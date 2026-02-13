@@ -9,9 +9,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 const TOOL_OUTPUT_MAX_DISPLAY_LEN: usize = 200;
-const ASSISTANT_COLOR: Color = Color::Green;
-const BOLD_STYLE: Style = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
-const CODE_STYLE: Style = Style::new().fg(Color::Yellow);
+const ASSISTANT_COLOR: Color = Color::White;
+const BOLD_STYLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+const CODE_STYLE: Style = Style::new().fg(Color::Magenta);
 
 struct Delimiter {
     open: &'static str,
