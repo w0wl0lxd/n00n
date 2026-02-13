@@ -1,0 +1,11 @@
+[package]
+name = "maki-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+maki-agent = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+color-eyre = { workspace = true }
+tracing = { workspace = true }
