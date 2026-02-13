@@ -70,6 +70,7 @@ const RETRY_DELAY: Duration = Duration::from_secs(2);
 pub fn stream_message(
     messages: &[Message],
     system: &str,
+    tools: &Value,
     event_tx: &Sender<AgentEvent>,
 ) -> Result<StreamResponse, AgentError> {
     let resolved = auth::resolve()?;
@@ -79,7 +80,7 @@ pub fn stream_message(
         "max_tokens": MAX_TOKENS,
         "system": system,
         "messages": messages,
-        "tools": ToolCall::definitions(),
+        "tools": tools,
         "stream": true,
     });
 

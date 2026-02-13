@@ -3,9 +3,64 @@ pub mod auth;
 pub mod client;
 pub mod tool;
 
+use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{env, fs};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::mpsc;
+
+const DATA_DIR_NAME: &str = ".maki";
+const PLANS_DIR: &str = "plans";
+
+pub fn data_dir() -> Result<PathBuf, AgentError> {
+    let home = env::var("HOME").map_err(|_| AgentError::Api {
+        status: 0,
+        message: "HOME not set".into(),
+    })?;
+    let dir = PathBuf::from(home).join(DATA_DIR_NAME);
+    fs::create_dir_all(&dir).map_err(AgentError::Io)?;
+    Ok(dir)
+}
+
+pub fn new_plan_path() -> String {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let plan_dir = data_dir()
+        .map(|d| d.join(PLANS_DIR))
+        .unwrap_or_else(|_| PLANS_DIR.into());
+    format!("{}/{ts}.md", plan_dir.display())
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum AgentMode {
+    #[default]
+    Build,
+    Plan(String),
+}
+
+pub struct AgentInput {
+    pub message: String,
+    pub mode: AgentMode,
+    pub pending_plan: Option<String>,
+}
+
+impl AgentInput {
+    pub fn effective_message(&self) -> String {
+        match &self.pending_plan {
+            Some(path) if self.mode == AgentMode::Build => {
+                format!(
+                    "A plan was written to {path}. Follow the plan.\n\n{}",
+                    self.message
+                )
+            }
+            _ => self.message.clone(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

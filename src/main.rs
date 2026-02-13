@@ -1,11 +1,7 @@
-use std::env;
-use std::fs;
-
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use tracing_subscriber::EnvFilter;
 
-const LOG_DIR_NAME: &str = ".maki";
 const LOG_FILE_NAME: &str = "maki.log";
 
 #[derive(Parser)]
@@ -47,8 +43,9 @@ fn main() -> Result<()> {
 }
 
 fn init_logging() {
-    let log_dir = log_dir();
-    let _ = fs::create_dir_all(&log_dir);
+    let Ok(log_dir) = maki_agent::data_dir() else {
+        return;
+    };
     let file_appender = tracing_appender::rolling::never(&log_dir, LOG_FILE_NAME);
     let filter = EnvFilter::try_from_env("MAKI_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
@@ -56,9 +53,4 @@ fn init_logging() {
         .with_env_filter(filter)
         .with_writer(file_appender)
         .init();
-}
-
-fn log_dir() -> String {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    format!("{home}/{LOG_DIR_NAME}")
 }

@@ -7,16 +7,16 @@ use std::thread;
 use std::time::Duration;
 
 use color_eyre::Result;
-
-const EVENT_POLL_INTERVAL_MS: u64 = 16;
 use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use maki_agent::AgentEvent;
 use maki_agent::agent;
+use maki_agent::{AgentEvent, AgentInput};
 use tracing::error;
 
 use app::{Action, App, Msg};
+
+const EVENT_POLL_INTERVAL_MS: u64 = 16;
 
 pub fn run() -> Result<()> {
     let mut terminal = ratatui::init();
@@ -35,19 +35,17 @@ pub fn run() -> Result<()> {
 fn run_event_loop(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     let mut app = App::new();
     let (agent_tx, agent_rx) = mpsc::channel::<AgentEvent>();
-    let (input_tx, input_rx) = mpsc::channel::<String>();
+    let (input_tx, input_rx) = mpsc::channel::<AgentInput>();
 
     let cwd = env::current_dir()?.to_string_lossy().to_string();
-    let system_prompt = agent::build_system_prompt(&cwd);
-
-    spawn_agent_thread(input_rx, agent_tx, system_prompt);
+    spawn_agent_thread(input_rx, agent_tx, cwd);
 
     loop {
         terminal.draw(|f| app.view(f))?;
 
         while let Ok(event) = agent_rx.try_recv() {
             for action in app.update(Msg::Agent(event)) {
-                handle_action(&action, &input_tx);
+                handle_action(action, &input_tx);
             }
         }
 
@@ -55,7 +53,7 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
             && let Event::Key(key) = event::read()?
         {
             for action in app.update(Msg::Key(key)) {
-                handle_action(&action, &input_tx);
+                handle_action(action, &input_tx);
             }
         }
 
@@ -68,14 +66,15 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
 }
 
 fn spawn_agent_thread(
-    input_rx: mpsc::Receiver<String>,
+    input_rx: mpsc::Receiver<AgentInput>,
     event_tx: mpsc::Sender<AgentEvent>,
-    system_prompt: String,
+    cwd: String,
 ) {
     thread::spawn(move || {
         let mut history = Vec::new();
-        while let Ok(user_msg) = input_rx.recv() {
-            if let Err(e) = agent::run(user_msg, &mut history, &system_prompt, &event_tx) {
+        while let Ok(input) = input_rx.recv() {
+            let system = agent::build_system_prompt(&cwd, &input.mode);
+            if let Err(e) = agent::run(input, &mut history, &system, &event_tx) {
                 error!(error = %e, "agent error");
                 let _ = event_tx.send(AgentEvent::Error(e.to_string()));
             }
@@ -83,10 +82,10 @@ fn spawn_agent_thread(
     });
 }
 
-fn handle_action(action: &Action, input_tx: &mpsc::Sender<String>) {
+fn handle_action(action: Action, input_tx: &mpsc::Sender<AgentInput>) {
     match action {
-        Action::SendMessage(msg) => {
-            let _ = input_tx.send(msg.clone());
+        Action::SendMessage(input) => {
+            let _ = input_tx.send(input);
         }
         Action::Quit => {}
     }

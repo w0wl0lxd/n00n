@@ -7,7 +7,7 @@ use std::sync::mpsc::Sender;
 use tracing::info;
 
 use crate::client;
-use crate::{AgentError, AgentEvent, Message, PendingToolCall, ToolOutput};
+use crate::{AgentError, AgentEvent, AgentInput, AgentMode, Message, PendingToolCall, ToolOutput};
 
 const AGENTS_MD: &str = "AGENTS.md";
 
@@ -18,7 +18,7 @@ You are Maki, a coding assistant. You help with software engineering tasks.
 - Be concise
 - When done, summarize what you did";
 
-pub fn build_system_prompt(cwd: &str) -> String {
+pub fn build_system_prompt(cwd: &str, mode: &AgentMode) -> String {
     let mut prompt = SYSTEM_PROMPT_STATIC.to_string();
     prompt.push_str(&format!(
         "\n\nEnvironment:\n- Working directory: {cwd}\n- Platform: {}\n- Date: {}",
@@ -30,6 +30,13 @@ pub fn build_system_prompt(cwd: &str) -> String {
     if let Ok(content) = fs::read_to_string(&agents_path) {
         prompt.push_str(&format!(
             "\n\nProject instructions ({AGENTS_MD}):\n{content}"
+        ));
+    }
+
+    if let AgentMode::Plan(plan_path) = mode {
+        prompt.push_str(&format!(
+            "\n\nYou are in PLAN mode. Do NOT make code changes. Only read, search, and analyze.\n\
+             Write your plan to {plan_path}. When complete, tell the user."
         ));
     }
 
@@ -47,6 +54,7 @@ fn current_date() -> String {
 fn execute_tools(
     tool_calls: &[PendingToolCall],
     event_tx: &Sender<AgentEvent>,
+    mode: &AgentMode,
 ) -> Vec<(String, ToolOutput)> {
     std::thread::scope(|s| {
         let handles: Vec<_> = tool_calls
@@ -54,7 +62,7 @@ fn execute_tools(
             .map(|pending| {
                 let tx = event_tx.clone();
                 s.spawn(move || {
-                    let output = pending.call.execute();
+                    let output = pending.call.execute(mode);
                     let _ = tx.send(AgentEvent::ToolDone {
                         name: pending.call.name().to_string(),
                         output: output.content.clone(),
@@ -78,15 +86,16 @@ fn execute_tools(
 }
 
 pub fn run(
-    user_msg: String,
+    input: AgentInput,
     history: &mut Vec<Message>,
     system: &str,
     event_tx: &Sender<AgentEvent>,
 ) -> Result<(), AgentError> {
-    history.push(Message::user(user_msg));
+    history.push(Message::user(input.effective_message()));
+    let tools = crate::tool::ToolCall::definitions();
 
     loop {
-        let response = client::stream_message(history, system, event_tx)?;
+        let response = client::stream_message(history, system, &tools, event_tx)?;
 
         info!(
             input_tokens = response.input_tokens,
@@ -112,9 +121,22 @@ pub fn run(
             })?;
         }
 
-        let tool_results = execute_tools(&response.tool_calls, event_tx);
+        let tool_results = execute_tools(&response.tool_calls, event_tx, &input.mode);
         history.push(Message::tool_results(tool_results));
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_case::test_case;
+
+    #[test_case(&AgentMode::Build, false ; "build_excludes_plan")]
+    #[test_case(&AgentMode::Plan(".maki/plans/123.md".into()), true ; "plan_includes_plan")]
+    fn system_prompt_plan_section(mode: &AgentMode, expect_plan: bool) {
+        let prompt = build_system_prompt("/tmp", mode);
+        assert_eq!(prompt.contains("PLAN mode"), expect_plan);
+    }
 }

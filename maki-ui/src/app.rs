@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::mem;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use maki_agent::AgentEvent;
+use maki_agent::{AgentEvent, AgentInput, AgentMode};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -22,6 +22,8 @@ const STATUS_STREAMING_STYLE: Style = Style::new().fg(Color::Yellow);
 const STATUS_ERROR_STYLE: Style = Style::new().fg(Color::Red);
 const BOLD_STYLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 const CODE_STYLE: Style = Style::new().fg(Color::Magenta);
+const MODE_BUILD_STYLE: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
+const MODE_PLAN_STYLE: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
 
 struct Delimiter {
     open: &'static str,
@@ -123,7 +125,7 @@ pub enum Msg {
 }
 
 pub enum Action {
-    SendMessage(String),
+    SendMessage(AgentInput),
     Quit,
 }
 
@@ -146,6 +148,8 @@ pub struct App {
     viewport_height: u16,
     pub token_usage: (u32, u32),
     pub should_quit: bool,
+    pub mode: AgentMode,
+    pending_plan: Option<String>,
 }
 
 impl Default for App {
@@ -167,6 +171,8 @@ impl App {
             viewport_height: 24,
             token_usage: (0, 0),
             should_quit: false,
+            mode: AgentMode::Build,
+            pending_plan: None,
         }
     }
 
@@ -215,6 +221,9 @@ impl App {
                 self.scroll(-1);
                 return vec![];
             }
+            KeyCode::Tab => {
+                return self.toggle_mode();
+            }
             _ => {}
         }
 
@@ -228,6 +237,9 @@ impl App {
                 if text.is_empty() {
                     return vec![];
                 }
+
+                let pending_plan = self.pending_plan.take();
+
                 self.messages.push(DisplayMessage {
                     role: DisplayRole::User,
                     text: text.clone(),
@@ -237,7 +249,11 @@ impl App {
                 self.streaming_text.clear();
                 self.status = Status::Streaming;
                 self.auto_scroll = true;
-                vec![Action::SendMessage(text)]
+                vec![Action::SendMessage(AgentInput {
+                    message: text,
+                    mode: self.mode.clone(),
+                    pending_plan,
+                })]
             }
             KeyCode::Char(c) => {
                 self.input.insert(self.cursor_pos, c);
@@ -294,6 +310,22 @@ impl App {
             AgentEvent::Error(err) => {
                 self.flush_streaming_text();
                 self.status = Status::Error(err);
+            }
+        }
+        vec![]
+    }
+
+    fn toggle_mode(&mut self) -> Vec<Action> {
+        if self.status == Status::Streaming {
+            return vec![];
+        }
+        match &self.mode {
+            AgentMode::Build => {
+                self.mode = AgentMode::Plan(maki_agent::new_plan_path());
+            }
+            AgentMode::Plan(path) => {
+                self.pending_plan = Some(path.clone());
+                self.mode = AgentMode::Build;
             }
         }
         vec![]
@@ -382,7 +414,12 @@ impl App {
     }
 
     fn render_status(&self, frame: &mut Frame, area: Rect) {
-        let (text, style) = match &self.status {
+        let (mode_label, mode_style) = match &self.mode {
+            AgentMode::Build => ("[BUILD]", MODE_BUILD_STYLE),
+            AgentMode::Plan(_) => ("[PLAN]", MODE_PLAN_STYLE),
+        };
+
+        let (status_text, status_style) = match &self.status {
             Status::Idle => (
                 format!(
                     " tokens: {}in / {}out",
@@ -394,7 +431,12 @@ impl App {
             Status::Error(e) => (format!(" error: {e}"), STATUS_ERROR_STYLE),
         };
 
-        frame.render_widget(Paragraph::new(text).style(style), area);
+        let line = Line::from(vec![
+            Span::styled(format!(" {mode_label}"), mode_style),
+            Span::styled(status_text, status_style),
+        ]);
+
+        frame.render_widget(Paragraph::new(line), area);
     }
 }
 
@@ -433,7 +475,7 @@ mod tests {
 
         let actions = app.update(Msg::Key(key(KeyCode::Enter)));
         assert_eq!(actions.len(), 1);
-        assert!(matches!(&actions[0], Action::SendMessage(s) if s == "hi"));
+        assert!(matches!(&actions[0], Action::SendMessage(s) if s.message == "hi"));
         assert!(app.input.is_empty());
         assert_eq!(app.status, Status::Streaming);
         assert_eq!(app.messages.len(), 1);
@@ -615,5 +657,31 @@ mod tests {
     #[test_case("single", 1, "single" ; "single_line")]
     fn truncate_lines_cases(input: &str, max: usize, expected: &str) {
         assert_eq!(truncate_lines(input, max), expected);
+    }
+
+    #[test]
+    fn tab_toggles_mode_and_sets_pending_plan() {
+        let mut app = App::new();
+        assert_eq!(app.mode, AgentMode::Build);
+
+        app.update(Msg::Key(key(KeyCode::Tab)));
+        assert!(matches!(app.mode, AgentMode::Plan(ref p) if p.contains("plans")));
+
+        app.update(Msg::Key(key(KeyCode::Tab)));
+        assert_eq!(app.mode, AgentMode::Build);
+        assert!(app.pending_plan.is_some());
+    }
+
+    #[test]
+    fn submit_consumes_pending_plan() {
+        let mut app = App::new();
+        app.pending_plan = Some("plan.md".into());
+        app.update(Msg::Key(key(KeyCode::Char('x'))));
+        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        let Action::SendMessage(ref input) = actions[0] else {
+            panic!("expected SendMessage");
+        };
+        assert_eq!(input.pending_plan.as_deref(), Some("plan.md"));
+        assert!(app.pending_plan.is_none());
     }
 }

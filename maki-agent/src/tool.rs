@@ -11,7 +11,7 @@ use ignore::overrides::OverrideBuilder;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{AgentError, ToolOutput};
+use crate::{AgentError, AgentMode, ToolOutput};
 
 const MAX_OUTPUT_BYTES: usize = 50_000;
 const MAX_OUTPUT_LINES: usize = 2000;
@@ -21,6 +21,7 @@ const TRUNCATED_MARKER: &str = "[truncated]";
 const SEARCH_RESULT_LIMIT: usize = 100;
 const MAX_GREP_LINE_LENGTH: usize = 2000;
 const NO_FILES_FOUND: &str = "No files found";
+const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
 
 fn unknown_tool_msg(name: &str) -> String {
     format!("unknown variant `{name}`")
@@ -190,7 +191,14 @@ impl ToolCall {
         }
     }
 
-    pub fn execute(&self) -> ToolOutput {
+    pub fn execute(&self, mode: &AgentMode) -> ToolOutput {
+        if let Self::Write { path, .. } = self
+            && let AgentMode::Plan(plan_path) = mode
+            && path != plan_path
+        {
+            return ToolOutput::err(PLAN_WRITE_RESTRICTED.to_string());
+        }
+
         match self {
             Self::Bash { command, timeout } => execute_bash(command, *timeout),
             Self::Read {
@@ -751,5 +759,17 @@ mod tests {
             result.content,
             "[x] first\n[>] second\n[ ] third\n[-] fourth"
         );
+    }
+
+    #[test]
+    fn plan_mode_blocks_write_to_non_plan_path() {
+        let call = ToolCall::Write {
+            path: "/tmp/some_file.rs".to_string(),
+            content: "fn main(){}".to_string(),
+        };
+        let mode = AgentMode::Plan(".maki/plans/123.md".into());
+        let result = call.execute(&mode);
+        assert!(result.is_error);
+        assert_eq!(result.content, PLAN_WRITE_RESTRICTED);
     }
 }

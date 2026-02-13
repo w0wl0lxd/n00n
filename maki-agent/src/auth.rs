@@ -26,7 +26,6 @@ const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 const REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
 const SCOPES: &str = "org:create_api_key user:profile user:inference";
-const AUTH_DIR: &str = ".maki";
 const AUTH_FILE: &str = "auth.json";
 const REFRESH_BUFFER_SECS: u64 = 60;
 
@@ -43,11 +42,7 @@ pub struct ResolvedAuth {
 }
 
 fn auth_file_path() -> Result<PathBuf, AgentError> {
-    let home = env::var("HOME").map_err(|_| AgentError::Api {
-        status: 0,
-        message: "HOME not set".into(),
-    })?;
-    Ok(PathBuf::from(home).join(AUTH_DIR).join(AUTH_FILE))
+    Ok(crate::data_dir()?.join(AUTH_FILE))
 }
 
 fn now_millis() -> u64 {
