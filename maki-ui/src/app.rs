@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::mem;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -8,7 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-const TOOL_OUTPUT_MAX_DISPLAY_LEN: usize = 200;
+const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 20;
 const ASSISTANT_COLOR: Color = Color::White;
 const BOLD_STYLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 const CODE_STYLE: Style = Style::new().fg(Color::Magenta);
@@ -80,8 +81,11 @@ fn text_to_lines<'a>(
         .collect()
 }
 
-fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
-    &s[..s.floor_char_boundary(max_bytes)]
+fn truncate_lines(s: &str, max_lines: usize) -> Cow<'_, str> {
+    match s.match_indices('\n').nth(max_lines.saturating_sub(1)) {
+        Some((i, _)) => Cow::Owned(format!("{}...", &s[..i])),
+        None => Cow::Borrowed(s),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -263,11 +267,7 @@ impl App {
                 });
             }
             AgentEvent::ToolDone { name, output } => {
-                let truncated = if output.len() > TOOL_OUTPUT_MAX_DISPLAY_LEN {
-                    format!("{}...", truncate_utf8(&output, TOOL_OUTPUT_MAX_DISPLAY_LEN))
-                } else {
-                    output
-                };
+                let truncated = truncate_lines(&output, TOOL_OUTPUT_MAX_DISPLAY_LINES);
                 self.messages.push(DisplayMessage {
                     role: DisplayRole::Tool,
                     text: tool_done_msg(&name, &truncated),
@@ -615,10 +615,10 @@ mod tests {
         assert_eq!(lines[1].spans.len(), 1);
     }
 
-    #[test_case("hello world", 5, "hello" ; "ascii")]
-    #[test_case("héllo", 3, "hé" ; "multibyte_boundary")]
-    #[test_case("héllo", 2, "h" ; "mid_char_boundary")]
-    fn truncate_utf8_cases(input: &str, max: usize, expected: &str) {
-        assert_eq!(truncate_utf8(input, max), expected);
+    #[test_case("a\nb\nc", 5, "a\nb\nc" ; "under_limit")]
+    #[test_case("a\nb\nc\nd", 2, "a\nb..." ; "over_limit")]
+    #[test_case("single", 1, "single" ; "single_line")]
+    fn truncate_lines_cases(input: &str, max: usize, expected: &str) {
+        assert_eq!(truncate_lines(input, max), expected);
     }
 }
