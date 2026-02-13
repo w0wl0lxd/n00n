@@ -319,10 +319,15 @@ fn execute_bash(command: &str, timeout: Option<u64>) -> ToolOutput {
                     }
                     output.push_str(&stderr);
                 }
-                return ToolOutput {
-                    content: truncate_output(output),
-                    is_error: !status.success(),
-                };
+                let content = truncate_output(output);
+                let is_error = !status.success();
+                if is_error && content.is_empty() {
+                    return ToolOutput::err(format!(
+                        "exited with code {}",
+                        status.code().unwrap_or(-1)
+                    ));
+                }
+                return ToolOutput { content, is_error };
             }
             Ok(None) => {
                 if Instant::now() >= deadline {
