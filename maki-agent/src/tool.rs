@@ -62,6 +62,21 @@ struct GrepInput {
     include: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TodoItem {
+    pub content: String,
+    pub status: TodoStatus,
+}
+
 #[derive(Debug, Clone)]
 pub enum ToolCall {
     Bash {
@@ -85,6 +100,9 @@ pub enum ToolCall {
         pattern: String,
         path: Option<String>,
         include: Option<String>,
+    },
+    TodoWrite {
+        todos: Vec<TodoItem>,
     },
 }
 
@@ -135,6 +153,14 @@ impl ToolCall {
                     include: i.include,
                 })
             }
+            "todowrite" => {
+                #[derive(Deserialize)]
+                struct Input {
+                    todos: Vec<TodoItem>,
+                }
+                let i: Input = parse_input(input, name)?;
+                Ok(Self::TodoWrite { todos: i.todos })
+            }
             _ => Err(AgentError::Tool {
                 tool: name.to_string(),
                 message: unknown_tool_msg(name),
@@ -149,6 +175,7 @@ impl ToolCall {
             Self::Write { .. } => "write",
             Self::Glob { .. } => "glob",
             Self::Grep { .. } => "grep",
+            Self::TodoWrite { .. } => "todowrite",
         }
     }
 
@@ -159,6 +186,7 @@ impl ToolCall {
             Self::Write { path, .. } => path.clone(),
             Self::Glob { pattern, .. } => pattern.clone(),
             Self::Grep { pattern, .. } => pattern.clone(),
+            Self::TodoWrite { todos } => format!("{} todos", todos.len()),
         }
     }
 
@@ -177,6 +205,7 @@ impl ToolCall {
                 path,
                 include,
             } => execute_grep(pattern, path.as_deref(), include.as_deref()),
+            Self::TodoWrite { todos } => execute_todowrite(todos),
         }
     }
 
@@ -242,6 +271,27 @@ impl ToolCall {
                         "include": { "type": "string", "description": "File glob filter (e.g. *.rs)" }
                     },
                     "required": ["pattern"]
+                }
+            },
+            {
+                "name": "todowrite",
+                "description": "Create or update a structured todo list to track tasks. Send the complete list each time (replace-all semantics). Use this to plan multi-step work, track progress, and show the user what you're doing. Mark items in_progress when starting, completed when done. Only one item should be in_progress at a time.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "todos": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "content": { "type": "string", "description": "Task description" },
+                                    "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"] }
+                                },
+                                "required": ["content", "status"]
+                            }
+                        }
+                    },
+                    "required": ["todos"]
                 }
             }
         ])
@@ -511,6 +561,26 @@ fn execute_grep(pattern: &str, path: Option<&str>, include: Option<&str>) -> Too
     ToolOutput::ok(result.trim_end().to_string())
 }
 
+fn execute_todowrite(todos: &[TodoItem]) -> ToolOutput {
+    if todos.is_empty() {
+        return ToolOutput::ok("No todos.".to_string());
+    }
+    let output = todos
+        .iter()
+        .map(|t| {
+            let marker = match t.status {
+                TodoStatus::Completed => "[x]",
+                TodoStatus::InProgress => "[>]",
+                TodoStatus::Pending => "[ ]",
+                TodoStatus::Cancelled => "[-]",
+            };
+            format!("{marker} {}", t.content)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    ToolOutput::ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use std::env;
@@ -532,6 +602,13 @@ mod tests {
 
         let err = ToolCall::from_api("unknown", &json!({})).unwrap_err();
         assert!(err.to_string().contains(&unknown_tool_msg("unknown")));
+
+        let todo = ToolCall::from_api(
+            "todowrite",
+            &json!({"todos": [{"content": "do stuff", "status": "in_progress"}]}),
+        )
+        .unwrap();
+        assert!(matches!(todo, ToolCall::TodoWrite { ref todos } if todos.len() == 1));
     }
 
     #[test]
@@ -651,5 +728,28 @@ mod tests {
         assert_eq!(miss.content, NO_FILES_FOUND);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn todo(content: &str, status: TodoStatus) -> TodoItem {
+        TodoItem {
+            content: content.to_string(),
+            status,
+        }
+    }
+
+    #[test]
+    fn todowrite_formats_all_statuses() {
+        let todos = vec![
+            todo("first", TodoStatus::Completed),
+            todo("second", TodoStatus::InProgress),
+            todo("third", TodoStatus::Pending),
+            todo("fourth", TodoStatus::Cancelled),
+        ];
+        let result = execute_todowrite(&todos);
+        assert!(!result.is_error);
+        assert_eq!(
+            result.content,
+            "[x] first\n[>] second\n[ ] third\n[-] fourth"
+        );
     }
 }
