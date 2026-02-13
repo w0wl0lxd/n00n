@@ -128,7 +128,8 @@ pub struct App {
     pub cursor_pos: usize,
     streaming_text: String,
     pub status: Status,
-    scroll_offset: u16,
+    scroll_top: u16,
+    auto_scroll: bool,
     viewport_height: u16,
     pub token_usage: (u32, u32),
     pub should_quit: bool,
@@ -148,7 +149,8 @@ impl App {
             cursor_pos: 0,
             streaming_text: String::new(),
             status: Status::Idle,
-            scroll_offset: 0,
+            scroll_top: u16::MAX,
+            auto_scroll: true,
             viewport_height: 24,
             token_usage: (0, 0),
             should_quit: false,
@@ -164,12 +166,11 @@ impl App {
 
     fn scroll(&mut self, delta: i32) {
         if delta > 0 {
-            self.scroll_offset = self.scroll_offset.saturating_add(delta as u16);
+            self.scroll_top = self.scroll_top.saturating_sub(delta as u16);
         } else {
-            self.scroll_offset = self
-                .scroll_offset
-                .saturating_sub(delta.unsigned_abs() as u16);
+            self.scroll_top = self.scroll_top.saturating_add(delta.unsigned_abs() as u16);
         }
+        self.auto_scroll = false;
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Vec<Action> {
@@ -222,7 +223,7 @@ impl App {
                 self.cursor_pos = 0;
                 self.streaming_text.clear();
                 self.status = Status::Streaming;
-                self.scroll_offset = 0;
+                self.auto_scroll = true;
                 vec![Action::SendMessage(text)]
             }
             KeyCode::Char(c) => {
@@ -253,7 +254,6 @@ impl App {
         match event {
             AgentEvent::TextDelta(text) => {
                 self.streaming_text.push_str(&text);
-                self.scroll_offset = 0;
             }
             AgentEvent::ToolStart { name, input } => {
                 self.flush_streaming_text();
@@ -352,14 +352,15 @@ impl App {
         }
 
         let total_lines = lines.len() as u16;
-        let visible = area.height;
-        let max_scroll_offset = total_lines.saturating_sub(visible);
-        self.scroll_offset = self.scroll_offset.min(max_scroll_offset);
-        let scroll = max_scroll_offset.saturating_sub(self.scroll_offset);
+        let max_scroll = total_lines.saturating_sub(area.height);
+        if self.auto_scroll {
+            self.scroll_top = max_scroll;
+        }
+        self.scroll_top = self.scroll_top.min(max_scroll);
 
         let paragraph = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
-            .scroll((scroll, 0));
+            .scroll((self.scroll_top, 0));
 
         frame.render_widget(paragraph, area);
     }
@@ -539,32 +540,55 @@ mod tests {
         assert!(matches!(app.status, Status::Error(ref e) if e == "boom"));
     }
 
-    #[test_case(0,  'u', 10 ; "ctrl_u_from_zero")]
-    #[test_case(10, 'u', 20 ; "ctrl_u_accumulates")]
-    #[test_case(25, 'd', 15 ; "ctrl_d_scrolls_down")]
-    #[test_case(3,  'd', 0  ; "ctrl_d_saturates_at_zero")]
+    #[test_case(10, 'u', 0  ; "ctrl_u_saturates_at_zero")]
+    #[test_case(20, 'u', 10 ; "ctrl_u_scrolls_up")]
+    #[test_case(5,  'd', 15 ; "ctrl_d_scrolls_down")]
+    #[test_case(0,  'd', 10 ; "ctrl_d_from_top")]
     fn half_page_scroll(initial: u16, key_char: char, expected: u16) {
         let mut app = App::new();
         app.viewport_height = 20;
-        app.scroll_offset = initial;
+        app.scroll_top = initial;
         app.update(Msg::Key(ctrl(key_char)));
-        assert_eq!(app.scroll_offset, expected);
+        assert_eq!(app.scroll_top, expected);
     }
 
     #[test]
-    fn scroll_offset_clamped_to_content() {
+    fn scroll_top_clamped_to_content() {
         let mut app = App::new();
         app.messages.push(DisplayMessage {
             role: DisplayRole::User,
             text: "short".into(),
         });
 
-        app.scroll_offset = 1000;
+        app.scroll_top = 1000;
+        app.auto_scroll = false;
         let backend = TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| app.view(f)).unwrap();
 
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.scroll_top, 0);
+    }
+
+    #[test]
+    fn scroll_up_pins_viewport_during_streaming() {
+        let mut app = App::new();
+        app.status = Status::Streaming;
+        app.streaming_text = "a\n".repeat(30);
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+
+        app.update(Msg::Key(key(KeyCode::Up)));
+        app.update(Msg::Key(key(KeyCode::Up)));
+        terminal.draw(|f| app.view(f)).unwrap();
+        let pinned = app.scroll_top;
+
+        app.update(Msg::Agent(AgentEvent::TextDelta("b\nb\nb\n".into())));
+        terminal.draw(|f| app.view(f)).unwrap();
+
+        assert!(!app.auto_scroll);
+        assert_eq!(app.scroll_top, pinned);
     }
 
     #[test_case("a **bold** b", &[("a ", None), ("bold", Some(BOLD_STYLE)), (" b", None)] ; "bold")]

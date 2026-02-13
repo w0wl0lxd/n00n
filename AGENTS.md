@@ -4,6 +4,7 @@ Maki is an AI coding agent (like Claude Code and opencode), that is built bottom
 
 - No trivial comments
 - Minimal bloat (KISS, DRY, SRP)
+- No unnecessary state (variables, fields, arguments)
 - Each line of code should justify its existence
 - Follow Rust idioms and best practices
 - Latest Rust features can be used
