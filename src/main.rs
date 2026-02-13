@@ -1,16 +1,49 @@
 use std::env;
 use std::fs;
 
+use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use tracing_subscriber::EnvFilter;
 
 const LOG_DIR_NAME: &str = ".maki";
 const LOG_FILE_NAME: &str = "maki.log";
 
+#[derive(Parser)]
+#[command(name = "maki", version, about = "AI coding assistant")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthAction {
+    Login,
+    Logout,
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
-    init_logging();
-    maki_ui::run()
+
+    let cli = Cli::parse();
+    match cli.command {
+        Some(Command::Auth { action }) => match action {
+            AuthAction::Login => maki_agent::auth::login()?,
+            AuthAction::Logout => maki_agent::auth::logout()?,
+        },
+        None => {
+            init_logging();
+            maki_ui::run()?;
+        }
+    }
+    Ok(())
 }
 
 fn init_logging() {

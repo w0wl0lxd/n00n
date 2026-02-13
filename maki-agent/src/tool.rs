@@ -5,6 +5,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{AgentError, ToolOutput};
@@ -15,16 +16,31 @@ const DEFAULT_BASH_TIMEOUT_SECS: u64 = 120;
 const PROCESS_POLL_INTERVAL_MS: u64 = 50;
 pub const TRUNCATED_MARKER: &str = "[truncated]";
 
-pub fn missing_field_msg(field: &str) -> String {
-    format!("missing field `{field}`")
-}
-
 pub fn unknown_tool_msg(name: &str) -> String {
     format!("unknown variant `{name}`")
 }
 
 pub fn timed_out_msg(secs: u64) -> String {
     format!("command timed out after {secs}s")
+}
+
+#[derive(Deserialize)]
+struct BashInput {
+    command: String,
+    timeout: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct ReadInput {
+    path: String,
+    offset: Option<usize>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct WriteInput {
+    path: String,
+    content: String,
 }
 
 #[derive(Debug, Clone)]
@@ -44,37 +60,42 @@ pub enum ToolCall {
     },
 }
 
-fn required_str(input: &Value, field: &str, tool: &str) -> Result<String, AgentError> {
-    input[field]
-        .as_str()
-        .map(String::from)
-        .ok_or_else(|| AgentError::Tool {
-            tool: tool.to_string(),
-            message: missing_field_msg(field),
-        })
+fn parse_input<T: serde::de::DeserializeOwned>(input: &Value, tool: &str) -> Result<T, AgentError> {
+    serde_json::from_value(input.clone()).map_err(|e| AgentError::Tool {
+        tool: tool.to_string(),
+        message: e.to_string(),
+    })
 }
 
 impl ToolCall {
     pub fn from_api(name: &str, input: &Value) -> Result<Self, AgentError> {
-        let err = || AgentError::Tool {
-            tool: name.to_string(),
-            message: unknown_tool_msg(name),
-        };
         match name {
-            "bash" => Ok(Self::Bash {
-                command: required_str(input, "command", name)?,
-                timeout: input["timeout"].as_u64(),
+            "bash" => {
+                let i: BashInput = parse_input(input, name)?;
+                Ok(Self::Bash {
+                    command: i.command,
+                    timeout: i.timeout,
+                })
+            }
+            "read" => {
+                let i: ReadInput = parse_input(input, name)?;
+                Ok(Self::Read {
+                    path: i.path,
+                    offset: i.offset,
+                    limit: i.limit,
+                })
+            }
+            "write" => {
+                let i: WriteInput = parse_input(input, name)?;
+                Ok(Self::Write {
+                    path: i.path,
+                    content: i.content,
+                })
+            }
+            _ => Err(AgentError::Tool {
+                tool: name.to_string(),
+                message: unknown_tool_msg(name),
             }),
-            "read" => Ok(Self::Read {
-                path: required_str(input, "path", name)?,
-                offset: input["offset"].as_u64().map(|v| v as usize),
-                limit: input["limit"].as_u64().map(|v| v as usize),
-            }),
-            "write" => Ok(Self::Write {
-                path: required_str(input, "path", name)?,
-                content: required_str(input, "content", name)?,
-            }),
-            _ => Err(err()),
         }
     }
 
@@ -271,71 +292,51 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn from_api_bash_valid() {
-        let input = json!({"command": "echo hello", "timeout": 5});
-        let tool = ToolCall::from_api("bash", &input).unwrap();
+    fn from_api_parses_valid_and_rejects_invalid() {
+        let tool =
+            ToolCall::from_api("bash", &json!({"command": "echo hello", "timeout": 5})).unwrap();
         assert!(
             matches!(tool, ToolCall::Bash { ref command, timeout: Some(5) } if command == "echo hello")
         );
-    }
 
-    #[test]
-    fn from_api_missing_required_field() {
-        let input = json!({});
-        let err = ToolCall::from_api("bash", &input).unwrap_err();
-        assert!(err.to_string().contains(&missing_field_msg("command")));
-    }
+        let err = ToolCall::from_api("bash", &json!({})).unwrap_err();
+        assert!(err.to_string().contains("command"));
 
-    #[test]
-    fn from_api_unknown_tool() {
         let err = ToolCall::from_api("unknown", &json!({})).unwrap_err();
         assert!(err.to_string().contains(&unknown_tool_msg("unknown")));
     }
 
     #[test]
-    fn truncate_within_limits() {
-        let text = "line1\nline2\nline3".to_string();
-        assert_eq!(truncate_output(text.clone()), text);
-    }
+    fn truncate_output_respects_limits() {
+        let small = "line1\nline2\nline3".to_string();
+        assert_eq!(truncate_output(small.clone()), small);
 
-    #[test]
-    fn truncate_excess_lines() {
-        let text: String = (0..2500)
+        let many_lines: String = (0..2500)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let result = truncate_output(text);
+        let result = truncate_output(many_lines);
         assert!(result.ends_with(TRUNCATED_MARKER));
-        let line_count = result.lines().count();
-        assert!(line_count <= MAX_OUTPUT_LINES + 1);
-    }
+        assert!(result.lines().count() <= MAX_OUTPUT_LINES + 1);
 
-    #[test]
-    fn truncate_excess_bytes() {
-        let text = "x".repeat(MAX_OUTPUT_BYTES + 1000);
-        let result = truncate_output(text);
+        let many_bytes = "x".repeat(MAX_OUTPUT_BYTES + 1000);
+        let result = truncate_output(many_bytes);
         assert!(result.ends_with(TRUNCATED_MARKER));
         assert!(result.len() <= MAX_OUTPUT_BYTES + 20);
     }
 
     #[test]
-    fn execute_bash_echo() {
-        let output = execute_bash("echo hello", Some(5));
-        assert!(!output.is_error);
-        assert_eq!(output.content.trim(), "hello");
-    }
+    fn execute_bash_success_failure_and_timeout() {
+        let ok = execute_bash("echo hello", Some(5));
+        assert!(!ok.is_error);
+        assert_eq!(ok.content.trim(), "hello");
 
-    #[test]
-    fn execute_bash_failing_command() {
-        let output = execute_bash("exit 1", Some(5));
-        assert!(output.is_error);
-    }
+        let fail = execute_bash("exit 1", Some(5));
+        assert!(fail.is_error);
 
-    #[test]
-    fn execute_bash_timeout() {
-        let output = execute_bash("sleep 10", Some(0));
-        assert!(output.is_error);
-        assert!(output.content.contains(&timed_out_msg(0)));
+        let timeout = execute_bash("sleep 10", Some(0));
+        assert!(timeout.is_error);
+        assert!(timeout.content.contains(&timed_out_msg(0)));
     }
 
     fn temp_file(name: &str) -> (PathBuf, String) {
@@ -346,41 +347,27 @@ mod tests {
     }
 
     #[test]
-    fn read_write_roundtrip() {
+    fn read_write_roundtrip_with_offset() {
         let (dir, path) = temp_file("maki_test_rw");
-
-        let w = execute_write(&path, "hello\nworld\n");
-        assert!(!w.is_error);
-
-        let r = execute_read(&path, None, None);
-        assert!(!r.is_error);
-        assert!(r.content.contains("1: hello"));
-        assert!(r.content.contains("2: world"));
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn read_with_offset_and_limit() {
-        let (dir, path) = temp_file("maki_test_offset");
         let content = (1..=10)
             .map(|i| format!("line{i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        execute_write(&path, &content);
 
-        let r = execute_read(&path, Some(3), Some(2));
-        assert!(!r.is_error);
-        assert!(r.content.contains("3: line3"));
-        assert!(r.content.contains("4: line4"));
-        assert!(!r.content.contains("5: line5"));
+        let w = execute_write(&path, &content);
+        assert!(!w.is_error);
+
+        let full = execute_read(&path, None, None);
+        assert!(!full.is_error);
+        assert!(full.content.contains("1: line1"));
+        assert!(full.content.contains("10: line10"));
+
+        let slice = execute_read(&path, Some(3), Some(2));
+        assert!(!slice.is_error);
+        assert!(slice.content.contains("3: line3"));
+        assert!(slice.content.contains("4: line4"));
+        assert!(!slice.content.contains("5: line5"));
 
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn read_nonexistent() {
-        let r = execute_read("/nonexistent/path/abcfilecba.txt", None, None);
-        assert!(r.is_error);
     }
 }

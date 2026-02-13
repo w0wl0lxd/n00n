@@ -1,17 +1,66 @@
-use std::env;
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 use ureq::Agent;
 
+use crate::auth;
 use crate::tool::ToolCall;
 use crate::{AgentError, AgentEvent, ContentBlock, Message, PendingToolCall, Role, StreamResponse};
 
-const API_URL: &str = "https://api.anthropic.com/v1/messages";
+#[derive(Deserialize)]
+struct Usage {
+    #[serde(default)]
+    input_tokens: u32,
+    #[serde(default)]
+    output_tokens: u32,
+}
+
+#[derive(Deserialize)]
+struct MessagePayload {
+    #[serde(default)]
+    usage: Option<Usage>,
+}
+
+#[derive(Deserialize)]
+struct MessageStartEvent {
+    message: MessagePayload,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SseContentBlock {
+    Text,
+    ToolUse { id: String, name: String },
+}
+
+#[derive(Deserialize)]
+struct ContentBlockStartEvent {
+    content_block: SseContentBlock,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Delta {
+    TextDelta { text: String },
+    InputJsonDelta { partial_json: String },
+}
+
+#[derive(Deserialize)]
+struct ContentBlockDeltaEvent {
+    delta: Delta,
+}
+
+#[derive(Deserialize)]
+struct MessageDeltaEvent {
+    #[serde(default)]
+    usage: Option<Usage>,
+}
+
 const API_VERSION: &str = "2023-06-01";
 const MODEL: &str = "claude-sonnet-4-20250514";
 const MAX_TOKENS: u32 = 8096;
@@ -23,10 +72,7 @@ pub fn stream_message(
     system: &str,
     event_tx: &Sender<AgentEvent>,
 ) -> Result<StreamResponse, AgentError> {
-    let api_key = env::var("ANTHROPIC_API_KEY").map_err(|_| AgentError::Api {
-        status: 0,
-        message: "ANTHROPIC_API_KEY not set".to_string(),
-    })?;
+    let resolved = auth::resolve()?;
 
     let body = json!({
         "model": MODEL,
@@ -45,12 +91,14 @@ pub fn stream_message(
     for attempt in 1..=MAX_RETRIES {
         debug!(attempt, "sending API request");
 
-        let response = agent
-            .post(API_URL)
-            .header("x-api-key", &api_key)
+        let mut req = agent
+            .post(&resolved.api_url)
             .header("anthropic-version", API_VERSION)
-            .header("content-type", "application/json")
-            .send(body.to_string().as_str())?;
+            .header("content-type", "application/json");
+        for (key, value) in &resolved.headers {
+            req = req.header(key, value);
+        }
+        let response = req.send(body.to_string().as_str())?;
 
         let status = response.status().as_u16();
 
@@ -114,54 +162,50 @@ fn parse_sse(
             None => continue,
         };
 
-        let parsed: Value = match serde_json::from_str(data) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
         match current_event.as_str() {
             "message_start" => {
-                if let Some(usage) = parsed.pointer("/message/usage") {
-                    input_tokens = usage["input_tokens"].as_u64().unwrap_or(0) as u32;
+                if let Ok(ev) = serde_json::from_str::<MessageStartEvent>(data)
+                    && let Some(usage) = ev.message.usage
+                {
+                    input_tokens = usage.input_tokens;
                 }
             }
             "content_block_start" => {
-                let block = &parsed["content_block"];
-                match block["type"].as_str() {
-                    Some("text") => {
-                        content_blocks.push(ContentBlock::Text {
-                            text: String::new(),
-                        });
+                if let Ok(ev) = serde_json::from_str::<ContentBlockStartEvent>(data) {
+                    match ev.content_block {
+                        SseContentBlock::Text => {
+                            content_blocks.push(ContentBlock::Text {
+                                text: String::new(),
+                            });
+                        }
+                        SseContentBlock::ToolUse { id, name } => {
+                            current_tool_json.clear();
+                            content_blocks.push(ContentBlock::ToolUse {
+                                id,
+                                name,
+                                input: Value::Null,
+                            });
+                        }
                     }
-                    Some("tool_use") => {
-                        current_tool_json.clear();
-                        content_blocks.push(ContentBlock::ToolUse {
-                            id: block["id"].as_str().unwrap_or("").to_string(),
-                            name: block["name"].as_str().unwrap_or("").to_string(),
-                            input: Value::Null,
-                        });
-                    }
-                    _ => {}
                 }
             }
             "content_block_delta" => {
-                let delta = &parsed["delta"];
-                match delta["type"].as_str() {
-                    Some("text_delta") => {
-                        let text = delta["text"].as_str().unwrap_or("");
-                        if !text.is_empty() {
-                            event_tx.send(AgentEvent::TextDelta(text.to_string()))?;
-                            if let Some(ContentBlock::Text { text: t }) = content_blocks.last_mut()
-                            {
-                                t.push_str(text);
+                if let Ok(ev) = serde_json::from_str::<ContentBlockDeltaEvent>(data) {
+                    match ev.delta {
+                        Delta::TextDelta { text } => {
+                            if !text.is_empty() {
+                                event_tx.send(AgentEvent::TextDelta(text.clone()))?;
+                                if let Some(ContentBlock::Text { text: t }) =
+                                    content_blocks.last_mut()
+                                {
+                                    t.push_str(&text);
+                                }
                             }
                         }
+                        Delta::InputJsonDelta { partial_json } => {
+                            current_tool_json.push_str(&partial_json);
+                        }
                     }
-                    Some("input_json_delta") => {
-                        let partial = delta["partial_json"].as_str().unwrap_or("");
-                        current_tool_json.push_str(partial);
-                    }
-                    _ => {}
                 }
             }
             "content_block_stop" => {
@@ -184,8 +228,10 @@ fn parse_sse(
                 }
             }
             "message_delta" => {
-                if let Some(usage) = parsed.get("usage") {
-                    output_tokens = usage["output_tokens"].as_u64().unwrap_or(0) as u32;
+                if let Ok(ev) = serde_json::from_str::<MessageDeltaEvent>(data)
+                    && let Some(usage) = ev.usage
+                {
+                    output_tokens = usage.output_tokens;
                 }
             }
             _ => {}
