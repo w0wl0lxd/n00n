@@ -14,13 +14,13 @@ const MAX_OUTPUT_BYTES: usize = 50_000;
 const MAX_OUTPUT_LINES: usize = 2000;
 const DEFAULT_BASH_TIMEOUT_SECS: u64 = 120;
 const PROCESS_POLL_INTERVAL_MS: u64 = 10;
-pub const TRUNCATED_MARKER: &str = "[truncated]";
+const TRUNCATED_MARKER: &str = "[truncated]";
 
-pub fn unknown_tool_msg(name: &str) -> String {
+fn unknown_tool_msg(name: &str) -> String {
     format!("unknown variant `{name}`")
 }
 
-pub fn timed_out_msg(secs: u64) -> String {
+fn timed_out_msg(secs: u64) -> String {
     format!("command timed out after {secs}s")
 }
 
