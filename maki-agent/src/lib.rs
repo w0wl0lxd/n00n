@@ -3,8 +3,6 @@ pub mod auth;
 pub mod client;
 pub mod tool;
 
-use serde::de::Deserializer;
-use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::mpsc;
@@ -30,25 +28,9 @@ pub enum ContentBlock {
     ToolResult {
         tool_use_id: String,
         content: String,
-        #[serde(
-            serialize_with = "serialize_is_error",
-            deserialize_with = "deserialize_is_error",
-            default
-        )]
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
-}
-
-fn serialize_is_error<S: Serializer>(val: &bool, s: S) -> Result<S::Ok, S::Error> {
-    if *val {
-        s.serialize_bool(true)
-    } else {
-        s.serialize_none()
-    }
-}
-
-fn deserialize_is_error<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
-    Option::<bool>::deserialize(d).map(|o| o.unwrap_or(false))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
