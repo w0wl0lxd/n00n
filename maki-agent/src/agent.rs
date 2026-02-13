@@ -7,7 +7,7 @@ use std::sync::mpsc::Sender;
 use tracing::info;
 
 use crate::client;
-use crate::{AgentError, AgentEvent, Message, ToolOutput};
+use crate::{AgentError, AgentEvent, Message, PendingToolCall, ToolOutput};
 
 const AGENTS_MD: &str = "AGENTS.md";
 
@@ -42,6 +42,39 @@ fn current_date() -> String {
         Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         Err(_) => "unknown".to_string(),
     }
+}
+
+fn execute_tools(
+    tool_calls: &[PendingToolCall],
+    event_tx: &Sender<AgentEvent>,
+) -> Vec<(String, ToolOutput)> {
+    std::thread::scope(|s| {
+        let handles: Vec<_> = tool_calls
+            .iter()
+            .map(|pending| {
+                let tx = event_tx.clone();
+                s.spawn(move || {
+                    let output = pending.call.execute();
+                    let _ = tx.send(AgentEvent::ToolDone {
+                        name: pending.call.name().to_string(),
+                        output: output.content.clone(),
+                    });
+                    output
+                })
+            })
+            .collect();
+
+        tool_calls
+            .iter()
+            .zip(handles)
+            .map(|(pending, h)| {
+                let output = h
+                    .join()
+                    .unwrap_or_else(|_| ToolOutput::err("tool thread panicked".into()));
+                (pending.id.clone(), output)
+            })
+            .collect()
+    })
 }
 
 pub fn run(
@@ -79,32 +112,7 @@ pub fn run(
             })?;
         }
 
-        let outputs: Vec<_> = std::thread::scope(|s| {
-            response
-                .tool_calls
-                .iter()
-                .map(|p| s.spawn(|| p.call.execute()))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|h| {
-                    h.join()
-                        .unwrap_or_else(|_| ToolOutput::err("tool thread panicked".into()))
-                })
-                .collect()
-        });
-
-        let tool_results = response
-            .tool_calls
-            .iter()
-            .zip(outputs)
-            .map(|(pending, output)| {
-                event_tx.send(AgentEvent::ToolDone {
-                    name: pending.call.name().to_string(),
-                    output: output.content.clone(),
-                })?;
-                Ok((pending.id.clone(), output))
-            })
-            .collect::<Result<Vec<_>, AgentError>>()?;
+        let tool_results = execute_tools(&response.tool_calls, event_tx);
         history.push(Message::tool_results(tool_results));
     }
 
