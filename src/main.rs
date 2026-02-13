@@ -52,9 +52,9 @@ fn init_logging() {
     let file_appender = tracing_appender::rolling::never(&log_dir, LOG_FILE_NAME);
     let filter = EnvFilter::try_from_env("MAKI_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
+        .json()
         .with_env_filter(filter)
         .with_writer(file_appender)
-        .with_ansi(false)
         .init();
 }
 
