@@ -10,7 +10,16 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 20;
-const ASSISTANT_COLOR: Color = Color::White;
+
+const USER_STYLE: Style = Style::new().fg(Color::Cyan);
+const ASSISTANT_STYLE: Style = Style::new().fg(Color::White);
+const TOOL_STYLE: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::DIM);
+const CURSOR_STYLE: Style = Style::new()
+    .fg(Color::White)
+    .add_modifier(Modifier::SLOW_BLINK);
+const STATUS_IDLE_STYLE: Style = Style::new().fg(Color::DarkGray);
+const STATUS_STREAMING_STYLE: Style = Style::new().fg(Color::Yellow);
+const STATUS_ERROR_STYLE: Style = Style::new().fg(Color::Red);
 const BOLD_STYLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 const CODE_STYLE: Style = Style::new().fg(Color::Magenta);
 
@@ -314,39 +323,28 @@ impl App {
 
     fn render_messages(&mut self, frame: &mut Frame, area: Rect) {
         self.viewport_height = area.height;
-        let assistant_style = Style::default().fg(ASSISTANT_COLOR);
         let mut lines: Vec<Line> = Vec::new();
 
         for msg in &self.messages {
             let (prefix, base_style) = match msg.role {
-                DisplayRole::User => ("you> ", Style::default().fg(Color::Cyan)),
-                DisplayRole::Assistant => ("maki> ", assistant_style),
-                DisplayRole::Tool => (
-                    "tool> ",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::DIM),
-                ),
+                DisplayRole::User => ("you> ", USER_STYLE),
+                DisplayRole::Assistant => ("maki> ", ASSISTANT_STYLE),
+                DisplayRole::Tool => ("tool> ", TOOL_STYLE),
             };
             let prefix_style = base_style.add_modifier(Modifier::BOLD);
             lines.extend(text_to_lines(&msg.text, prefix, prefix_style, base_style));
         }
 
         if !self.streaming_text.is_empty() {
-            let prefix_style = assistant_style.add_modifier(Modifier::BOLD);
+            let prefix_style = ASSISTANT_STYLE.add_modifier(Modifier::BOLD);
             let mut parsed = text_to_lines(
                 &self.streaming_text,
                 "maki> ",
                 prefix_style,
-                assistant_style,
+                ASSISTANT_STYLE,
             );
             if let Some(last) = parsed.last_mut() {
-                last.spans.push(Span::styled(
-                    "_",
-                    Style::default()
-                        .fg(ASSISTANT_COLOR)
-                        .add_modifier(Modifier::SLOW_BLINK),
-                ));
+                last.spans.push(Span::styled("_", CURSOR_STYLE));
             }
             lines.extend(parsed);
         }
@@ -390,13 +388,10 @@ impl App {
                     " tokens: {}in / {}out",
                     self.token_usage.0, self.token_usage.1
                 ),
-                Style::default().fg(Color::DarkGray),
+                STATUS_IDLE_STYLE,
             ),
-            Status::Streaming => (
-                " streaming...".to_string(),
-                Style::default().fg(Color::Yellow),
-            ),
-            Status::Error(e) => (format!(" error: {e}"), Style::default().fg(Color::Red)),
+            Status::Streaming => (" streaming...".to_string(), STATUS_STREAMING_STYLE),
+            Status::Error(e) => (format!(" error: {e}"), STATUS_ERROR_STYLE),
         };
 
         frame.render_widget(Paragraph::new(text).style(style), area);
