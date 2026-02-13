@@ -39,3 +39,4 @@ clap = { version = "4", features = ["derive"] }
 sha2 = "0.10"
 base64 = "0.22"
 getrandom = "0.3"
+test-case = "3"

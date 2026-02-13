@@ -9,3 +9,6 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 color-eyre = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+test-case = { workspace = true }

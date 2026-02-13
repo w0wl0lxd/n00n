@@ -9,6 +9,80 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 const TOOL_OUTPUT_MAX_DISPLAY_LEN: usize = 200;
+const ASSISTANT_COLOR: Color = Color::Green;
+const BOLD_STYLE: Style = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
+const CODE_STYLE: Style = Style::new().fg(Color::Yellow);
+
+struct Delimiter {
+    open: &'static str,
+    style: Style,
+}
+
+const DELIMITERS: [Delimiter; 2] = [
+    Delimiter {
+        open: "**",
+        style: BOLD_STYLE,
+    },
+    Delimiter {
+        open: "`",
+        style: CODE_STYLE,
+    },
+];
+
+fn parse_inline_markdown<'a>(text: &'a str, base_style: Style) -> Vec<Span<'a>> {
+    let mut spans = Vec::new();
+    let mut remaining = text;
+
+    while !remaining.is_empty() {
+        let next = DELIMITERS
+            .iter()
+            .filter_map(|d| remaining.find(d.open).map(|pos| (pos, d)))
+            .min_by_key(|(pos, _)| *pos);
+
+        let Some((pos, delim)) = next else {
+            spans.push(Span::styled(remaining, base_style));
+            break;
+        };
+
+        if pos > 0 {
+            spans.push(Span::styled(&remaining[..pos], base_style));
+        }
+
+        let after_open = &remaining[pos + delim.open.len()..];
+        if let Some(close) = after_open.find(delim.open) {
+            spans.push(Span::styled(&after_open[..close], delim.style));
+            remaining = &after_open[close + delim.open.len()..];
+        } else {
+            spans.push(Span::styled(&remaining[pos..], base_style));
+            break;
+        }
+    }
+
+    spans
+}
+
+fn text_to_lines<'a>(
+    text: &'a str,
+    prefix: &'a str,
+    prefix_style: Style,
+    base_style: Style,
+) -> Vec<Line<'a>> {
+    text.split('\n')
+        .enumerate()
+        .map(|(i, line)| {
+            let mut spans = Vec::new();
+            if i == 0 {
+                spans.push(Span::styled(prefix, prefix_style));
+            }
+            spans.extend(parse_inline_markdown(line, base_style));
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    &s[..s.floor_char_boundary(max_bytes)]
+}
 
 #[derive(Debug, Clone)]
 pub struct DisplayMessage {
@@ -160,7 +234,7 @@ impl App {
             }
             AgentEvent::ToolDone { name, output } => {
                 let truncated = if output.len() > TOOL_OUTPUT_MAX_DISPLAY_LEN {
-                    format!("{}...", &output[..TOOL_OUTPUT_MAX_DISPLAY_LEN])
+                    format!("{}...", truncate_utf8(&output, TOOL_OUTPUT_MAX_DISPLAY_LEN))
                 } else {
                     output
                 };
@@ -212,9 +286,9 @@ impl App {
         let mut lines: Vec<Line> = Vec::new();
 
         for msg in &self.messages {
-            let (prefix, style) = match msg.role {
+            let (prefix, base_style) = match msg.role {
                 DisplayRole::User => ("you> ", Style::default().fg(Color::Cyan)),
-                DisplayRole::Assistant => ("maki> ", Style::default().fg(Color::Green)),
+                DisplayRole::Assistant => ("maki> ", Style::default().fg(ASSISTANT_COLOR)),
                 DisplayRole::Tool => (
                     "tool> ",
                     Style::default()
@@ -222,32 +296,28 @@ impl App {
                         .add_modifier(Modifier::DIM),
                 ),
             };
-            lines.push(Line::from(vec![
-                Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
-                Span::styled(&msg.text, style),
-            ]));
+            let prefix_style = base_style.add_modifier(Modifier::BOLD);
+            lines.extend(text_to_lines(&msg.text, prefix, prefix_style, base_style));
         }
 
         if !self.streaming_text.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    "maki> ",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(&self.streaming_text, Style::default().fg(Color::Green)),
-                Span::styled(
+            let base_style = Style::default().fg(ASSISTANT_COLOR);
+            let prefix_style = base_style.add_modifier(Modifier::BOLD);
+            let mut parsed =
+                text_to_lines(&self.streaming_text, "maki> ", prefix_style, base_style);
+            if let Some(last) = parsed.last_mut() {
+                last.spans.push(Span::styled(
                     "_",
                     Style::default()
-                        .fg(Color::Green)
+                        .fg(ASSISTANT_COLOR)
                         .add_modifier(Modifier::SLOW_BLINK),
-                ),
-            ]));
+                ));
+            }
+            lines.extend(parsed);
         }
 
         let total_lines = lines.len() as u16;
-        let visible = area.height.saturating_sub(2);
+        let visible = area.height;
         let scroll = if self.scroll_offset == 0 {
             total_lines.saturating_sub(visible)
         } else {
@@ -257,7 +327,6 @@ impl App {
         };
 
         let paragraph = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(" maki "))
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0));
 
@@ -306,6 +375,7 @@ impl App {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use test_case::test_case;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent {
@@ -435,5 +505,36 @@ mod tests {
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::Error("boom".into())));
         assert!(matches!(app.status, Status::Error(ref e) if e == "boom"));
+    }
+
+    #[test_case("a **bold** b", &[("a ", None), ("bold", Some(BOLD_STYLE)), (" b", None)] ; "bold")]
+    #[test_case("use `foo` here", &[("use ", None), ("foo", Some(CODE_STYLE)), (" here", None)] ; "inline_code")]
+    #[test_case("a `code` then **bold**", &[("a ", None), ("code", Some(CODE_STYLE)), (" then ", None), ("bold", Some(BOLD_STYLE))] ; "code_before_bold")]
+    #[test_case("a **unclosed", &[("a ", None), ("**unclosed", None)] ; "unclosed_delimiter")]
+    fn parse_inline_markdown_cases(input: &str, expected: &[(&str, Option<Style>)]) {
+        let base = Style::default();
+        let spans = parse_inline_markdown(input, base);
+        assert_eq!(spans.len(), expected.len());
+        for (span, (text, style)) in spans.iter().zip(expected) {
+            assert_eq!(span.content, *text);
+            assert_eq!(span.style, style.unwrap_or(base));
+        }
+    }
+
+    #[test]
+    fn text_to_lines_splits_newlines() {
+        let style = Style::default();
+        let prefix_style = style.add_modifier(Modifier::BOLD);
+        let lines = text_to_lines("line1\nline2\nline3", "p> ", prefix_style, style);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].spans[0].content, "p> ");
+        assert_eq!(lines[1].spans.len(), 1);
+    }
+
+    #[test_case("hello world", 5, "hello" ; "ascii")]
+    #[test_case("héllo", 3, "hé" ; "multibyte_boundary")]
+    #[test_case("héllo", 2, "h" ; "mid_char_boundary")]
+    fn truncate_utf8_cases(input: &str, max: usize, expected: &str) {
+        assert_eq!(truncate_utf8(input, max), expected);
     }
 }
