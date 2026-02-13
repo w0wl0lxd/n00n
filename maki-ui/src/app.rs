@@ -129,6 +129,7 @@ pub struct App {
     streaming_text: String,
     pub status: Status,
     scroll_offset: u16,
+    viewport_height: u16,
     pub token_usage: (u32, u32),
     pub should_quit: bool,
 }
@@ -148,6 +149,7 @@ impl App {
             streaming_text: String::new(),
             status: Status::Idle,
             scroll_offset: 0,
+            viewport_height: 24,
             token_usage: (0, 0),
             should_quit: false,
         }
@@ -160,10 +162,46 @@ impl App {
         }
     }
 
+    fn scroll(&mut self, delta: i32) {
+        if delta > 0 {
+            self.scroll_offset = self.scroll_offset.saturating_add(delta as u16);
+        } else {
+            self.scroll_offset = self
+                .scroll_offset
+                .saturating_sub(delta.unsigned_abs() as u16);
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> Vec<Action> {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.should_quit = true;
-            return vec![Action::Quit];
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            let half = self.viewport_height as i32 / 2;
+            return match key.code {
+                KeyCode::Char('c') => {
+                    self.should_quit = true;
+                    vec![Action::Quit]
+                }
+                KeyCode::Char('u') => {
+                    self.scroll(half);
+                    vec![]
+                }
+                KeyCode::Char('d') => {
+                    self.scroll(-half);
+                    vec![]
+                }
+                _ => vec![],
+            };
+        }
+
+        match key.code {
+            KeyCode::Up => {
+                self.scroll(1);
+                return vec![];
+            }
+            KeyCode::Down => {
+                self.scroll(-1);
+                return vec![];
+            }
+            _ => {}
         }
 
         if self.status == Status::Streaming {
@@ -205,14 +243,6 @@ impl App {
             }
             KeyCode::Right => {
                 self.cursor_pos = (self.cursor_pos + 1).min(self.input.len());
-                vec![]
-            }
-            KeyCode::Up => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
-                vec![]
-            }
-            KeyCode::Down => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
                 vec![]
             }
             _ => vec![],
@@ -269,7 +299,7 @@ impl App {
         }
     }
 
-    pub fn view(&self, frame: &mut Frame) {
+    pub fn view(&mut self, frame: &mut Frame) {
         let [messages_area, input_area, status_area] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(3),
@@ -282,13 +312,15 @@ impl App {
         self.render_status(frame, status_area);
     }
 
-    fn render_messages(&self, frame: &mut Frame, area: Rect) {
+    fn render_messages(&mut self, frame: &mut Frame, area: Rect) {
+        self.viewport_height = area.height;
+        let assistant_style = Style::default().fg(ASSISTANT_COLOR);
         let mut lines: Vec<Line> = Vec::new();
 
         for msg in &self.messages {
             let (prefix, base_style) = match msg.role {
                 DisplayRole::User => ("you> ", Style::default().fg(Color::Cyan)),
-                DisplayRole::Assistant => ("maki> ", Style::default().fg(ASSISTANT_COLOR)),
+                DisplayRole::Assistant => ("maki> ", assistant_style),
                 DisplayRole::Tool => (
                     "tool> ",
                     Style::default()
@@ -301,10 +333,13 @@ impl App {
         }
 
         if !self.streaming_text.is_empty() {
-            let base_style = Style::default().fg(ASSISTANT_COLOR);
-            let prefix_style = base_style.add_modifier(Modifier::BOLD);
-            let mut parsed =
-                text_to_lines(&self.streaming_text, "maki> ", prefix_style, base_style);
+            let prefix_style = assistant_style.add_modifier(Modifier::BOLD);
+            let mut parsed = text_to_lines(
+                &self.streaming_text,
+                "maki> ",
+                prefix_style,
+                assistant_style,
+            );
             if let Some(last) = parsed.last_mut() {
                 last.spans.push(Span::styled(
                     "_",
@@ -318,13 +353,9 @@ impl App {
 
         let total_lines = lines.len() as u16;
         let visible = area.height;
-        let scroll = if self.scroll_offset == 0 {
-            total_lines.saturating_sub(visible)
-        } else {
-            total_lines
-                .saturating_sub(visible)
-                .saturating_sub(self.scroll_offset)
-        };
+        let max_scroll_offset = total_lines.saturating_sub(visible);
+        self.scroll_offset = self.scroll_offset.min(max_scroll_offset);
+        let scroll = max_scroll_offset.saturating_sub(self.scroll_offset);
 
         let paragraph = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
@@ -375,6 +406,7 @@ impl App {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use ratatui::backend::TestBackend;
     use test_case::test_case;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -386,9 +418,9 @@ mod tests {
         }
     }
 
-    fn ctrl_c() -> KeyEvent {
+    fn ctrl(c: char) -> KeyEvent {
         KeyEvent {
-            code: KeyCode::Char('c'),
+            code: KeyCode::Char(c),
             modifiers: KeyModifiers::CONTROL,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
@@ -432,7 +464,7 @@ mod tests {
         for status in [Status::Idle, Status::Streaming] {
             let mut app = App::new();
             app.status = status;
-            let actions = app.update(Msg::Key(ctrl_c()));
+            let actions = app.update(Msg::Key(ctrl('c')));
             assert!(app.should_quit);
             assert!(matches!(&actions[0], Action::Quit));
         }
@@ -505,6 +537,34 @@ mod tests {
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::Error("boom".into())));
         assert!(matches!(app.status, Status::Error(ref e) if e == "boom"));
+    }
+
+    #[test_case(0,  'u', 10 ; "ctrl_u_from_zero")]
+    #[test_case(10, 'u', 20 ; "ctrl_u_accumulates")]
+    #[test_case(25, 'd', 15 ; "ctrl_d_scrolls_down")]
+    #[test_case(3,  'd', 0  ; "ctrl_d_saturates_at_zero")]
+    fn half_page_scroll(initial: u16, key_char: char, expected: u16) {
+        let mut app = App::new();
+        app.viewport_height = 20;
+        app.scroll_offset = initial;
+        app.update(Msg::Key(ctrl(key_char)));
+        assert_eq!(app.scroll_offset, expected);
+    }
+
+    #[test]
+    fn scroll_offset_clamped_to_content() {
+        let mut app = App::new();
+        app.messages.push(DisplayMessage {
+            role: DisplayRole::User,
+            text: "short".into(),
+        });
+
+        app.scroll_offset = 1000;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+
+        assert_eq!(app.scroll_offset, 0);
     }
 
     #[test_case("a **bold** b", &[("a ", None), ("bold", Some(BOLD_STYLE)), (" b", None)] ; "bold")]
