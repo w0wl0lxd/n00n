@@ -47,14 +47,17 @@ impl Message {
         }
     }
 
-    pub fn tool_result(tool_use_id: String, output: ToolOutput) -> Self {
+    pub fn tool_results(results: Vec<(String, ToolOutput)>) -> Self {
         Self {
             role: Role::User,
-            content: vec![ContentBlock::ToolResult {
-                tool_use_id,
-                content: output.content,
-                is_error: output.is_error,
-            }],
+            content: results
+                .into_iter()
+                .map(|(id, output)| ContentBlock::ToolResult {
+                    tool_use_id: id,
+                    content: output.content,
+                    is_error: output.is_error,
+                })
+                .collect(),
         }
     }
 }

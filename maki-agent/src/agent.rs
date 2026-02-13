@@ -4,10 +4,10 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::mpsc::Sender;
 
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::client;
-use crate::{AgentError, AgentEvent, Message};
+use crate::{AgentError, AgentEvent, Message, ToolOutput};
 
 const AGENTS_MD: &str = "AGENTS.md";
 
@@ -72,25 +72,40 @@ pub fn run(
             break;
         }
 
-        for pending in response.tool_calls {
-            let name = pending.call.name().to_string();
-
+        for pending in &response.tool_calls {
             event_tx.send(AgentEvent::ToolStart {
-                name: name.clone(),
+                name: pending.call.name().to_string(),
                 input: pending.call.input_summary(),
             })?;
-
-            debug!(tool = %name, "executing tool");
-            let output = pending.call.execute();
-            let output_content = output.content.clone();
-
-            history.push(Message::tool_result(pending.id, output));
-
-            event_tx.send(AgentEvent::ToolDone {
-                name,
-                output: output_content,
-            })?;
         }
+
+        let outputs: Vec<_> = std::thread::scope(|s| {
+            response
+                .tool_calls
+                .iter()
+                .map(|p| s.spawn(|| p.call.execute()))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| ToolOutput::err("tool thread panicked".into()))
+                })
+                .collect()
+        });
+
+        let tool_results = response
+            .tool_calls
+            .iter()
+            .zip(outputs)
+            .map(|(pending, output)| {
+                event_tx.send(AgentEvent::ToolDone {
+                    name: pending.call.name().to_string(),
+                    output: output.content.clone(),
+                })?;
+                Ok((pending.id.clone(), output))
+            })
+            .collect::<Result<Vec<_>, AgentError>>()?;
+        history.push(Message::tool_results(tool_results));
     }
 
     Ok(())
