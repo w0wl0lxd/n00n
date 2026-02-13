@@ -199,33 +199,41 @@ fn truncate_output(text: String) -> String {
     result
 }
 
+fn read_pipe_lossy(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<String> {
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = pipe.read_to_end(&mut buf);
+        String::from_utf8_lossy(&buf).into_owned()
+    })
+}
+
 fn execute_bash(command: &str, timeout: Option<u64>) -> ToolOutput {
     let timeout_secs = timeout.unwrap_or(DEFAULT_BASH_TIMEOUT_SECS);
-    let result = Command::new("bash")
+    let mut child = match Command::new("bash")
         .arg("-c")
         .arg(command)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn();
-
-    let mut child = match result {
+        .spawn()
+    {
         Ok(c) => c,
         Err(e) => return ToolOutput::err(format!("failed to spawn: {e}")),
     };
+
+    let stdout_handle = child.stdout.take().map(read_pipe_lossy);
+    let stderr_handle = child.stderr.take().map(read_pipe_lossy);
 
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let mut stdout = String::new();
-                let mut stderr = String::new();
-                if let Some(ref mut out) = child.stdout {
-                    let _ = out.read_to_string(&mut stdout);
-                }
-                if let Some(ref mut err) = child.stderr {
-                    let _ = err.read_to_string(&mut stderr);
-                }
+                let stdout = stdout_handle
+                    .map(|h| h.join().unwrap_or_default())
+                    .unwrap_or_default();
+                let stderr = stderr_handle
+                    .map(|h| h.join().unwrap_or_default())
+                    .unwrap_or_default();
                 let mut output = stdout;
                 if !stderr.is_empty() {
                     if !output.is_empty() {
@@ -241,6 +249,7 @@ fn execute_bash(command: &str, timeout: Option<u64>) -> ToolOutput {
             Ok(None) => {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
+                    let _ = child.wait();
                     return ToolOutput::err(timed_out_msg(timeout_secs));
                 }
                 thread::sleep(Duration::from_millis(PROCESS_POLL_INTERVAL_MS));
@@ -337,6 +346,14 @@ mod tests {
         let timeout = execute_bash("sleep 10", Some(0));
         assert!(timeout.is_error);
         assert!(timeout.content.contains(&timed_out_msg(0)));
+    }
+
+    #[test]
+    fn execute_bash_large_output_does_not_deadlock() {
+        let pipe_buf_overflow = "yes | head -n 100000";
+        let result = execute_bash(pipe_buf_overflow, Some(10));
+        assert!(!result.is_error);
+        assert!(result.content.contains(TRUNCATED_MARKER));
     }
 
     fn temp_file(name: &str) -> (PathBuf, String) {
