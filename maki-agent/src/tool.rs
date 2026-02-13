@@ -13,7 +13,7 @@ use crate::{AgentError, ToolOutput};
 const MAX_OUTPUT_BYTES: usize = 50_000;
 const MAX_OUTPUT_LINES: usize = 2000;
 const DEFAULT_BASH_TIMEOUT_SECS: u64 = 120;
-const PROCESS_POLL_INTERVAL_MS: u64 = 50;
+const PROCESS_POLL_INTERVAL_MS: u64 = 10;
 pub const TRUNCATED_MARKER: &str = "[truncated]";
 
 pub fn unknown_tool_msg(name: &str) -> String {
