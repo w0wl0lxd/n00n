@@ -349,7 +349,7 @@ impl App {
             lines.extend(parsed);
         }
 
-        let total_lines = lines.len() as u16;
+        let total_lines = lines.len() as u16 + 1;
         let max_scroll = total_lines.saturating_sub(area.height);
         if self.auto_scroll {
             self.scroll_top = max_scroll;
