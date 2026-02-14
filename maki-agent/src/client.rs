@@ -92,6 +92,26 @@ const API_VERSION: &str = "2023-06-01";
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 
+fn authed_agent() -> Result<(Agent, auth::ResolvedAuth), AgentError> {
+    let resolved = auth::resolve()?;
+    let agent: Agent = Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into();
+    Ok((agent, resolved))
+}
+
+fn apply_auth<B>(
+    req: ureq::RequestBuilder<B>,
+    resolved: &auth::ResolvedAuth,
+) -> ureq::RequestBuilder<B> {
+    let mut req = req.header("anthropic-version", API_VERSION);
+    for (key, value) in &resolved.headers {
+        req = req.header(key, value);
+    }
+    req
+}
+
 pub fn stream_message(
     model: &Model,
     messages: &[Message],
@@ -99,7 +119,7 @@ pub fn stream_message(
     tools: &Value,
     event_tx: &Sender<AgentEvent>,
 ) -> Result<StreamResponse, AgentError> {
-    let resolved = auth::resolve()?;
+    let (agent, resolved) = authed_agent()?;
 
     let body = json!({
         "model": model.id,
@@ -110,21 +130,15 @@ pub fn stream_message(
         "stream": true,
     });
 
-    let agent: Agent = Agent::config_builder()
-        .http_status_as_error(false)
-        .build()
-        .into();
-
     for attempt in 1..=MAX_RETRIES {
         debug!(attempt, "sending API request");
 
-        let mut req = agent
-            .post(&resolved.api_url)
-            .header("anthropic-version", API_VERSION)
-            .header("content-type", "application/json");
-        for (key, value) in &resolved.headers {
-            req = req.header(key, value);
-        }
+        let req = apply_auth(
+            agent
+                .post(&resolved.api_url)
+                .header("content-type", "application/json"),
+            &resolved,
+        );
         let response = req.send(body.to_string().as_str())?;
 
         let status = response.status().as_u16();
@@ -156,6 +170,55 @@ pub fn stream_message(
     }
 
     unreachable!()
+}
+
+#[derive(Deserialize)]
+struct ModelInfo {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct ModelsPage {
+    data: Vec<ModelInfo>,
+    has_more: bool,
+    last_id: Option<String>,
+}
+
+pub fn list_models() -> Result<Vec<String>, AgentError> {
+    let (agent, resolved) = authed_agent()?;
+    let mut models = Vec::new();
+    let mut after_id: Option<String> = None;
+
+    loop {
+        let mut url = "https://api.anthropic.com/v1/models?limit=1000".to_string();
+        if let Some(cursor) = &after_id {
+            url.push_str(&format!("&after_id={cursor}"));
+        }
+
+        let response = apply_auth(agent.get(&url), &resolved).call()?;
+        let status = response.status().as_u16();
+        if status != 200 {
+            let body = response
+                .into_body()
+                .read_to_string()
+                .unwrap_or_else(|_| "unable to read error body".into());
+            return Err(AgentError::Api {
+                status,
+                message: body,
+            });
+        }
+
+        let page: ModelsPage = serde_json::from_reader(response.into_body().into_reader())?;
+        models.extend(page.data.into_iter().map(|m| m.id));
+
+        if !page.has_more {
+            break;
+        }
+        after_id = page.last_id;
+    }
+
+    models.sort();
+    Ok(models)
 }
 
 fn parse_sse_stream(

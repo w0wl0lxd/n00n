@@ -36,6 +36,7 @@ enum Command {
         #[command(subcommand)]
         action: AuthAction,
     },
+    Models,
 }
 
 #[derive(Subcommand)]
@@ -53,6 +54,11 @@ fn main() -> Result<()> {
             AuthAction::Login => maki_agent::auth::login()?,
             AuthAction::Logout => maki_agent::auth::logout()?,
         },
+        Some(Command::Models) => {
+            for id in maki_agent::client::list_models()? {
+                println!("anthropic/{id}");
+            }
+        }
         None => {
             let model = Model::from_spec(&cli.model)?;
             init_logging();
