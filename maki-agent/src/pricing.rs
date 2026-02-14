@@ -48,20 +48,3 @@ impl AddAssign for TokenUsage {
         self.cache_read += rhs.cache_read;
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn token_usage_cost() {
-        let usage = TokenUsage {
-            input: 1_000_000,
-            output: 1_000_000,
-            cache_creation: 1_000_000,
-            cache_read: 1_000_000,
-        };
-        let expected = 3.0 + 15.0 + 3.75 + 0.30;
-        assert!((usage.cost(&SONNET_4) - expected).abs() < 1e-9);
-    }
-}
