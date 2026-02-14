@@ -12,6 +12,31 @@ from pathlib import Path
 
 AGENTS = ("maki", "claude-code", "opencode")
 
+RESET = "\033[0m"
+AGENT_COLORS = {
+    "claude-code": "\033[38;5;172m",
+    "maki":        "\033[35m",
+    "opencode":    "\033[34m",
+}
+
+
+def _color(agent):
+    return AGENT_COLORS.get(agent, "")
+
+
+_active_agent = ""
+
+
+def _ts():
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def _log(msg):
+    c = _color(_active_agent)
+    ts = _ts()
+    prefix = f"[{ts}] [{_active_agent}]" if _active_agent else f"[{ts}]"
+    print(f"{c}{prefix} {msg}{RESET}" if c else f"{prefix} {msg}", file=sys.stderr)
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Run coding agent with analytics collection")
@@ -65,6 +90,9 @@ TOOL_DISPLAY_KEY = {
     "Bash": "command", "mcp_bash": "command",
 }
 
+MAX_TOOL_PREVIEW_LINES = 5
+MAX_TOOL_PREVIEW_LINE_LEN = 120
+
 
 def format_tool_summary(block):
     name = block.get("name", "?")
@@ -75,11 +103,31 @@ def format_tool_summary(block):
     return f"{name} {arg[:60]}"
 
 
+def format_tool_detail(block):
+    name = block.get("name", "?")
+    key = TOOL_DISPLAY_KEY.get(name)
+    if not key:
+        return None
+    val = block.get("input", {}).get(key, "")
+    if not val:
+        return None
+    lines = val.splitlines()
+    preview = []
+    for line in lines[:MAX_TOOL_PREVIEW_LINES]:
+        if len(line) > MAX_TOOL_PREVIEW_LINE_LEN:
+            preview.append(line[:MAX_TOOL_PREVIEW_LINE_LEN] + "...")
+        else:
+            preview.append(line)
+    if len(lines) > MAX_TOOL_PREVIEW_LINES:
+        preview.append(f"  ... ({len(lines) - MAX_TOOL_PREVIEW_LINES} more lines)")
+    return "\n".join(f"  | {line}" for line in preview)
+
+
 def process_init(msg, meta):
     init = msg.get("init", msg)
     meta["session_id"] = init.get("session_id", meta["session_id"])
     meta["model"] = init.get("model", meta["model"])
-    print(f"[init] session={meta['session_id'] or '?'} model={meta['model'] or '?'}", file=sys.stderr)
+    _log(f"[init] session={meta['session_id'] or '?'} model={meta['model'] or '?'}")
 
 
 def process_assistant(msg, turn_index, turn_usage, all_tool_calls):
@@ -90,6 +138,7 @@ def process_assistant(msg, turn_index, turn_usage, all_tool_calls):
     turn_usage[turn_index] = usage
 
     parts = []
+    details = []
     for b in content:
         btype = b.get("type")
         if btype == "tool_use":
@@ -99,9 +148,14 @@ def process_assistant(msg, turn_index, turn_usage, all_tool_calls):
                 "input": b.get("input", {}),
             })
             parts.append(f"tool_use {format_tool_summary(b)}")
+            detail = format_tool_detail(b)
+            if detail:
+                details.append(detail)
         elif btype == "text":
             parts.append(f"text ({usage.get('output_tokens', '?')} tokens)")
-    print(f"[turn {turn_index + 1}] assistant: {', '.join(parts) or 'empty'}", file=sys.stderr)
+    _log(f"[turn {turn_index + 1}] assistant: {', '.join(parts) or 'empty'}")
+    for d in details:
+        _log(d)
 
 
 def process_result(msg, meta):
@@ -110,7 +164,7 @@ def process_result(msg, meta):
 
     cost = msg.get("total_cost_usd") or 0
     dur = (msg.get("duration_ms") or 0) / 1000
-    print(f"[done] {msg.get('num_turns', 0)} turns, ${cost:.3f}, {dur:.1f}s", file=sys.stderr)
+    _log(f"[done] {msg.get('num_turns', 0)} turns, ${cost:.3f}, {dur:.1f}s")
 
     return {
         "total_cost_usd": msg.get("total_cost_usd"),
@@ -160,7 +214,7 @@ def process_opencode_stream(proc, meta):
 
         if msg_type == "step_start":
             turn_index += 1
-            print(f"[turn {turn_index + 1}] start", file=sys.stderr)
+            _log(f"[turn {turn_index + 1}] start")
 
         elif msg_type == "tool_use":
             state = part.get("state", {})
@@ -170,7 +224,7 @@ def process_opencode_stream(proc, meta):
                 "name": part.get("tool", ""),
                 "input": inp,
             })
-            print(f"[turn {turn_index + 1}] tool_use {part.get('tool', '?')}", file=sys.stderr)
+            _log(f"[turn {turn_index + 1}] tool_use {part.get('tool', '?')}")
 
         elif msg_type == "text":
             result_text = part.get("text", "")
@@ -183,11 +237,11 @@ def process_opencode_stream(proc, meta):
             turn_usage[turn_index] = tokens
             for k in total_tokens:
                 total_tokens[k] += tokens.get(k, 0)
-            print(f"[turn {turn_index + 1}] finish reason={part.get('reason', '?')}", file=sys.stderr)
+            _log(f"[turn {turn_index + 1}] finish reason={part.get('reason', '?')}")
 
     duration_ms = (last_ts - first_ts) if (first_ts and last_ts) else 0
     num_turns = max(turn_index + 1, 0)
-    print(f"[done] {num_turns} turns, ${total_cost:.3f}, {duration_ms / 1000:.1f}s", file=sys.stderr)
+    _log(f"[done] {num_turns} turns, ${total_cost:.3f}, {duration_ms / 1000:.1f}s")
 
     summary = {
         "total_cost_usd": total_cost,
@@ -291,6 +345,9 @@ STREAM_PROCESSORS = {
 
 
 def run(args):
+    global _active_agent
+    _active_agent = args.agent
+
     meta = {
         "prompt": args.prompt,
         "agent": args.agent,
@@ -310,7 +367,7 @@ def run(args):
 
     csv_path = Path(args.output)
     append_csv(csv_path, meta, summary, turn_usage, all_tool_calls)
-    print(f"[csv] {csv_path}", file=sys.stderr)
+    _log(f"[csv] {csv_path}")
 
     sys.stdout.write(result_text)
     return proc.returncode
