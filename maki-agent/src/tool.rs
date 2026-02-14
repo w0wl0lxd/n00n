@@ -11,7 +11,7 @@ use ignore::overrides::OverrideBuilder;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{AgentError, AgentMode, ToolOutput};
+use crate::{AgentError, AgentMode, ToolDoneEvent, ToolStartEvent};
 
 const MAX_OUTPUT_BYTES: usize = 50_000;
 const MAX_OUTPUT_LINES: usize = 2000;
@@ -188,26 +188,32 @@ impl ToolCall {
         self.into()
     }
 
-    pub fn input_summary(&self) -> String {
-        match self {
+    pub fn start_event(&self) -> ToolStartEvent {
+        let summary = match self {
             Self::Bash { command, .. } => command.clone(),
-            Self::Read { path, .. } => path.clone(),
-            Self::Write { path, .. } => path.clone(),
-            Self::Glob { pattern, .. } => pattern.clone(),
-            Self::Grep { pattern, .. } => pattern.clone(),
+            Self::Read { path, .. } | Self::Write { path, .. } => path.clone(),
+            Self::Glob { pattern, .. } | Self::Grep { pattern, .. } => pattern.clone(),
             Self::TodoWrite { todos } => format!("{} todos", todos.len()),
+        };
+        ToolStartEvent {
+            tool: self.name(),
+            summary,
         }
     }
 
-    pub fn execute(&self, mode: &AgentMode) -> ToolOutput {
+    pub fn execute(&self, mode: &AgentMode) -> ToolDoneEvent {
         if let Self::Write { path, .. } = self
             && let AgentMode::Plan(plan_path) = mode
             && path != plan_path
         {
-            return ToolOutput::err(PLAN_WRITE_RESTRICTED.to_string());
+            return ToolDoneEvent {
+                tool: self.name(),
+                content: PLAN_WRITE_RESTRICTED.into(),
+                is_error: true,
+            };
         }
 
-        match self {
+        let result = match self {
             Self::Bash { command, timeout } => execute_bash(command, *timeout),
             Self::Read {
                 path,
@@ -222,6 +228,15 @@ impl ToolCall {
                 include,
             } => execute_grep(pattern, path.as_deref(), include.as_deref()),
             Self::TodoWrite { todos } => execute_todowrite(todos),
+        };
+        let (content, is_error) = match result {
+            Ok(c) => (c, false),
+            Err(c) => (c, true),
+        };
+        ToolDoneEvent {
+            tool: self.name(),
+            content,
+            is_error,
         }
     }
 
@@ -352,19 +367,16 @@ fn read_pipe_lossy(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<S
     })
 }
 
-fn execute_bash(command: &str, timeout: Option<u64>) -> ToolOutput {
+fn execute_bash(command: &str, timeout: Option<u64>) -> Result<String, String> {
     let timeout_secs = timeout.unwrap_or(DEFAULT_BASH_TIMEOUT_SECS);
-    let mut child = match Command::new("bash")
+    let mut child = Command::new("bash")
         .arg("-c")
         .arg(command)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => return ToolOutput::err(format!("failed to spawn: {e}")),
-    };
+        .map_err(|e| format!("failed to spawn: {e}"))?;
 
     let stdout_handle = child.stdout.take().map(read_pipe_lossy);
     let stderr_handle = child.stderr.take().map(read_pipe_lossy);
@@ -387,38 +399,34 @@ fn execute_bash(command: &str, timeout: Option<u64>) -> ToolOutput {
                     output.push_str(&stderr);
                 }
                 let content = truncate_output(output);
-                let is_error = !status.success();
-                if is_error && content.is_empty() {
-                    return ToolOutput::err(format!(
-                        "exited with code {}",
-                        status.code().unwrap_or(-1)
-                    ));
+                if !status.success() {
+                    if content.is_empty() {
+                        return Err(format!("exited with code {}", status.code().unwrap_or(-1)));
+                    }
+                    return Err(content);
                 }
-                return ToolOutput { content, is_error };
+                return Ok(content);
             }
             Ok(None) => {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return ToolOutput::err(timed_out_msg(timeout_secs));
+                    return Err(timed_out_msg(timeout_secs));
                 }
                 thread::sleep(Duration::from_millis(PROCESS_POLL_INTERVAL_MS));
             }
-            Err(e) => return ToolOutput::err(format!("wait error: {e}")),
+            Err(e) => return Err(format!("wait error: {e}")),
         }
     }
 }
 
-fn execute_read(path: &str, offset: Option<usize>, limit: Option<usize>) -> ToolOutput {
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => return ToolOutput::err(format!("read error: {e}")),
-    };
+fn execute_read(path: &str, offset: Option<usize>, limit: Option<usize>) -> Result<String, String> {
+    let raw = fs::read_to_string(path).map_err(|e| format!("read error: {e}"))?;
 
     let start = offset.unwrap_or(1).saturating_sub(1);
     let limit = limit.unwrap_or(MAX_OUTPUT_LINES);
 
-    let numbered: String = content
+    let numbered: String = raw
         .lines()
         .enumerate()
         .skip(start)
@@ -427,27 +435,23 @@ fn execute_read(path: &str, offset: Option<usize>, limit: Option<usize>) -> Tool
         .collect::<Vec<_>>()
         .join("\n");
 
-    ToolOutput::ok(truncate_output(numbered))
+    Ok(truncate_output(numbered))
 }
 
-fn execute_write(path: &str, content: &str) -> ToolOutput {
-    if let Some(parent) = Path::new(path).parent()
-        && let Err(e) = fs::create_dir_all(parent)
-    {
-        return ToolOutput::err(format!("mkdir error: {e}"));
+fn execute_write(path: &str, content: &str) -> Result<String, String> {
+    if let Some(parent) = Path::new(path).parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir error: {e}"))?;
     }
-    match fs::write(path, content) {
-        Ok(()) => ToolOutput::ok(format!("wrote {} bytes to {path}", content.len())),
-        Err(e) => ToolOutput::err(format!("write error: {e}")),
-    }
+    fs::write(path, content).map_err(|e| format!("write error: {e}"))?;
+    Ok(format!("wrote {} bytes to {path}", content.len()))
 }
 
-fn resolve_search_path(path: Option<&str>) -> Result<String, ToolOutput> {
+fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
     match path {
         Some(p) => Ok(p.to_string()),
         None => std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
-            .map_err(|e| ToolOutput::err(format!("cwd error: {e}"))),
+            .map_err(|e| format!("cwd error: {e}")),
     }
 }
 
@@ -457,20 +461,16 @@ fn mtime(path: &Path) -> SystemTime {
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
-fn execute_glob(pattern: &str, path: Option<&str>) -> ToolOutput {
-    let search_path = match resolve_search_path(path) {
-        Ok(p) => p,
-        Err(e) => return e,
-    };
+fn execute_glob(pattern: &str, path: Option<&str>) -> Result<String, String> {
+    let search_path = resolve_search_path(path)?;
 
     let mut overrides = OverrideBuilder::new(&search_path);
-    if let Err(e) = overrides.add(pattern) {
-        return ToolOutput::err(format!("invalid glob pattern: {e}"));
-    }
-    let overrides = match overrides.build() {
-        Ok(o) => o,
-        Err(e) => return ToolOutput::err(format!("glob build error: {e}")),
-    };
+    overrides
+        .add(pattern)
+        .map_err(|e| format!("invalid glob pattern: {e}"))?;
+    let overrides = overrides
+        .build()
+        .map_err(|e| format!("glob build error: {e}"))?;
 
     let mut entries: Vec<(SystemTime, String)> = WalkBuilder::new(&search_path)
         .hidden(false)
@@ -485,25 +485,25 @@ fn execute_glob(pattern: &str, path: Option<&str>) -> ToolOutput {
         .collect();
 
     if entries.is_empty() {
-        return ToolOutput::ok(NO_FILES_FOUND.to_string());
+        return Ok(NO_FILES_FOUND.to_string());
     }
 
     entries.sort_unstable_by(|a, b| b.0.cmp(&a.0));
     entries.truncate(SEARCH_RESULT_LIMIT);
 
-    let output = entries
+    Ok(entries
         .into_iter()
         .map(|(_, p)| p)
         .collect::<Vec<_>>()
-        .join("\n");
-    ToolOutput::ok(output)
+        .join("\n"))
 }
 
-fn execute_grep(pattern: &str, path: Option<&str>, include: Option<&str>) -> ToolOutput {
-    let search_path = match resolve_search_path(path) {
-        Ok(p) => p,
-        Err(e) => return e,
-    };
+fn execute_grep(
+    pattern: &str,
+    path: Option<&str>,
+    include: Option<&str>,
+) -> Result<String, String> {
+    let search_path = resolve_search_path(path)?;
 
     let mut cmd = Command::new("rg");
     cmd.args([
@@ -523,14 +523,9 @@ fn execute_grep(pattern: &str, path: Option<&str>, include: Option<&str>) -> Too
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let output = match cmd.output() {
-        Ok(o) => o,
-        Err(e) => return ToolOutput::err(format!("failed to run rg: {e}")),
-    };
-
+    let output = cmd.output().map_err(|e| format!("failed to run rg: {e}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Group matches by file, preserving insertion order
     let mut files: Vec<(String, Vec<String>)> = Vec::new();
     for line in stdout.lines() {
         let Some((file, rest)) = line.split_once('|') else {
@@ -552,7 +547,7 @@ fn execute_grep(pattern: &str, path: Option<&str>, include: Option<&str>) -> Too
     }
 
     if files.is_empty() {
-        return ToolOutput::ok(NO_FILES_FOUND.to_string());
+        return Ok(NO_FILES_FOUND.to_string());
     }
 
     files.sort_by(|a, b| mtime(Path::new(&b.0)).cmp(&mtime(Path::new(&a.0))));
@@ -575,14 +570,14 @@ fn execute_grep(pattern: &str, path: Option<&str>, include: Option<&str>) -> Too
         }
     }
 
-    ToolOutput::ok(result.trim_end().to_string())
+    Ok(result.trim_end().to_string())
 }
 
-fn execute_todowrite(todos: &[TodoItem]) -> ToolOutput {
+fn execute_todowrite(todos: &[TodoItem]) -> Result<String, String> {
     if todos.is_empty() {
-        return ToolOutput::ok("No todos.".to_string());
+        return Ok("No todos.".to_string());
     }
-    let output = todos
+    Ok(todos
         .iter()
         .map(|t| {
             let marker = match t.status {
@@ -594,8 +589,7 @@ fn execute_todowrite(todos: &[TodoItem]) -> ToolOutput {
             format!("{marker} ({}) {}", t.priority, t.content)
         })
         .collect::<Vec<_>>()
-        .join("\n");
-    ToolOutput::ok(output)
+        .join("\n"))
 }
 
 #[cfg(test)]
@@ -649,24 +643,21 @@ mod tests {
 
     #[test]
     fn execute_bash_success_failure_and_timeout() {
-        let ok = execute_bash("echo hello", Some(5));
-        assert!(!ok.is_error);
-        assert_eq!(ok.content.trim(), "hello");
+        let ok = execute_bash("echo hello", Some(5)).unwrap();
+        assert_eq!(ok.trim(), "hello");
 
-        let fail = execute_bash("exit 1", Some(5));
-        assert!(fail.is_error);
+        let fail = execute_bash("exit 1", Some(5)).unwrap_err();
+        assert!(!fail.is_empty());
 
-        let timeout = execute_bash("sleep 10", Some(0));
-        assert!(timeout.is_error);
-        assert!(timeout.content.contains(&timed_out_msg(0)));
+        let timeout = execute_bash("sleep 10", Some(0)).unwrap_err();
+        assert!(timeout.contains(&timed_out_msg(0)));
     }
 
     #[test]
     fn execute_bash_large_output_does_not_deadlock() {
         let pipe_buf_overflow = "yes | head -n 100000";
-        let result = execute_bash(pipe_buf_overflow, Some(10));
-        assert!(!result.is_error);
-        assert!(result.content.contains(TRUNCATED_MARKER));
+        let result = execute_bash(pipe_buf_overflow, Some(10)).unwrap();
+        assert!(result.contains(TRUNCATED_MARKER));
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -685,19 +676,16 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let w = execute_write(&path, &content);
-        assert!(!w.is_error);
+        execute_write(&path, &content).unwrap();
 
-        let full = execute_read(&path, None, None);
-        assert!(!full.is_error);
-        assert!(full.content.contains("1: line1"));
-        assert!(full.content.contains("10: line10"));
+        let full = execute_read(&path, None, None).unwrap();
+        assert!(full.contains("1: line1"));
+        assert!(full.contains("10: line10"));
 
-        let slice = execute_read(&path, Some(3), Some(2));
-        assert!(!slice.is_error);
-        assert!(slice.content.contains("3: line3"));
-        assert!(slice.content.contains("4: line4"));
-        assert!(!slice.content.contains("5: line5"));
+        let slice = execute_read(&path, Some(3), Some(2)).unwrap();
+        assert!(slice.contains("3: line3"));
+        assert!(slice.contains("4: line4"));
+        assert!(!slice.contains("5: line5"));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -710,15 +698,13 @@ mod tests {
         fs::write(dir.join("c.rs"), "fn main(){}").unwrap();
         let dir_str = dir.to_string_lossy();
 
-        let hit = execute_glob("*.txt", Some(&dir_str));
-        assert!(!hit.is_error);
-        assert!(hit.content.contains("a.txt"));
-        assert!(hit.content.contains("b.txt"));
-        assert!(!hit.content.contains("c.rs"));
+        let hit = execute_glob("*.txt", Some(&dir_str)).unwrap();
+        assert!(hit.contains("a.txt"));
+        assert!(hit.contains("b.txt"));
+        assert!(!hit.contains("c.rs"));
 
-        let miss = execute_glob("*.nope", Some(&dir_str));
-        assert!(!miss.is_error);
-        assert_eq!(miss.content, NO_FILES_FOUND);
+        let miss = execute_glob("*.nope", Some(&dir_str)).unwrap();
+        assert_eq!(miss, NO_FILES_FOUND);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -730,19 +716,16 @@ mod tests {
         fs::write(dir.join("b.rs"), "hello rust").unwrap();
         let dir_str = dir.to_string_lossy();
 
-        let hit = execute_grep("hello", Some(&dir_str), None);
-        assert!(!hit.is_error);
-        assert!(hit.content.contains("a.txt"));
-        assert!(hit.content.contains("b.rs"));
+        let hit = execute_grep("hello", Some(&dir_str), None).unwrap();
+        assert!(hit.contains("a.txt"));
+        assert!(hit.contains("b.rs"));
 
-        let filtered = execute_grep("hello", Some(&dir_str), Some("*.rs"));
-        assert!(!filtered.is_error);
-        assert!(filtered.content.contains("b.rs"));
-        assert!(!filtered.content.contains("a.txt"));
+        let filtered = execute_grep("hello", Some(&dir_str), Some("*.rs")).unwrap();
+        assert!(filtered.contains("b.rs"));
+        assert!(!filtered.contains("a.txt"));
 
-        let miss = execute_grep("zzzznotfound", Some(&dir_str), None);
-        assert!(!miss.is_error);
-        assert_eq!(miss.content, NO_FILES_FOUND);
+        let miss = execute_grep("zzzznotfound", Some(&dir_str), None).unwrap();
+        assert_eq!(miss, NO_FILES_FOUND);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -763,12 +746,11 @@ mod tests {
             todo("third", TodoStatus::Pending, TodoPriority::Low),
             todo("fourth", TodoStatus::Cancelled, TodoPriority::High),
         ];
-        let result = execute_todowrite(&todos);
-        assert!(!result.is_error);
+        let result = execute_todowrite(&todos).unwrap();
         let expected = format!(
             "{MARKER_COMPLETED} (high) first\n{MARKER_IN_PROGRESS} (medium) second\n{MARKER_PENDING} (low) third\n{MARKER_CANCELLED} (high) fourth"
         );
-        assert_eq!(result.content, expected);
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -781,5 +763,34 @@ mod tests {
         let result = call.execute(&mode);
         assert!(result.is_error);
         assert_eq!(result.content, PLAN_WRITE_RESTRICTED);
+    }
+
+    #[test]
+    fn execute_bash_stderr_is_captured() {
+        let result = execute_bash("echo err >&2", Some(5)).unwrap();
+        assert!(result.contains("err"));
+    }
+
+    #[test]
+    fn read_nonexistent_file_returns_error() {
+        let err = execute_read("/tmp/maki_test_nonexistent_file_xyz", None, None).unwrap_err();
+        assert!(err.contains("read error"));
+    }
+
+    #[test]
+    fn plan_mode_allows_write_to_plan_path() {
+        let plan_path = env::temp_dir()
+            .join("maki_test_plan.md")
+            .to_string_lossy()
+            .to_string();
+        let call = ToolCall::Write {
+            path: plan_path.clone(),
+            content: "plan content".to_string(),
+        };
+        let mode = AgentMode::Plan(plan_path.clone());
+        let result = call.execute(&mode);
+        assert!(!result.is_error);
+        assert!(result.content.contains("wrote"));
+        let _ = fs::remove_file(&plan_path);
     }
 }

@@ -76,7 +76,9 @@ fn spawn_agent_thread(
             let system = agent::build_system_prompt(&cwd, &input.mode);
             if let Err(e) = agent::run(input, &mut history, &system, &event_tx) {
                 error!(error = %e, "agent error");
-                let _ = event_tx.send(AgentEvent::Error(e.to_string()));
+                let _ = event_tx.send(AgentEvent::Error {
+                    message: e.to_string(),
+                });
             }
         }
     });

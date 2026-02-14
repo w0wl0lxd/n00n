@@ -130,14 +130,6 @@ pub enum Action {
     Quit,
 }
 
-pub fn tool_start_msg(name: &str, input: &str) -> String {
-    format!("[{name}] {input}")
-}
-
-pub fn tool_done_msg(name: &str, output: &str) -> String {
-    format!("[{name} done] {output}")
-}
-
 pub struct App {
     pub messages: Vec<DisplayMessage>,
     pub input: String,
@@ -282,31 +274,31 @@ impl App {
 
     fn handle_agent_event(&mut self, event: AgentEvent) -> Vec<Action> {
         match event {
-            AgentEvent::TextDelta(text) => {
+            AgentEvent::TextDelta { text } => {
                 self.streaming_text.push_str(&text);
             }
-            AgentEvent::ToolStart { name, input } => {
+            AgentEvent::ToolStart(ref start) => {
                 self.flush_streaming_text();
                 self.messages.push(DisplayMessage {
                     role: DisplayRole::Tool,
-                    text: tool_start_msg(&name, &input),
+                    text: format!("[{}] {}", start.tool, start.summary),
                 });
             }
-            AgentEvent::ToolDone { name, output } => {
-                let truncated = truncate_lines(&output, TOOL_OUTPUT_MAX_DISPLAY_LINES);
+            AgentEvent::ToolDone(ref done) => {
+                let truncated = truncate_lines(&done.content, TOOL_OUTPUT_MAX_DISPLAY_LINES);
                 self.messages.push(DisplayMessage {
                     role: DisplayRole::Tool,
-                    text: tool_done_msg(&name, &truncated),
+                    text: format!("[{} done] {truncated}", done.tool),
                 });
             }
-            AgentEvent::Done { usage } => {
+            AgentEvent::Done { usage, .. } => {
                 self.flush_streaming_text();
                 self.token_usage += usage;
                 self.status = Status::Idle;
             }
-            AgentEvent::Error(err) => {
+            AgentEvent::Error { message } => {
                 self.flush_streaming_text();
-                self.status = Status::Error(err);
+                self.status = Status::Error(message);
             }
         }
         vec![]
@@ -443,6 +435,7 @@ impl App {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use maki_agent::{ToolDoneEvent, ToolStartEvent};
     use ratatui::backend::TestBackend;
     use test_case::test_case;
 
@@ -482,6 +475,45 @@ mod tests {
     }
 
     #[test]
+    fn empty_submit_ignored() {
+        let mut app = App::new();
+        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn keys_ignored_while_streaming() {
+        let mut app = App::new();
+        app.status = Status::Streaming;
+        app.update(Msg::Key(key(KeyCode::Char('x'))));
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn ctrl_c_quits_regardless_of_state() {
+        for status in [Status::Idle, Status::Streaming] {
+            let mut app = App::new();
+            app.status = status;
+            let actions = app.update(Msg::Key(ctrl('c')));
+            assert!(app.should_quit);
+            assert!(matches!(&actions[0], Action::Quit));
+        }
+    }
+
+    #[test]
+    fn agent_text_delta_accumulates() {
+        let mut app = App::new();
+        app.status = Status::Streaming;
+        app.update(Msg::Agent(AgentEvent::TextDelta {
+            text: "hello".into(),
+        }));
+        app.update(Msg::Agent(AgentEvent::TextDelta {
+            text: " world".into(),
+        }));
+        assert_eq!(app.streaming_text, "hello world");
+    }
+
+    #[test]
     fn agent_done_flushes_and_tracks_tokens() {
         let mut app = App::new();
         app.status = Status::Streaming;
@@ -493,6 +525,8 @@ mod tests {
         };
         app.update(Msg::Agent(AgentEvent::Done {
             usage: usage.clone(),
+            num_turns: 1,
+            stop_reason: None,
         }));
 
         assert_eq!(app.status, Status::Idle);
@@ -506,19 +540,22 @@ mod tests {
     fn tool_events_create_messages() {
         let mut app = App::new();
         app.status = Status::Streaming;
-        app.update(Msg::Agent(AgentEvent::ToolStart {
-            name: "bash".into(),
-            input: "ls".into(),
-        }));
-        app.update(Msg::Agent(AgentEvent::ToolDone {
-            name: "bash".into(),
-            output: "file.txt".into(),
-        }));
+        let start = ToolStartEvent {
+            tool: "bash",
+            summary: "ls".into(),
+        };
+        app.update(Msg::Agent(AgentEvent::ToolStart(start.clone())));
+        let done = ToolDoneEvent {
+            tool: "bash",
+            content: "file.txt".into(),
+            is_error: false,
+        };
+        app.update(Msg::Agent(AgentEvent::ToolDone(done.clone())));
 
         assert_eq!(app.messages.len(), 2);
         assert_eq!(app.messages[0].role, DisplayRole::Tool);
-        assert_eq!(app.messages[0].text, tool_start_msg("bash", "ls"));
-        assert_eq!(app.messages[1].text, tool_done_msg("bash", "file.txt"));
+        assert_eq!(app.messages[0].text, "[bash] ls");
+        assert_eq!(app.messages[1].text, "[bash done] file.txt");
     }
 
     #[test]
@@ -535,6 +572,16 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Backspace)));
         assert_eq!(app.input, "ac");
         assert_eq!(app.cursor_pos, 1);
+    }
+
+    #[test]
+    fn error_event_sets_status() {
+        let mut app = App::new();
+        app.status = Status::Streaming;
+        app.update(Msg::Agent(AgentEvent::Error {
+            message: "boom".into(),
+        }));
+        assert!(matches!(app.status, Status::Error(ref e) if e == "boom"));
     }
 
     #[test_case(10, 'u', 0  ; "ctrl_u_saturates_at_zero")]
@@ -581,7 +628,9 @@ mod tests {
         terminal.draw(|f| app.view(f)).unwrap();
         let pinned = app.scroll_top;
 
-        app.update(Msg::Agent(AgentEvent::TextDelta("b\nb\nb\n".into())));
+        app.update(Msg::Agent(AgentEvent::TextDelta {
+            text: "b\nb\nb\n".into(),
+        }));
         terminal.draw(|f| app.view(f)).unwrap();
 
         assert!(!app.auto_scroll);

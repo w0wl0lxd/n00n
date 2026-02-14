@@ -870,8 +870,12 @@ dependencies = [
  "color-eyre",
  "maki-agent",
  "maki-ui",
+ "serde",
+ "serde_json",
+ "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

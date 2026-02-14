@@ -8,7 +8,8 @@ use tracing::info;
 
 use crate::client;
 use crate::{
-    AgentError, AgentEvent, AgentInput, AgentMode, Message, PendingToolCall, TokenUsage, ToolOutput,
+    AgentError, AgentEvent, AgentInput, AgentMode, Message, PendingToolCall, TokenUsage,
+    ToolDoneEvent,
 };
 
 const AGENTS_MD: &str = "AGENTS.md";
@@ -58,7 +59,7 @@ fn execute_tools(
     tool_calls: &[PendingToolCall],
     event_tx: &Sender<AgentEvent>,
     mode: &AgentMode,
-) -> Vec<(String, ToolOutput)> {
+) -> Vec<(String, ToolDoneEvent)> {
     std::thread::scope(|s| {
         let handles: Vec<_> = tool_calls
             .iter()
@@ -66,10 +67,7 @@ fn execute_tools(
                 let tx = event_tx.clone();
                 s.spawn(move || {
                     let output = pending.call.execute(mode);
-                    let _ = tx.send(AgentEvent::ToolDone {
-                        name: pending.call.name().to_string(),
-                        output: output.content.clone(),
-                    });
+                    let _ = tx.send(AgentEvent::ToolDone(output.clone()));
                     output
                 })
             })
@@ -79,9 +77,11 @@ fn execute_tools(
             .iter()
             .zip(handles)
             .map(|(pending, h)| {
-                let output = h
-                    .join()
-                    .unwrap_or_else(|_| ToolOutput::err("tool thread panicked".into()));
+                let output = h.join().unwrap_or_else(|_| ToolDoneEvent {
+                    tool: "unknown",
+                    content: "tool thread panicked".into(),
+                    is_error: true,
+                });
                 (pending.id.clone(), output)
             })
             .collect()
@@ -97,9 +97,11 @@ pub fn run(
     history.push(Message::user(input.effective_message()));
     let tools = crate::tool::ToolCall::definitions();
     let mut total_usage = TokenUsage::default();
+    let mut num_turns: u32 = 0;
 
     loop {
         let response = client::stream_message(history, system, &tools, event_tx)?;
+        num_turns += 1;
 
         info!(
             input_tokens = response.usage.input,
@@ -114,15 +116,16 @@ pub fn run(
         history.push(response.message);
 
         if response.tool_calls.is_empty() {
-            event_tx.send(AgentEvent::Done { usage: total_usage })?;
+            event_tx.send(AgentEvent::Done {
+                usage: total_usage,
+                num_turns,
+                stop_reason: response.stop_reason,
+            })?;
             break;
         }
 
         for pending in &response.tool_calls {
-            event_tx.send(AgentEvent::ToolStart {
-                name: pending.call.name().to_string(),
-                input: pending.call.input_summary(),
-            })?;
+            event_tx.send(AgentEvent::ToolStart(pending.call.start_event()))?;
         }
 
         let tool_results = execute_tools(&response.tool_calls, event_tx, &input.mode);

@@ -1,6 +1,10 @@
+mod print;
+
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use tracing_subscriber::EnvFilter;
+
+use print::OutputFormat;
 
 const LOG_FILE_NAME: &str = "maki.log";
 
@@ -9,6 +13,14 @@ const LOG_FILE_NAME: &str = "maki.log";
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+
+    #[arg(short, long)]
+    print: bool,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    output_format: OutputFormat,
+
+    prompt: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -34,6 +46,10 @@ fn main() -> Result<()> {
             AuthAction::Login => maki_agent::auth::login()?,
             AuthAction::Logout => maki_agent::auth::logout()?,
         },
+        None if cli.print => {
+            init_logging();
+            print::run(cli.prompt, cli.output_format)?;
+        }
         None => {
             init_logging();
             maki_ui::run()?;

@@ -1,5 +1,7 @@
 use std::ops::AddAssign;
 
+use serde::Serialize;
+
 const PER_MILLION: f64 = 1_000_000.0;
 
 #[derive(Debug, Clone)]
@@ -17,11 +19,15 @@ pub const SONNET_4: ModelPricing = ModelPricing {
     cache_read: 0.30,
 };
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
 pub struct TokenUsage {
+    #[serde(rename = "input_tokens")]
     pub input: u32,
+    #[serde(rename = "output_tokens")]
     pub output: u32,
+    #[serde(rename = "cache_creation_input_tokens")]
     pub cache_creation: u32,
+    #[serde(rename = "cache_read_input_tokens")]
     pub cache_read: u32,
 }
 

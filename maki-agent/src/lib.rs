@@ -105,7 +105,7 @@ impl Message {
         }
     }
 
-    pub fn tool_results(results: Vec<(String, ToolOutput)>) -> Self {
+    pub fn tool_results(results: Vec<(String, ToolDoneEvent)>) -> Self {
         Self {
             role: Role::User,
             content: results
@@ -120,35 +120,35 @@ impl Message {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ToolOutput {
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolStartEvent {
+    pub tool: &'static str,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolDoneEvent {
+    pub tool: &'static str,
     pub content: String,
     pub is_error: bool,
 }
 
-impl ToolOutput {
-    pub fn ok(content: String) -> Self {
-        Self {
-            content,
-            is_error: false,
-        }
-    }
-
-    pub fn err(content: String) -> Self {
-        Self {
-            content,
-            is_error: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
-    TextDelta(String),
-    ToolStart { name: String, input: String },
-    ToolDone { name: String, output: String },
-    Done { usage: TokenUsage },
-    Error(String),
+    TextDelta {
+        text: String,
+    },
+    ToolStart(ToolStartEvent),
+    ToolDone(ToolDoneEvent),
+    Done {
+        usage: TokenUsage,
+        num_turns: u32,
+        stop_reason: Option<String>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -182,4 +182,44 @@ pub struct StreamResponse {
     pub message: Message,
     pub tool_calls: Vec<PendingToolCall>,
     pub usage: TokenUsage,
+    pub stop_reason: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_results_from_done_events() {
+        let events = vec![
+            (
+                "id1".into(),
+                ToolDoneEvent {
+                    tool: "write",
+                    content: "wrote 5 bytes".into(),
+                    is_error: false,
+                },
+            ),
+            (
+                "id2".into(),
+                ToolDoneEvent {
+                    tool: "glob",
+                    content: "err".into(),
+                    is_error: true,
+                },
+            ),
+        ];
+        let msg = Message::tool_results(events);
+        assert_eq!(msg.content.len(), 2);
+        assert!(matches!(
+            &msg.content[0],
+            ContentBlock::ToolResult { tool_use_id, content, is_error: false }
+            if tool_use_id == "id1" && content == "wrote 5 bytes"
+        ));
+        assert!(matches!(
+            &msg.content[1],
+            ContentBlock::ToolResult { tool_use_id, content, is_error: true }
+            if tool_use_id == "id2" && content == "err"
+        ));
+    }
 }

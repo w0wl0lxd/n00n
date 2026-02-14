@@ -74,7 +74,15 @@ struct ContentBlockDeltaEvent {
 }
 
 #[derive(Deserialize)]
+struct MessageDeltaPayload {
+    #[serde(default)]
+    stop_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct MessageDeltaEvent {
+    #[serde(default)]
+    delta: Option<MessageDeltaPayload>,
     #[serde(default)]
     usage: Option<Usage>,
 }
@@ -166,6 +174,7 @@ fn parse_sse(
     let mut current_tool_json = String::new();
     let mut current_event = String::new();
     let mut usage = TokenUsage::default();
+    let mut stop_reason: Option<String> = None;
 
     for line in reader.lines() {
         let line = line?;
@@ -212,7 +221,7 @@ fn parse_sse(
                     match ev.delta {
                         Delta::TextDelta { text } => {
                             if !text.is_empty() {
-                                event_tx.send(AgentEvent::TextDelta(text.clone()))?;
+                                event_tx.send(AgentEvent::TextDelta { text: text.clone() })?;
                                 if let Some(ContentBlock::Text { text: t }) =
                                     content_blocks.last_mut()
                                 {
@@ -237,19 +246,22 @@ fn parse_sse(
                         }),
                         Err(e) => {
                             warn!(tool = %name, error = %e, "failed to parse tool call");
-                            event_tx.send(AgentEvent::Error(format!(
-                                "failed to parse tool {name}: {e}"
-                            )))?;
+                            event_tx.send(AgentEvent::Error {
+                                message: format!("failed to parse tool {name}: {e}"),
+                            })?;
                         }
                     }
                     current_tool_json.clear();
                 }
             }
             "message_delta" => {
-                if let Ok(ev) = serde_json::from_str::<MessageDeltaEvent>(data)
-                    && let Some(u) = ev.usage
-                {
-                    usage.output = u.output_tokens;
+                if let Ok(ev) = serde_json::from_str::<MessageDeltaEvent>(data) {
+                    if let Some(u) = ev.usage {
+                        usage.output = u.output_tokens;
+                    }
+                    if let Some(d) = ev.delta {
+                        stop_reason = d.stop_reason.or(stop_reason);
+                    }
                 }
             }
             _ => {}
@@ -263,6 +275,7 @@ fn parse_sse(
         },
         tool_calls,
         usage,
+        stop_reason,
     })
 }
 
@@ -316,7 +329,7 @@ data: {\"type\":\"message_stop\"}\n";
         let deltas: Vec<String> = rx
             .try_iter()
             .filter_map(|e| {
-                if let AgentEvent::TextDelta(t) = e {
+                if let AgentEvent::TextDelta { text: t } = e {
                     Some(t)
                 } else {
                     None
