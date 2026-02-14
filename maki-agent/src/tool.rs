@@ -76,10 +76,20 @@ pub enum TodoStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Deserialize, strum::Display)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum TodoPriority {
+    High,
+    Medium,
+    Low,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TodoItem {
     pub content: String,
     pub status: TodoStatus,
+    pub priority: TodoPriority,
 }
 
 #[derive(Debug, Clone)]
@@ -297,9 +307,10 @@ impl ToolCall {
                                 "type": "object",
                                 "properties": {
                                     "content": { "type": "string", "description": "Task description" },
-                                    "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"] }
+                                    "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"] },
+                                    "priority": { "type": "string", "enum": ["high", "medium", "low"] }
                                 },
-                                "required": ["content", "status"]
+                                "required": ["content", "status", "priority"]
                             }
                         }
                     },
@@ -586,7 +597,7 @@ fn execute_todowrite(todos: &[TodoItem]) -> ToolOutput {
                 TodoStatus::Pending => MARKER_PENDING,
                 TodoStatus::Cancelled => MARKER_CANCELLED,
             };
-            format!("{marker} {}", t.content)
+            format!("{marker} ({}) {}", t.priority, t.content)
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -617,7 +628,7 @@ mod tests {
 
         let todo = ToolCall::from_api(
             "todowrite",
-            &json!({"todos": [{"content": "do stuff", "status": "in_progress"}]}),
+            &json!({"todos": [{"content": "do stuff", "status": "in_progress", "priority": "high"}]}),
         )
         .unwrap();
         assert!(matches!(todo, ToolCall::TodoWrite { ref todos } if todos.len() == 1));
@@ -742,25 +753,26 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    fn todo(content: &str, status: TodoStatus) -> TodoItem {
+    fn todo(content: &str, status: TodoStatus, priority: TodoPriority) -> TodoItem {
         TodoItem {
             content: content.to_string(),
             status,
+            priority,
         }
     }
 
     #[test]
     fn todowrite_formats_all_statuses() {
         let todos = vec![
-            todo("first", TodoStatus::Completed),
-            todo("second", TodoStatus::InProgress),
-            todo("third", TodoStatus::Pending),
-            todo("fourth", TodoStatus::Cancelled),
+            todo("first", TodoStatus::Completed, TodoPriority::High),
+            todo("second", TodoStatus::InProgress, TodoPriority::Medium),
+            todo("third", TodoStatus::Pending, TodoPriority::Low),
+            todo("fourth", TodoStatus::Cancelled, TodoPriority::High),
         ];
         let result = execute_todowrite(&todos);
         assert!(!result.is_error);
         let expected = format!(
-            "{MARKER_COMPLETED} first\n{MARKER_IN_PROGRESS} second\n{MARKER_PENDING} third\n{MARKER_CANCELLED} fourth"
+            "{MARKER_COMPLETED} (high) first\n{MARKER_IN_PROGRESS} (medium) second\n{MARKER_PENDING} (low) third\n{MARKER_CANCELLED} (high) fourth"
         );
         assert_eq!(result.content, expected);
     }
