@@ -22,6 +22,10 @@ const SEARCH_RESULT_LIMIT: usize = 100;
 const MAX_GREP_LINE_LENGTH: usize = 2000;
 const NO_FILES_FOUND: &str = "No files found";
 const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
+const MARKER_COMPLETED: &str = "[x]";
+const MARKER_IN_PROGRESS: &str = "[>]";
+const MARKER_PENDING: &str = "[ ]";
+const MARKER_CANCELLED: &str = "[-]";
 
 fn unknown_tool_msg(name: &str) -> String {
     format!("unknown variant `{name}`")
@@ -577,10 +581,10 @@ fn execute_todowrite(todos: &[TodoItem]) -> ToolOutput {
         .iter()
         .map(|t| {
             let marker = match t.status {
-                TodoStatus::Completed => "[x]",
-                TodoStatus::InProgress => "[>]",
-                TodoStatus::Pending => "[ ]",
-                TodoStatus::Cancelled => "[-]",
+                TodoStatus::Completed => MARKER_COMPLETED,
+                TodoStatus::InProgress => MARKER_IN_PROGRESS,
+                TodoStatus::Pending => MARKER_PENDING,
+                TodoStatus::Cancelled => MARKER_CANCELLED,
             };
             format!("{marker} {}", t.content)
         })
@@ -755,10 +759,10 @@ mod tests {
         ];
         let result = execute_todowrite(&todos);
         assert!(!result.is_error);
-        assert_eq!(
-            result.content,
-            "[x] first\n[>] second\n[ ] third\n[-] fourth"
+        let expected = format!(
+            "{MARKER_COMPLETED} first\n{MARKER_IN_PROGRESS} second\n{MARKER_PENDING} third\n{MARKER_CANCELLED} fourth"
         );
+        assert_eq!(result.content, expected);
     }
 
     #[test]

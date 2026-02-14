@@ -10,6 +10,7 @@ use crate::client;
 use crate::{AgentError, AgentEvent, AgentInput, AgentMode, Message, PendingToolCall, ToolOutput};
 
 const AGENTS_MD: &str = "AGENTS.md";
+const PLAN_MODE_LABEL: &str = "PLAN mode";
 
 const SYSTEM_PROMPT_STATIC: &str = "\
 You are Maki, a coding assistant. You help with software engineering tasks.
@@ -35,7 +36,7 @@ pub fn build_system_prompt(cwd: &str, mode: &AgentMode) -> String {
 
     if let AgentMode::Plan(plan_path) = mode {
         prompt.push_str(&format!(
-            "\n\nYou are in PLAN mode. Do NOT make code changes. Only read, search, and analyze.\n\
+            "\n\nYou are in {PLAN_MODE_LABEL}. Do NOT make code changes. Only read, search, and analyze.\n\
              Write your plan to {plan_path}. When complete, tell the user."
         ));
     }
@@ -137,6 +138,6 @@ mod tests {
     #[test_case(&AgentMode::Plan(".maki/plans/123.md".into()), true ; "plan_includes_plan")]
     fn system_prompt_plan_section(mode: &AgentMode, expect_plan: bool) {
         let prompt = build_system_prompt("/tmp", mode);
-        assert_eq!(prompt.contains("PLAN mode"), expect_plan);
+        assert_eq!(prompt.contains(PLAN_MODE_LABEL), expect_plan);
     }
 }

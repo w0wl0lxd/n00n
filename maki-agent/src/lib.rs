@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const DATA_DIR_NAME: &str = ".maki";
-const PLANS_DIR: &str = "plans";
+pub const PLANS_DIR: &str = "plans";
 
 pub fn data_dir() -> Result<PathBuf, AgentError> {
     let home = env::var("HOME").map_err(|_| AgentError::Api {

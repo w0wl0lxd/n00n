@@ -665,7 +665,7 @@ mod tests {
         assert_eq!(app.mode, AgentMode::Build);
 
         app.update(Msg::Key(key(KeyCode::Tab)));
-        assert!(matches!(app.mode, AgentMode::Plan(ref p) if p.contains("plans")));
+        assert!(matches!(app.mode, AgentMode::Plan(ref p) if p.contains(maki_agent::PLANS_DIR)));
 
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.mode, AgentMode::Build);

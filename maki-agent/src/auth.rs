@@ -28,6 +28,8 @@ const REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
 const SCOPES: &str = "org:create_api_key user:profile user:inference";
 const AUTH_FILE: &str = "auth.json";
 const REFRESH_BUFFER_SECS: u64 = 60;
+const RESPONSE_TYPE: &str = "response_type=code";
+const CHALLENGE_METHOD: &str = "code_challenge_method=S256";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OAuthTokens {
@@ -64,11 +66,11 @@ fn build_authorize_url(challenge: &str) -> String {
     format!(
         "{AUTHORIZE_URL}?code=true\
         &client_id={CLIENT_ID}\
-        &response_type=code\
+        &{RESPONSE_TYPE}\
         &redirect_uri={}\
         &scope={}\
         &code_challenge={challenge}\
-        &code_challenge_method=S256\
+        &{CHALLENGE_METHOD}\
         &state={challenge}",
         urlenc(REDIRECT_URI),
         urlenc(SCOPES),
@@ -280,8 +282,8 @@ mod tests {
         let url = build_authorize_url(&challenge);
         assert!(url.starts_with(AUTHORIZE_URL));
         assert!(url.contains(&format!("client_id={CLIENT_ID}")));
-        assert!(url.contains("response_type=code"));
-        assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains(RESPONSE_TYPE));
+        assert!(url.contains(CHALLENGE_METHOD));
         assert!(url.contains(&format!("code_challenge={challenge}")));
     }
 
