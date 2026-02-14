@@ -17,6 +17,19 @@ use crate::{
     TokenUsage,
 };
 
+const API_VERSION: &str = "2023-06-01";
+const MAX_RETRIES: u32 = 3;
+const RETRY_DELAY: Duration = Duration::from_secs(2);
+const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
+
+/// How many messages from the end get a cache breakpoint (max 4 total per request).
+/// We use 2 slots for system prompt + tools, leaving this many for messages.
+/// With N=2 the last assistant reply + user message are marked, so next turn
+/// everything before them is a cache hit (cheaper, lower latency).
+///
+/// See https://platform.claude.com/docs/en/build-with-claude/prompt-caching.
+const CACHE_BREAKPOINTS: usize = 2;
+
 #[derive(Deserialize)]
 struct Usage {
     #[serde(default)]
@@ -88,11 +101,6 @@ struct MessageDeltaEvent {
     #[serde(default)]
     usage: Option<Usage>,
 }
-
-const API_VERSION: &str = "2023-06-01";
-const MAX_RETRIES: u32 = 3;
-const RETRY_DELAY: Duration = Duration::from_secs(2);
-const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
 
 pub struct Anthropic {
     agent: Agent,
@@ -252,14 +260,13 @@ struct WireMessage<'a> {
 }
 
 fn build_wire_messages(messages: &[Message]) -> Vec<WireMessage<'_>> {
-    let last_user_idx = messages.iter().rposition(|m| matches!(m.role, Role::User));
+    let len = messages.len();
 
     messages
         .iter()
         .enumerate()
         .map(|(msg_idx, msg)| {
-            let is_cache_target = last_user_idx == Some(msg_idx);
-            let last_block_idx = msg.content.len().saturating_sub(1);
+            let cache_last_block = msg_idx + CACHE_BREAKPOINTS >= len;
 
             WireMessage {
                 role: &msg.role,
@@ -269,7 +276,7 @@ fn build_wire_messages(messages: &[Message]) -> Vec<WireMessage<'_>> {
                     .enumerate()
                     .map(|(block_idx, block)| WireContentBlock {
                         inner: block,
-                        cache_control: if is_cache_target && block_idx == last_block_idx {
+                        cache_control: if cache_last_block && block_idx + 1 == msg.content.len() {
                             Some(EPHEMERAL)
                         } else {
                             None
@@ -496,7 +503,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
     }
 
     #[test]
-    fn cache_control_targets_last_user_message() {
+    fn cache_control_targets_last_two_messages() {
         let messages = vec![
             Message::user("first".into()),
             Message {
@@ -522,13 +529,29 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
         let wire = build_wire_messages(&messages);
         let json: Value = serde_json::to_value(&wire).unwrap();
 
-        let first_user = &json[0]["content"][0];
-        assert!(first_user.get("cache_control").is_none());
+        assert!(json[0]["content"][0].get("cache_control").is_none());
 
-        let last_block = &json[2]["content"][1];
-        assert_eq!(last_block["cache_control"], json!({"type": "ephemeral"}));
+        assert_eq!(
+            json[1]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
 
-        let first_block_last_user = &json[2]["content"][0];
-        assert!(first_block_last_user.get("cache_control").is_none());
+        assert!(json[2]["content"][0].get("cache_control").is_none());
+        assert_eq!(
+            json[2]["content"][1]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+    }
+
+    #[test]
+    fn cache_control_single_message() {
+        let messages = vec![Message::user("only".into())];
+        let wire = build_wire_messages(&messages);
+        let json: Value = serde_json::to_value(&wire).unwrap();
+
+        assert_eq!(
+            json[0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
     }
 }
