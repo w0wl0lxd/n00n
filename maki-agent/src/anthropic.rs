@@ -3,7 +3,7 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 use ureq::Agent;
@@ -130,12 +130,20 @@ impl Provider for Anthropic {
         tools: &Value,
         event_tx: &Sender<AgentEvent>,
     ) -> Result<StreamResponse, AgentError> {
+        let wire_messages = build_wire_messages(messages);
+        let wire_tools = build_wire_tools(tools);
+        let system_block = SystemBlock {
+            r#type: "text",
+            text: system,
+            cache_control: EPHEMERAL,
+        };
+
         let body = json!({
             "model": model.id,
             "max_tokens": model.max_output_tokens,
-            "system": system,
-            "messages": messages,
-            "tools": tools,
+            "system": [system_block],
+            "messages": wire_messages,
+            "tools": wire_tools,
             "stream": true,
         });
 
@@ -211,6 +219,77 @@ struct ModelsPage {
     data: Vec<ModelInfo>,
     has_more: bool,
     last_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CacheControl {
+    r#type: &'static str,
+}
+
+const EPHEMERAL: CacheControl = CacheControl {
+    r#type: "ephemeral",
+};
+
+#[derive(Serialize)]
+struct SystemBlock<'a> {
+    r#type: &'static str,
+    text: &'a str,
+    cache_control: CacheControl,
+}
+
+#[derive(Serialize)]
+struct WireContentBlock<'a> {
+    #[serde(flatten)]
+    inner: &'a ContentBlock,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
+#[derive(Serialize)]
+struct WireMessage<'a> {
+    role: &'a Role,
+    content: Vec<WireContentBlock<'a>>,
+}
+
+fn build_wire_messages(messages: &[Message]) -> Vec<WireMessage<'_>> {
+    let last_user_idx = messages.iter().rposition(|m| matches!(m.role, Role::User));
+
+    messages
+        .iter()
+        .enumerate()
+        .map(|(msg_idx, msg)| {
+            let is_cache_target = last_user_idx == Some(msg_idx);
+            let last_block_idx = msg.content.len().saturating_sub(1);
+
+            WireMessage {
+                role: &msg.role,
+                content: msg
+                    .content
+                    .iter()
+                    .enumerate()
+                    .map(|(block_idx, block)| WireContentBlock {
+                        inner: block,
+                        cache_control: if is_cache_target && block_idx == last_block_idx {
+                            Some(EPHEMERAL)
+                        } else {
+                            None
+                        },
+                    })
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+fn build_wire_tools(tools: &Value) -> Value {
+    let Some(arr) = tools.as_array() else {
+        return tools.clone();
+    };
+    let mut out: Vec<Value> = arr.clone();
+    if let Some(last) = out.last_mut() {
+        last["cache_control"] = json!({"type": "ephemeral"});
+    }
+    Value::Array(out)
 }
 
 fn parse_sse(
@@ -414,5 +493,42 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
         assert_eq!(resp.tool_calls.len(), 1);
         assert_eq!(resp.tool_calls[0].id, "tu_1");
         assert_eq!(resp.tool_calls[0].call.name(), "bash");
+    }
+
+    #[test]
+    fn cache_control_targets_last_user_message() {
+        let messages = vec![
+            Message::user("first".into()),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "reply".into(),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "ok".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::Text {
+                        text: "second".into(),
+                    },
+                ],
+            },
+        ];
+        let wire = build_wire_messages(&messages);
+        let json: Value = serde_json::to_value(&wire).unwrap();
+
+        let first_user = &json[0]["content"][0];
+        assert!(first_user.get("cache_control").is_none());
+
+        let last_block = &json[2]["content"][1];
+        assert_eq!(last_block["cache_control"], json!({"type": "ephemeral"}));
+
+        let first_block_last_user = &json[2]["content"][0];
+        assert!(first_block_last_user.get("cache_control").is_none());
     }
 }
