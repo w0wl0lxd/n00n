@@ -92,7 +92,8 @@ pub struct TodoItem {
     pub priority: TodoPriority,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, strum::IntoStaticStr)]
+#[strum(serialize_all = "lowercase")]
 pub enum ToolCall {
     Bash {
         command: String,
@@ -183,15 +184,8 @@ impl ToolCall {
         }
     }
 
-    pub fn name(&self) -> &str {
-        match self {
-            Self::Bash { .. } => "bash",
-            Self::Read { .. } => "read",
-            Self::Write { .. } => "write",
-            Self::Glob { .. } => "glob",
-            Self::Grep { .. } => "grep",
-            Self::TodoWrite { .. } => "todowrite",
-        }
+    pub fn name(&self) -> &'static str {
+        self.into()
     }
 
     pub fn input_summary(&self) -> String {
