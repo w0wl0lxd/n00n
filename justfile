@@ -22,5 +22,9 @@ fmt-check:
 fmt:
     cargo fmt --all
 
+pylint:
+    ruff check scripts/
+    ty check scripts/
+
 # Full CI check
-ci: fmt-check lint test
+ci: fmt-check lint pylint test
