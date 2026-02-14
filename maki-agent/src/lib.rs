@@ -1,11 +1,10 @@
 pub mod agent;
-pub(crate) mod anthropic;
 pub mod auth;
 pub mod model;
 pub(crate) mod prompt;
 pub mod provider;
+pub(crate) mod providers;
 pub mod tool;
-pub(crate) mod zai;
 
 use std::path::PathBuf;
 use std::sync::mpsc;

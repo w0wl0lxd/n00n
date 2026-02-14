@@ -17,8 +17,8 @@ pub enum ProviderKind {
 impl ProviderKind {
     fn create(self) -> Result<Box<dyn Provider>, AgentError> {
         match self {
-            Self::Anthropic => Ok(Box::new(crate::anthropic::Anthropic::new()?)),
-            Self::Zai => Ok(Box::new(crate::zai::Zai::new()?)),
+            Self::Anthropic => Ok(Box::new(crate::providers::anthropic::Anthropic::new()?)),
+            Self::Zai => Ok(Box::new(crate::providers::zai::Zai::new()?)),
         }
     }
 }
