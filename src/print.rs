@@ -23,11 +23,15 @@ use std::time::Instant;
 
 use clap::ValueEnum;
 use color_eyre::Result;
+use maki_agent::client::MODEL;
 use maki_agent::pricing::SONNET_4;
 use maki_agent::{AgentEvent, AgentInput, AgentMode, TokenUsage, agent};
 use serde::Serialize;
+use serde_json::Value;
 use tracing::error;
 use uuid::Uuid;
+
+const TOOLS: &[&str] = &["bash", "read", "write", "glob", "grep", "todowrite"];
 
 #[derive(Clone, ValueEnum)]
 pub enum OutputFormat {
@@ -51,7 +55,63 @@ struct PrintResult {
     usage: TokenUsage,
 }
 
-pub fn run(prompt_arg: Option<String>, format: OutputFormat) -> Result<()> {
+#[derive(Serialize)]
+struct InitEvent<'a> {
+    #[serde(rename = "type")]
+    event_type: &'static str,
+    subtype: &'static str,
+    cwd: &'a str,
+    session_id: &'a str,
+    tools: &'static [&'static str],
+    model: &'static str,
+}
+
+#[derive(Serialize)]
+struct AssistantEvent<'a> {
+    #[serde(rename = "type")]
+    event_type: &'static str,
+    message: AssistantMessage<'a>,
+    session_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct AssistantMessage<'a> {
+    model: &'static str,
+    role: &'static str,
+    content: &'a Value,
+    usage: &'a TokenUsage,
+}
+
+#[derive(Serialize)]
+struct UserEvent<'a> {
+    #[serde(rename = "type")]
+    event_type: &'static str,
+    message: UserMessage<'a>,
+    session_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct UserMessage<'a> {
+    role: &'static str,
+    content: &'a Value,
+}
+
+enum VerboseOutput {
+    StreamJson,
+    Json(Vec<Value>),
+}
+
+impl VerboseOutput {
+    fn emit(&mut self, value: &impl Serialize) -> Result<()> {
+        match self {
+            Self::StreamJson => println!("{}", serde_json::to_string(value)?),
+            Self::Json(events) => events.push(serde_json::to_value(value)?),
+        }
+        Ok(())
+    }
+}
+
+pub fn run(prompt_arg: Option<String>, format: OutputFormat, verbose: bool) -> Result<()> {
     let prompt = match prompt_arg {
         Some(p) => p,
         None => {
@@ -85,6 +145,23 @@ pub fn run(prompt_arg: Option<String>, format: OutputFormat) -> Result<()> {
         }
     });
 
+    let is_stream_json = matches!(format, OutputFormat::StreamJson);
+    let mut verbose_out = verbose.then(|| match format {
+        OutputFormat::StreamJson => VerboseOutput::StreamJson,
+        _ => VerboseOutput::Json(Vec::new()),
+    });
+
+    if let Some(out) = &mut verbose_out {
+        out.emit(&InitEvent {
+            event_type: "system",
+            subtype: "init",
+            cwd: &cwd,
+            session_id: &session_id,
+            tools: TOOLS,
+            model: MODEL,
+        })?;
+    }
+
     let mut result_text = String::new();
     let mut is_error = false;
     let mut num_turns: u32 = 0;
@@ -92,7 +169,7 @@ pub fn run(prompt_arg: Option<String>, format: OutputFormat) -> Result<()> {
     let mut stop_reason: Option<String> = None;
 
     for event in event_rx {
-        if let OutputFormat::StreamJson = format {
+        if verbose_out.is_none() && is_stream_json {
             let done = matches!(event, AgentEvent::Done { .. });
             println!("{}", serde_json::to_string(&event)?);
             if done {
@@ -104,6 +181,46 @@ pub fn run(prompt_arg: Option<String>, format: OutputFormat) -> Result<()> {
         match &event {
             AgentEvent::TextDelta { text } => {
                 result_text.push_str(text);
+                if is_stream_json {
+                    println!("{}", serde_json::to_string(&event)?);
+                }
+            }
+            AgentEvent::ToolStart(_) | AgentEvent::ToolDone(_) => {
+                if is_stream_json {
+                    println!("{}", serde_json::to_string(&event)?);
+                }
+            }
+            AgentEvent::TurnComplete {
+                message,
+                usage: turn_usage,
+                model,
+            } => {
+                if let Some(out) = &mut verbose_out {
+                    let content_value = serde_json::to_value(&message.content)?;
+                    out.emit(&AssistantEvent {
+                        event_type: "assistant",
+                        message: AssistantMessage {
+                            model,
+                            role: "assistant",
+                            content: &content_value,
+                            usage: turn_usage,
+                        },
+                        session_id: &session_id,
+                    })?;
+                }
+            }
+            AgentEvent::ToolResultsSubmitted { message } => {
+                if let Some(out) = &mut verbose_out {
+                    let content_value = serde_json::to_value(&message.content)?;
+                    out.emit(&UserEvent {
+                        event_type: "user",
+                        message: UserMessage {
+                            role: "user",
+                            content: &content_value,
+                        },
+                        session_id: &session_id,
+                    })?;
+                }
             }
             AgentEvent::Done {
                 usage: u,
@@ -118,7 +235,6 @@ pub fn run(prompt_arg: Option<String>, format: OutputFormat) -> Result<()> {
                 is_error = true;
                 result_text = message.clone();
             }
-            _ => {}
         }
 
         if matches!(event, AgentEvent::Done { .. } | AgentEvent::Error { .. }) {
@@ -127,13 +243,13 @@ pub fn run(prompt_arg: Option<String>, format: OutputFormat) -> Result<()> {
     }
 
     let duration_ms = start.elapsed().as_millis();
+    let total_cost_usd = usage.cost(&SONNET_4);
 
     match format {
         OutputFormat::Text => {
             print!("{result_text}");
         }
-        OutputFormat::Json => {
-            let total_cost_usd = usage.cost(&SONNET_4);
+        OutputFormat::Json | OutputFormat::StreamJson => {
             let result = PrintResult {
                 result_type: "result",
                 subtype: if is_error { "error" } else { "success" },
@@ -146,9 +262,16 @@ pub fn run(prompt_arg: Option<String>, format: OutputFormat) -> Result<()> {
                 total_cost_usd,
                 usage,
             };
-            println!("{}", serde_json::to_string(&result)?);
+            match verbose_out {
+                Some(VerboseOutput::Json(mut events)) => {
+                    events.push(serde_json::to_value(&result)?);
+                    println!("{}", serde_json::to_string(&events)?);
+                }
+                Some(VerboseOutput::StreamJson) => println!("{}", serde_json::to_string(&result)?),
+                None if is_stream_json => {}
+                None => println!("{}", serde_json::to_string(&result)?),
+            }
         }
-        OutputFormat::StreamJson => {}
     }
 
     Ok(())

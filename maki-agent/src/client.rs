@@ -88,7 +88,7 @@ struct MessageDeltaEvent {
 }
 
 const API_VERSION: &str = "2023-06-01";
-const MODEL: &str = "claude-sonnet-4-20250514";
+pub const MODEL: &str = "claude-sonnet-4-20250514";
 const MAX_TOKENS: u32 = 8096;
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(2);

@@ -17,6 +17,9 @@ struct Cli {
     #[arg(short, long)]
     print: bool,
 
+    #[arg(long)]
+    verbose: bool,
+
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     output_format: OutputFormat,
 
@@ -48,7 +51,7 @@ fn main() -> Result<()> {
         },
         None if cli.print => {
             init_logging();
-            print::run(cli.prompt, cli.output_format)?;
+            print::run(cli.prompt, cli.output_format, cli.verbose)?;
         }
         None => {
             init_logging();

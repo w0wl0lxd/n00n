@@ -291,6 +291,7 @@ impl App {
                     text: format!("[{} done] {truncated}", done.tool),
                 });
             }
+            AgentEvent::TurnComplete { .. } | AgentEvent::ToolResultsSubmitted { .. } => {}
             AgentEvent::Done { usage, .. } => {
                 self.flush_streaming_text();
                 self.token_usage += usage;

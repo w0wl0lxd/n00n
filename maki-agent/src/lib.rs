@@ -141,6 +141,14 @@ pub enum AgentEvent {
     },
     ToolStart(ToolStartEvent),
     ToolDone(ToolDoneEvent),
+    TurnComplete {
+        message: Message,
+        usage: TokenUsage,
+        model: &'static str,
+    },
+    ToolResultsSubmitted {
+        message: Message,
+    },
     Done {
         usage: TokenUsage,
         num_turns: u32,

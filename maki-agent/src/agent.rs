@@ -112,6 +112,12 @@ pub fn run(
             "API response received"
         );
 
+        event_tx.send(AgentEvent::TurnComplete {
+            message: response.message.clone(),
+            usage: response.usage.clone(),
+            model: client::MODEL,
+        })?;
+
         total_usage += response.usage;
         history.push(response.message);
 
@@ -129,7 +135,11 @@ pub fn run(
         }
 
         let tool_results = execute_tools(&response.tool_calls, event_tx, &input.mode);
-        history.push(Message::tool_results(tool_results));
+        let tool_msg = Message::tool_results(tool_results);
+        event_tx.send(AgentEvent::ToolResultsSubmitted {
+            message: tool_msg.clone(),
+        })?;
+        history.push(tool_msg);
     }
 
     Ok(())
