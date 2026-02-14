@@ -1,4 +1,4 @@
-name: CI
+name: Rust
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
       - "src/**"
       - "maki-*/src/**"
       - "justfile"
-      - ".github/workflows/ci.yml"
+      - ".github/workflows/rust.yml"
   pull_request:
     branches: ["main"]
     paths:
@@ -18,7 +18,7 @@ on:
       - "src/**"
       - "maki-*/src/**"
       - "justfile"
-      - ".github/workflows/ci.yml"
+      - ".github/workflows/rust.yml"
 
 env:
   CARGO_TERM_COLOR: always
