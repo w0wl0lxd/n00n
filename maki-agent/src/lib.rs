@@ -230,4 +230,76 @@ mod tests {
             if tool_use_id == "id2" && content == "err"
         ));
     }
+
+    #[test]
+    fn agent_event_type_tags() {
+        let cases: Vec<(AgentEvent, &str)> = vec![
+            (AgentEvent::TextDelta { text: "x".into() }, "text_delta"),
+            (
+                AgentEvent::ToolStart(ToolStartEvent {
+                    tool: "bash",
+                    summary: "s".into(),
+                }),
+                "tool_start",
+            ),
+            (
+                AgentEvent::ToolDone(ToolDoneEvent {
+                    tool: "read",
+                    content: "c".into(),
+                    is_error: false,
+                }),
+                "tool_done",
+            ),
+            (
+                AgentEvent::Done {
+                    usage: TokenUsage::default(),
+                    num_turns: 1,
+                    stop_reason: None,
+                },
+                "done",
+            ),
+            (
+                AgentEvent::Error {
+                    message: "e".into(),
+                },
+                "error",
+            ),
+        ];
+        for (event, expected_type) in cases {
+            let json: Value = serde_json::to_value(&event).unwrap();
+            assert_eq!(json["type"], expected_type);
+        }
+    }
+
+    #[test]
+    fn effective_message_without_plan() {
+        let input = AgentInput {
+            message: "do stuff".into(),
+            mode: AgentMode::Build,
+            pending_plan: None,
+        };
+        assert_eq!(input.effective_message(), "do stuff");
+    }
+
+    #[test]
+    fn effective_message_injects_plan_in_build_mode() {
+        let input = AgentInput {
+            message: "go".into(),
+            mode: AgentMode::Build,
+            pending_plan: Some("/tmp/plan.md".into()),
+        };
+        let msg = input.effective_message();
+        assert!(msg.contains("/tmp/plan.md"));
+        assert!(msg.contains("go"));
+    }
+
+    #[test]
+    fn effective_message_ignores_plan_in_plan_mode() {
+        let input = AgentInput {
+            message: "plan this".into(),
+            mode: AgentMode::Plan("/tmp/p.md".into()),
+            pending_plan: Some("/tmp/p.md".into()),
+        };
+        assert_eq!(input.effective_message(), "plan this");
+    }
 }

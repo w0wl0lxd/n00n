@@ -340,6 +340,46 @@ data: {\"type\":\"message_stop\"}\n";
     }
 
     #[test]
+    fn parse_sse_stop_reason() {
+        let with_stop = b"\
+event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\
+\n\
+event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\
+\n\
+event: content_block_stop\n\
+data: {\"type\":\"content_block_stop\"}\n\
+\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\
+\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n";
+
+        let (tx, _rx) = mpsc::channel();
+        let resp = parse_sse(with_stop.as_slice(), &tx).unwrap();
+        assert_eq!(resp.stop_reason.as_deref(), Some("end_turn"));
+
+        let without_stop = b"\
+event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\
+\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":2}}\n\
+\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n";
+
+        let (tx, _rx) = mpsc::channel();
+        let resp = parse_sse(without_stop.as_slice(), &tx).unwrap();
+        assert!(resp.stop_reason.is_none());
+    }
+
+    #[test]
     fn parse_sse_tool_use() {
         let line1 = r#"data: {"type":"message_start","message":{"usage":{"input_tokens":10}}}"#;
         let line2 = r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"bash"}}"#;

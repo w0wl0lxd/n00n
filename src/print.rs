@@ -276,3 +276,71 @@ pub fn run(prompt_arg: Option<String>, format: OutputFormat, verbose: bool) -> R
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maki_agent::TokenUsage;
+
+    #[test]
+    fn wire_format_required_fields() {
+        let result = PrintResult {
+            result_type: "result",
+            subtype: "success",
+            is_error: false,
+            duration_ms: 1234,
+            num_turns: 2,
+            result: "done".into(),
+            stop_reason: Some("end_turn".into()),
+            session_id: "sess-123".into(),
+            total_cost_usd: 0.003,
+            usage: TokenUsage::default(),
+        };
+        let json: Value = serde_json::to_value(&result).unwrap();
+        for field in [
+            "type",
+            "subtype",
+            "is_error",
+            "num_turns",
+            "result",
+            "stop_reason",
+            "session_id",
+            "total_cost_usd",
+            "usage",
+            "duration_ms",
+        ] {
+            assert!(
+                json.get(field).is_some(),
+                "PrintResult missing field: {field}"
+            );
+        }
+
+        let init = InitEvent {
+            event_type: "system",
+            subtype: "init",
+            cwd: "/tmp",
+            session_id: "abc",
+            tools: TOOLS,
+            model: MODEL,
+        };
+        let json: Value = serde_json::to_value(&init).unwrap();
+        for field in ["type", "subtype", "cwd", "session_id", "tools", "model"] {
+            assert!(
+                json.get(field).is_some(),
+                "InitEvent missing field: {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn verbose_output_json_accumulates() {
+        let mut out = VerboseOutput::Json(Vec::new());
+        out.emit(&serde_json::json!({"a": 1})).unwrap();
+        out.emit(&serde_json::json!({"b": 2})).unwrap();
+        if let VerboseOutput::Json(events) = out {
+            assert_eq!(events.len(), 2);
+        } else {
+            panic!("expected Json variant");
+        }
+    }
+}

@@ -766,6 +766,78 @@ mod tests {
     }
 
     #[test]
+    fn start_event_summaries() {
+        let cases: Vec<(ToolCall, &str, &str)> = vec![
+            (
+                ToolCall::Bash {
+                    command: "echo hi".into(),
+                    timeout: None,
+                },
+                "bash",
+                "echo hi",
+            ),
+            (
+                ToolCall::Read {
+                    path: "/tmp/f.rs".into(),
+                    offset: None,
+                    limit: None,
+                },
+                "read",
+                "/tmp/f.rs",
+            ),
+            (
+                ToolCall::Write {
+                    path: "/tmp/out.txt".into(),
+                    content: "data".into(),
+                },
+                "write",
+                "/tmp/out.txt",
+            ),
+            (
+                ToolCall::Glob {
+                    pattern: "**/*.rs".into(),
+                    path: None,
+                },
+                "glob",
+                "**/*.rs",
+            ),
+            (
+                ToolCall::Grep {
+                    pattern: "TODO".into(),
+                    path: None,
+                    include: None,
+                },
+                "grep",
+                "TODO",
+            ),
+            (
+                ToolCall::TodoWrite { todos: vec![] },
+                "todowrite",
+                "0 todos",
+            ),
+        ];
+        for (call, expected_tool, expected_summary) in cases {
+            let event = call.start_event();
+            assert_eq!(event.tool, expected_tool);
+            assert_eq!(event.summary, expected_summary);
+        }
+    }
+
+    #[test]
+    fn build_mode_allows_any_write() {
+        let dir = temp_dir("maki_test_build_write");
+        let path = dir.join("file.txt").to_string_lossy().to_string();
+        let call = ToolCall::Write {
+            path: path.clone(),
+            content: "hello".into(),
+        };
+        let result = call.execute(&AgentMode::Build);
+        assert!(!result.is_error);
+        assert!(result.content.contains("wrote"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn execute_bash_stderr_is_captured() {
         let result = execute_bash("echo err >&2", Some(5)).unwrap();
         assert!(result.contains("err"));

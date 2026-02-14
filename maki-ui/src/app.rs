@@ -576,6 +576,52 @@ mod tests {
     }
 
     #[test]
+    fn tool_start_flushes_streaming_text() {
+        let mut app = App::new();
+        app.status = Status::Streaming;
+        app.streaming_text = "partial response".into();
+
+        let start = ToolStartEvent {
+            tool: "read",
+            summary: "/tmp/file".into(),
+        };
+        app.update(Msg::Agent(AgentEvent::ToolStart(start)));
+
+        assert_eq!(app.messages.len(), 2);
+        assert_eq!(app.messages[0].role, DisplayRole::Assistant);
+        assert_eq!(app.messages[0].text, "partial response");
+        assert_eq!(app.messages[1].role, DisplayRole::Tool);
+        assert!(app.streaming_text.is_empty());
+    }
+
+    #[test]
+    fn done_accumulates_usage_across_events() {
+        let mut app = App::new();
+        app.status = Status::Streaming;
+        app.update(Msg::Agent(AgentEvent::Done {
+            usage: TokenUsage {
+                input: 10,
+                output: 5,
+                ..Default::default()
+            },
+            num_turns: 1,
+            stop_reason: None,
+        }));
+        app.status = Status::Streaming;
+        app.update(Msg::Agent(AgentEvent::Done {
+            usage: TokenUsage {
+                input: 20,
+                output: 10,
+                ..Default::default()
+            },
+            num_turns: 1,
+            stop_reason: None,
+        }));
+        assert_eq!(app.token_usage.input, 30);
+        assert_eq!(app.token_usage.output, 15);
+    }
+
+    #[test]
     fn error_event_sets_status() {
         let mut app = App::new();
         app.status = Status::Streaming;
