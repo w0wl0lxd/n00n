@@ -1,0 +1,1 @@
+Find files by glob pattern. Respects .gitignore. Returns absolute paths sorted by modification time (newest first). Prefer speculative parallel searches over sequential rounds of glob+grep.

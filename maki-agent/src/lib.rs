@@ -2,6 +2,7 @@ pub mod agent;
 pub(crate) mod anthropic;
 pub mod auth;
 pub mod model;
+pub(crate) mod prompt;
 pub mod provider;
 pub mod tool;
 pub(crate) mod zai;

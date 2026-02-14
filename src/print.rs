@@ -127,7 +127,7 @@ pub fn run(
 
     let cwd = env::current_dir()?.to_string_lossy().to_string();
     let mode = AgentMode::Build;
-    let system = agent::build_system_prompt(&cwd, &mode);
+    let system = agent::build_system_prompt(&cwd, &mode, model);
 
     let (event_tx, event_rx) = mpsc::channel::<AgentEvent>();
     let input = AgentInput {

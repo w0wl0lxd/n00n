@@ -1,6 +1,9 @@
 use std::ops::AddAssign;
+use std::str::FromStr;
 
 use serde::Serialize;
+
+use crate::provider::ProviderKind;
 
 const PER_MILLION: f64 = 1_000_000.0;
 
@@ -10,7 +13,7 @@ pub const DEFAULT_SPEC: &str = "anthropic/claude-sonnet-4-20250514";
 pub enum ModelError {
     #[error("model must be in 'provider/model' format (e.g. anthropic/claude-sonnet-4-20250514)")]
     InvalidFormat,
-    #[error("unsupported provider '{0}', supported: 'anthropic', 'zai'")]
+    #[error("unsupported provider '{0}'")]
     UnsupportedProvider(String),
     #[error("unknown model '{0}'")]
     UnknownModel(String),
@@ -24,10 +27,16 @@ pub struct ModelPricing {
     pub cache_read: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelFamily {
+    Claude,
+    Glm,
+}
+
 #[derive(Debug, Clone)]
 pub struct Model {
     pub id: String,
-    pub provider: String,
+    pub provider: ProviderKind,
     pub pricing: ModelPricing,
     pub max_output_tokens: u32,
 }
@@ -214,16 +223,25 @@ fn lookup_tier(tiers: &[ModelTier], model_id: &str) -> Result<(ModelPricing, u32
 }
 
 impl Model {
+    pub fn family(&self) -> ModelFamily {
+        match self.provider {
+            ProviderKind::Zai => ModelFamily::Glm,
+            ProviderKind::Anthropic => ModelFamily::Claude,
+        }
+    }
+
     pub fn from_spec(spec: &str) -> Result<Self, ModelError> {
-        let (provider, model_id) = spec.split_once('/').ok_or(ModelError::InvalidFormat)?;
-        let (pricing, max_output_tokens) = match provider {
-            "anthropic" => lookup_tier(ANTHROPIC_TIERS, model_id),
-            "zai" => lookup_tier(ZAI_TIERS, model_id),
-            _ => return Err(ModelError::UnsupportedProvider(provider.to_string())),
-        }?;
+        let (provider_str, model_id) = spec.split_once('/').ok_or(ModelError::InvalidFormat)?;
+        let provider = ProviderKind::from_str(provider_str)
+            .map_err(|_| ModelError::UnsupportedProvider(provider_str.to_string()))?;
+        let tiers = match provider {
+            ProviderKind::Anthropic => ANTHROPIC_TIERS,
+            ProviderKind::Zai => ZAI_TIERS,
+        };
+        let (pricing, max_output_tokens) = lookup_tier(tiers, model_id)?;
         Ok(Self {
             id: model_id.to_string(),
-            provider: provider.to_string(),
+            provider,
             pricing,
             max_output_tokens,
         })

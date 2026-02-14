@@ -7,6 +7,7 @@ use std::sync::mpsc::Sender;
 use tracing::info;
 
 use crate::model::Model;
+use crate::prompt;
 use crate::provider::Provider;
 use crate::{
     AgentError, AgentEvent, AgentInput, AgentMode, Message, PendingToolCall, TokenUsage,
@@ -14,18 +15,11 @@ use crate::{
 };
 
 const AGENTS_MD: &str = "AGENTS.md";
-const PLAN_MODE_LABEL: &str = "PLAN mode";
 
-const SYSTEM_PROMPT_STATIC: &str = "\
-You are Maki, a coding assistant. You help with software engineering tasks.
-- Use tools to interact with the filesystem and execute commands
-- Read files before editing them
-- Be concise
-- When done, summarize what you did";
+pub fn build_system_prompt(cwd: &str, mode: &AgentMode, model: &Model) -> String {
+    let mut out = prompt::base_prompt(model.family()).to_string();
 
-pub fn build_system_prompt(cwd: &str, mode: &AgentMode) -> String {
-    let mut prompt = SYSTEM_PROMPT_STATIC.to_string();
-    prompt.push_str(&format!(
+    out.push_str(&format!(
         "\n\nEnvironment:\n- Working directory: {cwd}\n- Platform: {}\n- Date: {}",
         env::consts::OS,
         current_date(),
@@ -33,19 +27,16 @@ pub fn build_system_prompt(cwd: &str, mode: &AgentMode) -> String {
 
     let agents_path = Path::new(cwd).join(AGENTS_MD);
     if let Ok(content) = fs::read_to_string(&agents_path) {
-        prompt.push_str(&format!(
+        out.push_str(&format!(
             "\n\nProject instructions ({AGENTS_MD}):\n{content}"
         ));
     }
 
     if let AgentMode::Plan(plan_path) = mode {
-        prompt.push_str(&format!(
-            "\n\nYou are in {PLAN_MODE_LABEL}. Do NOT make code changes. Only read, search, and analyze.\n\
-             Write your plan to {plan_path}. When complete, tell the user."
-        ));
+        out.push_str(&prompt::PLAN_PROMPT.replace("{plan_path}", plan_path));
     }
 
-    prompt
+    out
 }
 
 fn current_date() -> String {
@@ -153,10 +144,19 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
+    const PLAN_PATH: &str = ".maki/plans/123.md";
+
+    fn default_model() -> Model {
+        Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap()
+    }
+
     #[test_case(&AgentMode::Build, false ; "build_excludes_plan")]
-    #[test_case(&AgentMode::Plan(".maki/plans/123.md".into()), true ; "plan_includes_plan")]
-    fn system_prompt_plan_section(mode: &AgentMode, expect_plan: bool) {
-        let prompt = build_system_prompt("/tmp", mode);
-        assert_eq!(prompt.contains(PLAN_MODE_LABEL), expect_plan);
+    #[test_case(&AgentMode::Plan(PLAN_PATH.into()), true ; "plan_includes_plan")]
+    fn plan_section_presence(mode: &AgentMode, expect_plan: bool) {
+        let prompt = build_system_prompt("/tmp", mode, &default_model());
+        assert_eq!(prompt.contains("Plan Mode"), expect_plan);
+        if expect_plan {
+            assert!(prompt.contains(PLAN_PATH));
+        }
     }
 }

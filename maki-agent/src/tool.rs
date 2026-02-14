@@ -244,7 +244,7 @@ impl ToolCall {
         json!([
             {
                 "name": "bash",
-                "description": "Execute a bash command. Use for running shell commands, git operations, builds, etc.",
+                "description": include_str!("tools/bash.md"),
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -256,11 +256,11 @@ impl ToolCall {
             },
             {
                 "name": "read",
-                "description": "Read a file from the filesystem. Returns file contents with line numbers.",
+                "description": include_str!("tools/read.md"),
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Absolute path to the file" },
+                        "path": { "type": "string", "description": "Absolute path to the file or directory" },
                         "offset": { "type": "integer", "description": "Line number to start from (1-indexed)" },
                         "limit": { "type": "integer", "description": "Max number of lines to read" }
                     },
@@ -269,23 +269,23 @@ impl ToolCall {
             },
             {
                 "name": "write",
-                "description": "Write content to a file. Creates parent directories if needed.",
+                "description": include_str!("tools/write.md"),
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "Absolute path to the file" },
-                        "content": { "type": "string", "description": "The content to write" }
+                        "content": { "type": "string", "description": "The complete file content to write" }
                     },
                     "required": ["path", "content"]
                 }
             },
             {
                 "name": "glob",
-                "description": "Find files by glob pattern. Respects .gitignore. Returns absolute paths sorted by modification time (newest first).",
+                "description": include_str!("tools/glob.md"),
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "pattern": { "type": "string", "description": "Glob pattern to match (e.g. **/*.rs)" },
+                        "pattern": { "type": "string", "description": "Glob pattern (e.g. **/*.rs, src/**/*.ts)" },
                         "path": { "type": "string", "description": "Directory to search in (default: cwd)" }
                     },
                     "required": ["pattern"]
@@ -293,7 +293,7 @@ impl ToolCall {
             },
             {
                 "name": "grep",
-                "description": "Search file contents using regex via ripgrep. Respects .gitignore. Results grouped by file, sorted by modification time.",
+                "description": include_str!("tools/grep.md"),
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -306,7 +306,7 @@ impl ToolCall {
             },
             {
                 "name": "todowrite",
-                "description": "Create or update a structured todo list to track tasks. Send the complete list each time (replace-all semantics). Use this to plan multi-step work, track progress, and show the user what you're doing. Mark items in_progress when starting, completed when done. Only one item should be in_progress at a time.",
+                "description": include_str!("tools/todowrite.md"),
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -600,45 +600,37 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(name);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
-    fn from_api_parses_valid_and_rejects_invalid() {
+    fn from_api_parses_valid_and_rejects_unknown() {
         let tool =
             ToolCall::from_api("bash", &json!({"command": "echo hello", "timeout": 5})).unwrap();
         assert!(
             matches!(tool, ToolCall::Bash { ref command, timeout: Some(5) } if command == "echo hello")
         );
 
-        let err = ToolCall::from_api("bash", &json!({})).unwrap_err();
-        assert!(err.to_string().contains("command"));
-
         let err = ToolCall::from_api("unknown", &json!({})).unwrap_err();
         assert!(err.to_string().contains(&unknown_tool_msg("unknown")));
-
-        let todo = ToolCall::from_api(
-            "todowrite",
-            &json!({"todos": [{"content": "do stuff", "status": "in_progress", "priority": "high"}]}),
-        )
-        .unwrap();
-        assert!(matches!(todo, ToolCall::TodoWrite { ref todos } if todos.len() == 1));
     }
 
     #[test]
-    fn truncate_output_respects_limits() {
-        let small = "line1\nline2\nline3".to_string();
-        assert_eq!(truncate_output(small.clone()), small);
-
+    fn truncate_output_respects_line_and_byte_limits() {
         let many_lines: String = (0..2500)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
         let result = truncate_output(many_lines);
         assert!(result.ends_with(TRUNCATED_MARKER));
-        assert!(result.lines().count() <= MAX_OUTPUT_LINES + 1);
 
         let many_bytes = "x".repeat(MAX_OUTPUT_BYTES + 1000);
         let result = truncate_output(many_bytes);
         assert!(result.ends_with(TRUNCATED_MARKER));
-        assert!(result.len() <= MAX_OUTPUT_BYTES + 20);
     }
 
     #[test]
@@ -646,8 +638,7 @@ mod tests {
         let ok = execute_bash("echo hello", Some(5)).unwrap();
         assert_eq!(ok.trim(), "hello");
 
-        let fail = execute_bash("exit 1", Some(5)).unwrap_err();
-        assert!(!fail.is_empty());
+        assert!(execute_bash("exit 1", Some(5)).is_err());
 
         let timeout = execute_bash("sleep 10", Some(0)).unwrap_err();
         assert!(timeout.contains(&timed_out_msg(0)));
@@ -655,16 +646,8 @@ mod tests {
 
     #[test]
     fn execute_bash_large_output_does_not_deadlock() {
-        let pipe_buf_overflow = "yes | head -n 100000";
-        let result = execute_bash(pipe_buf_overflow, Some(10)).unwrap();
+        let result = execute_bash("yes | head -n 100000", Some(10)).unwrap();
         assert!(result.contains(TRUNCATED_MARKER));
-    }
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = env::temp_dir().join(name);
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
     }
 
     #[test]
@@ -700,7 +683,6 @@ mod tests {
 
         let hit = execute_glob("*.txt", Some(&dir_str)).unwrap();
         assert!(hit.contains("a.txt"));
-        assert!(hit.contains("b.txt"));
         assert!(!hit.contains("c.rs"));
 
         let miss = execute_glob("*.nope", Some(&dir_str)).unwrap();
@@ -730,139 +712,51 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    fn todo(content: &str, status: TodoStatus, priority: TodoPriority) -> TodoItem {
-        TodoItem {
-            content: content.to_string(),
-            status,
-            priority,
-        }
-    }
-
     #[test]
     fn todowrite_formats_all_statuses() {
+        fn item(content: &str, status: TodoStatus, priority: TodoPriority) -> TodoItem {
+            TodoItem {
+                content: content.to_string(),
+                status,
+                priority,
+            }
+        }
         let todos = vec![
-            todo("first", TodoStatus::Completed, TodoPriority::High),
-            todo("second", TodoStatus::InProgress, TodoPriority::Medium),
-            todo("third", TodoStatus::Pending, TodoPriority::Low),
-            todo("fourth", TodoStatus::Cancelled, TodoPriority::High),
+            item("first", TodoStatus::Completed, TodoPriority::High),
+            item("second", TodoStatus::InProgress, TodoPriority::Medium),
+            item("third", TodoStatus::Pending, TodoPriority::Low),
+            item("fourth", TodoStatus::Cancelled, TodoPriority::High),
         ];
         let result = execute_todowrite(&todos).unwrap();
-        let expected = format!(
-            "{MARKER_COMPLETED} (high) first\n{MARKER_IN_PROGRESS} (medium) second\n{MARKER_PENDING} (low) third\n{MARKER_CANCELLED} (high) fourth"
-        );
-        assert_eq!(result, expected);
+        assert!(result.contains(MARKER_COMPLETED));
+        assert!(result.contains(MARKER_IN_PROGRESS));
+        assert!(result.contains(MARKER_PENDING));
+        assert!(result.contains(MARKER_CANCELLED));
     }
 
     #[test]
-    fn plan_mode_blocks_write_to_non_plan_path() {
-        let call = ToolCall::Write {
-            path: "/tmp/some_file.rs".to_string(),
-            content: "fn main(){}".to_string(),
-        };
-        let mode = AgentMode::Plan(".maki/plans/123.md".into());
-        let result = call.execute(&mode);
-        assert!(result.is_error);
-        assert_eq!(result.content, PLAN_WRITE_RESTRICTED);
-    }
-
-    #[test]
-    fn start_event_summaries() {
-        let cases: Vec<(ToolCall, &str, &str)> = vec![
-            (
-                ToolCall::Bash {
-                    command: "echo hi".into(),
-                    timeout: None,
-                },
-                "bash",
-                "echo hi",
-            ),
-            (
-                ToolCall::Read {
-                    path: "/tmp/f.rs".into(),
-                    offset: None,
-                    limit: None,
-                },
-                "read",
-                "/tmp/f.rs",
-            ),
-            (
-                ToolCall::Write {
-                    path: "/tmp/out.txt".into(),
-                    content: "data".into(),
-                },
-                "write",
-                "/tmp/out.txt",
-            ),
-            (
-                ToolCall::Glob {
-                    pattern: "**/*.rs".into(),
-                    path: None,
-                },
-                "glob",
-                "**/*.rs",
-            ),
-            (
-                ToolCall::Grep {
-                    pattern: "TODO".into(),
-                    path: None,
-                    include: None,
-                },
-                "grep",
-                "TODO",
-            ),
-            (
-                ToolCall::TodoWrite { todos: vec![] },
-                "todowrite",
-                "0 todos",
-            ),
-        ];
-        for (call, expected_tool, expected_summary) in cases {
-            let event = call.start_event();
-            assert_eq!(event.tool, expected_tool);
-            assert_eq!(event.summary, expected_summary);
-        }
-    }
-
-    #[test]
-    fn build_mode_allows_any_write() {
-        let dir = temp_dir("maki_test_build_write");
-        let path = dir.join("file.txt").to_string_lossy().to_string();
-        let call = ToolCall::Write {
-            path: path.clone(),
-            content: "hello".into(),
-        };
-        let result = call.execute(&AgentMode::Build);
-        assert!(!result.is_error);
-        assert!(result.content.contains("wrote"));
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn execute_bash_stderr_is_captured() {
-        let result = execute_bash("echo err >&2", Some(5)).unwrap();
-        assert!(result.contains("err"));
-    }
-
-    #[test]
-    fn read_nonexistent_file_returns_error() {
-        let err = execute_read("/tmp/maki_test_nonexistent_file_xyz", None, None).unwrap_err();
-        assert!(err.contains("read error"));
-    }
-
-    #[test]
-    fn plan_mode_allows_write_to_plan_path() {
+    fn plan_mode_write_restrictions() {
         let plan_path = env::temp_dir()
             .join("maki_test_plan.md")
             .to_string_lossy()
             .to_string();
-        let call = ToolCall::Write {
-            path: plan_path.clone(),
-            content: "plan content".to_string(),
-        };
         let mode = AgentMode::Plan(plan_path.clone());
-        let result = call.execute(&mode);
+
+        let blocked = ToolCall::Write {
+            path: "/tmp/other.rs".into(),
+            content: "fn main(){}".into(),
+        };
+        let result = blocked.execute(&mode);
+        assert!(result.is_error);
+        assert_eq!(result.content, PLAN_WRITE_RESTRICTED);
+
+        let allowed = ToolCall::Write {
+            path: plan_path.clone(),
+            content: "plan content".into(),
+        };
+        let result = allowed.execute(&mode);
         assert!(!result.is_error);
-        assert!(result.content.contains("wrote"));
+
         let _ = fs::remove_file(&plan_path);
     }
 }

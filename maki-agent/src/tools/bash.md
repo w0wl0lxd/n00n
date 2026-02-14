@@ -1,0 +1,1 @@
+Execute a bash command. Use for git, builds, tests, and system commands only. Do NOT use for file operations (reading, writing, searching) - use specialized tools. Do NOT use bash to communicate text to the user - output text directly instead. Chain dependent commands with '&&'. Output truncated beyond 2000 lines or 50KB.

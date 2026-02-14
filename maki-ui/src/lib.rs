@@ -85,7 +85,7 @@ fn spawn_agent_thread(
         };
         let mut history = Vec::new();
         while let Ok(input) = input_rx.recv() {
-            let system = agent::build_system_prompt(&cwd, &input.mode);
+            let system = agent::build_system_prompt(&cwd, &input.mode, &model);
             if let Err(e) = agent::run(&*provider, &model, input, &mut history, &system, &event_tx)
             {
                 error!(error = %e, "agent error");

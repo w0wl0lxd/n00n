@@ -1,0 +1,1 @@
+Write content to a file, replacing existing content. Creates parent directories if needed. Always read the file first before writing. NEVER create files unless absolutely necessary - prefer editing existing files.
