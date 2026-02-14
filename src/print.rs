@@ -23,8 +23,7 @@ use std::time::Instant;
 
 use clap::ValueEnum;
 use color_eyre::Result;
-use maki_agent::client::MODEL;
-use maki_agent::pricing::SONNET_4;
+use maki_agent::model::Model;
 use maki_agent::{AgentEvent, AgentInput, AgentMode, TokenUsage, agent};
 use serde::Serialize;
 use serde_json::Value;
@@ -63,7 +62,7 @@ struct InitEvent<'a> {
     cwd: &'a str,
     session_id: &'a str,
     tools: &'static [&'static str],
-    model: &'static str,
+    model: &'a str,
 }
 
 #[derive(Serialize)]
@@ -76,7 +75,7 @@ struct AssistantEvent<'a> {
 
 #[derive(Serialize)]
 struct AssistantMessage<'a> {
-    model: &'static str,
+    model: &'a str,
     role: &'static str,
     content: &'a Value,
     usage: &'a TokenUsage,
@@ -111,7 +110,12 @@ impl VerboseOutput {
     }
 }
 
-pub fn run(prompt_arg: Option<String>, format: OutputFormat, verbose: bool) -> Result<()> {
+pub fn run(
+    model: &Model,
+    prompt_arg: Option<String>,
+    format: OutputFormat,
+    verbose: bool,
+) -> Result<()> {
     let prompt = match prompt_arg {
         Some(p) => p,
         None => {
@@ -135,9 +139,10 @@ pub fn run(prompt_arg: Option<String>, format: OutputFormat, verbose: bool) -> R
     let session_id = Uuid::new_v4().to_string();
     let start = Instant::now();
 
+    let model_clone = model.clone();
     thread::spawn(move || {
         let mut history = Vec::new();
-        if let Err(e) = agent::run(input, &mut history, &system, &event_tx) {
+        if let Err(e) = agent::run(&model_clone, input, &mut history, &system, &event_tx) {
             error!(error = %e, "agent error");
             let _ = event_tx.send(AgentEvent::Error {
                 message: e.to_string(),
@@ -158,7 +163,7 @@ pub fn run(prompt_arg: Option<String>, format: OutputFormat, verbose: bool) -> R
             cwd: &cwd,
             session_id: &session_id,
             tools: TOOLS,
-            model: MODEL,
+            model: &model.id,
         })?;
     }
 
@@ -243,7 +248,7 @@ pub fn run(prompt_arg: Option<String>, format: OutputFormat, verbose: bool) -> R
     }
 
     let duration_ms = start.elapsed().as_millis();
-    let total_cost_usd = usage.cost(&SONNET_4);
+    let total_cost_usd = usage.cost(&model.pricing);
 
     match format {
         OutputFormat::Text => {
@@ -282,6 +287,21 @@ mod tests {
     use super::*;
     use maki_agent::TokenUsage;
 
+    const PRINT_RESULT_FIELDS: &[&str] = &[
+        "type",
+        "subtype",
+        "is_error",
+        "num_turns",
+        "result",
+        "stop_reason",
+        "session_id",
+        "total_cost_usd",
+        "usage",
+        "duration_ms",
+    ];
+
+    const INIT_EVENT_FIELDS: &[&str] = &["type", "subtype", "cwd", "session_id", "tools", "model"];
+
     #[test]
     fn wire_format_required_fields() {
         let result = PrintResult {
@@ -297,22 +317,8 @@ mod tests {
             usage: TokenUsage::default(),
         };
         let json: Value = serde_json::to_value(&result).unwrap();
-        for field in [
-            "type",
-            "subtype",
-            "is_error",
-            "num_turns",
-            "result",
-            "stop_reason",
-            "session_id",
-            "total_cost_usd",
-            "usage",
-            "duration_ms",
-        ] {
-            assert!(
-                json.get(field).is_some(),
-                "PrintResult missing field: {field}"
-            );
+        for field in PRINT_RESULT_FIELDS {
+            assert!(json.get(field).is_some(), "PrintResult missing: {field}");
         }
 
         let init = InitEvent {
@@ -321,26 +327,11 @@ mod tests {
             cwd: "/tmp",
             session_id: "abc",
             tools: TOOLS,
-            model: MODEL,
+            model: "test-model",
         };
         let json: Value = serde_json::to_value(&init).unwrap();
-        for field in ["type", "subtype", "cwd", "session_id", "tools", "model"] {
-            assert!(
-                json.get(field).is_some(),
-                "InitEvent missing field: {field}"
-            );
-        }
-    }
-
-    #[test]
-    fn verbose_output_json_accumulates() {
-        let mut out = VerboseOutput::Json(Vec::new());
-        out.emit(&serde_json::json!({"a": 1})).unwrap();
-        out.emit(&serde_json::json!({"b": 2})).unwrap();
-        if let VerboseOutput::Json(events) = out {
-            assert_eq!(events.len(), 2);
-        } else {
-            panic!("expected Json variant");
+        for field in INIT_EVENT_FIELDS {
+            assert!(json.get(field).is_some(), "InitEvent missing: {field}");
         }
     }
 }

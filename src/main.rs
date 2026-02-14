@@ -2,6 +2,7 @@ mod print;
 
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
+use maki_agent::model::{DEFAULT_SPEC, Model};
 use tracing_subscriber::EnvFilter;
 
 use print::OutputFormat;
@@ -16,6 +17,9 @@ struct Cli {
 
     #[arg(short, long)]
     print: bool,
+
+    #[arg(short, long, default_value = DEFAULT_SPEC)]
+    model: String,
 
     #[arg(long)]
     verbose: bool,
@@ -49,13 +53,14 @@ fn main() -> Result<()> {
             AuthAction::Login => maki_agent::auth::login()?,
             AuthAction::Logout => maki_agent::auth::logout()?,
         },
-        None if cli.print => {
-            init_logging();
-            print::run(cli.prompt, cli.output_format, cli.verbose)?;
-        }
         None => {
+            let model = Model::from_spec(&cli.model)?;
             init_logging();
-            maki_ui::run()?;
+            if cli.print {
+                print::run(&model, cli.prompt, cli.output_format, cli.verbose)?;
+            } else {
+                maki_ui::run(model)?;
+            }
         }
     }
     Ok(())

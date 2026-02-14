@@ -1,7 +1,7 @@
 pub mod agent;
 pub mod auth;
 pub mod client;
-pub mod pricing;
+pub mod model;
 pub mod tool;
 
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ use std::{env, fs};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use pricing::{ModelPricing, TokenUsage};
+pub use model::{Model, ModelError, ModelPricing, TokenUsage};
 
 const DATA_DIR_NAME: &str = ".maki";
 pub const PLANS_DIR: &str = "plans";
@@ -144,7 +144,7 @@ pub enum AgentEvent {
     TurnComplete {
         message: Message,
         usage: TokenUsage,
-        model: &'static str,
+        model: String,
     },
     ToolResultsSubmitted {
         message: Message,

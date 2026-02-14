@@ -9,6 +9,7 @@ use tracing::{debug, warn};
 use ureq::Agent;
 
 use crate::auth;
+use crate::model::Model;
 use crate::tool::ToolCall;
 use crate::{
     AgentError, AgentEvent, ContentBlock, Message, PendingToolCall, Role, StreamResponse,
@@ -88,12 +89,11 @@ struct MessageDeltaEvent {
 }
 
 const API_VERSION: &str = "2023-06-01";
-pub const MODEL: &str = "claude-sonnet-4-20250514";
-const MAX_TOKENS: u32 = 8096;
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 
 pub fn stream_message(
+    model: &Model,
     messages: &[Message],
     system: &str,
     tools: &Value,
@@ -102,8 +102,8 @@ pub fn stream_message(
     let resolved = auth::resolve()?;
 
     let body = json!({
-        "model": MODEL,
-        "max_tokens": MAX_TOKENS,
+        "model": model.id,
+        "max_tokens": model.max_output_tokens,
         "system": system,
         "messages": messages,
         "tools": tools,

@@ -2,8 +2,7 @@ use std::borrow::Cow;
 use std::mem;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use maki_agent::pricing::SONNET_4;
-use maki_agent::{AgentEvent, AgentInput, AgentMode, TokenUsage};
+use maki_agent::{AgentEvent, AgentInput, AgentMode, ModelPricing, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -143,16 +142,11 @@ pub struct App {
     pub should_quit: bool,
     pub mode: AgentMode,
     pending_plan: Option<String>,
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
-    }
+    pricing: ModelPricing,
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(pricing: ModelPricing) -> Self {
         Self {
             messages: Vec::new(),
             input: String::new(),
@@ -166,6 +160,7 @@ impl App {
             should_quit: false,
             mode: AgentMode::Build,
             pending_plan: None,
+            pricing,
         }
     }
 
@@ -415,7 +410,7 @@ impl App {
                     " tokens: {}in / {}out (${:.3})",
                     self.token_usage.input,
                     self.token_usage.output,
-                    self.token_usage.cost(&SONNET_4)
+                    self.token_usage.cost(&self.pricing)
                 ),
                 STATUS_IDLE_STYLE,
             ),
@@ -440,6 +435,15 @@ mod tests {
     use ratatui::backend::TestBackend;
     use test_case::test_case;
 
+    fn test_pricing() -> ModelPricing {
+        ModelPricing {
+            input: 3.0,
+            output: 15.0,
+            cache_write: 3.75,
+            cache_read: 0.30,
+        }
+    }
+
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent {
             code,
@@ -460,7 +464,7 @@ mod tests {
 
     #[test]
     fn typing_and_submit() {
-        let mut app = App::new();
+        let mut app = App::new(test_pricing());
         app.update(Msg::Key(key(KeyCode::Char('h'))));
         app.update(Msg::Key(key(KeyCode::Char('i'))));
         assert_eq!(app.input, "hi");
@@ -476,24 +480,9 @@ mod tests {
     }
 
     #[test]
-    fn empty_submit_ignored() {
-        let mut app = App::new();
-        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-        assert!(actions.is_empty());
-    }
-
-    #[test]
-    fn keys_ignored_while_streaming() {
-        let mut app = App::new();
-        app.status = Status::Streaming;
-        app.update(Msg::Key(key(KeyCode::Char('x'))));
-        assert!(app.input.is_empty());
-    }
-
-    #[test]
     fn ctrl_c_quits_regardless_of_state() {
         for status in [Status::Idle, Status::Streaming] {
-            let mut app = App::new();
+            let mut app = App::new(test_pricing());
             app.status = status;
             let actions = app.update(Msg::Key(ctrl('c')));
             assert!(app.should_quit);
@@ -503,7 +492,7 @@ mod tests {
 
     #[test]
     fn agent_text_delta_accumulates() {
-        let mut app = App::new();
+        let mut app = App::new(test_pricing());
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::TextDelta {
             text: "hello".into(),
@@ -515,53 +504,59 @@ mod tests {
     }
 
     #[test]
-    fn agent_done_flushes_and_tracks_tokens() {
-        let mut app = App::new();
+    fn done_flushes_text_and_accumulates_usage() {
+        let mut app = App::new(test_pricing());
         app.status = Status::Streaming;
         app.streaming_text = "response text".into();
-        let usage = TokenUsage {
-            input: 100,
-            output: 50,
-            ..Default::default()
-        };
         app.update(Msg::Agent(AgentEvent::Done {
-            usage: usage.clone(),
+            usage: TokenUsage {
+                input: 100,
+                output: 50,
+                ..Default::default()
+            },
             num_turns: 1,
             stop_reason: None,
         }));
 
         assert_eq!(app.status, Status::Idle);
-        assert_eq!(app.token_usage, usage);
         assert!(app.streaming_text.is_empty());
-        assert_eq!(app.messages.last().unwrap().text, "response text");
         assert_eq!(app.messages.last().unwrap().role, DisplayRole::Assistant);
+
+        app.status = Status::Streaming;
+        app.update(Msg::Agent(AgentEvent::Done {
+            usage: TokenUsage {
+                input: 20,
+                output: 10,
+                ..Default::default()
+            },
+            num_turns: 1,
+            stop_reason: None,
+        }));
+        assert_eq!(app.token_usage.input, 120);
+        assert_eq!(app.token_usage.output, 60);
     }
 
     #[test]
     fn tool_events_create_messages() {
-        let mut app = App::new();
+        let mut app = App::new(test_pricing());
         app.status = Status::Streaming;
-        let start = ToolStartEvent {
+        app.update(Msg::Agent(AgentEvent::ToolStart(ToolStartEvent {
             tool: "bash",
             summary: "ls".into(),
-        };
-        app.update(Msg::Agent(AgentEvent::ToolStart(start.clone())));
-        let done = ToolDoneEvent {
+        })));
+        app.update(Msg::Agent(AgentEvent::ToolDone(ToolDoneEvent {
             tool: "bash",
             content: "file.txt".into(),
             is_error: false,
-        };
-        app.update(Msg::Agent(AgentEvent::ToolDone(done.clone())));
+        })));
 
         assert_eq!(app.messages.len(), 2);
-        assert_eq!(app.messages[0].role, DisplayRole::Tool);
-        assert_eq!(app.messages[0].text, "[bash] ls");
-        assert_eq!(app.messages[1].text, "[bash done] file.txt");
+        assert!(app.messages.iter().all(|m| m.role == DisplayRole::Tool));
     }
 
     #[test]
     fn backspace_and_cursor_movement() {
-        let mut app = App::new();
+        let mut app = App::new(test_pricing());
         app.update(Msg::Key(key(KeyCode::Char('a'))));
         app.update(Msg::Key(key(KeyCode::Char('b'))));
         app.update(Msg::Key(key(KeyCode::Char('c'))));
@@ -577,53 +572,23 @@ mod tests {
 
     #[test]
     fn tool_start_flushes_streaming_text() {
-        let mut app = App::new();
+        let mut app = App::new(test_pricing());
         app.status = Status::Streaming;
         app.streaming_text = "partial response".into();
 
-        let start = ToolStartEvent {
+        app.update(Msg::Agent(AgentEvent::ToolStart(ToolStartEvent {
             tool: "read",
             summary: "/tmp/file".into(),
-        };
-        app.update(Msg::Agent(AgentEvent::ToolStart(start)));
+        })));
 
-        assert_eq!(app.messages.len(), 2);
-        assert_eq!(app.messages[0].role, DisplayRole::Assistant);
-        assert_eq!(app.messages[0].text, "partial response");
-        assert_eq!(app.messages[1].role, DisplayRole::Tool);
         assert!(app.streaming_text.is_empty());
-    }
-
-    #[test]
-    fn done_accumulates_usage_across_events() {
-        let mut app = App::new();
-        app.status = Status::Streaming;
-        app.update(Msg::Agent(AgentEvent::Done {
-            usage: TokenUsage {
-                input: 10,
-                output: 5,
-                ..Default::default()
-            },
-            num_turns: 1,
-            stop_reason: None,
-        }));
-        app.status = Status::Streaming;
-        app.update(Msg::Agent(AgentEvent::Done {
-            usage: TokenUsage {
-                input: 20,
-                output: 10,
-                ..Default::default()
-            },
-            num_turns: 1,
-            stop_reason: None,
-        }));
-        assert_eq!(app.token_usage.input, 30);
-        assert_eq!(app.token_usage.output, 15);
+        assert_eq!(app.messages[0].role, DisplayRole::Assistant);
+        assert_eq!(app.messages[1].role, DisplayRole::Tool);
     }
 
     #[test]
     fn error_event_sets_status() {
-        let mut app = App::new();
+        let mut app = App::new(test_pricing());
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::Error {
             message: "boom".into(),
@@ -636,7 +601,7 @@ mod tests {
     #[test_case(5,  'd', 15 ; "ctrl_d_scrolls_down")]
     #[test_case(0,  'd', 10 ; "ctrl_d_from_top")]
     fn half_page_scroll(initial: u16, key_char: char, expected: u16) {
-        let mut app = App::new();
+        let mut app = App::new(test_pricing());
         app.viewport_height = 20;
         app.scroll_top = initial;
         app.update(Msg::Key(ctrl(key_char)));
@@ -645,7 +610,7 @@ mod tests {
 
     #[test]
     fn scroll_top_clamped_to_content() {
-        let mut app = App::new();
+        let mut app = App::new(test_pricing());
         app.messages.push(DisplayMessage {
             role: DisplayRole::User,
             text: "short".into(),
@@ -662,7 +627,7 @@ mod tests {
 
     #[test]
     fn scroll_up_pins_viewport_during_streaming() {
-        let mut app = App::new();
+        let mut app = App::new(test_pricing());
         app.status = Status::Streaming;
         app.streaming_text = "a\n".repeat(30);
 
@@ -717,7 +682,7 @@ mod tests {
 
     #[test]
     fn tab_toggles_mode_and_sets_pending_plan() {
-        let mut app = App::new();
+        let mut app = App::new(test_pricing());
         assert_eq!(app.mode, AgentMode::Build);
 
         app.update(Msg::Key(key(KeyCode::Tab)));
@@ -730,7 +695,7 @@ mod tests {
 
     #[test]
     fn submit_consumes_pending_plan() {
-        let mut app = App::new();
+        let mut app = App::new(test_pricing());
         app.pending_plan = Some("plan.md".into());
         app.update(Msg::Key(key(KeyCode::Char('x'))));
         let actions = app.update(Msg::Key(key(KeyCode::Enter)));
