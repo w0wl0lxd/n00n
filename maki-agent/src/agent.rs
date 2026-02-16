@@ -89,7 +89,7 @@ pub fn run(
     event_tx: &Sender<AgentEvent>,
 ) -> Result<(), AgentError> {
     history.push(Message::user(input.effective_message()));
-    let tools = crate::tool::ToolCall::definitions();
+    let tools = crate::tools::ToolCall::definitions();
     let mut total_usage = TokenUsage::default();
     let mut num_turns: u32 = 0;
 

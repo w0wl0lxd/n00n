@@ -11,7 +11,7 @@ use ureq::Agent;
 
 use crate::model::Model;
 use crate::provider::Provider;
-use crate::tool::ToolCall;
+use crate::tools::ToolCall;
 use crate::{
     AgentError, AgentEvent, ContentBlock, Message, PendingToolCall, Role, StreamResponse,
     TokenUsage,

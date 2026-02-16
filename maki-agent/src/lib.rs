@@ -4,7 +4,7 @@ pub mod model;
 pub(crate) mod prompt;
 pub mod provider;
 pub(crate) mod providers;
-pub mod tool;
+pub mod tools;
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -133,54 +133,19 @@ impl Message {
             if let ContentBlock::ToolUse { id, name, input } = block
                 && successful_ids.contains(&id.as_str())
             {
-                match name.as_str() {
-                    tool::ToolCall::WRITE => {
-                        if let Some(content) = input.get("content").and_then(|v| v.as_str()) {
-                            let lines = content.lines().count();
-                            let bytes = content.len();
-                            input["content"] =
-                                Value::String(format!("[{lines} lines, {bytes} bytes]"));
-                        }
-                    }
-                    tool::ToolCall::EDIT => {
-                        for key in &["old_string", "new_string"] {
-                            if let Some(v) = input.get(*key).and_then(|v| v.as_str()) {
-                                input[*key] = Value::String(format!("[{} bytes]", v.len()));
-                            }
-                        }
-                    }
-                    _ => {}
-                }
+                tools::ToolCall::scrub_input(name, input);
             }
         }
     }
 }
 
-fn scrub_target_name<'a>(msg: &'a Message, tool_use_id: &str) -> Option<&'a str> {
+fn scrub_target(msg: &Message, tool_use_id: &str, content: &str) -> Option<String> {
     msg.content.iter().find_map(|b| match b {
-        ContentBlock::ToolUse { id, name, .. }
-            if id == tool_use_id
-                && matches!(
-                    name.as_str(),
-                    tool::ToolCall::READ | tool::ToolCall::GREP | tool::ToolCall::GLOB
-                ) =>
-        {
-            Some(name.as_str())
+        ContentBlock::ToolUse { id, name, .. } if id == tool_use_id => {
+            tools::ToolCall::scrub_result(name, content)
         }
         _ => None,
     })
-}
-
-fn scrub_summary(name: &str, content: &str) -> String {
-    match name {
-        tool::ToolCall::READ => format!("[read: {} lines]", content.lines().count()),
-        tool::ToolCall::GREP => {
-            let matches = content.lines().filter(|l| l.starts_with("  ")).count();
-            format!("[grep: {matches} matches]")
-        }
-        tool::ToolCall::GLOB => format!("[glob: {} files]", content.lines().count()),
-        _ => format!("[{name}: scrubbed]"),
-    }
 }
 
 fn truncate_to_lines(content: &str, max: usize) -> String {
@@ -223,9 +188,6 @@ pub fn scrub_stale_tool_results(history: &mut [Message]) {
             if *is_error || content.starts_with('[') {
                 continue;
             }
-            let Some(name) = scrub_target_name(&before[i - 1], tool_use_id) else {
-                continue;
-            };
 
             let line_count = content.lines().count();
             let should_scrub = SCRUB_TIERS
@@ -233,7 +195,9 @@ pub fn scrub_stale_tool_results(history: &mut [Message]) {
                 .any(|&(min_lines, min_turns)| line_count >= min_lines && turns_ago >= min_turns);
 
             if should_scrub {
-                *content = scrub_summary(name, content);
+                if let Some(summary) = scrub_target(&before[i - 1], tool_use_id, content) {
+                    *content = summary;
+                }
             } else if line_count > SCRUB_MAX_LINES {
                 *content = truncate_to_lines(content, SCRUB_MAX_LINES);
             }
@@ -315,7 +279,7 @@ impl From<mpsc::SendError<AgentEvent>> for AgentError {
 
 pub struct PendingToolCall {
     pub id: String,
-    pub call: tool::ToolCall,
+    pub call: tools::ToolCall,
 }
 
 pub struct StreamResponse {
@@ -327,6 +291,8 @@ pub struct StreamResponse {
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use super::*;
 
     #[test]
@@ -415,55 +381,23 @@ mod tests {
         assert!(!result_content(&history, 3).starts_with('['));
     }
 
-    #[test]
-    fn scrub_100_lines_after_5_turns() {
-        let content = make_lines(150);
+    #[test_case(150, "read", 5 ; "100_line_tier_at_5_turns")]
+    #[test_case(500, "read", 3 ; "500_line_tier_at_3_turns")]
+    #[test_case(1000, "grep", 2 ; "1000_line_tier_at_2_turns")]
+    fn scrub_triggers_at_tier_threshold(lines: usize, tool: &str, threshold: usize) {
+        let content = make_lines(lines);
         let mut history = vec![
-            tool_use_msg("r1", "read"),
-            tool_result_msg("r1", &content, false),
+            tool_use_msg("t1", tool),
+            tool_result_msg("t1", &content, false),
         ];
 
-        add_filler_turns(&mut history, 4);
+        add_filler_turns(&mut history, threshold - 1);
         scrub_stale_tool_results(&mut history);
         assert!(!result_content(&history, 1).starts_with('['));
 
         add_filler_turns(&mut history, 1);
         scrub_stale_tool_results(&mut history);
-        assert!(result_content(&history, 1).starts_with("[read:"));
-    }
-
-    #[test]
-    fn scrub_500_lines_after_3_turns() {
-        let content = make_lines(500);
-        let mut history = vec![
-            tool_use_msg("r1", "read"),
-            tool_result_msg("r1", &content, false),
-        ];
-
-        add_filler_turns(&mut history, 2);
-        scrub_stale_tool_results(&mut history);
-        assert!(!result_content(&history, 1).starts_with('['));
-
-        add_filler_turns(&mut history, 1);
-        scrub_stale_tool_results(&mut history);
-        assert!(result_content(&history, 1).starts_with("[read:"));
-    }
-
-    #[test]
-    fn scrub_1000_lines_after_2_turns() {
-        let content = make_lines(1000);
-        let mut history = vec![
-            tool_use_msg("g1", "grep"),
-            tool_result_msg("g1", &content, false),
-        ];
-
-        add_filler_turns(&mut history, 1);
-        scrub_stale_tool_results(&mut history);
-        assert!(!result_content(&history, 1).starts_with('['));
-
-        add_filler_turns(&mut history, 1);
-        scrub_stale_tool_results(&mut history);
-        assert!(result_content(&history, 1).starts_with("[grep:"));
+        assert!(result_content(&history, 1).starts_with('['));
     }
 
     #[test]
