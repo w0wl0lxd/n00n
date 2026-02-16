@@ -1,42 +1,24 @@
 pub mod agent;
-pub mod auth;
-pub mod model;
 pub(crate) mod prompt;
-pub mod provider;
-pub(crate) mod providers;
 pub mod tools;
 
-use std::path::PathBuf;
-use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{env, fs};
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+pub(crate) use maki_providers::model::ModelFamily;
+pub(crate) use maki_providers::{
+    AgentError, AgentEvent, ContentBlock, Message, Role, TokenUsage, ToolDoneEvent, ToolStartEvent,
+};
 
-pub use model::{Model, ModelError, ModelPricing, TokenUsage};
-
-const DATA_DIR_NAME: &str = ".maki";
 pub const PLANS_DIR: &str = "plans";
 const SCRUB_MAX_LINES: usize = 1000;
 const SCRUB_TIERS: &[(usize, usize)] = &[(1000, 2), (500, 3), (100, 5)];
-
-pub fn data_dir() -> Result<PathBuf, AgentError> {
-    let home = env::var("HOME").map_err(|_| AgentError::Api {
-        status: 0,
-        message: "HOME not set".into(),
-    })?;
-    let dir = PathBuf::from(home).join(DATA_DIR_NAME);
-    fs::create_dir_all(&dir).map_err(AgentError::Io)?;
-    Ok(dir)
-}
 
 pub fn new_plan_path() -> String {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let plan_dir = data_dir()
+    let plan_dir = maki_providers::data_dir()
         .map(|d| d.join(PLANS_DIR))
         .unwrap_or_else(|_| PLANS_DIR.into());
     format!("{}/{ts}.md", plan_dir.display())
@@ -69,72 +51,12 @@ impl AgentInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Role {
-    User,
-    Assistant,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ContentBlock {
-    Text {
-        text: String,
-    },
-    ToolUse {
-        id: String,
-        name: String,
-        input: Value,
-    },
-    ToolResult {
-        tool_use_id: String,
-        content: String,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        is_error: bool,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub role: Role,
-    pub content: Vec<ContentBlock>,
-}
-
-impl Message {
-    pub fn user(text: String) -> Self {
-        Self {
-            role: Role::User,
-            content: vec![ContentBlock::Text { text }],
-        }
-    }
-
-    pub fn tool_results(results: Vec<(String, ToolDoneEvent)>) -> Self {
-        Self {
-            role: Role::User,
-            content: results
-                .into_iter()
-                .map(|(id, output)| ContentBlock::ToolResult {
-                    tool_use_id: id,
-                    content: output.content,
-                    is_error: output.is_error,
-                })
-                .collect(),
-        }
-    }
-
-    /// Replace the stale tool contents with a short summary.
-    /// The model's `ToolUse` block stores the entire written file in `input.content`,
-    /// and because we resend the full conversation history on every API call,
-    /// a single 500-line `write`, for example, permanently adds ~5-10k tokens to every request.
-    /// The tool result already confirms success, so the model doesn't need the content again.
-    pub fn scrub_tool_use_inputs(&mut self, successful_ids: &[&str]) {
-        for block in &mut self.content {
-            if let ContentBlock::ToolUse { id, name, input } = block
-                && successful_ids.contains(&id.as_str())
-            {
-                tools::ToolCall::scrub_input(name, input);
-            }
+pub(crate) fn scrub_tool_use_inputs(msg: &mut Message, successful_ids: &[&str]) {
+    for block in &mut msg.content {
+        if let ContentBlock::ToolUse { id, name, input } = block
+            && successful_ids.contains(&id.as_str())
+        {
+            tools::ToolCall::scrub_input(name, input);
         }
     }
 }
@@ -171,7 +93,7 @@ fn assistant_turns_after(history: &[Message], from: usize) -> usize {
         .count()
 }
 
-pub fn scrub_stale_tool_results(history: &mut [Message]) {
+pub(crate) fn scrub_stale_tool_results(history: &mut [Message]) {
     for i in 1..history.len() {
         let turns_ago = assistant_turns_after(history, i);
         let (before, current) = history.split_at_mut(i);
@@ -203,90 +125,6 @@ pub fn scrub_stale_tool_results(history: &mut [Message]) {
             }
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ToolStartEvent {
-    pub tool: &'static str,
-    pub summary: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ToolDoneEvent {
-    pub tool: &'static str,
-    pub content: String,
-    pub is_error: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum AgentEvent {
-    TextDelta {
-        text: String,
-    },
-    ToolStart(ToolStartEvent),
-    ToolDone(ToolDoneEvent),
-    TurnComplete {
-        message: Message,
-        usage: TokenUsage,
-        model: String,
-    },
-    ToolResultsSubmitted {
-        message: Message,
-    },
-    Done {
-        usage: TokenUsage,
-        num_turns: u32,
-        stop_reason: Option<String>,
-    },
-    Error {
-        message: String,
-    },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum AgentError {
-    #[error("API error ({status}): {message}")]
-    Api { status: u16, message: String },
-    #[error("tool error in {tool}: {message}")]
-    Tool { tool: String, message: String },
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error("http: {0}")]
-    Http(#[from] ureq::Error),
-    #[error("json: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("channel send failed")]
-    Channel,
-}
-
-impl AgentError {
-    pub fn from_response(response: ureq::http::Response<ureq::Body>) -> Self {
-        let status = response.status().as_u16();
-        let message = response
-            .into_body()
-            .read_to_string()
-            .unwrap_or_else(|_| "unable to read error body".into());
-        Self::Api { status, message }
-    }
-}
-
-impl From<mpsc::SendError<AgentEvent>> for AgentError {
-    fn from(_: mpsc::SendError<AgentEvent>) -> Self {
-        Self::Channel
-    }
-}
-
-pub struct PendingToolCall {
-    pub id: String,
-    pub call: tools::ToolCall,
-}
-
-pub struct StreamResponse {
-    pub message: Message,
-    pub tool_calls: Vec<PendingToolCall>,
-    pub usage: TokenUsage,
-    pub stop_reason: Option<String>,
 }
 
 #[cfg(test)]

@@ -8,14 +8,11 @@ use serde_json::{Value, json};
 use tracing::{debug, warn};
 use ureq::Agent;
 
-use crate::auth;
+pub mod auth;
+
 use crate::model::Model;
 use crate::provider::Provider;
-use crate::tools::ToolCall;
-use crate::{
-    AgentError, AgentEvent, ContentBlock, Message, PendingToolCall, Role, StreamResponse,
-    TokenUsage,
-};
+use crate::{AgentError, AgentEvent, ContentBlock, Message, Role, StreamResponse, TokenUsage};
 
 const API_VERSION: &str = "2023-06-01";
 const MAX_RETRIES: u32 = 3;
@@ -305,7 +302,6 @@ fn parse_sse(
     event_tx: &Sender<AgentEvent>,
 ) -> Result<StreamResponse, AgentError> {
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
-    let mut tool_calls: Vec<PendingToolCall> = Vec::new();
     let mut current_tool_json = String::new();
     let mut current_event = String::new();
     let mut usage = TokenUsage::default();
@@ -356,12 +352,12 @@ fn parse_sse(
                     match ev.delta {
                         Delta::TextDelta { text } => {
                             if !text.is_empty() {
-                                event_tx.send(AgentEvent::TextDelta { text: text.clone() })?;
                                 if let Some(ContentBlock::Text { text: t }) =
                                     content_blocks.last_mut()
                                 {
                                     t.push_str(&text);
                                 }
+                                event_tx.send(AgentEvent::TextDelta { text })?;
                             }
                         }
                         Delta::InputJsonDelta { partial_json } => {
@@ -371,21 +367,8 @@ fn parse_sse(
                 }
             }
             "content_block_stop" => {
-                if let Some(ContentBlock::ToolUse { id, name, input }) = content_blocks.last_mut() {
+                if let Some(ContentBlock::ToolUse { input, .. }) = content_blocks.last_mut() {
                     *input = serde_json::from_str(&current_tool_json).unwrap_or(Value::Null);
-
-                    match ToolCall::from_api(name, input) {
-                        Ok(tc) => tool_calls.push(PendingToolCall {
-                            id: id.clone(),
-                            call: tc,
-                        }),
-                        Err(e) => {
-                            warn!(tool = %name, error = %e, "failed to parse tool call");
-                            event_tx.send(AgentEvent::Error {
-                                message: format!("failed to parse tool {name}: {e}"),
-                            })?;
-                        }
-                    }
                     current_tool_json.clear();
                 }
             }
@@ -408,7 +391,6 @@ fn parse_sse(
             role: Role::Assistant,
             content: content_blocks,
         },
-        tool_calls,
         usage,
         stop_reason,
     })
@@ -458,7 +440,7 @@ data: {\"type\":\"message_stop\"}\n";
         assert!(
             matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Hello world")
         );
-        assert!(resp.tool_calls.is_empty());
+        assert!(!resp.message.has_tool_calls());
         assert_eq!(resp.stop_reason.as_deref(), Some("end_turn"));
 
         let deltas: Vec<String> = rx
@@ -498,14 +480,23 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
         let (tx, _rx) = mpsc::channel();
         let resp = parse_sse(sse_data.as_bytes(), &tx).unwrap();
 
-        assert_eq!(resp.tool_calls.len(), 1);
-        assert_eq!(resp.tool_calls[0].id, "tu_1");
-        assert_eq!(resp.tool_calls[0].call.name(), "bash");
+        let tools: Vec<_> = resp.message.tool_uses().collect();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].0, "tu_1");
+        assert_eq!(tools[0].1, "bash");
     }
 
     #[test]
-    fn cache_control_targets_last_two_messages() {
-        let messages = vec![
+    fn cache_control_placement() {
+        let single = vec![Message::user("only".into())];
+        let wire = build_wire_messages(&single);
+        let json: Value = serde_json::to_value(&wire).unwrap();
+        assert_eq!(
+            json[0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+
+        let multi = vec![
             Message::user("first".into()),
             Message {
                 role: Role::Assistant,
@@ -527,16 +518,14 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
                 ],
             },
         ];
-        let wire = build_wire_messages(&messages);
+        let wire = build_wire_messages(&multi);
         let json: Value = serde_json::to_value(&wire).unwrap();
 
         assert!(json[0]["content"][0].get("cache_control").is_none());
-
         assert_eq!(
             json[1]["content"][0]["cache_control"],
             json!({"type": "ephemeral"})
         );
-
         assert!(json[2]["content"][0].get("cache_control").is_none());
         assert_eq!(
             json[2]["content"][1]["cache_control"],
@@ -545,14 +534,29 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
     }
 
     #[test]
-    fn cache_control_single_message() {
-        let messages = vec![Message::user("only".into())];
-        let wire = build_wire_messages(&messages);
-        let json: Value = serde_json::to_value(&wire).unwrap();
+    fn parse_sse_malformed_tool_json_yields_null_input() {
+        let sse_data = "\
+event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\
+\n\
+event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu_2\",\"name\":\"read\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{broken\"}}\n\
+\n\
+event: content_block_stop\n\
+data: {\"type\":\"content_block_stop\"}\n\
+\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n";
 
-        assert_eq!(
-            json[0]["content"][0]["cache_control"],
-            json!({"type": "ephemeral"})
-        );
+        let (tx, _rx) = mpsc::channel();
+        let resp = parse_sse(sse_data.as_bytes(), &tx).unwrap();
+
+        let tools: Vec<_> = resp.message.tool_uses().collect();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].1, "read");
+        assert_eq!(*tools[0].2, Value::Null);
     }
 }

@@ -1,4 +1,4 @@
-use crate::model::ModelFamily;
+use crate::ModelFamily;
 
 const CLAUDE_PROMPT: &str = include_str!("prompts/claude.md");
 const GLM_PROMPT: &str = include_str!("prompts/glm.md");

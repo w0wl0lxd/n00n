@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 maki-agent = { workspace = true }
+maki-providers = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 color-eyre = { workspace = true }

@@ -10,9 +10,10 @@ use color_eyre::Result;
 use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use maki_agent::Model;
+use maki_agent::AgentInput;
 use maki_agent::agent;
-use maki_agent::{AgentEvent, AgentInput};
+use maki_providers::AgentEvent;
+use maki_providers::Model;
 use tracing::error;
 
 use app::{Action, App, Msg};
@@ -73,7 +74,7 @@ fn spawn_agent_thread(
     model: Model,
 ) {
     thread::spawn(move || {
-        let provider = match maki_agent::provider::from_model(&model) {
+        let provider = match maki_providers::provider::from_model(&model) {
             Ok(p) => p,
             Err(e) => {
                 error!(error = %e, "provider error");

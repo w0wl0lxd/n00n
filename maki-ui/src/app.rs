@@ -2,7 +2,8 @@ use std::borrow::Cow;
 use std::mem;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use maki_agent::{AgentEvent, AgentInput, AgentMode, ModelPricing, TokenUsage};
+use maki_agent::{AgentInput, AgentMode};
+use maki_providers::{AgentEvent, ModelPricing, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -431,7 +432,7 @@ impl App {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-    use maki_agent::{ToolDoneEvent, ToolStartEvent};
+    use maki_providers::{ToolDoneEvent, ToolStartEvent};
     use ratatui::backend::TestBackend;
     use test_case::test_case;
 

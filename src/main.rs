@@ -2,7 +2,7 @@ mod print;
 
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
-use maki_agent::model::{DEFAULT_SPEC, Model};
+use maki_providers::model::{DEFAULT_SPEC, Model};
 use tracing_subscriber::EnvFilter;
 
 use print::OutputFormat;
@@ -51,11 +51,11 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Auth { action }) => match action {
-            AuthAction::Login => maki_agent::auth::login()?,
-            AuthAction::Logout => maki_agent::auth::logout()?,
+            AuthAction::Login => maki_providers::auth::login()?,
+            AuthAction::Logout => maki_providers::auth::logout()?,
         },
         Some(Command::Models) => {
-            maki_agent::provider::fetch_all_models(|models| {
+            maki_providers::provider::fetch_all_models(|models| {
                 for model in models {
                     println!("{model}");
                 }
@@ -75,7 +75,7 @@ fn main() -> Result<()> {
 }
 
 fn init_logging() {
-    let Ok(log_dir) = maki_agent::data_dir() else {
+    let Ok(log_dir) = maki_providers::data_dir() else {
         return;
     };
     let file_appender = tracing_appender::rolling::never(&log_dir, LOG_FILE_NAME);

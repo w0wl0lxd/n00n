@@ -1,17 +1,18 @@
 [package]
-name = "maki-agent"
+name = "maki-providers"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-maki-providers = { workspace = true }
+ureq = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-ignore = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+getrandom = { workspace = true }
 strum = { workspace = true }
-maki-tool-macro = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }

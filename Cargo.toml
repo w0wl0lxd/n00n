@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 maki-ui = { path = "maki-ui" }
 maki-agent = { workspace = true }
+maki-providers = { workspace = true }
 clap = { workspace = true }
 color-eyre = { workspace = true }
 serde = { workspace = true }
@@ -20,7 +21,7 @@ tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 
 [workspace]
-members = ["maki-agent", "maki-tool-macro", "maki-ui"]
+members = ["maki-agent", "maki-providers", "maki-tool-macro", "maki-ui"]
 resolver = "3"
 
 [workspace.package]
@@ -29,6 +30,7 @@ edition = "2024"
 
 [workspace.dependencies]
 maki-agent = { path = "maki-agent" }
+maki-providers = { path = "maki-providers" }
 maki-tool-macro = { path = "maki-tool-macro" }
 ureq = "3"
 serde = { version = "1", features = ["derive"] }

@@ -11,11 +11,7 @@ use ureq::Agent;
 
 use crate::model::Model;
 use crate::provider::Provider;
-use crate::tools::ToolCall;
-use crate::{
-    AgentError, AgentEvent, ContentBlock, Message, PendingToolCall, Role, StreamResponse,
-    TokenUsage,
-};
+use crate::{AgentError, AgentEvent, ContentBlock, Message, Role, StreamResponse, TokenUsage};
 
 const API_KEY_ENV: &str = "Z_AI_API_KEY";
 const COMPLETIONS_URL: &str = "https://api.z.ai/api/paas/v4/chat/completions";
@@ -354,19 +350,15 @@ fn parse_sse(
         if let Some(reasoning) = delta.reasoning_content
             && !reasoning.is_empty()
         {
-            event_tx.send(AgentEvent::TextDelta {
-                text: reasoning.clone(),
-            })?;
             text.push_str(&reasoning);
+            event_tx.send(AgentEvent::TextDelta { text: reasoning })?;
         }
 
         if let Some(content) = delta.content
             && !content.is_empty()
         {
-            event_tx.send(AgentEvent::TextDelta {
-                text: content.clone(),
-            })?;
             text.push_str(&content);
+            event_tx.send(AgentEvent::TextDelta { text: content })?;
         }
 
         if let Some(tc_deltas) = delta.tool_calls {
@@ -395,7 +387,6 @@ fn parse_sse(
     }
 
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
-    let mut tool_calls: Vec<PendingToolCall> = Vec::new();
 
     if !text.is_empty() {
         content_blocks.push(ContentBlock::Text { text });
@@ -403,20 +394,6 @@ fn parse_sse(
 
     for acc in tool_accumulators {
         let input: Value = serde_json::from_str(&acc.arguments).unwrap_or(Value::Null);
-
-        match ToolCall::from_api(&acc.name, &input) {
-            Ok(tc) => tool_calls.push(PendingToolCall {
-                id: acc.id.clone(),
-                call: tc,
-            }),
-            Err(e) => {
-                warn!(tool = %acc.name, error = %e, "failed to parse tool call");
-                event_tx.send(AgentEvent::Error {
-                    message: format!("failed to parse tool {}: {e}", acc.name),
-                })?;
-            }
-        }
-
         content_blocks.push(ContentBlock::ToolUse {
             id: acc.id,
             name: acc.name,
@@ -429,7 +406,6 @@ fn parse_sse(
             role: Role::Assistant,
             content: content_blocks,
         },
-        tool_calls,
         usage,
         stop_reason,
     })
@@ -462,7 +438,7 @@ data: [DONE]\n";
         assert!(
             matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Hello world")
         );
-        assert!(resp.tool_calls.is_empty());
+        assert!(!resp.message.has_tool_calls());
 
         let deltas: Vec<String> = rx
             .try_iter()
@@ -502,28 +478,6 @@ data: [DONE]\n";
             })
             .collect();
         assert_eq!(deltas, vec!["Let me think", "...", "Hello"]);
-    }
-
-    #[test]
-    fn parse_sse_tool_use() {
-        let sse = "\
-data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}]}\n\
-\n\
-data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"command\\\":\"}}]}}]}\n\
-\n\
-data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\" \\\"echo hi\\\"}\"}}]}}]}\n\
-\n\
-data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":15}}\n\
-\n\
-data: [DONE]\n";
-
-        let (tx, _rx) = mpsc::channel();
-        let resp = parse_sse(sse.as_bytes(), &tx).unwrap();
-
-        assert_eq!(resp.tool_calls.len(), 1);
-        assert_eq!(resp.tool_calls[0].id, "call_1");
-        assert_eq!(resp.tool_calls[0].call.name(), "bash");
-        assert_eq!(resp.stop_reason.as_deref(), Some("tool_use"));
     }
 
     #[test_case("stop", "end_turn" ; "stop_maps_to_end_turn")]
@@ -605,5 +559,54 @@ data: [DONE]\n";
         assert_eq!(tool["function"]["name"], "bash");
         assert_eq!(tool["function"]["description"], "Run a command");
         assert_eq!(tool["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn parse_sse_multiple_parallel_tool_calls() {
+        let sse = "\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}]}\n\
+\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c2\",\"function\":{\"name\":\"read\",\"arguments\":\"\"}}]}}]}\n\
+\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"command\\\": \\\"ls\\\"}\"}}]}}]}\n\
+\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"function\":{\"arguments\":\"{\\\"path\\\": \\\"/tmp\\\"}\"}}]}}]}\n\
+\n\
+data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3}}\n\
+\n\
+data: [DONE]\n";
+
+        let (tx, _rx) = mpsc::channel();
+        let resp = parse_sse(sse.as_bytes(), &tx).unwrap();
+
+        let tools: Vec<_> = resp.message.tool_uses().collect();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].0, "c1");
+        assert_eq!(tools[0].1, "bash");
+        assert_eq!(tools[0].2["command"], "ls");
+        assert_eq!(tools[1].0, "c2");
+        assert_eq!(tools[1].1, "read");
+        assert_eq!(tools[1].2["path"], "/tmp");
+        assert_eq!(resp.stop_reason.as_deref(), Some("tool_use"));
+    }
+
+    #[test]
+    fn parse_sse_malformed_tool_json_yields_null_input() {
+        let sse = "\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}]}\n\
+\n\
+data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{broken\"}}]}}]}\n\
+\n\
+data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\
+\n\
+data: [DONE]\n";
+
+        let (tx, _rx) = mpsc::channel();
+        let resp = parse_sse(sse.as_bytes(), &tx).unwrap();
+
+        let tools: Vec<_> = resp.message.tool_uses().collect();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].1, "bash");
+        assert_eq!(*tools[0].2, Value::Null);
     }
 }

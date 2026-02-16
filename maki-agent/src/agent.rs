@@ -4,20 +4,20 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::mpsc::Sender;
 
-use tracing::info;
+use tracing::{info, warn};
 
-use crate::model::Model;
-use crate::prompt;
-use crate::provider::Provider;
+use crate::tools::ToolCall;
 use crate::{
-    AgentError, AgentEvent, AgentInput, AgentMode, Message, PendingToolCall, TokenUsage,
-    ToolDoneEvent, scrub_stale_tool_results,
+    AgentError, AgentEvent, AgentInput, AgentMode, Message, TokenUsage, ToolDoneEvent,
+    scrub_stale_tool_results, scrub_tool_use_inputs,
 };
+use maki_providers::Model;
+use maki_providers::provider::Provider;
 
 const AGENTS_MD: &str = "AGENTS.md";
 
 pub fn build_system_prompt(cwd: &str, mode: &AgentMode, model: &Model) -> String {
-    let mut out = prompt::base_prompt(model.family()).to_string();
+    let mut out = crate::prompt::base_prompt(model.family()).to_string();
 
     out.push_str(&format!(
         "\n\nEnvironment:\n- Working directory: {cwd}\n- Platform: {}\n- Date: {}",
@@ -33,7 +33,7 @@ pub fn build_system_prompt(cwd: &str, mode: &AgentMode, model: &Model) -> String
     }
 
     if let AgentMode::Plan(plan_path) = mode {
-        out.push_str(&prompt::PLAN_PROMPT.replace("{plan_path}", plan_path));
+        out.push_str(&crate::prompt::PLAN_PROMPT.replace("{plan_path}", plan_path));
     }
 
     out
@@ -47,18 +47,44 @@ fn current_date() -> String {
     }
 }
 
+struct ParsedToolCall {
+    id: String,
+    call: ToolCall,
+}
+
+fn parse_tool_calls<'a>(
+    tool_uses: impl Iterator<Item = (&'a str, &'a str, &'a serde_json::Value)>,
+    event_tx: &Sender<AgentEvent>,
+) -> Vec<ParsedToolCall> {
+    tool_uses
+        .filter_map(|(id, name, input)| match ToolCall::from_api(name, input) {
+            Ok(call) => Some(ParsedToolCall {
+                id: id.to_owned(),
+                call,
+            }),
+            Err(e) => {
+                warn!(tool = %name, error = %e, "failed to parse tool call");
+                let _ = event_tx.send(AgentEvent::Error {
+                    message: format!("failed to parse tool {name}: {e}"),
+                });
+                None
+            }
+        })
+        .collect()
+}
+
 fn execute_tools(
-    tool_calls: &[PendingToolCall],
+    tool_calls: &[ParsedToolCall],
     event_tx: &Sender<AgentEvent>,
     mode: &AgentMode,
 ) -> Vec<(String, ToolDoneEvent)> {
     std::thread::scope(|s| {
         let handles: Vec<_> = tool_calls
             .iter()
-            .map(|pending| {
+            .map(|parsed| {
                 let tx = event_tx.clone();
                 s.spawn(move || {
-                    let output = pending.call.execute(mode);
+                    let output = parsed.call.execute(mode);
                     let _ = tx.send(AgentEvent::ToolDone(output.clone()));
                     output
                 })
@@ -68,13 +94,13 @@ fn execute_tools(
         tool_calls
             .iter()
             .zip(handles)
-            .map(|(pending, h)| {
+            .map(|(parsed, h)| {
                 let output = h.join().unwrap_or_else(|_| ToolDoneEvent {
                     tool: "unknown",
                     content: "tool thread panicked".into(),
                     is_error: true,
                 });
-                (pending.id.clone(), output)
+                (parsed.id.clone(), output)
             })
             .collect()
     })
@@ -89,7 +115,7 @@ pub fn run(
     event_tx: &Sender<AgentEvent>,
 ) -> Result<(), AgentError> {
     history.push(Message::user(input.effective_message()));
-    let tools = crate::tools::ToolCall::definitions();
+    let tools = ToolCall::definitions();
     let mut total_usage = TokenUsage::default();
     let mut num_turns: u32 = 0;
 
@@ -97,12 +123,14 @@ pub fn run(
         let response = provider.stream_message(model, history, system, &tools, event_tx)?;
         num_turns += 1;
 
+        let has_tools = response.message.has_tool_calls();
+
         info!(
             input_tokens = response.usage.input,
             output_tokens = response.usage.output,
             cache_creation = response.usage.cache_creation,
             cache_read = response.usage.cache_read,
-            tool_count = response.tool_calls.len(),
+            has_tools,
             "API response received"
         );
 
@@ -113,10 +141,10 @@ pub fn run(
         })?;
 
         total_usage += response.usage;
-        history.push(response.message);
-        scrub_stale_tool_results(history);
 
-        if response.tool_calls.is_empty() {
+        if !has_tools {
+            history.push(response.message);
+            scrub_stale_tool_results(history);
             event_tx.send(AgentEvent::Done {
                 usage: total_usage,
                 num_turns,
@@ -125,11 +153,16 @@ pub fn run(
             break;
         }
 
-        for pending in &response.tool_calls {
-            event_tx.send(AgentEvent::ToolStart(pending.call.start_event()))?;
+        let parsed = parse_tool_calls(response.message.tool_uses(), event_tx);
+
+        history.push(response.message);
+        scrub_stale_tool_results(history);
+
+        for p in &parsed {
+            event_tx.send(AgentEvent::ToolStart(p.call.start_event()))?;
         }
 
-        let tool_results = execute_tools(&response.tool_calls, event_tx, &input.mode);
+        let tool_results = execute_tools(&parsed, event_tx, &input.mode);
 
         let successful_ids: Vec<&str> = tool_results
             .iter()
@@ -137,7 +170,7 @@ pub fn run(
             .map(|(id, _)| id.as_str())
             .collect();
         if let Some(last_msg) = history.last_mut() {
-            last_msg.scrub_tool_use_inputs(&successful_ids);
+            scrub_tool_use_inputs(last_msg, &successful_ids);
         }
 
         let tool_msg = Message::tool_results(tool_results);

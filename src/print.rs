@@ -23,8 +23,9 @@ use std::time::Instant;
 
 use clap::ValueEnum;
 use color_eyre::Result;
-use maki_agent::model::Model;
-use maki_agent::{AgentEvent, AgentInput, AgentMode, TokenUsage, agent};
+use maki_agent::{AgentInput, AgentMode, agent};
+use maki_providers::model::Model;
+use maki_providers::{AgentEvent, TokenUsage};
 use serde::Serialize;
 use serde_json::Value;
 use tracing::error;
@@ -141,7 +142,7 @@ pub fn run(
 
     let model_clone = model.clone();
     thread::spawn(move || {
-        let provider = match maki_agent::provider::from_model(&model_clone) {
+        let provider = match maki_providers::provider::from_model(&model_clone) {
             Ok(p) => p,
             Err(e) => {
                 error!(error = %e, "provider error");
@@ -302,7 +303,7 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maki_agent::TokenUsage;
+    use maki_providers::TokenUsage;
 
     const PRINT_RESULT_FIELDS: &[&str] = &[
         "type",
