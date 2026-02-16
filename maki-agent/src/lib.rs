@@ -2,6 +2,7 @@ pub mod agent;
 pub(crate) mod prompt;
 pub mod tools;
 
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) use maki_providers::model::ModelFamily;
@@ -40,7 +41,7 @@ pub struct AgentInput {
 impl AgentInput {
     pub fn effective_message(&self) -> String {
         match &self.pending_plan {
-            Some(path) if self.mode == AgentMode::Build => {
+            Some(path) if self.mode == AgentMode::Build && Path::new(path).exists() => {
                 format!(
                     "A plan was written to {path}. Follow the plan.\n\n{}",
                     self.message
@@ -129,34 +130,58 @@ pub(crate) fn scrub_stale_tool_results(history: &mut [Message]) {
 
 #[cfg(test)]
 mod tests {
+    use std::{env, fs};
+
     use test_case::test_case;
 
     use super::*;
 
     #[test]
-    fn effective_message_with_and_without_plan() {
-        let no_plan = AgentInput {
+    fn effective_message_no_plan() {
+        let input = AgentInput {
             message: "do stuff".into(),
             mode: AgentMode::Build,
             pending_plan: None,
         };
-        assert_eq!(no_plan.effective_message(), "do stuff");
+        assert_eq!(input.effective_message(), "do stuff");
+    }
 
-        let with_plan = AgentInput {
+    #[test]
+    fn effective_message_with_existing_plan() {
+        let plan_path = env::temp_dir().join("maki_test_plan.md");
+        fs::write(&plan_path, "the plan").unwrap();
+        let path_str = plan_path.to_str().unwrap().to_string();
+
+        let input = AgentInput {
             message: "go".into(),
             mode: AgentMode::Build,
-            pending_plan: Some("/tmp/plan.md".into()),
+            pending_plan: Some(path_str.clone()),
         };
-        let msg = with_plan.effective_message();
-        assert!(msg.contains("/tmp/plan.md"));
+        let msg = input.effective_message();
+        assert!(msg.contains(&path_str));
         assert!(msg.contains("go"));
 
-        let plan_mode = AgentInput {
+        let _ = fs::remove_file(&plan_path);
+    }
+
+    #[test]
+    fn effective_message_skips_missing_plan() {
+        let input = AgentInput {
+            message: "go".into(),
+            mode: AgentMode::Build,
+            pending_plan: Some("/nonexistent/plan.md".into()),
+        };
+        assert_eq!(input.effective_message(), "go");
+    }
+
+    #[test]
+    fn effective_message_plan_mode_ignores_pending() {
+        let input = AgentInput {
             message: "plan this".into(),
             mode: AgentMode::Plan("/tmp/p.md".into()),
             pending_plan: Some("/tmp/p.md".into()),
         };
-        assert_eq!(plan_mode.effective_message(), "plan this");
+        assert_eq!(input.effective_message(), "plan this");
     }
 
     fn tool_use_msg(id: &str, name: &str) -> Message {
