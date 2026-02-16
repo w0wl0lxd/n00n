@@ -12,6 +12,8 @@ tracing = { workspace = true }
 ignore = { workspace = true }
 strum = { workspace = true }
 maki-tool-macro = { workspace = true }
+ureq = { workspace = true }
+htmd = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }

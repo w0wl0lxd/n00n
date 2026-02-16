@@ -4,6 +4,7 @@ mod glob;
 mod grep;
 mod read;
 mod todowrite;
+mod webfetch;
 mod write;
 
 use std::path::Path;
@@ -162,6 +163,7 @@ register_tools! {
     Glob(glob::Glob),
     Grep(grep::Grep),
     TodoWrite(todowrite::TodoWrite),
+    WebFetch(webfetch::WebFetch),
 }
 
 #[cfg(test)]
