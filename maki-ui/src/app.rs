@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 20;
+const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 5;
 
 const USER_STYLE: Style = Style::new().fg(Color::Cyan);
 const ASSISTANT_STYLE: Style = Style::new().fg(Color::White);
@@ -25,6 +25,9 @@ const BOLD_STYLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BO
 const CODE_STYLE: Style = Style::new().fg(Color::Magenta);
 const MODE_BUILD_STYLE: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 const MODE_PLAN_STYLE: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
+
+const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const SPINNER_DIVISOR: usize = 8;
 
 struct Delimiter {
     open: &'static str,
@@ -95,7 +98,7 @@ fn text_to_lines<'a>(
 
 fn truncate_lines(s: &str, max_lines: usize) -> Cow<'_, str> {
     match s.match_indices('\n').nth(max_lines.saturating_sub(1)) {
-        Some((i, _)) => Cow::Owned(format!("{}...", &s[..i])),
+        Some((i, _)) => Cow::Owned(format!("{}\n...", &s[..i])),
         None => Cow::Borrowed(s),
     }
 }
@@ -144,6 +147,7 @@ pub struct App {
     pub mode: AgentMode,
     pending_plan: Option<String>,
     pricing: ModelPricing,
+    render_tick: usize,
 }
 
 impl App {
@@ -162,6 +166,7 @@ impl App {
             mode: AgentMode::Build,
             pending_plan: None,
             pricing,
+            render_tick: 0,
         }
     }
 
@@ -337,6 +342,7 @@ impl App {
         self.render_messages(frame, messages_area);
         self.render_input(frame, input_area);
         self.render_status(frame, status_area);
+        self.render_tick += 1;
     }
 
     fn render_messages(&mut self, frame: &mut Frame, area: Rect) {
@@ -367,17 +373,16 @@ impl App {
             lines.extend(parsed);
         }
 
-        let total_lines = lines.len() as u16 + 1;
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+
+        let total_lines = paragraph.line_count(area.width) as u16;
         let max_scroll = total_lines.saturating_sub(area.height);
         if self.auto_scroll {
             self.scroll_top = max_scroll;
         }
         self.scroll_top = self.scroll_top.min(max_scroll);
 
-        let paragraph = Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .scroll((self.scroll_top, 0));
-
+        let paragraph = paragraph.scroll((self.scroll_top, 0));
         frame.render_widget(paragraph, area);
     }
 
@@ -405,26 +410,35 @@ impl App {
             AgentMode::Plan(_) => ("[PLAN]", MODE_PLAN_STYLE),
         };
 
-        let (status_text, status_style) = match &self.status {
-            Status::Idle => (
-                format!(
-                    " tokens: {}in / {}out (${:.3})",
-                    self.token_usage.input,
-                    self.token_usage.output,
-                    self.token_usage.cost(&self.pricing)
-                ),
-                STATUS_IDLE_STYLE,
-            ),
-            Status::Streaming => (" streaming...".to_string(), STATUS_STREAMING_STYLE),
-            Status::Error(e) => (format!(" error: {e}"), STATUS_ERROR_STYLE),
-        };
+        let stats = format!(
+            " tokens: {}in / {}out (${:.3})",
+            self.token_usage.input,
+            self.token_usage.output,
+            self.token_usage.cost(&self.pricing)
+        );
 
-        let line = Line::from(vec![
-            Span::styled(format!(" {mode_label}"), mode_style),
-            Span::styled(status_text, status_style),
-        ]);
+        let mut spans = Vec::new();
 
-        frame.render_widget(Paragraph::new(line), area);
+        if self.status == Status::Streaming {
+            let frame_idx = (self.render_tick / SPINNER_DIVISOR) % SPINNER_FRAMES.len();
+            spans.push(Span::styled(
+                format!(" {}", SPINNER_FRAMES[frame_idx]),
+                STATUS_STREAMING_STYLE,
+            ));
+        }
+
+        spans.push(Span::styled(format!(" {mode_label}"), mode_style));
+
+        match &self.status {
+            Status::Error(e) => {
+                spans.push(Span::styled(format!(" error: {e}"), STATUS_ERROR_STYLE));
+            }
+            _ => {
+                spans.push(Span::styled(stats, STATUS_IDLE_STYLE));
+            }
+        }
+
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 }
 
@@ -675,7 +689,7 @@ mod tests {
     }
 
     #[test_case("a\nb\nc", 5, "a\nb\nc" ; "under_limit")]
-    #[test_case("a\nb\nc\nd", 2, "a\nb..." ; "over_limit")]
+    #[test_case("a\nb\nc\nd", 2, "a\nb\n..." ; "over_limit")]
     #[test_case("single", 1, "single" ; "single_line")]
     fn truncate_lines_cases(input: &str, max: usize, expected: &str) {
         assert_eq!(truncate_lines(input, max), expected);
