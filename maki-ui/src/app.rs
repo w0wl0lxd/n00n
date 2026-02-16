@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::mem;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use maki_agent::tools::WEBFETCH_TOOL_NAME;
 use maki_agent::{AgentInput, AgentMode};
 use maki_providers::{AgentEvent, ModelPricing, TokenUsage};
 use ratatui::Frame;
@@ -286,10 +287,16 @@ impl App {
                 });
             }
             AgentEvent::ToolDone(ref done) => {
-                let truncated = truncate_lines(&done.content, TOOL_OUTPUT_MAX_DISPLAY_LINES);
+                let display = if done.tool == WEBFETCH_TOOL_NAME {
+                    let n = done.content.lines().count();
+                    format!("[{} done] ({n} lines)", done.tool)
+                } else {
+                    let truncated = truncate_lines(&done.content, TOOL_OUTPUT_MAX_DISPLAY_LINES);
+                    format!("[{} done] {truncated}", done.tool)
+                };
                 self.messages.push(DisplayMessage {
                     role: DisplayRole::Tool,
-                    text: format!("[{} done] {truncated}", done.tool),
+                    text: display,
                 });
             }
             AgentEvent::TurnComplete { .. } | AgentEvent::ToolResultsSubmitted { .. } => {}
@@ -567,6 +574,21 @@ mod tests {
 
         assert_eq!(app.messages.len(), 2);
         assert!(app.messages.iter().all(|m| m.role == DisplayRole::Tool));
+    }
+
+    #[test]
+    fn webfetch_done_shows_line_count_only() {
+        let mut app = App::new(test_pricing());
+        app.status = Status::Streaming;
+        app.update(Msg::Agent(AgentEvent::ToolDone(ToolDoneEvent {
+            tool: WEBFETCH_TOOL_NAME,
+            content: "line1\nline2\nline3".into(),
+            is_error: false,
+        })));
+        assert_eq!(
+            app.messages[0].text,
+            format!("[{WEBFETCH_TOOL_NAME} done] (3 lines)")
+        );
     }
 
     #[test]

@@ -19,6 +19,7 @@ const MAX_OUTPUT_BYTES: usize = 30_000;
 pub(crate) const MAX_OUTPUT_LINES: usize = 2000;
 pub(crate) const SEARCH_RESULT_LIMIT: usize = 100;
 pub(crate) const NO_FILES_FOUND: &str = "No files found";
+pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
 
 pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
     match path {
