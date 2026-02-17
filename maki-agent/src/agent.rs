@@ -6,7 +6,9 @@ use std::sync::mpsc::Sender;
 
 use tracing::{info, warn};
 
-use crate::tools::ToolCall;
+use serde_json::Value;
+
+use crate::tools::{ToolCall, ToolContext};
 use crate::{AgentError, AgentEvent, AgentInput, AgentMode, Message, TokenUsage, ToolDoneEvent};
 use maki_providers::Model;
 use maki_providers::provider::Provider;
@@ -70,18 +72,14 @@ fn parse_tool_calls<'a>(
         .collect()
 }
 
-fn execute_tools(
-    tool_calls: &[ParsedToolCall],
-    event_tx: &Sender<AgentEvent>,
-    mode: &AgentMode,
-) -> Vec<(String, ToolDoneEvent)> {
+fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<(String, ToolDoneEvent)> {
     std::thread::scope(|s| {
         let handles: Vec<_> = tool_calls
             .iter()
             .map(|parsed| {
-                let tx = event_tx.clone();
+                let tx = ctx.event_tx.clone();
                 s.spawn(move || {
-                    let output = parsed.call.execute(mode);
+                    let output = parsed.call.execute(ctx);
                     let _ = tx.send(AgentEvent::ToolDone(output.clone()));
                     output
                 })
@@ -110,9 +108,16 @@ pub fn run(
     history: &mut Vec<Message>,
     system: &str,
     event_tx: &Sender<AgentEvent>,
+    tools_override: Option<Value>,
 ) -> Result<(), AgentError> {
     history.push(Message::user(input.effective_message()));
-    let tools = ToolCall::definitions();
+    let tools = tools_override.unwrap_or_else(ToolCall::definitions);
+    let ctx = ToolContext {
+        provider,
+        model,
+        event_tx,
+        mode: &input.mode,
+    };
     let mut total_usage = TokenUsage::default();
     let mut num_turns: u32 = 0;
 
@@ -157,7 +162,7 @@ pub fn run(
             event_tx.send(AgentEvent::ToolStart(p.call.start_event()))?;
         }
 
-        let tool_results = execute_tools(&parsed, event_tx, &input.mode);
+        let tool_results = execute_tools(&parsed, &ctx);
         let tool_msg = Message::tool_results(tool_results);
         event_tx.send(AgentEvent::ToolResultsSubmitted {
             message: tool_msg.clone(),

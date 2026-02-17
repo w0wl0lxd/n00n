@@ -18,7 +18,7 @@ impl Read {
     pub const NAME: &str = "read";
     pub const DESCRIPTION: &str = include_str!("read.md");
 
-    pub fn execute(&self) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
         let raw = fs::read_to_string(&self.path).map_err(|e| format!("read error: {e}"))?;
 
         let start = self.offset.unwrap_or(1).saturating_sub(1);

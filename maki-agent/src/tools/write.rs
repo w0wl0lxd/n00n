@@ -15,7 +15,7 @@ impl Write {
     pub const NAME: &str = "write";
     pub const DESCRIPTION: &str = include_str!("write.md");
 
-    pub fn execute(&self) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
         if let Some(parent) = Path::new(&self.path).parent() {
             fs::create_dir_all(parent).map_err(|e| format!("mkdir error: {e}"))?;
         }

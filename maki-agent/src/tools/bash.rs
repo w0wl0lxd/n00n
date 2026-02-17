@@ -26,7 +26,7 @@ impl Bash {
     pub const NAME: &str = "bash";
     pub const DESCRIPTION: &str = include_str!("bash.md");
 
-    pub fn execute(&self) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
         let timeout_secs = self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let mut child = Command::new("bash")
             .arg("-c")
@@ -101,35 +101,46 @@ fn read_pipe_lossy(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<S
 
 #[cfg(test)]
 mod tests {
+    use crate::AgentMode;
+    use crate::tools::test_support::stub_ctx;
+
     use super::*;
 
     #[test]
     fn bash_success_failure_and_timeout() {
+        let ctx = stub_ctx(&AgentMode::Build);
+
         let ok = Bash {
             command: "echo hello".into(),
             timeout: Some(5),
         };
-        assert_eq!(ok.execute().unwrap().trim(), "hello");
+        assert_eq!(ok.execute(&ctx).unwrap().trim(), "hello");
 
         let fail = Bash {
             command: "exit 1".into(),
             timeout: Some(5),
         };
-        assert!(fail.execute().is_err());
+        assert!(fail.execute(&ctx).is_err());
 
         let timeout = Bash {
             command: "sleep 10".into(),
             timeout: Some(0),
         };
-        assert!(timeout.execute().unwrap_err().contains(&timed_out_msg(0)));
+        assert!(
+            timeout
+                .execute(&ctx)
+                .unwrap_err()
+                .contains(&timed_out_msg(0))
+        );
     }
 
     #[test]
     fn bash_large_output_does_not_deadlock() {
+        let ctx = stub_ctx(&AgentMode::Build);
         let bash = Bash {
             command: "yes | head -n 100000".into(),
             timeout: Some(10),
         };
-        assert!(bash.execute().unwrap().contains("[truncated]"));
+        assert!(bash.execute(&ctx).unwrap().contains("[truncated]"));
     }
 }

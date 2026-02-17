@@ -40,7 +40,7 @@ impl MultiEdit {
     pub const NAME: &str = "multiedit";
     pub const DESCRIPTION: &str = include_str!("multiedit.md");
 
-    pub fn execute(&self) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
         if self.edits.is_empty() {
             return Err("provide at least one edit".into());
         }
@@ -78,6 +78,9 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
+    use crate::AgentMode;
+    use crate::tools::test_support::stub_ctx;
+
     use super::*;
 
     const EMPTY_ERR: &str = "provide at least one edit";
@@ -91,6 +94,7 @@ mod tests {
     #[test]
     fn sequential_edits_compose() {
         let dir = TempDir::new().unwrap();
+        let ctx = stub_ctx(&AgentMode::Build);
         let path = temp_file(&dir, "f.rs", "fn alpha() {}\nfn beta() {}");
         let tool = MultiEdit::parse_input(&json!({
             "path": path,
@@ -100,7 +104,8 @@ mod tests {
             ]
         }))
         .unwrap();
-        tool.execute().unwrap();
+        let msg = tool.execute(&ctx).unwrap();
+        assert!(msg.contains("2 edits"));
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             "fn one() {}\nfn two() {}"
@@ -110,6 +115,7 @@ mod tests {
     #[test]
     fn failure_leaves_file_unchanged() {
         let dir = TempDir::new().unwrap();
+        let ctx = stub_ctx(&AgentMode::Build);
         let original = "let a = 1;\nlet b = 2;";
         let path = temp_file(&dir, "f.rs", original);
         let tool = MultiEdit::parse_input(&json!({
@@ -120,7 +126,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let err = tool.execute().unwrap_err();
+        let err = tool.execute(&ctx).unwrap_err();
         assert!(err.contains("edit 1"));
         assert!(err.contains(fuzzy_replace::NO_MATCH));
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
@@ -129,8 +135,9 @@ mod tests {
     #[test]
     fn empty_edits_rejected() {
         let dir = TempDir::new().unwrap();
+        let ctx = stub_ctx(&AgentMode::Build);
         let path = temp_file(&dir, "f.rs", "content");
         let tool = MultiEdit::parse_input(&json!({ "path": path, "edits": [] })).unwrap();
-        assert_eq!(tool.execute().unwrap_err(), EMPTY_ERR);
+        assert_eq!(tool.execute(&ctx).unwrap_err(), EMPTY_ERR);
     }
 }

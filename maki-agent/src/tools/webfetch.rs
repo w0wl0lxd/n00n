@@ -28,7 +28,7 @@ impl WebFetch {
     pub const NAME: &str = "webfetch";
     pub const DESCRIPTION: &str = include_str!("webfetch.md");
 
-    pub fn execute(&self) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
         let url = validate_and_upgrade_url(&self.url)?;
         let format = self.validated_format()?;
         let timeout = Duration::from_secs(

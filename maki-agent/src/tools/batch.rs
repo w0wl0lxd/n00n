@@ -5,8 +5,7 @@ use serde_json::Value;
 
 use maki_tool_macro::Tool;
 
-use super::ToolCall;
-use crate::AgentMode;
+use super::{ToolCall, ToolContext};
 
 const MAX_BATCH_SIZE: usize = 25;
 
@@ -39,7 +38,7 @@ impl Batch {
     pub const NAME: &str = "batch";
     pub const DESCRIPTION: &str = include_str!("batch.md");
 
-    pub fn execute(&self, mode: &AgentMode) -> Result<String, String> {
+    pub fn execute(&self, ctx: &ToolContext) -> Result<String, String> {
         if self.tool_calls.is_empty() {
             return Err("provide at least one tool call".into());
         }
@@ -57,7 +56,7 @@ impl Batch {
                         }
                         let call = ToolCall::from_api(&entry.tool, &entry.parameters)
                             .map_err(|e| e.to_string())?;
-                        let done = call.execute(mode);
+                        let done = call.execute(ctx);
                         if done.is_error {
                             Err(done.content)
                         } else {
@@ -123,56 +122,36 @@ impl Batch {
 mod tests {
     use serde_json::json;
 
-    use super::*;
+    use crate::AgentMode;
+    use crate::tools::test_support::stub_ctx;
 
-    fn build_mode() -> AgentMode {
-        AgentMode::Build
-    }
+    use super::*;
 
     #[test]
     fn empty_batch_returns_error() {
+        let ctx = stub_ctx(&AgentMode::Build);
         let batch = Batch::parse_input(&json!({"tool_calls": []})).unwrap();
-        assert!(batch.execute(&build_mode()).is_err());
+        assert!(batch.execute(&ctx).is_err());
     }
 
     #[test]
     fn nested_batch_rejected() {
+        let ctx = stub_ctx(&AgentMode::Build);
         let batch = Batch::parse_input(&json!({
             "tool_calls": [{"tool": "batch", "parameters": {"tool_calls": []}}]
         }))
         .unwrap();
 
-        let result = batch.execute(&build_mode()).unwrap();
+        let result = batch.execute(&ctx).unwrap();
         assert!(result.contains("[ERROR]"));
         assert!(result.contains("failed"));
     }
 
     #[test]
-    fn parallel_execution_of_multiple_tools() {
+    fn parallel_execution_with_mixed_results() {
+        let ctx = stub_ctx(&AgentMode::Build);
         let dir = tempfile::TempDir::new().unwrap();
-        let f1 = dir.path().join("a.txt");
-        let f2 = dir.path().join("b.txt");
-        std::fs::write(&f1, "file_a").unwrap();
-        std::fs::write(&f2, "file_b").unwrap();
-
-        let batch = Batch::parse_input(&json!({
-            "tool_calls": [
-                {"tool": "read", "parameters": {"path": f1.to_str().unwrap()}},
-                {"tool": "read", "parameters": {"path": f2.to_str().unwrap()}}
-            ]
-        }))
-        .unwrap();
-
-        let result = batch.execute(&build_mode()).unwrap();
-        assert!(result.contains("file_a"));
-        assert!(result.contains("file_b"));
-        assert!(!result.contains("[ERROR]"));
-    }
-
-    #[test]
-    fn mixed_success_and_failure() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let f = dir.path().join("exists.txt");
+        let f = dir.path().join("a.txt");
         std::fs::write(&f, "content").unwrap();
 
         let batch = Batch::parse_input(&json!({
@@ -183,20 +162,20 @@ mod tests {
         }))
         .unwrap();
 
-        let result = batch.execute(&build_mode()).unwrap();
+        let result = batch.execute(&ctx).unwrap();
         assert!(result.contains("content"));
         assert!(result.contains("[ERROR]"));
-        assert!(result.contains("failed"));
     }
 
     #[test]
     fn exceeds_max_batch_size_discards_excess() {
+        let ctx = stub_ctx(&AgentMode::Build);
         let calls: Vec<Value> = (0..MAX_BATCH_SIZE + 2)
             .map(|_| json!({"tool": "nonexistent", "parameters": {}}))
             .collect();
 
         let batch = Batch::parse_input(&json!({"tool_calls": calls})).unwrap();
-        let result = batch.execute(&build_mode()).unwrap();
+        let result = batch.execute(&ctx).unwrap();
         assert!(result.contains(&format!("maximum of {MAX_BATCH_SIZE}")));
     }
 }

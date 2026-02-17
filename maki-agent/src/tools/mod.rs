@@ -6,23 +6,35 @@ mod glob;
 mod grep;
 mod multiedit;
 mod read;
+mod task;
 mod todowrite;
 mod webfetch;
 mod write;
 
 use std::path::Path;
+use std::sync::mpsc::Sender;
 use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
 use crate::{AgentError, AgentMode, ToolDoneEvent, ToolStartEvent};
+use maki_providers::AgentEvent;
+use maki_providers::Model;
+use maki_providers::provider::Provider;
 
-const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
+pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
 const MAX_OUTPUT_BYTES: usize = 30_000;
 pub(crate) const MAX_OUTPUT_LINES: usize = 2000;
 pub(crate) const SEARCH_RESULT_LIMIT: usize = 100;
 pub(crate) const NO_FILES_FOUND: &str = "No files found";
-pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
+const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
+
+pub struct ToolContext<'a> {
+    pub provider: &'a dyn Provider,
+    pub model: &'a Model,
+    pub event_tx: &'a Sender<AgentEvent>,
+    pub mode: &'a AgentMode,
+}
 
 pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
     match path {
@@ -70,14 +82,10 @@ pub(crate) fn truncate_output(text: String) -> String {
 }
 
 macro_rules! register_tools {
-    (
-        [$($Variant:ident($inner:path)),+ $(,)?]
-        $(, @with_mode [$($MVariant:ident($minner:path)),+ $(,)?])?
-    ) => {
+    ($($Variant:ident($inner:path)),+ $(,)?) => {
         #[derive(Debug, Clone)]
         pub enum ToolCall {
-            $($Variant($inner),)+
-            $($($MVariant($minner),)+)?
+            $($Variant($inner)),+
         }
 
         impl ToolCall {
@@ -88,11 +96,6 @@ macro_rules! register_tools {
                             .map(ToolCall::$Variant)
                             .map_err(|msg| AgentError::Tool { tool: name.to_string(), message: msg })
                     })+
-                    $($(<$minner>::NAME => {
-                        <$minner>::parse_input(input)
-                            .map(ToolCall::$MVariant)
-                            .map_err(|msg| AgentError::Tool { tool: name.to_string(), message: msg })
-                    })+)?
                     _ => Err(AgentError::Tool {
                         tool: name.to_string(),
                         message: format!("unknown variant `{name}`"),
@@ -102,22 +105,20 @@ macro_rules! register_tools {
 
             pub fn name(&self) -> &'static str {
                 match self {
-                    $(ToolCall::$Variant(_) => <$inner>::NAME,)+
-                    $($(ToolCall::$MVariant(_) => <$minner>::NAME,)+)?
+                    $(ToolCall::$Variant(_) => <$inner>::NAME),+
                 }
             }
 
             pub fn start_event(&self) -> ToolStartEvent {
                 let summary = match self {
-                    $(ToolCall::$Variant(inner) => inner.start_summary(),)+
-                    $($(ToolCall::$MVariant(inner) => inner.start_summary(),)+)?
+                    $(ToolCall::$Variant(inner) => inner.start_summary()),+
                 };
                 ToolStartEvent { tool: self.name(), summary }
             }
 
-            pub fn execute(&self, mode: &AgentMode) -> ToolDoneEvent {
+            pub fn execute(&self, ctx: &ToolContext) -> ToolDoneEvent {
                 if let Some(path) = self.mutable_path()
-                    && let AgentMode::Plan(plan_path) = mode
+                    && let AgentMode::Plan(plan_path) = ctx.mode
                     && path != plan_path
                 {
                     return ToolDoneEvent {
@@ -128,8 +129,7 @@ macro_rules! register_tools {
                 }
 
                 let result = match self {
-                    $(ToolCall::$Variant(inner) => inner.execute(),)+
-                    $($(ToolCall::$MVariant(inner) => inner.execute(mode),)+)?
+                    $(ToolCall::$Variant(inner) => inner.execute(ctx)),+
                 };
                 let (content, is_error) = match result {
                     Ok(c) => (c, false),
@@ -140,44 +140,90 @@ macro_rules! register_tools {
 
             fn mutable_path(&self) -> Option<&str> {
                 match self {
-                    $(ToolCall::$Variant(inner) => inner.mutable_path(),)+
-                    $($(ToolCall::$MVariant(inner) => inner.mutable_path(),)+)?
+                    $(ToolCall::$Variant(inner) => inner.mutable_path()),+
                 }
             }
 
             pub fn definitions() -> Value {
-                Value::Array(vec![
-                    $(json!({
+                Self::definitions_filtered(None)
+            }
+
+            pub fn definitions_filtered(allowed: Option<&[&str]>) -> Value {
+                let all = vec![
+                    $((<$inner>::NAME, json!({
                         "name": <$inner>::NAME,
                         "description": <$inner>::DESCRIPTION,
                         "input_schema": <$inner>::schema()
-                    }),)+
-                    $($(json!({
-                        "name": <$minner>::NAME,
-                        "description": <$minner>::DESCRIPTION,
-                        "input_schema": <$minner>::schema()
-                    }),)+)?
-                ])
+                    }))),+
+                ];
+                Value::Array(match allowed {
+                    Some(filter) => all.into_iter()
+                        .filter(|(name, _)| filter.contains(name))
+                        .map(|(_, def)| def)
+                        .collect(),
+                    None => all.into_iter().map(|(_, def)| def).collect(),
+                })
             }
         }
     };
 }
 
 register_tools! {
-    [
-        Bash(bash::Bash),
-        Read(read::Read),
-        Write(write::Write),
-        Edit(edit::Edit),
-        MultiEdit(multiedit::MultiEdit),
-        Glob(glob::Glob),
-        Grep(grep::Grep),
-        TodoWrite(todowrite::TodoWrite),
-        WebFetch(webfetch::WebFetch),
-    ],
-    @with_mode [
-        Batch(batch::Batch),
-    ]
+    Bash(bash::Bash),
+    Read(read::Read),
+    Write(write::Write),
+    Edit(edit::Edit),
+    MultiEdit(multiedit::MultiEdit),
+    Glob(glob::Glob),
+    Grep(grep::Grep),
+    TodoWrite(todowrite::TodoWrite),
+    WebFetch(webfetch::WebFetch),
+    Task(task::Task),
+    Batch(batch::Batch),
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::mpsc::Sender;
+
+    use maki_providers::provider::Provider;
+    use maki_providers::{AgentError, AgentEvent, Model, StreamResponse};
+    use serde_json::Value;
+
+    use super::*;
+
+    struct StubProvider;
+
+    impl Provider for StubProvider {
+        fn stream_message(
+            &self,
+            _: &Model,
+            _: &[maki_providers::Message],
+            _: &str,
+            _: &Value,
+            _: &Sender<AgentEvent>,
+        ) -> Result<StreamResponse, AgentError> {
+            unimplemented!()
+        }
+
+        fn list_models(&self) -> Result<Vec<String>, AgentError> {
+            unimplemented!()
+        }
+    }
+
+    pub(crate) fn stub_ctx(mode: &AgentMode) -> ToolContext<'_> {
+        let tx: &Sender<AgentEvent> = Box::leak(Box::new(std::sync::mpsc::channel().0));
+        let model: &Model = Box::leak(Box::new(
+            Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap(),
+        ));
+        let provider: &dyn Provider = Box::leak(Box::new(StubProvider));
+        ToolContext {
+            provider,
+            model,
+            event_tx: tx,
+            mode,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -187,15 +233,8 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
+    use super::test_support::stub_ctx;
     use super::*;
-
-    #[test]
-    fn from_api_parses_valid_and_rejects_unknown() {
-        let tool =
-            ToolCall::from_api("bash", &json!({"command": "echo hello", "timeout": 5})).unwrap();
-        assert_eq!(tool.name(), "bash");
-        assert!(ToolCall::from_api("unknown", &json!({})).is_err());
-    }
 
     #[test]
     fn truncate_output_respects_line_and_byte_limits() {
@@ -219,17 +258,18 @@ mod tests {
             .map(|i| format!("line{i}"))
             .collect::<Vec<_>>()
             .join("\n");
+        let ctx = stub_ctx(&AgentMode::Build);
 
         let w = write::Write::parse_input(&json!({"path": path, "content": content})).unwrap();
-        w.execute().unwrap();
+        w.execute(&ctx).unwrap();
 
         let r = read::Read::parse_input(&json!({"path": path})).unwrap();
-        let full = r.execute().unwrap();
+        let full = r.execute(&ctx).unwrap();
         assert!(full.contains("1: line1"));
         assert!(full.contains("10: line10"));
 
         let r = read::Read::parse_input(&json!({"path": path, "offset": 3, "limit": 2})).unwrap();
-        let slice = r.execute().unwrap();
+        let slice = r.execute(&ctx).unwrap();
         assert!(slice.contains("3: line3"));
         assert!(slice.contains("4: line4"));
         assert!(!slice.contains("5: line5"));
@@ -242,14 +282,15 @@ mod tests {
         fs::write(dir.path().join("b.txt"), "world").unwrap();
         fs::write(dir.path().join("c.rs"), "fn main(){}").unwrap();
         let dir_str = dir.path().to_string_lossy().to_string();
+        let ctx = stub_ctx(&AgentMode::Build);
 
         let g = glob::Glob::parse_input(&json!({"pattern": "*.txt", "path": dir_str})).unwrap();
-        let hit = g.execute().unwrap();
+        let hit = g.execute(&ctx).unwrap();
         assert!(hit.contains("a.txt"));
         assert!(!hit.contains("c.rs"));
 
         let g = glob::Glob::parse_input(&json!({"pattern": "*.nope", "path": dir_str})).unwrap();
-        assert_eq!(g.execute().unwrap(), NO_FILES_FOUND);
+        assert_eq!(g.execute(&ctx).unwrap(), NO_FILES_FOUND);
     }
 
     #[test]
@@ -258,9 +299,10 @@ mod tests {
         fs::write(dir.path().join("a.txt"), "hello world\ngoodbye world").unwrap();
         fs::write(dir.path().join("b.rs"), "hello rust").unwrap();
         let dir_str = dir.path().to_string_lossy().to_string();
+        let ctx = stub_ctx(&AgentMode::Build);
 
         let g = grep::Grep::parse_input(&json!({"pattern": "hello", "path": dir_str})).unwrap();
-        let hit = g.execute().unwrap();
+        let hit = g.execute(&ctx).unwrap();
         assert!(hit.contains("a.txt"));
         assert!(hit.contains("b.rs"));
 
@@ -268,13 +310,13 @@ mod tests {
             &json!({"pattern": "hello", "path": dir_str, "include": "*.rs"}),
         )
         .unwrap();
-        let filtered = g.execute().unwrap();
+        let filtered = g.execute(&ctx).unwrap();
         assert!(filtered.contains("b.rs"));
         assert!(!filtered.contains("a.txt"));
 
         let g =
             grep::Grep::parse_input(&json!({"pattern": "zzzznotfound", "path": dir_str})).unwrap();
-        assert_eq!(g.execute().unwrap(), NO_FILES_FOUND);
+        assert_eq!(g.execute(&ctx).unwrap(), NO_FILES_FOUND);
     }
 
     #[test]
@@ -282,16 +324,17 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let plan_path = dir.path().join("plan.md").to_string_lossy().to_string();
         let mode = AgentMode::Plan(plan_path.clone());
+        let ctx = stub_ctx(&mode);
 
         let other = dir.path().join("other.rs").to_string_lossy().to_string();
         let blocked = ToolCall::from_api("write", &json!({"path": other, "content": "x"})).unwrap();
-        assert!(blocked.execute(&mode).is_error);
+        assert!(blocked.execute(&ctx).is_error);
 
         let allowed = ToolCall::from_api(
             "write",
             &json!({"path": plan_path, "content": "plan content"}),
         )
         .unwrap();
-        assert!(!allowed.execute(&mode).is_error);
+        assert!(!allowed.execute(&ctx).is_error);
     }
 }

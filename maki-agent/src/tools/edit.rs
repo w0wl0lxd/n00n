@@ -20,7 +20,7 @@ impl Edit {
     pub const NAME: &str = "edit";
     pub const DESCRIPTION: &str = include_str!("edit.md");
 
-    pub fn execute(&self) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
         let content = fs::read_to_string(&self.path).map_err(|e| format!("read error: {e}"))?;
         let replace_all = self.replace_all.unwrap_or(false);
         let updated =
@@ -42,6 +42,9 @@ impl Edit {
 mod tests {
     use tempfile::TempDir;
 
+    use crate::AgentMode;
+    use crate::tools::test_support::stub_ctx;
+
     use super::*;
 
     fn temp_file(dir: &TempDir, name: &str, content: &str) -> String {
@@ -53,6 +56,8 @@ mod tests {
     #[test]
     fn edit_reads_replaces_writes() {
         let dir = TempDir::new().unwrap();
+        let ctx = stub_ctx(&AgentMode::Build);
+
         let path = temp_file(&dir, "f.rs", "fn old() {}\nfn keep() {}");
         Edit {
             path: path.clone(),
@@ -60,11 +65,25 @@ mod tests {
             new_string: "fn new() {}".into(),
             replace_all: None,
         }
-        .execute()
+        .execute(&ctx)
         .unwrap();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             "fn new() {}\nfn keep() {}"
+        );
+
+        let path = temp_file(&dir, "g.rs", "let x = 1;\nlet x = 1;\nlet y = 2;");
+        Edit {
+            path: path.clone(),
+            old_string: "let x = 1;".into(),
+            new_string: "let x = 9;".into(),
+            replace_all: Some(true),
+        }
+        .execute(&ctx)
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "let x = 9;\nlet x = 9;\nlet y = 2;"
         );
     }
 }

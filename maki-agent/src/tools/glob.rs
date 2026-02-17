@@ -16,7 +16,7 @@ impl Glob {
     pub const NAME: &str = "glob";
     pub const DESCRIPTION: &str = include_str!("glob.md");
 
-    pub fn execute(&self) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
         let search_path = resolve_search_path(self.path.as_deref())?;
 
         let mut overrides = OverrideBuilder::new(&search_path);

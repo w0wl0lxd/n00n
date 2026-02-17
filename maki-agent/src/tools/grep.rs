@@ -21,7 +21,7 @@ impl Grep {
     pub const NAME: &str = "grep";
     pub const DESCRIPTION: &str = include_str!("grep.md");
 
-    pub fn execute(&self) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
         let search_path = resolve_search_path(self.path.as_deref())?;
 
         let mut cmd = Command::new("rg");

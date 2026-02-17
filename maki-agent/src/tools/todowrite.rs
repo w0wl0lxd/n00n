@@ -55,7 +55,7 @@ impl TodoWrite {
     pub const NAME: &str = "todowrite";
     pub const DESCRIPTION: &str = include_str!("todowrite.md");
 
-    pub fn execute(&self) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
         if self.todos.is_empty() {
             return Ok("No todos.".to_string());
         }

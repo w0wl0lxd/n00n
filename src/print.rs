@@ -160,6 +160,7 @@ pub fn run(
             &mut history,
             &system,
             &event_tx,
+            None,
         ) {
             error!(error = %e, "agent error");
             let _ = event_tx.send(AgentEvent::Error {
