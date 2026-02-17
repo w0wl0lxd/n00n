@@ -12,6 +12,49 @@ from pathlib import Path
 
 AGENTS = ("maki", "claude-code", "opencode")
 
+PER_MILLION = 1_000_000
+
+# Pricing per million tokens (must match model.rs tiers).
+PRICING = {
+    "claude-3-haiku":    {"input": 0.25, "output": 1.25, "cache_write": 0.30, "cache_read": 0.03},
+    "claude-3-5-haiku":  {"input": 0.80, "output": 4.00, "cache_write": 1.00, "cache_read": 0.08},
+    "claude-haiku-4-5":  {"input": 0.80, "output": 4.00, "cache_write": 1.00, "cache_read": 0.08},
+    "claude-3-sonnet":   {"input": 3.00, "output": 15.00, "cache_write": 0.30, "cache_read": 0.30},
+    "claude-3-5-sonnet": {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30},
+    "claude-3-7-sonnet": {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30},
+    "claude-sonnet-4":   {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30},
+    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30},
+    "claude-opus-4-5":   {"input": 5.00, "output": 25.00, "cache_write": 6.25, "cache_read": 0.50},
+    "claude-opus-4-6":   {"input": 5.00, "output": 25.00, "cache_write": 6.25, "cache_read": 0.50},
+    "claude-3-opus":     {"input": 15.00, "output": 75.00, "cache_write": 18.75, "cache_read": 1.50},
+    "claude-opus-4-0":   {"input": 15.00, "output": 75.00, "cache_write": 18.75, "cache_read": 1.50},
+    "claude-opus-4-1":   {"input": 15.00, "output": 75.00, "cache_write": 18.75, "cache_read": 1.50},
+}
+
+
+def lookup_pricing(model_id):
+    bare = model_id.removeprefix("anthropic/")
+    for prefix, p in PRICING.items():
+        if bare.startswith(prefix):
+            return p
+    return None
+
+
+def compute_cost(usage, pricing):
+    if not pricing:
+        return 0.0
+    inp = usage.get("input_tokens", 0)
+    out = usage.get("output_tokens", 0)
+    cw = usage.get("cache_creation_input_tokens", 0)
+    cr = usage.get("cache_read_input_tokens", 0)
+    return (
+        inp * pricing["input"] / PER_MILLION
+        + out * pricing["output"] / PER_MILLION
+        + cw * pricing["cache_write"] / PER_MILLION
+        + cr * pricing["cache_read"] / PER_MILLION
+    )
+
+
 RESET = "\033[0m"
 AGENT_COLORS = {
     "claude-code": "\033[38;5;172m",
@@ -188,7 +231,6 @@ def process_opencode_stream(proc, meta):
     all_tool_calls = []
     turn_index = -1
     result_text = ""
-    total_cost = 0
     total_tokens = {"input_tokens": 0, "output_tokens": 0,
                     "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
     first_ts = None
@@ -231,13 +273,15 @@ def process_opencode_stream(proc, meta):
 
         elif msg_type == "step_finish":
             last_ts = ts
-            cost = part.get("cost", 0)
-            total_cost += cost
             tokens = opencode_usage(part.get("tokens", {}))
             turn_usage[turn_index] = tokens
             for k in total_tokens:
                 total_tokens[k] += tokens.get(k, 0)
             _log(f"[turn {turn_index + 1}] finish reason={part.get('reason', '?')}")
+
+    # opencode reports cost=0 for Anthropic models; compute from tokens + pricing
+    pricing = lookup_pricing(meta.get("model", ""))
+    total_cost = compute_cost(total_tokens, pricing)
 
     duration_ms = (last_ts - first_ts) if (first_ts and last_ts) else 0
     num_turns = max(turn_index + 1, 0)
@@ -287,9 +331,16 @@ def append_csv(csv_path, meta, summary, turn_usage, tool_calls):
     empty_turn = usage_fields({}, "turn")
     rows = []
     if tool_calls:
+        # Count tool calls per turn to split usage evenly (avoid double-counting).
+        from collections import Counter
+        calls_per_turn = Counter(tc.get("turn", 0) for tc in tool_calls)
+
         for tc in tool_calls:
             turn_idx = tc.get("turn", 0)
-            turn_fields = usage_fields(turn_usage.get(turn_idx, {}), "turn")
+            raw = turn_usage.get(turn_idx, {})
+            n = calls_per_turn[turn_idx]
+            split = {k: v // n for k, v in raw.items() if isinstance(v, (int, float))} if n > 1 else raw
+            turn_fields = usage_fields(split, "turn")
             rows.append({
                 **run_base,
                 "turn": turn_idx,
