@@ -1,4 +1,5 @@
 mod bash;
+mod batch;
 mod edit;
 mod glob;
 mod grep;
@@ -67,10 +68,14 @@ pub(crate) fn truncate_output(text: String) -> String {
 }
 
 macro_rules! register_tools {
-    ($($Variant:ident($inner:path)),+ $(,)?) => {
+    (
+        [$($Variant:ident($inner:path)),+ $(,)?]
+        $(, @with_mode [$($MVariant:ident($minner:path)),+ $(,)?])?
+    ) => {
         #[derive(Debug, Clone)]
         pub enum ToolCall {
-            $($Variant($inner)),+
+            $($Variant($inner),)+
+            $($($MVariant($minner),)+)?
         }
 
         impl ToolCall {
@@ -81,6 +86,11 @@ macro_rules! register_tools {
                             .map(ToolCall::$Variant)
                             .map_err(|msg| AgentError::Tool { tool: name.to_string(), message: msg })
                     })+
+                    $($(<$minner>::NAME => {
+                        <$minner>::parse_input(input)
+                            .map(ToolCall::$MVariant)
+                            .map_err(|msg| AgentError::Tool { tool: name.to_string(), message: msg })
+                    })+)?
                     _ => Err(AgentError::Tool {
                         tool: name.to_string(),
                         message: format!("unknown variant `{name}`"),
@@ -90,13 +100,15 @@ macro_rules! register_tools {
 
             pub fn name(&self) -> &'static str {
                 match self {
-                    $(ToolCall::$Variant(_) => <$inner>::NAME),+
+                    $(ToolCall::$Variant(_) => <$inner>::NAME,)+
+                    $($(ToolCall::$MVariant(_) => <$minner>::NAME,)+)?
                 }
             }
 
             pub fn start_event(&self) -> ToolStartEvent {
                 let summary = match self {
-                    $(ToolCall::$Variant(inner) => inner.start_summary()),+
+                    $(ToolCall::$Variant(inner) => inner.start_summary(),)+
+                    $($(ToolCall::$MVariant(inner) => inner.start_summary(),)+)?
                 };
                 ToolStartEvent { tool: self.name(), summary }
             }
@@ -114,7 +126,8 @@ macro_rules! register_tools {
                 }
 
                 let result = match self {
-                    $(ToolCall::$Variant(inner) => inner.execute()),+
+                    $(ToolCall::$Variant(inner) => inner.execute(),)+
+                    $($(ToolCall::$MVariant(inner) => inner.execute(mode),)+)?
                 };
                 let (content, is_error) = match result {
                     Ok(c) => (c, false),
@@ -125,7 +138,8 @@ macro_rules! register_tools {
 
             fn mutable_path(&self) -> Option<&str> {
                 match self {
-                    $(ToolCall::$Variant(inner) => inner.mutable_path()),+
+                    $(ToolCall::$Variant(inner) => inner.mutable_path(),)+
+                    $($(ToolCall::$MVariant(inner) => inner.mutable_path(),)+)?
                 }
             }
 
@@ -135,24 +149,32 @@ macro_rules! register_tools {
                         "name": <$inner>::NAME,
                         "description": <$inner>::DESCRIPTION,
                         "input_schema": <$inner>::schema()
-                    })),+
+                    }),)+
+                    $($(json!({
+                        "name": <$minner>::NAME,
+                        "description": <$minner>::DESCRIPTION,
+                        "input_schema": <$minner>::schema()
+                    }),)+)?
                 ])
             }
-
-
         }
     };
 }
 
 register_tools! {
-    Bash(bash::Bash),
-    Read(read::Read),
-    Write(write::Write),
-    Edit(edit::Edit),
-    Glob(glob::Glob),
-    Grep(grep::Grep),
-    TodoWrite(todowrite::TodoWrite),
-    WebFetch(webfetch::WebFetch),
+    [
+        Bash(bash::Bash),
+        Read(read::Read),
+        Write(write::Write),
+        Edit(edit::Edit),
+        Glob(glob::Glob),
+        Grep(grep::Grep),
+        TodoWrite(todowrite::TodoWrite),
+        WebFetch(webfetch::WebFetch),
+    ],
+    @with_mode [
+        Batch(batch::Batch),
+    ]
 }
 
 #[cfg(test)]
