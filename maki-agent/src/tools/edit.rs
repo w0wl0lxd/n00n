@@ -2,9 +2,7 @@ use std::fs;
 
 use maki_tool_macro::Tool;
 
-const NO_MATCH: &str = "old_string not found in file";
-const MULTIPLE_MATCHES: &str =
-    "old_string matches multiple locations; add surrounding context to make it unique";
+use super::fuzzy_replace;
 
 #[derive(Tool, Debug, Clone)]
 pub struct Edit {
@@ -24,21 +22,11 @@ impl Edit {
 
     pub fn execute(&self) -> Result<String, String> {
         let content = fs::read_to_string(&self.path).map_err(|e| format!("read error: {e}"))?;
-        let count = content.matches(self.old_string.as_str()).count();
-        if count == 0 {
-            return Err(NO_MATCH.into());
-        }
         let replace_all = self.replace_all.unwrap_or(false);
-        if !replace_all && count > 1 {
-            return Err(MULTIPLE_MATCHES.into());
-        }
-        let updated = content.replace(self.old_string.as_str(), &self.new_string);
+        let updated =
+            fuzzy_replace::replace(&content, &self.old_string, &self.new_string, replace_all)?;
         fs::write(&self.path, &updated).map_err(|e| format!("write error: {e}"))?;
-        Ok(format!(
-            "edited {} ({count} occurrence{s})",
-            self.path,
-            s = if count == 1 { "" } else { "s" }
-        ))
+        Ok(format!("edited {}", self.path))
     }
 
     pub fn start_summary(&self) -> String {
@@ -63,7 +51,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_unique_and_replace_all() {
+    fn edit_reads_replaces_writes() {
         let dir = TempDir::new().unwrap();
         let path = temp_file(&dir, "f.rs", "fn old() {}\nfn keep() {}");
         Edit {
@@ -77,49 +65,6 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             "fn new() {}\nfn keep() {}"
-        );
-
-        let path = temp_file(&dir, "g.rs", "let x = 1;\nlet x = 1;\nlet y = 2;");
-        let msg = Edit {
-            path: path.clone(),
-            old_string: "let x = 1;".into(),
-            new_string: "let x = 9;".into(),
-            replace_all: Some(true),
-        }
-        .execute()
-        .unwrap();
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "let x = 9;\nlet x = 9;\nlet y = 2;"
-        );
-        assert!(msg.contains("2 occurrence"));
-    }
-
-    #[test]
-    fn edit_rejects_no_match_and_ambiguous() {
-        let dir = TempDir::new().unwrap();
-        let path = temp_file(&dir, "f.rs", "let x = 1;\nlet x = 1;");
-        assert_eq!(
-            Edit {
-                path: path.clone(),
-                old_string: "NOPE".into(),
-                new_string: "b".into(),
-                replace_all: None,
-            }
-            .execute()
-            .unwrap_err(),
-            NO_MATCH
-        );
-        assert_eq!(
-            Edit {
-                path,
-                old_string: "let x = 1;".into(),
-                new_string: "let x = 2;".into(),
-                replace_all: None,
-            }
-            .execute()
-            .unwrap_err(),
-            MULTIPLE_MATCHES
         );
     }
 }

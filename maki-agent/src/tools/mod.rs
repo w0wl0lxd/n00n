@@ -1,8 +1,10 @@
 mod bash;
 mod batch;
 mod edit;
+mod fuzzy_replace;
 mod glob;
 mod grep;
+mod multiedit;
 mod read;
 mod todowrite;
 mod webfetch;
@@ -167,6 +169,7 @@ register_tools! {
         Read(read::Read),
         Write(write::Write),
         Edit(edit::Edit),
+        MultiEdit(multiedit::MultiEdit),
         Glob(glob::Glob),
         Grep(grep::Grep),
         TodoWrite(todowrite::TodoWrite),
