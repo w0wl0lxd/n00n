@@ -139,19 +139,7 @@ macro_rules! register_tools {
                 ])
             }
 
-            pub fn scrub_input(name: &str, input: &mut Value) {
-                match name {
-                    $(<$inner>::NAME => <$inner>::scrub_input(input),)+
-                    _ => {}
-                }
-            }
 
-            pub fn scrub_result(name: &str, content: &str) -> Option<String> {
-                match name {
-                    $(<$inner>::NAME => <$inner>::scrub_result(content),)+
-                    _ => None,
-                }
-            }
         }
     };
 }
@@ -280,24 +268,5 @@ mod tests {
         )
         .unwrap();
         assert!(!allowed.execute(&mode).is_error);
-    }
-
-    #[test]
-    fn scrub_input_redacts_mutable_tools() {
-        let mut input = json!({"path": "/tmp/f.txt", "content": "hello\nworld"});
-        ToolCall::scrub_input("write", &mut input);
-        assert!(!input["content"].as_str().unwrap().contains("hello"));
-
-        let mut input = json!({"path": "/tmp/f.txt", "old_string": "abc", "new_string": "def"});
-        ToolCall::scrub_input("edit", &mut input);
-        assert!(!input["old_string"].as_str().unwrap().contains("abc"));
-    }
-
-    #[test]
-    fn scrub_result_summarizes_read_tools_and_skips_others() {
-        assert!(ToolCall::scrub_result("read", "line1\nline2").is_some());
-        assert!(ToolCall::scrub_result("glob", "f1\nf2\nf3").is_some());
-        assert!(ToolCall::scrub_result("grep", "file.rs:\n  1: match").is_some());
-        assert!(ToolCall::scrub_result("bash", "output").is_none());
     }
 }

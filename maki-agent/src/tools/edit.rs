@@ -1,7 +1,6 @@
 use std::fs;
 
 use maki_tool_macro::Tool;
-use serde_json::Value;
 
 const NO_MATCH: &str = "old_string not found in file";
 const MULTIPLE_MATCHES: &str =
@@ -48,18 +47,6 @@ impl Edit {
 
     pub fn mutable_path(&self) -> Option<&str> {
         Some(&self.path)
-    }
-
-    pub fn scrub_input(input: &mut Value) {
-        for key in &["old_string", "new_string"] {
-            if let Some(v) = input.get(*key).and_then(|v| v.as_str()) {
-                input[*key] = Value::String(format!("[{} bytes]", v.len()));
-            }
-        }
-    }
-
-    pub fn scrub_result(_content: &str) -> Option<String> {
-        None
     }
 }
 

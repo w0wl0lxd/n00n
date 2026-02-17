@@ -7,10 +7,7 @@ use std::sync::mpsc::Sender;
 use tracing::{info, warn};
 
 use crate::tools::ToolCall;
-use crate::{
-    AgentError, AgentEvent, AgentInput, AgentMode, Message, TokenUsage, ToolDoneEvent,
-    scrub_stale_tool_results, scrub_tool_use_inputs,
-};
+use crate::{AgentError, AgentEvent, AgentInput, AgentMode, Message, TokenUsage, ToolDoneEvent};
 use maki_providers::Model;
 use maki_providers::provider::Provider;
 
@@ -144,7 +141,6 @@ pub fn run(
 
         if !has_tools {
             history.push(response.message);
-            scrub_stale_tool_results(history);
             event_tx.send(AgentEvent::Done {
                 usage: total_usage,
                 num_turns,
@@ -156,23 +152,12 @@ pub fn run(
         let parsed = parse_tool_calls(response.message.tool_uses(), event_tx);
 
         history.push(response.message);
-        scrub_stale_tool_results(history);
 
         for p in &parsed {
             event_tx.send(AgentEvent::ToolStart(p.call.start_event()))?;
         }
 
         let tool_results = execute_tools(&parsed, event_tx, &input.mode);
-
-        let successful_ids: Vec<&str> = tool_results
-            .iter()
-            .filter(|(_, ev)| !ev.is_error)
-            .map(|(id, _)| id.as_str())
-            .collect();
-        if let Some(last_msg) = history.last_mut() {
-            scrub_tool_use_inputs(last_msg, &successful_ids);
-        }
-
         let tool_msg = Message::tool_results(tool_results);
         event_tx.send(AgentEvent::ToolResultsSubmitted {
             message: tool_msg.clone(),

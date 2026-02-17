@@ -2,7 +2,6 @@ use std::io::Read;
 use std::time::Duration;
 
 use maki_tool_macro::Tool;
-use serde_json::Value;
 use ureq::Agent;
 
 use super::truncate_output;
@@ -127,14 +126,6 @@ impl WebFetch {
 
     pub fn mutable_path(&self) -> Option<&str> {
         None
-    }
-
-    pub fn scrub_input(_input: &mut Value) {}
-
-    pub fn scrub_result(content: &str) -> Option<String> {
-        let lines = content.lines().count();
-        let bytes = content.len();
-        Some(format!("[webfetch: {lines} lines, {bytes} bytes]"))
     }
 }
 

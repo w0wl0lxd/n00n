@@ -112,11 +112,4 @@ impl Grep {
     pub fn mutable_path(&self) -> Option<&str> {
         None
     }
-
-    pub fn scrub_input(_input: &mut serde_json::Value) {}
-
-    pub fn scrub_result(content: &str) -> Option<String> {
-        let matches = content.lines().filter(|l| l.starts_with("  ")).count();
-        Some(format!("[grep: {matches} matches]"))
-    }
 }

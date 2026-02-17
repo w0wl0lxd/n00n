@@ -82,10 +82,4 @@ impl TodoWrite {
     pub fn mutable_path(&self) -> Option<&str> {
         None
     }
-
-    pub fn scrub_input(_input: &mut serde_json::Value) {}
-
-    pub fn scrub_result(_content: &str) -> Option<String> {
-        None
-    }
 }
