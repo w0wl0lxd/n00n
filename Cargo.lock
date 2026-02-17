@@ -983,6 +983,7 @@ dependencies = [
  "ignore",
  "maki-providers",
  "maki-tool-macro",
+ "regex",
  "serde",
  "serde_json",
  "strum",

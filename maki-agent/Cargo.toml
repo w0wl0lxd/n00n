@@ -14,6 +14,7 @@ strum = { workspace = true }
 maki-tool-macro = { workspace = true }
 ureq = { workspace = true }
 htmd = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }
