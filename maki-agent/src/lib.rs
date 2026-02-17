@@ -130,8 +130,9 @@ pub(crate) fn scrub_stale_tool_results(history: &mut [Message]) {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs};
+    use std::fs;
 
+    use tempfile::TempDir;
     use test_case::test_case;
 
     use super::*;
@@ -148,7 +149,8 @@ mod tests {
 
     #[test]
     fn effective_message_with_existing_plan() {
-        let plan_path = env::temp_dir().join("maki_test_plan.md");
+        let dir = TempDir::new().unwrap();
+        let plan_path = dir.path().join("plan.md");
         fs::write(&plan_path, "the plan").unwrap();
         let path_str = plan_path.to_str().unwrap().to_string();
 
@@ -160,8 +162,6 @@ mod tests {
         let msg = input.effective_message();
         assert!(msg.contains(&path_str));
         assert!(msg.contains("go"));
-
-        let _ = fs::remove_file(&plan_path);
     }
 
     #[test]

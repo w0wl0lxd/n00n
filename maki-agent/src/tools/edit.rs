@@ -65,22 +65,20 @@ impl Edit {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
+    use tempfile::TempDir;
 
     use super::*;
 
-    fn temp_file(dir_suffix: &str, name: &str, content: &str) -> String {
-        let dir = env::temp_dir().join(format!("maki_test_edit_{dir_suffix}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(name);
+    fn temp_file(dir: &TempDir, name: &str, content: &str) -> String {
+        let path = dir.path().join(name);
         fs::write(&path, content).unwrap();
         path.to_string_lossy().to_string()
     }
 
     #[test]
     fn edit_unique_and_replace_all() {
-        let path = temp_file("unique", "f.rs", "fn old() {}\nfn keep() {}");
+        let dir = TempDir::new().unwrap();
+        let path = temp_file(&dir, "f.rs", "fn old() {}\nfn keep() {}");
         Edit {
             path: path.clone(),
             old_string: "fn old() {}".into(),
@@ -94,7 +92,7 @@ mod tests {
             "fn new() {}\nfn keep() {}"
         );
 
-        let path = temp_file("replace_all", "f.rs", "let x = 1;\nlet x = 1;\nlet y = 2;");
+        let path = temp_file(&dir, "g.rs", "let x = 1;\nlet x = 1;\nlet y = 2;");
         let msg = Edit {
             path: path.clone(),
             old_string: "let x = 1;".into(),
@@ -112,7 +110,8 @@ mod tests {
 
     #[test]
     fn edit_rejects_no_match_and_ambiguous() {
-        let path = temp_file("reject", "f.rs", "let x = 1;\nlet x = 1;");
+        let dir = TempDir::new().unwrap();
+        let path = temp_file(&dir, "f.rs", "let x = 1;\nlet x = 1;");
         assert_eq!(
             Edit {
                 path: path.clone(),

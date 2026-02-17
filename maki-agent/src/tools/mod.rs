@@ -169,20 +169,12 @@ register_tools! {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
     use std::fs;
-    use std::path::PathBuf;
 
     use serde_json::json;
+    use tempfile::TempDir;
 
     use super::*;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = env::temp_dir().join(name);
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
 
     #[test]
     fn from_api_parses_valid_and_rejects_unknown() {
@@ -208,8 +200,8 @@ mod tests {
 
     #[test]
     fn read_write_roundtrip_with_offset() {
-        let dir = temp_dir("maki_test_rw2");
-        let path = dir.join("test.txt").to_string_lossy().to_string();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.txt").to_string_lossy().to_string();
         let content = (1..=10)
             .map(|i| format!("line{i}"))
             .collect::<Vec<_>>()
@@ -228,17 +220,15 @@ mod tests {
         assert!(slice.contains("3: line3"));
         assert!(slice.contains("4: line4"));
         assert!(!slice.contains("5: line5"));
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn glob_finds_and_misses() {
-        let dir = temp_dir("maki_test_glob2");
-        fs::write(dir.join("a.txt"), "hello").unwrap();
-        fs::write(dir.join("b.txt"), "world").unwrap();
-        fs::write(dir.join("c.rs"), "fn main(){}").unwrap();
-        let dir_str = dir.to_string_lossy().to_string();
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        fs::write(dir.path().join("b.txt"), "world").unwrap();
+        fs::write(dir.path().join("c.rs"), "fn main(){}").unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
 
         let g = glob::Glob::parse_input(&json!({"pattern": "*.txt", "path": dir_str})).unwrap();
         let hit = g.execute().unwrap();
@@ -247,16 +237,14 @@ mod tests {
 
         let g = glob::Glob::parse_input(&json!({"pattern": "*.nope", "path": dir_str})).unwrap();
         assert_eq!(g.execute().unwrap(), NO_FILES_FOUND);
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn grep_finds_filters_and_misses() {
-        let dir = temp_dir("maki_test_grep2");
-        fs::write(dir.join("a.txt"), "hello world\ngoodbye world").unwrap();
-        fs::write(dir.join("b.rs"), "hello rust").unwrap();
-        let dir_str = dir.to_string_lossy().to_string();
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.txt"), "hello world\ngoodbye world").unwrap();
+        fs::write(dir.path().join("b.rs"), "hello rust").unwrap();
+        let dir_str = dir.path().to_string_lossy().to_string();
 
         let g = grep::Grep::parse_input(&json!({"pattern": "hello", "path": dir_str})).unwrap();
         let hit = g.execute().unwrap();
@@ -274,20 +262,16 @@ mod tests {
         let g =
             grep::Grep::parse_input(&json!({"pattern": "zzzznotfound", "path": dir_str})).unwrap();
         assert_eq!(g.execute().unwrap(), NO_FILES_FOUND);
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn plan_mode_restricts_mutations() {
-        let plan_path = env::temp_dir()
-            .join("maki_test_plan2.md")
-            .to_string_lossy()
-            .to_string();
+        let dir = TempDir::new().unwrap();
+        let plan_path = dir.path().join("plan.md").to_string_lossy().to_string();
         let mode = AgentMode::Plan(plan_path.clone());
 
-        let blocked =
-            ToolCall::from_api("write", &json!({"path": "/tmp/other.rs", "content": "x"})).unwrap();
+        let other = dir.path().join("other.rs").to_string_lossy().to_string();
+        let blocked = ToolCall::from_api("write", &json!({"path": other, "content": "x"})).unwrap();
         assert!(blocked.execute(&mode).is_error);
 
         let allowed = ToolCall::from_api(
@@ -296,8 +280,6 @@ mod tests {
         )
         .unwrap();
         assert!(!allowed.execute(&mode).is_error);
-
-        let _ = fs::remove_file(&plan_path);
     }
 
     #[test]
