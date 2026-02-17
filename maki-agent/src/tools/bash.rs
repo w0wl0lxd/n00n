@@ -20,6 +20,10 @@ pub struct Bash {
     command: String,
     #[param(description = "Timeout in seconds (default 120)")]
     timeout: Option<u64>,
+    #[param(description = "Working directory (default: cwd)")]
+    workdir: Option<String>,
+    #[param(description = "Short description (3-5 words) of what the command does")]
+    description: Option<String>,
 }
 
 impl Bash {
@@ -28,14 +32,16 @@ impl Bash {
 
     pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
         let timeout_secs = self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
-        let mut child = Command::new("bash")
-            .arg("-c")
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c")
             .arg(&self.command)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("failed to spawn: {e}"))?;
+            .stderr(Stdio::piped());
+        if let Some(dir) = &self.workdir {
+            cmd.current_dir(dir);
+        }
+        let mut child = cmd.spawn().map_err(|e| format!("failed to spawn: {e}"))?;
 
         let stdout_handle = child.stdout.take().map(read_pipe_lossy);
         let stderr_handle = child.stderr.take().map(read_pipe_lossy);
@@ -83,7 +89,9 @@ impl Bash {
     }
 
     pub fn start_summary(&self) -> String {
-        self.command.clone()
+        self.description
+            .clone()
+            .unwrap_or_else(|| self.command.clone())
     }
 
     pub fn mutable_path(&self) -> Option<&str> {
@@ -106,41 +114,55 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn bash_success_failure_and_timeout() {
-        let ctx = stub_ctx(&AgentMode::Build);
-
-        let ok = Bash {
-            command: "echo hello".into(),
+    fn bash(cmd: &str) -> Bash {
+        Bash {
+            command: cmd.into(),
             timeout: Some(5),
-        };
-        assert_eq!(ok.execute(&ctx).unwrap().trim(), "hello");
-
-        let fail = Bash {
-            command: "exit 1".into(),
-            timeout: Some(5),
-        };
-        assert!(fail.execute(&ctx).is_err());
-
-        let timeout = Bash {
-            command: "sleep 10".into(),
-            timeout: Some(0),
-        };
-        assert!(
-            timeout
-                .execute(&ctx)
-                .unwrap_err()
-                .contains(&timed_out_msg(0))
-        );
+            workdir: None,
+            description: None,
+        }
     }
 
     #[test]
-    fn bash_large_output_does_not_deadlock() {
+    fn execute_success_failure_timeout_and_workdir() {
         let ctx = stub_ctx(&AgentMode::Build);
-        let bash = Bash {
-            command: "yes | head -n 100000".into(),
-            timeout: Some(10),
-        };
-        assert!(bash.execute(&ctx).unwrap().contains("[truncated]"));
+
+        assert_eq!(bash("echo hello").execute(&ctx).unwrap().trim(), "hello");
+        assert!(bash("exit 1").execute(&ctx).is_err());
+
+        let mut timeout = bash("sleep 10");
+        timeout.timeout = Some(0);
+        assert!(timeout.execute(&ctx).unwrap_err().contains("timed out"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut in_dir = bash("pwd");
+        in_dir.workdir = Some(dir.path().to_string_lossy().into());
+        let output = in_dir.execute(&ctx).unwrap();
+        assert!(
+            output
+                .trim()
+                .ends_with(dir.path().file_name().unwrap().to_str().unwrap())
+        );
+
+        let mut bad_dir = bash("echo hi");
+        bad_dir.workdir = Some("/nonexistent_dir_12345".into());
+        assert!(bad_dir.execute(&ctx).is_err());
+    }
+
+    #[test]
+    fn large_output_is_truncated() {
+        let ctx = stub_ctx(&AgentMode::Build);
+        let mut b = bash("yes | head -n 100000");
+        b.timeout = Some(10);
+        assert!(b.execute(&ctx).unwrap().contains("[truncated]"));
+    }
+
+    #[test]
+    fn start_summary_prefers_description() {
+        let mut b = bash("cargo test --workspace");
+        b.description = Some("run tests".into());
+        assert_eq!(b.start_summary(), "run tests");
+
+        assert_eq!(bash("ls").start_summary(), "ls");
     }
 }
