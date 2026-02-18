@@ -15,6 +15,9 @@ const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 5;
 
 const USER_STYLE: Style = Style::new().fg(Color::Cyan);
 const ASSISTANT_STYLE: Style = Style::new().fg(Color::White);
+const THINKING_STYLE: Style = Style::new()
+    .fg(Color::DarkGray)
+    .add_modifier(Modifier::ITALIC);
 const TOOL_STYLE: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::DIM);
 const CURSOR_STYLE: Style = Style::new()
     .fg(Color::White)
@@ -114,6 +117,7 @@ pub struct DisplayMessage {
 pub enum DisplayRole {
     User,
     Assistant,
+    Thinking,
     Tool,
 }
 
@@ -138,6 +142,7 @@ pub struct App {
     pub messages: Vec<DisplayMessage>,
     pub input: String,
     pub cursor_pos: usize,
+    streaming_thinking: String,
     streaming_text: String,
     pub status: Status,
     scroll_top: u16,
@@ -157,6 +162,7 @@ impl App {
             messages: Vec::new(),
             input: String::new(),
             cursor_pos: 0,
+            streaming_thinking: String::new(),
             streaming_text: String::new(),
             status: Status::Idle,
             scroll_top: u16::MAX,
@@ -241,6 +247,7 @@ impl App {
                 });
                 self.input.clear();
                 self.cursor_pos = 0;
+                self.streaming_thinking.clear();
                 self.streaming_text.clear();
                 self.status = Status::Streaming;
                 self.auto_scroll = true;
@@ -276,7 +283,11 @@ impl App {
 
     fn handle_agent_event(&mut self, event: AgentEvent) -> Vec<Action> {
         match event {
+            AgentEvent::ThinkingDelta { text } => {
+                self.streaming_thinking.push_str(&text);
+            }
             AgentEvent::TextDelta { text } => {
+                self.flush_streaming_thinking();
                 self.streaming_text.push_str(&text);
             }
             AgentEvent::ToolStart(ref start) => {
@@ -329,7 +340,17 @@ impl App {
         vec![]
     }
 
+    fn flush_streaming_thinking(&mut self) {
+        if !self.streaming_thinking.is_empty() {
+            self.messages.push(DisplayMessage {
+                role: DisplayRole::Thinking,
+                text: mem::take(&mut self.streaming_thinking),
+            });
+        }
+    }
+
     fn flush_streaming_text(&mut self) {
+        self.flush_streaming_thinking();
         if !self.streaming_text.is_empty() {
             self.messages.push(DisplayMessage {
                 role: DisplayRole::Assistant,
@@ -360,24 +381,25 @@ impl App {
             let (prefix, base_style) = match msg.role {
                 DisplayRole::User => ("you> ", USER_STYLE),
                 DisplayRole::Assistant => ("maki> ", ASSISTANT_STYLE),
+                DisplayRole::Thinking => ("thinking> ", THINKING_STYLE),
                 DisplayRole::Tool => ("tool> ", TOOL_STYLE),
             };
             let prefix_style = base_style.add_modifier(Modifier::BOLD);
             lines.extend(text_to_lines(&msg.text, prefix, prefix_style, base_style));
         }
 
-        if !self.streaming_text.is_empty() {
-            let prefix_style = ASSISTANT_STYLE.add_modifier(Modifier::BOLD);
-            let mut parsed = text_to_lines(
-                &self.streaming_text,
-                "maki> ",
-                prefix_style,
-                ASSISTANT_STYLE,
-            );
-            if let Some(last) = parsed.last_mut() {
-                last.spans.push(Span::styled("_", CURSOR_STYLE));
+        for (buf, prefix, style) in [
+            (&self.streaming_thinking, "thinking> ", THINKING_STYLE),
+            (&self.streaming_text, "maki> ", ASSISTANT_STYLE),
+        ] {
+            if !buf.is_empty() {
+                let mut parsed =
+                    text_to_lines(buf, prefix, style.add_modifier(Modifier::BOLD), style);
+                if let Some(last) = parsed.last_mut() {
+                    last.spans.push(Span::styled("_", CURSOR_STYLE));
+                }
+                lines.extend(parsed);
             }
-            lines.extend(parsed);
         }
 
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
@@ -621,6 +643,25 @@ mod tests {
         assert!(app.streaming_text.is_empty());
         assert_eq!(app.messages[0].role, DisplayRole::Assistant);
         assert_eq!(app.messages[1].role, DisplayRole::Tool);
+    }
+
+    #[test]
+    fn thinking_delta_separate_from_text() {
+        let mut app = App::new(test_pricing());
+        app.status = Status::Streaming;
+        app.update(Msg::Agent(AgentEvent::ThinkingDelta {
+            text: "reasoning".into(),
+        }));
+        assert_eq!(app.streaming_thinking, "reasoning");
+        assert!(app.streaming_text.is_empty());
+
+        app.update(Msg::Agent(AgentEvent::TextDelta {
+            text: "output".into(),
+        }));
+        assert!(app.streaming_thinking.is_empty());
+        assert_eq!(app.streaming_text, "output");
+        assert_eq!(app.messages[0].role, DisplayRole::Thinking);
+        assert_eq!(app.messages[0].text, "reasoning");
     }
 
     #[test]

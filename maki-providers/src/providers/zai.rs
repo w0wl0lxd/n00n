@@ -370,7 +370,7 @@ fn parse_sse(
             && !reasoning.is_empty()
         {
             text.push_str(&reasoning);
-            event_tx.send(AgentEvent::TextDelta { text: reasoning }.into())?;
+            event_tx.send(AgentEvent::ThinkingDelta { text: reasoning }.into())?;
         }
 
         if let Some(content) = delta.content
@@ -489,14 +489,23 @@ data: [DONE]\n";
             matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Let me think...Hello")
         );
 
-        let deltas: Vec<String> = rx
-            .try_iter()
-            .filter_map(|e| match e.event {
-                AgentEvent::TextDelta { text } => Some(text),
+        let events: Vec<_> = rx.try_iter().collect();
+        let thinking: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match &e.event {
+                AgentEvent::ThinkingDelta { text } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
-        assert_eq!(deltas, vec!["Let me think", "...", "Hello"]);
+        let text: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match &e.event {
+                AgentEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thinking, vec!["Let me think", "..."]);
+        assert_eq!(text, vec!["Hello"]);
     }
 
     #[test_case("stop", "end_turn" ; "stop_maps_to_end_turn")]

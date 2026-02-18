@@ -226,7 +226,9 @@ pub fn run(
                     println!("{}", serde_json::to_string(&envelope)?);
                 }
             }
-            AgentEvent::ToolStart(_) | AgentEvent::ToolDone(_) => {
+            AgentEvent::ThinkingDelta { .. }
+            | AgentEvent::ToolStart(_)
+            | AgentEvent::ToolDone(_) => {
                 if is_stream_json {
                     println!("{}", serde_json::to_string(&envelope)?);
                 }

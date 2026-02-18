@@ -67,6 +67,7 @@ struct MessageStartEvent {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum SseContentBlock {
     Text,
+    Thinking,
     ToolUse { id: String, name: String },
 }
 
@@ -76,10 +77,14 @@ struct ContentBlockStartEvent {
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type")]
 enum Delta {
-    TextDelta { text: String },
-    InputJsonDelta { partial_json: String },
+    #[serde(rename = "text_delta")]
+    Text { text: String },
+    #[serde(rename = "thinking_delta")]
+    Thinking { thinking: String },
+    #[serde(rename = "input_json_delta")]
+    InputJson { partial_json: String },
 }
 
 #[derive(Deserialize)]
@@ -338,6 +343,7 @@ fn parse_sse(
                                 text: String::new(),
                             });
                         }
+                        SseContentBlock::Thinking => {}
                         SseContentBlock::ToolUse { id, name } => {
                             current_tool_json.clear();
                             content_blocks.push(ContentBlock::ToolUse {
@@ -352,7 +358,7 @@ fn parse_sse(
             "content_block_delta" => {
                 if let Ok(ev) = serde_json::from_str::<ContentBlockDeltaEvent>(data) {
                     match ev.delta {
-                        Delta::TextDelta { text } => {
+                        Delta::Text { text } => {
                             if !text.is_empty() {
                                 if let Some(ContentBlock::Text { text: t }) =
                                     content_blocks.last_mut()
@@ -362,7 +368,13 @@ fn parse_sse(
                                 event_tx.send(AgentEvent::TextDelta { text }.into())?;
                             }
                         }
-                        Delta::InputJsonDelta { partial_json } => {
+                        Delta::Thinking { thinking } => {
+                            if !thinking.is_empty() {
+                                event_tx
+                                    .send(AgentEvent::ThinkingDelta { text: thinking }.into())?;
+                            }
+                        }
+                        Delta::InputJson { partial_json } => {
                             current_tool_json.push_str(&partial_json);
                         }
                     }

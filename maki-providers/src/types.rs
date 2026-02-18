@@ -90,6 +90,9 @@ pub enum AgentEvent {
     TextDelta {
         text: String,
     },
+    ThinkingDelta {
+        text: String,
+    },
     ToolStart(ToolStartEvent),
     ToolDone(ToolDoneEvent),
     TurnComplete {
