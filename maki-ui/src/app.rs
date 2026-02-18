@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use crate::animation::{Typewriter, spinner_frame};
+use crate::highlight;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use maki_agent::tools::WEBFETCH_TOOL_NAME;
@@ -80,23 +81,94 @@ fn parse_inline_markdown<'a>(text: &'a str, base_style: Style) -> Vec<Span<'a>> 
     spans
 }
 
-fn text_to_lines<'a>(
-    text: &'a str,
-    prefix: &'a str,
-    prefix_style: Style,
-    base_style: Style,
-) -> Vec<Line<'a>> {
-    text.split('\n')
-        .enumerate()
-        .map(|(i, line)| {
-            let mut spans = Vec::new();
-            if i == 0 {
-                spans.push(Span::styled(prefix, prefix_style));
+enum TextBlock<'a> {
+    Normal(&'a str),
+    Code { lang: &'a str, code: &'a str },
+}
+
+fn parse_blocks(text: &str) -> Vec<TextBlock<'_>> {
+    let mut blocks = Vec::new();
+    let mut rest = text;
+
+    while let Some(fence_start) = rest.find("```") {
+        let before = &rest[..fence_start];
+        if !before.is_empty() {
+            blocks.push(TextBlock::Normal(
+                before.strip_suffix('\n').unwrap_or(before),
+            ));
+        }
+
+        let after_fence = &rest[fence_start + 3..];
+        let lang_end = after_fence.find('\n').unwrap_or(after_fence.len());
+        let lang = after_fence[..lang_end].trim();
+
+        let code_start_offset = lang_end + 1;
+        if code_start_offset > after_fence.len() {
+            rest = "";
+            break;
+        }
+        let code_region = &after_fence[code_start_offset..];
+
+        if let Some(close) = code_region.find("```") {
+            let code = code_region[..close]
+                .strip_suffix('\n')
+                .unwrap_or(&code_region[..close]);
+            blocks.push(TextBlock::Code { lang, code });
+            let after_close = &code_region[close + 3..];
+            rest = after_close.strip_prefix('\n').unwrap_or(after_close);
+        } else {
+            let code = code_region;
+            blocks.push(TextBlock::Code { lang, code });
+            rest = "";
+            break;
+        }
+    }
+
+    if !rest.is_empty() {
+        blocks.push(TextBlock::Normal(rest));
+    }
+
+    blocks
+}
+
+fn text_to_lines(text: &str, prefix: &str, base_style: Style) -> Vec<Line<'static>> {
+    let prefix_style = base_style.add_modifier(Modifier::BOLD);
+    let blocks = parse_blocks(text);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut first_line = true;
+
+    for block in blocks {
+        match block {
+            TextBlock::Normal(content) => {
+                for line in content.split('\n') {
+                    let mut spans: Vec<Span<'static>> = Vec::new();
+                    if first_line {
+                        spans.push(Span::styled(prefix.to_owned(), prefix_style));
+                        first_line = false;
+                    }
+                    spans.extend(
+                        parse_inline_markdown(line, base_style)
+                            .into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(), s.style)),
+                    );
+                    lines.push(Line::from(spans));
+                }
             }
-            spans.extend(parse_inline_markdown(line, base_style));
-            Line::from(spans)
-        })
-        .collect()
+            TextBlock::Code { lang, code } => {
+                if first_line {
+                    lines.push(Line::from(Span::styled(prefix.to_owned(), prefix_style)));
+                    first_line = false;
+                }
+                lines.extend(highlight::highlight_code(lang, code));
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(prefix.to_owned(), prefix_style)));
+    }
+
+    lines
 }
 
 fn truncate_lines(s: &str, max_lines: usize) -> Cow<'_, str> {
@@ -153,6 +225,8 @@ pub struct App {
     pending_plan: Option<String>,
     pricing: ModelPricing,
     started_at: Instant,
+    cached_lines: Vec<Line<'static>>,
+    cached_msg_count: usize,
 }
 
 impl App {
@@ -173,6 +247,8 @@ impl App {
             pending_plan: None,
             pricing,
             started_at: Instant::now(),
+            cached_lines: Vec::new(),
+            cached_msg_count: 0,
         }
     }
 
@@ -371,35 +447,37 @@ impl App {
         self.render_status(frame, status_area);
     }
 
-    fn render_messages(&mut self, frame: &mut Frame, area: Rect) {
-        self.viewport_height = area.height;
-        let mut lines: Vec<Line> = Vec::new();
-
-        for msg in &self.messages {
+    fn rebuild_line_cache(&mut self) {
+        if self.cached_msg_count == self.messages.len() {
+            return;
+        }
+        for msg in &self.messages[self.cached_msg_count..] {
             let (prefix, base_style) = match msg.role {
                 DisplayRole::User => ("you> ", USER_STYLE),
                 DisplayRole::Assistant => ("maki> ", ASSISTANT_STYLE),
                 DisplayRole::Thinking => ("thinking> ", THINKING_STYLE),
                 DisplayRole::Tool => ("tool> ", TOOL_STYLE),
             };
-            let prefix_style = base_style.add_modifier(Modifier::BOLD);
-            lines.extend(text_to_lines(&msg.text, prefix, prefix_style, base_style));
+            self.cached_lines
+                .extend(text_to_lines(&msg.text, prefix, base_style));
         }
+        self.cached_msg_count = self.messages.len();
+    }
+
+    fn render_messages(&mut self, frame: &mut Frame, area: Rect) {
+        self.viewport_height = area.height;
+        self.rebuild_line_cache();
 
         self.streaming_thinking.tick();
         self.streaming_text.tick();
 
+        let mut lines = self.cached_lines.clone();
         for (tw, prefix, style) in [
             (&self.streaming_thinking, "thinking> ", THINKING_STYLE),
             (&self.streaming_text, "maki> ", ASSISTANT_STYLE),
         ] {
             if !tw.is_empty() {
-                let mut parsed = text_to_lines(
-                    tw.visible(),
-                    prefix,
-                    style.add_modifier(Modifier::BOLD),
-                    style,
-                );
+                let mut parsed = text_to_lines(tw.visible(), prefix, style);
                 if let Some(last) = parsed.last_mut() {
                     last.spans.push(Span::styled("_", CURSOR_STYLE));
                 }
@@ -408,13 +486,15 @@ impl App {
         }
 
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-
         let total_lines = paragraph.line_count(area.width) as u16;
         let max_scroll = total_lines.saturating_sub(area.height);
+        self.scroll_top = self.scroll_top.min(max_scroll);
+        if self.scroll_top >= max_scroll {
+            self.auto_scroll = true;
+        }
         if self.auto_scroll {
             self.scroll_top = max_scroll;
         }
-        self.scroll_top = self.scroll_top.min(max_scroll);
 
         let paragraph = paragraph.scroll((self.scroll_top, 0));
         frame.render_widget(paragraph, area);
@@ -733,6 +813,26 @@ mod tests {
         assert_eq!(app.scroll_top, pinned);
     }
 
+    #[test]
+    fn ctrl_d_to_bottom_re_enables_auto_scroll() {
+        let mut app = App::new(test_pricing());
+        app.status = Status::Streaming;
+        app.streaming_text.set_buffer(&"a\n".repeat(30));
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+        assert!(app.auto_scroll);
+
+        app.update(Msg::Key(ctrl('u')));
+        terminal.draw(|f| app.view(f)).unwrap();
+        assert!(!app.auto_scroll);
+
+        app.update(Msg::Key(ctrl('d')));
+        terminal.draw(|f| app.view(f)).unwrap();
+        assert!(app.auto_scroll);
+    }
+
     #[test_case("a **bold** b", &[("a ", None), ("bold", Some(BOLD_STYLE)), (" b", None)] ; "bold")]
     #[test_case("use `foo` here", &[("use ", None), ("foo", Some(CODE_STYLE)), (" here", None)] ; "inline_code")]
     #[test_case("a `code` then **bold**", &[("a ", None), ("code", Some(CODE_STYLE)), (" then ", None), ("bold", Some(BOLD_STYLE))] ; "code_before_bold")]
@@ -750,8 +850,7 @@ mod tests {
     #[test]
     fn text_to_lines_splits_newlines() {
         let style = Style::default();
-        let prefix_style = style.add_modifier(Modifier::BOLD);
-        let lines = text_to_lines("line1\nline2\nline3", "p> ", prefix_style, style);
+        let lines = text_to_lines("line1\nline2\nline3", "p> ", style);
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].spans[0].content, "p> ");
         assert_eq!(lines[1].spans.len(), 1);
@@ -788,5 +887,50 @@ mod tests {
         };
         assert_eq!(input.pending_plan.as_deref(), Some("plan.md"));
         assert!(app.pending_plan.is_none());
+    }
+
+    fn block_summary<'a>(blocks: &'a [TextBlock<'a>]) -> Vec<(&'a str, Option<&'a str>)> {
+        blocks
+            .iter()
+            .map(|b| match b {
+                TextBlock::Normal(t) => (*t, None),
+                TextBlock::Code { lang, code } => (*code, Some(*lang)),
+            })
+            .collect()
+    }
+
+    #[test_case(
+        "hello world\nsecond line",
+        &[("hello world\nsecond line", None)]
+        ; "no_fences"
+    )]
+    #[test_case(
+        "before\n```rust\nfn main() {}\n```\nafter",
+        &[("before", None), ("fn main() {}", Some("rust")), ("after", None)]
+        ; "single_code_block"
+    )]
+    #[test_case(
+        "a\n```py\nx=1\n```\nb\n```js\ny=2\n```\nc",
+        &[("a", None), ("x=1", Some("py")), ("b", None), ("y=2", Some("js")), ("c", None)]
+        ; "multiple_code_blocks"
+    )]
+    #[test_case(
+        "before\n```rust\nfn main() {}",
+        &[("before", None), ("fn main() {}", Some("rust"))]
+        ; "unclosed_fence"
+    )]
+    #[test_case(
+        "a\n```rs\n```\nb",
+        &[("a", None), ("", Some("rs")), ("b", None)]
+        ; "empty_code_block"
+    )]
+    #[test_case(
+        "```\ncode\n```",
+        &[("code", Some(""))]
+        ; "no_language_tag"
+    )]
+    fn parse_blocks_cases(input: &str, expected: &[(&str, Option<&str>)]) {
+        let blocks = parse_blocks(input);
+        assert_eq!(block_summary(&blocks), expected);
     }
 }

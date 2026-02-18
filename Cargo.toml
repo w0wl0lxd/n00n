@@ -53,3 +53,4 @@ strum = { version = "0.27", features = ["derive"] }
 htmd = "0.5"
 tempfile = "3"
 regex = "1"
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }

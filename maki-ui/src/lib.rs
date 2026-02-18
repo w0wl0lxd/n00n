@@ -1,5 +1,6 @@
 pub mod animation;
 pub mod app;
+mod highlight;
 
 use std::env;
 use std::io::stdout;
