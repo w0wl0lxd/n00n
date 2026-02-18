@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod app;
 
 use std::env;
@@ -18,7 +19,8 @@ use tracing::error;
 
 use app::{Action, App, Msg};
 
-const EVENT_POLL_INTERVAL_MS: u64 = 16;
+const ANIMATION_INTERVAL_MS: u64 = 2;
+const EVENT_POLL_INTERVAL_MS: u64 = 8;
 
 pub fn run(model: Model) -> Result<()> {
     let mut terminal = ratatui::init();
@@ -59,6 +61,8 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
 
         let poll_duration = if had_agent_msg {
             Duration::ZERO
+        } else if app.is_animating() {
+            Duration::from_millis(ANIMATION_INTERVAL_MS)
         } else {
             Duration::from_millis(EVENT_POLL_INTERVAL_MS)
         };

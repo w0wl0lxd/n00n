@@ -1,6 +1,7 @@
 use std::borrow::Cow;
-use std::mem;
 use std::time::Instant;
+
+use crate::animation::{Typewriter, spinner_frame};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use maki_agent::tools::WEBFETCH_TOOL_NAME;
@@ -31,9 +32,6 @@ const CODE_STYLE: Style = Style::new().fg(Color::Magenta);
 const MODE_BUILD_STYLE: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 const MODE_PLAN_STYLE: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
 
-const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-const SPINNER_FRAME_MS: u128 = 80;
-
 struct Delimiter {
     open: &'static str,
     style: Style,
@@ -49,10 +47,6 @@ const DELIMITERS: [Delimiter; 2] = [
         style: CODE_STYLE,
     },
 ];
-
-fn spinner_frame_idx(elapsed_ms: u128) -> usize {
-    (elapsed_ms / SPINNER_FRAME_MS) as usize % SPINNER_FRAMES.len()
-}
 
 fn parse_inline_markdown<'a>(text: &'a str, base_style: Style) -> Vec<Span<'a>> {
     let mut spans = Vec::new();
@@ -147,8 +141,8 @@ pub struct App {
     pub messages: Vec<DisplayMessage>,
     pub input: String,
     pub cursor_pos: usize,
-    streaming_thinking: String,
-    streaming_text: String,
+    streaming_thinking: Typewriter,
+    streaming_text: Typewriter,
     pub status: Status,
     scroll_top: u16,
     auto_scroll: bool,
@@ -167,8 +161,8 @@ impl App {
             messages: Vec::new(),
             input: String::new(),
             cursor_pos: 0,
-            streaming_thinking: String::new(),
-            streaming_text: String::new(),
+            streaming_thinking: Typewriter::new(),
+            streaming_text: Typewriter::new(),
             status: Status::Idle,
             scroll_top: u16::MAX,
             auto_scroll: true,
@@ -252,8 +246,8 @@ impl App {
                 });
                 self.input.clear();
                 self.cursor_pos = 0;
-                self.streaming_thinking.clear();
-                self.streaming_text.clear();
+                drop(self.streaming_thinking.take_all());
+                drop(self.streaming_text.take_all());
                 self.status = Status::Streaming;
                 self.auto_scroll = true;
                 vec![Action::SendMessage(AgentInput {
@@ -289,11 +283,11 @@ impl App {
     fn handle_agent_event(&mut self, event: AgentEvent) -> Vec<Action> {
         match event {
             AgentEvent::ThinkingDelta { text } => {
-                self.streaming_thinking.push_str(&text);
+                self.streaming_thinking.push(&text);
             }
             AgentEvent::TextDelta { text } => {
                 self.flush_streaming_thinking();
-                self.streaming_text.push_str(&text);
+                self.streaming_text.push(&text);
             }
             AgentEvent::ToolStart(ref start) => {
                 self.flush_streaming_text();
@@ -349,7 +343,7 @@ impl App {
         if !self.streaming_thinking.is_empty() {
             self.messages.push(DisplayMessage {
                 role: DisplayRole::Thinking,
-                text: mem::take(&mut self.streaming_thinking),
+                text: self.streaming_thinking.take_all(),
             });
         }
     }
@@ -359,7 +353,7 @@ impl App {
         if !self.streaming_text.is_empty() {
             self.messages.push(DisplayMessage {
                 role: DisplayRole::Assistant,
-                text: mem::take(&mut self.streaming_text),
+                text: self.streaming_text.take_all(),
             });
         }
     }
@@ -392,13 +386,20 @@ impl App {
             lines.extend(text_to_lines(&msg.text, prefix, prefix_style, base_style));
         }
 
-        for (buf, prefix, style) in [
+        self.streaming_thinking.tick();
+        self.streaming_text.tick();
+
+        for (tw, prefix, style) in [
             (&self.streaming_thinking, "thinking> ", THINKING_STYLE),
             (&self.streaming_text, "maki> ", ASSISTANT_STYLE),
         ] {
-            if !buf.is_empty() {
-                let mut parsed =
-                    text_to_lines(buf, prefix, style.add_modifier(Modifier::BOLD), style);
+            if !tw.is_empty() {
+                let mut parsed = text_to_lines(
+                    tw.visible(),
+                    prefix,
+                    style.add_modifier(Modifier::BOLD),
+                    style,
+                );
                 if let Some(last) = parsed.last_mut() {
                     last.spans.push(Span::styled("_", CURSOR_STYLE));
                 }
@@ -453,11 +454,8 @@ impl App {
         let mut spans = Vec::new();
 
         if self.status == Status::Streaming {
-            let idx = spinner_frame_idx(self.started_at.elapsed().as_millis());
-            spans.push(Span::styled(
-                format!(" {}", SPINNER_FRAMES[idx]),
-                STATUS_STREAMING_STYLE,
-            ));
+            let ch = spinner_frame(self.started_at.elapsed().as_millis());
+            spans.push(Span::styled(format!(" {ch}"), STATUS_STREAMING_STYLE));
         }
 
         spans.push(Span::styled(format!(" {mode_label}"), mode_style));
@@ -472,6 +470,10 @@ impl App {
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+
+    pub fn is_animating(&self) -> bool {
+        self.streaming_thinking.is_animating() || self.streaming_text.is_animating()
     }
 }
 
@@ -555,7 +557,7 @@ mod tests {
     fn done_flushes_text_and_accumulates_usage() {
         let mut app = App::new(test_pricing());
         app.status = Status::Streaming;
-        app.streaming_text = "response text".into();
+        app.streaming_text.set_buffer("response text");
         app.update(Msg::Agent(AgentEvent::Done {
             usage: TokenUsage {
                 input: 100,
@@ -637,7 +639,7 @@ mod tests {
     fn tool_start_flushes_streaming_text() {
         let mut app = App::new(test_pricing());
         app.status = Status::Streaming;
-        app.streaming_text = "partial response".into();
+        app.streaming_text.set_buffer("partial response");
 
         app.update(Msg::Agent(AgentEvent::ToolStart(ToolStartEvent {
             tool: "read",
@@ -711,7 +713,7 @@ mod tests {
     fn scroll_up_pins_viewport_during_streaming() {
         let mut app = App::new(test_pricing());
         app.status = Status::Streaming;
-        app.streaming_text = "a\n".repeat(30);
+        app.streaming_text.set_buffer(&"a\n".repeat(30));
 
         let backend = TestBackend::new(80, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
