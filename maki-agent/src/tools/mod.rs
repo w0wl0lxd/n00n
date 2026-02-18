@@ -17,8 +17,7 @@ use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
-use crate::{AgentError, AgentMode, ToolDoneEvent, ToolStartEvent};
-use maki_providers::AgentEvent;
+use crate::{AgentError, AgentMode, Envelope, ToolDoneEvent, ToolStartEvent};
 use maki_providers::Model;
 use maki_providers::provider::Provider;
 
@@ -32,8 +31,9 @@ const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode"
 pub struct ToolContext<'a> {
     pub provider: &'a dyn Provider,
     pub model: &'a Model,
-    pub event_tx: &'a Sender<AgentEvent>,
+    pub event_tx: &'a Sender<Envelope>,
     pub mode: &'a AgentMode,
+    pub tool_use_id: Option<&'a str>,
 }
 
 pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
@@ -187,7 +187,7 @@ pub(crate) mod test_support {
     use std::sync::mpsc::Sender;
 
     use maki_providers::provider::Provider;
-    use maki_providers::{AgentError, AgentEvent, Model, StreamResponse};
+    use maki_providers::{AgentError, Envelope, Model, StreamResponse};
     use serde_json::Value;
 
     use super::*;
@@ -201,7 +201,7 @@ pub(crate) mod test_support {
             _: &[maki_providers::Message],
             _: &str,
             _: &Value,
-            _: &Sender<AgentEvent>,
+            _: &Sender<Envelope>,
         ) -> Result<StreamResponse, AgentError> {
             unimplemented!()
         }
@@ -212,7 +212,7 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn stub_ctx(mode: &AgentMode) -> ToolContext<'_> {
-        let tx: &Sender<AgentEvent> = Box::leak(Box::new(std::sync::mpsc::channel().0));
+        let tx: &Sender<Envelope> = Box::leak(Box::new(std::sync::mpsc::channel().0));
         let model: &Model = Box::leak(Box::new(
             Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap(),
         ));
@@ -222,6 +222,7 @@ pub(crate) mod test_support {
             model,
             event_tx: tx,
             mode,
+            tool_use_id: None,
         }
     }
 }

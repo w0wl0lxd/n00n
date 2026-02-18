@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) use maki_providers::model::ModelFamily;
 pub(crate) use maki_providers::{
-    AgentError, AgentEvent, Message, TokenUsage, ToolDoneEvent, ToolStartEvent,
+    AgentError, AgentEvent, Envelope, Message, TokenUsage, ToolDoneEvent, ToolStartEvent,
 };
 
 pub const PLANS_DIR: &str = "plans";

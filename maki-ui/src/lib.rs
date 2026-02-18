@@ -12,8 +12,8 @@ use crossterm::event::{self, Event};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_agent::AgentInput;
 use maki_agent::agent;
-use maki_providers::AgentEvent;
 use maki_providers::Model;
+use maki_providers::{AgentEvent, Envelope};
 use tracing::error;
 
 use app::{Action, App, Msg};
@@ -36,7 +36,7 @@ pub fn run(model: Model) -> Result<()> {
 
 fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Result<()> {
     let mut app = App::new(model.pricing.clone());
-    let (agent_tx, agent_rx) = mpsc::channel::<AgentEvent>();
+    let (agent_tx, agent_rx) = mpsc::channel::<Envelope>();
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>();
 
     let cwd = env::current_dir()?.to_string_lossy().to_string();
@@ -45,8 +45,8 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
     loop {
         terminal.draw(|f| app.view(f))?;
 
-        while let Ok(event) = agent_rx.try_recv() {
-            for action in app.update(Msg::Agent(event)) {
+        while let Ok(envelope) = agent_rx.try_recv() {
+            for action in app.update(Msg::Agent(envelope.event)) {
                 handle_action(action, &input_tx);
             }
         }
@@ -69,7 +69,7 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
 
 fn spawn_agent_thread(
     input_rx: mpsc::Receiver<AgentInput>,
-    event_tx: mpsc::Sender<AgentEvent>,
+    event_tx: mpsc::Sender<Envelope>,
     cwd: String,
     model: Model,
 ) {
@@ -78,9 +78,12 @@ fn spawn_agent_thread(
             Ok(p) => p,
             Err(e) => {
                 error!(error = %e, "provider error");
-                let _ = event_tx.send(AgentEvent::Error {
-                    message: e.to_string(),
-                });
+                let _ = event_tx.send(
+                    AgentEvent::Error {
+                        message: e.to_string(),
+                    }
+                    .into(),
+                );
                 return;
             }
         };
@@ -97,9 +100,12 @@ fn spawn_agent_thread(
                 None,
             ) {
                 error!(error = %e, "agent error");
-                let _ = event_tx.send(AgentEvent::Error {
-                    message: e.to_string(),
-                });
+                let _ = event_tx.send(
+                    AgentEvent::Error {
+                        message: e.to_string(),
+                    }
+                    .into(),
+                );
             }
         }
     });

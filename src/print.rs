@@ -25,7 +25,7 @@ use clap::ValueEnum;
 use color_eyre::Result;
 use maki_agent::{AgentInput, AgentMode, agent};
 use maki_providers::model::Model;
-use maki_providers::{AgentEvent, TokenUsage};
+use maki_providers::{AgentEvent, Envelope, TokenUsage};
 use serde::Serialize;
 use serde_json::Value;
 use tracing::error;
@@ -72,6 +72,8 @@ struct AssistantEvent<'a> {
     event_type: &'static str,
     message: AssistantMessage<'a>,
     session_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_tool_use_id: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -88,6 +90,8 @@ struct UserEvent<'a> {
     event_type: &'static str,
     message: UserMessage<'a>,
     session_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_tool_use_id: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -130,7 +134,7 @@ pub fn run(
     let mode = AgentMode::Build;
     let system = agent::build_system_prompt(&cwd, &mode, model);
 
-    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>();
+    let (event_tx, event_rx) = mpsc::channel::<Envelope>();
     let input = AgentInput {
         message: prompt,
         mode,
@@ -146,9 +150,12 @@ pub fn run(
             Ok(p) => p,
             Err(e) => {
                 error!(error = %e, "provider error");
-                let _ = event_tx.send(AgentEvent::Error {
-                    message: e.to_string(),
-                });
+                let _ = event_tx.send(
+                    AgentEvent::Error {
+                        message: e.to_string(),
+                    }
+                    .into(),
+                );
                 return;
             }
         };
@@ -163,9 +170,12 @@ pub fn run(
             None,
         ) {
             error!(error = %e, "agent error");
-            let _ = event_tx.send(AgentEvent::Error {
-                message: e.to_string(),
-            });
+            let _ = event_tx.send(
+                AgentEvent::Error {
+                    message: e.to_string(),
+                }
+                .into(),
+            );
         }
     });
 
@@ -192,26 +202,33 @@ pub fn run(
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<String> = None;
 
-    for event in event_rx {
+    for envelope in event_rx {
+        let Envelope {
+            ref event,
+            ref parent_tool_use_id,
+        } = envelope;
+
         if verbose_out.is_none() && is_stream_json {
             let done = matches!(event, AgentEvent::Done { .. });
-            println!("{}", serde_json::to_string(&event)?);
+            println!("{}", serde_json::to_string(&envelope)?);
             if done {
                 break;
             }
             continue;
         }
 
-        match &event {
+        match event {
             AgentEvent::TextDelta { text } => {
-                result_text.push_str(text);
+                if parent_tool_use_id.is_none() {
+                    result_text.push_str(text);
+                }
                 if is_stream_json {
-                    println!("{}", serde_json::to_string(&event)?);
+                    println!("{}", serde_json::to_string(&envelope)?);
                 }
             }
             AgentEvent::ToolStart(_) | AgentEvent::ToolDone(_) => {
                 if is_stream_json {
-                    println!("{}", serde_json::to_string(&event)?);
+                    println!("{}", serde_json::to_string(&envelope)?);
                 }
             }
             AgentEvent::TurnComplete {
@@ -230,6 +247,7 @@ pub fn run(
                             usage: turn_usage,
                         },
                         session_id: &session_id,
+                        parent_tool_use_id: parent_tool_use_id.as_deref(),
                     })?;
                 }
             }
@@ -243,6 +261,7 @@ pub fn run(
                             content: &content_value,
                         },
                         session_id: &session_id,
+                        parent_tool_use_id: parent_tool_use_id.as_deref(),
                     })?;
                 }
             }
@@ -254,15 +273,13 @@ pub fn run(
                 num_turns = *turns;
                 usage = u.clone();
                 stop_reason = sr.clone();
+                break;
             }
             AgentEvent::Error { message } => {
                 is_error = true;
                 result_text = message.clone();
+                break;
             }
-        }
-
-        if matches!(event, AgentEvent::Done { .. } | AgentEvent::Error { .. }) {
-            break;
         }
     }
 

@@ -12,7 +12,9 @@ pub mod auth;
 
 use crate::model::Model;
 use crate::provider::Provider;
-use crate::{AgentError, AgentEvent, ContentBlock, Message, Role, StreamResponse, TokenUsage};
+use crate::{
+    AgentError, AgentEvent, ContentBlock, Envelope, Message, Role, StreamResponse, TokenUsage,
+};
 
 const API_VERSION: &str = "2023-06-01";
 const MAX_RETRIES: u32 = 3;
@@ -133,7 +135,7 @@ impl Provider for Anthropic {
         messages: &[Message],
         system: &str,
         tools: &Value,
-        event_tx: &Sender<AgentEvent>,
+        event_tx: &Sender<Envelope>,
     ) -> Result<StreamResponse, AgentError> {
         let wire_messages = build_wire_messages(messages);
         let wire_tools = build_wire_tools(tools);
@@ -299,7 +301,7 @@ fn build_wire_tools(tools: &Value) -> Value {
 
 fn parse_sse(
     reader: impl BufRead,
-    event_tx: &Sender<AgentEvent>,
+    event_tx: &Sender<Envelope>,
 ) -> Result<StreamResponse, AgentError> {
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
     let mut current_tool_json = String::new();
@@ -357,7 +359,7 @@ fn parse_sse(
                                 {
                                     t.push_str(&text);
                                 }
-                                event_tx.send(AgentEvent::TextDelta { text })?;
+                                event_tx.send(AgentEvent::TextDelta { text }.into())?;
                             }
                         }
                         Delta::InputJsonDelta { partial_json } => {
@@ -446,7 +448,7 @@ data: {\"type\":\"message_stop\"}\n";
         let deltas: Vec<String> = rx
             .try_iter()
             .filter_map(|e| {
-                if let AgentEvent::TextDelta { text: t } = e {
+                if let AgentEvent::TextDelta { text: t } = e.event {
                     Some(t)
                 } else {
                     None

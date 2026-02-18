@@ -9,7 +9,9 @@ use tracing::{info, warn};
 use serde_json::Value;
 
 use crate::tools::{ToolCall, ToolContext};
-use crate::{AgentError, AgentEvent, AgentInput, AgentMode, Message, TokenUsage, ToolDoneEvent};
+use crate::{
+    AgentError, AgentEvent, AgentInput, AgentMode, Envelope, Message, TokenUsage, ToolDoneEvent,
+};
 use maki_providers::Model;
 use maki_providers::provider::Provider;
 
@@ -53,7 +55,7 @@ struct ParsedToolCall {
 
 fn parse_tool_calls<'a>(
     tool_uses: impl Iterator<Item = (&'a str, &'a str, &'a serde_json::Value)>,
-    event_tx: &Sender<AgentEvent>,
+    event_tx: &Sender<Envelope>,
 ) -> Vec<ParsedToolCall> {
     tool_uses
         .filter_map(|(id, name, input)| match ToolCall::from_api(name, input) {
@@ -63,9 +65,12 @@ fn parse_tool_calls<'a>(
             }),
             Err(e) => {
                 warn!(tool = %name, error = %e, "failed to parse tool call");
-                let _ = event_tx.send(AgentEvent::Error {
-                    message: format!("failed to parse tool {name}: {e}"),
-                });
+                let _ = event_tx.send(
+                    AgentEvent::Error {
+                        message: format!("failed to parse tool {name}: {e}"),
+                    }
+                    .into(),
+                );
                 None
             }
         })
@@ -78,9 +83,13 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<(Strin
             .iter()
             .map(|parsed| {
                 let tx = ctx.event_tx.clone();
+                let tool_ctx = ToolContext {
+                    tool_use_id: Some(&parsed.id),
+                    ..*ctx
+                };
                 s.spawn(move || {
-                    let output = parsed.call.execute(ctx);
-                    let _ = tx.send(AgentEvent::ToolDone(output.clone()));
+                    let output = parsed.call.execute(&tool_ctx);
+                    let _ = tx.send(AgentEvent::ToolDone(output.clone()).into());
                     output
                 })
             })
@@ -107,7 +116,7 @@ pub fn run(
     input: AgentInput,
     history: &mut Vec<Message>,
     system: &str,
-    event_tx: &Sender<AgentEvent>,
+    event_tx: &Sender<Envelope>,
     tools_override: Option<Value>,
 ) -> Result<(), AgentError> {
     history.push(Message::user(input.effective_message()));
@@ -117,6 +126,7 @@ pub fn run(
         model,
         event_tx,
         mode: &input.mode,
+        tool_use_id: None,
     };
     let mut total_usage = TokenUsage::default();
     let mut num_turns: u32 = 0;
@@ -136,21 +146,27 @@ pub fn run(
             "API response received"
         );
 
-        event_tx.send(AgentEvent::TurnComplete {
-            message: response.message.clone(),
-            usage: response.usage.clone(),
-            model: model.id.clone(),
-        })?;
+        event_tx.send(
+            AgentEvent::TurnComplete {
+                message: response.message.clone(),
+                usage: response.usage.clone(),
+                model: model.id.clone(),
+            }
+            .into(),
+        )?;
 
         total_usage += response.usage;
 
         if !has_tools {
             history.push(response.message);
-            event_tx.send(AgentEvent::Done {
-                usage: total_usage,
-                num_turns,
-                stop_reason: response.stop_reason,
-            })?;
+            event_tx.send(
+                AgentEvent::Done {
+                    usage: total_usage,
+                    num_turns,
+                    stop_reason: response.stop_reason,
+                }
+                .into(),
+            )?;
             break;
         }
 
@@ -159,14 +175,17 @@ pub fn run(
         history.push(response.message);
 
         for p in &parsed {
-            event_tx.send(AgentEvent::ToolStart(p.call.start_event()))?;
+            event_tx.send(AgentEvent::ToolStart(p.call.start_event()).into())?;
         }
 
         let tool_results = execute_tools(&parsed, &ctx);
         let tool_msg = Message::tool_results(tool_results);
-        event_tx.send(AgentEvent::ToolResultsSubmitted {
-            message: tool_msg.clone(),
-        })?;
+        event_tx.send(
+            AgentEvent::ToolResultsSubmitted {
+                message: tool_msg.clone(),
+            }
+            .into(),
+        )?;
         history.push(tool_msg);
     }
 

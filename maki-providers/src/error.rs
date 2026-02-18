@@ -1,6 +1,6 @@
 use std::sync::mpsc;
 
-use crate::AgentEvent;
+use crate::Envelope;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -29,8 +29,8 @@ impl AgentError {
     }
 }
 
-impl From<mpsc::SendError<AgentEvent>> for AgentError {
-    fn from(_: mpsc::SendError<AgentEvent>) -> Self {
+impl From<mpsc::SendError<Envelope>> for AgentError {
+    fn from(_: mpsc::SendError<Envelope>) -> Self {
         Self::Channel
     }
 }

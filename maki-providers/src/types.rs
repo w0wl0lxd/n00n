@@ -110,6 +110,23 @@ pub enum AgentEvent {
     },
 }
 
+#[derive(Debug, Serialize)]
+pub struct Envelope {
+    #[serde(flatten)]
+    pub event: AgentEvent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_tool_use_id: Option<String>,
+}
+
+impl From<AgentEvent> for Envelope {
+    fn from(event: AgentEvent) -> Self {
+        Self {
+            event,
+            parent_tool_use_id: None,
+        }
+    }
+}
+
 pub struct StreamResponse {
     pub message: Message,
     pub usage: TokenUsage,

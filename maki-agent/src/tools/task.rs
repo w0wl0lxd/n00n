@@ -2,7 +2,7 @@ use std::env;
 use std::sync::mpsc;
 use std::thread;
 
-use maki_providers::ContentBlock;
+use maki_providers::{AgentEvent, ContentBlock};
 use maki_tool_macro::Tool;
 
 use super::ToolContext;
@@ -32,8 +32,21 @@ impl Task {
         let system = build_research_system_prompt(&cwd);
         let tools = ToolCall::definitions_filtered(Some(RESEARCH_TOOLS));
 
-        let (sub_tx, sub_rx) = mpsc::channel();
-        thread::spawn(move || while sub_rx.recv().is_ok() {});
+        let (sub_tx, sub_rx) = mpsc::channel::<crate::Envelope>();
+        let parent_tx = ctx.event_tx.clone();
+        let parent_id = ctx.tool_use_id.map(String::from);
+        thread::spawn(move || {
+            while let Ok(mut envelope) = sub_rx.recv() {
+                if matches!(
+                    envelope.event,
+                    AgentEvent::Done { .. } | AgentEvent::Error { .. }
+                ) {
+                    continue;
+                }
+                envelope.parent_tool_use_id = parent_id.clone();
+                let _ = parent_tx.send(envelope);
+            }
+        });
 
         let input = AgentInput {
             message: self.prompt.clone(),

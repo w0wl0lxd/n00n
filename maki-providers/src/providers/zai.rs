@@ -11,7 +11,9 @@ use ureq::Agent;
 
 use crate::model::Model;
 use crate::provider::Provider;
-use crate::{AgentError, AgentEvent, ContentBlock, Message, Role, StreamResponse, TokenUsage};
+use crate::{
+    AgentError, AgentEvent, ContentBlock, Envelope, Message, Role, StreamResponse, TokenUsage,
+};
 
 const API_KEY_ENV: &str = "ZHIPU_API_KEY";
 const BASE_STANDARD: &str = "https://api.z.ai/api/paas/v4";
@@ -170,7 +172,7 @@ impl Provider for Zai {
         messages: &[Message],
         system: &str,
         tools: &Value,
-        event_tx: &Sender<AgentEvent>,
+        event_tx: &Sender<Envelope>,
     ) -> Result<StreamResponse, AgentError> {
         let wire_messages = convert_messages(messages, system);
         let wire_tools = convert_tools(tools);
@@ -317,7 +319,7 @@ struct ToolAccumulator {
 
 fn parse_sse(
     reader: impl BufRead,
-    event_tx: &Sender<AgentEvent>,
+    event_tx: &Sender<Envelope>,
 ) -> Result<StreamResponse, AgentError> {
     let mut text = String::new();
     let mut tool_accumulators: Vec<ToolAccumulator> = Vec::new();
@@ -368,14 +370,14 @@ fn parse_sse(
             && !reasoning.is_empty()
         {
             text.push_str(&reasoning);
-            event_tx.send(AgentEvent::TextDelta { text: reasoning })?;
+            event_tx.send(AgentEvent::TextDelta { text: reasoning }.into())?;
         }
 
         if let Some(content) = delta.content
             && !content.is_empty()
         {
             text.push_str(&content);
-            event_tx.send(AgentEvent::TextDelta { text: content })?;
+            event_tx.send(AgentEvent::TextDelta { text: content }.into())?;
         }
 
         if let Some(tc_deltas) = delta.tool_calls {
@@ -459,7 +461,7 @@ data: [DONE]\n";
 
         let deltas: Vec<String> = rx
             .try_iter()
-            .filter_map(|e| match e {
+            .filter_map(|e| match e.event {
                 AgentEvent::TextDelta { text } => Some(text),
                 _ => None,
             })
@@ -489,7 +491,7 @@ data: [DONE]\n";
 
         let deltas: Vec<String> = rx
             .try_iter()
-            .filter_map(|e| match e {
+            .filter_map(|e| match e.event {
                 AgentEvent::TextDelta { text } => Some(text),
                 _ => None,
             })
