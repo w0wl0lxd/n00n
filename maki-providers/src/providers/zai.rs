@@ -13,30 +13,47 @@ use crate::model::Model;
 use crate::provider::Provider;
 use crate::{AgentError, AgentEvent, ContentBlock, Message, Role, StreamResponse, TokenUsage};
 
-const API_KEY_ENV: &str = "Z_AI_API_KEY";
-const COMPLETIONS_URL: &str = "https://api.z.ai/api/paas/v4/chat/completions";
-const MODELS_URL: &str = "https://api.z.ai/api/paas/v4/models";
+const API_KEY_ENV: &str = "ZHIPU_API_KEY";
+const BASE_STANDARD: &str = "https://api.z.ai/api/paas/v4";
+const BASE_CODING: &str = "https://api.z.ai/api/coding/paas/v4";
 const MAX_RETRIES: u32 = 3;
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(8);
 const STREAM_DONE: &str = "[DONE]";
 
+#[derive(Debug, Clone, Copy)]
+pub enum ZaiPlan {
+    Standard,
+    Coding,
+}
+
 pub struct Zai {
     agent: Agent,
     api_key: String,
+    completions_url: String,
+    models_url: String,
 }
 
 impl Zai {
-    pub fn new() -> Result<Self, AgentError> {
+    pub fn new(plan: ZaiPlan) -> Result<Self, AgentError> {
         let api_key = env::var(API_KEY_ENV).map_err(|_| AgentError::Api {
             status: 0,
             message: format!("{API_KEY_ENV} not set"),
         })?;
+        let base = match plan {
+            ZaiPlan::Standard => BASE_STANDARD,
+            ZaiPlan::Coding => BASE_CODING,
+        };
         let agent: Agent = Agent::config_builder()
             .http_status_as_error(false)
             .build()
             .into();
-        Ok(Self { agent, api_key })
+        Ok(Self {
+            agent,
+            api_key,
+            completions_url: format!("{base}/chat/completions"),
+            models_url: format!("{base}/models"),
+        })
     }
 }
 
@@ -174,7 +191,7 @@ impl Provider for Zai {
 
             let req = self
                 .agent
-                .post(COMPLETIONS_URL)
+                .post(&self.completions_url)
                 .header("content-type", "application/json")
                 .header("authorization", &format!("Bearer {}", self.api_key));
             let response = req.send(body_str.as_str())?;
@@ -212,7 +229,7 @@ impl Provider for Zai {
     fn list_models(&self) -> Result<Vec<String>, AgentError> {
         let response = self
             .agent
-            .get(MODELS_URL)
+            .get(&self.models_url)
             .header("authorization", &format!("Bearer {}", self.api_key))
             .call()?;
         if response.status().as_u16() != 200 {

@@ -5,20 +5,23 @@ use serde_json::Value;
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 
 use crate::model::Model;
+use crate::providers::zai::{Zai, ZaiPlan};
 use crate::{AgentError, AgentEvent, Message, StreamResponse};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, EnumIter)]
-#[strum(serialize_all = "lowercase")]
+#[strum(serialize_all = "kebab-case")]
 pub enum ProviderKind {
     Anthropic,
     Zai,
+    ZaiCodingPlan,
 }
 
 impl ProviderKind {
     fn create(self) -> Result<Box<dyn Provider>, AgentError> {
         match self {
             Self::Anthropic => Ok(Box::new(crate::providers::anthropic::Anthropic::new()?)),
-            Self::Zai => Ok(Box::new(crate::providers::zai::Zai::new()?)),
+            Self::Zai => Ok(Box::new(Zai::new(ZaiPlan::Standard)?)),
+            Self::ZaiCodingPlan => Ok(Box::new(Zai::new(ZaiPlan::Coding)?)),
         }
     }
 }

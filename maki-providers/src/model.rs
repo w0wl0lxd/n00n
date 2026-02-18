@@ -225,7 +225,7 @@ fn lookup_tier(tiers: &[ModelTier], model_id: &str) -> Result<(ModelPricing, u32
 impl Model {
     pub fn family(&self) -> ModelFamily {
         match self.provider {
-            ProviderKind::Zai => ModelFamily::Glm,
+            ProviderKind::Zai | ProviderKind::ZaiCodingPlan => ModelFamily::Glm,
             ProviderKind::Anthropic => ModelFamily::Claude,
         }
     }
@@ -236,7 +236,7 @@ impl Model {
             .map_err(|_| ModelError::UnsupportedProvider(provider_str.to_string()))?;
         let tiers = match provider {
             ProviderKind::Anthropic => ANTHROPIC_TIERS,
-            ProviderKind::Zai => ZAI_TIERS,
+            ProviderKind::Zai | ProviderKind::ZaiCodingPlan => ZAI_TIERS,
         };
         let (pricing, max_output_tokens) = lookup_tier(tiers, model_id)?;
         Ok(Self {
@@ -288,6 +288,7 @@ mod tests {
     #[test_case("anthropic/claude-opus-4-6-20260101", 128000 ; "anthropic_opus_tier")]
     #[test_case("zai/glm-5", 131072 ; "zai_high_output_tier")]
     #[test_case("zai/glm-4.5", 98304 ; "zai_standard_output_tier")]
+    #[test_case("zai-coding-plan/glm-4.7", 131072 ; "zai_coding_plan_tier")]
     fn from_spec_resolves_tier(spec: &str, expected_max: u32) {
         let model = Model::from_spec(spec).unwrap();
         assert_eq!(model.max_output_tokens, expected_max);
