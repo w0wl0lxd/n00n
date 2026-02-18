@@ -45,22 +45,30 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
     loop {
         terminal.draw(|f| app.view(f))?;
 
+        if app.should_quit {
+            break;
+        }
+
+        let mut had_agent_msg = false;
         while let Ok(envelope) = agent_rx.try_recv() {
+            had_agent_msg = true;
             for action in app.update(Msg::Agent(envelope.event)) {
                 handle_action(action, &input_tx);
             }
         }
 
-        if event::poll(Duration::from_millis(EVENT_POLL_INTERVAL_MS))?
+        let poll_duration = if had_agent_msg {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(EVENT_POLL_INTERVAL_MS)
+        };
+
+        if event::poll(poll_duration)?
             && let Event::Key(key) = event::read()?
         {
             for action in app.update(Msg::Key(key)) {
                 handle_action(action, &input_tx);
             }
-        }
-
-        if app.should_quit {
-            break;
         }
     }
 

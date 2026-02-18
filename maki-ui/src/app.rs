@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::mem;
+use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use maki_agent::tools::WEBFETCH_TOOL_NAME;
@@ -31,7 +32,7 @@ const MODE_BUILD_STYLE: Style = Style::new().fg(Color::Green).add_modifier(Modif
 const MODE_PLAN_STYLE: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
 
 const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-const SPINNER_DIVISOR: usize = 8;
+const SPINNER_FRAME_MS: u128 = 80;
 
 struct Delimiter {
     open: &'static str,
@@ -48,6 +49,10 @@ const DELIMITERS: [Delimiter; 2] = [
         style: CODE_STYLE,
     },
 ];
+
+fn spinner_frame_idx(elapsed_ms: u128) -> usize {
+    (elapsed_ms / SPINNER_FRAME_MS) as usize % SPINNER_FRAMES.len()
+}
 
 fn parse_inline_markdown<'a>(text: &'a str, base_style: Style) -> Vec<Span<'a>> {
     let mut spans = Vec::new();
@@ -153,7 +158,7 @@ pub struct App {
     pub mode: AgentMode,
     pending_plan: Option<String>,
     pricing: ModelPricing,
-    render_tick: usize,
+    started_at: Instant,
 }
 
 impl App {
@@ -173,7 +178,7 @@ impl App {
             mode: AgentMode::Build,
             pending_plan: None,
             pricing,
-            render_tick: 0,
+            started_at: Instant::now(),
         }
     }
 
@@ -370,7 +375,6 @@ impl App {
         self.render_messages(frame, messages_area);
         self.render_input(frame, input_area);
         self.render_status(frame, status_area);
-        self.render_tick += 1;
     }
 
     fn render_messages(&mut self, frame: &mut Frame, area: Rect) {
@@ -449,9 +453,9 @@ impl App {
         let mut spans = Vec::new();
 
         if self.status == Status::Streaming {
-            let frame_idx = (self.render_tick / SPINNER_DIVISOR) % SPINNER_FRAMES.len();
+            let idx = spinner_frame_idx(self.started_at.elapsed().as_millis());
             spans.push(Span::styled(
-                format!(" {}", SPINNER_FRAMES[frame_idx]),
+                format!(" {}", SPINNER_FRAMES[idx]),
                 STATUS_STREAMING_STYLE,
             ));
         }
