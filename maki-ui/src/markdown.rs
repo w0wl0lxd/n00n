@@ -1,14 +1,13 @@
 use std::borrow::Cow;
 
 use crate::highlight;
+use crate::theme;
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-pub const BOLD_STYLE: Style = Style::new()
-    .fg(ratatui::style::Color::Cyan)
-    .add_modifier(Modifier::BOLD);
-pub const CODE_STYLE: Style = Style::new().fg(ratatui::style::Color::Magenta);
+pub const BOLD_STYLE: Style = theme::BOLD;
+pub const CODE_STYLE: Style = theme::INLINE_CODE;
 
 struct Delimiter {
     open: &'static str,

@@ -3,6 +3,7 @@ pub mod app;
 mod components;
 mod highlight;
 mod markdown;
+mod theme;
 
 use std::env;
 use std::io::stdout;

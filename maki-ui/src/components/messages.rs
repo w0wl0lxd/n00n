@@ -2,30 +2,16 @@ use super::{DisplayMessage, DisplayRole, ToolStatus};
 
 use crate::animation::Typewriter;
 use crate::markdown::{text_to_lines, truncate_lines};
+use crate::theme;
 
 use maki_agent::tools::WEBFETCH_TOOL_NAME;
 use maki_providers::{ToolDoneEvent, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
-const USER_STYLE: Style = Style::new().fg(Color::Cyan);
-const ASSISTANT_STYLE: Style = Style::new().fg(Color::White);
-const THINKING_STYLE: Style = Style::new()
-    .fg(Color::DarkGray)
-    .add_modifier(Modifier::ITALIC);
-const TOOL_BG: Style = Style::new().bg(Color::Rgb(30, 30, 30));
-const TOOL_STYLE: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::DIM);
 const TOOL_INDICATOR: &str = "● ";
-const TOOL_IN_PROGRESS_STYLE: Style = Style::new().fg(Color::White);
-const TOOL_SUCCESS_STYLE: Style = Style::new().fg(Color::Green);
-const TOOL_ERROR_STYLE: Style = Style::new().fg(Color::Red);
-const CURSOR_STYLE: Style = Style::new()
-    .fg(Color::White)
-    .add_modifier(Modifier::SLOW_BLINK);
-const STATUS_ERROR_STYLE: Style = Style::new().fg(Color::Red);
 const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 5;
 
 struct Segment {
@@ -171,13 +157,13 @@ impl MessagesPanel {
         let spacer_line = vec![Line::default()];
         let mut streaming_lines = Vec::new();
         for (tw, prefix, style) in [
-            (&self.streaming_thinking, "thinking> ", THINKING_STYLE),
-            (&self.streaming_text, "maki> ", ASSISTANT_STYLE),
+            (&self.streaming_thinking, "thinking> ", theme::THINKING),
+            (&self.streaming_text, "maki> ", theme::ASSISTANT),
         ] {
             if !tw.is_empty() {
                 let mut parsed = text_to_lines(tw.visible(), prefix, style);
                 if let Some(last) = parsed.last_mut() {
-                    last.spans.push(Span::styled("_", CURSOR_STYLE));
+                    last.spans.push(Span::styled("_", theme::CURSOR));
                 }
                 streaming_lines.extend(parsed);
             }
@@ -225,7 +211,7 @@ impl MessagesPanel {
             let seg_area = Rect::new(area.x, y, area.width, visible_h);
             let mut p = Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false });
             if *is_tool {
-                p = p.style(TOOL_BG);
+                p = p.style(theme::TOOL_BG);
             }
             if skip > 0 {
                 p = p.scroll((skip, 0));
@@ -257,20 +243,20 @@ impl MessagesPanel {
         for i in self.cached_msg_count..self.messages.len() {
             let msg = &self.messages[i];
             let (prefix, base_style) = match &msg.role {
-                DisplayRole::User => ("you> ", USER_STYLE),
-                DisplayRole::Assistant => ("maki> ", ASSISTANT_STYLE),
-                DisplayRole::Thinking => ("thinking> ", THINKING_STYLE),
-                DisplayRole::Tool { .. } => ("tool> ", TOOL_STYLE),
-                DisplayRole::Error => ("", STATUS_ERROR_STYLE),
+                DisplayRole::User => ("you> ", theme::USER),
+                DisplayRole::Assistant => ("maki> ", theme::ASSISTANT),
+                DisplayRole::Thinking => ("thinking> ", theme::THINKING),
+                DisplayRole::Tool { .. } => ("tool> ", theme::TOOL),
+                DisplayRole::Error => ("", theme::ERROR),
             };
             let mut lines = text_to_lines(&msg.text, prefix, base_style);
             if let DisplayRole::Tool { status, .. } = &msg.role
                 && let Some(first) = lines.first_mut()
             {
                 let indicator_style = match status {
-                    ToolStatus::Success => TOOL_SUCCESS_STYLE,
-                    ToolStatus::Error => TOOL_ERROR_STYLE,
-                    ToolStatus::InProgress => TOOL_IN_PROGRESS_STYLE,
+                    ToolStatus::Success => theme::TOOL_SUCCESS,
+                    ToolStatus::Error => theme::TOOL_ERROR,
+                    ToolStatus::InProgress => theme::TOOL_IN_PROGRESS,
                 };
                 first
                     .spans

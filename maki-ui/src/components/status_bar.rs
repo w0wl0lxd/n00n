@@ -3,21 +3,14 @@ use std::time::{Duration, Instant};
 use super::Status;
 
 use crate::animation::spinner_frame;
+use crate::theme;
 
 use maki_agent::AgentMode;
 use maki_providers::{ModelPricing, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-
-const STATUS_IDLE_STYLE: Style = Style::new().fg(Color::DarkGray);
-const STATUS_STREAMING_STYLE: Style = Style::new().fg(Color::Yellow);
-const STATUS_ERROR_STYLE: Style = Style::new().fg(Color::Red);
-const MODE_BUILD_STYLE: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
-const MODE_PLAN_STYLE: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
-const CANCEL_HINT_STYLE: Style = Style::new().fg(Color::Yellow);
 
 const CANCEL_WINDOW: Duration = Duration::from_secs(3);
 
@@ -73,8 +66,8 @@ impl StatusBar {
         pricing: &ModelPricing,
     ) {
         let (mode_label, mode_style) = match mode {
-            AgentMode::Build => ("[BUILD]", MODE_BUILD_STYLE),
-            AgentMode::Plan(_) => ("[PLAN]", MODE_PLAN_STYLE),
+            AgentMode::Build => ("[BUILD]", theme::MODE_BUILD),
+            AgentMode::Plan(_) => ("[PLAN]", theme::MODE_PLAN),
         };
 
         let stats = format!(
@@ -88,22 +81,22 @@ impl StatusBar {
 
         if *status == Status::Streaming {
             let ch = spinner_frame(self.started_at.elapsed().as_millis());
-            spans.push(Span::styled(format!(" {ch}"), STATUS_STREAMING_STYLE));
+            spans.push(Span::styled(format!(" {ch}"), theme::STATUS_STREAMING));
         }
 
         spans.push(Span::styled(format!(" {mode_label}"), mode_style));
 
         match status {
             Status::Error(e) => {
-                spans.push(Span::styled(format!(" error: {e}"), STATUS_ERROR_STYLE));
+                spans.push(Span::styled(format!(" error: {e}"), theme::ERROR));
             }
             _ => {
-                spans.push(Span::styled(stats, STATUS_IDLE_STYLE));
+                spans.push(Span::styled(stats, theme::STATUS_IDLE));
             }
         }
 
         if self.cancel_hint_since.is_some() {
-            spans.push(Span::styled(" press Esc again to stop", CANCEL_HINT_STYLE));
+            spans.push(Span::styled(" press Esc again to stop", theme::CANCEL_HINT));
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);

@@ -1,5 +1,7 @@
 use std::sync::LazyLock;
 
+use crate::theme;
+
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
@@ -15,7 +17,7 @@ static THEME: LazyLock<syntect::highlighting::Theme> = LazyLock::new(|| {
     syntect::highlighting::ThemeSet::load_from_reader(&mut cursor).expect("embedded Dracula theme")
 });
 
-const FALLBACK_STYLE: Style = Style::new().fg(Color::Magenta);
+const FALLBACK_STYLE: Style = theme::CODE_FALLBACK;
 
 pub fn highlight_code(lang: &str, code: &str) -> Vec<Line<'static>> {
     let ss = &*SYNTAX_SET;

@@ -2,12 +2,14 @@ use crate::components::input::InputBox;
 use crate::components::messages::MessagesPanel;
 use crate::components::status_bar::{CancelResult, StatusBar};
 use crate::components::{Action, DisplayMessage, DisplayRole, Status};
+use crate::theme;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use maki_agent::{AgentInput, AgentMode};
 use maki_providers::{AgentEvent, ModelPricing, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
+use ratatui::widgets::{Block, Widget};
 
 const CANCEL_MSG: &str = "Cancelled. The agent will continue from the last successful result.";
 
@@ -193,6 +195,10 @@ impl App {
 
     pub fn view(&mut self, frame: &mut Frame) {
         self.status_bar.clear_expired_hint();
+
+        let bg = Block::default().style(ratatui::style::Style::new().bg(theme::BACKGROUND));
+        bg.render(frame.area(), frame.buffer_mut());
+
         let [msg_area, input_area, status_area] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(3),

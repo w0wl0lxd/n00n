@@ -1,5 +1,8 @@
+use crate::theme;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 pub struct InputBox {
@@ -48,7 +51,14 @@ impl InputBox {
     pub fn view(&self, frame: &mut Frame, area: Rect, is_streaming: bool) {
         let indicator = if is_streaming { "..." } else { "> " };
         let input_text = format!("{indicator}{}", self.input);
-        let paragraph = Paragraph::new(input_text).block(Block::default().borders(Borders::ALL));
+        let border_style = Style::new().fg(theme::INPUT_BORDER);
+        let paragraph = Paragraph::new(input_text)
+            .style(Style::new().fg(theme::FOREGROUND))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(border_style),
+            );
         frame.render_widget(paragraph, area);
 
         if !is_streaming {
