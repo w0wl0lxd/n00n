@@ -23,6 +23,7 @@ pub const TOOL_ERROR: Style = Style::new().fg(RED);
 pub const ERROR: Style = Style::new().fg(RED);
 
 pub const STATUS_IDLE: Style = Style::new().fg(COMMENT);
+pub const STATUS_CONTEXT: Style = Style::new().fg(FOREGROUND);
 pub const STATUS_STREAMING: Style = Style::new().fg(YELLOW);
 pub const MODE_BUILD: Style = Style::new().fg(GREEN).add_modifier(Modifier::BOLD);
 pub const MODE_PLAN: Style = Style::new().fg(PINK).add_modifier(Modifier::BOLD);

@@ -27,13 +27,14 @@ pub struct App {
     pub context_size: u32,
     pub mode: AgentMode,
     pending_plan: Option<String>,
+    model_id: String,
     pricing: ModelPricing,
     context_window: u32,
     pub should_quit: bool,
 }
 
 impl App {
-    pub fn new(pricing: ModelPricing, context_window: u32) -> Self {
+    pub fn new(model_id: String, pricing: ModelPricing, context_window: u32) -> Self {
         Self {
             messages_panel: MessagesPanel::new(),
             input_box: InputBox::new(),
@@ -43,6 +44,7 @@ impl App {
             context_size: 0,
             mode: AgentMode::Build,
             pending_plan: None,
+            model_id,
             pricing,
             context_window,
             should_quit: false,
@@ -232,8 +234,14 @@ impl App {
             pricing: &self.pricing,
             context_window: self.context_window,
         };
-        self.status_bar
-            .view(frame, status_area, &self.status, &self.mode, &stats);
+        self.status_bar.view(
+            frame,
+            status_area,
+            &self.status,
+            &self.mode,
+            &self.model_id,
+            &stats,
+        );
     }
 
     pub fn is_animating(&self) -> bool {
@@ -249,7 +257,7 @@ mod tests {
 
     #[test]
     fn typing_and_submit() {
-        let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
         app.update(Msg::Key(key(KeyCode::Char('h'))));
         app.update(Msg::Key(key(KeyCode::Char('i'))));
 
@@ -262,7 +270,7 @@ mod tests {
     #[test]
     fn ctrl_c_quits_regardless_of_state() {
         for status in [Status::Idle, Status::Streaming] {
-            let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
+            let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
             app.status = status;
             let actions = app.update(Msg::Key(ctrl('c')));
             assert!(app.should_quit);
@@ -272,7 +280,7 @@ mod tests {
 
     #[test]
     fn done_flushes_text_and_accumulates_usage() {
-        let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::TextDelta {
             text: "response text".into(),
@@ -307,7 +315,7 @@ mod tests {
 
     #[test]
     fn error_event_sets_status() {
-        let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::Error {
             message: "boom".into(),
@@ -317,7 +325,7 @@ mod tests {
 
     #[test]
     fn tab_toggles_mode_and_sets_pending_plan() {
-        let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
         assert_eq!(app.mode, AgentMode::Build);
 
         app.update(Msg::Key(key(KeyCode::Tab)));
@@ -330,7 +338,7 @@ mod tests {
 
     #[test]
     fn submit_consumes_pending_plan() {
-        let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
         app.pending_plan = Some("plan.md".into());
         app.update(Msg::Key(key(KeyCode::Char('x'))));
         let actions = app.update(Msg::Key(key(KeyCode::Enter)));
@@ -343,7 +351,7 @@ mod tests {
 
     #[test]
     fn double_esc_cancels_and_flushes() {
-        let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::TextDelta {
             text: "partial response".into(),

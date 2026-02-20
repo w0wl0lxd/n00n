@@ -248,6 +248,10 @@ fn lookup_tier<'a>(tiers: &'a [ModelTier], model_id: &str) -> Result<&'a ModelTi
 }
 
 impl Model {
+    pub fn spec(&self) -> String {
+        format!("{}/{}", self.provider, self.id)
+    }
+
     pub fn family(&self) -> ModelFamily {
         match self.provider {
             ProviderKind::Zai | ProviderKind::ZaiCodingPlan => ModelFamily::Glm,

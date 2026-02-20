@@ -77,6 +77,7 @@ impl StatusBar {
         area: Rect,
         status: &Status,
         mode: &AgentMode,
+        model_id: &str,
         stats: &UsageStats,
     ) {
         let (mode_label, mode_style) = match mode {
@@ -105,13 +106,16 @@ impl StatusBar {
                 } else {
                     0
                 };
-                let text = format!(
-                    "{} ({}%) ${:.3} ",
+
+                right_spans.push(Span::styled(model_id.to_string(), theme::STATUS_IDLE));
+
+                let rest_text = format!(
+                    "  {} ({}%) ${:.3} ",
                     format_tokens(stats.context_size),
                     pct,
                     stats.usage.cost(stats.pricing),
                 );
-                right_spans.push(Span::styled(text, theme::STATUS_IDLE));
+                right_spans.push(Span::styled(rest_text, theme::STATUS_CONTEXT));
             }
         }
 
