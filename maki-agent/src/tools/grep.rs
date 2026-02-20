@@ -57,7 +57,8 @@ impl Grep {
             };
             let mut text = text.to_string();
             if text.len() > MAX_GREP_LINE_LENGTH {
-                text.truncate(MAX_GREP_LINE_LENGTH);
+                let boundary = text.floor_char_boundary(MAX_GREP_LINE_LENGTH);
+                text.truncate(boundary);
                 text.push_str("...");
             }
             let rel = file

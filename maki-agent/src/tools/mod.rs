@@ -64,7 +64,8 @@ pub(crate) fn truncate_output(text: String) -> String {
         }
         result.push_str(line);
         if result.len() > MAX_OUTPUT_BYTES {
-            result.truncate(MAX_OUTPUT_BYTES);
+            let boundary = result.floor_char_boundary(MAX_OUTPUT_BYTES);
+            result.truncate(boundary);
             truncated = true;
             break;
         }
