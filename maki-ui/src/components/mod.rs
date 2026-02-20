@@ -37,8 +37,21 @@ pub enum DisplayRole {
     User,
     Assistant,
     Thinking,
-    Tool { id: String, status: ToolStatus },
+    Tool {
+        id: String,
+        status: ToolStatus,
+        name: &'static str,
+    },
     Error,
+}
+
+impl DisplayRole {
+    pub fn tool_name(&self) -> Option<&'static str> {
+        match self {
+            DisplayRole::Tool { name, .. } => Some(*name),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

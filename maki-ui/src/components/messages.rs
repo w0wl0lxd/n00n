@@ -16,8 +16,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 const TOOL_INDICATOR: &str = "● ";
-const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 5;
-const TOOL_BODY_INDENT: &str = "         ";
+const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 7;
+const TOOL_BODY_INDENT: &str = "  ";
 
 #[derive(Default)]
 struct StreamingCache {
@@ -102,19 +102,15 @@ impl MessagesPanel {
             role: DisplayRole::Tool {
                 id: event.id,
                 status: ToolStatus::InProgress,
+                name: event.tool,
             },
-            text: format!("[{}] {}", event.tool, event.summary),
+            text: event.summary.clone(),
             tool_output: None,
         });
         self.in_progress_count += 1;
     }
 
     pub fn tool_done(&mut self, event: ToolDoneEvent) {
-        let status = if event.is_error {
-            ToolStatus::Error
-        } else {
-            ToolStatus::Success
-        };
         let Some(msg) = self
             .messages
             .iter_mut()
@@ -122,10 +118,13 @@ impl MessagesPanel {
         else {
             return;
         };
-        msg.role = DisplayRole::Tool {
-            id: event.id,
-            status,
-        };
+        if let DisplayRole::Tool { ref mut status, .. } = msg.role {
+            *status = if event.is_error {
+                ToolStatus::Error
+            } else {
+                ToolStatus::Success
+            };
+        }
         if let ToolOutput::Plain(ref text) = event.output {
             if event.tool == GLOB_TOOL_NAME {
                 let n = text.lines().count();
@@ -317,7 +316,7 @@ impl MessagesPanel {
                 continue;
             };
             let is_in_progress = self.messages.iter().any(|m| {
-                matches!(&m.role, DisplayRole::Tool { id, status: ToolStatus::InProgress } if id == tool_id)
+                matches!(&m.role, DisplayRole::Tool { id, status: ToolStatus::InProgress, .. } if id == tool_id)
             });
             if is_in_progress
                 && let Some(first_line) = seg.lines.first_mut()
@@ -340,7 +339,7 @@ impl MessagesPanel {
         for i in self.cached_msg_count..self.messages.len() {
             let msg = &self.messages[i];
 
-            if let DisplayRole::Tool { ref id, status } = msg.role {
+            if let DisplayRole::Tool { ref id, status, .. } = msg.role {
                 let lines = self.build_tool_lines(msg, status);
                 let id = id.clone();
                 self.push_spacer_if_needed();
@@ -382,7 +381,8 @@ impl MessagesPanel {
             .text
             .split_once('\n')
             .map_or(msg.text.as_str(), |(h, _)| h);
-        let mut lines = text_to_lines(header, "tool> ", theme::TOOL, None);
+        let tool_name = msg.role.tool_name().unwrap_or("?");
+        let mut lines = text_to_lines(header, &format!("{tool_name}> "), theme::TOOL, None);
 
         let (indicator, indicator_style) = match status {
             ToolStatus::InProgress => {
