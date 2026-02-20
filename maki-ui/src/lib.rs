@@ -1,6 +1,8 @@
 pub mod animation;
 pub mod app;
+mod components;
 mod highlight;
+mod markdown;
 
 use std::env;
 use std::io::stdout;
@@ -18,7 +20,8 @@ use maki_providers::Model;
 use maki_providers::{AgentEvent, Envelope};
 use tracing::error;
 
-use app::{Action, App, Msg};
+use app::{App, Msg};
+use components::Action;
 
 const ANIMATION_INTERVAL_MS: u64 = 8;
 const EVENT_POLL_INTERVAL_MS: u64 = 8;
