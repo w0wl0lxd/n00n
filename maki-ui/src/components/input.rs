@@ -3,7 +3,7 @@ use crate::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 pub struct InputBox {
@@ -115,6 +115,7 @@ impl InputBox {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(border_style),
             );
         frame.render_widget(paragraph, area);
