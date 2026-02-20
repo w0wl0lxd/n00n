@@ -1,8 +1,10 @@
 use super::{DisplayMessage, DisplayRole, ToolStatus};
 
-use crate::animation::Typewriter;
+use crate::animation::{Typewriter, spinner_frame};
 use crate::markdown::{text_to_lines, truncate_lines};
 use crate::theme;
+
+use std::time::Instant;
 
 use maki_agent::tools::WEBFETCH_TOOL_NAME;
 use maki_providers::{ToolDoneEvent, ToolStartEvent};
@@ -13,6 +15,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 const TOOL_INDICATOR: &str = "● ";
 const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 5;
+const TOOL_BODY_INDENT: &str = "         ";
 
 struct Segment {
     lines: Vec<Line<'static>>,
@@ -29,6 +32,8 @@ pub struct MessagesPanel {
     messages: Vec<DisplayMessage>,
     streaming_thinking: Typewriter,
     streaming_text: Typewriter,
+    started_at: Instant,
+    in_progress_count: usize,
     scroll_top: u16,
     auto_scroll: bool,
     viewport_height: u16,
@@ -42,6 +47,8 @@ impl MessagesPanel {
             messages: Vec::new(),
             streaming_thinking: Typewriter::new(),
             streaming_text: Typewriter::new(),
+            started_at: Instant::now(),
+            in_progress_count: 0,
             scroll_top: u16::MAX,
             auto_scroll: true,
             viewport_height: 24,
@@ -73,6 +80,7 @@ impl MessagesPanel {
             },
             text,
         });
+        self.in_progress_count += 1;
     }
 
     pub fn tool_done(&mut self, event: ToolDoneEvent) {
@@ -81,31 +89,29 @@ impl MessagesPanel {
         } else {
             ToolStatus::Success
         };
-        if let Some(msg) = self
+        let Some(msg) = self
             .messages
             .iter_mut()
             .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == event.id))
-        {
-            msg.role = DisplayRole::Tool {
-                id: event.id.clone(),
-                status,
-            };
-            self.invalidate_line_cache();
-        }
-        let text = if event.tool == WEBFETCH_TOOL_NAME {
-            let n = event.content.lines().count();
-            format!("[{} done] ({n} lines)", event.tool)
-        } else {
-            let truncated = truncate_lines(&event.content, TOOL_OUTPUT_MAX_DISPLAY_LINES);
-            format!("[{} done] {truncated}", event.tool)
+        else {
+            return;
         };
-        self.messages.push(DisplayMessage {
-            role: DisplayRole::Tool {
-                id: event.id,
-                status,
-            },
-            text,
-        });
+        msg.role = DisplayRole::Tool {
+            id: event.id,
+            status,
+        };
+        let output = if event.tool == WEBFETCH_TOOL_NAME {
+            let n = event.content.lines().count();
+            format!("({n} lines)")
+        } else {
+            truncate_lines(&event.content, TOOL_OUTPUT_MAX_DISPLAY_LINES).into_owned()
+        };
+        if !output.is_empty() {
+            msg.text.push('\n');
+            msg.text.push_str(&output);
+        }
+        self.in_progress_count -= 1;
+        self.invalidate_line_cache();
     }
 
     pub fn flush(&mut self) {
@@ -136,11 +142,16 @@ impl MessagesPanel {
     }
 
     pub fn is_animating(&self) -> bool {
-        self.streaming_thinking.is_animating() || self.streaming_text.is_animating()
+        self.in_progress_count > 0
+            || self.streaming_thinking.is_animating()
+            || self.streaming_text.is_animating()
     }
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) {
         self.viewport_height = area.height;
+        if self.in_progress_count > 0 {
+            self.invalidate_line_cache();
+        }
         self.rebuild_line_cache();
 
         self.streaming_thinking.tick();
@@ -242,43 +253,54 @@ impl MessagesPanel {
         }
         for i in self.cached_msg_count..self.messages.len() {
             let msg = &self.messages[i];
-            let (prefix, base_style) = match &msg.role {
-                DisplayRole::User => ("you> ", theme::USER),
-                DisplayRole::Assistant => ("maki> ", theme::ASSISTANT),
-                DisplayRole::Thinking => ("thinking> ", theme::THINKING),
-                DisplayRole::Tool { .. } => ("tool> ", theme::TOOL),
-                DisplayRole::Error => ("", theme::ERROR),
-            };
-            let mut lines = text_to_lines(&msg.text, prefix, base_style);
-            if let DisplayRole::Tool { status, .. } = &msg.role
-                && let Some(first) = lines.first_mut()
-            {
-                let indicator_style = match status {
-                    ToolStatus::Success => theme::TOOL_SUCCESS,
-                    ToolStatus::Error => theme::TOOL_ERROR,
-                    ToolStatus::InProgress => theme::TOOL_IN_PROGRESS,
-                };
-                first
-                    .spans
-                    .insert(0, Span::styled(TOOL_INDICATOR, indicator_style));
-            }
 
-            if let DisplayRole::Tool { id, .. } = &msg.role {
-                let id = id.clone();
-                if let Some(seg) = self
-                    .cached_segments
-                    .iter_mut()
-                    .rfind(|s| s.tool_id.as_deref() == Some(&id))
-                {
-                    seg.lines.extend(lines);
-                } else {
-                    self.push_spacer_if_needed();
-                    self.cached_segments.push(Segment {
-                        lines,
-                        tool_id: Some(id),
-                    });
+            if let DisplayRole::Tool { ref id, status } = msg.role {
+                let (header, body) = msg
+                    .text
+                    .split_once('\n')
+                    .map_or((msg.text.as_str(), None), |(h, b)| (h, Some(b)));
+
+                let mut lines = text_to_lines(header, "tool> ", theme::TOOL);
+
+                let (indicator, indicator_style) = match status {
+                    ToolStatus::InProgress => {
+                        let ch = spinner_frame(self.started_at.elapsed().as_millis());
+                        (format!("{ch} "), theme::TOOL_IN_PROGRESS)
+                    }
+                    ToolStatus::Success => (TOOL_INDICATOR.into(), theme::TOOL_SUCCESS),
+                    ToolStatus::Error => (TOOL_INDICATOR.into(), theme::TOOL_ERROR),
+                };
+                if let Some(first) = lines.first_mut() {
+                    first
+                        .spans
+                        .insert(0, Span::styled(indicator, indicator_style));
                 }
+
+                if let Some(body_text) = body {
+                    for line in body_text.lines() {
+                        lines.push(Line::from(vec![
+                            Span::styled(TOOL_BODY_INDENT.to_owned(), theme::TOOL),
+                            Span::styled(line.to_owned(), theme::TOOL),
+                        ]));
+                    }
+                }
+
+                let id = id.clone();
+                self.push_spacer_if_needed();
+                self.cached_segments.push(Segment {
+                    lines,
+                    tool_id: Some(id),
+                });
             } else {
+                let (prefix, base_style) = match &msg.role {
+                    DisplayRole::User => ("you> ", theme::USER),
+                    DisplayRole::Assistant => ("maki> ", theme::ASSISTANT),
+                    DisplayRole::Thinking => ("thinking> ", theme::THINKING),
+                    DisplayRole::Error => ("", theme::ERROR),
+                    DisplayRole::Tool { .. } => unreachable!(),
+                };
+                let lines = text_to_lines(&msg.text, prefix, base_style);
+
                 let last_was_tool = self.cached_segments.last().is_some_and(|s| s.is_tool());
                 if self.cached_segments.is_empty() || last_was_tool {
                     self.push_spacer_if_needed();
@@ -342,25 +364,29 @@ mod tests {
             is_error,
         });
 
-        assert_eq!(panel.messages.len(), 2);
-        for msg in &panel.messages {
-            assert!(matches!(msg.role, DisplayRole::Tool { status, .. } if status == expected));
-        }
+        assert_eq!(panel.messages.len(), 1);
+        assert!(
+            matches!(panel.messages[0].role, DisplayRole::Tool { status, .. } if status == expected)
+        );
+        assert!(panel.messages[0].text.contains("output"));
     }
 
     #[test]
     fn webfetch_done_shows_line_count_only() {
         let mut panel = MessagesPanel::new();
+        panel.tool_start(ToolStartEvent {
+            id: "t1".into(),
+            tool: WEBFETCH_TOOL_NAME,
+            summary: "https://example.com".into(),
+        });
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
             tool: WEBFETCH_TOOL_NAME,
             content: "line1\nline2\nline3".into(),
             is_error: false,
         });
-        assert_eq!(
-            panel.messages[0].text,
-            format!("[{WEBFETCH_TOOL_NAME} done] (3 lines)")
-        );
+        assert_eq!(panel.messages.len(), 1);
+        assert!(panel.messages[0].text.contains("(3 lines)"));
     }
 
     #[test]
@@ -449,31 +475,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_start_and_done_grouped_into_one_segment() {
-        let mut panel = MessagesPanel::new();
-        panel.tool_start(ToolStartEvent {
-            id: "t1".into(),
-            tool: "bash",
-            summary: "ls".into(),
-        });
-        panel.tool_done(ToolDoneEvent {
-            id: "t1".into(),
-            tool: "bash",
-            content: "file.txt".into(),
-            is_error: false,
-        });
-        rebuild(&mut panel);
-
-        let tool_segs: Vec<_> = panel
-            .cached_segments
-            .iter()
-            .filter(|s| s.is_tool())
-            .collect();
-        assert_eq!(tool_segs.len(), 1);
-        assert_eq!(tool_segs[0].tool_id.as_deref(), Some("t1"));
-    }
-
-    #[test]
     fn ctrl_d_to_bottom_re_enables_auto_scroll() {
         let mut panel = MessagesPanel::new();
         panel.streaming_text.set_buffer(&"a\n".repeat(30));
@@ -488,5 +489,96 @@ mod tests {
         panel.scroll(-half);
         render(&mut panel, 80, 10);
         assert!(panel.auto_scroll);
+    }
+
+    #[test]
+    fn tool_done_appends_truncated_output() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(ToolStartEvent {
+            id: "t1".into(),
+            tool: "bash",
+            summary: "long output".into(),
+        });
+        let long_output = (1..=10)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "bash",
+            content: long_output,
+            is_error: false,
+        });
+        assert_eq!(panel.messages.len(), 1);
+        let text = &panel.messages[0].text;
+        assert!(text.contains('\n'), "body should be appended");
+        assert!(text.contains("..."), "long output should be truncated");
+    }
+
+    #[test]
+    fn tool_done_empty_output_no_body() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(ToolStartEvent {
+            id: "t1".into(),
+            tool: "edit",
+            summary: "/tmp/f.rs".into(),
+        });
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "edit",
+            content: String::new(),
+            is_error: false,
+        });
+        assert_eq!(panel.messages.len(), 1);
+        assert!(
+            !panel.messages[0].text.contains('\n'),
+            "empty output should not append body"
+        );
+    }
+
+    #[test]
+    fn tool_done_without_matching_start_is_noop() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_done(ToolDoneEvent {
+            id: "orphan".into(),
+            tool: "bash",
+            content: "output".into(),
+            is_error: false,
+        });
+        assert!(panel.messages.is_empty());
+    }
+
+    #[test]
+    fn multiple_in_progress_tools_tracked() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(ToolStartEvent {
+            id: "t1".into(),
+            tool: "bash",
+            summary: "a".into(),
+        });
+        panel.tool_start(ToolStartEvent {
+            id: "t2".into(),
+            tool: "read",
+            summary: "b".into(),
+        });
+        assert_eq!(panel.in_progress_count, 2);
+
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "bash",
+            content: "ok".into(),
+            is_error: false,
+        });
+        assert_eq!(panel.in_progress_count, 1);
+        assert!(panel.is_animating());
+
+        panel.tool_done(ToolDoneEvent {
+            id: "t2".into(),
+            tool: "read",
+            content: "ok".into(),
+            is_error: false,
+        });
+        assert_eq!(panel.in_progress_count, 0);
+        assert!(!panel.is_animating());
     }
 }
