@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight;
@@ -15,6 +15,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 5;
+const CANCEL_WINDOW: Duration = Duration::from_secs(3);
+const CANCEL_MSG: &str = "Cancelled. The agent will continue from the last successful result.";
 
 const USER_STYLE: Style = Style::new().fg(Color::Cyan);
 const ASSISTANT_STYLE: Style = Style::new().fg(Color::White);
@@ -32,6 +34,7 @@ const BOLD_STYLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BO
 const CODE_STYLE: Style = Style::new().fg(Color::Magenta);
 const MODE_BUILD_STYLE: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 const MODE_PLAN_STYLE: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
+const CANCEL_HINT_STYLE: Style = Style::new().fg(Color::Yellow);
 
 struct Delimiter {
     open: &'static str,
@@ -190,6 +193,7 @@ pub enum DisplayRole {
     Assistant,
     Thinking,
     Tool,
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -206,6 +210,7 @@ pub enum Msg {
 
 pub enum Action {
     SendMessage(AgentInput),
+    CancelAgent,
     Quit,
 }
 
@@ -221,6 +226,7 @@ pub struct App {
     viewport_height: u16,
     pub token_usage: TokenUsage,
     pub should_quit: bool,
+    cancel_hint_since: Option<Instant>,
     pub mode: AgentMode,
     pending_plan: Option<String>,
     pricing: ModelPricing,
@@ -243,6 +249,7 @@ impl App {
             viewport_height: 24,
             token_usage: TokenUsage::default(),
             should_quit: false,
+            cancel_hint_since: None,
             mode: AgentMode::Build,
             pending_plan: None,
             pricing,
@@ -300,6 +307,9 @@ impl App {
             KeyCode::Tab => {
                 return self.toggle_mode();
             }
+            KeyCode::Esc if self.status == Status::Streaming => {
+                return self.handle_cancel_press();
+            }
             _ => {}
         }
 
@@ -356,6 +366,23 @@ impl App {
         }
     }
 
+    fn handle_cancel_press(&mut self) -> Vec<Action> {
+        if let Some(t) = self.cancel_hint_since
+            && t.elapsed() < CANCEL_WINDOW
+        {
+            self.flush_streaming_text();
+            self.messages.push(DisplayMessage {
+                role: DisplayRole::Error,
+                text: CANCEL_MSG.into(),
+            });
+            self.status = Status::Idle;
+            self.cancel_hint_since = None;
+            return vec![Action::CancelAgent];
+        }
+        self.cancel_hint_since = Some(Instant::now());
+        vec![]
+    }
+
     fn handle_agent_event(&mut self, event: AgentEvent) -> Vec<Action> {
         match event {
             AgentEvent::ThinkingDelta { text } => {
@@ -390,10 +417,12 @@ impl App {
                 self.flush_streaming_text();
                 self.token_usage += usage;
                 self.status = Status::Idle;
+                self.cancel_hint_since = None;
             }
             AgentEvent::Error { message } => {
                 self.flush_streaming_text();
                 self.status = Status::Error(message);
+                self.cancel_hint_since = None;
             }
         }
         vec![]
@@ -435,6 +464,13 @@ impl App {
     }
 
     pub fn view(&mut self, frame: &mut Frame) {
+        if self
+            .cancel_hint_since
+            .is_some_and(|t| t.elapsed() >= CANCEL_WINDOW)
+        {
+            self.cancel_hint_since = None;
+        }
+
         let [messages_area, input_area, status_area] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(3),
@@ -457,6 +493,7 @@ impl App {
                 DisplayRole::Assistant => ("maki> ", ASSISTANT_STYLE),
                 DisplayRole::Thinking => ("thinking> ", THINKING_STYLE),
                 DisplayRole::Tool => ("tool> ", TOOL_STYLE),
+                DisplayRole::Error => ("", STATUS_ERROR_STYLE),
             };
             self.cached_lines
                 .extend(text_to_lines(&msg.text, prefix, base_style));
@@ -549,6 +586,10 @@ impl App {
             }
         }
 
+        if self.cancel_hint_since.is_some() {
+            spans.push(Span::styled(" press Esc again to stop", CANCEL_HINT_STYLE));
+        }
+
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
@@ -637,6 +678,7 @@ mod tests {
     fn done_flushes_text_and_accumulates_usage() {
         let mut app = App::new(test_pricing());
         app.status = Status::Streaming;
+        app.cancel_hint_since = Some(Instant::now());
         app.streaming_text.set_buffer("response text");
         app.update(Msg::Agent(AgentEvent::Done {
             usage: TokenUsage {
@@ -650,6 +692,7 @@ mod tests {
 
         assert_eq!(app.status, Status::Idle);
         assert!(app.streaming_text.is_empty());
+        assert!(app.cancel_hint_since.is_none());
         assert_eq!(app.messages.last().unwrap().role, DisplayRole::Assistant);
 
         app.status = Status::Streaming;
@@ -932,5 +975,40 @@ mod tests {
     fn parse_blocks_cases(input: &str, expected: &[(&str, Option<&str>)]) {
         let blocks = parse_blocks(input);
         assert_eq!(block_summary(&blocks), expected);
+    }
+
+    #[test]
+    fn double_esc_cancels_and_flushes() {
+        let mut app = App::new(test_pricing());
+        app.status = Status::Streaming;
+        app.streaming_text.set_buffer("partial response");
+
+        let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(actions.is_empty());
+        assert!(app.cancel_hint_since.is_some());
+
+        let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(matches!(&actions[0], Action::CancelAgent));
+        assert_eq!(app.status, Status::Idle);
+        assert!(app.cancel_hint_since.is_none());
+
+        let flushed = app
+            .messages
+            .iter()
+            .find(|m| m.role == DisplayRole::Assistant);
+        assert_eq!(flushed.unwrap().text, "partial response");
+        let cancel = app.messages.iter().find(|m| m.role == DisplayRole::Error);
+        assert_eq!(cancel.unwrap().text, CANCEL_MSG);
+    }
+
+    #[test]
+    fn esc_after_expired_window_resets_hint() {
+        let mut app = App::new(test_pricing());
+        app.status = Status::Streaming;
+        app.cancel_hint_since = Some(Instant::now() - CANCEL_WINDOW - Duration::from_millis(1));
+
+        let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(actions.is_empty());
+        assert!(app.cancel_hint_since.is_some());
     }
 }

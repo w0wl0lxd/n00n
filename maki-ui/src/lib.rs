@@ -39,11 +39,9 @@ pub fn run(model: Model) -> Result<()> {
 
 fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Result<()> {
     let mut app = App::new(model.pricing.clone());
-    let (agent_tx, agent_rx) = mpsc::channel::<Envelope>();
-    let (input_tx, input_rx) = mpsc::channel::<AgentInput>();
-
     let cwd = env::current_dir()?.to_string_lossy().to_string();
-    spawn_agent_thread(input_rx, agent_tx, cwd, model);
+
+    let (mut input_tx, mut agent_rx) = spawn_agent(&cwd, &model);
 
     loop {
         terminal.draw(|f| app.view(f))?;
@@ -55,9 +53,13 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
         let mut had_agent_msg = false;
         while let Ok(envelope) = agent_rx.try_recv() {
             had_agent_msg = true;
-            for action in app.update(Msg::Agent(envelope.event)) {
-                handle_action(action, &input_tx);
-            }
+            dispatch(
+                app.update(Msg::Agent(envelope.event)),
+                &mut input_tx,
+                &mut agent_rx,
+                &cwd,
+                &model,
+            );
         }
 
         let poll_duration = if had_agent_msg {
@@ -71,27 +73,31 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
         if event::poll(poll_duration)?
             && let Event::Key(key) = event::read()?
         {
-            for action in app.update(Msg::Key(key)) {
-                handle_action(action, &input_tx);
-            }
+            dispatch(
+                app.update(Msg::Key(key)),
+                &mut input_tx,
+                &mut agent_rx,
+                &cwd,
+                &model,
+            );
         }
     }
 
     Ok(())
 }
 
-fn spawn_agent_thread(
-    input_rx: mpsc::Receiver<AgentInput>,
-    event_tx: mpsc::Sender<Envelope>,
-    cwd: String,
-    model: Model,
-) {
+fn spawn_agent(cwd: &str, model: &Model) -> (mpsc::Sender<AgentInput>, mpsc::Receiver<Envelope>) {
+    let (agent_tx, agent_rx) = mpsc::channel::<Envelope>();
+    let (input_tx, input_rx) = mpsc::channel::<AgentInput>();
+    let cwd = cwd.to_owned();
+    let model = model.clone();
+
     thread::spawn(move || {
         let provider = match maki_providers::provider::from_model(&model) {
             Ok(p) => p,
             Err(e) => {
                 error!(error = %e, "provider error");
-                let _ = event_tx.send(
+                let _ = agent_tx.send(
                     AgentEvent::Error {
                         message: e.to_string(),
                     }
@@ -109,11 +115,11 @@ fn spawn_agent_thread(
                 input,
                 &mut history,
                 &system,
-                &event_tx,
+                &agent_tx,
                 None,
             ) {
                 error!(error = %e, "agent error");
-                let _ = event_tx.send(
+                let _ = agent_tx.send(
                     AgentEvent::Error {
                         message: e.to_string(),
                     }
@@ -122,13 +128,26 @@ fn spawn_agent_thread(
             }
         }
     });
+
+    (input_tx, agent_rx)
 }
 
-fn handle_action(action: Action, input_tx: &mpsc::Sender<AgentInput>) {
-    match action {
-        Action::SendMessage(input) => {
-            let _ = input_tx.send(input);
+fn dispatch(
+    actions: Vec<Action>,
+    input_tx: &mut mpsc::Sender<AgentInput>,
+    agent_rx: &mut mpsc::Receiver<Envelope>,
+    cwd: &str,
+    model: &Model,
+) {
+    for action in actions {
+        match action {
+            Action::SendMessage(input) => {
+                let _ = input_tx.send(input);
+            }
+            Action::CancelAgent => {
+                (*input_tx, *agent_rx) = spawn_agent(cwd, model);
+            }
+            Action::Quit => {}
         }
-        Action::Quit => {}
     }
 }
