@@ -27,14 +27,13 @@ struct StreamingCache {
 }
 
 impl StreamingCache {
-    fn get_or_update(&mut self, visible: &str, prefix: &str, style: Style) -> Vec<Line<'static>> {
+    fn get_or_update(&mut self, visible: &str, prefix: &str, style: Style) -> &[Line<'static>] {
         let len = visible.len();
-        if len == self.byte_len && !self.lines.is_empty() {
-            return self.lines.clone();
+        if len != self.byte_len || self.lines.is_empty() {
+            self.lines = text_to_lines(visible, prefix, style, Some(&mut self.highlighters));
+            self.byte_len = len;
         }
-        self.lines = text_to_lines(visible, prefix, style, Some(&mut self.highlighters));
-        self.byte_len = len;
-        self.lines.clone()
+        &self.lines
     }
 }
 
@@ -212,8 +211,6 @@ impl MessagesPanel {
             })
             .collect();
 
-        let last_cached_is_tool = self.cached_segments.last().is_some_and(|s| s.is_tool());
-
         let mut segments: Vec<(&[Line<'static>], bool)> = self
             .cached_segments
             .iter()
@@ -221,8 +218,7 @@ impl MessagesPanel {
             .collect();
 
         let spacer_line = vec![Line::default()];
-        let mut streaming_lines = Vec::new();
-        for (tw, cache, prefix, style) in [
+        let streaming_sources: [(&Typewriter, &mut StreamingCache, &str, Style); 2] = [
             (
                 &self.streaming_thinking,
                 &mut self.cached_streaming_thinking,
@@ -235,23 +231,22 @@ impl MessagesPanel {
                 "maki> ",
                 theme::ASSISTANT,
             ),
-        ] {
-            if !tw.is_empty() {
-                let lines = cache.get_or_update(tw.visible(), prefix, style);
-                streaming_lines.extend(lines);
+        ];
+        for (tw, cache, prefix, style) in streaming_sources {
+            if tw.is_empty() {
+                continue;
             }
-        }
-        if !streaming_lines.is_empty() {
-            if last_cached_is_tool {
+            let lines = cache.get_or_update(tw.visible(), prefix, style);
+            if !segments.is_empty() {
                 segments.push((&spacer_line, false));
                 heights.push(1);
             }
             heights.push(
-                Paragraph::new(streaming_lines.clone())
+                Paragraph::new(lines.to_vec())
                     .wrap(Wrap { trim: false })
                     .line_count(width) as u16,
             );
-            segments.push((&streaming_lines, false));
+            segments.push((lines, false));
         }
 
         let total_lines: u16 = heights.iter().sum();
@@ -355,19 +350,12 @@ impl MessagesPanel {
                 };
                 let lines = text_to_lines(&msg.text, prefix, base_style, None);
 
-                let last_was_tool = self.cached_segments.last().is_some_and(|s| s.is_tool());
-                if self.cached_segments.is_empty() || last_was_tool {
-                    self.push_spacer_if_needed();
-                    self.cached_segments.push(Segment {
-                        lines,
-                        tool_id: None,
-                        cached_height: None,
-                    });
-                } else {
-                    let last = self.cached_segments.last_mut().unwrap();
-                    last.lines.extend(lines);
-                    last.cached_height = None;
-                }
+                self.push_spacer_if_needed();
+                self.cached_segments.push(Segment {
+                    lines,
+                    tool_id: None,
+                    cached_height: None,
+                });
             }
         }
         self.cached_msg_count = self.messages.len();
