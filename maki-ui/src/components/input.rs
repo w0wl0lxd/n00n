@@ -266,4 +266,24 @@ mod tests {
         input.history_up();
         assert_eq!(input.input, "bc");
     }
+
+    #[test]
+    fn edit_during_browse_then_up_overwrites_modification() {
+        let mut input = InputBox::new();
+        submit_text(&mut input, "first");
+        submit_text(&mut input, "second");
+        type_text(&mut input, "draft");
+
+        input.history_up();
+        assert_eq!(input.input, "second");
+        input.insert_char('!');
+        assert_eq!(input.input, "second!");
+
+        input.history_up();
+        assert_eq!(input.input, "first");
+        input.history_down();
+        assert_eq!(input.input, "second");
+        input.history_down();
+        assert_eq!(input.input, "draft");
+    }
 }

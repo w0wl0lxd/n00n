@@ -325,6 +325,32 @@ mod tests {
     }
 
     #[test]
+    fn from_api_unknown_tool_returns_error() {
+        let err = ToolCall::from_api("nonexistent_tool", &json!({})).unwrap_err();
+        match err {
+            AgentError::Tool { tool, message } => {
+                assert_eq!(tool, "nonexistent_tool");
+                assert!(message.contains("unknown variant"));
+            }
+            other => panic!("expected AgentError::Tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn definitions_filtered_restricts_to_allowed() {
+        let filtered = ToolCall::definitions_filtered(Some(&["bash", "read"]));
+        let names: Vec<&str> = filtered
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"bash"));
+        assert!(names.contains(&"read"));
+        assert!(!names.iter().any(|n| *n != "bash" && *n != "read"));
+    }
+
+    #[test]
     fn plan_mode_restricts_mutations() {
         let dir = TempDir::new().unwrap();
         let plan_path = dir.path().join("plan.md").to_string_lossy().to_string();

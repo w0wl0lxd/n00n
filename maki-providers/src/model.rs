@@ -342,4 +342,32 @@ mod tests {
             std::mem::discriminant(&expected)
         );
     }
+
+    #[test]
+    fn cost_computes_all_token_types() {
+        let pricing = ModelPricing {
+            input: 3.00,
+            output: 15.00,
+            cache_write: 3.75,
+            cache_read: 0.30,
+        };
+        let usage = TokenUsage {
+            input: 1_000_000,
+            output: 100_000,
+            cache_creation: 200_000,
+            cache_read: 500_000,
+        };
+        let cost = usage.cost(&pricing);
+        let expected = 3.0 + 1.5 + 0.75 + 0.15;
+        assert!((cost - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn spec_roundtrips_through_from_spec() {
+        let model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
+        let spec = model.spec();
+        let round = Model::from_spec(&spec).unwrap();
+        assert_eq!(round.id, model.id);
+        assert_eq!(round.max_output_tokens, model.max_output_tokens);
+    }
 }

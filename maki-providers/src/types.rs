@@ -346,4 +346,27 @@ mod tests {
         let err_json: Value = serde_json::to_value(&err).unwrap();
         assert_eq!(err_json["is_error"], true);
     }
+
+    #[test]
+    fn tool_results_maps_events_to_content_blocks() {
+        let events = vec![ToolDoneEvent {
+            id: "t1".into(),
+            tool: "bash",
+            output: ToolOutput::Plain("fail".into()),
+            is_error: true,
+        }];
+        let msg = Message::tool_results(events);
+        assert!(matches!(msg.role, Role::User));
+        match &msg.content[0] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                is_error,
+                ..
+            } => {
+                assert_eq!(tool_use_id, "t1");
+                assert!(is_error);
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
 }

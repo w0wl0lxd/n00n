@@ -500,4 +500,40 @@ mod tests {
         let search = "fn f() {\n    w();\n    x();\n    y();\n    z();\n}";
         assert!(context_aware(content, search).is_empty());
     }
+
+    #[test]
+    fn levenshtein_dp_loop() {
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
+    }
+
+    #[test_case("hello\\nworld", "hello\nworld" ; "newline")]
+    #[test_case("no escapes", "no escapes" ; "passthrough")]
+    #[test_case("trailing\\", "trailing\\" ; "trailing_backslash")]
+    #[test_case("\\z", "\\z" ; "unknown_escape_kept")]
+    fn unescape_cases(input: &str, expected: &str) {
+        assert_eq!(unescape(input), expected);
+    }
+
+    #[test_case("hello   world", "hello world" ; "collapse_spaces")]
+    #[test_case("a\tb\nc", "a b c" ; "tabs_and_newlines")]
+    fn normalize_whitespace_cases(input: &str, expected: &str) {
+        assert_eq!(normalize_whitespace(input), expected);
+    }
+
+    #[test]
+    fn strip_common_indent_skips_blank_lines() {
+        let lines = vec!["    a", "", "    b"];
+        let result = strip_common_indent(&lines);
+        assert_eq!(result, "a\n\nb");
+    }
+
+    #[test]
+    fn replace_returns_match_offset() {
+        let exact = replace("let x = 1;", "let x = 1;", "let x = 2;", false).unwrap();
+        assert_eq!(exact.match_offset, 0);
+
+        let all = replace("aXbXc", "X", "Y", true).unwrap();
+        assert_eq!(all.content, "aYbYc");
+        assert_eq!(all.match_offset, 1);
+    }
 }
