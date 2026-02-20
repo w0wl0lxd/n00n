@@ -16,6 +16,7 @@ const ASSISTANT_STYLE: Style = Style::new().fg(Color::White);
 const THINKING_STYLE: Style = Style::new()
     .fg(Color::DarkGray)
     .add_modifier(Modifier::ITALIC);
+const TOOL_BG: Style = Style::new().bg(Color::Rgb(30, 30, 30));
 const TOOL_STYLE: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::DIM);
 const TOOL_INDICATOR: &str = "● ";
 const TOOL_IN_PROGRESS_STYLE: Style = Style::new().fg(Color::White);
@@ -27,6 +28,17 @@ const CURSOR_STYLE: Style = Style::new()
 const STATUS_ERROR_STYLE: Style = Style::new().fg(Color::Red);
 const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 5;
 
+struct Segment {
+    lines: Vec<Line<'static>>,
+    tool_id: Option<String>,
+}
+
+impl Segment {
+    fn is_tool(&self) -> bool {
+        self.tool_id.is_some()
+    }
+}
+
 pub struct MessagesPanel {
     messages: Vec<DisplayMessage>,
     streaming_thinking: Typewriter,
@@ -34,7 +46,7 @@ pub struct MessagesPanel {
     scroll_top: u16,
     auto_scroll: bool,
     viewport_height: u16,
-    cached_lines: Vec<Line<'static>>,
+    cached_segments: Vec<Segment>,
     cached_msg_count: usize,
 }
 
@@ -47,7 +59,7 @@ impl MessagesPanel {
             scroll_top: u16::MAX,
             auto_scroll: true,
             viewport_height: 24,
-            cached_lines: Vec::new(),
+            cached_segments: Vec::new(),
             cached_msg_count: 0,
         }
     }
@@ -148,7 +160,16 @@ impl MessagesPanel {
         self.streaming_thinking.tick();
         self.streaming_text.tick();
 
-        let mut lines = self.cached_lines.clone();
+        let last_cached_is_tool = self.cached_segments.last().is_some_and(|s| s.is_tool());
+
+        let mut segments: Vec<(&[Line<'static>], bool)> = self
+            .cached_segments
+            .iter()
+            .map(|s| (s.lines.as_slice(), s.is_tool()))
+            .collect();
+
+        let spacer_line = vec![Line::default()];
+        let mut streaming_lines = Vec::new();
         for (tw, prefix, style) in [
             (&self.streaming_thinking, "thinking> ", THINKING_STYLE),
             (&self.streaming_text, "maki> ", ASSISTANT_STYLE),
@@ -158,12 +179,26 @@ impl MessagesPanel {
                 if let Some(last) = parsed.last_mut() {
                     last.spans.push(Span::styled("_", CURSOR_STYLE));
                 }
-                lines.extend(parsed);
+                streaming_lines.extend(parsed);
             }
         }
+        if !streaming_lines.is_empty() {
+            if last_cached_is_tool {
+                segments.push((&spacer_line, false));
+            }
+            segments.push((&streaming_lines, false));
+        }
 
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-        let total_lines = paragraph.line_count(area.width) as u16;
+        let heights: Vec<u16> = segments
+            .iter()
+            .map(|(lines, _)| {
+                Paragraph::new(lines.to_vec())
+                    .wrap(Wrap { trim: false })
+                    .line_count(area.width) as u16
+            })
+            .collect();
+
+        let total_lines: u16 = heights.iter().sum();
         let max_scroll = total_lines.saturating_sub(area.height);
         self.scroll_top = self.scroll_top.min(max_scroll);
         if self.scroll_top >= max_scroll {
@@ -173,8 +208,32 @@ impl MessagesPanel {
             self.scroll_top = max_scroll;
         }
 
-        let paragraph = paragraph.scroll((self.scroll_top, 0));
-        frame.render_widget(paragraph, area);
+        let mut skip = self.scroll_top;
+        let mut y = area.y;
+        let bottom = area.y + area.height;
+
+        for (i, (lines, is_tool)) in segments.iter().enumerate() {
+            if y >= bottom {
+                break;
+            }
+            let h = heights[i];
+            if skip >= h {
+                skip -= h;
+                continue;
+            }
+            let visible_h = h.saturating_sub(skip).min(bottom - y);
+            let seg_area = Rect::new(area.x, y, area.width, visible_h);
+            let mut p = Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false });
+            if *is_tool {
+                p = p.style(TOOL_BG);
+            }
+            if skip > 0 {
+                p = p.scroll((skip, 0));
+                skip = 0;
+            }
+            frame.render_widget(p, seg_area);
+            y += visible_h;
+        }
     }
 
     fn flush_thinking(&mut self) {
@@ -188,14 +247,15 @@ impl MessagesPanel {
 
     fn invalidate_line_cache(&mut self) {
         self.cached_msg_count = 0;
-        self.cached_lines.clear();
+        self.cached_segments.clear();
     }
 
     fn rebuild_line_cache(&mut self) {
         if self.cached_msg_count == self.messages.len() {
             return;
         }
-        for msg in &self.messages[self.cached_msg_count..] {
+        for i in self.cached_msg_count..self.messages.len() {
+            let msg = &self.messages[i];
             let (prefix, base_style) = match &msg.role {
                 DisplayRole::User => ("you> ", USER_STYLE),
                 DisplayRole::Assistant => ("maki> ", ASSISTANT_STYLE),
@@ -216,9 +276,45 @@ impl MessagesPanel {
                     .spans
                     .insert(0, Span::styled(TOOL_INDICATOR, indicator_style));
             }
-            self.cached_lines.extend(lines);
+
+            if let DisplayRole::Tool { id, .. } = &msg.role {
+                let id = id.clone();
+                if let Some(seg) = self
+                    .cached_segments
+                    .iter_mut()
+                    .rfind(|s| s.tool_id.as_deref() == Some(&id))
+                {
+                    seg.lines.extend(lines);
+                } else {
+                    self.push_spacer_if_needed();
+                    self.cached_segments.push(Segment {
+                        lines,
+                        tool_id: Some(id),
+                    });
+                }
+            } else {
+                let last_was_tool = self.cached_segments.last().is_some_and(|s| s.is_tool());
+                if self.cached_segments.is_empty() || last_was_tool {
+                    self.push_spacer_if_needed();
+                    self.cached_segments.push(Segment {
+                        lines,
+                        tool_id: None,
+                    });
+                } else {
+                    self.cached_segments.last_mut().unwrap().lines.extend(lines);
+                }
+            }
         }
         self.cached_msg_count = self.messages.len();
+    }
+
+    fn push_spacer_if_needed(&mut self) {
+        if !self.cached_segments.is_empty() {
+            self.cached_segments.push(Segment {
+                lines: vec![Line::default()],
+                tool_id: None,
+            });
+        }
     }
 }
 
@@ -332,13 +428,9 @@ mod tests {
             role: DisplayRole::User,
             text: "short".into(),
         });
-
         panel.scroll_top = 1000;
         panel.auto_scroll = false;
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| panel.view(f, f.area())).unwrap();
-
+        rebuild(&mut panel);
         assert_eq!(panel.scroll_top, 0);
     }
 
@@ -346,40 +438,69 @@ mod tests {
     fn scroll_up_pins_viewport_during_streaming() {
         let mut panel = MessagesPanel::new();
         panel.streaming_text.set_buffer(&"a\n".repeat(30));
-
-        let backend = TestBackend::new(80, 10);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| panel.view(f, f.area())).unwrap();
+        render(&mut panel, 80, 10);
 
         panel.scroll(1);
         panel.scroll(1);
-        terminal.draw(|f| panel.view(f, f.area())).unwrap();
+        render(&mut panel, 80, 10);
         let pinned = panel.scroll_top;
 
         panel.text_delta("b\nb\nb\n");
-        terminal.draw(|f| panel.view(f, f.area())).unwrap();
+        render(&mut panel, 80, 10);
 
         assert!(!panel.auto_scroll);
         assert_eq!(panel.scroll_top, pinned);
+    }
+
+    fn render(panel: &mut MessagesPanel, width: u16, height: u16) {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| panel.view(f, f.area())).unwrap();
+    }
+
+    fn rebuild(panel: &mut MessagesPanel) {
+        render(panel, 80, 24);
+    }
+
+    #[test]
+    fn tool_start_and_done_grouped_into_one_segment() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(ToolStartEvent {
+            id: "t1".into(),
+            tool: "bash",
+            summary: "ls".into(),
+        });
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "bash",
+            content: "file.txt".into(),
+            is_error: false,
+        });
+        rebuild(&mut panel);
+
+        let tool_segs: Vec<_> = panel
+            .cached_segments
+            .iter()
+            .filter(|s| s.is_tool())
+            .collect();
+        assert_eq!(tool_segs.len(), 1);
+        assert_eq!(tool_segs[0].tool_id.as_deref(), Some("t1"));
     }
 
     #[test]
     fn ctrl_d_to_bottom_re_enables_auto_scroll() {
         let mut panel = MessagesPanel::new();
         panel.streaming_text.set_buffer(&"a\n".repeat(30));
-
-        let backend = TestBackend::new(80, 10);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| panel.view(f, f.area())).unwrap();
+        render(&mut panel, 80, 10);
         assert!(panel.auto_scroll);
 
         let half = panel.half_page();
         panel.scroll(half);
-        terminal.draw(|f| panel.view(f, f.area())).unwrap();
+        render(&mut panel, 80, 10);
         assert!(!panel.auto_scroll);
 
         panel.scroll(-half);
-        terminal.draw(|f| panel.view(f, f.area())).unwrap();
+        render(&mut panel, 80, 10);
         assert!(panel.auto_scroll);
     }
 }
