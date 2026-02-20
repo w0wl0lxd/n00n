@@ -579,12 +579,22 @@ mod tests {
     #[test_case(20, 'u', 10 ; "ctrl_u_scrolls_up")]
     #[test_case(5,  'd', 15 ; "ctrl_d_scrolls_down")]
     #[test_case(0,  'd', 10 ; "ctrl_d_from_top")]
+    #[test_case(5,  'y', 4  ; "ctrl_y_scrolls_up_one")]
+    #[test_case(0,  'y', 0  ; "ctrl_y_saturates_at_zero")]
+    #[test_case(5,  'e', 6  ; "ctrl_e_scrolls_down_one")]
+    #[test_case(0,  'e', 1  ; "ctrl_e_from_top")]
     fn half_page_scroll(initial: u16, key_char: char, expected: u16) {
         let mut panel = MessagesPanel::new();
         panel.viewport_height = 20;
         panel.scroll_top = initial;
         let half = panel.half_page();
-        let delta = if key_char == 'u' { half } else { -half };
+        let delta = match key_char {
+            'u' => half,
+            'd' => -half,
+            'y' => 1,
+            'e' => -1,
+            _ => unreachable!(),
+        };
         panel.scroll(delta);
         assert_eq!(panel.scroll_top, expected);
     }

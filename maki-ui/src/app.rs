@@ -74,6 +74,14 @@ impl App {
                     self.messages_panel.scroll(-half);
                     vec![]
                 }
+                KeyCode::Char('y') => {
+                    self.messages_panel.scroll(1);
+                    vec![]
+                }
+                KeyCode::Char('e') => {
+                    self.messages_panel.scroll(-1);
+                    vec![]
+                }
                 _ => vec![],
             };
         }
