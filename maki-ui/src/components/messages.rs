@@ -24,6 +24,7 @@ struct StreamingCache {
     byte_len: usize,
     lines: Vec<Line<'static>>,
     highlighters: Vec<CodeHighlighter>,
+    dim: bool,
 }
 
 impl StreamingCache {
@@ -31,6 +32,9 @@ impl StreamingCache {
         let len = visible.len();
         if len != self.byte_len || self.lines.is_empty() {
             self.lines = text_to_lines(visible, prefix, style, Some(&mut self.highlighters));
+            if self.dim {
+                theme::dim_lines(&mut self.lines);
+            }
             self.byte_len = len;
         }
         &self.lines
@@ -77,7 +81,10 @@ impl MessagesPanel {
             viewport_height: 24,
             cached_segments: Vec::new(),
             cached_msg_count: 0,
-            cached_streaming_thinking: StreamingCache::default(),
+            cached_streaming_thinking: StreamingCache {
+                dim: true,
+                ..StreamingCache::default()
+            },
             cached_streaming_text: StreamingCache::default(),
         }
     }
@@ -294,7 +301,10 @@ impl MessagesPanel {
                 text: self.streaming_thinking.take_all(),
                 tool_output: None,
             });
-            self.cached_streaming_thinking = StreamingCache::default();
+            self.cached_streaming_thinking = StreamingCache {
+                dim: true,
+                ..StreamingCache::default()
+            };
         }
     }
 
@@ -348,7 +358,10 @@ impl MessagesPanel {
                     DisplayRole::Error => ("", theme::ERROR),
                     DisplayRole::Tool { .. } => unreachable!(),
                 };
-                let lines = text_to_lines(&msg.text, prefix, base_style, None);
+                let mut lines = text_to_lines(&msg.text, prefix, base_style, None);
+                if msg.role == DisplayRole::Thinking {
+                    theme::dim_lines(&mut lines);
+                }
 
                 self.push_spacer_if_needed();
                 self.cached_segments.push(Segment {

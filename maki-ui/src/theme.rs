@@ -1,4 +1,5 @@
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Line;
 
 pub const BACKGROUND: Color = Color::Rgb(0x28, 0x2a, 0x36);
 pub const BACKGROUND_2: Color = Color::Rgb(0x22, 0x24, 0x30);
@@ -43,3 +44,29 @@ pub const TODO_PENDING: Style = Style::new().fg(FOREGROUND);
 pub const TODO_CANCELLED: Style = Style::new().fg(COMMENT);
 
 pub const INPUT_BORDER: Color = COMMENT;
+
+const fn midpoint(a: u8, b: u8) -> u8 {
+    (a as u16 / 2 + b as u16 / 2) as u8
+}
+
+fn dim_style(style: Style) -> Style {
+    let Color::Rgb(br, bg, bb) = BACKGROUND else {
+        return style;
+    };
+    match style.fg {
+        Some(Color::Rgb(r, g, b)) => style.fg(Color::Rgb(
+            midpoint(r, br),
+            midpoint(g, bg),
+            midpoint(b, bb),
+        )),
+        _ => style,
+    }
+}
+
+pub fn dim_lines(lines: &mut [Line<'_>]) {
+    for line in lines {
+        for span in &mut line.spans {
+            span.style = dim_style(span.style);
+        }
+    }
+}
