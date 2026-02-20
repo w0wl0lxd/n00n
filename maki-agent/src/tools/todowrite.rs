@@ -1,10 +1,10 @@
 use maki_tool_macro::Tool;
 use serde::Deserialize;
 
-const MARKER_COMPLETED: &str = "[x]";
-const MARKER_IN_PROGRESS: &str = "[>]";
+const MARKER_COMPLETED: &str = "[✓]";
+const MARKER_IN_PROGRESS: &str = "[•]";
 const MARKER_PENDING: &str = "[ ]";
-const MARKER_CANCELLED: &str = "[-]";
+const MARKER_CANCELLED: &str = "[x]";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
