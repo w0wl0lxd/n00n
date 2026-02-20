@@ -237,10 +237,7 @@ impl MessagesPanel {
             ),
         ] {
             if !tw.is_empty() {
-                let mut lines = cache.get_or_update(tw.visible(), prefix, style);
-                if let Some(last) = lines.last_mut() {
-                    last.spans.push(Span::styled("_", theme::CURSOR));
-                }
+                let lines = cache.get_or_update(tw.visible(), prefix, style);
                 streaming_lines.extend(lines);
             }
         }
