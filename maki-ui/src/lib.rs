@@ -3,6 +3,7 @@ pub mod app;
 mod components;
 mod highlight;
 mod markdown;
+mod text_buffer;
 mod theme;
 
 use std::env;

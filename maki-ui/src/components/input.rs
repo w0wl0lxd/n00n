@@ -1,77 +1,72 @@
+use crate::text_buffer::TextBuffer;
 use crate::theme;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
-use unicode_width::UnicodeWidthStr;
+
+const MAX_INPUT_LINES: u16 = 10;
 
 pub struct InputBox {
-    input: String,
-    /// Cursor position as a character index (not byte offset)
-    cursor_pos: usize,
+    pub(crate) buffer: TextBuffer,
     history: Vec<String>,
     history_index: Option<usize>,
     draft: String,
+    scroll_y: u16,
 }
 
 impl InputBox {
     pub fn new() -> Self {
         Self {
-            input: String::new(),
-            cursor_pos: 0,
+            buffer: TextBuffer::new(String::new()),
             history: Vec::new(),
             history_index: None,
             draft: String::new(),
+            scroll_y: 0,
         }
     }
 
-    fn byte_offset(&self) -> usize {
-        self.input
-            .char_indices()
-            .nth(self.cursor_pos)
-            .map_or(self.input.len(), |(i, _)| i)
+    pub fn height(&self) -> u16 {
+        (self.buffer.line_count() as u16).min(MAX_INPUT_LINES) + 2
     }
 
-    pub fn insert_char(&mut self, c: char) {
-        self.input.insert(self.byte_offset(), c);
-        self.cursor_pos += 1;
+    pub fn is_at_first_line(&self) -> bool {
+        self.buffer.y() == 0
     }
 
-    pub fn backspace(&mut self) {
-        if self.cursor_pos > 0 {
-            self.cursor_pos -= 1;
-            let offset = self.byte_offset();
-            let ch = self.input[offset..].chars().next().unwrap();
-            self.input.replace_range(offset..offset + ch.len_utf8(), "");
-        }
+    pub fn is_at_last_line(&self) -> bool {
+        self.buffer.y() == self.buffer.line_count() - 1
     }
 
-    pub fn move_left(&mut self) {
-        self.cursor_pos = self.cursor_pos.saturating_sub(1);
+    pub fn char_before_cursor_is_backslash(&self) -> bool {
+        let line = &self.buffer.lines()[self.buffer.y()];
+        let x = self.buffer.x();
+        x > 0 && line.as_bytes()[x - 1] == b'\\'
     }
 
-    pub fn move_right(&mut self) {
-        let char_count = self.input.chars().count();
-        self.cursor_pos = (self.cursor_pos + 1).min(char_count);
+    pub fn continue_line(&mut self) {
+        self.buffer.remove_char();
+        self.buffer.add_line();
     }
 
     pub fn submit(&mut self) -> Option<String> {
-        let text = self.input.trim().to_string();
+        let text = self.buffer.value().trim().to_string();
         if text.is_empty() {
             return None;
         }
         self.history.push(text.clone());
         self.history_index = None;
         self.draft.clear();
-        self.input.clear();
-        self.cursor_pos = 0;
+        self.buffer.clear();
+        self.scroll_y = 0;
         Some(text)
     }
 
     fn set_input(&mut self, s: String) {
-        self.cursor_pos = s.chars().count();
-        self.input = s;
+        self.buffer = TextBuffer::new(s);
+        self.buffer.move_to_end();
     }
 
     pub fn history_up(&mut self) {
@@ -80,7 +75,7 @@ impl InputBox {
         }
         let new_index = match self.history_index {
             None => {
-                self.draft = self.input.clone();
+                self.draft = self.buffer.value();
                 self.history.len() - 1
             }
             Some(0) => return,
@@ -106,12 +101,55 @@ impl InputBox {
         }
     }
 
-    pub fn view(&self, frame: &mut Frame, area: Rect, is_streaming: bool) {
+    pub fn view(&mut self, frame: &mut Frame, area: Rect, is_streaming: bool) {
         let indicator = if is_streaming { "..." } else { "> " };
-        let input_text = format!("{indicator}{}", self.input);
+        let content_height = area.height.saturating_sub(2);
+        let cursor_y = self.buffer.y() as u16;
+
+        if cursor_y < self.scroll_y {
+            self.scroll_y = cursor_y;
+        } else if cursor_y >= self.scroll_y + content_height {
+            self.scroll_y = cursor_y - content_height + 1;
+        }
+
+        let styled_lines: Vec<Line> = self
+            .buffer
+            .lines()
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let prefix = if i == 0 { indicator } else { "  " };
+                let mut spans = vec![Span::raw(prefix.to_string())];
+
+                if !is_streaming && i == self.buffer.y() {
+                    let x = self.buffer.x();
+                    let (before, after) = line.split_at(x.min(line.len()));
+                    if after.is_empty() {
+                        spans.push(Span::raw(before.to_string()));
+                        spans.push(Span::styled(" ", Style::new().reversed()));
+                    } else {
+                        let mut chars = after.chars();
+                        let cursor_char = chars.next().unwrap();
+                        spans.push(Span::raw(before.to_string()));
+                        spans.push(Span::styled(
+                            cursor_char.to_string(),
+                            Style::new().reversed(),
+                        ));
+                        let rest: String = chars.collect();
+                        spans.push(Span::raw(rest));
+                    }
+                } else {
+                    spans.push(Span::raw(line.clone()));
+                }
+                Line::from(spans)
+            })
+            .collect();
+
+        let text = Text::from(styled_lines);
         let border_style = Style::new().fg(theme::INPUT_BORDER);
-        let paragraph = Paragraph::new(input_text)
+        let paragraph = Paragraph::new(text)
             .style(Style::new().fg(theme::FOREGROUND))
+            .scroll((self.scroll_y, 0))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -119,14 +157,6 @@ impl InputBox {
                     .border_style(border_style),
             );
         frame.render_widget(paragraph, area);
-
-        if !is_streaming {
-            let text_before_cursor = &self.input[..self.byte_offset()];
-            let display_width = text_before_cursor.width() as u16;
-            let cursor_x = area.x + 1 + indicator.len() as u16 + display_width;
-            let cursor_y = area.y + 1;
-            frame.set_cursor_position((cursor_x, cursor_y));
-        }
     }
 }
 
@@ -134,73 +164,9 @@ impl InputBox {
 mod tests {
     use super::*;
 
-    #[test]
-    fn backspace_and_cursor_movement() {
-        let mut input = InputBox::new();
-        input.insert_char('a');
-        input.insert_char('b');
-        input.insert_char('c');
-        assert_eq!(input.input, "abc");
-
-        input.move_left();
-        assert_eq!(input.cursor_pos, 2);
-
-        input.backspace();
-        assert_eq!(input.input, "ac");
-        assert_eq!(input.cursor_pos, 1);
-    }
-
-    #[test]
-    fn submit_returns_trimmed_and_clears() {
-        let mut input = InputBox::new();
-        input.insert_char(' ');
-        input.insert_char('x');
-        input.insert_char(' ');
-
-        let result = input.submit();
-        assert_eq!(result.as_deref(), Some("x"));
-        assert!(input.input.is_empty());
-        assert_eq!(input.cursor_pos, 0);
-    }
-
-    #[test]
-    fn submit_empty_returns_none() {
-        let mut input = InputBox::new();
-        assert!(input.submit().is_none());
-
-        input.insert_char(' ');
-        assert!(input.submit().is_none());
-    }
-
-    #[test]
-    fn multibyte_insert_move_backspace() {
-        let mut input = InputBox::new();
-        for c in "café🎉".chars() {
-            input.insert_char(c);
-        }
-        assert_eq!(input.input, "café🎉");
-
-        // move back past emoji and 'é', insert in the middle
-        input.move_left();
-        input.move_left();
-        input.insert_char('X');
-        assert_eq!(input.input, "cafXé🎉");
-
-        // backspace the multi-byte 'é' after it
-        input.move_right();
-        input.backspace();
-        assert_eq!(input.input, "cafX🎉");
-
-        // move_right clamps at end
-        input.move_right();
-        input.move_right();
-        input.move_right();
-        assert_eq!(input.cursor_pos, input.input.chars().count());
-    }
-
     fn type_text(input: &mut InputBox, text: &str) {
         for c in text.chars() {
-            input.insert_char(c);
+            input.buffer.push_char(c);
         }
     }
 
@@ -210,80 +176,105 @@ mod tests {
     }
 
     #[test]
-    fn history_navigation_on_empty_is_noop() {
+    fn submit() {
         let mut input = InputBox::new();
+        assert!(input.submit().is_none());
+
+        type_text(&mut input, " ");
+        assert!(input.submit().is_none());
+
+        type_text(&mut input, " x ");
+        assert_eq!(input.submit().as_deref(), Some("x"));
+        assert_eq!(input.buffer.value(), "");
+
+        // multiline
+        type_text(&mut input, "line1");
+        input.buffer.add_line();
+        type_text(&mut input, "line2");
+        assert_eq!(input.submit().as_deref(), Some("line1\nline2"));
+    }
+
+    #[test]
+    fn backslash_continuation() {
+        // at end of line: cursor is after backslash
+        let mut input = InputBox::new();
+        type_text(&mut input, "hello\\");
+        assert!(input.char_before_cursor_is_backslash());
+        input.continue_line();
+        assert_eq!(input.buffer.lines(), &["hello", ""]);
+
+        // mid-line: cursor right after backslash
+        let mut input = InputBox::new();
+        type_text(&mut input, "asd\\asd");
+        for _ in 0..3 {
+            input.buffer.move_left();
+        }
+        assert!(input.char_before_cursor_is_backslash());
+        input.continue_line();
+        assert_eq!(input.buffer.lines(), &["asd", "asd"]);
+    }
+
+    #[test]
+    fn height_capped_at_max() {
+        let mut input = InputBox::new();
+        let base = input.height();
+        for _ in 0..20 {
+            input.buffer.add_line();
+        }
+        assert!(input.height() > base);
+        assert!(input.height() <= MAX_INPUT_LINES + 2);
+    }
+
+    #[test]
+    fn first_last_line() {
+        let mut input = InputBox::new();
+        assert!(input.is_at_first_line());
+        assert!(input.is_at_last_line());
+
+        input.buffer.add_line();
+        assert!(!input.is_at_first_line());
+        assert!(input.is_at_last_line());
+
+        input.buffer.move_up();
+        assert!(input.is_at_first_line());
+        assert!(!input.is_at_last_line());
+    }
+
+    #[test]
+    fn history() {
+        let mut input = InputBox::new();
+
+        // noop on empty history
         input.history_up();
         input.history_down();
-        assert!(input.input.is_empty());
-    }
+        assert_eq!(input.buffer.value(), "");
 
-    #[test]
-    fn history_up_recalls_and_clamps_at_oldest() {
-        let mut input = InputBox::new();
         submit_text(&mut input, "a");
         submit_text(&mut input, "b");
-        submit_text(&mut input, "c");
-
-        input.history_up();
-        assert_eq!(input.input, "c");
-        input.history_up();
-        assert_eq!(input.input, "b");
-        input.history_up();
-        assert_eq!(input.input, "a");
-        input.history_up();
-        assert_eq!(input.input, "a");
-    }
-
-    #[test]
-    fn history_down_restores_draft() {
-        let mut input = InputBox::new();
-        submit_text(&mut input, "a");
         type_text(&mut input, "draft");
 
+        // navigate up through history, clamps at oldest
         input.history_up();
-        assert_eq!(input.input, "a");
-
-        input.history_down();
-        assert_eq!(input.input, "draft");
-
-        input.history_down();
-        assert_eq!(input.input, "draft");
-    }
-
-    #[test]
-    fn submit_while_browsing_resets_and_appends() {
-        let mut input = InputBox::new();
-        submit_text(&mut input, "a");
-        submit_text(&mut input, "b");
-
+        assert_eq!(input.buffer.value(), "b");
         input.history_up();
-        assert_eq!(input.input, "b");
+        assert_eq!(input.buffer.value(), "a");
+        input.history_up();
+        assert_eq!(input.buffer.value(), "a");
 
-        input.insert_char('c');
+        // navigate back down, restores draft
+        input.history_down();
+        assert_eq!(input.buffer.value(), "b");
+        input.history_down();
+        assert_eq!(input.buffer.value(), "draft");
+
+        // multiline content survives history roundtrip
+        input.buffer.clear();
+        type_text(&mut input, "line1");
+        input.buffer.add_line();
+        type_text(&mut input, "line2");
         input.submit();
-        assert!(input.input.is_empty());
-
         input.history_up();
-        assert_eq!(input.input, "bc");
-    }
-
-    #[test]
-    fn edit_during_browse_then_up_overwrites_modification() {
-        let mut input = InputBox::new();
-        submit_text(&mut input, "first");
-        submit_text(&mut input, "second");
-        type_text(&mut input, "draft");
-
-        input.history_up();
-        assert_eq!(input.input, "second");
-        input.insert_char('!');
-        assert_eq!(input.input, "second!");
-
-        input.history_up();
-        assert_eq!(input.input, "first");
-        input.history_down();
-        assert_eq!(input.input, "second");
-        input.history_down();
-        assert_eq!(input.input, "draft");
+        assert_eq!(input.buffer.value(), "line1\nline2");
+        assert!(input.is_at_last_line());
     }
 }

@@ -59,7 +59,9 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Vec<Action> {
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
+        let is_ctrl = key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT);
+        if is_ctrl {
             let half = self.messages_panel.half_page();
             return match key.code {
                 KeyCode::Char('c') => {
@@ -82,6 +84,14 @@ impl App {
                     self.messages_panel.scroll(-1);
                     vec![]
                 }
+                KeyCode::Char('w') if self.status != Status::Streaming => {
+                    self.input_box.buffer.remove_word_before_cursor();
+                    vec![]
+                }
+                KeyCode::Char('k') if self.status != Status::Streaming => {
+                    self.input_box.buffer.remove_line();
+                    vec![]
+                }
                 _ => vec![],
             };
         }
@@ -95,12 +105,20 @@ impl App {
                 self.messages_panel.scroll(-1);
                 return vec![];
             }
-            KeyCode::Up => {
+            KeyCode::Up if self.input_box.is_at_first_line() => {
                 self.input_box.history_up();
                 return vec![];
             }
-            KeyCode::Down => {
+            KeyCode::Down if self.input_box.is_at_last_line() => {
                 self.input_box.history_down();
+                return vec![];
+            }
+            KeyCode::Up => {
+                self.input_box.buffer.move_up();
+                return vec![];
+            }
+            KeyCode::Down => {
+                self.input_box.buffer.move_down();
                 return vec![];
             }
             KeyCode::Tab => {
@@ -117,6 +135,10 @@ impl App {
         }
 
         match key.code {
+            KeyCode::Enter if self.input_box.char_before_cursor_is_backslash() => {
+                self.input_box.continue_line();
+                vec![]
+            }
             KeyCode::Enter => {
                 let Some(text) = self.input_box.submit() else {
                     return vec![];
@@ -136,19 +158,31 @@ impl App {
                 })]
             }
             KeyCode::Char(c) => {
-                self.input_box.insert_char(c);
+                self.input_box.buffer.push_char(c);
                 vec![]
             }
             KeyCode::Backspace => {
-                self.input_box.backspace();
+                self.input_box.buffer.remove_char();
+                vec![]
+            }
+            KeyCode::Delete => {
+                self.input_box.buffer.delete_char();
                 vec![]
             }
             KeyCode::Left => {
-                self.input_box.move_left();
+                self.input_box.buffer.move_left();
                 vec![]
             }
             KeyCode::Right => {
-                self.input_box.move_right();
+                self.input_box.buffer.move_right();
+                vec![]
+            }
+            KeyCode::Home => {
+                self.input_box.buffer.move_home();
+                vec![]
+            }
+            KeyCode::End => {
+                self.input_box.buffer.move_end();
                 vec![]
             }
             _ => vec![],
@@ -226,9 +260,10 @@ impl App {
         let bg = Block::default().style(ratatui::style::Style::new().bg(theme::BACKGROUND));
         bg.render(frame.area(), frame.buffer_mut());
 
+        let input_height = self.input_box.height();
         let [msg_area, input_area, status_area] = Layout::vertical([
             Constraint::Min(1),
-            Constraint::Length(3),
+            Constraint::Length(input_height),
             Constraint::Length(1),
         ])
         .areas(frame.area());
@@ -355,6 +390,43 @@ mod tests {
         };
         assert_eq!(input.pending_plan.as_deref(), Some("plan.md"));
         assert!(app.pending_plan.is_none());
+    }
+
+    #[test]
+    fn backslash_enter_creates_newline() {
+        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        for c in "hello\\".chars() {
+            app.update(Msg::Key(key(KeyCode::Char(c))));
+        }
+        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(actions.is_empty(), "backslash-enter should not submit");
+        assert_eq!(app.input_box.buffer.lines(), &["hello", ""]);
+
+        for c in "world".chars() {
+            app.update(Msg::Key(key(KeyCode::Char(c))));
+        }
+        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], Action::SendMessage(s) if s.message == "hello\nworld"));
+    }
+
+    #[test]
+    fn altgr_chars_not_swallowed_by_ctrl_handler() {
+        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        let altgr_backslash = KeyEvent {
+            code: KeyCode::Char('\\'),
+            modifiers: KeyModifiers::CONTROL | KeyModifiers::ALT,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        app.update(Msg::Key(key(KeyCode::Char('h'))));
+        app.update(Msg::Key(key(KeyCode::Char('i'))));
+        app.update(Msg::Key(altgr_backslash));
+        assert_eq!(app.input_box.buffer.value(), "hi\\");
+
+        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(actions.is_empty(), "backslash-enter should not submit");
+        assert_eq!(app.input_box.buffer.lines(), &["hi", ""]);
     }
 
     #[test]
