@@ -21,13 +21,12 @@ const MAX_RETRIES: u32 = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
 
-/// How many messages from the end get a cache breakpoint (max 4 total per request).
-/// We use 2 slots for system prompt + tools, leaving this many for messages.
-/// With N=2 the last assistant reply + user message are marked, so next turn
-/// everything before them is a cache hit (cheaper, lower latency).
+/// Anthropic caches conversation by blocks (tools -> system -> messages).
+/// We use 1 cache breakpoint for the last tool block, and 1 for the system prompt.
+/// We're allowed to set up to 4 breakpoints. So we're left with 2 to use for messages.
 ///
 /// See https://platform.claude.com/docs/en/build-with-claude/prompt-caching.
-const CACHE_BREAKPOINTS: usize = 2;
+const MESSAGE_CACHE_BREAKPOINTS: usize = 2;
 
 #[derive(Deserialize)]
 struct Usage {
@@ -271,7 +270,7 @@ fn build_wire_messages(messages: &[Message]) -> Vec<WireMessage<'_>> {
         .iter()
         .enumerate()
         .map(|(msg_idx, msg)| {
-            let cache_last_block = msg_idx + CACHE_BREAKPOINTS >= len;
+            let cache_last_block = msg_idx + MESSAGE_CACHE_BREAKPOINTS >= len;
 
             WireMessage {
                 role: &msg.role,
