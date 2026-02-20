@@ -1,6 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 
 pub const BACKGROUND: Color = Color::Rgb(0x28, 0x2a, 0x36);
+pub const BACKGROUND_2: Color = Color::Rgb(0x22, 0x24, 0x30);
 pub const FOREGROUND: Color = Color::Rgb(0xf8, 0xf8, 0xf2);
 pub const COMMENT: Color = Color::Rgb(0x62, 0x72, 0xa4);
 pub const CYAN: Color = Color::Rgb(0x8b, 0xe9, 0xfd);
@@ -14,9 +15,8 @@ pub const YELLOW: Color = Color::Rgb(0xf1, 0xfa, 0x8c);
 pub const USER: Style = Style::new().fg(CYAN);
 pub const ASSISTANT: Style = Style::new().fg(FOREGROUND);
 pub const THINKING: Style = Style::new().fg(COMMENT).add_modifier(Modifier::ITALIC);
-const TOOL_BG_COLOR: Color = Color::Rgb(0x22, 0x24, 0x30);
-pub const TOOL_BG: Style = Style::new().bg(TOOL_BG_COLOR);
-pub const TOOL: Style = Style::new().fg(FOREGROUND).add_modifier(Modifier::DIM);
+pub const TOOL_BG: Style = Style::new().bg(BACKGROUND_2);
+pub const TOOL: Style = Style::new().fg(FOREGROUND);
 pub const TOOL_IN_PROGRESS: Style = Style::new().fg(FOREGROUND);
 pub const TOOL_SUCCESS: Style = Style::new().fg(GREEN);
 pub const TOOL_ERROR: Style = Style::new().fg(RED);
