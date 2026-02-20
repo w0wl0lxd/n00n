@@ -20,7 +20,7 @@ use tracing::error;
 
 use app::{Action, App, Msg};
 
-const ANIMATION_INTERVAL_MS: u64 = 2;
+const ANIMATION_INTERVAL_MS: u64 = 8;
 const EVENT_POLL_INTERVAL_MS: u64 = 8;
 
 pub fn run(model: Model) -> Result<()> {
@@ -46,10 +46,6 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
     loop {
         terminal.draw(|f| app.view(f))?;
 
-        if app.should_quit {
-            break;
-        }
-
         let mut had_agent_msg = false;
         while let Ok(envelope) = agent_rx.try_recv() {
             had_agent_msg = true;
@@ -60,6 +56,10 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
                 &cwd,
                 &model,
             );
+        }
+
+        if app.should_quit {
+            break;
         }
 
         let poll_duration = if had_agent_msg {
