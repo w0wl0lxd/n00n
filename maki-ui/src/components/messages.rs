@@ -380,7 +380,11 @@ impl MessagesPanel {
             .split_once('\n')
             .map_or(msg.text.as_str(), |(h, _)| h);
         let tool_name = msg.role.tool_name().unwrap_or("?");
-        let mut lines = text_to_lines(header, &format!("{tool_name}> "), theme::TOOL, None);
+        let prefix = format!("{tool_name}> ");
+        let mut lines = vec![Line::from(vec![
+            Span::styled(prefix, theme::TOOL_PREFIX),
+            Span::styled(header.to_owned(), theme::TOOL),
+        ])];
 
         let (indicator, indicator_style) = match status {
             ToolStatus::InProgress => {
@@ -753,5 +757,31 @@ mod tests {
         });
         assert_eq!(panel.in_progress_count, 0);
         assert!(!panel.is_animating());
+    }
+
+    #[test_case("**/*.rs"   ; "double_star_glob")]
+    #[test_case("*dir*"     ; "single_star_glob")]
+    #[test_case("`backtick`"; "backtick_pattern")]
+    fn tool_header_not_markdown_parsed(summary: &str) {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(ToolStartEvent {
+            id: "t1".into(),
+            tool: GLOB_TOOL_NAME,
+            summary: summary.into(),
+        });
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: GLOB_TOOL_NAME,
+            output: ToolOutput::Plain(String::new()),
+            is_error: false,
+        });
+        rebuild(&mut panel);
+        let seg = panel.cached_segments.last().unwrap();
+        let header = &seg.lines[0];
+        let text: String = header.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains(summary),
+            "header should contain raw summary {summary:?}, got {text:?}"
+        );
     }
 }

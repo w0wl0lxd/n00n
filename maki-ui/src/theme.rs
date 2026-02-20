@@ -18,6 +18,7 @@ pub const ASSISTANT: Style = Style::new().fg(FOREGROUND);
 pub const THINKING: Style = Style::new().fg(COMMENT).add_modifier(Modifier::ITALIC);
 pub const TOOL_BG: Style = Style::new().bg(BACKGROUND_2);
 pub const TOOL: Style = Style::new().fg(FOREGROUND);
+pub const TOOL_PREFIX: Style = Style::new().fg(FOREGROUND).add_modifier(Modifier::BOLD);
 pub const TOOL_IN_PROGRESS: Style = Style::new().fg(FOREGROUND);
 pub const TOOL_SUCCESS: Style = Style::new().fg(GREEN);
 pub const TOOL_ERROR: Style = Style::new().fg(RED);
