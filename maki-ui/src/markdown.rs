@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::highlight;
+use crate::highlight::{self, CodeHighlighter};
 use crate::theme;
 
 use ratatui::style::{Modifier, Style};
@@ -107,11 +107,17 @@ fn parse_blocks(text: &str) -> Vec<TextBlock<'_>> {
     blocks
 }
 
-pub fn text_to_lines(text: &str, prefix: &str, base_style: Style) -> Vec<Line<'static>> {
+pub fn text_to_lines(
+    text: &str,
+    prefix: &str,
+    base_style: Style,
+    mut highlighters: Option<&mut Vec<CodeHighlighter>>,
+) -> Vec<Line<'static>> {
     let prefix_style = base_style.add_modifier(Modifier::BOLD);
     let blocks = parse_blocks(text);
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut first_line = true;
+    let mut code_idx = 0;
 
     for block in blocks {
         match block {
@@ -135,9 +141,21 @@ pub fn text_to_lines(text: &str, prefix: &str, base_style: Style) -> Vec<Line<'s
                     lines.push(Line::from(Span::styled(prefix.to_owned(), prefix_style)));
                     first_line = false;
                 }
-                lines.extend(highlight::highlight_code(lang, code));
+                if let Some(ref mut hl) = highlighters {
+                    if code_idx >= hl.len() {
+                        hl.push(CodeHighlighter::new(lang));
+                    }
+                    lines.extend(hl[code_idx].update(code));
+                } else {
+                    lines.extend(highlight::highlight_code(lang, code));
+                }
+                code_idx += 1;
             }
         }
+    }
+
+    if let Some(hl) = highlighters {
+        hl.truncate(code_idx);
     }
 
     if lines.is_empty() {
@@ -176,7 +194,7 @@ mod tests {
     #[test]
     fn text_to_lines_splits_newlines() {
         let style = Style::default();
-        let lines = text_to_lines("line1\nline2\nline3", "p> ", style);
+        let lines = text_to_lines("line1\nline2\nline3", "p> ", style, None);
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].spans[0].content, "p> ");
         assert_eq!(lines[1].spans.len(), 1);
@@ -232,5 +250,27 @@ mod tests {
     fn parse_blocks_cases(input: &str, expected: &[(&str, Option<&str>)]) {
         let blocks = parse_blocks(input);
         assert_eq!(block_summary(&blocks), expected);
+    }
+
+    fn lines_text(lines: &[Line<'_>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn incremental_matches_non_incremental() {
+        let style = Style::default();
+        let text = "hello\n```rust\nfn main() {}\n```\nbye";
+        let full = text_to_lines(text, "p> ", style, None);
+        let mut hl = Vec::new();
+        let inc = text_to_lines(text, "p> ", style, Some(&mut hl));
+        assert_eq!(lines_text(&full), lines_text(&inc));
     }
 }

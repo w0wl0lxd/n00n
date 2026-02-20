@@ -1,6 +1,7 @@
 use super::{DisplayMessage, DisplayRole, ToolStatus};
 
 use crate::animation::{Typewriter, spinner_frame};
+use crate::highlight::CodeHighlighter;
 use crate::markdown::{text_to_lines, truncate_lines};
 use crate::theme;
 
@@ -10,6 +11,7 @@ use maki_agent::tools::WEBFETCH_TOOL_NAME;
 use maki_providers::{ToolDoneEvent, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
@@ -17,9 +19,29 @@ const TOOL_INDICATOR: &str = "● ";
 const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 5;
 const TOOL_BODY_INDENT: &str = "         ";
 
+#[derive(Default)]
+struct StreamingCache {
+    byte_len: usize,
+    lines: Vec<Line<'static>>,
+    highlighters: Vec<CodeHighlighter>,
+}
+
+impl StreamingCache {
+    fn get_or_update(&mut self, visible: &str, prefix: &str, style: Style) -> Vec<Line<'static>> {
+        let len = visible.len();
+        if len == self.byte_len && !self.lines.is_empty() {
+            return self.lines.clone();
+        }
+        self.lines = text_to_lines(visible, prefix, style, Some(&mut self.highlighters));
+        self.byte_len = len;
+        self.lines.clone()
+    }
+}
+
 struct Segment {
     lines: Vec<Line<'static>>,
     tool_id: Option<String>,
+    cached_height: Option<(u16, u16)>,
 }
 
 impl Segment {
@@ -39,6 +61,8 @@ pub struct MessagesPanel {
     viewport_height: u16,
     cached_segments: Vec<Segment>,
     cached_msg_count: usize,
+    cached_streaming_thinking: StreamingCache,
+    cached_streaming_text: StreamingCache,
 }
 
 impl MessagesPanel {
@@ -54,6 +78,8 @@ impl MessagesPanel {
             viewport_height: 24,
             cached_segments: Vec::new(),
             cached_msg_count: 0,
+            cached_streaming_thinking: StreamingCache::default(),
+            cached_streaming_text: StreamingCache::default(),
         }
     }
 
@@ -121,6 +147,7 @@ impl MessagesPanel {
                 role: DisplayRole::Assistant,
                 text: self.streaming_text.take_all(),
             });
+            self.cached_streaming_text = StreamingCache::default();
         }
     }
 
@@ -149,13 +176,32 @@ impl MessagesPanel {
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) {
         self.viewport_height = area.height;
-        if self.in_progress_count > 0 {
-            self.invalidate_line_cache();
-        }
         self.rebuild_line_cache();
+        if self.in_progress_count > 0 {
+            self.update_spinners();
+        }
 
         self.streaming_thinking.tick();
         self.streaming_text.tick();
+
+        let width = area.width;
+
+        let mut heights: Vec<u16> = self
+            .cached_segments
+            .iter_mut()
+            .map(|seg| {
+                if let Some((w, h)) = seg.cached_height
+                    && w == width
+                {
+                    return h;
+                }
+                let h = Paragraph::new(seg.lines.clone())
+                    .wrap(Wrap { trim: false })
+                    .line_count(width) as u16;
+                seg.cached_height = Some((width, h));
+                h
+            })
+            .collect();
 
         let last_cached_is_tool = self.cached_segments.last().is_some_and(|s| s.is_tool());
 
@@ -167,33 +213,40 @@ impl MessagesPanel {
 
         let spacer_line = vec![Line::default()];
         let mut streaming_lines = Vec::new();
-        for (tw, prefix, style) in [
-            (&self.streaming_thinking, "thinking> ", theme::THINKING),
-            (&self.streaming_text, "maki> ", theme::ASSISTANT),
+        for (tw, cache, prefix, style) in [
+            (
+                &self.streaming_thinking,
+                &mut self.cached_streaming_thinking,
+                "thinking> ",
+                theme::THINKING,
+            ),
+            (
+                &self.streaming_text,
+                &mut self.cached_streaming_text,
+                "maki> ",
+                theme::ASSISTANT,
+            ),
         ] {
             if !tw.is_empty() {
-                let mut parsed = text_to_lines(tw.visible(), prefix, style);
-                if let Some(last) = parsed.last_mut() {
+                let mut lines = cache.get_or_update(tw.visible(), prefix, style);
+                if let Some(last) = lines.last_mut() {
                     last.spans.push(Span::styled("_", theme::CURSOR));
                 }
-                streaming_lines.extend(parsed);
+                streaming_lines.extend(lines);
             }
         }
         if !streaming_lines.is_empty() {
             if last_cached_is_tool {
                 segments.push((&spacer_line, false));
+                heights.push(1);
             }
+            heights.push(
+                Paragraph::new(streaming_lines.clone())
+                    .wrap(Wrap { trim: false })
+                    .line_count(width) as u16,
+            );
             segments.push((&streaming_lines, false));
         }
-
-        let heights: Vec<u16> = segments
-            .iter()
-            .map(|(lines, _)| {
-                Paragraph::new(lines.to_vec())
-                    .wrap(Wrap { trim: false })
-                    .line_count(area.width) as u16
-            })
-            .collect();
 
         let total_lines: u16 = heights.iter().sum();
         let max_scroll = total_lines.saturating_sub(area.height);
@@ -239,6 +292,28 @@ impl MessagesPanel {
                 role: DisplayRole::Thinking,
                 text: self.streaming_thinking.take_all(),
             });
+            self.cached_streaming_thinking = StreamingCache::default();
+        }
+    }
+
+    fn update_spinners(&mut self) {
+        let spinner_span = Span::styled(
+            format!("{} ", spinner_frame(self.started_at.elapsed().as_millis())),
+            theme::TOOL_IN_PROGRESS,
+        );
+        for seg in &mut self.cached_segments {
+            let Some(ref tool_id) = seg.tool_id else {
+                continue;
+            };
+            let is_in_progress = self.messages.iter().any(|m| {
+                matches!(&m.role, DisplayRole::Tool { id, status: ToolStatus::InProgress } if id == tool_id)
+            });
+            if is_in_progress
+                && let Some(first_line) = seg.lines.first_mut()
+                && !first_line.spans.is_empty()
+            {
+                first_line.spans[0] = spinner_span.clone();
+            }
         }
     }
 
@@ -260,7 +335,7 @@ impl MessagesPanel {
                     .split_once('\n')
                     .map_or((msg.text.as_str(), None), |(h, b)| (h, Some(b)));
 
-                let mut lines = text_to_lines(header, "tool> ", theme::TOOL);
+                let mut lines = text_to_lines(header, "tool> ", theme::TOOL, None);
 
                 let (indicator, indicator_style) = match status {
                     ToolStatus::InProgress => {
@@ -290,6 +365,7 @@ impl MessagesPanel {
                 self.cached_segments.push(Segment {
                     lines,
                     tool_id: Some(id),
+                    cached_height: None,
                 });
             } else {
                 let (prefix, base_style) = match &msg.role {
@@ -299,7 +375,7 @@ impl MessagesPanel {
                     DisplayRole::Error => ("", theme::ERROR),
                     DisplayRole::Tool { .. } => unreachable!(),
                 };
-                let lines = text_to_lines(&msg.text, prefix, base_style);
+                let lines = text_to_lines(&msg.text, prefix, base_style, None);
 
                 let last_was_tool = self.cached_segments.last().is_some_and(|s| s.is_tool());
                 if self.cached_segments.is_empty() || last_was_tool {
@@ -307,9 +383,12 @@ impl MessagesPanel {
                     self.cached_segments.push(Segment {
                         lines,
                         tool_id: None,
+                        cached_height: None,
                     });
                 } else {
-                    self.cached_segments.last_mut().unwrap().lines.extend(lines);
+                    let last = self.cached_segments.last_mut().unwrap();
+                    last.lines.extend(lines);
+                    last.cached_height = None;
                 }
             }
         }
@@ -321,6 +400,7 @@ impl MessagesPanel {
             self.cached_segments.push(Segment {
                 lines: vec![Line::default()],
                 tool_id: None,
+                cached_height: None,
             });
         }
     }
@@ -546,6 +626,35 @@ mod tests {
             is_error: false,
         });
         assert!(panel.messages.is_empty());
+    }
+
+    #[test]
+    fn spinner_only_updates_in_progress_tools() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(ToolStartEvent {
+            id: "done".into(),
+            tool: "bash",
+            summary: "finished".into(),
+        });
+        panel.tool_done(ToolDoneEvent {
+            id: "done".into(),
+            tool: "bash",
+            content: "ok".into(),
+            is_error: false,
+        });
+        panel.tool_start(ToolStartEvent {
+            id: "active".into(),
+            tool: "read",
+            summary: "reading".into(),
+        });
+        render(&mut panel, 80, 24);
+
+        let done_seg = panel
+            .cached_segments
+            .iter()
+            .find(|s| s.tool_id.as_deref() == Some("done"))
+            .unwrap();
+        assert_eq!(done_seg.lines[0].spans[0].style, theme::TOOL_SUCCESS);
     }
 
     #[test]
