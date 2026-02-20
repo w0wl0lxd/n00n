@@ -10,6 +10,9 @@ pub struct InputBox {
     input: String,
     /// Cursor position as a character index (not byte offset)
     cursor_pos: usize,
+    history: Vec<String>,
+    history_index: Option<usize>,
+    draft: String,
 }
 
 impl InputBox {
@@ -17,6 +20,9 @@ impl InputBox {
         Self {
             input: String::new(),
             cursor_pos: 0,
+            history: Vec::new(),
+            history_index: None,
+            draft: String::new(),
         }
     }
 
@@ -55,9 +61,49 @@ impl InputBox {
         if text.is_empty() {
             return None;
         }
+        self.history.push(text.clone());
+        self.history_index = None;
+        self.draft.clear();
         self.input.clear();
         self.cursor_pos = 0;
         Some(text)
+    }
+
+    fn set_input(&mut self, s: String) {
+        self.cursor_pos = s.chars().count();
+        self.input = s;
+    }
+
+    pub fn history_up(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        let new_index = match self.history_index {
+            None => {
+                self.draft = self.input.clone();
+                self.history.len() - 1
+            }
+            Some(0) => return,
+            Some(i) => i - 1,
+        };
+        self.history_index = Some(new_index);
+        let entry = self.history[new_index].clone();
+        self.set_input(entry);
+    }
+
+    pub fn history_down(&mut self) {
+        let Some(i) = self.history_index else {
+            return;
+        };
+        if i + 1 < self.history.len() {
+            self.history_index = Some(i + 1);
+            let entry = self.history[i + 1].clone();
+            self.set_input(entry);
+        } else {
+            self.history_index = None;
+            let draft = self.draft.clone();
+            self.set_input(draft);
+        }
     }
 
     pub fn view(&self, frame: &mut Frame, area: Rect, is_streaming: bool) {
@@ -149,5 +195,74 @@ mod tests {
         input.move_right();
         input.move_right();
         assert_eq!(input.cursor_pos, input.input.chars().count());
+    }
+
+    fn type_text(input: &mut InputBox, text: &str) {
+        for c in text.chars() {
+            input.insert_char(c);
+        }
+    }
+
+    fn submit_text(input: &mut InputBox, text: &str) {
+        type_text(input, text);
+        input.submit();
+    }
+
+    #[test]
+    fn history_navigation_on_empty_is_noop() {
+        let mut input = InputBox::new();
+        input.history_up();
+        input.history_down();
+        assert!(input.input.is_empty());
+    }
+
+    #[test]
+    fn history_up_recalls_and_clamps_at_oldest() {
+        let mut input = InputBox::new();
+        submit_text(&mut input, "a");
+        submit_text(&mut input, "b");
+        submit_text(&mut input, "c");
+
+        input.history_up();
+        assert_eq!(input.input, "c");
+        input.history_up();
+        assert_eq!(input.input, "b");
+        input.history_up();
+        assert_eq!(input.input, "a");
+        input.history_up();
+        assert_eq!(input.input, "a");
+    }
+
+    #[test]
+    fn history_down_restores_draft() {
+        let mut input = InputBox::new();
+        submit_text(&mut input, "a");
+        type_text(&mut input, "draft");
+
+        input.history_up();
+        assert_eq!(input.input, "a");
+
+        input.history_down();
+        assert_eq!(input.input, "draft");
+
+        input.history_down();
+        assert_eq!(input.input, "draft");
+    }
+
+    #[test]
+    fn submit_while_browsing_resets_and_appends() {
+        let mut input = InputBox::new();
+        submit_text(&mut input, "a");
+        submit_text(&mut input, "b");
+
+        input.history_up();
+        assert_eq!(input.input, "b");
+
+        input.insert_char('c');
+        input.submit();
+        assert!(input.input.is_empty());
+
+        input.history_up();
+        assert_eq!(input.input, "bc");
     }
 }

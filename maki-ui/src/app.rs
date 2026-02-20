@@ -73,12 +73,20 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Up => {
+            KeyCode::Up if self.status == Status::Streaming => {
                 self.messages_panel.scroll(1);
                 return vec![];
             }
-            KeyCode::Down => {
+            KeyCode::Down if self.status == Status::Streaming => {
                 self.messages_panel.scroll(-1);
+                return vec![];
+            }
+            KeyCode::Up => {
+                self.input_box.history_up();
+                return vec![];
+            }
+            KeyCode::Down => {
+                self.input_box.history_down();
                 return vec![];
             }
             KeyCode::Tab => {
