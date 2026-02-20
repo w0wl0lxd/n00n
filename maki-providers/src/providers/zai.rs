@@ -412,7 +412,8 @@ fn parse_sse(
     }
 
     for acc in tool_accumulators {
-        let input: Value = serde_json::from_str(&acc.arguments).unwrap_or(Value::Null);
+        let input: Value =
+            serde_json::from_str(&acc.arguments).unwrap_or(Value::Object(Default::default()));
         content_blocks.push(ContentBlock::ToolUse {
             id: acc.id,
             name: acc.name,
@@ -617,7 +618,7 @@ data: [DONE]\n";
     }
 
     #[test]
-    fn parse_sse_malformed_tool_json_yields_null_input() {
+    fn parse_sse_malformed_tool_json_yields_empty_object() {
         let sse = "\
 data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}]}\n\
 \n\
@@ -633,6 +634,6 @@ data: [DONE]\n";
         let tools: Vec<_> = resp.message.tool_uses().collect();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].1, "bash");
-        assert_eq!(*tools[0].2, Value::Null);
+        assert_eq!(*tools[0].2, Value::Object(Default::default()));
     }
 }

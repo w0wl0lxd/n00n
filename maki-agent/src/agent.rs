@@ -57,25 +57,36 @@ struct ParsedToolCall {
 fn parse_tool_calls<'a>(
     tool_uses: impl Iterator<Item = (&'a str, &'a str, &'a serde_json::Value)>,
     event_tx: &Sender<Envelope>,
-) -> Vec<ParsedToolCall> {
-    tool_uses
-        .filter_map(|(id, name, input)| match ToolCall::from_api(name, input) {
-            Ok(call) => Some(ParsedToolCall {
+) -> (Vec<ParsedToolCall>, Vec<ToolDoneEvent>) {
+    let mut parsed = Vec::new();
+    let mut errors = Vec::new();
+
+    for (id, name, input) in tool_uses {
+        match ToolCall::from_api(name, input) {
+            Ok(call) => parsed.push(ParsedToolCall {
                 id: id.to_owned(),
                 call,
             }),
             Err(e) => {
+                let msg = format!("failed to parse tool {name}: {e}");
                 warn!(tool = %name, error = %e, "failed to parse tool call");
                 let _ = event_tx.send(
                     AgentEvent::Error {
-                        message: format!("failed to parse tool {name}: {e}"),
+                        message: msg.clone(),
                     }
                     .into(),
                 );
-                None
+                errors.push(ToolDoneEvent {
+                    id: id.to_owned(),
+                    tool: "unknown",
+                    output: ToolOutput::Plain(msg),
+                    is_error: true,
+                });
             }
-        })
-        .collect()
+        }
+    }
+
+    (parsed, errors)
 }
 
 fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDoneEvent> {
@@ -172,7 +183,7 @@ pub fn run(
             break;
         }
 
-        let parsed = parse_tool_calls(response.message.tool_uses(), event_tx);
+        let (parsed, errors) = parse_tool_calls(response.message.tool_uses(), event_tx);
 
         history.push(response.message);
 
@@ -180,7 +191,8 @@ pub fn run(
             event_tx.send(AgentEvent::ToolStart(p.call.start_event(p.id.clone())).into())?;
         }
 
-        let tool_results = execute_tools(&parsed, &ctx);
+        let mut tool_results = execute_tools(&parsed, &ctx);
+        tool_results.extend(errors);
         let tool_msg = Message::tool_results(tool_results);
         event_tx.send(
             AgentEvent::ToolResultsSubmitted {

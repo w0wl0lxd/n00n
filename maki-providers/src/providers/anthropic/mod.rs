@@ -381,7 +381,8 @@ fn parse_sse(
             }
             "content_block_stop" => {
                 if let Some(ContentBlock::ToolUse { input, .. }) = content_blocks.last_mut() {
-                    *input = serde_json::from_str(&current_tool_json).unwrap_or(Value::Null);
+                    *input = serde_json::from_str(&current_tool_json)
+                        .unwrap_or(Value::Object(Default::default()));
                     current_tool_json.clear();
                 }
             }
@@ -547,7 +548,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
     }
 
     #[test]
-    fn parse_sse_malformed_tool_json_yields_null_input() {
+    fn parse_sse_malformed_tool_json_yields_empty_object() {
         let sse_data = "\
 event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\
@@ -570,6 +571,6 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n";
         let tools: Vec<_> = resp.message.tool_uses().collect();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].1, "read");
-        assert_eq!(*tools[0].2, Value::Null);
+        assert_eq!(*tools[0].2, Value::Object(Default::default()));
     }
 }
