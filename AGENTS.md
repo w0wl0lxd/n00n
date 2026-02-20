@@ -39,4 +39,4 @@ The codebase is a Rust workspace with the following key crates:
 
 - **maki-ui**: Uses ratatui for an interactive UI (elm like architecture)
 - **maki-agent**: The agent loop + tools descriptions and implementations
-- **maki-providers**: Integration with LLM providers via APIs
+- **maki-providers**: Integration with LLM providers via APIs (e.g. Anthropic, Z.AI)
