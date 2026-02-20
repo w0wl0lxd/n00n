@@ -24,6 +24,7 @@ pub struct App {
     status_bar: StatusBar,
     pub status: Status,
     pub token_usage: TokenUsage,
+    pub context_size: u32,
     pub mode: AgentMode,
     pending_plan: Option<String>,
     pricing: ModelPricing,
@@ -39,6 +40,7 @@ impl App {
             status_bar: StatusBar::new(),
             status: Status::Idle,
             token_usage: TokenUsage::default(),
+            context_size: 0,
             mode: AgentMode::Build,
             pending_plan: None,
             pricing,
@@ -173,7 +175,10 @@ impl App {
             AgentEvent::ToolDone(e) => {
                 self.messages_panel.tool_done(e);
             }
-            AgentEvent::TurnComplete { .. } | AgentEvent::ToolResultsSubmitted { .. } => {}
+            AgentEvent::TurnComplete { usage, .. } => {
+                self.context_size = usage.input;
+            }
+            AgentEvent::ToolResultsSubmitted { .. } => {}
             AgentEvent::Done { usage, .. } => {
                 self.messages_panel.flush();
                 self.token_usage += usage;
@@ -223,6 +228,7 @@ impl App {
         self.input_box.view(frame, input_area, is_streaming);
         let stats = UsageStats {
             usage: &self.token_usage,
+            context_size: self.context_size,
             pricing: &self.pricing,
             context_window: self.context_window,
         };

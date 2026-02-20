@@ -24,6 +24,7 @@ fn format_tokens(n: u32) -> String {
 
 pub struct UsageStats<'a> {
     pub usage: &'a TokenUsage,
+    pub context_size: u32,
     pub pricing: &'a ModelPricing,
     pub context_window: u32,
 }
@@ -100,13 +101,13 @@ impl StatusBar {
             }
             _ => {
                 let pct = if stats.context_window > 0 {
-                    (stats.usage.input as f64 / stats.context_window as f64 * 100.0) as u32
+                    (stats.context_size as f64 / stats.context_window as f64 * 100.0) as u32
                 } else {
                     0
                 };
                 let text = format!(
                     "{} ({}%) ${:.3} ",
-                    format_tokens(stats.usage.input),
+                    format_tokens(stats.context_size),
                     pct,
                     stats.usage.cost(stats.pricing),
                 );
