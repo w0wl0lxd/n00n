@@ -28,11 +28,11 @@ pub const ERROR: Style = Style::new().fg(RED);
 pub const STATUS_IDLE: Style = Style::new().fg(COMMENT);
 pub const STATUS_STREAMING: Style = Style::new().fg(YELLOW);
 pub const MODE_BUILD: Style = Style::new().fg(GREEN).add_modifier(Modifier::BOLD);
-pub const MODE_PLAN: Style = Style::new().fg(PURPLE).add_modifier(Modifier::BOLD);
+pub const MODE_PLAN: Style = Style::new().fg(PINK).add_modifier(Modifier::BOLD);
 pub const CANCEL_HINT: Style = Style::new().fg(ORANGE);
 
-pub const BOLD: Style = Style::new().fg(CYAN).add_modifier(Modifier::BOLD);
-pub const INLINE_CODE: Style = Style::new().fg(PINK);
+pub const BOLD: Style = Style::new().fg(ORANGE).add_modifier(Modifier::BOLD);
+pub const INLINE_CODE: Style = Style::new().fg(GREEN);
 pub const CODE_FALLBACK: Style = Style::new().fg(PURPLE);
 
 pub const DIFF_OLD: Style = Style::new().fg(RED);
