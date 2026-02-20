@@ -4,9 +4,11 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 pub struct InputBox {
     input: String,
+    /// Cursor position as a character index (not byte offset)
     cursor_pos: usize,
 }
 
@@ -18,15 +20,24 @@ impl InputBox {
         }
     }
 
+    fn byte_offset(&self) -> usize {
+        self.input
+            .char_indices()
+            .nth(self.cursor_pos)
+            .map_or(self.input.len(), |(i, _)| i)
+    }
+
     pub fn insert_char(&mut self, c: char) {
-        self.input.insert(self.cursor_pos, c);
+        self.input.insert(self.byte_offset(), c);
         self.cursor_pos += 1;
     }
 
     pub fn backspace(&mut self) {
         if self.cursor_pos > 0 {
             self.cursor_pos -= 1;
-            self.input.remove(self.cursor_pos);
+            let offset = self.byte_offset();
+            let ch = self.input[offset..].chars().next().unwrap();
+            self.input.replace_range(offset..offset + ch.len_utf8(), "");
         }
     }
 
@@ -35,7 +46,8 @@ impl InputBox {
     }
 
     pub fn move_right(&mut self) {
-        self.cursor_pos = (self.cursor_pos + 1).min(self.input.len());
+        let char_count = self.input.chars().count();
+        self.cursor_pos = (self.cursor_pos + 1).min(char_count);
     }
 
     pub fn submit(&mut self) -> Option<String> {
@@ -62,7 +74,9 @@ impl InputBox {
         frame.render_widget(paragraph, area);
 
         if !is_streaming {
-            let cursor_x = area.x + 1 + indicator.len() as u16 + self.cursor_pos as u16;
+            let text_before_cursor = &self.input[..self.byte_offset()];
+            let display_width = text_before_cursor.width() as u16;
+            let cursor_x = area.x + 1 + indicator.len() as u16 + display_width;
             let cursor_y = area.y + 1;
             frame.set_cursor_position((cursor_x, cursor_y));
         }
@@ -109,5 +123,31 @@ mod tests {
 
         input.insert_char(' ');
         assert!(input.submit().is_none());
+    }
+
+    #[test]
+    fn multibyte_insert_move_backspace() {
+        let mut input = InputBox::new();
+        for c in "café🎉".chars() {
+            input.insert_char(c);
+        }
+        assert_eq!(input.input, "café🎉");
+
+        // move back past emoji and 'é', insert in the middle
+        input.move_left();
+        input.move_left();
+        input.insert_char('X');
+        assert_eq!(input.input, "cafXé🎉");
+
+        // backspace the multi-byte 'é' after it
+        input.move_right();
+        input.backspace();
+        assert_eq!(input.input, "cafX🎉");
+
+        // move_right clamps at end
+        input.move_right();
+        input.move_right();
+        input.move_right();
+        assert_eq!(input.cursor_pos, input.input.chars().count());
     }
 }

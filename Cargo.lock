@@ -1072,6 +1072,7 @@ dependencies = [
  "syntect",
  "test-case",
  "tracing",
+ "unicode-width",
 ]
 
 [[package]]
