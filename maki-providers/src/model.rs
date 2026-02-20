@@ -7,8 +7,6 @@ use crate::provider::ProviderKind;
 
 const PER_MILLION: f64 = 1_000_000.0;
 
-pub const DEFAULT_SPEC: &str = "anthropic/claude-sonnet-4-20250514";
-
 #[derive(Debug, thiserror::Error)]
 pub enum ModelError {
     #[error("model must be in 'provider/model' format (e.g. anthropic/claude-sonnet-4-20250514)")]
@@ -283,7 +281,6 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case(DEFAULT_SPEC, 64000 ; "default_spec")]
     #[test_case("anthropic/claude-3-5-haiku-20241022", 8192 ; "anthropic_haiku_tier")]
     #[test_case("anthropic/claude-opus-4-6-20260101", 128000 ; "anthropic_opus_tier")]
     #[test_case("zai/glm-5", 131072 ; "zai_high_output_tier")]

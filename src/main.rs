@@ -2,7 +2,7 @@ mod print;
 
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
-use maki_providers::model::{DEFAULT_SPEC, Model};
+use maki_providers::model::Model;
 use tracing_subscriber::EnvFilter;
 
 use print::OutputFormat;
@@ -18,7 +18,7 @@ struct Cli {
     #[arg(short, long)]
     print: bool,
 
-    #[arg(short, long, default_value = DEFAULT_SPEC)]
+    #[arg(short, long, default_value = "anthropic/claude-opus-4-6")]
     model: String,
 
     #[arg(long)]
