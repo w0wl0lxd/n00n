@@ -196,28 +196,6 @@ pub enum ToolStatus {
 pub struct DisplayMessage {
     pub role: DisplayRole,
     pub text: String,
-    pub tool_id: Option<String>,
-    pub tool_status: Option<ToolStatus>,
-}
-
-impl DisplayMessage {
-    fn new(role: DisplayRole, text: String) -> Self {
-        Self {
-            role,
-            text,
-            tool_id: None,
-            tool_status: None,
-        }
-    }
-
-    fn tool(text: String, id: String, status: ToolStatus) -> Self {
-        Self {
-            role: DisplayRole::Tool,
-            text,
-            tool_id: Some(id),
-            tool_status: Some(status),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -225,7 +203,7 @@ pub enum DisplayRole {
     User,
     Assistant,
     Thinking,
-    Tool,
+    Tool { id: String, status: ToolStatus },
     Error,
 }
 
@@ -359,8 +337,10 @@ impl App {
 
                 let pending_plan = self.pending_plan.take();
 
-                self.messages
-                    .push(DisplayMessage::new(DisplayRole::User, text.clone()));
+                self.messages.push(DisplayMessage {
+                    role: DisplayRole::User,
+                    text: text.clone(),
+                });
                 self.input.clear();
                 self.cursor_pos = 0;
                 drop(self.streaming_thinking.take_all());
@@ -402,8 +382,10 @@ impl App {
             && t.elapsed() < CANCEL_WINDOW
         {
             self.flush_streaming_text();
-            self.messages
-                .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
+            self.messages.push(DisplayMessage {
+                role: DisplayRole::Error,
+                text: CANCEL_MSG.into(),
+            });
             self.status = Status::Idle;
             self.cancel_hint_since = None;
             return vec![Action::CancelAgent];
@@ -421,37 +403,46 @@ impl App {
                 self.flush_streaming_thinking();
                 self.streaming_text.push(&text);
             }
-            AgentEvent::ToolStart(ref start) => {
+            AgentEvent::ToolStart(start) => {
                 self.flush_streaming_text();
-                self.messages.push(DisplayMessage::tool(
-                    format!("[{}] {}", start.tool, start.summary),
-                    start.id.clone(),
-                    ToolStatus::InProgress,
-                ));
+                let text = format!("[{}] {}", start.tool, start.summary);
+                self.messages.push(DisplayMessage {
+                    role: DisplayRole::Tool {
+                        id: start.id,
+                        status: ToolStatus::InProgress,
+                    },
+                    text,
+                });
             }
-            AgentEvent::ToolDone(ref done) => {
+            AgentEvent::ToolDone(done) => {
                 let status = if done.is_error {
                     ToolStatus::Error
                 } else {
                     ToolStatus::Success
                 };
-                if let Some(msg) = self
-                    .messages
-                    .iter_mut()
-                    .rfind(|m| m.tool_id.as_deref() == Some(&done.id))
-                {
-                    msg.tool_status = Some(status);
+                if let Some(msg) = self.messages.iter_mut().rfind(|m| {
+                    matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == done.id)
+                }) {
+                    msg.role = DisplayRole::Tool {
+                        id: done.id.clone(),
+                        status,
+                    };
                     self.invalidate_line_cache();
                 }
-                let display = if done.tool == WEBFETCH_TOOL_NAME {
+                let text = if done.tool == WEBFETCH_TOOL_NAME {
                     let n = done.content.lines().count();
                     format!("[{} done] ({n} lines)", done.tool)
                 } else {
                     let truncated = truncate_lines(&done.content, TOOL_OUTPUT_MAX_DISPLAY_LINES);
                     format!("[{} done] {truncated}", done.tool)
                 };
-                self.messages
-                    .push(DisplayMessage::tool(display, done.id.clone(), status));
+                self.messages.push(DisplayMessage {
+                    role: DisplayRole::Tool {
+                        id: done.id,
+                        status,
+                    },
+                    text,
+                });
             }
             AgentEvent::TurnComplete { .. } | AgentEvent::ToolResultsSubmitted { .. } => {}
             AgentEvent::Done { usage, .. } => {
@@ -487,20 +478,20 @@ impl App {
 
     fn flush_streaming_thinking(&mut self) {
         if !self.streaming_thinking.is_empty() {
-            self.messages.push(DisplayMessage::new(
-                DisplayRole::Thinking,
-                self.streaming_thinking.take_all(),
-            ));
+            self.messages.push(DisplayMessage {
+                role: DisplayRole::Thinking,
+                text: self.streaming_thinking.take_all(),
+            });
         }
     }
 
     fn flush_streaming_text(&mut self) {
         self.flush_streaming_thinking();
         if !self.streaming_text.is_empty() {
-            self.messages.push(DisplayMessage::new(
-                DisplayRole::Assistant,
-                self.streaming_text.take_all(),
-            ));
+            self.messages.push(DisplayMessage {
+                role: DisplayRole::Assistant,
+                text: self.streaming_text.take_all(),
+            });
         }
     }
 
@@ -534,21 +525,21 @@ impl App {
             return;
         }
         for msg in &self.messages[self.cached_msg_count..] {
-            let (prefix, base_style) = match msg.role {
+            let (prefix, base_style) = match &msg.role {
                 DisplayRole::User => ("you> ", USER_STYLE),
                 DisplayRole::Assistant => ("maki> ", ASSISTANT_STYLE),
                 DisplayRole::Thinking => ("thinking> ", THINKING_STYLE),
-                DisplayRole::Tool => ("tool> ", TOOL_STYLE),
+                DisplayRole::Tool { .. } => ("tool> ", TOOL_STYLE),
                 DisplayRole::Error => ("", STATUS_ERROR_STYLE),
             };
             let mut lines = text_to_lines(&msg.text, prefix, base_style);
-            if msg.role == DisplayRole::Tool
+            if let DisplayRole::Tool { status, .. } = &msg.role
                 && let Some(first) = lines.first_mut()
             {
-                let indicator_style = match msg.tool_status {
-                    Some(ToolStatus::Success) => TOOL_SUCCESS_STYLE,
-                    Some(ToolStatus::Error) => TOOL_ERROR_STYLE,
-                    _ => TOOL_IN_PROGRESS_STYLE,
+                let indicator_style = match status {
+                    ToolStatus::Success => TOOL_SUCCESS_STYLE,
+                    ToolStatus::Error => TOOL_ERROR_STYLE,
+                    ToolStatus::InProgress => TOOL_IN_PROGRESS_STYLE,
                 };
                 first
                     .spans
@@ -777,7 +768,10 @@ mod tests {
             tool: "bash",
             summary: "cmd".into(),
         })));
-        assert_eq!(app.messages[0].tool_status, Some(ToolStatus::InProgress));
+        assert!(matches!(
+            app.messages[0].role,
+            DisplayRole::Tool { status: ToolStatus::InProgress, .. }
+        ));
 
         app.update(Msg::Agent(AgentEvent::ToolDone(ToolDoneEvent {
             id: "t1".into(),
@@ -787,9 +781,10 @@ mod tests {
         })));
 
         assert_eq!(app.messages.len(), 2);
-        assert!(app.messages.iter().all(|m| m.role == DisplayRole::Tool));
-        assert_eq!(app.messages[0].tool_status, Some(expected));
-        assert_eq!(app.messages[1].tool_status, Some(expected));
+        assert!(app.messages.iter().all(|m| matches!(m.role, DisplayRole::Tool { .. })));
+        for msg in &app.messages {
+            assert!(matches!(msg.role, DisplayRole::Tool { status, .. } if status == expected));
+        }
     }
 
     #[test]
@@ -838,7 +833,7 @@ mod tests {
 
         assert!(app.streaming_text.is_empty());
         assert_eq!(app.messages[0].role, DisplayRole::Assistant);
-        assert_eq!(app.messages[1].role, DisplayRole::Tool);
+        assert!(matches!(app.messages[1].role, DisplayRole::Tool { .. }));
     }
 
     #[test]
@@ -885,8 +880,10 @@ mod tests {
     #[test]
     fn scroll_top_clamped_to_content() {
         let mut app = App::new(test_pricing());
-        app.messages
-            .push(DisplayMessage::new(DisplayRole::User, "short".into()));
+        app.messages.push(DisplayMessage {
+            role: DisplayRole::User,
+            text: "short".into(),
+        });
 
         app.scroll_top = 1000;
         app.auto_scroll = false;
