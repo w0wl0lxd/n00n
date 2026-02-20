@@ -3,7 +3,7 @@ pub mod messages;
 pub mod status_bar;
 
 use maki_agent::AgentInput;
-use maki_providers::ToolOutput;
+use maki_providers::{ToolInput, ToolOutput};
 
 pub enum Action {
     SendMessage(AgentInput),
@@ -29,6 +29,7 @@ pub enum ToolStatus {
 pub struct DisplayMessage {
     pub role: DisplayRole,
     pub text: String,
+    pub tool_input: Option<ToolInput>,
     pub tool_output: Option<ToolOutput>,
 }
 

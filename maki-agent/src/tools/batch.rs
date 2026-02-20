@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use maki_providers::ToolOutput;
+use maki_providers::{ToolInput, ToolOutput};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -109,6 +109,10 @@ impl Batch {
 
     pub fn start_summary(&self) -> String {
         format!("{} tools", self.tool_calls.len())
+    }
+
+    pub fn start_input(&self) -> Option<ToolInput> {
+        None
     }
 
     pub fn mutable_path(&self) -> Option<&str> {

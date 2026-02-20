@@ -147,6 +147,7 @@ impl App {
                 self.messages_panel.push(DisplayMessage {
                     role: DisplayRole::User,
                     text: text.clone(),
+                    tool_input: None,
                     tool_output: None,
                 });
                 self.status = Status::Streaming;
@@ -196,6 +197,7 @@ impl App {
                 self.messages_panel.push(DisplayMessage {
                     role: DisplayRole::Error,
                     text: CANCEL_MSG.into(),
+                    tool_input: None,
                     tool_output: None,
                 });
                 self.status = Status::Idle;

@@ -1,4 +1,4 @@
-use maki_providers::{TodoItem, ToolOutput};
+use maki_providers::{TodoItem, ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
 #[derive(Tool, Debug, Clone)]
@@ -17,6 +17,10 @@ impl TodoWrite {
 
     pub fn start_summary(&self) -> String {
         format!("{} todos", self.todos.len())
+    }
+
+    pub fn start_input(&self) -> Option<ToolInput> {
+        None
     }
 
     pub fn mutable_path(&self) -> Option<&str> {

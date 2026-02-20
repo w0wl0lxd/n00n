@@ -1,6 +1,6 @@
 use std::fs;
 
-use maki_providers::{DiffHunk, DiffLine, ToolOutput};
+use maki_providers::{DiffHunk, DiffLine, ToolInput, ToolOutput};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -73,6 +73,10 @@ impl MultiEdit {
 
     pub fn start_summary(&self) -> String {
         self.path.clone()
+    }
+
+    pub fn start_input(&self) -> Option<ToolInput> {
+        None
     }
 
     pub fn mutable_path(&self) -> Option<&str> {

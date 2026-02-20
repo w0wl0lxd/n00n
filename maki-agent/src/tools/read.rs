@@ -1,6 +1,6 @@
 use std::fs;
 
-use maki_providers::ToolOutput;
+use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
 use super::{MAX_OUTPUT_LINES, truncate_output};
@@ -39,6 +39,10 @@ impl Read {
 
     pub fn start_summary(&self) -> String {
         self.path.clone()
+    }
+
+    pub fn start_input(&self) -> Option<ToolInput> {
+        None
     }
 
     pub fn mutable_path(&self) -> Option<&str> {

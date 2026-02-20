@@ -1,14 +1,14 @@
 use super::{DisplayMessage, DisplayRole, ToolStatus};
 
 use crate::animation::{Typewriter, spinner_frame};
-use crate::highlight::CodeHighlighter;
+use crate::highlight::{self, CodeHighlighter};
 use crate::markdown::{text_to_lines, truncate_lines};
 use crate::theme;
 
 use std::time::Instant;
 
 use maki_agent::tools::{GLOB_TOOL_NAME, GREP_TOOL_NAME, WEBFETCH_TOOL_NAME};
-use maki_providers::{DiffLine, ToolDoneEvent, ToolOutput, ToolStartEvent};
+use maki_providers::{DiffLine, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -111,6 +111,7 @@ impl MessagesPanel {
                 name: event.tool,
             },
             text: event.summary.clone(),
+            tool_input: event.input,
             tool_output: None,
         });
         self.in_progress_count += 1;
@@ -160,6 +161,7 @@ impl MessagesPanel {
             self.messages.push(DisplayMessage {
                 role: DisplayRole::Assistant,
                 text: self.streaming_text.take_all(),
+                tool_input: None,
                 tool_output: None,
             });
             self.cached_streaming_text = StreamingCache::default();
@@ -299,6 +301,7 @@ impl MessagesPanel {
             self.messages.push(DisplayMessage {
                 role: DisplayRole::Thinking,
                 text: self.streaming_thinking.take_all(),
+                tool_input: None,
                 tool_output: None,
             });
             self.cached_streaming_thinking = StreamingCache {
@@ -398,6 +401,13 @@ impl MessagesPanel {
             first
                 .spans
                 .insert(0, Span::styled(indicator, indicator_style));
+        }
+
+        if let Some(ToolInput::Code { language, code }) = &msg.tool_input {
+            for mut line in highlight::highlight_code(language, code) {
+                line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
+                lines.push(line);
+            }
         }
 
         match msg.tool_output.as_ref() {
@@ -508,6 +518,7 @@ mod tests {
             id: "t1".into(),
             tool: "bash",
             summary: "cmd".into(),
+            input: None,
         });
         assert!(matches!(
             panel.messages[0].role,
@@ -540,6 +551,7 @@ mod tests {
             id: "t1".into(),
             tool,
             summary: "s".into(),
+            input: None,
         });
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -559,6 +571,7 @@ mod tests {
             id: "t1".into(),
             tool: "read",
             summary: "/tmp/file".into(),
+            input: None,
         });
 
         assert!(panel.streaming_text.is_empty());
@@ -610,6 +623,7 @@ mod tests {
         panel.push(DisplayMessage {
             role: DisplayRole::User,
             text: "short".into(),
+            tool_input: None,
             tool_output: None,
         });
         panel.scroll_top = 1000;
@@ -670,6 +684,7 @@ mod tests {
             id: "t1".into(),
             tool: "bash",
             summary: "long output".into(),
+            input: None,
         });
         let long_output = (1..=10)
             .map(|i| format!("line{i}"))
@@ -699,6 +714,7 @@ mod tests {
             id: "t1".into(),
             tool: "edit",
             summary: "/tmp/f.rs".into(),
+            input: None,
         });
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -732,11 +748,13 @@ mod tests {
             id: "t1".into(),
             tool: "bash",
             summary: "a".into(),
+            input: None,
         });
         panel.tool_start(ToolStartEvent {
             id: "t2".into(),
             tool: "read",
             summary: "b".into(),
+            input: None,
         });
         assert_eq!(panel.in_progress_count, 2);
 
@@ -768,6 +786,7 @@ mod tests {
             id: "t1".into(),
             tool: GLOB_TOOL_NAME,
             summary: summary.into(),
+            input: None,
         });
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),

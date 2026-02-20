@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use maki_tool_macro::Tool;
 
-use maki_providers::ToolOutput;
+use maki_providers::{ToolInput, ToolOutput};
 
 use super::truncate_output;
 
@@ -98,6 +98,12 @@ impl Bash {
 
     pub fn mutable_path(&self) -> Option<&str> {
         None
+    }
+    pub fn start_input(&self) -> Option<ToolInput> {
+        Some(ToolInput::Code {
+            language: "bash",
+            code: self.command.clone(),
+        })
     }
 }
 

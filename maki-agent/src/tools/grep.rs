@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use maki_providers::ToolOutput;
+use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
 use super::{NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, resolve_search_path};
@@ -109,6 +109,10 @@ impl Grep {
 
     pub fn start_summary(&self) -> String {
         self.pattern.clone()
+    }
+
+    pub fn start_input(&self) -> Option<ToolInput> {
+        None
     }
 
     pub fn mutable_path(&self) -> Option<&str> {

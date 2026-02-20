@@ -2,7 +2,7 @@ use std::env;
 use std::sync::mpsc;
 use std::thread;
 
-use maki_providers::{AgentEvent, ContentBlock, ToolOutput};
+use maki_providers::{AgentEvent, ContentBlock, ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
 use super::ToolContext;
@@ -82,6 +82,10 @@ impl Task {
 
     pub fn start_summary(&self) -> String {
         self.description.clone()
+    }
+
+    pub fn start_input(&self) -> Option<ToolInput> {
+        None
     }
 
     pub fn mutable_path(&self) -> Option<&str> {

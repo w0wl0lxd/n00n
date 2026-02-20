@@ -1,6 +1,6 @@
 use std::fs;
 
-use maki_providers::ToolOutput;
+use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
 use super::fuzzy_replace;
@@ -38,6 +38,10 @@ impl Edit {
 
     pub fn start_summary(&self) -> String {
         self.path.clone()
+    }
+
+    pub fn start_input(&self) -> Option<ToolInput> {
+        None
     }
 
     pub fn mutable_path(&self) -> Option<&str> {

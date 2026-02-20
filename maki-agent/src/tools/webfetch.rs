@@ -4,7 +4,7 @@ use std::time::Duration;
 use maki_tool_macro::Tool;
 use ureq::Agent;
 
-use maki_providers::ToolOutput;
+use maki_providers::{ToolInput, ToolOutput};
 
 use super::truncate_output;
 
@@ -124,6 +124,10 @@ impl WebFetch {
 
     pub fn start_summary(&self) -> String {
         self.url.clone()
+    }
+
+    pub fn start_input(&self) -> Option<ToolInput> {
+        None
     }
 
     pub fn mutable_path(&self) -> Option<&str> {

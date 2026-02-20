@@ -12,7 +12,7 @@ pub use model::{Model, ModelError, ModelFamily, ModelPricing, TokenUsage};
 pub use providers::auth;
 pub use types::{
     AgentEvent, ContentBlock, DiffHunk, DiffLine, Envelope, Message, Role, StreamResponse,
-    TodoItem, TodoPriority, TodoStatus, ToolDoneEvent, ToolOutput, ToolStartEvent,
+    TodoItem, TodoPriority, TodoStatus, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
 };
 
 const DATA_DIR_NAME: &str = ".maki";

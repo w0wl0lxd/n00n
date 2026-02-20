@@ -76,6 +76,14 @@ pub enum TodoPriority {
     Low,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum ToolInput {
+    Code {
+        language: &'static str,
+        code: String,
+    },
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub enum ToolOutput {
     Plain(String),
@@ -195,6 +203,7 @@ pub struct ToolStartEvent {
     pub id: String,
     pub tool: &'static str,
     pub summary: String,
+    pub input: Option<ToolInput>,
 }
 
 #[derive(Debug, Clone, Serialize)]
