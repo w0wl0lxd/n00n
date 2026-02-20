@@ -291,6 +291,10 @@ pub struct TokenUsage {
 }
 
 impl TokenUsage {
+    pub fn context_tokens(&self) -> u32 {
+        self.input + self.output + self.cache_creation + self.cache_read
+    }
+
     pub fn cost(&self, pricing: &ModelPricing) -> f64 {
         self.input as f64 * pricing.input / PER_MILLION
             + self.output as f64 * pricing.output / PER_MILLION

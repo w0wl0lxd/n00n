@@ -220,7 +220,7 @@ impl App {
                 self.messages_panel.tool_done(e);
             }
             AgentEvent::TurnComplete { usage, .. } => {
-                self.context_size = usage.input;
+                self.context_size = usage.context_tokens();
             }
             AgentEvent::ToolResultsSubmitted { .. } => {}
             AgentEvent::Done { usage, .. } => {
@@ -354,6 +354,24 @@ mod tests {
         }));
         assert_eq!(app.token_usage.input, 120);
         assert_eq!(app.token_usage.output, 60);
+    }
+
+    #[test]
+    fn turn_complete_sets_context_size() {
+        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        app.status = Status::Streaming;
+        let usage = TokenUsage {
+            input: 1_000,
+            output: 500,
+            cache_creation: 200,
+            cache_read: 3_000,
+        };
+        app.update(Msg::Agent(AgentEvent::TurnComplete {
+            message: Default::default(),
+            usage: usage.clone(),
+            model: "test-model".into(),
+        }));
+        assert_eq!(app.context_size, usage.context_tokens());
     }
 
     #[test]

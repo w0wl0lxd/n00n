@@ -5,9 +5,10 @@ use serde_json::Value;
 
 use crate::TokenUsage;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    #[default]
     User,
     Assistant,
 }
@@ -147,7 +148,7 @@ pub enum ContentBlock {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
