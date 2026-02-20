@@ -35,4 +35,13 @@ pub const BOLD: Style = Style::new().fg(CYAN).add_modifier(Modifier::BOLD);
 pub const INLINE_CODE: Style = Style::new().fg(PINK);
 pub const CODE_FALLBACK: Style = Style::new().fg(PURPLE);
 
+pub const DIFF_OLD: Style = Style::new().fg(RED);
+pub const DIFF_NEW: Style = Style::new().fg(GREEN);
+pub const DIFF_UNCHANGED: Style = Style::new().fg(COMMENT);
+pub const DIFF_LINE_NR: Style = Style::new().fg(COMMENT);
+pub const TODO_COMPLETED: Style = Style::new().fg(GREEN);
+pub const TODO_IN_PROGRESS: Style = Style::new().fg(YELLOW);
+pub const TODO_PENDING: Style = Style::new().fg(FOREGROUND);
+pub const TODO_CANCELLED: Style = Style::new().fg(COMMENT);
+
 pub const INPUT_BORDER: Color = COMMENT;

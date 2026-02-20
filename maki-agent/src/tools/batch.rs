@@ -1,5 +1,6 @@
 use std::fmt::Write;
 
+use maki_providers::ToolOutput;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -38,7 +39,7 @@ impl Batch {
     pub const NAME: &str = "batch";
     pub const DESCRIPTION: &str = include_str!("batch.md");
 
-    pub fn execute(&self, ctx: &ToolContext) -> Result<String, String> {
+    pub fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
         if self.tool_calls.is_empty() {
             return Err("provide at least one tool call".into());
         }
@@ -57,11 +58,8 @@ impl Batch {
                         let call = ToolCall::from_api(&entry.tool, &entry.parameters)
                             .map_err(|e| e.to_string())?;
                         let done = call.execute(ctx, String::new());
-                        if done.is_error {
-                            Err(done.content)
-                        } else {
-                            Ok(done.content)
-                        }
+                        let text = done.output.as_text();
+                        if done.is_error { Err(text) } else { Ok(text) }
                     })
                 })
                 .collect();
@@ -106,7 +104,7 @@ impl Batch {
             let _ = write!(output, "All {total} tools executed successfully.");
         }
 
-        Ok(output)
+        Ok(ToolOutput::Plain(output))
     }
 
     pub fn start_summary(&self) -> String {
@@ -142,7 +140,7 @@ mod tests {
         }))
         .unwrap();
 
-        let result = batch.execute(&ctx).unwrap();
+        let result = batch.execute(&ctx).unwrap().as_text().to_string();
         assert!(result.contains("[ERROR]"));
         assert!(result.contains("failed"));
     }
@@ -162,7 +160,7 @@ mod tests {
         }))
         .unwrap();
 
-        let result = batch.execute(&ctx).unwrap();
+        let result = batch.execute(&ctx).unwrap().as_text().to_string();
         assert!(result.contains("content"));
         assert!(result.contains("[ERROR]"));
     }
@@ -175,7 +173,7 @@ mod tests {
             .collect();
 
         let batch = Batch::parse_input(&json!({"tool_calls": calls})).unwrap();
-        let result = batch.execute(&ctx).unwrap();
+        let result = batch.execute(&ctx).unwrap().as_text().to_string();
         assert!(result.contains(&format!("maximum of {MAX_BATCH_SIZE}")));
     }
 }

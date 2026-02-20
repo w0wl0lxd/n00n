@@ -2,7 +2,7 @@ use std::env;
 use std::sync::mpsc;
 use std::thread;
 
-use maki_providers::{AgentEvent, ContentBlock};
+use maki_providers::{AgentEvent, ContentBlock, ToolOutput};
 use maki_tool_macro::Tool;
 
 use super::ToolContext;
@@ -24,7 +24,7 @@ impl Task {
     pub const NAME: &str = "task";
     pub const DESCRIPTION: &str = include_str!("task.md");
 
-    pub fn execute(&self, ctx: &ToolContext) -> Result<String, String> {
+    pub fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
         let cwd = env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| ".".into());
@@ -77,7 +77,7 @@ impl Task {
             })
             .unwrap_or("(no response)");
 
-        Ok(text.to_string())
+        Ok(ToolOutput::Plain(text.to_string()))
     }
 
     pub fn start_summary(&self) -> String {

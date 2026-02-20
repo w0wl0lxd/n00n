@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use maki_tool_macro::Tool;
 
+use maki_providers::ToolOutput;
+
 use super::truncate_output;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -30,7 +32,7 @@ impl Bash {
     pub const NAME: &str = "bash";
     pub const DESCRIPTION: &str = include_str!("bash.md");
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let timeout_secs = self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let mut cmd = Command::new("bash");
         cmd.arg("-c")
@@ -73,7 +75,7 @@ impl Bash {
                         }
                         return Err(content);
                     }
-                    return Ok(content);
+                    return Ok(ToolOutput::Plain(content));
                 }
                 Ok(None) => {
                     if Instant::now() >= deadline {
@@ -127,7 +129,10 @@ mod tests {
     fn execute_success_failure_timeout_and_workdir() {
         let ctx = stub_ctx(&AgentMode::Build);
 
-        assert_eq!(bash("echo hello").execute(&ctx).unwrap().trim(), "hello");
+        assert_eq!(
+            bash("echo hello").execute(&ctx).unwrap().as_text().trim(),
+            "hello"
+        );
         assert!(bash("exit 1").execute(&ctx).is_err());
 
         let mut timeout = bash("sleep 10");
@@ -137,7 +142,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut in_dir = bash("pwd");
         in_dir.workdir = Some(dir.path().to_string_lossy().into());
-        let output = in_dir.execute(&ctx).unwrap();
+        let output = in_dir.execute(&ctx).unwrap().as_text().to_string();
         assert!(
             output
                 .trim()
@@ -154,7 +159,7 @@ mod tests {
         let ctx = stub_ctx(&AgentMode::Build);
         let mut b = bash("yes | head -n 100000");
         b.timeout = Some(10);
-        assert!(b.execute(&ctx).unwrap().contains("[truncated]"));
+        assert!(b.execute(&ctx).unwrap().as_text().contains("[truncated]"));
     }
 
     #[test]

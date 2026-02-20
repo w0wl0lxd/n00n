@@ -22,12 +22,18 @@ const REPLACERS: &[Replacer] = &[
     context_aware,
 ];
 
+#[derive(Debug)]
+pub(super) struct ReplaceResult {
+    pub content: String,
+    pub match_offset: usize,
+}
+
 pub(super) fn replace(
     content: &str,
     old_string: &str,
     new_string: &str,
     replace_all: bool,
-) -> Result<String, String> {
+) -> Result<ReplaceResult, String> {
     let mut any_found = false;
 
     for replacer in REPLACERS {
@@ -38,7 +44,10 @@ pub(super) fn replace(
             any_found = true;
 
             if replace_all {
-                return Ok(content.replace(&candidate, new_string));
+                return Ok(ReplaceResult {
+                    content: content.replace(&candidate, new_string),
+                    match_offset: first,
+                });
             }
 
             if content[first + candidate.len()..].contains(&candidate) {
@@ -49,7 +58,10 @@ pub(super) fn replace(
             result.push_str(&content[..first]);
             result.push_str(new_string);
             result.push_str(&content[first + candidate.len()..]);
-            return Ok(result);
+            return Ok(ReplaceResult {
+                content: result,
+                match_offset: first,
+            });
         }
     }
 
@@ -447,6 +459,7 @@ mod tests {
         assert!(
             replace(content, search, replacement, false)
                 .unwrap()
+                .content
                 .contains(R)
         );
     }
@@ -463,22 +476,22 @@ mod tests {
     #[test]
     fn replace_all() {
         let result = replace("let x = 1;\nlet x = 1;", "let x = 1;", "let x = 2;", true).unwrap();
-        assert!(!result.contains("let x = 1;"));
+        assert!(!result.content.contains("let x = 1;"));
     }
 
     #[test]
     fn block_anchor_picks_best_among_multiple() {
         let content = "fn a() {\n    unrelated();\n}\nfn a() {\n    target();\n}";
         let result = replace(content, "fn a() {\n    target();\n}", R, false).unwrap();
-        assert!(result.contains(R));
-        assert!(result.contains("unrelated()"));
+        assert!(result.content.contains(R));
+        assert!(result.content.contains("unrelated()"));
     }
 
     #[test]
     fn leading_whitespace_disambiguates() {
         let result = replace("fn foo() {}\n  fn foo() {}", "  fn foo() {}", R, false).unwrap();
-        assert!(result.starts_with("fn foo() {}"));
-        assert!(result.ends_with(R));
+        assert!(result.content.starts_with("fn foo() {}"));
+        assert!(result.content.ends_with(R));
     }
 
     #[test]

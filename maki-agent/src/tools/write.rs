@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use maki_providers::ToolOutput;
 use maki_tool_macro::Tool;
 
 #[derive(Tool, Debug, Clone)]
@@ -15,16 +16,16 @@ impl Write {
     pub const NAME: &str = "write";
     pub const DESCRIPTION: &str = include_str!("write.md");
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         if let Some(parent) = Path::new(&self.path).parent() {
             fs::create_dir_all(parent).map_err(|e| format!("mkdir error: {e}"))?;
         }
         fs::write(&self.path, &self.content).map_err(|e| format!("write error: {e}"))?;
-        Ok(format!(
+        Ok(ToolOutput::Plain(format!(
             "wrote {} bytes to {}",
             self.content.len(),
             self.path
-        ))
+        )))
     }
 
     pub fn start_summary(&self) -> String {

@@ -4,6 +4,8 @@ use std::time::Duration;
 use maki_tool_macro::Tool;
 use ureq::Agent;
 
+use maki_providers::ToolOutput;
+
 use super::truncate_output;
 
 const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
@@ -28,7 +30,7 @@ impl WebFetch {
     pub const NAME: &str = "webfetch";
     pub const DESCRIPTION: &str = include_str!("webfetch.md");
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let url = validate_and_upgrade_url(&self.url)?;
         let format = self.validated_format()?;
         let timeout = Duration::from_secs(
@@ -108,7 +110,7 @@ impl WebFetch {
             _ => text,
         };
 
-        Ok(truncate_output(output))
+        Ok(ToolOutput::Plain(truncate_output(output)))
     }
 
     fn validated_format(&self) -> Result<&'static str, String> {

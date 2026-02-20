@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use maki_providers::ToolOutput;
 use maki_tool_macro::Tool;
 
 use super::{NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, resolve_search_path};
@@ -21,7 +22,7 @@ impl Grep {
     pub const NAME: &str = "grep";
     pub const DESCRIPTION: &str = include_str!("grep.md");
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let search_path = resolve_search_path(self.path.as_deref())?;
 
         let mut cmd = Command::new("rg");
@@ -73,7 +74,7 @@ impl Grep {
         }
 
         if files.is_empty() {
-            return Ok(NO_FILES_FOUND.to_string());
+            return Ok(ToolOutput::Plain(NO_FILES_FOUND.to_string()));
         }
 
         files.sort_by(|a, b| {
@@ -103,7 +104,7 @@ impl Grep {
             }
         }
 
-        Ok(result)
+        Ok(ToolOutput::Plain(result))
     }
 
     pub fn start_summary(&self) -> String {

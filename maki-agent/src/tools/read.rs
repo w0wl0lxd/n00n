@@ -1,5 +1,6 @@
 use std::fs;
 
+use maki_providers::ToolOutput;
 use maki_tool_macro::Tool;
 
 use super::{MAX_OUTPUT_LINES, truncate_output};
@@ -18,7 +19,7 @@ impl Read {
     pub const NAME: &str = "read";
     pub const DESCRIPTION: &str = include_str!("read.md");
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let raw = fs::read_to_string(&self.path).map_err(|e| format!("read error: {e}"))?;
 
         let start = self.offset.unwrap_or(1).saturating_sub(1);
@@ -33,7 +34,7 @@ impl Read {
             .collect::<Vec<_>>()
             .join("\n");
 
-        Ok(truncate_output(numbered))
+        Ok(ToolOutput::Plain(truncate_output(numbered)))
     }
 
     pub fn start_summary(&self) -> String {

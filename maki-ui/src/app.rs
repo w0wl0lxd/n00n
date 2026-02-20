@@ -113,6 +113,7 @@ impl App {
                 self.messages_panel.push(DisplayMessage {
                     role: DisplayRole::User,
                     text: text.clone(),
+                    tool_output: None,
                 });
                 self.status = Status::Streaming;
                 self.messages_panel.enable_auto_scroll();
@@ -149,6 +150,7 @@ impl App {
                 self.messages_panel.push(DisplayMessage {
                     role: DisplayRole::Error,
                     text: CANCEL_MSG.into(),
+                    tool_output: None,
                 });
                 self.status = Status::Idle;
                 vec![Action::CancelAgent]

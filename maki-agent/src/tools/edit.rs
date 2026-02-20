@@ -1,8 +1,10 @@
 use std::fs;
 
+use maki_providers::ToolOutput;
 use maki_tool_macro::Tool;
 
 use super::fuzzy_replace;
+use super::multiedit::build_hunk;
 
 #[derive(Tool, Debug, Clone)]
 pub struct Edit {
@@ -20,13 +22,18 @@ impl Edit {
     pub const NAME: &str = "edit";
     pub const DESCRIPTION: &str = include_str!("edit.md");
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let content = fs::read_to_string(&self.path).map_err(|e| format!("read error: {e}"))?;
         let replace_all = self.replace_all.unwrap_or(false);
-        let updated =
+        let result =
             fuzzy_replace::replace(&content, &self.old_string, &self.new_string, replace_all)?;
-        fs::write(&self.path, &updated).map_err(|e| format!("write error: {e}"))?;
-        Ok(format!("edited {}", self.path))
+        let start_line = content[..result.match_offset].matches('\n').count() + 1;
+        fs::write(&self.path, &result.content).map_err(|e| format!("write error: {e}"))?;
+        Ok(ToolOutput::Diff {
+            path: self.path.clone(),
+            hunks: vec![build_hunk(start_line, &self.old_string, &self.new_string)],
+            summary: format!("edited {}", self.path),
+        })
     }
 
     pub fn start_summary(&self) -> String {

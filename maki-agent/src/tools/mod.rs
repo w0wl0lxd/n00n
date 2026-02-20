@@ -17,11 +17,13 @@ use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
-use crate::{AgentError, AgentMode, Envelope, ToolDoneEvent, ToolStartEvent};
+use crate::{AgentError, AgentMode, Envelope, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use maki_providers::Model;
 use maki_providers::provider::Provider;
 
 pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
+pub const GLOB_TOOL_NAME: &str = glob::Glob::NAME;
+pub const GREP_TOOL_NAME: &str = grep::Grep::NAME;
 const MAX_OUTPUT_BYTES: usize = 30_000;
 pub(crate) const MAX_OUTPUT_LINES: usize = 2000;
 pub(crate) const SEARCH_RESULT_LIMIT: usize = 100;
@@ -125,7 +127,7 @@ macro_rules! register_tools {
                     return ToolDoneEvent {
                         id,
                         tool: self.name(),
-                        content: PLAN_WRITE_RESTRICTED.into(),
+                        output: ToolOutput::Plain(PLAN_WRITE_RESTRICTED.into()),
                         is_error: true,
                     };
                 }
@@ -133,11 +135,11 @@ macro_rules! register_tools {
                 let result = match self {
                     $(ToolCall::$Variant(inner) => inner.execute(ctx)),+
                 };
-                let (content, is_error) = match result {
-                    Ok(c) => (c, false),
-                    Err(c) => (c, true),
+                let (output, is_error) = match result {
+                    Ok(o) => (o, false),
+                    Err(e) => (ToolOutput::Plain(e), true),
                 };
-                ToolDoneEvent { id, tool: self.name(), content, is_error }
+                ToolDoneEvent { id, tool: self.name(), output, is_error }
             }
 
             fn mutable_path(&self) -> Option<&str> {
@@ -267,12 +269,12 @@ mod tests {
         w.execute(&ctx).unwrap();
 
         let r = read::Read::parse_input(&json!({"path": path})).unwrap();
-        let full = r.execute(&ctx).unwrap();
+        let full = r.execute(&ctx).unwrap().as_text().to_string();
         assert!(full.contains("1: line1"));
         assert!(full.contains("10: line10"));
 
         let r = read::Read::parse_input(&json!({"path": path, "offset": 3, "limit": 2})).unwrap();
-        let slice = r.execute(&ctx).unwrap();
+        let slice = r.execute(&ctx).unwrap().as_text().to_string();
         assert!(slice.contains("3: line3"));
         assert!(slice.contains("4: line4"));
         assert!(!slice.contains("5: line5"));
@@ -288,12 +290,12 @@ mod tests {
         let ctx = stub_ctx(&AgentMode::Build);
 
         let g = glob::Glob::parse_input(&json!({"pattern": "*.txt", "path": dir_str})).unwrap();
-        let hit = g.execute(&ctx).unwrap();
+        let hit = g.execute(&ctx).unwrap().as_text().to_string();
         assert!(hit.contains("a.txt"));
         assert!(!hit.contains("c.rs"));
 
         let g = glob::Glob::parse_input(&json!({"pattern": "*.nope", "path": dir_str})).unwrap();
-        assert_eq!(g.execute(&ctx).unwrap(), NO_FILES_FOUND);
+        assert_eq!(g.execute(&ctx).unwrap().as_text(), NO_FILES_FOUND);
     }
 
     #[test]
@@ -305,7 +307,7 @@ mod tests {
         let ctx = stub_ctx(&AgentMode::Build);
 
         let g = grep::Grep::parse_input(&json!({"pattern": "hello", "path": dir_str})).unwrap();
-        let hit = g.execute(&ctx).unwrap();
+        let hit = g.execute(&ctx).unwrap().as_text().to_string();
         assert!(hit.contains("a.txt"));
         assert!(hit.contains("b.rs"));
 
@@ -313,13 +315,13 @@ mod tests {
             &json!({"pattern": "hello", "path": dir_str, "include": "*.rs"}),
         )
         .unwrap();
-        let filtered = g.execute(&ctx).unwrap();
+        let filtered = g.execute(&ctx).unwrap().as_text().to_string();
         assert!(filtered.contains("b.rs"));
         assert!(!filtered.contains("a.txt"));
 
         let g =
             grep::Grep::parse_input(&json!({"pattern": "zzzznotfound", "path": dir_str})).unwrap();
-        assert_eq!(g.execute(&ctx).unwrap(), NO_FILES_FOUND);
+        assert_eq!(g.execute(&ctx).unwrap().as_text(), NO_FILES_FOUND);
     }
 
     #[test]

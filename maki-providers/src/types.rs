@@ -1,4 +1,6 @@
-use serde::Serialize;
+use std::fmt::Write;
+
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::TokenUsage;
@@ -8,6 +10,122 @@ use crate::TokenUsage;
 pub enum Role {
     User,
     Assistant,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum DiffLine {
+    Unchanged(String),
+    Added(String),
+    Removed(String),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiffHunk {
+    pub start_line: usize,
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoItem {
+    pub content: String,
+    pub status: TodoStatus,
+    pub priority: TodoPriority,
+}
+
+impl TodoItem {
+    pub fn item_schema() -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "content": { "type": "string", "description": "Task description" },
+                "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"] },
+                "priority": { "type": "string", "enum": ["high", "medium", "low"] }
+            },
+            "required": ["content", "status", "priority"]
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Cancelled,
+}
+
+impl TodoStatus {
+    pub fn marker(self) -> &'static str {
+        match self {
+            Self::Completed => "[✓]",
+            Self::InProgress => "[•]",
+            Self::Pending => "[ ]",
+            Self::Cancelled => "[x]",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, strum::Display)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum TodoPriority {
+    High,
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum ToolOutput {
+    Plain(String),
+    Diff {
+        path: String,
+        hunks: Vec<DiffHunk>,
+        summary: String,
+    },
+    TodoList(Vec<TodoItem>),
+}
+
+impl ToolOutput {
+    pub fn as_text(&self) -> String {
+        match self {
+            Self::Plain(s) => s.clone(),
+            Self::Diff {
+                path,
+                hunks,
+                summary,
+            } => {
+                let mut out = format!("{summary}\n--- {path}\n+++ {path}");
+                for hunk in hunks {
+                    out.push('\n');
+                    for dl in &hunk.lines {
+                        match dl {
+                            DiffLine::Unchanged(l) => {
+                                let _ = write!(out, "\n  {l}");
+                            }
+                            DiffLine::Removed(l) => {
+                                let _ = write!(out, "\n- {l}");
+                            }
+                            DiffLine::Added(l) => {
+                                let _ = write!(out, "\n+ {l}");
+                            }
+                        }
+                    }
+                }
+                out
+            }
+            Self::TodoList(items) => {
+                if items.is_empty() {
+                    return "No todos.".into();
+                }
+                items
+                    .iter()
+                    .map(|t| format!("{} ({}) {}", t.status.marker(), t.priority, t.content))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,10 +166,10 @@ impl Message {
             role: Role::User,
             content: results
                 .into_iter()
-                .map(|output| ContentBlock::ToolResult {
-                    tool_use_id: output.id,
-                    content: output.content,
-                    is_error: output.is_error,
+                .map(|r| ContentBlock::ToolResult {
+                    tool_use_id: r.id,
+                    content: r.output.as_text(),
+                    is_error: r.is_error,
                 })
                 .collect(),
         }
@@ -82,7 +200,7 @@ pub struct ToolStartEvent {
 pub struct ToolDoneEvent {
     pub id: String,
     pub tool: &'static str,
-    pub content: String,
+    pub output: ToolOutput,
     pub is_error: bool,
 }
 
@@ -141,6 +259,74 @@ pub struct StreamResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn as_text_diff_covers_all_line_types_and_multiple_hunks() {
+        let output = ToolOutput::Diff {
+            path: "src/main.rs".into(),
+            hunks: vec![
+                DiffHunk {
+                    start_line: 1,
+                    lines: vec![
+                        DiffLine::Unchanged("keep".into()),
+                        DiffLine::Removed("old".into()),
+                        DiffLine::Added("new".into()),
+                    ],
+                },
+                DiffHunk {
+                    start_line: 10,
+                    lines: vec![DiffLine::Removed("c".into()), DiffLine::Added("d".into())],
+                },
+            ],
+            summary: "Updated value".into(),
+        };
+        let text = output.as_text();
+        assert!(text.starts_with("Updated value"));
+        assert!(text.contains("--- src/main.rs"));
+        assert!(text.contains("+++ src/main.rs"));
+        assert!(text.contains("  keep"));
+        assert!(text.contains("- old"));
+        assert!(text.contains("+ new"));
+        assert!(text.contains("- c"));
+        assert!(text.contains("+ d"));
+    }
+
+    #[test]
+    fn as_text_todolist_formats_all_statuses() {
+        let output = ToolOutput::TodoList(vec![
+            TodoItem {
+                content: "done".into(),
+                status: TodoStatus::Completed,
+                priority: TodoPriority::High,
+            },
+            TodoItem {
+                content: "wip".into(),
+                status: TodoStatus::InProgress,
+                priority: TodoPriority::Medium,
+            },
+            TodoItem {
+                content: "todo".into(),
+                status: TodoStatus::Pending,
+                priority: TodoPriority::Low,
+            },
+            TodoItem {
+                content: "nope".into(),
+                status: TodoStatus::Cancelled,
+                priority: TodoPriority::Low,
+            },
+        ]);
+        let text = output.as_text();
+        assert!(text.contains("[✓] (high) done"));
+        assert!(text.contains("[•] (medium) wip"));
+        assert!(text.contains("[ ] (low) todo"));
+        assert!(text.contains("[x] (low) nope"));
+    }
+
+    #[test]
+    fn as_text_todolist_empty() {
+        let output = ToolOutput::TodoList(vec![]);
+        assert_eq!(output.as_text(), "No todos.");
+    }
 
     #[test]
     fn tool_result_is_error_skipped_when_false() {

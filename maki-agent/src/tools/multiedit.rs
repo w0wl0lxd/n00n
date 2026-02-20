@@ -1,5 +1,6 @@
 use std::fs;
 
+use maki_providers::{DiffHunk, DiffLine, ToolOutput};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -40,26 +41,34 @@ impl MultiEdit {
     pub const NAME: &str = "multiedit";
     pub const DESCRIPTION: &str = include_str!("multiedit.md");
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         if self.edits.is_empty() {
             return Err("provide at least one edit".into());
         }
         let mut content = fs::read_to_string(&self.path).map_err(|e| format!("read error: {e}"))?;
 
+        let mut hunks = Vec::with_capacity(self.edits.len());
         for (i, edit) in self.edits.iter().enumerate() {
             let replace_all = edit.replace_all.unwrap_or(false);
-            content =
+            let result =
                 fuzzy_replace::replace(&content, &edit.old_string, &edit.new_string, replace_all)
                     .map_err(|e| format!("edit {i}: {e}"))?;
+            let start_line = content[..result.match_offset].matches('\n').count() + 1;
+            hunks.push(build_hunk(start_line, &edit.old_string, &edit.new_string));
+            content = result.content;
         }
 
         fs::write(&self.path, &content).map_err(|e| format!("write error: {e}"))?;
         let n = self.edits.len();
-        Ok(format!(
-            "applied {n} edit{s} to {path}",
-            s = if n == 1 { "" } else { "s" },
-            path = self.path
-        ))
+        Ok(ToolOutput::Diff {
+            path: self.path.clone(),
+            hunks,
+            summary: format!(
+                "applied {n} edit{s} to {path}",
+                s = if n == 1 { "" } else { "s" },
+                path = self.path
+            ),
+        })
     }
 
     pub fn start_summary(&self) -> String {
@@ -68,6 +77,44 @@ impl MultiEdit {
 
     pub fn mutable_path(&self) -> Option<&str> {
         Some(&self.path)
+    }
+}
+
+pub(super) fn build_hunk(start_line: usize, old: &str, new: &str) -> DiffHunk {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let mut diff_lines = Vec::new();
+
+    let common_prefix = old_lines
+        .iter()
+        .zip(&new_lines)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let max_suffix = old_lines.len().min(new_lines.len()) - common_prefix;
+    let common_suffix = old_lines
+        .iter()
+        .rev()
+        .zip(new_lines.iter().rev())
+        .take(max_suffix)
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    for &line in &old_lines[..common_prefix] {
+        diff_lines.push(DiffLine::Unchanged(line.to_owned()));
+    }
+    for &line in &old_lines[common_prefix..old_lines.len() - common_suffix] {
+        diff_lines.push(DiffLine::Removed(line.to_owned()));
+    }
+    for &line in &new_lines[common_prefix..new_lines.len() - common_suffix] {
+        diff_lines.push(DiffLine::Added(line.to_owned()));
+    }
+    for &line in &old_lines[old_lines.len() - common_suffix..] {
+        diff_lines.push(DiffLine::Unchanged(line.to_owned()));
+    }
+
+    DiffHunk {
+        start_line,
+        lines: diff_lines,
     }
 }
 
@@ -104,7 +151,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let msg = tool.execute(&ctx).unwrap();
+        let msg = tool.execute(&ctx).unwrap().as_text().to_string();
         assert!(msg.contains("2 edits"));
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
@@ -139,5 +186,37 @@ mod tests {
         let path = temp_file(&dir, "f.rs", "content");
         let tool = MultiEdit::parse_input(&json!({ "path": path, "edits": [] })).unwrap();
         assert_eq!(tool.execute(&ctx).unwrap_err(), EMPTY_ERR);
+    }
+
+    #[test]
+    fn build_hunk_unchanged_lines_not_duplicated() {
+        let old = "pub const PLANS_DIR: &str = \"plans\";\n";
+        let new = "pub const PLANS_DIR: &str = \"plans\";\npub const TEST: &str = \"test\";";
+        let hunk = build_hunk(1, old, new);
+        assert_eq!(hunk.start_line, 1);
+        assert_eq!(
+            hunk.lines,
+            vec![
+                DiffLine::Unchanged("pub const PLANS_DIR: &str = \"plans\";".into()),
+                DiffLine::Added("pub const TEST: &str = \"test\";".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_hunk_middle_change() {
+        let old = "a\nb\nc";
+        let new = "a\nB\nc";
+        let hunk = build_hunk(5, old, new);
+        assert_eq!(hunk.start_line, 5);
+        assert_eq!(
+            hunk.lines,
+            vec![
+                DiffLine::Unchanged("a".into()),
+                DiffLine::Removed("b".into()),
+                DiffLine::Added("B".into()),
+                DiffLine::Unchanged("c".into()),
+            ]
+        );
     }
 }

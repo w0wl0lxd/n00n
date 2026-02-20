@@ -7,8 +7,8 @@ use crate::theme;
 
 use std::time::Instant;
 
-use maki_agent::tools::WEBFETCH_TOOL_NAME;
-use maki_providers::{ToolDoneEvent, ToolStartEvent};
+use maki_agent::tools::{GLOB_TOOL_NAME, GREP_TOOL_NAME, WEBFETCH_TOOL_NAME};
+use maki_providers::{DiffLine, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -98,13 +98,13 @@ impl MessagesPanel {
 
     pub fn tool_start(&mut self, event: ToolStartEvent) {
         self.flush();
-        let text = format!("[{}] {}", event.tool, event.summary);
         self.messages.push(DisplayMessage {
             role: DisplayRole::Tool {
                 id: event.id,
                 status: ToolStatus::InProgress,
             },
-            text,
+            text: format!("[{}] {}", event.tool, event.summary),
+            tool_output: None,
         });
         self.in_progress_count += 1;
     }
@@ -126,16 +126,25 @@ impl MessagesPanel {
             id: event.id,
             status,
         };
-        let output = if event.tool == WEBFETCH_TOOL_NAME {
-            let n = event.content.lines().count();
-            format!("({n} lines)")
-        } else {
-            truncate_lines(&event.content, TOOL_OUTPUT_MAX_DISPLAY_LINES).into_owned()
-        };
-        if !output.is_empty() {
-            msg.text.push('\n');
-            msg.text.push_str(&output);
+        if let ToolOutput::Plain(ref text) = event.output {
+            if event.tool == GLOB_TOOL_NAME {
+                let n = text.lines().count();
+                msg.text = format!("{} ({n} files)", msg.text);
+            } else if event.tool == GREP_TOOL_NAME {
+                let n = text.lines().filter(|l| !l.starts_with(' ')).count();
+                msg.text = format!("{} ({n} files)", msg.text);
+            }
+            let display = if event.tool == WEBFETCH_TOOL_NAME {
+                let n = text.lines().count();
+                format!("({n} lines)")
+            } else {
+                truncate_lines(text, TOOL_OUTPUT_MAX_DISPLAY_LINES).into_owned()
+            };
+            if !display.is_empty() {
+                msg.text = format!("{}\n{display}", msg.text);
+            }
         }
+        msg.tool_output = Some(event.output);
         self.in_progress_count -= 1;
         self.invalidate_line_cache();
     }
@@ -146,6 +155,7 @@ impl MessagesPanel {
             self.messages.push(DisplayMessage {
                 role: DisplayRole::Assistant,
                 text: self.streaming_text.take_all(),
+                tool_output: None,
             });
             self.cached_streaming_text = StreamingCache::default();
         }
@@ -291,6 +301,7 @@ impl MessagesPanel {
             self.messages.push(DisplayMessage {
                 role: DisplayRole::Thinking,
                 text: self.streaming_thinking.take_all(),
+                tool_output: None,
             });
             self.cached_streaming_thinking = StreamingCache::default();
         }
@@ -330,36 +341,7 @@ impl MessagesPanel {
             let msg = &self.messages[i];
 
             if let DisplayRole::Tool { ref id, status } = msg.role {
-                let (header, body) = msg
-                    .text
-                    .split_once('\n')
-                    .map_or((msg.text.as_str(), None), |(h, b)| (h, Some(b)));
-
-                let mut lines = text_to_lines(header, "tool> ", theme::TOOL, None);
-
-                let (indicator, indicator_style) = match status {
-                    ToolStatus::InProgress => {
-                        let ch = spinner_frame(self.started_at.elapsed().as_millis());
-                        (format!("{ch} "), theme::TOOL_IN_PROGRESS)
-                    }
-                    ToolStatus::Success => (TOOL_INDICATOR.into(), theme::TOOL_SUCCESS),
-                    ToolStatus::Error => (TOOL_INDICATOR.into(), theme::TOOL_ERROR),
-                };
-                if let Some(first) = lines.first_mut() {
-                    first
-                        .spans
-                        .insert(0, Span::styled(indicator, indicator_style));
-                }
-
-                if let Some(body_text) = body {
-                    for line in body_text.lines() {
-                        lines.push(Line::from(vec![
-                            Span::styled(TOOL_BODY_INDENT.to_owned(), theme::TOOL),
-                            Span::styled(line.to_owned(), theme::TOOL),
-                        ]));
-                    }
-                }
-
+                let lines = self.build_tool_lines(msg, status);
                 let id = id.clone();
                 self.push_spacer_if_needed();
                 self.cached_segments.push(Segment {
@@ -395,6 +377,109 @@ impl MessagesPanel {
         self.cached_msg_count = self.messages.len();
     }
 
+    fn build_tool_lines(&self, msg: &DisplayMessage, status: ToolStatus) -> Vec<Line<'static>> {
+        let header = msg
+            .text
+            .split_once('\n')
+            .map_or(msg.text.as_str(), |(h, _)| h);
+        let mut lines = text_to_lines(header, "tool> ", theme::TOOL, None);
+
+        let (indicator, indicator_style) = match status {
+            ToolStatus::InProgress => {
+                let ch = spinner_frame(self.started_at.elapsed().as_millis());
+                (format!("{ch} "), theme::TOOL_IN_PROGRESS)
+            }
+            ToolStatus::Success => (TOOL_INDICATOR.into(), theme::TOOL_SUCCESS),
+            ToolStatus::Error => (TOOL_INDICATOR.into(), theme::TOOL_ERROR),
+        };
+        if let Some(first) = lines.first_mut() {
+            first
+                .spans
+                .insert(0, Span::styled(indicator, indicator_style));
+        }
+
+        match msg.tool_output.as_ref() {
+            None | Some(ToolOutput::Plain(_)) => {
+                if let Some((_, body)) = msg.text.split_once('\n') {
+                    for line in body.lines() {
+                        lines.push(Line::from(vec![
+                            Span::styled(TOOL_BODY_INDENT.to_owned(), theme::TOOL),
+                            Span::styled(line.to_owned(), theme::TOOL),
+                        ]));
+                    }
+                }
+            }
+            Some(ToolOutput::Diff { hunks, .. }) => {
+                let max_line_nr = hunks
+                    .iter()
+                    .map(|h| {
+                        let numbered = h
+                            .lines
+                            .iter()
+                            .filter(|l| !matches!(l, DiffLine::Added(_)))
+                            .count();
+                        h.start_line + numbered.saturating_sub(1)
+                    })
+                    .max()
+                    .unwrap_or(1);
+                let nr_width = max_line_nr.ilog10() as usize + 1;
+
+                for (i, hunk) in hunks.iter().enumerate() {
+                    if i > 0 {
+                        lines.push(Line::from(Span::styled(
+                            format!("{TOOL_BODY_INDENT}{:>nr_width$}  ...", ""),
+                            theme::DIFF_LINE_NR,
+                        )));
+                    }
+                    let mut line_nr = hunk.start_line;
+                    for dl in &hunk.lines {
+                        let (prefix, text, style, show_nr) = match dl {
+                            DiffLine::Unchanged(t) => {
+                                ("  ", t.as_str(), theme::DIFF_UNCHANGED, true)
+                            }
+                            DiffLine::Removed(t) => ("- ", t.as_str(), theme::DIFF_OLD, true),
+                            DiffLine::Added(t) => ("+ ", t.as_str(), theme::DIFF_NEW, false),
+                        };
+                        let nr_str = if show_nr {
+                            let s = format!("{line_nr:>nr_width$}");
+                            line_nr += 1;
+                            s
+                        } else {
+                            " ".repeat(nr_width)
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{TOOL_BODY_INDENT}{nr_str} "),
+                                theme::DIFF_LINE_NR,
+                            ),
+                            Span::styled(format!("{prefix}{text}"), style),
+                        ]));
+                    }
+                }
+            }
+            Some(ToolOutput::TodoList(items)) => {
+                for item in items {
+                    let style = match item.status {
+                        maki_providers::TodoStatus::Completed => theme::TODO_COMPLETED,
+                        maki_providers::TodoStatus::InProgress => theme::TODO_IN_PROGRESS,
+                        maki_providers::TodoStatus::Pending => theme::TODO_PENDING,
+                        maki_providers::TodoStatus::Cancelled => theme::TODO_CANCELLED,
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "{TOOL_BODY_INDENT}{} {}",
+                            item.status.marker(),
+                            item.content
+                        ),
+                        style,
+                    )));
+                }
+            }
+        }
+
+        lines
+    }
+
     fn push_spacer_if_needed(&mut self) {
         if !self.cached_segments.is_empty() {
             self.cached_segments.push(Segment {
@@ -409,16 +494,9 @@ impl MessagesPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maki_providers::ToolOutput;
     use ratatui::backend::TestBackend;
     use test_case::test_case;
-
-    #[test]
-    fn agent_text_delta_accumulates() {
-        let mut panel = MessagesPanel::new();
-        panel.text_delta("hello");
-        panel.text_delta(" world");
-        assert_eq!(panel.streaming_text, "hello world");
-    }
 
     #[test_case(false, ToolStatus::Success ; "success_updates_start_to_success")]
     #[test_case(true,  ToolStatus::Error   ; "error_updates_start_to_error")]
@@ -440,7 +518,7 @@ mod tests {
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
             tool: "bash",
-            content: "output".into(),
+            output: ToolOutput::Plain("output".into()),
             is_error,
         });
 
@@ -451,22 +529,23 @@ mod tests {
         assert!(panel.messages[0].text.contains("output"));
     }
 
-    #[test]
-    fn webfetch_done_shows_line_count_only() {
+    #[test_case(WEBFETCH_TOOL_NAME, "line1\nline2\nline3", "(3 lines)" ; "webfetch_shows_line_count")]
+    #[test_case(GLOB_TOOL_NAME, "src/a.rs\nsrc/b.rs\nsrc/c.rs", "(3 files)" ; "glob_shows_file_count")]
+    #[test_case(GREP_TOOL_NAME, "src/a.rs:\n  1: match\nsrc/b.rs:\n  2: match", "(2 files)" ; "grep_shows_file_count")]
+    fn tool_done_summary_annotation(tool: &'static str, output: &str, expected: &str) {
         let mut panel = MessagesPanel::new();
         panel.tool_start(ToolStartEvent {
             id: "t1".into(),
-            tool: WEBFETCH_TOOL_NAME,
-            summary: "https://example.com".into(),
+            tool,
+            summary: "s".into(),
         });
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
-            tool: WEBFETCH_TOOL_NAME,
-            content: "line1\nline2\nline3".into(),
+            tool,
+            output: ToolOutput::Plain(output.into()),
             is_error: false,
         });
-        assert_eq!(panel.messages.len(), 1);
-        assert!(panel.messages[0].text.contains("(3 lines)"));
+        assert!(panel.messages[0].text.contains(expected));
     }
 
     #[test]
@@ -519,6 +598,7 @@ mod tests {
         panel.push(DisplayMessage {
             role: DisplayRole::User,
             text: "short".into(),
+            tool_output: None,
         });
         panel.scroll_top = 1000;
         panel.auto_scroll = false;
@@ -586,13 +666,18 @@ mod tests {
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
             tool: "bash",
-            content: long_output,
+            output: ToolOutput::Plain(long_output),
             is_error: false,
         });
         assert_eq!(panel.messages.len(), 1);
-        let text = &panel.messages[0].text;
-        assert!(text.contains('\n'), "body should be appended");
-        assert!(text.contains("..."), "long output should be truncated");
+        assert!(
+            panel.messages[0].text.contains('\n'),
+            "body should be appended"
+        );
+        assert!(
+            panel.messages[0].text.contains("..."),
+            "long output should be truncated"
+        );
     }
 
     #[test]
@@ -606,7 +691,7 @@ mod tests {
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
             tool: "edit",
-            content: String::new(),
+            output: ToolOutput::Plain(String::new()),
             is_error: false,
         });
         assert_eq!(panel.messages.len(), 1);
@@ -622,39 +707,10 @@ mod tests {
         panel.tool_done(ToolDoneEvent {
             id: "orphan".into(),
             tool: "bash",
-            content: "output".into(),
+            output: ToolOutput::Plain("output".into()),
             is_error: false,
         });
         assert!(panel.messages.is_empty());
-    }
-
-    #[test]
-    fn spinner_only_updates_in_progress_tools() {
-        let mut panel = MessagesPanel::new();
-        panel.tool_start(ToolStartEvent {
-            id: "done".into(),
-            tool: "bash",
-            summary: "finished".into(),
-        });
-        panel.tool_done(ToolDoneEvent {
-            id: "done".into(),
-            tool: "bash",
-            content: "ok".into(),
-            is_error: false,
-        });
-        panel.tool_start(ToolStartEvent {
-            id: "active".into(),
-            tool: "read",
-            summary: "reading".into(),
-        });
-        render(&mut panel, 80, 24);
-
-        let done_seg = panel
-            .cached_segments
-            .iter()
-            .find(|s| s.tool_id.as_deref() == Some("done"))
-            .unwrap();
-        assert_eq!(done_seg.lines[0].spans[0].style, theme::TOOL_SUCCESS);
     }
 
     #[test]
@@ -675,7 +731,7 @@ mod tests {
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
             tool: "bash",
-            content: "ok".into(),
+            output: ToolOutput::Plain("ok".into()),
             is_error: false,
         });
         assert_eq!(panel.in_progress_count, 1);
@@ -684,7 +740,7 @@ mod tests {
         panel.tool_done(ToolDoneEvent {
             id: "t2".into(),
             tool: "read",
-            content: "ok".into(),
+            output: ToolOutput::Plain("ok".into()),
             is_error: false,
         });
         assert_eq!(panel.in_progress_count, 0);

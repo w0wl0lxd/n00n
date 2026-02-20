@@ -1,5 +1,6 @@
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
+use maki_providers::ToolOutput;
 use maki_tool_macro::Tool;
 
 use super::{NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, resolve_search_path};
@@ -16,7 +17,7 @@ impl Glob {
     pub const NAME: &str = "glob";
     pub const DESCRIPTION: &str = include_str!("glob.md");
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<String, String> {
+    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let search_path = resolve_search_path(self.path.as_deref())?;
 
         let mut overrides = OverrideBuilder::new(&search_path);
@@ -40,17 +41,19 @@ impl Glob {
             .collect();
 
         if entries.is_empty() {
-            return Ok(NO_FILES_FOUND.to_string());
+            return Ok(ToolOutput::Plain(NO_FILES_FOUND.to_string()));
         }
 
         entries.sort_unstable_by(|a, b| b.0.cmp(&a.0));
         entries.truncate(SEARCH_RESULT_LIMIT);
 
-        Ok(entries
-            .into_iter()
-            .map(|(_, p)| p)
-            .collect::<Vec<_>>()
-            .join("\n"))
+        Ok(ToolOutput::Plain(
+            entries
+                .into_iter()
+                .map(|(_, p)| p)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ))
     }
 
     pub fn start_summary(&self) -> String {

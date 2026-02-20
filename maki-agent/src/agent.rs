@@ -11,6 +11,7 @@ use serde_json::Value;
 use crate::tools::{ToolCall, ToolContext};
 use crate::{
     AgentError, AgentEvent, AgentInput, AgentMode, Envelope, Message, TokenUsage, ToolDoneEvent,
+    ToolOutput,
 };
 use maki_providers::Model;
 use maki_providers::provider::Provider;
@@ -103,7 +104,7 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDo
                 h.join().unwrap_or_else(|_| ToolDoneEvent {
                     id: parsed.id.clone(),
                     tool: "unknown",
-                    content: "tool thread panicked".into(),
+                    output: ToolOutput::Plain("tool thread panicked".into()),
                     is_error: true,
                 })
             })

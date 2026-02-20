@@ -536,7 +536,7 @@ data: [DONE]\n";
             Message::tool_results(vec![crate::ToolDoneEvent {
                 id: "tc_1".to_string(),
                 tool: "bash",
-                content: "file.txt".to_string(),
+                output: crate::ToolOutput::Plain("file.txt".to_string()),
                 is_error: false,
             }]),
         ];
