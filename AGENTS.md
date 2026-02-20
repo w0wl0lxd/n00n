@@ -22,7 +22,7 @@ Maki is an AI coding agent (like Claude Code and opencode), that is built bottom
 - Prefer structured logging (wide logs with a bunch of useful fields)
 - Provide helpful error messages
 - Use #[test_case] when writing tests, and use snake_case for naming the tests
-- No need for bullshit tests (e.g. arithmetic tautology)
+- No need for bullshit tests (e.g. tautology)
 - No inline magic numbers or strings
 - In tests const error/status messages and assert against the shared constant
 - Add #[derive(Copy)] on structs with 1 primitive field
