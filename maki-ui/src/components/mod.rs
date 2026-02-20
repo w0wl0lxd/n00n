@@ -40,6 +40,9 @@ pub enum DisplayRole {
 }
 
 #[cfg(test)]
+pub(crate) const TEST_CONTEXT_WINDOW: u32 = 200_000;
+
+#[cfg(test)]
 pub(crate) fn test_pricing() -> maki_providers::ModelPricing {
     maki_providers::ModelPricing {
         input: 3.0,

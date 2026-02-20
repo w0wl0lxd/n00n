@@ -37,12 +37,14 @@ pub struct Model {
     pub provider: ProviderKind,
     pub pricing: ModelPricing,
     pub max_output_tokens: u32,
+    pub context_window: u32,
 }
 
 struct ModelTier {
     prefixes: &'static [&'static str],
     pricing: ModelPricing,
     max_output_tokens: u32,
+    context_window: u32,
 }
 
 const ANTHROPIC_TIERS: &[ModelTier] = &[
@@ -55,9 +57,10 @@ const ANTHROPIC_TIERS: &[ModelTier] = &[
             cache_read: 0.03,
         },
         max_output_tokens: 4096,
+        context_window: 200_000,
     },
     ModelTier {
-        prefixes: &["claude-3-5-haiku", "claude-haiku-4-5"],
+        prefixes: &["claude-3-5-haiku"],
         pricing: ModelPricing {
             input: 0.80,
             output: 4.00,
@@ -65,6 +68,18 @@ const ANTHROPIC_TIERS: &[ModelTier] = &[
             cache_read: 0.08,
         },
         max_output_tokens: 8192,
+        context_window: 200_000,
+    },
+    ModelTier {
+        prefixes: &["claude-haiku-4-5"],
+        pricing: ModelPricing {
+            input: 1.00,
+            output: 5.00,
+            cache_write: 1.25,
+            cache_read: 0.10,
+        },
+        max_output_tokens: 64000,
+        context_window: 200_000,
     },
     ModelTier {
         prefixes: &["claude-3-sonnet"],
@@ -75,6 +90,7 @@ const ANTHROPIC_TIERS: &[ModelTier] = &[
             cache_read: 0.30,
         },
         max_output_tokens: 4096,
+        context_window: 200_000,
     },
     ModelTier {
         prefixes: &["claude-3-5-sonnet"],
@@ -85,6 +101,7 @@ const ANTHROPIC_TIERS: &[ModelTier] = &[
             cache_read: 0.30,
         },
         max_output_tokens: 8192,
+        context_window: 200_000,
     },
     ModelTier {
         prefixes: &["claude-3-7-sonnet", "claude-sonnet-4"],
@@ -95,9 +112,10 @@ const ANTHROPIC_TIERS: &[ModelTier] = &[
             cache_read: 0.30,
         },
         max_output_tokens: 64000,
+        context_window: 200_000,
     },
     ModelTier {
-        prefixes: &["claude-sonnet-4-5"],
+        prefixes: &["claude-sonnet-4-5", "claude-sonnet-4-6"],
         pricing: ModelPricing {
             input: 3.00,
             output: 15.00,
@@ -105,6 +123,7 @@ const ANTHROPIC_TIERS: &[ModelTier] = &[
             cache_read: 0.30,
         },
         max_output_tokens: 64000,
+        context_window: 200_000,
     },
     ModelTier {
         prefixes: &["claude-opus-4-5"],
@@ -115,6 +134,7 @@ const ANTHROPIC_TIERS: &[ModelTier] = &[
             cache_read: 0.50,
         },
         max_output_tokens: 64000,
+        context_window: 200_000,
     },
     ModelTier {
         prefixes: &["claude-opus-4-6"],
@@ -125,6 +145,7 @@ const ANTHROPIC_TIERS: &[ModelTier] = &[
             cache_read: 0.50,
         },
         max_output_tokens: 128000,
+        context_window: 200_000,
     },
     ModelTier {
         prefixes: &["claude-3-opus", "claude-opus-4-0", "claude-opus-4-1"],
@@ -135,6 +156,7 @@ const ANTHROPIC_TIERS: &[ModelTier] = &[
             cache_read: 1.50,
         },
         max_output_tokens: 32000,
+        context_window: 200_000,
     },
 ];
 
@@ -148,6 +170,7 @@ const ZAI_TIERS: &[ModelTier] = &[
             cache_read: 0.30,
         },
         max_output_tokens: 131072,
+        context_window: 200_000,
     },
     ModelTier {
         prefixes: &["glm-5"],
@@ -158,6 +181,7 @@ const ZAI_TIERS: &[ModelTier] = &[
             cache_read: 0.20,
         },
         max_output_tokens: 131072,
+        context_window: 200_000,
     },
     ModelTier {
         prefixes: &["glm-4.7-flash"],
@@ -168,6 +192,7 @@ const ZAI_TIERS: &[ModelTier] = &[
             cache_read: 0.00,
         },
         max_output_tokens: 131072,
+        context_window: 200_000,
     },
     ModelTier {
         prefixes: &["glm-4.7", "glm-4.6"],
@@ -178,6 +203,7 @@ const ZAI_TIERS: &[ModelTier] = &[
             cache_read: 0.11,
         },
         max_output_tokens: 131072,
+        context_window: 200_000,
     },
     ModelTier {
         prefixes: &["glm-4.5-flash"],
@@ -188,6 +214,7 @@ const ZAI_TIERS: &[ModelTier] = &[
             cache_read: 0.00,
         },
         max_output_tokens: 98304,
+        context_window: 131_072,
     },
     ModelTier {
         prefixes: &["glm-4.5-air"],
@@ -198,6 +225,7 @@ const ZAI_TIERS: &[ModelTier] = &[
             cache_read: 0.03,
         },
         max_output_tokens: 98304,
+        context_window: 131_072,
     },
     ModelTier {
         prefixes: &["glm-4.5"],
@@ -208,16 +236,15 @@ const ZAI_TIERS: &[ModelTier] = &[
             cache_read: 0.11,
         },
         max_output_tokens: 98304,
+        context_window: 131_072,
     },
 ];
 
-fn lookup_tier(tiers: &[ModelTier], model_id: &str) -> Result<(ModelPricing, u32), ModelError> {
-    for tier in tiers {
-        if tier.prefixes.iter().any(|p| model_id.starts_with(p)) {
-            return Ok((tier.pricing.clone(), tier.max_output_tokens));
-        }
-    }
-    Err(ModelError::UnknownModel(model_id.to_string()))
+fn lookup_tier<'a>(tiers: &'a [ModelTier], model_id: &str) -> Result<&'a ModelTier, ModelError> {
+    tiers
+        .iter()
+        .find(|t| t.prefixes.iter().any(|p| model_id.starts_with(p)))
+        .ok_or_else(|| ModelError::UnknownModel(model_id.to_string()))
 }
 
 impl Model {
@@ -236,12 +263,13 @@ impl Model {
             ProviderKind::Anthropic => ANTHROPIC_TIERS,
             ProviderKind::Zai | ProviderKind::ZaiCodingPlan => ZAI_TIERS,
         };
-        let (pricing, max_output_tokens) = lookup_tier(tiers, model_id)?;
+        let tier = lookup_tier(tiers, model_id)?;
         Ok(Self {
             id: model_id.to_string(),
             provider,
-            pricing,
-            max_output_tokens,
+            pricing: tier.pricing.clone(),
+            max_output_tokens: tier.max_output_tokens,
+            context_window: tier.context_window,
         })
     }
 }
@@ -281,14 +309,15 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case("anthropic/claude-3-5-haiku-20241022", 8192 ; "anthropic_haiku_tier")]
-    #[test_case("anthropic/claude-opus-4-6-20260101", 128000 ; "anthropic_opus_tier")]
-    #[test_case("zai/glm-5", 131072 ; "zai_high_output_tier")]
-    #[test_case("zai/glm-4.5", 98304 ; "zai_standard_output_tier")]
-    #[test_case("zai-coding-plan/glm-4.7", 131072 ; "zai_coding_plan_tier")]
-    fn from_spec_resolves_tier(spec: &str, expected_max: u32) {
+    #[test_case("anthropic/claude-3-5-haiku-20241022", 8192, 200_000 ; "anthropic_tier")]
+    #[test_case("anthropic/claude-opus-4-6-20260101", 128000, 200_000 ; "anthropic_high_output_tier")]
+    #[test_case("zai/glm-5", 131072, 200_000 ; "zai_200k_context")]
+    #[test_case("zai/glm-4.5", 98304, 131_072 ; "zai_131k_context")]
+    #[test_case("zai-coding-plan/glm-4.7", 131072, 200_000 ; "zai_coding_plan_alias")]
+    fn from_spec_resolves_tier(spec: &str, expected_max: u32, expected_ctx: u32) {
         let model = Model::from_spec(spec).unwrap();
         assert_eq!(model.max_output_tokens, expected_max);
+        assert_eq!(model.context_window, expected_ctx);
     }
 
     #[test]

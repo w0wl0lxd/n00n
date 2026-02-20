@@ -42,7 +42,7 @@ pub fn run(model: Model) -> Result<()> {
 }
 
 fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Result<()> {
-    let mut app = App::new(model.pricing.clone());
+    let mut app = App::new(model.pricing.clone(), model.context_window);
     let cwd = env::current_dir()?.to_string_lossy().to_string();
 
     let (mut input_tx, mut agent_rx) = spawn_agent(&cwd, &model);

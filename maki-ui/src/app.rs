@@ -1,6 +1,6 @@
 use crate::components::input::InputBox;
 use crate::components::messages::MessagesPanel;
-use crate::components::status_bar::{CancelResult, StatusBar};
+use crate::components::status_bar::{CancelResult, StatusBar, UsageStats};
 use crate::components::{Action, DisplayMessage, DisplayRole, Status};
 use crate::theme;
 
@@ -27,11 +27,12 @@ pub struct App {
     pub mode: AgentMode,
     pending_plan: Option<String>,
     pricing: ModelPricing,
+    context_window: u32,
     pub should_quit: bool,
 }
 
 impl App {
-    pub fn new(pricing: ModelPricing) -> Self {
+    pub fn new(pricing: ModelPricing, context_window: u32) -> Self {
         Self {
             messages_panel: MessagesPanel::new(),
             input_box: InputBox::new(),
@@ -41,6 +42,7 @@ impl App {
             mode: AgentMode::Build,
             pending_plan: None,
             pricing,
+            context_window,
             should_quit: false,
         }
     }
@@ -217,14 +219,13 @@ impl App {
         let is_streaming = self.status == Status::Streaming;
         self.messages_panel.view(frame, msg_area);
         self.input_box.view(frame, input_area, is_streaming);
-        self.status_bar.view(
-            frame,
-            status_area,
-            &self.status,
-            &self.mode,
-            &self.token_usage,
-            &self.pricing,
-        );
+        let stats = UsageStats {
+            usage: &self.token_usage,
+            pricing: &self.pricing,
+            context_window: self.context_window,
+        };
+        self.status_bar
+            .view(frame, status_area, &self.status, &self.mode, &stats);
     }
 
     pub fn is_animating(&self) -> bool {
@@ -235,12 +236,12 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{ctrl, key, test_pricing};
+    use crate::components::{TEST_CONTEXT_WINDOW, ctrl, key, test_pricing};
     use crossterm::event::KeyCode;
 
     #[test]
     fn typing_and_submit() {
-        let mut app = App::new(test_pricing());
+        let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
         app.update(Msg::Key(key(KeyCode::Char('h'))));
         app.update(Msg::Key(key(KeyCode::Char('i'))));
 
@@ -253,7 +254,7 @@ mod tests {
     #[test]
     fn ctrl_c_quits_regardless_of_state() {
         for status in [Status::Idle, Status::Streaming] {
-            let mut app = App::new(test_pricing());
+            let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
             app.status = status;
             let actions = app.update(Msg::Key(ctrl('c')));
             assert!(app.should_quit);
@@ -263,7 +264,7 @@ mod tests {
 
     #[test]
     fn done_flushes_text_and_accumulates_usage() {
-        let mut app = App::new(test_pricing());
+        let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::TextDelta {
             text: "response text".into(),
@@ -298,7 +299,7 @@ mod tests {
 
     #[test]
     fn error_event_sets_status() {
-        let mut app = App::new(test_pricing());
+        let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::Error {
             message: "boom".into(),
@@ -308,7 +309,7 @@ mod tests {
 
     #[test]
     fn tab_toggles_mode_and_sets_pending_plan() {
-        let mut app = App::new(test_pricing());
+        let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
         assert_eq!(app.mode, AgentMode::Build);
 
         app.update(Msg::Key(key(KeyCode::Tab)));
@@ -321,7 +322,7 @@ mod tests {
 
     #[test]
     fn submit_consumes_pending_plan() {
-        let mut app = App::new(test_pricing());
+        let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
         app.pending_plan = Some("plan.md".into());
         app.update(Msg::Key(key(KeyCode::Char('x'))));
         let actions = app.update(Msg::Key(key(KeyCode::Enter)));
@@ -334,7 +335,7 @@ mod tests {
 
     #[test]
     fn double_esc_cancels_and_flushes() {
-        let mut app = App::new(test_pricing());
+        let mut app = App::new(test_pricing(), TEST_CONTEXT_WINDOW);
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::TextDelta {
             text: "partial response".into(),
