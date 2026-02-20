@@ -533,14 +533,12 @@ data: [DONE]\n";
                     },
                 ],
             },
-            Message::tool_results(vec![(
-                "tc_1".to_string(),
-                crate::ToolDoneEvent {
-                    tool: "bash",
-                    content: "file.txt".to_string(),
-                    is_error: false,
-                },
-            )]),
+            Message::tool_results(vec![crate::ToolDoneEvent {
+                id: "tc_1".to_string(),
+                tool: "bash",
+                content: "file.txt".to_string(),
+                is_error: false,
+            }]),
         ];
 
         let wire = convert_messages(&messages, "be helpful");

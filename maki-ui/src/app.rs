@@ -24,6 +24,10 @@ const THINKING_STYLE: Style = Style::new()
     .fg(Color::DarkGray)
     .add_modifier(Modifier::ITALIC);
 const TOOL_STYLE: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::DIM);
+const TOOL_INDICATOR: &str = "● ";
+const TOOL_IN_PROGRESS_STYLE: Style = Style::new().fg(Color::White);
+const TOOL_SUCCESS_STYLE: Style = Style::new().fg(Color::Green);
+const TOOL_ERROR_STYLE: Style = Style::new().fg(Color::Red);
 const CURSOR_STYLE: Style = Style::new()
     .fg(Color::White)
     .add_modifier(Modifier::SLOW_BLINK);
@@ -181,10 +185,39 @@ fn truncate_lines(s: &str, max_lines: usize) -> Cow<'_, str> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ToolStatus {
+    InProgress,
+    Success,
+    Error,
+}
+
 #[derive(Debug, Clone)]
 pub struct DisplayMessage {
     pub role: DisplayRole,
     pub text: String,
+    pub tool_id: Option<String>,
+    pub tool_status: Option<ToolStatus>,
+}
+
+impl DisplayMessage {
+    fn new(role: DisplayRole, text: String) -> Self {
+        Self {
+            role,
+            text,
+            tool_id: None,
+            tool_status: None,
+        }
+    }
+
+    fn tool(text: String, id: String, status: ToolStatus) -> Self {
+        Self {
+            role: DisplayRole::Tool,
+            text,
+            tool_id: Some(id),
+            tool_status: Some(status),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -326,10 +359,8 @@ impl App {
 
                 let pending_plan = self.pending_plan.take();
 
-                self.messages.push(DisplayMessage {
-                    role: DisplayRole::User,
-                    text: text.clone(),
-                });
+                self.messages
+                    .push(DisplayMessage::new(DisplayRole::User, text.clone()));
                 self.input.clear();
                 self.cursor_pos = 0;
                 drop(self.streaming_thinking.take_all());
@@ -371,10 +402,8 @@ impl App {
             && t.elapsed() < CANCEL_WINDOW
         {
             self.flush_streaming_text();
-            self.messages.push(DisplayMessage {
-                role: DisplayRole::Error,
-                text: CANCEL_MSG.into(),
-            });
+            self.messages
+                .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
             self.status = Status::Idle;
             self.cancel_hint_since = None;
             return vec![Action::CancelAgent];
@@ -394,12 +423,26 @@ impl App {
             }
             AgentEvent::ToolStart(ref start) => {
                 self.flush_streaming_text();
-                self.messages.push(DisplayMessage {
-                    role: DisplayRole::Tool,
-                    text: format!("[{}] {}", start.tool, start.summary),
-                });
+                self.messages.push(DisplayMessage::tool(
+                    format!("[{}] {}", start.tool, start.summary),
+                    start.id.clone(),
+                    ToolStatus::InProgress,
+                ));
             }
             AgentEvent::ToolDone(ref done) => {
+                let status = if done.is_error {
+                    ToolStatus::Error
+                } else {
+                    ToolStatus::Success
+                };
+                if let Some(msg) = self
+                    .messages
+                    .iter_mut()
+                    .rfind(|m| m.tool_id.as_deref() == Some(&done.id))
+                {
+                    msg.tool_status = Some(status);
+                    self.invalidate_line_cache();
+                }
                 let display = if done.tool == WEBFETCH_TOOL_NAME {
                     let n = done.content.lines().count();
                     format!("[{} done] ({n} lines)", done.tool)
@@ -407,10 +450,8 @@ impl App {
                     let truncated = truncate_lines(&done.content, TOOL_OUTPUT_MAX_DISPLAY_LINES);
                     format!("[{} done] {truncated}", done.tool)
                 };
-                self.messages.push(DisplayMessage {
-                    role: DisplayRole::Tool,
-                    text: display,
-                });
+                self.messages
+                    .push(DisplayMessage::tool(display, done.id.clone(), status));
             }
             AgentEvent::TurnComplete { .. } | AgentEvent::ToolResultsSubmitted { .. } => {}
             AgentEvent::Done { usage, .. } => {
@@ -446,21 +487,26 @@ impl App {
 
     fn flush_streaming_thinking(&mut self) {
         if !self.streaming_thinking.is_empty() {
-            self.messages.push(DisplayMessage {
-                role: DisplayRole::Thinking,
-                text: self.streaming_thinking.take_all(),
-            });
+            self.messages.push(DisplayMessage::new(
+                DisplayRole::Thinking,
+                self.streaming_thinking.take_all(),
+            ));
         }
     }
 
     fn flush_streaming_text(&mut self) {
         self.flush_streaming_thinking();
         if !self.streaming_text.is_empty() {
-            self.messages.push(DisplayMessage {
-                role: DisplayRole::Assistant,
-                text: self.streaming_text.take_all(),
-            });
+            self.messages.push(DisplayMessage::new(
+                DisplayRole::Assistant,
+                self.streaming_text.take_all(),
+            ));
         }
+    }
+
+    fn invalidate_line_cache(&mut self) {
+        self.cached_msg_count = 0;
+        self.cached_lines.clear();
     }
 
     pub fn view(&mut self, frame: &mut Frame) {
@@ -495,8 +541,20 @@ impl App {
                 DisplayRole::Tool => ("tool> ", TOOL_STYLE),
                 DisplayRole::Error => ("", STATUS_ERROR_STYLE),
             };
-            self.cached_lines
-                .extend(text_to_lines(&msg.text, prefix, base_style));
+            let mut lines = text_to_lines(&msg.text, prefix, base_style);
+            if msg.role == DisplayRole::Tool
+                && let Some(first) = lines.first_mut()
+            {
+                let indicator_style = match msg.tool_status {
+                    Some(ToolStatus::Success) => TOOL_SUCCESS_STYLE,
+                    Some(ToolStatus::Error) => TOOL_ERROR_STYLE,
+                    _ => TOOL_IN_PROGRESS_STYLE,
+                };
+                first
+                    .spans
+                    .insert(0, Span::styled(TOOL_INDICATOR, indicator_style));
+            }
+            self.cached_lines.extend(lines);
         }
         self.cached_msg_count = self.messages.len();
     }
@@ -709,22 +767,29 @@ mod tests {
         assert_eq!(app.token_usage.output, 60);
     }
 
-    #[test]
-    fn tool_events_create_messages() {
+    #[test_case(false, ToolStatus::Success ; "success_updates_start_to_success")]
+    #[test_case(true,  ToolStatus::Error   ; "error_updates_start_to_error")]
+    fn tool_done_updates_start_status(is_error: bool, expected: ToolStatus) {
         let mut app = App::new(test_pricing());
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::ToolStart(ToolStartEvent {
+            id: "t1".into(),
             tool: "bash",
-            summary: "ls".into(),
+            summary: "cmd".into(),
         })));
+        assert_eq!(app.messages[0].tool_status, Some(ToolStatus::InProgress));
+
         app.update(Msg::Agent(AgentEvent::ToolDone(ToolDoneEvent {
+            id: "t1".into(),
             tool: "bash",
-            content: "file.txt".into(),
-            is_error: false,
+            content: "output".into(),
+            is_error,
         })));
 
         assert_eq!(app.messages.len(), 2);
         assert!(app.messages.iter().all(|m| m.role == DisplayRole::Tool));
+        assert_eq!(app.messages[0].tool_status, Some(expected));
+        assert_eq!(app.messages[1].tool_status, Some(expected));
     }
 
     #[test]
@@ -732,6 +797,7 @@ mod tests {
         let mut app = App::new(test_pricing());
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::ToolDone(ToolDoneEvent {
+            id: "t1".into(),
             tool: WEBFETCH_TOOL_NAME,
             content: "line1\nline2\nline3".into(),
             is_error: false,
@@ -765,6 +831,7 @@ mod tests {
         app.streaming_text.set_buffer("partial response");
 
         app.update(Msg::Agent(AgentEvent::ToolStart(ToolStartEvent {
+            id: "t1".into(),
             tool: "read",
             summary: "/tmp/file".into(),
         })));
@@ -818,10 +885,8 @@ mod tests {
     #[test]
     fn scroll_top_clamped_to_content() {
         let mut app = App::new(test_pricing());
-        app.messages.push(DisplayMessage {
-            role: DisplayRole::User,
-            text: "short".into(),
-        });
+        app.messages
+            .push(DisplayMessage::new(DisplayRole::User, "short".into()));
 
         app.scroll_top = 1000;
         app.auto_scroll = false;

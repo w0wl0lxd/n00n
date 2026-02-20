@@ -43,13 +43,13 @@ impl Message {
         }
     }
 
-    pub fn tool_results(results: Vec<(String, ToolDoneEvent)>) -> Self {
+    pub fn tool_results(results: Vec<ToolDoneEvent>) -> Self {
         Self {
             role: Role::User,
             content: results
                 .into_iter()
-                .map(|(id, output)| ContentBlock::ToolResult {
-                    tool_use_id: id,
+                .map(|output| ContentBlock::ToolResult {
+                    tool_use_id: output.id,
                     content: output.content,
                     is_error: output.is_error,
                 })
@@ -71,14 +71,16 @@ impl Message {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ToolStartEvent {
+    pub id: String,
     pub tool: &'static str,
     pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolDoneEvent {
+    pub id: String,
     pub tool: &'static str,
     pub content: String,
     pub is_error: bool,

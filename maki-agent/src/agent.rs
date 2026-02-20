@@ -77,7 +77,7 @@ fn parse_tool_calls<'a>(
         .collect()
 }
 
-fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<(String, ToolDoneEvent)> {
+fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDoneEvent> {
     std::thread::scope(|s| {
         let handles: Vec<_> = tool_calls
             .iter()
@@ -87,8 +87,9 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<(Strin
                     tool_use_id: Some(&parsed.id),
                     ..*ctx
                 };
+                let id = parsed.id.clone();
                 s.spawn(move || {
-                    let output = parsed.call.execute(&tool_ctx);
+                    let output = parsed.call.execute(&tool_ctx, id);
                     let _ = tx.send(AgentEvent::ToolDone(output.clone()).into());
                     output
                 })
@@ -99,12 +100,12 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<(Strin
             .iter()
             .zip(handles)
             .map(|(parsed, h)| {
-                let output = h.join().unwrap_or_else(|_| ToolDoneEvent {
+                h.join().unwrap_or_else(|_| ToolDoneEvent {
+                    id: parsed.id.clone(),
                     tool: "unknown",
                     content: "tool thread panicked".into(),
                     is_error: true,
-                });
-                (parsed.id.clone(), output)
+                })
             })
             .collect()
     })
@@ -175,7 +176,7 @@ pub fn run(
         history.push(response.message);
 
         for p in &parsed {
-            event_tx.send(AgentEvent::ToolStart(p.call.start_event()).into())?;
+            event_tx.send(AgentEvent::ToolStart(p.call.start_event(p.id.clone())).into())?;
         }
 
         let tool_results = execute_tools(&parsed, &ctx);

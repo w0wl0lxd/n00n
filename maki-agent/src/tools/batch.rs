@@ -56,7 +56,7 @@ impl Batch {
                         }
                         let call = ToolCall::from_api(&entry.tool, &entry.parameters)
                             .map_err(|e| e.to_string())?;
-                        let done = call.execute(ctx);
+                        let done = call.execute(ctx, String::new());
                         if done.is_error {
                             Err(done.content)
                         } else {

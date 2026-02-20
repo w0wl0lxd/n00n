@@ -109,19 +109,20 @@ macro_rules! register_tools {
                 }
             }
 
-            pub fn start_event(&self) -> ToolStartEvent {
+            pub fn start_event(&self, id: String) -> ToolStartEvent {
                 let summary = match self {
                     $(ToolCall::$Variant(inner) => inner.start_summary()),+
                 };
-                ToolStartEvent { tool: self.name(), summary }
+                ToolStartEvent { id, tool: self.name(), summary }
             }
 
-            pub fn execute(&self, ctx: &ToolContext) -> ToolDoneEvent {
+            pub fn execute(&self, ctx: &ToolContext, id: String) -> ToolDoneEvent {
                 if let Some(path) = self.mutable_path()
                     && let AgentMode::Plan(plan_path) = ctx.mode
                     && path != plan_path
                 {
                     return ToolDoneEvent {
+                        id,
                         tool: self.name(),
                         content: PLAN_WRITE_RESTRICTED.into(),
                         is_error: true,
@@ -135,7 +136,7 @@ macro_rules! register_tools {
                     Ok(c) => (c, false),
                     Err(c) => (c, true),
                 };
-                ToolDoneEvent { tool: self.name(), content, is_error }
+                ToolDoneEvent { id, tool: self.name(), content, is_error }
             }
 
             fn mutable_path(&self) -> Option<&str> {
@@ -329,13 +330,13 @@ mod tests {
 
         let other = dir.path().join("other.rs").to_string_lossy().to_string();
         let blocked = ToolCall::from_api("write", &json!({"path": other, "content": "x"})).unwrap();
-        assert!(blocked.execute(&ctx).is_error);
+        assert!(blocked.execute(&ctx, "t1".into()).is_error);
 
         let allowed = ToolCall::from_api(
             "write",
             &json!({"path": plan_path, "content": "plan content"}),
         )
         .unwrap();
-        assert!(!allowed.execute(&ctx).is_error);
+        assert!(!allowed.execute(&ctx, "t2".into()).is_error);
     }
 }
