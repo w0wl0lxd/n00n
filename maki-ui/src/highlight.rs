@@ -3,16 +3,16 @@ use std::sync::LazyLock;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{FontStyle, ThemeSet};
+use syntect::highlighting::FontStyle;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+
+const DRACULA_TMTHEME: &[u8] = include_bytes!("dracula.tmTheme");
 static THEME: LazyLock<syntect::highlighting::Theme> = LazyLock::new(|| {
-    ThemeSet::load_defaults()
-        .themes
-        .remove("base16-eighties.dark")
-        .expect("bundled theme missing")
+    let mut cursor = std::io::Cursor::new(DRACULA_TMTHEME);
+    syntect::highlighting::ThemeSet::load_from_reader(&mut cursor).expect("embedded Dracula theme")
 });
 
 const FALLBACK_STYLE: Style = Style::new().fg(Color::Magenta);
