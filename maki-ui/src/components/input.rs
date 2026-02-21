@@ -161,15 +161,15 @@ impl InputBox {
 
         let is_empty = self.buffer.value().is_empty();
         let styled_lines: Vec<Line> = if is_empty && !is_streaming {
+            let placeholder_base = Style::new().fg(theme::COMMENT);
             vec![Line::from(vec![
-                Span::styled("Ask maki to ", Style::new().fg(theme::COMMENT)),
+                Span::styled("A", placeholder_base.bg(theme::PLACEHOLDER_CURSOR)),
+                Span::styled("sk maki to ", placeholder_base),
                 Span::styled(
                     self.placeholder_hint,
-                    Style::new()
-                        .fg(theme::COMMENT)
-                        .add_modifier(ratatui::style::Modifier::ITALIC),
+                    placeholder_base.add_modifier(ratatui::style::Modifier::ITALIC),
                 ),
-                Span::styled("...", Style::new().fg(theme::COMMENT)),
+                Span::styled("...", placeholder_base),
             ])]
         } else {
             self.buffer
