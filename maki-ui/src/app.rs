@@ -231,6 +231,7 @@ impl App {
             }
             AgentEvent::TurnComplete { usage, .. } => {
                 self.context_size = usage.context_tokens();
+                self.token_usage = usage;
             }
             AgentEvent::ToolResultsSubmitted { .. } => {}
             AgentEvent::Done { usage, .. } => {
