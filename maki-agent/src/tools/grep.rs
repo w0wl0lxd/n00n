@@ -114,10 +114,6 @@ impl Grep {
             s.push_str(inc);
             s.push(']');
         }
-        if let Some(p) = &self.path {
-            s.push_str(" in ");
-            s.push_str(p);
-        }
         s
     }
 
@@ -136,20 +132,13 @@ mod tests {
 
     use super::*;
 
-    #[test_case("fn main", None,          None,          "fn main"                ; "pattern_only")]
-    #[test_case("TODO",    Some("*.rs"),  None,          "TODO [*.rs]"            ; "with_include")]
-    #[test_case("TODO",    None,          Some("src/"),  "TODO in src/"           ; "with_path")]
-    #[test_case("TODO",    Some("*.rs"),  Some("src/"),  "TODO [*.rs] in src/"    ; "with_both")]
-    fn start_summary_cases(
-        pattern: &str,
-        include: Option<&str>,
-        path: Option<&str>,
-        expected: &str,
-    ) {
+    #[test_case("fn main", None,       "fn main"       ; "pattern_only")]
+    #[test_case("TODO",    Some("*.rs"), "TODO [*.rs]"  ; "with_include")]
+    fn start_summary_cases(pattern: &str, include: Option<&str>, expected: &str) {
         let g = Grep {
             pattern: pattern.into(),
             include: include.map(Into::into),
-            path: path.map(Into::into),
+            path: Some("src/".into()),
         };
         assert_eq!(g.start_summary(), expected);
     }

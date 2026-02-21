@@ -25,6 +25,8 @@ use maki_providers::provider::Provider;
 pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
 pub const GLOB_TOOL_NAME: &str = glob::Glob::NAME;
 pub const GREP_TOOL_NAME: &str = grep::Grep::NAME;
+pub const READ_TOOL_NAME: &str = read::Read::NAME;
+pub const WRITE_TOOL_NAME: &str = write::Write::NAME;
 const MAX_OUTPUT_BYTES: usize = 30_000;
 pub(crate) const MAX_OUTPUT_LINES: usize = 2000;
 pub(crate) const SEARCH_RESULT_LIMIT: usize = 100;

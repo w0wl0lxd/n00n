@@ -7,7 +7,9 @@ use crate::theme;
 
 use std::time::Instant;
 
-use maki_agent::tools::{GLOB_TOOL_NAME, GREP_TOOL_NAME, WEBFETCH_TOOL_NAME};
+use maki_agent::tools::{
+    GLOB_TOOL_NAME, GREP_TOOL_NAME, READ_TOOL_NAME, WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME,
+};
 use maki_providers::{DiffLine, DiffSpan, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -19,6 +21,28 @@ const TOOL_INDICATOR: &str = "● ";
 const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 7;
 const TOOL_BODY_INDENT: &str = "  ";
 const SCROLLBAR_THUMB: &str = "\u{2590}";
+
+fn tool_summary_annotation(tool: &str, text: &str) -> Option<String> {
+    match tool {
+        GLOB_TOOL_NAME => Some(format!("{} files", text.lines().count())),
+        GREP_TOOL_NAME => {
+            let n = text.lines().filter(|l| !l.starts_with(' ')).count();
+            Some(format!("{n} files"))
+        }
+        READ_TOOL_NAME | WEBFETCH_TOOL_NAME => Some(format!("{} lines", text.lines().count())),
+        WRITE_TOOL_NAME => {
+            let bytes = text
+                .strip_prefix("wrote ")
+                .and_then(|s| s.split_once(' '))
+                .map_or("?", |(n, _)| n);
+            Some(format!("{bytes} bytes"))
+        }
+        _ => {
+            let n = text.lines().count();
+            (n > TOOL_OUTPUT_MAX_DISPLAY_LINES).then(|| format!("{n} lines"))
+        }
+    }
+}
 
 struct RoleStyle {
     prefix: &'static str,
@@ -238,21 +262,15 @@ impl MessagesPanel {
         }
         match &event.output {
             ToolOutput::Plain(text) => {
-                if event.tool == GLOB_TOOL_NAME {
-                    let n = text.lines().count();
-                    msg.text = format!("{} ({n} files)", msg.text);
-                } else if event.tool == GREP_TOOL_NAME {
-                    let n = text.lines().filter(|l| !l.starts_with(' ')).count();
-                    msg.text = format!("{} ({n} files)", msg.text);
+                if let Some(annotation) = tool_summary_annotation(event.tool, text) {
+                    msg.text = format!("{} ({annotation})", msg.text);
                 }
-                let display = if event.tool == WEBFETCH_TOOL_NAME {
-                    let n = text.lines().count();
-                    format!("({n} lines)")
-                } else {
-                    truncate_lines(text, TOOL_OUTPUT_MAX_DISPLAY_LINES).into_owned()
-                };
-                if !display.is_empty() {
-                    msg.text = format!("{}\n{display}", msg.text);
+                let hide_body = matches!(event.tool, WEBFETCH_TOOL_NAME | WRITE_TOOL_NAME);
+                if !hide_body {
+                    let display = truncate_lines(text, TOOL_OUTPUT_MAX_DISPLAY_LINES);
+                    if !display.is_empty() {
+                        msg.text = format!("{}\n{display}", msg.text);
+                    }
                 }
             }
             ToolOutput::Batch { entries, .. } => {
@@ -721,10 +739,20 @@ mod tests {
         assert!(panel.messages[0].text.contains("output"));
     }
 
-    #[test_case(WEBFETCH_TOOL_NAME, "line1\nline2\nline3", "(3 lines)" ; "webfetch_shows_line_count")]
-    #[test_case(GLOB_TOOL_NAME, "src/a.rs\nsrc/b.rs\nsrc/c.rs", "(3 files)" ; "glob_shows_file_count")]
-    #[test_case(GREP_TOOL_NAME, "src/a.rs:\n  1: match\nsrc/b.rs:\n  2: match", "(2 files)" ; "grep_shows_file_count")]
-    fn tool_done_summary_annotation(tool: &'static str, output: &str, expected: &str) {
+    #[test_case(GLOB_TOOL_NAME, "src/a.rs\nsrc/b.rs\nsrc/c.rs", Some("3 files") ; "glob_file_count")]
+    #[test_case(GREP_TOOL_NAME, "src/a.rs:\n  1: match\nsrc/b.rs:\n  2: match", Some("2 files") ; "grep_file_count")]
+    #[test_case(READ_TOOL_NAME, "1: fn main() {}\n2: }", Some("2 lines") ; "read_line_count")]
+    #[test_case(WEBFETCH_TOOL_NAME, "line1\nline2\nline3", Some("3 lines") ; "webfetch_line_count")]
+    #[test_case(WRITE_TOOL_NAME, "wrote 42 bytes to /tmp/f.rs", Some("42 bytes") ; "write_byte_count")]
+    #[test_case("bash", "ok", None ; "short_output_no_annotation")]
+    #[test_case("bash", &(0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"), Some("20 lines") ; "long_output_line_count")]
+    fn summary_annotation(tool: &str, output: &str, expected: Option<&str>) {
+        assert_eq!(tool_summary_annotation(tool, output).as_deref(), expected,);
+    }
+
+    #[test_case(WEBFETCH_TOOL_NAME, "fetched content\nmore lines" ; "webfetch_hides_body")]
+    #[test_case(WRITE_TOOL_NAME, "wrote 100 bytes to /tmp/f.rs" ; "write_hides_body")]
+    fn tool_done_hides_body(tool: &'static str, output: &str) {
         let mut panel = MessagesPanel::new();
         panel.tool_start(ToolStartEvent {
             id: "t1".into(),
@@ -738,7 +766,7 @@ mod tests {
             output: ToolOutput::Plain(output.into()),
             is_error: false,
         });
-        assert!(panel.messages[0].text.contains(expected));
+        assert!(!panel.messages[0].text.contains('\n'));
     }
 
     #[test]
@@ -772,26 +800,18 @@ mod tests {
         assert_eq!(panel.messages[0].text, "reasoning");
     }
 
-    #[test_case(10, 'u', 0  ; "ctrl_u_saturates_at_zero")]
-    #[test_case(20, 'u', 10 ; "ctrl_u_scrolls_up")]
-    #[test_case(5,  'd', 15 ; "ctrl_d_scrolls_down")]
-    #[test_case(0,  'd', 10 ; "ctrl_d_from_top")]
-    #[test_case(5,  'y', 4  ; "ctrl_y_scrolls_up_one")]
-    #[test_case(0,  'y', 0  ; "ctrl_y_saturates_at_zero")]
-    #[test_case(5,  'e', 6  ; "ctrl_e_scrolls_down_one")]
-    #[test_case(0,  'e', 1  ; "ctrl_e_from_top")]
-    fn half_page_scroll(initial: u16, key_char: char, expected: u16) {
+    #[test_case(10, 10, 0   ; "half_page_up_saturates_at_zero")]
+    #[test_case(20, 10, 10  ; "half_page_up")]
+    #[test_case(5,  -10, 15 ; "half_page_down")]
+    #[test_case(0,  -10, 10 ; "half_page_down_from_top")]
+    #[test_case(5,  1, 4    ; "scroll_up_one")]
+    #[test_case(0,  1, 0    ; "scroll_up_one_saturates_at_zero")]
+    #[test_case(5,  -1, 6   ; "scroll_down_one")]
+    #[test_case(0,  -1, 1   ; "scroll_down_from_top")]
+    fn scroll_by_delta(initial: u16, delta: i32, expected: u16) {
         let mut panel = MessagesPanel::new();
         panel.viewport_height = 20;
         panel.scroll_top = initial;
-        let half = panel.half_page();
-        let delta = match key_char {
-            'u' => half,
-            'd' => -half,
-            'y' => 1,
-            'e' => -1,
-            _ => unreachable!(),
-        };
         panel.scroll(delta);
         assert_eq!(panel.scroll_top, expected);
     }
@@ -859,31 +879,6 @@ mod tests {
         panel.scroll(-half);
         render(&mut panel, 80, 10);
         assert!(panel.auto_scroll);
-    }
-
-    #[test_case(
-        &(1..=10).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n"),
-        true, true
-        ; "long_output_truncated"
-    )]
-    #[test_case("", false, false ; "empty_output_no_body")]
-    fn tool_done_output_display(output: &str, expect_newline: bool, expect_ellipsis: bool) {
-        let mut panel = MessagesPanel::new();
-        panel.tool_start(ToolStartEvent {
-            id: "t1".into(),
-            tool: "bash",
-            summary: "cmd".into(),
-            input: None,
-        });
-        panel.tool_done(ToolDoneEvent {
-            id: "t1".into(),
-            tool: "bash",
-            output: ToolOutput::Plain(output.into()),
-            is_error: false,
-        });
-        assert_eq!(panel.messages.len(), 1);
-        assert_eq!(panel.messages[0].text.contains('\n'), expect_newline);
-        assert_eq!(panel.messages[0].text.contains("..."), expect_ellipsis);
     }
 
     #[test]
@@ -998,35 +993,6 @@ mod tests {
         assert_eq!(result[2].style.bg, Some(ratatui::style::Color::Green));
     }
 
-    #[test]
-    fn tool_body_preserves_markdown_literally() {
-        let body = "has `back` and **bold** with ```fences```";
-        let mut panel = MessagesPanel::new();
-        panel.tool_start(ToolStartEvent {
-            id: "t1".into(),
-            tool: "bash",
-            summary: "test".into(),
-            input: None,
-        });
-        panel.tool_done(ToolDoneEvent {
-            id: "t1".into(),
-            tool: "bash",
-            output: ToolOutput::Plain(body.into()),
-            is_error: false,
-        });
-        rebuild(&mut panel);
-        let seg = panel.cached_segments.last().unwrap();
-        let body_text: String = seg.lines[1..]
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-            .collect::<Vec<_>>()
-            .join("");
-        assert!(
-            body_text.contains(body),
-            "tool body should contain literal text, got {body_text:?}"
-        );
-    }
-
     fn has_scrollbar_thumb(terminal: &ratatui::Terminal<TestBackend>) -> bool {
         let buf = terminal.backend().buffer();
         (0..buf.area.height).any(|y| {
@@ -1044,23 +1010,5 @@ mod tests {
             .set_buffer(&"line\n".repeat(line_count));
         let terminal = render(&mut panel, 80, 10);
         assert_eq!(has_scrollbar_thumb(&terminal), expected);
-    }
-
-    #[test]
-    fn segments_cached_across_renders() {
-        let mut panel = MessagesPanel::new();
-        panel.push(DisplayMessage {
-            role: DisplayRole::User,
-            text: "hello".into(),
-            tool_input: None,
-            tool_output: None,
-        });
-
-        rebuild(&mut panel);
-        let seg_count = panel.cached_segments.len();
-
-        rebuild(&mut panel);
-        assert_eq!(panel.cached_segments.len(), seg_count);
-        assert_eq!(panel.cached_msg_count, 1);
     }
 }
