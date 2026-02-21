@@ -8,34 +8,50 @@ use ratatui::text::{Line, Span};
 
 pub const BOLD_STYLE: Style = theme::BOLD;
 pub const CODE_STYLE: Style = theme::INLINE_CODE;
+pub const BOLD_CODE_STYLE: Style = theme::BOLD_CODE;
 
-struct Delimiter {
-    open: &'static str,
-    style: Style,
+const BOLD_DELIM: &str = "**";
+const CODE_DELIM: &str = "`";
+
+fn find_earliest_delim(text: &str) -> Option<(usize, &'static str, Style)> {
+    [(BOLD_DELIM, BOLD_STYLE), (CODE_DELIM, CODE_STYLE)]
+        .into_iter()
+        .filter_map(|(d, s)| text.find(d).map(|pos| (pos, d, s)))
+        .min_by_key(|(pos, _, _)| *pos)
 }
 
-const DELIMITERS: [Delimiter; 2] = [
-    Delimiter {
-        open: "**",
-        style: BOLD_STYLE,
-    },
-    Delimiter {
-        open: "`",
-        style: CODE_STYLE,
-    },
-];
+fn parse_inner<'a>(
+    content: &'a str,
+    outer_style: Style,
+    nested_delim: &str,
+    spans: &mut Vec<Span<'a>>,
+) {
+    let mut remaining = content;
+
+    while !remaining.is_empty() {
+        let Some(pos) = remaining.find(nested_delim) else {
+            spans.push(Span::styled(remaining, outer_style));
+            return;
+        };
+        let after_open = &remaining[pos + nested_delim.len()..];
+        let Some(close) = after_open.find(nested_delim) else {
+            spans.push(Span::styled(remaining, outer_style));
+            return;
+        };
+        if pos > 0 {
+            spans.push(Span::styled(&remaining[..pos], outer_style));
+        }
+        spans.push(Span::styled(&after_open[..close], BOLD_CODE_STYLE));
+        remaining = &after_open[close + nested_delim.len()..];
+    }
+}
 
 pub fn parse_inline_markdown<'a>(text: &'a str, base_style: Style) -> Vec<Span<'a>> {
     let mut spans = Vec::new();
     let mut remaining = text;
 
     while !remaining.is_empty() {
-        let next = DELIMITERS
-            .iter()
-            .filter_map(|d| remaining.find(d.open).map(|pos| (pos, d)))
-            .min_by_key(|(pos, _)| *pos);
-
-        let Some((pos, delim)) = next else {
+        let Some((pos, delim, style)) = find_earliest_delim(remaining) else {
             spans.push(Span::styled(remaining, base_style));
             break;
         };
@@ -44,14 +60,19 @@ pub fn parse_inline_markdown<'a>(text: &'a str, base_style: Style) -> Vec<Span<'
             spans.push(Span::styled(&remaining[..pos], base_style));
         }
 
-        let after_open = &remaining[pos + delim.open.len()..];
-        if let Some(close) = after_open.find(delim.open) {
-            spans.push(Span::styled(&after_open[..close], delim.style));
-            remaining = &after_open[close + delim.open.len()..];
-        } else {
+        let after_open = &remaining[pos + delim.len()..];
+        let Some(close) = after_open.find(delim) else {
             spans.push(Span::styled(&remaining[pos..], base_style));
             break;
-        }
+        };
+
+        let nested_delim = if delim == BOLD_DELIM {
+            CODE_DELIM
+        } else {
+            BOLD_DELIM
+        };
+        parse_inner(&after_open[..close], style, nested_delim, &mut spans);
+        remaining = &after_open[close + delim.len()..];
     }
 
     spans
@@ -184,6 +205,12 @@ mod tests {
     #[test_case("use `foo` here", &[("use ", None), ("foo", Some(CODE_STYLE)), (" here", None)] ; "inline_code")]
     #[test_case("a `code` then **bold**", &[("a ", None), ("code", Some(CODE_STYLE)), (" then ", None), ("bold", Some(BOLD_STYLE))] ; "code_before_bold")]
     #[test_case("a **unclosed", &[("a ", None), ("**unclosed", None)] ; "unclosed_delimiter")]
+    #[test_case("**bold `code` bold**", &[("bold ", Some(BOLD_STYLE)), ("code", Some(BOLD_CODE_STYLE)), (" bold", Some(BOLD_STYLE))] ; "code_inside_bold")]
+    #[test_case("`code **bold** code`", &[("code ", Some(CODE_STYLE)), ("bold", Some(BOLD_CODE_STYLE)), (" code", Some(CODE_STYLE))] ; "bold_inside_code")]
+    #[test_case("**`all`**", &[("all", Some(BOLD_CODE_STYLE))] ; "entire_bold_is_code")]
+    #[test_case("`**all**`", &[("all", Some(BOLD_CODE_STYLE))] ; "entire_code_is_bold")]
+    #[test_case("**bold `unclosed**", &[("bold `unclosed", Some(BOLD_STYLE))] ; "unclosed_nested_code_in_bold")]
+    #[test_case("`code **unclosed`", &[("code **unclosed", Some(CODE_STYLE))] ; "unclosed_nested_bold_in_code")]
     fn parse_inline_markdown_cases(input: &str, expected: &[(&str, Option<Style>)]) {
         let base = Style::default();
         let spans = parse_inline_markdown(input, base);
@@ -194,13 +221,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn text_to_lines_splits_newlines() {
+    #[test_case("line1\nline2\nline3", 3, "line1" ; "splits_newlines")]
+    #[test_case("\n\nfirst line\nsecond", 2, "first line" ; "strips_leading_newlines")]
+    fn text_to_lines_cases(input: &str, expected_lines: usize, first_text: &str) {
         let style = Style::default();
-        let lines = text_to_lines("line1\nline2\nline3", "p> ", style, None);
-        assert_eq!(lines.len(), 3);
+        let lines = text_to_lines(input, "p> ", style, None);
+        assert_eq!(lines.len(), expected_lines);
         assert_eq!(lines[0].spans[0].content, "p> ");
-        assert_eq!(lines[1].spans.len(), 1);
+        let text: String = lines[0].spans[1..]
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(text, first_text);
     }
 
     #[test_case("a\nb\nc", 5, "a\nb\nc" ; "under_limit")]
@@ -265,15 +297,6 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
-    }
-
-    #[test]
-    fn text_to_lines_strips_leading_newlines() {
-        let style = Style::default();
-        let lines = text_to_lines("\n\nfirst line\nsecond", "p> ", style, None);
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].spans[0].content, "p> ");
-        assert_eq!(lines[0].spans[1].content, "first line");
     }
 
     #[test]

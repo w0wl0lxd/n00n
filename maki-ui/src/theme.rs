@@ -33,6 +33,7 @@ pub const CANCEL_HINT: Style = Style::new().fg(ORANGE);
 
 pub const BOLD: Style = Style::new().fg(ORANGE).add_modifier(Modifier::BOLD);
 pub const INLINE_CODE: Style = Style::new().fg(GREEN);
+pub const BOLD_CODE: Style = Style::new().fg(GREEN).add_modifier(Modifier::BOLD);
 pub const CODE_FALLBACK: Style = Style::new().fg(PURPLE);
 
 const DIFF_OLD_BG: Color = Color::Rgb(0x55, 0x22, 0x22);
