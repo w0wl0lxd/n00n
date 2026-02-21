@@ -954,4 +954,22 @@ mod tests {
         let terminal = render(&mut panel, 80, 10);
         assert_eq!(has_scrollbar_thumb(&terminal), expected);
     }
+
+    #[test]
+    fn segments_cached_across_renders() {
+        let mut panel = MessagesPanel::new();
+        panel.push(DisplayMessage {
+            role: DisplayRole::User,
+            text: "hello".into(),
+            tool_input: None,
+            tool_output: None,
+        });
+
+        rebuild(&mut panel);
+        let seg_count = panel.cached_segments.len();
+
+        rebuild(&mut panel);
+        assert_eq!(panel.cached_segments.len(), seg_count);
+        assert_eq!(panel.cached_msg_count, 1);
+    }
 }
