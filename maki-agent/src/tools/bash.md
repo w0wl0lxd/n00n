@@ -1,6 +1,7 @@
 Execute a bash command.
+Commands run in {cwd} by default.
 
-- Commands run in {cwd} by default. Set `workdir` to an absolute path to run elsewhere; never use `cd dir && command`.
+- Set `workdir` to an absolute path to run elsewhere; NEVER use `cd {cwd} && command`.
 - Use for git, builds, tests, and system commands only.
 - Do NOT use for file operations (reading, writing, searching) - use specialized tools.
 - Do NOT use bash to communicate text to the user - output text directly instead.
