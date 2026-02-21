@@ -426,7 +426,7 @@ impl MessagesPanel {
                 });
             } else {
                 let (prefix, base_style, use_markdown) = match &msg.role {
-                    DisplayRole::User => ("you> ", theme::USER, false),
+                    DisplayRole::User => ("you> ", theme::USER, true),
                     DisplayRole::Assistant => ("maki> ", theme::ASSISTANT, true),
                     DisplayRole::Thinking => ("thinking> ", theme::THINKING, true),
                     DisplayRole::Error => ("", theme::ERROR, false),
