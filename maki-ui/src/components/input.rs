@@ -12,10 +12,7 @@ use ratatui::widgets::{
 };
 
 const MAX_INPUT_LINES: u16 = 10;
-const CONTINUATION_PREFIX: &str = "  ";
 const SCROLLBAR_THUMB: &str = "\u{2590}";
-const PROMPT_INDICATOR: &str = "> ";
-const STREAMING_INDICATOR: &str = "...";
 
 const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
     "research how something works",
@@ -54,11 +51,9 @@ impl InputBox {
         }
     }
 
-    pub fn height(&self, width: u16, is_streaming: bool) -> u16 {
+    pub fn height(&self, width: u16, _is_streaming: bool) -> u16 {
         let content_width = width.saturating_sub(2) as usize;
-        let indicator_len = indicator(is_streaming).len();
-        let visual_lines =
-            total_visual_lines(&self.buffer, indicator_len, content_width, !is_streaming);
+        let visual_lines = total_visual_lines(&self.buffer, content_width, true);
         (visual_lines as u16).min(MAX_INPUT_LINES) + 2
     }
 
@@ -131,49 +126,42 @@ impl InputBox {
         }
     }
 
-    fn visual_cursor_y(&self, indicator_len: usize, content_width: usize) -> u16 {
+    fn visual_cursor_y(&self, content_width: usize) -> u16 {
         let lines_above: u16 = self
             .buffer
             .lines()
             .iter()
-            .enumerate()
             .take(self.buffer.y())
-            .map(|(i, line)| {
-                visual_line_count(line.len() + prefix_len(i, indicator_len), content_width) as u16
-            })
+            .map(|line| visual_line_count(line.len(), content_width) as u16)
             .sum();
 
-        let cursor_col = self.buffer.x() + prefix_len(self.buffer.y(), indicator_len);
         let wrap_row = if content_width == 0 {
             0
         } else {
-            (cursor_col / content_width) as u16
+            (self.buffer.x() / content_width) as u16
         };
 
         lines_above + wrap_row
     }
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect, is_streaming: bool) {
-        let ind = indicator(is_streaming);
         let content_height = area.height.saturating_sub(2);
         let content_width = area.width.saturating_sub(2) as usize;
 
-        let visual_cursor_y = self.visual_cursor_y(ind.len(), content_width);
+        let visual_cursor_y = self.visual_cursor_y(content_width);
         if visual_cursor_y < self.scroll_y {
             self.scroll_y = visual_cursor_y;
         } else if visual_cursor_y >= self.scroll_y + content_height {
             self.scroll_y = visual_cursor_y - content_height + 1;
         }
 
-        let total_vl =
-            total_visual_lines(&self.buffer, ind.len(), content_width, !is_streaming) as u16;
+        let total_vl = total_visual_lines(&self.buffer, content_width, !is_streaming) as u16;
         let max_scroll = total_vl.saturating_sub(content_height);
         self.scroll_y = self.scroll_y.min(max_scroll);
 
         let is_empty = self.buffer.value().is_empty();
         let styled_lines: Vec<Line> = if is_empty && !is_streaming {
             vec![Line::from(vec![
-                Span::raw(ind.to_string()),
                 Span::styled("Ask maki to ", Style::new().fg(theme::COMMENT)),
                 Span::styled(
                     self.placeholder_hint,
@@ -189,8 +177,7 @@ impl InputBox {
                 .iter()
                 .enumerate()
                 .map(|(i, line)| {
-                    let prefix = if i == 0 { ind } else { CONTINUATION_PREFIX };
-                    let mut spans = vec![Span::raw(prefix.to_string())];
+                    let mut spans = Vec::new();
 
                     if !is_streaming && i == self.buffer.y() {
                         let x = self.buffer.x();
@@ -246,14 +233,6 @@ impl InputBox {
     }
 }
 
-fn indicator(is_streaming: bool) -> &'static str {
-    if is_streaming {
-        STREAMING_INDICATOR
-    } else {
-        PROMPT_INDICATOR
-    }
-}
-
 fn random_placeholder_hint() -> &'static str {
     let idx = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -262,27 +241,14 @@ fn random_placeholder_hint() -> &'static str {
     PLACEHOLDER_SUGGESTIONS[idx]
 }
 
-fn prefix_len(line_index: usize, indicator_len: usize) -> usize {
-    if line_index == 0 {
-        indicator_len
-    } else {
-        CONTINUATION_PREFIX.len()
-    }
-}
-
-fn total_visual_lines(
-    buffer: &TextBuffer,
-    indicator_len: usize,
-    content_width: usize,
-    cursor_visible: bool,
-) -> usize {
+fn total_visual_lines(buffer: &TextBuffer, content_width: usize, cursor_visible: bool) -> usize {
     let cursor_y = buffer.y();
     buffer
         .lines()
         .iter()
         .enumerate()
         .map(|(i, line)| {
-            let mut text_len = line.len() + prefix_len(i, indicator_len);
+            let mut text_len = line.len();
             if cursor_visible && i == cursor_y {
                 text_len += 1;
             }
@@ -416,13 +382,15 @@ mod tests {
     fn cursor_adds_extra_wrap_row_at_boundary() {
         let content_width: u16 = 12;
         let width = content_width + 2;
-        let chars_to_fill = content_width as usize - PROMPT_INDICATOR.len();
 
         let mut at_boundary = InputBox::new();
-        type_text(&mut at_boundary, &"x".repeat(chars_to_fill));
+        type_text(&mut at_boundary, &"x".repeat(content_width as usize));
 
         let mut before_boundary = InputBox::new();
-        type_text(&mut before_boundary, &"x".repeat(chars_to_fill - 1));
+        type_text(
+            &mut before_boundary,
+            &"x".repeat(content_width as usize - 1),
+        );
 
         assert_eq!(
             at_boundary.height(width, false),
