@@ -124,9 +124,9 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDo
     })
 }
 
-const STATUS_SYSTEM: &str =
-    "Output a 3-6 word label summarizing the request. No punctuation. Never refuse.";
-const STATUS_MAX_TOKENS: u32 = 32;
+const STATUS_SYSTEM: &str = "Output a 3-6 word label summarizing the request. No punctuation. No markdown. No code. Never refuse.";
+const STATUS_MAX_TOKENS: u32 = 20;
+const STATUS_MAX_INPUT_CHARS: usize = 512;
 
 fn generate_status_description(
     provider: &dyn Provider,
@@ -136,7 +136,11 @@ fn generate_status_description(
 ) {
     let mut capped_model = model.clone();
     capped_model.max_output_tokens = STATUS_MAX_TOKENS;
-    let user_msg = Message::user(user_input.to_owned());
+    let truncated: &str = &user_input[..user_input
+        .char_indices()
+        .nth(STATUS_MAX_INPUT_CHARS)
+        .map_or(user_input.len(), |(i, _)| i)];
+    let user_msg = Message::user(truncated.to_owned());
     let (sink_tx, _sink_rx) = std::sync::mpsc::channel::<Envelope>();
     let empty_tools = Value::Array(vec![]);
 
@@ -164,7 +168,9 @@ fn generate_status_description(
         })
         .unwrap_or_default();
 
+    let text = text.lines().next().unwrap_or_default().trim().to_owned();
     if !text.is_empty() {
+        info!(description = %text, "generated status description");
         let _ = event_tx.send(AgentEvent::StatusDescription { text }.into());
     }
 }
