@@ -1,1 +1,5 @@
-Search file contents using regex. Respects .gitignore. Results grouped by file, sorted by modification time. Prefer speculative parallel searches over sequential rounds of glob+grep.
+Search file contents using regex.
+
+- Respects .gitignore.
+- Results grouped by file, sorted by modification time.
+- Prefer speculative parallel searches over sequential rounds of glob+grep.

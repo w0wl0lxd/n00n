@@ -1,6 +1,7 @@
 Launch an autonomous research agent to explore the codebase.
 
-The research agent has read-only tools (bash, read, glob, grep, webfetch) and runs independently with its own conversation. Use it for tasks that require broad codebase exploration, searching across many files, or gathering context that would be expensive to do inline.
+- The research agent has read-only tools (bash, read, glob, grep, webfetch) and runs independently with its own conversation.
+- Use it for tasks that require broad codebase exploration, searching across many files, or gathering context that would be expensive to do inline.
 
 When to use:
 - Exploring unfamiliar parts of the codebase
