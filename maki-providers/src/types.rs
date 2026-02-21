@@ -100,6 +100,13 @@ pub enum ToolInput {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct BatchToolEntry {
+    pub tool: String,
+    pub summary: String,
+    pub is_error: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub enum ToolOutput {
     Plain(String),
     Diff {
@@ -108,6 +115,10 @@ pub enum ToolOutput {
         summary: String,
     },
     TodoList(Vec<TodoItem>),
+    Batch {
+        entries: Vec<BatchToolEntry>,
+        text: String,
+    },
 }
 
 impl ToolOutput {
@@ -153,6 +164,7 @@ impl ToolOutput {
                     .collect::<Vec<_>>()
                     .join("\n")
             }
+            Self::Batch { text, .. } => text.clone(),
         }
     }
 }

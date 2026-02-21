@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use maki_providers::{ToolInput, ToolOutput};
+use maki_providers::{BatchToolEntry, ToolInput, ToolOutput};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -47,19 +47,27 @@ impl Batch {
         let active = &self.tool_calls[..self.tool_calls.len().min(MAX_BATCH_SIZE)];
         let discarded = &self.tool_calls[active.len()..];
 
-        let results: Vec<_> = std::thread::scope(|s| {
-            let handles: Vec<_> = active
+        let parsed: Vec<_> = active
+            .iter()
+            .map(|entry| {
+                if entry.tool == Self::NAME {
+                    return Err("cannot nest batch inside batch".into());
+                }
+                ToolCall::from_api(&entry.tool, &entry.parameters).map_err(|e| e.to_string())
+            })
+            .collect();
+
+        let results: Vec<Result<String, String>> = std::thread::scope(|s| {
+            let handles: Vec<_> = parsed
                 .iter()
-                .map(|entry| {
-                    s.spawn(|| {
-                        if entry.tool == Self::NAME {
-                            return Err("cannot nest batch inside batch".into());
+                .map(|parsed_call| {
+                    s.spawn(move || match parsed_call {
+                        Ok(call) => {
+                            let done = call.execute(ctx, String::new());
+                            let text = done.output.as_text();
+                            if done.is_error { Err(text) } else { Ok(text) }
                         }
-                        let call = ToolCall::from_api(&entry.tool, &entry.parameters)
-                            .map_err(|e| e.to_string())?;
-                        let done = call.execute(ctx, String::new());
-                        let text = done.output.as_text();
-                        if done.is_error { Err(text) } else { Ok(text) }
+                        Err(e) => Err(e.clone()),
                     })
                 })
                 .collect();
@@ -73,9 +81,11 @@ impl Batch {
         let total = results.len() + discarded.len();
         let mut failed = discarded.len();
         let mut output = String::new();
+        let mut entries = Vec::with_capacity(total);
 
-        for (entry, result) in active.iter().zip(&results) {
+        for ((entry, parsed_call), result) in active.iter().zip(&parsed).zip(&results) {
             let _ = writeln!(output, "## {}", entry.tool);
+            let is_error = result.is_err();
             match result {
                 Ok(content) => output.push_str(content),
                 Err(err) => {
@@ -84,6 +94,15 @@ impl Batch {
                 }
             }
             output.push_str("\n\n");
+            let summary = parsed_call
+                .as_ref()
+                .map(|c| c.start_summary())
+                .unwrap_or_default();
+            entries.push(BatchToolEntry {
+                tool: entry.tool.clone(),
+                summary,
+                is_error,
+            });
         }
 
         for entry in discarded {
@@ -92,6 +111,11 @@ impl Batch {
                 "## {}\n[ERROR] maximum of {MAX_BATCH_SIZE} tools per batch\n\n",
                 entry.tool
             );
+            entries.push(BatchToolEntry {
+                tool: entry.tool.clone(),
+                summary: String::new(),
+                is_error: true,
+            });
         }
 
         let succeeded = total - failed;
@@ -104,7 +128,10 @@ impl Batch {
             let _ = write!(output, "All {total} tools executed successfully.");
         }
 
-        Ok(ToolOutput::Plain(output))
+        Ok(ToolOutput::Batch {
+            entries,
+            text: output,
+        })
     }
 
     pub fn start_summary(&self) -> String {
@@ -122,12 +149,22 @@ impl Batch {
 
 #[cfg(test)]
 mod tests {
+    use maki_providers::BatchToolEntry;
     use serde_json::json;
 
     use crate::AgentMode;
     use crate::tools::test_support::stub_ctx;
 
     use super::*;
+
+    fn run_batch(input: Value) -> (Vec<BatchToolEntry>, String) {
+        let ctx = stub_ctx(&AgentMode::Build);
+        let batch = Batch::parse_input(&input).unwrap();
+        match batch.execute(&ctx).unwrap() {
+            ToolOutput::Batch { entries, text } => (entries, text),
+            other => panic!("expected Batch, got {other:?}"),
+        }
+    }
 
     #[test]
     fn empty_batch_returns_error() {
@@ -138,46 +175,40 @@ mod tests {
 
     #[test]
     fn nested_batch_rejected() {
-        let ctx = stub_ctx(&AgentMode::Build);
-        let batch = Batch::parse_input(&json!({
+        let (entries, _) = run_batch(json!({
             "tool_calls": [{"tool": "batch", "parameters": {"tool_calls": []}}]
-        }))
-        .unwrap();
-
-        let result = batch.execute(&ctx).unwrap().as_text().to_string();
-        assert!(result.contains("[ERROR]"));
-        assert!(result.contains("failed"));
+        }));
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_error);
+        assert_eq!(entries[0].tool, "batch");
     }
 
     #[test]
     fn parallel_execution_with_mixed_results() {
-        let ctx = stub_ctx(&AgentMode::Build);
         let dir = tempfile::TempDir::new().unwrap();
         let f = dir.path().join("a.txt");
         std::fs::write(&f, "content").unwrap();
 
-        let batch = Batch::parse_input(&json!({
+        let (entries, text) = run_batch(json!({
             "tool_calls": [
                 {"tool": "read", "parameters": {"path": f.to_str().unwrap()}},
                 {"tool": "read", "parameters": {"path": "/nonexistent/path.txt"}}
             ]
-        }))
-        .unwrap();
-
-        let result = batch.execute(&ctx).unwrap().as_text().to_string();
-        assert!(result.contains("content"));
-        assert!(result.contains("[ERROR]"));
+        }));
+        assert_eq!(entries.len(), 2);
+        assert!(!entries[0].is_error);
+        assert!(entries[1].is_error);
+        assert!(text.contains("content"));
     }
 
     #[test]
     fn exceeds_max_batch_size_discards_excess() {
-        let ctx = stub_ctx(&AgentMode::Build);
         let calls: Vec<Value> = (0..MAX_BATCH_SIZE + 2)
-            .map(|_| json!({"tool": "nonexistent", "parameters": {}}))
+            .map(|_| json!({"tool": "read", "parameters": {"path": "/tmp"}}))
             .collect();
-
-        let batch = Batch::parse_input(&json!({"tool_calls": calls})).unwrap();
-        let result = batch.execute(&ctx).unwrap().as_text().to_string();
-        assert!(result.contains(&format!("maximum of {MAX_BATCH_SIZE}")));
+        let (entries, _) = run_batch(json!({"tool_calls": calls}));
+        assert_eq!(entries.len(), MAX_BATCH_SIZE + 2);
+        let discarded: Vec<_> = entries[MAX_BATCH_SIZE..].iter().collect();
+        assert!(discarded.iter().all(|e| e.is_error));
     }
 }

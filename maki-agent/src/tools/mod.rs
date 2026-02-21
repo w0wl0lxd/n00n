@@ -113,14 +113,17 @@ macro_rules! register_tools {
                 }
             }
 
-            pub fn start_event(&self, id: String) -> ToolStartEvent {
-                let summary = match self {
+            pub fn start_summary(&self) -> String {
+                match self {
                     $(ToolCall::$Variant(inner) => inner.start_summary()),+
-                };
+                }
+            }
+
+            pub fn start_event(&self, id: String) -> ToolStartEvent {
                 let input = match self {
                     $(ToolCall::$Variant(inner) => inner.start_input()),+
                 };
-                ToolStartEvent { id, tool: self.name(), summary, input }
+                ToolStartEvent { id, tool: self.name(), summary: self.start_summary(), input }
             }
 
             pub fn execute(&self, ctx: &ToolContext, id: String) -> ToolDoneEvent {

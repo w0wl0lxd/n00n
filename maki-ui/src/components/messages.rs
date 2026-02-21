@@ -189,23 +189,33 @@ impl MessagesPanel {
                 ToolStatus::Success
             };
         }
-        if let ToolOutput::Plain(ref text) = event.output {
-            if event.tool == GLOB_TOOL_NAME {
-                let n = text.lines().count();
-                msg.text = format!("{} ({n} files)", msg.text);
-            } else if event.tool == GREP_TOOL_NAME {
-                let n = text.lines().filter(|l| !l.starts_with(' ')).count();
-                msg.text = format!("{} ({n} files)", msg.text);
+        match &event.output {
+            ToolOutput::Plain(text) => {
+                if event.tool == GLOB_TOOL_NAME {
+                    let n = text.lines().count();
+                    msg.text = format!("{} ({n} files)", msg.text);
+                } else if event.tool == GREP_TOOL_NAME {
+                    let n = text.lines().filter(|l| !l.starts_with(' ')).count();
+                    msg.text = format!("{} ({n} files)", msg.text);
+                }
+                let display = if event.tool == WEBFETCH_TOOL_NAME {
+                    let n = text.lines().count();
+                    format!("({n} lines)")
+                } else {
+                    truncate_lines(text, TOOL_OUTPUT_MAX_DISPLAY_LINES).into_owned()
+                };
+                if !display.is_empty() {
+                    msg.text = format!("{}\n{display}", msg.text);
+                }
             }
-            let display = if event.tool == WEBFETCH_TOOL_NAME {
-                let n = text.lines().count();
-                format!("({n} lines)")
-            } else {
-                truncate_lines(text, TOOL_OUTPUT_MAX_DISPLAY_LINES).into_owned()
-            };
-            if !display.is_empty() {
-                msg.text = format!("{}\n{display}", msg.text);
+            ToolOutput::Batch { entries, .. } => {
+                let failed = entries.iter().filter(|e| e.is_error).count();
+                if failed > 0 {
+                    let total = entries.len();
+                    msg.text = format!("{}/{total} tools succeeded", total - failed);
+                }
             }
+            _ => {}
         }
         msg.tool_output = Some(event.output);
         self.in_progress_count -= 1;
@@ -560,6 +570,21 @@ impl MessagesPanel {
                         ),
                         style,
                     )));
+                }
+            }
+            Some(ToolOutput::Batch { entries, .. }) => {
+                for entry in entries {
+                    let style = if entry.is_error {
+                        theme::TOOL_ERROR
+                    } else {
+                        theme::TOOL_SUCCESS
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(TOOL_BODY_INDENT.to_owned(), style),
+                        Span::styled(TOOL_INDICATOR, style),
+                        Span::styled(format!("{}> ", entry.tool), theme::TOOL_PREFIX),
+                        Span::styled(entry.summary.clone(), theme::TOOL),
+                    ]));
                 }
             }
         }
