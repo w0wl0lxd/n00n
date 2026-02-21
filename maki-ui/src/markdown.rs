@@ -114,6 +114,7 @@ pub fn text_to_lines(
     mut highlighters: Option<&mut Vec<CodeHighlighter>>,
 ) -> Vec<Line<'static>> {
     let prefix_style = base_style.add_modifier(Modifier::BOLD);
+    let text = text.trim_start_matches('\n');
     let blocks = parse_blocks(text);
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut first_line = true;
@@ -264,6 +265,15 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    #[test]
+    fn text_to_lines_strips_leading_newlines() {
+        let style = Style::default();
+        let lines = text_to_lines("\n\nfirst line\nsecond", "p> ", style, None);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].spans[0].content, "p> ");
+        assert_eq!(lines[0].spans[1].content, "first line");
     }
 
     #[test]
