@@ -124,7 +124,7 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDo
     })
 }
 
-const STATUS_SYSTEM: &str = "Output a 3-6 word label summarizing the request. No punctuation. No markdown. No code. Never refuse.";
+const STATUS_SYSTEM: &str = "Summarize input in 3 to 6 word label. Always useful even if info missing. Never refuse. No punctuation markdown or code.";
 const STATUS_MAX_TOKENS: u32 = 20;
 const STATUS_MAX_INPUT_CHARS: usize = 512;
 
