@@ -65,8 +65,13 @@ impl App {
             let half = self.messages_panel.half_page();
             return match key.code {
                 KeyCode::Char('c') => {
-                    self.should_quit = true;
-                    vec![Action::Quit]
+                    if self.input_box.buffer.value().trim().is_empty() {
+                        self.should_quit = true;
+                        vec![Action::Quit]
+                    } else {
+                        self.input_box.buffer.clear();
+                        vec![]
+                    }
                 }
                 KeyCode::Char('u') => {
                     self.messages_panel.scroll(half);
@@ -86,10 +91,6 @@ impl App {
                 }
                 KeyCode::Char('w') if self.status != Status::Streaming => {
                     self.input_box.buffer.remove_word_before_cursor();
-                    vec![]
-                }
-                KeyCode::Char('k') if self.status != Status::Streaming => {
-                    self.input_box.buffer.remove_line();
                     vec![]
                 }
                 _ => vec![],
@@ -313,7 +314,19 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_quits_regardless_of_state() {
+    fn ctrl_c_clears_nonempty_input() {
+        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        app.update(Msg::Key(key(KeyCode::Char('h'))));
+        app.update(Msg::Key(key(KeyCode::Char('i'))));
+
+        let actions = app.update(Msg::Key(ctrl('c')));
+        assert!(actions.is_empty());
+        assert!(!app.should_quit);
+        assert_eq!(app.input_box.buffer.value(), "");
+    }
+
+    #[test]
+    fn ctrl_c_quits_when_input_empty() {
         for status in [Status::Idle, Status::Streaming] {
             let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
             app.status = status;

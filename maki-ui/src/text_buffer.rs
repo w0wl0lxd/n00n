@@ -76,18 +76,6 @@ impl TextBuffer {
         }
     }
 
-    pub fn remove_line(&mut self) {
-        if self.lines.len() == 1 {
-            self.lines[0].clear();
-        } else {
-            self.lines.remove(self.cursor_y);
-        }
-        if self.cursor_y >= self.lines.len() {
-            self.cursor_y = self.lines.len() - 1;
-        }
-        self.raw_x = self.current_line_len();
-    }
-
     pub fn remove_word_before_cursor(&mut self) {
         let x = self.x();
         if x == 0 {
@@ -240,20 +228,5 @@ mod tests {
         buf.raw_x = 0;
         buf.remove_word_before_cursor();
         assert_eq!(buf.value(), "abcd");
-    }
-
-    #[test]
-    fn remove_line() {
-        // single line: clears content, keeps one empty line
-        let mut buf = TextBuffer::new("only".into());
-        buf.remove_line();
-        assert_eq!(buf.value(), "");
-        assert_eq!(buf.line_count(), 1);
-
-        // multi line: removes current line
-        let mut buf = TextBuffer::new("a\nb\nc".into());
-        buf.cursor_y = 1;
-        buf.remove_line();
-        assert_eq!(buf.value(), "a\nc");
     }
 }
