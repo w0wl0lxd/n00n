@@ -44,6 +44,19 @@ impl TextBuffer {
         self.raw_x = x + 1;
     }
 
+    pub fn insert_text(&mut self, text: &str) {
+        for (i, chunk) in text.split('\n').enumerate() {
+            if i > 0 {
+                self.add_line();
+            }
+            if !chunk.is_empty() {
+                let x = self.x();
+                self.lines[self.cursor_y].insert_str(x, chunk);
+                self.raw_x = x + chunk.len();
+            }
+        }
+    }
+
     pub fn add_line(&mut self) {
         let x = self.x();
         let (left, right) = self.lines[self.cursor_y].split_at(x);
@@ -210,6 +223,23 @@ mod tests {
         assert_eq!(buf.x(), 2);
         buf.move_down();
         assert_eq!(buf.x(), 4);
+    }
+
+    #[test]
+    fn insert_text_multiline() {
+        let mut buf = TextBuffer::new(String::new());
+        buf.insert_text("line1\nline2\nline3");
+        assert_eq!(buf.lines(), &["line1", "line2", "line3"]);
+        assert_eq!(buf.y(), 2);
+        assert_eq!(buf.x(), 5);
+    }
+
+    #[test]
+    fn insert_text_at_cursor_middle() {
+        let mut buf = TextBuffer::new("abcd".into());
+        buf.raw_x = 2;
+        buf.insert_text("X\nY");
+        assert_eq!(buf.lines(), &["abX", "Ycd"]);
     }
 
     #[test]

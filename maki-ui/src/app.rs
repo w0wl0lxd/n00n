@@ -15,6 +15,7 @@ const CANCEL_MSG: &str = "Cancelled. The agent will continue from the last succe
 
 pub enum Msg {
     Key(KeyEvent),
+    Paste(String),
     Agent(AgentEvent),
 }
 
@@ -54,6 +55,12 @@ impl App {
     pub fn update(&mut self, msg: Msg) -> Vec<Action> {
         match msg {
             Msg::Key(key) => self.handle_key(key),
+            Msg::Paste(text) => {
+                if self.status != Status::Streaming {
+                    self.input_box.buffer.insert_text(&text);
+                }
+                vec![]
+            }
             Msg::Agent(event) => self.handle_agent_event(event),
         }
     }
@@ -476,5 +483,21 @@ mod tests {
         let actions = app.update(Msg::Key(key(KeyCode::Esc)));
         assert!(matches!(&actions[0], Action::CancelAgent));
         assert_eq!(app.status, Status::Idle);
+    }
+
+    #[test]
+    fn paste_inserts_text() {
+        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        let actions = app.update(Msg::Paste("pasted".into()));
+        assert!(actions.is_empty());
+        assert_eq!(app.input_box.buffer.value(), "pasted");
+    }
+
+    #[test]
+    fn paste_ignored_while_streaming() {
+        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        app.status = Status::Streaming;
+        app.update(Msg::Paste("pasted text".into()));
+        assert_eq!(app.input_box.buffer.value(), "");
     }
 }

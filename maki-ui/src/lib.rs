@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use color_eyre::Result;
 use crossterm::ExecutableCommand;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, EnableBracketedPaste, Event};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_agent::AgentInput;
 use maki_agent::agent;
@@ -31,11 +31,13 @@ const EVENT_POLL_INTERVAL_MS: u64 = 8;
 pub fn run(model: Model) -> Result<()> {
     let mut terminal = ratatui::init();
     stdout().execute(EnterAlternateScreen)?;
+    stdout().execute(EnableBracketedPaste)?;
     terminal::enable_raw_mode()?;
 
     let result = run_event_loop(&mut terminal, model);
 
     terminal::disable_raw_mode()?;
+    stdout().execute(event::DisableBracketedPaste)?;
     stdout().execute(LeaveAlternateScreen)?;
     ratatui::restore();
 
@@ -72,15 +74,13 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
             Duration::from_millis(EVENT_POLL_INTERVAL_MS)
         };
 
-        if event::poll(poll_duration)?
-            && let Event::Key(key) = event::read()?
-        {
-            dispatch(
-                app.update(Msg::Key(key)),
-                &mut input_tx,
-                &mut agent_rx,
-                &model,
-            );
+        if event::poll(poll_duration)? {
+            let msg = match event::read()? {
+                Event::Key(key) => Msg::Key(key),
+                Event::Paste(text) => Msg::Paste(text),
+                _ => continue,
+            };
+            dispatch(app.update(msg), &mut input_tx, &mut agent_rx, &model);
         }
     }
 
