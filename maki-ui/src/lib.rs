@@ -8,6 +8,7 @@ mod theme;
 
 use std::io::stdout;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -19,7 +20,7 @@ use maki_agent::AgentInput;
 use maki_agent::agent;
 use maki_agent::template;
 use maki_providers::Model;
-use maki_providers::{AgentEvent, Envelope};
+use maki_providers::{AgentEvent, Envelope, Message};
 use tracing::error;
 
 use app::{App, Msg};
@@ -46,7 +47,7 @@ pub fn run(model: Model) -> Result<()> {
 
 fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Result<()> {
     let mut app = App::new(model.spec(), model.pricing.clone(), model.context_window);
-    let (mut input_tx, mut agent_rx) = spawn_agent(&model);
+    let (mut input_tx, mut agent_rx, mut history) = spawn_agent(&model, Vec::new());
 
     loop {
         terminal.draw(|f| app.view(f))?;
@@ -58,6 +59,7 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
                 app.update(Msg::Agent(envelope.event)),
                 &mut input_tx,
                 &mut agent_rx,
+                &mut history,
                 &model,
             );
         }
@@ -80,17 +82,34 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
                 Event::Paste(text) => Msg::Paste(text),
                 _ => continue,
             };
-            dispatch(app.update(msg), &mut input_tx, &mut agent_rx, &model);
+            dispatch(
+                app.update(msg),
+                &mut input_tx,
+                &mut agent_rx,
+                &mut history,
+                &model,
+            );
         }
     }
 
     Ok(())
 }
 
-fn spawn_agent(model: &Model) -> (mpsc::Sender<AgentInput>, mpsc::Receiver<Envelope>) {
+type SharedHistory = Arc<Mutex<Vec<Message>>>;
+
+fn spawn_agent(
+    model: &Model,
+    initial_history: Vec<Message>,
+) -> (
+    mpsc::Sender<AgentInput>,
+    mpsc::Receiver<Envelope>,
+    SharedHistory,
+) {
     let (agent_tx, agent_rx) = mpsc::channel::<Envelope>();
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>();
     let model = model.clone();
+    let shared_history: SharedHistory = Arc::new(Mutex::new(initial_history.clone()));
+    let history_ref = Arc::clone(&shared_history);
 
     thread::spawn(move || {
         let provider = match maki_providers::provider::from_model(&model) {
@@ -106,7 +125,7 @@ fn spawn_agent(model: &Model) -> (mpsc::Sender<AgentInput>, mpsc::Receiver<Envel
                 return;
             }
         };
-        let mut history = Vec::new();
+        let mut history = initial_history;
         while let Ok(input) = input_rx.recv() {
             let vars = template::env_vars();
             let system = agent::build_system_prompt(&vars, &input.mode, &model);
@@ -128,16 +147,18 @@ fn spawn_agent(model: &Model) -> (mpsc::Sender<AgentInput>, mpsc::Receiver<Envel
                     .into(),
                 );
             }
+            *history_ref.lock().unwrap() = history.clone();
         }
     });
 
-    (input_tx, agent_rx)
+    (input_tx, agent_rx, shared_history)
 }
 
 fn dispatch(
     actions: Vec<Action>,
     input_tx: &mut mpsc::Sender<AgentInput>,
     agent_rx: &mut mpsc::Receiver<Envelope>,
+    shared_history: &mut SharedHistory,
     model: &Model,
 ) {
     for action in actions {
@@ -146,7 +167,8 @@ fn dispatch(
                 let _ = input_tx.send(input);
             }
             Action::CancelAgent => {
-                (*input_tx, *agent_rx) = spawn_agent(model);
+                let history = std::mem::take(&mut *shared_history.lock().unwrap());
+                (*input_tx, *agent_rx, *shared_history) = spawn_agent(model, history);
             }
             Action::Quit => {}
         }

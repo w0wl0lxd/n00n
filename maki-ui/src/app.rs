@@ -162,19 +162,20 @@ impl App {
                     return vec![];
                 };
                 let pending_plan = self.pending_plan.take();
+                let input = AgentInput {
+                    message: text.clone(),
+                    mode: self.mode.clone(),
+                    pending_plan,
+                };
                 self.messages_panel.push(DisplayMessage {
                     role: DisplayRole::User,
-                    text: text.clone(),
+                    text,
                     tool_input: None,
                     tool_output: None,
                 });
                 self.status = Status::Streaming;
                 self.messages_panel.enable_auto_scroll();
-                vec![Action::SendMessage(AgentInput {
-                    message: text,
-                    mode: self.mode.clone(),
-                    pending_plan,
-                })]
+                vec![Action::SendMessage(input)]
             }
             KeyCode::Char(c) => {
                 self.input_box.buffer.push_char(c);
