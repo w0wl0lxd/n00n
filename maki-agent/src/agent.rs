@@ -125,7 +125,8 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDo
 }
 
 const STATUS_SYSTEM: &str =
-    "Summarize the user's request in 3-6 words. Be specific and concise. No punctuation.";
+    "Output a 3-6 word label summarizing the request. No punctuation. Never refuse.";
+const STATUS_MAX_TOKENS: u32 = 32;
 
 fn generate_status_description(
     provider: &dyn Provider,
@@ -133,18 +134,25 @@ fn generate_status_description(
     user_input: &str,
     event_tx: &Sender<Envelope>,
 ) {
+    let mut capped_model = model.clone();
+    capped_model.max_output_tokens = STATUS_MAX_TOKENS;
     let user_msg = Message::user(user_input.to_owned());
     let (sink_tx, _sink_rx) = std::sync::mpsc::channel::<Envelope>();
     let empty_tools = Value::Array(vec![]);
 
-    let response =
-        match provider.stream_message(model, &[user_msg], STATUS_SYSTEM, &empty_tools, &sink_tx) {
-            Ok(r) => r,
-            Err(e) => {
-                warn!(error = %e, model = %model.id, "failed to generate status description");
-                return;
-            }
-        };
+    let response = match provider.stream_message(
+        &capped_model,
+        &[user_msg],
+        STATUS_SYSTEM,
+        &empty_tools,
+        &sink_tx,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, model = %model.id, "failed to generate status description");
+            return;
+        }
+    };
 
     let text = response
         .message
