@@ -23,7 +23,7 @@ use std::time::Instant;
 
 use clap::ValueEnum;
 use color_eyre::Result;
-use maki_agent::{AgentInput, AgentMode, agent};
+use maki_agent::{AgentInput, AgentMode, agent, template};
 use maki_providers::model::Model;
 use maki_providers::{AgentEvent, Envelope, TokenUsage};
 use serde::Serialize;
@@ -130,9 +130,13 @@ pub fn run(
         }
     };
 
-    let cwd = env::current_dir()?.to_string_lossy().to_string();
+    let cwd = env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".into());
+    let vars = template::env_vars();
     let mode = AgentMode::Build;
-    let system = agent::build_system_prompt(&cwd, &mode, model);
+    let system = agent::build_system_prompt(&vars, &mode, model);
+    let tools = maki_agent::tools::ToolCall::definitions(&vars);
 
     let (event_tx, event_rx) = mpsc::channel::<Envelope>();
     let input = AgentInput {
@@ -167,7 +171,7 @@ pub fn run(
             &mut history,
             &system,
             &event_tx,
-            None,
+            &tools,
         ) {
             error!(error = %e, "agent error");
             let _ = event_tx.send(

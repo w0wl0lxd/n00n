@@ -1,5 +1,6 @@
 pub mod agent;
 pub(crate) mod prompt;
+pub mod template;
 pub mod tools;
 
 use std::path::Path;

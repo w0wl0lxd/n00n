@@ -6,7 +6,6 @@ mod markdown;
 mod text_buffer;
 mod theme;
 
-use std::env;
 use std::io::stdout;
 use std::sync::mpsc;
 use std::thread;
@@ -18,6 +17,7 @@ use crossterm::event::{self, Event};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_agent::AgentInput;
 use maki_agent::agent;
+use maki_agent::template;
 use maki_providers::Model;
 use maki_providers::{AgentEvent, Envelope};
 use tracing::error;
@@ -44,9 +44,7 @@ pub fn run(model: Model) -> Result<()> {
 
 fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Result<()> {
     let mut app = App::new(model.spec(), model.pricing.clone(), model.context_window);
-    let cwd = env::current_dir()?.to_string_lossy().to_string();
-
-    let (mut input_tx, mut agent_rx) = spawn_agent(&cwd, &model);
+    let (mut input_tx, mut agent_rx) = spawn_agent(&model);
 
     loop {
         terminal.draw(|f| app.view(f))?;
@@ -58,7 +56,6 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
                 app.update(Msg::Agent(envelope.event)),
                 &mut input_tx,
                 &mut agent_rx,
-                &cwd,
                 &model,
             );
         }
@@ -82,7 +79,6 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
                 app.update(Msg::Key(key)),
                 &mut input_tx,
                 &mut agent_rx,
-                &cwd,
                 &model,
             );
         }
@@ -91,10 +87,9 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Resu
     Ok(())
 }
 
-fn spawn_agent(cwd: &str, model: &Model) -> (mpsc::Sender<AgentInput>, mpsc::Receiver<Envelope>) {
+fn spawn_agent(model: &Model) -> (mpsc::Sender<AgentInput>, mpsc::Receiver<Envelope>) {
     let (agent_tx, agent_rx) = mpsc::channel::<Envelope>();
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>();
-    let cwd = cwd.to_owned();
     let model = model.clone();
 
     thread::spawn(move || {
@@ -113,7 +108,9 @@ fn spawn_agent(cwd: &str, model: &Model) -> (mpsc::Sender<AgentInput>, mpsc::Rec
         };
         let mut history = Vec::new();
         while let Ok(input) = input_rx.recv() {
-            let system = agent::build_system_prompt(&cwd, &input.mode, &model);
+            let vars = template::env_vars();
+            let system = agent::build_system_prompt(&vars, &input.mode, &model);
+            let tools = maki_agent::tools::ToolCall::definitions(&vars);
             if let Err(e) = agent::run(
                 &*provider,
                 &model,
@@ -121,7 +118,7 @@ fn spawn_agent(cwd: &str, model: &Model) -> (mpsc::Sender<AgentInput>, mpsc::Rec
                 &mut history,
                 &system,
                 &agent_tx,
-                None,
+                &tools,
             ) {
                 error!(error = %e, "agent error");
                 let _ = agent_tx.send(
@@ -141,7 +138,6 @@ fn dispatch(
     actions: Vec<Action>,
     input_tx: &mut mpsc::Sender<AgentInput>,
     agent_rx: &mut mpsc::Receiver<Envelope>,
-    cwd: &str,
     model: &Model,
 ) {
     for action in actions {
@@ -150,7 +146,7 @@ fn dispatch(
                 let _ = input_tx.send(input);
             }
             Action::CancelAgent => {
-                (*input_tx, *agent_rx) = spawn_agent(cwd, model);
+                (*input_tx, *agent_rx) = spawn_agent(model);
             }
             Action::Quit => {}
         }

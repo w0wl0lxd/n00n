@@ -1,4 +1,3 @@
-use std::env;
 use std::sync::mpsc;
 use std::thread;
 
@@ -7,6 +6,7 @@ use maki_tool_macro::Tool;
 
 use super::ToolContext;
 use crate::agent;
+use crate::template;
 use crate::tools::ToolCall;
 use crate::{AgentInput, AgentMode};
 
@@ -25,12 +25,9 @@ impl Task {
     pub const DESCRIPTION: &str = include_str!("task.md");
 
     pub fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
-        let cwd = env::current_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| ".".into());
-
-        let system = build_research_system_prompt(&cwd);
-        let tools = ToolCall::definitions_filtered(Some(RESEARCH_TOOLS));
+        let vars = template::env_vars();
+        let system = vars.apply(crate::prompt::RESEARCH_PROMPT).into_owned();
+        let tools = ToolCall::definitions_filtered(&vars, Some(RESEARCH_TOOLS));
 
         let (sub_tx, sub_rx) = mpsc::channel::<crate::Envelope>();
         let parent_tx = ctx.event_tx.clone();
@@ -62,7 +59,7 @@ impl Task {
             &mut history,
             &system,
             &sub_tx,
-            Some(tools),
+            &tools,
         )
         .map_err(|e| format!("sub-agent error: {e}"))?;
 
@@ -93,21 +90,14 @@ impl Task {
     }
 }
 
-fn build_research_system_prompt(cwd: &str) -> String {
-    let base = crate::prompt::RESEARCH_PROMPT;
-    format!(
-        "{base}\n\nEnvironment:\n- Working directory: {cwd}\n- Platform: {}",
-        env::consts::OS
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn research_tools_all_registered() {
-        let filtered = ToolCall::definitions_filtered(Some(RESEARCH_TOOLS));
+        let vars = template::Vars::new();
+        let filtered = ToolCall::definitions_filtered(&vars, Some(RESEARCH_TOOLS));
         assert_eq!(filtered.as_array().unwrap().len(), RESEARCH_TOOLS.len());
     }
 }

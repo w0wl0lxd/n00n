@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -8,6 +7,7 @@ use tracing::{info, warn};
 
 use serde_json::Value;
 
+use crate::template::Vars;
 use crate::tools::{ToolCall, ToolContext};
 use crate::{
     AgentError, AgentEvent, AgentInput, AgentMode, Envelope, Message, TokenUsage, ToolDoneEvent,
@@ -18,16 +18,16 @@ use maki_providers::provider::Provider;
 
 const AGENTS_MD: &str = "AGENTS.md";
 
-pub fn build_system_prompt(cwd: &str, mode: &AgentMode, model: &Model) -> String {
+pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, model: &Model) -> String {
     let mut out = crate::prompt::base_prompt(model.family()).to_string();
 
-    out.push_str(&format!(
-        "\n\nEnvironment:\n- Working directory: {cwd}\n- Platform: {}\n- Date: {}",
-        env::consts::OS,
+    out.push_str(&vars.apply(&format!(
+        "\n\nEnvironment:\n- Working directory: {{cwd}}\n- Platform: {{platform}}\n- Date: {}",
         current_date(),
-    ));
+    )));
 
-    let agents_path = Path::new(cwd).join(AGENTS_MD);
+    let cwd = vars.apply("{cwd}");
+    let agents_path = Path::new(cwd.as_ref()).join(AGENTS_MD);
     if let Ok(content) = fs::read_to_string(&agents_path) {
         out.push_str(&format!(
             "\n\nProject instructions ({AGENTS_MD}):\n{content}"
@@ -35,7 +35,8 @@ pub fn build_system_prompt(cwd: &str, mode: &AgentMode, model: &Model) -> String
     }
 
     if let AgentMode::Plan(plan_path) = mode {
-        out.push_str(&crate::prompt::PLAN_PROMPT.replace("{plan_path}", plan_path));
+        let plan_vars = Vars::new().set("{plan_path}", plan_path);
+        out.push_str(&plan_vars.apply(crate::prompt::PLAN_PROMPT));
     }
 
     out
@@ -130,10 +131,9 @@ pub fn run(
     history: &mut Vec<Message>,
     system: &str,
     event_tx: &Sender<Envelope>,
-    tools_override: Option<Value>,
+    tools: &Value,
 ) -> Result<(), AgentError> {
     history.push(Message::user(input.effective_message()));
-    let tools = tools_override.unwrap_or_else(ToolCall::definitions);
     let ctx = ToolContext {
         provider,
         model,
@@ -145,7 +145,7 @@ pub fn run(
     let mut num_turns: u32 = 0;
 
     loop {
-        let response = provider.stream_message(model, history, system, &tools, event_tx)?;
+        let response = provider.stream_message(model, history, system, tools, event_tx)?;
         num_turns += 1;
 
         let has_tools = response.message.has_tool_calls();
@@ -220,7 +220,8 @@ mod tests {
     #[test_case(&AgentMode::Build, false ; "build_excludes_plan")]
     #[test_case(&AgentMode::Plan(PLAN_PATH.into()), true ; "plan_includes_plan")]
     fn plan_section_presence(mode: &AgentMode, expect_plan: bool) {
-        let prompt = build_system_prompt("/tmp", mode, &default_model());
+        let vars = Vars::new().set("{cwd}", "/tmp").set("{platform}", "linux");
+        let prompt = build_system_prompt(&vars, mode, &default_model());
         assert_eq!(prompt.contains("Plan Mode"), expect_plan);
         if expect_plan {
             assert!(prompt.contains(PLAN_PATH));

@@ -17,6 +17,7 @@ use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
+use crate::template::Vars;
 use crate::{AgentError, AgentMode, Envelope, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use maki_providers::Model;
 use maki_providers::provider::Provider;
@@ -151,15 +152,15 @@ macro_rules! register_tools {
                 }
             }
 
-            pub fn definitions() -> Value {
-                Self::definitions_filtered(None)
+            pub fn definitions(vars: &Vars) -> Value {
+                Self::definitions_filtered(vars, None)
             }
 
-            pub fn definitions_filtered(allowed: Option<&[&str]>) -> Value {
+            pub fn definitions_filtered(vars: &Vars, allowed: Option<&[&str]>) -> Value {
                 let all = vec![
                     $((<$inner>::NAME, json!({
                         "name": <$inner>::NAME,
-                        "description": <$inner>::DESCRIPTION,
+                        "description": vars.apply(<$inner>::DESCRIPTION),
                         "input_schema": <$inner>::schema()
                     }))),+
                 ];
@@ -341,7 +342,8 @@ mod tests {
 
     #[test]
     fn definitions_filtered_restricts_to_allowed() {
-        let filtered = ToolCall::definitions_filtered(Some(&["bash", "read"]));
+        let vars = Vars::new().set("{cwd}", "/tmp");
+        let filtered = ToolCall::definitions_filtered(&vars, Some(&["bash", "read"]));
         let names: Vec<&str> = filtered
             .as_array()
             .unwrap()
