@@ -259,6 +259,7 @@ impl App {
                 self.status = Status::Error(message);
                 self.status_description = None;
                 self.status_bar.clear_cancel_hint();
+                self.status_bar.mark_error();
             }
         }
         vec![]
@@ -282,6 +283,9 @@ impl App {
 
     pub fn view(&mut self, frame: &mut Frame) {
         self.status_bar.clear_expired_hint();
+        if self.status_bar.is_error_expired() {
+            self.status = Status::Idle;
+        }
 
         let bg = Block::default().style(ratatui::style::Style::new().bg(theme::BACKGROUND));
         bg.render(frame.area(), frame.buffer_mut());
