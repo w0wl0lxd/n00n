@@ -13,11 +13,12 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 
 const TOOL_INDICATOR: &str = "● ";
 const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 7;
 const TOOL_BODY_INDENT: &str = "  ";
+const SCROLLBAR_THUMB: &str = "\u{2590}";
 
 #[derive(Default)]
 struct StreamingCache {
@@ -350,6 +351,10 @@ impl MessagesPanel {
             frame.render_widget(p, seg_area);
             y += visible_h;
         }
+
+        if total_lines > area.height {
+            render_vertical_scrollbar(frame, area, total_lines, self.scroll_top);
+        }
     }
 
     fn flush_thinking(&mut self) {
@@ -573,6 +578,21 @@ impl MessagesPanel {
     }
 }
 
+fn render_vertical_scrollbar(frame: &mut Frame, area: Rect, content_len: u16, position: u16) {
+    let max_scroll = content_len.saturating_sub(area.height);
+    let mut state = ScrollbarState::default()
+        .content_length(max_scroll as usize + 1)
+        .position(position as usize);
+
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .thumb_symbol(SCROLLBAR_THUMB)
+        .track_symbol(None)
+        .begin_symbol(None)
+        .end_symbol(None);
+
+    frame.render_stateful_widget(scrollbar, area, &mut state);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -720,10 +740,15 @@ mod tests {
         assert_eq!(panel.scroll_top, pinned);
     }
 
-    fn render(panel: &mut MessagesPanel, width: u16, height: u16) {
+    fn render(
+        panel: &mut MessagesPanel,
+        width: u16,
+        height: u16,
+    ) -> ratatui::Terminal<TestBackend> {
         let backend = TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| panel.view(f, f.area())).unwrap();
+        terminal
     }
 
     fn rebuild(panel: &mut MessagesPanel) {
@@ -747,56 +772,29 @@ mod tests {
         assert!(panel.auto_scroll);
     }
 
-    #[test]
-    fn tool_done_appends_truncated_output() {
+    #[test_case(
+        &(1..=10).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n"),
+        true, true
+        ; "long_output_truncated"
+    )]
+    #[test_case("", false, false ; "empty_output_no_body")]
+    fn tool_done_output_display(output: &str, expect_newline: bool, expect_ellipsis: bool) {
         let mut panel = MessagesPanel::new();
         panel.tool_start(ToolStartEvent {
             id: "t1".into(),
             tool: "bash",
-            summary: "long output".into(),
+            summary: "cmd".into(),
             input: None,
         });
-        let long_output = (1..=10)
-            .map(|i| format!("line{i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
             tool: "bash",
-            output: ToolOutput::Plain(long_output),
+            output: ToolOutput::Plain(output.into()),
             is_error: false,
         });
         assert_eq!(panel.messages.len(), 1);
-        assert!(
-            panel.messages[0].text.contains('\n'),
-            "body should be appended"
-        );
-        assert!(
-            panel.messages[0].text.contains("..."),
-            "long output should be truncated"
-        );
-    }
-
-    #[test]
-    fn tool_done_empty_output_no_body() {
-        let mut panel = MessagesPanel::new();
-        panel.tool_start(ToolStartEvent {
-            id: "t1".into(),
-            tool: "edit",
-            summary: "/tmp/f.rs".into(),
-            input: None,
-        });
-        panel.tool_done(ToolDoneEvent {
-            id: "t1".into(),
-            tool: "edit",
-            output: ToolOutput::Plain(String::new()),
-            is_error: false,
-        });
-        assert_eq!(panel.messages.len(), 1);
-        assert!(
-            !panel.messages[0].text.contains('\n'),
-            "empty output should not append body"
-        );
+        assert_eq!(panel.messages[0].text.contains('\n'), expect_newline);
+        assert_eq!(panel.messages[0].text.contains("..."), expect_ellipsis);
     }
 
     #[test]
@@ -936,5 +934,24 @@ mod tests {
             text.contains(summary),
             "header should contain raw summary {summary:?}, got {text:?}"
         );
+    }
+
+    fn has_scrollbar_thumb(terminal: &ratatui::Terminal<TestBackend>) -> bool {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height).any(|y| {
+            buf.cell((buf.area.width - 1, y))
+                .is_some_and(|c: &ratatui::buffer::Cell| c.symbol() == SCROLLBAR_THUMB)
+        })
+    }
+
+    #[test_case(40, true  ; "rendered_when_content_overflows")]
+    #[test_case(1,  false ; "hidden_when_content_fits")]
+    fn scrollbar_visibility(line_count: usize, expected: bool) {
+        let mut panel = MessagesPanel::new();
+        panel
+            .streaming_text
+            .set_buffer(&"line\n".repeat(line_count));
+        let terminal = render(&mut panel, 80, 10);
+        assert_eq!(has_scrollbar_thumb(&terminal), expected);
     }
 }
