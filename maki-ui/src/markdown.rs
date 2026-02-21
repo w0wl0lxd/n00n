@@ -10,6 +10,13 @@ pub const BOLD_STYLE: Style = theme::BOLD;
 pub const CODE_STYLE: Style = theme::INLINE_CODE;
 pub const BOLD_CODE_STYLE: Style = theme::BOLD_CODE;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ContentStyle {
+    #[default]
+    Markdown,
+    Plain,
+}
+
 const BOLD_DELIM: &str = "**";
 const CODE_DELIM: &str = "`";
 
@@ -132,52 +139,69 @@ pub fn text_to_lines(
     text: &str,
     prefix: &str,
     base_style: Style,
+    content_style: ContentStyle,
     mut highlighters: Option<&mut Vec<CodeHighlighter>>,
 ) -> Vec<Line<'static>> {
     let prefix_style = base_style.add_modifier(Modifier::BOLD);
     let text = text.trim_start_matches('\n');
-    let blocks = parse_blocks(text);
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut first_line = true;
-    let mut code_idx = 0;
 
-    for block in blocks {
-        match block {
-            TextBlock::Normal(content) => {
-                for line in content.split('\n') {
-                    let mut spans: Vec<Span<'static>> = Vec::new();
-                    if first_line {
-                        spans.push(Span::styled(prefix.to_owned(), prefix_style));
-                        first_line = false;
+    match content_style {
+        ContentStyle::Markdown => {
+            let blocks = parse_blocks(text);
+            let mut code_idx = 0;
+
+            for block in blocks {
+                match block {
+                    TextBlock::Normal(content) => {
+                        for line in content.split('\n') {
+                            let mut spans: Vec<Span<'static>> = Vec::new();
+                            if first_line {
+                                spans.push(Span::styled(prefix.to_owned(), prefix_style));
+                                first_line = false;
+                            }
+                            spans.extend(
+                                parse_inline_markdown(line, base_style)
+                                    .into_iter()
+                                    .map(|s| Span::styled(s.content.into_owned(), s.style)),
+                            );
+                            lines.push(Line::from(spans));
+                        }
                     }
-                    spans.extend(
-                        parse_inline_markdown(line, base_style)
-                            .into_iter()
-                            .map(|s| Span::styled(s.content.into_owned(), s.style)),
-                    );
-                    lines.push(Line::from(spans));
+                    TextBlock::Code { lang, code } => {
+                        if first_line {
+                            lines.push(Line::from(Span::styled(prefix.to_owned(), prefix_style)));
+                            first_line = false;
+                        }
+                        if let Some(ref mut hl) = highlighters {
+                            if code_idx >= hl.len() {
+                                hl.push(CodeHighlighter::new(lang));
+                            }
+                            lines.extend(hl[code_idx].update(code));
+                        } else {
+                            lines.extend(highlight::highlight_code(lang, code));
+                        }
+                        code_idx += 1;
+                    }
                 }
             }
-            TextBlock::Code { lang, code } => {
-                if first_line {
-                    lines.push(Line::from(Span::styled(prefix.to_owned(), prefix_style)));
-                    first_line = false;
-                }
-                if let Some(ref mut hl) = highlighters {
-                    if code_idx >= hl.len() {
-                        hl.push(CodeHighlighter::new(lang));
-                    }
-                    lines.extend(hl[code_idx].update(code));
-                } else {
-                    lines.extend(highlight::highlight_code(lang, code));
-                }
-                code_idx += 1;
+
+            if let Some(hl) = highlighters {
+                hl.truncate(code_idx);
             }
         }
-    }
-
-    if let Some(hl) = highlighters {
-        hl.truncate(code_idx);
+        ContentStyle::Plain => {
+            for line in text.split('\n') {
+                let mut spans: Vec<Span<'static>> = Vec::new();
+                if first_line {
+                    spans.push(Span::styled(prefix.to_owned(), prefix_style));
+                    first_line = false;
+                }
+                spans.push(Span::styled(line.to_owned(), base_style));
+                lines.push(Line::from(spans));
+            }
+        }
     }
 
     if lines.is_empty() {
@@ -197,6 +221,7 @@ pub fn truncate_lines(s: &str, max_lines: usize) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
     use test_case::test_case;
 
     #[test_case("a **bold** b", &[("a ", None), ("bold", Some(BOLD_STYLE)), (" b", None)] ; "bold")]
@@ -223,7 +248,7 @@ mod tests {
     #[test_case("\n\nfirst line\nsecond", 2, "first line" ; "strips_leading_newlines")]
     fn text_to_lines_cases(input: &str, expected_lines: usize, first_text: &str) {
         let style = Style::default();
-        let lines = text_to_lines(input, "p> ", style, None);
+        let lines = text_to_lines(input, "p> ", style, ContentStyle::Markdown, None);
         assert_eq!(lines.len(), expected_lines);
         assert_eq!(lines[0].spans[0].content, "p> ");
         let text: String = lines[0].spans[1..]
@@ -301,9 +326,58 @@ mod tests {
     fn incremental_matches_non_incremental() {
         let style = Style::default();
         let text = "hello\n```rust\nfn main() {}\n```\nbye";
-        let full = text_to_lines(text, "p> ", style, None);
+        let full = text_to_lines(text, "p> ", style, ContentStyle::Markdown, None);
         let mut hl = Vec::new();
-        let inc = text_to_lines(text, "p> ", style, Some(&mut hl));
+        let inc = text_to_lines(text, "p> ", style, ContentStyle::Markdown, Some(&mut hl));
         assert_eq!(lines_text(&full), lines_text(&inc));
+    }
+
+    #[test_case(
+        "output with **bold** markers",
+        &["p> output with **bold** markers"]
+        ; "plain_ignores_bold"
+    )]
+    #[test_case(
+        "output with `backticks`",
+        &["p> output with `backticks`"]
+        ; "plain_ignores_inline_code"
+    )]
+    #[test_case(
+        "before\n```rust\nfn main() {}\n```\nafter",
+        &["p> before", "```rust", "fn main() {}", "```", "after"]
+        ; "plain_ignores_code_fences"
+    )]
+    #[test_case(
+        "line1\nline2",
+        &["p> line1", "line2"]
+        ; "plain_splits_lines"
+    )]
+    fn plain_content_style(input: &str, expected: &[&str]) {
+        let style = Style::default();
+        let lines = text_to_lines(input, "p> ", style, ContentStyle::Plain, None);
+        let texts = lines_text(&lines);
+        assert_eq!(texts, expected);
+    }
+
+    #[test]
+    fn plain_all_spans_use_base_style() {
+        let base = Style::new().fg(Color::Cyan);
+        let bold_base = base.add_modifier(Modifier::BOLD);
+        let input = "**bold** and `code` with ```fences```";
+        let lines = text_to_lines(input, "p> ", base, ContentStyle::Plain, None);
+        for line in &lines {
+            for span in &line.spans {
+                let expected = if span.content.as_ref() == "p> " {
+                    bold_base
+                } else {
+                    base
+                };
+                assert_eq!(
+                    span.style, expected,
+                    "span {:?} has wrong style",
+                    span.content
+                );
+            }
+        }
     }
 }

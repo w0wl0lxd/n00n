@@ -2,7 +2,7 @@ use super::{DisplayMessage, DisplayRole, ToolStatus};
 
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::{self, CodeHighlighter};
-use crate::markdown::{text_to_lines, truncate_lines};
+use crate::markdown::{plain_lines, text_to_lines, truncate_lines};
 use crate::theme;
 
 use std::time::Instant;
@@ -425,14 +425,18 @@ impl MessagesPanel {
                     cached_height: None,
                 });
             } else {
-                let (prefix, base_style) = match &msg.role {
-                    DisplayRole::User => ("you> ", theme::USER),
-                    DisplayRole::Assistant => ("maki> ", theme::ASSISTANT),
-                    DisplayRole::Thinking => ("thinking> ", theme::THINKING),
-                    DisplayRole::Error => ("", theme::ERROR),
+                let (prefix, base_style, use_markdown) = match &msg.role {
+                    DisplayRole::User => ("you> ", theme::USER, false),
+                    DisplayRole::Assistant => ("maki> ", theme::ASSISTANT, true),
+                    DisplayRole::Thinking => ("thinking> ", theme::THINKING, true),
+                    DisplayRole::Error => ("", theme::ERROR, false),
                     DisplayRole::Tool { .. } => unreachable!(),
                 };
-                let mut lines = text_to_lines(&msg.text, prefix, base_style, None);
+                let mut lines = if use_markdown {
+                    text_to_lines(&msg.text, prefix, base_style, None)
+                } else {
+                    plain_lines(&msg.text, prefix, base_style)
+                };
                 if msg.role == DisplayRole::Thinking {
                     theme::dim_lines(&mut lines);
                 }
@@ -934,30 +938,32 @@ mod tests {
         assert_eq!(result[2].style.bg, Some(ratatui::style::Color::Green));
     }
 
-    #[test_case("**/*.rs"   ; "double_star_glob")]
-    #[test_case("*dir*"     ; "single_star_glob")]
-    #[test_case("`backtick`"; "backtick_pattern")]
-    fn tool_header_not_markdown_parsed(summary: &str) {
+    #[test]
+    fn tool_body_preserves_markdown_literally() {
+        let body = "has `back` and **bold** with ```fences```";
         let mut panel = MessagesPanel::new();
         panel.tool_start(ToolStartEvent {
             id: "t1".into(),
-            tool: GLOB_TOOL_NAME,
-            summary: summary.into(),
+            tool: "bash",
+            summary: "test".into(),
             input: None,
         });
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
-            tool: GLOB_TOOL_NAME,
-            output: ToolOutput::Plain(String::new()),
+            tool: "bash",
+            output: ToolOutput::Plain(body.into()),
             is_error: false,
         });
         rebuild(&mut panel);
         let seg = panel.cached_segments.last().unwrap();
-        let header = &seg.lines[0];
-        let text: String = header.spans.iter().map(|s| s.content.as_ref()).collect();
+        let body_text: String = seg.lines[1..]
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect::<Vec<_>>()
+            .join("");
         assert!(
-            text.contains(summary),
-            "header should contain raw summary {summary:?}, got {text:?}"
+            body_text.contains(body),
+            "tool body should contain literal text, got {body_text:?}"
         );
     }
 
