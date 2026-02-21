@@ -20,6 +20,41 @@ const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 7;
 const TOOL_BODY_INDENT: &str = "  ";
 const SCROLLBAR_THUMB: &str = "\u{2590}";
 
+struct RoleStyle {
+    prefix: &'static str,
+    text_style: Style,
+    prefix_style: Style,
+    use_markdown: bool,
+}
+
+const ASSISTANT_STYLE: RoleStyle = RoleStyle {
+    prefix: "maki> ",
+    text_style: theme::ASSISTANT,
+    prefix_style: theme::ASSISTANT_PREFIX,
+    use_markdown: true,
+};
+
+const USER_STYLE: RoleStyle = RoleStyle {
+    prefix: "you> ",
+    text_style: theme::ASSISTANT,
+    prefix_style: theme::USER,
+    use_markdown: true,
+};
+
+const THINKING_STYLE: RoleStyle = RoleStyle {
+    prefix: "thinking> ",
+    text_style: theme::THINKING,
+    prefix_style: theme::THINKING,
+    use_markdown: true,
+};
+
+const ERROR_STYLE: RoleStyle = RoleStyle {
+    prefix: "",
+    text_style: theme::ERROR,
+    prefix_style: theme::ERROR,
+    use_markdown: false,
+};
+
 #[derive(Default)]
 struct StreamingCache {
     byte_len: usize,
@@ -29,10 +64,22 @@ struct StreamingCache {
 }
 
 impl StreamingCache {
-    fn get_or_update(&mut self, visible: &str, prefix: &str, style: Style) -> &[Line<'static>] {
+    fn get_or_update(
+        &mut self,
+        visible: &str,
+        prefix: &str,
+        text_style: Style,
+        prefix_style: Style,
+    ) -> &[Line<'static>] {
         let len = visible.len();
         if len != self.byte_len || self.lines.is_empty() {
-            self.lines = text_to_lines(visible, prefix, style, Some(&mut self.highlighters));
+            self.lines = text_to_lines(
+                visible,
+                prefix,
+                text_style,
+                prefix_style,
+                Some(&mut self.highlighters),
+            );
             if self.dim {
                 theme::dim_lines(&mut self.lines);
             }
@@ -294,25 +341,27 @@ impl MessagesPanel {
             .collect();
 
         let spacer_line = vec![Line::default()];
-        let streaming_sources: [(&Typewriter, &mut StreamingCache, &str, Style); 2] = [
+        let streaming_sources: [(&Typewriter, &mut StreamingCache, &str, Style, Style); 2] = [
             (
                 &self.streaming_thinking,
                 &mut self.cached_streaming_thinking,
-                "thinking> ",
-                theme::THINKING,
+                THINKING_STYLE.prefix,
+                THINKING_STYLE.text_style,
+                THINKING_STYLE.prefix_style,
             ),
             (
                 &self.streaming_text,
                 &mut self.cached_streaming_text,
-                "maki> ",
-                theme::ASSISTANT,
+                ASSISTANT_STYLE.prefix,
+                ASSISTANT_STYLE.text_style,
+                ASSISTANT_STYLE.prefix_style,
             ),
         ];
-        for (tw, cache, prefix, style) in streaming_sources {
+        for (tw, cache, prefix, text_style, prefix_style) in streaming_sources {
             if tw.is_empty() {
                 continue;
             }
-            let lines = cache.get_or_update(tw.visible(), prefix, style);
+            let lines = cache.get_or_update(tw.visible(), prefix, text_style, prefix_style);
             if !segments.is_empty() {
                 segments.push((&spacer_line, false));
                 heights.push(1);
@@ -425,17 +474,28 @@ impl MessagesPanel {
                     cached_height: None,
                 });
             } else {
-                let (prefix, base_style, use_markdown) = match &msg.role {
-                    DisplayRole::User => ("you> ", theme::USER, true),
-                    DisplayRole::Assistant => ("maki> ", theme::ASSISTANT, true),
-                    DisplayRole::Thinking => ("thinking> ", theme::THINKING, true),
-                    DisplayRole::Error => ("", theme::ERROR, false),
+                let style = match &msg.role {
+                    DisplayRole::User => &USER_STYLE,
+                    DisplayRole::Assistant => &ASSISTANT_STYLE,
+                    DisplayRole::Thinking => &THINKING_STYLE,
+                    DisplayRole::Error => &ERROR_STYLE,
                     DisplayRole::Tool { .. } => unreachable!(),
                 };
-                let mut lines = if use_markdown {
-                    text_to_lines(&msg.text, prefix, base_style, None)
+                let mut lines = if style.use_markdown {
+                    text_to_lines(
+                        &msg.text,
+                        style.prefix,
+                        style.text_style,
+                        style.prefix_style,
+                        None,
+                    )
                 } else {
-                    plain_lines(&msg.text, prefix, base_style)
+                    plain_lines(
+                        &msg.text,
+                        style.prefix,
+                        style.text_style,
+                        style.prefix_style,
+                    )
                 };
                 if msg.role == DisplayRole::Thinking {
                     theme::dim_lines(&mut lines);

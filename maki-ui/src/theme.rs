@@ -16,6 +16,7 @@ pub const YELLOW: Color = Color::Rgb(0xf1, 0xfa, 0x8c);
 
 pub const USER: Style = Style::new().fg(CYAN);
 pub const ASSISTANT: Style = Style::new().fg(FOREGROUND);
+pub const ASSISTANT_PREFIX: Style = Style::new().fg(PINK);
 pub const THINKING: Style = Style::new()
     .fg(COMMENT_LIGHTER)
     .add_modifier(Modifier::ITALIC);

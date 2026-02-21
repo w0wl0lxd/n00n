@@ -158,7 +158,12 @@ fn prefix_span(prefix: &str, style: Style) -> Span<'static> {
     Span::styled(prefix.to_owned(), style.add_modifier(Modifier::BOLD))
 }
 
-pub fn plain_lines(text: &str, prefix: &str, base_style: Style) -> Vec<Line<'static>> {
+pub fn plain_lines(
+    text: &str,
+    prefix: &str,
+    text_style: Style,
+    prefix_style: Style,
+) -> Vec<Line<'static>> {
     let text = text.trim_start_matches('\n');
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut first_line = true;
@@ -166,15 +171,15 @@ pub fn plain_lines(text: &str, prefix: &str, base_style: Style) -> Vec<Line<'sta
     for line in text.split('\n') {
         let mut spans: Vec<Span<'static>> = Vec::new();
         if first_line {
-            spans.push(prefix_span(prefix, base_style));
+            spans.push(prefix_span(prefix, prefix_style));
             first_line = false;
         }
-        spans.push(Span::styled(line.to_owned(), base_style));
+        spans.push(Span::styled(line.to_owned(), text_style));
         lines.push(Line::from(spans));
     }
 
     if lines.is_empty() {
-        lines.push(Line::from(prefix_span(prefix, base_style)));
+        lines.push(Line::from(prefix_span(prefix, prefix_style)));
     }
 
     lines
@@ -183,7 +188,8 @@ pub fn plain_lines(text: &str, prefix: &str, base_style: Style) -> Vec<Line<'sta
 pub fn text_to_lines(
     text: &str,
     prefix: &str,
-    base_style: Style,
+    text_style: Style,
+    prefix_style: Style,
     mut highlighters: Option<&mut Vec<CodeHighlighter>>,
 ) -> Vec<Line<'static>> {
     let text = text.trim_start_matches('\n');
@@ -198,11 +204,11 @@ pub fn text_to_lines(
                 for line in content.split('\n') {
                     let mut spans: Vec<Span<'static>> = Vec::new();
                     if first_line {
-                        spans.push(prefix_span(prefix, base_style));
+                        spans.push(prefix_span(prefix, prefix_style));
                         first_line = false;
                     }
                     spans.extend(
-                        parse_inline_markdown(line, base_style)
+                        parse_inline_markdown(line, text_style)
                             .into_iter()
                             .map(|s| Span::styled(s.content.into_owned(), s.style)),
                     );
@@ -211,7 +217,7 @@ pub fn text_to_lines(
             }
             TextBlock::Code { lang, code } => {
                 if first_line {
-                    lines.push(Line::from(prefix_span(prefix, base_style)));
+                    lines.push(Line::from(prefix_span(prefix, prefix_style)));
                     first_line = false;
                 }
                 if let Some(ref mut hl) = highlighters {
@@ -232,7 +238,7 @@ pub fn text_to_lines(
     }
 
     if lines.is_empty() {
-        lines.push(Line::from(prefix_span(prefix, base_style)));
+        lines.push(Line::from(prefix_span(prefix, prefix_style)));
     }
 
     lines
@@ -274,7 +280,7 @@ mod tests {
     #[test_case("\n\nfirst line\nsecond", 2, "first line" ; "strips_leading_newlines")]
     fn text_to_lines_cases(input: &str, expected_lines: usize, first_text: &str) {
         let style = Style::default();
-        let lines = text_to_lines(input, "p> ", style, None);
+        let lines = text_to_lines(input, "p> ", style, style, None);
         assert_eq!(lines.len(), expected_lines);
         assert_eq!(lines[0].spans[0].content, "p> ");
         let text: String = lines[0].spans[1..]
@@ -367,9 +373,9 @@ mod tests {
     fn incremental_matches_non_incremental() {
         let style = Style::default();
         let text = "hello\n```rust\nfn main() {}\n```\nbye";
-        let full = text_to_lines(text, "p> ", style, None);
+        let full = text_to_lines(text, "p> ", style, style, None);
         let mut hl = Vec::new();
-        let inc = text_to_lines(text, "p> ", style, Some(&mut hl));
+        let inc = text_to_lines(text, "p> ", style, style, Some(&mut hl));
         assert_eq!(lines_text(&full), lines_text(&inc));
     }
 
@@ -390,7 +396,7 @@ mod tests {
     )]
     fn plain_content(input: &str, expected: &[&str]) {
         let base = Style::new().fg(ratatui::style::Color::Cyan);
-        let lines = plain_lines(input, "p> ", base);
+        let lines = plain_lines(input, "p> ", base, base);
         assert_eq!(lines_text(&lines), expected);
         for line in &lines {
             for span in &line.spans {
