@@ -19,6 +19,27 @@ static THEME: LazyLock<syntect::highlighting::Theme> = LazyLock::new(|| {
 
 const FALLBACK_STYLE: Style = theme::CODE_FALLBACK;
 
+pub fn highlighter_for_path(path: &str) -> HighlightLines<'static> {
+    let ss = &*SYNTAX_SET;
+    let syntax = ss
+        .find_syntax_for_file(path)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
+    HighlightLines::new(syntax, &THEME)
+}
+
+pub fn highlight_line(hl: &mut HighlightLines<'_>, text: &str) -> Vec<(Style, String)> {
+    let ss = &*SYNTAX_SET;
+    match hl.highlight_line(text, ss) {
+        Ok(ranges) => ranges
+            .into_iter()
+            .map(|(style, text)| (convert_style(style), text.trim_end_matches('\n').to_owned()))
+            .collect(),
+        Err(_) => vec![(FALLBACK_STYLE, text.to_owned())],
+    }
+}
+
 pub fn highlight_code(lang: &str, code: &str) -> Vec<Line<'static>> {
     let ss = &*SYNTAX_SET;
     let syntax = ss
@@ -208,6 +229,29 @@ mod tests {
     fn incremental_partial_line_produces_output() {
         let mut ch = CodeHighlighter::new("rust");
         assert_eq!(ch.update("let x").len(), 1);
+    }
+
+    #[test]
+    fn highlighter_for_path_known_extension() {
+        let mut hl = highlighter_for_path("main.rs");
+        let spans = highlight_line(&mut hl, "fn main() {}");
+        let text: String = spans.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(text, "fn main() {}");
+    }
+
+    #[test]
+    fn highlighter_for_path_unknown_extension_falls_back() {
+        let mut hl = highlighter_for_path("data.xyznonexistent");
+        let spans = highlight_line(&mut hl, "hello");
+        assert!(!spans.is_empty());
+    }
+
+    #[test]
+    fn highlight_line_strips_trailing_newline() {
+        let mut hl = highlighter_for_path("test.rs");
+        let spans = highlight_line(&mut hl, "let x = 1;\n");
+        let text: String = spans.iter().map(|(_, t)| t.as_str()).collect();
+        assert!(!text.ends_with('\n'));
     }
 
     #[test]

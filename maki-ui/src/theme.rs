@@ -35,11 +35,16 @@ pub const BOLD: Style = Style::new().fg(ORANGE).add_modifier(Modifier::BOLD);
 pub const INLINE_CODE: Style = Style::new().fg(GREEN);
 pub const CODE_FALLBACK: Style = Style::new().fg(PURPLE);
 
-pub const DIFF_OLD: Style = Style::new().fg(RED);
-pub const DIFF_NEW: Style = Style::new().fg(GREEN);
-pub const DIFF_OLD_EMPHASIS: Style = Style::new().fg(RED).add_modifier(Modifier::BOLD);
-pub const DIFF_NEW_EMPHASIS: Style = Style::new().fg(GREEN).add_modifier(Modifier::BOLD);
-pub const DIFF_UNCHANGED: Style = Style::new().fg(COMMENT);
+const DIFF_OLD_BG: Color = Color::Rgb(0x55, 0x22, 0x22);
+const DIFF_NEW_BG: Color = Color::Rgb(0x22, 0x44, 0x22);
+const DIFF_OLD_EMPHASIS_BG: Color = Color::Rgb(0x77, 0x33, 0x33);
+const DIFF_NEW_EMPHASIS_BG: Color = Color::Rgb(0x33, 0x66, 0x33);
+
+pub const DIFF_OLD: Style = Style::new().bg(DIFF_OLD_BG);
+pub const DIFF_NEW: Style = Style::new().bg(DIFF_NEW_BG);
+pub const DIFF_OLD_EMPHASIS: Style = Style::new().bg(DIFF_OLD_EMPHASIS_BG);
+pub const DIFF_NEW_EMPHASIS: Style = Style::new().bg(DIFF_NEW_EMPHASIS_BG);
+
 pub const DIFF_LINE_NR: Style = Style::new().fg(COMMENT);
 pub const TODO_COMPLETED: Style = Style::new().fg(GREEN);
 pub const TODO_IN_PROGRESS: Style = Style::new().fg(YELLOW);

@@ -53,14 +53,60 @@ impl Segment {
     }
 }
 
-fn span_list(spans: &[DiffSpan], base: Style, emphasis: Style) -> Vec<Span<'static>> {
-    spans
-        .iter()
-        .map(|s| {
-            let style = if s.emphasized { emphasis } else { base };
-            Span::styled(s.text.clone(), style)
-        })
-        .collect()
+fn merge_syntax_with_diff(
+    syntax_spans: &[(Style, String)],
+    diff_spans: &[DiffSpan],
+    base: Style,
+    emphasis: Style,
+) -> Vec<Span<'static>> {
+    let mut result = Vec::new();
+    let mut syn_off = 0;
+    let mut syn_idx = 0;
+    let mut diff_off = 0;
+    let mut diff_idx = 0;
+
+    while syn_idx < syntax_spans.len() {
+        let (ref syn_style, ref syn_text) = syntax_spans[syn_idx];
+        let syn_rem = &syn_text[syn_off..];
+        if syn_rem.is_empty() {
+            syn_idx += 1;
+            syn_off = 0;
+            continue;
+        }
+
+        let (bg, diff_rem) = if diff_idx < diff_spans.len() {
+            let ds = &diff_spans[diff_idx];
+            let rem = &ds.text[diff_off..];
+            if rem.is_empty() {
+                diff_idx += 1;
+                diff_off = 0;
+                continue;
+            }
+            let bg = if ds.emphasized { emphasis } else { base };
+            (bg, rem.len())
+        } else {
+            (base, syn_rem.len())
+        };
+
+        let take = syn_rem.len().min(diff_rem);
+        result.push(Span::styled(
+            syn_rem[..take].to_owned(),
+            syn_style.patch(bg),
+        ));
+        syn_off += take;
+        diff_off += take;
+
+        if syn_off >= syn_text.len() {
+            syn_idx += 1;
+            syn_off = 0;
+        }
+        if diff_idx < diff_spans.len() && diff_off >= diff_spans[diff_idx].text.len() {
+            diff_idx += 1;
+            diff_off = 0;
+        }
+    }
+
+    result
 }
 
 pub struct MessagesPanel {
@@ -431,7 +477,7 @@ impl MessagesPanel {
                     }
                 }
             }
-            Some(ToolOutput::Diff { hunks, .. }) => {
+            Some(ToolOutput::Diff { path, hunks, .. }) => {
                 let max_line_nr = hunks
                     .iter()
                     .map(|h| {
@@ -453,6 +499,7 @@ impl MessagesPanel {
                             theme::DIFF_LINE_NR,
                         )));
                     }
+                    let mut hl = highlight::highlighter_for_path(path);
                     let mut line_nr = hunk.start_line;
                     for dl in &hunk.lines {
                         let show_nr = !matches!(dl, DiffLine::Added(_));
@@ -469,23 +516,23 @@ impl MessagesPanel {
                         )];
                         match dl {
                             DiffLine::Unchanged(t) => {
-                                spans.push(Span::styled(format!("  {t}"), theme::DIFF_UNCHANGED));
+                                spans.push(Span::raw("  "));
+                                let syn = highlight::highlight_line(&mut hl, t);
+                                for (style, text) in syn {
+                                    spans.push(Span::styled(text, style));
+                                }
                             }
-                            DiffLine::Removed(ds) => {
-                                spans.push(Span::styled("- ", theme::DIFF_OLD));
-                                spans.extend(span_list(
-                                    ds,
-                                    theme::DIFF_OLD,
-                                    theme::DIFF_OLD_EMPHASIS,
-                                ));
-                            }
-                            DiffLine::Added(ds) => {
-                                spans.push(Span::styled("+ ", theme::DIFF_NEW));
-                                spans.extend(span_list(
-                                    ds,
-                                    theme::DIFF_NEW,
-                                    theme::DIFF_NEW_EMPHASIS,
-                                ));
+                            DiffLine::Removed(ds) | DiffLine::Added(ds) => {
+                                let is_add = matches!(dl, DiffLine::Added(_));
+                                let (prefix, base, emph) = if is_add {
+                                    ("+ ", theme::DIFF_NEW, theme::DIFF_NEW_EMPHASIS)
+                                } else {
+                                    ("- ", theme::DIFF_OLD, theme::DIFF_OLD_EMPHASIS)
+                                };
+                                spans.push(Span::styled(prefix, base.fg(theme::FOREGROUND)));
+                                let full: String = ds.iter().map(|s| s.text.as_str()).collect();
+                                let syn = highlight::highlight_line(&mut hl, &full);
+                                spans.extend(merge_syntax_with_diff(&syn, ds, base, emph));
                             }
                         }
                         lines.push(Line::from(spans));
@@ -798,6 +845,70 @@ mod tests {
         });
         assert_eq!(panel.in_progress_count, 0);
         assert!(!panel.is_animating());
+    }
+
+    #[test]
+    fn merge_syntax_with_diff_emphasis_split() {
+        let base = Style::new().bg(ratatui::style::Color::Red);
+        let emph = Style::new().bg(ratatui::style::Color::Green);
+        let syn = vec![(
+            Style::new().fg(ratatui::style::Color::White),
+            "abcde".into(),
+        )];
+        let diff = vec![
+            DiffSpan::plain("abc".into()),
+            DiffSpan {
+                text: "de".into(),
+                emphasized: true,
+            },
+        ];
+        let result = merge_syntax_with_diff(&syn, &diff, base, emph);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].content.as_ref(), "abc");
+        assert_eq!(result[0].style.fg, Some(ratatui::style::Color::White));
+        assert_eq!(result[0].style.bg, Some(ratatui::style::Color::Red));
+        assert_eq!(result[1].content.as_ref(), "de");
+        assert_eq!(result[1].style.bg, Some(ratatui::style::Color::Green));
+    }
+
+    #[test]
+    fn merge_syntax_with_diff_syntax_longer_than_diff() {
+        let base = Style::new().bg(ratatui::style::Color::Red);
+        let emph = Style::default();
+        let syn = vec![
+            (Style::new().fg(ratatui::style::Color::Blue), "ab".into()),
+            (Style::new().fg(ratatui::style::Color::Cyan), "cd".into()),
+        ];
+        let diff = vec![DiffSpan::plain("ab".into())];
+        let result = merge_syntax_with_diff(&syn, &diff, base, emph);
+        let text: String = result.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "abcd");
+    }
+
+    #[test]
+    fn merge_syntax_with_diff_interleaved_boundaries() {
+        let base = Style::default();
+        let emph = Style::new().bg(ratatui::style::Color::Green);
+        let syn = vec![
+            (Style::new().fg(ratatui::style::Color::Red), "ab".into()),
+            (Style::new().fg(ratatui::style::Color::Blue), "cd".into()),
+        ];
+        let diff = vec![
+            DiffSpan::plain("a".into()),
+            DiffSpan {
+                text: "bcd".into(),
+                emphasized: true,
+            },
+        ];
+        let result = merge_syntax_with_diff(&syn, &diff, base, emph);
+        let text: String = result.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "abcd");
+        assert_eq!(result[0].content.as_ref(), "a");
+        assert_eq!(result[0].style.fg, Some(ratatui::style::Color::Red));
+        assert_eq!(result[1].content.as_ref(), "b");
+        assert_eq!(result[1].style.bg, Some(ratatui::style::Color::Green));
+        assert_eq!(result[2].content.as_ref(), "cd");
+        assert_eq!(result[2].style.bg, Some(ratatui::style::Color::Green));
     }
 
     #[test_case("**/*.rs"   ; "double_star_glob")]
