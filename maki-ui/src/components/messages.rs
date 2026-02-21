@@ -3,12 +3,14 @@ use super::{DisplayMessage, DisplayRole, ToolStatus};
 use super::code_view;
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::{self, CodeHighlighter};
-use crate::markdown::{plain_lines, text_to_lines, truncate_lines};
+use crate::markdown::{plain_lines, tail_lines, text_to_lines, truncate_lines};
 use crate::theme;
 
 use std::time::Instant;
 
-use maki_agent::tools::{GLOB_TOOL_NAME, GREP_TOOL_NAME, WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME};
+use maki_agent::tools::{
+    BASH_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME,
+};
 use maki_providers::{ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -18,6 +20,7 @@ use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarStat
 
 const TOOL_INDICATOR: &str = "● ";
 const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 7;
+const TOOL_STREAM_MAX_DISPLAY_LINES: usize = 10;
 const TOOL_BODY_INDENT: &str = "  ";
 const SCROLLBAR_THUMB: &str = "\u{2590}";
 
@@ -188,6 +191,21 @@ impl MessagesPanel {
         self.in_progress_count += 1;
     }
 
+    pub fn tool_output(&mut self, tool_id: &str, content: &str) {
+        let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == tool_id))
+        else {
+            return;
+        };
+        truncate_to_header(&mut msg.text);
+        let truncated = tail_lines(content, TOOL_STREAM_MAX_DISPLAY_LINES);
+        msg.text.push('\n');
+        msg.text.push_str(&truncated);
+        self.invalidate_line_cache();
+    }
+
     pub fn tool_done(&mut self, event: ToolDoneEvent) {
         let Some(msg) = self
             .messages
@@ -203,6 +221,8 @@ impl MessagesPanel {
                 ToolStatus::Success
             };
         }
+        truncate_to_header(&mut msg.text);
+
         match &event.output {
             ToolOutput::Plain(text) => {
                 if let Some(annotation) = tool_summary_annotation(event.tool, text) {
@@ -210,7 +230,11 @@ impl MessagesPanel {
                 }
                 let hide_body = matches!(event.tool, WEBFETCH_TOOL_NAME | WRITE_TOOL_NAME);
                 if !hide_body {
-                    let display = truncate_lines(text, TOOL_OUTPUT_MAX_DISPLAY_LINES);
+                    let display = if event.tool == BASH_TOOL_NAME {
+                        tail_lines(text, TOOL_OUTPUT_MAX_DISPLAY_LINES)
+                    } else {
+                        truncate_lines(text, TOOL_OUTPUT_MAX_DISPLAY_LINES)
+                    };
                     if !display.is_empty() {
                         msg.text = format!("{}\n{display}", msg.text);
                     }
@@ -578,6 +602,11 @@ impl MessagesPanel {
             });
         }
     }
+}
+
+fn truncate_to_header(text: &mut String) {
+    let end = text.find('\n').unwrap_or(text.len());
+    text.truncate(end);
 }
 
 fn render_vertical_scrollbar(frame: &mut Frame, area: Rect, content_len: u16, position: u16) {

@@ -22,6 +22,7 @@ use crate::{AgentError, AgentMode, Envelope, ToolDoneEvent, ToolOutput, ToolStar
 use maki_providers::Model;
 use maki_providers::provider::Provider;
 
+pub const BASH_TOOL_NAME: &str = bash::Bash::NAME;
 pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
 pub const GLOB_TOOL_NAME: &str = glob::Glob::NAME;
 pub const GREP_TOOL_NAME: &str = grep::Grep::NAME;
@@ -235,8 +236,13 @@ pub(crate) mod test_support {
         }
     }
 
-    pub(crate) fn stub_ctx(mode: &AgentMode) -> ToolContext<'_> {
-        let tx: &Sender<Envelope> = Box::leak(Box::new(std::sync::mpsc::channel().0));
+    pub(crate) fn stub_ctx_with<'a>(
+        mode: &'a AgentMode,
+        event_tx: Option<&'a Sender<Envelope>>,
+        tool_use_id: Option<&'a str>,
+    ) -> ToolContext<'a> {
+        let event_tx =
+            event_tx.unwrap_or_else(|| Box::leak(Box::new(std::sync::mpsc::channel().0)));
         let model: &Model = Box::leak(Box::new(
             Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap(),
         ));
@@ -244,10 +250,14 @@ pub(crate) mod test_support {
         ToolContext {
             provider,
             model,
-            event_tx: tx,
+            event_tx,
             mode,
-            tool_use_id: None,
+            tool_use_id,
         }
+    }
+
+    pub(crate) fn stub_ctx(mode: &AgentMode) -> ToolContext<'_> {
+        stub_ctx_with(mode, None, None)
     }
 }
 

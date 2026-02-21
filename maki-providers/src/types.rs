@@ -269,6 +269,10 @@ pub enum AgentEvent {
         text: String,
     },
     ToolStart(ToolStartEvent),
+    ToolOutput {
+        id: String,
+        content: String,
+    },
     ToolDone(ToolDoneEvent),
     TurnComplete {
         message: Message,

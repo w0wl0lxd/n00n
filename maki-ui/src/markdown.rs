@@ -267,6 +267,13 @@ pub fn truncate_lines(s: &str, max_lines: usize) -> Cow<'_, str> {
     }
 }
 
+pub fn tail_lines(s: &str, max_lines: usize) -> Cow<'_, str> {
+    match s.rmatch_indices('\n').nth(max_lines.saturating_sub(1)) {
+        Some((i, _)) => Cow::Owned(format!("...\n{}", &s[i + 1..])),
+        None => Cow::Borrowed(s),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +318,14 @@ mod tests {
     #[test_case("single", 1, "single" ; "single_line")]
     fn truncate_lines_cases(input: &str, max: usize, expected: &str) {
         assert_eq!(truncate_lines(input, max), expected);
+    }
+
+    #[test_case("a\nb\nc", 5, "a\nb\nc" ; "under_limit")]
+    #[test_case("a\nb\nc\nd", 2, "...\nc\nd" ; "over_limit")]
+    #[test_case("single", 1, "single" ; "single_line")]
+    #[test_case("a\nb\nc\nd\ne", 3, "...\nc\nd\ne" ; "keeps_last_three")]
+    fn tail_lines_cases(input: &str, max: usize, expected: &str) {
+        assert_eq!(tail_lines(input, max), expected);
     }
 
     fn block_summary<'a>(blocks: &'a [TextBlock<'a>]) -> Vec<(&'a str, Option<&'a str>)> {

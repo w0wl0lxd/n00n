@@ -235,6 +235,9 @@ impl App {
             AgentEvent::ToolStart(e) => {
                 self.messages_panel.tool_start(e);
             }
+            AgentEvent::ToolOutput { id, content } => {
+                self.messages_panel.tool_output(&id, &content);
+            }
             AgentEvent::ToolDone(e) => {
                 self.messages_panel.tool_done(e);
             }
