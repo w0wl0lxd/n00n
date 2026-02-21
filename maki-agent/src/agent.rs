@@ -159,16 +159,16 @@ pub fn run(
             "API response received"
         );
 
-        total_usage += response.usage;
-
         event_tx.send(
             AgentEvent::TurnComplete {
                 message: response.message.clone(),
-                usage: total_usage.clone(),
+                usage: response.usage.clone(),
                 model: model.id.clone(),
             }
             .into(),
         )?;
+
+        total_usage += response.usage;
 
         if !has_tools {
             history.push(response.message);
