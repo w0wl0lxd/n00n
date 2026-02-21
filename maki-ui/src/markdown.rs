@@ -154,6 +154,16 @@ fn parse_blocks(text: &str) -> Vec<TextBlock<'_>> {
     blocks
 }
 
+fn is_blank_line(line: &Line<'_>) -> bool {
+    line.spans.is_empty() || line.spans.iter().all(|s| s.content.is_empty())
+}
+
+fn ensure_blank_line(lines: &mut Vec<Line<'static>>) {
+    if !lines.last().is_some_and(is_blank_line) {
+        lines.push(Line::default());
+    }
+}
+
 fn prefix_span(prefix: &str, style: Style) -> Span<'static> {
     Span::styled(prefix.to_owned(), style.add_modifier(Modifier::BOLD))
 }
@@ -220,6 +230,7 @@ pub fn text_to_lines(
                     lines.push(Line::from(prefix_span(prefix, prefix_style)));
                     first_line = false;
                 }
+                ensure_blank_line(&mut lines);
                 if let Some(ref mut hl) = highlighters {
                     if code_idx >= hl.len() {
                         hl.push(CodeHighlighter::new(lang));
@@ -228,6 +239,7 @@ pub fn text_to_lines(
                 } else {
                     lines.extend(highlight::highlight_code(lang, code));
                 }
+                ensure_blank_line(&mut lines);
                 code_idx += 1;
             }
         }
@@ -235,6 +247,10 @@ pub fn text_to_lines(
 
     if let Some(hl) = highlighters {
         hl.truncate(code_idx);
+    }
+
+    while lines.last().is_some_and(is_blank_line) {
+        lines.pop();
     }
 
     if lines.is_empty() {
@@ -377,6 +393,27 @@ mod tests {
         let mut hl = Vec::new();
         let inc = text_to_lines(text, "p> ", style, style, Some(&mut hl));
         assert_eq!(lines_text(&full), lines_text(&inc));
+    }
+
+    #[test_case(
+        "before\n```rust\nfn main() {}\n```\nafter",
+        &["before", "", "fn main() {}", "", "after"]
+        ; "margin_around_code_block"
+    )]
+    #[test_case(
+        "before\n\n```rust\ncode\n```\n\nafter",
+        &["before", "", "code", "", "", "after"]
+        ; "existing_blanks_preserved"
+    )]
+    #[test_case(
+        "hello\n```rust\ncode\n```",
+        &["hello", "", "code"]
+        ; "no_trailing_blank_after_final_code_block"
+    )]
+    fn code_block_margins(input: &str, expected: &[&str]) {
+        let style = Style::default();
+        let lines = text_to_lines(input, "", style, style, None);
+        assert_eq!(lines_text(&lines), expected);
     }
 
     #[test_case(
