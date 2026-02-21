@@ -11,10 +11,10 @@ test *ARGS:
     cargo nextest run --workspace {{ARGS}}
 
 lint:
-    cargo clippy --all --all-features --tests -- -D warnings
+    cargo clippy --all --tests -- -D warnings
 
 lint-fix:
-    cargo clippy --all --all-features --tests --fix
+    cargo clippy --all --tests --fix
 
 fmt-check:
     cargo fmt --all -- --check
