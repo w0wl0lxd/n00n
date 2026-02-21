@@ -100,6 +100,14 @@ impl App {
                     self.input_box.buffer.remove_word_before_cursor();
                     vec![]
                 }
+                KeyCode::Left if self.status != Status::Streaming => {
+                    self.input_box.buffer.move_word_left();
+                    vec![]
+                }
+                KeyCode::Right if self.status != Status::Streaming => {
+                    self.input_box.buffer.move_word_right();
+                    vec![]
+                }
                 _ => vec![],
             };
         }

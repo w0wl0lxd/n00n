@@ -89,23 +89,61 @@ impl TextBuffer {
         }
     }
 
-    pub fn remove_word_before_cursor(&mut self) {
-        let x = self.x();
-        if x == 0 {
-            self.merge_with_previous_line();
-            return;
-        }
-
-        let mut new_x = x;
+    fn find_prev_word_boundary(&self, x: usize) -> usize {
         let line = &self.lines[self.cursor_y];
+        let mut new_x = x;
         while new_x > 0 && line.as_bytes()[new_x - 1].is_ascii_whitespace() {
             new_x -= 1;
         }
         while new_x > 0 && !line.as_bytes()[new_x - 1].is_ascii_whitespace() {
             new_x -= 1;
         }
+        new_x
+    }
 
+    pub fn remove_word_before_cursor(&mut self) {
+        let x = self.x();
+        if x == 0 {
+            self.merge_with_previous_line();
+            return;
+        }
+        let new_x = self.find_prev_word_boundary(x);
         self.lines[self.cursor_y].replace_range(new_x..x, "");
+        self.raw_x = new_x;
+    }
+
+    pub fn move_word_left(&mut self) {
+        let x = self.x();
+        if x == 0 {
+            if self.cursor_y > 0 {
+                self.cursor_y -= 1;
+                self.raw_x = self.lines[self.cursor_y].len();
+            }
+            return;
+        }
+        self.raw_x = self.find_prev_word_boundary(x);
+    }
+
+    pub fn move_word_right(&mut self) {
+        let line = &self.lines[self.cursor_y];
+        let line_len = line.len();
+        let x = self.x();
+
+        if x == line_len {
+            if self.cursor_y < self.lines.len() - 1 {
+                self.cursor_y += 1;
+                self.raw_x = 0;
+            }
+            return;
+        }
+
+        let mut new_x = x;
+        while new_x < line_len && line.as_bytes()[new_x].is_ascii_whitespace() {
+            new_x += 1;
+        }
+        while new_x < line_len && !line.as_bytes()[new_x].is_ascii_whitespace() {
+            new_x += 1;
+        }
         self.raw_x = new_x;
     }
 
@@ -258,5 +296,52 @@ mod tests {
         buf.raw_x = 0;
         buf.remove_word_before_cursor();
         assert_eq!(buf.value(), "abcd");
+    }
+
+    #[test]
+    fn move_word_left() {
+        let mut buf = TextBuffer::new("hello world".into());
+        buf.move_to_end();
+        buf.move_word_left();
+        assert_eq!(buf.x(), 6);
+        buf.move_word_left();
+        assert_eq!(buf.x(), 0);
+
+        // leading whitespace - same algorithm, just starts at space
+        let mut buf = TextBuffer::new("  hello".into());
+        buf.move_to_end();
+        buf.move_word_left();
+        assert_eq!(buf.x(), 2);
+    }
+
+    #[test]
+    fn move_word_left_wraps_line() {
+        let mut buf = TextBuffer::new("ab\ncd".into());
+        buf.cursor_y = 1;
+        buf.raw_x = 0;
+        buf.move_word_left();
+        assert_eq!((buf.y(), buf.x()), (0, 2));
+    }
+
+    #[test]
+    fn move_word_right() {
+        let mut buf = TextBuffer::new("hello world".into());
+        buf.move_word_right();
+        assert_eq!(buf.x(), 5);
+        buf.move_word_right();
+        assert_eq!(buf.x(), 11);
+
+        // trailing whitespace - same algorithm, ends at space
+        let mut buf = TextBuffer::new("hello  ".into());
+        buf.move_word_right();
+        assert_eq!(buf.x(), 5);
+    }
+
+    #[test]
+    fn move_word_right_wraps_line() {
+        let mut buf = TextBuffer::new("ab\ncd".into());
+        buf.raw_x = 2;
+        buf.move_word_right();
+        assert_eq!((buf.y(), buf.x()), (1, 0));
     }
 }
