@@ -1,8 +1,9 @@
 use std::fs;
 
-use maki_providers::{DiffHunk, DiffLine, ToolInput, ToolOutput};
+use maki_providers::{DiffHunk, DiffLine, DiffSpan, ToolInput, ToolOutput};
 use serde::Deserialize;
 use serde_json::Value;
+use similar::ChangeTag;
 
 use maki_tool_macro::Tool;
 
@@ -85,41 +86,36 @@ impl MultiEdit {
 }
 
 pub(super) fn build_hunk(start_line: usize, old: &str, new: &str) -> DiffHunk {
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
-    let mut diff_lines = Vec::new();
-
-    let common_prefix = old_lines
-        .iter()
-        .zip(&new_lines)
-        .take_while(|(a, b)| a == b)
-        .count();
-    let max_suffix = old_lines.len().min(new_lines.len()) - common_prefix;
-    let common_suffix = old_lines
-        .iter()
-        .rev()
-        .zip(new_lines.iter().rev())
-        .take(max_suffix)
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    for &line in &old_lines[..common_prefix] {
-        diff_lines.push(DiffLine::Unchanged(line.to_owned()));
+    let diff = similar::TextDiff::from_lines(old, new);
+    let mut lines = Vec::new();
+    for op in diff.ops() {
+        for change in diff.iter_inline_changes(op) {
+            match change.tag() {
+                ChangeTag::Equal => {
+                    let text: String = change
+                        .iter_strings_lossy()
+                        .map(|(_, t)| t.trim_end_matches('\n').to_owned())
+                        .collect();
+                    lines.push(DiffLine::Unchanged(text));
+                }
+                tag => {
+                    let spans: Vec<DiffSpan> = change
+                        .iter_strings_lossy()
+                        .map(|(emphasized, text)| DiffSpan {
+                            text: text.trim_end_matches('\n').to_owned(),
+                            emphasized,
+                        })
+                        .collect();
+                    if tag == ChangeTag::Delete {
+                        lines.push(DiffLine::Removed(spans));
+                    } else {
+                        lines.push(DiffLine::Added(spans));
+                    }
+                }
+            }
+        }
     }
-    for &line in &old_lines[common_prefix..old_lines.len() - common_suffix] {
-        diff_lines.push(DiffLine::Removed(line.to_owned()));
-    }
-    for &line in &new_lines[common_prefix..new_lines.len() - common_suffix] {
-        diff_lines.push(DiffLine::Added(line.to_owned()));
-    }
-    for &line in &old_lines[old_lines.len() - common_suffix..] {
-        diff_lines.push(DiffLine::Unchanged(line.to_owned()));
-    }
-
-    DiffHunk {
-        start_line,
-        lines: diff_lines,
-    }
+    DiffHunk { start_line, lines }
 }
 
 #[cfg(test)]
@@ -192,19 +188,24 @@ mod tests {
         assert_eq!(tool.execute(&ctx).unwrap_err(), EMPTY_ERR);
     }
 
+    fn tags(hunk: &DiffHunk) -> Vec<char> {
+        hunk.lines
+            .iter()
+            .map(|l| match l {
+                DiffLine::Unchanged(_) => '=',
+                DiffLine::Removed(_) => '-',
+                DiffLine::Added(_) => '+',
+            })
+            .collect()
+    }
+
     #[test]
-    fn build_hunk_unchanged_lines_not_duplicated() {
-        let old = "pub const PLANS_DIR: &str = \"plans\";\n";
-        let new = "pub const PLANS_DIR: &str = \"plans\";\npub const TEST: &str = \"test\";";
+    fn build_hunk_append_does_not_duplicate_unchanged() {
+        let old = "keep\n";
+        let new = "keep\nadded";
         let hunk = build_hunk(1, old, new);
         assert_eq!(hunk.start_line, 1);
-        assert_eq!(
-            hunk.lines,
-            vec![
-                DiffLine::Unchanged("pub const PLANS_DIR: &str = \"plans\";".into()),
-                DiffLine::Added("pub const TEST: &str = \"test\";".into()),
-            ]
-        );
+        assert_eq!(tags(&hunk), vec!['=', '+']);
     }
 
     #[test]
@@ -213,14 +214,6 @@ mod tests {
         let new = "a\nB\nc";
         let hunk = build_hunk(5, old, new);
         assert_eq!(hunk.start_line, 5);
-        assert_eq!(
-            hunk.lines,
-            vec![
-                DiffLine::Unchanged("a".into()),
-                DiffLine::Removed("b".into()),
-                DiffLine::Added("B".into()),
-                DiffLine::Unchanged("c".into()),
-            ]
-        );
+        assert_eq!(tags(&hunk), vec!['=', '-', '+', '=']);
     }
 }

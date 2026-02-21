@@ -11,8 +11,9 @@ pub use error::AgentError;
 pub use model::{Model, ModelError, ModelFamily, ModelPricing, TokenUsage};
 pub use providers::auth;
 pub use types::{
-    AgentEvent, ContentBlock, DiffHunk, DiffLine, Envelope, Message, Role, StreamResponse,
-    TodoItem, TodoPriority, TodoStatus, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
+    AgentEvent, ContentBlock, DiffHunk, DiffLine, DiffSpan, Envelope, Message, Role,
+    StreamResponse, TodoItem, TodoPriority, TodoStatus, ToolDoneEvent, ToolInput, ToolOutput,
+    ToolStartEvent,
 };
 
 const DATA_DIR_NAME: &str = ".maki";

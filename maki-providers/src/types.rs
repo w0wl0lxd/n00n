@@ -14,10 +14,25 @@ pub enum Role {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DiffSpan {
+    pub text: String,
+    pub emphasized: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum DiffLine {
     Unchanged(String),
-    Added(String),
-    Removed(String),
+    Added(Vec<DiffSpan>),
+    Removed(Vec<DiffSpan>),
+}
+
+impl DiffSpan {
+    pub fn plain(text: String) -> Self {
+        Self {
+            text,
+            emphasized: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -109,14 +124,19 @@ impl ToolOutput {
                     out.push('\n');
                     for dl in &hunk.lines {
                         match dl {
-                            DiffLine::Unchanged(l) => {
-                                let _ = write!(out, "\n  {l}");
+                            DiffLine::Unchanged(t) => {
+                                let _ = write!(out, "\n  {t}");
                             }
-                            DiffLine::Removed(l) => {
-                                let _ = write!(out, "\n- {l}");
-                            }
-                            DiffLine::Added(l) => {
-                                let _ = write!(out, "\n+ {l}");
+                            DiffLine::Removed(spans) | DiffLine::Added(spans) => {
+                                let prefix = if matches!(dl, DiffLine::Removed(_)) {
+                                    "- "
+                                } else {
+                                    "+ "
+                                };
+                                let _ = write!(out, "\n{prefix}");
+                                for s in spans {
+                                    out.push_str(&s.text);
+                                }
                             }
                         }
                     }
@@ -279,13 +299,16 @@ mod tests {
                     start_line: 1,
                     lines: vec![
                         DiffLine::Unchanged("keep".into()),
-                        DiffLine::Removed("old".into()),
-                        DiffLine::Added("new".into()),
+                        DiffLine::Removed(vec![DiffSpan::plain("old".into())]),
+                        DiffLine::Added(vec![DiffSpan::plain("new".into())]),
                     ],
                 },
                 DiffHunk {
                     start_line: 10,
-                    lines: vec![DiffLine::Removed("c".into()), DiffLine::Added("d".into())],
+                    lines: vec![
+                        DiffLine::Removed(vec![DiffSpan::plain("c".into())]),
+                        DiffLine::Added(vec![DiffSpan::plain("d".into())]),
+                    ],
                 },
             ],
             summary: "Updated value".into(),

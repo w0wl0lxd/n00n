@@ -37,6 +37,8 @@ pub const CODE_FALLBACK: Style = Style::new().fg(PURPLE);
 
 pub const DIFF_OLD: Style = Style::new().fg(RED);
 pub const DIFF_NEW: Style = Style::new().fg(GREEN);
+pub const DIFF_OLD_EMPHASIS: Style = Style::new().fg(RED).add_modifier(Modifier::BOLD);
+pub const DIFF_NEW_EMPHASIS: Style = Style::new().fg(GREEN).add_modifier(Modifier::BOLD);
 pub const DIFF_UNCHANGED: Style = Style::new().fg(COMMENT);
 pub const DIFF_LINE_NR: Style = Style::new().fg(COMMENT);
 pub const TODO_COMPLETED: Style = Style::new().fg(GREEN);

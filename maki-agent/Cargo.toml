@@ -15,6 +15,7 @@ maki-tool-macro = { workspace = true }
 ureq = { workspace = true }
 htmd = { workspace = true }
 regex = { workspace = true }
+similar = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }

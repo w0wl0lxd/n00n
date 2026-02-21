@@ -8,7 +8,7 @@ use crate::theme;
 use std::time::Instant;
 
 use maki_agent::tools::{GLOB_TOOL_NAME, GREP_TOOL_NAME, WEBFETCH_TOOL_NAME};
-use maki_providers::{DiffLine, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent};
+use maki_providers::{DiffLine, DiffSpan, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -51,6 +51,16 @@ impl Segment {
     fn is_tool(&self) -> bool {
         self.tool_id.is_some()
     }
+}
+
+fn span_list(spans: &[DiffSpan], base: Style, emphasis: Style) -> Vec<Span<'static>> {
+    spans
+        .iter()
+        .map(|s| {
+            let style = if s.emphasized { emphasis } else { base };
+            Span::styled(s.text.clone(), style)
+        })
+        .collect()
 }
 
 pub struct MessagesPanel {
@@ -445,13 +455,7 @@ impl MessagesPanel {
                     }
                     let mut line_nr = hunk.start_line;
                     for dl in &hunk.lines {
-                        let (prefix, text, style, show_nr) = match dl {
-                            DiffLine::Unchanged(t) => {
-                                ("  ", t.as_str(), theme::DIFF_UNCHANGED, true)
-                            }
-                            DiffLine::Removed(t) => ("- ", t.as_str(), theme::DIFF_OLD, true),
-                            DiffLine::Added(t) => ("+ ", t.as_str(), theme::DIFF_NEW, false),
-                        };
+                        let show_nr = !matches!(dl, DiffLine::Added(_));
                         let nr_str = if show_nr {
                             let s = format!("{line_nr:>nr_width$}");
                             line_nr += 1;
@@ -459,13 +463,32 @@ impl MessagesPanel {
                         } else {
                             " ".repeat(nr_width)
                         };
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                format!("{TOOL_BODY_INDENT}{nr_str} "),
-                                theme::DIFF_LINE_NR,
-                            ),
-                            Span::styled(format!("{prefix}{text}"), style),
-                        ]));
+                        let mut spans = vec![Span::styled(
+                            format!("{TOOL_BODY_INDENT}{nr_str} "),
+                            theme::DIFF_LINE_NR,
+                        )];
+                        match dl {
+                            DiffLine::Unchanged(t) => {
+                                spans.push(Span::styled(format!("  {t}"), theme::DIFF_UNCHANGED));
+                            }
+                            DiffLine::Removed(ds) => {
+                                spans.push(Span::styled("- ", theme::DIFF_OLD));
+                                spans.extend(span_list(
+                                    ds,
+                                    theme::DIFF_OLD,
+                                    theme::DIFF_OLD_EMPHASIS,
+                                ));
+                            }
+                            DiffLine::Added(ds) => {
+                                spans.push(Span::styled("+ ", theme::DIFF_NEW));
+                                spans.extend(span_list(
+                                    ds,
+                                    theme::DIFF_NEW,
+                                    theme::DIFF_NEW_EMPHASIS,
+                                ));
+                            }
+                        }
+                        lines.push(Line::from(spans));
                     }
                 }
             }
