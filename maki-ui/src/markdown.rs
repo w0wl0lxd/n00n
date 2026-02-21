@@ -97,12 +97,13 @@ fn find_opening_fence(text: &str) -> Option<(usize, usize)> {
     None
 }
 
-fn find_closing_fence(text: &str, fence_len: usize) -> Option<usize> {
-    let fence_pat = &"`".repeat(fence_len);
+fn find_closing_fence(text: &str, fence_len: usize) -> Option<(usize, usize)> {
+    let fence_pat = "`".repeat(fence_len);
     let mut offset = 0;
     for line in text.split('\n') {
-        if line.trim_end() == fence_pat {
-            return Some(offset);
+        let trimmed = line.trim_end();
+        if trimmed.starts_with(&fence_pat) && !trimmed[fence_len..].starts_with('`') {
+            return Some((offset, line.len()));
         }
         offset += line.len() + 1;
     }
@@ -132,12 +133,11 @@ fn parse_blocks(text: &str) -> Vec<TextBlock<'_>> {
         }
         let code_region = &after_fence[code_start_offset..];
 
-        if let Some(close) = find_closing_fence(code_region, fence_len) {
-            let code = code_region[..close]
-                .strip_suffix('\n')
-                .unwrap_or(&code_region[..close]);
+        if let Some((close_offset, close_line_len)) = find_closing_fence(code_region, fence_len) {
+            let raw = &code_region[..close_offset];
+            let code = raw.strip_suffix('\n').unwrap_or(raw);
             blocks.push(TextBlock::Code { lang, code });
-            let after_close = &code_region[close + fence_len..];
+            let after_close = &code_region[close_offset + close_line_len..];
             rest = after_close.strip_prefix('\n').unwrap_or(after_close);
         } else {
             let code = code_region;
@@ -367,6 +367,11 @@ mod tests {
         "before\n```md\nuse ``` in code\n```\nafter",
         &[("before", None), ("use ``` in code", Some("md")), ("after", None)]
         ; "backticks_inside_code_block_not_closing_fence"
+    )]
+    #[test_case(
+        "before\n```rs\ncode\n```trailing\nmore",
+        &[("before", None), ("code", Some("rs")), ("more", None)]
+        ; "closing_fence_with_trailing_text"
     )]
     fn parse_blocks_cases(input: &str, expected: &[(&str, Option<&str>)]) {
         let blocks = parse_blocks(input);
