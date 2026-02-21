@@ -7,10 +7,13 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+};
 
 const MAX_INPUT_LINES: u16 = 10;
 const CONTINUATION_PREFIX: &str = "  ";
+const SCROLLBAR_THUMB: &str = "\u{2590}";
 const PROMPT_INDICATOR: &str = "> ";
 const STREAMING_INDICATOR: &str = "...";
 
@@ -54,15 +57,8 @@ impl InputBox {
     pub fn height(&self, width: u16, is_streaming: bool) -> u16 {
         let content_width = width.saturating_sub(2) as usize;
         let indicator_len = indicator(is_streaming).len();
-        let visual_lines: usize = self
-            .buffer
-            .lines()
-            .iter()
-            .enumerate()
-            .map(|(i, line)| {
-                visual_line_count(line.len() + prefix_len(i, indicator_len), content_width)
-            })
-            .sum();
+        let visual_lines =
+            total_visual_lines(&self.buffer, indicator_len, content_width, !is_streaming);
         (visual_lines as u16).min(MAX_INPUT_LINES) + 2
     }
 
@@ -169,6 +165,11 @@ impl InputBox {
             self.scroll_y = visual_cursor_y - content_height + 1;
         }
 
+        let total_vl =
+            total_visual_lines(&self.buffer, ind.len(), content_width, !is_streaming) as u16;
+        let max_scroll = total_vl.saturating_sub(content_height);
+        self.scroll_y = self.scroll_y.min(max_scroll);
+
         let is_empty = self.buffer.value().is_empty();
         let styled_lines: Vec<Line> = if is_empty && !is_streaming {
             vec![Line::from(vec![
@@ -229,6 +230,19 @@ impl InputBox {
                     .border_style(border_style),
             );
         frame.render_widget(paragraph, area);
+
+        if max_scroll > 0 {
+            let inner = area.inner(ratatui::layout::Margin::new(1, 1));
+            let mut state = ScrollbarState::default()
+                .content_length(max_scroll as usize + 1)
+                .position(self.scroll_y as usize);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .thumb_symbol(SCROLLBAR_THUMB)
+                .track_symbol(None)
+                .begin_symbol(None)
+                .end_symbol(None);
+            frame.render_stateful_widget(scrollbar, inner, &mut state);
+        }
     }
 }
 
@@ -256,6 +270,27 @@ fn prefix_len(line_index: usize, indicator_len: usize) -> usize {
     }
 }
 
+fn total_visual_lines(
+    buffer: &TextBuffer,
+    indicator_len: usize,
+    content_width: usize,
+    cursor_visible: bool,
+) -> usize {
+    let cursor_y = buffer.y();
+    buffer
+        .lines()
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let mut text_len = line.len() + prefix_len(i, indicator_len);
+            if cursor_visible && i == cursor_y {
+                text_len += 1;
+            }
+            visual_line_count(text_len, content_width)
+        })
+        .sum()
+}
+
 fn visual_line_count(text_len: usize, width: usize) -> usize {
     if width == 0 {
         return 1;
@@ -266,6 +301,7 @@ fn visual_line_count(text_len: usize, width: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
 
     fn type_text(input: &mut InputBox, text: &str) {
         for c in text.chars() {
@@ -374,5 +410,76 @@ mod tests {
         input.history_up();
         assert_eq!(input.buffer.value(), "line1\nline2");
         assert!(input.is_at_last_line());
+    }
+
+    #[test]
+    fn cursor_adds_extra_wrap_row_at_boundary() {
+        let content_width: u16 = 12;
+        let width = content_width + 2;
+        let chars_to_fill = content_width as usize - PROMPT_INDICATOR.len();
+
+        let mut at_boundary = InputBox::new();
+        type_text(&mut at_boundary, &"x".repeat(chars_to_fill));
+
+        let mut before_boundary = InputBox::new();
+        type_text(&mut before_boundary, &"x".repeat(chars_to_fill - 1));
+
+        assert_eq!(
+            at_boundary.height(width, false),
+            before_boundary.height(width, false) + 1,
+            "cursor at boundary should cause one extra visual line"
+        );
+    }
+
+    fn render_input(
+        input: &mut InputBox,
+        width: u16,
+        height: u16,
+        is_streaming: bool,
+    ) -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = Rect::new(0, 0, width, height);
+                input.view(frame, area, is_streaming);
+            })
+            .unwrap();
+        terminal
+    }
+
+    fn has_scrollbar_thumb(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> bool {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height).any(|y| {
+            buf.cell((buf.area.width - 2, y))
+                .is_some_and(|c| c.symbol() == SCROLLBAR_THUMB)
+        })
+    }
+
+    #[test_case(20, true  ; "visible_when_content_overflows")]
+    #[test_case(0,  false ; "hidden_when_content_fits")]
+    fn scrollbar_visibility(extra_lines: usize, expect_visible: bool) {
+        let mut input = InputBox::new();
+        for _ in 0..extra_lines {
+            input.buffer.add_line();
+        }
+        let terminal = render_input(&mut input, 40, MAX_INPUT_LINES + 2, false);
+        assert_eq!(has_scrollbar_thumb(&terminal), expect_visible);
+    }
+
+    #[test]
+    fn scroll_clamped_on_content_shrink() {
+        let mut input = InputBox::new();
+        for _ in 0..20 {
+            input.buffer.add_line();
+        }
+        let area_height = 5_u16;
+        let _ = render_input(&mut input, 40, area_height, false);
+        let scroll_before = input.scroll_y;
+        assert!(scroll_before > 0);
+
+        input.buffer = TextBuffer::new("short".into());
+        let _ = render_input(&mut input, 40, area_height, false);
+        assert_eq!(input.scroll_y, 0);
     }
 }
