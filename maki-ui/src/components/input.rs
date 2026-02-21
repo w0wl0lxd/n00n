@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::text_buffer::TextBuffer;
 use crate::theme;
 
@@ -12,12 +14,29 @@ const CONTINUATION_PREFIX: &str = "  ";
 const PROMPT_INDICATOR: &str = "> ";
 const STREAMING_INDICATOR: &str = "...";
 
+const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
+    "research how something works",
+    "fix a bug",
+    "add a feature",
+    "add a database migration",
+    "create a helm chart",
+    "simplify some function",
+    "remove trivial comments",
+    "analyze data",
+    "profile and improve performance",
+    "add tests",
+    "add benchmarks",
+    "refactor a module",
+    "remove dead code",
+];
+
 pub struct InputBox {
     pub(crate) buffer: TextBuffer,
     history: Vec<String>,
     history_index: Option<usize>,
     draft: String,
     scroll_y: u16,
+    placeholder_hint: &'static str,
 }
 
 impl InputBox {
@@ -28,6 +47,7 @@ impl InputBox {
             history_index: None,
             draft: String::new(),
             scroll_y: 0,
+            placeholder_hint: random_placeholder_hint(),
         }
     }
 
@@ -149,38 +169,52 @@ impl InputBox {
             self.scroll_y = visual_cursor_y - content_height + 1;
         }
 
-        let styled_lines: Vec<Line> = self
-            .buffer
-            .lines()
-            .iter()
-            .enumerate()
-            .map(|(i, line)| {
-                let prefix = if i == 0 { ind } else { CONTINUATION_PREFIX };
-                let mut spans = vec![Span::raw(prefix.to_string())];
+        let is_empty = self.buffer.value().is_empty();
+        let styled_lines: Vec<Line> = if is_empty && !is_streaming {
+            vec![Line::from(vec![
+                Span::raw(ind.to_string()),
+                Span::styled("Ask maki to ", Style::new().fg(theme::COMMENT)),
+                Span::styled(
+                    self.placeholder_hint,
+                    Style::new()
+                        .fg(theme::COMMENT)
+                        .add_modifier(ratatui::style::Modifier::ITALIC),
+                ),
+                Span::styled("...", Style::new().fg(theme::COMMENT)),
+            ])]
+        } else {
+            self.buffer
+                .lines()
+                .iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    let prefix = if i == 0 { ind } else { CONTINUATION_PREFIX };
+                    let mut spans = vec![Span::raw(prefix.to_string())];
 
-                if !is_streaming && i == self.buffer.y() {
-                    let x = self.buffer.x();
-                    let (before, after) = line.split_at(x.min(line.len()));
-                    if after.is_empty() {
-                        spans.push(Span::raw(before.to_string()));
-                        spans.push(Span::styled(" ", Style::new().reversed()));
+                    if !is_streaming && i == self.buffer.y() {
+                        let x = self.buffer.x();
+                        let (before, after) = line.split_at(x.min(line.len()));
+                        if after.is_empty() {
+                            spans.push(Span::raw(before.to_string()));
+                            spans.push(Span::styled(" ", Style::new().reversed()));
+                        } else {
+                            let mut chars = after.chars();
+                            let cursor_char = chars.next().unwrap();
+                            spans.push(Span::raw(before.to_string()));
+                            spans.push(Span::styled(
+                                cursor_char.to_string(),
+                                Style::new().reversed(),
+                            ));
+                            let rest: String = chars.collect();
+                            spans.push(Span::raw(rest));
+                        }
                     } else {
-                        let mut chars = after.chars();
-                        let cursor_char = chars.next().unwrap();
-                        spans.push(Span::raw(before.to_string()));
-                        spans.push(Span::styled(
-                            cursor_char.to_string(),
-                            Style::new().reversed(),
-                        ));
-                        let rest: String = chars.collect();
-                        spans.push(Span::raw(rest));
+                        spans.push(Span::raw(line.clone()));
                     }
-                } else {
-                    spans.push(Span::raw(line.clone()));
-                }
-                Line::from(spans)
-            })
-            .collect();
+                    Line::from(spans)
+                })
+                .collect()
+        };
 
         let text = Text::from(styled_lines);
         let border_style = Style::new().fg(theme::INPUT_BORDER);
@@ -204,6 +238,14 @@ fn indicator(is_streaming: bool) -> &'static str {
     } else {
         PROMPT_INDICATOR
     }
+}
+
+fn random_placeholder_hint() -> &'static str {
+    let idx = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as usize % PLACEHOLDER_SUGGESTIONS.len())
+        .unwrap_or(0);
+    PLACEHOLDER_SUGGESTIONS[idx]
 }
 
 fn prefix_len(line_index: usize, indicator_len: usize) -> usize {

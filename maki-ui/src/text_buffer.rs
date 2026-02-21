@@ -89,6 +89,26 @@ impl TextBuffer {
         }
     }
 
+    fn wrap_to_prev_line(&mut self) -> bool {
+        if self.cursor_y > 0 {
+            self.cursor_y -= 1;
+            self.raw_x = self.lines[self.cursor_y].len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn wrap_to_next_line(&mut self) -> bool {
+        if self.cursor_y < self.lines.len() - 1 {
+            self.cursor_y += 1;
+            self.raw_x = 0;
+            true
+        } else {
+            false
+        }
+    }
+
     fn find_prev_word_boundary(&self, x: usize) -> usize {
         let line = &self.lines[self.cursor_y];
         let mut new_x = x;
@@ -97,6 +117,19 @@ impl TextBuffer {
         }
         while new_x > 0 && !line.as_bytes()[new_x - 1].is_ascii_whitespace() {
             new_x -= 1;
+        }
+        new_x
+    }
+
+    fn find_next_word_boundary(&self, x: usize) -> usize {
+        let line = &self.lines[self.cursor_y];
+        let len = line.len();
+        let mut new_x = x;
+        while new_x < len && line.as_bytes()[new_x].is_ascii_whitespace() {
+            new_x += 1;
+        }
+        while new_x < len && !line.as_bytes()[new_x].is_ascii_whitespace() {
+            new_x += 1;
         }
         new_x
     }
@@ -115,45 +148,27 @@ impl TextBuffer {
     pub fn move_word_left(&mut self) {
         let x = self.x();
         if x == 0 {
-            if self.cursor_y > 0 {
-                self.cursor_y -= 1;
-                self.raw_x = self.lines[self.cursor_y].len();
-            }
+            self.wrap_to_prev_line();
             return;
         }
         self.raw_x = self.find_prev_word_boundary(x);
     }
 
     pub fn move_word_right(&mut self) {
-        let line = &self.lines[self.cursor_y];
-        let line_len = line.len();
         let x = self.x();
-
-        if x == line_len {
-            if self.cursor_y < self.lines.len() - 1 {
-                self.cursor_y += 1;
-                self.raw_x = 0;
-            }
+        if x == self.current_line_len() {
+            self.wrap_to_next_line();
             return;
         }
-
-        let mut new_x = x;
-        while new_x < line_len && line.as_bytes()[new_x].is_ascii_whitespace() {
-            new_x += 1;
-        }
-        while new_x < line_len && !line.as_bytes()[new_x].is_ascii_whitespace() {
-            new_x += 1;
-        }
-        self.raw_x = new_x;
+        self.raw_x = self.find_next_word_boundary(x);
     }
 
     pub fn move_left(&mut self) {
         let x = self.x();
         if x > 0 {
             self.raw_x = x - 1;
-        } else if self.cursor_y > 0 {
-            self.cursor_y -= 1;
-            self.raw_x = self.lines[self.cursor_y].len();
+        } else {
+            self.wrap_to_prev_line();
         }
     }
 
@@ -161,9 +176,8 @@ impl TextBuffer {
         let x = self.x();
         if x < self.current_line_len() {
             self.raw_x = x + 1;
-        } else if self.cursor_y < self.lines.len() - 1 {
-            self.raw_x = 0;
-            self.cursor_y += 1;
+        } else {
+            self.wrap_to_next_line();
         }
     }
 
