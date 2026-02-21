@@ -270,15 +270,14 @@ impl App {
         let bg = Block::default().style(ratatui::style::Style::new().bg(theme::BACKGROUND));
         bg.render(frame.area(), frame.buffer_mut());
 
-        let input_height = self.input_box.height();
+        let is_streaming = self.status == Status::Streaming;
+        let input_height = self.input_box.height(frame.area().width, is_streaming);
         let [msg_area, input_area, status_area] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(input_height),
             Constraint::Length(1),
         ])
         .areas(frame.area());
-
-        let is_streaming = self.status == Status::Streaming;
         self.messages_panel.view(frame, msg_area);
         self.input_box.view(frame, input_area, is_streaming);
         let stats = UsageStats {

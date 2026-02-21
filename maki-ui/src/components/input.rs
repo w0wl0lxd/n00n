@@ -5,9 +5,12 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 const MAX_INPUT_LINES: u16 = 10;
+const CONTINUATION_PREFIX: &str = "  ";
+const PROMPT_INDICATOR: &str = "> ";
+const STREAMING_INDICATOR: &str = "...";
 
 pub struct InputBox {
     pub(crate) buffer: TextBuffer,
@@ -28,8 +31,19 @@ impl InputBox {
         }
     }
 
-    pub fn height(&self) -> u16 {
-        (self.buffer.line_count() as u16).min(MAX_INPUT_LINES) + 2
+    pub fn height(&self, width: u16, is_streaming: bool) -> u16 {
+        let content_width = width.saturating_sub(2) as usize;
+        let indicator_len = indicator(is_streaming).len();
+        let visual_lines: usize = self
+            .buffer
+            .lines()
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                visual_line_count(line.len() + prefix_len(i, indicator_len), content_width)
+            })
+            .sum();
+        (visual_lines as u16).min(MAX_INPUT_LINES) + 2
     }
 
     pub fn is_at_first_line(&self) -> bool {
@@ -101,15 +115,38 @@ impl InputBox {
         }
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect, is_streaming: bool) {
-        let indicator = if is_streaming { "..." } else { "> " };
-        let content_height = area.height.saturating_sub(2);
-        let cursor_y = self.buffer.y() as u16;
+    fn visual_cursor_y(&self, indicator_len: usize, content_width: usize) -> u16 {
+        let lines_above: u16 = self
+            .buffer
+            .lines()
+            .iter()
+            .enumerate()
+            .take(self.buffer.y())
+            .map(|(i, line)| {
+                visual_line_count(line.len() + prefix_len(i, indicator_len), content_width) as u16
+            })
+            .sum();
 
-        if cursor_y < self.scroll_y {
-            self.scroll_y = cursor_y;
-        } else if cursor_y >= self.scroll_y + content_height {
-            self.scroll_y = cursor_y - content_height + 1;
+        let cursor_col = self.buffer.x() + prefix_len(self.buffer.y(), indicator_len);
+        let wrap_row = if content_width == 0 {
+            0
+        } else {
+            (cursor_col / content_width) as u16
+        };
+
+        lines_above + wrap_row
+    }
+
+    pub fn view(&mut self, frame: &mut Frame, area: Rect, is_streaming: bool) {
+        let ind = indicator(is_streaming);
+        let content_height = area.height.saturating_sub(2);
+        let content_width = area.width.saturating_sub(2) as usize;
+
+        let visual_cursor_y = self.visual_cursor_y(ind.len(), content_width);
+        if visual_cursor_y < self.scroll_y {
+            self.scroll_y = visual_cursor_y;
+        } else if visual_cursor_y >= self.scroll_y + content_height {
+            self.scroll_y = visual_cursor_y - content_height + 1;
         }
 
         let styled_lines: Vec<Line> = self
@@ -118,7 +155,7 @@ impl InputBox {
             .iter()
             .enumerate()
             .map(|(i, line)| {
-                let prefix = if i == 0 { indicator } else { "  " };
+                let prefix = if i == 0 { ind } else { CONTINUATION_PREFIX };
                 let mut spans = vec![Span::raw(prefix.to_string())];
 
                 if !is_streaming && i == self.buffer.y() {
@@ -149,6 +186,7 @@ impl InputBox {
         let border_style = Style::new().fg(theme::INPUT_BORDER);
         let paragraph = Paragraph::new(text)
             .style(Style::new().fg(theme::FOREGROUND))
+            .wrap(Wrap { trim: false })
             .scroll((self.scroll_y, 0))
             .block(
                 Block::default()
@@ -158,6 +196,29 @@ impl InputBox {
             );
         frame.render_widget(paragraph, area);
     }
+}
+
+fn indicator(is_streaming: bool) -> &'static str {
+    if is_streaming {
+        STREAMING_INDICATOR
+    } else {
+        PROMPT_INDICATOR
+    }
+}
+
+fn prefix_len(line_index: usize, indicator_len: usize) -> usize {
+    if line_index == 0 {
+        indicator_len
+    } else {
+        CONTINUATION_PREFIX.len()
+    }
+}
+
+fn visual_line_count(text_len: usize, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    text_len.div_ceil(width).max(1)
 }
 
 #[cfg(test)]
@@ -187,7 +248,6 @@ mod tests {
         assert_eq!(input.submit().as_deref(), Some("x"));
         assert_eq!(input.buffer.value(), "");
 
-        // multiline
         type_text(&mut input, "line1");
         input.buffer.add_line();
         type_text(&mut input, "line2");
@@ -196,14 +256,12 @@ mod tests {
 
     #[test]
     fn backslash_continuation() {
-        // at end of line: cursor is after backslash
         let mut input = InputBox::new();
         type_text(&mut input, "hello\\");
         assert!(input.char_before_cursor_is_backslash());
         input.continue_line();
         assert_eq!(input.buffer.lines(), &["hello", ""]);
 
-        // mid-line: cursor right after backslash
         let mut input = InputBox::new();
         type_text(&mut input, "asd\\asd");
         for _ in 0..3 {
@@ -214,15 +272,17 @@ mod tests {
         assert_eq!(input.buffer.lines(), &["asd", "asd"]);
     }
 
+    const TEST_WIDTH: u16 = 80;
+
     #[test]
     fn height_capped_at_max() {
         let mut input = InputBox::new();
-        let base = input.height();
+        let base = input.height(TEST_WIDTH, false);
         for _ in 0..20 {
             input.buffer.add_line();
         }
-        assert!(input.height() > base);
-        assert!(input.height() <= MAX_INPUT_LINES + 2);
+        assert!(input.height(TEST_WIDTH, false) > base);
+        assert!(input.height(TEST_WIDTH, false) <= MAX_INPUT_LINES + 2);
     }
 
     #[test]
@@ -244,7 +304,6 @@ mod tests {
     fn history() {
         let mut input = InputBox::new();
 
-        // noop on empty history
         input.history_up();
         input.history_down();
         assert_eq!(input.buffer.value(), "");
@@ -253,7 +312,6 @@ mod tests {
         submit_text(&mut input, "b");
         type_text(&mut input, "draft");
 
-        // navigate up through history, clamps at oldest
         input.history_up();
         assert_eq!(input.buffer.value(), "b");
         input.history_up();
@@ -261,13 +319,11 @@ mod tests {
         input.history_up();
         assert_eq!(input.buffer.value(), "a");
 
-        // navigate back down, restores draft
         input.history_down();
         assert_eq!(input.buffer.value(), "b");
         input.history_down();
         assert_eq!(input.buffer.value(), "draft");
 
-        // multiline content survives history roundtrip
         input.buffer.clear();
         type_text(&mut input, "line1");
         input.buffer.add_line();
