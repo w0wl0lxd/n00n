@@ -239,11 +239,11 @@ impl App {
             }
             AgentEvent::TurnComplete { usage, .. } => {
                 self.context_size = usage.context_tokens();
+                self.token_usage += usage;
             }
             AgentEvent::ToolResultsSubmitted { .. } => {}
-            AgentEvent::Done { usage, .. } => {
+            AgentEvent::Done { .. } => {
                 self.messages_panel.flush();
-                self.token_usage += usage;
                 self.status = Status::Idle;
                 self.status_bar.clear_cancel_hint();
             }
@@ -351,42 +351,23 @@ mod tests {
     }
 
     #[test]
-    fn done_flushes_text_and_accumulates_usage() {
+    fn done_flushes_text_and_sets_idle() {
         let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::TextDelta {
             text: "response text".into(),
         }));
         app.update(Msg::Agent(AgentEvent::Done {
-            usage: TokenUsage {
-                input: 100,
-                output: 50,
-                ..Default::default()
-            },
+            usage: TokenUsage::default(),
             num_turns: 1,
             stop_reason: None,
         }));
 
         assert_eq!(app.status, Status::Idle);
-        assert_eq!(app.token_usage.input, 100);
-        assert_eq!(app.token_usage.output, 50);
-
-        app.status = Status::Streaming;
-        app.update(Msg::Agent(AgentEvent::Done {
-            usage: TokenUsage {
-                input: 20,
-                output: 10,
-                ..Default::default()
-            },
-            num_turns: 1,
-            stop_reason: None,
-        }));
-        assert_eq!(app.token_usage.input, 120);
-        assert_eq!(app.token_usage.output, 60);
     }
 
     #[test]
-    fn turn_complete_sets_context_size() {
+    fn turn_complete_accumulates_usage_and_sets_context_size() {
         let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
         app.status = Status::Streaming;
         let usage = TokenUsage {
@@ -401,6 +382,20 @@ mod tests {
             model: "test-model".into(),
         }));
         assert_eq!(app.context_size, usage.context_tokens());
+        assert_eq!(app.token_usage.input, 1_000);
+        assert_eq!(app.token_usage.output, 500);
+
+        app.update(Msg::Agent(AgentEvent::TurnComplete {
+            message: Default::default(),
+            usage: TokenUsage {
+                input: 20,
+                output: 10,
+                ..Default::default()
+            },
+            model: "test-model".into(),
+        }));
+        assert_eq!(app.token_usage.input, 1_020);
+        assert_eq!(app.token_usage.output, 510);
     }
 
     #[test]
