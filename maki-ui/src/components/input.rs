@@ -163,7 +163,7 @@ impl InputBox {
         let styled_lines: Vec<Line> = if is_empty && !is_streaming {
             let placeholder_base = Style::new().fg(theme::COMMENT);
             vec![Line::from(vec![
-                Span::styled("A", placeholder_base.bg(theme::PLACEHOLDER_CURSOR)),
+                Span::styled("A", placeholder_base.reversed()),
                 Span::styled("sk maki to ", placeholder_base),
                 Span::styled(
                     self.placeholder_hint,

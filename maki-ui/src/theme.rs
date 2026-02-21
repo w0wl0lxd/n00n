@@ -57,7 +57,6 @@ pub const TODO_PENDING: Style = Style::new().fg(FOREGROUND);
 pub const TODO_CANCELLED: Style = Style::new().fg(COMMENT);
 
 pub const INPUT_BORDER: Color = COMMENT;
-pub const PLACEHOLDER_CURSOR: Color = Color::Rgb(0x45, 0x4e, 0x6d);
 
 const fn midpoint(a: u8, b: u8) -> u8 {
     (a as u16 / 2 + b as u16 / 2) as u8
