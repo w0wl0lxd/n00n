@@ -91,9 +91,15 @@ impl Bash {
     }
 
     pub fn start_summary(&self) -> String {
-        self.description
+        let mut s = self
+            .description
             .clone()
-            .unwrap_or_else(|| self.command.clone())
+            .unwrap_or_else(|| self.command.clone());
+        if let Some(dir) = &self.workdir {
+            s.push_str(" in ");
+            s.push_str(dir);
+        }
+        s
     }
 
     pub fn mutable_path(&self) -> Option<&str> {
@@ -117,6 +123,8 @@ fn read_pipe_lossy(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<S
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use crate::AgentMode;
     use crate::tools::test_support::stub_ctx;
 
@@ -168,12 +176,16 @@ mod tests {
         assert!(b.execute(&ctx).unwrap().as_text().contains("[truncated]"));
     }
 
-    #[test]
-    fn start_summary_prefers_description() {
-        let mut b = bash("cargo test --workspace");
-        b.description = Some("run tests".into());
-        assert_eq!(b.start_summary(), "run tests");
-
-        assert_eq!(bash("ls").start_summary(), "ls");
+    #[test_case(None, None, "ls",              "ls"               ; "falls_back_to_command")]
+    #[test_case(Some("run tests"), None, "cargo test", "run tests"     ; "prefers_description")]
+    #[test_case(Some("build"), Some("/tmp/proj"), "cargo build", "build in /tmp/proj" ; "appends_workdir")]
+    fn start_summary_cases(desc: Option<&str>, workdir: Option<&str>, cmd: &str, expected: &str) {
+        let b = Bash {
+            command: cmd.into(),
+            timeout: None,
+            workdir: workdir.map(Into::into),
+            description: desc.map(Into::into),
+        };
+        assert_eq!(b.start_summary(), expected);
     }
 }

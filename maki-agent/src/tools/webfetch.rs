@@ -123,7 +123,10 @@ impl WebFetch {
     }
 
     pub fn start_summary(&self) -> String {
-        self.url.clone()
+        match self.format.as_deref() {
+            Some(f) if f != "markdown" => format!("{} [{f}]", self.url),
+            _ => self.url.clone(),
+        }
     }
 
     pub fn start_input(&self) -> Option<ToolInput> {
@@ -289,5 +292,17 @@ mod tests {
     fn read_body_rejects_oversized() {
         let data = vec![0u8; MAX_RESPONSE_BYTES + 1];
         assert!(read_body(data.as_slice()).is_err());
+    }
+
+    #[test_case(None,                "https://x.com"        ; "default_format")]
+    #[test_case(Some("markdown"),     "https://x.com"        ; "markdown_hidden")]
+    #[test_case(Some("text"),         "https://x.com [text]" ; "non_default_shown")]
+    fn start_summary_cases(format: Option<&str>, expected: &str) {
+        let wf = WebFetch {
+            url: "https://x.com".into(),
+            format: format.map(Into::into),
+            timeout: None,
+        };
+        assert_eq!(wf.start_summary(), expected);
     }
 }

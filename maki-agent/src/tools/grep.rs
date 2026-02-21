@@ -108,7 +108,17 @@ impl Grep {
     }
 
     pub fn start_summary(&self) -> String {
-        self.pattern.clone()
+        let mut s = self.pattern.clone();
+        if let Some(inc) = &self.include {
+            s.push_str(" [");
+            s.push_str(inc);
+            s.push(']');
+        }
+        if let Some(p) = &self.path {
+            s.push_str(" in ");
+            s.push_str(p);
+        }
+        s
     }
 
     pub fn start_input(&self) -> Option<ToolInput> {
@@ -117,5 +127,30 @@ impl Grep {
 
     pub fn mutable_path(&self) -> Option<&str> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use test_case::test_case;
+
+    use super::*;
+
+    #[test_case("fn main", None,          None,          "fn main"                ; "pattern_only")]
+    #[test_case("TODO",    Some("*.rs"),  None,          "TODO [*.rs]"            ; "with_include")]
+    #[test_case("TODO",    None,          Some("src/"),  "TODO in src/"           ; "with_path")]
+    #[test_case("TODO",    Some("*.rs"),  Some("src/"),  "TODO [*.rs] in src/"    ; "with_both")]
+    fn start_summary_cases(
+        pattern: &str,
+        include: Option<&str>,
+        path: Option<&str>,
+        expected: &str,
+    ) {
+        let g = Grep {
+            pattern: pattern.into(),
+            include: include.map(Into::into),
+            path: path.map(Into::into),
+        };
+        assert_eq!(g.start_summary(), expected);
     }
 }

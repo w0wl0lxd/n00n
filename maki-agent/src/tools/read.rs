@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::fs;
 
 use maki_providers::{ToolInput, ToolOutput};
@@ -38,7 +39,18 @@ impl Read {
     }
 
     pub fn start_summary(&self) -> String {
-        self.path.clone()
+        let mut s = self.path.clone();
+        let start = self.offset.unwrap_or(1);
+        match (self.offset.is_some(), self.limit) {
+            (_, Some(l)) => {
+                let _ = write!(s, ":{start}-{}", start + l - 1);
+            }
+            (true, None) => {
+                let _ = write!(s, ":{start}");
+            }
+            _ => {}
+        }
+        s
     }
 
     pub fn start_input(&self) -> Option<ToolInput> {
@@ -47,5 +59,25 @@ impl Read {
 
     pub fn mutable_path(&self) -> Option<&str> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use test_case::test_case;
+
+    use super::*;
+
+    #[test_case(None,      None,      "/a/b.rs"       ; "path_only")]
+    #[test_case(Some(10),  None,      "/a/b.rs:10"    ; "offset_only")]
+    #[test_case(None,      Some(25),  "/a/b.rs:1-25"  ; "limit_only")]
+    #[test_case(Some(50),  Some(51),  "/a/b.rs:50-100" ; "offset_and_limit")]
+    fn start_summary_cases(offset: Option<usize>, limit: Option<usize>, expected: &str) {
+        let r = Read {
+            path: "/a/b.rs".into(),
+            offset,
+            limit,
+        };
+        assert_eq!(r.start_summary(), expected);
     }
 }

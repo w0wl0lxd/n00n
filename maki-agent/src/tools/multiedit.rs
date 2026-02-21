@@ -42,6 +42,12 @@ impl MultiEdit {
     pub const NAME: &str = "multiedit";
     pub const DESCRIPTION: &str = include_str!("multiedit.md");
 
+    fn edit_count_label(&self) -> String {
+        let n = self.edits.len();
+        let s = if n == 1 { "" } else { "s" };
+        format!("{n} edit{s}")
+    }
+
     pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         if self.edits.is_empty() {
             return Err("provide at least one edit".into());
@@ -60,20 +66,15 @@ impl MultiEdit {
         }
 
         fs::write(&self.path, &content).map_err(|e| format!("write error: {e}"))?;
-        let n = self.edits.len();
         Ok(ToolOutput::Diff {
             path: self.path.clone(),
             hunks,
-            summary: format!(
-                "applied {n} edit{s} to {path}",
-                s = if n == 1 { "" } else { "s" },
-                path = self.path
-            ),
+            summary: format!("applied {} to {}", self.edit_count_label(), self.path),
         })
     }
 
     pub fn start_summary(&self) -> String {
-        self.path.clone()
+        format!("{} ({})", self.path, self.edit_count_label())
     }
 
     pub fn start_input(&self) -> Option<ToolInput> {
@@ -124,6 +125,7 @@ mod tests {
 
     use serde_json::json;
     use tempfile::TempDir;
+    use test_case::test_case;
 
     use crate::AgentMode;
     use crate::tools::test_support::stub_ctx;
@@ -215,5 +217,23 @@ mod tests {
         let hunk = build_hunk(5, old, new);
         assert_eq!(hunk.start_line, 5);
         assert_eq!(tags(&hunk), vec!['=', '-', '+', '=']);
+    }
+
+    #[test_case(1, "/x.rs (1 edit)"  ; "singular")]
+    #[test_case(2, "/x.rs (2 edits)" ; "plural")]
+    fn start_summary_edit_count(n: usize, expected: &str) {
+        let edits = vec![
+            EditEntry {
+                old_string: "a".into(),
+                new_string: "b".into(),
+                replace_all: None
+            };
+            n
+        ];
+        let tool = MultiEdit {
+            path: "/x.rs".into(),
+            edits,
+        };
+        assert_eq!(tool.start_summary(), expected);
     }
 }
