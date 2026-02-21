@@ -120,7 +120,10 @@ impl StatusBar {
         }
 
         if self.cancel_hint_since.is_some() {
-            left_spans.push(Span::styled(" press Esc again to stop", theme::CANCEL_HINT));
+            left_spans.push(Span::styled(
+                " Press esc again to stop...",
+                theme::CANCEL_HINT,
+            ));
         }
 
         let [left_area, right_area] = Layout::horizontal([
