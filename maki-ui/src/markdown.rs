@@ -162,8 +162,6 @@ pub fn text_to_lines(
                 if first_line {
                     lines.push(Line::from(Span::styled(prefix.to_owned(), prefix_style)));
                     first_line = false;
-                } else {
-                    lines.push(Line::default());
                 }
                 if let Some(ref mut hl) = highlighters {
                     if code_idx >= hl.len() {
