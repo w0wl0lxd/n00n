@@ -31,6 +31,7 @@ pub struct App {
     model_id: String,
     pricing: ModelPricing,
     context_window: u32,
+    status_description: Option<String>,
     pub should_quit: bool,
 }
 
@@ -48,6 +49,7 @@ impl App {
             model_id,
             pricing,
             context_window,
+            status_description: None,
             should_quit: false,
         }
     }
@@ -242,14 +244,19 @@ impl App {
                 self.token_usage += usage;
             }
             AgentEvent::ToolResultsSubmitted { .. } => {}
+            AgentEvent::StatusDescription { text } => {
+                self.status_description = Some(text);
+            }
             AgentEvent::Done { .. } => {
                 self.messages_panel.flush();
                 self.status = Status::Idle;
+                self.status_description = None;
                 self.status_bar.clear_cancel_hint();
             }
             AgentEvent::Error { message } => {
                 self.messages_panel.flush();
                 self.status = Status::Error(message);
+                self.status_description = None;
                 self.status_bar.clear_cancel_hint();
             }
         }
@@ -301,6 +308,7 @@ impl App {
             &self.mode,
             &self.model_id,
             &stats,
+            self.status_description.as_deref(),
         );
     }
 
@@ -314,6 +322,7 @@ mod tests {
     use super::*;
     use crate::components::{TEST_CONTEXT_WINDOW, ctrl, key, test_pricing};
     use crossterm::event::KeyCode;
+    use test_case::test_case;
 
     #[test]
     fn typing_and_submit() {
@@ -501,5 +510,34 @@ mod tests {
         app.status = Status::Streaming;
         app.update(Msg::Paste("pasted text".into()));
         assert_eq!(app.input_box.buffer.value(), "");
+    }
+
+    fn done_event() -> AgentEvent {
+        AgentEvent::Done {
+            usage: TokenUsage::default(),
+            num_turns: 1,
+            stop_reason: None,
+        }
+    }
+
+    fn error_event() -> AgentEvent {
+        AgentEvent::Error {
+            message: "boom".into(),
+        }
+    }
+
+    #[test_case(done_event()  ; "cleared_on_done")]
+    #[test_case(error_event() ; "cleared_on_error")]
+    fn status_description_lifecycle(terminal_event: AgentEvent) {
+        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        app.status = Status::Streaming;
+
+        app.update(Msg::Agent(AgentEvent::StatusDescription {
+            text: "Working on task".into(),
+        }));
+        assert_eq!(app.status_description.as_deref(), Some("Working on task"));
+
+        app.update(Msg::Agent(terminal_event));
+        assert!(app.status_description.is_none());
     }
 }

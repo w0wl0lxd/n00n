@@ -71,6 +71,7 @@ impl StatusBar {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn view(
         &self,
         frame: &mut Frame,
@@ -79,6 +80,7 @@ impl StatusBar {
         mode: &AgentMode,
         model_id: &str,
         stats: &UsageStats,
+        description: Option<&str>,
     ) {
         let (mode_label, mode_style) = match mode {
             AgentMode::Build => ("[BUILD]", theme::MODE_BUILD),
@@ -93,6 +95,10 @@ impl StatusBar {
         }
 
         left_spans.push(Span::styled(format!(" {mode_label}"), mode_style));
+
+        if let Some(desc) = description {
+            left_spans.push(Span::styled(format!(" {desc}"), theme::STATUS_IDLE));
+        }
 
         let mut right_spans = Vec::new();
 

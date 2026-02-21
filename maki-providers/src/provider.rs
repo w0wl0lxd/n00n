@@ -24,6 +24,15 @@ impl ProviderKind {
             Self::ZaiCodingPlan => Ok(Box::new(Zai::new(ZaiPlan::Coding)?)),
         }
     }
+
+    pub fn cheapest_model(&self) -> Model {
+        let model = match self {
+            Self::Anthropic => "claude-haiku-4-5",
+            Self::Zai | Self::ZaiCodingPlan => "glm-4.7-flash",
+        };
+        Model::from_spec(&format!("{self}/{model}"))
+            .expect("hardcoded cheapest model spec must be valid")
+    }
 }
 
 pub trait Provider: Send + Sync {
