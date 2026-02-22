@@ -6,6 +6,8 @@ use maki_tool_macro::Tool;
 
 use super::relative_path;
 
+const PREVIEW_LINES: usize = 30;
+
 #[derive(Tool, Debug, Clone)]
 pub struct Write {
     #[param(description = "Absolute path to the file")]
@@ -23,11 +25,18 @@ impl Write {
             fs::create_dir_all(parent).map_err(|e| format!("mkdir error: {e}"))?;
         }
         fs::write(&self.path, &self.content).map_err(|e| format!("write error: {e}"))?;
-        Ok(ToolOutput::Plain(format!(
-            "wrote {} bytes to {}",
-            self.content.len(),
-            relative_path(&self.path)
-        )))
+        let path = relative_path(&self.path);
+        let lines: Vec<String> = self
+            .content
+            .lines()
+            .take(PREVIEW_LINES)
+            .map(String::from)
+            .collect();
+        Ok(ToolOutput::WriteCode {
+            path,
+            byte_count: self.content.len(),
+            lines,
+        })
     }
 
     pub fn start_summary(&self) -> String {

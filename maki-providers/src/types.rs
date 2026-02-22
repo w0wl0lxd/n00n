@@ -120,6 +120,11 @@ pub enum ToolOutput {
         summary: String,
     },
     TodoList(Vec<TodoItem>),
+    WriteCode {
+        path: String,
+        byte_count: usize,
+        lines: Vec<String>,
+    },
     Batch {
         entries: Vec<BatchToolEntry>,
         text: String,
@@ -177,6 +182,9 @@ impl ToolOutput {
                     .collect::<Vec<_>>()
                     .join("\n")
             }
+            Self::WriteCode {
+                path, byte_count, ..
+            } => format!("wrote {byte_count} bytes to {path}"),
             Self::Batch { text, .. } => text.clone(),
         }
     }

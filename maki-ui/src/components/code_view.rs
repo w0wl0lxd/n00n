@@ -31,12 +31,13 @@ fn syntax_spans(hl: &mut syntect::easy::HighlightLines<'_>, text: &str) -> Vec<S
     spans
 }
 
-pub fn render_read_code(
+pub fn render_code(
     path: &str,
     start_line: usize,
     code_lines: &[String],
+    max_lines: usize,
 ) -> Vec<Line<'static>> {
-    let display_count = code_lines.len().min(MAX_DISPLAY_LINES);
+    let display_count = code_lines.len().min(max_lines);
     let max_nr = start_line + display_count.saturating_sub(1);
     let w = nr_width(max_nr);
     let mut hl = highlighter_for_path(path);
@@ -53,10 +54,18 @@ pub fn render_read_code(
         })
         .collect();
 
-    if code_lines.len() > MAX_DISPLAY_LINES {
+    if code_lines.len() > max_lines {
         lines.push(ellipsis(w));
     }
     lines
+}
+
+pub fn render_read_code(
+    path: &str,
+    start_line: usize,
+    code_lines: &[String],
+) -> Vec<Line<'static>> {
+    render_code(path, start_line, code_lines, MAX_DISPLAY_LINES)
 }
 
 pub fn render_diff(path: &str, hunks: &[DiffHunk]) -> Vec<Line<'static>> {

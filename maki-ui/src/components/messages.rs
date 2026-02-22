@@ -8,9 +8,7 @@ use crate::theme;
 
 use std::time::Instant;
 
-use maki_agent::tools::{
-    BASH_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME,
-};
+use maki_agent::tools::{BASH_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, WEBFETCH_TOOL_NAME};
 use maki_providers::{ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -32,13 +30,6 @@ fn tool_summary_annotation(tool: &str, text: &str) -> Option<String> {
             Some(format!("{n} files"))
         }
         WEBFETCH_TOOL_NAME => Some(format!("{} lines", text.lines().count())),
-        WRITE_TOOL_NAME => {
-            let bytes = text
-                .strip_prefix("wrote ")
-                .and_then(|s| s.split_once(' '))
-                .map_or("?", |(n, _)| n);
-            Some(format!("{bytes} bytes"))
-        }
         _ => {
             let n = text.lines().count();
             (n > BASH_OUTPUT_MAX_LINES).then(|| format!("{n} lines"))
@@ -228,7 +219,7 @@ impl MessagesPanel {
                 if let Some(annotation) = tool_summary_annotation(event.tool, text) {
                     msg.text = format!("{} ({annotation})", msg.text);
                 }
-                let hide_body = matches!(event.tool, WEBFETCH_TOOL_NAME | WRITE_TOOL_NAME);
+                let hide_body = matches!(event.tool, WEBFETCH_TOOL_NAME);
                 if !hide_body {
                     let display = if event.tool == BASH_TOOL_NAME {
                         tail_lines(text, BASH_OUTPUT_MAX_LINES)
@@ -242,6 +233,9 @@ impl MessagesPanel {
             }
             ToolOutput::ReadCode { lines, .. } => {
                 msg.text = format!("{} ({} lines)", msg.text, lines.len());
+            }
+            ToolOutput::WriteCode { byte_count, .. } => {
+                msg.text = format!("{} ({byte_count} bytes)", msg.text);
             }
             ToolOutput::Batch { entries, .. } => {
                 let failed = entries.iter().filter(|e| e.is_error).count();
@@ -552,6 +546,18 @@ impl MessagesPanel {
             }) => {
                 lines.extend(code_view::render_read_code(path, *start_line, code_lines));
             }
+            Some(ToolOutput::WriteCode {
+                path,
+                lines: code_lines,
+                ..
+            }) => {
+                lines.extend(code_view::render_code(
+                    path,
+                    1,
+                    code_lines,
+                    code_lines.len(),
+                ));
+            }
             Some(ToolOutput::Diff { path, hunks, .. }) => {
                 lines.extend(code_view::render_diff(path, hunks));
             }
@@ -627,6 +633,7 @@ fn render_vertical_scrollbar(frame: &mut Frame, area: Rect, content_len: u16, po
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maki_agent::tools::WRITE_TOOL_NAME;
     use maki_providers::ToolOutput;
     use ratatui::backend::TestBackend;
     use test_case::test_case;
@@ -666,30 +673,50 @@ mod tests {
     #[test_case(GLOB_TOOL_NAME, "src/a.rs\nsrc/b.rs\nsrc/c.rs", Some("3 files") ; "glob_file_count")]
     #[test_case(GREP_TOOL_NAME, "src/a.rs:\n  1: match\nsrc/b.rs:\n  2: match", Some("2 files") ; "grep_file_count")]
     #[test_case(WEBFETCH_TOOL_NAME, "line1\nline2\nline3", Some("3 lines") ; "webfetch_line_count")]
-    #[test_case(WRITE_TOOL_NAME, "wrote 42 bytes to /tmp/f.rs", Some("42 bytes") ; "write_byte_count")]
     #[test_case("bash", "ok", None ; "short_output_no_annotation")]
     #[test_case("bash", &(0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"), Some("20 lines") ; "long_output_line_count")]
     fn summary_annotation(tool: &str, output: &str, expected: Option<&str>) {
         assert_eq!(tool_summary_annotation(tool, output).as_deref(), expected,);
     }
 
-    #[test_case(WEBFETCH_TOOL_NAME, "fetched content\nmore lines" ; "webfetch_hides_body")]
-    #[test_case(WRITE_TOOL_NAME, "wrote 100 bytes to /tmp/f.rs" ; "write_hides_body")]
-    fn tool_done_hides_body(tool: &'static str, output: &str) {
+    #[test]
+    fn webfetch_hides_body() {
         let mut panel = MessagesPanel::new();
         panel.tool_start(ToolStartEvent {
             id: "t1".into(),
-            tool,
+            tool: WEBFETCH_TOOL_NAME,
             summary: "s".into(),
             input: None,
         });
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
-            tool,
-            output: ToolOutput::Plain(output.into()),
+            tool: WEBFETCH_TOOL_NAME,
+            output: ToolOutput::Plain("fetched content\nmore lines".into()),
             is_error: false,
         });
         assert!(!panel.messages[0].text.contains('\n'));
+    }
+
+    #[test]
+    fn write_done_shows_bytes_annotation() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(ToolStartEvent {
+            id: "t1".into(),
+            tool: WRITE_TOOL_NAME,
+            summary: "src/main.rs".into(),
+            input: None,
+        });
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: WRITE_TOOL_NAME,
+            output: ToolOutput::WriteCode {
+                path: "src/main.rs".into(),
+                byte_count: 42,
+                lines: vec!["fn main() {}".into()],
+            },
+            is_error: false,
+        });
+        assert!(panel.messages[0].text.contains("42 bytes"));
     }
 
     #[test]
