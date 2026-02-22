@@ -13,8 +13,8 @@ use crate::{
     AgentError, AgentEvent, AgentInput, AgentMode, Envelope, Message, TokenUsage, ToolDoneEvent,
     ToolOutput,
 };
+use maki_providers::Model;
 use maki_providers::provider::Provider;
-use maki_providers::{ContentBlock, Model};
 
 const AGENTS_MD: &str = "AGENTS.md";
 
@@ -124,57 +124,6 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDo
     })
 }
 
-const STATUS_SYSTEM: &str = "Summarize input in 3 to 6 word label. Always useful even if info missing. Never refuse. No punctuation markdown or code.";
-const STATUS_MAX_TOKENS: u32 = 20;
-const STATUS_MAX_INPUT_CHARS: usize = 512;
-
-fn generate_status_description(
-    provider: &dyn Provider,
-    model: &Model,
-    user_input: &str,
-    event_tx: &Sender<Envelope>,
-) {
-    let mut capped_model = model.clone();
-    capped_model.max_output_tokens = STATUS_MAX_TOKENS;
-    let truncated: &str = &user_input[..user_input
-        .char_indices()
-        .nth(STATUS_MAX_INPUT_CHARS)
-        .map_or(user_input.len(), |(i, _)| i)];
-    let user_msg = Message::user(truncated.to_owned());
-    let (sink_tx, _sink_rx) = std::sync::mpsc::channel::<Envelope>();
-    let empty_tools = Value::Array(vec![]);
-
-    let response = match provider.stream_message(
-        &capped_model,
-        &[user_msg],
-        STATUS_SYSTEM,
-        &empty_tools,
-        &sink_tx,
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(error = %e, model = %model.id, "failed to generate status description");
-            return;
-        }
-    };
-
-    let text = response
-        .message
-        .content
-        .iter()
-        .find_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
-
-    let text = text.lines().next().unwrap_or_default().trim().to_owned();
-    if !text.is_empty() {
-        info!(description = %text, "generated status description");
-        let _ = event_tx.send(AgentEvent::StatusDescription { text }.into());
-    }
-}
-
 pub fn run(
     provider: &dyn Provider,
     model: &Model,
@@ -196,73 +145,64 @@ pub fn run(
     let mut total_usage = TokenUsage::default();
     let mut num_turns: u32 = 0;
 
-    let cheap_model = model.provider.cheapest_model();
-    let status_provider = maki_providers::provider::from_model(&cheap_model).ok();
+    loop {
+        let response = provider.stream_message(model, history, system, tools, event_tx)?;
+        num_turns += 1;
 
-    std::thread::scope(|s| {
-        if let Some(ref sp) = status_provider {
-            s.spawn(|| generate_status_description(&**sp, &cheap_model, &user_message, event_tx));
-        }
+        let has_tools = response.message.has_tool_calls();
 
-        loop {
-            let response = provider.stream_message(model, history, system, tools, event_tx)?;
-            num_turns += 1;
+        info!(
+            input_tokens = response.usage.input,
+            output_tokens = response.usage.output,
+            cache_creation = response.usage.cache_creation,
+            cache_read = response.usage.cache_read,
+            has_tools,
+            "API response received"
+        );
 
-            let has_tools = response.message.has_tool_calls();
-
-            info!(
-                input_tokens = response.usage.input,
-                output_tokens = response.usage.output,
-                cache_creation = response.usage.cache_creation,
-                cache_read = response.usage.cache_read,
-                has_tools,
-                "API response received"
-            );
-
-            event_tx.send(
-                AgentEvent::TurnComplete {
-                    message: response.message.clone(),
-                    usage: response.usage.clone(),
-                    model: model.id.clone(),
-                }
-                .into(),
-            )?;
-
-            total_usage += response.usage;
-
-            if !has_tools {
-                history.push(response.message);
-                event_tx.send(
-                    AgentEvent::Done {
-                        usage: total_usage,
-                        num_turns,
-                        stop_reason: response.stop_reason,
-                    }
-                    .into(),
-                )?;
-                return Ok(());
+        event_tx.send(
+            AgentEvent::TurnComplete {
+                message: response.message.clone(),
+                usage: response.usage.clone(),
+                model: model.id.clone(),
             }
+            .into(),
+        )?;
 
-            let (parsed, errors) = parse_tool_calls(response.message.tool_uses(), event_tx);
+        total_usage += response.usage;
 
+        if !has_tools {
             history.push(response.message);
-
-            for p in &parsed {
-                event_tx.send(AgentEvent::ToolStart(p.call.start_event(p.id.clone())).into())?;
-            }
-
-            let mut tool_results = execute_tools(&parsed, &ctx);
-            tool_results.extend(errors);
-            let tool_msg = Message::tool_results(tool_results);
             event_tx.send(
-                AgentEvent::ToolResultsSubmitted {
-                    message: tool_msg.clone(),
+                AgentEvent::Done {
+                    usage: total_usage,
+                    num_turns,
+                    stop_reason: response.stop_reason,
                 }
                 .into(),
             )?;
-            history.push(tool_msg);
+            return Ok(());
         }
-    })
+
+        let (parsed, errors) = parse_tool_calls(response.message.tool_uses(), event_tx);
+
+        history.push(response.message);
+
+        for p in &parsed {
+            event_tx.send(AgentEvent::ToolStart(p.call.start_event(p.id.clone())).into())?;
+        }
+
+        let mut tool_results = execute_tools(&parsed, &ctx);
+        tool_results.extend(errors);
+        let tool_msg = Message::tool_results(tool_results);
+        event_tx.send(
+            AgentEvent::ToolResultsSubmitted {
+                message: tool_msg.clone(),
+            }
+            .into(),
+        )?;
+        history.push(tool_msg);
+    }
 }
 
 #[cfg(test)]

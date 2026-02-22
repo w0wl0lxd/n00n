@@ -36,9 +36,7 @@ impl Task {
             while let Ok(mut envelope) = sub_rx.recv() {
                 if matches!(
                     envelope.event,
-                    AgentEvent::Done { .. }
-                        | AgentEvent::Error { .. }
-                        | AgentEvent::StatusDescription { .. }
+                    AgentEvent::Done { .. } | AgentEvent::Error { .. }
                 ) {
                     continue;
                 }

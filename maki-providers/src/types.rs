@@ -270,9 +270,6 @@ pub enum AgentEvent {
         num_turns: u32,
         stop_reason: Option<String>,
     },
-    StatusDescription {
-        text: String,
-    },
     Error {
         message: String,
     },
