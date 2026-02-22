@@ -128,7 +128,7 @@ fn parse_blocks(text: &str) -> Vec<TextBlock<'_>> {
 
         let code_start_offset = lang_end + 1;
         if code_start_offset > after_fence.len() {
-            rest = "";
+            rest = &rest[fence_start..];
             break;
         }
         let code_region = &after_fence[code_start_offset..];
@@ -289,14 +289,94 @@ mod tests {
     #[test_case("`**all**`", &[("all", Some(BOLD_CODE_STYLE))] ; "entire_code_is_bold")]
     #[test_case("**bold `unclosed**", &[("bold `unclosed", Some(BOLD_STYLE))] ; "unclosed_nested_code_in_bold")]
     #[test_case("`code **unclosed`", &[("code **unclosed", Some(CODE_STYLE))] ; "unclosed_nested_bold_in_code")]
+    #[test_case("plain text", &[("plain text", None)] ; "no_delimiters")]
+    #[test_case("", &[] ; "empty_string")]
+    #[test_case("`", &[("`", None)] ; "lone_backtick")]
+    #[test_case("**", &[("**", None)] ; "lone_double_star")]
+    #[test_case("``", &[] ; "empty_code_span")]
+    #[test_case("****", &[] ; "empty_bold_span")]
+    #[test_case("a * b", &[("a * b", None)] ; "single_star_not_bold")]
+    #[test_case("a*b*c", &[("a*b*c", None)] ; "single_stars_not_parsed")]
+    #[test_case("`a` `b`", &[("a", Some(CODE_STYLE)), (" ", None), ("b", Some(CODE_STYLE))] ; "two_code_spans")]
+    #[test_case("**a** **b**", &[("a", Some(BOLD_STYLE)), (" ", None), ("b", Some(BOLD_STYLE))] ; "two_bold_spans")]
+    #[test_case("`a` **b**", &[("a", Some(CODE_STYLE)), (" ", None), ("b", Some(BOLD_STYLE))] ; "code_then_bold")]
+    #[test_case("**a** `b`", &[("a", Some(BOLD_STYLE)), (" ", None), ("b", Some(CODE_STYLE))] ; "bold_then_code")]
+    #[test_case("`a` middle `b`", &[("a", Some(CODE_STYLE)), (" middle ", None), ("b", Some(CODE_STYLE))] ; "two_code_spans_with_text")]
+    #[test_case("a `unclosed", &[("a ", None), ("`unclosed", None)] ; "unclosed_backtick")]
+    #[test_case("a `b` c `unclosed", &[("a ", None), ("b", Some(CODE_STYLE)), (" c ", None), ("`unclosed", None)] ; "code_then_unclosed_backtick")]
+    #[test_case("a **b** c **unclosed", &[("a ", None), ("b", Some(BOLD_STYLE)), (" c ", None), ("**unclosed", None)] ; "bold_then_unclosed_bold")]
+    #[test_case("**a `b** c`", &[("a `b", Some(BOLD_STYLE)), (" c", None), ("`", None)] ; "interleaved_bold_code")]
+    #[test_case("`a **b` c**", &[("a **b", Some(CODE_STYLE)), (" c", None), ("**", None)] ; "interleaved_code_bold")]
+    #[test_case("***bold***", &[("*bold", Some(BOLD_STYLE)), ("*", None)] ; "triple_star_treated_as_bold_with_star")]
+    #[test_case("**`**`", &[("`", Some(BOLD_STYLE)), ("`", None)] ; "bold_delim_greedily_matches_before_code")]
     fn parse_inline_markdown_cases(input: &str, expected: &[(&str, Option<Style>)]) {
         let base = Style::default();
         let spans = parse_inline_markdown(input, base);
-        assert_eq!(spans.len(), expected.len());
+        assert_eq!(
+            spans.len(),
+            expected.len(),
+            "span count mismatch for {input:?}: got {spans:?}"
+        );
         for (span, (text, style)) in spans.iter().zip(expected) {
             assert_eq!(span.content, *text);
             assert_eq!(span.style, style.unwrap_or(base));
         }
+    }
+
+    #[test_case("plain text" ; "plain")]
+    #[test_case("a **bold** b" ; "simple_bold")]
+    #[test_case("use `foo` here" ; "simple_code")]
+    #[test_case("**bold `code` bold**" ; "nested_code_in_bold")]
+    #[test_case("`code **bold** code`" ; "nested_bold_in_code")]
+    #[test_case("a **unclosed" ; "unclosed_bold")]
+    #[test_case("a `unclosed" ; "unclosed_code")]
+    #[test_case("**bold `unclosed**" ; "unclosed_nested_code")]
+    #[test_case("`code **unclosed`" ; "unclosed_nested_bold")]
+    #[test_case("**a `b** c`" ; "interleaved_1")]
+    #[test_case("`a **b` c**" ; "interleaved_2")]
+    #[test_case("***bold***" ; "triple_star")]
+    #[test_case("**`**`" ; "bold_before_code")]
+    #[test_case("a `b` c `d` e" ; "multiple_code")]
+    #[test_case("a **b** c **d** e" ; "multiple_bold")]
+    #[test_case("``" ; "empty_code")]
+    #[test_case("****" ; "empty_bold")]
+    #[test_case("" ; "empty")]
+    #[test_case("`" ; "lone_backtick")]
+    #[test_case("**" ; "lone_stars")]
+    #[test_case("**`all`**" ; "bold_code_combined")]
+    #[test_case("`**all**`" ; "code_bold_combined")]
+    #[test_case("here is `/home/tony/file.rs` path" ; "path_in_backticks")]
+    #[test_case("use `fn main()` and **important**" ; "code_and_bold_real_content")]
+    #[test_case("**`/home/tony/c/maki/src/tools/read.rs:23-38`**" ; "bold_code_path")]
+    #[test_case("### 1. Data ` Types` — How Output" ; "heading_with_stray_backtick")]
+    #[test_case("**/ Diffs Are Structured" ; "unclosed_bold_with_slash")]
+    #[test_case("`a` `b` `c` `d` `e`" ; "many_code_spans")]
+    #[test_case("**a** `b` **c** `d`" ; "alternating_bold_code")]
+    #[test_case("text `code` more **bold** end `code2` fin" ; "mixed_inline")]
+    fn inline_parse_invariants(input: &str) {
+        let base = Style::default();
+        let spans = parse_inline_markdown(input, base);
+        let reconstructed: String = spans.iter().map(|s| s.content.as_ref()).collect();
+
+        let mut input_chars = input.chars().peekable();
+        for ch in reconstructed.chars() {
+            loop {
+                match input_chars.next() {
+                    Some(c) if c == ch => break,
+                    Some(_) => continue,
+                    None => panic!(
+                        "output not a subsequence of input\n  input: {input:?}\n  output: {reconstructed:?}"
+                    ),
+                }
+            }
+        }
+
+        let strip = |s: &str| -> String { s.chars().filter(|c| *c != '`' && *c != '*').collect() };
+        assert_eq!(
+            strip(&reconstructed),
+            strip(input),
+            "non-delimiter content lost or reordered\n  input: {input:?}\n  output: {reconstructed:?}"
+        );
     }
 
     #[test_case("line1\nline2\nline3", 3, "line1" ; "splits_newlines")]
@@ -388,6 +468,26 @@ mod tests {
         &[("before", None), ("code", Some("rs")), ("more", None)]
         ; "closing_fence_with_trailing_text"
     )]
+    #[test_case(
+        "before\n```rust",
+        &[("before", None), ("```rust", None)]
+        ; "partial_fence_no_newline_after_lang"
+    )]
+    #[test_case(
+        "before\n```",
+        &[("before", None), ("```", None)]
+        ; "partial_fence_no_lang_no_newline"
+    )]
+    #[test_case(
+        "```rust",
+        &[("```rust", None)]
+        ; "only_partial_fence"
+    )]
+    #[test_case(
+        "a\n```\n",
+        &[("a", None), ("", Some(""))]
+        ; "fence_with_newline_then_eof"
+    )]
     fn parse_blocks_cases(input: &str, expected: &[(&str, Option<&str>)]) {
         let blocks = parse_blocks(input);
         assert_eq!(block_summary(&blocks), expected);
@@ -413,6 +513,62 @@ mod tests {
         let mut hl = Vec::new();
         let inc = text_to_lines(text, "p> ", style, style, Some(&mut hl));
         assert_eq!(lines_text(&full), lines_text(&inc));
+    }
+
+    #[test_case(
+        "Here is **bold** and `code` text.\nLine2 has `more` stuff."
+        ; "streaming_mixed_markdown"
+    )]
+    #[test_case(
+        "### 1. Data Types\n\nHere is `/home/file.rs` path\n**bold** end"
+        ; "streaming_heading_with_code"
+    )]
+    #[test_case(
+        "**`/home/tony/c/maki/src/tools/read.rs:23-38`**\n\nSome text after"
+        ; "streaming_bold_code_path"
+    )]
+    #[test_case(
+        "Before\n```rust\nfn main() {}\n```\nAfter with **bold**"
+        ; "streaming_code_block_then_inline"
+    )]
+    #[test_case(
+        "a `b` c **d** e\n`f` **g**\nh"
+        ; "streaming_multiline_inline"
+    )]
+    fn streaming_never_garbles(input: &str) {
+        let style = Style::default();
+        for end in 1..=input.len() {
+            if !input.is_char_boundary(end) {
+                continue;
+            }
+            let prefix = &input[..end];
+            let mut hl = Vec::new();
+            let lines = text_to_lines(prefix, "", style, style, Some(&mut hl));
+            let rendered: String = lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            for line in rendered.split('\n') {
+                if line.is_empty() {
+                    continue;
+                }
+                let line_stripped: String =
+                    line.chars().filter(|c| *c != '`' && *c != '*').collect();
+                let input_stripped: String =
+                    prefix.chars().filter(|c| *c != '`' && *c != '*').collect();
+                assert!(
+                    input_stripped.contains(&line_stripped),
+                    "rendered line not found in input at prefix len={end}\n  prefix: {prefix:?}\n  rendered line: {line:?}\n  full rendered: {rendered:?}"
+                );
+            }
+        }
     }
 
     #[test_case(
