@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -17,6 +18,8 @@ use maki_providers::Model;
 use maki_providers::provider::Provider;
 
 const AGENTS_MD: &str = "AGENTS.md";
+const DOOM_LOOP_THRESHOLD: usize = 3;
+const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
 
 pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, model: &Model) -> String {
     let mut out = crate::prompt::base_prompt(model.family()).to_string();
@@ -55,35 +58,59 @@ struct ParsedToolCall {
     call: ToolCall,
 }
 
+fn is_doom_loop(name: &str, input: &Value, recent: &VecDeque<(String, Value)>) -> bool {
+    recent.len() >= DOOM_LOOP_THRESHOLD - 1
+        && recent
+            .iter()
+            .rev()
+            .take(DOOM_LOOP_THRESHOLD - 1)
+            .all(|(n, i)| n == name && i == input)
+}
+
 fn parse_tool_calls<'a>(
     tool_uses: impl Iterator<Item = (&'a str, &'a str, &'a serde_json::Value)>,
     event_tx: &Sender<Envelope>,
+    recent_calls: &mut VecDeque<(String, Value)>,
 ) -> (Vec<ParsedToolCall>, Vec<ToolDoneEvent>) {
     let mut parsed = Vec::new();
     let mut errors = Vec::new();
 
     for (id, name, input) in tool_uses {
-        match ToolCall::from_api(name, input) {
-            Ok(call) => parsed.push(ParsedToolCall {
+        if is_doom_loop(name, input, recent_calls) {
+            warn!(tool = %name, "doom loop detected, skipping execution");
+            errors.push(ToolDoneEvent {
                 id: id.to_owned(),
-                call,
-            }),
-            Err(e) => {
-                let msg = format!("failed to parse tool {name}: {e}");
-                warn!(tool = %name, error = %e, "failed to parse tool call");
-                let _ = event_tx.send(
-                    AgentEvent::Error {
-                        message: msg.clone(),
-                    }
-                    .into(),
-                );
-                errors.push(ToolDoneEvent {
+                tool: "unknown",
+                output: ToolOutput::Plain(DOOM_LOOP_MESSAGE.into()),
+                is_error: true,
+            });
+        } else {
+            match ToolCall::from_api(name, input) {
+                Ok(call) => parsed.push(ParsedToolCall {
                     id: id.to_owned(),
-                    tool: "unknown",
-                    output: ToolOutput::Plain(msg),
-                    is_error: true,
-                });
+                    call,
+                }),
+                Err(e) => {
+                    let msg = format!("failed to parse tool {name}: {e}");
+                    warn!(tool = %name, error = %e, "failed to parse tool call");
+                    let _ = event_tx.send(
+                        AgentEvent::Error {
+                            message: msg.clone(),
+                        }
+                        .into(),
+                    );
+                    errors.push(ToolDoneEvent {
+                        id: id.to_owned(),
+                        tool: "unknown",
+                        output: ToolOutput::Plain(msg),
+                        is_error: true,
+                    });
+                }
             }
+        }
+        recent_calls.push_back((name.to_owned(), input.clone()));
+        if recent_calls.len() > DOOM_LOOP_THRESHOLD {
+            recent_calls.pop_front();
         }
     }
 
@@ -144,6 +171,7 @@ pub fn run(
     };
     let mut total_usage = TokenUsage::default();
     let mut num_turns: u32 = 0;
+    let mut recent_calls: VecDeque<(String, Value)> = VecDeque::new();
 
     loop {
         let response = provider.stream_message(model, history, system, tools, event_tx)?;
@@ -184,7 +212,8 @@ pub fn run(
             return Ok(());
         }
 
-        let (parsed, errors) = parse_tool_calls(response.message.tool_uses(), event_tx);
+        let (parsed, errors) =
+            parse_tool_calls(response.message.tool_uses(), event_tx, &mut recent_calls);
 
         history.push(response.message);
 
@@ -225,5 +254,57 @@ mod tests {
         if expect_plan {
             assert!(prompt.contains(PLAN_PATH));
         }
+    }
+
+    fn recent(entries: &[(&str, Value)]) -> VecDeque<(String, Value)> {
+        entries
+            .iter()
+            .map(|(n, v)| (n.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn doom_loop_triggers_after_threshold() {
+        let input = serde_json::json!({"path": "/tmp/a.txt"});
+        assert!(!is_doom_loop("read", &input, &VecDeque::new()));
+        assert!(!is_doom_loop(
+            "read",
+            &input,
+            &recent(&[("read", input.clone())])
+        ));
+        assert!(is_doom_loop(
+            "read",
+            &input,
+            &recent(&[("read", input.clone()), ("read", input.clone())])
+        ));
+    }
+
+    #[test]
+    fn doom_loop_no_false_positives() {
+        let input = serde_json::json!({"path": "/a"});
+        let other = serde_json::json!({"path": "/b"});
+
+        // different input breaks chain
+        assert!(!is_doom_loop(
+            "read",
+            &input,
+            &recent(&[("read", input.clone()), ("read", other.clone())])
+        ));
+        // different tool name breaks chain
+        assert!(!is_doom_loop(
+            "grep",
+            &input,
+            &recent(&[("glob", input.clone()), ("glob", input.clone())])
+        ));
+        // interrupted chain in tail
+        assert!(!is_doom_loop(
+            "bash",
+            &input,
+            &recent(&[
+                ("bash", input.clone()),
+                ("bash", other),
+                ("bash", input.clone())
+            ])
+        ));
     }
 }
