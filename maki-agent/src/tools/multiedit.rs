@@ -8,6 +8,7 @@ use similar::ChangeTag;
 use maki_tool_macro::Tool;
 
 use super::fuzzy_replace;
+use super::relative_path;
 
 #[derive(Debug, Clone, Deserialize)]
 struct EditEntry {
@@ -66,15 +67,20 @@ impl MultiEdit {
         }
 
         fs::write(&self.path, &content).map_err(|e| format!("write error: {e}"))?;
+        let rel = relative_path(&self.path);
         Ok(ToolOutput::Diff {
-            path: self.path.clone(),
             hunks,
-            summary: format!("applied {} to {}", self.edit_count_label(), self.path),
+            summary: format!("applied {} to {rel}", self.edit_count_label()),
+            path: rel,
         })
     }
 
     pub fn start_summary(&self) -> String {
-        format!("{} ({})", self.path, self.edit_count_label())
+        format!(
+            "{} ({})",
+            relative_path(&self.path),
+            self.edit_count_label()
+        )
     }
 
     pub fn start_input(&self) -> Option<ToolInput> {

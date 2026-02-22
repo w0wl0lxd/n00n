@@ -7,7 +7,7 @@ use maki_tool_macro::Tool;
 
 use maki_providers::{ToolInput, ToolOutput};
 
-use super::truncate_output;
+use super::{relative_path, truncate_output};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const POLL_INTERVAL_MS: u64 = 10;
@@ -97,7 +97,7 @@ impl Bash {
             .unwrap_or_else(|| self.command.clone());
         if let Some(dir) = &self.workdir {
             s.push_str(" in ");
-            s.push_str(dir);
+            s.push_str(&relative_path(dir));
         }
         s
     }

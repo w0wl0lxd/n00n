@@ -50,6 +50,17 @@ pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> 
     }
 }
 
+pub(crate) fn relative_path(path: &str) -> String {
+    let Ok(cwd) = std::env::current_dir() else {
+        return path.to_string();
+    };
+    let cwd = cwd.to_string_lossy();
+    path.strip_prefix(cwd.as_ref())
+        .and_then(|p| p.strip_prefix('/'))
+        .unwrap_or(path)
+        .to_string()
+}
+
 pub(crate) fn mtime(path: &Path) -> SystemTime {
     std::fs::metadata(path)
         .and_then(|m| m.modified())

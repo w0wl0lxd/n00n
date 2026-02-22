@@ -4,7 +4,7 @@ use std::fs;
 use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
-use super::{MAX_OUTPUT_LINES, truncate_output};
+use super::{MAX_OUTPUT_LINES, relative_path, truncate_output};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Read {
@@ -39,7 +39,7 @@ impl Read {
     }
 
     pub fn start_summary(&self) -> String {
-        let mut s = self.path.clone();
+        let mut s = relative_path(&self.path);
         let start = self.offset.unwrap_or(1);
         match (self.offset.is_some(), self.limit) {
             (_, Some(l)) => {

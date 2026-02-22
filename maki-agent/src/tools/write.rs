@@ -4,6 +4,8 @@ use std::path::Path;
 use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
+use super::relative_path;
+
 #[derive(Tool, Debug, Clone)]
 pub struct Write {
     #[param(description = "Absolute path to the file")]
@@ -24,12 +26,12 @@ impl Write {
         Ok(ToolOutput::Plain(format!(
             "wrote {} bytes to {}",
             self.content.len(),
-            self.path
+            relative_path(&self.path)
         )))
     }
 
     pub fn start_summary(&self) -> String {
-        self.path.clone()
+        relative_path(&self.path)
     }
 
     pub fn start_input(&self) -> Option<ToolInput> {

@@ -3,7 +3,7 @@ use ignore::overrides::OverrideBuilder;
 use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
-use super::{NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, resolve_search_path};
+use super::{NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Glob {
@@ -36,7 +36,7 @@ impl Glob {
             .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
             .map(|e| {
                 let p = e.into_path();
-                (mtime(&p), p.to_string_lossy().into_owned())
+                (mtime(&p), relative_path(&p.to_string_lossy()))
             })
             .collect();
 

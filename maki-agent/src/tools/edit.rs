@@ -5,6 +5,7 @@ use maki_tool_macro::Tool;
 
 use super::fuzzy_replace;
 use super::multiedit::build_hunk;
+use super::relative_path;
 
 #[derive(Tool, Debug, Clone)]
 pub struct Edit {
@@ -29,15 +30,16 @@ impl Edit {
             fuzzy_replace::replace(&content, &self.old_string, &self.new_string, replace_all)?;
         let start_line = content[..result.match_offset].matches('\n').count() + 1;
         fs::write(&self.path, &result.content).map_err(|e| format!("write error: {e}"))?;
+        let rel = relative_path(&self.path);
         Ok(ToolOutput::Diff {
-            path: self.path.clone(),
             hunks: vec![build_hunk(start_line, &self.old_string, &self.new_string)],
-            summary: format!("edited {}", self.path),
+            summary: format!("edited {rel}"),
+            path: rel,
         })
     }
 
     pub fn start_summary(&self) -> String {
-        self.path.clone()
+        relative_path(&self.path)
     }
 
     pub fn start_input(&self) -> Option<ToolInput> {
