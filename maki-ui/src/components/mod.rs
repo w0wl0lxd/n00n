@@ -1,3 +1,4 @@
+mod code_view;
 pub mod input;
 pub mod messages;
 pub mod status_bar;

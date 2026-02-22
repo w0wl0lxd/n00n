@@ -109,6 +109,11 @@ pub struct BatchToolEntry {
 #[derive(Debug, Clone, Serialize)]
 pub enum ToolOutput {
     Plain(String),
+    ReadCode {
+        path: String,
+        start_line: usize,
+        lines: Vec<String>,
+    },
     Diff {
         path: String,
         hunks: Vec<DiffHunk>,
@@ -125,6 +130,14 @@ impl ToolOutput {
     pub fn as_text(&self) -> String {
         match self {
             Self::Plain(s) => s.clone(),
+            Self::ReadCode {
+                start_line, lines, ..
+            } => lines
+                .iter()
+                .enumerate()
+                .map(|(i, line)| format!("{}: {line}", start_line + i))
+                .collect::<Vec<_>>()
+                .join("\n"),
             Self::Diff {
                 path,
                 hunks,

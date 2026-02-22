@@ -4,7 +4,7 @@ use std::fs;
 use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
-use super::{MAX_OUTPUT_LINES, relative_path, truncate_output};
+use super::{MAX_OUTPUT_LINES, relative_path};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Read {
@@ -26,16 +26,18 @@ impl Read {
         let start = self.offset.unwrap_or(1).saturating_sub(1);
         let limit = self.limit.unwrap_or(MAX_OUTPUT_LINES);
 
-        let numbered: String = raw
+        let lines: Vec<String> = raw
             .lines()
-            .enumerate()
             .skip(start)
             .take(limit)
-            .map(|(i, line)| format!("{}: {line}", i + 1))
-            .collect::<Vec<_>>()
-            .join("\n");
+            .map(|l| l.to_owned())
+            .collect();
 
-        Ok(ToolOutput::Plain(truncate_output(numbered)))
+        Ok(ToolOutput::ReadCode {
+            path: self.path.clone(),
+            start_line: start + 1,
+            lines,
+        })
     }
 
     pub fn start_summary(&self) -> String {
