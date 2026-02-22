@@ -57,7 +57,12 @@ impl Glob {
     }
 
     pub fn start_summary(&self) -> String {
-        self.pattern.clone()
+        let mut s = self.pattern.clone();
+        if let Some(dir) = &self.path {
+            s.push_str(" in ");
+            s.push_str(&relative_path(dir));
+        }
+        s
     }
 
     pub fn start_input(&self) -> Option<ToolInput> {
@@ -72,13 +77,15 @@ impl Glob {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
 
-    #[test]
-    fn start_summary_returns_pattern() {
+    #[test_case("**/*.rs", None,            "**/*.rs"          ; "pattern_only")]
+    #[test_case("**/*.rs", Some("src/"),      "**/*.rs in src/"  ; "with_path")]
+    fn start_summary_cases(pattern: &str, path: Option<&str>, expected: &str) {
         let g = Glob {
-            pattern: "**/*.rs".into(),
-            path: Some("src/".into()),
+            pattern: pattern.into(),
+            path: path.map(Into::into),
         };
-        assert_eq!(g.start_summary(), "**/*.rs");
+        assert_eq!(g.start_summary(), expected);
     }
 }

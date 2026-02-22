@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
-use super::{NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, resolve_search_path};
+use super::{NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path};
 
 const MAX_GREP_LINE_LENGTH: usize = 2000;
 
@@ -114,6 +114,10 @@ impl Grep {
             s.push_str(inc);
             s.push(']');
         }
+        if let Some(dir) = &self.path {
+            s.push_str(" in ");
+            s.push_str(&relative_path(dir));
+        }
         s
     }
 
@@ -132,13 +136,20 @@ mod tests {
 
     use super::*;
 
-    #[test_case("fn main", None,       "fn main"       ; "pattern_only")]
-    #[test_case("TODO",    Some("*.rs"), "TODO [*.rs]"  ; "with_include")]
-    fn start_summary_cases(pattern: &str, include: Option<&str>, expected: &str) {
+    #[test_case("fn main", None,        None,           "fn main"              ; "pattern_only")]
+    #[test_case("TODO",    Some("*.rs"), None,           "TODO [*.rs]"          ; "with_include")]
+    #[test_case("TODO",    None,         Some("src/"),   "TODO in src/"         ; "with_path")]
+    #[test_case("TODO",    Some("*.rs"), Some("src/"),   "TODO [*.rs] in src/" ; "with_include_and_path")]
+    fn start_summary_cases(
+        pattern: &str,
+        include: Option<&str>,
+        path: Option<&str>,
+        expected: &str,
+    ) {
         let g = Grep {
             pattern: pattern.into(),
             include: include.map(Into::into),
-            path: Some("src/".into()),
+            path: path.map(Into::into),
         };
         assert_eq!(g.start_summary(), expected);
     }
