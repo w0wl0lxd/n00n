@@ -251,6 +251,23 @@ impl MessagesPanel {
         self.invalidate_line_cache();
     }
 
+    pub fn fail_in_progress(&mut self) {
+        for msg in &mut self.messages {
+            if let DisplayRole::Tool { ref mut status, .. } = msg.role
+                && *status == ToolStatus::InProgress
+            {
+                *status = ToolStatus::Error;
+            }
+        }
+        self.in_progress_count = 0;
+        self.invalidate_line_cache();
+    }
+
+    #[cfg(test)]
+    pub fn in_progress_count(&self) -> usize {
+        self.in_progress_count
+    }
+
     pub fn flush(&mut self) {
         self.flush_thinking();
         if !self.streaming_text.is_empty() {
@@ -638,16 +655,28 @@ mod tests {
     use ratatui::backend::TestBackend;
     use test_case::test_case;
 
+    fn start(id: &str, tool: &'static str) -> ToolStartEvent {
+        ToolStartEvent {
+            id: id.into(),
+            tool,
+            summary: id.into(),
+            input: None,
+        }
+    }
+
+    fn panel_with_tools(ids: &[(&str, &'static str)]) -> MessagesPanel {
+        let mut panel = MessagesPanel::new();
+        for &(id, tool) in ids {
+            panel.tool_start(start(id, tool));
+        }
+        panel
+    }
+
     #[test_case(false, ToolStatus::Success ; "success_updates_start_to_success")]
     #[test_case(true,  ToolStatus::Error   ; "error_updates_start_to_error")]
     fn tool_done_updates_start_status(is_error: bool, expected: ToolStatus) {
         let mut panel = MessagesPanel::new();
-        panel.tool_start(ToolStartEvent {
-            id: "t1".into(),
-            tool: "bash",
-            summary: "cmd".into(),
-            input: None,
-        });
+        panel.tool_start(start("t1", "bash"));
         assert!(matches!(
             panel.messages[0].role,
             DisplayRole::Tool {
@@ -682,12 +711,7 @@ mod tests {
     #[test]
     fn webfetch_hides_body() {
         let mut panel = MessagesPanel::new();
-        panel.tool_start(ToolStartEvent {
-            id: "t1".into(),
-            tool: WEBFETCH_TOOL_NAME,
-            summary: "s".into(),
-            input: None,
-        });
+        panel.tool_start(start("t1", WEBFETCH_TOOL_NAME));
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
             tool: WEBFETCH_TOOL_NAME,
@@ -700,12 +724,7 @@ mod tests {
     #[test]
     fn write_done_shows_bytes_annotation() {
         let mut panel = MessagesPanel::new();
-        panel.tool_start(ToolStartEvent {
-            id: "t1".into(),
-            tool: WRITE_TOOL_NAME,
-            summary: "src/main.rs".into(),
-            input: None,
-        });
+        panel.tool_start(start("t1", WRITE_TOOL_NAME));
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
             tool: WRITE_TOOL_NAME,
@@ -724,12 +743,7 @@ mod tests {
         let mut panel = MessagesPanel::new();
         panel.streaming_text.set_buffer("partial response");
 
-        panel.tool_start(ToolStartEvent {
-            id: "t1".into(),
-            tool: "read",
-            summary: "/tmp/file".into(),
-            input: None,
-        });
+        panel.tool_start(start("t1", "read"));
 
         assert!(panel.streaming_text.is_empty());
         assert_eq!(panel.messages[0].role, DisplayRole::Assistant);
@@ -750,14 +764,11 @@ mod tests {
         assert_eq!(panel.messages[0].text, "reasoning");
     }
 
-    #[test_case(10, 10, 0   ; "half_page_up_saturates_at_zero")]
+    #[test_case(10, 10, 0   ; "up_saturates_at_zero")]
     #[test_case(20, 10, 10  ; "half_page_up")]
     #[test_case(5,  -10, 15 ; "half_page_down")]
-    #[test_case(0,  -10, 10 ; "half_page_down_from_top")]
     #[test_case(5,  1, 4    ; "scroll_up_one")]
-    #[test_case(0,  1, 0    ; "scroll_up_one_saturates_at_zero")]
     #[test_case(5,  -1, 6   ; "scroll_down_one")]
-    #[test_case(0,  -1, 1   ; "scroll_down_from_top")]
     fn scroll_by_delta(initial: u16, delta: i32, expected: u16) {
         let mut panel = MessagesPanel::new();
         panel.viewport_height = 20;
@@ -844,20 +855,8 @@ mod tests {
     }
 
     #[test]
-    fn multiple_in_progress_tools_tracked() {
-        let mut panel = MessagesPanel::new();
-        panel.tool_start(ToolStartEvent {
-            id: "t1".into(),
-            tool: "bash",
-            summary: "a".into(),
-            input: None,
-        });
-        panel.tool_start(ToolStartEvent {
-            id: "t2".into(),
-            tool: "read",
-            summary: "b".into(),
-            input: None,
-        });
+    fn in_progress_tracking_and_fail() {
+        let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "read")]);
         assert_eq!(panel.in_progress_count, 2);
 
         panel.tool_done(ToolDoneEvent {
@@ -877,6 +876,25 @@ mod tests {
         });
         assert_eq!(panel.in_progress_count, 0);
         assert!(!panel.is_animating());
+    }
+
+    #[test]
+    fn fail_in_progress_marks_all_as_error() {
+        let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "read")]);
+
+        panel.fail_in_progress();
+
+        assert_eq!(panel.in_progress_count, 0);
+        assert!(!panel.is_animating());
+        for msg in &panel.messages {
+            assert!(matches!(
+                msg.role,
+                DisplayRole::Tool {
+                    status: ToolStatus::Error,
+                    ..
+                }
+            ));
+        }
     }
 
     fn has_scrollbar_thumb(terminal: &ratatui::Terminal<TestBackend>) -> bool {

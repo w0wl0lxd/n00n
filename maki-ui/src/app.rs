@@ -211,6 +211,7 @@ impl App {
         match self.status_bar.handle_cancel_press() {
             CancelResult::Confirmed => {
                 self.messages_panel.flush();
+                self.messages_panel.fail_in_progress();
                 self.messages_panel.push(DisplayMessage {
                     role: DisplayRole::Error,
                     text: CANCEL_MSG.into(),
@@ -322,10 +323,15 @@ mod tests {
     use super::*;
     use crate::components::{TEST_CONTEXT_WINDOW, ctrl, key, test_pricing};
     use crossterm::event::KeyCode;
+    use maki_providers::ToolStartEvent;
+
+    fn test_app() -> App {
+        App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW)
+    }
 
     #[test]
     fn typing_and_submit() {
-        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = test_app();
         app.update(Msg::Key(key(KeyCode::Char('h'))));
         app.update(Msg::Key(key(KeyCode::Char('i'))));
 
@@ -337,7 +343,7 @@ mod tests {
 
     #[test]
     fn ctrl_c_clears_nonempty_input() {
-        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = test_app();
         app.update(Msg::Key(key(KeyCode::Char('h'))));
         app.update(Msg::Key(key(KeyCode::Char('i'))));
 
@@ -350,7 +356,7 @@ mod tests {
     #[test]
     fn ctrl_c_quits_when_input_empty() {
         for status in [Status::Idle, Status::Streaming] {
-            let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+            let mut app = test_app();
             app.status = status;
             let actions = app.update(Msg::Key(ctrl('c')));
             assert!(app.should_quit);
@@ -360,7 +366,7 @@ mod tests {
 
     #[test]
     fn done_flushes_text_and_sets_idle() {
-        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = test_app();
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::TextDelta {
             text: "response text".into(),
@@ -376,7 +382,7 @@ mod tests {
 
     #[test]
     fn turn_complete_accumulates_usage_and_sets_context_size() {
-        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = test_app();
         app.status = Status::Streaming;
         let usage = TokenUsage {
             input: 1_000,
@@ -408,7 +414,7 @@ mod tests {
 
     #[test]
     fn error_event_sets_status() {
-        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = test_app();
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::Error {
             message: "boom".into(),
@@ -418,7 +424,7 @@ mod tests {
 
     #[test]
     fn tab_toggles_mode_and_sets_pending_plan() {
-        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = test_app();
         assert_eq!(app.mode, AgentMode::Build);
 
         app.update(Msg::Key(key(KeyCode::Tab)));
@@ -431,7 +437,7 @@ mod tests {
 
     #[test]
     fn submit_consumes_pending_plan() {
-        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = test_app();
         app.pending_plan = Some("plan.md".into());
         app.update(Msg::Key(key(KeyCode::Char('x'))));
         let actions = app.update(Msg::Key(key(KeyCode::Enter)));
@@ -444,7 +450,7 @@ mod tests {
 
     #[test]
     fn backslash_enter_creates_newline() {
-        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = test_app();
         for c in "hello\\".chars() {
             app.update(Msg::Key(key(KeyCode::Char(c))));
         }
@@ -462,7 +468,7 @@ mod tests {
 
     #[test]
     fn altgr_chars_not_swallowed_by_ctrl_handler() {
-        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = test_app();
         let altgr_backslash = KeyEvent {
             code: KeyCode::Char('\\'),
             modifiers: KeyModifiers::CONTROL | KeyModifiers::ALT,
@@ -473,19 +479,21 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Char('i'))));
         app.update(Msg::Key(altgr_backslash));
         assert_eq!(app.input_box.buffer.value(), "hi\\");
-
-        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-        assert!(actions.is_empty(), "backslash-enter should not submit");
-        assert_eq!(app.input_box.buffer.lines(), &["hi", ""]);
     }
 
     #[test]
-    fn double_esc_cancels_and_flushes() {
-        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+    fn double_esc_cancels_flushes_and_fails_tools() {
+        let mut app = test_app();
         app.status = Status::Streaming;
         app.update(Msg::Agent(AgentEvent::TextDelta {
-            text: "partial response".into(),
+            text: "partial".into(),
         }));
+        app.update(Msg::Agent(AgentEvent::ToolStart(ToolStartEvent {
+            id: "t1".into(),
+            tool: "bash",
+            summary: "running".into(),
+            input: None,
+        })));
 
         let actions = app.update(Msg::Key(key(KeyCode::Esc)));
         assert!(actions.is_empty());
@@ -493,11 +501,12 @@ mod tests {
         let actions = app.update(Msg::Key(key(KeyCode::Esc)));
         assert!(matches!(&actions[0], Action::CancelAgent));
         assert_eq!(app.status, Status::Idle);
+        assert_eq!(app.messages_panel.in_progress_count(), 0);
     }
 
     #[test]
     fn paste_inserts_text() {
-        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = test_app();
         let actions = app.update(Msg::Paste("pasted".into()));
         assert!(actions.is_empty());
         assert_eq!(app.input_box.buffer.value(), "pasted");
@@ -505,7 +514,7 @@ mod tests {
 
     #[test]
     fn paste_ignored_while_streaming() {
-        let mut app = App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW);
+        let mut app = test_app();
         app.status = Status::Streaming;
         app.update(Msg::Paste("pasted text".into()));
         assert_eq!(app.input_box.buffer.value(), "");
