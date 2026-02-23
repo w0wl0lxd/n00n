@@ -51,7 +51,7 @@ impl InputBox {
         }
     }
 
-    pub fn height(&self, width: u16, _is_streaming: bool) -> u16 {
+    pub fn height(&self, width: u16) -> u16 {
         let content_width = width.saturating_sub(2) as usize;
         let visual_lines = total_visual_lines(&self.buffer, content_width, true);
         (visual_lines as u16).min(MAX_INPUT_LINES) + 2
@@ -144,7 +144,7 @@ impl InputBox {
         lines_above + wrap_row
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect, is_streaming: bool) {
+    pub fn view(&mut self, frame: &mut Frame, area: Rect) {
         let content_height = area.height.saturating_sub(2);
         let content_width = area.width.saturating_sub(2) as usize;
 
@@ -155,12 +155,12 @@ impl InputBox {
             self.scroll_y = visual_cursor_y - content_height + 1;
         }
 
-        let total_vl = total_visual_lines(&self.buffer, content_width, !is_streaming) as u16;
+        let total_vl = total_visual_lines(&self.buffer, content_width, true) as u16;
         let max_scroll = total_vl.saturating_sub(content_height);
         self.scroll_y = self.scroll_y.min(max_scroll);
 
         let is_empty = self.buffer.value().is_empty();
-        let styled_lines: Vec<Line> = if is_empty && !is_streaming {
+        let styled_lines: Vec<Line> = if is_empty {
             let placeholder_base = Style::new().fg(theme::COMMENT);
             vec![Line::from(vec![
                 Span::styled("A", placeholder_base.reversed()),
@@ -179,7 +179,7 @@ impl InputBox {
                 .map(|(i, line)| {
                     let mut spans = Vec::new();
 
-                    if !is_streaming && i == self.buffer.y() {
+                    if i == self.buffer.y() {
                         let x = self.buffer.x();
                         let (before, after) = line.split_at(x.min(line.len()));
                         if after.is_empty() {
@@ -321,12 +321,12 @@ mod tests {
     #[test]
     fn height_capped_at_max() {
         let mut input = InputBox::new();
-        let base = input.height(TEST_WIDTH, false);
+        let base = input.height(TEST_WIDTH);
         for _ in 0..20 {
             input.buffer.add_line();
         }
-        assert!(input.height(TEST_WIDTH, false) > base);
-        assert!(input.height(TEST_WIDTH, false) <= MAX_INPUT_LINES + 2);
+        assert!(input.height(TEST_WIDTH) > base);
+        assert!(input.height(TEST_WIDTH) <= MAX_INPUT_LINES + 2);
     }
 
     #[test]
@@ -393,8 +393,8 @@ mod tests {
         );
 
         assert_eq!(
-            at_boundary.height(width, false),
-            before_boundary.height(width, false) + 1,
+            at_boundary.height(width),
+            before_boundary.height(width) + 1,
             "cursor at boundary should cause one extra visual line"
         );
     }
@@ -403,14 +403,13 @@ mod tests {
         input: &mut InputBox,
         width: u16,
         height: u16,
-        is_streaming: bool,
     ) -> ratatui::Terminal<ratatui::backend::TestBackend> {
         let backend = ratatui::backend::TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
                 let area = Rect::new(0, 0, width, height);
-                input.view(frame, area, is_streaming);
+                input.view(frame, area);
             })
             .unwrap();
         terminal
@@ -431,7 +430,7 @@ mod tests {
         for _ in 0..extra_lines {
             input.buffer.add_line();
         }
-        let terminal = render_input(&mut input, 40, MAX_INPUT_LINES + 2, false);
+        let terminal = render_input(&mut input, 40, MAX_INPUT_LINES + 2);
         assert_eq!(has_scrollbar_thumb(&terminal), expect_visible);
     }
 
@@ -442,12 +441,12 @@ mod tests {
             input.buffer.add_line();
         }
         let area_height = 5_u16;
-        let _ = render_input(&mut input, 40, area_height, false);
+        let _ = render_input(&mut input, 40, area_height);
         let scroll_before = input.scroll_y;
         assert!(scroll_before > 0);
 
         input.buffer = TextBuffer::new("short".into());
-        let _ = render_input(&mut input, 40, area_height, false);
+        let _ = render_input(&mut input, 40, area_height);
         assert_eq!(input.scroll_y, 0);
     }
 }

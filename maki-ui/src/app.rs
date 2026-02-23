@@ -1,5 +1,8 @@
+use std::collections::VecDeque;
+
 use crate::components::input::InputBox;
 use crate::components::messages::MessagesPanel;
+use crate::components::queue_panel;
 use crate::components::status_bar::{CancelResult, StatusBar, StatusBarContext, UsageStats};
 use crate::components::{Action, DisplayMessage, DisplayRole, Status};
 use crate::theme;
@@ -21,7 +24,7 @@ pub enum Msg {
 
 pub struct App {
     messages_panel: MessagesPanel,
-    input_box: InputBox,
+    pub(crate) input_box: InputBox,
     status_bar: StatusBar,
     pub status: Status,
     pub token_usage: TokenUsage,
@@ -32,6 +35,7 @@ pub struct App {
     pricing: ModelPricing,
     context_window: u32,
     pub should_quit: bool,
+    pub(crate) queue: VecDeque<AgentInput>,
 }
 
 impl App {
@@ -49,6 +53,7 @@ impl App {
             pricing,
             context_window,
             should_quit: false,
+            queue: VecDeque::new(),
         }
     }
 
@@ -56,9 +61,7 @@ impl App {
         match msg {
             Msg::Key(key) => self.handle_key(key),
             Msg::Paste(text) => {
-                if self.status != Status::Streaming {
-                    self.input_box.buffer.insert_text(&text);
-                }
+                self.input_box.buffer.insert_text(&text);
                 vec![]
             }
             Msg::Agent(event) => self.handle_agent_event(event),
@@ -96,15 +99,15 @@ impl App {
                     self.messages_panel.scroll(-1);
                     vec![]
                 }
-                KeyCode::Char('w') if self.status != Status::Streaming => {
+                KeyCode::Char('w') => {
                     self.input_box.buffer.remove_word_before_cursor();
                     vec![]
                 }
-                KeyCode::Left if self.status != Status::Streaming => {
+                KeyCode::Left => {
                     self.input_box.buffer.move_word_left();
                     vec![]
                 }
-                KeyCode::Right if self.status != Status::Streaming => {
+                KeyCode::Right => {
                     self.input_box.buffer.move_word_right();
                     vec![]
                 }
@@ -146,10 +149,6 @@ impl App {
             _ => {}
         }
 
-        if self.status == Status::Streaming {
-            return vec![];
-        }
-
         match key.code {
             KeyCode::Enter if self.input_box.char_before_cursor_is_backslash() => {
                 self.input_box.continue_line();
@@ -165,15 +164,16 @@ impl App {
                     mode: self.mode.clone(),
                     pending_plan,
                 };
-                self.messages_panel.push(DisplayMessage {
-                    role: DisplayRole::User,
-                    text,
-                    tool_input: None,
-                    tool_output: None,
-                });
-                self.status = Status::Streaming;
-                self.messages_panel.enable_auto_scroll();
-                vec![Action::SendMessage(input)]
+                if self.status == Status::Streaming {
+                    self.queue.push_back(input);
+                    self.messages_panel.enable_auto_scroll();
+                    vec![]
+                } else {
+                    self.push_user_message(&text);
+                    self.status = Status::Streaming;
+                    self.messages_panel.enable_auto_scroll();
+                    vec![Action::SendMessage(input)]
+                }
             }
             KeyCode::Char(c) => {
                 self.input_box.buffer.push_char(c);
@@ -218,6 +218,7 @@ impl App {
                     tool_input: None,
                     tool_output: None,
                 });
+                self.queue.clear();
                 self.status = Status::Idle;
                 vec![Action::CancelAgent]
             }
@@ -249,17 +250,32 @@ impl App {
             AgentEvent::ToolResultsSubmitted { .. } => {}
             AgentEvent::Done { .. } => {
                 self.messages_panel.flush();
-                self.status = Status::Idle;
                 self.status_bar.clear_cancel_hint();
+                if let Some(input) = self.queue.pop_front() {
+                    self.push_user_message(&input.message);
+                    self.messages_panel.enable_auto_scroll();
+                    return vec![Action::SendMessage(input)];
+                }
+                self.status = Status::Idle;
             }
             AgentEvent::Error { message } => {
                 self.messages_panel.flush();
                 self.status = Status::Error(message);
                 self.status_bar.clear_cancel_hint();
                 self.status_bar.mark_error();
+                self.queue.clear();
             }
         }
         vec![]
+    }
+
+    fn push_user_message(&mut self, text: &str) {
+        self.messages_panel.push(DisplayMessage {
+            role: DisplayRole::User,
+            text: text.to_string(),
+            tool_input: None,
+            tool_output: None,
+        });
     }
 
     fn toggle_mode(&mut self) -> Vec<Action> {
@@ -287,16 +303,19 @@ impl App {
         let bg = Block::default().style(ratatui::style::Style::new().bg(theme::BACKGROUND));
         bg.render(frame.area(), frame.buffer_mut());
 
-        let is_streaming = self.status == Status::Streaming;
-        let input_height = self.input_box.height(frame.area().width, is_streaming);
-        let [msg_area, input_area, status_area] = Layout::vertical([
+        let queue_height = queue_panel::height(self.queue.len());
+        let input_height = self.input_box.height(frame.area().width);
+        let [msg_area, queue_area, input_area, status_area] = Layout::vertical([
             Constraint::Min(1),
+            Constraint::Length(queue_height),
             Constraint::Length(input_height),
             Constraint::Length(1),
         ])
         .areas(frame.area());
         self.messages_panel.view(frame, msg_area);
-        self.input_box.view(frame, input_area, is_streaming);
+        let queue_texts: Vec<&str> = self.queue.iter().map(|i| i.message.as_str()).collect();
+        queue_panel::view(frame, queue_area, &queue_texts);
+        self.input_box.view(frame, input_area);
         let ctx = StatusBarContext {
             status: &self.status,
             mode: &self.mode,
@@ -504,18 +523,72 @@ mod tests {
     }
 
     #[test]
-    fn paste_inserts_text() {
-        let mut app = test_app();
-        let actions = app.update(Msg::Paste("pasted".into()));
-        assert!(actions.is_empty());
-        assert_eq!(app.input_box.buffer.value(), "pasted");
+    fn paste_works_regardless_of_status() {
+        for status in [Status::Idle, Status::Streaming] {
+            let mut app = test_app();
+            app.status = status;
+            let actions = app.update(Msg::Paste("pasted".into()));
+            assert!(actions.is_empty());
+            assert_eq!(app.input_box.buffer.value(), "pasted");
+        }
     }
 
     #[test]
-    fn paste_ignored_while_streaming() {
+    fn submit_during_streaming_queues_message() {
+        let mut app = test_app();
+        app.update(Msg::Key(key(KeyCode::Char('a'))));
+        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], Action::SendMessage(_)));
+        assert_eq!(app.status, Status::Streaming);
+
+        app.update(Msg::Key(key(KeyCode::Char('b'))));
+        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(actions.is_empty());
+        assert_eq!(app.queue.len(), 1);
+        assert_eq!(app.queue[0].message, "b");
+    }
+
+    #[test]
+    fn done_drains_queued_message() {
+        let mut app = app_with_queued_message();
+        let actions = app.update(Msg::Agent(AgentEvent::Done {
+            usage: TokenUsage::default(),
+            num_turns: 1,
+            stop_reason: None,
+        }));
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], Action::SendMessage(i) if i.message == "queued"));
+        assert!(app.queue.is_empty());
+        assert_eq!(app.status, Status::Streaming);
+    }
+
+    #[test]
+    fn error_clears_queue() {
+        let mut app = app_with_queued_message();
+        app.update(Msg::Agent(AgentEvent::Error {
+            message: "boom".into(),
+        }));
+        assert!(app.queue.is_empty());
+    }
+
+    #[test]
+    fn cancel_clears_queue() {
+        let mut app = app_with_queued_message();
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(matches!(&actions[0], Action::CancelAgent));
+        assert!(app.queue.is_empty());
+    }
+
+    fn app_with_queued_message() -> App {
         let mut app = test_app();
         app.status = Status::Streaming;
-        app.update(Msg::Paste("pasted text".into()));
-        assert_eq!(app.input_box.buffer.value(), "");
+        app.queue.push_back(AgentInput {
+            message: "queued".into(),
+            mode: AgentMode::Build,
+            pending_plan: None,
+        });
+        app
     }
 }

@@ -1,6 +1,7 @@
 mod code_view;
 pub mod input;
 pub mod messages;
+pub mod queue_panel;
 pub mod status_bar;
 
 use maki_agent::AgentInput;
