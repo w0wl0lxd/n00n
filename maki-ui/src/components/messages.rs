@@ -572,12 +572,7 @@ impl MessagesPanel {
                 lines: code_lines,
                 ..
             }) => {
-                lines.extend(code_view::render_code(
-                    path,
-                    1,
-                    code_lines,
-                    code_lines.len(),
-                ));
+                lines.extend(code_view::render_read_code(path, 1, code_lines));
             }
             Some(ToolOutput::Diff { path, hunks, .. }) => {
                 lines.extend(code_view::render_diff(path, hunks));
