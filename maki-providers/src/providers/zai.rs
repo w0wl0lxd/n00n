@@ -335,7 +335,10 @@ fn parse_sse(
 
         let chunk: SseChunk = match serde_json::from_str(data) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                warn!(error = %e, "failed to parse SSE chunk");
+                continue;
+            }
         };
 
         if let Some(u) = chunk.usage {

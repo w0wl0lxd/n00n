@@ -330,51 +330,47 @@ fn parse_sse(
                     usage = TokenUsage::from(u);
                 }
             }
-            "content_block_start" => {
-                if let Ok(ev) = serde_json::from_str::<ContentBlockStartEvent>(data) {
-                    match ev.content_block {
-                        SseContentBlock::Text => {
-                            content_blocks.push(ContentBlock::Text {
-                                text: String::new(),
-                            });
-                        }
-                        SseContentBlock::Thinking => {}
-                        SseContentBlock::ToolUse { id, name } => {
-                            current_tool_json.clear();
-                            content_blocks.push(ContentBlock::ToolUse {
-                                id,
-                                name,
-                                input: Value::Null,
-                            });
+            "content_block_start" => match serde_json::from_str::<ContentBlockStartEvent>(data) {
+                Ok(ev) => match ev.content_block {
+                    SseContentBlock::Text => {
+                        content_blocks.push(ContentBlock::Text {
+                            text: String::new(),
+                        });
+                    }
+                    SseContentBlock::Thinking => {}
+                    SseContentBlock::ToolUse { id, name } => {
+                        current_tool_json.clear();
+                        content_blocks.push(ContentBlock::ToolUse {
+                            id,
+                            name,
+                            input: Value::Null,
+                        });
+                    }
+                },
+                Err(e) => warn!(error = %e, "failed to parse content_block_start"),
+            },
+            "content_block_delta" => match serde_json::from_str::<ContentBlockDeltaEvent>(data) {
+                Ok(ev) => match ev.delta {
+                    Delta::Text { text } => {
+                        if !text.is_empty() {
+                            if let Some(ContentBlock::Text { text: t }) = content_blocks.last_mut()
+                            {
+                                t.push_str(&text);
+                            }
+                            event_tx.send(AgentEvent::TextDelta { text }.into())?;
                         }
                     }
-                }
-            }
-            "content_block_delta" => {
-                if let Ok(ev) = serde_json::from_str::<ContentBlockDeltaEvent>(data) {
-                    match ev.delta {
-                        Delta::Text { text } => {
-                            if !text.is_empty() {
-                                if let Some(ContentBlock::Text { text: t }) =
-                                    content_blocks.last_mut()
-                                {
-                                    t.push_str(&text);
-                                }
-                                event_tx.send(AgentEvent::TextDelta { text }.into())?;
-                            }
-                        }
-                        Delta::Thinking { thinking } => {
-                            if !thinking.is_empty() {
-                                event_tx
-                                    .send(AgentEvent::ThinkingDelta { text: thinking }.into())?;
-                            }
-                        }
-                        Delta::InputJson { partial_json } => {
-                            current_tool_json.push_str(&partial_json);
+                    Delta::Thinking { thinking } => {
+                        if !thinking.is_empty() {
+                            event_tx.send(AgentEvent::ThinkingDelta { text: thinking }.into())?;
                         }
                     }
-                }
-            }
+                    Delta::InputJson { partial_json } => {
+                        current_tool_json.push_str(&partial_json);
+                    }
+                },
+                Err(e) => warn!(error = %e, "failed to parse content_block_delta"),
+            },
             "content_block_stop" => {
                 if let Some(ContentBlock::ToolUse { input, .. }) = content_blocks.last_mut() {
                     *input = serde_json::from_str(&current_tool_json)

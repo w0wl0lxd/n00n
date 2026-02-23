@@ -19,6 +19,7 @@ use maki_providers::provider::Provider;
 
 const AGENTS_MD: &str = "AGENTS.md";
 const DOOM_LOOP_THRESHOLD: usize = 3;
+const MAX_CONTINUATION_TURNS: u32 = 3;
 const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
 
 pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, model: &Model) -> String {
@@ -200,7 +201,14 @@ pub fn run(
         total_usage += response.usage;
 
         if !has_tools {
+            let truncated = response.stop_reason.as_deref() == Some("max_tokens");
             history.push(response.message);
+
+            if truncated && num_turns <= MAX_CONTINUATION_TURNS {
+                warn!(num_turns, "response truncated (max_tokens), re-prompting");
+                continue;
+            }
+
             event_tx.send(
                 AgentEvent::Done {
                     usage: total_usage,
@@ -236,8 +244,15 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Mutex;
+    use std::sync::mpsc;
+
     use test_case::test_case;
+
+    use maki_providers::provider::Provider;
+    use maki_providers::{ContentBlock, Message, Role, StreamResponse, TokenUsage};
+
+    use super::*;
 
     const PLAN_PATH: &str = ".maki/plans/123.md";
 
@@ -263,48 +278,123 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn doom_loop_triggers_after_threshold() {
-        let input = serde_json::json!({"path": "/tmp/a.txt"});
-        assert!(!is_doom_loop("read", &input, &VecDeque::new()));
-        assert!(!is_doom_loop(
-            "read",
-            &input,
-            &recent(&[("read", input.clone())])
-        ));
-        assert!(is_doom_loop(
-            "read",
-            &input,
-            &recent(&[("read", input.clone()), ("read", input.clone())])
-        ));
+    #[test_case("read", &[("read", "/a"), ("read", "/a")], true  ; "triggers_at_threshold")]
+    #[test_case("read", &[("read", "/a")],                 false ; "below_threshold")]
+    #[test_case("read", &[],                                false ; "empty_history")]
+    #[test_case("read", &[("read", "/a"), ("read", "/b")], false ; "different_input_breaks_chain")]
+    #[test_case("grep", &[("glob", "/a"), ("glob", "/a")], false ; "different_tool_name")]
+    #[test_case("bash", &[("bash", "/a"), ("bash", "/b"), ("bash", "/a")], false ; "interrupted_chain")]
+    fn doom_loop_detection(name: &str, history: &[(&str, &str)], expected: bool) {
+        let entries: Vec<_> = history
+            .iter()
+            .map(|(n, p)| (*n, serde_json::json!({"path": p})))
+            .collect();
+        let input = serde_json::json!({"path": "/a"});
+        assert_eq!(is_doom_loop(name, &input, &recent(&entries)), expected);
+    }
+
+    struct MockProvider {
+        responses: Mutex<Vec<StreamResponse>>,
+    }
+
+    impl MockProvider {
+        fn new(responses: Vec<StreamResponse>) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+            }
+        }
+    }
+
+    impl Provider for MockProvider {
+        fn stream_message(
+            &self,
+            _: &Model,
+            _: &[Message],
+            _: &str,
+            _: &Value,
+            _: &Sender<Envelope>,
+        ) -> Result<StreamResponse, AgentError> {
+            let mut responses = self.responses.lock().unwrap();
+            assert!(!responses.is_empty(), "MockProvider: no more responses");
+            Ok(responses.remove(0))
+        }
+
+        fn list_models(&self) -> Result<Vec<String>, AgentError> {
+            unimplemented!()
+        }
+    }
+
+    fn text_response(stop_reason: &str) -> StreamResponse {
+        StreamResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "response".into(),
+                }],
+            },
+            usage: TokenUsage::default(),
+            stop_reason: Some(stop_reason.into()),
+        }
+    }
+
+    fn run_agent(provider: &MockProvider) -> (u32, Option<String>) {
+        let model = default_model();
+        let input = AgentInput {
+            message: "hello".into(),
+            mode: AgentMode::Build,
+            pending_plan: None,
+        };
+        let mut history = Vec::new();
+        let (event_tx, event_rx) = mpsc::channel();
+        let tools = serde_json::json!([]);
+
+        let _ = run(
+            provider,
+            &model,
+            input,
+            &mut history,
+            "system",
+            &event_tx,
+            &tools,
+        );
+        drop(event_tx);
+
+        event_rx
+            .iter()
+            .find_map(|e| match e.event {
+                AgentEvent::Done {
+                    num_turns,
+                    stop_reason,
+                    ..
+                } => Some((num_turns, stop_reason)),
+                _ => None,
+            })
+            .expect("expected Done event")
     }
 
     #[test]
-    fn doom_loop_no_false_positives() {
-        let input = serde_json::json!({"path": "/a"});
-        let other = serde_json::json!({"path": "/b"});
+    fn end_turn_completes_in_one_turn() {
+        let provider = MockProvider::new(vec![text_response("end_turn")]);
+        let (turns, _) = run_agent(&provider);
+        assert_eq!(turns, 1);
+    }
 
-        // different input breaks chain
-        assert!(!is_doom_loop(
-            "read",
-            &input,
-            &recent(&[("read", input.clone()), ("read", other.clone())])
-        ));
-        // different tool name breaks chain
-        assert!(!is_doom_loop(
-            "grep",
-            &input,
-            &recent(&[("glob", input.clone()), ("glob", input.clone())])
-        ));
-        // interrupted chain in tail
-        assert!(!is_doom_loop(
-            "bash",
-            &input,
-            &recent(&[
-                ("bash", input.clone()),
-                ("bash", other),
-                ("bash", input.clone())
-            ])
-        ));
+    #[test]
+    fn max_tokens_continues_then_completes() {
+        let provider =
+            MockProvider::new(vec![text_response("max_tokens"), text_response("end_turn")]);
+        let (turns, _) = run_agent(&provider);
+        assert_eq!(turns, 2);
+    }
+
+    #[test]
+    fn max_tokens_gives_up_after_limit() {
+        let responses: Vec<_> = (0..=MAX_CONTINUATION_TURNS)
+            .map(|_| text_response("max_tokens"))
+            .collect();
+        let provider = MockProvider::new(responses);
+        let (turns, stop_reason) = run_agent(&provider);
+        assert_eq!(turns, MAX_CONTINUATION_TURNS + 1);
+        assert_eq!(stop_reason.as_deref(), Some("max_tokens"));
     }
 }
