@@ -13,7 +13,6 @@ use ratatui::widgets::{
 
 const MAX_INPUT_LINES: u16 = 10;
 const SCROLLBAR_THUMB: &str = "\u{2590}";
-
 const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
     "research how something works",
     "fix a bug",
@@ -144,7 +143,7 @@ impl InputBox {
         lines_above + wrap_row
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect) {
+    pub fn view(&mut self, frame: &mut Frame, area: Rect, streaming: bool) {
         let content_height = area.height.saturating_sub(2);
         let content_width = area.width.saturating_sub(2) as usize;
 
@@ -162,15 +161,22 @@ impl InputBox {
         let is_empty = self.buffer.value().is_empty();
         let styled_lines: Vec<Line> = if is_empty {
             let placeholder_base = Style::new().fg(theme::COMMENT);
-            vec![Line::from(vec![
-                Span::styled("A", placeholder_base.reversed()),
-                Span::styled("sk maki to ", placeholder_base),
-                Span::styled(
-                    self.placeholder_hint,
-                    placeholder_base.add_modifier(ratatui::style::Modifier::ITALIC),
-                ),
-                Span::styled("...", placeholder_base),
-            ])]
+            if streaming {
+                vec![Line::from(vec![
+                    Span::styled("Q", placeholder_base.reversed()),
+                    Span::styled("ueue another prompt...", placeholder_base),
+                ])]
+            } else {
+                vec![Line::from(vec![
+                    Span::styled("A", placeholder_base.reversed()),
+                    Span::styled("sk maki to ", placeholder_base),
+                    Span::styled(
+                        self.placeholder_hint,
+                        placeholder_base.add_modifier(ratatui::style::Modifier::ITALIC),
+                    ),
+                    Span::styled("...", placeholder_base),
+                ])]
+            }
         } else {
             self.buffer
                 .lines()
@@ -409,7 +415,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = Rect::new(0, 0, width, height);
-                input.view(frame, area);
+                input.view(frame, area, false);
             })
             .unwrap();
         terminal

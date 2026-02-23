@@ -315,7 +315,8 @@ impl App {
         self.messages_panel.view(frame, msg_area);
         let queue_texts: Vec<&str> = self.queue.iter().map(|i| i.message.as_str()).collect();
         queue_panel::view(frame, queue_area, &queue_texts);
-        self.input_box.view(frame, input_area);
+        self.input_box
+            .view(frame, input_area, self.status == Status::Streaming);
         let ctx = StatusBarContext {
             status: &self.status,
             mode: &self.mode,
