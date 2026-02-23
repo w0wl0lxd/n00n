@@ -14,7 +14,7 @@ pub(crate) fn streaming_agent() -> Agent {
     Agent::config_builder()
         .http_status_as_error(false)
         .timeout_connect(Some(CONNECT_TIMEOUT))
-        .timeout_recv_response(Some(CONNECT_TIMEOUT))
+        .timeout_recv_response(Some(RECV_TIMEOUT))
         .timeout_recv_body(Some(RECV_TIMEOUT))
         .build()
         .into()
