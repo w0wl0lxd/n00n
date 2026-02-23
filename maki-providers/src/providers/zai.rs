@@ -46,12 +46,8 @@ impl Zai {
             ZaiPlan::Standard => BASE_STANDARD,
             ZaiPlan::Coding => BASE_CODING,
         };
-        let agent: Agent = Agent::config_builder()
-            .http_status_as_error(false)
-            .build()
-            .into();
         Ok(Self {
-            agent,
+            agent: super::streaming_agent(),
             api_key,
             completions_url: format!("{base}/chat/completions"),
             models_url: format!("{base}/models"),

@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -13,6 +13,7 @@ use tracing::debug;
 use ureq::Agent;
 
 use crate::AgentError;
+use crate::providers::CONNECT_TIMEOUT;
 
 #[derive(Deserialize)]
 struct TokenResponse {
@@ -96,6 +97,8 @@ fn urlenc(s: &str) -> String {
 fn post_token_request(body: serde_json::Value, context: &str) -> Result<TokenResponse, AgentError> {
     let agent: Agent = Agent::config_builder()
         .http_status_as_error(false)
+        .timeout_connect(Some(CONNECT_TIMEOUT))
+        .timeout_global(Some(Duration::from_secs(30)))
         .build()
         .into();
 

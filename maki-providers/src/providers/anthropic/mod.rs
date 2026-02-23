@@ -113,12 +113,8 @@ pub struct Anthropic {
 impl Anthropic {
     pub fn new() -> Result<Self, AgentError> {
         let resolved = auth::resolve()?;
-        let agent: Agent = Agent::config_builder()
-            .http_status_as_error(false)
-            .build()
-            .into();
         Ok(Self {
-            agent,
+            agent: super::streaming_agent(),
             auth: resolved,
         })
     }
