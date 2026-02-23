@@ -5,6 +5,7 @@ mod fuzzy_replace;
 mod glob;
 mod grep;
 mod multiedit;
+mod question;
 mod read;
 mod task;
 mod todowrite;
@@ -201,6 +202,7 @@ register_tools! {
     MultiEdit(multiedit::MultiEdit),
     Glob(glob::Glob),
     Grep(grep::Grep),
+    Question(question::Question),
     TodoWrite(todowrite::TodoWrite),
     WebFetch(webfetch::WebFetch),
     Task(task::Task),
