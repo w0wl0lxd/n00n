@@ -112,12 +112,6 @@ struct Segment {
     cached_height: Option<(u16, u16)>,
 }
 
-impl Segment {
-    fn is_tool(&self) -> bool {
-        self.tool_id.is_some()
-    }
-}
-
 pub struct MessagesPanel {
     messages: Vec<DisplayMessage>,
     streaming_thinking: Typewriter,
@@ -194,7 +188,7 @@ impl MessagesPanel {
         let truncated = tail_lines(content, BASH_OUTPUT_MAX_LINES);
         msg.text.push('\n');
         msg.text.push_str(&truncated);
-        self.invalidate_line_cache();
+        self.rebuild_tool_segment(tool_id);
     }
 
     pub fn tool_done(&mut self, event: ToolDoneEvent) {
@@ -248,7 +242,7 @@ impl MessagesPanel {
         }
         msg.tool_output = Some(event.output);
         self.in_progress_count -= 1;
-        self.invalidate_line_cache();
+        self.rebuild_tool_segment(&event.id);
     }
 
     pub fn fail_in_progress(&mut self) {
@@ -260,7 +254,20 @@ impl MessagesPanel {
             }
         }
         self.in_progress_count = 0;
-        self.invalidate_line_cache();
+        for seg in &mut self.cached_segments {
+            if let Some(ref tool_id) = seg.tool_id
+                && let Some(msg) = self
+                    .messages
+                    .iter()
+                    .rfind(|m| matches!(&m.role, DisplayRole::Tool { id, .. } if id == tool_id))
+            {
+                let DisplayRole::Tool { status, .. } = &msg.role else {
+                    continue;
+                };
+                seg.lines = build_tool_lines(msg, *status, self.started_at);
+                seg.cached_height = None;
+            }
+        }
     }
 
     #[cfg(test)]
@@ -340,7 +347,7 @@ impl MessagesPanel {
         let mut segments: Vec<(&[Line<'static>], bool)> = self
             .cached_segments
             .iter()
-            .map(|s| (s.lines.as_slice(), s.is_tool()))
+            .map(|s| (s.lines.as_slice(), s.tool_id.is_some()))
             .collect();
 
         let spacer_line = vec![Line::default()];
@@ -455,9 +462,26 @@ impl MessagesPanel {
         }
     }
 
-    fn invalidate_line_cache(&mut self) {
-        self.cached_msg_count = 0;
-        self.cached_segments.clear();
+    fn rebuild_tool_segment(&mut self, tool_id: &str) {
+        let Some(msg) = self
+            .messages
+            .iter()
+            .rfind(|m| matches!(&m.role, DisplayRole::Tool { id, .. } if id == tool_id))
+        else {
+            return;
+        };
+        let DisplayRole::Tool { status, .. } = &msg.role else {
+            unreachable!()
+        };
+        let lines = build_tool_lines(msg, *status, self.started_at);
+        if let Some(seg) = self
+            .cached_segments
+            .iter_mut()
+            .rfind(|s| s.tool_id.as_deref() == Some(tool_id))
+        {
+            seg.lines = lines;
+            seg.cached_height = None;
+        }
     }
 
     fn rebuild_line_cache(&mut self) {
@@ -468,7 +492,7 @@ impl MessagesPanel {
             let msg = &self.messages[i];
 
             if let DisplayRole::Tool { ref id, status, .. } = msg.role {
-                let lines = self.build_tool_lines(msg, status);
+                let lines = build_tool_lines(msg, status, self.started_at);
                 let id = id.clone();
                 self.push_spacer_if_needed();
                 self.cached_segments.push(Segment {
@@ -515,106 +539,6 @@ impl MessagesPanel {
         self.cached_msg_count = self.messages.len();
     }
 
-    fn build_tool_lines(&self, msg: &DisplayMessage, status: ToolStatus) -> Vec<Line<'static>> {
-        let header = msg
-            .text
-            .split_once('\n')
-            .map_or(msg.text.as_str(), |(h, _)| h);
-        let tool_name = msg.role.tool_name().unwrap_or("?");
-        let prefix = format!("{tool_name}> ");
-        let mut lines = vec![Line::from(vec![
-            Span::styled(prefix, theme::TOOL_PREFIX),
-            Span::styled(header.to_owned(), theme::TOOL),
-        ])];
-
-        let (indicator, indicator_style) = match status {
-            ToolStatus::InProgress => {
-                let ch = spinner_frame(self.started_at.elapsed().as_millis());
-                (format!("{ch} "), theme::TOOL_IN_PROGRESS)
-            }
-            ToolStatus::Success => (TOOL_INDICATOR.into(), theme::TOOL_SUCCESS),
-            ToolStatus::Error => (TOOL_INDICATOR.into(), theme::TOOL_ERROR),
-        };
-        if let Some(first) = lines.first_mut() {
-            first
-                .spans
-                .insert(0, Span::styled(indicator, indicator_style));
-        }
-
-        if let Some(ToolInput::Code { language, code }) = &msg.tool_input {
-            for mut line in highlight::highlight_code(language, code) {
-                line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
-                lines.push(line);
-            }
-        }
-
-        match msg.tool_output.as_ref() {
-            None | Some(ToolOutput::Plain(_)) => {
-                if let Some((_, body)) = msg.text.split_once('\n') {
-                    for line in body.lines() {
-                        lines.push(Line::from(vec![
-                            Span::styled(TOOL_BODY_INDENT.to_owned(), theme::TOOL),
-                            Span::styled(line.to_owned(), theme::TOOL),
-                        ]));
-                    }
-                }
-            }
-            Some(ToolOutput::ReadCode {
-                path,
-                start_line,
-                lines: code_lines,
-                ..
-            }) => {
-                lines.extend(code_view::render_read_code(path, *start_line, code_lines));
-            }
-            Some(ToolOutput::WriteCode {
-                path,
-                lines: code_lines,
-                ..
-            }) => {
-                lines.extend(code_view::render_read_code(path, 1, code_lines));
-            }
-            Some(ToolOutput::Diff { path, hunks, .. }) => {
-                lines.extend(code_view::render_diff(path, hunks));
-            }
-            Some(ToolOutput::TodoList(items)) => {
-                for item in items {
-                    let style = match item.status {
-                        maki_providers::TodoStatus::Completed => theme::TODO_COMPLETED,
-                        maki_providers::TodoStatus::InProgress => theme::TODO_IN_PROGRESS,
-                        maki_providers::TodoStatus::Pending => theme::TODO_PENDING,
-                        maki_providers::TodoStatus::Cancelled => theme::TODO_CANCELLED,
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "{TOOL_BODY_INDENT}{} {}",
-                            item.status.marker(),
-                            item.content
-                        ),
-                        style,
-                    )));
-                }
-            }
-            Some(ToolOutput::Batch { entries, .. }) => {
-                for entry in entries {
-                    let style = if entry.is_error {
-                        theme::TOOL_ERROR
-                    } else {
-                        theme::TOOL_SUCCESS
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(TOOL_BODY_INDENT.to_owned(), style),
-                        Span::styled(TOOL_INDICATOR, style),
-                        Span::styled(format!("{}> ", entry.tool), theme::TOOL_PREFIX),
-                        Span::styled(entry.summary.clone(), theme::TOOL),
-                    ]));
-                }
-            }
-        }
-
-        lines
-    }
-
     fn push_spacer_if_needed(&mut self) {
         if !self.cached_segments.is_empty() {
             self.cached_segments.push(Segment {
@@ -624,6 +548,108 @@ impl MessagesPanel {
             });
         }
     }
+}
+
+fn build_tool_lines(
+    msg: &DisplayMessage,
+    status: ToolStatus,
+    started_at: Instant,
+) -> Vec<Line<'static>> {
+    let header = msg
+        .text
+        .split_once('\n')
+        .map_or(msg.text.as_str(), |(h, _)| h);
+    let tool_name = msg.role.tool_name().unwrap_or("?");
+    let prefix = format!("{tool_name}> ");
+    let mut lines = vec![Line::from(vec![
+        Span::styled(prefix, theme::TOOL_PREFIX),
+        Span::styled(header.to_owned(), theme::TOOL),
+    ])];
+
+    let (indicator, indicator_style) = match status {
+        ToolStatus::InProgress => {
+            let ch = spinner_frame(started_at.elapsed().as_millis());
+            (format!("{ch} "), theme::TOOL_IN_PROGRESS)
+        }
+        ToolStatus::Success => (TOOL_INDICATOR.into(), theme::TOOL_SUCCESS),
+        ToolStatus::Error => (TOOL_INDICATOR.into(), theme::TOOL_ERROR),
+    };
+    lines[0]
+        .spans
+        .insert(0, Span::styled(indicator, indicator_style));
+
+    if let Some(ToolInput::Code { language, code }) = &msg.tool_input {
+        for mut line in highlight::highlight_code(language, code) {
+            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
+            lines.push(line);
+        }
+    }
+
+    match msg.tool_output.as_ref() {
+        None | Some(ToolOutput::Plain(_)) => {
+            if let Some((_, body)) = msg.text.split_once('\n') {
+                for line in body.lines() {
+                    lines.push(Line::from(vec![
+                        Span::styled(TOOL_BODY_INDENT.to_owned(), theme::TOOL),
+                        Span::styled(line.to_owned(), theme::TOOL),
+                    ]));
+                }
+            }
+        }
+        Some(ToolOutput::ReadCode {
+            path,
+            start_line,
+            lines: code_lines,
+            ..
+        }) => {
+            lines.extend(code_view::render_read_code(path, *start_line, code_lines));
+        }
+        Some(ToolOutput::WriteCode {
+            path,
+            lines: code_lines,
+            ..
+        }) => {
+            lines.extend(code_view::render_read_code(path, 1, code_lines));
+        }
+        Some(ToolOutput::Diff { path, hunks, .. }) => {
+            lines.extend(code_view::render_diff(path, hunks));
+        }
+        Some(ToolOutput::TodoList(items)) => {
+            for item in items {
+                let style = match item.status {
+                    maki_providers::TodoStatus::Completed => theme::TODO_COMPLETED,
+                    maki_providers::TodoStatus::InProgress => theme::TODO_IN_PROGRESS,
+                    maki_providers::TodoStatus::Pending => theme::TODO_PENDING,
+                    maki_providers::TodoStatus::Cancelled => theme::TODO_CANCELLED,
+                };
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "{TOOL_BODY_INDENT}{} {}",
+                        item.status.marker(),
+                        item.content
+                    ),
+                    style,
+                )));
+            }
+        }
+        Some(ToolOutput::Batch { entries, .. }) => {
+            for entry in entries {
+                let style = if entry.is_error {
+                    theme::TOOL_ERROR
+                } else {
+                    theme::TOOL_SUCCESS
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(TOOL_BODY_INDENT.to_owned(), style),
+                    Span::styled(TOOL_INDICATOR, style),
+                    Span::styled(format!("{}> ", entry.tool), theme::TOOL_PREFIX),
+                    Span::styled(entry.summary.clone(), theme::TOOL),
+                ]));
+            }
+        }
+    }
+
+    lines
 }
 
 fn truncate_to_header(text: &mut String) {
@@ -913,5 +939,148 @@ mod tests {
             .set_buffer(&"line\n".repeat(line_count));
         let terminal = render(&mut panel, 80, 10);
         assert_eq!(has_scrollbar_thumb(&terminal), expected);
+    }
+
+    fn seg_text(panel: &MessagesPanel, tool_id: &str) -> String {
+        panel
+            .cached_segments
+            .iter()
+            .find(|s| s.tool_id.as_deref() == Some(tool_id))
+            .unwrap()
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect()
+    }
+
+    fn msg_status(panel: &MessagesPanel, tool_id: &str) -> ToolStatus {
+        panel
+            .messages
+            .iter()
+            .rfind(|m| matches!(&m.role, DisplayRole::Tool { id, .. } if id == tool_id))
+            .map(|m| match &m.role {
+                DisplayRole::Tool { status, .. } => *status,
+                _ => unreachable!(),
+            })
+            .unwrap()
+    }
+
+    fn has_seg(panel: &MessagesPanel, tool_id: &str) -> bool {
+        panel
+            .cached_segments
+            .iter()
+            .any(|s| s.tool_id.as_deref() == Some(tool_id))
+    }
+
+    #[test]
+    fn tool_output_rebuilds_only_target_segment() {
+        let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "bash")]);
+        rebuild(&mut panel);
+        let seg_count_before = panel.cached_segments.len();
+
+        panel.tool_output("t1", "new output");
+
+        assert_eq!(panel.cached_segments.len(), seg_count_before);
+        assert!(seg_text(&panel, "t1").contains("new output"));
+    }
+
+    #[test]
+    fn tool_output_for_unknown_id_is_noop() {
+        let mut panel = panel_with_tools(&[("t1", "bash")]);
+        rebuild(&mut panel);
+        let seg_count = panel.cached_segments.len();
+        panel.tool_output("nonexistent", "data");
+        assert_eq!(panel.cached_segments.len(), seg_count);
+    }
+
+    #[test]
+    fn tool_output_before_cache_built_renders_correctly() {
+        let mut panel = panel_with_tools(&[("t1", "bash")]);
+        panel.tool_output("t1", "early output");
+        rebuild(&mut panel);
+        assert!(seg_text(&panel, "t1").contains("early output"));
+    }
+
+    #[test]
+    fn tool_done_before_cache_built_renders_with_correct_status() {
+        let mut panel = panel_with_tools(&[("t1", "bash")]);
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "bash",
+            output: ToolOutput::Plain("result".into()),
+            is_error: false,
+        });
+        rebuild(&mut panel);
+        assert_eq!(msg_status(&panel, "t1"), ToolStatus::Success);
+        assert!(seg_text(&panel, "t1").contains("result"));
+    }
+
+    #[test]
+    fn multiple_tool_output_replaces_body() {
+        let mut panel = panel_with_tools(&[("t1", "bash")]);
+        rebuild(&mut panel);
+        panel.tool_output("t1", "first");
+        panel.tool_output("t1", "second");
+        let text = seg_text(&panel, "t1");
+        assert!(text.contains("second"));
+        assert!(!text.contains("first"));
+    }
+
+    #[test]
+    fn fail_in_progress_preserves_completed_tool_status() {
+        let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "read")]);
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "bash",
+            output: ToolOutput::Plain("ok".into()),
+            is_error: false,
+        });
+        rebuild(&mut panel);
+
+        panel.fail_in_progress();
+
+        assert_eq!(msg_status(&panel, "t1"), ToolStatus::Success);
+        assert_eq!(msg_status(&panel, "t2"), ToolStatus::Error);
+    }
+
+    #[test]
+    fn new_tool_after_in_place_update() {
+        let mut panel = panel_with_tools(&[("t1", "bash")]);
+        rebuild(&mut panel);
+        panel.tool_output("t1", "streaming data");
+
+        panel.tool_start(start("t2", "read"));
+        rebuild(&mut panel);
+
+        assert!(seg_text(&panel, "t1").contains("streaming data"));
+        assert!(has_seg(&panel, "t2"));
+    }
+
+    #[test]
+    fn tool_done_after_tool_output_transitions_status() {
+        let mut panel = panel_with_tools(&[("t1", "bash")]);
+        rebuild(&mut panel);
+        assert_eq!(msg_status(&panel, "t1"), ToolStatus::InProgress);
+
+        panel.tool_output("t1", "partial");
+        assert_eq!(msg_status(&panel, "t1"), ToolStatus::InProgress);
+
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "bash",
+            output: ToolOutput::Plain("final".into()),
+            is_error: false,
+        });
+        assert_eq!(msg_status(&panel, "t1"), ToolStatus::Success);
+    }
+
+    #[test]
+    fn fail_in_progress_before_cache_built_no_panic() {
+        let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "read")]);
+        panel.fail_in_progress();
+        assert_eq!(panel.in_progress_count, 0);
+        rebuild(&mut panel);
+        assert_eq!(msg_status(&panel, "t1"), ToolStatus::Error);
+        assert_eq!(msg_status(&panel, "t2"), ToolStatus::Error);
     }
 }

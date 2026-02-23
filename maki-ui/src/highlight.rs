@@ -74,14 +74,14 @@ impl CodeHighlighter {
         }
     }
 
-    pub fn update(&mut self, code: &str) -> Vec<Line<'static>> {
+    pub fn update(&mut self, code: &str) -> &[Line<'static>] {
         let ss = &*SYNTAX_SET;
         let raw_lines: Vec<&str> = LinesWithEndings::from(code).collect();
         let total = raw_lines.len();
         if total == 0 {
             self.lines.clear();
             self.completed_lines = 0;
-            return Vec::new();
+            return &[];
         }
 
         let new_completed = if code.ends_with('\n') {
@@ -129,7 +129,7 @@ impl CodeHighlighter {
             }
         }
 
-        self.lines.clone()
+        &self.lines
     }
 }
 
@@ -212,7 +212,7 @@ mod tests {
         let full = highlight_code("rust", code);
         let mut ch = CodeHighlighter::new("rust");
         let incremental = ch.update(code);
-        assert_eq!(spans_text(&full), spans_text(&incremental));
+        assert_eq!(spans_text(&full), spans_text(incremental));
     }
 
     #[test]
@@ -222,7 +222,7 @@ mod tests {
         ch.update("x = 1\ny");
         let result = ch.update("x = 1\ny = 2\n");
         let full = highlight_code("py", "x = 1\ny = 2\n");
-        assert_eq!(spans_text(&full), spans_text(&result));
+        assert_eq!(spans_text(&full), spans_text(result));
     }
 
     #[test]

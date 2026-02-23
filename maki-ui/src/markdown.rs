@@ -235,7 +235,7 @@ pub fn text_to_lines(
                     if code_idx >= hl.len() {
                         hl.push(CodeHighlighter::new(lang));
                     }
-                    lines.extend(hl[code_idx].update(code));
+                    lines.extend_from_slice(hl[code_idx].update(code));
                 } else {
                     lines.extend(highlight::highlight_code(lang, code));
                 }
