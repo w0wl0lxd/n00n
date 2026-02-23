@@ -19,8 +19,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 
 const TOOL_INDICATOR: &str = "● ";
-const TOOL_OUTPUT_MAX_DISPLAY_LINES: usize = 7;
-const TOOL_STREAM_MAX_DISPLAY_LINES: usize = 10;
+const TOOL_OUTPUT_MAX_LINES: usize = 7;
+const BASH_OUTPUT_MAX_LINES: usize = 10;
 const TOOL_BODY_INDENT: &str = "  ";
 const SCROLLBAR_THUMB: &str = "\u{2590}";
 
@@ -41,7 +41,7 @@ fn tool_summary_annotation(tool: &str, text: &str) -> Option<String> {
         }
         _ => {
             let n = text.lines().count();
-            (n > TOOL_OUTPUT_MAX_DISPLAY_LINES).then(|| format!("{n} lines"))
+            (n > BASH_OUTPUT_MAX_LINES).then(|| format!("{n} lines"))
         }
     }
 }
@@ -200,7 +200,7 @@ impl MessagesPanel {
             return;
         };
         truncate_to_header(&mut msg.text);
-        let truncated = tail_lines(content, TOOL_STREAM_MAX_DISPLAY_LINES);
+        let truncated = tail_lines(content, BASH_OUTPUT_MAX_LINES);
         msg.text.push('\n');
         msg.text.push_str(&truncated);
         self.invalidate_line_cache();
@@ -231,9 +231,9 @@ impl MessagesPanel {
                 let hide_body = matches!(event.tool, WEBFETCH_TOOL_NAME | WRITE_TOOL_NAME);
                 if !hide_body {
                     let display = if event.tool == BASH_TOOL_NAME {
-                        tail_lines(text, TOOL_OUTPUT_MAX_DISPLAY_LINES)
+                        tail_lines(text, BASH_OUTPUT_MAX_LINES)
                     } else {
-                        truncate_lines(text, TOOL_OUTPUT_MAX_DISPLAY_LINES)
+                        truncate_lines(text, TOOL_OUTPUT_MAX_LINES)
                     };
                     if !display.is_empty() {
                         msg.text = format!("{}\n{display}", msg.text);
