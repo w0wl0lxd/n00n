@@ -30,6 +30,14 @@ pub struct UsageStats<'a> {
     pub context_window: u32,
 }
 
+pub struct StatusBarContext<'a> {
+    pub status: &'a Status,
+    pub mode: &'a AgentMode,
+    pub model_id: &'a str,
+    pub stats: UsageStats<'a>,
+    pub auto_scroll: bool,
+}
+
 pub enum CancelResult {
     FirstPress,
     Confirmed,
@@ -83,49 +91,45 @@ impl StatusBar {
             .is_some_and(|t| t.elapsed() >= ERROR_DISPLAY)
     }
 
-    pub fn view(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        status: &Status,
-        mode: &AgentMode,
-        model_id: &str,
-        stats: &UsageStats,
-    ) {
-        let (mode_label, mode_style) = match mode {
+    pub fn view(&self, frame: &mut Frame, area: Rect, ctx: &StatusBarContext) {
+        let (mode_label, mode_style) = match ctx.mode {
             AgentMode::Build => ("[BUILD]", theme::MODE_BUILD),
             AgentMode::Plan(_) => ("[PLAN]", theme::MODE_PLAN),
         };
 
         let mut left_spans = Vec::new();
 
-        if *status == Status::Streaming {
+        if *ctx.status == Status::Streaming {
             let ch = spinner_frame(self.started_at.elapsed().as_millis());
             left_spans.push(Span::styled(format!(" {ch}"), theme::STATUS_STREAMING));
         }
 
         left_spans.push(Span::styled(format!(" {mode_label}"), mode_style));
 
+        if !ctx.auto_scroll {
+            left_spans.push(Span::styled(" auto-scroll paused", theme::COMMENT));
+        }
+
         let mut right_spans = Vec::new();
 
-        match status {
+        match ctx.status {
             Status::Error(e) => {
                 left_spans.push(Span::styled(format!(" error: {e}"), theme::ERROR));
             }
             _ => {
-                let pct = if stats.context_window > 0 {
-                    (stats.context_size as f64 / stats.context_window as f64 * 100.0) as u32
+                let pct = if ctx.stats.context_window > 0 {
+                    (ctx.stats.context_size as f64 / ctx.stats.context_window as f64 * 100.0) as u32
                 } else {
                     0
                 };
 
-                right_spans.push(Span::styled(model_id.to_string(), theme::STATUS_IDLE));
+                right_spans.push(Span::styled(ctx.model_id.to_string(), theme::STATUS_IDLE));
 
                 let rest_text = format!(
                     "  {} ({}%) ${:.3} ",
-                    format_tokens(stats.context_size),
+                    format_tokens(ctx.stats.context_size),
                     pct,
-                    stats.usage.cost(stats.pricing),
+                    ctx.stats.usage.cost(ctx.stats.pricing),
                 );
                 right_spans.push(Span::styled(rest_text, theme::STATUS_CONTEXT));
             }

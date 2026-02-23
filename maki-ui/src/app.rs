@@ -1,6 +1,6 @@
 use crate::components::input::InputBox;
 use crate::components::messages::MessagesPanel;
-use crate::components::status_bar::{CancelResult, StatusBar, UsageStats};
+use crate::components::status_bar::{CancelResult, StatusBar, StatusBarContext, UsageStats};
 use crate::components::{Action, DisplayMessage, DisplayRole, Status};
 use crate::theme;
 
@@ -297,20 +297,19 @@ impl App {
         .areas(frame.area());
         self.messages_panel.view(frame, msg_area);
         self.input_box.view(frame, input_area, is_streaming);
-        let stats = UsageStats {
-            usage: &self.token_usage,
-            context_size: self.context_size,
-            pricing: &self.pricing,
-            context_window: self.context_window,
+        let ctx = StatusBarContext {
+            status: &self.status,
+            mode: &self.mode,
+            model_id: &self.model_id,
+            stats: UsageStats {
+                usage: &self.token_usage,
+                context_size: self.context_size,
+                pricing: &self.pricing,
+                context_window: self.context_window,
+            },
+            auto_scroll: self.messages_panel.auto_scroll(),
         };
-        self.status_bar.view(
-            frame,
-            status_area,
-            &self.status,
-            &self.mode,
-            &self.model_id,
-            &stats,
-        );
+        self.status_bar.view(frame, status_area, &ctx);
     }
 
     pub fn is_animating(&self) -> bool {

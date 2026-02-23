@@ -290,6 +290,10 @@ impl MessagesPanel {
         self.auto_scroll = false;
     }
 
+    pub fn auto_scroll(&self) -> bool {
+        self.auto_scroll
+    }
+
     pub fn enable_auto_scroll(&mut self) {
         self.auto_scroll = true;
     }
