@@ -647,7 +647,8 @@ fn build_tool_lines(
         }
     }
 
-    match msg.tool_output.as_ref() {
+    let body_start = lines.len();
+    let has_body = match msg.tool_output.as_ref() {
         None | Some(ToolOutput::Plain(_)) => {
             if let Some((_, body)) = msg.text.split_once('\n') {
                 for line in body.lines() {
@@ -656,6 +657,9 @@ fn build_tool_lines(
                         Span::styled(line.to_owned(), theme::TOOL),
                     ]));
                 }
+                true
+            } else {
+                false
             }
         }
         Some(ToolOutput::ReadCode {
@@ -665,6 +669,7 @@ fn build_tool_lines(
             ..
         }) => {
             lines.extend(code_view::render_read_code(path, *start_line, code_lines));
+            true
         }
         Some(ToolOutput::WriteCode {
             path,
@@ -672,15 +677,18 @@ fn build_tool_lines(
             ..
         }) => {
             lines.extend(code_view::render_read_code(path, 1, code_lines));
+            true
         }
         Some(ToolOutput::GrepResult { entries, .. }) => {
             lines.extend(code_view::render_grep_results(
                 entries,
                 TOOL_OUTPUT_MAX_LINES,
             ));
+            true
         }
         Some(ToolOutput::Diff { path, hunks, .. }) => {
             lines.extend(code_view::render_diff(path, hunks));
+            true
         }
         Some(ToolOutput::TodoList(items)) => {
             for item in items {
@@ -699,6 +707,7 @@ fn build_tool_lines(
                     style,
                 )));
             }
+            false
         }
         Some(ToolOutput::Batch { entries, .. }) => {
             for entry in entries {
@@ -715,7 +724,12 @@ fn build_tool_lines(
                 spans.extend(style_tool_header(&entry.tool, &entry.summary));
                 lines.push(Line::from(spans));
             }
+            false
         }
+    };
+
+    if has_body {
+        lines.insert(body_start, Line::default());
     }
 
     lines
