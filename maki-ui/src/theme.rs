@@ -41,6 +41,8 @@ pub const BOLD: Style = Style::new().fg(ORANGE).add_modifier(Modifier::BOLD);
 pub const INLINE_CODE: Style = Style::new().fg(GREEN);
 pub const BOLD_CODE: Style = Style::new().fg(GREEN).add_modifier(Modifier::BOLD);
 pub const CODE_FALLBACK: Style = Style::new().fg(PURPLE);
+pub const HEADING: Style = Style::new().fg(PURPLE).add_modifier(Modifier::BOLD);
+pub const LIST_MARKER: Style = Style::new().fg(ORANGE);
 
 const DIFF_OLD_BG: Color = Color::Rgb(0x55, 0x22, 0x22);
 const DIFF_NEW_BG: Color = Color::Rgb(0x22, 0x44, 0x22);

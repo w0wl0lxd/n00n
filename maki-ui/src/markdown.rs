@@ -9,9 +9,13 @@ use ratatui::text::{Line, Span};
 pub const BOLD_STYLE: Style = theme::BOLD;
 pub const CODE_STYLE: Style = theme::INLINE_CODE;
 pub const BOLD_CODE_STYLE: Style = theme::BOLD_CODE;
+pub const HEADING_STYLE: Style = theme::HEADING;
+pub const LIST_MARKER_STYLE: Style = theme::LIST_MARKER;
 
 const BOLD_DELIM: &str = "**";
 const CODE_DELIM: &str = "`";
+const BULLET: &str = "• ";
+const LIST_INDENT: &str = "  ";
 
 fn find_earliest_delim(text: &str) -> Option<(usize, &'static str, Style)> {
     [(BOLD_DELIM, BOLD_STYLE), (CODE_DELIM, CODE_STYLE)]
@@ -76,6 +80,67 @@ pub fn parse_inline_markdown<'a>(text: &'a str, base_style: Style) -> Vec<Span<'
     }
 
     spans
+}
+
+fn parse_heading(line: &str) -> Option<&str> {
+    let hashes = line.bytes().take_while(|&b| b == b'#').count();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    let rest = &line[hashes..];
+    if let Some(stripped) = rest.strip_prefix(' ') {
+        Some(stripped.trim_end())
+    } else if rest.is_empty() {
+        Some("")
+    } else {
+        None
+    }
+}
+
+fn parse_unordered_marker(line: &str) -> Option<(usize, &str)> {
+    let indent = line.bytes().take_while(|&b| b == b' ').count();
+    let rest = &line[indent..];
+    let marker = rest.as_bytes().first()?;
+    if !matches!(marker, b'-' | b'*' | b'+') {
+        return None;
+    }
+    let after = &rest[1..];
+    if let Some(stripped) = after.strip_prefix(' ') {
+        Some((indent, stripped))
+    } else {
+        None
+    }
+}
+
+fn parse_ordered_marker(line: &str) -> Option<(usize, &str, &str)> {
+    let indent = line.bytes().take_while(|&b| b == b' ').count();
+    let rest = &line[indent..];
+    let digits_end = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if digits_end == 0 {
+        return None;
+    }
+    let after_digits = &rest[digits_end..];
+    if !after_digits.starts_with(". ") {
+        return None;
+    }
+    Some((indent, &rest[..digits_end + 1], &after_digits[2..]))
+}
+
+fn parse_line_prefix(line: &str, base_style: Style) -> (Option<String>, &str, Style) {
+    if let Some(heading_text) = parse_heading(line) {
+        return (None, heading_text, HEADING_STYLE);
+    }
+    if let Some((indent, content)) = parse_unordered_marker(line) {
+        let depth = indent / 2;
+        let prefix = format!("{}{}", LIST_INDENT.repeat(depth), BULLET);
+        return (Some(prefix), content, base_style);
+    }
+    if let Some((indent, marker, content)) = parse_ordered_marker(line) {
+        let depth = indent / 2;
+        let prefix = format!("{}{} ", LIST_INDENT.repeat(depth), marker);
+        return (Some(prefix), content, base_style);
+    }
+    (None, line, base_style)
 }
 
 enum TextBlock<'a> {
@@ -215,8 +280,12 @@ pub fn text_to_lines(
                         spans.push(prefix_span(prefix, prefix_style));
                         first_line = false;
                     }
+                    let (line_prefix, rest, style) = parse_line_prefix(line, text_style);
+                    if let Some(lp) = line_prefix {
+                        spans.push(Span::styled(lp, LIST_MARKER_STYLE));
+                    }
                     spans.extend(
-                        parse_inline_markdown(line, text_style)
+                        parse_inline_markdown(rest, style)
                             .into_iter()
                             .map(|s| Span::styled(s.content.into_owned(), s.style)),
                     );
@@ -503,6 +572,12 @@ mod tests {
             .collect()
     }
 
+    fn strip_md(s: &str) -> String {
+        s.chars()
+            .filter(|c| !matches!(c, '`' | '*' | '#' | '•' | '-' | '+'))
+            .collect()
+    }
+
     #[test]
     fn incremental_matches_non_incremental() {
         let style = Style::default();
@@ -533,6 +608,10 @@ mod tests {
         "a `b` c **d** e\n`f` **g**\nh"
         ; "streaming_multiline_inline"
     )]
+    #[test_case(
+        "- **bold item**\n- `code item`\n  - nested"
+        ; "streaming_list_with_inline"
+    )]
     fn streaming_never_garbles(input: &str) {
         let style = Style::default();
         for end in 1..=input.len() {
@@ -557,10 +636,8 @@ mod tests {
                 if line.is_empty() {
                     continue;
                 }
-                let line_stripped: String =
-                    line.chars().filter(|c| *c != '`' && *c != '*').collect();
-                let input_stripped: String =
-                    prefix.chars().filter(|c| *c != '`' && *c != '*').collect();
+                let line_stripped = strip_md(line);
+                let input_stripped = strip_md(prefix);
                 assert!(
                     input_stripped.contains(&line_stripped),
                     "rendered line not found in input at prefix len={end}\n  prefix: {prefix:?}\n  rendered line: {line:?}\n  full rendered: {rendered:?}"
@@ -588,6 +665,90 @@ mod tests {
         let style = Style::default();
         let lines = text_to_lines(input, "", style, style, None);
         assert_eq!(lines_text(&lines), expected);
+    }
+
+    #[test_case("# heading", "heading" ; "h1")]
+    #[test_case("## heading", "heading" ; "h2")]
+    #[test_case("### heading", "heading" ; "h3")]
+    #[test_case("#### heading", "heading" ; "h4")]
+    #[test_case("##### heading", "heading" ; "h5")]
+    #[test_case("###### heading", "heading" ; "h6")]
+    #[test_case("# ", "" ; "h1_empty")]
+    fn heading_parsed(input: &str, expected: &str) {
+        assert_eq!(parse_heading(input), Some(expected));
+    }
+
+    #[test]
+    fn heading_with_inline_markdown() {
+        let style = Style::default();
+        let lines = text_to_lines("## **bold** and `code`", "", style, style, None);
+        assert_eq!(lines.len(), 1);
+        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "bold and code");
+        let styles: Vec<_> = lines[0].spans.iter().map(|s| s.style).collect();
+        assert!(styles.contains(&BOLD_STYLE));
+        assert!(styles.contains(&HEADING_STYLE));
+        assert!(styles.contains(&CODE_STYLE));
+    }
+
+    #[test_case("##nospace" ; "no_space_not_heading")]
+    #[test_case("####### seven" ; "seven_hashes_not_heading")]
+    #[test_case("not a heading" ; "plain_text")]
+    fn not_a_heading(input: &str) {
+        assert_eq!(parse_heading(input), None);
+    }
+
+    #[test_case(
+        "- first\n- second\n- third",
+        &["• first", "• second", "• third"]
+        ; "simple_unordered_list"
+    )]
+    #[test_case(
+        "- item\n  - nested\n    - deep",
+        &["• item", "  • nested", "    • deep"]
+        ; "nested_unordered_list"
+    )]
+    #[test_case(
+        "* star item\n+ plus item",
+        &["• star item", "• plus item"]
+        ; "star_and_plus_markers"
+    )]
+    #[test_case(
+        "1. first\n2. second\n3. third",
+        &["1. first", "2. second", "3. third"]
+        ; "simple_ordered_list"
+    )]
+    #[test_case(
+        "1. item\n   - nested bullet",
+        &["1. item", "  • nested bullet"]
+        ; "ordered_then_nested_unordered"
+    )]
+    #[test_case(
+        "10. double digits\n100. triple digits",
+        &["10. double digits", "100. triple digits"]
+        ; "multi_digit_numbers"
+    )]
+    fn list_rendering(input: &str, expected: &[&str]) {
+        let style = Style::default();
+        let lines = text_to_lines(input, "", style, style, None);
+        assert_eq!(lines_text(&lines), expected);
+    }
+
+    #[test_case("- item", "• " ; "unordered_bullet")]
+    #[test_case("1. item", "1. " ; "ordered_number")]
+    fn list_marker_styled(input: &str, expected_marker: &str) {
+        let style = Style::default();
+        let lines = text_to_lines(input, "", style, style, None);
+        let marker = lines[0].spans.iter().find(|s| s.style == LIST_MARKER_STYLE);
+        assert_eq!(marker.unwrap().content, expected_marker);
+    }
+
+    #[test]
+    fn list_item_with_inline_markdown() {
+        let style = Style::default();
+        let lines = text_to_lines("- **bold** and `code`", "", style, style, None);
+        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "• bold and code");
     }
 
     #[test_case(
