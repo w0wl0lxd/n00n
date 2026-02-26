@@ -4,9 +4,9 @@ use std::process::{Command, Stdio};
 use maki_providers::{GrepFileEntry, GrepMatch, ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
-use super::{NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path};
-
-const MAX_GREP_LINE_LENGTH: usize = 2000;
+use super::{
+    NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path, truncate_line,
+};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Grep {
@@ -56,12 +56,7 @@ impl Grep {
             let Some((line_num, text)) = rest.split_once('|') else {
                 continue;
             };
-            let mut text = text.to_string();
-            if text.len() > MAX_GREP_LINE_LENGTH {
-                let boundary = text.floor_char_boundary(MAX_GREP_LINE_LENGTH);
-                text.truncate(boundary);
-                text.push_str("...");
-            }
+            let text = truncate_line(text);
             let rel = file
                 .strip_prefix(prefix)
                 .and_then(|p| p.strip_prefix('/'))

@@ -37,6 +37,7 @@ pub const WRITE_TOOL_NAME: &str = write::Write::NAME;
 const MAX_OUTPUT_BYTES: usize = 30_000;
 pub(crate) const MAX_OUTPUT_LINES: usize = 2000;
 pub(crate) const SEARCH_RESULT_LIMIT: usize = 100;
+pub(crate) const MAX_LINE_LENGTH: usize = 1000;
 pub(crate) const NO_FILES_FOUND: &str = "No files found";
 const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
 
@@ -72,6 +73,15 @@ pub(crate) fn mtime(path: &Path) -> SystemTime {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+pub(crate) fn truncate_line(line: &str) -> String {
+    if line.len() > MAX_LINE_LENGTH {
+        let boundary = line.floor_char_boundary(MAX_LINE_LENGTH);
+        format!("{}...", &line[..boundary])
+    } else {
+        line.to_owned()
+    }
 }
 
 pub(crate) fn truncate_output(text: String) -> String {
@@ -274,9 +284,28 @@ mod tests {
 
     use serde_json::json;
     use tempfile::TempDir;
+    use test_case::test_case;
 
     use super::test_support::stub_ctx;
     use super::*;
+
+    const SUFFIX: &str = "...";
+
+    #[test_case("short",                            "short"                             ; "short_passthrough")]
+    #[test_case(&"x".repeat(MAX_LINE_LENGTH),       &"x".repeat(MAX_LINE_LENGTH)        ; "exact_boundary")]
+    #[test_case(&"x".repeat(MAX_LINE_LENGTH + 500), &format!("{}...", "x".repeat(MAX_LINE_LENGTH)) ; "long_truncated")]
+    fn truncate_line_cases(input: &str, expected: &str) {
+        let result = truncate_line(input);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn truncate_line_respects_char_boundary() {
+        let input = "a".repeat(MAX_LINE_LENGTH - 1) + "\u{1F600}";
+        let result = truncate_line(&input);
+        assert!(result.len() <= MAX_LINE_LENGTH + SUFFIX.len());
+        assert!(result.ends_with(SUFFIX));
+    }
 
     #[test]
     fn truncate_output_respects_line_and_byte_limits() {

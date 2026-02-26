@@ -4,7 +4,7 @@ use std::path::Path;
 use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
-use super::relative_path;
+use super::{relative_path, truncate_line};
 
 const PREVIEW_LINES: usize = 30;
 
@@ -30,7 +30,7 @@ impl Write {
             .content
             .lines()
             .take(PREVIEW_LINES)
-            .map(String::from)
+            .map(truncate_line)
             .collect();
         Ok(ToolOutput::WriteCode {
             path,
