@@ -8,7 +8,10 @@ use crate::theme;
 
 use std::time::Instant;
 
-use maki_agent::tools::{BASH_TOOL_NAME, GLOB_TOOL_NAME, WEBFETCH_TOOL_NAME};
+use maki_agent::tools::{
+    BASH_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME,
+    READ_TOOL_NAME, WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME,
+};
 use maki_providers::{ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -31,6 +34,51 @@ fn tool_summary_annotation(tool: &str, text: &str) -> Option<String> {
             (n > BASH_OUTPUT_MAX_LINES).then(|| format!("{n} lines"))
         }
     }
+}
+
+const PATH_FIRST_TOOLS: &[&str] = &[
+    READ_TOOL_NAME,
+    EDIT_TOOL_NAME,
+    WRITE_TOOL_NAME,
+    MULTIEDIT_TOOL_NAME,
+];
+const IN_PATH_TOOLS: &[&str] = &[BASH_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME];
+
+fn split_trailing_annotation(s: &str) -> (&str, Option<&str>) {
+    if let Some(i) = s.rfind(" (")
+        && s.ends_with(')')
+    {
+        return (&s[..i], Some(&s[i..]));
+    }
+    (s, None)
+}
+
+fn path_with_annotation(text: &str, prefix: Option<&str>) -> Vec<Span<'static>> {
+    let (path, annotation) = split_trailing_annotation(text);
+    let mut spans = match prefix {
+        Some(p) => vec![
+            Span::styled(format!("{p} in "), theme::TOOL),
+            Span::styled(path.to_owned(), theme::TOOL_PATH),
+        ],
+        None => vec![Span::styled(path.to_owned(), theme::TOOL_PATH)],
+    };
+    if let Some(ann) = annotation {
+        spans.push(Span::styled(ann.to_owned(), theme::TOOL_ANNOTATION));
+    }
+    spans
+}
+
+fn style_tool_header(tool: &str, header: &str) -> Vec<Span<'static>> {
+    if PATH_FIRST_TOOLS.contains(&tool) {
+        return path_with_annotation(header, None);
+    }
+    if IN_PATH_TOOLS.contains(&tool)
+        && let Some(i) = header.rfind(" in ")
+    {
+        let (before, after) = header.split_at(i);
+        return path_with_annotation(&after[4..], Some(before));
+    }
+    vec![Span::styled(header.to_owned(), theme::TOOL)]
 }
 
 struct RoleStyle {
@@ -576,10 +624,9 @@ fn build_tool_lines(
         .map_or(msg.text.as_str(), |(h, _)| h);
     let tool_name = msg.role.tool_name().unwrap_or("?");
     let prefix = format!("{tool_name}> ");
-    let mut lines = vec![Line::from(vec![
-        Span::styled(prefix, theme::TOOL_PREFIX),
-        Span::styled(header.to_owned(), theme::TOOL),
-    ])];
+    let mut header_spans = vec![Span::styled(prefix, theme::TOOL_PREFIX)];
+    header_spans.extend(style_tool_header(tool_name, header));
+    let mut lines = vec![Line::from(header_spans)];
 
     let (indicator, indicator_style) = match status {
         ToolStatus::InProgress => {
@@ -660,12 +707,13 @@ fn build_tool_lines(
                 } else {
                     theme::TOOL_SUCCESS
                 };
-                lines.push(Line::from(vec![
+                let mut spans = vec![
                     Span::styled(TOOL_BODY_INDENT.to_owned(), style),
                     Span::styled(TOOL_INDICATOR, style),
                     Span::styled(format!("{}> ", entry.tool), theme::TOOL_PREFIX),
-                    Span::styled(entry.summary.clone(), theme::TOOL),
-                ]));
+                ];
+                spans.extend(style_tool_header(&entry.tool, &entry.summary));
+                lines.push(Line::from(spans));
             }
         }
     }
