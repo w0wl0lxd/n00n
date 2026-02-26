@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use crate::components::command::{self, CommandPalette};
 use crate::components::input::InputBox;
 use crate::components::messages::MessagesPanel;
 use crate::components::queue_panel;
@@ -25,6 +26,7 @@ pub enum Msg {
 pub struct App {
     messages_panel: MessagesPanel,
     pub(crate) input_box: InputBox,
+    command_palette: CommandPalette,
     status_bar: StatusBar,
     pub status: Status,
     pub token_usage: TokenUsage,
@@ -43,6 +45,7 @@ impl App {
         Self {
             messages_panel: MessagesPanel::new(),
             input_box: InputBox::new(),
+            command_palette: CommandPalette::new(),
             status_bar: StatusBar::new(),
             status: Status::Idle,
             token_usage: TokenUsage::default(),
@@ -62,6 +65,7 @@ impl App {
             Msg::Key(key) => self.handle_key(key),
             Msg::Paste(text) => {
                 self.input_box.buffer.insert_text(&text);
+                self.command_palette.sync(&self.input_box.buffer.value());
                 vec![]
             }
             Msg::Agent(event) => self.handle_agent_event(event),
@@ -75,6 +79,7 @@ impl App {
             let half = self.messages_panel.half_page();
             return match key.code {
                 KeyCode::Char('c') => {
+                    self.command_palette.close();
                     if self.input_box.buffer.value().trim().is_empty() {
                         self.should_quit = true;
                         vec![Action::Quit]
@@ -101,6 +106,7 @@ impl App {
                 }
                 KeyCode::Char('w') => {
                     self.input_box.buffer.remove_word_before_cursor();
+                    self.command_palette.sync(&self.input_box.buffer.value());
                     vec![]
                 }
                 KeyCode::Left => {
@@ -113,6 +119,30 @@ impl App {
                 }
                 _ => vec![],
             };
+        }
+
+        if self.command_palette.is_active() {
+            match key.code {
+                KeyCode::Up => {
+                    self.command_palette.move_up();
+                    return vec![];
+                }
+                KeyCode::Down => {
+                    self.command_palette.move_down();
+                    return vec![];
+                }
+                KeyCode::Esc => {
+                    self.command_palette.close();
+                    return vec![];
+                }
+                KeyCode::Enter => {
+                    return self.execute_selected_command();
+                }
+                KeyCode::Tab => {
+                    self.command_palette.close();
+                }
+                _ => {}
+            }
         }
 
         match key.code {
@@ -177,10 +207,12 @@ impl App {
             }
             KeyCode::Char(c) => {
                 self.input_box.buffer.push_char(c);
+                self.command_palette.sync(&self.input_box.buffer.value());
                 vec![]
             }
             KeyCode::Backspace => {
                 self.input_box.buffer.remove_char();
+                self.command_palette.sync(&self.input_box.buffer.value());
                 vec![]
             }
             KeyCode::Delete => {
@@ -294,6 +326,29 @@ impl App {
         vec![]
     }
 
+    fn execute_selected_command(&mut self) -> Vec<Action> {
+        let Some(name) = self.command_palette.confirm() else {
+            return vec![];
+        };
+        self.command_palette.close();
+        self.input_box.buffer.clear();
+        match name {
+            "/new" => self.reset_session(),
+            _ => vec![],
+        }
+    }
+
+    fn reset_session(&mut self) -> Vec<Action> {
+        self.messages_panel = MessagesPanel::new();
+        self.status = Status::Idle;
+        self.token_usage = TokenUsage::default();
+        self.context_size = 0;
+        self.queue.clear();
+        self.pending_plan = None;
+        self.status_bar.clear_cancel_hint();
+        vec![Action::NewSession]
+    }
+
     pub fn view(&mut self, frame: &mut Frame) {
         self.status_bar.clear_expired_hint();
         if self.status_bar.is_error_expired() {
@@ -317,6 +372,7 @@ impl App {
         queue_panel::view(frame, queue_area, &queue_texts);
         self.input_box
             .view(frame, input_area, self.status == Status::Streaming);
+        command::view(&self.command_palette, frame, input_area);
         let ctx = StatusBarContext {
             status: &self.status,
             mode: &self.mode,
@@ -595,5 +651,95 @@ mod tests {
             pending_plan: None,
         });
         app
+    }
+
+    fn type_slash(app: &mut App) {
+        app.update(Msg::Key(key(KeyCode::Char('/'))));
+    }
+
+    #[test]
+    fn slash_on_empty_opens_palette() {
+        let mut app = test_app();
+        type_slash(&mut app);
+        assert!(app.command_palette.is_active());
+    }
+
+    #[test]
+    fn slash_on_nonempty_does_not_open_palette() {
+        let mut app = test_app();
+        app.update(Msg::Key(key(KeyCode::Char('a'))));
+        type_slash(&mut app);
+        assert!(!app.command_palette.is_active());
+    }
+
+    #[test]
+    fn typing_filters_palette() {
+        let mut app = test_app();
+        type_slash(&mut app);
+        app.update(Msg::Key(key(KeyCode::Char('n'))));
+        assert!(app.command_palette.is_active());
+
+        app.update(Msg::Key(key(KeyCode::Char('z'))));
+        assert!(!app.command_palette.is_active());
+    }
+
+    #[test]
+    fn enter_executes_new_command() {
+        let mut app = test_app();
+        type_slash(&mut app);
+        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(matches!(&actions[0], Action::NewSession));
+        assert!(!app.command_palette.is_active());
+    }
+
+    #[test]
+    fn ctrl_c_closes_palette() {
+        let mut app = test_app();
+        type_slash(&mut app);
+        assert!(app.command_palette.is_active());
+
+        app.update(Msg::Key(ctrl('c')));
+        assert!(!app.command_palette.is_active());
+    }
+
+    #[test]
+    fn paste_syncs_palette() {
+        let mut app = test_app();
+        app.update(Msg::Paste("/ne".into()));
+        assert!(app.command_palette.is_active());
+
+        app.update(Msg::Paste("zzz".into()));
+        assert!(!app.command_palette.is_active());
+    }
+
+    #[test]
+    fn reset_session_clears_state() {
+        let mut app = test_app();
+        app.token_usage.input = 500;
+        app.context_size = 1000;
+        app.pending_plan = Some("plan.md".into());
+        app.queue.push_back(AgentInput {
+            message: "q".into(),
+            mode: AgentMode::Build,
+            pending_plan: None,
+        });
+        let actions = app.reset_session();
+        assert!(matches!(&actions[0], Action::NewSession));
+        assert_eq!(app.status, Status::Idle);
+        assert_eq!(app.token_usage.input, 0);
+        assert_eq!(app.context_size, 0);
+        assert!(app.pending_plan.is_none());
+        assert!(app.queue.is_empty());
+    }
+
+    #[test]
+    fn tab_in_palette_closes_and_toggles_mode() {
+        let mut app = test_app();
+        type_slash(&mut app);
+        assert!(app.command_palette.is_active());
+
+        app.update(Msg::Key(key(KeyCode::Tab)));
+        assert!(!app.command_palette.is_active());
+        assert!(matches!(app.mode, AgentMode::Plan(_)));
     }
 }

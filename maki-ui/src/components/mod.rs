@@ -1,4 +1,5 @@
 mod code_view;
+pub mod command;
 pub mod input;
 pub mod messages;
 pub mod queue_panel;
@@ -10,6 +11,7 @@ use maki_providers::{ToolInput, ToolOutput};
 pub enum Action {
     SendMessage(AgentInput),
     CancelAgent,
+    NewSession,
     Quit,
 }
 

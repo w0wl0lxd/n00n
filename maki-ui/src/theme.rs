@@ -56,6 +56,10 @@ pub const TODO_IN_PROGRESS: Style = Style::new().fg(YELLOW);
 pub const TODO_PENDING: Style = Style::new().fg(FOREGROUND);
 pub const TODO_CANCELLED: Style = Style::new().fg(COMMENT);
 
+pub const CMD_SELECTED: Style = Style::new().fg(BACKGROUND).bg(PURPLE);
+pub const CMD_NAME: Style = Style::new().fg(FOREGROUND);
+pub const CMD_DESC: Style = Style::new().fg(COMMENT_LIGHTER);
+
 pub const INPUT_BORDER: Color = COMMENT;
 
 const fn midpoint(a: u8, b: u8) -> u8 {

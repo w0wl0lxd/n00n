@@ -180,6 +180,9 @@ fn dispatch(
                 let history = std::mem::take(&mut *shared_history.lock().unwrap());
                 (*input_tx, *agent_rx, *shared_history) = spawn_agent(model, history);
             }
+            Action::NewSession => {
+                (*input_tx, *agent_rx, *shared_history) = spawn_agent(model, Vec::new());
+            }
             Action::Quit => {}
         }
     }
