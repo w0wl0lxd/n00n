@@ -2,7 +2,7 @@ use super::{DisplayMessage, DisplayRole, ToolStatus};
 
 use super::code_view;
 use crate::animation::{Typewriter, spinner_frame};
-use crate::highlight::{self, CodeHighlighter};
+use crate::highlight::{CodeHighlighter, HighlightWorker};
 use crate::markdown::{TRUNCATION_PREFIX, plain_lines, tail_lines, text_to_lines, truncate_lines};
 use crate::theme;
 
@@ -138,10 +138,13 @@ impl StreamingCache {
     }
 }
 
+#[derive(Default)]
 struct Segment {
     lines: Vec<Line<'static>>,
     tool_id: Option<String>,
     cached_height: Option<(u16, u16)>,
+    pending_highlight: Option<u64>,
+    highlight_range: Option<(usize, usize)>,
 }
 
 pub struct MessagesPanel {
@@ -157,6 +160,7 @@ pub struct MessagesPanel {
     cached_msg_count: usize,
     cached_streaming_thinking: StreamingCache,
     cached_streaming_text: StreamingCache,
+    hl_worker: HighlightWorker,
 }
 
 impl MessagesPanel {
@@ -177,7 +181,25 @@ impl MessagesPanel {
                 ..StreamingCache::default()
             },
             cached_streaming_text: StreamingCache::default(),
+            hl_worker: HighlightWorker::new(),
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.messages.clear();
+        self.streaming_thinking = Typewriter::new();
+        self.streaming_text = Typewriter::new();
+        self.started_at = Instant::now();
+        self.in_progress_count = 0;
+        self.scroll_top = u16::MAX;
+        self.auto_scroll = true;
+        self.cached_segments.clear();
+        self.cached_msg_count = 0;
+        self.cached_streaming_thinking = StreamingCache {
+            dim: true,
+            ..StreamingCache::default()
+        };
+        self.cached_streaming_text = StreamingCache::default();
     }
 
     pub fn push(&mut self, msg: DisplayMessage) {
@@ -315,7 +337,8 @@ impl MessagesPanel {
                 let DisplayRole::Tool { status, .. } = &msg.role else {
                     continue;
                 };
-                seg.lines = build_tool_lines(msg, *status, self.started_at);
+                let tl = build_tool_lines(msg, *status, self.started_at);
+                seg.lines = tl.lines;
                 seg.cached_height = None;
             }
         }
@@ -366,6 +389,7 @@ impl MessagesPanel {
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) {
         self.viewport_height = area.height;
+        self.drain_highlights();
         self.rebuild_line_cache();
         if self.in_progress_count > 0 {
             self.update_spinners();
@@ -509,6 +533,22 @@ impl MessagesPanel {
         }
     }
 
+    fn drain_highlights(&mut self) {
+        while let Some(result) = self.hl_worker.try_recv() {
+            if let Some(seg) = self
+                .cached_segments
+                .iter_mut()
+                .find(|s| s.pending_highlight == Some(result.id))
+            {
+                if let Some((start, end)) = seg.highlight_range.take() {
+                    seg.lines.splice(start..end, result.lines);
+                }
+                seg.cached_height = None;
+                seg.pending_highlight = None;
+            }
+        }
+    }
+
     fn rebuild_tool_segment(&mut self, tool_id: &str) {
         let Some(msg) = self
             .messages
@@ -520,14 +560,17 @@ impl MessagesPanel {
         let DisplayRole::Tool { status, .. } = &msg.role else {
             unreachable!()
         };
-        let lines = build_tool_lines(msg, *status, self.started_at);
+        let tl = build_tool_lines(msg, *status, self.started_at);
+        let pending = tl.send_highlight(&self.hl_worker);
         if let Some(seg) = self
             .cached_segments
             .iter_mut()
             .rfind(|s| s.tool_id.as_deref() == Some(tool_id))
         {
-            seg.lines = lines;
+            seg.lines = tl.lines;
             seg.cached_height = None;
+            seg.pending_highlight = pending;
+            seg.highlight_range = tl.highlight.as_ref().map(|h| h.range);
         }
     }
 
@@ -539,13 +582,16 @@ impl MessagesPanel {
             let msg = &self.messages[i];
 
             if let DisplayRole::Tool { ref id, status, .. } = msg.role {
-                let lines = build_tool_lines(msg, status, self.started_at);
+                let tl = build_tool_lines(msg, status, self.started_at);
+                let pending = tl.send_highlight(&self.hl_worker);
                 let id = id.clone();
                 self.push_spacer_if_needed();
                 self.cached_segments.push(Segment {
-                    lines,
+                    lines: tl.lines,
                     tool_id: Some(id),
-                    cached_height: None,
+                    pending_highlight: pending,
+                    highlight_range: tl.highlight.as_ref().map(|h| h.range),
+                    ..Segment::default()
                 });
             } else {
                 let style = match &msg.role {
@@ -578,8 +624,7 @@ impl MessagesPanel {
                 self.push_spacer_if_needed();
                 self.cached_segments.push(Segment {
                     lines,
-                    tool_id: None,
-                    cached_height: None,
+                    ..Segment::default()
                 });
             }
         }
@@ -590,18 +635,31 @@ impl MessagesPanel {
         if !self.cached_segments.is_empty() {
             self.cached_segments.push(Segment {
                 lines: vec![Line::default()],
-                tool_id: None,
-                cached_height: None,
+                ..Segment::default()
             });
         }
     }
 }
 
-fn build_tool_lines(
-    msg: &DisplayMessage,
-    status: ToolStatus,
-    started_at: Instant,
-) -> Vec<Line<'static>> {
+struct ToolLines {
+    lines: Vec<Line<'static>>,
+    highlight: Option<HighlightRequest>,
+}
+
+struct HighlightRequest {
+    range: (usize, usize),
+    input: Option<ToolInput>,
+    output: Option<ToolOutput>,
+}
+
+impl ToolLines {
+    fn send_highlight(&self, worker: &HighlightWorker) -> Option<u64> {
+        let hl = self.highlight.as_ref()?;
+        Some(worker.send(hl.input.clone(), hl.output.clone()))
+    }
+}
+
+fn build_tool_lines(msg: &DisplayMessage, status: ToolStatus, started_at: Instant) -> ToolLines {
     let header = msg
         .text
         .split_once('\n')
@@ -628,104 +686,79 @@ fn build_tool_lines(
         .spans
         .insert(0, Span::styled(indicator, indicator_style));
 
-    if let Some(ToolInput::Code { language, code }) = &msg.tool_input {
-        for mut line in highlight::highlight_code(language, code) {
-            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
-            lines.push(line);
-        }
+    let content =
+        code_view::render_tool_content(msg.tool_input.as_ref(), msg.tool_output.as_ref(), false);
+    let has_content = !content.is_empty();
+    if has_content {
+        lines.push(Line::default());
     }
+    let content_start = lines.len();
+    lines.extend(content);
+    let content_end = lines.len();
 
-    let body_start = lines.len();
-    let has_body = match msg.tool_output.as_ref() {
-        None | Some(ToolOutput::Plain(_)) => {
-            if let Some((_, body)) = msg.text.split_once('\n') {
-                for line in body.lines() {
-                    let style = if line.starts_with(TRUNCATION_PREFIX) {
-                        theme::TOOL_ANNOTATION
-                    } else {
-                        theme::TOOL
+    if !has_content {
+        match msg.tool_output.as_ref() {
+            None | Some(ToolOutput::Plain(_)) => {
+                if let Some((_, body)) = msg.text.split_once('\n') {
+                    lines.push(Line::default());
+                    for line in body.lines() {
+                        let style = if line.starts_with(TRUNCATION_PREFIX) {
+                            theme::TOOL_ANNOTATION
+                        } else {
+                            theme::TOOL
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("{TOOL_BODY_INDENT}{line}"),
+                            style,
+                        )));
+                    }
+                }
+            }
+            Some(ToolOutput::TodoList(items)) => {
+                for item in items {
+                    let style = match item.status {
+                        maki_providers::TodoStatus::Completed => theme::TODO_COMPLETED,
+                        maki_providers::TodoStatus::InProgress => theme::TODO_IN_PROGRESS,
+                        maki_providers::TodoStatus::Pending => theme::TODO_PENDING,
+                        maki_providers::TodoStatus::Cancelled => theme::TODO_CANCELLED,
                     };
                     lines.push(Line::from(Span::styled(
-                        format!("{TOOL_BODY_INDENT}{line}"),
+                        format!(
+                            "{TOOL_BODY_INDENT}{} {}",
+                            item.status.marker(),
+                            item.content
+                        ),
                         style,
                     )));
                 }
-                true
-            } else {
-                false
             }
-        }
-        Some(ToolOutput::ReadCode {
-            path,
-            start_line,
-            lines: code_lines,
-            ..
-        }) => {
-            lines.extend(code_view::render_read_code(path, *start_line, code_lines));
-            true
-        }
-        Some(ToolOutput::WriteCode {
-            path,
-            lines: code_lines,
-            ..
-        }) => {
-            lines.extend(code_view::render_read_code(path, 1, code_lines));
-            true
-        }
-        Some(ToolOutput::GrepResult { entries, .. }) => {
-            lines.extend(code_view::render_grep_results(
-                entries,
-                TOOL_OUTPUT_MAX_LINES,
-            ));
-            true
-        }
-        Some(ToolOutput::Diff { path, hunks, .. }) => {
-            lines.extend(code_view::render_diff(path, hunks));
-            true
-        }
-        Some(ToolOutput::TodoList(items)) => {
-            for item in items {
-                let style = match item.status {
-                    maki_providers::TodoStatus::Completed => theme::TODO_COMPLETED,
-                    maki_providers::TodoStatus::InProgress => theme::TODO_IN_PROGRESS,
-                    maki_providers::TodoStatus::Pending => theme::TODO_PENDING,
-                    maki_providers::TodoStatus::Cancelled => theme::TODO_CANCELLED,
-                };
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "{TOOL_BODY_INDENT}{} {}",
-                        item.status.marker(),
-                        item.content
-                    ),
-                    style,
-                )));
+            Some(ToolOutput::Batch { entries, .. }) => {
+                for entry in entries {
+                    let style = if entry.is_error {
+                        theme::TOOL_ERROR
+                    } else {
+                        theme::TOOL_SUCCESS
+                    };
+                    let mut spans = vec![
+                        Span::styled(TOOL_BODY_INDENT.to_owned(), style),
+                        Span::styled(TOOL_INDICATOR, style),
+                        Span::styled(format!("{}> ", entry.tool), theme::TOOL_PREFIX),
+                    ];
+                    spans.extend(style_tool_header(&entry.tool, &entry.summary));
+                    lines.push(Line::from(spans));
+                }
             }
-            false
+            _ => {}
         }
-        Some(ToolOutput::Batch { entries, .. }) => {
-            for entry in entries {
-                let style = if entry.is_error {
-                    theme::TOOL_ERROR
-                } else {
-                    theme::TOOL_SUCCESS
-                };
-                let mut spans = vec![
-                    Span::styled(TOOL_BODY_INDENT.to_owned(), style),
-                    Span::styled(TOOL_INDICATOR, style),
-                    Span::styled(format!("{}> ", entry.tool), theme::TOOL_PREFIX),
-                ];
-                spans.extend(style_tool_header(&entry.tool, &entry.summary));
-                lines.push(Line::from(spans));
-            }
-            false
-        }
-    };
-
-    if has_body {
-        lines.insert(body_start, Line::default());
     }
 
-    lines
+    let highlight = has_content.then(|| HighlightRequest {
+        range: (content_start, content_end),
+        input: msg.tool_input.clone(),
+        output: msg.tool_output.clone(),
+    });
+
+    ToolLines { lines, highlight }
 }
 
 fn truncate_to_header(text: &mut String) {
@@ -752,7 +785,7 @@ fn render_vertical_scrollbar(frame: &mut Frame, area: Rect, content_len: u16, po
 mod tests {
     use super::*;
     use maki_agent::tools::WRITE_TOOL_NAME;
-    use maki_providers::{GrepFileEntry, GrepMatch, ToolOutput};
+    use maki_providers::{GrepFileEntry, GrepMatch, ToolInput, ToolOutput};
     use ratatui::backend::TestBackend;
     use test_case::test_case;
 
@@ -1205,5 +1238,61 @@ mod tests {
         panel.load_messages(Vec::new());
         assert_eq!(panel.in_progress_count, 0);
         assert!(panel.messages.is_empty());
+    }
+
+    fn code_input() -> Option<ToolInput> {
+        Some(ToolInput::Code {
+            language: "sh",
+            code: "echo hi\n".into(),
+        })
+    }
+
+    fn code_output() -> Option<ToolOutput> {
+        Some(ToolOutput::ReadCode {
+            path: "test.rs".into(),
+            start_line: 1,
+            lines: vec!["fn main() {}".into()],
+        })
+    }
+
+    fn plain_output() -> Option<ToolOutput> {
+        Some(ToolOutput::Plain("ok".into()))
+    }
+
+    #[test_case(code_input(),  plain_output(),  true  ; "input_code_needs_highlight")]
+    #[test_case(None,          code_output(),   true  ; "code_output_needs_highlight")]
+    #[test_case(code_input(),  code_output(),   true  ; "both_input_and_output_need_highlight")]
+    #[test_case(None,          plain_output(),  false ; "plain_no_input_skips_highlight")]
+    fn highlight_job_presence(
+        input: Option<ToolInput>,
+        output: Option<ToolOutput>,
+        expect_highlight: bool,
+    ) {
+        let msg = DisplayMessage {
+            role: DisplayRole::Tool {
+                id: "t1".into(),
+                status: ToolStatus::Success,
+                name: "bash",
+            },
+            text: "header\nbody".into(),
+            tool_input: input,
+            tool_output: output,
+        };
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
+        assert_eq!(tl.highlight.is_some(), expect_highlight);
+    }
+
+    #[test]
+    fn reset_allows_reuse() {
+        let mut panel = panel_with_tools(&[("t1", "bash")]);
+        rebuild(&mut panel);
+
+        panel.reset();
+        assert!(panel.messages.is_empty());
+        assert_eq!(panel.in_progress_count, 0);
+
+        panel.tool_start(start("t2", "bash"));
+        rebuild(&mut panel);
+        assert!(has_seg(&panel, "t2"));
     }
 }

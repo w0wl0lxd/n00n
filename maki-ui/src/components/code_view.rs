@@ -1,12 +1,13 @@
-use crate::highlight::{highlight_line, highlighter_for_path};
+use crate::highlight::{highlight_code, highlight_line, highlighter_for_path};
 use crate::markdown::truncation_notice;
 use crate::theme;
 
-use maki_providers::{DiffHunk, DiffLine, GrepFileEntry};
+use maki_providers::{DiffHunk, DiffLine, GrepFileEntry, ToolInput, ToolOutput};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 const INDENT: &str = "  ";
+const BODY_INDENT: &str = "  ";
 const MAX_DISPLAY_LINES: usize = 7;
 
 fn nr_width(max_nr: usize) -> usize {
@@ -31,6 +32,13 @@ fn truncation_line(truncated: usize) -> Line<'static> {
     ))
 }
 
+fn plain_spans(text: &str) -> Vec<Span<'static>> {
+    vec![
+        Span::raw(INDENT),
+        Span::styled(text.to_owned(), theme::CODE_FALLBACK),
+    ]
+}
+
 fn syntax_spans(hl: &mut syntect::easy::HighlightLines<'_>, text: &str) -> Vec<Span<'static>> {
     let mut spans = vec![Span::raw(INDENT)];
     for (style, chunk) in highlight_line(hl, text) {
@@ -39,8 +47,18 @@ fn syntax_spans(hl: &mut syntect::easy::HighlightLines<'_>, text: &str) -> Vec<S
     spans
 }
 
-pub fn render_code(
-    path: &str,
+fn code_spans(
+    hl: &mut Option<syntect::easy::HighlightLines<'_>>,
+    text: &str,
+) -> Vec<Span<'static>> {
+    match hl {
+        Some(h) => syntax_spans(h, text),
+        None => plain_spans(text),
+    }
+}
+
+fn render_code(
+    path: Option<&str>,
     start_line: usize,
     code_lines: &[String],
     max_lines: usize,
@@ -48,7 +66,7 @@ pub fn render_code(
     let display_count = code_lines.len().min(max_lines);
     let max_nr = start_line + display_count.saturating_sub(1);
     let w = nr_width(max_nr);
-    let mut hl = highlighter_for_path(path);
+    let mut hl = path.map(highlighter_for_path);
 
     let mut lines: Vec<Line<'static>> = code_lines
         .iter()
@@ -57,7 +75,7 @@ pub fn render_code(
         .map(|(i, text)| {
             let nr = start_line + i;
             let mut spans = vec![gutter(&format!("{nr:>w$}"))];
-            spans.extend(syntax_spans(&mut hl, text));
+            spans.extend(code_spans(&mut hl, text));
             Line::from(spans)
         })
         .collect();
@@ -68,15 +86,15 @@ pub fn render_code(
     lines
 }
 
-pub fn render_read_code(
-    path: &str,
+fn render_read_code(
+    path: Option<&str>,
     start_line: usize,
     code_lines: &[String],
 ) -> Vec<Line<'static>> {
     render_code(path, start_line, code_lines, MAX_DISPLAY_LINES)
 }
 
-pub fn render_diff(path: &str, hunks: &[DiffHunk]) -> Vec<Line<'static>> {
+fn render_diff(path: Option<&str>, hunks: &[DiffHunk]) -> Vec<Line<'static>> {
     let max_line_nr = hunks
         .iter()
         .map(|h| {
@@ -96,7 +114,7 @@ pub fn render_diff(path: &str, hunks: &[DiffHunk]) -> Vec<Line<'static>> {
         if i > 0 {
             lines.push(gap_ellipsis(w));
         }
-        let mut hl = highlighter_for_path(path);
+        let mut hl = path.map(highlighter_for_path);
         let mut line_nr = hunk.start_line;
         for dl in &hunk.lines {
             let show_nr = !matches!(dl, DiffLine::Added(_));
@@ -110,7 +128,7 @@ pub fn render_diff(path: &str, hunks: &[DiffHunk]) -> Vec<Line<'static>> {
             let mut spans = vec![gutter(&nr_str)];
             match dl {
                 DiffLine::Unchanged(t) => {
-                    spans.extend(syntax_spans(&mut hl, t));
+                    spans.extend(code_spans(&mut hl, t));
                 }
                 DiffLine::Removed(ds) | DiffLine::Added(ds) => {
                     let is_add = matches!(dl, DiffLine::Added(_));
@@ -121,13 +139,103 @@ pub fn render_diff(path: &str, hunks: &[DiffHunk]) -> Vec<Line<'static>> {
                     };
                     spans.push(Span::styled(prefix, base.fg(theme::FOREGROUND)));
                     let full: String = ds.iter().map(|s| s.text.as_str()).collect();
-                    let syn = highlight_line(&mut hl, &full);
-                    spans.extend(merge_syntax_with_diff(&syn, ds, base, emph));
+                    if let Some(ref mut h) = hl {
+                        let syn = highlight_line(h, &full);
+                        spans.extend(merge_syntax_with_diff(&syn, ds, base, emph));
+                    } else {
+                        spans.push(Span::styled(full, base.fg(theme::FOREGROUND)));
+                    }
                 }
             }
             lines.push(Line::from(spans));
         }
     }
+    lines
+}
+
+fn render_grep_results(
+    entries: &[GrepFileEntry],
+    max_lines: usize,
+    highlight: bool,
+) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    let mut budget = max_lines;
+    let total: usize = entries.iter().map(|e| e.matches.len()).sum();
+    for entry in entries {
+        if budget == 0 {
+            break;
+        }
+        let take = entry.matches.len().min(budget);
+        let max_nr = entry
+            .matches
+            .iter()
+            .take(take)
+            .map(|m| m.line_nr)
+            .max()
+            .unwrap_or(1);
+        let w = nr_width(max_nr);
+        let mut hl = if highlight {
+            Some(highlighter_for_path(&entry.path))
+        } else {
+            None
+        };
+        for m in entry.matches.iter().take(take) {
+            let mut spans = vec![gutter(&format!("{:>w$}", m.line_nr))];
+            spans.extend(code_spans(&mut hl, &m.text));
+            out.push(Line::from(spans));
+            budget -= 1;
+        }
+    }
+    if total > max_lines {
+        out.push(truncation_line(total - max_lines));
+    }
+    out
+}
+
+pub fn render_tool_content(
+    input: Option<&ToolInput>,
+    output: Option<&ToolOutput>,
+    highlight: bool,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if let Some(ToolInput::Code { language, code }) = input {
+        if highlight {
+            for mut line in highlight_code(language, code) {
+                line.spans.insert(0, Span::raw(BODY_INDENT.to_owned()));
+                lines.push(line);
+            }
+        } else {
+            for text in code.trim_end_matches('\n').lines() {
+                lines.push(Line::from(vec![
+                    Span::raw(BODY_INDENT.to_owned()),
+                    Span::styled(text.to_owned(), theme::CODE_FALLBACK),
+                ]));
+            }
+        }
+    }
+    let output_lines = match output {
+        Some(ToolOutput::ReadCode {
+            path,
+            start_line,
+            lines: code_lines,
+        }) => render_read_code(highlight.then_some(path.as_str()), *start_line, code_lines),
+        Some(ToolOutput::WriteCode {
+            path,
+            lines: code_lines,
+            ..
+        }) => render_read_code(highlight.then_some(path.as_str()), 1, code_lines),
+        Some(ToolOutput::Diff { path, hunks, .. }) => {
+            render_diff(highlight.then_some(path.as_str()), hunks)
+        }
+        Some(ToolOutput::GrepResult { entries }) => {
+            render_grep_results(entries, MAX_DISPLAY_LINES, highlight)
+        }
+        _ => Vec::new(),
+    };
+    if !lines.is_empty() && !output_lines.is_empty() {
+        lines.push(Line::default());
+    }
+    lines.extend(output_lines);
     lines
 }
 
@@ -187,37 +295,6 @@ fn merge_syntax_with_diff(
     result
 }
 
-pub fn render_grep_results(entries: &[GrepFileEntry], max_lines: usize) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    let mut budget = max_lines;
-    let total: usize = entries.iter().map(|e| e.matches.len()).sum();
-    for entry in entries {
-        if budget == 0 {
-            break;
-        }
-        let take = entry.matches.len().min(budget);
-        let max_nr = entry
-            .matches
-            .iter()
-            .take(take)
-            .map(|m| m.line_nr)
-            .max()
-            .unwrap_or(1);
-        let w = nr_width(max_nr);
-        let mut hl = highlighter_for_path(&entry.path);
-        for m in entry.matches.iter().take(take) {
-            let mut spans = vec![gutter(&format!("{:>w$}", m.line_nr))];
-            spans.extend(syntax_spans(&mut hl, &m.text));
-            out.push(Line::from(spans));
-            budget -= 1;
-        }
-    }
-    if total > max_lines {
-        out.push(truncation_line(total - max_lines));
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,7 +315,7 @@ mod tests {
     #[test_case(3,  3                      ; "no_truncation_when_short")]
     fn render_read_code_line_count(input_lines: usize, expected: usize) {
         let code_lines: Vec<String> = (0..input_lines).map(|i| format!("line {i}")).collect();
-        let result = render_read_code("test.rs", 1, &code_lines);
+        let result = render_read_code(Some("test.rs"), 1, &code_lines);
         assert_eq!(result.len(), expected);
     }
 
@@ -297,7 +374,7 @@ mod tests {
     #[test_case(&[("a.rs", &[1_usize,2,3]), ("b.rs", &[10,20])],          4, 5  ; "multi_file_budget_with_ellipsis")]
     fn render_grep_line_count(files: &[(&str, &[usize])], max: usize, expected: usize) {
         let entries = grep_entries(files);
-        assert_eq!(render_grep_results(&entries, max).len(), expected);
+        assert_eq!(render_grep_results(&entries, max, true).len(), expected);
     }
 
     #[test]

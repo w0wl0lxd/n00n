@@ -331,7 +331,7 @@ impl App {
     }
 
     fn reset_session(&mut self) -> Vec<Action> {
-        self.messages_panel = MessagesPanel::new();
+        self.messages_panel.reset();
         self.status = Status::Idle;
         self.token_usage = TokenUsage::default();
         self.context_size = 0;

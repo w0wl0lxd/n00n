@@ -1,7 +1,11 @@
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::thread;
 
 use crate::theme;
 
+use maki_providers::{ToolInput, ToolOutput};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
@@ -147,6 +151,67 @@ fn highlight_single_line(hl: &mut HighlightLines<'_>, raw: &str, ss: &SyntaxSet)
         )],
     };
     Line::from(spans)
+}
+
+struct HighlightJob {
+    id: u64,
+    tool_input: Option<ToolInput>,
+    tool_output: Option<ToolOutput>,
+}
+
+pub struct HighlightResult {
+    pub id: u64,
+    pub lines: Vec<Line<'static>>,
+}
+
+static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(0);
+
+pub struct HighlightWorker {
+    tx: mpsc::Sender<HighlightJob>,
+    rx: mpsc::Receiver<HighlightResult>,
+}
+
+impl HighlightWorker {
+    pub fn new() -> Self {
+        let (req_tx, req_rx) = mpsc::channel::<HighlightJob>();
+        let (res_tx, res_rx) = mpsc::channel::<HighlightResult>();
+
+        thread::Builder::new()
+            .name("highlight".into())
+            .spawn(move || {
+                use crate::components::code_view;
+                while let Ok(job) = req_rx.recv() {
+                    let lines = code_view::render_tool_content(
+                        job.tool_input.as_ref(),
+                        job.tool_output.as_ref(),
+                        true,
+                    );
+                    if res_tx.send(HighlightResult { id: job.id, lines }).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("spawn highlight thread");
+
+        Self {
+            tx: req_tx,
+            rx: res_rx,
+        }
+    }
+
+    pub fn send(&self, tool_input: Option<ToolInput>, tool_output: Option<ToolOutput>) -> u64 {
+        let id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
+        let _ = self.tx.send(HighlightJob {
+            id,
+            tool_input,
+            tool_output,
+        });
+        id
+    }
+
+    pub fn try_recv(&self) -> Option<HighlightResult> {
+        self.rx.try_recv().ok()
+    }
 }
 
 fn convert_style(s: syntect::highlighting::Style) -> Style {

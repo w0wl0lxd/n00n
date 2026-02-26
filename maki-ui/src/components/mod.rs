@@ -1,4 +1,4 @@
-mod code_view;
+pub(crate) mod code_view;
 pub mod command;
 pub mod input;
 pub mod messages;
