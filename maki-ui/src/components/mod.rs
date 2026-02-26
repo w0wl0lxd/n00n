@@ -37,6 +37,17 @@ pub struct DisplayMessage {
     pub tool_output: Option<ToolOutput>,
 }
 
+impl DisplayMessage {
+    pub fn new(role: DisplayRole, text: String) -> Self {
+        Self {
+            role,
+            text,
+            tool_input: None,
+            tool_output: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DisplayRole {
     User,

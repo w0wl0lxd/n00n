@@ -11,12 +11,7 @@ use maki_providers::{
 use crate::components::{DisplayMessage, DisplayRole, ToolStatus};
 
 fn msg(role: DisplayRole, text: &str) -> DisplayMessage {
-    DisplayMessage {
-        role,
-        text: text.into(),
-        tool_input: None,
-        tool_output: None,
-    }
+    DisplayMessage::new(role, text.into())
 }
 
 fn tool(

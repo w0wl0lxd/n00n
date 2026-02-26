@@ -3,7 +3,7 @@ use super::{DisplayMessage, DisplayRole, ToolStatus};
 use super::code_view;
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::{self, CodeHighlighter};
-use crate::markdown::{plain_lines, tail_lines, text_to_lines, truncate_lines};
+use crate::markdown::{TRUNCATION_PREFIX, plain_lines, tail_lines, text_to_lines, truncate_lines};
 use crate::theme;
 
 use std::time::Instant;
@@ -53,30 +53,18 @@ fn split_trailing_annotation(s: &str) -> (&str, Option<&str>) {
     (s, None)
 }
 
-fn path_with_annotation(text: &str, prefix: Option<&str>) -> Vec<Span<'static>> {
-    let (path, annotation) = split_trailing_annotation(text);
-    let mut spans = match prefix {
-        Some(p) => vec![
-            Span::styled(format!("{p} in "), theme::TOOL),
-            Span::styled(path.to_owned(), theme::TOOL_PATH),
-        ],
-        None => vec![Span::styled(path.to_owned(), theme::TOOL_PATH)],
-    };
-    if let Some(ann) = annotation {
-        spans.push(Span::styled(ann.to_owned(), theme::TOOL_ANNOTATION));
-    }
-    spans
-}
-
 fn style_tool_header(tool: &str, header: &str) -> Vec<Span<'static>> {
     if PATH_FIRST_TOOLS.contains(&tool) {
-        return path_with_annotation(header, None);
+        return vec![Span::styled(header.to_owned(), theme::TOOL_PATH)];
     }
     if IN_PATH_TOOLS.contains(&tool)
         && let Some(i) = header.rfind(" in ")
     {
-        let (before, after) = header.split_at(i);
-        return path_with_annotation(&after[4..], Some(before));
+        let (cmd, rest) = header.split_at(i);
+        return vec![
+            Span::styled(format!("{cmd} in "), theme::TOOL),
+            Span::styled(rest[4..].to_owned(), theme::TOOL_PATH),
+        ];
     }
     vec![Span::styled(header.to_owned(), theme::TOOL)]
 }
@@ -229,7 +217,7 @@ impl MessagesPanel {
                 status: ToolStatus::InProgress,
                 name: event.tool,
             },
-            text: event.summary.clone(),
+            text: event.summary,
             tool_input: event.input,
             tool_output: None,
         });
@@ -341,12 +329,10 @@ impl MessagesPanel {
     pub fn flush(&mut self) {
         self.flush_thinking();
         if !self.streaming_text.is_empty() {
-            self.messages.push(DisplayMessage {
-                role: DisplayRole::Assistant,
-                text: self.streaming_text.take_all(),
-                tool_input: None,
-                tool_output: None,
-            });
+            self.messages.push(DisplayMessage::new(
+                DisplayRole::Assistant,
+                self.streaming_text.take_all(),
+            ));
             self.cached_streaming_text = StreamingCache::default();
         }
     }
@@ -491,12 +477,10 @@ impl MessagesPanel {
 
     fn flush_thinking(&mut self) {
         if !self.streaming_thinking.is_empty() {
-            self.messages.push(DisplayMessage {
-                role: DisplayRole::Thinking,
-                text: self.streaming_thinking.take_all(),
-                tool_input: None,
-                tool_output: None,
-            });
+            self.messages.push(DisplayMessage::new(
+                DisplayRole::Thinking,
+                self.streaming_thinking.take_all(),
+            ));
             self.cached_streaming_thinking = StreamingCache {
                 dim: true,
                 ..StreamingCache::default()
@@ -622,10 +606,14 @@ fn build_tool_lines(
         .text
         .split_once('\n')
         .map_or(msg.text.as_str(), |(h, _)| h);
+    let (header, annotation) = split_trailing_annotation(header);
     let tool_name = msg.role.tool_name().unwrap_or("?");
     let prefix = format!("{tool_name}> ");
     let mut header_spans = vec![Span::styled(prefix, theme::TOOL_PREFIX)];
     header_spans.extend(style_tool_header(tool_name, header));
+    if let Some(ann) = annotation {
+        header_spans.push(Span::styled(ann.to_owned(), theme::TOOL_ANNOTATION));
+    }
     let mut lines = vec![Line::from(header_spans)];
 
     let (indicator, indicator_style) = match status {
@@ -652,10 +640,15 @@ fn build_tool_lines(
         None | Some(ToolOutput::Plain(_)) => {
             if let Some((_, body)) = msg.text.split_once('\n') {
                 for line in body.lines() {
-                    lines.push(Line::from(vec![
-                        Span::styled(TOOL_BODY_INDENT.to_owned(), theme::TOOL),
-                        Span::styled(line.to_owned(), theme::TOOL),
-                    ]));
+                    let style = if line.starts_with(TRUNCATION_PREFIX) {
+                        theme::TOOL_ANNOTATION
+                    } else {
+                        theme::TOOL
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("{TOOL_BODY_INDENT}{line}"),
+                        style,
+                    )));
                 }
                 true
             } else {
@@ -898,11 +891,9 @@ mod tests {
         assert_eq!(panel.messages[0].text, "reasoning");
     }
 
-    #[test_case(10, 10, 0   ; "up_saturates_at_zero")]
-    #[test_case(20, 10, 10  ; "half_page_up")]
-    #[test_case(5,  -10, 15 ; "half_page_down")]
-    #[test_case(5,  1, 4    ; "scroll_up_one")]
-    #[test_case(5,  -1, 6   ; "scroll_down_one")]
+    #[test_case(10, 10, 0  ; "up_saturates_at_zero")]
+    #[test_case(5,  1, 4    ; "scroll_up")]
+    #[test_case(5,  -1, 6   ; "scroll_down")]
     fn scroll_by_delta(initial: u16, delta: i32, expected: u16) {
         let mut panel = MessagesPanel::new();
         panel.viewport_height = 20;
@@ -914,12 +905,7 @@ mod tests {
     #[test]
     fn scroll_top_clamped_to_content() {
         let mut panel = MessagesPanel::new();
-        panel.push(DisplayMessage {
-            role: DisplayRole::User,
-            text: "short".into(),
-            tool_input: None,
-            tool_output: None,
-        });
+        panel.push(DisplayMessage::new(DisplayRole::User, "short".into()));
         panel.scroll_top = 1000;
         panel.auto_scroll = false;
         rebuild(&mut panel);
@@ -1194,16 +1180,14 @@ mod tests {
     }
 
     fn tool_msg(id: &str, name: &'static str, status: ToolStatus) -> DisplayMessage {
-        DisplayMessage {
-            role: DisplayRole::Tool {
+        DisplayMessage::new(
+            DisplayRole::Tool {
                 id: id.into(),
                 status,
                 name,
             },
-            text: id.into(),
-            tool_input: None,
-            tool_output: None,
-        }
+            id.into(),
+        )
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use crate::highlight::{highlight_line, highlighter_for_path};
+use crate::markdown::truncation_notice;
 use crate::theme;
 
 use maki_providers::{DiffHunk, DiffLine, GrepFileEntry};
@@ -16,10 +17,17 @@ fn gutter(nr_str: &str) -> Span<'static> {
     Span::styled(format!("{INDENT}{nr_str} "), theme::DIFF_LINE_NR)
 }
 
-fn ellipsis(nr_width: usize) -> Line<'static> {
+fn gap_ellipsis(nr_width: usize) -> Line<'static> {
     Line::from(Span::styled(
         format!("{INDENT}{:>nr_width$}  ...", ""),
         theme::DIFF_LINE_NR,
+    ))
+}
+
+fn truncation_line(truncated: usize) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("{INDENT}{}", truncation_notice(truncated)),
+        theme::TOOL_ANNOTATION,
     ))
 }
 
@@ -55,7 +63,7 @@ pub fn render_code(
         .collect();
 
     if code_lines.len() > max_lines {
-        lines.push(ellipsis(w));
+        lines.push(truncation_line(code_lines.len() - max_lines));
     }
     lines
 }
@@ -86,7 +94,7 @@ pub fn render_diff(path: &str, hunks: &[DiffHunk]) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for (i, hunk) in hunks.iter().enumerate() {
         if i > 0 {
-            lines.push(ellipsis(w));
+            lines.push(gap_ellipsis(w));
         }
         let mut hl = highlighter_for_path(path);
         let mut line_nr = hunk.start_line;
@@ -205,7 +213,7 @@ pub fn render_grep_results(entries: &[GrepFileEntry], max_lines: usize) -> Vec<L
         }
     }
     if total > max_lines {
-        out.push(ellipsis(nr_width(1)));
+        out.push(truncation_line(total - max_lines));
     }
     out
 }

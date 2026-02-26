@@ -244,12 +244,8 @@ impl App {
             CancelResult::Confirmed => {
                 self.messages_panel.flush();
                 self.messages_panel.fail_in_progress();
-                self.messages_panel.push(DisplayMessage {
-                    role: DisplayRole::Error,
-                    text: CANCEL_MSG.into(),
-                    tool_input: None,
-                    tool_output: None,
-                });
+                self.messages_panel
+                    .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
                 self.queue.clear();
                 self.status = Status::Idle;
                 vec![Action::CancelAgent]
@@ -302,12 +298,8 @@ impl App {
     }
 
     fn push_user_message(&mut self, text: &str) {
-        self.messages_panel.push(DisplayMessage {
-            role: DisplayRole::User,
-            text: text.to_string(),
-            tool_input: None,
-            tool_output: None,
-        });
+        self.messages_panel
+            .push(DisplayMessage::new(DisplayRole::User, text.to_string()));
     }
 
     fn toggle_mode(&mut self) -> Vec<Action> {

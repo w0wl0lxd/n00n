@@ -6,6 +6,13 @@ use crate::theme;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+pub const TRUNCATION_PREFIX: &str = "...";
+
+pub fn truncation_notice(count: usize) -> String {
+    let label = if count == 1 { "line" } else { "lines" };
+    format!("{TRUNCATION_PREFIX} ({count} {label})")
+}
+
 pub const BOLD_STYLE: Style = theme::BOLD;
 pub const CODE_STYLE: Style = theme::INLINE_CODE;
 pub const BOLD_CODE_STYLE: Style = theme::BOLD_CODE;
@@ -329,14 +336,20 @@ pub fn text_to_lines(
 
 pub fn truncate_lines(s: &str, max_lines: usize) -> Cow<'_, str> {
     match s.match_indices('\n').nth(max_lines.saturating_sub(1)) {
-        Some((i, _)) => Cow::Owned(format!("{}\n...", &s[..i])),
+        Some((i, _)) => {
+            let truncated = s[i..].matches('\n').count();
+            Cow::Owned(format!("{}\n{}", &s[..i], truncation_notice(truncated)))
+        }
         None => Cow::Borrowed(s),
     }
 }
 
 pub fn tail_lines(s: &str, max_lines: usize) -> Cow<'_, str> {
     match s.rmatch_indices('\n').nth(max_lines.saturating_sub(1)) {
-        Some((i, _)) => Cow::Owned(format!("...\n{}", &s[i + 1..])),
+        Some((i, _)) => {
+            let truncated = s[..i].matches('\n').count() + 1;
+            Cow::Owned(format!("{}\n{}", truncation_notice(truncated), &s[i + 1..]))
+        }
         None => Cow::Borrowed(s),
     }
 }
@@ -461,16 +474,18 @@ mod tests {
     }
 
     #[test_case("a\nb\nc", 5, "a\nb\nc" ; "under_limit")]
-    #[test_case("a\nb\nc\nd", 2, "a\nb\n..." ; "over_limit")]
+    #[test_case("a\nb\nc\nd", 2, "a\nb\n... (2 lines)" ; "over_limit")]
     #[test_case("single", 1, "single" ; "single_line")]
+    #[test_case("a\nb\nc", 2, "a\nb\n... (1 line)" ; "singular_line")]
     fn truncate_lines_cases(input: &str, max: usize, expected: &str) {
         assert_eq!(truncate_lines(input, max), expected);
     }
 
     #[test_case("a\nb\nc", 5, "a\nb\nc" ; "under_limit")]
-    #[test_case("a\nb\nc\nd", 2, "...\nc\nd" ; "over_limit")]
+    #[test_case("a\nb\nc\nd", 2, "... (2 lines)\nc\nd" ; "over_limit")]
     #[test_case("single", 1, "single" ; "single_line")]
-    #[test_case("a\nb\nc\nd\ne", 3, "...\nc\nd\ne" ; "keeps_last_three")]
+    #[test_case("a\nb\nc\nd\ne", 3, "... (2 lines)\nc\nd\ne" ; "keeps_last_three")]
+    #[test_case("a\nb\nc", 2, "... (1 line)\nb\nc" ; "singular_line")]
     fn tail_lines_cases(input: &str, max: usize, expected: &str) {
         assert_eq!(tail_lines(input, max), expected);
     }
