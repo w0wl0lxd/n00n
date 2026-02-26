@@ -26,6 +26,18 @@ pub enum DiffLine {
     Removed(Vec<DiffSpan>),
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct GrepFileEntry {
+    pub path: String,
+    pub matches: Vec<GrepMatch>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GrepMatch {
+    pub line_nr: usize,
+    pub text: String,
+}
+
 impl DiffSpan {
     pub fn plain(text: String) -> Self {
         Self {
@@ -125,6 +137,9 @@ pub enum ToolOutput {
         byte_count: usize,
         lines: Vec<String>,
     },
+    GrepResult {
+        entries: Vec<GrepFileEntry>,
+    },
     Batch {
         entries: Vec<BatchToolEntry>,
         text: String,
@@ -185,6 +200,20 @@ impl ToolOutput {
             Self::WriteCode {
                 path, byte_count, ..
             } => format!("wrote {byte_count} bytes to {path}"),
+            Self::GrepResult { entries } => {
+                let mut out = String::new();
+                for entry in entries {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(&entry.path);
+                    out.push(':');
+                    for m in &entry.matches {
+                        out.push_str(&format!("\n  {}: {}", m.line_nr, m.text));
+                    }
+                }
+                out
+            }
             Self::Batch { text, .. } => text.clone(),
         }
     }
@@ -396,6 +425,39 @@ mod tests {
     fn as_text_todolist_empty() {
         let output = ToolOutput::TodoList(vec![]);
         assert_eq!(output.as_text(), "No todos.");
+    }
+
+    #[test]
+    fn as_text_grep_result_multi_file() {
+        let output = ToolOutput::GrepResult {
+            entries: vec![
+                GrepFileEntry {
+                    path: "src/a.rs".into(),
+                    matches: vec![
+                        GrepMatch {
+                            line_nr: 3,
+                            text: "fn foo()".into(),
+                        },
+                        GrepMatch {
+                            line_nr: 10,
+                            text: "fn bar()".into(),
+                        },
+                    ],
+                },
+                GrepFileEntry {
+                    path: "src/b.rs".into(),
+                    matches: vec![GrepMatch {
+                        line_nr: 1,
+                        text: "use crate".into(),
+                    }],
+                },
+            ],
+        };
+        let text = output.as_text();
+        assert_eq!(
+            text,
+            "src/a.rs:\n  3: fn foo()\n  10: fn bar()\nsrc/b.rs:\n  1: use crate"
+        );
     }
 
     #[test]

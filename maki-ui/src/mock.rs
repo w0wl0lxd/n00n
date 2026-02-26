@@ -4,8 +4,8 @@ use maki_agent::tools::{
     WRITE_TOOL_NAME,
 };
 use maki_providers::{
-    BatchToolEntry, DiffHunk, DiffLine, DiffSpan, TodoItem, TodoPriority, TodoStatus, ToolInput,
-    ToolOutput,
+    BatchToolEntry, DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, TodoItem, TodoPriority,
+    TodoStatus, ToolInput, ToolOutput,
 };
 
 use crate::components::{DisplayMessage, DisplayRole, ToolStatus};
@@ -132,16 +132,25 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 "src/config/mod.rs\nsrc/config/builder.rs\nsrc/config/validation.rs".into(),
             )),
         ),
-        // #9 Grep — Success, Plain, header+body
+        // #9 Grep — Success, GrepResult
         tool(
             "t_grep",
             GREP_TOOL_NAME,
             ToolStatus::Success,
-            "ConfigBuilder (2 files)\nsrc/config/mod.rs:3: pub struct ConfigBuilder {\nsrc/main.rs:12: use config::ConfigBuilder;",
+            "ConfigBuilder",
             None,
-            Some(ToolOutput::Plain(
-                "src/config/mod.rs:3: pub struct ConfigBuilder {\nsrc/main.rs:12: use config::ConfigBuilder;".into(),
-            )),
+            Some(ToolOutput::GrepResult {
+                entries: vec![
+                    GrepFileEntry {
+                        path: "src/config/mod.rs".into(),
+                        matches: vec![GrepMatch { line_nr: 3, text: "pub struct ConfigBuilder {".into() }],
+                    },
+                    GrepFileEntry {
+                        path: "src/main.rs".into(),
+                        matches: vec![GrepMatch { line_nr: 12, text: "use config::ConfigBuilder;".into() }],
+                    },
+                ],
+            }),
         ),
         // #10 TodoWrite — Success, TodoList
         tool(

@@ -8,7 +8,7 @@ use crate::theme;
 
 use std::time::Instant;
 
-use maki_agent::tools::{BASH_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, WEBFETCH_TOOL_NAME};
+use maki_agent::tools::{BASH_TOOL_NAME, GLOB_TOOL_NAME, WEBFETCH_TOOL_NAME};
 use maki_providers::{ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -25,10 +25,6 @@ const SCROLLBAR_THUMB: &str = "\u{2590}";
 fn tool_summary_annotation(tool: &str, text: &str) -> Option<String> {
     match tool {
         GLOB_TOOL_NAME => Some(format!("{} files", text.lines().count())),
-        GREP_TOOL_NAME => {
-            let n = text.lines().filter(|l| !l.starts_with(' ')).count();
-            Some(format!("{n} files"))
-        }
         WEBFETCH_TOOL_NAME => Some(format!("{} lines", text.lines().count())),
         _ => {
             let n = text.lines().count();
@@ -246,6 +242,9 @@ impl MessagesPanel {
             }
             ToolOutput::WriteCode { byte_count, .. } => {
                 msg.text = format!("{} ({byte_count} bytes)", msg.text);
+            }
+            ToolOutput::GrepResult { entries, .. } => {
+                msg.text = format!("{} ({} files)", msg.text, entries.len());
             }
             ToolOutput::Batch { entries, .. } => {
                 let failed = entries.iter().filter(|e| e.is_error).count();
@@ -627,6 +626,12 @@ fn build_tool_lines(
         }) => {
             lines.extend(code_view::render_read_code(path, 1, code_lines));
         }
+        Some(ToolOutput::GrepResult { entries, .. }) => {
+            lines.extend(code_view::render_grep_results(
+                entries,
+                TOOL_OUTPUT_MAX_LINES,
+            ));
+        }
         Some(ToolOutput::Diff { path, hunks, .. }) => {
             lines.extend(code_view::render_diff(path, hunks));
         }
@@ -692,7 +697,7 @@ fn render_vertical_scrollbar(frame: &mut Frame, area: Rect, content_len: u16, po
 mod tests {
     use super::*;
     use maki_agent::tools::WRITE_TOOL_NAME;
-    use maki_providers::ToolOutput;
+    use maki_providers::{GrepFileEntry, GrepMatch, ToolOutput};
     use ratatui::backend::TestBackend;
     use test_case::test_case;
 
@@ -741,7 +746,6 @@ mod tests {
     }
 
     #[test_case(GLOB_TOOL_NAME, "src/a.rs\nsrc/b.rs\nsrc/c.rs", Some("3 files") ; "glob_file_count")]
-    #[test_case(GREP_TOOL_NAME, "src/a.rs:\n  1: match\nsrc/b.rs:\n  2: match", Some("2 files") ; "grep_file_count")]
     #[test_case(WEBFETCH_TOOL_NAME, "line1\nline2\nline3", Some("3 lines") ; "webfetch_line_count")]
     #[test_case("bash", "ok", None ; "short_output_no_annotation")]
     #[test_case("bash", &(0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"), Some("20 lines") ; "long_output_line_count")]
@@ -777,6 +781,33 @@ mod tests {
             is_error: false,
         });
         assert!(panel.messages[0].text.contains("42 bytes"));
+    }
+
+    fn grep_output(n_files: usize) -> ToolOutput {
+        ToolOutput::GrepResult {
+            entries: (0..n_files)
+                .map(|i| GrepFileEntry {
+                    path: format!("{i}.rs"),
+                    matches: vec![GrepMatch {
+                        line_nr: 1,
+                        text: String::new(),
+                    }],
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn tool_done_grep_result_annotation() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(start("t1", "grep"));
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "grep",
+            output: grep_output(2),
+            is_error: false,
+        });
+        assert!(panel.messages[0].text.contains("2 files"));
     }
 
     #[test]

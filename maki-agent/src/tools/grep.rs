@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use maki_providers::{ToolInput, ToolOutput};
+use maki_providers::{GrepFileEntry, GrepMatch, ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
 use super::{NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path};
@@ -48,7 +48,7 @@ impl Grep {
 
         let prefix = search_path.strip_suffix('/').unwrap_or(&search_path);
 
-        let mut files: Vec<(String, Vec<String>)> = Vec::new();
+        let mut entries: Vec<GrepFileEntry> = Vec::new();
         for line in stdout.lines() {
             let Some((file, rest)) = line.split_once('|') else {
                 continue;
@@ -66,45 +66,38 @@ impl Grep {
                 .strip_prefix(prefix)
                 .and_then(|p| p.strip_prefix('/'))
                 .unwrap_or(file);
-            let formatted = format!("  {line_num}: {text}");
-            match files.last_mut().filter(|(f, _)| f == rel) {
-                Some((_, lines)) => lines.push(formatted),
-                None => files.push((rel.to_string(), vec![formatted])),
+            let m = GrepMatch {
+                line_nr: line_num.parse().unwrap_or(0),
+                text,
+            };
+            match entries.last_mut().filter(|e| e.path == rel) {
+                Some(entry) => entry.matches.push(m),
+                None => entries.push(GrepFileEntry {
+                    path: rel.to_string(),
+                    matches: vec![m],
+                }),
             }
         }
 
-        if files.is_empty() {
+        if entries.is_empty() {
             return Ok(ToolOutput::Plain(NO_FILES_FOUND.to_string()));
         }
 
-        files.sort_by(|a, b| {
-            let a_abs = Path::new(prefix).join(&a.0);
-            let b_abs = Path::new(prefix).join(&b.0);
+        entries.sort_by(|a, b| {
+            let a_abs = Path::new(prefix).join(&a.path);
+            let b_abs = Path::new(prefix).join(&b.path);
             mtime(&b_abs).cmp(&mtime(&a_abs))
         });
 
-        let mut result = String::new();
         let mut total = 0;
-        for (file, lines) in &files {
-            if total >= SEARCH_RESULT_LIMIT {
-                break;
-            }
-            if !result.is_empty() {
-                result.push('\n');
-            }
-            result.push_str(file);
-            result.push(':');
-            for line in lines {
-                if total >= SEARCH_RESULT_LIMIT {
-                    break;
-                }
-                result.push('\n');
-                result.push_str(line);
-                total += 1;
-            }
+        for entry in &mut entries {
+            let remaining = SEARCH_RESULT_LIMIT.saturating_sub(total);
+            entry.matches.truncate(remaining);
+            total += entry.matches.len();
         }
+        entries.retain(|e| !e.matches.is_empty());
 
-        Ok(ToolOutput::Plain(result))
+        Ok(ToolOutput::GrepResult { entries })
     }
 
     pub fn start_summary(&self) -> String {

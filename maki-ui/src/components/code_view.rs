@@ -1,7 +1,7 @@
 use crate::highlight::{highlight_line, highlighter_for_path};
 use crate::theme;
 
-use maki_providers::{DiffHunk, DiffLine};
+use maki_providers::{DiffHunk, DiffLine, GrepFileEntry};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -179,10 +179,41 @@ fn merge_syntax_with_diff(
     result
 }
 
+pub fn render_grep_results(entries: &[GrepFileEntry], max_lines: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    let mut budget = max_lines;
+    let total: usize = entries.iter().map(|e| e.matches.len()).sum();
+    for entry in entries {
+        if budget == 0 {
+            break;
+        }
+        let take = entry.matches.len().min(budget);
+        let max_nr = entry
+            .matches
+            .iter()
+            .take(take)
+            .map(|m| m.line_nr)
+            .max()
+            .unwrap_or(1);
+        let w = nr_width(max_nr);
+        let mut hl = highlighter_for_path(&entry.path);
+        for m in entry.matches.iter().take(take) {
+            let mut spans = vec![gutter(&format!("{:>w$}", m.line_nr))];
+            spans.extend(syntax_spans(&mut hl, &m.text));
+            out.push(Line::from(spans));
+            budget -= 1;
+        }
+    }
+    if total > max_lines {
+        out.push(ellipsis(nr_width(1)));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maki_providers::DiffSpan;
+    use maki_providers::{DiffSpan, GrepMatch};
     use test_case::test_case;
 
     use ratatui::style::Color;
@@ -235,6 +266,30 @@ mod tests {
         let result = merge_syntax_with_diff(&syn, &diff, base, Style::default());
         let text: String = result.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "abcd");
+    }
+
+    fn grep_entries(files: &[(&str, &[usize])]) -> Vec<GrepFileEntry> {
+        files
+            .iter()
+            .map(|(path, nrs)| GrepFileEntry {
+                path: path.to_string(),
+                matches: nrs
+                    .iter()
+                    .map(|&n| GrepMatch {
+                        line_nr: n,
+                        text: format!("code at {path}:{n}"),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    #[test_case(&[("a.rs", &[1,2,3,4,5,6,7,8,9,10_usize] as &[usize])], 3, 4  ; "truncates_with_ellipsis")]
+    #[test_case(&[("a.rs", &[1_usize,2])],                                5, 2  ; "no_truncation_when_fits")]
+    #[test_case(&[("a.rs", &[1_usize,2,3]), ("b.rs", &[10,20])],          4, 5  ; "multi_file_budget_with_ellipsis")]
+    fn render_grep_line_count(files: &[(&str, &[usize])], max: usize, expected: usize) {
+        let entries = grep_entries(files);
+        assert_eq!(render_grep_results(&entries, max).len(), expected);
     }
 
     #[test]
