@@ -115,11 +115,9 @@ fn parse_blocks(text: &str) -> Vec<TextBlock<'_>> {
     let mut rest = text;
 
     while let Some((fence_start, fence_len)) = find_opening_fence(rest) {
-        let before = &rest[..fence_start];
+        let before = rest[..fence_start].trim_end_matches('\n');
         if !before.is_empty() {
-            blocks.push(TextBlock::Normal(
-                before.strip_suffix('\n').unwrap_or(before),
-            ));
+            blocks.push(TextBlock::Normal(before));
         }
 
         let after_fence = &rest[fence_start + fence_len..];
@@ -138,7 +136,7 @@ fn parse_blocks(text: &str) -> Vec<TextBlock<'_>> {
             let code = raw.strip_suffix('\n').unwrap_or(raw);
             blocks.push(TextBlock::Code { lang, code });
             let after_close = &code_region[close_offset + close_line_len..];
-            rest = after_close.strip_prefix('\n').unwrap_or(after_close);
+            rest = after_close.trim_start_matches('\n');
         } else {
             let code = code_region;
             blocks.push(TextBlock::Code { lang, code });
@@ -578,8 +576,8 @@ mod tests {
     )]
     #[test_case(
         "before\n\n```rust\ncode\n```\n\nafter",
-        &["before", "", "code", "", "", "after"]
-        ; "existing_blanks_preserved"
+        &["before", "", "code", "", "after"]
+        ; "extra_blanks_collapsed"
     )]
     #[test_case(
         "hello\n```rust\ncode\n```",
