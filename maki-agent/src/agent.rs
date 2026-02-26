@@ -12,7 +12,6 @@ use crate::template::Vars;
 use crate::tools::{ToolCall, ToolContext};
 use crate::{
     AgentError, AgentEvent, AgentInput, AgentMode, Envelope, Message, TokenUsage, ToolDoneEvent,
-    ToolOutput,
 };
 use maki_providers::Model;
 use maki_providers::provider::Provider;
@@ -59,32 +58,42 @@ struct ParsedToolCall {
     call: ToolCall,
 }
 
-fn is_doom_loop(name: &str, input: &Value, recent: &VecDeque<(String, Value)>) -> bool {
-    recent.len() >= DOOM_LOOP_THRESHOLD - 1
-        && recent
-            .iter()
-            .rev()
-            .take(DOOM_LOOP_THRESHOLD - 1)
-            .all(|(n, i)| n == name && i == input)
+struct RecentCalls(VecDeque<(String, Value)>);
+
+impl RecentCalls {
+    fn new() -> Self {
+        Self(VecDeque::new())
+    }
+
+    fn is_doom_loop(&self, name: &str, input: &Value) -> bool {
+        self.0.len() >= DOOM_LOOP_THRESHOLD - 1
+            && self
+                .0
+                .iter()
+                .rev()
+                .take(DOOM_LOOP_THRESHOLD - 1)
+                .all(|(n, i)| n == name && i == input)
+    }
+
+    fn record(&mut self, name: String, input: Value) {
+        self.0.push_back((name, input));
+        if self.0.len() > DOOM_LOOP_THRESHOLD {
+            self.0.pop_front();
+        }
+    }
 }
 
 fn parse_tool_calls<'a>(
     tool_uses: impl Iterator<Item = (&'a str, &'a str, &'a serde_json::Value)>,
-    event_tx: &Sender<Envelope>,
-    recent_calls: &mut VecDeque<(String, Value)>,
+    recent: &mut RecentCalls,
 ) -> (Vec<ParsedToolCall>, Vec<ToolDoneEvent>) {
     let mut parsed = Vec::new();
     let mut errors = Vec::new();
 
     for (id, name, input) in tool_uses {
-        if is_doom_loop(name, input, recent_calls) {
+        if recent.is_doom_loop(name, input) {
             warn!(tool = %name, "doom loop detected, skipping execution");
-            errors.push(ToolDoneEvent {
-                id: id.to_owned(),
-                tool: "unknown",
-                output: ToolOutput::Plain(DOOM_LOOP_MESSAGE.into()),
-                is_error: true,
-            });
+            errors.push(ToolDoneEvent::error(id.to_owned(), DOOM_LOOP_MESSAGE));
         } else {
             match ToolCall::from_api(name, input) {
                 Ok(call) => parsed.push(ParsedToolCall {
@@ -94,25 +103,11 @@ fn parse_tool_calls<'a>(
                 Err(e) => {
                     let msg = format!("failed to parse tool {name}: {e}");
                     warn!(tool = %name, error = %e, "failed to parse tool call");
-                    let _ = event_tx.send(
-                        AgentEvent::Error {
-                            message: msg.clone(),
-                        }
-                        .into(),
-                    );
-                    errors.push(ToolDoneEvent {
-                        id: id.to_owned(),
-                        tool: "unknown",
-                        output: ToolOutput::Plain(msg),
-                        is_error: true,
-                    });
+                    errors.push(ToolDoneEvent::error(id.to_owned(), msg));
                 }
             }
         }
-        recent_calls.push_back((name.to_owned(), input.clone()));
-        if recent_calls.len() > DOOM_LOOP_THRESHOLD {
-            recent_calls.pop_front();
-        }
+        recent.record(name.to_owned(), input.clone());
     }
 
     (parsed, errors)
@@ -141,11 +136,8 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDo
             .iter()
             .zip(handles)
             .map(|(parsed, h)| {
-                h.join().unwrap_or_else(|_| ToolDoneEvent {
-                    id: parsed.id.clone(),
-                    tool: "unknown",
-                    output: ToolOutput::Plain("tool thread panicked".into()),
-                    is_error: true,
+                h.join().unwrap_or_else(|_| {
+                    ToolDoneEvent::error(parsed.id.clone(), "tool thread panicked")
                 })
             })
             .collect()
@@ -172,7 +164,7 @@ pub fn run(
     };
     let mut total_usage = TokenUsage::default();
     let mut num_turns: u32 = 0;
-    let mut recent_calls: VecDeque<(String, Value)> = VecDeque::new();
+    let mut recent_calls = RecentCalls::new();
 
     loop {
         let response = provider.stream_message(model, history, system, tools, event_tx)?;
@@ -220,8 +212,7 @@ pub fn run(
             return Ok(());
         }
 
-        let (parsed, errors) =
-            parse_tool_calls(response.message.tool_uses(), event_tx, &mut recent_calls);
+        let (parsed, errors) = parse_tool_calls(response.message.tool_uses(), &mut recent_calls);
 
         history.push(response.message);
 
@@ -271,16 +262,16 @@ mod tests {
         }
     }
 
-    fn recent(entries: &[(&str, Value)]) -> VecDeque<(String, Value)> {
-        entries
-            .iter()
-            .map(|(n, v)| (n.to_string(), v.clone()))
-            .collect()
+    fn recent_calls(entries: &[(&str, Value)]) -> RecentCalls {
+        let mut rc = RecentCalls::new();
+        for (n, v) in entries {
+            rc.record(n.to_string(), v.clone());
+        }
+        rc
     }
 
     #[test_case("read", &[("read", "/a"), ("read", "/a")], true  ; "triggers_at_threshold")]
     #[test_case("read", &[("read", "/a")],                 false ; "below_threshold")]
-    #[test_case("read", &[],                                false ; "empty_history")]
     #[test_case("read", &[("read", "/a"), ("read", "/b")], false ; "different_input_breaks_chain")]
     #[test_case("grep", &[("glob", "/a"), ("glob", "/a")], false ; "different_tool_name")]
     #[test_case("bash", &[("bash", "/a"), ("bash", "/b"), ("bash", "/a")], false ; "interrupted_chain")]
@@ -290,7 +281,7 @@ mod tests {
             .map(|(n, p)| (*n, serde_json::json!({"path": p})))
             .collect();
         let input = serde_json::json!({"path": "/a"});
-        assert_eq!(is_doom_loop(name, &input, &recent(&entries)), expected);
+        assert_eq!(recent_calls(&entries).is_doom_loop(name, &input), expected);
     }
 
     struct MockProvider {
@@ -372,27 +363,23 @@ mod tests {
             .expect("expected Done event")
     }
 
-    #[test]
-    fn end_turn_completes_in_one_turn() {
-        let provider = MockProvider::new(vec![text_response("end_turn")]);
-        let (turns, _) = run_agent(&provider);
-        assert_eq!(turns, 1);
+    fn max_tokens_responses(n: u32) -> Vec<StreamResponse> {
+        (0..n).map(|_| text_response("max_tokens")).collect()
     }
 
-    #[test]
-    fn max_tokens_continues_then_completes() {
-        let provider =
-            MockProvider::new(vec![text_response("max_tokens"), text_response("end_turn")]);
-        let (turns, _) = run_agent(&provider);
-        assert_eq!(turns, 2);
+    #[test_case(&["end_turn"],                 1, Some("end_turn")  ; "end_turn_completes")]
+    #[test_case(&["max_tokens", "end_turn"],   2, Some("end_turn")  ; "max_tokens_continues")]
+    fn turn_counting(stops: &[&str], expected_turns: u32, expected_stop: Option<&str>) {
+        let responses = stops.iter().map(|s| text_response(s)).collect();
+        let provider = MockProvider::new(responses);
+        let (turns, stop_reason) = run_agent(&provider);
+        assert_eq!(turns, expected_turns);
+        assert_eq!(stop_reason.as_deref(), expected_stop);
     }
 
     #[test]
     fn max_tokens_gives_up_after_limit() {
-        let responses: Vec<_> = (0..=MAX_CONTINUATION_TURNS)
-            .map(|_| text_response("max_tokens"))
-            .collect();
-        let provider = MockProvider::new(responses);
+        let provider = MockProvider::new(max_tokens_responses(MAX_CONTINUATION_TURNS + 1));
         let (turns, stop_reason) = run_agent(&provider);
         assert_eq!(turns, MAX_CONTINUATION_TURNS + 1);
         assert_eq!(stop_reason.as_deref(), Some("max_tokens"));
