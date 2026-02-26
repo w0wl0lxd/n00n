@@ -3,6 +3,7 @@ pub mod app;
 mod components;
 mod highlight;
 mod markdown;
+mod mock;
 mod text_buffer;
 mod theme;
 
@@ -29,13 +30,13 @@ use components::Action;
 const ANIMATION_INTERVAL_MS: u64 = 8;
 const EVENT_POLL_INTERVAL_MS: u64 = 8;
 
-pub fn run(model: Model) -> Result<()> {
+pub fn run(model: Model, demo: bool) -> Result<()> {
     let mut terminal = ratatui::init();
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(EnableBracketedPaste)?;
     terminal::enable_raw_mode()?;
 
-    let result = run_event_loop(&mut terminal, model);
+    let result = run_event_loop(&mut terminal, model, demo);
 
     terminal::disable_raw_mode()?;
     stdout().execute(event::DisableBracketedPaste)?;
@@ -45,8 +46,11 @@ pub fn run(model: Model) -> Result<()> {
     result
 }
 
-fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model) -> Result<()> {
+fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model, demo: bool) -> Result<()> {
     let mut app = App::new(model.spec(), model.pricing.clone(), model.context_window);
+    if demo {
+        app.load_messages(mock::mock_messages());
+    }
     let (mut input_tx, mut agent_rx, mut history) = spawn_agent(&model, Vec::new());
 
     loop {

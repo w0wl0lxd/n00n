@@ -335,6 +335,10 @@ impl App {
     pub fn is_animating(&self) -> bool {
         self.messages_panel.is_animating()
     }
+
+    pub fn load_messages(&mut self, msgs: Vec<DisplayMessage>) {
+        self.messages_panel.load_messages(msgs);
+    }
 }
 
 #[cfg(test)]

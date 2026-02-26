@@ -24,6 +24,9 @@ struct Cli {
     #[arg(long)]
     verbose: bool,
 
+    #[arg(long)]
+    demo: bool,
+
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     output_format: OutputFormat,
 
@@ -67,7 +70,7 @@ fn main() -> Result<()> {
             if cli.print {
                 print::run(&model, cli.prompt, cli.output_format, cli.verbose)?;
             } else {
-                maki_ui::run(model)?;
+                maki_ui::run(model, cli.demo)?;
             }
         }
     }

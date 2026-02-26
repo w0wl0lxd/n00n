@@ -24,10 +24,15 @@ use maki_providers::Model;
 use maki_providers::provider::Provider;
 
 pub const BASH_TOOL_NAME: &str = bash::Bash::NAME;
-pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
+pub const BATCH_TOOL_NAME: &str = batch::Batch::NAME;
+pub const EDIT_TOOL_NAME: &str = edit::Edit::NAME;
 pub const GLOB_TOOL_NAME: &str = glob::Glob::NAME;
 pub const GREP_TOOL_NAME: &str = grep::Grep::NAME;
+pub const MULTIEDIT_TOOL_NAME: &str = multiedit::MultiEdit::NAME;
 pub const READ_TOOL_NAME: &str = read::Read::NAME;
+pub const TASK_TOOL_NAME: &str = task::Task::NAME;
+pub const TODOWRITE_TOOL_NAME: &str = todowrite::TodoWrite::NAME;
+pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
 pub const WRITE_TOOL_NAME: &str = write::Write::NAME;
 const MAX_OUTPUT_BYTES: usize = 30_000;
 pub(crate) const MAX_OUTPUT_LINES: usize = 2000;

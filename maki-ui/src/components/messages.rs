@@ -152,6 +152,22 @@ impl MessagesPanel {
         self.messages.push(msg);
     }
 
+    pub fn load_messages(&mut self, msgs: Vec<DisplayMessage>) {
+        self.in_progress_count = msgs
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m.role,
+                    DisplayRole::Tool {
+                        status: ToolStatus::InProgress,
+                        ..
+                    }
+                )
+            })
+            .count();
+        self.messages = msgs;
+    }
+
     pub fn thinking_delta(&mut self, text: &str) {
         self.streaming_thinking.push(text);
     }
@@ -1082,5 +1098,35 @@ mod tests {
         rebuild(&mut panel);
         assert_eq!(msg_status(&panel, "t1"), ToolStatus::Error);
         assert_eq!(msg_status(&panel, "t2"), ToolStatus::Error);
+    }
+
+    fn tool_msg(id: &str, name: &'static str, status: ToolStatus) -> DisplayMessage {
+        DisplayMessage {
+            role: DisplayRole::Tool {
+                id: id.into(),
+                status,
+                name,
+            },
+            text: id.into(),
+            tool_input: None,
+            tool_output: None,
+        }
+    }
+
+    #[test]
+    fn load_messages_counts_in_progress_and_replaces_state() {
+        let mut panel = panel_with_tools(&[("old", "bash")]);
+        assert_eq!(panel.in_progress_count, 1);
+
+        panel.load_messages(vec![
+            tool_msg("t1", "bash", ToolStatus::InProgress),
+            tool_msg("t2", "read", ToolStatus::Success),
+        ]);
+        assert_eq!(panel.in_progress_count, 1);
+        assert_eq!(panel.messages.len(), 2);
+
+        panel.load_messages(Vec::new());
+        assert_eq!(panel.in_progress_count, 0);
+        assert!(panel.messages.is_empty());
     }
 }
