@@ -45,10 +45,10 @@ pub const STRIKETHROUGH: Style = Style::new().fg(COMMENT).add_modifier(Modifier:
 pub const HEADING: Style = Style::new().fg(PURPLE).add_modifier(Modifier::BOLD);
 pub const LIST_MARKER: Style = Style::new().fg(ORANGE);
 
-const DIFF_OLD_BG: Color = Color::Rgb(0x55, 0x22, 0x22);
-const DIFF_NEW_BG: Color = Color::Rgb(0x22, 0x44, 0x22);
-const DIFF_OLD_EMPHASIS_BG: Color = Color::Rgb(0x77, 0x33, 0x33);
-const DIFF_NEW_EMPHASIS_BG: Color = Color::Rgb(0x33, 0x66, 0x33);
+const DIFF_OLD_BG: Color = Color::Rgb(0x4D, 0x1F, 0x1F);
+const DIFF_NEW_BG: Color = Color::Rgb(0x1F, 0x3D, 0x1F);
+const DIFF_OLD_EMPHASIS_BG: Color = Color::Rgb(0x6B, 0x2E, 0x2E);
+const DIFF_NEW_EMPHASIS_BG: Color = Color::Rgb(0x2E, 0x5C, 0x2E);
 
 pub const DIFF_OLD: Style = Style::new().bg(DIFF_OLD_BG);
 pub const DIFF_NEW: Style = Style::new().bg(DIFF_NEW_BG);
