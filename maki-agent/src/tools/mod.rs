@@ -29,6 +29,7 @@ pub const EDIT_TOOL_NAME: &str = edit::Edit::NAME;
 pub const GLOB_TOOL_NAME: &str = glob::Glob::NAME;
 pub const GREP_TOOL_NAME: &str = grep::Grep::NAME;
 pub const MULTIEDIT_TOOL_NAME: &str = multiedit::MultiEdit::NAME;
+pub const QUESTION_TOOL_NAME: &str = question::Question::NAME;
 pub const READ_TOOL_NAME: &str = read::Read::NAME;
 pub const TASK_TOOL_NAME: &str = task::Task::NAME;
 pub const TODOWRITE_TOOL_NAME: &str = todowrite::TodoWrite::NAME;

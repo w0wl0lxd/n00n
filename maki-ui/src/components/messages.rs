@@ -11,7 +11,7 @@ use crate::theme;
 
 use std::time::Instant;
 
-use maki_agent::tools::{BASH_TOOL_NAME, WEBFETCH_TOOL_NAME};
+use maki_agent::tools::{BASH_TOOL_NAME, QUESTION_TOOL_NAME, WEBFETCH_TOOL_NAME};
 use maki_providers::{ToolDoneEvent, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -197,18 +197,21 @@ impl MessagesPanel {
 
         match &event.output {
             ToolOutput::Plain(text) => {
-                if let Some(annotation) = tool_summary_annotation(event.tool, text) {
-                    msg.text = format!("{} ({annotation})", msg.text);
-                }
-                let hide_body = matches!(event.tool, WEBFETCH_TOOL_NAME);
-                if !hide_body {
-                    let display = if event.tool == BASH_TOOL_NAME {
-                        tail_lines(text, BASH_OUTPUT_MAX_LINES)
-                    } else {
-                        truncate_lines(text, TOOL_OUTPUT_MAX_LINES)
-                    };
-                    if !display.is_empty() {
-                        msg.text = format!("{}\n{display}", msg.text);
+                if event.tool == QUESTION_TOOL_NAME {
+                    msg.text = text.clone();
+                } else {
+                    if let Some(annotation) = tool_summary_annotation(event.tool, text) {
+                        msg.text = format!("{} ({annotation})", msg.text);
+                    }
+                    if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
+                        let display = if event.tool == BASH_TOOL_NAME {
+                            tail_lines(text, BASH_OUTPUT_MAX_LINES)
+                        } else {
+                            truncate_lines(text, TOOL_OUTPUT_MAX_LINES)
+                        };
+                        if !display.is_empty() {
+                            msg.text = format!("{}\n{display}", msg.text);
+                        }
                     }
                 }
             }
@@ -498,18 +501,38 @@ impl MessagesPanel {
         for i in self.cached_msg_count..self.messages.len() {
             let msg = &self.messages[i];
 
-            if let DisplayRole::Tool { ref id, status, .. } = msg.role {
-                let tl = build_tool_lines(msg, status, self.started_at);
-                let pending = tl.send_highlight(&self.hl_worker);
-                let id = id.clone();
-                self.push_spacer_if_needed();
-                self.cached_segments.push(Segment {
-                    lines: tl.lines,
-                    tool_id: Some(id),
-                    pending_highlight: pending,
-                    highlight_range: tl.highlight.as_ref().map(|h| h.range),
-                    ..Segment::default()
-                });
+            if let DisplayRole::Tool {
+                ref id,
+                status,
+                name,
+            } = msg.role
+            {
+                if name == QUESTION_TOOL_NAME {
+                    let lines = text_to_lines(
+                        &msg.text,
+                        ASSISTANT_STYLE.prefix,
+                        ASSISTANT_STYLE.text_style,
+                        ASSISTANT_STYLE.prefix_style,
+                        None,
+                    );
+                    self.push_spacer_if_needed();
+                    self.cached_segments.push(Segment {
+                        lines,
+                        ..Segment::default()
+                    });
+                } else {
+                    let tl = build_tool_lines(msg, status, self.started_at);
+                    let pending = tl.send_highlight(&self.hl_worker);
+                    let id = id.clone();
+                    self.push_spacer_if_needed();
+                    self.cached_segments.push(Segment {
+                        lines: tl.lines,
+                        tool_id: Some(id),
+                        pending_highlight: pending,
+                        highlight_range: tl.highlight.as_ref().map(|h| h.range),
+                        ..Segment::default()
+                    });
+                }
             } else {
                 let style = match &msg.role {
                     DisplayRole::User => &USER_STYLE,
@@ -1041,5 +1064,45 @@ mod tests {
         panel.tool_start(start("t2", "bash"));
         rebuild(&mut panel);
         assert!(has_seg(&panel, "t2"));
+    }
+
+    #[test]
+    fn question_tool_uses_assistant_style_and_no_truncation() {
+        let questions: String = (1..=20)
+            .map(|i| format!("{i}. Question {i}?"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(start("q1", QUESTION_TOOL_NAME));
+        panel.tool_done(ToolDoneEvent {
+            id: "q1".into(),
+            tool: QUESTION_TOOL_NAME,
+            output: ToolOutput::Plain(questions.clone()),
+            is_error: false,
+        });
+        rebuild(&mut panel);
+
+        assert!(panel.messages[0].text.contains("1. Question 1?"));
+        assert!(panel.messages[0].text.contains("20. Question 20?"));
+        assert!(!has_seg(&panel, "q1"), "question should not have tool_id");
+
+        let seg = panel
+            .cached_segments
+            .iter()
+            .find(|s| s.tool_id.is_none() && !s.lines.is_empty())
+            .expect("should have non-tool segment");
+        let text: String = seg
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            text.contains("maki>"),
+            "question should use assistant prefix"
+        );
+        assert!(
+            text.contains("Question 20?"),
+            "full question text should be visible"
+        );
     }
 }
