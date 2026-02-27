@@ -5,7 +5,7 @@ use maki_tool_macro::Tool;
 
 use super::fuzzy_replace;
 use super::multiedit::build_hunk;
-use super::relative_path;
+use super::{line_at_offset, relative_path};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Edit {
@@ -23,10 +23,14 @@ impl Edit {
     pub const NAME: &str = "edit";
     pub const DESCRIPTION: &str = include_str!("edit.md");
 
-    fn diff_output(&self, start_line: usize) -> ToolOutput {
+    fn diff_output(&self, lines: &[usize]) -> ToolOutput {
         let rel = relative_path(&self.path);
+        let hunks = lines
+            .iter()
+            .map(|&line| build_hunk(line, &self.old_string, &self.new_string))
+            .collect();
         ToolOutput::Diff {
-            hunks: vec![build_hunk(start_line, &self.old_string, &self.new_string)],
+            hunks,
             summary: format!("edited {rel}"),
             path: rel,
         }
@@ -37,9 +41,13 @@ impl Edit {
         let replace_all = self.replace_all.unwrap_or(false);
         let result =
             fuzzy_replace::replace(&content, &self.old_string, &self.new_string, replace_all)?;
-        let start_line = content[..result.match_offset].matches('\n').count() + 1;
         fs::write(&self.path, &result.content).map_err(|e| format!("write error: {e}"))?;
-        Ok(self.diff_output(start_line))
+        let lines: Vec<usize> = result
+            .match_offsets
+            .iter()
+            .map(|&off| line_at_offset(&content, off))
+            .collect();
+        Ok(self.diff_output(&lines))
     }
 
     pub fn start_summary(&self) -> String {
@@ -51,7 +59,7 @@ impl Edit {
     }
 
     pub fn start_output(&self) -> Option<ToolOutput> {
-        Some(self.diff_output(0))
+        Some(self.diff_output(&[1]))
     }
 
     pub fn mutable_path(&self) -> Option<&str> {

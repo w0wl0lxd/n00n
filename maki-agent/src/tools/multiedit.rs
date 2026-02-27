@@ -8,7 +8,7 @@ use similar::ChangeTag;
 use maki_tool_macro::Tool;
 
 use super::fuzzy_replace;
-use super::relative_path;
+use super::{line_at_offset, relative_path};
 
 #[derive(Debug, Clone, Deserialize)]
 struct EditEntry {
@@ -61,8 +61,10 @@ impl MultiEdit {
             let result =
                 fuzzy_replace::replace(&content, &edit.old_string, &edit.new_string, replace_all)
                     .map_err(|e| format!("edit {i}: {e}"))?;
-            let start_line = content[..result.match_offset].matches('\n').count() + 1;
-            hunks.push(build_hunk(start_line, &edit.old_string, &edit.new_string));
+            for &off in &result.match_offsets {
+                let line = line_at_offset(&content, off);
+                hunks.push(build_hunk(line, &edit.old_string, &edit.new_string));
+            }
             content = result.content;
         }
 
@@ -91,7 +93,7 @@ impl MultiEdit {
         let hunks: Vec<DiffHunk> = self
             .edits
             .iter()
-            .map(|e| build_hunk(0, &e.old_string, &e.new_string))
+            .map(|e| build_hunk(1, &e.old_string, &e.new_string))
             .collect();
         let rel = relative_path(&self.path);
         Some(ToolOutput::Diff {
@@ -221,22 +223,12 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn build_hunk_append_does_not_duplicate_unchanged() {
-        let old = "keep\n";
-        let new = "keep\nadded";
-        let hunk = build_hunk(1, old, new);
-        assert_eq!(hunk.start_line, 1);
-        assert_eq!(tags(&hunk), vec!['=', '+']);
-    }
-
-    #[test]
-    fn build_hunk_middle_change() {
-        let old = "a\nb\nc";
-        let new = "a\nB\nc";
-        let hunk = build_hunk(5, old, new);
-        assert_eq!(hunk.start_line, 5);
-        assert_eq!(tags(&hunk), vec!['=', '-', '+', '=']);
+    #[test_case(1, "keep\n",  "keep\nadded", &['=', '+']           ; "append")]
+    #[test_case(5, "a\nb\nc", "a\nB\nc",     &['=', '-', '+', '='] ; "middle_change")]
+    fn build_hunk_tags(line: usize, old: &str, new: &str, expected: &[char]) {
+        let hunk = build_hunk(line, old, new);
+        assert_eq!(hunk.start_line, line);
+        assert_eq!(tags(&hunk), expected);
     }
 
     #[test_case(1, "/x.rs (1 edit)"  ; "singular")]

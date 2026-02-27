@@ -25,7 +25,7 @@ const REPLACERS: &[Replacer] = &[
 #[derive(Debug)]
 pub(super) struct ReplaceResult {
     pub content: String,
-    pub match_offset: usize,
+    pub match_offsets: Vec<usize>,
 }
 
 pub(super) fn replace(
@@ -44,9 +44,10 @@ pub(super) fn replace(
             any_found = true;
 
             if replace_all {
+                let offsets = all_offsets(content, &candidate);
                 return Ok(ReplaceResult {
                     content: content.replace(&candidate, new_string),
-                    match_offset: first,
+                    match_offsets: offsets,
                 });
             }
 
@@ -60,7 +61,7 @@ pub(super) fn replace(
             result.push_str(&content[first + candidate.len()..]);
             return Ok(ReplaceResult {
                 content: result,
-                match_offset: first,
+                match_offsets: vec![first],
             });
         }
     }
@@ -408,6 +409,16 @@ fn substring_whitespace_match(line: &str, normalized_find: &str) -> Option<Strin
     re.find(line).map(|m| m.as_str().to_string())
 }
 
+fn all_offsets(content: &str, needle: &str) -> Vec<usize> {
+    let mut offsets = Vec::new();
+    let mut start = 0;
+    while let Some(pos) = content[start..].find(needle) {
+        offsets.push(start + pos);
+        start += pos + needle.len();
+    }
+    offsets
+}
+
 fn unescape(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars();
@@ -474,12 +485,6 @@ mod tests {
     }
 
     #[test]
-    fn replace_all() {
-        let result = replace("let x = 1;\nlet x = 1;", "let x = 1;", "let x = 2;", true).unwrap();
-        assert!(!result.content.contains("let x = 1;"));
-    }
-
-    #[test]
     fn block_anchor_picks_best_among_multiple() {
         let content = "fn a() {\n    unrelated();\n}\nfn a() {\n    target();\n}";
         let result = replace(content, "fn a() {\n    target();\n}", R, false).unwrap();
@@ -528,12 +533,12 @@ mod tests {
     }
 
     #[test]
-    fn replace_returns_match_offset() {
+    fn replace_returns_match_offsets() {
         let exact = replace("let x = 1;", "let x = 1;", "let x = 2;", false).unwrap();
-        assert_eq!(exact.match_offset, 0);
+        assert_eq!(exact.match_offsets, vec![0]);
 
         let all = replace("aXbXc", "X", "Y", true).unwrap();
         assert_eq!(all.content, "aYbYc");
-        assert_eq!(all.match_offset, 1);
+        assert_eq!(all.match_offsets, vec![1, 3]);
     }
 }

@@ -59,6 +59,10 @@ pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> 
     }
 }
 
+pub(crate) fn line_at_offset(content: &str, offset: usize) -> usize {
+    content[..offset].matches('\n').count() + 1
+}
+
 pub(crate) fn relative_path(path: &str) -> String {
     let Ok(cwd) = std::env::current_dir() else {
         return path.to_string();
