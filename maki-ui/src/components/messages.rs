@@ -337,7 +337,7 @@ impl MessagesPanel {
         self.streaming_thinking.tick();
         self.streaming_text.tick();
 
-        let width = area.width;
+        let width = area.width.saturating_sub(1);
 
         let mut heights: Vec<u16> = self
             .cached_segments
@@ -420,7 +420,7 @@ impl MessagesPanel {
                 continue;
             }
             let visible_h = h.saturating_sub(skip).min(bottom - y);
-            let seg_area = Rect::new(area.x, y, area.width, visible_h);
+            let seg_area = Rect::new(area.x, y, width, visible_h);
             let mut p = Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false });
             if *is_tool {
                 p = p.style(theme::TOOL_BG);
