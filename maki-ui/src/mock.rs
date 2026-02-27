@@ -281,6 +281,8 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             "- _Validation_ via `validate_port()` - rejects ports **outside** `1..=65534`\n",
             "  - Returns `Result<Config, ConfigError>` instead of *panicking*\n",
             "\n",
+            "---\n",
+            "\n",
             "### Before / After\n",
             "\n",
             "```rust\n",

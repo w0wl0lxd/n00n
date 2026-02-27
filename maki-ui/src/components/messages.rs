@@ -36,6 +36,7 @@ impl StreamingCache {
         prefix: &str,
         text_style: Style,
         prefix_style: Style,
+        width: u16,
     ) -> &[Line<'static>] {
         let len = visible.len();
         if len != self.byte_len || self.lines.is_empty() {
@@ -45,6 +46,7 @@ impl StreamingCache {
                 text_style,
                 prefix_style,
                 Some(&mut self.highlighters),
+                width,
             );
             if self.dim {
                 theme::dim_lines(&mut self.lines);
@@ -73,6 +75,7 @@ pub struct MessagesPanel {
     scroll_top: u16,
     auto_scroll: bool,
     viewport_height: u16,
+    viewport_width: u16,
     cached_segments: Vec<Segment>,
     cached_msg_count: usize,
     cached_streaming_thinking: StreamingCache,
@@ -91,6 +94,7 @@ impl MessagesPanel {
             scroll_top: u16::MAX,
             auto_scroll: true,
             viewport_height: 24,
+            viewport_width: 80,
             cached_segments: Vec::new(),
             cached_msg_count: 0,
             cached_streaming_thinking: StreamingCache {
@@ -328,6 +332,12 @@ impl MessagesPanel {
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) {
         self.viewport_height = area.height;
+        let width = area.width.saturating_sub(1);
+        if self.viewport_width != width {
+            self.viewport_width = width;
+            self.cached_msg_count = 0;
+            self.cached_segments.clear();
+        }
         self.drain_highlights();
         self.rebuild_line_cache();
         if self.in_progress_count > 0 {
@@ -336,8 +346,6 @@ impl MessagesPanel {
 
         self.streaming_thinking.tick();
         self.streaming_text.tick();
-
-        let width = area.width.saturating_sub(1);
 
         let mut heights: Vec<u16> = self
             .cached_segments
@@ -383,7 +391,7 @@ impl MessagesPanel {
             if tw.is_empty() {
                 continue;
             }
-            let lines = cache.get_or_update(tw.visible(), prefix, text_style, prefix_style);
+            let lines = cache.get_or_update(tw.visible(), prefix, text_style, prefix_style, width);
             if !segments.is_empty() {
                 segments.push((&spacer_line, false));
                 heights.push(1);
@@ -550,6 +558,7 @@ impl MessagesPanel {
                         ASSISTANT_STYLE.text_style,
                         ASSISTANT_STYLE.prefix_style,
                         None,
+                        self.viewport_width,
                     );
                     self.push_spacer_if_needed();
                     self.cached_segments.push(Segment {
@@ -584,6 +593,7 @@ impl MessagesPanel {
                         style.text_style,
                         style.prefix_style,
                         None,
+                        self.viewport_width,
                     )
                 } else {
                     plain_lines(

@@ -18,8 +18,10 @@ pub const CODE_STYLE: Style = theme::INLINE_CODE;
 pub const STRIKETHROUGH_STYLE: Style = theme::STRIKETHROUGH;
 pub const HEADING_STYLE: Style = theme::HEADING;
 pub const LIST_MARKER_STYLE: Style = theme::LIST_MARKER;
+pub const HORIZONTAL_RULE_STYLE: Style = theme::HORIZONTAL_RULE;
 
 const BULLET: &str = "• ";
+const HR_CHAR: char = '─';
 const LIST_INDENT: &str = "  ";
 
 fn code_style(base: Style) -> Style {
@@ -413,6 +415,16 @@ fn parse_ordered_marker(line: &str) -> Option<(usize, &str, &str)> {
     Some((indent, &rest[..digits_end + 1], &after_digits[2..]))
 }
 
+fn is_horizontal_rule(line: &str) -> bool {
+    let trimmed = line.trim();
+    let first = match trimmed.as_bytes().first() {
+        Some(b'-' | b'*' | b'_') => trimmed.as_bytes()[0],
+        _ => return false,
+    };
+    trimmed.bytes().all(|b| b == first || b == b' ')
+        && trimmed.bytes().filter(|&b| b == first).count() >= 3
+}
+
 fn parse_line_prefix(line: &str, base_style: Style) -> (Option<String>, &str, Style) {
     if let Some(heading_text) = parse_heading(line) {
         return (None, heading_text, HEADING_STYLE);
@@ -551,6 +563,7 @@ pub fn text_to_lines(
     text_style: Style,
     prefix_style: Style,
     mut highlighters: Option<&mut Vec<CodeHighlighter>>,
+    width: u16,
 ) -> Vec<Line<'static>> {
     let text = text.trim_start_matches('\n');
     let blocks = parse_blocks(text);
@@ -562,6 +575,17 @@ pub fn text_to_lines(
         match block {
             TextBlock::Normal(content) => {
                 for line in content.split('\n') {
+                    if is_horizontal_rule(line) {
+                        if first_line {
+                            if !prefix.is_empty() {
+                                lines.push(Line::from(prefix_span(prefix, prefix_style)));
+                            }
+                            first_line = false;
+                        }
+                        let hr: String = std::iter::repeat_n(HR_CHAR, width as usize).collect();
+                        lines.push(Line::from(Span::styled(hr, HORIZONTAL_RULE_STYLE)));
+                        continue;
+                    }
                     let mut spans: Vec<Span<'static>> = Vec::new();
                     if first_line {
                         spans.push(prefix_span(prefix, prefix_style));
@@ -642,6 +666,7 @@ mod tests {
     const BOLD_ITALIC: Style = BOLD_STYLE.add_modifier(Modifier::ITALIC);
     const BOLD_CODE_STYLE: Style = CODE_STYLE.add_modifier(Modifier::BOLD);
     const ITALIC_STYLE: Style = Style::new().add_modifier(Modifier::ITALIC);
+    const TEST_WIDTH: u16 = 80;
 
     #[test_case("a **bold** b", &[("a ", None), ("bold", Some(BOLD_STYLE)), (" b", None)] ; "bold")]
     #[test_case("use `foo` here", &[("use ", None), ("foo", Some(CODE_STYLE)), (" here", None)] ; "inline_code")]
@@ -736,7 +761,7 @@ mod tests {
     #[test_case("\n\nfirst line\nsecond", 2, "first line" ; "strips_leading_newlines")]
     fn text_to_lines_cases(input: &str, expected_lines: usize, first_text: &str) {
         let style = Style::default();
-        let lines = text_to_lines(input, "p> ", style, style, None);
+        let lines = text_to_lines(input, "p> ", style, style, None, TEST_WIDTH);
         assert_eq!(lines.len(), expected_lines);
         assert_eq!(lines[0].spans[0].content, "p> ");
         let text: String = lines[0].spans[1..]
@@ -862,7 +887,7 @@ mod tests {
 
     fn strip_md(s: &str) -> String {
         s.chars()
-            .filter(|c| !matches!(c, '`' | '*' | '#' | '•' | '-' | '+' | '~' | '_'))
+            .filter(|c| !matches!(c, '`' | '*' | '#' | '•' | '-' | '+' | '~' | '_' | '─'))
             .collect()
     }
 
@@ -870,9 +895,9 @@ mod tests {
     fn incremental_matches_non_incremental() {
         let style = Style::default();
         let text = "hello\n```rust\nfn main() {}\n```\nbye";
-        let full = text_to_lines(text, "p> ", style, style, None);
+        let full = text_to_lines(text, "p> ", style, style, None, TEST_WIDTH);
         let mut hl = Vec::new();
-        let inc = text_to_lines(text, "p> ", style, style, Some(&mut hl));
+        let inc = text_to_lines(text, "p> ", style, style, Some(&mut hl), TEST_WIDTH);
         assert_eq!(lines_text(&full), lines_text(&inc));
     }
 
@@ -952,7 +977,7 @@ mod tests {
                 continue;
             }
             let prefix = &input[..end];
-            let lines = text_to_lines(prefix, "", style, style, None);
+            let lines = text_to_lines(prefix, "", style, style, None, TEST_WIDTH);
             let rendered: String = lines
                 .iter()
                 .map(|l| {
@@ -979,6 +1004,40 @@ mod tests {
         }
     }
 
+    fn hr_line() -> String {
+        std::iter::repeat_n(HR_CHAR, TEST_WIDTH as usize).collect()
+    }
+
+    #[test_case("---", true ; "three_dashes")]
+    #[test_case("***", true ; "three_stars")]
+    #[test_case("___", true ; "three_underscores")]
+    #[test_case("-----", true ; "five_dashes")]
+    #[test_case("- - -", true ; "spaced_dashes")]
+    #[test_case("  ---  ", true ; "indented_dashes")]
+    #[test_case("--", false ; "two_dashes_too_short")]
+    #[test_case("- item", false ; "list_item_not_hr")]
+    #[test_case("---text", false ; "text_after_dashes")]
+    #[test_case("abc", false ; "plain_text")]
+    fn horizontal_rule_detection(input: &str, expected: bool) {
+        assert_eq!(is_horizontal_rule(input), expected);
+    }
+
+    #[test_case(
+        "before\n---\nafter",
+        &["before", &hr_line(), "after"]
+        ; "hr_between_paragraphs"
+    )]
+    #[test_case(
+        "---",
+        &[&hr_line()]
+        ; "hr_only"
+    )]
+    fn horizontal_rule_rendering(input: &str, expected: &[&str]) {
+        let style = Style::default();
+        let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
+        assert_eq!(lines_text(&lines), expected);
+    }
+
     #[test_case(
         "before\n```rust\nfn main() {}\n```\nafter",
         &["before", "", "fn main() {}", "", "after"]
@@ -996,7 +1055,7 @@ mod tests {
     )]
     fn code_block_margins(input: &str, expected: &[&str]) {
         let style = Style::default();
-        let lines = text_to_lines(input, "", style, style, None);
+        let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
         assert_eq!(lines_text(&lines), expected);
     }
 
@@ -1014,7 +1073,7 @@ mod tests {
     #[test]
     fn heading_with_inline_markdown() {
         let style = Style::default();
-        let lines = text_to_lines("## **bold** and `code`", "", style, style, None);
+        let lines = text_to_lines("## **bold** and `code`", "", style, style, None, TEST_WIDTH);
         assert_eq!(lines.len(), 1);
         let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "bold and code");
@@ -1063,7 +1122,7 @@ mod tests {
     )]
     fn list_rendering(input: &str, expected: &[&str]) {
         let style = Style::default();
-        let lines = text_to_lines(input, "", style, style, None);
+        let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
         assert_eq!(lines_text(&lines), expected);
     }
 
@@ -1071,7 +1130,7 @@ mod tests {
     #[test_case("1. item", "1. " ; "ordered_number")]
     fn list_marker_styled(input: &str, expected_marker: &str) {
         let style = Style::default();
-        let lines = text_to_lines(input, "", style, style, None);
+        let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
         let marker = lines[0].spans.iter().find(|s| s.style == LIST_MARKER_STYLE);
         assert_eq!(marker.unwrap().content, expected_marker);
     }
@@ -1079,7 +1138,7 @@ mod tests {
     #[test]
     fn list_item_with_inline_markdown() {
         let style = Style::default();
-        let lines = text_to_lines("- **bold** and `code`", "", style, style, None);
+        let lines = text_to_lines("- **bold** and `code`", "", style, style, None, TEST_WIDTH);
         let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "• bold and code");
     }
