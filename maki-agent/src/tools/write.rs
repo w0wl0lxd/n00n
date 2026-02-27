@@ -20,23 +20,25 @@ impl Write {
     pub const NAME: &str = "write";
     pub const DESCRIPTION: &str = include_str!("write.md");
 
+    fn write_output(&self) -> ToolOutput {
+        ToolOutput::WriteCode {
+            path: relative_path(&self.path),
+            byte_count: self.content.len(),
+            lines: self
+                .content
+                .lines()
+                .take(PREVIEW_LINES)
+                .map(truncate_line)
+                .collect(),
+        }
+    }
+
     pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         if let Some(parent) = Path::new(&self.path).parent() {
             fs::create_dir_all(parent).map_err(|e| format!("mkdir error: {e}"))?;
         }
         fs::write(&self.path, &self.content).map_err(|e| format!("write error: {e}"))?;
-        let path = relative_path(&self.path);
-        let lines: Vec<String> = self
-            .content
-            .lines()
-            .take(PREVIEW_LINES)
-            .map(truncate_line)
-            .collect();
-        Ok(ToolOutput::WriteCode {
-            path,
-            byte_count: self.content.len(),
-            lines,
-        })
+        Ok(self.write_output())
     }
 
     pub fn start_summary(&self) -> String {
@@ -45,6 +47,10 @@ impl Write {
 
     pub fn start_input(&self) -> Option<ToolInput> {
         None
+    }
+
+    pub fn start_output(&self) -> Option<ToolOutput> {
+        Some(self.write_output())
     }
 
     pub fn mutable_path(&self) -> Option<&str> {

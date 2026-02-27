@@ -87,6 +87,20 @@ impl MultiEdit {
         None
     }
 
+    pub fn start_output(&self) -> Option<ToolOutput> {
+        let hunks: Vec<DiffHunk> = self
+            .edits
+            .iter()
+            .map(|e| build_hunk(0, &e.old_string, &e.new_string))
+            .collect();
+        let rel = relative_path(&self.path);
+        Some(ToolOutput::Diff {
+            hunks,
+            summary: format!("applied {} to {rel}", self.edit_count_label()),
+            path: rel,
+        })
+    }
+
     pub fn mutable_path(&self) -> Option<&str> {
         Some(&self.path)
     }

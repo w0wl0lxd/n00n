@@ -133,6 +133,10 @@ impl WebFetch {
         None
     }
 
+    pub fn start_output(&self) -> Option<ToolOutput> {
+        None
+    }
+
     pub fn mutable_path(&self) -> Option<&str> {
         None
     }

@@ -146,6 +146,11 @@ impl Bash {
     pub fn mutable_path(&self) -> Option<&str> {
         None
     }
+
+    pub fn start_output(&self) -> Option<ToolOutput> {
+        None
+    }
+
     pub fn start_input(&self) -> Option<ToolInput> {
         let (command, _) = self.resolved();
         Some(ToolInput::Code {

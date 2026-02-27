@@ -286,6 +286,7 @@ pub struct ToolStartEvent {
     pub tool: &'static str,
     pub summary: String,
     pub input: Option<ToolInput>,
+    pub output: Option<ToolOutput>,
 }
 
 #[derive(Debug, Clone, Serialize)]

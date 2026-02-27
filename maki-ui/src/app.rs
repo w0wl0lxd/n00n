@@ -465,6 +465,7 @@ mod tests {
             tool: "bash",
             summary: "running".into(),
             input: None,
+            output: None,
         })));
 
         let actions = app.update(Msg::Key(key(KeyCode::Esc)));

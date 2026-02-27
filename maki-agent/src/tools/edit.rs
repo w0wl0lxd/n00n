@@ -23,6 +23,15 @@ impl Edit {
     pub const NAME: &str = "edit";
     pub const DESCRIPTION: &str = include_str!("edit.md");
 
+    fn diff_output(&self, start_line: usize) -> ToolOutput {
+        let rel = relative_path(&self.path);
+        ToolOutput::Diff {
+            hunks: vec![build_hunk(start_line, &self.old_string, &self.new_string)],
+            summary: format!("edited {rel}"),
+            path: rel,
+        }
+    }
+
     pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let content = fs::read_to_string(&self.path).map_err(|e| format!("read error: {e}"))?;
         let replace_all = self.replace_all.unwrap_or(false);
@@ -30,12 +39,7 @@ impl Edit {
             fuzzy_replace::replace(&content, &self.old_string, &self.new_string, replace_all)?;
         let start_line = content[..result.match_offset].matches('\n').count() + 1;
         fs::write(&self.path, &result.content).map_err(|e| format!("write error: {e}"))?;
-        let rel = relative_path(&self.path);
-        Ok(ToolOutput::Diff {
-            hunks: vec![build_hunk(start_line, &self.old_string, &self.new_string)],
-            summary: format!("edited {rel}"),
-            path: rel,
-        })
+        Ok(self.diff_output(start_line))
     }
 
     pub fn start_summary(&self) -> String {
@@ -44,6 +48,10 @@ impl Edit {
 
     pub fn start_input(&self) -> Option<ToolInput> {
         None
+    }
+
+    pub fn start_output(&self) -> Option<ToolOutput> {
+        Some(self.diff_output(0))
     }
 
     pub fn mutable_path(&self) -> Option<&str> {

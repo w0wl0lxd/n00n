@@ -158,7 +158,7 @@ impl MessagesPanel {
             },
             text: event.summary,
             tool_input: event.input,
-            tool_output: None,
+            tool_output: event.output,
         });
         self.in_progress_count += 1;
     }
@@ -600,6 +600,7 @@ mod tests {
             tool,
             summary: id.into(),
             input: None,
+            output: None,
         }
     }
 
@@ -937,6 +938,7 @@ mod tests {
                 language: "bash",
                 code: "echo hello".into(),
             }),
+            output: None,
         });
         rebuild(&mut panel);
         panel.tool_output("t1", "hello\nworld");
