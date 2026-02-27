@@ -460,8 +460,10 @@ impl MessagesPanel {
                 .iter_mut()
                 .find(|s| s.pending_highlight == Some(result.id))
             {
-                if let Some((start, end)) = seg.highlight_range.take() {
+                if let Some((start, end)) = seg.highlight_range {
+                    let new_end = start + result.lines.len();
                     seg.lines.splice(start..end, result.lines);
+                    seg.highlight_range = Some((start, new_end));
                 }
                 seg.cached_height = None;
                 seg.pending_highlight = None;
@@ -480,18 +482,20 @@ impl MessagesPanel {
         let DisplayRole::Tool { status, .. } = &msg.role else {
             unreachable!()
         };
+        let Some(seg_idx) = self
+            .cached_segments
+            .iter()
+            .rposition(|s| s.tool_id.as_deref() == Some(tool_id))
+        else {
+            return;
+        };
         let tl = build_tool_lines(msg, *status, self.started_at);
         let pending = tl.send_highlight(&self.hl_worker);
-        if let Some(seg) = self
-            .cached_segments
-            .iter_mut()
-            .rfind(|s| s.tool_id.as_deref() == Some(tool_id))
-        {
-            seg.lines = tl.lines;
-            seg.cached_height = None;
-            seg.pending_highlight = pending;
-            seg.highlight_range = tl.highlight.as_ref().map(|h| h.range);
-        }
+        let seg = &mut self.cached_segments[seg_idx];
+        seg.lines = tl.lines;
+        seg.cached_height = None;
+        seg.pending_highlight = pending;
+        seg.highlight_range = tl.highlight.as_ref().map(|h| h.range);
     }
 
     fn rebuild_line_cache(&mut self) {

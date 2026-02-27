@@ -130,8 +130,7 @@ pub fn build_tool_lines(
         .map_or(msg.text.as_str(), |(h, _)| h);
     let (header, annotation) = split_trailing_annotation(header);
     let tool_name = msg.role.tool_name().unwrap_or("?");
-    let prefix = format!("{tool_name}> ");
-    let mut header_spans = vec![Span::styled(prefix, theme::TOOL_PREFIX)];
+    let mut header_spans = vec![Span::styled(format!("{tool_name}> "), theme::TOOL_PREFIX)];
     header_spans.extend(style_tool_header(tool_name, header));
     if let Some(ann) = annotation {
         header_spans.push(Span::styled(ann.to_owned(), theme::TOOL_ANNOTATION));
@@ -152,69 +151,64 @@ pub fn build_tool_lines(
 
     let content =
         code_view::render_tool_content(msg.tool_input.as_ref(), msg.tool_output.as_ref(), false);
-    let has_content = !content.is_empty();
-
     let content_start = lines.len();
     lines.extend(content);
     let content_end = lines.len();
 
-    let show_body = !has_content || msg.tool_output.is_none();
-    if show_body {
-        match msg.tool_output.as_ref() {
-            None | Some(ToolOutput::Plain(_)) => {
-                if let Some((_, body)) = msg.text.split_once('\n') {
-                    for line in body.lines() {
-                        let style = if line.starts_with(TRUNCATION_PREFIX) {
-                            theme::TOOL_ANNOTATION
-                        } else {
-                            theme::TOOL
-                        };
-                        lines.push(Line::from(Span::styled(
-                            format!("{TOOL_BODY_INDENT}{line}"),
-                            style,
-                        )));
-                    }
-                }
-            }
-            Some(ToolOutput::TodoList(items)) => {
-                for item in items {
-                    let style = match item.status {
-                        maki_providers::TodoStatus::Completed => theme::TODO_COMPLETED,
-                        maki_providers::TodoStatus::InProgress => theme::TODO_IN_PROGRESS,
-                        maki_providers::TodoStatus::Pending => theme::TODO_PENDING,
-                        maki_providers::TodoStatus::Cancelled => theme::TODO_CANCELLED,
+    match msg.tool_output.as_ref() {
+        None | Some(ToolOutput::Plain(_)) => {
+            if let Some((_, body)) = msg.text.split_once('\n') {
+                for line in body.lines() {
+                    let style = if line.starts_with(TRUNCATION_PREFIX) {
+                        theme::TOOL_ANNOTATION
+                    } else {
+                        theme::TOOL
                     };
                     lines.push(Line::from(Span::styled(
-                        format!(
-                            "{TOOL_BODY_INDENT}{} {}",
-                            item.status.marker(),
-                            item.content
-                        ),
+                        format!("{TOOL_BODY_INDENT}{line}"),
                         style,
                     )));
                 }
             }
-            Some(ToolOutput::Batch { entries, .. }) => {
-                for entry in entries {
-                    let style = if entry.is_error {
-                        theme::TOOL_ERROR
-                    } else {
-                        theme::TOOL_SUCCESS
-                    };
-                    let mut spans = vec![
-                        Span::styled(TOOL_BODY_INDENT.to_owned(), style),
-                        Span::styled(TOOL_INDICATOR, style),
-                        Span::styled(format!("{}> ", entry.tool), theme::TOOL_PREFIX),
-                    ];
-                    spans.extend(style_tool_header(&entry.tool, &entry.summary));
-                    lines.push(Line::from(spans));
-                }
-            }
-            _ => {}
         }
+        Some(ToolOutput::TodoList(items)) => {
+            for item in items {
+                let style = match item.status {
+                    maki_providers::TodoStatus::Completed => theme::TODO_COMPLETED,
+                    maki_providers::TodoStatus::InProgress => theme::TODO_IN_PROGRESS,
+                    maki_providers::TodoStatus::Pending => theme::TODO_PENDING,
+                    maki_providers::TodoStatus::Cancelled => theme::TODO_CANCELLED,
+                };
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "{TOOL_BODY_INDENT}{} {}",
+                        item.status.marker(),
+                        item.content
+                    ),
+                    style,
+                )));
+            }
+        }
+        Some(ToolOutput::Batch { entries, .. }) => {
+            for entry in entries {
+                let style = if entry.is_error {
+                    theme::TOOL_ERROR
+                } else {
+                    theme::TOOL_SUCCESS
+                };
+                let mut spans = vec![
+                    Span::styled(TOOL_BODY_INDENT.to_owned(), style),
+                    Span::styled(TOOL_INDICATOR, style),
+                    Span::styled(format!("{}> ", entry.tool), theme::TOOL_PREFIX),
+                ];
+                spans.extend(style_tool_header(&entry.tool, &entry.summary));
+                lines.push(Line::from(spans));
+            }
+        }
+        _ => {}
     }
 
-    let highlight = has_content.then(|| HighlightRequest {
+    let highlight = (content_start != content_end).then(|| HighlightRequest {
         range: (content_start, content_end),
         input: msg.tool_input.clone(),
         output: msg.tool_output.clone(),
@@ -313,54 +307,32 @@ mod tests {
         assert_eq!(spans[1].content, "/tmp");
     }
 
-    #[test]
-    fn bash_live_output_shown_with_code_input() {
+    fn lines_text(tl: &ToolLines) -> String {
+        tl.lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    #[test_case(ToolStatus::InProgress, None           ; "live_streaming_shows_body")]
+    #[test_case(ToolStatus::Success,    plain_output() ; "done_with_plain_output_shows_body")]
+    fn bash_body_visible(status: ToolStatus, output: Option<ToolOutput>) {
         let msg = DisplayMessage {
             role: DisplayRole::Tool {
                 id: "t1".into(),
-                status: ToolStatus::InProgress,
+                status,
                 name: BASH_TOOL_NAME,
             },
             text: "echo hi\nline1\nline2".into(),
             tool_input: code_input(),
-            tool_output: None,
+            tool_output: output,
         };
-        let tl = build_tool_lines(&msg, ToolStatus::InProgress, Instant::now());
-        let text: String = tl
-            .lines
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .map(|s| s.content.as_ref())
-            .collect::<Vec<_>>()
-            .join("");
-        assert!(text.contains("line1"), "live output line1 missing");
-        assert!(text.contains("line2"), "live output line2 missing");
-    }
-
-    #[test]
-    fn bash_done_hides_body_when_code_output_present() {
-        let msg = DisplayMessage {
-            role: DisplayRole::Tool {
-                id: "t1".into(),
-                status: ToolStatus::Success,
-                name: BASH_TOOL_NAME,
-            },
-            text: "echo hi\nstale body".into(),
-            tool_input: code_input(),
-            tool_output: plain_output(),
-        };
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
-        let text: String = tl
-            .lines
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .map(|s| s.content.as_ref())
-            .collect::<Vec<_>>()
-            .join("");
-        assert!(
-            !text.contains("stale body"),
-            "body should be hidden once tool_output is set"
-        );
+        let tl = build_tool_lines(&msg, status, Instant::now());
+        let text = lines_text(&tl);
+        assert!(text.contains("line1"));
+        assert!(text.contains("line2"));
     }
 
     #[test_case("header\nbody\nmore", "header" ; "multiline")]
