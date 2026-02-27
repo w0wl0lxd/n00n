@@ -18,11 +18,8 @@ fn gutter(nr_str: &str) -> Span<'static> {
     Span::styled(format!("{INDENT}{nr_str} "), theme::DIFF_LINE_NR)
 }
 
-fn gap_ellipsis(nr_width: usize) -> Line<'static> {
-    Line::from(Span::styled(
-        format!("{INDENT}{:>nr_width$}  ...", ""),
-        theme::DIFF_LINE_NR,
-    ))
+fn gap_ellipsis() -> Line<'static> {
+    Line::from(Span::styled(format!("{INDENT}..."), theme::DIFF_LINE_NR))
 }
 
 fn truncation_line(truncated: usize) -> Line<'static> {
@@ -106,7 +103,7 @@ fn render_diff(path: Option<&str>, hunks: &[DiffHunk]) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for (i, hunk) in hunks.iter().enumerate() {
         if i > 0 {
-            lines.push(gap_ellipsis(w));
+            lines.push(gap_ellipsis());
         }
         let mut hl = path.map(highlighter_for_path);
         let mut line_nr = hunk.start_line;
