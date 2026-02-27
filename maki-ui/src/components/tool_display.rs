@@ -58,9 +58,10 @@ fn style_tool_header(tool: &str, header: &str) -> Vec<Span<'static>> {
         && let Some(i) = header.rfind(" in ")
     {
         let (cmd, rest) = header.split_at(i);
+        let path = rest[4..].split('"').next().unwrap();
         return vec![
             Span::styled(format!("{cmd} in "), theme::TOOL),
-            Span::styled(rest[4..].to_owned(), theme::TOOL_PATH),
+            Span::styled(path.to_owned(), theme::TOOL_PATH),
         ];
     }
     vec![Span::styled(header.to_owned(), theme::TOOL)]
@@ -309,6 +310,16 @@ mod tests {
         assert_eq!(spans.len(), 2);
         assert!(spans[0].content.contains("echo hi in "));
         assert_eq!(spans[1].content, "/tmp");
+    }
+
+    #[test]
+    fn style_tool_header_truncates_json_in_path() {
+        let spans = style_tool_header(
+            GREP_TOOL_NAME,
+            "STRIKETHROUGH_STYLE in /home/tony/c/maki2\", \"pattern\": \"STRIKETHROUGH_STYLE\"}",
+        );
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[1].content, "/home/tony/c/maki2");
     }
 
     fn lines_text(tl: &ToolLines) -> String {
