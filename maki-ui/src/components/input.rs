@@ -145,7 +145,7 @@ impl InputBox {
     }
 
     pub fn height(&self, width: u16) -> u16 {
-        let content_width = width.saturating_sub(2) as usize;
+        let content_width = width as usize;
         let visual_lines = total_visual_lines(&self.buffer, content_width, true);
         (visual_lines as u16).min(MAX_INPUT_LINES) + 2
     }
@@ -243,7 +243,7 @@ impl InputBox {
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect, streaming: bool) {
         let content_height = area.height.saturating_sub(2);
-        let content_width = area.width.saturating_sub(2) as usize;
+        let content_width = area.width as usize;
 
         let visual_cursor_y = self.visual_cursor_y(content_width);
         if visual_cursor_y < self.scroll_y {
@@ -316,14 +316,14 @@ impl InputBox {
             .scroll((self.scroll_y, 0))
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .borders(Borders::TOP | Borders::BOTTOM)
+                    .border_type(BorderType::Plain)
                     .border_style(border_style),
             );
         frame.render_widget(paragraph, area);
 
         if max_scroll > 0 {
-            let inner = area.inner(ratatui::layout::Margin::new(1, 1));
+            let inner = area.inner(ratatui::layout::Margin::new(0, 1));
             render_vertical_scrollbar(frame, inner, total_vl, self.scroll_y);
         }
     }
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn cursor_adds_extra_wrap_row_at_boundary() {
         let content_width: u16 = 12;
-        let width = content_width + 2;
+        let width = content_width;
 
         let mut at_boundary = InputBox::new();
         type_text(&mut at_boundary, &"x".repeat(content_width as usize));
@@ -515,7 +515,7 @@ mod tests {
     fn has_scrollbar_thumb(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> bool {
         let buf = terminal.backend().buffer();
         (0..buf.area.height).any(|y| {
-            buf.cell((buf.area.width - 2, y))
+            buf.cell((buf.area.width - 1, y))
                 .is_some_and(|c| c.symbol() == SCROLLBAR_THUMB)
         })
     }
