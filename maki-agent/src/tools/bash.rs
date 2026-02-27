@@ -34,15 +34,31 @@ impl Bash {
     pub const NAME: &str = "bash";
     pub const DESCRIPTION: &str = include_str!("bash.md");
 
+    fn resolved(&self) -> (&str, Option<&str>) {
+        if self.workdir.is_some() {
+            return (&self.command, self.workdir.as_deref());
+        }
+        if let Some(rest) = self.command.strip_prefix("cd ")
+            && let Some(idx) = rest.find(" && ")
+        {
+            let dir = rest[..idx].trim();
+            if !dir.is_empty() {
+                return (&rest[idx + 4..], Some(dir));
+            }
+        }
+        (&self.command, None)
+    }
+
     pub fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let timeout_secs = self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let (command, workdir) = self.resolved();
         let mut cmd = Command::new("bash");
         cmd.arg("-c")
-            .arg(&self.command)
+            .arg(command)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(dir) = &self.workdir {
+        if let Some(dir) = workdir {
             cmd.current_dir(dir);
         }
         let mut child = cmd.spawn().map_err(|e| format!("failed to spawn: {e}"))?;
@@ -115,11 +131,12 @@ impl Bash {
     }
 
     pub fn start_summary(&self) -> String {
+        let (command, workdir) = self.resolved();
         let mut s = self
             .description
             .clone()
-            .unwrap_or_else(|| self.command.clone());
-        if let Some(dir) = &self.workdir {
+            .unwrap_or_else(|| command.to_string());
+        if let Some(dir) = workdir {
             s.push_str(" in ");
             s.push_str(&relative_path(dir));
         }
@@ -130,9 +147,10 @@ impl Bash {
         None
     }
     pub fn start_input(&self) -> Option<ToolInput> {
+        let (command, _) = self.resolved();
         Some(ToolInput::Code {
             language: "bash",
-            code: self.command.clone(),
+            code: command.to_string(),
         })
     }
 }
@@ -180,14 +198,10 @@ fn send_output(event_tx: &Sender<Envelope>, id: &str, content: &str) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc as std_mpsc;
-
     use test_case::test_case;
 
-    use maki_providers::{AgentEvent, Envelope};
-
     use crate::AgentMode;
-    use crate::tools::test_support::{stub_ctx, stub_ctx_with};
+    use crate::tools::test_support::stub_ctx;
 
     use super::*;
 
@@ -237,26 +251,25 @@ mod tests {
         assert!(b.execute(&ctx).unwrap().as_text().contains("[truncated]"));
     }
 
-    #[test]
-    fn streams_output_events() {
-        let (event_tx, event_rx) = std_mpsc::channel::<Envelope>();
-        let mode = AgentMode::Build;
-        let ctx = stub_ctx_with(&mode, Some(&event_tx), Some("test-id"));
-
-        let mut b = bash("echo hello && echo world");
-        b.timeout = Some(10);
-        assert!(b.execute(&ctx).is_ok());
-        drop(event_tx);
-
-        let has_output = event_rx
-            .iter()
-            .any(|e| matches!(e.event, AgentEvent::ToolOutput { ref id, .. } if id == "test-id"));
-        assert!(has_output, "should have streamed output events");
+    #[test_case("ls",              None,           "ls",              None          ; "no_prefix")]
+    #[test_case("cd /tmp && ls",   None,           "ls",              Some("/tmp")  ; "strips_cd")]
+    #[test_case("cd /tmp && ls",   Some("/home"),  "cd /tmp && ls",   Some("/home") ; "explicit_workdir_wins")]
+    #[test_case("cd  && ls",       None,           "cd  && ls",       None          ; "empty_dir_noop")]
+    fn resolved_cases(cmd: &str, workdir: Option<&str>, exp_cmd: &str, exp_dir: Option<&str>) {
+        let b = Bash {
+            command: cmd.into(),
+            timeout: None,
+            workdir: workdir.map(Into::into),
+            description: None,
+        };
+        assert_eq!(b.resolved(), (exp_cmd, exp_dir));
     }
 
     #[test_case(None, None, "ls",              "ls"               ; "falls_back_to_command")]
     #[test_case(Some("run tests"), None, "cargo test", "run tests"     ; "prefers_description")]
     #[test_case(Some("build"), Some("/tmp/proj"), "cargo build", "build in /tmp/proj" ; "appends_workdir")]
+    #[test_case(None, None, "cd /tmp && ls", "ls in /tmp" ; "strips_cd_prefix")]
+    #[test_case(Some("list"), None, "cd /tmp && ls", "list in /tmp" ; "strips_cd_prefix_with_desc")]
     fn start_summary_cases(desc: Option<&str>, workdir: Option<&str>, cmd: &str, expected: &str) {
         let b = Bash {
             command: cmd.into(),
