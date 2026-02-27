@@ -161,7 +161,11 @@ impl InputBox {
     pub fn char_before_cursor_is_backslash(&self) -> bool {
         let line = &self.buffer.lines()[self.buffer.y()];
         let x = self.buffer.x();
-        x > 0 && line.as_bytes()[x - 1] == b'\\'
+        if x == 0 {
+            return false;
+        }
+        let byte_idx = TextBuffer::char_to_byte(line, x - 1);
+        line.as_bytes()[byte_idx] == b'\\'
     }
 
     pub fn continue_line(&mut self) {
@@ -225,7 +229,7 @@ impl InputBox {
             .lines()
             .iter()
             .take(self.buffer.y())
-            .map(|line| visual_line_count(line.len(), content_width) as u16)
+            .map(|line| visual_line_count(line.chars().count(), content_width) as u16)
             .sum();
 
         let wrap_row = if content_width == 0 {
@@ -280,8 +284,8 @@ impl InputBox {
                     let mut spans = Vec::new();
 
                     if i == self.buffer.y() {
-                        let x = self.buffer.x();
-                        let (before, after) = line.split_at(x.min(line.len()));
+                        let byte_x = TextBuffer::char_to_byte(line, self.buffer.x());
+                        let (before, after) = line.split_at(byte_x);
                         if after.is_empty() {
                             spans.push(Span::raw(before.to_string()));
                             spans.push(Span::styled(" ", Style::new().reversed()));
@@ -340,7 +344,7 @@ fn total_visual_lines(buffer: &TextBuffer, content_width: usize, cursor_visible:
         .iter()
         .enumerate()
         .map(|(i, line)| {
-            let mut text_len = line.len();
+            let mut text_len = line.chars().count();
             if cursor_visible && i == cursor_y {
                 text_len += 1;
             }
@@ -541,5 +545,23 @@ mod tests {
         input.buffer = TextBuffer::new("short".into());
         let _ = render_input(&mut input, 40, area_height);
         assert_eq!(input.scroll_y, 0);
+    }
+
+    #[test]
+    fn multibyte_input_renders_without_panic() {
+        let mut input = InputBox::new();
+        type_text(&mut input, "● grep> hello");
+        input.buffer.move_home();
+        input.buffer.move_right();
+        input.buffer.move_right();
+        let _ = render_input(&mut input, 40, 5);
+    }
+
+    #[test_case("●\\", true  ; "after_multibyte")]
+    #[test_case("●", false   ; "inside_multibyte_would_be_false")]
+    fn char_before_cursor_backslash(input: &str, expected: bool) {
+        let mut input_box = InputBox::new();
+        type_text(&mut input_box, input);
+        assert_eq!(input_box.char_before_cursor_is_backslash(), expected);
     }
 }

@@ -47,7 +47,7 @@ fn truncate_line(text: &str, max_width: usize) -> Vec<Span<'static>> {
     if text.len() <= max_width {
         return vec![Span::raw(text.to_string())];
     }
-    let truncated_len = max_width.saturating_sub(ELLIPSIS.len());
+    let truncated_len = text.floor_char_boundary(max_width.saturating_sub(ELLIPSIS.len()));
     vec![
         Span::raw(text[..truncated_len].to_string()),
         Span::styled(ELLIPSIS, Style::new().fg(theme::COMMENT)),
@@ -71,6 +71,8 @@ mod tests {
     #[test_case("abcdefghij", 7, &[("abcd", false), (ELLIPSIS, true)] ; "long_text_with_ellipsis")]
     #[test_case("abcde", 5, &[("abcde", false)]                     ; "at_exact_width")]
     #[test_case("abcdef", 2, &[("", false), (ELLIPSIS, true)]        ; "tiny_width")]
+    #[test_case("●abc", 5, &[("", false), (ELLIPSIS, true)]          ; "multibyte_too_narrow")]
+    #[test_case("●●●", 8, &[("●", false), (ELLIPSIS, true)]          ; "multibyte_fits_one")]
     fn truncate_line_cases(input: &str, width: usize, expected: &[(&str, bool)]) {
         let spans = truncate_line(input, width);
         assert_eq!(spans.len(), expected.len());
