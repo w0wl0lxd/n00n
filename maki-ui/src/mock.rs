@@ -48,7 +48,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             "\n",
             "1. Read existing `Config` struct and *understand* the current API\n",
             "2. Create **`ConfigBuilder`** with a ***fluent interface***\n",
-            "3. Add validation — ~~manual checks~~ replaced with `validate()` method\n",
+            "3. Add validation - ~~manual checks~~ replaced with `validate()` method\n",
             "4. Update tests\n",
             "   - Unit tests for _builder methods_\n",
             "   - Integration tests for **validation rules**\n",
@@ -67,7 +67,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             "\n",
             "I'll transform this into a *builder* with **compile-time** guarantees.",
         )),
-        // #4 Bash — Success, Plain, header+body
+        // #4 Bash - Success, Plain, header+body
         tool(
             "t_bash",
             BASH_TOOL_NAME,
@@ -84,7 +84,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                     .into(),
             )),
         ),
-        // #5 Read — Success, ReadCode
+        // #5 Read - Success, ReadCode
         tool(
             "t_read",
             READ_TOOL_NAME,
@@ -103,7 +103,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 ],
             }),
         ),
-        // #6 Edit — Success, Diff
+        // #6 Edit - Success, Diff
         tool(
             "t_edit",
             EDIT_TOOL_NAME,
@@ -124,7 +124,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 summary: "Renamed Config to ConfigBuilder, added host field".into(),
             }),
         ),
-        // #7 Write — Success, WriteCode
+        // #7 Write - Success, WriteCode
         tool(
             "t_write",
             WRITE_TOOL_NAME,
@@ -141,7 +141,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 ],
             }),
         ),
-        // #8 Glob — Success, Plain, header+body
+        // #8 Glob - Success, Plain, header+body
         tool(
             "t_glob",
             GLOB_TOOL_NAME,
@@ -152,7 +152,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 "src/config/mod.rs\nsrc/config/builder.rs\nsrc/config/validation.rs".into(),
             )),
         ),
-        // #9 Grep — Success, GrepResult
+        // #9 Grep - Success, GrepResult
         tool(
             "t_grep",
             GREP_TOOL_NAME,
@@ -172,7 +172,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 ],
             }),
         ),
-        // #10 TodoWrite — Success, TodoList
+        // #10 TodoWrite - Success, TodoList
         tool(
             "t_todo",
             TODOWRITE_TOOL_NAME,
@@ -186,7 +186,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 TodoItem { content: "Update tests".into(), status: TodoStatus::Pending, priority: TodoPriority::Low },
             ])),
         ),
-        // #11 WebFetch — Success, Plain, header only (body hidden)
+        // #11 WebFetch - Success, Plain, header only (body hidden)
         tool(
             "t_web",
             WEBFETCH_TOOL_NAME,
@@ -195,7 +195,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             None,
             Some(ToolOutput::Plain("Configuration crate docs content...".into())),
         ),
-        // #12 Task — Success, Plain, header+body
+        // #12 Task - Success, Plain, header+body
         tool(
             "t_task",
             TASK_TOOL_NAME,
@@ -206,7 +206,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 "Found 3 relevant patterns in the codebase:\n- Builder pattern in src/http/\n- Validation in src/auth/\n- Default impl in src/db/".into(),
             )),
         ),
-        // #13 Batch — Success, Batch
+        // #13 Batch - Success, Batch
         tool(
             "t_batch",
             BATCH_TOOL_NAME,
@@ -222,7 +222,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 text: String::new(),
             }),
         ),
-        // #14 MultiEdit — Success, Diff
+        // #14 MultiEdit - Success, Diff
         tool(
             "t_multiedit",
             MULTIEDIT_TOOL_NAME,
@@ -241,7 +241,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 summary: "Updated import to use ConfigBuilder".into(),
             }),
         ),
-        // #15 Bash — Error, Plain, header+stderr
+        // #15 Bash - Error, Plain, header+stderr
         tool(
             "t_bash_err",
             BASH_TOOL_NAME,
@@ -255,7 +255,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 "error[E0433]: failed to resolve: use of undeclared type `Config`\n  --> src/main.rs:15:5".into(),
             )),
         ),
-        // #16 Bash — InProgress (spinner animates)
+        // #16 Bash - InProgress (spinner animates)
         tool(
             "t_bash_ip",
             BASH_TOOL_NAME,
@@ -269,7 +269,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
         ),
         // #17 Error
         msg(DisplayRole::Error, "Connection timed out after 30s. Retrying..."),
-        // #18 Assistant — final summary
+        // #18 Assistant - final summary
         msg(DisplayRole::Assistant, concat!(
             "Done! The config module now uses a ***builder pattern*** with validation.\n",
             "\n",
@@ -278,7 +278,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             "**Changes:**\n",
             "- `ConfigBuilder` with `port()` and `host()` methods\n",
             "- ~~`Config::new()`~~ replaced with `ConfigBuilder::default().build()`\n",
-            "- _Validation_ via `validate_port()` — rejects ports **outside** `1..=65534`\n",
+            "- _Validation_ via `validate_port()` - rejects ports **outside** `1..=65534`\n",
             "  - Returns `Result<Config, ConfigError>` instead of *panicking*\n",
             "\n",
             "### Before / After\n",
