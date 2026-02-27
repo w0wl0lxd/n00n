@@ -3,10 +3,17 @@ pub mod command;
 pub mod input;
 pub mod messages;
 pub mod queue_panel;
+pub(crate) mod scrollbar;
 pub mod status_bar;
+pub(crate) mod tool_display;
 
+use crossterm::event::{KeyEvent, KeyModifiers};
 use maki_agent::AgentInput;
 use maki_providers::{ToolInput, ToolOutput};
+
+pub fn is_ctrl(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT)
+}
 
 pub enum Action {
     SendMessage(AgentInput),

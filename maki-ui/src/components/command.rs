@@ -1,10 +1,18 @@
 use crate::theme;
 
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
+
+pub enum CommandAction {
+    Consumed,
+    Execute(&'static str),
+    Close,
+    Passthrough,
+}
 
 struct Command {
     name: &'static str,
@@ -26,6 +34,38 @@ impl CommandPalette {
         Self {
             selected: 0,
             filtered: Vec::new(),
+        }
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) -> CommandAction {
+        if !self.is_active() {
+            return CommandAction::Passthrough;
+        }
+        match key.code {
+            KeyCode::Up => {
+                self.move_up();
+                CommandAction::Consumed
+            }
+            KeyCode::Down => {
+                self.move_down();
+                CommandAction::Consumed
+            }
+            KeyCode::Esc => {
+                self.close();
+                CommandAction::Consumed
+            }
+            KeyCode::Enter => match self.confirm() {
+                Some(name) => {
+                    self.close();
+                    CommandAction::Execute(name)
+                }
+                None => CommandAction::Consumed,
+            },
+            KeyCode::Tab => {
+                self.close();
+                CommandAction::Close
+            }
+            _ => CommandAction::Passthrough,
         }
     }
 
@@ -81,73 +121,73 @@ impl CommandPalette {
     pub fn confirm(&self) -> Option<&'static str> {
         self.filtered.get(self.selected).map(|&i| COMMANDS[i].name)
     }
-}
 
-pub fn view(palette: &CommandPalette, frame: &mut Frame, input_area: Rect) {
-    let filtered = &palette.filtered;
-    if filtered.is_empty() {
-        return;
+    pub fn view(&self, frame: &mut Frame, input_area: Rect) {
+        let filtered = &self.filtered;
+        if filtered.is_empty() {
+            return;
+        }
+
+        let popup_height = (filtered.len() as u16).min(input_area.y);
+        if popup_height == 0 {
+            return;
+        }
+
+        const GAP: usize = 2;
+        let max_name = filtered
+            .iter()
+            .map(|&i| COMMANDS[i].name.len())
+            .max()
+            .unwrap_or(0);
+        let max_desc = filtered
+            .iter()
+            .map(|&i| COMMANDS[i].description.len())
+            .max()
+            .unwrap_or(0);
+        const PAD: usize = 1;
+        let popup_width = (PAD + max_name + GAP + max_desc + PAD) as u16;
+
+        let popup = Rect {
+            x: input_area.x,
+            y: input_area.y.saturating_sub(popup_height),
+            width: popup_width.min(input_area.width),
+            height: popup_height,
+        };
+
+        let lines: Vec<Line> = filtered
+            .iter()
+            .enumerate()
+            .map(|(i, &cmd_idx)| {
+                let cmd = &COMMANDS[cmd_idx];
+                let selected = i == self.selected;
+                let name_pad = max_name - cmd.name.len() + GAP;
+                if selected {
+                    let s = theme::CMD_SELECTED;
+                    Line::from(vec![
+                        Span::styled(" ".repeat(PAD), s),
+                        Span::styled(cmd.name, s),
+                        Span::styled(" ".repeat(name_pad), s),
+                        Span::styled(cmd.description, s),
+                        Span::styled(" ".repeat(PAD), s),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::raw(" ".repeat(PAD)),
+                        Span::styled(cmd.name, theme::CMD_NAME),
+                        Span::raw(" ".repeat(name_pad)),
+                        Span::styled(cmd.description, theme::CMD_DESC),
+                        Span::raw(" ".repeat(PAD)),
+                    ])
+                }
+            })
+            .collect();
+
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::new().bg(theme::BACKGROUND)),
+            popup,
+        );
     }
-
-    let popup_height = (filtered.len() as u16).min(input_area.y);
-    if popup_height == 0 {
-        return;
-    }
-
-    const GAP: usize = 2;
-    let max_name = filtered
-        .iter()
-        .map(|&i| COMMANDS[i].name.len())
-        .max()
-        .unwrap_or(0);
-    let max_desc = filtered
-        .iter()
-        .map(|&i| COMMANDS[i].description.len())
-        .max()
-        .unwrap_or(0);
-    const PAD: usize = 1;
-    let popup_width = (PAD + max_name + GAP + max_desc + PAD) as u16;
-
-    let popup = Rect {
-        x: input_area.x,
-        y: input_area.y.saturating_sub(popup_height),
-        width: popup_width.min(input_area.width),
-        height: popup_height,
-    };
-
-    let lines: Vec<Line> = filtered
-        .iter()
-        .enumerate()
-        .map(|(i, &cmd_idx)| {
-            let cmd = &COMMANDS[cmd_idx];
-            let selected = i == palette.selected;
-            let name_pad = max_name - cmd.name.len() + GAP;
-            if selected {
-                let s = theme::CMD_SELECTED;
-                Line::from(vec![
-                    Span::styled(" ".repeat(PAD), s),
-                    Span::styled(cmd.name, s),
-                    Span::styled(" ".repeat(name_pad), s),
-                    Span::styled(cmd.description, s),
-                    Span::styled(" ".repeat(PAD), s),
-                ])
-            } else {
-                Line::from(vec![
-                    Span::raw(" ".repeat(PAD)),
-                    Span::styled(cmd.name, theme::CMD_NAME),
-                    Span::raw(" ".repeat(name_pad)),
-                    Span::styled(cmd.description, theme::CMD_DESC),
-                    Span::raw(" ".repeat(PAD)),
-                ])
-            }
-        })
-        .collect();
-
-    frame.render_widget(Clear, popup);
-    frame.render_widget(
-        Paragraph::new(lines).style(Style::new().bg(theme::BACKGROUND)),
-        popup,
-    );
 }
 
 #[cfg(test)]

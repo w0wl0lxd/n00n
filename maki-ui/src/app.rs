@@ -1,14 +1,14 @@
 use std::collections::VecDeque;
 
-use crate::components::command::{self, CommandPalette};
-use crate::components::input::InputBox;
+use crate::components::command::{CommandAction, CommandPalette};
+use crate::components::input::{InputAction, InputBox};
 use crate::components::messages::MessagesPanel;
 use crate::components::queue_panel;
 use crate::components::status_bar::{CancelResult, StatusBar, StatusBarContext, UsageStats};
-use crate::components::{Action, DisplayMessage, DisplayRole, Status};
+use crate::components::{Action, DisplayMessage, DisplayRole, Status, is_ctrl};
 use crate::theme;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 use maki_agent::{AgentInput, AgentMode};
 use maki_providers::{AgentEvent, ModelPricing, TokenUsage};
 use ratatui::Frame;
@@ -64,8 +64,9 @@ impl App {
         match msg {
             Msg::Key(key) => self.handle_key(key),
             Msg::Paste(text) => {
-                self.input_box.buffer.insert_text(&text);
-                self.command_palette.sync(&self.input_box.buffer.value());
+                if let InputAction::PaletteSync(val) = self.input_box.handle_paste(&text) {
+                    self.command_palette.sync(&val);
+                }
                 vec![]
             }
             Msg::Agent(event) => self.handle_agent_event(event),
@@ -73,9 +74,7 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Vec<Action> {
-        let is_ctrl = key.modifiers.contains(KeyModifiers::CONTROL)
-            && !key.modifiers.contains(KeyModifiers::ALT);
-        if is_ctrl {
+        if is_ctrl(&key) {
             let half = self.messages_panel.half_page();
             return match key.code {
                 KeyCode::Char('c') => {
@@ -104,138 +103,62 @@ impl App {
                     self.messages_panel.scroll(-1);
                     vec![]
                 }
-                KeyCode::Char('w') => {
-                    self.input_box.buffer.remove_word_before_cursor();
-                    self.command_palette.sync(&self.input_box.buffer.value());
+                _ => {
+                    if let InputAction::PaletteSync(val) = self.input_box.handle_key(key) {
+                        self.command_palette.sync(&val);
+                    }
                     vec![]
                 }
-                KeyCode::Left => {
-                    self.input_box.buffer.move_word_left();
-                    vec![]
-                }
-                KeyCode::Right => {
-                    self.input_box.buffer.move_word_right();
-                    vec![]
-                }
-                _ => vec![],
             };
         }
 
-        if self.command_palette.is_active() {
-            match key.code {
-                KeyCode::Up => {
-                    self.command_palette.move_up();
-                    return vec![];
-                }
-                KeyCode::Down => {
-                    self.command_palette.move_down();
-                    return vec![];
-                }
-                KeyCode::Esc => {
-                    self.command_palette.close();
-                    return vec![];
-                }
-                KeyCode::Enter => {
-                    return self.execute_selected_command();
-                }
-                KeyCode::Tab => {
-                    self.command_palette.close();
-                }
-                _ => {}
-            }
+        match self.command_palette.handle_key(key) {
+            CommandAction::Consumed => return vec![],
+            CommandAction::Execute(name) => return self.execute_command(name),
+            CommandAction::Close => {}
+            CommandAction::Passthrough => {}
         }
 
-        match key.code {
-            KeyCode::Up if self.status == Status::Streaming => {
-                self.messages_panel.scroll(1);
-                return vec![];
-            }
-            KeyCode::Down if self.status == Status::Streaming => {
-                self.messages_panel.scroll(-1);
-                return vec![];
-            }
-            KeyCode::Up if self.input_box.is_at_first_line() => {
-                self.input_box.history_up();
-                return vec![];
-            }
-            KeyCode::Down if self.input_box.is_at_last_line() => {
-                self.input_box.history_down();
-                return vec![];
-            }
-            KeyCode::Up => {
-                self.input_box.buffer.move_up();
-                return vec![];
-            }
-            KeyCode::Down => {
-                self.input_box.buffer.move_down();
-                return vec![];
-            }
-            KeyCode::Tab => {
-                return self.toggle_mode();
-            }
-            KeyCode::Esc if self.status == Status::Streaming => {
-                return self.handle_cancel_press();
-            }
-            _ => {}
-        }
-
-        match key.code {
-            KeyCode::Enter if self.input_box.char_before_cursor_is_backslash() => {
-                self.input_box.continue_line();
+        let streaming = self.status == Status::Streaming;
+        match self.input_box.handle_key(key) {
+            InputAction::Submit(text) => self.handle_submit(text),
+            InputAction::PaletteSync(val) => {
+                self.command_palette.sync(&val);
                 vec![]
             }
-            KeyCode::Enter => {
-                let Some(text) = self.input_box.submit() else {
-                    return vec![];
-                };
-                let pending_plan = self.pending_plan.take();
-                let input = AgentInput {
-                    message: text.clone(),
-                    mode: self.mode.clone(),
-                    pending_plan,
-                };
-                if self.status == Status::Streaming {
-                    self.queue.push_back(input);
-                    self.messages_panel.enable_auto_scroll();
+            InputAction::Passthrough(key) => match key.code {
+                KeyCode::Up if streaming => {
+                    self.messages_panel.scroll(1);
                     vec![]
-                } else {
-                    self.push_user_message(&text);
-                    self.status = Status::Streaming;
-                    self.messages_panel.enable_auto_scroll();
-                    vec![Action::SendMessage(input)]
                 }
-            }
-            KeyCode::Char(c) => {
-                self.input_box.buffer.push_char(c);
-                self.command_palette.sync(&self.input_box.buffer.value());
-                vec![]
-            }
-            KeyCode::Backspace => {
-                self.input_box.buffer.remove_char();
-                self.command_palette.sync(&self.input_box.buffer.value());
-                vec![]
-            }
-            KeyCode::Delete => {
-                self.input_box.buffer.delete_char();
-                vec![]
-            }
-            KeyCode::Left => {
-                self.input_box.buffer.move_left();
-                vec![]
-            }
-            KeyCode::Right => {
-                self.input_box.buffer.move_right();
-                vec![]
-            }
-            KeyCode::Home => {
-                self.input_box.buffer.move_home();
-                vec![]
-            }
-            KeyCode::End => {
-                self.input_box.buffer.move_end();
-                vec![]
-            }
-            _ => vec![],
+                KeyCode::Down if streaming => {
+                    self.messages_panel.scroll(-1);
+                    vec![]
+                }
+                KeyCode::Tab => self.toggle_mode(),
+                KeyCode::Esc if streaming => self.handle_cancel_press(),
+                _ => vec![],
+            },
+            InputAction::ContinueLine | InputAction::None => vec![],
+        }
+    }
+
+    fn handle_submit(&mut self, text: String) -> Vec<Action> {
+        let pending_plan = self.pending_plan.take();
+        let input = AgentInput {
+            message: text.clone(),
+            mode: self.mode.clone(),
+            pending_plan,
+        };
+        if self.status == Status::Streaming {
+            self.queue.push_back(input);
+            self.messages_panel.enable_auto_scroll();
+            vec![]
+        } else {
+            self.push_user_message(&text);
+            self.status = Status::Streaming;
+            self.messages_panel.enable_auto_scroll();
+            vec![Action::SendMessage(input)]
         }
     }
 
@@ -318,11 +241,7 @@ impl App {
         vec![]
     }
 
-    fn execute_selected_command(&mut self) -> Vec<Action> {
-        let Some(name) = self.command_palette.confirm() else {
-            return vec![];
-        };
-        self.command_palette.close();
+    fn execute_command(&mut self, name: &str) -> Vec<Action> {
         self.input_box.buffer.clear();
         match name {
             "/new" => self.reset_session(),
@@ -364,7 +283,7 @@ impl App {
         queue_panel::view(frame, queue_area, &queue_texts);
         self.input_box
             .view(frame, input_area, self.status == Status::Streaming);
-        command::view(&self.command_palette, frame, input_area);
+        self.command_palette.view(frame, input_area);
         let ctx = StatusBarContext {
             status: &self.status,
             mode: &self.mode,
@@ -393,7 +312,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::components::{TEST_CONTEXT_WINDOW, ctrl, key, test_pricing};
-    use crossterm::event::KeyCode;
+    use crossterm::event::{KeyCode, KeyModifiers};
     use maki_providers::ToolStartEvent;
 
     fn test_app() -> App {
@@ -520,24 +439,6 @@ mod tests {
     }
 
     #[test]
-    fn backslash_enter_creates_newline() {
-        let mut app = test_app();
-        for c in "hello\\".chars() {
-            app.update(Msg::Key(key(KeyCode::Char(c))));
-        }
-        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-        assert!(actions.is_empty(), "backslash-enter should not submit");
-        assert_eq!(app.input_box.buffer.lines(), &["hello", ""]);
-
-        for c in "world".chars() {
-            app.update(Msg::Key(key(KeyCode::Char(c))));
-        }
-        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(&actions[0], Action::SendMessage(s) if s.message == "hello\nworld"));
-    }
-
-    #[test]
     fn altgr_chars_not_swallowed_by_ctrl_handler() {
         let mut app = test_app();
         let altgr_backslash = KeyEvent {
@@ -650,21 +551,6 @@ mod tests {
     }
 
     #[test]
-    fn slash_on_empty_opens_palette() {
-        let mut app = test_app();
-        type_slash(&mut app);
-        assert!(app.command_palette.is_active());
-    }
-
-    #[test]
-    fn slash_on_nonempty_does_not_open_palette() {
-        let mut app = test_app();
-        app.update(Msg::Key(key(KeyCode::Char('a'))));
-        type_slash(&mut app);
-        assert!(!app.command_palette.is_active());
-    }
-
-    #[test]
     fn typing_filters_palette() {
         let mut app = test_app();
         type_slash(&mut app);
@@ -691,16 +577,6 @@ mod tests {
         assert!(app.command_palette.is_active());
 
         app.update(Msg::Key(ctrl('c')));
-        assert!(!app.command_palette.is_active());
-    }
-
-    #[test]
-    fn paste_syncs_palette() {
-        let mut app = test_app();
-        app.update(Msg::Paste("/ne".into()));
-        assert!(app.command_palette.is_active());
-
-        app.update(Msg::Paste("zzz".into()));
         assert!(!app.command_palette.is_active());
     }
 

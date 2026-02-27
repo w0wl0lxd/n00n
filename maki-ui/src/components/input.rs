@@ -3,16 +3,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::text_buffer::TextBuffer;
 use crate::theme;
 
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
-};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+
+use super::scrollbar::render_vertical_scrollbar;
+
+pub enum InputAction {
+    Submit(String),
+    ContinueLine,
+    PaletteSync(String),
+    Passthrough(KeyEvent),
+    None,
+}
 
 const MAX_INPUT_LINES: u16 = 10;
-const SCROLLBAR_THUMB: &str = "\u{2590}";
 const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
     "research how something works",
     "fix a bug",
@@ -39,6 +47,92 @@ pub struct InputBox {
 }
 
 impl InputBox {
+    pub fn handle_key(&mut self, key: KeyEvent) -> InputAction {
+        if super::is_ctrl(&key) {
+            return match key.code {
+                KeyCode::Char('w') => {
+                    self.buffer.remove_word_before_cursor();
+                    InputAction::PaletteSync(self.buffer.value())
+                }
+                KeyCode::Left => {
+                    self.buffer.move_word_left();
+                    InputAction::None
+                }
+                KeyCode::Right => {
+                    self.buffer.move_word_right();
+                    InputAction::None
+                }
+                _ => InputAction::None,
+            };
+        }
+
+        match key.code {
+            KeyCode::Up if self.is_at_first_line() => {
+                self.history_up();
+                return InputAction::None;
+            }
+            KeyCode::Down if self.is_at_last_line() => {
+                self.history_down();
+                return InputAction::None;
+            }
+            KeyCode::Up => {
+                self.buffer.move_up();
+                return InputAction::None;
+            }
+            KeyCode::Down => {
+                self.buffer.move_down();
+                return InputAction::None;
+            }
+            KeyCode::Tab | KeyCode::Esc => return InputAction::Passthrough(key),
+            _ => {}
+        }
+
+        match key.code {
+            KeyCode::Enter if self.char_before_cursor_is_backslash() => {
+                self.continue_line();
+                InputAction::ContinueLine
+            }
+            KeyCode::Enter => match self.submit() {
+                Some(text) => InputAction::Submit(text),
+                None => InputAction::None,
+            },
+            KeyCode::Char(c) => {
+                self.buffer.push_char(c);
+                InputAction::PaletteSync(self.buffer.value())
+            }
+            KeyCode::Backspace => {
+                self.buffer.remove_char();
+                InputAction::PaletteSync(self.buffer.value())
+            }
+            KeyCode::Delete => {
+                self.buffer.delete_char();
+                InputAction::None
+            }
+            KeyCode::Left => {
+                self.buffer.move_left();
+                InputAction::None
+            }
+            KeyCode::Right => {
+                self.buffer.move_right();
+                InputAction::None
+            }
+            KeyCode::Home => {
+                self.buffer.move_home();
+                InputAction::None
+            }
+            KeyCode::End => {
+                self.buffer.move_end();
+                InputAction::None
+            }
+            _ => InputAction::None,
+        }
+    }
+
+    pub fn handle_paste(&mut self, text: &str) -> InputAction {
+        self.buffer.insert_text(text);
+        InputAction::PaletteSync(self.buffer.value())
+    }
+
     pub fn new() -> Self {
         Self {
             buffer: TextBuffer::new(String::new()),
@@ -226,15 +320,7 @@ impl InputBox {
 
         if max_scroll > 0 {
             let inner = area.inner(ratatui::layout::Margin::new(1, 1));
-            let mut state = ScrollbarState::default()
-                .content_length(max_scroll as usize + 1)
-                .position(self.scroll_y as usize);
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .thumb_symbol(SCROLLBAR_THUMB)
-                .track_symbol(None)
-                .begin_symbol(None)
-                .end_symbol(None);
-            frame.render_stateful_widget(scrollbar, inner, &mut state);
+            render_vertical_scrollbar(frame, inner, total_vl, self.scroll_y);
         }
     }
 }
@@ -273,6 +359,7 @@ fn visual_line_count(text_len: usize, width: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::scrollbar::SCROLLBAR_THUMB;
     use test_case::test_case;
 
     fn type_text(input: &mut InputBox, text: &str) {
