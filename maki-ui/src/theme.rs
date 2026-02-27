@@ -22,7 +22,7 @@ pub const THINKING: Style = Style::new()
     .add_modifier(Modifier::ITALIC);
 pub const TOOL_BG: Style = Style::new().bg(BACKGROUND_2);
 pub const TOOL: Style = Style::new().fg(FOREGROUND);
-pub const TOOL_PATH: Style = Style::new().fg(PURPLE);
+pub const TOOL_PATH: Style = Style::new().fg(ORANGE);
 pub const TOOL_ANNOTATION: Style = Style::new().fg(COMMENT);
 pub const TOOL_PREFIX: Style = Style::new().fg(FOREGROUND).add_modifier(Modifier::BOLD);
 pub const TOOL_IN_PROGRESS: Style = Style::new().fg(FOREGROUND);

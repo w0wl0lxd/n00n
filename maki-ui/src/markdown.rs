@@ -968,7 +968,7 @@ mod tests {
                 if line.is_empty() {
                     continue;
                 }
-                let line_stripped = strip_md(line);
+                let line_stripped = strip_md(line.trim_end());
                 let input_stripped = strip_md(prefix);
                 assert!(
                     input_stripped.contains(&line_stripped),

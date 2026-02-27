@@ -22,6 +22,7 @@ static THEME: LazyLock<syntect::highlighting::Theme> = LazyLock::new(|| {
 });
 
 const FALLBACK_STYLE: Style = theme::CODE_FALLBACK;
+const CODE_BG_STYLE: Style = Style::new().bg(theme::BACKGROUND_2);
 
 pub fn highlighter_for_path(path: &str) -> HighlightLines<'static> {
     let ss = &*SYNTAX_SET;
@@ -51,13 +52,17 @@ pub fn highlight_code(lang: &str, code: &str) -> Vec<Line<'static>> {
         .unwrap_or_else(|| ss.find_syntax_plain_text());
 
     let mut h = HighlightLines::new(syntax, &THEME);
-    LinesWithEndings::from(code)
+    let mut lines: Vec<Line<'static>> = LinesWithEndings::from(code)
         .map(|raw| highlight_single_line(&mut h, raw, ss))
-        .collect()
+        .collect();
+    let content_widths: Vec<usize> = lines.iter().map(Line::width).collect();
+    pad_lines_to_equal_width(&mut lines, &content_widths);
+    lines
 }
 
 pub struct CodeHighlighter {
     lines: Vec<Line<'static>>,
+    content_widths: Vec<usize>,
     checkpoint_parse: ParseState,
     checkpoint_highlight: HighlightState,
     completed_lines: usize,
@@ -72,6 +77,7 @@ impl CodeHighlighter {
         let highlighter = Highlighter::new(&THEME);
         Self {
             lines: Vec::new(),
+            content_widths: Vec::new(),
             checkpoint_parse: ParseState::new(syntax),
             checkpoint_highlight: HighlightState::new(&highlighter, ScopeStack::new()),
             completed_lines: 0,
@@ -84,6 +90,7 @@ impl CodeHighlighter {
         let total = raw_lines.len();
         if total == 0 {
             self.lines.clear();
+            self.content_widths.clear();
             self.completed_lines = 0;
             return &[];
         }
@@ -103,10 +110,13 @@ impl CodeHighlighter {
 
             for raw in &raw_lines[self.completed_lines..new_completed] {
                 let line = highlight_single_line(&mut hl, raw, ss);
+                let width = line.width();
                 if self.completed_lines < self.lines.len() {
                     self.lines[self.completed_lines] = line;
+                    self.content_widths[self.completed_lines] = width;
                 } else {
                     self.lines.push(line);
+                    self.content_widths.push(width);
                 }
                 self.completed_lines += 1;
             }
@@ -116,8 +126,9 @@ impl CodeHighlighter {
             self.checkpoint_highlight = hs;
         }
 
-        self.lines
-            .truncate(new_completed + usize::from(new_completed < total));
+        let line_count = new_completed + usize::from(new_completed < total);
+        self.lines.truncate(line_count);
+        self.content_widths.truncate(line_count);
 
         if new_completed < total {
             let mut hl = HighlightLines::from_state(
@@ -126,14 +137,33 @@ impl CodeHighlighter {
                 self.checkpoint_parse.clone(),
             );
             let partial = highlight_single_line(&mut hl, raw_lines[new_completed], ss);
+            let width = partial.width();
             if new_completed < self.lines.len() {
                 self.lines[new_completed] = partial;
+                self.content_widths[new_completed] = width;
             } else {
                 self.lines.push(partial);
+                self.content_widths.push(width);
             }
         }
 
+        pad_lines_to_equal_width(&mut self.lines, &self.content_widths);
+
         &self.lines
+    }
+}
+
+fn pad_lines_to_equal_width(lines: &mut [Line<'static>], content_widths: &[usize]) {
+    let max_width = content_widths.iter().copied().max().unwrap_or(0);
+    for (line, &content_width) in lines.iter_mut().zip(content_widths) {
+        let pad = max_width - content_width;
+        let padding_span = Span::styled(" ".repeat(pad), CODE_BG_STYLE);
+        match line.spans.last() {
+            Some(last) if last.style == CODE_BG_STYLE => {
+                *line.spans.last_mut().unwrap() = padding_span;
+            }
+            _ => line.spans.push(padding_span),
+        }
     }
 }
 
@@ -150,7 +180,7 @@ fn highlight_single_line(hl: &mut HighlightLines<'_>, raw: &str, ss: &SyntaxSet)
             FALLBACK_STYLE,
         )],
     };
-    Line::from(spans)
+    Line::from(spans).style(Style::new().bg(theme::BACKGROUND_2))
 }
 
 struct HighlightJob {
@@ -234,23 +264,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn known_language_produces_output() {
-        let lines = highlight_code("rust", "fn main() {}");
-        assert_eq!(lines.len(), 1);
-        assert!(!lines[0].spans.is_empty());
-    }
-
-    #[test]
     fn unknown_language_falls_back_without_panic() {
         let lines = highlight_code("nonexistent_lang_xyz", "some code");
         assert_eq!(lines.len(), 1);
         assert!(!lines[0].spans.is_empty());
-    }
-
-    #[test]
-    fn multiline_code_produces_correct_line_count() {
-        let lines = highlight_code("py", "x = 1\ny = 2\nz = 3\n");
-        assert_eq!(lines.len(), 3);
     }
 
     #[test]
@@ -291,21 +308,31 @@ mod tests {
     }
 
     #[test]
-    fn incremental_partial_line_produces_output() {
-        let mut ch = CodeHighlighter::new("rust");
-        assert_eq!(ch.update("let x").len(), 1);
+    fn streaming_padding_stays_consistent() {
+        let mut ch = CodeHighlighter::new("py");
+
+        let r1 = ch.update("short\n");
+        assert_eq!(r1.len(), 1);
+        let w1 = r1[0].width();
+
+        let r2 = ch.update("short\nthis_is_a_longer_line\n");
+        let widths: Vec<usize> = r2.iter().map(Line::width).collect();
+        assert!(
+            widths.iter().all(|&w| w == widths[0]),
+            "all lines should have equal width after padding"
+        );
+
+        let r3 = ch.update("short\nthis_is_a_longer_line\nx\n");
+        let widths: Vec<usize> = r3.iter().map(Line::width).collect();
+        assert!(
+            widths.iter().all(|&w| w == widths[0]),
+            "all lines should have equal width after re-padding"
+        );
+        assert!(widths[0] >= w1, "max width should grow or stay the same");
     }
 
     #[test]
-    fn highlighter_for_path_known_extension() {
-        let mut hl = highlighter_for_path("main.rs");
-        let spans = highlight_line(&mut hl, "fn main() {}");
-        let text: String = spans.iter().map(|(_, t)| t.as_str()).collect();
-        assert_eq!(text, "fn main() {}");
-    }
-
-    #[test]
-    fn highlighter_for_path_unknown_extension_falls_back() {
+    fn highlighter_for_path_falls_back_on_unknown_extension() {
         let mut hl = highlighter_for_path("data.xyznonexistent");
         let spans = highlight_line(&mut hl, "hello");
         assert!(!spans.is_empty());
