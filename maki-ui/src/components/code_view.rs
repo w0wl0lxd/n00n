@@ -7,7 +7,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 const INDENT: &str = "  ";
-const BODY_INDENT: &str = "  ";
+
 const MAX_DISPLAY_LINES: usize = 7;
 
 fn nr_width(max_nr: usize) -> usize {
@@ -32,28 +32,22 @@ fn truncation_line(truncated: usize) -> Line<'static> {
     ))
 }
 
-fn plain_spans(text: &str) -> Vec<Span<'static>> {
-    vec![
-        Span::raw(INDENT),
-        Span::styled(text.to_owned(), theme::CODE_FALLBACK),
-    ]
-}
-
-fn syntax_spans(hl: &mut syntect::easy::HighlightLines<'_>, text: &str) -> Vec<Span<'static>> {
-    let mut spans = vec![Span::raw(INDENT)];
-    for (style, chunk) in highlight_line(hl, text) {
-        spans.push(Span::styled(chunk, style));
-    }
-    spans
-}
-
 fn code_spans(
     hl: &mut Option<syntect::easy::HighlightLines<'_>>,
     text: &str,
 ) -> Vec<Span<'static>> {
     match hl {
-        Some(h) => syntax_spans(h, text),
-        None => plain_spans(text),
+        Some(h) => {
+            let mut spans = vec![Span::raw(INDENT)];
+            for (style, chunk) in highlight_line(h, text) {
+                spans.push(Span::styled(chunk, style));
+            }
+            spans
+        }
+        None => vec![
+            Span::raw(INDENT),
+            Span::styled(text.to_owned(), theme::CODE_FALLBACK),
+        ],
     }
 }
 
@@ -161,26 +155,40 @@ fn render_grep_results(
     let mut out = Vec::new();
     let mut budget = max_lines;
     let total: usize = entries.iter().map(|e| e.matches.len()).sum();
+
+    let global_max_nr = entries
+        .iter()
+        .flat_map(|e| e.matches.iter().map(|m| m.line_nr))
+        .max()
+        .unwrap_or(1);
+    let w = nr_width(global_max_nr);
+    let multi = entries.len() > 1;
+
     for entry in entries {
         if budget == 0 {
             break;
         }
         let take = entry.matches.len().min(budget);
-        let max_nr = entry
-            .matches
-            .iter()
-            .take(take)
-            .map(|m| m.line_nr)
-            .max()
-            .unwrap_or(1);
-        let w = nr_width(max_nr);
+
+        if multi {
+            out.push(Line::from(Span::styled(
+                format!("{INDENT}{}", entry.path),
+                theme::TOOL_PATH,
+            )));
+        }
+
         let mut hl = if highlight {
             Some(highlighter_for_path(&entry.path))
         } else {
             None
         };
+
         for m in entry.matches.iter().take(take) {
-            let mut spans = vec![gutter(&format!("{:>w$}", m.line_nr))];
+            let mut spans = if multi {
+                vec![Span::raw(INDENT), gutter(&format!("{:>w$}", m.line_nr))]
+            } else {
+                vec![gutter(&format!("{:>w$}", m.line_nr))]
+            };
             spans.extend(code_spans(&mut hl, &m.text));
             out.push(Line::from(spans));
             budget -= 1;
@@ -201,13 +209,13 @@ pub fn render_tool_content(
     if let Some(ToolInput::Code { language, code }) = input {
         if highlight {
             for mut line in highlight_code(language, code) {
-                line.spans.insert(0, Span::raw(BODY_INDENT.to_owned()));
+                line.spans.insert(0, Span::raw(INDENT.to_owned()));
                 lines.push(line);
             }
         } else {
             for text in code.trim_end_matches('\n').lines() {
                 lines.push(Line::from(vec![
-                    Span::raw(BODY_INDENT.to_owned()),
+                    Span::raw(INDENT.to_owned()),
                     Span::styled(text.to_owned(), theme::CODE_FALLBACK),
                 ]));
             }
@@ -371,10 +379,29 @@ mod tests {
 
     #[test_case(&[("a.rs", &[1,2,3,4,5,6,7,8,9,10_usize] as &[usize])], 3, 4  ; "truncates_with_ellipsis")]
     #[test_case(&[("a.rs", &[1_usize,2])],                                5, 2  ; "no_truncation_when_fits")]
-    #[test_case(&[("a.rs", &[1_usize,2,3]), ("b.rs", &[10,20])],          4, 5  ; "multi_file_budget_with_ellipsis")]
+    #[test_case(&[("a.rs", &[1_usize,2,3]), ("b.rs", &[10,20])],          4, 7  ; "multi_file_budget_with_ellipsis")]
     fn render_grep_line_count(files: &[(&str, &[usize])], max: usize, expected: usize) {
         let entries = grep_entries(files);
         assert_eq!(render_grep_results(&entries, max, true).len(), expected);
+    }
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn multi_file_grep_headers_and_alignment() {
+        let entries = grep_entries(&[("a.rs", &[1]), ("b.rs", &[100])]);
+        let lines = render_grep_results(&entries, 10, false);
+
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(texts[0].contains("a.rs"));
+        assert!(texts[2].contains("b.rs"));
+
+        assert!(lines[0].spans.iter().any(|s| s.style == theme::TOOL_PATH));
+
+        let gutter_width = |line: &str| line.find(|c: char| c.is_alphabetic()).unwrap_or(0);
+        assert_eq!(gutter_width(&texts[1]), gutter_width(&texts[3]));
     }
 
     #[test]
