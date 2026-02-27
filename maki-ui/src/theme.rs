@@ -39,8 +39,8 @@ pub const CANCEL_HINT: Style = Style::new().fg(ORANGE);
 
 pub const BOLD: Style = Style::new().fg(ORANGE).add_modifier(Modifier::BOLD);
 pub const INLINE_CODE: Style = Style::new().fg(GREEN);
-pub const BOLD_CODE: Style = Style::new().fg(GREEN).add_modifier(Modifier::BOLD);
 pub const CODE_FALLBACK: Style = Style::new().fg(FOREGROUND);
+pub const STRIKETHROUGH: Style = Style::new().fg(COMMENT).add_modifier(Modifier::CROSSED_OUT);
 pub const HEADING: Style = Style::new().fg(PURPLE).add_modifier(Modifier::BOLD);
 pub const LIST_MARKER: Style = Style::new().fg(ORANGE);
 

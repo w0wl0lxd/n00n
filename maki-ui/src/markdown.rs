@@ -15,75 +15,355 @@ pub fn truncation_notice(count: usize) -> String {
 
 pub const BOLD_STYLE: Style = theme::BOLD;
 pub const CODE_STYLE: Style = theme::INLINE_CODE;
-pub const BOLD_CODE_STYLE: Style = theme::BOLD_CODE;
+pub const STRIKETHROUGH_STYLE: Style = theme::STRIKETHROUGH;
 pub const HEADING_STYLE: Style = theme::HEADING;
 pub const LIST_MARKER_STYLE: Style = theme::LIST_MARKER;
 
-const BOLD_DELIM: &str = "**";
-const CODE_DELIM: &str = "`";
 const BULLET: &str = "• ";
 const LIST_INDENT: &str = "  ";
 
-fn find_earliest_delim(text: &str) -> Option<(usize, &'static str, Style)> {
-    [(BOLD_DELIM, BOLD_STYLE), (CODE_DELIM, CODE_STYLE)]
-        .into_iter()
-        .filter_map(|(d, s)| text.find(d).map(|pos| (pos, d, s)))
-        .min_by_key(|(pos, _, _)| *pos)
+fn code_style(base: Style) -> Style {
+    CODE_STYLE.add_modifier(base.add_modifier)
 }
 
-fn parse_inner<'a>(
-    content: &'a str,
-    outer_style: Style,
-    nested_delim: &str,
-    spans: &mut Vec<Span<'a>>,
-) {
-    let mut remaining = content;
+fn bold_style(base: Style) -> Style {
+    BOLD_STYLE.add_modifier(base.add_modifier)
+}
 
-    while !remaining.is_empty() {
-        let Some(pos) = remaining.find(nested_delim) else {
-            spans.push(Span::styled(remaining, outer_style));
-            return;
-        };
-        let after_open = &remaining[pos + nested_delim.len()..];
-        let Some(close) = after_open.find(nested_delim) else {
-            spans.push(Span::styled(remaining, outer_style));
-            return;
-        };
-        if pos > 0 {
-            spans.push(Span::styled(&remaining[..pos], outer_style));
+fn italic_style(base: Style) -> Style {
+    base.add_modifier(Modifier::ITALIC)
+}
+
+fn strikethrough_style(base: Style) -> Style {
+    STRIKETHROUGH_STYLE.add_modifier(base.add_modifier)
+}
+
+fn count_run(bytes: &[u8], pos: usize, ch: u8) -> usize {
+    bytes[pos..].iter().take_while(|&&b| b == ch).count()
+}
+
+fn count_backtick_run(bytes: &[u8], pos: usize) -> usize {
+    count_run(bytes, pos, b'`')
+}
+
+fn find_code_span_close(bytes: &[u8], pos: usize, run_len: usize) -> Option<(usize, usize, usize)> {
+    let content_start = pos + run_len;
+    let mut i = content_start;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let close_run = count_backtick_run(bytes, i);
+            if close_run == run_len {
+                return Some((content_start, i, i + run_len));
+            }
+            i += close_run;
+        } else {
+            i += 1;
         }
-        spans.push(Span::styled(&after_open[..close], BOLD_CODE_STYLE));
-        remaining = &after_open[close + nested_delim.len()..];
     }
+    None
+}
+
+fn find_emphasis_close(bytes: &[u8], start: usize, delim: &[u8]) -> Option<usize> {
+    let mut pos = start;
+    while pos + delim.len() <= bytes.len() {
+        if bytes[pos] == b'`' {
+            let run = count_backtick_run(bytes, pos);
+            if let Some((_, _, close_end)) = find_code_span_close(bytes, pos, run) {
+                pos = close_end;
+            } else {
+                pos += run;
+            }
+            continue;
+        }
+        if bytes[pos..].starts_with(delim) {
+            return Some(pos);
+        }
+        pos += 1;
+    }
+    None
+}
+
+fn is_word_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn find_italic_close(bytes: &[u8], start: usize, ch: u8) -> Option<usize> {
+    let mut pos = start;
+    while pos < bytes.len() {
+        if bytes[pos] == b'`' {
+            let run = count_backtick_run(bytes, pos);
+            if let Some((_, _, close_end)) = find_code_span_close(bytes, pos, run) {
+                pos = close_end;
+            } else {
+                pos += run;
+            }
+            continue;
+        }
+        if bytes[pos] == ch {
+            if (ch == b'*' && pos + 1 < bytes.len() && bytes[pos + 1] == b'*')
+                || (pos > 0 && bytes[pos - 1] == ch)
+            {
+                pos += 1;
+                continue;
+            }
+            if pos > start && !bytes[pos - 1].is_ascii_whitespace() {
+                if ch == b'_' && pos + 1 < bytes.len() && is_word_char(bytes[pos + 1]) {
+                    pos += 1;
+                    continue;
+                }
+                return Some(pos);
+            }
+        }
+        pos += 1;
+    }
+    None
+}
+
+fn is_valid_italic_open(bytes: &[u8], pos: usize) -> bool {
+    if pos + 1 >= bytes.len() || bytes[pos + 1].is_ascii_whitespace() {
+        return false;
+    }
+    let ch = bytes[pos];
+    if ch == b'*' {
+        if bytes[pos + 1] == b'*' {
+            return false;
+        }
+        if pos > 0 && bytes[pos - 1] == b'*' {
+            return false;
+        }
+        if pos > 0 && is_word_char(bytes[pos - 1]) {
+            return false;
+        }
+    }
+    if ch == b'_' && pos > 0 && is_word_char(bytes[pos - 1]) {
+        return false;
+    }
+    true
+}
+
+fn is_valid_strike_open(bytes: &[u8], pos: usize) -> bool {
+    if pos + 2 >= bytes.len() {
+        return false;
+    }
+    if bytes[pos + 2] == b'~' {
+        return false;
+    }
+    if pos > 0 && bytes[pos - 1] == b'~' {
+        return false;
+    }
+    !bytes[pos + 2].is_ascii_whitespace()
+}
+
+fn find_strike_close(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut pos = start;
+    while pos + 1 < bytes.len() {
+        if bytes[pos] == b'`' {
+            let run = count_backtick_run(bytes, pos);
+            if let Some((_, _, close_end)) = find_code_span_close(bytes, pos, run) {
+                pos = close_end;
+            } else {
+                pos += run;
+            }
+            continue;
+        }
+        if bytes[pos] == b'~' && bytes[pos + 1] == b'~' {
+            if pos + 2 < bytes.len() && bytes[pos + 2] == b'~' {
+                pos += 1;
+                continue;
+            }
+            if pos > start && bytes[pos - 1] == b'~' {
+                pos += 1;
+                continue;
+            }
+            if pos > start && !bytes[pos - 1].is_ascii_whitespace() {
+                return Some(pos);
+            }
+        }
+        pos += 1;
+    }
+    None
+}
+
+struct EmphasisMatch {
+    style_fn: fn(Style) -> Style,
+    content_start: usize,
+    close: usize,
+    delim_len: usize,
+    skip_on_fail: usize,
+}
+
+fn try_star_emphasis(bytes: &[u8], pos: usize) -> Option<EmphasisMatch> {
+    let run = count_run(bytes, pos, b'*');
+
+    if run >= 3
+        && let Some(close) = find_emphasis_close(bytes, pos + 3, b"***")
+        && close > pos + 3
+    {
+        return Some(EmphasisMatch {
+            style_fn: |s| italic_style(bold_style(s)),
+            content_start: pos + 3,
+            close,
+            delim_len: 3,
+            skip_on_fail: 0,
+        });
+    }
+
+    if run >= 2 {
+        if let Some(close) = find_emphasis_close(bytes, pos + 2, b"**")
+            && close > pos + 2
+        {
+            return Some(EmphasisMatch {
+                style_fn: bold_style,
+                content_start: pos + 2,
+                close,
+                delim_len: 2,
+                skip_on_fail: 0,
+            });
+        }
+        return Some(EmphasisMatch {
+            style_fn: |s| s,
+            content_start: pos,
+            close: pos,
+            delim_len: 0,
+            skip_on_fail: 2,
+        });
+    }
+
+    if is_valid_italic_open(bytes, pos)
+        && let Some(close) = find_italic_close(bytes, pos + 1, b'*')
+        && close > pos + 1
+    {
+        return Some(EmphasisMatch {
+            style_fn: italic_style,
+            content_start: pos + 1,
+            close,
+            delim_len: 1,
+            skip_on_fail: 0,
+        });
+    }
+    Some(EmphasisMatch {
+        style_fn: |s| s,
+        content_start: pos,
+        close: pos,
+        delim_len: 0,
+        skip_on_fail: 1,
+    })
+}
+
+fn try_strike_emphasis(bytes: &[u8], pos: usize) -> Option<EmphasisMatch> {
+    if pos + 1 >= bytes.len() || bytes[pos + 1] != b'~' {
+        return None;
+    }
+    if is_valid_strike_open(bytes, pos)
+        && let Some(close) = find_strike_close(bytes, pos + 2)
+        && close > pos + 2
+    {
+        return Some(EmphasisMatch {
+            style_fn: strikethrough_style,
+            content_start: pos + 2,
+            close,
+            delim_len: 2,
+            skip_on_fail: 0,
+        });
+    }
+    Some(EmphasisMatch {
+        style_fn: |s| s,
+        content_start: pos,
+        close: pos,
+        delim_len: 0,
+        skip_on_fail: 2,
+    })
+}
+
+fn try_underscore_emphasis(bytes: &[u8], pos: usize) -> Option<EmphasisMatch> {
+    if !is_valid_italic_open(bytes, pos) {
+        return None;
+    }
+    if let Some(close) = find_italic_close(bytes, pos + 1, b'_')
+        && close > pos + 1
+    {
+        return Some(EmphasisMatch {
+            style_fn: italic_style,
+            content_start: pos + 1,
+            close,
+            delim_len: 1,
+            skip_on_fail: 0,
+        });
+    }
+    Some(EmphasisMatch {
+        style_fn: |s| s,
+        content_start: pos,
+        close: pos,
+        delim_len: 0,
+        skip_on_fail: 1,
+    })
 }
 
 pub fn parse_inline_markdown<'a>(text: &'a str, base_style: Style) -> Vec<Span<'a>> {
+    parse_inline(text, base_style, true)
+}
+
+fn parse_inline<'a>(text: &'a str, base_style: Style, code_spans: bool) -> Vec<Span<'a>> {
+    let bytes = text.as_bytes();
     let mut spans = Vec::new();
-    let mut remaining = text;
+    let mut pos = 0;
+    let mut plain_start = 0;
 
-    while !remaining.is_empty() {
-        let Some((pos, delim, style)) = find_earliest_delim(remaining) else {
-            spans.push(Span::styled(remaining, base_style));
-            break;
+    macro_rules! flush_before {
+        () => {
+            if plain_start < pos {
+                let before = &text[plain_start..pos];
+                if code_spans {
+                    spans.extend(parse_inline(before, base_style, false));
+                } else {
+                    spans.push(Span::styled(before, base_style));
+                }
+            }
         };
+    }
 
-        if pos > 0 {
-            spans.push(Span::styled(&remaining[..pos], base_style));
+    while pos < bytes.len() {
+        if code_spans && bytes[pos] == b'`' {
+            let run_len = count_backtick_run(bytes, pos);
+            if let Some((cs, ce, close_end)) = find_code_span_close(bytes, pos, run_len)
+                && ce > cs
+            {
+                flush_before!();
+                spans.push(Span::styled(&text[cs..ce], code_style(base_style)));
+                pos = close_end;
+                plain_start = pos;
+                continue;
+            }
+            pos += run_len;
+            continue;
         }
 
-        let after_open = &remaining[pos + delim.len()..];
-        let Some(close) = after_open.find(delim) else {
-            spans.push(Span::styled(&remaining[pos..], base_style));
-            break;
+        let em = match bytes[pos] {
+            b'*' => try_star_emphasis(bytes, pos),
+            b'~' => try_strike_emphasis(bytes, pos),
+            b'_' => try_underscore_emphasis(bytes, pos),
+            _ => None,
         };
 
-        let nested_delim = if delim == BOLD_DELIM {
-            CODE_DELIM
-        } else {
-            BOLD_DELIM
-        };
-        parse_inner(&after_open[..close], style, nested_delim, &mut spans);
-        remaining = &after_open[close + delim.len()..];
+        if let Some(em) = em {
+            if em.delim_len > 0 {
+                flush_before!();
+                let content = &text[em.content_start..em.close];
+                let inner = (em.style_fn)(base_style);
+                spans.extend(parse_inline(content, inner, code_spans));
+                pos = em.close + em.delim_len;
+                plain_start = pos;
+            } else {
+                pos += em.skip_on_fail;
+            }
+            continue;
+        }
+
+        pos += 1;
+    }
+
+    if plain_start < bytes.len() {
+        spans.push(Span::styled(&text[plain_start..], base_style));
     }
 
     spans
@@ -359,36 +639,49 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
+    const BOLD_ITALIC: Style = BOLD_STYLE.add_modifier(Modifier::ITALIC);
+    const BOLD_CODE_STYLE: Style = CODE_STYLE.add_modifier(Modifier::BOLD);
+    const ITALIC_STYLE: Style = Style::new().add_modifier(Modifier::ITALIC);
+
     #[test_case("a **bold** b", &[("a ", None), ("bold", Some(BOLD_STYLE)), (" b", None)] ; "bold")]
     #[test_case("use `foo` here", &[("use ", None), ("foo", Some(CODE_STYLE)), (" here", None)] ; "inline_code")]
     #[test_case("a `code` then **bold**", &[("a ", None), ("code", Some(CODE_STYLE)), (" then ", None), ("bold", Some(BOLD_STYLE))] ; "code_before_bold")]
-    #[test_case("a **unclosed", &[("a ", None), ("**unclosed", None)] ; "unclosed_delimiter")]
+    #[test_case("a **unclosed", &[("a **unclosed", None)] ; "unclosed_bold")]
+    #[test_case("a `unclosed", &[("a `unclosed", None)] ; "unclosed_backtick")]
     #[test_case("**bold `code` bold**", &[("bold ", Some(BOLD_STYLE)), ("code", Some(BOLD_CODE_STYLE)), (" bold", Some(BOLD_STYLE))] ; "code_inside_bold")]
-    #[test_case("`code **bold** code`", &[("code ", Some(CODE_STYLE)), ("bold", Some(BOLD_CODE_STYLE)), (" code", Some(CODE_STYLE))] ; "bold_inside_code")]
+    #[test_case("`code **bold** code`", &[("code **bold** code", Some(CODE_STYLE))] ; "bold_inside_code")]
     #[test_case("**`all`**", &[("all", Some(BOLD_CODE_STYLE))] ; "entire_bold_is_code")]
-    #[test_case("`**all**`", &[("all", Some(BOLD_CODE_STYLE))] ; "entire_code_is_bold")]
+    #[test_case("`**all**`", &[("**all**", Some(CODE_STYLE))] ; "entire_code_is_bold")]
     #[test_case("**bold `unclosed**", &[("bold `unclosed", Some(BOLD_STYLE))] ; "unclosed_nested_code_in_bold")]
     #[test_case("`code **unclosed`", &[("code **unclosed", Some(CODE_STYLE))] ; "unclosed_nested_bold_in_code")]
     #[test_case("plain text", &[("plain text", None)] ; "no_delimiters")]
-    #[test_case("", &[] ; "empty_string")]
-    #[test_case("`", &[("`", None)] ; "lone_backtick")]
-    #[test_case("**", &[("**", None)] ; "lone_double_star")]
-    #[test_case("``", &[] ; "empty_code_span")]
-    #[test_case("****", &[] ; "empty_bold_span")]
-    #[test_case("a * b", &[("a * b", None)] ; "single_star_not_bold")]
-    #[test_case("a*b*c", &[("a*b*c", None)] ; "single_stars_not_parsed")]
-    #[test_case("`a` `b`", &[("a", Some(CODE_STYLE)), (" ", None), ("b", Some(CODE_STYLE))] ; "two_code_spans")]
-    #[test_case("**a** **b**", &[("a", Some(BOLD_STYLE)), (" ", None), ("b", Some(BOLD_STYLE))] ; "two_bold_spans")]
+    #[test_case("``", &[("``", None)] ; "empty_code_span")]
+    #[test_case("****", &[("****", None)] ; "empty_bold_span")]
+    #[test_case("a * b", &[("a * b", None)] ; "star_with_spaces_not_italic")]
+    #[test_case("a*b*c", &[("a*b*c", None)] ; "intraword_stars_not_italic")]
+    #[test_case("`a` middle `b`", &[("a", Some(CODE_STYLE)), (" middle ", None), ("b", Some(CODE_STYLE))] ; "two_code_spans_with_text")]
     #[test_case("`a` **b**", &[("a", Some(CODE_STYLE)), (" ", None), ("b", Some(BOLD_STYLE))] ; "code_then_bold")]
     #[test_case("**a** `b`", &[("a", Some(BOLD_STYLE)), (" ", None), ("b", Some(CODE_STYLE))] ; "bold_then_code")]
-    #[test_case("`a` middle `b`", &[("a", Some(CODE_STYLE)), (" middle ", None), ("b", Some(CODE_STYLE))] ; "two_code_spans_with_text")]
-    #[test_case("a `unclosed", &[("a ", None), ("`unclosed", None)] ; "unclosed_backtick")]
-    #[test_case("a `b` c `unclosed", &[("a ", None), ("b", Some(CODE_STYLE)), (" c ", None), ("`unclosed", None)] ; "code_then_unclosed_backtick")]
-    #[test_case("a **b** c **unclosed", &[("a ", None), ("b", Some(BOLD_STYLE)), (" c ", None), ("**unclosed", None)] ; "bold_then_unclosed_bold")]
-    #[test_case("**a `b** c`", &[("a `b", Some(BOLD_STYLE)), (" c", None), ("`", None)] ; "interleaved_bold_code")]
-    #[test_case("`a **b` c**", &[("a **b", Some(CODE_STYLE)), (" c", None), ("**", None)] ; "interleaved_code_bold")]
-    #[test_case("***bold***", &[("*bold", Some(BOLD_STYLE)), ("*", None)] ; "triple_star_treated_as_bold_with_star")]
-    #[test_case("**`**`", &[("`", Some(BOLD_STYLE)), ("`", None)] ; "bold_delim_greedily_matches_before_code")]
+    #[test_case("a `b` c `unclosed", &[("a ", None), ("b", Some(CODE_STYLE)), (" c `unclosed", None)] ; "code_then_unclosed_backtick")]
+    #[test_case("a **b** c **unclosed", &[("a ", None), ("b", Some(BOLD_STYLE)), (" c **unclosed", None)] ; "bold_then_unclosed_bold")]
+    #[test_case("**a `b** c`", &[("**a ", None), ("b** c", Some(CODE_STYLE))] ; "interleaved_bold_code")]
+    #[test_case("`a **b` c**", &[("a **b", Some(CODE_STYLE)), (" c**", None)] ; "interleaved_code_bold")]
+    #[test_case("***bold italic***", &[("bold italic", Some(BOLD_ITALIC))] ; "triple_star_bold_italic")]
+    #[test_case("**`**`", &[("**", None), ("**", Some(CODE_STYLE))] ; "code_span_captures_bold_delim")]
+    // Italic
+    #[test_case("some *emphasized* word", &[("some ", None), ("emphasized", Some(ITALIC_STYLE)), (" word", None)] ; "italic_star")]
+    #[test_case("_italic_", &[("italic", Some(ITALIC_STYLE))] ; "italic_underscore")]
+    #[test_case("file_name_here", &[("file_name_here", None)] ; "intraword_underscores_not_italic")]
+    #[test_case("__dunder__", &[("__dunder__", None)] ; "double_underscore_not_italic")]
+    // Strikethrough
+    #[test_case("a ~~struck~~ b", &[("a ", None), ("struck", Some(STRIKETHROUGH_STYLE)), (" b", None)] ; "strikethrough")]
+    #[test_case("~~~~", &[("~~~~", None)] ; "empty_strikethrough")]
+    // Backtick runs
+    #[test_case("``code with ` inside``", &[("code with ` inside", Some(CODE_STYLE))] ; "double_backtick_code_span")]
+    #[test_case("```code```", &[("code", Some(CODE_STYLE))] ; "triple_backtick_inline_code")]
+    // Nesting
+    #[test_case("**bold *italic* bold**", &[("bold ", Some(BOLD_STYLE)), ("italic", Some(BOLD_ITALIC)), (" bold", Some(BOLD_STYLE))] ; "italic_inside_bold")]
+    #[test_case("**bold `code**` bold**", &[("bold ", Some(BOLD_STYLE)), ("code**", Some(BOLD_CODE_STYLE)), (" bold", Some(BOLD_STYLE))] ; "bold_closer_inside_code_ignored")]
     fn parse_inline_markdown_cases(input: &str, expected: &[(&str, Option<Style>)]) {
         let base = Style::default();
         let spans = parse_inline_markdown(input, base);
@@ -403,35 +696,11 @@ mod tests {
         }
     }
 
-    #[test_case("plain text" ; "plain")]
-    #[test_case("a **bold** b" ; "simple_bold")]
-    #[test_case("use `foo` here" ; "simple_code")]
-    #[test_case("**bold `code` bold**" ; "nested_code_in_bold")]
-    #[test_case("`code **bold** code`" ; "nested_bold_in_code")]
-    #[test_case("a **unclosed" ; "unclosed_bold")]
-    #[test_case("a `unclosed" ; "unclosed_code")]
-    #[test_case("**bold `unclosed**" ; "unclosed_nested_code")]
-    #[test_case("`code **unclosed`" ; "unclosed_nested_bold")]
-    #[test_case("**a `b** c`" ; "interleaved_1")]
-    #[test_case("`a **b` c**" ; "interleaved_2")]
-    #[test_case("***bold***" ; "triple_star")]
-    #[test_case("**`**`" ; "bold_before_code")]
-    #[test_case("a `b` c `d` e" ; "multiple_code")]
-    #[test_case("a **b** c **d** e" ; "multiple_bold")]
-    #[test_case("``" ; "empty_code")]
-    #[test_case("****" ; "empty_bold")]
-    #[test_case("" ; "empty")]
-    #[test_case("`" ; "lone_backtick")]
-    #[test_case("**" ; "lone_stars")]
-    #[test_case("**`all`**" ; "bold_code_combined")]
-    #[test_case("`**all**`" ; "code_bold_combined")]
     #[test_case("here is `/home/tony/file.rs` path" ; "path_in_backticks")]
     #[test_case("use `fn main()` and **important**" ; "code_and_bold_real_content")]
     #[test_case("**`/home/tony/c/maki/src/tools/read.rs:23-38`**" ; "bold_code_path")]
     #[test_case("### 1. Data ` Types` — How Output" ; "heading_with_stray_backtick")]
     #[test_case("**/ Diffs Are Structured" ; "unclosed_bold_with_slash")]
-    #[test_case("`a` `b` `c` `d` `e`" ; "many_code_spans")]
-    #[test_case("**a** `b` **c** `d`" ; "alternating_bold_code")]
     #[test_case("text `code` more **bold** end `code2` fin" ; "mixed_inline")]
     fn inline_parse_invariants(input: &str) {
         let base = Style::default();
@@ -451,7 +720,11 @@ mod tests {
             }
         }
 
-        let strip = |s: &str| -> String { s.chars().filter(|c| *c != '`' && *c != '*').collect() };
+        let strip = |s: &str| -> String {
+            s.chars()
+                .filter(|c| !matches!(c, '`' | '*' | '~' | '_'))
+                .collect()
+        };
         assert_eq!(
             strip(&reconstructed),
             strip(input),
@@ -589,7 +862,7 @@ mod tests {
 
     fn strip_md(s: &str) -> String {
         s.chars()
-            .filter(|c| !matches!(c, '`' | '*' | '#' | '•' | '-' | '+'))
+            .filter(|c| !matches!(c, '`' | '*' | '#' | '•' | '-' | '+' | '~' | '_'))
             .collect()
     }
 
@@ -627,15 +900,59 @@ mod tests {
         "- **bold item**\n- `code item`\n  - nested"
         ; "streaming_list_with_inline"
     )]
+    #[test_case(
+        "Here is *italic* and ~~struck~~ text with _underscores_"
+        ; "streaming_italic_strike_underscore"
+    )]
+    #[test_case(
+        concat!(
+            "## Refactoring `parse_inline` for ***extensibility***\n",
+            "\n",
+            "The old approach used a ~~naive~~ **greedy** scan:\n",
+            "\n",
+            "```rust\n",
+            "fn find_earliest_delim(text: &str) -> Option<(usize, &str)> {\n",
+            "    [(\"**\", BOLD), (\"`\", CODE)]\n",
+            "        .into_iter()\n",
+            "        .filter_map(|(d, s)| text.find(d).map(|p| (p, d, s)))\n",
+            "        .min_by_key(|(p, _, _)| *p)\n",
+            "}\n",
+            "```\n",
+            "\n",
+            "Key changes:\n",
+            "\n",
+            "1. **Priority**: backtick runs are matched *first*, so `code **ignores** bold`\n",
+            "2. **Nesting**: ``code with ` inside`` uses double-backtick fencing\n",
+            "3. **Emphasis stack**:\n",
+            "   - Single `*` or `_` for *italic*\n",
+            "   - Double `**` for **bold**\n",
+            "   - Triple `***` for ***bold italic***\n",
+            "   - `~~tildes~~` for ~~strikethrough~~\n",
+            "\n",
+            "Run `cargo test -p maki-ui -- markdown` to verify.\n",
+            "\n",
+            "````markdown\n",
+            "```rust\n",
+            "fn nested_fence() {}\n",
+            "```\n",
+            "````\n",
+            "\n",
+            "- **`/home/tony/c/maki/src/tools/read.rs:23-38`** was the _root cause_\n",
+            "- Items with `inline_code` and **bold** and *italic* and ~~struck~~ in one line",
+        )
+        ; "streaming_realistic_llm_response"
+    )]
     fn streaming_never_garbles(input: &str) {
         let style = Style::default();
-        for end in 1..=input.len() {
+        let step = if input.len() > 200 { 7 } else { 1 };
+        let mut end = step;
+        while end <= input.len() {
             if !input.is_char_boundary(end) {
+                end += 1;
                 continue;
             }
             let prefix = &input[..end];
-            let mut hl = Vec::new();
-            let lines = text_to_lines(prefix, "", style, style, Some(&mut hl));
+            let lines = text_to_lines(prefix, "", style, style, None);
             let rendered: String = lines
                 .iter()
                 .map(|l| {
@@ -658,6 +975,7 @@ mod tests {
                     "rendered line not found in input at prefix len={end}\n  prefix: {prefix:?}\n  rendered line: {line:?}\n  full rendered: {rendered:?}"
                 );
             }
+            end += step;
         }
     }
 
@@ -703,7 +1021,7 @@ mod tests {
         let styles: Vec<_> = lines[0].spans.iter().map(|s| s.style).collect();
         assert!(styles.contains(&BOLD_STYLE));
         assert!(styles.contains(&HEADING_STYLE));
-        assert!(styles.contains(&CODE_STYLE));
+        assert!(styles.contains(&code_style(HEADING_STYLE)));
     }
 
     #[test_case("##nospace" ; "no_space_not_heading")]

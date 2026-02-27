@@ -41,7 +41,32 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
         // #2 Thinking
         msg(DisplayRole::Thinking, "Let me analyze the config module structure. I'll need to look at the existing implementation, understand the current API surface, and plan the refactor to use a builder pattern with proper validation."),
         // #3 Assistant (rich markdown)
-        msg(DisplayRole::Assistant, "I'll refactor the config module. Let me start by reading the current implementation.\n\n## Plan\n1. Read existing config\n2. Create builder struct\n3. Add validation\n4. Update tests"),
+        msg(DisplayRole::Assistant, concat!(
+            "I'll refactor the config module. Let me start by reading the current implementation.\n",
+            "\n",
+            "## Plan\n",
+            "\n",
+            "1. Read existing `Config` struct and *understand* the current API\n",
+            "2. Create **`ConfigBuilder`** with a ***fluent interface***\n",
+            "3. Add validation — ~~manual checks~~ replaced with `validate()` method\n",
+            "4. Update tests\n",
+            "   - Unit tests for _builder methods_\n",
+            "   - Integration tests for **validation rules**\n",
+            "\n",
+            "### Current structure\n",
+            "\n",
+            "The `Config` struct in ``src/config/mod.rs`` is straightforward:\n",
+            "\n",
+            "```rust\n",
+            "pub struct Config {\n",
+            "    pub port: u16,\n",
+            "    pub host: String,\n",
+            "    pub workers: Option<usize>,\n",
+            "}\n",
+            "```\n",
+            "\n",
+            "I'll transform this into a *builder* with **compile-time** guarantees.",
+        )),
         // #4 Bash — Success, Plain, header+body
         tool(
             "t_bash",
@@ -245,7 +270,32 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
         // #17 Error
         msg(DisplayRole::Error, "Connection timed out after 30s. Retrying..."),
         // #18 Assistant — final summary
-        msg(DisplayRole::Assistant, "Done! The config module now uses a builder pattern with validation. All tests pass.\n\n**Changes:**\n- `ConfigBuilder` with `port()` and `host()` methods\n- `validate_port()` for input validation\n- Updated imports across the codebase"),
+        msg(DisplayRole::Assistant, concat!(
+            "Done! The config module now uses a ***builder pattern*** with validation.\n",
+            "\n",
+            "## Summary\n",
+            "\n",
+            "**Changes:**\n",
+            "- `ConfigBuilder` with `port()` and `host()` methods\n",
+            "- ~~`Config::new()`~~ replaced with `ConfigBuilder::default().build()`\n",
+            "- _Validation_ via `validate_port()` — rejects ports **outside** `1..=65534`\n",
+            "  - Returns `Result<Config, ConfigError>` instead of *panicking*\n",
+            "\n",
+            "### Before / After\n",
+            "\n",
+            "```rust\n",
+            "// Before\n",
+            "let cfg = Config { port: 8080, host: \"localhost\".into() };\n",
+            "\n",
+            "// After\n",
+            "let cfg = ConfigBuilder::default()\n",
+            "    .port(8080)\n",
+            "    .host(\"localhost\")\n",
+            "    .build()?;\n",
+            "```\n",
+            "\n",
+            "All **396** tests pass. Run `cargo test` to verify.",
+        )),
     ]
 }
 
