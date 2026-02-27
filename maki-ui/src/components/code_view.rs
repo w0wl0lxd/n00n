@@ -9,6 +9,8 @@ use ratatui::text::{Line, Span};
 const INDENT: &str = "  ";
 
 const MAX_DISPLAY_LINES: usize = 7;
+const MAX_WRITE_LINES: usize = 30;
+const MAX_GREP_LINES: usize = 100;
 
 fn nr_width(max_nr: usize) -> usize {
     max_nr.max(1).ilog10() as usize + 1
@@ -228,12 +230,12 @@ pub fn render_tool_content(
             path,
             lines: code_lines,
             ..
-        }) => render_read_code(highlight.then_some(path.as_str()), 1, code_lines),
+        }) => render_code(highlight.then_some(path.as_str()), 1, code_lines, MAX_WRITE_LINES),
         Some(ToolOutput::Diff { path, hunks, .. }) => {
             render_diff(highlight.then_some(path.as_str()), hunks)
         }
         Some(ToolOutput::GrepResult { entries }) => {
-            render_grep_results(entries, MAX_DISPLAY_LINES, highlight)
+            render_grep_results(entries, MAX_GREP_LINES, highlight)
         }
         _ => Vec::new(),
     };
