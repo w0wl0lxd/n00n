@@ -689,9 +689,7 @@ fn build_tool_lines(msg: &DisplayMessage, status: ToolStatus, started_at: Instan
     let content =
         code_view::render_tool_content(msg.tool_input.as_ref(), msg.tool_output.as_ref(), false);
     let has_content = !content.is_empty();
-    if has_content {
-        lines.push(Line::default());
-    }
+
     let content_start = lines.len();
     lines.extend(content);
     let content_end = lines.len();
@@ -700,7 +698,6 @@ fn build_tool_lines(msg: &DisplayMessage, status: ToolStatus, started_at: Instan
         match msg.tool_output.as_ref() {
             None | Some(ToolOutput::Plain(_)) => {
                 if let Some((_, body)) = msg.text.split_once('\n') {
-                    lines.push(Line::default());
                     for line in body.lines() {
                         let style = if line.starts_with(TRUNCATION_PREFIX) {
                             theme::TOOL_ANNOTATION
