@@ -34,14 +34,28 @@ impl TextBuffer {
         self.lines.len()
     }
 
+    fn current_line(&self) -> &str {
+        &self.lines[self.cursor_y]
+    }
+
     fn current_line_len(&self) -> usize {
-        self.lines[self.cursor_y].len()
+        self.current_line().chars().count()
+    }
+
+    fn char_to_byte(s: &str, char_idx: usize) -> usize {
+        s.char_indices()
+            .nth(char_idx)
+            .map_or(s.len(), |(byte_idx, _)| byte_idx)
+    }
+
+    fn byte_x(&self) -> usize {
+        Self::char_to_byte(self.current_line(), self.x())
     }
 
     pub fn push_char(&mut self, c: char) {
-        let x = self.x();
-        self.lines[self.cursor_y].insert(x, c);
-        self.raw_x = x + 1;
+        let bx = self.byte_x();
+        self.lines[self.cursor_y].insert(bx, c);
+        self.raw_x = self.x() + 1;
     }
 
     pub fn insert_text(&mut self, text: &str) {
@@ -50,16 +64,16 @@ impl TextBuffer {
                 self.add_line();
             }
             if !chunk.is_empty() {
-                let x = self.x();
-                self.lines[self.cursor_y].insert_str(x, chunk);
-                self.raw_x = x + chunk.len();
+                let bx = self.byte_x();
+                self.lines[self.cursor_y].insert_str(bx, chunk);
+                self.raw_x = self.x() + chunk.chars().count();
             }
         }
     }
 
     pub fn add_line(&mut self) {
-        let x = self.x();
-        let (left, right) = self.lines[self.cursor_y].split_at(x);
+        let bx = self.byte_x();
+        let (left, right) = self.lines[self.cursor_y].split_at(bx);
         let (left, right) = (left.to_string(), right.to_string());
         self.lines[self.cursor_y] = left;
         self.lines.insert(self.cursor_y + 1, right);
@@ -72,7 +86,8 @@ impl TextBuffer {
         if x == 0 {
             self.merge_with_previous_line();
         } else {
-            self.lines[self.cursor_y].remove(x - 1);
+            let bx = Self::char_to_byte(self.current_line(), x - 1);
+            self.lines[self.cursor_y].remove(bx);
             self.raw_x = x - 1;
         }
     }
@@ -85,14 +100,15 @@ impl TextBuffer {
                 self.lines[self.cursor_y].push_str(&next_line);
             }
         } else {
-            self.lines[self.cursor_y].remove(x);
+            let bx = self.byte_x();
+            self.lines[self.cursor_y].remove(bx);
         }
     }
 
     fn wrap_to_prev_line(&mut self) -> bool {
         if self.cursor_y > 0 {
             self.cursor_y -= 1;
-            self.raw_x = self.lines[self.cursor_y].len();
+            self.raw_x = self.current_line_len();
             true
         } else {
             false
@@ -109,29 +125,29 @@ impl TextBuffer {
         }
     }
 
-    fn find_prev_word_boundary(&self, x: usize) -> usize {
-        let line = &self.lines[self.cursor_y];
-        let mut new_x = x;
-        while new_x > 0 && line.as_bytes()[new_x - 1].is_ascii_whitespace() {
-            new_x -= 1;
+    fn find_prev_word_boundary(&self, char_x: usize) -> usize {
+        let chars: Vec<char> = self.current_line().chars().collect();
+        let mut i = char_x;
+        while i > 0 && chars[i - 1].is_ascii_whitespace() {
+            i -= 1;
         }
-        while new_x > 0 && !line.as_bytes()[new_x - 1].is_ascii_whitespace() {
-            new_x -= 1;
+        while i > 0 && !chars[i - 1].is_ascii_whitespace() {
+            i -= 1;
         }
-        new_x
+        i
     }
 
-    fn find_next_word_boundary(&self, x: usize) -> usize {
-        let line = &self.lines[self.cursor_y];
-        let len = line.len();
-        let mut new_x = x;
-        while new_x < len && line.as_bytes()[new_x].is_ascii_whitespace() {
-            new_x += 1;
+    fn find_next_word_boundary(&self, char_x: usize) -> usize {
+        let chars: Vec<char> = self.current_line().chars().collect();
+        let len = chars.len();
+        let mut i = char_x;
+        while i < len && chars[i].is_ascii_whitespace() {
+            i += 1;
         }
-        while new_x < len && !line.as_bytes()[new_x].is_ascii_whitespace() {
-            new_x += 1;
+        while i < len && !chars[i].is_ascii_whitespace() {
+            i += 1;
         }
-        new_x
+        i
     }
 
     pub fn remove_word_before_cursor(&mut self) {
@@ -141,7 +157,10 @@ impl TextBuffer {
             return;
         }
         let new_x = self.find_prev_word_boundary(x);
-        self.lines[self.cursor_y].replace_range(new_x..x, "");
+        let line = self.current_line();
+        let byte_start = Self::char_to_byte(line, new_x);
+        let byte_end = Self::char_to_byte(line, x);
+        self.lines[self.cursor_y].replace_range(byte_start..byte_end, "");
         self.raw_x = new_x;
     }
 
@@ -216,10 +235,10 @@ impl TextBuffer {
         if self.cursor_y == 0 {
             return;
         }
-        self.raw_x = self.lines[self.cursor_y - 1].len();
-        let line = self.lines.remove(self.cursor_y);
-        self.lines[self.cursor_y - 1].push_str(&line);
         self.cursor_y -= 1;
+        self.raw_x = self.current_line_len();
+        let line = self.lines.remove(self.cursor_y + 1);
+        self.lines[self.cursor_y].push_str(&line);
     }
 }
 
@@ -268,16 +287,6 @@ mod tests {
     }
 
     #[test]
-    fn sticky_x_across_short_lines() {
-        let mut buf = TextBuffer::new("long\nhi\nlong".into());
-        buf.raw_x = 4;
-        buf.move_down();
-        assert_eq!(buf.x(), 2);
-        buf.move_down();
-        assert_eq!(buf.x(), 4);
-    }
-
-    #[test]
     fn insert_text_multiline() {
         let mut buf = TextBuffer::new(String::new());
         buf.insert_text("line1\nline2\nline3");
@@ -304,7 +313,6 @@ mod tests {
         buf.remove_word_before_cursor();
         assert_eq!(buf.value(), "");
 
-        // at line start, merges with previous line
         let mut buf = TextBuffer::new("ab\ncd".into());
         buf.cursor_y = 1;
         buf.raw_x = 0;
@@ -321,15 +329,11 @@ mod tests {
         buf.move_word_left();
         assert_eq!(buf.x(), 0);
 
-        // leading whitespace - same algorithm, just starts at space
         let mut buf = TextBuffer::new("  hello".into());
         buf.move_to_end();
         buf.move_word_left();
         assert_eq!(buf.x(), 2);
-    }
 
-    #[test]
-    fn move_word_left_wraps_line() {
         let mut buf = TextBuffer::new("ab\ncd".into());
         buf.cursor_y = 1;
         buf.raw_x = 0;
@@ -345,17 +349,83 @@ mod tests {
         buf.move_word_right();
         assert_eq!(buf.x(), 11);
 
-        // trailing whitespace - same algorithm, ends at space
         let mut buf = TextBuffer::new("hello  ".into());
         buf.move_word_right();
         assert_eq!(buf.x(), 5);
-    }
 
-    #[test]
-    fn move_word_right_wraps_line() {
         let mut buf = TextBuffer::new("ab\ncd".into());
         buf.raw_x = 2;
         buf.move_word_right();
         assert_eq!((buf.y(), buf.x()), (1, 0));
+    }
+
+    #[test]
+    fn multibyte_push_and_remove() {
+        let mut buf = TextBuffer::new(String::new());
+        buf.push_char('a');
+        buf.push_char('●');
+        buf.push_char('b');
+        assert_eq!(buf.value(), "a●b");
+        assert_eq!(buf.x(), 3);
+
+        buf.remove_char();
+        assert_eq!(buf.value(), "a●");
+        buf.remove_char();
+        assert_eq!(buf.value(), "a");
+    }
+
+    #[test]
+    fn multibyte_move_left_right() {
+        let mut buf = TextBuffer::new("a●b".into());
+        buf.move_to_end();
+        assert_eq!(buf.x(), 3);
+        buf.move_left();
+        assert_eq!(buf.x(), 2);
+        buf.move_left();
+        assert_eq!(buf.x(), 1);
+        buf.move_right();
+        assert_eq!(buf.x(), 2);
+    }
+
+    #[test]
+    fn multibyte_delete_char() {
+        let mut buf = TextBuffer::new("a●b".into());
+        buf.raw_x = 1;
+        buf.delete_char();
+        assert_eq!(buf.value(), "ab");
+    }
+
+    #[test]
+    fn multibyte_split_line() {
+        let mut buf = TextBuffer::new("a●b".into());
+        buf.raw_x = 2;
+        buf.add_line();
+        assert_eq!(buf.lines(), &["a●", "b"]);
+    }
+
+    #[test]
+    fn multibyte_insert_text() {
+        let mut buf = TextBuffer::new("a●b".into());
+        buf.raw_x = 2;
+        buf.insert_text("X");
+        assert_eq!(buf.value(), "a●Xb");
+    }
+
+    #[test]
+    fn multibyte_remove_word() {
+        let mut buf = TextBuffer::new("hello ●●●".into());
+        buf.move_to_end();
+        buf.remove_word_before_cursor();
+        assert_eq!(buf.value(), "hello ");
+    }
+
+    #[test]
+    fn sticky_x_with_multibyte() {
+        let mut buf = TextBuffer::new("a●cd\nhi\na●cd".into());
+        buf.raw_x = 4;
+        buf.move_down();
+        assert_eq!(buf.x(), 2);
+        buf.move_down();
+        assert_eq!(buf.x(), 4);
     }
 }
