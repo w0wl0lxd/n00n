@@ -21,6 +21,7 @@ use maki_agent::AgentInput;
 use maki_agent::agent;
 use maki_agent::template;
 use maki_providers::Model;
+use maki_providers::provider::Provider;
 use maki_providers::{AgentEvent, Envelope, Message};
 use tracing::error;
 
@@ -51,7 +52,8 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model, demo: b
     if demo {
         app.load_messages(mock::mock_messages());
     }
-    let (mut input_tx, mut agent_rx, mut history) = spawn_agent(&model, Vec::new());
+    let provider: Arc<dyn Provider> = Arc::from(maki_providers::provider::from_model(&model)?);
+    let (mut input_tx, mut agent_rx, mut history) = spawn_agent(&provider, &model, Vec::new());
 
     loop {
         terminal.draw(|f| app.view(f))?;
@@ -64,6 +66,7 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model, demo: b
                 &mut input_tx,
                 &mut agent_rx,
                 &mut history,
+                &provider,
                 &model,
             );
         }
@@ -91,6 +94,7 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model, demo: b
                 &mut input_tx,
                 &mut agent_rx,
                 &mut history,
+                &provider,
                 &model,
             );
         }
@@ -102,6 +106,7 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model, demo: b
 type SharedHistory = Arc<Mutex<Vec<Message>>>;
 
 fn spawn_agent(
+    provider: &Arc<dyn Provider>,
     model: &Model,
     initial_history: Vec<Message>,
 ) -> (
@@ -114,21 +119,9 @@ fn spawn_agent(
     let model = model.clone();
     let shared_history: SharedHistory = Arc::new(Mutex::new(initial_history.clone()));
     let history_ref = Arc::clone(&shared_history);
+    let provider = Arc::clone(provider);
 
     thread::spawn(move || {
-        let provider = match maki_providers::provider::from_model(&model) {
-            Ok(p) => p,
-            Err(e) => {
-                error!(error = %e, "provider error");
-                let _ = agent_tx.send(
-                    AgentEvent::Error {
-                        message: e.to_string(),
-                    }
-                    .into(),
-                );
-                return;
-            }
-        };
         let mut history = initial_history;
         while let Ok(input) = input_rx.recv() {
             let vars = template::env_vars();
@@ -163,6 +156,7 @@ fn dispatch(
     input_tx: &mut mpsc::Sender<AgentInput>,
     agent_rx: &mut mpsc::Receiver<Envelope>,
     shared_history: &mut SharedHistory,
+    provider: &Arc<dyn Provider>,
     model: &Model,
 ) {
     for action in actions {
@@ -173,15 +167,15 @@ fn dispatch(
                     Err(e) => e.0,
                 };
                 let history = std::mem::take(&mut *shared_history.lock().unwrap());
-                (*input_tx, *agent_rx, *shared_history) = spawn_agent(model, history);
+                (*input_tx, *agent_rx, *shared_history) = spawn_agent(provider, model, history);
                 let _ = input_tx.send(input);
             }
             Action::CancelAgent => {
                 let history = std::mem::take(&mut *shared_history.lock().unwrap());
-                (*input_tx, *agent_rx, *shared_history) = spawn_agent(model, history);
+                (*input_tx, *agent_rx, *shared_history) = spawn_agent(provider, model, history);
             }
             Action::NewSession => {
-                (*input_tx, *agent_rx, *shared_history) = spawn_agent(model, Vec::new());
+                (*input_tx, *agent_rx, *shared_history) = spawn_agent(provider, model, Vec::new());
             }
             Action::Quit => {}
         }
