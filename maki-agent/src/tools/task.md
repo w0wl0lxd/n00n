@@ -1,18 +1,25 @@
-Launch an autonomous research agent to explore the codebase.
+Launch an autonomous subagent to perform tasks independently.
 
-- The research agent has read-only tools (bash, read, glob, grep, webfetch) and runs independently with its own conversation.
-- Use it for tasks that require broad codebase exploration, searching across many files, or gathering context that would be expensive to do inline.
+Subagent types (set via `subagent_type`):
+- `research` (default): Read-only tools (bash, read, glob, grep, webfetch). For codebase exploration, searching across files, or gathering context.
+- `general`: Full tool access (bash, read, write, edit, multiedit, glob, grep, webfetch). For delegating implementation work — writing code, making edits, or executing multi-step changes.
 
-When to use:
+When to use `research`:
 - Exploring unfamiliar parts of the codebase
 - Searching for patterns across many files
 - Gathering context about architecture or conventions
 - Answering questions about how something works
 
+When to use `general`:
+- Delegating a self-contained implementation task
+- Making changes across multiple files in parallel
+- Performing refactors or migrations that can be described precisely
+
 When NOT to use:
 - Reading a specific known file (use read directly)
 - Searching for a specific string (use grep directly)
 - Simple glob lookups (use glob directly)
+- Tasks requiring user interaction or clarification
 
 Usage notes:
 1. Launch multiple tasks concurrently when possible by calling this tool multiple times in the same response.

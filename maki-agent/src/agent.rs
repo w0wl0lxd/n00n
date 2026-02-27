@@ -29,13 +29,7 @@ pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, model: &Model) -> Stri
         current_date(),
     )));
 
-    let cwd = vars.apply("{cwd}");
-    let agents_path = Path::new(cwd.as_ref()).join(AGENTS_MD);
-    if let Ok(content) = fs::read_to_string(&agents_path) {
-        out.push_str(&format!(
-            "\n\nProject instructions ({AGENTS_MD}):\n{content}"
-        ));
-    }
+    append_agents_md(&mut out, &vars.apply("{cwd}"));
 
     if let AgentMode::Plan(plan_path) = mode {
         let plan_vars = Vars::new().set("{plan_path}", plan_path);
@@ -43,6 +37,15 @@ pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, model: &Model) -> Stri
     }
 
     out
+}
+
+pub fn append_agents_md(system: &mut String, cwd: &str) {
+    let agents_path = Path::new(cwd).join(AGENTS_MD);
+    if let Ok(content) = fs::read_to_string(&agents_path) {
+        system.push_str(&format!(
+            "\n\nProject instructions ({AGENTS_MD}):\n{content}"
+        ));
+    }
 }
 
 fn current_date() -> String {
@@ -363,25 +366,14 @@ mod tests {
             .expect("expected Done event")
     }
 
-    fn max_tokens_responses(n: u32) -> Vec<StreamResponse> {
-        (0..n).map(|_| text_response("max_tokens")).collect()
-    }
-
-    #[test_case(&["end_turn"],                 1, Some("end_turn")  ; "end_turn_completes")]
-    #[test_case(&["max_tokens", "end_turn"],   2, Some("end_turn")  ; "max_tokens_continues")]
+    #[test_case(&["end_turn"],                                                     1, Some("end_turn")  ; "end_turn_completes")]
+    #[test_case(&["max_tokens", "end_turn"],                                         2, Some("end_turn")  ; "max_tokens_continues")]
+    #[test_case(&["max_tokens", "max_tokens", "max_tokens", "max_tokens"], 4, Some("max_tokens") ; "max_tokens_gives_up_after_limit")]
     fn turn_counting(stops: &[&str], expected_turns: u32, expected_stop: Option<&str>) {
-        let responses = stops.iter().map(|s| text_response(s)).collect();
+        let responses: Vec<_> = stops.iter().map(|s| text_response(s)).collect();
         let provider = MockProvider::new(responses);
         let (turns, stop_reason) = run_agent(&provider);
         assert_eq!(turns, expected_turns);
         assert_eq!(stop_reason.as_deref(), expected_stop);
-    }
-
-    #[test]
-    fn max_tokens_gives_up_after_limit() {
-        let provider = MockProvider::new(max_tokens_responses(MAX_CONTINUATION_TURNS + 1));
-        let (turns, stop_reason) = run_agent(&provider);
-        assert_eq!(turns, MAX_CONTINUATION_TURNS + 1);
-        assert_eq!(stop_reason.as_deref(), Some("max_tokens"));
     }
 }
