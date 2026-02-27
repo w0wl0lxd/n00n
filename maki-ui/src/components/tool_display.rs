@@ -11,7 +11,7 @@ use maki_agent::tools::{
     BASH_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME,
     READ_TOOL_NAME, WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
-use maki_providers::{ToolInput, ToolOutput};
+use maki_providers::{BatchToolStatus, ToolInput, ToolOutput};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -191,14 +191,18 @@ pub fn build_tool_lines(
         }
         Some(ToolOutput::Batch { entries, .. }) => {
             for entry in entries {
-                let style = if entry.is_error {
-                    theme::TOOL_ERROR
-                } else {
-                    theme::TOOL_SUCCESS
+                let (indicator, style) = match entry.status {
+                    BatchToolStatus::Pending => ("○ ".into(), theme::TOOL_DIM),
+                    BatchToolStatus::InProgress => {
+                        let ch = spinner_frame(started_at.elapsed().as_millis());
+                        (format!("{ch} "), theme::TOOL_IN_PROGRESS)
+                    }
+                    BatchToolStatus::Success => (TOOL_INDICATOR.into(), theme::TOOL_SUCCESS),
+                    BatchToolStatus::Error => (TOOL_INDICATOR.into(), theme::TOOL_ERROR),
                 };
                 let mut spans = vec![
                     Span::styled(TOOL_BODY_INDENT.to_owned(), style),
-                    Span::styled(TOOL_INDICATOR, style),
+                    Span::styled(indicator, style),
                     Span::styled(format!("{}> ", entry.tool), theme::TOOL_PREFIX),
                 ];
                 spans.extend(style_tool_header(&entry.tool, &entry.summary));

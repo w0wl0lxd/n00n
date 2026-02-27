@@ -28,6 +28,7 @@ pub const TOOL_PREFIX: Style = Style::new().fg(FOREGROUND).add_modifier(Modifier
 pub const TOOL_IN_PROGRESS: Style = Style::new().fg(FOREGROUND);
 pub const TOOL_SUCCESS: Style = Style::new().fg(GREEN);
 pub const TOOL_ERROR: Style = Style::new().fg(RED);
+pub const TOOL_DIM: Style = Style::new().fg(COMMENT);
 pub const ERROR: Style = Style::new().fg(RED);
 
 pub const STATUS_IDLE: Style = Style::new().fg(COMMENT);

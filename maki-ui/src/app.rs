@@ -194,6 +194,13 @@ impl App {
             AgentEvent::ToolDone(e) => {
                 self.messages_panel.tool_done(e);
             }
+            AgentEvent::BatchProgress {
+                batch_id,
+                index,
+                status,
+            } => {
+                self.messages_panel.batch_progress(&batch_id, index, status);
+            }
             AgentEvent::TurnComplete { usage, .. } => {
                 self.context_size = usage.context_tokens();
                 self.token_usage += usage;

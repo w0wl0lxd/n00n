@@ -4,8 +4,8 @@ use maki_agent::tools::{
     WRITE_TOOL_NAME,
 };
 use maki_providers::{
-    BatchToolEntry, DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, TodoItem, TodoPriority,
-    TodoStatus, ToolInput, ToolOutput,
+    BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch,
+    TodoItem, TodoPriority, TodoStatus, ToolInput, ToolOutput,
 };
 
 use crate::components::{DisplayMessage, DisplayRole, ToolStatus};
@@ -215,9 +215,9 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             None,
             Some(ToolOutput::Batch {
                 entries: vec![
-                    BatchToolEntry { tool: "read".into(), summary: "src/config/mod.rs".into(), is_error: false },
-                    BatchToolEntry { tool: "read".into(), summary: "src/config/builder.rs".into(), is_error: false },
-                    BatchToolEntry { tool: "read".into(), summary: "src/config/validation.rs".into(), is_error: false },
+                    BatchToolEntry { tool: "read".into(), summary: "src/config/mod.rs".into(), status: BatchToolStatus::Success },
+                    BatchToolEntry { tool: "read".into(), summary: "src/config/builder.rs".into(), status: BatchToolStatus::Success },
+                    BatchToolEntry { tool: "read".into(), summary: "src/config/validation.rs".into(), status: BatchToolStatus::Success },
                 ],
                 text: String::new(),
             }),

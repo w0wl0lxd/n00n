@@ -12,7 +12,7 @@ use crate::theme;
 use std::time::Instant;
 
 use maki_agent::tools::{BASH_TOOL_NAME, QUESTION_TOOL_NAME, WEBFETCH_TOOL_NAME};
-use maki_providers::{ToolDoneEvent, ToolOutput, ToolStartEvent};
+use maki_providers::{BatchToolStatus, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -225,7 +225,10 @@ impl MessagesPanel {
                 msg.text = format!("{} ({} files)", msg.text, entries.len());
             }
             ToolOutput::Batch { entries, .. } => {
-                let failed = entries.iter().filter(|e| e.is_error).count();
+                let failed = entries
+                    .iter()
+                    .filter(|e| e.status == BatchToolStatus::Error)
+                    .count();
                 if failed > 0 {
                     let total = entries.len();
                     msg.text = format!("{}/{total} tools succeeded", total - failed);
@@ -236,6 +239,22 @@ impl MessagesPanel {
         msg.tool_output = Some(event.output);
         self.in_progress_count -= 1;
         self.rebuild_tool_segment(&event.id);
+    }
+
+    pub fn batch_progress(&mut self, batch_id: &str, index: usize, status: BatchToolStatus) {
+        let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == batch_id))
+        else {
+            return;
+        };
+        if let Some(ToolOutput::Batch { entries, .. }) = &mut msg.tool_output
+            && let Some(entry) = entries.get_mut(index)
+        {
+            entry.status = status;
+        }
+        self.rebuild_tool_segment(batch_id);
     }
 
     pub fn fail_in_progress(&mut self) {
@@ -441,14 +460,27 @@ impl MessagesPanel {
             let Some(ref tool_id) = seg.tool_id else {
                 continue;
             };
-            let is_in_progress = self.messages.iter().any(|m| {
+            let msg = self.messages.iter().find(|m| {
                 matches!(&m.role, DisplayRole::Tool { id, status: ToolStatus::InProgress, .. } if id == tool_id)
             });
-            if is_in_progress
-                && let Some(first_line) = seg.lines.first_mut()
+            let Some(msg) = msg else { continue };
+            if let Some(first_line) = seg.lines.first_mut()
                 && !first_line.spans.is_empty()
             {
                 first_line.spans[0] = spinner_span.clone();
+            }
+            if let Some(ToolOutput::Batch { entries, .. }) = &msg.tool_output {
+                let body_start = 1;
+                for (i, entry) in entries.iter().enumerate() {
+                    if entry.status != BatchToolStatus::InProgress {
+                        continue;
+                    }
+                    if let Some(line) = seg.lines.get_mut(body_start + i)
+                        && line.spans.len() > 1
+                    {
+                        line.spans[1] = spinner_span.clone();
+                    }
+                }
             }
         }
     }

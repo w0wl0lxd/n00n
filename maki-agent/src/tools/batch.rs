@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use maki_providers::{BatchToolEntry, ToolInput, ToolOutput};
+use maki_providers::{AgentEvent, BatchToolEntry, BatchToolStatus, ToolInput, ToolOutput};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -27,6 +27,16 @@ impl BatchEntry {
             "required": ["tool", "parameters"]
         })
     }
+
+    fn to_batch_entry(&self, status: BatchToolStatus) -> BatchToolEntry {
+        BatchToolEntry {
+            tool: self.tool.clone(),
+            summary: ToolCall::from_api(&self.tool, &self.parameters)
+                .map(|c| c.start_summary())
+                .unwrap_or_default(),
+            status,
+        }
+    }
 }
 
 #[derive(Tool, Debug, Clone)]
@@ -44,6 +54,8 @@ impl Batch {
             return Err("provide at least one tool call".into());
         }
 
+        let batch_id = ctx.tool_use_id.unwrap_or_default().to_owned();
+
         let active = &self.tool_calls[..self.tool_calls.len().min(MAX_BATCH_SIZE)];
         let discarded = &self.tool_calls[active.len()..];
 
@@ -57,17 +69,39 @@ impl Batch {
             })
             .collect();
 
+        let send_progress = |index: usize, status: BatchToolStatus| {
+            let _ = ctx.event_tx.send(
+                AgentEvent::BatchProgress {
+                    batch_id: batch_id.clone(),
+                    index,
+                    status,
+                }
+                .into(),
+            );
+        };
+
         let results: Vec<Result<String, String>> = std::thread::scope(|s| {
             let handles: Vec<_> = parsed
                 .iter()
-                .map(|parsed_call| {
-                    s.spawn(move || match parsed_call {
-                        Ok(call) => {
-                            let done = call.execute(ctx, String::new());
-                            let text = done.output.as_text();
-                            if done.is_error { Err(text) } else { Ok(text) }
-                        }
-                        Err(e) => Err(e.clone()),
+                .enumerate()
+                .map(|(i, parsed_call)| {
+                    s.spawn(move || {
+                        send_progress(i, BatchToolStatus::InProgress);
+                        let result = match parsed_call {
+                            Ok(call) => {
+                                let done = call.execute(ctx, String::new());
+                                let text = done.output.as_text();
+                                if done.is_error { Err(text) } else { Ok(text) }
+                            }
+                            Err(e) => Err(e.clone()),
+                        };
+                        let status = if result.is_ok() {
+                            BatchToolStatus::Success
+                        } else {
+                            BatchToolStatus::Error
+                        };
+                        send_progress(i, status);
+                        result
                     })
                 })
                 .collect();
@@ -81,11 +115,21 @@ impl Batch {
         let total = results.len() + discarded.len();
         let mut failed = discarded.len();
         let mut output = String::new();
-        let mut entries = Vec::with_capacity(total);
+        let mut entries: Vec<BatchToolEntry> = active
+            .iter()
+            .zip(&results)
+            .map(|(entry, result)| {
+                let status = if result.is_ok() {
+                    BatchToolStatus::Success
+                } else {
+                    BatchToolStatus::Error
+                };
+                entry.to_batch_entry(status)
+            })
+            .collect();
 
-        for ((entry, parsed_call), result) in active.iter().zip(&parsed).zip(&results) {
+        for (entry, result) in active.iter().zip(&results) {
             let _ = writeln!(output, "## {}", entry.tool);
-            let is_error = result.is_err();
             match result {
                 Ok(content) => output.push_str(content),
                 Err(err) => {
@@ -94,15 +138,6 @@ impl Batch {
                 }
             }
             output.push_str("\n\n");
-            let summary = parsed_call
-                .as_ref()
-                .map(|c| c.start_summary())
-                .unwrap_or_default();
-            entries.push(BatchToolEntry {
-                tool: entry.tool.clone(),
-                summary,
-                is_error,
-            });
         }
 
         for entry in discarded {
@@ -111,11 +146,7 @@ impl Batch {
                 "## {}\n[ERROR] maximum of {MAX_BATCH_SIZE} tools per batch\n\n",
                 entry.tool
             );
-            entries.push(BatchToolEntry {
-                tool: entry.tool.clone(),
-                summary: String::new(),
-                is_error: true,
-            });
+            entries.push(entry.to_batch_entry(BatchToolStatus::Error));
         }
 
         let succeeded = total - failed;
@@ -143,7 +174,15 @@ impl Batch {
     }
 
     pub fn start_output(&self) -> Option<ToolOutput> {
-        None
+        let entries = self
+            .tool_calls
+            .iter()
+            .map(|entry| entry.to_batch_entry(BatchToolStatus::Pending))
+            .collect();
+        Some(ToolOutput::Batch {
+            entries,
+            text: String::new(),
+        })
     }
 
     pub fn mutable_path(&self) -> Option<&str> {
@@ -183,7 +222,7 @@ mod tests {
             "tool_calls": [{"tool": "batch", "parameters": {"tool_calls": []}}]
         }));
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].is_error);
+        assert_eq!(entries[0].status, BatchToolStatus::Error);
         assert_eq!(entries[0].tool, "batch");
     }
 
@@ -200,8 +239,8 @@ mod tests {
             ]
         }));
         assert_eq!(entries.len(), 2);
-        assert!(!entries[0].is_error);
-        assert!(entries[1].is_error);
+        assert_eq!(entries[0].status, BatchToolStatus::Success);
+        assert_eq!(entries[1].status, BatchToolStatus::Error);
         assert!(text.contains("content"));
     }
 
@@ -213,6 +252,6 @@ mod tests {
         let (entries, _) = run_batch(json!({"tool_calls": calls}));
         assert_eq!(entries.len(), MAX_BATCH_SIZE + 2);
         let discarded: Vec<_> = entries[MAX_BATCH_SIZE..].iter().collect();
-        assert!(discarded.iter().all(|e| e.is_error));
+        assert!(discarded.iter().all(|e| e.status == BatchToolStatus::Error));
     }
 }

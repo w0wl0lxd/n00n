@@ -111,11 +111,19 @@ pub enum ToolInput {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub enum BatchToolStatus {
+    Pending,
+    InProgress,
+    Success,
+    Error,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchToolEntry {
     pub tool: String,
     pub summary: String,
-    pub is_error: bool,
+    pub status: BatchToolStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -323,6 +331,11 @@ pub enum AgentEvent {
         content: String,
     },
     ToolDone(ToolDoneEvent),
+    BatchProgress {
+        batch_id: String,
+        index: usize,
+        status: BatchToolStatus,
+    },
     TurnComplete {
         message: Message,
         usage: TokenUsage,
