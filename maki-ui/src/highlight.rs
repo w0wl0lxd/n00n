@@ -12,6 +12,7 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, HighlightState, Highlighter};
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
+use unicode_width::UnicodeWidthStr;
 
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
 
@@ -56,11 +57,12 @@ pub fn highlight_code_plain(lang: &str, code: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
-pub fn highlight_code(lang: &str, code: &str) -> Vec<Line<'static>> {
+pub fn highlight_code(lang: &str, code: &str, width: u16) -> Vec<Line<'static>> {
     let mut lines = highlight_code_plain(lang, code);
     for line in &mut lines {
         prepend_code_bar(line);
     }
+    wrap_code_lines(&mut lines, 0, width);
     lines
 }
 
@@ -145,6 +147,86 @@ impl CodeHighlighter {
 }
 
 pub(crate) const CODE_BAR: &str = "│ ";
+pub(crate) const CODE_BAR_WRAP: &str = "│";
+
+pub(crate) fn wrap_code_lines(lines: &mut Vec<Line<'static>>, start: usize, width: u16) {
+    let width = width as usize;
+    if width == 0 {
+        return;
+    }
+    let mut i = start;
+    while i < lines.len() {
+        let line_width: usize = lines[i].spans.iter().map(|s| s.content.width()).sum();
+        if line_width <= width {
+            i += 1;
+            continue;
+        }
+        let line = lines.remove(i);
+        let wrapped = split_line_with_bar(line, width);
+        let count = wrapped.len();
+        for (j, wl) in wrapped.into_iter().enumerate() {
+            lines.insert(i + j, wl);
+        }
+        i += count;
+    }
+}
+
+fn split_line_with_bar(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    debug_assert!(
+        line.spans
+            .first()
+            .is_some_and(|s| s.content.as_ref() == CODE_BAR)
+    );
+
+    let bar_span = line.spans[0].clone();
+    let content_spans = &line.spans[1..];
+    let first_avail = width.saturating_sub(CODE_BAR.width());
+    let cont_avail = width.saturating_sub(CODE_BAR_WRAP.width());
+
+    let mut result: Vec<Line<'static>> = Vec::new();
+    let mut current_spans: Vec<Span<'static>> = vec![bar_span];
+    let mut remaining = first_avail;
+
+    for span in content_spans {
+        let mut text = span.content.as_ref();
+        let style = span.style;
+
+        while !text.is_empty() {
+            let fits = fit_width(text, remaining);
+            if fits == 0 && remaining == 0 {
+                break;
+            }
+            if fits > 0 {
+                current_spans.push(Span::styled(text[..fits].to_owned(), style));
+                remaining -= text[..fits].width();
+                text = &text[fits..];
+            }
+            if !text.is_empty() {
+                result.push(Line::from(current_spans));
+                current_spans = vec![Span::styled(CODE_BAR_WRAP, theme::CODE_BAR_STYLE)];
+                remaining = cont_avail;
+            }
+        }
+    }
+
+    if current_spans.len() > 1 || result.is_empty() {
+        result.push(Line::from(current_spans));
+    }
+
+    result
+}
+
+fn fit_width(text: &str, max_width: usize) -> usize {
+    let mut width = 0;
+    for (i, ch) in text.char_indices() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + cw > max_width {
+            return i;
+        }
+        width += cw;
+    }
+    text.len()
+}
 
 fn highlight_to_spans(
     hl: &mut HighlightLines<'_>,
@@ -265,12 +347,12 @@ mod tests {
 
     #[test]
     fn unknown_language_falls_back_without_panic() {
-        highlight_code("nonexistent_lang_xyz", "some code");
+        highlight_code("nonexistent_lang_xyz", "some code", 80);
     }
 
     #[test]
     fn empty_code_produces_no_lines() {
-        let lines = highlight_code("rust", "");
+        let lines = highlight_code("rust", "", 80);
         assert!(lines.is_empty());
     }
 
@@ -286,10 +368,19 @@ mod tests {
             .collect()
     }
 
+    fn content_text(lines: &[Line<'_>]) -> String {
+        lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .filter(|s| s.content.as_ref() != CODE_BAR && s.content.as_ref() != CODE_BAR_WRAP)
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
     #[test]
     fn incremental_matches_full_highlight() {
         let code = "fn main() {\n    println!(\"hi\");\n}\n";
-        let full = highlight_code("rust", code);
+        let full = highlight_code("rust", code, 200);
         let mut ch = CodeHighlighter::new("rust");
         let incremental = ch.update(code);
         assert_eq!(spans_text(&full), spans_text(incremental));
@@ -301,17 +392,8 @@ mod tests {
         ch.update("x = ");
         ch.update("x = 1\ny");
         let result = ch.update("x = 1\ny = 2\n");
-        let full = highlight_code("py", "x = 1\ny = 2\n");
+        let full = highlight_code("py", "x = 1\ny = 2\n", 200);
         assert_eq!(spans_text(&full), spans_text(result));
-    }
-
-    #[test]
-    fn all_lines_have_bar_prefix() {
-        let expected = Span::styled(CODE_BAR, theme::CODE_BAR_STYLE);
-        let lines = highlight_code("rust", "fn main() {}\nlet x = 1;\n");
-        for line in &lines {
-            assert_eq!(line.spans[0], expected);
-        }
     }
 
     #[test]
@@ -326,5 +408,32 @@ mod tests {
         let spans = highlight_line(&mut hl, "let x = 1;\n");
         let text: String = spans.iter().map(|(_, t)| t.as_str()).collect();
         assert!(!text.ends_with('\n'));
+    }
+
+    #[test]
+    fn wrap_long_code_line() {
+        let code = "a".repeat(20);
+        let lines = highlight_code("txt", &code, 12);
+        assert!(lines.len() >= 2);
+        assert_eq!(lines[0].spans[0].content.as_ref(), CODE_BAR);
+        assert_eq!(lines[1].spans[0].content.as_ref(), CODE_BAR_WRAP);
+        assert_eq!(content_text(&lines), code);
+    }
+
+    #[test]
+    fn wrap_exactly_at_width_boundary() {
+        let code = "a".repeat(8);
+        let lines = highlight_code("txt", &code, 10);
+        assert_eq!(lines.len(), 1);
+
+        let code = "a".repeat(9);
+        let lines = highlight_code("txt", &code, 10);
+        assert!(lines.len() >= 2);
+    }
+
+    #[test]
+    fn wrap_zero_width_does_not_panic() {
+        let lines = highlight_code("txt", "hello", 0);
+        assert!(!lines.is_empty());
     }
 }

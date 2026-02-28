@@ -435,6 +435,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             "// Before\n",
             "let cfg = Config { port: 8080, host: \"localhost\".into() };\n",
             "\n",
+            "// After - this is an intentionally very long line to test horizontal wrapping behavior in the UI: ConfigBuilder::default().port(8080).host(\"localhost\").workers(num_cpus::get()).timeout(Duration::from_secs(30)).max_retries(3).backoff_strategy(ExponentialBackoff::new()).enable_tls(true).tls_cert_path(\"/etc/ssl/certs/server.pem\").build()\n",
             "// After\n",
             "let cfg = ConfigBuilder::default()\n",
             "    .port(8080)\n",

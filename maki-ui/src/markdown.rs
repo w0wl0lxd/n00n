@@ -788,9 +788,12 @@ pub fn text_to_lines(
                     if code_idx >= hl.len() {
                         hl.push(CodeHighlighter::new(lang));
                     }
-                    lines.extend_from_slice(hl[code_idx].update(code));
+                    let unwrapped = hl[code_idx].update(code);
+                    let start = lines.len();
+                    lines.extend_from_slice(unwrapped);
+                    highlight::wrap_code_lines(&mut lines, start, width);
                 } else {
-                    lines.extend(highlight::highlight_code(lang, code));
+                    lines.extend(highlight::highlight_code(lang, code, width));
                 }
                 ensure_blank_line(&mut lines);
                 code_idx += 1;
