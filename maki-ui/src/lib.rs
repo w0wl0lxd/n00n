@@ -32,13 +32,13 @@ use components::Action;
 const ANIMATION_INTERVAL_MS: u64 = 8;
 const EVENT_POLL_INTERVAL_MS: u64 = 8;
 
-pub fn run(model: Model, demo: bool) -> Result<()> {
+pub fn run(model: Model, demo: bool, excluded_tools: &'static [&'static str]) -> Result<()> {
     let mut terminal = ratatui::init();
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(EnableBracketedPaste)?;
     terminal::enable_raw_mode()?;
 
-    let result = run_event_loop(&mut terminal, model, demo);
+    let result = run_event_loop(&mut terminal, model, demo, excluded_tools);
 
     terminal::disable_raw_mode()?;
     stdout().execute(event::DisableBracketedPaste)?;
@@ -48,7 +48,12 @@ pub fn run(model: Model, demo: bool) -> Result<()> {
     result
 }
 
-fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model, demo: bool) -> Result<()> {
+fn run_event_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    model: Model,
+    demo: bool,
+    excluded_tools: &'static [&'static str],
+) -> Result<()> {
     let mut app = App::new(model.spec(), model.pricing.clone(), model.context_window);
     if demo {
         app.load_messages(mock::mock_messages());
@@ -59,7 +64,8 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model, demo: b
         );
     }
     let provider: Arc<dyn Provider> = Arc::from(maki_providers::provider::from_model(&model)?);
-    let (mut cmd_tx, mut agent_rx, mut history) = spawn_agent(&provider, &model, Vec::new());
+    let (mut cmd_tx, mut agent_rx, mut history) =
+        spawn_agent(&provider, &model, Vec::new(), excluded_tools);
 
     loop {
         terminal.draw(|f| app.view(f))?;
@@ -74,6 +80,7 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model, demo: b
                 &mut history,
                 &provider,
                 &model,
+                excluded_tools,
             );
         }
 
@@ -102,6 +109,7 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model, demo: b
                 &mut history,
                 &provider,
                 &model,
+                excluded_tools,
             );
         }
     }
@@ -120,6 +128,7 @@ fn spawn_agent(
     provider: &Arc<dyn Provider>,
     model: &Model,
     initial_history: Vec<Message>,
+    excluded_tools: &'static [&'static str],
 ) -> (
     mpsc::Sender<AgentCommand>,
     mpsc::Receiver<Envelope>,
@@ -142,7 +151,7 @@ fn spawn_agent(
                 AgentCommand::Run(input) => {
                     let vars = template::env_vars();
                     let system = agent::build_system_prompt(&vars, &input.mode, &model);
-                    let tools = maki_agent::tools::ToolCall::definitions(&vars);
+                    let tools = maki_agent::tools::ToolCall::definitions(&vars, excluded_tools);
                     agent::run(
                         &*provider,
                         &model,
@@ -177,6 +186,7 @@ fn dispatch(
     shared_history: &mut SharedHistory,
     provider: &Arc<dyn Provider>,
     model: &Model,
+    excluded_tools: &'static [&'static str],
 ) {
     for action in actions {
         match action {
@@ -187,15 +197,18 @@ fn dispatch(
                     Err(e) => e.0,
                 };
                 let history = std::mem::take(&mut *shared_history.lock().unwrap());
-                (*cmd_tx, *agent_rx, *shared_history) = spawn_agent(provider, model, history);
+                (*cmd_tx, *agent_rx, *shared_history) =
+                    spawn_agent(provider, model, history, excluded_tools);
                 let _ = cmd_tx.send(cmd);
             }
             Action::CancelAgent => {
                 let history = std::mem::take(&mut *shared_history.lock().unwrap());
-                (*cmd_tx, *agent_rx, *shared_history) = spawn_agent(provider, model, history);
+                (*cmd_tx, *agent_rx, *shared_history) =
+                    spawn_agent(provider, model, history, excluded_tools);
             }
             Action::NewSession => {
-                (*cmd_tx, *agent_rx, *shared_history) = spawn_agent(provider, model, Vec::new());
+                (*cmd_tx, *agent_rx, *shared_history) =
+                    spawn_agent(provider, model, Vec::new(), excluded_tools);
             }
             Action::Compact => {
                 let _ = cmd_tx.send(AgentCommand::Compact);

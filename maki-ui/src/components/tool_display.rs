@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use maki_agent::tools::{
     BASH_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME,
-    READ_TOOL_NAME, WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME,
+    READ_TOOL_NAME, WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
 use maki_providers::{BatchToolStatus, ToolInput, ToolOutput};
 use ratatui::style::Style;
@@ -25,7 +25,7 @@ pub const TOOL_BODY_INDENT: &str = "  ";
 pub fn tool_summary_annotation(tool: &str, text: &str) -> Option<String> {
     match tool {
         GLOB_TOOL_NAME => Some(format!("{} files", text.lines().count())),
-        WEBFETCH_TOOL_NAME => Some(format!("{} lines", text.lines().count())),
+        WEBFETCH_TOOL_NAME | WEBSEARCH_TOOL_NAME => Some(format!("{} lines", text.lines().count())),
         _ => {
             let n = text.lines().count();
             (n > BASH_OUTPUT_MAX_LINES).then(|| format!("{n} lines"))
@@ -277,6 +277,7 @@ mod tests {
 
     #[test_case(GLOB_TOOL_NAME, "src/a.rs\nsrc/b.rs\nsrc/c.rs", Some("3 files") ; "glob_file_count")]
     #[test_case(WEBFETCH_TOOL_NAME, "line1\nline2\nline3", Some("3 lines") ; "webfetch_line_count")]
+    #[test_case(WEBSEARCH_TOOL_NAME, "result1\nresult2", Some("2 lines") ; "websearch_line_count")]
     #[test_case("bash", "ok", None ; "short_output_no_annotation")]
     #[test_case("bash", &(0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"), Some("20 lines") ; "long_output_line_count")]
     fn summary_annotation(tool: &str, output: &str, expected: Option<&str>) {

@@ -10,6 +10,7 @@ mod read;
 mod task;
 mod todowrite;
 mod webfetch;
+mod websearch;
 mod write;
 
 use std::path::Path;
@@ -34,9 +35,11 @@ pub const READ_TOOL_NAME: &str = read::Read::NAME;
 pub const TASK_TOOL_NAME: &str = task::Task::NAME;
 pub const TODOWRITE_TOOL_NAME: &str = todowrite::TodoWrite::NAME;
 pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
+pub const WEBSEARCH_TOOL_NAME: &str = websearch::WebSearch::NAME;
 pub const WRITE_TOOL_NAME: &str = write::Write::NAME;
 const MAX_OUTPUT_BYTES: usize = 30_000;
 pub(crate) const MAX_OUTPUT_LINES: usize = 2000;
+pub(crate) const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 pub(crate) const SEARCH_RESULT_LIMIT: usize = 100;
 pub(crate) const MAX_LINE_BYTES: usize = 500;
 pub(crate) const NO_FILES_FOUND: &str = "No files found";
@@ -193,11 +196,7 @@ macro_rules! register_tools {
                 }
             }
 
-            pub fn definitions(vars: &Vars) -> Value {
-                Self::definitions_filtered(vars, None)
-            }
-
-            pub fn definitions_filtered(vars: &Vars, allowed: Option<&[&str]>) -> Value {
+            pub fn definitions(vars: &Vars, excluded: &[&str]) -> Value {
                 let all = vec![
                     $((<$inner>::NAME, json!({
                         "name": <$inner>::NAME,
@@ -205,13 +204,28 @@ macro_rules! register_tools {
                         "input_schema": <$inner>::schema()
                     }))),+
                 ];
-                Value::Array(match allowed {
-                    Some(filter) => all.into_iter()
-                        .filter(|(name, _)| filter.contains(name))
+                Value::Array(
+                    all.into_iter()
+                        .filter(|(name, _)| !excluded.contains(name))
                         .map(|(_, def)| def)
-                        .collect(),
-                    None => all.into_iter().map(|(_, def)| def).collect(),
-                })
+                        .collect()
+                )
+            }
+
+            pub fn definitions_filtered(vars: &Vars, allowed: &[&str]) -> Value {
+                let all = vec![
+                    $((<$inner>::NAME, json!({
+                        "name": <$inner>::NAME,
+                        "description": vars.apply(<$inner>::DESCRIPTION),
+                        "input_schema": <$inner>::schema()
+                    }))),+
+                ];
+                Value::Array(
+                    all.into_iter()
+                        .filter(|(name, _)| allowed.contains(name))
+                        .map(|(_, def)| def)
+                        .collect()
+                )
             }
         }
     };
@@ -228,6 +242,7 @@ register_tools! {
     Question(question::Question),
     TodoWrite(todowrite::TodoWrite),
     WebFetch(webfetch::WebFetch),
+    WebSearch(websearch::WebSearch),
     Task(task::Task),
     Batch(batch::Batch),
 }
@@ -409,7 +424,7 @@ mod tests {
     #[test]
     fn definitions_filtered_restricts_to_allowed() {
         let vars = Vars::new().set("{cwd}", "/tmp");
-        let filtered = ToolCall::definitions_filtered(&vars, Some(&["bash", "read"]));
+        let filtered = ToolCall::definitions_filtered(&vars, &["bash", "read"]);
         let names: Vec<&str> = filtered
             .as_array()
             .unwrap()
@@ -417,6 +432,20 @@ mod tests {
             .map(|d| d["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, ["bash", "read"]);
+    }
+
+    #[test]
+    fn definitions_excludes_specified_tool() {
+        let vars = Vars::new().set("{cwd}", "/tmp");
+        let defs = ToolCall::definitions(&vars, &["bash"]);
+        let names: Vec<&str> = defs
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
+        assert!(!names.contains(&"bash"));
+        assert!(!names.is_empty());
     }
 
     #[test]

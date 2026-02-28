@@ -49,7 +49,7 @@ impl Task {
         };
         let mut system = vars.apply(prompt).into_owned();
         agent::append_agents_md(&mut system, &vars.apply("{cwd}"));
-        let tools = ToolCall::definitions_filtered(&vars, Some(tool_names));
+        let tools = ToolCall::definitions_filtered(&vars, tool_names);
 
         let (sub_tx, sub_rx) = mpsc::channel::<crate::Envelope>();
         let parent_tx = ctx.event_tx.clone();
@@ -127,7 +127,7 @@ mod tests {
     #[test_case(GENERAL_TOOLS  ; "general_tools")]
     fn subagent_tools_all_registered(tools: &[&str]) {
         let vars = template::Vars::new();
-        let filtered = ToolCall::definitions_filtered(&vars, Some(tools));
+        let filtered = ToolCall::definitions_filtered(&vars, tools);
         assert_eq!(filtered.as_array().unwrap().len(), tools.len());
     }
 }

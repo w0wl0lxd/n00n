@@ -120,6 +120,7 @@ pub fn run(
     prompt_arg: Option<String>,
     format: OutputFormat,
     verbose: bool,
+    excluded_tools: &[&str],
 ) -> Result<()> {
     let prompt = match prompt_arg {
         Some(p) => p,
@@ -136,7 +137,7 @@ pub fn run(
     let vars = template::env_vars();
     let mode = AgentMode::Build;
     let system = agent::build_system_prompt(&vars, &mode, model);
-    let tools = maki_agent::tools::ToolCall::definitions(&vars);
+    let tools = maki_agent::tools::ToolCall::definitions(&vars, excluded_tools);
 
     let (event_tx, event_rx) = mpsc::channel::<Envelope>();
     let input = AgentInput {

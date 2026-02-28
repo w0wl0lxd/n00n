@@ -27,6 +27,9 @@ struct Cli {
     #[arg(long)]
     demo: bool,
 
+    #[arg(long)]
+    websearch: bool,
+
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     output_format: OutputFormat,
 
@@ -67,10 +70,17 @@ fn main() -> Result<()> {
         None => {
             let model = Model::from_spec(&cli.model)?;
             init_logging();
+            let excluded_tools: &[&str] = if cli.websearch { &[] } else { &["websearch"] };
             if cli.print {
-                print::run(&model, cli.prompt, cli.output_format, cli.verbose)?;
+                print::run(
+                    &model,
+                    cli.prompt,
+                    cli.output_format,
+                    cli.verbose,
+                    excluded_tools,
+                )?;
             } else {
-                maki_ui::run(model, cli.demo)?;
+                maki_ui::run(model, cli.demo, excluded_tools)?;
             }
         }
     }

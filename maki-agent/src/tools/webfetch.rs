@@ -6,9 +6,9 @@ use ureq::Agent;
 
 use maki_providers::{ToolInput, ToolOutput};
 
+use super::MAX_RESPONSE_BYTES;
 use super::truncate_output;
 
-const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 120;
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
