@@ -332,7 +332,7 @@ impl MessagesPanel {
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) {
         self.viewport_height = area.height;
-        let width = area.width.saturating_sub(1);
+        let width = area.width;
         if self.viewport_width != width {
             self.viewport_width = width;
             self.cached_msg_count = 0;
