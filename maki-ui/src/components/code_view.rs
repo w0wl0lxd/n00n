@@ -8,7 +8,8 @@ use ratatui::text::{Line, Span};
 
 const INDENT: &str = "  ";
 
-const MAX_READ_LINES: usize = 7;
+const MAX_CODE_LINES: usize = 7;
+const MAX_WRITE_LINES: usize = 30;
 const MAX_GREP_LINES: usize = 100;
 
 fn nr_width(max_nr: usize) -> usize {
@@ -53,6 +54,7 @@ fn render_code(
     path: Option<&str>,
     start_line: usize,
     code_lines: &[String],
+    total_count: usize,
     max_lines: usize,
 ) -> Vec<Line<'static>> {
     let display_count = code_lines.len().min(max_lines);
@@ -72,8 +74,9 @@ fn render_code(
         })
         .collect();
 
-    if code_lines.len() > max_lines {
-        lines.push(truncation_line(code_lines.len() - max_lines));
+    let hidden = total_count.saturating_sub(display_count);
+    if hidden > 0 {
+        lines.push(truncation_line(hidden));
     }
     lines
 }
@@ -220,7 +223,8 @@ pub fn render_tool_content(
             highlight.then_some(path.as_str()),
             *start_line,
             code_lines,
-            MAX_READ_LINES,
+            code_lines.len(),
+            MAX_CODE_LINES,
         ),
         Some(ToolOutput::WriteCode {
             path,
@@ -231,6 +235,7 @@ pub fn render_tool_content(
             1,
             code_lines,
             code_lines.len(),
+            MAX_WRITE_LINES,
         ),
         Some(ToolOutput::Diff { path, hunks, .. }) => {
             render_diff(highlight.then_some(path.as_str()), hunks)
@@ -319,11 +324,12 @@ mod tests {
         assert_eq!(nr_width(input), expected);
     }
 
-    #[test_case(20, MAX_READ_LINES + 1 ; "truncates_with_ellipsis")]
-    #[test_case(3,  3                    ; "no_truncation_when_short")]
-    fn render_read_code_line_count(input_lines: usize, expected: usize) {
+    #[test_case(20, 20, MAX_CODE_LINES + 1 ; "truncates_with_ellipsis")]
+    #[test_case(3,  3,  3                    ; "no_truncation_when_short")]
+    #[test_case(5,  50, 5 + 1                ; "total_exceeds_available_lines")]
+    fn render_code_line_count(input_lines: usize, total: usize, expected: usize) {
         let code_lines: Vec<String> = (0..input_lines).map(|i| format!("line {i}")).collect();
-        let result = render_code(Some("test.rs"), 1, &code_lines, MAX_READ_LINES);
+        let result = render_code(Some("test.rs"), 1, &code_lines, total, MAX_CODE_LINES);
         assert_eq!(result.len(), expected);
     }
 
