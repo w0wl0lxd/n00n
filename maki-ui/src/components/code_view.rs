@@ -9,7 +9,6 @@ use ratatui::text::{Line, Span};
 const INDENT: &str = "  ";
 
 const MAX_READ_LINES: usize = 7;
-const MAX_WRITE_LINES: usize = 30;
 const MAX_GREP_LINES: usize = 100;
 
 fn nr_width(max_nr: usize) -> usize {
@@ -231,7 +230,7 @@ pub fn render_tool_content(
             highlight.then_some(path.as_str()),
             1,
             code_lines,
-            MAX_WRITE_LINES,
+            code_lines.len(),
         ),
         Some(ToolOutput::Diff { path, hunks, .. }) => {
             render_diff(highlight.then_some(path.as_str()), hunks)
