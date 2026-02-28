@@ -1146,7 +1146,7 @@ mod tests {
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
         assert!(
-            text.contains("maki asks>"),
+            text.contains("maki_asks>"),
             "question should use question prefix"
         );
         assert!(

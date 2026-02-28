@@ -116,7 +116,7 @@ pub const ASSISTANT_STYLE: RoleStyle = RoleStyle {
 };
 
 pub const QUESTION_STYLE: RoleStyle = RoleStyle {
-    prefix: "maki asks> ",
+    prefix: "maki_asks> ",
     text_style: theme::ASSISTANT,
     prefix_style: theme::ASSISTANT_PREFIX,
     use_markdown: true,
