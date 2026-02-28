@@ -34,6 +34,120 @@ fn tool(
     }
 }
 
+pub const MOCK_TASK_TOOL_ID: &str = "t_task";
+
+pub fn mock_subagent_messages() -> Vec<DisplayMessage> {
+    vec![
+        msg(
+            DisplayRole::Thinking,
+            "The user wants me to explore config patterns in the codebase. Let me search for existing builder patterns and validation approaches.",
+        ),
+        tool(
+            "s_grep1",
+            GREP_TOOL_NAME,
+            ToolStatus::Success,
+            "\\bBuilder\\b [*.rs]",
+            None,
+            Some(ToolOutput::GrepResult {
+                entries: vec![
+                    GrepFileEntry {
+                        path: "src/http/client.rs".into(),
+                        matches: vec![
+                            GrepMatch {
+                                line_nr: 22,
+                                text: "pub struct ClientBuilder {".into(),
+                            },
+                            GrepMatch {
+                                line_nr: 45,
+                                text: "impl ClientBuilder {".into(),
+                            },
+                        ],
+                    },
+                    GrepFileEntry {
+                        path: "src/db/pool.rs".into(),
+                        matches: vec![GrepMatch {
+                            line_nr: 8,
+                            text: "pub struct PoolBuilder {".into(),
+                        }],
+                    },
+                ],
+            }),
+        ),
+        tool(
+            "s_read1",
+            READ_TOOL_NAME,
+            ToolStatus::Success,
+            "src/http/client.rs (12 lines)",
+            None,
+            Some(ToolOutput::ReadCode {
+                path: "src/http/client.rs".into(),
+                start_line: 22,
+                lines: vec![
+                    "pub struct ClientBuilder {".into(),
+                    "    timeout: Option<Duration>,".into(),
+                    "    retries: u32,".into(),
+                    "    base_url: String,".into(),
+                    "}".into(),
+                    "".into(),
+                    "impl ClientBuilder {".into(),
+                    "    pub fn new(base_url: impl Into<String>) -> Self {".into(),
+                    "        Self { timeout: None, retries: 3, base_url: base_url.into() }".into(),
+                    "    }".into(),
+                    "".into(),
+                    "    pub fn build(self) -> Result<Client, ConfigError> {".into(),
+                ],
+            }),
+        ),
+        tool(
+            "s_grep2",
+            GREP_TOOL_NAME,
+            ToolStatus::Success,
+            "validate [*.rs] in src/",
+            None,
+            Some(ToolOutput::GrepResult {
+                entries: vec![GrepFileEntry {
+                    path: "src/auth/token.rs".into(),
+                    matches: vec![GrepMatch {
+                        line_nr: 31,
+                        text: "fn validate_token(token: &str) -> Result<Claims> {".into(),
+                    }],
+                }],
+            }),
+        ),
+        tool(
+            "s_read2",
+            READ_TOOL_NAME,
+            ToolStatus::Success,
+            "src/db/pool.rs (8 lines)",
+            None,
+            Some(ToolOutput::ReadCode {
+                path: "src/db/pool.rs".into(),
+                start_line: 1,
+                lines: vec![
+                    "use std::time::Duration;".into(),
+                    "".into(),
+                    "pub struct PoolBuilder {".into(),
+                    "    max_connections: u32,".into(),
+                    "    idle_timeout: Duration,".into(),
+                    "}".into(),
+                    "".into(),
+                    "impl Default for PoolBuilder {".into(),
+                ],
+            }),
+        ),
+        msg(
+            DisplayRole::Assistant,
+            concat!(
+                "Found 3 relevant patterns in the codebase:\n",
+                "\n",
+                "- **Builder pattern** in `src/http/client.rs` — uses `ClientBuilder` with fluent setters and a `build()` that returns `Result<Client, ConfigError>`\n",
+                "- **Validation** in `src/auth/token.rs` — `validate_token()` returns `Result<Claims>` with descriptive errors\n",
+                "- **Default impl** in `src/db/pool.rs` — `PoolBuilder` implements `Default` for sensible defaults",
+            ),
+        ),
+    ]
+}
+
 pub fn mock_messages() -> Vec<DisplayMessage> {
     vec![
         // User
@@ -197,10 +311,10 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
         ),
         // Task - Success, Plain, header+body
         tool(
-            "t_task",
+            MOCK_TASK_TOOL_ID,
             TASK_TOOL_NAME,
             ToolStatus::Success,
-            "Explore config patterns\nFound 3 relevant patterns in the codebase:\n- Builder pattern in src/http/\n- Validation in src/auth/\n- Default impl in src/db/",
+            "Agent 1: Explore config patterns\nFound 3 relevant patterns in the codebase:\n- Builder pattern in src/http/\n- Validation in src/auth/\n- Default impl in src/db/",
             None,
             Some(ToolOutput::Plain(
                 "Found 3 relevant patterns in the codebase:\n- Builder pattern in src/http/\n- Validation in src/auth/\n- Default impl in src/db/".into(),
@@ -333,9 +447,17 @@ mod tests {
 
     #[test]
     fn mock_data_invariants() {
-        let msgs = mock_messages();
+        check_invariants(&mock_messages());
+    }
+
+    #[test]
+    fn mock_subagent_data_invariants() {
+        check_invariants(&mock_subagent_messages());
+    }
+
+    fn check_invariants(msgs: &[DisplayMessage]) {
         let mut ids = HashSet::new();
-        for msg in &msgs {
+        for msg in msgs {
             if let DisplayRole::Tool { id, status, name } = &msg.role {
                 assert!(ids.insert(id), "duplicate tool id: {id}");
                 match status {

@@ -338,6 +338,16 @@ impl App {
     pub fn load_messages(&mut self, msgs: Vec<DisplayMessage>) {
         self.main_chat().load_messages(msgs);
     }
+
+    pub fn load_subagent(&mut self, parent_tool_id: &str, msgs: Vec<DisplayMessage>) {
+        let name = format!("Agent {}", self.next_agent_id);
+        self.next_agent_id += 1;
+        let idx = self.chats.len();
+        let mut chat = Chat::new(name);
+        chat.load_messages(msgs);
+        self.chats.push(chat);
+        self.chat_index.insert(parent_tool_id.to_owned(), idx);
+    }
 }
 
 #[cfg(test)]

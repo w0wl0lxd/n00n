@@ -52,6 +52,7 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model, demo: b
     let mut app = App::new(model.spec(), model.pricing.clone(), model.context_window);
     if demo {
         app.load_messages(mock::mock_messages());
+        app.load_subagent(mock::MOCK_TASK_TOOL_ID, mock::mock_subagent_messages());
     }
     let provider: Arc<dyn Provider> = Arc::from(maki_providers::provider::from_model(&model)?);
     let (mut input_tx, mut agent_rx, mut history) = spawn_agent(&provider, &model, Vec::new());
