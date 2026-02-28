@@ -35,7 +35,6 @@ pub struct App {
     status_bar: StatusBar,
     pub status: Status,
     pub token_usage: TokenUsage,
-    pub context_size: u32,
     pub mode: AgentMode,
     pending_plan: Option<String>,
     model_id: String,
@@ -58,7 +57,6 @@ impl App {
             status_bar: StatusBar::new(),
             status: Status::Idle,
             token_usage: TokenUsage::default(),
-            context_size: 0,
             mode: AgentMode::Build,
             pending_plan: None,
             model_id,
@@ -230,9 +228,7 @@ impl App {
         if let maki_providers::AgentEvent::TurnComplete { usage, .. } = &envelope.event {
             self.token_usage += usage.clone();
             self.chats[chat_idx].token_usage += usage.clone();
-            if chat_idx == 0 {
-                self.context_size = usage.context_tokens();
-            }
+            self.chats[chat_idx].context_size = usage.context_tokens();
         }
 
         let result = self.chats[chat_idx].handle_event(envelope.event);
@@ -317,7 +313,6 @@ impl App {
         self.task_names.clear();
         self.status = Status::Idle;
         self.token_usage = TokenUsage::default();
-        self.context_size = 0;
         self.queue.clear();
         self.pending_plan = None;
         self.status_bar.clear_cancel_hint();
@@ -366,20 +361,21 @@ impl App {
             let full_area = frame.area();
             self.chat_picker.view(frame, full_area, &names);
         }
-        let chat_name = (self.chats.len() > 1).then(|| self.chats[self.active_chat].name.as_str());
+        let chat = &self.chats[render_chat];
+        let chat_name = (self.chats.len() > 1).then_some(chat.name.as_str());
         let ctx = StatusBarContext {
             status: &self.status,
             mode: &self.mode,
             model_id: &self.model_id,
             stats: UsageStats {
-                usage: &self.chats[self.active_chat].token_usage,
+                usage: &chat.token_usage,
                 global_usage: &self.token_usage,
-                context_size: self.context_size,
+                context_size: chat.context_size,
                 pricing: &self.pricing,
                 context_window: self.context_window,
                 show_global: self.chats.len() > 1,
             },
-            auto_scroll: self.chats[self.active_chat].auto_scroll(),
+            auto_scroll: chat.auto_scroll(),
             chat_name,
         };
         self.status_bar.view(frame, status_area, &ctx);
@@ -493,7 +489,7 @@ mod tests {
             usage: usage.clone(),
             model: "test-model".into(),
         }));
-        assert_eq!(app.context_size, usage.context_tokens());
+        assert_eq!(app.chats[0].context_size, usage.context_tokens());
         assert_eq!(app.token_usage.input, 1_000);
         assert_eq!(app.token_usage.output, 500);
 
@@ -694,7 +690,7 @@ mod tests {
     fn reset_session_clears_state() {
         let mut app = test_app();
         app.token_usage.input = 500;
-        app.context_size = 1000;
+        app.chats[0].context_size = 1000;
         app.pending_plan = Some("plan.md".into());
         app.queue.push_back(AgentInput {
             message: "q".into(),
@@ -705,7 +701,7 @@ mod tests {
         assert!(matches!(&actions[0], Action::NewSession));
         assert_eq!(app.status, Status::Idle);
         assert_eq!(app.token_usage.input, 0);
-        assert_eq!(app.context_size, 0);
+        assert_eq!(app.chats[0].context_size, 0);
         assert!(app.pending_plan.is_none());
         assert!(app.queue.is_empty());
         assert_eq!(app.chats.len(), 1);
@@ -857,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn context_size_only_from_main() {
+    fn context_size_per_chat() {
         let mut app = test_app();
         app.status = Status::Streaming;
         app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
@@ -882,8 +878,8 @@ mod tests {
             usage: main_usage.clone(),
             model: "test".into(),
         }));
-        let main_ctx = app.context_size;
-        assert_eq!(main_ctx, main_usage.context_tokens());
+        assert_eq!(app.chats[0].context_size, main_usage.context_tokens());
+        assert_eq!(app.chats[1].context_size, 0);
 
         let sub_usage = TokenUsage {
             input: 9999,
@@ -893,12 +889,13 @@ mod tests {
         app.update(subagent_msg(
             AgentEvent::TurnComplete {
                 message: Default::default(),
-                usage: sub_usage,
+                usage: sub_usage.clone(),
                 model: "test".into(),
             },
             "task1",
         ));
-        assert_eq!(app.context_size, main_ctx);
+        assert_eq!(app.chats[0].context_size, main_usage.context_tokens());
+        assert_eq!(app.chats[1].context_size, sub_usage.context_tokens());
     }
 
     #[test]

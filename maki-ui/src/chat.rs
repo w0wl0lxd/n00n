@@ -14,6 +14,7 @@ pub enum ChatEventResult {
 pub struct Chat {
     pub name: String,
     pub token_usage: TokenUsage,
+    pub context_size: u32,
     messages_panel: MessagesPanel,
 }
 
@@ -22,6 +23,7 @@ impl Chat {
         Self {
             name,
             token_usage: TokenUsage::default(),
+            context_size: 0,
             messages_panel: MessagesPanel::new(),
         }
     }
