@@ -7,6 +7,7 @@ mod markdown;
 #[cfg(feature = "demo")]
 mod mock;
 mod render_worker;
+mod selection;
 mod text_buffer;
 mod theme;
 
@@ -19,7 +20,10 @@ use std::time::Duration;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 use crossterm::ExecutableCommand;
-use crossterm::event::{self, EnableBracketedPaste, Event};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, MouseButton,
+    MouseEvent as CtMouseEvent, MouseEventKind,
+};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_agent::AgentInput;
 use maki_agent::agent;
@@ -32,6 +36,8 @@ use tracing::error;
 use app::{App, Msg};
 use components::Action;
 
+const MOUSE_SCROLL_LINES: i32 = 3;
+
 const ANIMATION_INTERVAL_MS: u64 = 8;
 const EVENT_POLL_INTERVAL_MS: u64 = 8;
 
@@ -43,6 +49,7 @@ pub fn run(
     let mut terminal = ratatui::init();
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(EnableBracketedPaste)?;
+    stdout().execute(EnableMouseCapture)?;
     terminal::enable_raw_mode()?;
 
     let result = run_event_loop(
@@ -54,6 +61,7 @@ pub fn run(
     );
 
     terminal::disable_raw_mode()?;
+    stdout().execute(DisableMouseCapture)?;
     stdout().execute(event::DisableBracketedPaste)?;
     stdout().execute(LeaveAlternateScreen)?;
     ratatui::restore();
@@ -123,6 +131,46 @@ fn run_event_loop(
             let msg = match event::read()? {
                 Event::Key(key) => Msg::Key(key),
                 Event::Paste(text) => Msg::Paste(text),
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                        let (scroll, extra) =
+                            aggregate_scroll(mouse.column, mouse.row, scroll_delta(mouse.kind));
+                        if let Some(extra) = extra {
+                            dispatch(
+                                app.update(scroll),
+                                &mut cmd_tx,
+                                &mut agent_rx,
+                                &mut history,
+                                &provider,
+                                &model,
+                                excluded_tools,
+                                &mut app,
+                            );
+                            extra
+                        } else {
+                            scroll
+                        }
+                    }
+                    MouseEventKind::Drag(MouseButton::Left) => {
+                        let (drag, extra) = coalesce_drag(mouse);
+                        dispatch(
+                            app.update(Msg::Mouse(drag)),
+                            &mut cmd_tx,
+                            &mut agent_rx,
+                            &mut history,
+                            &provider,
+                            &model,
+                            excluded_tools,
+                            &mut app,
+                        );
+                        if let Some(extra) = extra {
+                            extra
+                        } else {
+                            continue;
+                        }
+                    }
+                    _ => Msg::Mouse(mouse),
+                },
                 _ => continue,
             };
             dispatch(
@@ -252,4 +300,43 @@ fn dispatch(
             Action::Quit => {}
         }
     }
+}
+
+fn scroll_delta(kind: MouseEventKind) -> i32 {
+    if kind == MouseEventKind::ScrollUp {
+        MOUSE_SCROLL_LINES
+    } else {
+        -MOUSE_SCROLL_LINES
+    }
+}
+
+fn aggregate_scroll(column: u16, row: u16, mut delta: i32) -> (Msg, Option<Msg>) {
+    while event::poll(Duration::ZERO).unwrap_or(false) {
+        if let Ok(Event::Mouse(next)) = event::read() {
+            match next.kind {
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    delta += scroll_delta(next.kind);
+                }
+                _ => return (Msg::Scroll { column, row, delta }, Some(Msg::Mouse(next))),
+            }
+        } else {
+            break;
+        }
+    }
+    (Msg::Scroll { column, row, delta }, None)
+}
+
+fn coalesce_drag(mut latest: CtMouseEvent) -> (CtMouseEvent, Option<Msg>) {
+    while event::poll(Duration::ZERO).unwrap_or(false) {
+        if let Ok(Event::Mouse(next)) = event::read() {
+            if matches!(next.kind, MouseEventKind::Drag(MouseButton::Left)) {
+                latest = next;
+            } else {
+                return (latest, Some(Msg::Mouse(next)));
+            }
+        } else {
+            break;
+        }
+    }
+    (latest, None)
 }

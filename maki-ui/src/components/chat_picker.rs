@@ -1,5 +1,6 @@
 use crate::components::is_ctrl;
 use crate::components::scrollbar::render_vertical_scrollbar;
+use crate::selection::inset_border;
 use crate::text_buffer::TextBuffer;
 use crate::theme;
 
@@ -133,11 +134,8 @@ impl ChatPicker {
         s.selected_chat(chat_names)
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect, chat_names: &[String]) {
-        let s = match self.state.as_mut() {
-            Some(s) => s,
-            None => return,
-        };
+    pub fn view(&mut self, frame: &mut Frame, area: Rect, chat_names: &[String]) -> Option<Rect> {
+        let s = self.state.as_mut()?;
 
         let filtered = s.filter(chat_names);
         let max_h = (area.height as u32 * MAX_HEIGHT_PERCENT as u32 / 100) as u16;
@@ -185,6 +183,8 @@ impl ChatPicker {
                 s.scroll_offset as u16,
             );
         }
+
+        Some(inset_border(popup))
     }
 
     pub fn close(&mut self) {

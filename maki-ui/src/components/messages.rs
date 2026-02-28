@@ -22,6 +22,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use super::scrollbar::render_vertical_scrollbar;
+use crate::selection::ContentRegion;
 
 #[derive(Default)]
 struct StreamingCache {
@@ -63,6 +64,7 @@ impl StreamingCache {
 struct Segment {
     lines: Vec<Line<'static>>,
     tool_id: Option<String>,
+    msg_index: Option<usize>,
     cached_height: Option<(u16, u16)>,
     pending_highlight: Option<u64>,
     highlight_range: Option<(usize, usize)>,
@@ -83,6 +85,7 @@ pub struct MessagesPanel {
     cached_streaming_thinking: StreamingCache,
     cached_streaming_text: StreamingCache,
     hl_worker: RenderWorker,
+    visible_regions: Vec<(Rect, usize)>,
 }
 
 impl MessagesPanel {
@@ -105,6 +108,7 @@ impl MessagesPanel {
             },
             cached_streaming_text: StreamingCache::default(),
             hl_worker: RenderWorker::new(),
+            visible_regions: Vec::new(),
         }
     }
 
@@ -372,10 +376,10 @@ impl MessagesPanel {
             })
             .collect();
 
-        let mut segments: Vec<(&[Line<'static>], bool)> = self
+        let mut segments: Vec<(&[Line<'static>], bool, Option<usize>)> = self
             .cached_segments
             .iter()
-            .map(|s| (s.lines.as_slice(), s.tool_id.is_some()))
+            .map(|s| (s.lines.as_slice(), s.tool_id.is_some(), s.msg_index))
             .collect();
 
         let spacer_line = vec![Line::default()];
@@ -401,7 +405,7 @@ impl MessagesPanel {
             }
             let lines = cache.get_or_update(tw.visible(), prefix, text_style, prefix_style, width);
             if !segments.is_empty() {
-                segments.push((&spacer_line, false));
+                segments.push((&spacer_line, false, None));
                 heights.push(1);
             }
             heights.push(
@@ -409,7 +413,7 @@ impl MessagesPanel {
                     .wrap(Wrap { trim: false })
                     .line_count(width) as u16,
             );
-            segments.push((lines, false));
+            segments.push((lines, false, None));
         }
 
         let total_lines: u16 = heights.iter().sum();
@@ -425,8 +429,9 @@ impl MessagesPanel {
         let mut skip = self.scroll_top;
         let mut y = area.y;
         let bottom = area.y + area.height;
+        self.visible_regions.clear();
 
-        for (i, (lines, is_tool)) in segments.iter().enumerate() {
+        for (i, (lines, is_tool, msg_idx)) in segments.iter().enumerate() {
             if y >= bottom {
                 break;
             }
@@ -446,12 +451,27 @@ impl MessagesPanel {
                 skip = 0;
             }
             frame.render_widget(p, seg_area);
+            if let Some(idx) = *msg_idx {
+                self.visible_regions
+                    .push((Rect::new(area.x, y, width, visible_h), idx));
+            }
             y += visible_h;
         }
 
         if total_lines > area.height {
             render_vertical_scrollbar(frame, area, total_lines, self.scroll_top);
         }
+    }
+
+    pub fn push_content_regions<'a>(&'a self, out: &mut Vec<ContentRegion<'a>>) {
+        out.extend(
+            self.visible_regions
+                .iter()
+                .map(|&(area, idx)| ContentRegion {
+                    area,
+                    raw_text: &self.messages[idx].text,
+                }),
+        );
     }
 
     fn flush_thinking(&mut self) {
@@ -571,6 +591,7 @@ impl MessagesPanel {
                     self.push_spacer_if_needed();
                     self.cached_segments.push(Segment {
                         lines,
+                        msg_index: Some(i),
                         ..Segment::default()
                     });
                 } else {
@@ -581,6 +602,7 @@ impl MessagesPanel {
                     self.cached_segments.push(Segment {
                         lines: tl.lines,
                         tool_id: Some(id),
+                        msg_index: Some(i),
                         pending_highlight: pending,
                         highlight_range: tl.highlight.as_ref().map(|h| h.range),
                         ..Segment::default()
@@ -623,6 +645,7 @@ impl MessagesPanel {
                 self.push_spacer_if_needed();
                 self.cached_segments.push(Segment {
                     lines,
+                    msg_index: Some(i),
                     ..Segment::default()
                 });
             }
@@ -823,7 +846,11 @@ mod tests {
     ) -> ratatui::Terminal<TestBackend> {
         let backend = TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| panel.view(f, f.area())).unwrap();
+        terminal
+            .draw(|f| {
+                panel.view(f, f.area());
+            })
+            .unwrap();
         terminal
     }
 

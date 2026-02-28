@@ -16,6 +16,7 @@ use ratatui::widgets::Paragraph;
 
 const CANCEL_WINDOW: Duration = Duration::from_secs(3);
 const ERROR_DISPLAY: Duration = Duration::from_secs(5);
+const FLASH_DURATION: Duration = Duration::from_secs(2);
 
 fn format_tokens(n: u32) -> String {
     match n {
@@ -51,6 +52,7 @@ pub enum CancelResult {
 
 pub struct StatusBar {
     cancel_hint_since: Option<Instant>,
+    flash: Option<(String, Instant)>,
     error_since: Option<Instant>,
     started_at: Instant,
     cwd_branch: String,
@@ -60,6 +62,7 @@ impl StatusBar {
     pub fn new() -> Self {
         Self {
             cancel_hint_since: None,
+            flash: None,
             error_since: None,
             started_at: Instant::now(),
             cwd_branch: cwd_branch_label(),
@@ -74,11 +77,17 @@ impl StatusBar {
             return CancelResult::Confirmed;
         }
         self.cancel_hint_since = Some(Instant::now());
+        self.flash("Press esc again to stop...".into());
         CancelResult::FirstPress
+    }
+
+    pub fn flash(&mut self, msg: String) {
+        self.flash = Some((msg, Instant::now()));
     }
 
     pub fn clear_cancel_hint(&mut self) {
         self.cancel_hint_since = None;
+        self.flash = None;
     }
 
     pub fn clear_expired_hint(&mut self) {
@@ -87,6 +96,13 @@ impl StatusBar {
             .is_some_and(|t| t.elapsed() >= CANCEL_WINDOW)
         {
             self.cancel_hint_since = None;
+        }
+        if self
+            .flash
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed() >= FLASH_DURATION)
+        {
+            self.flash = None;
         }
     }
 
@@ -158,11 +174,8 @@ impl StatusBar {
             }
         }
 
-        if self.cancel_hint_since.is_some() {
-            left_spans.push(Span::styled(
-                " Press esc again to stop...",
-                theme::CANCEL_HINT,
-            ));
+        if let Some((ref msg, _)) = self.flash {
+            left_spans.push(Span::styled(format!(" {msg}"), theme::CANCEL_HINT));
         }
 
         let [left_area, right_area] = Layout::horizontal([
@@ -230,24 +243,26 @@ mod tests {
     }
 
     #[test]
-    fn esc_after_expired_window_resets_hint() {
+    fn cancel_hint_lifecycle() {
         let mut bar = StatusBar::new();
+
         bar.cancel_hint_since = Some(Instant::now() - CANCEL_WINDOW - Duration::from_millis(1));
+        let result = bar.handle_cancel_press();
+        assert!(
+            matches!(result, CancelResult::FirstPress),
+            "expired window resets to first press"
+        );
+        assert!(bar.flash.is_some(), "first press sets flash");
 
         let result = bar.handle_cancel_press();
-        assert!(matches!(result, CancelResult::FirstPress));
-        assert!(bar.cancel_hint_since.is_some());
-    }
-
-    #[test]
-    fn double_press_within_window_confirms() {
-        let mut bar = StatusBar::new();
-        let result = bar.handle_cancel_press();
-        assert!(matches!(result, CancelResult::FirstPress));
-
-        let result = bar.handle_cancel_press();
-        assert!(matches!(result, CancelResult::Confirmed));
+        assert!(
+            matches!(result, CancelResult::Confirmed),
+            "second press within window confirms"
+        );
         assert!(bar.cancel_hint_since.is_none());
+
+        bar.clear_cancel_hint();
+        assert!(bar.flash.is_none(), "clear_cancel_hint clears flash");
     }
 
     #[test_case(true, false  ; "removes_stale")]
@@ -303,5 +318,21 @@ mod tests {
 
         bar.mark_error();
         assert!(!bar.is_error_expired(), "re-marking resets the timer");
+    }
+
+    #[test]
+    fn flash_lifecycle() {
+        let mut bar = StatusBar::new();
+
+        bar.flash("Copied".into());
+        bar.clear_expired_hint();
+        assert!(bar.flash.is_some(), "fresh flash persists");
+
+        bar.flash = Some((
+            "Copied".into(),
+            Instant::now() - FLASH_DURATION - Duration::from_millis(1),
+        ));
+        bar.clear_expired_hint();
+        assert!(bar.flash.is_none(), "stale flash cleared");
     }
 }

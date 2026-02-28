@@ -13,6 +13,7 @@ tracing = { workspace = true }
 syntect = { workspace = true }
 unicode-width = { workspace = true }
 serde_json = { workspace = true }
+arboard = { workspace = true }
 
 [features]
 demo = []

@@ -132,15 +132,15 @@ impl CommandPalette {
         self.filtered.get(self.selected).map(|&i| COMMANDS[i].name)
     }
 
-    pub fn view(&self, frame: &mut Frame, input_area: Rect) {
+    pub fn view(&self, frame: &mut Frame, input_area: Rect) -> Option<Rect> {
         let filtered = &self.filtered;
         if filtered.is_empty() {
-            return;
+            return None;
         }
 
         let popup_height = (filtered.len() as u16).min(input_area.y);
         if popup_height == 0 {
-            return;
+            return None;
         }
 
         const GAP: usize = 2;
@@ -197,6 +197,8 @@ impl CommandPalette {
             Paragraph::new(lines).style(Style::new().bg(theme::BACKGROUND)),
             popup,
         );
+
+        Some(popup)
     }
 }
 

@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::components::messages::MessagesPanel;
 use crate::components::{DisplayMessage, DisplayRole};
+use crate::selection::ContentRegion;
 
 use maki_providers::{AgentEvent, QuestionInfo, TokenUsage};
 use ratatui::Frame;
@@ -99,6 +100,10 @@ impl Chat {
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) {
         self.messages_panel.view(frame, area);
+    }
+
+    pub fn push_content_regions<'a>(&'a self, out: &mut Vec<ContentRegion<'a>>) {
+        self.messages_panel.push_content_regions(out);
     }
 
     pub fn flush(&mut self) {

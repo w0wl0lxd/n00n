@@ -9,22 +9,37 @@ use crate::components::question_form::{QuestionForm, QuestionFormAction};
 use crate::components::queue_panel;
 use crate::components::status_bar::{CancelResult, StatusBar, StatusBarContext, UsageStats};
 use crate::components::{Action, DisplayMessage, DisplayRole, Status, is_ctrl};
+use crate::selection::{self, ContentRegion, Selection, inset_border};
 use crate::theme;
+use arboard::Clipboard;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use maki_agent::{AgentInput, AgentMode};
 #[cfg(feature = "demo")]
 use maki_providers::QuestionInfo;
 use maki_providers::{AgentEvent, Envelope, ModelPricing, TokenUsage};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::widgets::{Block, Widget};
 
 const CANCEL_MSG: &str = "Cancelled. The agent will continue from the last successful result.";
 
+struct ViewAreas {
+    render_chat: usize,
+    form_visible: bool,
+    bottom_area: Rect,
+    queue_area: Rect,
+    input_area: Rect,
+    status_area: Rect,
+    cmd_popup_area: Option<Rect>,
+    picker_inner_area: Option<Rect>,
+}
+
 pub enum Msg {
     Key(KeyEvent),
     Paste(String),
+    Mouse(MouseEvent),
+    Scroll { column: u16, row: u16, delta: i32 },
     Agent(Envelope),
 }
 
@@ -51,6 +66,11 @@ pub struct App {
     pending_question: bool,
     #[cfg(feature = "demo")]
     demo_questions: Option<(usize, Vec<QuestionInfo>)>,
+    msg_area: Rect,
+    frame_area: Rect,
+    selection: Option<Selection>,
+    copy_on_next_render: bool,
+    clipboard: Option<Clipboard>,
 }
 
 impl App {
@@ -78,6 +98,11 @@ impl App {
             pending_question: false,
             #[cfg(feature = "demo")]
             demo_questions: None,
+            msg_area: Rect::default(),
+            frame_area: Rect::default(),
+            selection: None,
+            copy_on_next_render: false,
+            clipboard: Clipboard::new().ok(),
         }
     }
 
@@ -98,6 +123,17 @@ impl App {
                 }
                 vec![]
             }
+            Msg::Mouse(event) => {
+                self.handle_mouse(event);
+                vec![]
+            }
+            Msg::Scroll { column, row, delta } => {
+                self.selection = None;
+                if self.msg_area.contains(Position::new(column, row)) {
+                    self.active_chat().scroll(delta);
+                }
+                vec![]
+            }
             Msg::Agent(envelope) => self.handle_agent_event(envelope),
         }
     }
@@ -105,6 +141,35 @@ impl App {
     fn send_answer(&self, answer: String) {
         if let Some(tx) = &self.answer_tx {
             let _ = tx.send(answer);
+        }
+    }
+
+    fn handle_mouse(&mut self, event: MouseEvent) {
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.selection = Some(Selection::start(event.row, event.column));
+                self.copy_on_next_render = false;
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(ref mut sel) = self.selection {
+                    let row = event.row.clamp(
+                        self.frame_area.y,
+                        self.frame_area.bottom().saturating_sub(1),
+                    );
+                    let col = event
+                        .column
+                        .clamp(self.frame_area.x, self.frame_area.right().saturating_sub(1));
+                    sel.update(row, col);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if self.selection.as_ref().is_some_and(|s| !s.is_empty()) {
+                    self.copy_on_next_render = true;
+                } else {
+                    self.selection = None;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -120,6 +185,7 @@ impl App {
             self.send_answer(answer);
             return vec![];
         }
+        self.selection = None;
 
         if self.chat_picker.is_open() {
             let names = self.chat_names();
@@ -421,7 +487,8 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(frame.area());
-
+        self.msg_area = msg_area;
+        self.frame_area = frame.area();
         let picker_open = self.chat_picker.is_open();
         let names = if picker_open {
             Some(self.chat_names())
@@ -437,27 +504,32 @@ impl App {
         };
         self.chats[render_chat].view(frame, msg_area);
 
-        if form_visible {
+        let queue_height = queue_panel::height(self.queue.len());
+        let input_height = bottom_area.height.saturating_sub(queue_height);
+        let [queue_area, input_area] = Layout::vertical([
+            Constraint::Length(queue_height),
+            Constraint::Length(input_height),
+        ])
+        .areas(bottom_area);
+
+        let cmd_popup_area = if form_visible {
             self.question_form.view(frame, bottom_area);
+            None
         } else {
-            let queue_height = queue_panel::height(self.queue.len());
-            let input_height = bottom_area.height.saturating_sub(queue_height);
-            let [queue_area, input_area] = Layout::vertical([
-                Constraint::Length(queue_height),
-                Constraint::Length(input_height),
-            ])
-            .areas(bottom_area);
             let queue_texts: Vec<&str> = self.queue.iter().map(|i| i.message.as_str()).collect();
             queue_panel::view(frame, queue_area, &queue_texts);
             self.input_box
                 .view(frame, input_area, self.status == Status::Streaming);
-            self.command_palette.view(frame, input_area);
-        }
+            self.command_palette.view(frame, input_area)
+        };
 
-        if let Some(names) = names {
+        let picker_inner_area = if let Some(names) = names {
             let full_area = frame.area();
-            self.chat_picker.view(frame, full_area, &names);
-        }
+            self.chat_picker.view(frame, full_area, &names)
+        } else {
+            None
+        };
+
         let chat = &self.chats[render_chat];
         let chat_name = (self.chats.len() > 1).then_some(chat.name.as_str());
         let ctx = StatusBarContext {
@@ -477,6 +549,96 @@ impl App {
             has_pending_plan: self.pending_plan.is_some(),
         };
         self.status_bar.view(frame, status_area, &ctx);
+
+        if let Some(sel) = self.selection {
+            selection::apply_highlight(frame.buffer_mut(), self.frame_area, &sel);
+            if self.copy_on_next_render {
+                self.copy_selection(
+                    frame.buffer_mut(),
+                    &sel,
+                    &ViewAreas {
+                        render_chat,
+                        form_visible,
+                        bottom_area,
+                        queue_area,
+                        input_area,
+                        status_area,
+                        cmd_popup_area,
+                        picker_inner_area,
+                    },
+                );
+            }
+        }
+    }
+
+    fn copy_selection(
+        &mut self,
+        buf: &mut ratatui::buffer::Buffer,
+        sel: &Selection,
+        va: &ViewAreas,
+    ) {
+        let mut regions = Vec::new();
+        self.chats[va.render_chat].push_content_regions(&mut regions);
+
+        let queue_text;
+        let input_value;
+        if va.form_visible {
+            regions.push(ContentRegion {
+                area: inset_border(va.bottom_area),
+                raw_text: "",
+            });
+        } else {
+            if va.queue_area.height > 0 {
+                let raw: Vec<&str> = self.queue.iter().map(|i| i.message.as_str()).collect();
+                queue_text = raw.join("\n");
+                regions.push(ContentRegion {
+                    area: inset_border(va.queue_area),
+                    raw_text: &queue_text,
+                });
+            }
+            regions.push(ContentRegion {
+                area: Rect::new(va.input_area.x, va.input_area.y, va.input_area.width, 1),
+                raw_text: "",
+            });
+            input_value = self.input_box.buffer.value();
+            regions.push(ContentRegion {
+                area: Rect::new(
+                    va.input_area.x,
+                    va.input_area.y + 1,
+                    va.input_area.width,
+                    va.input_area.height.saturating_sub(2),
+                ),
+                raw_text: &input_value,
+            });
+            let input_bottom = va.input_area.y + va.input_area.height.saturating_sub(1);
+            regions.push(ContentRegion {
+                area: Rect::new(va.input_area.x, input_bottom, va.input_area.width, 1),
+                raw_text: "",
+            });
+        }
+        regions.push(ContentRegion {
+            area: va.status_area,
+            raw_text: "",
+        });
+        if let Some(area) = va.cmd_popup_area {
+            regions.push(ContentRegion { area, raw_text: "" });
+        }
+        if let Some(area) = va.picker_inner_area {
+            regions.push(ContentRegion { area, raw_text: "" });
+        }
+
+        let text = selection::extract_selected_text(buf, sel, &regions);
+        if !text.is_empty() {
+            match &mut self.clipboard {
+                Some(cb) => match cb.set_text(&text) {
+                    Ok(()) => self.status_bar.flash("Copied selection".into()),
+                    Err(e) => self.status_bar.flash(format!("Copy failed: {e}")),
+                },
+                None => self.status_bar.flash("Copy failed: no clipboard".into()),
+            }
+        }
+        self.copy_on_next_render = false;
+        self.selection = None;
     }
 
     pub fn is_animating(&self) -> bool {
@@ -523,11 +685,21 @@ impl App {
 mod tests {
     use super::*;
     use crate::components::{TEST_CONTEXT_WINDOW, ctrl, key, test_pricing};
-    use crossterm::event::{KeyCode, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
     use maki_providers::ToolStartEvent;
+    use test_case::test_case;
 
     fn test_app() -> App {
         App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW)
+    }
+
+    fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> Msg {
+        Msg::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
     }
 
     fn agent_msg(event: AgentEvent) -> Msg {
@@ -1093,5 +1265,101 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Esc)));
         app.update(Msg::Key(key(KeyCode::Esc)));
         assert!(!app.pending_question);
+    }
+
+    #[test_case(3  ; "scroll_up")]
+    #[test_case(-3 ; "scroll_down")]
+    fn scroll_disables_auto_scroll(delta: i32) {
+        let mut app = test_app();
+        app.msg_area = Rect::new(0, 0, 80, 20);
+        app.active_chat().enable_auto_scroll();
+
+        let actions = app.update(Msg::Scroll {
+            column: 10,
+            row: 10,
+            delta,
+        });
+        assert!(actions.is_empty());
+        assert!(!app.chats[0].auto_scroll());
+    }
+
+    #[test]
+    fn scroll_outside_msg_area_ignored() {
+        let mut app = test_app();
+        app.msg_area = Rect::new(0, 0, 80, 20);
+        app.active_chat().enable_auto_scroll();
+
+        app.update(Msg::Scroll {
+            column: 10,
+            row: 25,
+            delta: 3,
+        });
+        assert!(app.chats[0].auto_scroll());
+    }
+
+    #[test_case(20, 10, 80, 30, 20, 10 ; "within_bounds")]
+    #[test_case(100, 50, 80, 30, 79, 29 ; "clamps_to_frame")]
+    fn mouse_drag_updates_selection(
+        drag_col: u16,
+        drag_row: u16,
+        frame_w: u16,
+        frame_h: u16,
+        expect_col: u16,
+        expect_row: u16,
+    ) {
+        let mut app = test_app();
+        app.msg_area = Rect::new(0, 0, 80, 20);
+        app.frame_area = Rect::new(0, 0, frame_w, frame_h);
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
+        app.update(mouse_event(
+            MouseEventKind::Drag(MouseButton::Left),
+            drag_col,
+            drag_row,
+        ));
+
+        let sel = app.selection.unwrap();
+        assert_eq!(sel.cursor_col, expect_col);
+        assert_eq!(sel.cursor_row, expect_row);
+    }
+
+    #[test]
+    fn mouse_up_behavior() {
+        let mut app = test_app();
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
+        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 10));
+        app.update(mouse_event(MouseEventKind::Up(MouseButton::Left), 10, 10));
+        assert!(
+            app.copy_on_next_render,
+            "non-empty selection sets copy flag"
+        );
+
+        app.copy_on_next_render = false;
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
+        app.update(mouse_event(MouseEventKind::Up(MouseButton::Left), 5, 5));
+        assert!(
+            !app.copy_on_next_render,
+            "empty selection does not set copy flag"
+        );
+        assert!(app.selection.is_none(), "empty selection is cleared");
+    }
+
+    #[test]
+    fn key_and_scroll_clear_selection() {
+        let mut app = test_app();
+        app.msg_area = Rect::new(0, 0, 80, 20);
+
+        app.selection = Some(Selection::start(5, 5));
+        app.update(Msg::Key(key(KeyCode::Char('a'))));
+        assert!(app.selection.is_none(), "key press clears selection");
+
+        app.selection = Some(Selection::start(5, 5));
+        app.update(Msg::Scroll {
+            column: 10,
+            row: 10,
+            delta: 3,
+        });
+        assert!(app.selection.is_none(), "scroll clears selection");
     }
 }
