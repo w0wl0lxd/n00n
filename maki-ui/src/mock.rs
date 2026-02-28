@@ -314,7 +314,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             MOCK_TASK_TOOL_ID,
             TASK_TOOL_NAME,
             ToolStatus::Success,
-            "Agent 1: Explore config patterns\nFound 3 relevant patterns in the codebase:\n- Builder pattern in src/http/\n- Validation in src/auth/\n- Default impl in src/db/",
+            "Explore config patterns: Found 3 relevant patterns in the codebase:\n- Builder pattern in src/http/\n- Validation in src/auth/\n- Default impl in src/db/",
             None,
             Some(ToolOutput::Plain(
                 "Found 3 relevant patterns in the codebase:\n- Builder pattern in src/http/\n- Validation in src/auth/\n- Default impl in src/db/".into(),

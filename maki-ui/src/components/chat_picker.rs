@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn open_sets_initial_state() {
         let mut p = ChatPicker::new();
-        let chat_names = names(&["Main", "Agent 1", "Agent 2"]);
+        let chat_names = names(&["Main", "Explore config", "Run tests"]);
         p.open(1, &chat_names);
         assert!(p.is_open());
         let s = p.state.as_ref().unwrap();
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn up_down_wraps() {
         let mut p = ChatPicker::new();
-        let chat_names = names(&["Main", "Agent 1", "Agent 2"]);
+        let chat_names = names(&["Main", "Explore config", "Run tests"]);
         p.open(0, &chat_names);
 
         p.handle_key(key(KeyCode::Up), &chat_names);
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn enter_confirms_selected() {
         let mut p = ChatPicker::new();
-        let chat_names = names(&["Main", "Agent 1", "Agent 2"]);
+        let chat_names = names(&["Main", "Explore config", "Run tests"]);
         p.open(0, &chat_names);
         p.handle_key(key(KeyCode::Down), &chat_names);
 
@@ -366,7 +366,7 @@ mod tests {
     #[test_case(ctrl('c') ; "ctrl_c_returns_original")]
     fn cancel_returns_original(cancel_key: KeyEvent) {
         let mut p = ChatPicker::new();
-        let chat_names = names(&["Main", "Agent 1"]);
+        let chat_names = names(&["Main", "Explore config"]);
         p.open(0, &chat_names);
         p.handle_key(key(KeyCode::Down), &chat_names);
 
@@ -378,10 +378,10 @@ mod tests {
     #[test]
     fn typing_filters_by_substring() {
         let mut p = ChatPicker::new();
-        let chat_names = names(&["Main", "Agent 1", "Agent 2"]);
+        let chat_names = names(&["Main", "Explore config", "Run tests"]);
         p.open(0, &chat_names);
 
-        p.handle_key(key(KeyCode::Char('g')), &chat_names);
+        p.handle_key(key(KeyCode::Char('E')), &chat_names);
         let filtered = p.state.as_ref().unwrap().filter(&chat_names);
         assert_eq!(filtered, vec![1, 2]);
     }
@@ -389,9 +389,9 @@ mod tests {
     #[test]
     fn backspace_widens_filter() {
         let mut p = ChatPicker::new();
-        let chat_names = names(&["Main", "Agent 1"]);
+        let chat_names = names(&["Main", "Explore config"]);
         p.open(0, &chat_names);
-        p.handle_key(key(KeyCode::Char('M')), &chat_names);
+        p.handle_key(key(KeyCode::Char('E')), &chat_names);
         assert_eq!(p.state.as_ref().unwrap().filter(&chat_names).len(), 1);
 
         p.handle_key(key(KeyCode::Backspace), &chat_names);
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn selected_clamped_on_filter_shrink() {
         let mut p = ChatPicker::new();
-        let chat_names = names(&["Main", "Agent 1", "Agent 2"]);
+        let chat_names = names(&["Main", "Explore config", "Run tests"]);
         p.open(0, &chat_names);
         p.handle_key(key(KeyCode::Down), &chat_names);
         p.handle_key(key(KeyCode::Down), &chat_names);
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn ctrl_w_deletes_word() {
         let mut p = ChatPicker::new();
-        let chat_names = names(&["Main", "Agent 1"]);
+        let chat_names = names(&["Main", "Explore config"]);
         p.open(0, &chat_names);
         p.handle_key(key(KeyCode::Char('h')), &chat_names);
         p.handle_key(key(KeyCode::Char('i')), &chat_names);

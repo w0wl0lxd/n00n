@@ -11,7 +11,7 @@ use crate::theme;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use maki_agent::{AgentInput, AgentMode};
-use maki_providers::{Envelope, ModelPricing, TokenUsage};
+use maki_providers::{AgentEvent, Envelope, ModelPricing, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::widgets::{Block, Widget};
@@ -27,8 +27,8 @@ pub enum Msg {
 pub struct App {
     chats: Vec<Chat>,
     active_chat: usize,
-    next_agent_id: usize,
     chat_index: HashMap<String, usize>,
+    task_names: HashMap<String, String>,
     pub(crate) input_box: InputBox,
     command_palette: CommandPalette,
     chat_picker: ChatPicker,
@@ -50,8 +50,8 @@ impl App {
         Self {
             chats: vec![Chat::new("Main".into())],
             active_chat: 0,
-            next_agent_id: 1,
             chat_index: HashMap::new(),
+            task_names: HashMap::new(),
             input_box: InputBox::new(),
             command_palette: CommandPalette::new(),
             chat_picker: ChatPicker::new(),
@@ -209,6 +209,7 @@ impl App {
                     .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
                 self.queue.clear();
                 self.chat_index.clear();
+                self.task_names.clear();
                 self.status = Status::Idle;
                 vec![Action::CancelAgent]
             }
@@ -217,6 +218,13 @@ impl App {
     }
 
     fn handle_agent_event(&mut self, envelope: Envelope) -> Vec<Action> {
+        if envelope.parent_tool_use_id.is_none()
+            && let AgentEvent::ToolStart(ref e) = envelope.event
+            && e.tool == "task"
+        {
+            self.task_names.insert(e.id.clone(), e.summary.clone());
+        }
+
         let chat_idx = self.resolve_or_create_chat(envelope.parent_tool_use_id.as_deref());
 
         if let maki_providers::AgentEvent::TurnComplete { usage, .. } = &envelope.event {
@@ -257,8 +265,10 @@ impl App {
         if let Some(&idx) = self.chat_index.get(id) {
             return idx;
         }
-        let name = format!("Agent {}", self.next_agent_id);
-        self.next_agent_id += 1;
+        let name = self
+            .task_names
+            .remove(id)
+            .unwrap_or_else(|| format!("Agent {}", self.chats.len()));
         let idx = self.chats.len();
         self.chats.push(Chat::new(name.clone()));
         self.chat_index.insert(id.to_owned(), idx);
@@ -303,8 +313,8 @@ impl App {
         self.chats.clear();
         self.chats.push(Chat::new("Main".into()));
         self.active_chat = 0;
-        self.next_agent_id = 1;
         self.chat_index.clear();
+        self.task_names.clear();
         self.status = Status::Idle;
         self.token_usage = TokenUsage::default();
         self.context_size = 0;
@@ -383,11 +393,9 @@ impl App {
         self.main_chat().load_messages(msgs);
     }
 
-    pub fn load_subagent(&mut self, parent_tool_id: &str, msgs: Vec<DisplayMessage>) {
-        let name = format!("Agent {}", self.next_agent_id);
-        self.next_agent_id += 1;
+    pub fn load_subagent(&mut self, parent_tool_id: &str, name: &str, msgs: Vec<DisplayMessage>) {
         let idx = self.chats.len();
-        let mut chat = Chat::new(name);
+        let mut chat = Chat::new(name.to_owned());
         chat.load_messages(msgs);
         self.chats.push(chat);
         self.chat_index.insert(parent_tool_id.to_owned(), idx);
@@ -399,7 +407,7 @@ mod tests {
     use super::*;
     use crate::components::{TEST_CONTEXT_WINDOW, ctrl, key, test_pricing};
     use crossterm::event::{KeyCode, KeyModifiers};
-    use maki_providers::{AgentEvent, ToolStartEvent};
+    use maki_providers::ToolStartEvent;
 
     fn test_app() -> App {
         App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW)
@@ -703,8 +711,8 @@ mod tests {
         assert_eq!(app.chats.len(), 1);
         assert_eq!(app.chats[0].name, "Main");
         assert_eq!(app.active_chat, 0);
-        assert_eq!(app.next_agent_id, 1);
         assert!(app.chat_index.is_empty());
+        assert!(app.task_names.is_empty());
     }
 
     #[test]
@@ -765,11 +773,11 @@ mod tests {
             "task1",
         ));
         assert_eq!(app.chats.len(), 2);
-        assert_eq!(app.chats[1].name, "Agent 1");
+        assert_eq!(app.chats[1].name, "research");
     }
 
     #[test]
-    fn multiple_subagents_get_sequential_names() {
+    fn multiple_subagents_get_descriptive_names() {
         let mut app = test_app();
         app.status = Status::Streaming;
         app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
@@ -795,8 +803,8 @@ mod tests {
             "task2",
         ));
         assert_eq!(app.chats.len(), 3);
-        assert_eq!(app.chats[1].name, "Agent 1");
-        assert_eq!(app.chats[2].name, "Agent 2");
+        assert_eq!(app.chats[1].name, "first");
+        assert_eq!(app.chats[2].name, "second");
     }
 
     #[test]
