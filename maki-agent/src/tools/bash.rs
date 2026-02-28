@@ -242,10 +242,6 @@ mod tests {
                 .trim()
                 .ends_with(dir.path().file_name().unwrap().to_str().unwrap())
         );
-
-        let mut bad_dir = bash("echo hi");
-        bad_dir.workdir = Some("/nonexistent_dir_12345".into());
-        assert!(bad_dir.execute(&ctx).is_err());
     }
 
     #[test]

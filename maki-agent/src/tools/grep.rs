@@ -5,7 +5,7 @@ use maki_providers::{GrepFileEntry, GrepMatch, ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
 use super::{
-    NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path, truncate_line,
+    NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path, truncate_bytes,
 };
 
 #[derive(Tool, Debug, Clone)]
@@ -56,7 +56,7 @@ impl Grep {
             let Some((line_num, text)) = rest.split_once('|') else {
                 continue;
             };
-            let text = truncate_line(text);
+            let text = truncate_bytes(text);
             let rel = file
                 .strip_prefix(prefix)
                 .and_then(|p| p.strip_prefix('/'))

@@ -4,7 +4,7 @@ use std::fs;
 use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
-use super::{MAX_OUTPUT_LINES, relative_path, truncate_line};
+use super::{MAX_OUTPUT_LINES, relative_path, truncate_bytes};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Read {
@@ -30,7 +30,7 @@ impl Read {
             .lines()
             .skip(start)
             .take(limit)
-            .map(truncate_line)
+            .map(truncate_bytes)
             .collect();
 
         Ok(ToolOutput::ReadCode {

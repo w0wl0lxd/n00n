@@ -38,7 +38,7 @@ pub const WRITE_TOOL_NAME: &str = write::Write::NAME;
 const MAX_OUTPUT_BYTES: usize = 30_000;
 pub(crate) const MAX_OUTPUT_LINES: usize = 2000;
 pub(crate) const SEARCH_RESULT_LIMIT: usize = 100;
-pub(crate) const MAX_LINE_LENGTH: usize = 1000;
+pub(crate) const MAX_LINE_BYTES: usize = 500;
 pub(crate) const NO_FILES_FOUND: &str = "No files found";
 const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
 
@@ -80,9 +80,9 @@ pub(crate) fn mtime(path: &Path) -> SystemTime {
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
-pub(crate) fn truncate_line(line: &str) -> String {
-    if line.len() > MAX_LINE_LENGTH {
-        let boundary = line.floor_char_boundary(MAX_LINE_LENGTH);
+pub(crate) fn truncate_bytes(line: &str) -> String {
+    if line.len() > MAX_LINE_BYTES {
+        let boundary = line.floor_char_boundary(MAX_LINE_BYTES);
         format!("{}...", &line[..boundary])
     } else {
         line.to_owned()
@@ -297,22 +297,20 @@ mod tests {
     use super::test_support::stub_ctx;
     use super::*;
 
-    const SUFFIX: &str = "...";
-
     #[test_case("short",                            "short"                             ; "short_passthrough")]
-    #[test_case(&"x".repeat(MAX_LINE_LENGTH),       &"x".repeat(MAX_LINE_LENGTH)        ; "exact_boundary")]
-    #[test_case(&"x".repeat(MAX_LINE_LENGTH + 500), &format!("{}...", "x".repeat(MAX_LINE_LENGTH)) ; "long_truncated")]
-    fn truncate_line_cases(input: &str, expected: &str) {
-        let result = truncate_line(input);
+    #[test_case(&"x".repeat(MAX_LINE_BYTES),       &"x".repeat(MAX_LINE_BYTES)        ; "exact_boundary")]
+    #[test_case(&"x".repeat(MAX_LINE_BYTES + 500), &format!("{}...", "x".repeat(MAX_LINE_BYTES)) ; "long_truncated")]
+    fn truncate_bytes_cases(input: &str, expected: &str) {
+        let result = truncate_bytes(input);
         assert_eq!(result, expected);
     }
 
     #[test]
-    fn truncate_line_respects_char_boundary() {
-        let input = "a".repeat(MAX_LINE_LENGTH - 1) + "\u{1F600}";
-        let result = truncate_line(&input);
-        assert!(result.len() <= MAX_LINE_LENGTH + SUFFIX.len());
-        assert!(result.ends_with(SUFFIX));
+    fn truncate_bytes_respects_char_boundary() {
+        let input = "a".repeat(MAX_LINE_BYTES - 1) + "\u{1F600}";
+        let result = truncate_bytes(&input);
+        assert!(result.len() <= MAX_LINE_BYTES + "...".len());
+        assert!(result.ends_with("..."));
     }
 
     #[test]
@@ -401,13 +399,11 @@ mod tests {
     #[test]
     fn from_api_unknown_tool_returns_error() {
         let err = ToolCall::from_api("nonexistent_tool", &json!({})).unwrap_err();
-        match err {
-            AgentError::Tool { tool, message } => {
-                assert_eq!(tool, "nonexistent_tool");
-                assert!(message.contains("unknown variant"));
-            }
-            other => panic!("expected AgentError::Tool, got {other:?}"),
-        }
+        let AgentError::Tool { tool, message } = err else {
+            panic!("expected AgentError::Tool, got {err:?}");
+        };
+        assert_eq!(tool, "nonexistent_tool");
+        assert!(message.contains("unknown variant"));
     }
 
     #[test]
@@ -420,9 +416,7 @@ mod tests {
             .iter()
             .map(|d| d["name"].as_str().unwrap())
             .collect();
-        assert!(names.contains(&"bash"));
-        assert!(names.contains(&"read"));
-        assert!(!names.iter().any(|n| *n != "bash" && *n != "read"));
+        assert_eq!(names, ["bash", "read"]);
     }
 
     #[test]
