@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::components::messages::MessagesPanel;
 use crate::components::{DisplayMessage, DisplayRole};
 
@@ -28,7 +30,7 @@ impl Chat {
         }
     }
 
-    pub fn handle_event(&mut self, event: AgentEvent) -> ChatEventResult {
+    pub fn handle_event(&mut self, event: AgentEvent, plan_path: Option<&str>) -> ChatEventResult {
         match event {
             AgentEvent::ThinkingDelta { text } => self.messages_panel.thinking_delta(&text),
             AgentEvent::TextDelta { text } => self.messages_panel.text_delta(&text),
@@ -36,7 +38,22 @@ impl Chat {
             AgentEvent::ToolOutput { id, content } => {
                 self.messages_panel.tool_output(&id, &content)
             }
-            AgentEvent::ToolDone(e) => self.messages_panel.tool_done(e),
+            AgentEvent::ToolDone(e) => {
+                let is_plan_write = plan_path.is_some_and(|pp| {
+                    e.written_path()
+                        .is_some_and(|wp| wp == pp || Path::new(pp).ends_with(wp))
+                });
+                self.messages_panel.tool_done(e);
+                if is_plan_write {
+                    let pp = plan_path.unwrap();
+                    if let Ok(content) = std::fs::read_to_string(pp) {
+                        self.messages_panel.push(DisplayMessage::new(
+                            DisplayRole::Assistant,
+                            format!("```markdown\n{content}\n```\n\n`{pp}`"),
+                        ));
+                    }
+                }
+            }
             AgentEvent::BatchProgress {
                 batch_id,
                 index,
@@ -111,58 +128,106 @@ impl Chat {
     pub fn in_progress_count(&self) -> usize {
         self.messages_panel.in_progress_count()
     }
+
+    #[cfg(test)]
+    pub fn last_message_text(&self) -> &str {
+        self.messages_panel.last_message_text()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maki_providers::{AgentEvent, ToolStartEvent};
+    use maki_providers::{AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 
-    fn tool_start_event(id: &str) -> ToolStartEvent {
-        ToolStartEvent {
+    fn tool_start(id: &str, tool: &'static str) -> AgentEvent {
+        AgentEvent::ToolStart(ToolStartEvent {
             id: id.into(),
-            tool: "bash",
-            summary: "running".into(),
+            tool,
+            summary: String::new(),
             input: None,
             output: None,
-        }
+        })
+    }
+
+    fn write_done(id: &str, path: &str) -> AgentEvent {
+        AgentEvent::ToolDone(ToolDoneEvent {
+            id: id.into(),
+            tool: "write",
+            output: ToolOutput::WriteCode {
+                path: path.into(),
+                byte_count: 42,
+                lines: vec![],
+            },
+            is_error: false,
+        })
     }
 
     #[test]
-    fn handle_event_tool_lifecycle() {
+    fn tool_lifecycle() {
         let mut chat = Chat::new("Main".into());
-        chat.handle_event(AgentEvent::ToolStart(tool_start_event("t1")));
+        chat.handle_event(tool_start("t1", "bash"), None);
         assert_eq!(chat.in_progress_count(), 1);
 
-        chat.handle_event(AgentEvent::ToolDone(maki_providers::ToolDoneEvent {
-            id: "t1".into(),
-            tool: "bash",
-            output: maki_providers::ToolOutput::Plain("ok".into()),
-            is_error: false,
-        }));
+        chat.handle_event(
+            AgentEvent::ToolDone(ToolDoneEvent {
+                id: "t1".into(),
+                tool: "bash",
+                output: ToolOutput::Plain("ok".into()),
+                is_error: false,
+            }),
+            None,
+        );
         assert_eq!(chat.in_progress_count(), 0);
     }
 
     #[test]
-    fn handle_event_done_returns_done() {
+    fn done_returns_done() {
         let mut chat = Chat::new("Main".into());
-        chat.handle_event(AgentEvent::TextDelta {
-            text: "partial".into(),
-        });
-        let result = chat.handle_event(AgentEvent::Done {
-            usage: TokenUsage::default(),
-            num_turns: 1,
-            stop_reason: None,
-        });
+        let result = chat.handle_event(
+            AgentEvent::Done {
+                usage: TokenUsage::default(),
+                num_turns: 1,
+                stop_reason: None,
+            },
+            None,
+        );
         assert!(matches!(result, ChatEventResult::Done));
     }
 
     #[test]
-    fn handle_event_error_returns_error() {
+    fn error_returns_error() {
         let mut chat = Chat::new("Main".into());
-        let result = chat.handle_event(AgentEvent::Error {
-            message: "boom".into(),
-        });
+        let result = chat.handle_event(
+            AgentEvent::Error {
+                message: "boom".into(),
+            },
+            None,
+        );
         assert!(matches!(result, ChatEventResult::Error(ref e) if e == "boom"));
+    }
+
+    #[test]
+    fn plan_write_renders_file_content() {
+        let mut chat = Chat::new("Main".into());
+        let dir = tempfile::tempdir().unwrap();
+        let plan_path = dir.path().join("plan.md");
+        std::fs::write(&plan_path, "# My Plan\n\n- Step 1").unwrap();
+        let plan_str = plan_path.to_str().unwrap();
+
+        chat.handle_event(tool_start("w1", "write"), Some(plan_str));
+        chat.handle_event(write_done("w1", plan_str), Some(plan_str));
+
+        let last = chat.last_message_text();
+        assert!(last.contains("# My Plan"));
+        assert!(last.contains("- Step 1"));
+    }
+
+    #[test]
+    fn plan_write_ignores_different_path() {
+        let mut chat = Chat::new("Main".into());
+        chat.handle_event(tool_start("w1", "write"), Some("/plans/123.md"));
+        chat.handle_event(write_done("w1", "src/main.rs"), Some("/plans/123.md"));
+        assert!(!chat.last_message_text().contains("```markdown"));
     }
 }

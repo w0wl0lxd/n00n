@@ -314,6 +314,16 @@ impl ToolDoneEvent {
             is_error: true,
         }
     }
+
+    pub fn written_path(&self) -> Option<&str> {
+        if self.is_error || self.tool != "write" {
+            return None;
+        }
+        match &self.output {
+            ToolOutput::WriteCode { path, .. } => Some(path),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -478,5 +488,46 @@ mod tests {
         assert!(text.contains("10: fn bar()"));
         assert!(text.contains("src/b.rs"));
         assert!(text.contains("1: use crate"));
+    }
+
+    #[test]
+    fn written_path_returns_path_for_successful_write() {
+        let event = ToolDoneEvent {
+            id: "w1".into(),
+            tool: "write",
+            output: ToolOutput::WriteCode {
+                path: "src/lib.rs".into(),
+                byte_count: 10,
+                lines: vec![],
+            },
+            is_error: false,
+        };
+        assert_eq!(event.written_path(), Some("src/lib.rs"));
+    }
+
+    #[test]
+    fn written_path_none_on_error() {
+        let event = ToolDoneEvent {
+            id: "w1".into(),
+            tool: "write",
+            output: ToolOutput::WriteCode {
+                path: "src/lib.rs".into(),
+                byte_count: 0,
+                lines: vec![],
+            },
+            is_error: true,
+        };
+        assert_eq!(event.written_path(), None);
+    }
+
+    #[test]
+    fn written_path_none_for_non_write_tool() {
+        let event = ToolDoneEvent {
+            id: "b1".into(),
+            tool: "bash",
+            output: ToolOutput::Plain("ok".into()),
+            is_error: false,
+        };
+        assert_eq!(event.written_path(), None);
     }
 }

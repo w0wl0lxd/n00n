@@ -289,6 +289,11 @@ impl MessagesPanel {
         self.in_progress_count
     }
 
+    #[cfg(test)]
+    pub fn last_message_text(&self) -> &str {
+        self.messages.last().map(|m| m.text.as_str()).unwrap_or("")
+    }
+
     pub fn flush(&mut self) {
         self.flush_thinking();
         if !self.streaming_text.is_empty() {

@@ -224,14 +224,18 @@ impl App {
         }
 
         let chat_idx = self.resolve_or_create_chat(envelope.parent_tool_use_id.as_deref());
+        let plan_path = match &self.mode {
+            AgentMode::Plan(p) => Some(p.as_str()),
+            AgentMode::Build => None,
+        };
 
-        if let maki_providers::AgentEvent::TurnComplete { usage, .. } = &envelope.event {
+        if let AgentEvent::TurnComplete { usage, .. } = &envelope.event {
             self.token_usage += usage.clone();
             self.chats[chat_idx].token_usage += usage.clone();
             self.chats[chat_idx].context_size = usage.context_tokens();
         }
 
-        let result = self.chats[chat_idx].handle_event(envelope.event);
+        let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);
 
         if chat_idx == 0 {
             match result {
