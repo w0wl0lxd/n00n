@@ -1,7 +1,7 @@
 use maki_agent::tools::{
     BASH_TOOL_NAME, BATCH_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME,
-    MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, TODOWRITE_TOOL_NAME, WEBFETCH_TOOL_NAME,
-    WRITE_TOOL_NAME,
+    MULTIEDIT_TOOL_NAME, QUESTION_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, TODOWRITE_TOOL_NAME,
+    WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
 use maki_providers::{
     BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch,
@@ -36,11 +36,11 @@ fn tool(
 
 pub fn mock_messages() -> Vec<DisplayMessage> {
     vec![
-        // #1 User
+        // User
         msg(DisplayRole::User, "Refactor the config module to use builder pattern and add validation."),
-        // #2 Thinking
+        // Thinking
         msg(DisplayRole::Thinking, "Let me analyze the config module structure. I'll need to look at the existing implementation, understand the current API surface, and plan the refactor to use a builder pattern with proper validation."),
-        // #3 Assistant (rich markdown)
+        // Assistant (rich markdown)
         msg(DisplayRole::Assistant, concat!(
             "I'll refactor the config module. Let me start by reading the current implementation.\n",
             "\n",
@@ -67,7 +67,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             "\n",
             "I'll transform this into a *builder* with **compile-time** guarantees.",
         )),
-        // #4 Bash - Success, Plain, header+body
+        // Bash - Success, Plain, header+body
         tool(
             "t_bash",
             BASH_TOOL_NAME,
@@ -84,7 +84,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                     .into(),
             )),
         ),
-        // #5 Read - Success, ReadCode
+        // Read - Success, ReadCode
         tool(
             "t_read",
             READ_TOOL_NAME,
@@ -103,7 +103,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 ],
             }),
         ),
-        // #6 Edit - Success, Diff
+        // Edit - Success, Diff
         tool(
             "t_edit",
             EDIT_TOOL_NAME,
@@ -124,7 +124,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 summary: "Renamed Config to ConfigBuilder, added host field".into(),
             }),
         ),
-        // #7 Write - Success, WriteCode
+        // Write - Success, WriteCode
         tool(
             "t_write",
             WRITE_TOOL_NAME,
@@ -141,7 +141,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 ],
             }),
         ),
-        // #8 Glob - Success, Plain, header+body
+        // Glob - Success, Plain, header+body
         tool(
             "t_glob",
             GLOB_TOOL_NAME,
@@ -152,7 +152,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 "src/config/mod.rs\nsrc/config/builder.rs\nsrc/config/validation.rs".into(),
             )),
         ),
-        // #9 Grep - Success, GrepResult (pattern + filter + path)
+        // Grep - Success, GrepResult (pattern + filter + path)
         tool(
             "t_grep",
             GREP_TOOL_NAME,
@@ -172,7 +172,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 ],
             }),
         ),
-        // #10 TodoWrite - Success, TodoList
+        // TodoWrite - Success, TodoList
         tool(
             "t_todo",
             TODOWRITE_TOOL_NAME,
@@ -186,7 +186,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 TodoItem { content: "Update tests".into(), status: TodoStatus::Pending, priority: TodoPriority::Low },
             ])),
         ),
-        // #11 WebFetch - Success, Plain, header only (body hidden)
+        // WebFetch - Success, Plain, header only (body hidden)
         tool(
             "t_web",
             WEBFETCH_TOOL_NAME,
@@ -195,7 +195,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             None,
             Some(ToolOutput::Plain("Configuration crate docs content...".into())),
         ),
-        // #12 Task - Success, Plain, header+body
+        // Task - Success, Plain, header+body
         tool(
             "t_task",
             TASK_TOOL_NAME,
@@ -206,7 +206,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 "Found 3 relevant patterns in the codebase:\n- Builder pattern in src/http/\n- Validation in src/auth/\n- Default impl in src/db/".into(),
             )),
         ),
-        // #13 Batch - Success, Batch
+        // Batch - Success, Batch
         tool(
             "t_batch",
             BATCH_TOOL_NAME,
@@ -222,7 +222,20 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 text: String::new(),
             }),
         ),
-        // #14 MultiEdit - Success, Diff
+        // Question - Success, Plain
+        tool(
+            "t_question",
+            QUESTION_TOOL_NAME,
+            ToolStatus::Success,
+            "2 questions",
+            None,
+            Some(ToolOutput::Plain(
+                "What testing framework do you prefer?
+\
+                 Should I add integration tests as well?".into(),
+            )),
+        ),
+        // MultiEdit - Success, Diff
         tool(
             "t_multiedit",
             MULTIEDIT_TOOL_NAME,
@@ -241,7 +254,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 summary: "Updated import to use ConfigBuilder".into(),
             }),
         ),
-        // #15 Bash - Error, Plain, header+stderr
+        // Bash - Error, Plain, header+stderr
         tool(
             "t_bash_err",
             BASH_TOOL_NAME,
@@ -255,7 +268,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 "error[E0433]: failed to resolve: use of undeclared type `Config`\n  --> src/main.rs:15:5".into(),
             )),
         ),
-        // #16 Bash - InProgress (spinner animates)
+        // Bash - InProgress (spinner animates)
         tool(
             "t_bash_ip",
             BASH_TOOL_NAME,
@@ -267,9 +280,9 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             }),
             None,
         ),
-        // #17 Error
+        // Error
         msg(DisplayRole::Error, "Connection timed out after 30s. Retrying..."),
-        // #18 Assistant - plain code block (no language)
+        // Assistant - plain code block (no language)
         msg(DisplayRole::Assistant, concat!(
             "Here's what the output looks like:\n",
             "\n",
@@ -281,7 +294,7 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             "\n",
             "All good.",
         )),
-        // #19 Assistant - final summary
+        // Assistant - final summary
         msg(DisplayRole::Assistant, concat!(
             "Done! The config module now uses a ***builder pattern*** with validation.\n",
             "\n",
