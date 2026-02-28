@@ -49,6 +49,7 @@ pub const STRIKETHROUGH: Style = Style::new().fg(COMMENT).add_modifier(Modifier:
 pub const HEADING: Style = Style::new().fg(CYAN).add_modifier(Modifier::BOLD);
 pub const LIST_MARKER: Style = Style::new().fg(CYAN);
 pub const HORIZONTAL_RULE: Style = Style::new().fg(COMMENT);
+pub const TABLE_BORDER: Style = Style::new().fg(COMMENT);
 
 const DIFF_OLD_BG: Color = Color::Rgb(0x4D, 0x1F, 0x1F);
 const DIFF_NEW_BG: Color = Color::Rgb(0x1F, 0x3D, 0x1F);

@@ -5,6 +5,7 @@ use crate::theme;
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 pub const TRUNCATION_PREFIX: &str = "...";
 
@@ -19,6 +20,7 @@ pub const STRIKETHROUGH_STYLE: Style = theme::STRIKETHROUGH;
 pub const HEADING_STYLE: Style = theme::HEADING;
 pub const LIST_MARKER_STYLE: Style = theme::LIST_MARKER;
 pub const HORIZONTAL_RULE_STYLE: Style = theme::HORIZONTAL_RULE;
+pub const TABLE_BORDER_STYLE: Style = theme::TABLE_BORDER;
 
 const BULLET: &str = "• ";
 const HR_CHAR: char = '─';
@@ -444,7 +446,180 @@ fn parse_line_prefix(line: &str, base_style: Style) -> (Option<String>, &str, St
 
 enum TextBlock<'a> {
     Normal(&'a str),
-    Code { lang: &'a str, code: &'a str },
+    Code {
+        lang: &'a str,
+        code: &'a str,
+    },
+    Table {
+        rows: Vec<Vec<&'a str>>,
+        header_end: usize,
+    },
+}
+
+fn is_table_row(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with('|') && t.ends_with('|') && t.matches('|').count() >= 2
+}
+
+fn is_separator_row(line: &str) -> bool {
+    if !is_table_row(line) {
+        return false;
+    }
+    parse_table_cells(line)
+        .iter()
+        .all(|cell| cell.bytes().all(|b| matches!(b, b'-' | b':')) && cell.contains('-'))
+}
+
+fn parse_table_cells(line: &str) -> Vec<&str> {
+    let t = line.trim();
+    let inner = t.strip_prefix('|').unwrap_or(t);
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    inner.split('|').map(|c| c.trim()).collect()
+}
+
+fn split_normal_blocks<'a>(text: &'a str) -> Vec<TextBlock<'a>> {
+    let mut lines_with_offsets: Vec<(usize, &str)> = Vec::new();
+    let mut offset = 0;
+    for line in text.split('\n') {
+        lines_with_offsets.push((offset, line));
+        offset += line.len() + 1;
+    }
+
+    let mut blocks: Vec<TextBlock<'a>> = Vec::new();
+    let mut normal_start: Option<usize> = None;
+    let mut i = 0;
+
+    while i < lines_with_offsets.len() {
+        let (_, line) = lines_with_offsets[i];
+        if is_table_row(line) {
+            let table_start = i;
+            let mut sep_idx = None;
+            let mut j = i;
+            while j < lines_with_offsets.len() && is_table_row(lines_with_offsets[j].1) {
+                if sep_idx.is_none() && is_separator_row(lines_with_offsets[j].1) {
+                    sep_idx = Some(j - table_start);
+                }
+                j += 1;
+            }
+
+            if let Some(si) = sep_idx
+                && j - table_start >= 2
+            {
+                if let Some(ns) = normal_start.take() {
+                    let start = lines_with_offsets[ns].0;
+                    let end = lines_with_offsets[table_start].0;
+                    let slice = text[start..end].trim_matches('\n');
+                    if !slice.is_empty() {
+                        blocks.push(TextBlock::Normal(slice));
+                    }
+                }
+
+                let mut rows = Vec::new();
+                for (k, &(_, line)) in lines_with_offsets[table_start..j].iter().enumerate() {
+                    if k != si {
+                        rows.push(parse_table_cells(line));
+                    }
+                }
+                blocks.push(TextBlock::Table {
+                    rows,
+                    header_end: si,
+                });
+                i = j;
+                continue;
+            }
+        }
+
+        if normal_start.is_none() {
+            normal_start = Some(i);
+        }
+        i += 1;
+    }
+
+    if let Some(ns) = normal_start {
+        let start = lines_with_offsets[ns].0;
+        let content = text[start..].trim_start_matches('\n');
+        if !content.is_empty() {
+            blocks.push(TextBlock::Normal(content));
+        }
+    }
+
+    if blocks.is_empty() {
+        blocks.push(TextBlock::Normal(text));
+    }
+
+    blocks
+}
+
+fn cell_display_width(cell: &str) -> usize {
+    parse_inline_markdown(cell, Style::default())
+        .iter()
+        .map(|s| s.content.width())
+        .sum()
+}
+
+fn render_table(rows: &[Vec<&str>], header_end: usize, text_style: Style) -> Vec<Line<'static>> {
+    let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    if col_count == 0 {
+        return Vec::new();
+    }
+
+    let mut col_widths = vec![0usize; col_count];
+    for row in rows {
+        for (c, cell) in row.iter().enumerate() {
+            col_widths[c] = col_widths[c].max(cell_display_width(cell));
+        }
+    }
+
+    let mut lines = Vec::new();
+
+    let border = |left: &str, mid: &str, right: &str, fill: &str| -> Line<'static> {
+        let mut spans = vec![Span::styled(left.to_owned(), TABLE_BORDER_STYLE)];
+        for (i, &w) in col_widths.iter().enumerate() {
+            spans.push(Span::styled(fill.repeat(w + 2), TABLE_BORDER_STYLE));
+            if i < col_count - 1 {
+                spans.push(Span::styled(mid.to_owned(), TABLE_BORDER_STYLE));
+            }
+        }
+        spans.push(Span::styled(right.to_owned(), TABLE_BORDER_STYLE));
+        Line::from(spans)
+    };
+
+    lines.push(border("┌", "┬", "┐", "─"));
+
+    for (ri, row) in rows.iter().enumerate() {
+        let base = if ri < header_end {
+            bold_style(text_style)
+        } else {
+            text_style
+        };
+
+        let mut spans = vec![Span::styled("│ ".to_owned(), TABLE_BORDER_STYLE)];
+        for (c, &w) in col_widths.iter().enumerate() {
+            let cell = row.get(c).copied().unwrap_or("");
+            let cell_spans = parse_inline_markdown(cell, base);
+            let content_width: usize = cell_spans.iter().map(|s| s.content.width()).sum();
+            let pad = w.saturating_sub(content_width);
+
+            for s in cell_spans {
+                spans.push(Span::styled(s.content.into_owned(), s.style));
+            }
+            spans.push(Span::styled(" ".repeat(pad + 1), base));
+            if c < col_count - 1 {
+                spans.push(Span::styled("│ ".to_owned(), TABLE_BORDER_STYLE));
+            } else {
+                spans.push(Span::styled("│".to_owned(), TABLE_BORDER_STYLE));
+            }
+        }
+        lines.push(Line::from(spans));
+
+        if ri + 1 == header_end && header_end < rows.len() {
+            lines.push(border("├", "┼", "┤", "─"));
+        }
+    }
+
+    lines.push(border("└", "┴", "┘", "─"));
+
+    lines
 }
 
 fn find_opening_fence(text: &str) -> Option<(usize, usize)> {
@@ -481,7 +656,7 @@ fn parse_blocks(text: &str) -> Vec<TextBlock<'_>> {
     while let Some((fence_start, fence_len)) = find_opening_fence(rest) {
         let before = rest[..fence_start].trim_end_matches('\n');
         if !before.is_empty() {
-            blocks.push(TextBlock::Normal(before));
+            blocks.extend(split_normal_blocks(before));
         }
 
         let after_fence = &rest[fence_start + fence_len..];
@@ -510,7 +685,7 @@ fn parse_blocks(text: &str) -> Vec<TextBlock<'_>> {
     }
 
     if !rest.is_empty() {
-        blocks.push(TextBlock::Normal(rest));
+        blocks.extend(split_normal_blocks(rest));
     }
 
     blocks
@@ -619,6 +794,17 @@ pub fn text_to_lines(
                 }
                 ensure_blank_line(&mut lines);
                 code_idx += 1;
+            }
+            TextBlock::Table { rows, header_end } => {
+                if first_line {
+                    if !prefix.is_empty() {
+                        lines.push(Line::from(prefix_span(prefix, prefix_style)));
+                    }
+                    first_line = false;
+                }
+                ensure_blank_line(&mut lines);
+                lines.extend(render_table(&rows, header_end, text_style));
+                ensure_blank_line(&mut lines);
             }
         }
     }
@@ -791,9 +977,10 @@ mod tests {
     fn block_summary<'a>(blocks: &'a [TextBlock<'a>]) -> Vec<(&'a str, Option<&'a str>)> {
         blocks
             .iter()
-            .map(|b| match b {
-                TextBlock::Normal(t) => (*t, None),
-                TextBlock::Code { lang, code } => (*code, Some(*lang)),
+            .filter_map(|b| match b {
+                TextBlock::Normal(t) => Some((*t, None)),
+                TextBlock::Code { lang, code } => Some((*code, Some(*lang))),
+                TextBlock::Table { .. } => None,
             })
             .collect()
     }
@@ -887,8 +1074,35 @@ mod tests {
 
     fn strip_md(s: &str) -> String {
         s.chars()
-            .filter(|c| !matches!(c, '`' | '*' | '#' | '•' | '-' | '+' | '~' | '_' | '─'))
+            .filter(|c| {
+                !matches!(
+                    c,
+                    '`' | '*'
+                        | '#'
+                        | '•'
+                        | '-'
+                        | '+'
+                        | '~'
+                        | '_'
+                        | '─'
+                        | '│'
+                        | '┌'
+                        | '┐'
+                        | '├'
+                        | '┤'
+                        | '└'
+                        | '┘'
+                        | '┬'
+                        | '┴'
+                        | '┼'
+                        | '|'
+                )
+            })
             .collect()
+    }
+
+    fn normalize_ws(s: &str) -> String {
+        s.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     #[test]
@@ -967,6 +1181,10 @@ mod tests {
         )
         ; "streaming_realistic_llm_response"
     )]
+    #[test_case(
+        "Before table\n\n| Name | Value |\n| --- | --- |\n| foo | 42 |\n| bar | 99 |\n\nAfter table"
+        ; "streaming_table_between_paragraphs"
+    )]
     fn streaming_never_garbles(input: &str) {
         let style = Style::default();
         let step = if input.len() > 200 { 7 } else { 1 };
@@ -998,11 +1216,11 @@ mod tests {
                     .strip_prefix(highlight::CODE_BAR)
                     .or_else(|| trimmed.strip_prefix(highlight::CODE_BAR.trim_end()))
                     .unwrap_or(trimmed);
-                let line_stripped = strip_md(without_bar).trim().to_owned();
+                let line_stripped = normalize_ws(&strip_md(without_bar));
                 if line_stripped.is_empty() {
                     continue;
                 }
-                let input_stripped = strip_md(prefix);
+                let input_stripped = normalize_ws(&strip_md(prefix));
                 assert!(
                     input_stripped.contains(&line_stripped),
                     "rendered line not found in input at prefix len={end}\n  prefix: {prefix:?}\n  rendered line: {line:?}\n  full rendered: {rendered:?}"
@@ -1183,5 +1401,135 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test_case("| a | b |", true ; "valid_row")]
+    #[test_case("| a | b | c |", true ; "three_cols")]
+    #[test_case("no pipes", false ; "no_pipes")]
+    #[test_case("| single |", true ; "single_col")]
+    #[test_case("| a | b", false ; "no_trailing_pipe")]
+    #[test_case("a | b |", false ; "no_leading_pipe")]
+    fn is_table_row_cases(input: &str, expected: bool) {
+        assert_eq!(is_table_row(input), expected);
+    }
+
+    #[test_case("| --- | --- |", true ; "simple_sep")]
+    #[test_case("| :---: | ---: |", true ; "aligned_sep")]
+    #[test_case("| - | -- |", true ; "short_dashes")]
+    #[test_case("| abc | def |", false ; "not_sep")]
+    #[test_case("| --- |", true ; "single_col_sep")]
+    fn is_separator_row_cases(input: &str, expected: bool) {
+        assert_eq!(is_separator_row(input), expected);
+    }
+
+    #[test_case("| a | b |", &["a", "b"] ; "basic_cells")]
+    #[test_case("|  x  |  y  |  z  |", &["x", "y", "z"] ; "trimmed_cells")]
+    #[test_case("| a |", &["a"] ; "single_cell")]
+    fn parse_table_cells_cases(input: &str, expected: &[&str]) {
+        assert_eq!(parse_table_cells(input), expected);
+    }
+
+    #[test]
+    fn split_normal_no_table() {
+        let blocks = split_normal_blocks("just some text\nwith lines");
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(blocks[0], TextBlock::Normal(_)));
+    }
+
+    #[test]
+    fn split_normal_extracts_table() {
+        let blocks = split_normal_blocks("before\n| a | b |\n| --- | --- |\n| 1 | 2 |\nafter");
+        assert!(blocks.len() >= 3);
+        assert!(matches!(blocks[0], TextBlock::Normal(_)));
+        assert!(matches!(blocks[1], TextBlock::Table { .. }));
+        assert!(matches!(blocks[2], TextBlock::Normal(_)));
+        let TextBlock::Table {
+            ref rows,
+            header_end,
+        } = blocks[1]
+        else {
+            unreachable!()
+        };
+        assert_eq!(header_end, 1);
+        assert_eq!(rows, &[vec!["a", "b"], vec!["1", "2"]]);
+    }
+
+    #[test_case("| h |\n| --- |\n| d |\nafter", 0 ; "table_at_start")]
+    #[test_case("before\n| h |\n| --- |\n| d |", -1 ; "table_at_end")]
+    fn split_normal_table_position(input: &str, idx: isize) {
+        let blocks = split_normal_blocks(input);
+        let i = if idx < 0 {
+            blocks.len() - 1
+        } else {
+            idx as usize
+        };
+        assert!(matches!(blocks[i], TextBlock::Table { .. }));
+    }
+
+    #[test]
+    fn render_table_structure() {
+        let style = Style::default();
+        let input = "| Name | Value |\n| --- | --- |\n| foo | 42 |";
+        let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
+        let text = lines_text(&lines);
+        let joined = text.join("\n");
+        for expected in ["┌", "Name", "├", "foo", "42", "└"] {
+            assert!(joined.contains(expected), "missing {expected:?} in table");
+        }
+    }
+
+    #[test]
+    fn table_with_prefix() {
+        let style = Style::default();
+        let input = "| a | b |\n| --- | --- |\n| 1 | 2 |";
+        let lines = text_to_lines(input, "p> ", style, style, None, TEST_WIDTH);
+        assert_eq!(lines[0].spans[0].content, "p> ");
+    }
+
+    #[test]
+    fn table_between_paragraphs() {
+        let style = Style::default();
+        let input = "before\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\nafter";
+        let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
+        let text = lines_text(&lines);
+        assert_eq!(text.first().unwrap(), "before");
+        assert!(text.iter().any(|l| l.contains('┌')));
+        assert_eq!(text.last().unwrap(), "after");
+    }
+
+    #[test]
+    fn table_no_double_blank_before_hr() {
+        let style = Style::default();
+        let input = "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n---\n\nafter";
+        let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
+        let text = lines_text(&lines);
+        let consecutive_blanks = text
+            .windows(2)
+            .filter(|w| w[0].is_empty() && w[1].is_empty())
+            .count();
+        assert_eq!(
+            consecutive_blanks, 0,
+            "should never have two consecutive blank lines"
+        );
+    }
+
+    #[test]
+    fn mismatched_cell_counts_does_not_panic() {
+        let style = Style::default();
+        let input = "| a | b | c |\n| --- | --- | --- |\n| 1 | 2 |";
+        let _ = text_to_lines(input, "", style, style, None, TEST_WIDTH);
+    }
+
+    #[test]
+    fn header_row_is_bold() {
+        let style = Style::default();
+        let input = "| Header |\n| --- |\n| Data |";
+        let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
+        let header_span = lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .find(|s| s.content.trim() == "Header")
+            .expect("Header span");
+        assert!(header_span.style.add_modifier.contains(Modifier::BOLD));
     }
 }
