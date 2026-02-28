@@ -388,6 +388,7 @@ impl App {
             },
             auto_scroll: chat.auto_scroll(),
             chat_name,
+            has_pending_plan: self.pending_plan.is_some(),
         };
         self.status_bar.view(frame, status_area, &ctx);
     }

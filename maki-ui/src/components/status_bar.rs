@@ -41,6 +41,7 @@ pub struct StatusBarContext<'a> {
     pub stats: UsageStats<'a>,
     pub auto_scroll: bool,
     pub chat_name: Option<&'a str>,
+    pub has_pending_plan: bool,
 }
 
 pub enum CancelResult {
@@ -100,6 +101,7 @@ impl StatusBar {
 
     pub fn view(&self, frame: &mut Frame, area: Rect, ctx: &StatusBarContext) {
         let (mode_label, mode_style) = match ctx.mode {
+            AgentMode::Build if ctx.has_pending_plan => ("[BUILD PLAN]", theme::MODE_BUILD),
             AgentMode::Build => ("[BUILD]", theme::MODE_BUILD),
             AgentMode::Plan(_) => ("[PLAN]", theme::MODE_PLAN),
         };
