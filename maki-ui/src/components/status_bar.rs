@@ -1,3 +1,5 @@
+use std::env;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::Status;
@@ -50,6 +52,7 @@ pub struct StatusBar {
     cancel_hint_since: Option<Instant>,
     error_since: Option<Instant>,
     started_at: Instant,
+    cwd_branch: String,
 }
 
 impl StatusBar {
@@ -58,6 +61,7 @@ impl StatusBar {
             cancel_hint_since: None,
             error_since: None,
             started_at: Instant::now(),
+            cwd_branch: cwd_branch_label(),
         }
     }
 
@@ -130,6 +134,8 @@ impl StatusBar {
                     0
                 };
 
+                right_spans.push(Span::styled(self.cwd_branch.clone(), theme::COMMENT_STYLE));
+                right_spans.push(Span::raw("  "));
                 right_spans.push(Span::styled(ctx.model_id.to_string(), theme::STATUS_IDLE));
 
                 let rest_text = format!(
@@ -171,9 +177,44 @@ impl StatusBar {
     }
 }
 
+fn collapse_home(path: &str) -> String {
+    let Some(home) = env::var_os("HOME") else {
+        return path.to_string();
+    };
+    collapse_home_with(path, &home.to_string_lossy())
+}
+
+fn collapse_home_with(path: &str, home: &str) -> String {
+    path.strip_prefix(home)
+        .map(|rest| format!("~{rest}"))
+        .unwrap_or_else(|| path.to_string())
+}
+
+fn cwd_branch_label() -> String {
+    let cwd = env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".into());
+    let label = collapse_home(&cwd);
+    match detect_branch(&cwd) {
+        Some(branch) => format!("{label}:{branch}"),
+        None => label,
+    }
+}
+
+fn detect_branch(cwd: &str) -> Option<String> {
+    let head = std::fs::read_to_string(Path::new(cwd).join(".git/HEAD")).ok()?;
+    let head = head.trim();
+    head.strip_prefix("ref: refs/heads/")
+        .map(str::to_string)
+        .or_else(|| Some(head.get(..7)?.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+    use tempfile::TempDir;
     use test_case::test_case;
 
     #[test_case(999, "999")]
@@ -221,6 +262,32 @@ mod tests {
         bar.cancel_hint_since = Some(Instant::now());
         bar.clear_expired_hint();
         assert!(bar.cancel_hint_since.is_some());
+    }
+
+    #[test_case("/home/user/projects/app", "/home/user", "~/projects/app" ; "inside_home")]
+    #[test_case("/tmp/other", "/home/user", "/tmp/other"                  ; "outside_home")]
+    #[test_case("/home/user", "/home/user", "~"                           ; "exact_home")]
+    fn collapse_home_cases(path: &str, home: &str, expected: &str) {
+        assert_eq!(collapse_home_with(path, home), expected);
+    }
+
+    fn tmp_with_head(content: Option<&str>) -> (TempDir, String) {
+        let dir = TempDir::new().unwrap();
+        if let Some(head) = content {
+            let git = dir.path().join(".git");
+            fs::create_dir(&git).unwrap();
+            fs::write(git.join("HEAD"), head).unwrap();
+        }
+        let path = dir.path().to_string_lossy().into_owned();
+        (dir, path)
+    }
+
+    #[test_case(Some("ref: refs/heads/feature/foo\n"), Some("feature/foo") ; "regular_ref")]
+    #[test_case(Some("abc1234deadbeef\n"),            Some("abc1234")      ; "detached_head")]
+    #[test_case(None,                                 None                 ; "no_git_dir")]
+    fn detect_branch_cases(head: Option<&str>, expected: Option<&str>) {
+        let (_dir, path) = tmp_with_head(head);
+        assert_eq!(detect_branch(&path), expected.map(String::from));
     }
 
     #[test]

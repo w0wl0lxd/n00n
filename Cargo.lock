@@ -1071,6 +1071,7 @@ dependencies = [
  "maki-providers",
  "ratatui",
  "syntect",
+ "tempfile",
  "test-case",
  "tracing",
  "unicode-width",
