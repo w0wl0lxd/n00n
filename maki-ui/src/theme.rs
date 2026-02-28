@@ -46,8 +46,8 @@ pub const INLINE_CODE: Style = Style::new().fg(GREEN);
 pub const CODE_FALLBACK: Style = Style::new().fg(FOREGROUND);
 pub const CODE_BG_STYLE: Style = Style::new().bg(BACKGROUND_2);
 pub const STRIKETHROUGH: Style = Style::new().fg(COMMENT).add_modifier(Modifier::CROSSED_OUT);
-pub const HEADING: Style = Style::new().fg(PURPLE).add_modifier(Modifier::BOLD);
-pub const LIST_MARKER: Style = Style::new().fg(ORANGE);
+pub const HEADING: Style = Style::new().fg(CYAN).add_modifier(Modifier::BOLD);
+pub const LIST_MARKER: Style = Style::new().fg(CYAN);
 pub const HORIZONTAL_RULE: Style = Style::new().fg(COMMENT);
 
 const DIFF_OLD_BG: Color = Color::Rgb(0x4D, 0x1F, 0x1F);
