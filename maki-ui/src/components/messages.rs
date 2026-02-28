@@ -107,23 +107,6 @@ impl MessagesPanel {
         }
     }
 
-    pub fn reset(&mut self) {
-        self.messages.clear();
-        self.streaming_thinking = Typewriter::new();
-        self.streaming_text = Typewriter::new();
-        self.started_at = Instant::now();
-        self.in_progress_count = 0;
-        self.scroll_top = u16::MAX;
-        self.auto_scroll = true;
-        self.cached_segments.clear();
-        self.cached_msg_count = 0;
-        self.cached_streaming_thinking = StreamingCache {
-            dim: true,
-            ..StreamingCache::default()
-        };
-        self.cached_streaming_text = StreamingCache::default();
-    }
-
     pub fn push(&mut self, msg: DisplayMessage) {
         self.messages.push(msg);
     }
@@ -260,6 +243,19 @@ impl MessagesPanel {
             entry.status = status;
         }
         self.rebuild_tool_segment(batch_id);
+    }
+
+    pub fn update_tool_summary(&mut self, tool_id: &str, prefix: &str) {
+        let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == tool_id))
+        else {
+            return;
+        };
+        truncate_to_header(&mut msg.text);
+        msg.text = format!("{prefix}{}", msg.text);
+        self.rebuild_tool_segment(tool_id);
     }
 
     pub fn fail_in_progress(&mut self) {
@@ -1099,20 +1095,6 @@ mod tests {
         panel.load_messages(Vec::new());
         assert_eq!(panel.in_progress_count, 0);
         assert!(panel.messages.is_empty());
-    }
-
-    #[test]
-    fn reset_allows_reuse() {
-        let mut panel = panel_with_tools(&[("t1", "bash")]);
-        rebuild(&mut panel);
-
-        panel.reset();
-        assert!(panel.messages.is_empty());
-        assert_eq!(panel.in_progress_count, 0);
-
-        panel.tool_start(start("t2", "bash"));
-        rebuild(&mut panel);
-        assert!(has_seg(&panel, "t2"));
     }
 
     #[test]

@@ -1,8 +1,8 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
+use crate::chat::{Chat, ChatEventResult};
 use crate::components::command::{CommandAction, CommandPalette};
 use crate::components::input::{InputAction, InputBox};
-use crate::components::messages::MessagesPanel;
 use crate::components::queue_panel;
 use crate::components::status_bar::{CancelResult, StatusBar, StatusBarContext, UsageStats};
 use crate::components::{Action, DisplayMessage, DisplayRole, Status, is_ctrl};
@@ -10,7 +10,7 @@ use crate::theme;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use maki_agent::{AgentInput, AgentMode};
-use maki_providers::{AgentEvent, ModelPricing, TokenUsage};
+use maki_providers::{Envelope, ModelPricing, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::widgets::{Block, Widget};
@@ -20,11 +20,14 @@ const CANCEL_MSG: &str = "Cancelled. The agent will continue from the last succe
 pub enum Msg {
     Key(KeyEvent),
     Paste(String),
-    Agent(AgentEvent),
+    Agent(Envelope),
 }
 
 pub struct App {
-    messages_panel: MessagesPanel,
+    chats: Vec<Chat>,
+    active_chat: usize,
+    next_agent_id: usize,
+    chat_index: HashMap<String, usize>,
     pub(crate) input_box: InputBox,
     command_palette: CommandPalette,
     status_bar: StatusBar,
@@ -43,7 +46,10 @@ pub struct App {
 impl App {
     pub fn new(model_id: String, pricing: ModelPricing, context_window: u32) -> Self {
         Self {
-            messages_panel: MessagesPanel::new(),
+            chats: vec![Chat::new("Main".into())],
+            active_chat: 0,
+            next_agent_id: 1,
+            chat_index: HashMap::new(),
             input_box: InputBox::new(),
             command_palette: CommandPalette::new(),
             status_bar: StatusBar::new(),
@@ -60,6 +66,14 @@ impl App {
         }
     }
 
+    fn main_chat(&mut self) -> &mut Chat {
+        &mut self.chats[0]
+    }
+
+    fn active_chat(&mut self) -> &mut Chat {
+        &mut self.chats[self.active_chat]
+    }
+
     pub fn update(&mut self, msg: Msg) -> Vec<Action> {
         match msg {
             Msg::Key(key) => self.handle_key(key),
@@ -69,13 +83,13 @@ impl App {
                 }
                 vec![]
             }
-            Msg::Agent(event) => self.handle_agent_event(event),
+            Msg::Agent(envelope) => self.handle_agent_event(envelope),
         }
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Vec<Action> {
         if is_ctrl(&key) {
-            let half = self.messages_panel.half_page();
+            let half = self.chats[self.active_chat].half_page();
             return match key.code {
                 KeyCode::Char('c') => {
                     self.command_palette.close();
@@ -87,20 +101,28 @@ impl App {
                         vec![]
                     }
                 }
+                KeyCode::Char('p') => {
+                    self.active_chat = self.active_chat.saturating_sub(1);
+                    vec![]
+                }
+                KeyCode::Char('n') => {
+                    self.active_chat = (self.active_chat + 1).min(self.chats.len() - 1);
+                    vec![]
+                }
                 KeyCode::Char('u') => {
-                    self.messages_panel.scroll(half);
+                    self.active_chat().scroll(half);
                     vec![]
                 }
                 KeyCode::Char('d') => {
-                    self.messages_panel.scroll(-half);
+                    self.active_chat().scroll(-half);
                     vec![]
                 }
                 KeyCode::Char('y') => {
-                    self.messages_panel.scroll(1);
+                    self.active_chat().scroll(1);
                     vec![]
                 }
                 KeyCode::Char('e') => {
-                    self.messages_panel.scroll(-1);
+                    self.active_chat().scroll(-1);
                     vec![]
                 }
                 _ => {
@@ -128,11 +150,11 @@ impl App {
             }
             InputAction::Passthrough(key) => match key.code {
                 KeyCode::Up if streaming => {
-                    self.messages_panel.scroll(1);
+                    self.active_chat().scroll(1);
                     vec![]
                 }
                 KeyCode::Down if streaming => {
-                    self.messages_panel.scroll(-1);
+                    self.active_chat().scroll(-1);
                     vec![]
                 }
                 KeyCode::Tab => self.toggle_mode(),
@@ -152,12 +174,12 @@ impl App {
         };
         if self.status == Status::Streaming {
             self.queue.push_back(input);
-            self.messages_panel.enable_auto_scroll();
+            self.main_chat().enable_auto_scroll();
             vec![]
         } else {
-            self.push_user_message(&text);
+            self.main_chat().push_user_message(&text);
             self.status = Status::Streaming;
-            self.messages_panel.enable_auto_scroll();
+            self.main_chat().enable_auto_scroll();
             vec![Action::SendMessage(input)]
         }
     }
@@ -165,11 +187,14 @@ impl App {
     fn handle_cancel_press(&mut self) -> Vec<Action> {
         match self.status_bar.handle_cancel_press() {
             CancelResult::Confirmed => {
-                self.messages_panel.flush();
-                self.messages_panel.fail_in_progress();
-                self.messages_panel
+                for chat in &mut self.chats {
+                    chat.flush();
+                    chat.fail_in_progress();
+                }
+                self.main_chat()
                     .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
                 self.queue.clear();
+                self.chat_index.clear();
                 self.status = Status::Idle;
                 vec![Action::CancelAgent]
             }
@@ -177,59 +202,53 @@ impl App {
         }
     }
 
-    fn handle_agent_event(&mut self, event: AgentEvent) -> Vec<Action> {
-        match event {
-            AgentEvent::ThinkingDelta { text } => {
-                self.messages_panel.thinking_delta(&text);
-            }
-            AgentEvent::TextDelta { text } => {
-                self.messages_panel.text_delta(&text);
-            }
-            AgentEvent::ToolStart(e) => {
-                self.messages_panel.tool_start(e);
-            }
-            AgentEvent::ToolOutput { id, content } => {
-                self.messages_panel.tool_output(&id, &content);
-            }
-            AgentEvent::ToolDone(e) => {
-                self.messages_panel.tool_done(e);
-            }
-            AgentEvent::BatchProgress {
-                batch_id,
-                index,
-                status,
-            } => {
-                self.messages_panel.batch_progress(&batch_id, index, status);
-            }
-            AgentEvent::TurnComplete { usage, .. } => {
+    fn handle_agent_event(&mut self, envelope: Envelope) -> Vec<Action> {
+        let chat_idx = self.resolve_or_create_chat(envelope.parent_tool_use_id.as_deref());
+
+        if let maki_providers::AgentEvent::TurnComplete { usage, .. } = &envelope.event {
+            self.token_usage += usage.clone();
+            if chat_idx == 0 {
                 self.context_size = usage.context_tokens();
-                self.token_usage += usage;
             }
-            AgentEvent::ToolResultsSubmitted { .. } => {}
-            AgentEvent::Done { .. } => {
-                self.messages_panel.flush();
-                self.status_bar.clear_cancel_hint();
-                if let Some(input) = self.queue.pop_front() {
-                    self.push_user_message(&input.message);
-                    self.messages_panel.enable_auto_scroll();
-                    return vec![Action::SendMessage(input)];
+        }
+
+        let result = self.chats[chat_idx].handle_event(envelope.event);
+
+        if chat_idx == 0 {
+            match result {
+                ChatEventResult::Done => {
+                    self.status_bar.clear_cancel_hint();
+                    if let Some(input) = self.queue.pop_front() {
+                        self.main_chat().push_user_message(&input.message);
+                        self.main_chat().enable_auto_scroll();
+                        return vec![Action::SendMessage(input)];
+                    }
+                    self.status = Status::Idle;
                 }
-                self.status = Status::Idle;
-            }
-            AgentEvent::Error { message } => {
-                self.messages_panel.flush();
-                self.status = Status::Error(message);
-                self.status_bar.clear_cancel_hint();
-                self.status_bar.mark_error();
-                self.queue.clear();
+                ChatEventResult::Error(message) => {
+                    self.status = Status::Error(message);
+                    self.status_bar.clear_cancel_hint();
+                    self.status_bar.mark_error();
+                    self.queue.clear();
+                }
+                ChatEventResult::Continue => {}
             }
         }
         vec![]
     }
 
-    fn push_user_message(&mut self, text: &str) {
-        self.messages_panel
-            .push(DisplayMessage::new(DisplayRole::User, text.to_string()));
+    fn resolve_or_create_chat(&mut self, parent_id: Option<&str>) -> usize {
+        let Some(id) = parent_id else { return 0 };
+        if let Some(&idx) = self.chat_index.get(id) {
+            return idx;
+        }
+        let name = format!("Agent {}", self.next_agent_id);
+        self.next_agent_id += 1;
+        let idx = self.chats.len();
+        self.chats.push(Chat::new(name.clone()));
+        self.chat_index.insert(id.to_owned(), idx);
+        self.chats[0].update_tool_summary(id, &format!("{name}: "));
+        idx
     }
 
     fn toggle_mode(&mut self) -> Vec<Action> {
@@ -257,7 +276,11 @@ impl App {
     }
 
     fn reset_session(&mut self) -> Vec<Action> {
-        self.messages_panel.reset();
+        self.chats.clear();
+        self.chats.push(Chat::new("Main".into()));
+        self.active_chat = 0;
+        self.next_agent_id = 1;
+        self.chat_index.clear();
         self.status = Status::Idle;
         self.token_usage = TokenUsage::default();
         self.context_size = 0;
@@ -285,12 +308,13 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(frame.area());
-        self.messages_panel.view(frame, msg_area);
+        self.chats[self.active_chat].view(frame, msg_area);
         let queue_texts: Vec<&str> = self.queue.iter().map(|i| i.message.as_str()).collect();
         queue_panel::view(frame, queue_area, &queue_texts);
         self.input_box
             .view(frame, input_area, self.status == Status::Streaming);
         self.command_palette.view(frame, input_area);
+        let chat_name = (self.chats.len() > 1).then(|| self.chats[self.active_chat].name.as_str());
         let ctx = StatusBarContext {
             status: &self.status,
             mode: &self.mode,
@@ -301,17 +325,18 @@ impl App {
                 pricing: &self.pricing,
                 context_window: self.context_window,
             },
-            auto_scroll: self.messages_panel.auto_scroll(),
+            auto_scroll: self.chats[self.active_chat].auto_scroll(),
+            chat_name,
         };
         self.status_bar.view(frame, status_area, &ctx);
     }
 
     pub fn is_animating(&self) -> bool {
-        self.messages_panel.is_animating()
+        self.chats.iter().any(|c| c.is_animating())
     }
 
     pub fn load_messages(&mut self, msgs: Vec<DisplayMessage>) {
-        self.messages_panel.load_messages(msgs);
+        self.main_chat().load_messages(msgs);
     }
 }
 
@@ -320,10 +345,24 @@ mod tests {
     use super::*;
     use crate::components::{TEST_CONTEXT_WINDOW, ctrl, key, test_pricing};
     use crossterm::event::{KeyCode, KeyModifiers};
-    use maki_providers::ToolStartEvent;
+    use maki_providers::{AgentEvent, ToolStartEvent};
 
     fn test_app() -> App {
         App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW)
+    }
+
+    fn agent_msg(event: AgentEvent) -> Msg {
+        Msg::Agent(Envelope {
+            event,
+            parent_tool_use_id: None,
+        })
+    }
+
+    fn subagent_msg(event: AgentEvent, parent_id: &str) -> Msg {
+        Msg::Agent(Envelope {
+            event,
+            parent_tool_use_id: Some(parent_id.into()),
+        })
     }
 
     #[test]
@@ -365,10 +404,10 @@ mod tests {
     fn done_flushes_text_and_sets_idle() {
         let mut app = test_app();
         app.status = Status::Streaming;
-        app.update(Msg::Agent(AgentEvent::TextDelta {
+        app.update(agent_msg(AgentEvent::TextDelta {
             text: "response text".into(),
         }));
-        app.update(Msg::Agent(AgentEvent::Done {
+        app.update(agent_msg(AgentEvent::Done {
             usage: TokenUsage::default(),
             num_turns: 1,
             stop_reason: None,
@@ -387,7 +426,7 @@ mod tests {
             cache_creation: 200,
             cache_read: 3_000,
         };
-        app.update(Msg::Agent(AgentEvent::TurnComplete {
+        app.update(agent_msg(AgentEvent::TurnComplete {
             message: Default::default(),
             usage: usage.clone(),
             model: "test-model".into(),
@@ -396,7 +435,7 @@ mod tests {
         assert_eq!(app.token_usage.input, 1_000);
         assert_eq!(app.token_usage.output, 500);
 
-        app.update(Msg::Agent(AgentEvent::TurnComplete {
+        app.update(agent_msg(AgentEvent::TurnComplete {
             message: Default::default(),
             usage: TokenUsage {
                 input: 20,
@@ -413,7 +452,7 @@ mod tests {
     fn error_event_sets_status() {
         let mut app = test_app();
         app.status = Status::Streaming;
-        app.update(Msg::Agent(AgentEvent::Error {
+        app.update(agent_msg(AgentEvent::Error {
             message: "boom".into(),
         }));
         assert!(matches!(app.status, Status::Error(ref e) if e == "boom"));
@@ -464,10 +503,10 @@ mod tests {
     fn double_esc_cancels_flushes_and_fails_tools() {
         let mut app = test_app();
         app.status = Status::Streaming;
-        app.update(Msg::Agent(AgentEvent::TextDelta {
+        app.update(agent_msg(AgentEvent::TextDelta {
             text: "partial".into(),
         }));
-        app.update(Msg::Agent(AgentEvent::ToolStart(ToolStartEvent {
+        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
             id: "t1".into(),
             tool: "bash",
             summary: "running".into(),
@@ -481,7 +520,7 @@ mod tests {
         let actions = app.update(Msg::Key(key(KeyCode::Esc)));
         assert!(matches!(&actions[0], Action::CancelAgent));
         assert_eq!(app.status, Status::Idle);
-        assert_eq!(app.messages_panel.in_progress_count(), 0);
+        assert_eq!(app.chats[0].in_progress_count(), 0);
     }
 
     #[test]
@@ -514,7 +553,7 @@ mod tests {
     #[test]
     fn done_drains_queued_message() {
         let mut app = app_with_queued_message();
-        let actions = app.update(Msg::Agent(AgentEvent::Done {
+        let actions = app.update(agent_msg(AgentEvent::Done {
             usage: TokenUsage::default(),
             num_turns: 1,
             stop_reason: None,
@@ -528,7 +567,7 @@ mod tests {
     #[test]
     fn error_clears_queue() {
         let mut app = app_with_queued_message();
-        app.update(Msg::Agent(AgentEvent::Error {
+        app.update(agent_msg(AgentEvent::Error {
             message: "boom".into(),
         }));
         assert!(app.queue.is_empty());
@@ -606,6 +645,11 @@ mod tests {
         assert_eq!(app.context_size, 0);
         assert!(app.pending_plan.is_none());
         assert!(app.queue.is_empty());
+        assert_eq!(app.chats.len(), 1);
+        assert_eq!(app.chats[0].name, "Main");
+        assert_eq!(app.active_chat, 0);
+        assert_eq!(app.next_agent_id, 1);
+        assert!(app.chat_index.is_empty());
     }
 
     #[test]
@@ -617,5 +661,227 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert!(!app.command_palette.is_active());
         assert!(matches!(app.mode, AgentMode::Plan(_)));
+    }
+
+    #[test]
+    fn ctrl_p_n_navigation() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+            id: "task1".into(),
+            tool: "task",
+            summary: "research".into(),
+            input: None,
+            output: None,
+        })));
+        app.update(subagent_msg(
+            AgentEvent::TextDelta { text: "sub".into() },
+            "task1",
+        ));
+        assert_eq!(app.chats.len(), 2);
+        assert_eq!(app.active_chat, 0);
+
+        app.update(Msg::Key(ctrl('n')));
+        assert_eq!(app.active_chat, 1);
+
+        app.update(Msg::Key(ctrl('n')));
+        assert_eq!(app.active_chat, 1);
+
+        app.update(Msg::Key(ctrl('p')));
+        assert_eq!(app.active_chat, 0);
+
+        app.update(Msg::Key(ctrl('p')));
+        assert_eq!(app.active_chat, 0);
+    }
+
+    #[test]
+    fn subagent_event_creates_chat() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+            id: "task1".into(),
+            tool: "task",
+            summary: "research".into(),
+            input: None,
+            output: None,
+        })));
+        app.update(subagent_msg(
+            AgentEvent::TextDelta { text: "hi".into() },
+            "task1",
+        ));
+        assert_eq!(app.chats.len(), 2);
+        assert_eq!(app.chats[1].name, "Agent 1");
+    }
+
+    #[test]
+    fn multiple_subagents_get_sequential_names() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+            id: "task1".into(),
+            tool: "task",
+            summary: "first".into(),
+            input: None,
+            output: None,
+        })));
+        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+            id: "task2".into(),
+            tool: "task",
+            summary: "second".into(),
+            input: None,
+            output: None,
+        })));
+        app.update(subagent_msg(
+            AgentEvent::TextDelta { text: "a".into() },
+            "task1",
+        ));
+        app.update(subagent_msg(
+            AgentEvent::TextDelta { text: "b".into() },
+            "task2",
+        ));
+        assert_eq!(app.chats.len(), 3);
+        assert_eq!(app.chats[1].name, "Agent 1");
+        assert_eq!(app.chats[2].name, "Agent 2");
+    }
+
+    #[test]
+    fn turn_complete_accumulates_usage_globally() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+            id: "task1".into(),
+            tool: "task",
+            summary: "research".into(),
+            input: None,
+            output: None,
+        })));
+        app.update(subagent_msg(
+            AgentEvent::TextDelta { text: "x".into() },
+            "task1",
+        ));
+
+        let main_usage = TokenUsage {
+            input: 100,
+            output: 50,
+            ..Default::default()
+        };
+        app.update(agent_msg(AgentEvent::TurnComplete {
+            message: Default::default(),
+            usage: main_usage,
+            model: "test".into(),
+        }));
+
+        let sub_usage = TokenUsage {
+            input: 200,
+            output: 75,
+            ..Default::default()
+        };
+        app.update(subagent_msg(
+            AgentEvent::TurnComplete {
+                message: Default::default(),
+                usage: sub_usage,
+                model: "test".into(),
+            },
+            "task1",
+        ));
+
+        assert_eq!(app.token_usage.input, 300);
+        assert_eq!(app.token_usage.output, 125);
+    }
+
+    #[test]
+    fn context_size_only_from_main() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+            id: "task1".into(),
+            tool: "task",
+            summary: "research".into(),
+            input: None,
+            output: None,
+        })));
+        app.update(subagent_msg(
+            AgentEvent::TextDelta { text: "x".into() },
+            "task1",
+        ));
+
+        let main_usage = TokenUsage {
+            input: 100,
+            output: 50,
+            ..Default::default()
+        };
+        app.update(agent_msg(AgentEvent::TurnComplete {
+            message: Default::default(),
+            usage: main_usage.clone(),
+            model: "test".into(),
+        }));
+        let main_ctx = app.context_size;
+        assert_eq!(main_ctx, main_usage.context_tokens());
+
+        let sub_usage = TokenUsage {
+            input: 9999,
+            output: 9999,
+            ..Default::default()
+        };
+        app.update(subagent_msg(
+            AgentEvent::TurnComplete {
+                message: Default::default(),
+                usage: sub_usage,
+                model: "test".into(),
+            },
+            "task1",
+        ));
+        assert_eq!(app.context_size, main_ctx);
+    }
+
+    #[test]
+    fn cancel_fails_all_chats() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+            id: "task1".into(),
+            tool: "task",
+            summary: "research".into(),
+            input: None,
+            output: None,
+        })));
+        app.update(subagent_msg(
+            AgentEvent::ToolStart(ToolStartEvent {
+                id: "sub_t1".into(),
+                tool: "bash",
+                summary: "running".into(),
+                input: None,
+                output: None,
+            }),
+            "task1",
+        ));
+
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(matches!(&actions[0], Action::CancelAgent));
+        assert_eq!(app.chats[0].in_progress_count(), 0);
+        assert_eq!(app.chats[1].in_progress_count(), 0);
+    }
+
+    #[test]
+    fn cancel_clears_chat_index() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+            id: "task1".into(),
+            tool: "task",
+            summary: "research".into(),
+            input: None,
+            output: None,
+        })));
+        app.update(subagent_msg(
+            AgentEvent::TextDelta { text: "x".into() },
+            "task1",
+        ));
+        assert!(!app.chat_index.is_empty());
+
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(app.chat_index.is_empty());
     }
 }

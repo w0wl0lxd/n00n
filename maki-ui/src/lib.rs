@@ -1,5 +1,6 @@
 pub mod animation;
 pub mod app;
+pub mod chat;
 mod components;
 mod highlight;
 mod markdown;
@@ -62,7 +63,7 @@ fn run_event_loop(terminal: &mut ratatui::DefaultTerminal, model: Model, demo: b
         while let Ok(envelope) = agent_rx.try_recv() {
             had_agent_msg = true;
             dispatch(
-                app.update(Msg::Agent(envelope.event)),
+                app.update(Msg::Agent(envelope)),
                 &mut input_tx,
                 &mut agent_rx,
                 &mut history,

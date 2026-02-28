@@ -36,6 +36,7 @@ pub struct StatusBarContext<'a> {
     pub model_id: &'a str,
     pub stats: UsageStats<'a>,
     pub auto_scroll: bool,
+    pub chat_name: Option<&'a str>,
 }
 
 pub enum CancelResult {
@@ -105,6 +106,10 @@ impl StatusBar {
         }
 
         left_spans.push(Span::styled(format!(" {mode_label}"), mode_style));
+
+        if let Some(name) = ctx.chat_name {
+            left_spans.push(Span::styled(format!(" [{name}]"), theme::COMMENT));
+        }
 
         if !ctx.auto_scroll {
             left_spans.push(Span::styled(" auto-scroll paused", theme::COMMENT));
