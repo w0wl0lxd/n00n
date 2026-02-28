@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::chat::{Chat, ChatEventResult};
+use crate::components::chat_picker::{ChatPicker, ChatPickerAction};
 use crate::components::command::{CommandAction, CommandPalette};
 use crate::components::input::{InputAction, InputBox};
 use crate::components::queue_panel;
@@ -30,6 +31,7 @@ pub struct App {
     chat_index: HashMap<String, usize>,
     pub(crate) input_box: InputBox,
     command_palette: CommandPalette,
+    chat_picker: ChatPicker,
     status_bar: StatusBar,
     pub status: Status,
     pub token_usage: TokenUsage,
@@ -52,6 +54,7 @@ impl App {
             chat_index: HashMap::new(),
             input_box: InputBox::new(),
             command_palette: CommandPalette::new(),
+            chat_picker: ChatPicker::new(),
             status_bar: StatusBar::new(),
             status: Status::Idle,
             token_usage: TokenUsage::default(),
@@ -88,6 +91,17 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        if self.chat_picker.is_open() {
+            let names = self.chat_names();
+            return match self.chat_picker.handle_key(key, &names) {
+                ChatPickerAction::Consumed => vec![],
+                ChatPickerAction::Select(idx) => {
+                    self.active_chat = idx;
+                    vec![]
+                }
+            };
+        }
+
         if is_ctrl(&key) {
             let half = self.chats[self.active_chat].half_page();
             return match key.code {
@@ -267,9 +281,18 @@ impl App {
         vec![]
     }
 
+    fn chat_names(&self) -> Vec<String> {
+        self.chats.iter().map(|c| c.name.clone()).collect()
+    }
+
     fn execute_command(&mut self, name: &str) -> Vec<Action> {
         self.input_box.buffer.clear();
         match name {
+            "/chats" => {
+                let names = self.chat_names();
+                self.chat_picker.open(self.active_chat, &names);
+                vec![]
+            }
             "/new" => self.reset_session(),
             _ => vec![],
         }
@@ -287,6 +310,7 @@ impl App {
         self.queue.clear();
         self.pending_plan = None;
         self.status_bar.clear_cancel_hint();
+        self.chat_picker.close();
         vec![Action::NewSession]
     }
 
@@ -308,12 +332,29 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(frame.area());
-        self.chats[self.active_chat].view(frame, msg_area);
+        let picker_open = self.chat_picker.is_open();
+        let names = if picker_open {
+            Some(self.chat_names())
+        } else {
+            None
+        };
+        let render_chat = if let Some(ref names) = names {
+            self.chat_picker
+                .selected_chat(names)
+                .unwrap_or(self.active_chat)
+        } else {
+            self.active_chat
+        };
+        self.chats[render_chat].view(frame, msg_area);
         let queue_texts: Vec<&str> = self.queue.iter().map(|i| i.message.as_str()).collect();
         queue_panel::view(frame, queue_area, &queue_texts);
         self.input_box
             .view(frame, input_area, self.status == Status::Streaming);
         self.command_palette.view(frame, input_area);
+        if let Some(names) = names {
+            let full_area = frame.area();
+            self.chat_picker.view(frame, full_area, &names);
+        }
         let chat_name = (self.chats.len() > 1).then(|| self.chats[self.active_chat].name.as_str());
         let ctx = StatusBarContext {
             status: &self.status,
@@ -622,6 +663,7 @@ mod tests {
     fn enter_executes_new_command() {
         let mut app = test_app();
         type_slash(&mut app);
+        app.update(Msg::Key(key(KeyCode::Char('n'))));
         let actions = app.update(Msg::Key(key(KeyCode::Enter)));
         assert!(matches!(&actions[0], Action::NewSession));
         assert!(!app.command_palette.is_active());
@@ -893,5 +935,75 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Esc)));
         app.update(Msg::Key(key(KeyCode::Esc)));
         assert!(app.chat_index.is_empty());
+    }
+
+    fn open_chats_picker(app: &mut App) {
+        for c in "/chats".chars() {
+            app.update(Msg::Key(key(KeyCode::Char(c))));
+        }
+        app.update(Msg::Key(key(KeyCode::Enter)));
+    }
+
+    fn app_with_subagent() -> App {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+            id: "task1".into(),
+            tool: "task",
+            summary: "research".into(),
+            input: None,
+            output: None,
+        })));
+        app.update(subagent_msg(
+            AgentEvent::TextDelta { text: "x".into() },
+            "task1",
+        ));
+        app
+    }
+
+    #[test]
+    fn chats_command_opens_picker() {
+        let mut app = test_app();
+        open_chats_picker(&mut app);
+        assert!(app.chat_picker.is_open());
+    }
+
+    #[test]
+    fn picker_escape_restores_chat() {
+        let mut app = app_with_subagent();
+        assert_eq!(app.active_chat, 0);
+
+        open_chats_picker(&mut app);
+        app.update(Msg::Key(key(KeyCode::Down)));
+        app.update(Msg::Key(key(KeyCode::Esc)));
+
+        assert!(!app.chat_picker.is_open());
+        assert_eq!(app.active_chat, 0);
+    }
+
+    #[test]
+    fn picker_enter_stays_at_navigated() {
+        let mut app = app_with_subagent();
+
+        open_chats_picker(&mut app);
+        app.update(Msg::Key(key(KeyCode::Down)));
+        app.update(Msg::Key(key(KeyCode::Enter)));
+
+        assert!(!app.chat_picker.is_open());
+        assert_eq!(app.active_chat, 1);
+    }
+
+    #[test]
+    fn picker_swallows_ctrl_keys() {
+        let mut app = app_with_subagent();
+
+        open_chats_picker(&mut app);
+        app.update(Msg::Key(ctrl('n')));
+        app.update(Msg::Key(ctrl('p')));
+        app.update(Msg::Key(ctrl('u')));
+        app.update(Msg::Key(ctrl('d')));
+
+        assert!(app.chat_picker.is_open());
+        assert_eq!(app.active_chat, 0);
     }
 }

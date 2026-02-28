@@ -19,10 +19,16 @@ struct Command {
     description: &'static str,
 }
 
-const COMMANDS: &[Command] = &[Command {
-    name: "/new",
-    description: "Start a new session",
-}];
+const COMMANDS: &[Command] = &[
+    Command {
+        name: "/chats",
+        description: "Browse and search chats",
+    },
+    Command {
+        name: "/new",
+        description: "Start a new session",
+    },
+];
 
 pub struct CommandPalette {
     selected: usize,
@@ -205,7 +211,7 @@ mod tests {
     fn slash_shows_all_commands() {
         let p = synced("/");
         assert!(p.is_active());
-        assert_eq!(p.confirm(), Some("/new"));
+        assert_eq!(p.filtered.len(), COMMANDS.len());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+pub mod chat_picker;
 pub(crate) mod code_view;
 pub mod command;
 pub mod input;

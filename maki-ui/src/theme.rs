@@ -4,6 +4,7 @@ use ratatui::text::Line;
 pub const BACKGROUND: Color = Color::Rgb(0x28, 0x2a, 0x36);
 pub const BACKGROUND_2: Color = Color::Rgb(0x22, 0x24, 0x30);
 pub const FOREGROUND: Color = Color::Rgb(0xf8, 0xf8, 0xf2);
+pub const FOREGROUND_STYLE: Style = Style::new().fg(FOREGROUND);
 pub const COMMENT: Color = Color::Rgb(0x62, 0x72, 0xa4);
 pub const COMMENT_LIGHTER: Color = Color::Rgb(0x91, 0x9c, 0xbf);
 pub const CYAN: Color = Color::Rgb(0x8b, 0xe9, 0xfd);
@@ -65,6 +66,11 @@ pub const TODO_CANCELLED: Style = Style::new().fg(COMMENT);
 pub const CMD_SELECTED: Style = Style::new().fg(BACKGROUND).bg(PURPLE);
 pub const CMD_NAME: Style = Style::new().fg(FOREGROUND);
 pub const CMD_DESC: Style = Style::new().fg(COMMENT_LIGHTER);
+
+pub const PICKER_BORDER: Style = Style::new().fg(PURPLE);
+pub const PICKER_TITLE: Style = Style::new().fg(PURPLE).add_modifier(Modifier::BOLD);
+pub const PICKER_SEARCH_PREFIX: Style = Style::new().fg(COMMENT_LIGHTER);
+pub const CURSOR: Style = Style::new().fg(BACKGROUND).bg(FOREGROUND);
 
 pub const INPUT_BORDER: Color = COMMENT;
 
