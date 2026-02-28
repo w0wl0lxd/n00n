@@ -269,7 +269,19 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
         ),
         // #17 Error
         msg(DisplayRole::Error, "Connection timed out after 30s. Retrying..."),
-        // #18 Assistant - final summary
+        // #18 Assistant - plain code block (no language)
+        msg(DisplayRole::Assistant, concat!(
+            "Here's what the output looks like:\n",
+            "\n",
+            "```\n",
+            "$ cargo test\n",
+            "running 396 tests\n",
+            "test result: ok. 396 passed; 0 failed\n",
+            "```\n",
+            "\n",
+            "All good.",
+        )),
+        // #19 Assistant - final summary
         msg(DisplayRole::Assistant, concat!(
             "Done! The config module now uses a ***builder pattern*** with validation.\n",
             "\n",
