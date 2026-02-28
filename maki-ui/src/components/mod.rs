@@ -20,6 +20,7 @@ pub enum Action {
     SendMessage(AgentInput),
     CancelAgent,
     NewSession,
+    Compact,
     Quit,
 }
 

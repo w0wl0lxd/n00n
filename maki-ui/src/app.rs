@@ -304,6 +304,13 @@ impl App {
                 self.chat_picker.open(self.active_chat, &names);
                 vec![]
             }
+            "/compact" => {
+                if self.status == Status::Streaming {
+                    return vec![];
+                }
+                self.status = Status::Streaming;
+                vec![Action::Compact]
+            }
             "/new" => self.reset_session(),
             _ => vec![],
         }
@@ -1021,5 +1028,21 @@ mod tests {
 
         assert!(app.chat_picker.is_open());
         assert_eq!(app.active_chat, 0);
+    }
+
+    #[test]
+    fn compact_command_sets_streaming() {
+        let mut app = test_app();
+        let actions = app.execute_command("/compact");
+        assert!(matches!(&actions[0], Action::Compact));
+        assert_eq!(app.status, Status::Streaming);
+    }
+
+    #[test]
+    fn compact_during_streaming_ignored() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        let actions = app.execute_command("/compact");
+        assert!(actions.is_empty());
     }
 }

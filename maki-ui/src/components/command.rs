@@ -25,6 +25,10 @@ const COMMANDS: &[Command] = &[
         description: "Browse and search chats",
     },
     Command {
+        name: "/compact",
+        description: "Summarize and compact conversation history",
+    },
+    Command {
         name: "/new",
         description: "Start a new session",
     },
@@ -221,6 +225,7 @@ mod tests {
         assert!(!p.is_active());
     }
 
+    #[test_case("/co", true ; "compact_prefix")]
     #[test_case("/ne", true ; "lowercase_prefix")]
     #[test_case("/NE", true ; "uppercase_prefix")]
     #[test_case("/zzz", false ; "no_match")]

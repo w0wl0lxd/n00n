@@ -236,6 +236,50 @@ pub fn run(
     }
 }
 
+pub fn compact(
+    provider: &dyn Provider,
+    model: &Model,
+    history: &mut Vec<Message>,
+    event_tx: &Sender<Envelope>,
+) -> Result<(), AgentError> {
+    let mut compaction_history = history.clone();
+    compaction_history.push(Message::user(crate::prompt::COMPACTION_USER.to_string()));
+
+    let empty_tools = serde_json::json!([]);
+    let response = provider.stream_message(
+        model,
+        &compaction_history,
+        crate::prompt::COMPACTION_SYSTEM,
+        &empty_tools,
+        event_tx,
+    )?;
+
+    event_tx.send(
+        AgentEvent::TurnComplete {
+            message: response.message.clone(),
+            usage: response.usage.clone(),
+            model: model.id.clone(),
+        }
+        .into(),
+    )?;
+
+    *history = vec![
+        Message::user("What did we do so far?".into()),
+        response.message,
+    ];
+
+    event_tx.send(
+        AgentEvent::Done {
+            usage: response.usage,
+            num_turns: 1,
+            stop_reason: response.stop_reason,
+        }
+        .into(),
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -375,5 +419,27 @@ mod tests {
         let (turns, stop_reason) = run_agent(&provider);
         assert_eq!(turns, expected_turns);
         assert_eq!(stop_reason.as_deref(), expected_stop);
+    }
+
+    #[test]
+    fn compact_replaces_history_with_summary() {
+        let provider = MockProvider::new(vec![text_response("end_turn")]);
+        let model = default_model();
+        let (event_tx, _rx) = mpsc::channel();
+        let mut history = vec![
+            Message::user("first".into()),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "reply".into(),
+                }],
+            },
+        ];
+
+        compact(&provider, &model, &mut history, &event_tx).unwrap();
+
+        assert_eq!(history.len(), 2);
+        assert!(matches!(history[0].role, Role::User));
+        assert!(matches!(history[1].role, Role::Assistant));
     }
 }
