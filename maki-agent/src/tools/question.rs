@@ -1,5 +1,3 @@
-use std::fmt::Write;
-
 use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
@@ -24,7 +22,7 @@ impl Question {
             if i > 0 {
                 out.push('\n');
             }
-            let _ = write!(out, "{}. {q}", i + 1);
+            out.push_str(q);
         }
         Ok(ToolOutput::Plain(out))
     }
@@ -68,6 +66,6 @@ mod tests {
             Question::parse_input(&json!({"questions": ["What language?", "Which framework?"]}))
                 .unwrap();
         let output = q.execute(&stub_ctx(&AgentMode::Build)).unwrap();
-        assert_eq!(output.as_text(), "1. What language?\n2. Which framework?");
+        assert_eq!(output.as_text(), "What language?\nWhich framework?");
     }
 }

@@ -115,6 +115,13 @@ pub const ASSISTANT_STYLE: RoleStyle = RoleStyle {
     use_markdown: true,
 };
 
+pub const QUESTION_STYLE: RoleStyle = RoleStyle {
+    prefix: "maki asks> ",
+    text_style: theme::ASSISTANT,
+    prefix_style: theme::ASSISTANT_PREFIX,
+    use_markdown: true,
+};
+
 pub const USER_STYLE: RoleStyle = RoleStyle {
     prefix: "you> ",
     text_style: theme::ASSISTANT,

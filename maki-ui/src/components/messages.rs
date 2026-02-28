@@ -1,8 +1,9 @@
 use super::{DisplayMessage, DisplayRole, ToolStatus};
 
 use super::tool_display::{
-    ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, THINKING_STYLE, TOOL_OUTPUT_MAX_LINES,
-    USER_STYLE, build_tool_lines, tool_summary_annotation, truncate_to_header,
+    ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, QUESTION_STYLE, THINKING_STYLE,
+    TOOL_OUTPUT_MAX_LINES, USER_STYLE, build_tool_lines, tool_summary_annotation,
+    truncate_to_header,
 };
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::{CodeHighlighter, HighlightWorker};
@@ -554,9 +555,9 @@ impl MessagesPanel {
                 if name == QUESTION_TOOL_NAME {
                     let lines = text_to_lines(
                         &msg.text,
-                        ASSISTANT_STYLE.prefix,
-                        ASSISTANT_STYLE.text_style,
-                        ASSISTANT_STYLE.prefix_style,
+                        QUESTION_STYLE.prefix,
+                        QUESTION_STYLE.text_style,
+                        QUESTION_STYLE.prefix_style,
                         None,
                         self.viewport_width,
                     );
@@ -1115,9 +1116,9 @@ mod tests {
     }
 
     #[test]
-    fn question_tool_uses_assistant_style_and_no_truncation() {
+    fn question_tool_uses_question_style_and_no_truncation() {
         let questions: String = (1..=20)
-            .map(|i| format!("{i}. Question {i}?"))
+            .map(|i| format!("Question {i}?"))
             .collect::<Vec<_>>()
             .join("\n");
         let mut panel = MessagesPanel::new();
@@ -1130,8 +1131,8 @@ mod tests {
         });
         rebuild(&mut panel);
 
-        assert!(panel.messages[0].text.contains("1. Question 1?"));
-        assert!(panel.messages[0].text.contains("20. Question 20?"));
+        assert!(panel.messages[0].text.contains("Question 1?"));
+        assert!(panel.messages[0].text.contains("Question 20?"));
         assert!(!has_seg(&panel, "q1"), "question should not have tool_id");
 
         let seg = panel
@@ -1145,8 +1146,8 @@ mod tests {
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
         assert!(
-            text.contains("maki>"),
-            "question should use assistant prefix"
+            text.contains("maki asks>"),
+            "question should use question prefix"
         );
         assert!(
             text.contains("Question 20?"),
