@@ -76,8 +76,7 @@ fn style_grep_header(header: &str) -> Vec<Span<'static>> {
     };
 
     if let Some((_, path)) = extract_path_suffix(after_pattern) {
-        spans.push(Span::styled(" in ".to_owned(), theme::TOOL));
-        spans.push(Span::styled(path.to_owned(), theme::TOOL_PATH));
+        spans.push(Span::styled(format!(" {path}"), theme::TOOL_PATH));
     }
 
     spans
@@ -94,7 +93,7 @@ fn style_tool_header(tool: &str, header: &str) -> Vec<Span<'static>> {
         && let Some((cmd, path)) = extract_path_suffix(header)
     {
         return vec![
-            Span::styled(format!("{cmd} in "), theme::TOOL),
+            Span::styled(format!("{cmd} "), theme::TOOL),
             Span::styled(path.to_owned(), theme::TOOL_PATH),
         ];
     }
@@ -375,8 +374,8 @@ mod tests {
 
     #[test_case("TODO",                       "TODO"                        ; "pattern_only")]
     #[test_case("TODO [*.rs]",                "TODO [*.rs]"                 ; "with_include")]
-    #[test_case("TODO in src/",               "TODO in src/"                ; "with_path")]
-    #[test_case("\\b(fn|pub)\\s+ [*.rs] in src/", "\\b(fn|pub)\\s+ [*.rs] in src/" ; "with_include_and_path")]
+    #[test_case("TODO in src/",               "TODO src/"                ; "with_path")]
+    #[test_case("\\b(fn|pub)\\s+ [*.rs] in src/", "\\b(fn|pub)\\s+ [*.rs] src/" ; "with_include_and_path")]
     fn grep_header_text_roundtrips(input: &str, expected: &str) {
         assert_eq!(spans_text(&style_grep_header(input)), expected);
     }
