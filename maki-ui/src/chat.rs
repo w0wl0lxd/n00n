@@ -49,7 +49,7 @@ impl Chat {
                     if let Ok(content) = std::fs::read_to_string(pp) {
                         self.messages_panel.push(DisplayMessage::new(
                             DisplayRole::Assistant,
-                            format!("```markdown\n{content}\n```\n\n`{pp}`"),
+                            format!("{content}\n\n`{pp}`"),
                         ));
                     }
                 }
