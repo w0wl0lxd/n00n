@@ -245,7 +245,7 @@ impl MessagesPanel {
         self.rebuild_tool_segment(batch_id);
     }
 
-    pub fn update_tool_summary(&mut self, tool_id: &str, prefix: &str) {
+    pub fn update_tool_summary(&mut self, tool_id: &str, summary: &str) {
         let Some(msg) = self
             .messages
             .iter_mut()
@@ -253,8 +253,7 @@ impl MessagesPanel {
         else {
             return;
         };
-        truncate_to_header(&mut msg.text);
-        msg.text = format!("{prefix}{}", msg.text);
+        msg.text = summary.to_owned();
         self.rebuild_tool_segment(tool_id);
     }
 

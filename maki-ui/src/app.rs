@@ -272,7 +272,7 @@ impl App {
         let idx = self.chats.len();
         self.chats.push(Chat::new(name.clone()));
         self.chat_index.insert(id.to_owned(), idx);
-        self.chats[0].update_tool_summary(id, &format!("{name}: "));
+        self.chats[0].update_tool_summary(id, &name);
         idx
     }
 

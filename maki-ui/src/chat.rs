@@ -111,8 +111,8 @@ impl Chat {
         self.messages_panel.push(msg);
     }
 
-    pub fn update_tool_summary(&mut self, tool_id: &str, prefix: &str) {
-        self.messages_panel.update_tool_summary(tool_id, prefix);
+    pub fn update_tool_summary(&mut self, tool_id: &str, summary: &str) {
+        self.messages_panel.update_tool_summary(tool_id, summary);
     }
 
     pub fn load_messages(&mut self, msgs: Vec<DisplayMessage>) {
