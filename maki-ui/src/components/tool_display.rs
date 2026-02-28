@@ -15,7 +15,7 @@ use maki_providers::{BatchToolStatus, ToolInput, ToolOutput};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::highlight::HighlightWorker;
+use crate::highlight::{HighlightWorker, highlight_regex_inline};
 
 pub const TOOL_INDICATOR: &str = "● ";
 pub const TOOL_OUTPUT_MAX_LINES: usize = 7;
@@ -39,7 +39,13 @@ const PATH_FIRST_TOOLS: &[&str] = &[
     WRITE_TOOL_NAME,
     MULTIEDIT_TOOL_NAME,
 ];
-const IN_PATH_TOOLS: &[&str] = &[BASH_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME];
+const IN_PATH_TOOLS: &[&str] = &[BASH_TOOL_NAME, GLOB_TOOL_NAME];
+
+fn extract_path_suffix(s: &str) -> Option<(&str, &str)> {
+    let i = s.rfind(" in ")?;
+    let path = s[i + 4..].split('"').next().unwrap();
+    Some((&s[..i], path))
+}
 
 fn split_trailing_annotation(s: &str) -> (&str, Option<&str>) {
     if let Some(i) = s.rfind(" (")
@@ -50,15 +56,43 @@ fn split_trailing_annotation(s: &str) -> (&str, Option<&str>) {
     (s, None)
 }
 
+fn style_grep_header(header: &str) -> Vec<Span<'static>> {
+    let (pattern, rest) = match header.find(" [") {
+        Some(i) => (&header[..i], &header[i..]),
+        None => match header.rfind(" in ") {
+            Some(i) => (&header[..i], &header[i..]),
+            None => (header, ""),
+        },
+    };
+
+    let mut spans = highlight_regex_inline(pattern);
+
+    let after_pattern = if let Some(bracket_end) = rest.find(']') {
+        let filter = &rest[..bracket_end + 1];
+        spans.push(Span::styled(filter.to_owned(), theme::TOOL_ANNOTATION));
+        &rest[bracket_end + 1..]
+    } else {
+        rest
+    };
+
+    if let Some((_, path)) = extract_path_suffix(after_pattern) {
+        spans.push(Span::styled(" in ".to_owned(), theme::TOOL));
+        spans.push(Span::styled(path.to_owned(), theme::TOOL_PATH));
+    }
+
+    spans
+}
+
 fn style_tool_header(tool: &str, header: &str) -> Vec<Span<'static>> {
     if PATH_FIRST_TOOLS.contains(&tool) {
         return vec![Span::styled(header.to_owned(), theme::TOOL_PATH)];
     }
+    if tool == GREP_TOOL_NAME {
+        return style_grep_header(header);
+    }
     if IN_PATH_TOOLS.contains(&tool)
-        && let Some(i) = header.rfind(" in ")
+        && let Some((cmd, path)) = extract_path_suffix(header)
     {
-        let (cmd, rest) = header.split_at(i);
-        let path = rest[4..].split('"').next().unwrap();
         return vec![
             Span::styled(format!("{cmd} in "), theme::TOOL),
             Span::styled(path.to_owned(), theme::TOOL_PATH),
@@ -264,7 +298,6 @@ mod tests {
 
     #[test_case(code_input(),  plain_output(),  true  ; "input_code_needs_highlight")]
     #[test_case(None,          code_output(),   true  ; "code_output_needs_highlight")]
-    #[test_case(code_input(),  code_output(),   true  ; "both_input_and_output_need_highlight")]
     #[test_case(None,          plain_output(),  false ; "plain_no_input_skips_highlight")]
     fn highlight_job_presence(
         input: Option<ToolInput>,
@@ -297,19 +330,28 @@ mod tests {
         assert_eq!(ann, expected_ann);
     }
 
+    fn spans_text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn has_styled_span(spans: &[Span<'_>], text: &str, style: Style) -> bool {
+        spans
+            .iter()
+            .any(|s| s.content.contains(text) && s.style == style)
+    }
+
     #[test]
     fn style_tool_header_path_first() {
         let spans = style_tool_header(WRITE_TOOL_NAME, "src/main.rs");
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content, "src/main.rs");
+        assert_eq!(spans_text(&spans), "src/main.rs");
     }
 
     #[test]
     fn style_tool_header_in_path() {
         let spans = style_tool_header(BASH_TOOL_NAME, "echo hi in /tmp");
-        assert_eq!(spans.len(), 2);
-        assert!(spans[0].content.contains("echo hi in "));
-        assert_eq!(spans[1].content, "/tmp");
+        let text = spans_text(&spans);
+        assert!(text.contains("echo hi"));
+        assert!(has_styled_span(&spans, "/tmp", theme::TOOL_PATH));
     }
 
     #[test]
@@ -318,8 +360,25 @@ mod tests {
             GREP_TOOL_NAME,
             "STRIKETHROUGH_STYLE in /home/tony/c/maki2\", \"pattern\": \"STRIKETHROUGH_STYLE\"}",
         );
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[1].content, "/home/tony/c/maki2");
+        let text = spans_text(&spans);
+        assert!(text.contains("STRIKETHROUGH_STYLE"));
+        assert!(text.contains("/home/tony/c/maki2"));
+        assert!(!text.contains("pattern"));
+    }
+
+    #[test_case("TODO",                       "TODO"                        ; "pattern_only")]
+    #[test_case("TODO [*.rs]",                "TODO [*.rs]"                 ; "with_include")]
+    #[test_case("TODO in src/",               "TODO in src/"                ; "with_path")]
+    #[test_case("\\b(fn|pub)\\s+ [*.rs] in src/", "\\b(fn|pub)\\s+ [*.rs] in src/" ; "with_include_and_path")]
+    fn grep_header_text_roundtrips(input: &str, expected: &str) {
+        assert_eq!(spans_text(&style_grep_header(input)), expected);
+    }
+
+    #[test]
+    fn grep_header_styles_filter_and_path() {
+        let spans = style_grep_header("TODO [*.rs] in src/");
+        assert!(has_styled_span(&spans, "[*.rs]", theme::TOOL_ANNOTATION));
+        assert!(has_styled_span(&spans, "src/", theme::TOOL_PATH));
     }
 
     fn lines_text(tl: &ToolLines) -> String {

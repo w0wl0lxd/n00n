@@ -152,12 +152,12 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 "src/config/mod.rs\nsrc/config/builder.rs\nsrc/config/validation.rs".into(),
             )),
         ),
-        // #9 Grep - Success, GrepResult
+        // #9 Grep - Success, GrepResult (pattern + filter + path)
         tool(
             "t_grep",
             GREP_TOOL_NAME,
             ToolStatus::Success,
-            "ConfigBuilder",
+            "\\b(Config|Builder)\\b [*.rs] in src/config/",
             None,
             Some(ToolOutput::GrepResult {
                 entries: vec![

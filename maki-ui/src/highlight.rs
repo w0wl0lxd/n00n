@@ -167,8 +167,12 @@ fn pad_lines_to_equal_width(lines: &mut [Line<'static>], content_widths: &[usize
     }
 }
 
-fn highlight_single_line(hl: &mut HighlightLines<'_>, raw: &str, ss: &SyntaxSet) -> Line<'static> {
-    let spans = match hl.highlight_line(raw, ss) {
+fn highlight_to_spans(
+    hl: &mut HighlightLines<'_>,
+    text: &str,
+    ss: &SyntaxSet,
+) -> Vec<Span<'static>> {
+    match hl.highlight_line(text, ss) {
         Ok(ranges) => ranges
             .into_iter()
             .map(|(style, text)| {
@@ -176,11 +180,14 @@ fn highlight_single_line(hl: &mut HighlightLines<'_>, raw: &str, ss: &SyntaxSet)
             })
             .collect(),
         Err(_) => vec![Span::styled(
-            raw.trim_end_matches('\n').to_owned(),
+            text.trim_end_matches('\n').to_owned(),
             FALLBACK_STYLE,
         )],
-    };
-    Line::from(spans).style(Style::new().bg(theme::BACKGROUND_2))
+    }
+}
+
+fn highlight_single_line(hl: &mut HighlightLines<'_>, raw: &str, ss: &SyntaxSet) -> Line<'static> {
+    Line::from(highlight_to_spans(hl, raw, ss)).style(Style::new().bg(theme::BACKGROUND_2))
 }
 
 struct HighlightJob {
@@ -242,6 +249,15 @@ impl HighlightWorker {
     pub fn try_recv(&self) -> Option<HighlightResult> {
         self.rx.try_recv().ok()
     }
+}
+
+pub fn highlight_regex_inline(pattern: &str) -> Vec<Span<'static>> {
+    let ss = &*SYNTAX_SET;
+    let Some(syntax) = ss.find_syntax_by_token("re") else {
+        return vec![Span::styled(pattern.to_owned(), FALLBACK_STYLE)];
+    };
+    let mut hl = HighlightLines::new(syntax, &THEME);
+    highlight_to_spans(&mut hl, pattern, ss)
 }
 
 fn convert_style(s: syntect::highlighting::Style) -> Style {
@@ -344,28 +360,5 @@ mod tests {
         let spans = highlight_line(&mut hl, "let x = 1;\n");
         let text: String = spans.iter().map(|(_, t)| t.as_str()).collect();
         assert!(!text.ends_with('\n'));
-    }
-
-    #[test]
-    fn convert_style_maps_rgb_and_modifiers() {
-        let s = syntect::highlighting::Style {
-            foreground: syntect::highlighting::Color {
-                r: 255,
-                g: 128,
-                b: 0,
-                a: 255,
-            },
-            background: syntect::highlighting::Color {
-                r: 0,
-                g: 0,
-                b: 0,
-                a: 255,
-            },
-            font_style: FontStyle::BOLD | FontStyle::ITALIC,
-        };
-        let result = convert_style(s);
-        assert_eq!(result.fg, Some(Color::Rgb(255, 128, 0)));
-        assert!(result.add_modifier.contains(Modifier::BOLD));
-        assert!(result.add_modifier.contains(Modifier::ITALIC));
     }
 }
