@@ -1,4 +1,4 @@
-use crate::highlight::{highlight_code, highlight_line, highlighter_for_path};
+use crate::highlight::{highlight_code_plain, highlight_line, highlighter_for_path};
 use crate::markdown::truncation_notice;
 use crate::theme;
 
@@ -201,7 +201,7 @@ pub fn render_tool_content(
     let mut lines = Vec::new();
     if let Some(ToolInput::Code { language, code }) = input {
         if highlight {
-            for mut line in highlight_code(language, code) {
+            for mut line in highlight_code_plain(language, code) {
                 line.spans.insert(0, Span::raw(INDENT.to_owned()));
                 lines.push(line);
             }

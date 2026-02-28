@@ -993,7 +993,15 @@ mod tests {
                 if line.is_empty() {
                     continue;
                 }
-                let line_stripped = strip_md(line.trim_end());
+                let trimmed = line.trim_end();
+                let without_bar = trimmed
+                    .strip_prefix(highlight::CODE_BAR)
+                    .or_else(|| trimmed.strip_prefix(highlight::CODE_BAR.trim_end()))
+                    .unwrap_or(trimmed);
+                let line_stripped = strip_md(without_bar).trim().to_owned();
+                if line_stripped.is_empty() {
+                    continue;
+                }
                 let input_stripped = strip_md(prefix);
                 assert!(
                     input_stripped.contains(&line_stripped),
@@ -1038,22 +1046,26 @@ mod tests {
         assert_eq!(lines_text(&lines), expected);
     }
 
+    fn prefixed(code: &str) -> String {
+        format!("{}{code}", highlight::CODE_BAR)
+    }
+
     #[test_case(
         "before\n```rust\nfn main() {}\n```\nafter",
-        &["before", "", "fn main() {}", "", "after"]
+        vec!["before".into(), "".into(), prefixed("fn main() {}"), "".into(), "after".into()]
         ; "margin_around_code_block"
     )]
     #[test_case(
         "before\n\n```rust\ncode\n```\n\nafter",
-        &["before", "", "code", "", "after"]
+        vec!["before".into(), "".into(), prefixed("code"), "".into(), "after".into()]
         ; "extra_blanks_collapsed"
     )]
     #[test_case(
         "hello\n```rust\ncode\n```",
-        &["hello", "", "code"]
+        vec!["hello".into(), "".into(), prefixed("code")]
         ; "no_trailing_blank_after_final_code_block"
     )]
-    fn code_block_margins(input: &str, expected: &[&str]) {
+    fn code_block_margins(input: &str, expected: Vec<String>) {
         let style = Style::default();
         let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
         assert_eq!(lines_text(&lines), expected);

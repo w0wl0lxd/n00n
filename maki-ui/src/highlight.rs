@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, HighlightState, Highlighter};
-use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
+use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
@@ -42,24 +42,30 @@ pub fn highlight_line(hl: &mut HighlightLines<'_>, text: &str) -> Vec<(Style, St
     }
 }
 
-pub fn highlight_code(lang: &str, code: &str) -> Vec<Line<'static>> {
+fn syntax_for_token(lang: &str) -> &'static SyntaxReference {
     let ss = &*SYNTAX_SET;
-    let syntax = ss
-        .find_syntax_by_token(lang)
-        .unwrap_or_else(|| ss.find_syntax_plain_text());
+    ss.find_syntax_by_token(lang)
+        .unwrap_or_else(|| ss.find_syntax_plain_text())
+}
 
-    let mut h = HighlightLines::new(syntax, &THEME);
-    let mut lines: Vec<Line<'static>> = LinesWithEndings::from(code)
+pub fn highlight_code_plain(lang: &str, code: &str) -> Vec<Line<'static>> {
+    let ss = &*SYNTAX_SET;
+    let mut h = HighlightLines::new(syntax_for_token(lang), &THEME);
+    LinesWithEndings::from(code)
         .map(|raw| highlight_single_line(&mut h, raw, ss))
-        .collect();
-    let content_widths: Vec<usize> = lines.iter().map(Line::width).collect();
-    pad_lines_to_equal_width(&mut lines, &content_widths);
+        .collect()
+}
+
+pub fn highlight_code(lang: &str, code: &str) -> Vec<Line<'static>> {
+    let mut lines = highlight_code_plain(lang, code);
+    for line in &mut lines {
+        prepend_code_bar(line);
+    }
     lines
 }
 
 pub struct CodeHighlighter {
     lines: Vec<Line<'static>>,
-    content_widths: Vec<usize>,
     checkpoint_parse: ParseState,
     checkpoint_highlight: HighlightState,
     completed_lines: usize,
@@ -67,14 +73,10 @@ pub struct CodeHighlighter {
 
 impl CodeHighlighter {
     pub fn new(lang: &str) -> Self {
-        let ss = &*SYNTAX_SET;
-        let syntax = ss
-            .find_syntax_by_token(lang)
-            .unwrap_or_else(|| ss.find_syntax_plain_text());
+        let syntax = syntax_for_token(lang);
         let highlighter = Highlighter::new(&THEME);
         Self {
             lines: Vec::new(),
-            content_widths: Vec::new(),
             checkpoint_parse: ParseState::new(syntax),
             checkpoint_highlight: HighlightState::new(&highlighter, ScopeStack::new()),
             completed_lines: 0,
@@ -87,7 +89,6 @@ impl CodeHighlighter {
         let total = raw_lines.len();
         if total == 0 {
             self.lines.clear();
-            self.content_widths.clear();
             self.completed_lines = 0;
             return &[];
         }
@@ -106,15 +107,9 @@ impl CodeHighlighter {
             );
 
             for raw in &raw_lines[self.completed_lines..new_completed] {
-                let line = highlight_single_line(&mut hl, raw, ss);
-                let width = line.width();
-                if self.completed_lines < self.lines.len() {
-                    self.lines[self.completed_lines] = line;
-                    self.content_widths[self.completed_lines] = width;
-                } else {
-                    self.lines.push(line);
-                    self.content_widths.push(width);
-                }
+                let mut line = highlight_single_line(&mut hl, raw, ss);
+                prepend_code_bar(&mut line);
+                self.set_or_push(self.completed_lines, line);
                 self.completed_lines += 1;
             }
 
@@ -125,7 +120,6 @@ impl CodeHighlighter {
 
         let line_count = new_completed + usize::from(new_completed < total);
         self.lines.truncate(line_count);
-        self.content_widths.truncate(line_count);
 
         if new_completed < total {
             let mut hl = HighlightLines::from_state(
@@ -133,36 +127,24 @@ impl CodeHighlighter {
                 self.checkpoint_highlight.clone(),
                 self.checkpoint_parse.clone(),
             );
-            let partial = highlight_single_line(&mut hl, raw_lines[new_completed], ss);
-            let width = partial.width();
-            if new_completed < self.lines.len() {
-                self.lines[new_completed] = partial;
-                self.content_widths[new_completed] = width;
-            } else {
-                self.lines.push(partial);
-                self.content_widths.push(width);
-            }
+            let mut partial = highlight_single_line(&mut hl, raw_lines[new_completed], ss);
+            prepend_code_bar(&mut partial);
+            self.set_or_push(new_completed, partial);
         }
-
-        pad_lines_to_equal_width(&mut self.lines, &self.content_widths);
 
         &self.lines
     }
-}
 
-fn pad_lines_to_equal_width(lines: &mut [Line<'static>], content_widths: &[usize]) {
-    let max_width = content_widths.iter().copied().max().unwrap_or(0);
-    for (line, &content_width) in lines.iter_mut().zip(content_widths) {
-        let pad = max_width - content_width;
-        let padding_span = Span::styled(" ".repeat(pad), theme::CODE_BG_STYLE);
-        match line.spans.last() {
-            Some(last) if last.style == theme::CODE_BG_STYLE => {
-                *line.spans.last_mut().unwrap() = padding_span;
-            }
-            _ => line.spans.push(padding_span),
+    fn set_or_push(&mut self, index: usize, line: Line<'static>) {
+        if index < self.lines.len() {
+            self.lines[index] = line;
+        } else {
+            self.lines.push(line);
         }
     }
 }
+
+pub(crate) const CODE_BAR: &str = "│ ";
 
 fn highlight_to_spans(
     hl: &mut HighlightLines<'_>,
@@ -184,7 +166,12 @@ fn highlight_to_spans(
 }
 
 fn highlight_single_line(hl: &mut HighlightLines<'_>, raw: &str, ss: &SyntaxSet) -> Line<'static> {
-    Line::from(highlight_to_spans(hl, raw, ss)).style(Style::new().bg(theme::BACKGROUND_2))
+    Line::from(highlight_to_spans(hl, raw, ss))
+}
+
+fn prepend_code_bar(line: &mut Line<'static>) {
+    line.spans
+        .insert(0, Span::styled(CODE_BAR, theme::CODE_BAR_STYLE));
 }
 
 struct HighlightJob {
@@ -319,27 +306,12 @@ mod tests {
     }
 
     #[test]
-    fn streaming_padding_stays_consistent() {
-        let mut ch = CodeHighlighter::new("py");
-
-        let r1 = ch.update("short\n");
-        assert_eq!(r1.len(), 1);
-        let w1 = r1[0].width();
-
-        let r2 = ch.update("short\nthis_is_a_longer_line\n");
-        let widths: Vec<usize> = r2.iter().map(Line::width).collect();
-        assert!(
-            widths.iter().all(|&w| w == widths[0]),
-            "all lines should have equal width after padding"
-        );
-
-        let r3 = ch.update("short\nthis_is_a_longer_line\nx\n");
-        let widths: Vec<usize> = r3.iter().map(Line::width).collect();
-        assert!(
-            widths.iter().all(|&w| w == widths[0]),
-            "all lines should have equal width after re-padding"
-        );
-        assert!(widths[0] >= w1, "max width should grow or stay the same");
+    fn all_lines_have_bar_prefix() {
+        let expected = Span::styled(CODE_BAR, theme::CODE_BAR_STYLE);
+        let lines = highlight_code("rust", "fn main() {}\nlet x = 1;\n");
+        for line in &lines {
+            assert_eq!(line.spans[0], expected);
+        }
     }
 
     #[test]
