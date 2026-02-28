@@ -33,6 +33,7 @@ pub const TOOL_DIM: Style = Style::new().fg(COMMENT);
 pub const ERROR: Style = Style::new().fg(RED);
 
 pub const STATUS_IDLE: Style = Style::new().fg(COMMENT);
+pub const STATUS_GLOBAL_COST: Style = Style::new().fg(FOREGROUND).add_modifier(Modifier::BOLD);
 pub const STATUS_CONTEXT: Style = Style::new().fg(FOREGROUND);
 pub const STATUS_STREAMING: Style = Style::new().fg(YELLOW);
 pub const MODE_BUILD: Style = Style::new().fg(GREEN).add_modifier(Modifier::BOLD);

@@ -25,9 +25,11 @@ fn format_tokens(n: u32) -> String {
 
 pub struct UsageStats<'a> {
     pub usage: &'a TokenUsage,
+    pub global_usage: &'a TokenUsage,
     pub context_size: u32,
     pub pricing: &'a ModelPricing,
     pub context_window: u32,
+    pub show_global: bool,
 }
 
 pub struct StatusBarContext<'a> {
@@ -137,6 +139,14 @@ impl StatusBar {
                     ctx.stats.usage.cost(ctx.stats.pricing),
                 );
                 right_spans.push(Span::styled(rest_text, theme::STATUS_CONTEXT));
+
+                if ctx.stats.show_global {
+                    let global_text = format!(
+                        " \u{03a3}${:.3} ",
+                        ctx.stats.global_usage.cost(ctx.stats.pricing),
+                    );
+                    right_spans.push(Span::styled(global_text, theme::STATUS_GLOBAL_COST));
+                }
             }
         }
 

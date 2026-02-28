@@ -1,7 +1,7 @@
 use crate::components::messages::MessagesPanel;
 use crate::components::{DisplayMessage, DisplayRole};
 
-use maki_providers::AgentEvent;
+use maki_providers::{AgentEvent, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
@@ -13,6 +13,7 @@ pub enum ChatEventResult {
 
 pub struct Chat {
     pub name: String,
+    pub token_usage: TokenUsage,
     messages_panel: MessagesPanel,
 }
 
@@ -20,6 +21,7 @@ impl Chat {
     pub fn new(name: String) -> Self {
         Self {
             name,
+            token_usage: TokenUsage::default(),
             messages_panel: MessagesPanel::new(),
         }
     }
@@ -112,7 +114,7 @@ impl Chat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maki_providers::{AgentEvent, TokenUsage, ToolStartEvent};
+    use maki_providers::{AgentEvent, ToolStartEvent};
 
     fn tool_start_event(id: &str) -> ToolStartEvent {
         ToolStartEvent {

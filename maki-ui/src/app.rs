@@ -221,6 +221,7 @@ impl App {
 
         if let maki_providers::AgentEvent::TurnComplete { usage, .. } = &envelope.event {
             self.token_usage += usage.clone();
+            self.chats[chat_idx].token_usage += usage.clone();
             if chat_idx == 0 {
                 self.context_size = usage.context_tokens();
             }
@@ -361,10 +362,12 @@ impl App {
             mode: &self.mode,
             model_id: &self.model_id,
             stats: UsageStats {
-                usage: &self.token_usage,
+                usage: &self.chats[self.active_chat].token_usage,
+                global_usage: &self.token_usage,
                 context_size: self.context_size,
                 pricing: &self.pricing,
                 context_window: self.context_window,
+                show_global: self.chats.len() > 1,
             },
             auto_scroll: self.chats[self.active_chat].auto_scroll(),
             chat_name,
@@ -839,6 +842,10 @@ mod tests {
 
         assert_eq!(app.token_usage.input, 300);
         assert_eq!(app.token_usage.output, 125);
+        assert_eq!(app.chats[0].token_usage.input, 100);
+        assert_eq!(app.chats[0].token_usage.output, 50);
+        assert_eq!(app.chats[1].token_usage.input, 200);
+        assert_eq!(app.chats[1].token_usage.output, 75);
     }
 
     #[test]
