@@ -173,6 +173,7 @@ pub fn run(
             &system,
             &event_tx,
             &tools,
+            None,
         ) {
             error!(error = %e, "agent error");
             let _ = event_tx.send(
@@ -235,7 +236,8 @@ pub fn run(
             | AgentEvent::ToolStart(_)
             | AgentEvent::ToolOutput { .. }
             | AgentEvent::ToolDone(_)
-            | AgentEvent::BatchProgress { .. } => {
+            | AgentEvent::BatchProgress { .. }
+            | AgentEvent::QuestionPrompt { .. } => {
                 if is_stream_json {
                     println!("{}", serde_json::to_string(&envelope)?);
                 }

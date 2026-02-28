@@ -25,6 +25,7 @@ struct Cli {
     verbose: bool,
 
     #[arg(long)]
+    #[cfg(feature = "demo")]
     demo: bool,
 
     #[arg(long)]
@@ -80,7 +81,12 @@ fn main() -> Result<()> {
                     excluded_tools,
                 )?;
             } else {
-                maki_ui::run(model, cli.demo, excluded_tools)?;
+                maki_ui::run(
+                    model,
+                    #[cfg(feature = "demo")]
+                    cli.demo,
+                    excluded_tools,
+                )?;
             }
         }
     }

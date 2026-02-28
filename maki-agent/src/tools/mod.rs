@@ -14,7 +14,8 @@ mod websearch;
 mod write;
 
 use std::path::Path;
-use std::sync::mpsc::Sender;
+use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::SystemTime;
 
 use serde_json::{Value, json};
@@ -51,6 +52,7 @@ pub struct ToolContext<'a> {
     pub event_tx: &'a Sender<Envelope>,
     pub mode: &'a AgentMode,
     pub tool_use_id: Option<&'a str>,
+    pub user_response_rx: Option<&'a Mutex<Receiver<String>>>,
 }
 
 pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
@@ -293,6 +295,7 @@ pub(crate) mod test_support {
             event_tx,
             mode,
             tool_use_id,
+            user_response_rx: None,
         }
     }
 

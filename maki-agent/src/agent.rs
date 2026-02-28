@@ -2,7 +2,8 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::sync::mpsc::Sender;
+use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, Sender};
 
 use tracing::{info, warn};
 
@@ -124,6 +125,7 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDo
                 let tx = ctx.event_tx.clone();
                 let tool_ctx = ToolContext {
                     tool_use_id: Some(&parsed.id),
+                    user_response_rx: ctx.user_response_rx,
                     ..*ctx
                 };
                 let id = parsed.id.clone();
@@ -147,6 +149,7 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDo
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     provider: &dyn Provider,
     model: &Model,
@@ -155,6 +158,7 @@ pub fn run(
     system: &str,
     event_tx: &Sender<Envelope>,
     tools: &Value,
+    user_response_rx: Option<&Mutex<Receiver<String>>>,
 ) -> Result<(), AgentError> {
     let user_message = input.effective_message();
     history.push(Message::user(user_message.clone()));
@@ -164,6 +168,7 @@ pub fn run(
         event_tx,
         mode: &input.mode,
         tool_use_id: None,
+        user_response_rx,
     };
     let mut total_usage = TokenUsage::default();
     let mut num_turns: u32 = 0;
@@ -394,6 +399,7 @@ mod tests {
             "system",
             &event_tx,
             &tools,
+            None,
         );
         drop(event_tx);
 

@@ -1,9 +1,11 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::mpsc;
 
 use crate::chat::{Chat, ChatEventResult};
 use crate::components::chat_picker::{ChatPicker, ChatPickerAction};
 use crate::components::command::{CommandAction, CommandPalette};
 use crate::components::input::{InputAction, InputBox};
+use crate::components::question_form::{QuestionForm, QuestionFormAction};
 use crate::components::queue_panel;
 use crate::components::status_bar::{CancelResult, StatusBar, StatusBarContext, UsageStats};
 use crate::components::{Action, DisplayMessage, DisplayRole, Status, is_ctrl};
@@ -11,6 +13,8 @@ use crate::theme;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use maki_agent::{AgentInput, AgentMode};
+#[cfg(feature = "demo")]
+use maki_providers::QuestionInfo;
 use maki_providers::{AgentEvent, Envelope, ModelPricing, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
@@ -32,6 +36,7 @@ pub struct App {
     pub(crate) input_box: InputBox,
     command_palette: CommandPalette,
     chat_picker: ChatPicker,
+    question_form: QuestionForm,
     status_bar: StatusBar,
     pub status: Status,
     pub token_usage: TokenUsage,
@@ -42,6 +47,9 @@ pub struct App {
     context_window: u32,
     pub should_quit: bool,
     pub(crate) queue: VecDeque<AgentInput>,
+    pub answer_tx: Option<mpsc::Sender<String>>,
+    #[cfg(feature = "demo")]
+    demo_questions: Option<(usize, Vec<QuestionInfo>)>,
 }
 
 impl App {
@@ -54,6 +62,7 @@ impl App {
             input_box: InputBox::new(),
             command_palette: CommandPalette::new(),
             chat_picker: ChatPicker::new(),
+            question_form: QuestionForm::new(),
             status_bar: StatusBar::new(),
             status: Status::Idle,
             token_usage: TokenUsage::default(),
@@ -64,6 +73,9 @@ impl App {
             context_window,
             should_quit: false,
             queue: VecDeque::new(),
+            answer_tx: None,
+            #[cfg(feature = "demo")]
+            demo_questions: None,
         }
     }
 
@@ -89,12 +101,34 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        if self.question_form.is_visible() {
+            return match self.question_form.handle_key(key) {
+                QuestionFormAction::Submit(answer) => {
+                    self.question_form.close();
+                    if let Some(tx) = &self.answer_tx {
+                        let _ = tx.send(answer);
+                    }
+                    vec![]
+                }
+                QuestionFormAction::Dismiss => {
+                    self.question_form.close();
+                    if let Some(tx) = &self.answer_tx {
+                        let _ = tx.send(String::new());
+                    }
+                    vec![]
+                }
+                QuestionFormAction::Consumed => vec![],
+            };
+        }
+
         if self.chat_picker.is_open() {
             let names = self.chat_names();
             return match self.chat_picker.handle_key(key, &names) {
                 ChatPickerAction::Consumed => vec![],
                 ChatPickerAction::Select(idx) => {
                     self.active_chat = idx;
+                    #[cfg(feature = "demo")]
+                    self.check_demo_questions();
                     vec![]
                 }
             };
@@ -115,10 +149,14 @@ impl App {
                 }
                 KeyCode::Char('p') => {
                     self.active_chat = self.active_chat.saturating_sub(1);
+                    #[cfg(feature = "demo")]
+                    self.check_demo_questions();
                     vec![]
                 }
                 KeyCode::Char('n') => {
                     self.active_chat = (self.active_chat + 1).min(self.chats.len() - 1);
+                    #[cfg(feature = "demo")]
+                    self.check_demo_questions();
                     vec![]
                 }
                 KeyCode::Char('u') => {
@@ -199,6 +237,7 @@ impl App {
     fn handle_cancel_press(&mut self) -> Vec<Action> {
         match self.status_bar.handle_cancel_press() {
             CancelResult::Confirmed => {
+                self.question_form.close();
                 for chat in &mut self.chats {
                     chat.flush();
                     chat.fail_in_progress();
@@ -253,6 +292,9 @@ impl App {
                     self.status_bar.clear_cancel_hint();
                     self.status_bar.mark_error();
                     self.queue.clear();
+                }
+                ChatEventResult::QuestionPrompt { questions } => {
+                    self.question_form.open(questions);
                 }
                 ChatEventResult::Continue => {}
             }
@@ -326,6 +368,11 @@ impl App {
         self.token_usage = TokenUsage::default();
         self.queue.clear();
         self.pending_plan = None;
+        #[cfg(feature = "demo")]
+        {
+            self.demo_questions = None;
+        }
+        self.question_form.close();
         self.status_bar.clear_cancel_hint();
         self.chat_picker.close();
         vec![Action::NewSession]
@@ -340,15 +387,19 @@ impl App {
         let bg = Block::default().style(ratatui::style::Style::new().bg(theme::BACKGROUND));
         bg.render(frame.area(), frame.buffer_mut());
 
-        let queue_height = queue_panel::height(self.queue.len());
-        let input_height = self.input_box.height(frame.area().width);
-        let [msg_area, queue_area, input_area, status_area] = Layout::vertical([
+        let form_visible = self.question_form.is_visible();
+        let bottom_height = if form_visible {
+            self.question_form.height()
+        } else {
+            queue_panel::height(self.queue.len()) + self.input_box.height(frame.area().width)
+        };
+        let [msg_area, bottom_area, status_area] = Layout::vertical([
             Constraint::Min(1),
-            Constraint::Length(queue_height),
-            Constraint::Length(input_height),
+            Constraint::Length(bottom_height),
             Constraint::Length(1),
         ])
         .areas(frame.area());
+
         let picker_open = self.chat_picker.is_open();
         let names = if picker_open {
             Some(self.chat_names())
@@ -363,11 +414,24 @@ impl App {
             self.active_chat
         };
         self.chats[render_chat].view(frame, msg_area);
-        let queue_texts: Vec<&str> = self.queue.iter().map(|i| i.message.as_str()).collect();
-        queue_panel::view(frame, queue_area, &queue_texts);
-        self.input_box
-            .view(frame, input_area, self.status == Status::Streaming);
-        self.command_palette.view(frame, input_area);
+
+        if form_visible {
+            self.question_form.view(frame, bottom_area);
+        } else {
+            let queue_height = queue_panel::height(self.queue.len());
+            let input_height = bottom_area.height.saturating_sub(queue_height);
+            let [queue_area, input_area] = Layout::vertical([
+                Constraint::Length(queue_height),
+                Constraint::Length(input_height),
+            ])
+            .areas(bottom_area);
+            let queue_texts: Vec<&str> = self.queue.iter().map(|i| i.message.as_str()).collect();
+            queue_panel::view(frame, queue_area, &queue_texts);
+            self.input_box
+                .view(frame, input_area, self.status == Status::Streaming);
+            self.command_palette.view(frame, input_area);
+        }
+
         if let Some(names) = names {
             let full_area = frame.area();
             self.chat_picker.view(frame, full_area, &names);
@@ -397,16 +461,39 @@ impl App {
         self.chats.iter().any(|c| c.is_animating())
     }
 
+    #[cfg(feature = "demo")]
     pub fn load_messages(&mut self, msgs: Vec<DisplayMessage>) {
         self.main_chat().load_messages(msgs);
     }
 
-    pub fn load_subagent(&mut self, parent_tool_id: &str, name: &str, msgs: Vec<DisplayMessage>) {
+    #[cfg(feature = "demo")]
+    pub fn load_subagent(
+        &mut self,
+        parent_tool_id: &str,
+        name: &str,
+        msgs: Vec<DisplayMessage>,
+    ) -> usize {
         let idx = self.chats.len();
         let mut chat = Chat::new(name.to_owned());
         chat.load_messages(msgs);
         self.chats.push(chat);
         self.chat_index.insert(parent_tool_id.to_owned(), idx);
+        idx
+    }
+
+    #[cfg(feature = "demo")]
+    pub fn set_demo_questions(&mut self, chat_idx: usize, questions: Vec<QuestionInfo>) {
+        self.demo_questions = Some((chat_idx, questions));
+    }
+
+    #[cfg(feature = "demo")]
+    fn check_demo_questions(&mut self) {
+        if let Some((idx, _)) = &self.demo_questions
+            && self.active_chat == *idx
+        {
+            let (_, questions) = self.demo_questions.take().unwrap();
+            self.question_form.open(questions);
+        }
     }
 }
 

@@ -7,6 +7,9 @@ edition = "2024"
 name = "maki"
 path = "src/main.rs"
 
+[features]
+demo = ["maki-ui/demo"]
+
 [dependencies]
 maki-ui = { path = "maki-ui" }
 maki-agent = { workspace = true }

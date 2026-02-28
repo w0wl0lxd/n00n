@@ -84,6 +84,7 @@ impl Task {
             &system,
             &sub_tx,
             &tools,
+            None,
         )
         .map_err(|e| format!("sub-agent error: {e}"))?;
 

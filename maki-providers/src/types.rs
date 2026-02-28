@@ -54,6 +54,56 @@ pub struct DiffHunk {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuestionOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+impl QuestionOption {
+    pub fn item_schema() -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": { "type": "string", "description": "Option label" },
+                "description": { "type": "string", "description": "Option description" }
+            },
+            "required": ["label"]
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuestionInfo {
+    pub question: String,
+    #[serde(default)]
+    pub header: String,
+    #[serde(default)]
+    pub options: Vec<QuestionOption>,
+    #[serde(default)]
+    pub multiple: bool,
+}
+
+impl QuestionInfo {
+    pub fn item_schema() -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "question": { "type": "string", "description": "The question text" },
+                "header": { "type": "string", "description": "Short tab header for the question" },
+                "options": {
+                    "type": "array",
+                    "description": "List of predefined options",
+                    "items": QuestionOption::item_schema()
+                },
+                "multiple": { "type": "boolean", "description": "Whether multiple options can be selected" }
+            },
+            "required": ["question"]
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoItem {
     pub content: String,
     pub status: TodoStatus,
@@ -353,6 +403,10 @@ pub enum AgentEvent {
     },
     ToolResultsSubmitted {
         message: Message,
+    },
+    QuestionPrompt {
+        id: String,
+        questions: Vec<QuestionInfo>,
     },
     Done {
         usage: TokenUsage,

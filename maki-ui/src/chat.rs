@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::components::messages::MessagesPanel;
 use crate::components::{DisplayMessage, DisplayRole};
 
-use maki_providers::{AgentEvent, TokenUsage};
+use maki_providers::{AgentEvent, QuestionInfo, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
@@ -11,6 +11,7 @@ pub enum ChatEventResult {
     Continue,
     Done,
     Error(String),
+    QuestionPrompt { questions: Vec<QuestionInfo> },
 }
 
 pub struct Chat {
@@ -60,6 +61,9 @@ impl Chat {
                 status,
             } => {
                 self.messages_panel.batch_progress(&batch_id, index, status);
+            }
+            AgentEvent::QuestionPrompt { questions, .. } => {
+                return ChatEventResult::QuestionPrompt { questions };
             }
             AgentEvent::TurnComplete { .. } => {}
             AgentEvent::ToolResultsSubmitted { .. } => {}

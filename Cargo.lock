@@ -1070,6 +1070,7 @@ dependencies = [
  "maki-agent",
  "maki-providers",
  "ratatui",
+ "serde_json",
  "syntect",
  "tempfile",
  "test-case",

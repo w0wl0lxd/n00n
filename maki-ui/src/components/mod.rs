@@ -3,6 +3,7 @@ pub(crate) mod code_view;
 pub mod command;
 pub mod input;
 pub mod messages;
+pub mod question_form;
 pub mod queue_panel;
 pub(crate) mod scrollbar;
 pub mod status_bar;

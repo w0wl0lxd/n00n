@@ -4,6 +4,7 @@ pub mod chat;
 mod components;
 mod highlight;
 mod markdown;
+#[cfg(feature = "demo")]
 mod mock;
 mod text_buffer;
 mod theme;
@@ -32,13 +33,23 @@ use components::Action;
 const ANIMATION_INTERVAL_MS: u64 = 8;
 const EVENT_POLL_INTERVAL_MS: u64 = 8;
 
-pub fn run(model: Model, demo: bool, excluded_tools: &'static [&'static str]) -> Result<()> {
+pub fn run(
+    model: Model,
+    #[cfg(feature = "demo")] demo: bool,
+    excluded_tools: &'static [&'static str],
+) -> Result<()> {
     let mut terminal = ratatui::init();
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(EnableBracketedPaste)?;
     terminal::enable_raw_mode()?;
 
-    let result = run_event_loop(&mut terminal, model, demo, excluded_tools);
+    let result = run_event_loop(
+        &mut terminal,
+        model,
+        #[cfg(feature = "demo")]
+        demo,
+        excluded_tools,
+    );
 
     terminal::disable_raw_mode()?;
     stdout().execute(event::DisableBracketedPaste)?;
@@ -51,10 +62,11 @@ pub fn run(model: Model, demo: bool, excluded_tools: &'static [&'static str]) ->
 fn run_event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     model: Model,
-    demo: bool,
+    #[cfg(feature = "demo")] demo: bool,
     excluded_tools: &'static [&'static str],
 ) -> Result<()> {
     let mut app = App::new(model.spec(), model.pricing.clone(), model.context_window);
+    #[cfg(feature = "demo")]
     if demo {
         app.load_messages(mock::mock_messages());
         app.load_subagent(
@@ -62,10 +74,17 @@ fn run_event_loop(
             "Explore config patterns",
             mock::mock_subagent_messages(),
         );
+        let question_chat_idx = app.load_subagent(
+            mock::MOCK_QUESTION_TOOL_ID,
+            "Project setup",
+            mock::mock_question_messages(),
+        );
+        app.set_demo_questions(question_chat_idx, mock::mock_questions());
     }
     let provider: Arc<dyn Provider> = Arc::from(maki_providers::provider::from_model(&model)?);
-    let (mut cmd_tx, mut agent_rx, mut history) =
+    let (mut cmd_tx, mut agent_rx, mut history, answer_tx) =
         spawn_agent(&provider, &model, Vec::new(), excluded_tools);
+    app.answer_tx = Some(answer_tx);
 
     loop {
         terminal.draw(|f| app.view(f))?;
@@ -81,6 +100,7 @@ fn run_event_loop(
                 &provider,
                 &model,
                 excluded_tools,
+                &mut app,
             );
         }
 
@@ -110,6 +130,7 @@ fn run_event_loop(
                 &provider,
                 &model,
                 excluded_tools,
+                &mut app,
             );
         }
     }
@@ -133,15 +154,18 @@ fn spawn_agent(
     mpsc::Sender<AgentCommand>,
     mpsc::Receiver<Envelope>,
     SharedHistory,
+    mpsc::Sender<String>,
 ) {
     let (agent_tx, agent_rx) = mpsc::channel::<Envelope>();
     let (cmd_tx, cmd_rx) = mpsc::channel::<AgentCommand>();
+    let (answer_tx, answer_rx) = mpsc::channel::<String>();
     let model = model.clone();
     let shared_history: SharedHistory = Arc::new(Mutex::new(initial_history.clone()));
     let history_ref = Arc::clone(&shared_history);
     let provider = Arc::clone(provider);
 
     thread::spawn(move || {
+        let answer_mutex = std::sync::Mutex::new(answer_rx);
         let mut history = initial_history;
         while let Ok(cmd) = cmd_rx.recv() {
             let result = match cmd {
@@ -160,6 +184,7 @@ fn spawn_agent(
                         &system,
                         &agent_tx,
                         &tools,
+                        Some(&answer_mutex),
                     )
                 }
             };
@@ -176,9 +201,10 @@ fn spawn_agent(
         }
     });
 
-    (cmd_tx, agent_rx, shared_history)
+    (cmd_tx, agent_rx, shared_history, answer_tx)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch(
     actions: Vec<Action>,
     cmd_tx: &mut mpsc::Sender<AgentCommand>,
@@ -187,6 +213,7 @@ fn dispatch(
     provider: &Arc<dyn Provider>,
     model: &Model,
     excluded_tools: &'static [&'static str],
+    app: &mut App,
 ) {
     for action in actions {
         match action {
@@ -197,18 +224,24 @@ fn dispatch(
                     Err(e) => e.0,
                 };
                 let history = std::mem::take(&mut *shared_history.lock().unwrap());
-                (*cmd_tx, *agent_rx, *shared_history) =
+                let answer_tx;
+                (*cmd_tx, *agent_rx, *shared_history, answer_tx) =
                     spawn_agent(provider, model, history, excluded_tools);
+                app.answer_tx = Some(answer_tx);
                 let _ = cmd_tx.send(cmd);
             }
             Action::CancelAgent => {
                 let history = std::mem::take(&mut *shared_history.lock().unwrap());
-                (*cmd_tx, *agent_rx, *shared_history) =
+                let answer_tx;
+                (*cmd_tx, *agent_rx, *shared_history, answer_tx) =
                     spawn_agent(provider, model, history, excluded_tools);
+                app.answer_tx = Some(answer_tx);
             }
             Action::NewSession => {
-                (*cmd_tx, *agent_rx, *shared_history) =
+                let answer_tx;
+                (*cmd_tx, *agent_rx, *shared_history, answer_tx) =
                     spawn_agent(provider, model, Vec::new(), excluded_tools);
+                app.answer_tx = Some(answer_tx);
             }
             Action::Compact => {
                 let _ = cmd_tx.send(AgentCommand::Compact);

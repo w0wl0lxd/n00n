@@ -5,7 +5,7 @@ use maki_agent::tools::{
 };
 use maki_providers::{
     BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch,
-    TodoItem, TodoPriority, TodoStatus, ToolInput, ToolOutput,
+    QuestionInfo, QuestionOption, TodoItem, TodoPriority, TodoStatus, ToolInput, ToolOutput,
 };
 
 use crate::components::{DisplayMessage, DisplayRole, ToolStatus};
@@ -35,6 +35,83 @@ fn tool(
 }
 
 pub const MOCK_TASK_TOOL_ID: &str = "t_task";
+pub const MOCK_QUESTION_TOOL_ID: &str = "t_qform";
+
+pub fn mock_questions() -> Vec<QuestionInfo> {
+    vec![
+        QuestionInfo {
+            question: "What language do you want to use?".into(),
+            header: "Language".into(),
+            options: vec![
+                QuestionOption {
+                    label: "TypeScript".into(),
+                    description: "Popular for web".into(),
+                },
+                QuestionOption {
+                    label: "Rust".into(),
+                    description: "Fast and safe".into(),
+                },
+                QuestionOption {
+                    label: "Go".into(),
+                    description: "Simple concurrency".into(),
+                },
+            ],
+            multiple: false,
+        },
+        QuestionInfo {
+            question: "Which framework do you prefer?".into(),
+            header: "Framework".into(),
+            options: vec![
+                QuestionOption {
+                    label: "Next.js".into(),
+                    description: "React SSR".into(),
+                },
+                QuestionOption {
+                    label: "tRPC".into(),
+                    description: "End-to-end typesafe".into(),
+                },
+                QuestionOption {
+                    label: "SvelteKit".into(),
+                    description: "Compiler-based".into(),
+                },
+            ],
+            multiple: true,
+        },
+        QuestionInfo {
+            question: "What database should we use?".into(),
+            header: "Database".into(),
+            options: vec![
+                QuestionOption {
+                    label: "PostgreSQL".into(),
+                    description: "Relational".into(),
+                },
+                QuestionOption {
+                    label: "SQLite".into(),
+                    description: "Embedded".into(),
+                },
+            ],
+            multiple: false,
+        },
+    ]
+}
+
+pub fn mock_question_messages() -> Vec<DisplayMessage> {
+    vec![
+        msg(DisplayRole::User, "Help me set up a new web project."),
+        msg(
+            DisplayRole::Thinking,
+            "I need to ask the user about their preferences before scaffolding the project.",
+        ),
+        tool(
+            MOCK_QUESTION_TOOL_ID,
+            QUESTION_TOOL_NAME,
+            ToolStatus::InProgress,
+            "3 questions",
+            None,
+            None,
+        ),
+    ]
+}
 
 pub fn mock_subagent_messages() -> Vec<DisplayMessage> {
     vec![
@@ -456,6 +533,11 @@ mod tests {
     #[test]
     fn mock_data_invariants() {
         check_invariants(&mock_messages());
+    }
+
+    #[test]
+    fn mock_question_data_invariants() {
+        check_invariants(&mock_question_messages());
     }
 
     #[test]
