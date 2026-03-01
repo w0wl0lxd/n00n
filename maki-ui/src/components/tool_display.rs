@@ -15,7 +15,8 @@ use maki_providers::{BatchToolStatus, ToolInput, ToolOutput};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::highlight::{HighlightWorker, highlight_regex_inline};
+use crate::highlight::highlight_regex_inline;
+use crate::render_worker::RenderWorker;
 
 pub const TOOL_INDICATOR: &str = "● ";
 pub const TOOL_OUTPUT_MAX_LINES: usize = 7;
@@ -154,7 +155,7 @@ pub struct HighlightRequest {
 }
 
 impl ToolLines {
-    pub fn send_highlight(&self, worker: &HighlightWorker) -> Option<u64> {
+    pub fn send_highlight(&self, worker: &RenderWorker) -> Option<u64> {
         let hl = self.highlight.as_ref()?;
         Some(worker.send(hl.input.clone(), hl.output.clone()))
     }

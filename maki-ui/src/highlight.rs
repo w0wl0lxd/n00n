@@ -1,18 +1,13 @@
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
-use std::thread;
 
 use crate::theme;
 
-use maki_providers::{ToolInput, ToolOutput};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, HighlightState, Highlighter};
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
-use unicode_width::UnicodeWidthStr;
 
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
 
@@ -55,15 +50,6 @@ pub fn highlight_code_plain(lang: &str, code: &str) -> Vec<Line<'static>> {
     LinesWithEndings::from(code)
         .map(|raw| highlight_single_line(&mut h, raw, ss))
         .collect()
-}
-
-pub fn highlight_code(lang: &str, code: &str, width: u16) -> Vec<Line<'static>> {
-    let mut lines = highlight_code_plain(lang, code);
-    for line in &mut lines {
-        prepend_code_bar(line);
-    }
-    wrap_code_lines(&mut lines, 0, width);
-    lines
 }
 
 pub struct CodeHighlighter {
@@ -109,8 +95,7 @@ impl CodeHighlighter {
             );
 
             for raw in &raw_lines[self.completed_lines..new_completed] {
-                let mut line = highlight_single_line(&mut hl, raw, ss);
-                prepend_code_bar(&mut line);
+                let line = highlight_single_line(&mut hl, raw, ss);
                 self.set_or_push(self.completed_lines, line);
                 self.completed_lines += 1;
             }
@@ -129,8 +114,7 @@ impl CodeHighlighter {
                 self.checkpoint_highlight.clone(),
                 self.checkpoint_parse.clone(),
             );
-            let mut partial = highlight_single_line(&mut hl, raw_lines[new_completed], ss);
-            prepend_code_bar(&mut partial);
+            let partial = highlight_single_line(&mut hl, raw_lines[new_completed], ss);
             self.set_or_push(new_completed, partial);
         }
 
@@ -144,88 +128,6 @@ impl CodeHighlighter {
             self.lines.push(line);
         }
     }
-}
-
-pub(crate) const CODE_BAR: &str = "│ ";
-pub(crate) const CODE_BAR_WRAP: &str = "│";
-
-pub(crate) fn wrap_code_lines(lines: &mut Vec<Line<'static>>, start: usize, width: u16) {
-    let width = width as usize;
-    if width == 0 {
-        return;
-    }
-    let mut i = start;
-    while i < lines.len() {
-        let line_width: usize = lines[i].spans.iter().map(|s| s.content.width()).sum();
-        if line_width <= width {
-            i += 1;
-            continue;
-        }
-        let line = lines.remove(i);
-        let wrapped = split_line_with_bar(line, width);
-        let count = wrapped.len();
-        for (j, wl) in wrapped.into_iter().enumerate() {
-            lines.insert(i + j, wl);
-        }
-        i += count;
-    }
-}
-
-fn split_line_with_bar(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
-    debug_assert!(
-        line.spans
-            .first()
-            .is_some_and(|s| s.content.as_ref() == CODE_BAR)
-    );
-
-    let bar_span = line.spans[0].clone();
-    let content_spans = &line.spans[1..];
-    let first_avail = width.saturating_sub(CODE_BAR.width());
-    let cont_avail = width.saturating_sub(CODE_BAR_WRAP.width());
-
-    let mut result: Vec<Line<'static>> = Vec::new();
-    let mut current_spans: Vec<Span<'static>> = vec![bar_span];
-    let mut remaining = first_avail;
-
-    for span in content_spans {
-        let mut text = span.content.as_ref();
-        let style = span.style;
-
-        while !text.is_empty() {
-            let fits = fit_width(text, remaining);
-            if fits == 0 && remaining == 0 {
-                break;
-            }
-            if fits > 0 {
-                current_spans.push(Span::styled(text[..fits].to_owned(), style));
-                remaining -= text[..fits].width();
-                text = &text[fits..];
-            }
-            if !text.is_empty() {
-                result.push(Line::from(current_spans));
-                current_spans = vec![Span::styled(CODE_BAR_WRAP, theme::CODE_BAR_STYLE)];
-                remaining = cont_avail;
-            }
-        }
-    }
-
-    if current_spans.len() > 1 || result.is_empty() {
-        result.push(Line::from(current_spans));
-    }
-
-    result
-}
-
-pub(crate) fn fit_width(text: &str, max_width: usize) -> usize {
-    let mut width = 0;
-    for (i, ch) in text.char_indices() {
-        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width + cw > max_width {
-            return i;
-        }
-        width += cw;
-    }
-    text.len()
 }
 
 fn highlight_to_spans(
@@ -249,72 +151,6 @@ fn highlight_to_spans(
 
 fn highlight_single_line(hl: &mut HighlightLines<'_>, raw: &str, ss: &SyntaxSet) -> Line<'static> {
     Line::from(highlight_to_spans(hl, raw, ss))
-}
-
-fn prepend_code_bar(line: &mut Line<'static>) {
-    line.spans
-        .insert(0, Span::styled(CODE_BAR, theme::CODE_BAR_STYLE));
-}
-
-struct HighlightJob {
-    id: u64,
-    tool_input: Option<ToolInput>,
-    tool_output: Option<ToolOutput>,
-}
-
-pub struct HighlightResult {
-    pub id: u64,
-    pub lines: Vec<Line<'static>>,
-}
-
-static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(0);
-
-pub struct HighlightWorker {
-    tx: mpsc::Sender<HighlightJob>,
-    rx: mpsc::Receiver<HighlightResult>,
-}
-
-impl HighlightWorker {
-    pub fn new() -> Self {
-        let (req_tx, req_rx) = mpsc::channel::<HighlightJob>();
-        let (res_tx, res_rx) = mpsc::channel::<HighlightResult>();
-
-        thread::Builder::new()
-            .name("highlight".into())
-            .spawn(move || {
-                use crate::components::code_view;
-                while let Ok(job) = req_rx.recv() {
-                    let lines = code_view::render_tool_content(
-                        job.tool_input.as_ref(),
-                        job.tool_output.as_ref(),
-                        true,
-                    );
-                    if res_tx.send(HighlightResult { id: job.id, lines }).is_err() {
-                        break;
-                    }
-                }
-            })
-            .expect("spawn highlight thread");
-
-        Self {
-            tx: req_tx,
-            rx: res_rx,
-        }
-    }
-
-    pub fn send(&self, tool_input: Option<ToolInput>, tool_output: Option<ToolOutput>) -> u64 {
-        let id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
-        let _ = self.tx.send(HighlightJob {
-            id,
-            tool_input,
-            tool_output,
-        });
-        id
-    }
-
-    pub fn try_recv(&self) -> Option<HighlightResult> {
-        self.rx.try_recv().ok()
-    }
 }
 
 pub fn highlight_regex_inline(pattern: &str) -> Vec<Span<'static>> {
@@ -345,17 +181,6 @@ fn convert_style(s: syntect::highlighting::Style) -> Style {
 mod tests {
     use super::*;
 
-    #[test]
-    fn unknown_language_falls_back_without_panic() {
-        highlight_code("nonexistent_lang_xyz", "some code", 80);
-    }
-
-    #[test]
-    fn empty_code_produces_no_lines() {
-        let lines = highlight_code("rust", "", 80);
-        assert!(lines.is_empty());
-    }
-
     fn spans_text(lines: &[Line<'_>]) -> Vec<String> {
         lines
             .iter()
@@ -368,19 +193,10 @@ mod tests {
             .collect()
     }
 
-    fn content_text(lines: &[Line<'_>]) -> String {
-        lines
-            .iter()
-            .flat_map(|l| &l.spans)
-            .filter(|s| s.content.as_ref() != CODE_BAR && s.content.as_ref() != CODE_BAR_WRAP)
-            .map(|s| s.content.as_ref())
-            .collect()
-    }
-
     #[test]
     fn incremental_matches_full_highlight() {
         let code = "fn main() {\n    println!(\"hi\");\n}\n";
-        let full = highlight_code("rust", code, 200);
+        let full = highlight_code_plain("rust", code);
         let mut ch = CodeHighlighter::new("rust");
         let incremental = ch.update(code);
         assert_eq!(spans_text(&full), spans_text(incremental));
@@ -392,7 +208,7 @@ mod tests {
         ch.update("x = ");
         ch.update("x = 1\ny");
         let result = ch.update("x = 1\ny = 2\n");
-        let full = highlight_code("py", "x = 1\ny = 2\n", 200);
+        let full = highlight_code_plain("py", "x = 1\ny = 2\n");
         assert_eq!(spans_text(&full), spans_text(result));
     }
 
@@ -408,32 +224,5 @@ mod tests {
         let spans = highlight_line(&mut hl, "let x = 1;\n");
         let text: String = spans.iter().map(|(_, t)| t.as_str()).collect();
         assert!(!text.ends_with('\n'));
-    }
-
-    #[test]
-    fn wrap_long_code_line() {
-        let code = "a".repeat(20);
-        let lines = highlight_code("txt", &code, 12);
-        assert!(lines.len() >= 2);
-        assert_eq!(lines[0].spans[0].content.as_ref(), CODE_BAR);
-        assert_eq!(lines[1].spans[0].content.as_ref(), CODE_BAR_WRAP);
-        assert_eq!(content_text(&lines), code);
-    }
-
-    #[test]
-    fn wrap_exactly_at_width_boundary() {
-        let code = "a".repeat(8);
-        let lines = highlight_code("txt", &code, 10);
-        assert_eq!(lines.len(), 1);
-
-        let code = "a".repeat(9);
-        let lines = highlight_code("txt", &code, 10);
-        assert!(lines.len() >= 2);
-    }
-
-    #[test]
-    fn wrap_zero_width_does_not_panic() {
-        let lines = highlight_code("txt", "hello", 0);
-        assert!(!lines.is_empty());
     }
 }

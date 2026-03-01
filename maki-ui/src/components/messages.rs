@@ -6,8 +6,9 @@ use super::tool_display::{
     truncate_to_header,
 };
 use crate::animation::{Typewriter, spinner_frame};
-use crate::highlight::{CodeHighlighter, HighlightWorker};
+use crate::highlight::CodeHighlighter;
 use crate::markdown::{plain_lines, tail_lines, text_to_lines, truncate_lines};
+use crate::render_worker::RenderWorker;
 use crate::theme;
 
 use std::time::Instant;
@@ -81,7 +82,7 @@ pub struct MessagesPanel {
     cached_msg_count: usize,
     cached_streaming_thinking: StreamingCache,
     cached_streaming_text: StreamingCache,
-    hl_worker: HighlightWorker,
+    hl_worker: RenderWorker,
 }
 
 impl MessagesPanel {
@@ -103,7 +104,7 @@ impl MessagesPanel {
                 ..StreamingCache::default()
             },
             cached_streaming_text: StreamingCache::default(),
-            hl_worker: HighlightWorker::new(),
+            hl_worker: RenderWorker::new(),
         }
     }
 

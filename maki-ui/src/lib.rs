@@ -6,6 +6,7 @@ mod highlight;
 mod markdown;
 #[cfg(feature = "demo")]
 mod mock;
+mod render_worker;
 mod text_buffer;
 mod theme;
 

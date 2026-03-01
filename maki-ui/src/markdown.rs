@@ -1,11 +1,108 @@
 use std::borrow::Cow;
 
-use crate::highlight::{self, CodeHighlighter};
+use crate::highlight;
+use crate::highlight::CodeHighlighter;
 use crate::theme;
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
+
+pub(crate) const CODE_BAR: &str = "│ ";
+const CODE_BAR_WRAP: &str = "│";
+
+fn fit_width(text: &str, max_width: usize) -> usize {
+    let mut width = 0;
+    for (i, ch) in text.char_indices() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + cw > max_width {
+            return i;
+        }
+        width += cw;
+    }
+    text.len()
+}
+
+fn prepend_code_bar(line: &mut Line<'static>) {
+    line.spans
+        .insert(0, Span::styled(CODE_BAR, theme::CODE_BAR_STYLE));
+}
+
+pub(crate) fn wrap_code_lines(lines: &mut Vec<Line<'static>>, start: usize, width: u16) {
+    let width = width as usize;
+    if width == 0 {
+        return;
+    }
+    let mut i = start;
+    while i < lines.len() {
+        let line_width: usize = lines[i].spans.iter().map(|s| s.content.width()).sum();
+        if line_width <= width {
+            i += 1;
+            continue;
+        }
+        let line = lines.remove(i);
+        let wrapped = split_line_with_bar(line, width);
+        let count = wrapped.len();
+        for (j, wl) in wrapped.into_iter().enumerate() {
+            lines.insert(i + j, wl);
+        }
+        i += count;
+    }
+}
+
+fn split_line_with_bar(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    debug_assert!(
+        line.spans
+            .first()
+            .is_some_and(|s| s.content.as_ref() == CODE_BAR)
+    );
+
+    let bar_span = line.spans[0].clone();
+    let content_spans = &line.spans[1..];
+    let first_avail = width.saturating_sub(CODE_BAR.width());
+    let cont_avail = width.saturating_sub(CODE_BAR_WRAP.width());
+
+    let mut result: Vec<Line<'static>> = Vec::new();
+    let mut current_spans: Vec<Span<'static>> = vec![bar_span];
+    let mut remaining = first_avail;
+
+    for span in content_spans {
+        let mut text = span.content.as_ref();
+        let style = span.style;
+
+        while !text.is_empty() {
+            let fits = fit_width(text, remaining);
+            if fits == 0 && remaining == 0 {
+                break;
+            }
+            if fits > 0 {
+                current_spans.push(Span::styled(text[..fits].to_owned(), style));
+                remaining -= text[..fits].width();
+                text = &text[fits..];
+            }
+            if !text.is_empty() {
+                result.push(Line::from(current_spans));
+                current_spans = vec![Span::styled(CODE_BAR_WRAP, theme::CODE_BAR_STYLE)];
+                remaining = cont_avail;
+            }
+        }
+    }
+
+    if current_spans.len() > 1 || result.is_empty() {
+        result.push(Line::from(current_spans));
+    }
+
+    result
+}
+
+fn highlight_code(lang: &str, code: &str, width: u16) -> Vec<Line<'static>> {
+    let mut lines = highlight::highlight_code_plain(lang, code);
+    for line in &mut lines {
+        prepend_code_bar(line);
+    }
+    wrap_code_lines(&mut lines, 0, width);
+    lines
+}
 
 pub const TRUNCATION_PREFIX: &str = "...";
 
@@ -629,7 +726,7 @@ fn wrap_cell_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Vec<Span<
         let style = span.style;
 
         while !text.is_empty() {
-            let fits = highlight::fit_width(text, remaining);
+            let fits = fit_width(text, remaining);
             if fits == 0 {
                 if current.is_empty() {
                     let ch_len = text.chars().next().map_or(1, char::len_utf8);
@@ -911,10 +1008,14 @@ pub fn text_to_lines(
                     }
                     let unwrapped = hl[code_idx].update(code);
                     let start = lines.len();
-                    lines.extend_from_slice(unwrapped);
-                    highlight::wrap_code_lines(&mut lines, start, width);
+                    for src_line in unwrapped {
+                        let mut line = src_line.clone();
+                        prepend_code_bar(&mut line);
+                        lines.push(line);
+                    }
+                    wrap_code_lines(&mut lines, start, width);
                 } else {
-                    lines.extend(highlight::highlight_code(lang, code, width));
+                    lines.extend(highlight_code(lang, code, width));
                 }
                 ensure_blank_line(&mut lines);
                 code_idx += 1;
@@ -1337,8 +1438,8 @@ mod tests {
                 }
                 let trimmed = line.trim_end();
                 let without_bar = trimmed
-                    .strip_prefix(highlight::CODE_BAR)
-                    .or_else(|| trimmed.strip_prefix(highlight::CODE_BAR.trim_end()))
+                    .strip_prefix(CODE_BAR)
+                    .or_else(|| trimmed.strip_prefix(CODE_BAR.trim_end()))
                     .unwrap_or(trimmed);
                 let line_stripped = normalize_ws(&strip_md(without_bar));
                 if line_stripped.is_empty() {
@@ -1389,7 +1490,7 @@ mod tests {
     }
 
     fn prefixed(code: &str) -> String {
-        format!("{}{code}", highlight::CODE_BAR)
+        format!("{}{code}", CODE_BAR)
     }
 
     #[test_case(
@@ -1705,5 +1806,28 @@ mod tests {
         if !should_shrink {
             assert_eq!(widths, original);
         }
+    }
+
+    fn content_text(lines: &[Line<'_>]) -> String {
+        lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .filter(|s| s.content.as_ref() != CODE_BAR && s.content.as_ref() != CODE_BAR_WRAP)
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn wrap_preserves_content() {
+        let code = "a".repeat(20);
+        let lines = highlight_code("txt", &code, 12);
+        assert!(lines.len() >= 2);
+        assert_eq!(content_text(&lines), code);
+    }
+
+    #[test]
+    fn wrap_zero_width_does_not_panic() {
+        let lines = highlight_code("txt", "hello", 0);
+        assert!(!lines.is_empty());
     }
 }
