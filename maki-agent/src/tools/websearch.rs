@@ -1,3 +1,5 @@
+use std::env;
+use std::fmt::Write;
 use std::io::Read;
 use std::time::Duration;
 
@@ -10,9 +12,11 @@ use maki_providers::{ToolInput, ToolOutput};
 use super::MAX_RESPONSE_BYTES;
 use super::truncate_output;
 
-const EXA_MCP_ENDPOINT: &str = "https://mcp.exa.ai/mcp";
+const EXA_API_ENDPOINT: &str = "https://api.exa.ai/search";
+const EXA_API_KEY_ENV: &str = "EXA_API_KEY";
 const REQUEST_TIMEOUT_SECS: u64 = 25;
 const DEFAULT_NUM_RESULTS: u64 = 8;
+const HIGHLIGHT_MAX_CHARS: u64 = 4000;
 
 #[derive(Tool, Debug, Clone)]
 pub struct WebSearch {
@@ -27,19 +31,18 @@ impl WebSearch {
     pub const DESCRIPTION: &str = include_str!("websearch.md");
 
     pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+        let api_key =
+            env::var(EXA_API_KEY_ENV).map_err(|_| format!("{EXA_API_KEY_ENV} not set"))?;
+
         let num_results = self.num_results.unwrap_or(DEFAULT_NUM_RESULTS);
 
         let payload = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "web_search_exa",
-                "arguments": {
-                    "query": self.query,
-                    "numResults": num_results,
-                    "livecrawl": "fallback",
-                    "type": "auto"
+            "query": self.query,
+            "numResults": num_results,
+            "type": "auto",
+            "contents": {
+                "highlights": {
+                    "maxCharacters": HIGHLIGHT_MAX_CHARS
                 }
             }
         });
@@ -53,16 +56,14 @@ impl WebSearch {
         let body = serde_json::to_string(&payload).map_err(|e| format!("serialize: {e}"))?;
 
         let response = agent
-            .post(EXA_MCP_ENDPOINT)
+            .post(EXA_API_ENDPOINT)
             .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("x-api-key", &api_key)
             .send(body.as_str())
             .map_err(|e| format!("request failed: {e}"))?;
 
         let status = response.status().as_u16();
-        if !(200..300).contains(&status) {
-            return Err(format!("HTTP {status}"));
-        }
-
         let mut body = String::new();
         response
             .into_body()
@@ -71,7 +72,14 @@ impl WebSearch {
             .read_to_string(&mut body)
             .map_err(|e| format!("read error: {e}"))?;
 
-        let text = parse_sse_response(&body)?;
+        if !(200..300).contains(&status) {
+            return Err(format!("HTTP {status}: {}", &body[..body.len().min(200)]));
+        }
+
+        let parsed: Value =
+            serde_json::from_str(&body).map_err(|e| format!("JSON parse error: {e}"))?;
+
+        let text = format_results(&parsed)?;
         Ok(ToolOutput::Plain(truncate_output(text)))
     }
 
@@ -92,24 +100,35 @@ impl WebSearch {
     }
 }
 
-fn parse_sse_response(body: &str) -> Result<String, String> {
-    for line in body.lines() {
-        let Some(data) = line.strip_prefix("data: ") else {
-            continue;
-        };
-        let parsed: Value =
-            serde_json::from_str(data).map_err(|e| format!("JSON parse error: {e}"))?;
-        if let Some(text) = parsed
-            .pointer("/result/content/0/text")
-            .and_then(Value::as_str)
-        {
-            return Ok(text.to_string());
+fn format_results(response: &Value) -> Result<String, String> {
+    let results = response["results"]
+        .as_array()
+        .ok_or("missing results array")?;
+
+    if results.is_empty() {
+        return Ok("No results found".into());
+    }
+
+    let mut out = String::new();
+    for (i, r) in results.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
         }
-        if let Some(err) = parsed.pointer("/error/message").and_then(Value::as_str) {
-            return Err(format!("Exa error: {err}"));
+        let title = r["title"].as_str().unwrap_or("Untitled");
+        let url = r["url"].as_str().unwrap_or("");
+        let _ = writeln!(out, "Title: {title}");
+        let _ = writeln!(out, "URL: {url}");
+
+        if let Some(highlights) = r["highlights"].as_array() {
+            for h in highlights {
+                if let Some(s) = h.as_str() {
+                    let _ = writeln!(out, "{s}");
+                }
+            }
         }
     }
-    Err("no result in SSE response".into())
+
+    Ok(out.trim_end().to_string())
 }
 
 #[cfg(test)]
@@ -117,17 +136,36 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    const VALID_SSE: &str =
-        "data: {\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"search results here\"}]}}";
-    const ERROR_SSE: &str = "data: {\"error\":{\"code\":-1,\"message\":\"rate limited\"}}";
-    const NO_DATA_SSE: &str = "event: message\nid: 1";
-    const MULTI_LINE_SSE: &str = "event: message\ndata: {\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"found it\"}]}}\n\n";
+    fn make_response(results: Value) -> Value {
+        json!({ "results": results })
+    }
 
-    #[test_case(VALID_SSE, Ok("search results here".into()) ; "valid_result")]
-    #[test_case(ERROR_SSE, Err("Exa error: rate limited".into()) ; "error_response")]
-    #[test_case(NO_DATA_SSE, Err("no result in SSE response".into()) ; "no_data_lines")]
-    #[test_case(MULTI_LINE_SSE, Ok("found it".into()) ; "multi_line_sse")]
-    fn parse_sse_response_cases(input: &str, expected: Result<String, String>) {
-        assert_eq!(parse_sse_response(input), expected);
+    const NO_RESULTS_MSG: &str = "No results found";
+    const MISSING_ARRAY_MSG: &str = "missing results array";
+
+    #[test]
+    fn format_results_happy_path() {
+        let resp = make_response(json!([
+            { "title": "Rust Lang", "url": "https://rust-lang.org", "highlights": ["Fast and safe", "Memory safety"] },
+            { "title": "Docs", "url": "https://doc.rust-lang.org", "highlights": ["API reference"] }
+        ]));
+        let out = format_results(&resp).unwrap();
+        assert!(out.contains("Title: Rust Lang"));
+        assert!(out.contains("URL: https://rust-lang.org"));
+        assert!(out.contains("Fast and safe"));
+        assert!(out.contains("Memory safety"));
+        assert!(out.contains("Title: Docs"));
+        assert!(out.contains("API reference"));
+        let first = out.find("Title: Rust Lang").unwrap();
+        let second = out.find("Title: Docs").unwrap();
+        assert!(first < second);
+    }
+
+    #[test_case(make_response(json!([])), Ok(NO_RESULTS_MSG.into()) ; "empty_results")]
+    #[test_case(json!({}), Err(MISSING_ARRAY_MSG.into()) ; "missing_results_key")]
+    #[test_case(json!({"results": "bad"}), Err(MISSING_ARRAY_MSG.into()) ; "results_not_array")]
+    #[test_case(make_response(json!([{"other": "data"}])), Ok("Title: Untitled\nURL:".into()) ; "missing_fields_uses_defaults")]
+    fn format_results_edge_cases(input: Value, expected: Result<String, String>) {
+        assert_eq!(format_results(&input), expected);
     }
 }
