@@ -9,7 +9,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::debug;
+use tracing::{debug, error, warn};
 use ureq::Agent;
 
 use crate::AgentError;
@@ -160,12 +160,16 @@ fn exchange_code(code: &str, verifier: &str) -> Result<OAuthTokens, AgentError> 
         "code_verifier": verifier,
     });
 
-    let resp = post_token_request(body, "token exchange failed")?;
+    let resp = post_token_request(body, "token exchange failed").map_err(|e| {
+        error!(error = %e, "OAuth token exchange failed");
+        e
+    })?;
     into_oauth_tokens(resp, None)
 }
 
 fn refresh_tokens(tokens: &OAuthTokens) -> Result<OAuthTokens, AgentError> {
-    debug!("refreshing OAuth tokens");
+    let expired = is_expired(tokens);
+    debug!(expired, "refreshing OAuth tokens");
 
     let body = serde_json::json!({
         "grant_type": "refresh_token",
@@ -173,7 +177,10 @@ fn refresh_tokens(tokens: &OAuthTokens) -> Result<OAuthTokens, AgentError> {
         "client_id": CLIENT_ID,
     });
 
-    let resp = post_token_request(body, "token refresh failed")?;
+    let resp = post_token_request(body, "token refresh failed").map_err(|e| {
+        error!(error = %e, "OAuth token refresh failed");
+        e
+    })?;
     into_oauth_tokens(resp, Some(&tokens.refresh))
 }
 
@@ -192,6 +199,7 @@ fn save_tokens(tokens: &OAuthTokens) -> Result<(), AgentError> {
     let mut file = File::create(&path)?;
     file.write_all(json.as_bytes())?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    debug!(path = %path.display(), "OAuth tokens saved");
     Ok(())
 }
 
@@ -226,6 +234,7 @@ pub fn resolve() -> Result<ResolvedAuth, AgentError> {
         });
     }
 
+    warn!("no OAuth tokens or API key found");
     Err(AgentError::Api {
         status: 0,
         message: "not authenticated — run `maki auth login` or set ANTHROPIC_API_KEY".into(),

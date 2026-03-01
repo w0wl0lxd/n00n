@@ -23,6 +23,7 @@ use std::time::Instant;
 
 use clap::ValueEnum;
 use color_eyre::Result;
+use color_eyre::eyre::Context;
 use maki_agent::{AgentInput, AgentMode, agent, template};
 use maki_providers::model::Model;
 use maki_providers::{AgentEvent, Envelope, TokenUsage};
@@ -126,7 +127,7 @@ pub fn run(
         Some(p) => p,
         None => {
             let mut buf = String::new();
-            io::stdin().read_to_string(&mut buf)?;
+            io::stdin().read_to_string(&mut buf).context("read stdin")?;
             buf
         }
     };

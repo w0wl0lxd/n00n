@@ -2,6 +2,7 @@ mod print;
 
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
+use color_eyre::eyre::Context;
 use maki_providers::model::Model;
 use tracing_subscriber::EnvFilter;
 
@@ -69,7 +70,7 @@ fn main() -> Result<()> {
             });
         }
         None => {
-            let model = Model::from_spec(&cli.model)?;
+            let model = Model::from_spec(&cli.model).context("parse model spec")?;
             init_logging();
             let excluded_tools: &[&str] = if cli.websearch { &[] } else { &["websearch"] };
             if cli.print {
@@ -79,14 +80,16 @@ fn main() -> Result<()> {
                     cli.output_format,
                     cli.verbose,
                     excluded_tools,
-                )?;
+                )
+                .context("run print mode")?;
             } else {
                 maki_ui::run(
                     model,
                     #[cfg(feature = "demo")]
                     cli.demo,
                     excluded_tools,
-                )?;
+                )
+                .context("run UI")?;
             }
         }
     }

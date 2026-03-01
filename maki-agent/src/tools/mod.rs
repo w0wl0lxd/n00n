@@ -19,6 +19,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::SystemTime;
 
 use serde_json::{Value, json};
+use tracing::error;
 
 use crate::template::Vars;
 use crate::{AgentError, AgentMode, Envelope, ToolDoneEvent, ToolOutput, ToolStartEvent};
@@ -187,7 +188,10 @@ macro_rules! register_tools {
                 };
                 let (output, is_error) = match result {
                     Ok(o) => (o, false),
-                    Err(e) => (ToolOutput::Plain(e), true),
+                    Err(e) => {
+                        error!(tool = self.name(), error = %e, "tool execution failed");
+                        (ToolOutput::Plain(e), true)
+                    }
                 };
                 ToolDoneEvent { id, tool: self.name(), output, is_error }
             }

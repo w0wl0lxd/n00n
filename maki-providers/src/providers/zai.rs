@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 use ureq::Agent;
 
 use crate::model::Model;
@@ -185,7 +185,7 @@ impl Provider for Zai {
         let body_str = body.to_string();
 
         for attempt in 1..=MAX_RETRIES {
-            debug!(attempt, "sending Z.AI API request");
+            debug!(attempt, model = %model.id, num_messages = messages.len(), "sending Z.AI API request");
 
             let req = self
                 .agent
@@ -198,16 +198,18 @@ impl Provider for Zai {
             if status == 429 || status >= 500 {
                 let error_body = response.into_body().read_to_string().unwrap_or_default();
                 if error_body.contains("1113") || error_body.contains("nsufficien") {
+                    warn!(status, "insufficient funds, bailing out");
                     return Err(AgentError::Api {
                         status,
                         message: error_body,
                     });
                 }
-                warn!(status, attempt, body = %error_body, "retryable Z.AI API error");
+                warn!(status, attempt, max_retries = MAX_RETRIES, body = %error_body, "retryable Z.AI API error");
                 if attempt < MAX_RETRIES {
                     thread::sleep(retry_delay(attempt));
                     continue;
                 }
+                error!(status, "max retries exhausted");
                 return Err(AgentError::Api {
                     status,
                     message: error_body,
@@ -215,6 +217,7 @@ impl Provider for Zai {
             }
 
             if status != 200 {
+                error!(status, "non-retryable Z.AI API error");
                 return Err(AgentError::from_response(response));
             }
 
@@ -411,8 +414,13 @@ fn parse_sse(
     }
 
     for acc in tool_accumulators {
-        let input: Value =
-            serde_json::from_str(&acc.arguments).unwrap_or(Value::Object(Default::default()));
+        let input: Value = match serde_json::from_str(&acc.arguments) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(error = %e, tool = %acc.name, json = %acc.arguments, "malformed tool JSON, falling back to {{}}");
+                Value::Object(Default::default())
+            }
+        };
         content_blocks.push(ContentBlock::ToolUse {
             id: acc.id,
             name: acc.name,

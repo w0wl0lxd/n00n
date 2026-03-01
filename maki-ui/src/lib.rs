@@ -16,6 +16,7 @@ use std::thread;
 use std::time::Duration;
 
 use color_eyre::Result;
+use color_eyre::eyre::Context;
 use crossterm::ExecutableCommand;
 use crossterm::event::{self, EnableBracketedPaste, Event};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -81,7 +82,8 @@ fn run_event_loop(
         );
         app.set_demo_questions(question_chat_idx, mock::mock_questions());
     }
-    let provider: Arc<dyn Provider> = Arc::from(maki_providers::provider::from_model(&model)?);
+    let provider: Arc<dyn Provider> =
+        Arc::from(maki_providers::provider::from_model(&model).context("create provider")?);
     let (mut cmd_tx, mut agent_rx, mut history, answer_tx) =
         spawn_agent(&provider, &model, Vec::new(), excluded_tools);
     app.answer_tx = Some(answer_tx);

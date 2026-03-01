@@ -3,6 +3,7 @@ use std::thread;
 
 use serde_json::Value;
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
+use tracing::{debug, warn};
 
 use crate::model::Model;
 use crate::providers::zai::{Zai, ZaiPlan};
@@ -40,7 +41,9 @@ pub trait Provider: Send + Sync {
 }
 
 pub fn from_model(model: &Model) -> Result<Box<dyn Provider>, AgentError> {
-    model.provider.create()
+    let provider = model.provider.create()?;
+    debug!(provider = %model.provider, model = %model.id, "provider created");
+    Ok(provider)
 }
 
 pub fn fetch_all_models(mut on_ready: impl FnMut(Vec<String>)) {
@@ -48,6 +51,7 @@ pub fn fetch_all_models(mut on_ready: impl FnMut(Vec<String>)) {
 
     for kind in ProviderKind::iter() {
         let Ok(provider) = kind.create() else {
+            warn!(provider = %kind, "failed to create provider, skipping");
             continue;
         };
         let tx = tx.clone();

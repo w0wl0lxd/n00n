@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 use ureq::Agent;
 
 pub mod auth;
@@ -156,7 +156,7 @@ impl Provider for Anthropic {
         .to_string();
 
         for attempt in 1..=MAX_RETRIES {
-            debug!(attempt, "sending API request");
+            debug!(attempt, model = %model.id, num_messages = messages.len(), "sending API request");
 
             let req = self.apply_auth(
                 self.agent
@@ -167,11 +167,17 @@ impl Provider for Anthropic {
             let status = response.status().as_u16();
 
             if status == 429 || status >= 500 {
-                warn!(status, attempt, "retryable API error");
+                warn!(
+                    status,
+                    attempt,
+                    max_retries = MAX_RETRIES,
+                    "retryable API error"
+                );
                 if attempt < MAX_RETRIES {
                     thread::sleep(RETRY_DELAY);
                     continue;
                 }
+                error!(status, "max retries exhausted");
                 return Err(AgentError::Api {
                     status,
                     message: "max retries exceeded".to_string(),
@@ -179,6 +185,7 @@ impl Provider for Anthropic {
             }
 
             if status != 200 {
+                error!(status, "non-retryable API error");
                 return Err(AgentError::from_response(response));
             }
 
@@ -373,8 +380,13 @@ fn parse_sse(
             },
             "content_block_stop" => {
                 if let Some(ContentBlock::ToolUse { input, .. }) = content_blocks.last_mut() {
-                    *input = serde_json::from_str(&current_tool_json)
-                        .unwrap_or(Value::Object(Default::default()));
+                    *input = match serde_json::from_str(&current_tool_json) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(error = %e, json = %current_tool_json, "malformed tool JSON, falling back to {{}}");
+                            Value::Object(Default::default())
+                        }
+                    };
                     current_tool_json.clear();
                 }
             }

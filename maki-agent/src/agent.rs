@@ -5,7 +5,7 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender};
 
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use serde_json::Value;
 
@@ -142,6 +142,7 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDo
             .zip(handles)
             .map(|(parsed, h)| {
                 h.join().unwrap_or_else(|_| {
+                    warn!(tool = parsed.call.name(), "tool thread panicked");
                     ToolDoneEvent::error(parsed.id.clone(), "tool thread panicked")
                 })
             })
@@ -174,8 +175,21 @@ pub fn run(
     let mut num_turns: u32 = 0;
     let mut recent_calls = RecentCalls::new();
 
+    info!(
+        model = %model.id,
+        mode = ?input.mode,
+        message_len = user_message.len(),
+        "agent run started"
+    );
+
     loop {
-        let response = provider.stream_message(model, history, system, tools, event_tx)?;
+        let response = match provider.stream_message(model, history, system, tools, event_tx) {
+            Ok(r) => r,
+            Err(e) => {
+                error!(error = %e, model = %model.id, num_turns, "stream_message failed");
+                return Err(e);
+            }
+        };
         num_turns += 1;
 
         let has_tools = response.message.has_tool_calls();
@@ -186,6 +200,9 @@ pub fn run(
             cache_creation = response.usage.cache_creation,
             cache_read = response.usage.cache_read,
             has_tools,
+            num_turns,
+            model = %model.id,
+            stop_reason = response.stop_reason.as_deref().unwrap_or("none"),
             "API response received"
         );
 
@@ -209,6 +226,12 @@ pub fn run(
                 continue;
             }
 
+            info!(
+                num_turns,
+                total_input = total_usage.input,
+                total_output = total_usage.output,
+                "agent run completed"
+            );
             event_tx.send(
                 AgentEvent::Done {
                     usage: total_usage,
