@@ -95,6 +95,9 @@ impl QuestionForm {
         }
 
         if super::is_ctrl(&key) {
+            if key.code == KeyCode::Char('c') {
+                return QuestionFormAction::Dismiss;
+            }
             return QuestionFormAction::Consumed;
         }
 
@@ -127,6 +130,9 @@ impl QuestionForm {
 
     fn handle_custom_key(&mut self, key: KeyEvent) -> QuestionFormAction {
         if super::is_ctrl(&key) {
+            if key.code == KeyCode::Char('c') {
+                return QuestionFormAction::Dismiss;
+            }
             if key.code == KeyCode::Char('w') {
                 self.buffer.remove_word_before_cursor();
             }
@@ -426,8 +432,23 @@ impl QuestionForm {
 mod tests {
     use maki_providers::{QuestionInfo, QuestionOption};
 
+    use test_case::test_case;
+
     use super::*;
-    use crate::components::key;
+    use crate::components::{ctrl, key};
+
+    fn assert_submit(action: QuestionFormAction) -> Vec<Vec<String>> {
+        match action {
+            QuestionFormAction::Submit(json) => serde_json::from_str(&json).unwrap(),
+            _ => panic!("expected Submit"),
+        }
+    }
+
+    fn enter_custom_mode(form: &mut QuestionForm) {
+        form.handle_key(key(KeyCode::Down));
+        form.handle_key(key(KeyCode::Down));
+        form.handle_key(key(KeyCode::Enter));
+    }
 
     fn single_q_with_options() -> Vec<QuestionInfo> {
         vec![QuestionInfo {
@@ -497,13 +518,7 @@ mod tests {
         form.open(single_q_with_options());
 
         let action = form.handle_key(key(KeyCode::Enter));
-        match action {
-            QuestionFormAction::Submit(json) => {
-                let parsed: Vec<Vec<String>> = serde_json::from_str(&json).unwrap();
-                assert_eq!(parsed, vec![vec!["PostgreSQL"]]);
-            }
-            _ => panic!("expected Submit"),
-        }
+        assert_eq!(assert_submit(action), vec![vec!["PostgreSQL"]]);
     }
 
     #[test]
@@ -513,43 +528,38 @@ mod tests {
         form.handle_key(key(KeyCode::Down));
 
         let action = form.handle_key(key(KeyCode::Enter));
-        match action {
-            QuestionFormAction::Submit(json) => {
-                let parsed: Vec<Vec<String>> = serde_json::from_str(&json).unwrap();
-                assert_eq!(parsed, vec![vec!["Redis"]]);
-            }
-            _ => panic!("expected Submit"),
-        }
+        assert_eq!(assert_submit(action), vec![vec!["Redis"]]);
     }
 
     #[test]
     fn custom_input_flow() {
         let mut form = QuestionForm::new();
         form.open(single_q_with_options());
-
-        form.handle_key(key(KeyCode::Down));
-        form.handle_key(key(KeyCode::Down));
-        form.handle_key(key(KeyCode::Enter));
-        assert!(form.editing_custom);
+        enter_custom_mode(&mut form);
 
         for c in "MongoDB".chars() {
             form.handle_key(key(KeyCode::Char(c)));
         }
         let action = form.handle_key(key(KeyCode::Enter));
-        match action {
-            QuestionFormAction::Submit(json) => {
-                let parsed: Vec<Vec<String>> = serde_json::from_str(&json).unwrap();
-                assert_eq!(parsed, vec![vec!["MongoDB"]]);
-            }
-            _ => panic!("expected Submit"),
-        }
+        assert_eq!(assert_submit(action), vec![vec!["MongoDB"]]);
+    }
+
+    #[test_case(key(KeyCode::Esc) ; "esc_in_normal_mode")]
+    #[test_case(ctrl('c') ; "ctrl_c_in_normal_mode")]
+    fn dismiss_from_normal_mode(dismiss_key: KeyEvent) {
+        let mut form = QuestionForm::new();
+        form.open(single_q_with_options());
+        let action = form.handle_key(dismiss_key);
+        assert!(matches!(action, QuestionFormAction::Dismiss));
     }
 
     #[test]
-    fn esc_dismisses() {
+    fn ctrl_c_in_custom_mode_dismisses_form() {
         let mut form = QuestionForm::new();
         form.open(single_q_with_options());
-        let action = form.handle_key(key(KeyCode::Esc));
+        enter_custom_mode(&mut form);
+
+        let action = form.handle_key(ctrl('c'));
         assert!(matches!(action, QuestionFormAction::Dismiss));
     }
 
@@ -557,9 +567,7 @@ mod tests {
     fn esc_in_custom_mode_exits_edit_not_form() {
         let mut form = QuestionForm::new();
         form.open(single_q_with_options());
-        form.handle_key(key(KeyCode::Down));
-        form.handle_key(key(KeyCode::Down));
-        form.handle_key(key(KeyCode::Enter));
+        enter_custom_mode(&mut form);
         assert!(form.editing_custom);
 
         let action = form.handle_key(key(KeyCode::Esc));
@@ -585,13 +593,7 @@ mod tests {
         assert_eq!(form.answers[1], vec!["Actix"]);
 
         let action = form.handle_key(key(KeyCode::Enter));
-        match action {
-            QuestionFormAction::Submit(json) => {
-                let parsed: Vec<Vec<String>> = serde_json::from_str(&json).unwrap();
-                assert_eq!(parsed, vec![vec!["Rust"], vec!["Actix"]]);
-            }
-            _ => panic!("expected Submit"),
-        }
+        assert_eq!(assert_submit(action), vec![vec!["Rust"], vec!["Actix"]]);
     }
 
     #[test]
@@ -671,9 +673,7 @@ mod tests {
         form.open(single_q_with_options());
         let h1 = form.height(80);
 
-        form.handle_key(key(KeyCode::Down));
-        form.handle_key(key(KeyCode::Down));
-        form.handle_key(key(KeyCode::Enter));
+        enter_custom_mode(&mut form);
         let h2 = form.height(80);
 
         assert!(h2 > h1);
@@ -683,20 +683,10 @@ mod tests {
     fn empty_custom_input_not_stored() {
         let mut form = QuestionForm::new();
         form.open(single_q_with_options());
-
-        form.handle_key(key(KeyCode::Down));
-        form.handle_key(key(KeyCode::Down));
-        form.handle_key(key(KeyCode::Enter));
-        assert!(form.editing_custom);
+        enter_custom_mode(&mut form);
 
         let action = form.handle_key(key(KeyCode::Enter));
-        match action {
-            QuestionFormAction::Submit(json) => {
-                let parsed: Vec<Vec<String>> = serde_json::from_str(&json).unwrap();
-                assert!(parsed[0].is_empty());
-            }
-            _ => panic!("expected Submit"),
-        }
+        assert!(assert_submit(action)[0].is_empty());
     }
 
     #[test]
