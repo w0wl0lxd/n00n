@@ -209,6 +209,10 @@ impl App {
                 }
                 KeyCode::Tab => self.toggle_mode(),
                 KeyCode::Esc if streaming => self.handle_cancel_press(),
+                KeyCode::Esc => {
+                    self.status_bar.clear_cancel_hint();
+                    vec![]
+                }
                 _ => vec![],
             },
             InputAction::ContinueLine | InputAction::None => vec![],
@@ -592,38 +596,6 @@ mod tests {
     }
 
     #[test]
-    fn turn_complete_accumulates_usage_and_sets_context_size() {
-        let mut app = test_app();
-        app.status = Status::Streaming;
-        let usage = TokenUsage {
-            input: 1_000,
-            output: 500,
-            cache_creation: 200,
-            cache_read: 3_000,
-        };
-        app.update(agent_msg(AgentEvent::TurnComplete {
-            message: Default::default(),
-            usage: usage.clone(),
-            model: "test-model".into(),
-        }));
-        assert_eq!(app.chats[0].context_size, usage.context_tokens());
-        assert_eq!(app.token_usage.input, 1_000);
-        assert_eq!(app.token_usage.output, 500);
-
-        app.update(agent_msg(AgentEvent::TurnComplete {
-            message: Default::default(),
-            usage: TokenUsage {
-                input: 20,
-                output: 10,
-                ..Default::default()
-            },
-            model: "test-model".into(),
-        }));
-        assert_eq!(app.token_usage.input, 1_020);
-        assert_eq!(app.token_usage.output, 510);
-    }
-
-    #[test]
     fn error_event_sets_status() {
         let mut app = test_app();
         app.status = Status::Streaming;
@@ -871,26 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn subagent_event_creates_chat() {
-        let mut app = test_app();
-        app.status = Status::Streaming;
-        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
-            id: "task1".into(),
-            tool: "task",
-            summary: "research".into(),
-            input: None,
-            output: None,
-        })));
-        app.update(subagent_msg(
-            AgentEvent::TextDelta { text: "hi".into() },
-            "task1",
-        ));
-        assert_eq!(app.chats.len(), 2);
-        assert_eq!(app.chats[1].name, "research");
-    }
-
-    #[test]
-    fn multiple_subagents_get_descriptive_names() {
+    fn subagents_get_descriptive_names() {
         let mut app = test_app();
         app.status = Status::Streaming;
         app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
@@ -921,69 +874,8 @@ mod tests {
     }
 
     #[test]
-    fn turn_complete_accumulates_usage_globally() {
-        let mut app = test_app();
-        app.status = Status::Streaming;
-        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
-            id: "task1".into(),
-            tool: "task",
-            summary: "research".into(),
-            input: None,
-            output: None,
-        })));
-        app.update(subagent_msg(
-            AgentEvent::TextDelta { text: "x".into() },
-            "task1",
-        ));
-
-        let main_usage = TokenUsage {
-            input: 100,
-            output: 50,
-            ..Default::default()
-        };
-        app.update(agent_msg(AgentEvent::TurnComplete {
-            message: Default::default(),
-            usage: main_usage,
-            model: "test".into(),
-        }));
-
-        let sub_usage = TokenUsage {
-            input: 200,
-            output: 75,
-            ..Default::default()
-        };
-        app.update(subagent_msg(
-            AgentEvent::TurnComplete {
-                message: Default::default(),
-                usage: sub_usage,
-                model: "test".into(),
-            },
-            "task1",
-        ));
-
-        assert_eq!(app.token_usage.input, 300);
-        assert_eq!(app.token_usage.output, 125);
-        assert_eq!(app.chats[0].token_usage.input, 100);
-        assert_eq!(app.chats[0].token_usage.output, 50);
-        assert_eq!(app.chats[1].token_usage.input, 200);
-        assert_eq!(app.chats[1].token_usage.output, 75);
-    }
-
-    #[test]
-    fn context_size_per_chat() {
-        let mut app = test_app();
-        app.status = Status::Streaming;
-        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
-            id: "task1".into(),
-            tool: "task",
-            summary: "research".into(),
-            input: None,
-            output: None,
-        })));
-        app.update(subagent_msg(
-            AgentEvent::TextDelta { text: "x".into() },
-            "task1",
-        ));
+    fn turn_complete_tracks_usage_and_context_per_chat() {
+        let mut app = app_with_subagent();
 
         let main_usage = TokenUsage {
             input: 100,
@@ -995,12 +887,10 @@ mod tests {
             usage: main_usage.clone(),
             model: "test".into(),
         }));
-        assert_eq!(app.chats[0].context_size, main_usage.context_tokens());
-        assert_eq!(app.chats[1].context_size, 0);
 
         let sub_usage = TokenUsage {
-            input: 9999,
-            output: 9999,
+            input: 200,
+            output: 75,
             ..Default::default()
         };
         app.update(subagent_msg(
@@ -1011,21 +901,18 @@ mod tests {
             },
             "task1",
         ));
+
+        assert_eq!(app.token_usage.input, 300);
+        assert_eq!(app.token_usage.output, 125);
+        assert_eq!(app.chats[0].token_usage.input, 100);
+        assert_eq!(app.chats[1].token_usage.input, 200);
         assert_eq!(app.chats[0].context_size, main_usage.context_tokens());
         assert_eq!(app.chats[1].context_size, sub_usage.context_tokens());
     }
 
     #[test]
-    fn cancel_fails_all_chats() {
-        let mut app = test_app();
-        app.status = Status::Streaming;
-        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
-            id: "task1".into(),
-            tool: "task",
-            summary: "research".into(),
-            input: None,
-            output: None,
-        })));
+    fn cancel_resets_all_chats_and_indices() {
+        let mut app = app_with_subagent();
         app.update(subagent_msg(
             AgentEvent::ToolStart(ToolStartEvent {
                 id: "sub_t1".into(),
@@ -1042,27 +929,6 @@ mod tests {
         assert!(matches!(&actions[0], Action::CancelAgent));
         assert_eq!(app.chats[0].in_progress_count(), 0);
         assert_eq!(app.chats[1].in_progress_count(), 0);
-    }
-
-    #[test]
-    fn cancel_clears_chat_index() {
-        let mut app = test_app();
-        app.status = Status::Streaming;
-        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
-            id: "task1".into(),
-            tool: "task",
-            summary: "research".into(),
-            input: None,
-            output: None,
-        })));
-        app.update(subagent_msg(
-            AgentEvent::TextDelta { text: "x".into() },
-            "task1",
-        ));
-        assert!(!app.chat_index.is_empty());
-
-        app.update(Msg::Key(key(KeyCode::Esc)));
-        app.update(Msg::Key(key(KeyCode::Esc)));
         assert!(app.chat_index.is_empty());
     }
 

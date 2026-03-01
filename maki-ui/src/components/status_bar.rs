@@ -250,20 +250,18 @@ mod tests {
         assert!(bar.cancel_hint_since.is_none());
     }
 
-    #[test]
-    fn clear_expired_hint_removes_stale() {
+    #[test_case(true, false  ; "removes_stale")]
+    #[test_case(false, true ; "keeps_fresh")]
+    fn clear_expired_hint(stale: bool, expect_some: bool) {
         let mut bar = StatusBar::new();
-        bar.cancel_hint_since = Some(Instant::now() - CANCEL_WINDOW - Duration::from_millis(1));
+        let offset = if stale {
+            CANCEL_WINDOW + Duration::from_millis(1)
+        } else {
+            Duration::ZERO
+        };
+        bar.cancel_hint_since = Some(Instant::now() - offset);
         bar.clear_expired_hint();
-        assert!(bar.cancel_hint_since.is_none());
-    }
-
-    #[test]
-    fn clear_expired_hint_keeps_fresh() {
-        let mut bar = StatusBar::new();
-        bar.cancel_hint_since = Some(Instant::now());
-        bar.clear_expired_hint();
-        assert!(bar.cancel_hint_since.is_some());
+        assert_eq!(bar.cancel_hint_since.is_some(), expect_some);
     }
 
     #[test_case("/home/user/projects/app", "/home/user", "~/projects/app" ; "inside_home")]
