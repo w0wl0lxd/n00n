@@ -175,11 +175,7 @@ impl QuestionForm {
         let custom_idx = q.options.len();
 
         if self.selected == custom_idx {
-            let existing = self.answers[self.current_tab]
-                .first()
-                .cloned()
-                .unwrap_or_default();
-            self.buffer = TextBuffer::new(existing);
+            self.buffer = TextBuffer::new(String::new());
             self.editing_custom = true;
             return QuestionFormAction::Consumed;
         }
