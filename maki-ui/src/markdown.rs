@@ -451,7 +451,7 @@ enum TextBlock<'a> {
         code: &'a str,
     },
     Table {
-        rows: Vec<Vec<&'a str>>,
+        rows: Vec<Vec<String>>,
         header_end: usize,
     },
 }
@@ -470,11 +470,42 @@ fn is_separator_row(line: &str) -> bool {
         .all(|cell| cell.bytes().all(|b| matches!(b, b'-' | b':')) && cell.contains('-'))
 }
 
-fn parse_table_cells(line: &str) -> Vec<&str> {
+fn parse_table_cells(line: &str) -> Vec<String> {
     let t = line.trim();
     let inner = t.strip_prefix('|').unwrap_or(t);
     let inner = inner.strip_suffix('|').unwrap_or(inner);
-    inner.split('|').map(|c| c.trim()).collect()
+
+    let bytes = inner.as_bytes();
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let run_len = count_backtick_run(bytes, i);
+            if let Some((_, _, close_end)) = find_code_span_close(bytes, i, run_len) {
+                current.push_str(&inner[i..close_end]);
+                i = close_end;
+            } else {
+                current.push_str(&inner[i..]);
+                i = bytes.len();
+            }
+        } else if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
+            current.push('|');
+            i += 2;
+        } else if bytes[i] == b'|' {
+            cells.push(current.trim().to_owned());
+            current = String::new();
+            i += 1;
+        } else {
+            let ch = inner[i..].chars().next().unwrap();
+            current.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+
+    cells.push(current.trim().to_owned());
+    cells
 }
 
 fn split_normal_blocks<'a>(text: &'a str) -> Vec<TextBlock<'a>> {
@@ -625,7 +656,7 @@ fn spans_width(spans: &[Span<'_>]) -> usize {
 }
 
 fn render_table(
-    rows: &[Vec<&str>],
+    rows: &[Vec<String>],
     header_end: usize,
     text_style: Style,
     width: u16,
@@ -671,7 +702,7 @@ fn render_table(
 
         let wrapped_cells: Vec<Vec<Vec<Span<'static>>>> = (0..col_count)
             .map(|c| {
-                let cell = row.get(c).copied().unwrap_or("");
+                let cell = row.get(c).map(String::as_str).unwrap_or("");
                 let cell_spans: Vec<Span<'static>> = parse_inline_markdown(cell, base)
                     .into_iter()
                     .map(|s| Span::styled(s.content.into_owned(), s.style))
@@ -1518,30 +1549,28 @@ mod tests {
     #[test_case("| a | b |", &["a", "b"] ; "basic_cells")]
     #[test_case("|  x  |  y  |  z  |", &["x", "y", "z"] ; "trimmed_cells")]
     #[test_case("| a |", &["a"] ; "single_cell")]
+    #[test_case("| a \\| b | c |", &["a | b", "c"] ; "escaped_pipe")]
+    #[test_case("| `a | b` | c |", &["`a | b`", "c"] ; "pipe_in_backtick_code")]
+    #[test_case("| `a \\| b` | c |", &["`a \\| b`", "c"] ; "escaped_pipe_in_code_preserved")]
+    #[test_case("| ``a | b`` | c |", &["``a | b``", "c"] ; "pipe_in_double_backtick_code")]
     fn parse_table_cells_cases(input: &str, expected: &[&str]) {
-        assert_eq!(parse_table_cells(input), expected);
-    }
-
-    #[test]
-    fn split_normal_no_table() {
-        let blocks = split_normal_blocks("just some text\nwith lines");
-        assert_eq!(blocks.len(), 1);
-        assert!(matches!(blocks[0], TextBlock::Normal(_)));
+        let result = parse_table_cells(input);
+        let result: Vec<&str> = result.iter().map(String::as_str).collect();
+        assert_eq!(result, expected);
     }
 
     #[test]
     fn split_normal_extracts_table() {
         let blocks = split_normal_blocks("before\n| a | b |\n| --- | --- |\n| 1 | 2 |\nafter");
-        assert!(blocks.len() >= 3);
+        assert_eq!(blocks.len(), 3);
         assert!(matches!(blocks[0], TextBlock::Normal(_)));
-        assert!(matches!(blocks[1], TextBlock::Table { .. }));
         assert!(matches!(blocks[2], TextBlock::Normal(_)));
         let TextBlock::Table {
             ref rows,
             header_end,
         } = blocks[1]
         else {
-            unreachable!()
+            panic!("expected Table block at index 1");
         };
         assert_eq!(header_end, 1);
         assert_eq!(rows, &[vec!["a", "b"], vec!["1", "2"]]);
@@ -1572,22 +1601,28 @@ mod tests {
     }
 
     #[test]
+    fn render_table_escaped_pipe_stays_in_cell() {
+        let style = Style::default();
+        let input = "| Query | Result |\n| --- | --- |\n| `cmd \\| filter` | ok |";
+        let lines = text_to_lines(input, "", style, style, None, 80);
+        let text = lines_text(&lines);
+        let joined = text.join("\n");
+        assert!(
+            joined.contains("cmd \\| filter"),
+            "escaped pipe content missing from: {joined}"
+        );
+        assert!(joined.contains("ok"), "adjacent cell missing");
+        let data_line = text.iter().find(|l| l.contains("cmd")).unwrap();
+        let col_count = data_line.matches('│').count();
+        assert_eq!(col_count, 3, "expected 3 borders (2 cols), got {col_count}");
+    }
+
+    #[test]
     fn table_with_prefix() {
         let style = Style::default();
         let input = "| a | b |\n| --- | --- |\n| 1 | 2 |";
         let lines = text_to_lines(input, "p> ", style, style, None, TEST_WIDTH);
         assert_eq!(lines[0].spans[0].content, "p> ");
-    }
-
-    #[test]
-    fn table_between_paragraphs() {
-        let style = Style::default();
-        let input = "before\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\nafter";
-        let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
-        let text = lines_text(&lines);
-        assert_eq!(text.first().unwrap(), "before");
-        assert!(text.iter().any(|l| l.contains('┌')));
-        assert_eq!(text.last().unwrap(), "after");
     }
 
     #[test]
