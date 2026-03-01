@@ -13,7 +13,10 @@ Each question can have:
 The user will always have the option to type a custom answer instead of selecting a predefined option.
 
 Usage notes:
-- Keep questions clear and concise
+- The `question` field must be a SHORT, direct question (1-3 sentences max)
+- Do NOT put analysis, explanations, or context in the question field
+- Put context/reasoning in your regular text output BEFORE calling the question tool
 - Provide options when there are known choices — this makes answering faster
+- Always provide `options` when there are known choices
 - If you recommend a specific option, note it in the description (e.g. "Recommended")
 - The user's answers will be provided in the next message

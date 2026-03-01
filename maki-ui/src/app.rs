@@ -48,6 +48,7 @@ pub struct App {
     pub should_quit: bool,
     pub(crate) queue: VecDeque<AgentInput>,
     pub answer_tx: Option<mpsc::Sender<String>>,
+    pending_question: bool,
     #[cfg(feature = "demo")]
     demo_questions: Option<(usize, Vec<QuestionInfo>)>,
 }
@@ -74,6 +75,7 @@ impl App {
             should_quit: false,
             queue: VecDeque::new(),
             answer_tx: None,
+            pending_question: false,
             #[cfg(feature = "demo")]
             demo_questions: None,
         }
@@ -100,25 +102,23 @@ impl App {
         }
     }
 
+    fn send_answer(&self, answer: String) {
+        if let Some(tx) = &self.answer_tx {
+            let _ = tx.send(answer);
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> Vec<Action> {
         if self.question_form.is_visible() {
-            return match self.question_form.handle_key(key) {
-                QuestionFormAction::Submit(answer) => {
-                    self.question_form.close();
-                    if let Some(tx) = &self.answer_tx {
-                        let _ = tx.send(answer);
-                    }
-                    vec![]
-                }
-                QuestionFormAction::Dismiss => {
-                    self.question_form.close();
-                    if let Some(tx) = &self.answer_tx {
-                        let _ = tx.send(String::new());
-                    }
-                    vec![]
-                }
-                QuestionFormAction::Consumed => vec![],
+            let action = self.question_form.handle_key(key);
+            let answer = match action {
+                QuestionFormAction::Submit(a) => a,
+                QuestionFormAction::Dismiss => String::new(),
+                QuestionFormAction::Consumed => return vec![],
             };
+            self.question_form.close();
+            self.send_answer(answer);
+            return vec![];
         }
 
         if self.chat_picker.is_open() {
@@ -216,6 +216,12 @@ impl App {
     }
 
     fn handle_submit(&mut self, text: String) -> Vec<Action> {
+        if self.pending_question {
+            self.pending_question = false;
+            self.main_chat().push_user_message(&text);
+            self.send_answer(text);
+            return vec![];
+        }
         let pending_plan = self.pending_plan.take();
         let input = AgentInput {
             message: text.clone(),
@@ -238,6 +244,7 @@ impl App {
         match self.status_bar.handle_cancel_press() {
             CancelResult::Confirmed => {
                 self.question_form.close();
+                self.pending_question = false;
                 for chat in &mut self.chats {
                     chat.flush();
                     chat.fail_in_progress();
@@ -294,7 +301,14 @@ impl App {
                     self.queue.clear();
                 }
                 ChatEventResult::QuestionPrompt { questions } => {
-                    self.question_form.open(questions);
+                    if QuestionForm::is_form_suitable(&questions) {
+                        self.question_form.open(questions);
+                    } else {
+                        let text = QuestionForm::format_questions_as_text(&questions);
+                        self.main_chat()
+                            .push(DisplayMessage::new(DisplayRole::Assistant, text));
+                        self.pending_question = true;
+                    }
                 }
                 ChatEventResult::Continue => {}
             }
@@ -373,6 +387,7 @@ impl App {
             self.demo_questions = None;
         }
         self.question_form.close();
+        self.pending_question = false;
         self.status_bar.clear_cancel_hint();
         self.chat_picker.close();
         vec![Action::NewSession]
@@ -388,8 +403,11 @@ impl App {
         bg.render(frame.area(), frame.buffer_mut());
 
         let form_visible = self.question_form.is_visible();
+        let max_form_height = frame.area().height.saturating_sub(3);
         let bottom_height = if form_visible {
-            self.question_form.height(frame.area().width)
+            self.question_form
+                .height(frame.area().width)
+                .min(max_form_height)
         } else {
             queue_panel::height(self.queue.len()) + self.input_box.height(frame.area().width)
         };
@@ -1132,5 +1150,82 @@ mod tests {
         app.status = Status::Streaming;
         let actions = app.execute_command("/compact");
         assert!(actions.is_empty());
+    }
+
+    fn long_question_no_options() -> AgentEvent {
+        let long = (0..20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        AgentEvent::QuestionPrompt {
+            id: "q1".into(),
+            questions: vec![maki_providers::QuestionInfo {
+                question: long,
+                header: String::new(),
+                options: vec![],
+                multiple: false,
+            }],
+        }
+    }
+
+    fn short_question_with_options() -> AgentEvent {
+        AgentEvent::QuestionPrompt {
+            id: "q2".into(),
+            questions: vec![maki_providers::QuestionInfo {
+                question: "Pick a DB".into(),
+                header: "DB".into(),
+                options: vec![maki_providers::QuestionOption {
+                    label: "PostgreSQL".into(),
+                    description: "Relational".into(),
+                }],
+                multiple: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn question_routing_by_suitability() {
+        let cases = [
+            (long_question_no_options(), false, true),
+            (short_question_with_options(), true, false),
+        ];
+        for (event, expect_form, expect_pending) in cases {
+            let mut app = test_app();
+            app.status = Status::Streaming;
+            app.update(agent_msg(event));
+            assert_eq!(app.question_form.is_visible(), expect_form);
+            assert_eq!(app.pending_question, expect_pending);
+        }
+    }
+
+    #[test]
+    fn pending_question_submit_routes_through_answer_tx() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        let (tx, rx) = mpsc::channel();
+        app.answer_tx = Some(tx);
+
+        app.update(agent_msg(long_question_no_options()));
+        assert!(app.pending_question);
+
+        for c in "my answer".chars() {
+            app.update(Msg::Key(key(KeyCode::Char(c))));
+        }
+        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(actions.is_empty());
+        assert!(!app.pending_question);
+        assert_eq!(rx.try_recv().unwrap(), "my answer");
+    }
+
+    #[test]
+    fn cancel_clears_pending_question() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.update(agent_msg(long_question_no_options()));
+        assert!(app.pending_question);
+
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(!app.pending_question);
     }
 }

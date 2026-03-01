@@ -12,6 +12,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 const FORM_LABEL: &str = " Questions ";
 const CUSTOM_OPTION: &str = "Type your own answer";
 const HINT_BAR: &str = "↑↓ select  Enter confirm  Tab next  Esc dismiss";
+const MAX_QUESTION_LINES_NO_OPTIONS: usize = 10;
 
 pub enum QuestionFormAction {
     Consumed,
@@ -27,6 +28,7 @@ pub struct QuestionForm {
     editing_custom: bool,
     buffer: TextBuffer,
     visible: bool,
+    scroll_offset: u16,
 }
 
 impl QuestionForm {
@@ -39,6 +41,7 @@ impl QuestionForm {
             editing_custom: false,
             buffer: TextBuffer::new(String::new()),
             visible: false,
+            scroll_offset: 0,
         }
     }
 
@@ -54,6 +57,7 @@ impl QuestionForm {
         self.selected = 0;
         self.editing_custom = false;
         self.buffer = TextBuffer::new(String::new());
+        self.scroll_offset = 0;
         self.visible = true;
     }
 
@@ -105,12 +109,16 @@ impl QuestionForm {
             KeyCode::Up => {
                 if self.selected > 0 {
                     self.selected -= 1;
+                } else {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
                 }
                 QuestionFormAction::Consumed
             }
             KeyCode::Down => {
                 if self.selected + 1 < self.option_count() {
                     self.selected += 1;
+                } else {
+                    self.scroll_offset = self.scroll_offset.saturating_add(1);
                 }
                 QuestionFormAction::Consumed
             }
@@ -215,6 +223,7 @@ impl QuestionForm {
         if self.current_tab + 1 < self.total_tabs() {
             self.current_tab += 1;
             self.selected = 0;
+            self.scroll_offset = 0;
         }
     }
 
@@ -222,6 +231,7 @@ impl QuestionForm {
         if self.current_tab > 0 {
             self.current_tab -= 1;
             self.selected = 0;
+            self.scroll_offset = 0;
         }
     }
 
@@ -258,7 +268,8 @@ impl QuestionForm {
         let paragraph = Paragraph::new(lines)
             .style(Style::new().fg(theme::FOREGROUND))
             .wrap(Wrap { trim: false })
-            .block(block);
+            .block(block)
+            .scroll((self.scroll_offset, 0));
 
         frame.render_widget(paragraph, area);
     }
@@ -397,6 +408,35 @@ impl QuestionForm {
             "Press Enter to submit, or navigate back to edit.",
             Style::new().fg(theme::COMMENT),
         )));
+    }
+
+    pub fn is_form_suitable(questions: &[QuestionInfo]) -> bool {
+        if questions.len() != 1 {
+            return true;
+        }
+        let q = &questions[0];
+        if !q.options.is_empty() {
+            return true;
+        }
+        q.question.split('\n').count() <= MAX_QUESTION_LINES_NO_OPTIONS
+    }
+
+    pub fn format_questions_as_text(questions: &[QuestionInfo]) -> String {
+        questions
+            .iter()
+            .enumerate()
+            .map(|(i, q)| {
+                let mut line = format!("{}. {}", i + 1, q.question);
+                for opt in &q.options {
+                    line.push_str(&format!("\n   - {}", opt.label));
+                    if !opt.description.is_empty() {
+                        line.push_str(&format!(" — {}", opt.description));
+                    }
+                }
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 
     pub fn height(&self, width: u16) -> u16 {
@@ -723,5 +763,57 @@ mod tests {
         let h_narrow = form.height(30);
         let h_wide = form.height(200);
         assert!(h_narrow > h_wide);
+    }
+
+    #[test_case(single_q_with_options() ; "with_options")]
+    #[test_case(q_no_options() ; "short_no_options")]
+    #[test_case(multi_q() ; "multi_question")]
+    fn is_form_suitable_positive(qs: Vec<QuestionInfo>) {
+        assert!(QuestionForm::is_form_suitable(&qs));
+    }
+
+    #[test]
+    fn is_form_unsuitable_long_no_options() {
+        let long = (0..20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let qs = vec![QuestionInfo {
+            question: long,
+            header: String::new(),
+            options: vec![],
+            multiple: false,
+        }];
+        assert!(!QuestionForm::is_form_suitable(&qs));
+    }
+
+    #[test]
+    fn format_questions_as_text_with_options() {
+        let qs = single_q_with_options();
+        let text = QuestionForm::format_questions_as_text(&qs);
+        assert!(text.contains("1. Pick a DB"));
+        assert!(text.contains("- PostgreSQL — Relational"));
+        assert!(text.contains("- Redis — Key-value"));
+    }
+
+    #[test]
+    fn scroll_offset_resets_on_tab_change() {
+        let mut form = QuestionForm::new();
+        form.open(multi_q());
+        form.scroll_offset = 5;
+        form.handle_key(key(KeyCode::Tab));
+        assert_eq!(form.scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_at_boundary_adjusts_offset() {
+        let mut form = QuestionForm::new();
+        form.open(q_no_options());
+
+        form.handle_key(key(KeyCode::Down));
+        assert_eq!(form.scroll_offset, 1);
+
+        form.handle_key(key(KeyCode::Up));
+        assert_eq!(form.scroll_offset, 0);
     }
 }
