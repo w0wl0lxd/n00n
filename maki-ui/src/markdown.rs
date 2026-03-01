@@ -550,6 +550,8 @@ fn split_normal_blocks<'a>(text: &'a str) -> Vec<TextBlock<'a>> {
     blocks
 }
 
+const MIN_COL_WIDTH: usize = 5;
+
 fn cell_display_width(cell: &str) -> usize {
     parse_inline_markdown(cell, Style::default())
         .iter()
@@ -557,7 +559,77 @@ fn cell_display_width(cell: &str) -> usize {
         .sum()
 }
 
-fn render_table(rows: &[Vec<&str>], header_end: usize, text_style: Style) -> Vec<Line<'static>> {
+fn constrain_col_widths(col_widths: &mut [usize], available: usize) {
+    let total: usize = col_widths.iter().sum();
+    if total <= available {
+        return;
+    }
+    for w in col_widths.iter_mut() {
+        *w = (*w * available / total).max(MIN_COL_WIDTH).min(*w);
+    }
+    let mut excess = col_widths.iter().sum::<usize>().saturating_sub(available);
+    while excess > 0 {
+        let max_w = col_widths.iter().copied().max().unwrap_or(0);
+        if max_w <= MIN_COL_WIDTH {
+            break;
+        }
+        for w in col_widths.iter_mut() {
+            if excess == 0 {
+                break;
+            }
+            if *w == max_w && *w > MIN_COL_WIDTH {
+                *w -= 1;
+                excess -= 1;
+            }
+        }
+    }
+}
+
+fn wrap_cell_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Vec<Span<'static>>> {
+    if max_width == 0 {
+        return vec![spans];
+    }
+    let mut result: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut remaining = max_width;
+
+    for span in spans {
+        let mut text = span.content.as_ref();
+        let style = span.style;
+
+        while !text.is_empty() {
+            let fits = highlight::fit_width(text, remaining);
+            if fits == 0 {
+                if current.is_empty() {
+                    let ch_len = text.chars().next().map_or(1, char::len_utf8);
+                    current.push(Span::styled(text[..ch_len].to_owned(), style));
+                    text = &text[ch_len..];
+                }
+                result.push(std::mem::take(&mut current));
+                remaining = max_width;
+                continue;
+            }
+            current.push(Span::styled(text[..fits].to_owned(), style));
+            remaining -= text[..fits].width();
+            text = &text[fits..];
+        }
+    }
+    if !current.is_empty() || result.is_empty() {
+        result.push(current);
+    }
+    result
+}
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|s| s.content.width()).sum()
+}
+
+fn render_table(
+    rows: &[Vec<&str>],
+    header_end: usize,
+    text_style: Style,
+    width: u16,
+) -> Vec<Line<'static>> {
     let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
     if col_count == 0 {
         return Vec::new();
@@ -569,6 +641,10 @@ fn render_table(rows: &[Vec<&str>], header_end: usize, text_style: Style) -> Vec
             col_widths[c] = col_widths[c].max(cell_display_width(cell));
         }
     }
+
+    let overhead = col_count * 3 + 1;
+    let available = (width as usize).saturating_sub(overhead);
+    constrain_col_widths(&mut col_widths, available);
 
     let mut lines = Vec::new();
 
@@ -593,24 +669,38 @@ fn render_table(rows: &[Vec<&str>], header_end: usize, text_style: Style) -> Vec
             text_style
         };
 
-        let mut spans = vec![Span::styled("│ ".to_owned(), TABLE_BORDER_STYLE)];
-        for (c, &w) in col_widths.iter().enumerate() {
-            let cell = row.get(c).copied().unwrap_or("");
-            let cell_spans = parse_inline_markdown(cell, base);
-            let content_width: usize = cell_spans.iter().map(|s| s.content.width()).sum();
-            let pad = w.saturating_sub(content_width);
+        let wrapped_cells: Vec<Vec<Vec<Span<'static>>>> = (0..col_count)
+            .map(|c| {
+                let cell = row.get(c).copied().unwrap_or("");
+                let cell_spans: Vec<Span<'static>> = parse_inline_markdown(cell, base)
+                    .into_iter()
+                    .map(|s| Span::styled(s.content.into_owned(), s.style))
+                    .collect();
+                wrap_cell_spans(cell_spans, col_widths[c])
+            })
+            .collect();
 
-            for s in cell_spans {
-                spans.push(Span::styled(s.content.into_owned(), s.style));
+        let row_height = wrapped_cells.iter().map(|c| c.len()).max().unwrap_or(1);
+
+        for line_idx in 0..row_height {
+            let mut spans = vec![Span::styled("│ ".to_owned(), TABLE_BORDER_STYLE)];
+            for (c, &w) in col_widths.iter().enumerate() {
+                let sub_line = wrapped_cells[c].get(line_idx);
+                let content_width = sub_line.map_or(0, |sl| spans_width(sl));
+                let pad = w.saturating_sub(content_width);
+
+                if let Some(sl) = sub_line {
+                    spans.extend(sl.iter().cloned());
+                }
+                spans.push(Span::styled(" ".repeat(pad + 1), base));
+                if c < col_count - 1 {
+                    spans.push(Span::styled("│ ".to_owned(), TABLE_BORDER_STYLE));
+                } else {
+                    spans.push(Span::styled("│".to_owned(), TABLE_BORDER_STYLE));
+                }
             }
-            spans.push(Span::styled(" ".repeat(pad + 1), base));
-            if c < col_count - 1 {
-                spans.push(Span::styled("│ ".to_owned(), TABLE_BORDER_STYLE));
-            } else {
-                spans.push(Span::styled("│".to_owned(), TABLE_BORDER_STYLE));
-            }
+            lines.push(Line::from(spans));
         }
-        lines.push(Line::from(spans));
 
         if ri + 1 == header_end && header_end < rows.len() {
             lines.push(border("├", "┼", "┤", "─"));
@@ -806,7 +896,7 @@ pub fn text_to_lines(
                     first_line = false;
                 }
                 ensure_blank_line(&mut lines);
-                lines.extend(render_table(&rows, header_end, text_style));
+                lines.extend(render_table(&rows, header_end, text_style, width));
                 ensure_blank_line(&mut lines);
             }
         }
@@ -1534,5 +1624,51 @@ mod tests {
             .find(|s| s.content.trim() == "Header")
             .expect("Header span");
         assert!(header_span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    fn assert_table_within_width(input: &str, width: u16) {
+        let style = Style::default();
+        let lines = text_to_lines(input, "", style, style, None, width);
+        for line in lines_text(&lines) {
+            assert!(
+                line.width() <= width as usize,
+                "line exceeds width {width}: ({}) {line:?}",
+                line.width()
+            );
+        }
+    }
+
+    #[test]
+    fn table_wraps_and_preserves_content() {
+        let style = Style::default();
+        let long = "x".repeat(60);
+        let input = format!("| Col1 | Col2 |\n| --- | --- |\n| short | {long} |");
+        let width: u16 = 40;
+        let lines = text_to_lines(&input, "", style, style, None, width);
+        let rendered: String = lines_text(&lines).join("");
+        let x_count = rendered.chars().filter(|c| *c == 'x').count();
+        assert_eq!(x_count, 60, "wrapped table must preserve all content");
+        assert_table_within_width(&input, width);
+    }
+
+    #[test]
+    fn table_narrow_prose_within_width() {
+        let input = "| Test | Rationale |\n| --- | --- |\n| name | This is a very long rationale that should definitely be wrapped when the terminal width is narrow enough to require it |";
+        assert_table_within_width(input, 50);
+    }
+
+    #[test_case(&[10, 90], 50, true  ; "shrinks_proportionally")]
+    #[test_case(&[10, 20], 50, false ; "noop_when_fits")]
+    fn constrain_col_widths_cases(input: &[usize], available: usize, should_shrink: bool) {
+        let mut widths = input.to_vec();
+        let original = widths.clone();
+        constrain_col_widths(&mut widths, available);
+        assert!(widths.iter().sum::<usize>() <= available);
+        for w in &widths {
+            assert!(*w >= MIN_COL_WIDTH);
+        }
+        if !should_shrink {
+            assert_eq!(widths, original);
+        }
     }
 }

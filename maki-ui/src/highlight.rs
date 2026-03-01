@@ -216,7 +216,7 @@ fn split_line_with_bar(line: Line<'static>, width: usize) -> Vec<Line<'static>> 
     result
 }
 
-fn fit_width(text: &str, max_width: usize) -> usize {
+pub(crate) fn fit_width(text: &str, max_width: usize) -> usize {
     let mut width = 0;
     for (i, ch) in text.char_indices() {
         let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
