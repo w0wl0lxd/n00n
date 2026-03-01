@@ -16,6 +16,7 @@ ureq = { workspace = true }
 htmd = { workspace = true }
 regex = { workspace = true }
 similar = { workspace = true }
+jiff = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }
