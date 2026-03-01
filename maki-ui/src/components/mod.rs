@@ -13,6 +13,13 @@ use crossterm::event::{KeyEvent, KeyModifiers};
 use maki_agent::AgentInput;
 use maki_providers::{ToolInput, ToolOutput};
 
+pub(crate) fn visual_line_count(text_len: usize, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    text_len.div_ceil(width).max(1)
+}
+
 pub fn is_ctrl(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT)
 }
@@ -110,5 +117,19 @@ pub(crate) fn ctrl(c: char) -> crossterm::event::KeyEvent {
         modifiers: crossterm::event::KeyModifiers::CONTROL,
         kind: crossterm::event::KeyEventKind::Press,
         state: crossterm::event::KeyEventState::NONE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_case::test_case;
+
+    #[test_case(0, 80, 1 ; "empty_text")]
+    #[test_case(0, 0, 1 ; "zero_width")]
+    #[test_case(5, 5, 1 ; "exact_fit")]
+    #[test_case(6, 5, 2 ; "one_char_overflow")]
+    fn visual_line_count_cases(text_len: usize, width: usize, expected: usize) {
+        assert_eq!(visual_line_count(text_len, width), expected);
     }
 }

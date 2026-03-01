@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use super::scrollbar::render_vertical_scrollbar;
+use super::visual_line_count;
 
 pub enum InputAction {
     Submit(String),
@@ -351,13 +352,6 @@ fn total_visual_lines(buffer: &TextBuffer, content_width: usize, cursor_visible:
             visual_line_count(text_len, content_width)
         })
         .sum()
-}
-
-fn visual_line_count(text_len: usize, width: usize) -> usize {
-    if width == 0 {
-        return 1;
-    }
-    text_len.div_ceil(width).max(1)
 }
 
 #[cfg(test)]

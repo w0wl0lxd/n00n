@@ -290,10 +290,12 @@ impl QuestionForm {
 
     fn render_question(&self, lines: &mut Vec<Line<'static>>) {
         let q = &self.questions[self.current_tab];
-        lines.push(Line::from(Span::styled(
-            q.question.clone(),
-            Style::new().fg(theme::FOREGROUND),
-        )));
+        for line_text in q.question.split('\n') {
+            lines.push(Line::from(Span::styled(
+                line_text.to_string(),
+                Style::new().fg(theme::FOREGROUND),
+            )));
+        }
         lines.push(Line::default());
 
         let answers = &self.answers[self.current_tab];
@@ -391,11 +393,12 @@ impl QuestionForm {
         )));
     }
 
-    pub fn height(&self) -> u16 {
+    pub fn height(&self, width: u16) -> u16 {
         if !self.visible {
             return 0;
         }
 
+        let inner_width = (width as usize).saturating_sub(2);
         let chrome = 2 + 1 + 1; // border(2) + empty line before hint + hint line
 
         if self.on_confirm_tab() {
@@ -406,7 +409,12 @@ impl QuestionForm {
 
         let q = &self.questions[self.current_tab];
         let option_lines = q.options.len() + 1; // +1 for custom option
-        let question_lines = 1 + 1; // question text + empty line
+        let question_lines: usize = q
+            .question
+            .split('\n')
+            .map(|line| super::visual_line_count(line.chars().count(), inner_width))
+            .sum::<usize>()
+            + 1; // +1 for empty line after question
         let tabs = if self.is_multi() { 2 } else { 0 };
         let custom_input = if self.editing_custom { 1 } else { 0 };
 
@@ -661,12 +669,12 @@ mod tests {
     fn height_changes_with_editing_custom() {
         let mut form = QuestionForm::new();
         form.open(single_q_with_options());
-        let h1 = form.height();
+        let h1 = form.height(80);
 
         form.handle_key(key(KeyCode::Down));
         form.handle_key(key(KeyCode::Down));
         form.handle_key(key(KeyCode::Enter));
-        let h2 = form.height();
+        let h2 = form.height(80);
 
         assert!(h2 > h1);
     }
@@ -689,5 +697,41 @@ mod tests {
             }
             _ => panic!("expected Submit"),
         }
+    }
+
+    #[test]
+    fn height_accounts_for_multiline_question() {
+        let mut form_multi = QuestionForm::new();
+        form_multi.open(vec![QuestionInfo {
+            question: "Line1\nLine2\nLine3".into(),
+            header: String::new(),
+            options: vec![],
+            multiple: false,
+        }]);
+
+        let mut form_single = QuestionForm::new();
+        form_single.open(vec![QuestionInfo {
+            question: "Single line".into(),
+            header: String::new(),
+            options: vec![],
+            multiple: false,
+        }]);
+
+        assert!(form_multi.height(80) > form_single.height(80));
+    }
+
+    #[test]
+    fn height_accounts_for_wrapping() {
+        let long_text = "a".repeat(100);
+        let mut form = QuestionForm::new();
+        form.open(vec![QuestionInfo {
+            question: long_text,
+            header: String::new(),
+            options: vec![],
+            multiple: false,
+        }]);
+        let h_narrow = form.height(30);
+        let h_wide = form.height(200);
+        assert!(h_narrow > h_wide);
     }
 }

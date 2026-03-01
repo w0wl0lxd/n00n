@@ -389,7 +389,7 @@ impl App {
 
         let form_visible = self.question_form.is_visible();
         let bottom_height = if form_visible {
-            self.question_form.height()
+            self.question_form.height(frame.area().width)
         } else {
             queue_panel::height(self.queue.len()) + self.input_box.height(frame.area().width)
         };
