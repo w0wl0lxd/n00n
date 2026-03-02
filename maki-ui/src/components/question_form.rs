@@ -392,12 +392,12 @@ impl QuestionForm {
         let custom_style = if is_custom_selected {
             Style::new().fg(theme::CYAN)
         } else {
-            Style::new().fg(theme::COMMENT)
+            Style::new().fg(theme::FOREGROUND)
         };
         let prefix = if is_custom_selected { "▸ " } else { "  " };
         lines.push(Line::from(vec![
             Span::styled(prefix.to_string(), custom_style),
-            Span::styled(CUSTOM_OPTION, custom_style),
+            Span::styled(format!("  {CUSTOM_OPTION}"), custom_style),
         ]));
 
         if self.editing_custom {
