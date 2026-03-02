@@ -39,7 +39,7 @@ pub const TODOWRITE_TOOL_NAME: &str = todowrite::TodoWrite::NAME;
 pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
 pub const WEBSEARCH_TOOL_NAME: &str = websearch::WebSearch::NAME;
 pub const WRITE_TOOL_NAME: &str = write::Write::NAME;
-const MAX_OUTPUT_BYTES: usize = 30_000;
+const MAX_OUTPUT_BYTES: usize = 50 * 1024;
 pub(crate) const MAX_OUTPUT_LINES: usize = 2000;
 pub(crate) const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 pub(crate) const SEARCH_RESULT_LIMIT: usize = 100;
@@ -337,7 +337,8 @@ mod tests {
 
     #[test]
     fn truncate_output_respects_line_and_byte_limits() {
-        let many_lines: String = (0..2500)
+        // exceed limit so truncation kicks in
+        let many_lines: String = (0..MAX_OUTPUT_LINES + 500)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
