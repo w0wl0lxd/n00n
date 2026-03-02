@@ -1,3 +1,4 @@
+use crate::markdown::text_to_lines;
 use crate::text_buffer::TextBuffer;
 use crate::theme;
 
@@ -283,10 +284,11 @@ impl QuestionForm {
             lines.push(Line::default());
         }
 
+        let inner_width = area.width.saturating_sub(2);
         if self.on_confirm_tab() {
             self.render_confirm(&mut lines);
         } else {
-            self.render_question(&mut lines);
+            self.render_question(&mut lines, inner_width);
         }
 
         lines.push(Line::default());
@@ -346,16 +348,23 @@ impl QuestionForm {
         Line::from(spans)
     }
 
-    fn render_question(&self, lines: &mut Vec<Line<'static>>) {
-        let q = &self.questions[self.current_tab];
-        for line_text in q.question.split('\n') {
-            lines.push(Line::from(Span::styled(
-                line_text.to_string(),
-                Style::new().fg(theme::FOREGROUND),
-            )));
-        }
+    fn question_text_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let base = Style::new().fg(theme::FOREGROUND);
+        text_to_lines(
+            &self.questions[self.current_tab].question,
+            "",
+            base,
+            base,
+            None,
+            width,
+        )
+    }
+
+    fn render_question(&self, lines: &mut Vec<Line<'static>>, width: u16) {
+        lines.extend(self.question_text_lines(width));
         lines.push(Line::default());
 
+        let q = &self.questions[self.current_tab];
         let answers = &self.answers[self.current_tab];
 
         for (i, opt) in q.options.iter().enumerate() {
@@ -481,7 +490,7 @@ impl QuestionForm {
             return 0;
         }
 
-        let inner_width = (width as usize).saturating_sub(2);
+        let inner_width = width.saturating_sub(2);
         let chrome = 2 + 1 + 1; // border(2) + empty line before hint + hint line
 
         if self.on_confirm_tab() {
@@ -491,13 +500,13 @@ impl QuestionForm {
         }
 
         let q = &self.questions[self.current_tab];
-        let option_lines = q.options.len() + 1; // +1 for custom option
-        let question_lines: usize = q
-            .question
-            .split('\n')
-            .map(|line| super::visual_line_count(line.chars().count(), inner_width))
+        let option_lines = q.options.len() + 1;
+        let question_lines: usize = self
+            .question_text_lines(inner_width)
+            .iter()
+            .map(|l| super::visual_line_count(l.width(), inner_width as usize))
             .sum::<usize>()
-            + 1; // +1 for empty line after question
+            + 1;
         let tabs = if self.has_confirm_tab() { 2 } else { 0 };
         let custom_input = if self.editing_custom { 1 } else { 0 };
 
