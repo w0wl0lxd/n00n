@@ -177,7 +177,11 @@ impl App {
         if self.question_form.is_visible() {
             let action = self.question_form.handle_key(key);
             let answer = match action {
-                QuestionFormAction::Submit(a) => a,
+                QuestionFormAction::Submit(a) => {
+                    let display = self.question_form.format_answers_display();
+                    self.main_chat().push_user_message(&display);
+                    a
+                }
                 QuestionFormAction::Dismiss => String::new(),
                 QuestionFormAction::Consumed => return vec![],
             };
@@ -1361,5 +1365,35 @@ mod tests {
             delta: 3,
         });
         assert!(app.selection.is_none(), "scroll clears selection");
+    }
+
+    #[test]
+    fn form_submit_pushes_answer_to_chat() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        let (tx, rx) = mpsc::channel();
+        app.answer_tx = Some(tx);
+
+        app.update(agent_msg(short_question_with_options()));
+        assert!(app.question_form.is_visible());
+
+        app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(!app.question_form.is_visible());
+        assert_eq!(app.chats[0].last_message_text(), "Pick a DB: PostgreSQL");
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn form_dismiss_does_not_push_to_chat() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        let (tx, rx) = mpsc::channel();
+        app.answer_tx = Some(tx);
+
+        app.update(agent_msg(short_question_with_options()));
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(!app.question_form.is_visible());
+        assert_eq!(app.chats[0].last_message_text(), "");
+        assert_eq!(rx.try_recv().unwrap(), "");
     }
 }

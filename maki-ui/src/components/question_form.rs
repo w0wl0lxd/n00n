@@ -11,13 +11,23 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 const FORM_LABEL: &str = " Questions ";
 const CUSTOM_OPTION: &str = "Type your own answer";
-const HINT_BAR: &str = "↑↓ select  Enter confirm  Tab next  Esc dismiss";
+const HINT_BAR: &str = "↑↓ select  Enter confirm  Esc dismiss";
+const HINT_BAR_TOGGLE: &str = "↑↓ select  Enter toggle  Tab submit  Esc dismiss";
+const NO_ANSWER: &str = "(no answer)";
 const MAX_QUESTION_LINES_NO_OPTIONS: usize = 10;
 
 pub enum QuestionFormAction {
     Consumed,
     Submit(String),
     Dismiss,
+}
+
+fn format_answer(answers: &[String]) -> String {
+    if answers.is_empty() {
+        NO_ANSWER.to_string()
+    } else {
+        answers.join(", ")
+    }
 }
 
 pub struct QuestionForm {
@@ -66,12 +76,44 @@ impl QuestionForm {
         self.questions.clear();
     }
 
+    pub fn format_answers_display(&self) -> String {
+        self.questions
+            .iter()
+            .zip(self.answers.iter())
+            .map(|(q, a)| format!("{}: {}", q.question, format_answer(a)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn is_multi(&self) -> bool {
         self.questions.len() > 1
     }
 
+    fn has_confirm_tab(&self) -> bool {
+        self.is_multi() || self.questions.iter().any(|q| q.multiple)
+    }
+
     fn on_confirm_tab(&self) -> bool {
-        self.is_multi() && self.current_tab == self.questions.len()
+        self.has_confirm_tab() && self.current_tab == self.questions.len()
+    }
+
+    fn current_question_is_multi(&self) -> bool {
+        self.current_tab < self.questions.len() && self.questions[self.current_tab].multiple
+    }
+
+    fn toggle_selected_option(&mut self) {
+        let q = &self.questions[self.current_tab];
+        let custom_idx = q.options.len();
+        if self.selected == custom_idx {
+            return;
+        }
+        let label = q.options[self.selected].label.clone();
+        let answers = &mut self.answers[self.current_tab];
+        if let Some(pos) = answers.iter().position(|a| a == &label) {
+            answers.remove(pos);
+        } else {
+            answers.push(label);
+        }
     }
 
     fn option_count(&self) -> usize {
@@ -82,7 +124,7 @@ impl QuestionForm {
     }
 
     fn total_tabs(&self) -> usize {
-        if self.is_multi() {
+        if self.has_confirm_tab() {
             self.questions.len() + 1
         } else {
             1
@@ -122,11 +164,11 @@ impl QuestionForm {
                 }
                 QuestionFormAction::Consumed
             }
-            KeyCode::Tab | KeyCode::Right if self.is_multi() => {
+            KeyCode::Tab | KeyCode::Right if self.has_confirm_tab() => {
                 self.next_tab();
                 QuestionFormAction::Consumed
             }
-            KeyCode::BackTab | KeyCode::Left if self.is_multi() => {
+            KeyCode::BackTab | KeyCode::Left if self.has_confirm_tab() => {
                 self.prev_tab();
                 QuestionFormAction::Consumed
             }
@@ -154,7 +196,7 @@ impl QuestionForm {
                     self.answers[self.current_tab] = vec![text];
                 }
                 self.editing_custom = false;
-                if !self.is_multi() {
+                if !self.has_confirm_tab() {
                     return self.build_submit();
                 }
                 self.next_tab();
@@ -194,24 +236,18 @@ impl QuestionForm {
             return QuestionFormAction::Consumed;
         }
 
-        let label = q.options[self.selected].label.clone();
-        let answers = &mut self.answers[self.current_tab];
-
         if q.multiple {
-            if let Some(pos) = answers.iter().position(|a| a == &label) {
-                answers.remove(pos);
-            } else {
-                answers.push(label);
-            }
-            QuestionFormAction::Consumed
-        } else {
-            *answers = vec![label];
-            if !self.is_multi() {
-                return self.build_submit();
-            }
-            self.next_tab();
-            QuestionFormAction::Consumed
+            self.toggle_selected_option();
+            return QuestionFormAction::Consumed;
         }
+
+        self.answers[self.current_tab] = vec![q.options[self.selected].label.clone()];
+
+        if !self.has_confirm_tab() {
+            return self.build_submit();
+        }
+        self.next_tab();
+        QuestionFormAction::Consumed
     }
 
     fn build_submit(&self) -> QuestionFormAction {
@@ -242,7 +278,7 @@ impl QuestionForm {
 
         let mut lines: Vec<Line> = Vec::new();
 
-        if self.is_multi() {
+        if self.has_confirm_tab() {
             lines.push(self.render_tab_bar());
             lines.push(Line::default());
         }
@@ -254,8 +290,13 @@ impl QuestionForm {
         }
 
         lines.push(Line::default());
+        let hint = if !self.on_confirm_tab() && self.current_question_is_multi() {
+            HINT_BAR_TOGGLE
+        } else {
+            HINT_BAR
+        };
         lines.push(Line::from(Span::styled(
-            HINT_BAR,
+            hint,
             Style::new().fg(theme::COMMENT),
         )));
 
@@ -356,7 +397,7 @@ impl QuestionForm {
         let prefix = if is_custom_selected { "▸ " } else { "  " };
         lines.push(Line::from(vec![
             Span::styled(prefix.to_string(), custom_style),
-            Span::styled(format!("  {CUSTOM_OPTION}"), custom_style),
+            Span::styled(CUSTOM_OPTION, custom_style),
         ]));
 
         if self.editing_custom {
@@ -390,11 +431,7 @@ impl QuestionForm {
         lines.push(Line::default());
 
         for (i, q) in self.questions.iter().enumerate() {
-            let answer_text = if self.answers[i].is_empty() {
-                "(no answer)".to_string()
-            } else {
-                self.answers[i].join(", ")
-            };
+            let answer_text = format_answer(&self.answers[i]);
             lines.push(Line::from(vec![
                 Span::styled(format!("{}. ", i + 1), Style::new().fg(theme::COMMENT)),
                 Span::styled(q.question.clone(), Style::new().fg(theme::FOREGROUND)),
@@ -449,7 +486,7 @@ impl QuestionForm {
 
         if self.on_confirm_tab() {
             let review_lines = 1 + 1 + self.questions.len() + 1 + 1; // header + empty + questions + empty + instruction
-            let tabs = if self.is_multi() { 2 } else { 0 };
+            let tabs = if self.has_confirm_tab() { 2 } else { 0 };
             return (chrome + review_lines + tabs) as u16;
         }
 
@@ -461,7 +498,7 @@ impl QuestionForm {
             .map(|line| super::visual_line_count(line.chars().count(), inner_width))
             .sum::<usize>()
             + 1; // +1 for empty line after question
-        let tabs = if self.is_multi() { 2 } else { 0 };
+        let tabs = if self.has_confirm_tab() { 2 } else { 0 };
         let custom_input = if self.editing_custom { 1 } else { 0 };
 
         (chrome + question_lines + option_lines + tabs + custom_input) as u16
@@ -676,10 +713,8 @@ mod tests {
         assert!(form.editing_custom);
     }
 
-    #[test]
-    fn multiple_selection_toggles() {
-        let mut form = QuestionForm::new();
-        form.open(vec![QuestionInfo {
+    fn single_multi_select_q() -> Vec<QuestionInfo> {
+        vec![QuestionInfo {
             question: "Pick features".into(),
             header: String::new(),
             options: vec![
@@ -693,7 +728,13 @@ mod tests {
                 },
             ],
             multiple: true,
-        }]);
+        }]
+    }
+
+    #[test]
+    fn enter_toggles_multi_select() {
+        let mut form = QuestionForm::new();
+        form.open(single_multi_select_q());
 
         form.handle_key(key(KeyCode::Enter));
         assert_eq!(form.answers[0], vec!["A"]);
@@ -705,6 +746,40 @@ mod tests {
         form.handle_key(key(KeyCode::Down));
         form.handle_key(key(KeyCode::Enter));
         assert_eq!(form.answers[0], vec!["A", "B"]);
+    }
+
+    #[test]
+    fn single_multi_select_confirm_flow() {
+        let mut form = QuestionForm::new();
+        form.open(single_multi_select_q());
+        assert!(form.has_confirm_tab());
+
+        form.handle_key(key(KeyCode::Enter));
+        form.handle_key(key(KeyCode::Down));
+        form.handle_key(key(KeyCode::Enter));
+
+        form.handle_key(key(KeyCode::Tab));
+        assert!(form.on_confirm_tab());
+
+        let action = form.handle_key(key(KeyCode::Enter));
+        assert_eq!(assert_submit(action), vec![vec!["A", "B"]]);
+    }
+
+    #[test]
+    fn enter_on_custom_in_multi_select_goes_to_confirm() {
+        let mut form = QuestionForm::new();
+        form.open(single_multi_select_q());
+
+        form.handle_key(key(KeyCode::Down));
+        form.handle_key(key(KeyCode::Down));
+        form.handle_key(key(KeyCode::Enter));
+        assert!(form.editing_custom);
+
+        for c in "custom".chars() {
+            form.handle_key(key(KeyCode::Char(c)));
+        }
+        form.handle_key(key(KeyCode::Enter));
+        assert!(form.on_confirm_tab());
     }
 
     #[test]
@@ -815,5 +890,70 @@ mod tests {
 
         form.handle_key(key(KeyCode::Up));
         assert_eq!(form.scroll_offset, 0);
+    }
+
+    #[test]
+    fn format_answers_display() {
+        let mut form = QuestionForm::new();
+        form.open(single_q_with_options());
+        assert_eq!(
+            form.format_answers_display(),
+            format!("Pick a DB: {NO_ANSWER}")
+        );
+
+        form.handle_key(key(KeyCode::Enter));
+        assert_eq!(form.format_answers_display(), "Pick a DB: PostgreSQL");
+
+        let mut form = QuestionForm::new();
+        form.open(multi_q());
+        form.handle_key(key(KeyCode::Enter));
+        form.handle_key(key(KeyCode::Down));
+        form.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            form.format_answers_display(),
+            "Language?: Rust\nFramework?: Actix"
+        );
+    }
+
+    fn multi_q_with_multi_select() -> Vec<QuestionInfo> {
+        vec![
+            QuestionInfo {
+                question: "Pick features".into(),
+                header: String::new(),
+                options: vec![
+                    QuestionOption {
+                        label: "A".into(),
+                        description: String::new(),
+                    },
+                    QuestionOption {
+                        label: "B".into(),
+                        description: String::new(),
+                    },
+                ],
+                multiple: true,
+            },
+            QuestionInfo {
+                question: "Pick color".into(),
+                header: String::new(),
+                options: vec![QuestionOption {
+                    label: "Red".into(),
+                    description: String::new(),
+                }],
+                multiple: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn enter_toggles_in_multi_question_tab_advances() {
+        let mut form = QuestionForm::new();
+        form.open(multi_q_with_multi_select());
+
+        form.handle_key(key(KeyCode::Enter));
+        assert_eq!(form.answers[0], vec!["A"]);
+        assert_eq!(form.current_tab, 0);
+
+        form.handle_key(key(KeyCode::Tab));
+        assert_eq!(form.current_tab, 1);
     }
 }
