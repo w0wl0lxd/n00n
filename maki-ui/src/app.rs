@@ -22,7 +22,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::widgets::{Block, Widget};
 
-const CANCEL_MSG: &str = "Cancelled. The agent will continue from the last successful result.";
+const CANCEL_MSG: &str = "Cancelled.";
 
 struct ViewAreas {
     render_chat: usize,
