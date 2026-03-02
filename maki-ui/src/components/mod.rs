@@ -20,6 +20,14 @@ pub(crate) fn visual_line_count(text_len: usize, width: usize) -> usize {
     text_len.div_ceil(width).max(1)
 }
 
+pub(crate) fn apply_scroll_delta(offset: u16, delta: i32) -> u16 {
+    if delta > 0 {
+        offset.saturating_sub(delta as u16)
+    } else {
+        offset.saturating_add(delta.unsigned_abs() as u16)
+    }
+}
+
 pub fn is_ctrl(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT)
 }
@@ -143,5 +151,12 @@ mod tests {
     #[test_case(6, 5, 2 ; "one_char_overflow")]
     fn visual_line_count_cases(text_len: usize, width: usize, expected: usize) {
         assert_eq!(visual_line_count(text_len, width), expected);
+    }
+
+    #[test_case(10, 3, 7   ; "scroll_up")]
+    #[test_case(10, -3, 13 ; "scroll_down")]
+    #[test_case(0, 5, 0    ; "clamp_underflow")]
+    fn apply_scroll_delta_cases(offset: u16, delta: i32, expected: u16) {
+        assert_eq!(apply_scroll_delta(offset, delta), expected);
     }
 }

@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use super::scrollbar::render_vertical_scrollbar;
-use super::visual_line_count;
+use super::{apply_scroll_delta, visual_line_count};
 
 pub enum InputAction {
     Submit(String),
@@ -44,11 +44,13 @@ pub struct InputBox {
     history_index: Option<usize>,
     draft: String,
     scroll_y: u16,
+    follow_cursor: bool,
     placeholder_hint: &'static str,
 }
 
 impl InputBox {
     pub fn handle_key(&mut self, key: KeyEvent) -> InputAction {
+        self.follow_cursor = true;
         if super::is_ctrl(&key) {
             return match key.code {
                 KeyCode::Char('w') => {
@@ -130,6 +132,7 @@ impl InputBox {
     }
 
     pub fn handle_paste(&mut self, text: &str) -> InputAction {
+        self.follow_cursor = true;
         self.buffer.insert_text(text);
         InputAction::PaletteSync(self.buffer.value())
     }
@@ -141,6 +144,7 @@ impl InputBox {
             history_index: None,
             draft: String::new(),
             scroll_y: 0,
+            follow_cursor: true,
             placeholder_hint: random_placeholder_hint(),
         }
     }
@@ -246,11 +250,13 @@ impl InputBox {
         let content_height = area.height.saturating_sub(2);
         let content_width = area.width as usize;
 
-        let visual_cursor_y = self.visual_cursor_y(content_width);
-        if visual_cursor_y < self.scroll_y {
-            self.scroll_y = visual_cursor_y;
-        } else if visual_cursor_y >= self.scroll_y + content_height {
-            self.scroll_y = visual_cursor_y - content_height + 1;
+        if self.follow_cursor {
+            let visual_cursor_y = self.visual_cursor_y(content_width);
+            if visual_cursor_y < self.scroll_y {
+                self.scroll_y = visual_cursor_y;
+            } else if visual_cursor_y >= self.scroll_y + content_height {
+                self.scroll_y = visual_cursor_y - content_height + 1;
+            }
         }
 
         let total_vl = total_visual_lines(&self.buffer, content_width, true) as u16;
@@ -327,6 +333,11 @@ impl InputBox {
             let inner = area.inner(ratatui::layout::Margin::new(0, 1));
             render_vertical_scrollbar(frame, inner, total_vl, self.scroll_y);
         }
+    }
+
+    pub fn scroll(&mut self, delta: i32) {
+        self.scroll_y = apply_scroll_delta(self.scroll_y, delta);
+        self.follow_cursor = false;
     }
 }
 

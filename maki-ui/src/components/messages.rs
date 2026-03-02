@@ -1,4 +1,4 @@
-use super::{DisplayMessage, DisplayRole, ToolStatus};
+use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
 
 use super::tool_display::{
     ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, QUESTION_STYLE, THINKING_STYLE,
@@ -316,11 +316,7 @@ impl MessagesPanel {
     }
 
     pub fn scroll(&mut self, delta: i32) {
-        if delta > 0 {
-            self.scroll_top = self.scroll_top.saturating_sub(delta as u16);
-        } else {
-            self.scroll_top = self.scroll_top.saturating_add(delta.unsigned_abs() as u16);
-        }
+        self.scroll_top = apply_scroll_delta(self.scroll_top, delta);
         self.auto_scroll = false;
     }
 
@@ -803,17 +799,6 @@ mod tests {
         assert_eq!(panel.streaming_text, "output");
         assert_eq!(panel.messages[0].role, DisplayRole::Thinking);
         assert_eq!(panel.messages[0].text, "reasoning");
-    }
-
-    #[test_case(10, 10, 0  ; "up_saturates_at_zero")]
-    #[test_case(5,  1, 4    ; "scroll_up")]
-    #[test_case(5,  -1, 6   ; "scroll_down")]
-    fn scroll_by_delta(initial: u16, delta: i32, expected: u16) {
-        let mut panel = MessagesPanel::new();
-        panel.viewport_height = 20;
-        panel.scroll_top = initial;
-        panel.scroll(delta);
-        assert_eq!(panel.scroll_top, expected);
     }
 
     #[test]

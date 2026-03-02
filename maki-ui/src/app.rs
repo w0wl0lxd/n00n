@@ -67,6 +67,7 @@ pub struct App {
     #[cfg(feature = "demo")]
     demo_questions: Option<(usize, Vec<QuestionInfo>)>,
     msg_area: Rect,
+    input_area: Rect,
     frame_area: Rect,
     selection: Option<Selection>,
     copy_on_next_render: bool,
@@ -99,6 +100,7 @@ impl App {
             #[cfg(feature = "demo")]
             demo_questions: None,
             msg_area: Rect::default(),
+            input_area: Rect::default(),
             frame_area: Rect::default(),
             selection: None,
             copy_on_next_render: false,
@@ -129,8 +131,11 @@ impl App {
             }
             Msg::Scroll { column, row, delta } => {
                 self.selection = None;
-                if self.msg_area.contains(Position::new(column, row)) {
+                let pos = Position::new(column, row);
+                if self.msg_area.contains(pos) {
                     self.active_chat().scroll(delta);
+                } else if self.input_area.contains(pos) {
+                    self.input_box.scroll(delta);
                 }
                 vec![]
             }
@@ -515,6 +520,7 @@ impl App {
             Constraint::Length(input_height),
         ])
         .areas(bottom_area);
+        self.input_area = input_area;
 
         let cmd_popup_area = if form_visible {
             self.question_form.view(frame, bottom_area);
