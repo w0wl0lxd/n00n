@@ -52,6 +52,7 @@ pub struct DisplayMessage {
     pub text: String,
     pub tool_input: Option<ToolInput>,
     pub tool_output: Option<ToolOutput>,
+    pub is_plan: bool,
 }
 
 impl DisplayMessage {
@@ -61,6 +62,17 @@ impl DisplayMessage {
             text,
             tool_input: None,
             tool_output: None,
+            is_plan: false,
+        }
+    }
+
+    pub fn plan(text: String) -> Self {
+        Self {
+            role: DisplayRole::Assistant,
+            text,
+            tool_input: None,
+            tool_output: None,
+            is_plan: true,
         }
     }
 }

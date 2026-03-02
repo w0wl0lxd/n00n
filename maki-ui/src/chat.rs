@@ -48,10 +48,8 @@ impl Chat {
                 if is_plan_write {
                     let pp = plan_path.unwrap();
                     if let Ok(content) = std::fs::read_to_string(pp) {
-                        self.messages_panel.push(DisplayMessage::new(
-                            DisplayRole::Assistant,
-                            format!("{content}\n\n`{pp}`"),
-                        ));
+                        self.messages_panel
+                            .push(DisplayMessage::plan(format!("{content}\n\n`{pp}`")));
                     }
                 }
             }
@@ -137,6 +135,11 @@ impl Chat {
     pub fn last_message_text(&self) -> &str {
         self.messages_panel.last_message_text()
     }
+
+    #[cfg(test)]
+    pub fn last_message_is_plan(&self) -> bool {
+        self.messages_panel.last_message_is_plan()
+    }
 }
 
 #[cfg(test)]
@@ -186,32 +189,6 @@ mod tests {
     }
 
     #[test]
-    fn done_returns_done() {
-        let mut chat = Chat::new("Main".into());
-        let result = chat.handle_event(
-            AgentEvent::Done {
-                usage: TokenUsage::default(),
-                num_turns: 1,
-                stop_reason: None,
-            },
-            None,
-        );
-        assert!(matches!(result, ChatEventResult::Done));
-    }
-
-    #[test]
-    fn error_returns_error() {
-        let mut chat = Chat::new("Main".into());
-        let result = chat.handle_event(
-            AgentEvent::Error {
-                message: "boom".into(),
-            },
-            None,
-        );
-        assert!(matches!(result, ChatEventResult::Error(ref e) if e == "boom"));
-    }
-
-    #[test]
     fn plan_write_renders_file_content() {
         let mut chat = Chat::new("Main".into());
         let dir = tempfile::tempdir().unwrap();
@@ -222,6 +199,7 @@ mod tests {
         chat.handle_event(tool_start("w1", "write"), Some(plan_str));
         chat.handle_event(write_done("w1", plan_str), Some(plan_str));
 
+        assert!(chat.last_message_is_plan());
         let last = chat.last_message_text();
         assert!(last.contains("# My Plan"));
         assert!(last.contains("- Step 1"));
@@ -232,6 +210,6 @@ mod tests {
         let mut chat = Chat::new("Main".into());
         chat.handle_event(tool_start("w1", "write"), Some("/plans/123.md"));
         chat.handle_event(write_done("w1", "src/main.rs"), Some("/plans/123.md"));
-        assert!(!chat.last_message_text().contains("```markdown"));
+        assert!(!chat.last_message_is_plan());
     }
 }

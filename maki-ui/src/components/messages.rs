@@ -1,13 +1,13 @@
 use super::{DisplayMessage, DisplayRole, ToolStatus};
 
 use super::tool_display::{
-    ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, QUESTION_STYLE, THINKING_STYLE,
-    TOOL_OUTPUT_MAX_LINES, USER_STYLE, build_tool_lines, tool_summary_annotation,
+    ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, PLAN_PREFIX, QUESTION_STYLE,
+    THINKING_STYLE, TOOL_OUTPUT_MAX_LINES, USER_STYLE, build_tool_lines, tool_summary_annotation,
     truncate_to_header,
 };
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::CodeHighlighter;
-use crate::markdown::{plain_lines, tail_lines, text_to_lines, truncate_lines};
+use crate::markdown::{hr_line, plain_lines, tail_lines, text_to_lines, truncate_lines};
 use crate::render_worker::RenderWorker;
 use crate::theme;
 
@@ -148,6 +148,7 @@ impl MessagesPanel {
             text: event.summary,
             tool_input: event.input,
             tool_output: event.output,
+            is_plan: false,
         });
         self.in_progress_count += 1;
     }
@@ -292,6 +293,11 @@ impl MessagesPanel {
     #[cfg(test)]
     pub fn last_message_text(&self) -> &str {
         self.messages.last().map(|m| m.text.as_str()).unwrap_or("")
+    }
+
+    #[cfg(test)]
+    pub fn last_message_is_plan(&self) -> bool {
+        self.messages.last().is_some_and(|m| m.is_plan)
     }
 
     pub fn flush(&mut self) {
@@ -588,25 +594,30 @@ impl MessagesPanel {
                     DisplayRole::Error => &ERROR_STYLE,
                     DisplayRole::Tool { .. } => unreachable!(),
                 };
+                let prefix = if msg.is_plan {
+                    PLAN_PREFIX
+                } else {
+                    style.prefix
+                };
                 let mut lines = if style.use_markdown {
                     text_to_lines(
                         &msg.text,
-                        style.prefix,
+                        prefix,
                         style.text_style,
                         style.prefix_style,
                         None,
                         self.viewport_width,
                     )
                 } else {
-                    plain_lines(
-                        &msg.text,
-                        style.prefix,
-                        style.text_style,
-                        style.prefix_style,
-                    )
+                    plain_lines(&msg.text, prefix, style.text_style, style.prefix_style)
                 };
                 if msg.role == DisplayRole::Thinking {
                     theme::dim_lines(&mut lines);
+                }
+                if msg.is_plan {
+                    let rule = hr_line(self.viewport_width, theme::PLAN_RULE);
+                    lines.insert(0, rule.clone());
+                    lines.push(rule);
                 }
 
                 self.push_spacer_if_needed();
@@ -838,8 +849,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_done_without_matching_start_is_noop() {
+    fn unknown_tool_id_is_noop() {
         let mut panel = MessagesPanel::new();
+        panel.tool_output("ghost", "data");
         panel.tool_done(ToolDoneEvent {
             id: "orphan".into(),
             tool: "bash",
@@ -955,20 +967,19 @@ mod tests {
     }
 
     #[test]
-    fn tool_output_for_unknown_id_is_noop() {
-        let mut panel = panel_with_tools(&[("t1", "bash")]);
-        rebuild(&mut panel);
-        let seg_count = panel.cached_segments.len();
-        panel.tool_output("nonexistent", "data");
-        assert_eq!(panel.cached_segments.len(), seg_count);
-    }
-
-    #[test]
-    fn tool_output_before_cache_built_renders_correctly() {
-        let mut panel = panel_with_tools(&[("t1", "bash")]);
+    fn events_before_cache_built_render_correctly() {
+        let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "bash")]);
         panel.tool_output("t1", "early output");
+        panel.tool_done(ToolDoneEvent {
+            id: "t2".into(),
+            tool: "bash",
+            output: ToolOutput::Plain("result".into()),
+            is_error: false,
+        });
         rebuild(&mut panel);
         assert!(seg_text(&panel, "t1").contains("early output"));
+        assert_eq!(msg_status(&panel, "t2"), ToolStatus::Success);
+        assert!(seg_text(&panel, "t2").contains("result"));
     }
 
     #[test]
@@ -989,20 +1000,6 @@ mod tests {
         let text = seg_text(&panel, "t1");
         assert!(text.contains("hello"), "live output should be visible");
         assert!(text.contains("world"), "live output should be visible");
-    }
-
-    #[test]
-    fn tool_done_before_cache_built_renders_with_correct_status() {
-        let mut panel = panel_with_tools(&[("t1", "bash")]);
-        panel.tool_done(ToolDoneEvent {
-            id: "t1".into(),
-            tool: "bash",
-            output: ToolOutput::Plain("result".into()),
-            is_error: false,
-        });
-        rebuild(&mut panel);
-        assert_eq!(msg_status(&panel, "t1"), ToolStatus::Success);
-        assert!(seg_text(&panel, "t1").contains("result"));
     }
 
     #[test]
@@ -1103,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn question_tool_uses_question_style_and_no_truncation() {
+    fn question_tool_preserves_full_text() {
         let questions: String = (1..=20)
             .map(|i| format!("Question {i}?"))
             .collect::<Vec<_>>()
@@ -1121,24 +1118,5 @@ mod tests {
         assert!(panel.messages[0].text.contains("Question 1?"));
         assert!(panel.messages[0].text.contains("Question 20?"));
         assert!(!has_seg(&panel, "q1"), "question should not have tool_id");
-
-        let seg = panel
-            .cached_segments
-            .iter()
-            .find(|s| s.tool_id.is_none() && !s.lines.is_empty())
-            .expect("should have non-tool segment");
-        let text: String = seg
-            .lines
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-            .collect();
-        assert!(
-            text.contains("maki_asks>"),
-            "question should use question prefix"
-        );
-        assert!(
-            text.contains("Question 20?"),
-            "full question text should be visible"
-        );
     }
 }

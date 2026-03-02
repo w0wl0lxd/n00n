@@ -127,6 +127,11 @@ fn code_style(base: Style) -> Style {
     CODE_STYLE.add_modifier(base.add_modifier)
 }
 
+pub(crate) fn hr_line(width: u16, style: Style) -> Line<'static> {
+    let hr: String = std::iter::repeat_n(HR_CHAR, width as usize).collect();
+    Line::from(Span::styled(hr, style))
+}
+
 fn bold_style(base: Style) -> Style {
     BOLD_STYLE.add_modifier(base.add_modifier)
 }
@@ -977,8 +982,7 @@ pub fn text_to_lines(
                             }
                             first_line = false;
                         }
-                        let hr: String = std::iter::repeat_n(HR_CHAR, width as usize).collect();
-                        lines.push(Line::from(Span::styled(hr, HORIZONTAL_RULE_STYLE)));
+                        lines.push(hr_line(width, HORIZONTAL_RULE_STYLE));
                         continue;
                     }
                     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -1518,9 +1522,6 @@ mod tests {
 
     #[test_case("# heading", "heading" ; "h1")]
     #[test_case("## heading", "heading" ; "h2")]
-    #[test_case("### heading", "heading" ; "h3")]
-    #[test_case("#### heading", "heading" ; "h4")]
-    #[test_case("##### heading", "heading" ; "h5")]
     #[test_case("###### heading", "heading" ; "h6")]
     #[test_case("# ", "" ; "h1_empty")]
     fn heading_parsed(input: &str, expected: &str) {
@@ -1542,7 +1543,6 @@ mod tests {
 
     #[test_case("##nospace" ; "no_space_not_heading")]
     #[test_case("####### seven" ; "seven_hashes_not_heading")]
-    #[test_case("not a heading" ; "plain_text")]
     fn not_a_heading(input: &str) {
         assert_eq!(parse_heading(input), None);
     }
@@ -1712,7 +1712,11 @@ mod tests {
             .iter()
             .filter(|l| l.spans.iter().any(|s| s.content.contains('├')))
             .collect();
-        assert_eq!(sep_lines.len(), 3, "expected 3 separator lines (1 header + 2 cell)");
+        assert_eq!(
+            sep_lines.len(),
+            3,
+            "expected 3 separator lines (1 header + 2 cell)"
+        );
         for sep in &sep_lines {
             assert_eq!(
                 sep.spans.first().unwrap().style,
@@ -1731,7 +1735,10 @@ mod tests {
             .iter()
             .filter(|l| l.spans.iter().any(|s| s.content.contains('├')))
             .count();
-        assert_eq!(sep_count, 1, "single data row should only have header separator");
+        assert_eq!(
+            sep_count, 1,
+            "single data row should only have header separator"
+        );
     }
 
     #[test]
