@@ -50,7 +50,7 @@ impl Chat {
                     let pp = plan_path.unwrap();
                     if let Ok(content) = std::fs::read_to_string(pp) {
                         self.messages_panel
-                            .push(DisplayMessage::plan(format!("{content}\n\n`{pp}`")));
+                            .push(DisplayMessage::plan(content, pp.to_string()));
                     }
                 }
             }

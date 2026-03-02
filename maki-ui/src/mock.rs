@@ -31,7 +31,7 @@ fn tool(
         text: text.into(),
         tool_input: input,
         tool_output: output,
-        is_plan: false,
+        plan_path: None,
     }
 }
 

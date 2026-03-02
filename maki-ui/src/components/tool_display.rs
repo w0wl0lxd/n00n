@@ -136,8 +136,6 @@ pub const THINKING_STYLE: RoleStyle = RoleStyle {
     use_markdown: true,
 };
 
-pub const PLAN_PREFIX: &str = "plan> ";
-
 pub const ERROR_STYLE: RoleStyle = RoleStyle {
     prefix: "",
     text_style: theme::ERROR,
@@ -323,7 +321,7 @@ mod tests {
             text: "header\nbody".into(),
             tool_input: input,
             tool_output: output,
-            is_plan: false,
+            plan_path: None,
         };
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
         assert_eq!(tl.highlight.is_some(), expect_highlight);
@@ -413,7 +411,7 @@ mod tests {
             text: "echo hi\nline1\nline2".into(),
             tool_input: code_input(),
             tool_output: output,
-            is_plan: false,
+            plan_path: None,
         };
         let tl = build_tool_lines(&msg, status, Instant::now());
         let text = lines_text(&tl);

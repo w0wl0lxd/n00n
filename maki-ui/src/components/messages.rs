@@ -1,8 +1,8 @@
 use super::{DisplayMessage, DisplayRole, ToolStatus};
 
 use super::tool_display::{
-    ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, PLAN_PREFIX, QUESTION_STYLE,
-    THINKING_STYLE, TOOL_OUTPUT_MAX_LINES, USER_STYLE, build_tool_lines, tool_summary_annotation,
+    ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, QUESTION_STYLE, THINKING_STYLE,
+    TOOL_OUTPUT_MAX_LINES, USER_STYLE, build_tool_lines, tool_summary_annotation,
     truncate_to_header,
 };
 use crate::animation::{Typewriter, spinner_frame};
@@ -17,7 +17,7 @@ use maki_agent::tools::{BASH_TOOL_NAME, QUESTION_TOOL_NAME, WEBFETCH_TOOL_NAME};
 use maki_providers::{BatchToolStatus, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
@@ -152,7 +152,7 @@ impl MessagesPanel {
             text: event.summary,
             tool_input: event.input,
             tool_output: event.output,
-            is_plan: false,
+            plan_path: None,
         });
         self.in_progress_count += 1;
     }
@@ -301,7 +301,7 @@ impl MessagesPanel {
 
     #[cfg(test)]
     pub fn last_message_is_plan(&self) -> bool {
-        self.messages.last().is_some_and(|m| m.is_plan)
+        self.messages.last().is_some_and(|m| m.plan_path.is_some())
     }
 
     pub fn flush(&mut self) {
@@ -616,8 +616,8 @@ impl MessagesPanel {
                     DisplayRole::Error => &ERROR_STYLE,
                     DisplayRole::Tool { .. } => unreachable!(),
                 };
-                let prefix = if msg.is_plan {
-                    PLAN_PREFIX
+                let prefix = if msg.plan_path.is_some() {
+                    ""
                 } else {
                     style.prefix
                 };
@@ -636,10 +636,15 @@ impl MessagesPanel {
                 if msg.role == DisplayRole::Thinking {
                     theme::dim_lines(&mut lines);
                 }
-                if msg.is_plan {
+                if let Some(pp) = &msg.plan_path {
                     let rule = hr_line(self.viewport_width, theme::PLAN_RULE);
                     lines.insert(0, rule.clone());
                     lines.push(rule);
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        pp.to_owned(),
+                        theme::TOOL_PATH.add_modifier(Modifier::BOLD),
+                    )));
                 }
 
                 self.push_spacer_if_needed();
