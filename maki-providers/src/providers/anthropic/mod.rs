@@ -370,9 +370,12 @@ fn parse_sse(
                 Err(e) => warn!(error = %e, "failed to parse content_block_delta"),
             },
             "content_block_stop" => {
-                if let Some(ContentBlock::ToolUse { input, .. }) = content_blocks.last_mut() {
+                if let Some(ContentBlock::ToolUse { name, input, .. }) = content_blocks.last_mut() {
                     *input = match serde_json::from_str(&current_tool_json) {
-                        Ok(v) => v,
+                        Ok(v) => {
+                            debug!(tool = %name, json = %current_tool_json, "tool input JSON");
+                            v
+                        }
                         Err(e) => {
                             warn!(error = %e, json = %current_tool_json, "malformed tool JSON, falling back to {{}}");
                             Value::Object(Default::default())

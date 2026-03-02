@@ -431,7 +431,10 @@ fn parse_sse(
 
     for acc in tool_accumulators {
         let input: Value = match serde_json::from_str(&acc.arguments) {
-            Ok(v) => v,
+            Ok(v) => {
+                debug!(tool = %acc.name, json = %acc.arguments, "tool input JSON");
+                v
+            }
             Err(e) => {
                 warn!(error = %e, tool = %acc.name, json = %acc.arguments, "malformed tool JSON, falling back to {{}}");
                 Value::Object(Default::default())
