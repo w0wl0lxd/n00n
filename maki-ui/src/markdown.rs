@@ -832,6 +832,8 @@ fn render_table(
 
         if ri + 1 == header_end && header_end < rows.len() {
             lines.push(border("├", "┼", "┤", "─"));
+        } else if ri + 1 < rows.len() && ri + 1 != header_end {
+            lines.push(border("├", "┼", "┤", "─"));
         }
     }
 
@@ -1699,6 +1701,37 @@ mod tests {
         for expected in ["╭", "Name", "├", "foo", "42", "╰"] {
             assert!(joined.contains(expected), "missing {expected:?} in table");
         }
+    }
+
+    #[test]
+    fn render_table_row_separators() {
+        let style = Style::default();
+        let input = "| H |\n| --- |\n| a |\n| b |\n| c |";
+        let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
+        let sep_lines: Vec<_> = lines
+            .iter()
+            .filter(|l| l.spans.iter().any(|s| s.content.contains('├')))
+            .collect();
+        assert_eq!(sep_lines.len(), 3, "expected 3 separator lines (1 header + 2 cell)");
+        for sep in &sep_lines {
+            assert_eq!(
+                sep.spans.first().unwrap().style,
+                TABLE_BORDER_STYLE,
+                "all separators should use TABLE_BORDER_STYLE"
+            );
+        }
+    }
+
+    #[test]
+    fn render_table_single_data_row_only_header_separator() {
+        let style = Style::default();
+        let input = "| H |\n| --- |\n| only |";
+        let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
+        let sep_count = lines
+            .iter()
+            .filter(|l| l.spans.iter().any(|s| s.content.contains('├')))
+            .count();
+        assert_eq!(sep_count, 1, "single data row should only have header separator");
     }
 
     #[test]
