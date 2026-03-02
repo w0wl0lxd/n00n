@@ -788,7 +788,7 @@ fn render_table(
         Line::from(spans)
     };
 
-    lines.push(border("┌", "┬", "┐", "─"));
+    lines.push(border("╭", "┬", "╮", "─"));
 
     for (ri, row) in rows.iter().enumerate() {
         let base = if ri < header_end {
@@ -835,7 +835,7 @@ fn render_table(
         }
     }
 
-    lines.push(border("└", "┴", "┘", "─"));
+    lines.push(border("╰", "┴", "╯", "─"));
 
     lines
 }
@@ -1311,12 +1311,12 @@ mod tests {
                         | '_'
                         | '─'
                         | '│'
-                        | '┌'
-                        | '┐'
+                        | '╭'
+                        | '╮'
                         | '├'
                         | '┤'
-                        | '└'
-                        | '┘'
+                        | '╰'
+                        | '╯'
                         | '┬'
                         | '┴'
                         | '┼'
@@ -1696,7 +1696,7 @@ mod tests {
         let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
         let text = lines_text(&lines);
         let joined = text.join("\n");
-        for expected in ["┌", "Name", "├", "foo", "42", "└"] {
+        for expected in ["╭", "Name", "├", "foo", "42", "╰"] {
             assert!(joined.contains(expected), "missing {expected:?} in table");
         }
     }
