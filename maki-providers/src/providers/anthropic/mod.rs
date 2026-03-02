@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 use ureq::Agent;
 
 pub mod auth;
@@ -166,30 +166,21 @@ impl Provider for Anthropic {
             let response = req.send(body_str.as_str())?;
             let status = response.status().as_u16();
 
-            if status == 429 || status >= 500 {
-                warn!(
-                    status,
-                    attempt,
-                    max_retries = MAX_RETRIES,
-                    "retryable API error"
-                );
-                if attempt < MAX_RETRIES {
+            let result = if status == 200 {
+                parse_sse(BufReader::new(response.into_body().into_reader()), event_tx)
+            } else {
+                Err(AgentError::from_response(response))
+            };
+
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(ref e) if e.is_retryable() && attempt < MAX_RETRIES => {
+                    warn!(attempt, max_retries = MAX_RETRIES, error = %e, "retryable error, will retry");
                     thread::sleep(RETRY_DELAY);
                     continue;
                 }
-                error!(status, "max retries exhausted");
-                return Err(AgentError::Api {
-                    status,
-                    message: "max retries exceeded".to_string(),
-                });
+                Err(e) => return Err(e),
             }
-
-            if status != 200 {
-                error!(status, "non-retryable API error");
-                return Err(AgentError::from_response(response));
-            }
-
-            return parse_sse(BufReader::new(response.into_body().into_reader()), event_tx);
         }
 
         unreachable!()
@@ -400,6 +391,17 @@ fn parse_sse(
                     }
                 }
             }
+            "error" => {
+                if let Ok(ev) = serde_json::from_str::<super::SseErrorPayload>(data) {
+                    warn!(error_type = %ev.error.r#type, message = %ev.error.message, "SSE error event");
+                    return Err(ev.into_agent_error());
+                }
+                warn!(raw = %data, "unparseable SSE error event");
+                return Err(AgentError::Api {
+                    status: 0,
+                    message: data.to_string(),
+                });
+            }
             _ => {}
         }
     }
@@ -418,6 +420,7 @@ fn parse_sse(
 mod tests {
     use super::*;
     use std::sync::mpsc;
+    use test_case::test_case;
 
     #[test]
     fn parse_sse_text_and_usage() {
@@ -549,6 +552,27 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
             json[2]["content"][1]["cache_control"],
             json!({"type": "ephemeral"})
         );
+    }
+
+    #[test_case(
+        b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n",
+        529, "Overloaded" ; "overloaded_error"
+    )]
+    #[test_case(
+        b"event: error\ndata: not-json\n",
+        0, "not-json" ; "unparseable_error"
+    )]
+    fn parse_sse_error_event(input: &[u8], expected_status: u16, expected_message: &str) {
+        let (tx, _rx) = mpsc::channel();
+        let err = parse_sse(input, &tx).unwrap_err();
+
+        match err {
+            AgentError::Api { status, message } => {
+                assert_eq!(status, expected_status);
+                assert_eq!(message, expected_message);
+            }
+            other => panic!("expected Api error, got: {other:?}"),
+        }
     }
 
     #[test]

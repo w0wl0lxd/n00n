@@ -19,6 +19,10 @@ pub enum AgentError {
 }
 
 impl AgentError {
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::Api { status, .. } if *status == 429 || *status >= 500)
+    }
+
     pub fn from_response(response: ureq::http::Response<ureq::Body>) -> Self {
         let status = response.status().as_u16();
         let message = response
@@ -32,5 +36,24 @@ impl AgentError {
 impl From<mpsc::SendError<Envelope>> for AgentError {
     fn from(_: mpsc::SendError<Envelope>) -> Self {
         Self::Channel
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_case::test_case;
+
+    #[test_case(429, true ; "rate_limit_is_retryable")]
+    #[test_case(500, true ; "server_error_is_retryable")]
+    #[test_case(529, true ; "overloaded_is_retryable")]
+    #[test_case(400, false ; "bad_request_not_retryable")]
+    #[test_case(0, false ; "zero_status_not_retryable")]
+    fn is_retryable(status: u16, expected: bool) {
+        let err = AgentError::Api {
+            status,
+            message: "test".into(),
+        };
+        assert_eq!(err.is_retryable(), expected);
     }
 }

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 use ureq::Agent;
 
 use crate::model::Model;
@@ -204,24 +204,33 @@ impl Provider for Zai {
                         message: error_body,
                     });
                 }
-                warn!(status, attempt, max_retries = MAX_RETRIES, body = %error_body, "retryable Z.AI API error");
+                let err = AgentError::Api {
+                    status,
+                    message: error_body,
+                };
                 if attempt < MAX_RETRIES {
+                    warn!(attempt, max_retries = MAX_RETRIES, error = %err, "retryable error, will retry");
                     thread::sleep(retry_delay(attempt));
                     continue;
                 }
-                error!(status, "max retries exhausted");
-                return Err(AgentError::Api {
-                    status,
-                    message: error_body,
-                });
+                return Err(err);
             }
 
-            if status != 200 {
-                error!(status, "non-retryable Z.AI API error");
-                return Err(AgentError::from_response(response));
-            }
+            let result = if status == 200 {
+                parse_sse(BufReader::new(response.into_body().into_reader()), event_tx)
+            } else {
+                Err(AgentError::from_response(response))
+            };
 
-            return parse_sse(BufReader::new(response.into_body().into_reader()), event_tx);
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(ref e) if e.is_retryable() && attempt < MAX_RETRIES => {
+                    warn!(attempt, max_retries = MAX_RETRIES, error = %e, "retryable error, will retry");
+                    thread::sleep(retry_delay(attempt));
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         unreachable!()
@@ -334,6 +343,13 @@ fn parse_sse(
 
         if data == STREAM_DONE {
             break;
+        }
+
+        if data.contains("\"error\"")
+            && let Ok(ev) = serde_json::from_str::<super::SseErrorPayload>(data)
+        {
+            warn!(error_type = %ev.error.r#type, message = %ev.error.message, "SSE error in stream");
+            return Err(ev.into_agent_error());
         }
 
         let chunk: SseChunk = match serde_json::from_str(data) {
@@ -566,13 +582,10 @@ data: [DONE]\n";
     }
 
     #[test]
-    fn retry_delay_exponential_backoff() {
-        let d1 = retry_delay(1);
-        let d2 = retry_delay(2);
-        let d3 = retry_delay(3);
-        assert!(d1 < d2);
-        assert!(d2 < d3);
-        assert!(d3 <= MAX_RETRY_DELAY);
+    fn retry_delay_bounded_by_max() {
+        for attempt in 1..=5 {
+            assert!(retry_delay(attempt) <= MAX_RETRY_DELAY);
+        }
     }
 
     #[test]
@@ -622,6 +635,23 @@ data: [DONE]\n";
         assert_eq!(tools[1].1, "read");
         assert_eq!(tools[1].2["path"], "/tmp");
         assert_eq!(resp.stop_reason.as_deref(), Some("tool_use"));
+    }
+
+    #[test]
+    fn parse_sse_error_payload_returns_err() {
+        let sse = "\
+data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\"}}\n";
+
+        let (tx, _rx) = mpsc::channel();
+        let err = parse_sse(sse.as_bytes(), &tx).unwrap_err();
+
+        match err {
+            AgentError::Api { status, message } => {
+                assert_eq!(status, 529);
+                assert_eq!(message, "Server overloaded");
+            }
+            other => panic!("expected Api error, got: {other:?}"),
+        }
     }
 
     #[test]

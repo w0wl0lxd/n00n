@@ -435,6 +435,7 @@ impl From<AgentEvent> for Envelope {
     }
 }
 
+#[derive(Debug)]
 pub struct StreamResponse {
     pub message: Message,
     pub usage: TokenUsage,
