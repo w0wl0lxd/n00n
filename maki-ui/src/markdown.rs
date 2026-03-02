@@ -835,9 +835,7 @@ fn render_table(
             lines.push(Line::from(spans));
         }
 
-        if ri + 1 == header_end && header_end < rows.len() {
-            lines.push(border("├", "┼", "┤", "─"));
-        } else if ri + 1 < rows.len() && ri + 1 != header_end {
+        if ri + 1 < rows.len() {
             lines.push(border("├", "┼", "┤", "─"));
         }
     }
