@@ -310,6 +310,11 @@ impl MessagesPanel {
     }
 
     #[cfg(test)]
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+
+    #[cfg(test)]
     pub fn in_progress_count(&self) -> usize {
         self.in_progress_count
     }

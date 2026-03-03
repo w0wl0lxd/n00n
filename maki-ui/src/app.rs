@@ -107,6 +107,7 @@ pub struct App {
     context_window: u32,
     pub should_quit: bool,
     pub(crate) queue: VecDeque<AgentInput>,
+    pending_interrupts: Vec<String>,
     pub answer_tx: Option<mpsc::Sender<String>>,
     pub interrupt_tx: Option<mpsc::Sender<String>>,
     pending_question: bool,
@@ -140,6 +141,7 @@ impl App {
             context_window,
             should_quit: false,
             queue: VecDeque::new(),
+            pending_interrupts: Vec::new(),
             answer_tx: None,
             interrupt_tx: None,
             pending_question: false,
@@ -161,6 +163,18 @@ impl App {
 
     fn active_chat(&mut self) -> &mut Chat {
         &mut self.chats[self.active_chat]
+    }
+
+    fn visible_queue_len(&self) -> usize {
+        self.pending_interrupts.len() + self.queue.len()
+    }
+
+    fn visible_queue_texts(&self) -> Vec<&str> {
+        self.pending_interrupts
+            .iter()
+            .map(|s| s.as_str())
+            .chain(self.queue.iter().map(|i| i.message.as_str()))
+            .collect()
     }
 
     pub fn update(&mut self, msg: Msg) -> Vec<Action> {
@@ -354,11 +368,10 @@ impl App {
             pending_plan: self.plan.pending_plan().map(String::from),
         };
         if self.status == Status::Streaming {
-            self.main_chat().push_user_message(&text);
-            self.main_chat().enable_auto_scroll();
             if let Some(tx) = &self.interrupt_tx
-                && tx.send(text).is_ok()
+                && tx.send(text.clone()).is_ok()
             {
+                self.pending_interrupts.push(text);
                 return vec![];
             }
             self.queue.push_back(input);
@@ -383,6 +396,7 @@ impl App {
                 }
                 self.main_chat()
                     .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
+                self.pending_interrupts.clear();
                 self.queue.clear();
                 self.chat_index.clear();
                 self.status = Status::Idle;
@@ -438,6 +452,13 @@ impl App {
 
         let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);
 
+        if matches!(result, ChatEventResult::InterruptConsumed) && chat_idx == 0 {
+            if !self.pending_interrupts.is_empty() {
+                self.pending_interrupts.remove(0);
+            }
+            return vec![];
+        }
+
         if chat_idx == 0 {
             match result {
                 ChatEventResult::Done => {
@@ -453,6 +474,7 @@ impl App {
                     self.status = Status::Error(message);
                     self.status_bar.clear_cancel_hint();
                     self.status_bar.mark_error();
+                    self.pending_interrupts.clear();
                     self.queue.clear();
                 }
                 ChatEventResult::QuestionPrompt { questions } => {
@@ -465,7 +487,7 @@ impl App {
                         self.pending_question = true;
                     }
                 }
-                ChatEventResult::Continue => {}
+                ChatEventResult::Continue | ChatEventResult::InterruptConsumed => {}
             }
         }
         vec![]
@@ -553,6 +575,7 @@ impl App {
         self.chat_index.clear();
         self.status = Status::Idle;
         self.token_usage = TokenUsage::default();
+        self.pending_interrupts.clear();
         self.queue.clear();
         #[cfg(feature = "demo")]
         {
@@ -581,7 +604,8 @@ impl App {
                 .height(frame.area().width)
                 .min(max_form_height)
         } else {
-            queue_panel::height(self.queue.len()) + self.input_box.height(frame.area().width)
+            queue_panel::height(self.visible_queue_len())
+                + self.input_box.height(frame.area().width)
         };
         let [msg_area, bottom_area, status_area] = Layout::vertical([
             Constraint::Min(1),
@@ -606,7 +630,7 @@ impl App {
         };
         self.chats[render_chat].view(frame, msg_area, self.selection.is_some());
 
-        let queue_height = queue_panel::height(self.queue.len());
+        let queue_height = queue_panel::height(self.visible_queue_len());
         let input_height = bottom_area.height.saturating_sub(queue_height);
         let [queue_area, input_area] = Layout::vertical([
             Constraint::Length(queue_height),
@@ -619,7 +643,7 @@ impl App {
             self.question_form.view(frame, bottom_area);
             None
         } else {
-            let queue_texts: Vec<&str> = self.queue.iter().map(|i| i.message.as_str()).collect();
+            let queue_texts = self.visible_queue_texts();
             queue_panel::view(frame, queue_area, &queue_texts);
             self.input_box
                 .view(frame, input_area, self.status == Status::Streaming);
@@ -694,7 +718,7 @@ impl App {
             });
         } else {
             if va.queue_area.height > 0 {
-                let raw: Vec<&str> = self.queue.iter().map(|i| i.message.as_str()).collect();
+                let raw = self.visible_queue_texts();
                 queue_text = raw.join("\n");
                 regions.push(ContentRegion {
                     area: inset_border(va.queue_area),
@@ -1105,6 +1129,55 @@ mod tests {
         app
     }
 
+    fn app_with_pending_interrupt() -> App {
+        let mut app = test_app();
+        let (tx, _rx) = mpsc::channel();
+        app.interrupt_tx = Some(tx);
+        app.status = Status::Streaming;
+        app.pending_interrupts.push("pending".into());
+        app
+    }
+
+    fn type_and_submit(app: &mut App, text: &str) -> Vec<Action> {
+        for c in text.chars() {
+            app.update(Msg::Key(key(KeyCode::Char(c))));
+        }
+        app.update(Msg::Key(key(KeyCode::Enter)))
+    }
+
+    #[test]
+    fn cancel_clears_pending_interrupts() {
+        let mut app = app_with_pending_interrupt();
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(app.pending_interrupts.is_empty());
+    }
+
+    #[test]
+    fn error_clears_pending_interrupts() {
+        let mut app = app_with_pending_interrupt();
+        app.update(agent_msg(AgentEvent::Error {
+            message: "boom".into(),
+        }));
+        assert!(app.pending_interrupts.is_empty());
+    }
+
+    #[test]
+    fn multiple_interrupts_drained_in_order() {
+        let mut app = app_with_pending_interrupt();
+        app.pending_interrupts.push("second".into());
+
+        app.update(agent_msg(AgentEvent::InterruptConsumed {
+            message: "pending".into(),
+        }));
+        assert_eq!(app.pending_interrupts, vec!["second"]);
+
+        app.update(agent_msg(AgentEvent::InterruptConsumed {
+            message: "second".into(),
+        }));
+        assert!(app.pending_interrupts.is_empty());
+    }
+
     #[test]
     fn submit_during_streaming_sends_via_interrupt_channel() {
         let mut app = test_app();
@@ -1112,14 +1185,12 @@ mod tests {
         app.interrupt_tx = Some(tx);
         app.status = Status::Streaming;
 
-        for c in "urgent".chars() {
-            app.update(Msg::Key(key(KeyCode::Char(c))));
-        }
-        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        let actions = type_and_submit(&mut app, "urgent");
         assert!(actions.is_empty());
         assert!(app.queue.is_empty());
         assert_eq!(rx.try_recv().unwrap(), "urgent");
-        assert_eq!(app.chats[0].last_message_text(), "urgent");
+        assert_ne!(app.chats[0].last_message_text(), "urgent");
+        assert_eq!(app.pending_interrupts, vec!["urgent"]);
     }
 
     #[test]
@@ -1130,13 +1201,23 @@ mod tests {
         app.status = Status::Streaming;
         drop(rx);
 
-        for c in "late".chars() {
-            app.update(Msg::Key(key(KeyCode::Char(c))));
-        }
-        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        let actions = type_and_submit(&mut app, "late");
         assert!(actions.is_empty());
         assert_eq!(app.queue.len(), 1);
         assert_eq!(app.queue[0].message, "late");
+    }
+
+    #[test]
+    fn interrupt_displayed_only_on_consumed_event() {
+        let mut app = app_with_pending_interrupt();
+        let before = app.chats[0].message_count();
+
+        app.update(agent_msg(AgentEvent::InterruptConsumed {
+            message: "pending".into(),
+        }));
+        assert!(app.pending_interrupts.is_empty());
+        assert_eq!(app.chats[0].message_count(), before + 1);
+        assert_eq!(app.chats[0].last_message_text(), "pending");
     }
 
     fn type_slash(app: &mut App) {
@@ -1187,6 +1268,7 @@ mod tests {
             mode: AgentMode::Build,
             pending_plan: None,
         });
+        app.pending_interrupts.push("p".into());
         let actions = app.reset_session();
         assert!(matches!(&actions[0], Action::NewSession));
         assert_eq!(app.status, Status::Idle);
@@ -1199,6 +1281,7 @@ mod tests {
             }
         );
         assert!(app.queue.is_empty());
+        assert!(app.pending_interrupts.is_empty());
         assert_eq!(app.chats.len(), 1);
         assert_eq!(app.chats[0].name, "Main");
         assert_eq!(app.active_chat, 0);
@@ -1457,10 +1540,7 @@ mod tests {
         app.update(agent_msg(long_question_no_options()));
         assert!(app.pending_question);
 
-        for c in "my answer".chars() {
-            app.update(Msg::Key(key(KeyCode::Char(c))));
-        }
-        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        let actions = type_and_submit(&mut app, "my answer");
         assert!(actions.is_empty());
         assert!(!app.pending_question);
         assert_eq!(rx.try_recv().unwrap(), "my answer");

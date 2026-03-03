@@ -220,6 +220,24 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDo
     })
 }
 
+fn consume_interrupt(
+    interrupt_rx: Option<&Receiver<String>>,
+    history: &mut History,
+    event_tx: &Sender<Envelope>,
+) -> Result<bool, AgentError> {
+    if let Some(rx) = interrupt_rx
+        && let Ok(msg) = rx.try_recv()
+    {
+        let wrapped = format!(
+            "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{msg}\n</user-interrupt>"
+        );
+        history.push(Message::user(wrapped));
+        event_tx.send(AgentEvent::InterruptConsumed { message: msg }.into())?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     provider: &dyn Provider,
@@ -298,6 +316,10 @@ pub fn run(
                 continue;
             }
 
+            if consume_interrupt(interrupt_rx, history, event_tx)? {
+                continue;
+            }
+
             info!(
                 num_turns,
                 total_input = total_usage.input,
@@ -334,15 +356,7 @@ pub fn run(
         )?;
         history.push(tool_msg);
 
-        if let Some(rx) = interrupt_rx
-            && let Ok(msg) = rx.try_recv()
-        {
-            let wrapped = format!(
-                "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{msg}\n</user-interrupt>"
-            );
-            history.push(Message::user(wrapped));
-            event_tx.send(AgentEvent::InterruptConsumed { message: msg }.into())?;
-        }
+        consume_interrupt(interrupt_rx, history, event_tx)?;
     }
 }
 
@@ -579,11 +593,10 @@ mod tests {
         }
     }
 
-    fn run_with_interrupt(interrupt_rx: &Receiver<String>) -> (Vec<Message>, Vec<Envelope>) {
-        let provider = MockProvider::new(vec![
-            tool_call_response("glob", "t1"),
-            text_response("end_turn"),
-        ]);
+    fn run_with_interrupt(
+        provider: MockProvider,
+        interrupt_rx: &Receiver<String>,
+    ) -> (Vec<Message>, Vec<Envelope>) {
         let model = default_model();
         let input = AgentInput {
             message: "hello".into(),
@@ -628,7 +641,11 @@ mod tests {
         let (interrupt_tx, interrupt_rx) = mpsc::channel();
         interrupt_tx.send("fix the bug".into()).unwrap();
 
-        let (history, events) = run_with_interrupt(&interrupt_rx);
+        let provider = MockProvider::new(vec![
+            tool_call_response("glob", "t1"),
+            text_response("end_turn"),
+        ]);
+        let (history, events) = run_with_interrupt(provider, &interrupt_rx);
 
         assert!(events.iter().any(|e| {
             matches!(e.event, AgentEvent::InterruptConsumed { ref message } if message == "fix the bug")
@@ -640,10 +657,29 @@ mod tests {
     fn no_interrupt_when_channel_empty() {
         let (_interrupt_tx, interrupt_rx) = mpsc::channel();
 
-        let (history, events) = run_with_interrupt(&interrupt_rx);
+        let provider = MockProvider::new(vec![
+            tool_call_response("glob", "t1"),
+            text_response("end_turn"),
+        ]);
+        let (history, events) = run_with_interrupt(provider, &interrupt_rx);
 
         assert!(!has_interrupt_event(&events));
         assert!(!has_interrupt_in_history(&history));
+    }
+
+    #[test]
+    fn interrupt_consumed_during_text_only_response() {
+        let (interrupt_tx, interrupt_rx) = mpsc::channel();
+        interrupt_tx.send("new task".into()).unwrap();
+
+        let provider =
+            MockProvider::new(vec![text_response("end_turn"), text_response("end_turn")]);
+        let (history, events) = run_with_interrupt(provider, &interrupt_rx);
+
+        assert!(events.iter().any(|e| {
+            matches!(e.event, AgentEvent::InterruptConsumed { ref message } if message == "new task")
+        }));
+        assert!(has_interrupt_in_history(history.as_slice()));
     }
 
     #[test]
