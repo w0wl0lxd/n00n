@@ -66,6 +66,7 @@ impl Chat {
             }
             AgentEvent::TurnComplete { .. } => {}
             AgentEvent::ToolResultsSubmitted { .. } => {}
+            AgentEvent::InterruptConsumed { .. } => {}
             AgentEvent::Done { .. } => {
                 self.messages_panel.flush();
                 return ChatEventResult::Done;

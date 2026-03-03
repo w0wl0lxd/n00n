@@ -408,6 +408,9 @@ pub enum AgentEvent {
         id: String,
         questions: Vec<QuestionInfo>,
     },
+    InterruptConsumed {
+        message: String,
+    },
     Done {
         usage: TokenUsage,
         num_turns: u32,

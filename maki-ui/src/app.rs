@@ -63,6 +63,7 @@ pub struct App {
     pub should_quit: bool,
     pub(crate) queue: VecDeque<AgentInput>,
     pub answer_tx: Option<mpsc::Sender<String>>,
+    pub interrupt_tx: Option<mpsc::Sender<String>>,
     pending_question: bool,
     #[cfg(feature = "demo")]
     demo_questions: Option<(usize, Vec<QuestionInfo>)>,
@@ -96,6 +97,7 @@ impl App {
             should_quit: false,
             queue: VecDeque::new(),
             answer_tx: None,
+            interrupt_tx: None,
             pending_question: false,
             #[cfg(feature = "demo")]
             demo_questions: None,
@@ -308,8 +310,14 @@ impl App {
             pending_plan,
         };
         if self.status == Status::Streaming {
-            self.queue.push_back(input);
+            self.main_chat().push_user_message(&text);
             self.main_chat().enable_auto_scroll();
+            if let Some(tx) = &self.interrupt_tx
+                && tx.send(text).is_ok()
+            {
+                return vec![];
+            }
+            self.queue.push_back(input);
             vec![]
         } else {
             self.main_chat().push_user_message(&text);
@@ -920,6 +928,40 @@ mod tests {
             pending_plan: None,
         });
         app
+    }
+
+    #[test]
+    fn submit_during_streaming_sends_via_interrupt_channel() {
+        let mut app = test_app();
+        let (tx, rx) = mpsc::channel();
+        app.interrupt_tx = Some(tx);
+        app.status = Status::Streaming;
+
+        for c in "urgent".chars() {
+            app.update(Msg::Key(key(KeyCode::Char(c))));
+        }
+        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(actions.is_empty());
+        assert!(app.queue.is_empty());
+        assert_eq!(rx.try_recv().unwrap(), "urgent");
+        assert_eq!(app.chats[0].last_message_text(), "urgent");
+    }
+
+    #[test]
+    fn submit_during_streaming_falls_back_to_queue_when_channel_closed() {
+        let mut app = test_app();
+        let (tx, rx) = mpsc::channel();
+        app.interrupt_tx = Some(tx);
+        app.status = Status::Streaming;
+        drop(rx);
+
+        for c in "late".chars() {
+            app.update(Msg::Key(key(KeyCode::Char(c))));
+        }
+        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(actions.is_empty());
+        assert_eq!(app.queue.len(), 1);
+        assert_eq!(app.queue[0].message, "late");
     }
 
     fn type_slash(app: &mut App) {

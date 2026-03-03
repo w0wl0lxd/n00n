@@ -93,21 +93,18 @@ fn run_event_loop(
     }
     let provider: Arc<dyn Provider> =
         Arc::from(maki_providers::provider::from_model(&model).context("create provider")?);
-    let (mut cmd_tx, mut agent_rx, mut history, answer_tx) =
-        spawn_agent(&provider, &model, Vec::new(), excluded_tools);
-    app.answer_tx = Some(answer_tx);
+    let mut handles = spawn_agent(&provider, &model, Vec::new(), excluded_tools);
+    handles.apply_to_app(&mut app);
 
     loop {
         terminal.draw(|f| app.view(f))?;
 
         let mut had_agent_msg = false;
-        while let Ok(envelope) = agent_rx.try_recv() {
+        while let Ok(envelope) = handles.agent_rx.try_recv() {
             had_agent_msg = true;
             dispatch(
                 app.update(Msg::Agent(envelope)),
-                &mut cmd_tx,
-                &mut agent_rx,
-                &mut history,
+                &mut handles,
                 &provider,
                 &model,
                 excluded_tools,
@@ -138,9 +135,7 @@ fn run_event_loop(
                         if let Some(extra) = extra {
                             dispatch(
                                 app.update(scroll),
-                                &mut cmd_tx,
-                                &mut agent_rx,
-                                &mut history,
+                                &mut handles,
                                 &provider,
                                 &model,
                                 excluded_tools,
@@ -155,9 +150,7 @@ fn run_event_loop(
                         let (drag, extra) = coalesce_drag(mouse);
                         dispatch(
                             app.update(Msg::Mouse(drag)),
-                            &mut cmd_tx,
-                            &mut agent_rx,
-                            &mut history,
+                            &mut handles,
                             &provider,
                             &model,
                             excluded_tools,
@@ -175,9 +168,7 @@ fn run_event_loop(
             };
             dispatch(
                 app.update(msg),
-                &mut cmd_tx,
-                &mut agent_rx,
-                &mut history,
+                &mut handles,
                 &provider,
                 &model,
                 excluded_tools,
@@ -196,20 +187,31 @@ enum AgentCommand {
     Compact,
 }
 
+struct AgentHandles {
+    cmd_tx: mpsc::Sender<AgentCommand>,
+    agent_rx: mpsc::Receiver<Envelope>,
+    history: SharedHistory,
+    answer_tx: mpsc::Sender<String>,
+    interrupt_tx: mpsc::Sender<String>,
+}
+
+impl AgentHandles {
+    fn apply_to_app(&self, app: &mut App) {
+        app.answer_tx = Some(self.answer_tx.clone());
+        app.interrupt_tx = Some(self.interrupt_tx.clone());
+    }
+}
+
 fn spawn_agent(
     provider: &Arc<dyn Provider>,
     model: &Model,
     initial_history: Vec<Message>,
     excluded_tools: &'static [&'static str],
-) -> (
-    mpsc::Sender<AgentCommand>,
-    mpsc::Receiver<Envelope>,
-    SharedHistory,
-    mpsc::Sender<String>,
-) {
+) -> AgentHandles {
     let (agent_tx, agent_rx) = mpsc::channel::<Envelope>();
     let (cmd_tx, cmd_rx) = mpsc::channel::<AgentCommand>();
     let (answer_tx, answer_rx) = mpsc::channel::<String>();
+    let (interrupt_tx, interrupt_rx) = mpsc::channel::<String>();
     let model = model.clone();
     let shared_history: SharedHistory = Arc::new(Mutex::new(initial_history.clone()));
     let history_ref = Arc::clone(&shared_history);
@@ -236,6 +238,7 @@ fn spawn_agent(
                         &agent_tx,
                         &tools,
                         Some(&answer_mutex),
+                        Some(&interrupt_rx),
                     )
                 }
             };
@@ -252,15 +255,18 @@ fn spawn_agent(
         }
     });
 
-    (cmd_tx, agent_rx, shared_history, answer_tx)
+    AgentHandles {
+        cmd_tx,
+        agent_rx,
+        history: shared_history,
+        answer_tx,
+        interrupt_tx,
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn dispatch(
     actions: Vec<Action>,
-    cmd_tx: &mut mpsc::Sender<AgentCommand>,
-    agent_rx: &mut mpsc::Receiver<Envelope>,
-    shared_history: &mut SharedHistory,
+    handles: &mut AgentHandles,
     provider: &Arc<dyn Provider>,
     model: &Model,
     excluded_tools: &'static [&'static str],
@@ -270,32 +276,26 @@ fn dispatch(
         match action {
             Action::SendMessage(input) => {
                 let cmd = AgentCommand::Run(input);
-                let cmd = match cmd_tx.send(cmd) {
+                let cmd = match handles.cmd_tx.send(cmd) {
                     Ok(()) => continue,
                     Err(e) => e.0,
                 };
-                let history = std::mem::take(&mut *shared_history.lock().unwrap());
-                let answer_tx;
-                (*cmd_tx, *agent_rx, *shared_history, answer_tx) =
-                    spawn_agent(provider, model, history, excluded_tools);
-                app.answer_tx = Some(answer_tx);
-                let _ = cmd_tx.send(cmd);
+                let history = std::mem::take(&mut *handles.history.lock().unwrap());
+                *handles = spawn_agent(provider, model, history, excluded_tools);
+                handles.apply_to_app(app);
+                let _ = handles.cmd_tx.send(cmd);
             }
             Action::CancelAgent => {
-                let history = std::mem::take(&mut *shared_history.lock().unwrap());
-                let answer_tx;
-                (*cmd_tx, *agent_rx, *shared_history, answer_tx) =
-                    spawn_agent(provider, model, history, excluded_tools);
-                app.answer_tx = Some(answer_tx);
+                let history = std::mem::take(&mut *handles.history.lock().unwrap());
+                *handles = spawn_agent(provider, model, history, excluded_tools);
+                handles.apply_to_app(app);
             }
             Action::NewSession => {
-                let answer_tx;
-                (*cmd_tx, *agent_rx, *shared_history, answer_tx) =
-                    spawn_agent(provider, model, Vec::new(), excluded_tools);
-                app.answer_tx = Some(answer_tx);
+                *handles = spawn_agent(provider, model, Vec::new(), excluded_tools);
+                handles.apply_to_app(app);
             }
             Action::Compact => {
-                let _ = cmd_tx.send(AgentCommand::Compact);
+                let _ = handles.cmd_tx.send(AgentCommand::Compact);
             }
             Action::Quit => {}
         }

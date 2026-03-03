@@ -160,6 +160,7 @@ pub fn run(
     event_tx: &Sender<Envelope>,
     tools: &Value,
     user_response_rx: Option<&Mutex<Receiver<String>>>,
+    interrupt_rx: Option<&Receiver<String>>,
 ) -> Result<(), AgentError> {
     let user_message = input.effective_message();
     history.push(Message::user(user_message.clone()));
@@ -261,6 +262,16 @@ pub fn run(
             .into(),
         )?;
         history.push(tool_msg);
+
+        if let Some(rx) = interrupt_rx
+            && let Ok(msg) = rx.try_recv()
+        {
+            let wrapped = format!(
+                "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{msg}\n</user-interrupt>"
+            );
+            history.push(Message::user(wrapped));
+            event_tx.send(AgentEvent::InterruptConsumed { message: msg }.into())?;
+        }
     }
 }
 
@@ -423,6 +434,7 @@ mod tests {
             &event_tx,
             &tools,
             None,
+            None,
         );
         drop(event_tx);
 
@@ -470,5 +482,87 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert!(matches!(history[0].role, Role::User));
         assert!(matches!(history[1].role, Role::Assistant));
+    }
+
+    fn tool_call_response(tool_name: &str, tool_id: &str) -> StreamResponse {
+        StreamResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: tool_id.into(),
+                    name: tool_name.into(),
+                    input: serde_json::json!({"pattern": "*.nonexistent_test_xyz", "path": "/tmp"}),
+                }],
+            },
+            usage: TokenUsage::default(),
+            stop_reason: Some("tool_use".into()),
+        }
+    }
+
+    fn run_with_interrupt(interrupt_rx: &Receiver<String>) -> (Vec<Message>, Vec<Envelope>) {
+        let provider = MockProvider::new(vec![
+            tool_call_response("glob", "t1"),
+            text_response("end_turn"),
+        ]);
+        let model = default_model();
+        let input = AgentInput {
+            message: "hello".into(),
+            mode: AgentMode::Build,
+            pending_plan: None,
+        };
+        let mut history = Vec::new();
+        let (event_tx, event_rx) = mpsc::channel();
+        let tools = serde_json::json!([]);
+
+        let _ = run(
+            &provider,
+            &model,
+            input,
+            &mut history,
+            "system",
+            &event_tx,
+            &tools,
+            None,
+            Some(interrupt_rx),
+        );
+        drop(event_tx);
+        (history, event_rx.iter().collect())
+    }
+
+    fn has_interrupt_event(events: &[Envelope]) -> bool {
+        events
+            .iter()
+            .any(|e| matches!(e.event, AgentEvent::InterruptConsumed { .. }))
+    }
+
+    fn has_interrupt_in_history(history: &[Message]) -> bool {
+        history.iter().any(|m| {
+            m.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text } if text.contains("<user-interrupt>")),
+            )
+        })
+    }
+
+    #[test]
+    fn interrupt_injects_user_message_between_turns() {
+        let (interrupt_tx, interrupt_rx) = mpsc::channel();
+        interrupt_tx.send("fix the bug".into()).unwrap();
+
+        let (history, events) = run_with_interrupt(&interrupt_rx);
+
+        assert!(events.iter().any(|e| {
+            matches!(e.event, AgentEvent::InterruptConsumed { ref message } if message == "fix the bug")
+        }));
+        assert!(has_interrupt_in_history(&history));
+    }
+
+    #[test]
+    fn no_interrupt_when_channel_empty() {
+        let (_interrupt_tx, interrupt_rx) = mpsc::channel();
+
+        let (history, events) = run_with_interrupt(&interrupt_rx);
+
+        assert!(!has_interrupt_event(&events));
+        assert!(!has_interrupt_in_history(&history));
     }
 }
