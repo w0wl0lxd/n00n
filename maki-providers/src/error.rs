@@ -31,6 +31,15 @@ impl AgentError {
             .unwrap_or_else(|_| "unable to read error body".into());
         Self::Api { status, message }
     }
+
+    pub fn retry_message(&self) -> String {
+        match self {
+            Self::Api { status: 429, .. } => "Rate limited".into(),
+            Self::Api { status: 529, .. } => "Provider is overloaded".into(),
+            Self::Api { status, .. } if *status >= 500 => format!("Server error ({status})"),
+            _ => self.to_string(),
+        }
+    }
 }
 
 impl From<mpsc::SendError<Envelope>> for AgentError {
@@ -55,5 +64,25 @@ mod tests {
             message: "test".into(),
         };
         assert_eq!(err.is_retryable(), expected);
+    }
+
+    #[test_case(429, "Rate limited"           ; "rate_limited")]
+    #[test_case(529, "Provider is overloaded" ; "overloaded")]
+    #[test_case(500, "Server error (500)"     ; "server_error")]
+    fn retry_message_text(status: u16, expected: &str) {
+        let err = AgentError::Api {
+            status,
+            message: "bad req".into(),
+        };
+        assert_eq!(err.retry_message(), expected);
+    }
+
+    #[test]
+    fn retry_message_non_retryable_falls_through_to_display() {
+        let err = AgentError::Api {
+            status: 400,
+            message: "bad req".into(),
+        };
+        assert_eq!(err.retry_message(), err.to_string());
     }
 }

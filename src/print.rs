@@ -241,7 +241,8 @@ pub fn run(
             | AgentEvent::ToolDone(_)
             | AgentEvent::BatchProgress { .. }
             | AgentEvent::QuestionPrompt { .. }
-            | AgentEvent::InterruptConsumed { .. } => {
+            | AgentEvent::InterruptConsumed { .. }
+            | AgentEvent::Retry { .. } => {
                 if is_stream_json {
                     println!("{}", serde_json::to_string(&envelope)?);
                 }

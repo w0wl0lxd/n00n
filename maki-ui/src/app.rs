@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use crate::chat::{Chat, ChatEventResult};
 use crate::components::chat_picker::{ChatPicker, ChatPickerAction};
@@ -8,7 +9,7 @@ use crate::components::input::{InputAction, InputBox};
 use crate::components::question_form::{QuestionForm, QuestionFormAction};
 use crate::components::queue_panel;
 use crate::components::status_bar::{CancelResult, StatusBar, StatusBarContext, UsageStats};
-use crate::components::{Action, DisplayMessage, DisplayRole, Status, is_ctrl};
+use crate::components::{Action, DisplayMessage, DisplayRole, RetryInfo, Status, is_ctrl};
 use crate::selection::{self, ContentRegion, Selection, inset_border};
 use crate::theme;
 use arboard::Clipboard;
@@ -64,6 +65,7 @@ pub struct App {
     pub answer_tx: Option<mpsc::Sender<String>>,
     pub interrupt_tx: Option<mpsc::Sender<String>>,
     pending_question: bool,
+    retry_info: Option<RetryInfo>,
     #[cfg(feature = "demo")]
     demo_questions: Option<(usize, Vec<QuestionInfo>)>,
     msg_area: Rect,
@@ -97,6 +99,7 @@ impl App {
             answer_tx: None,
             interrupt_tx: None,
             pending_question: false,
+            retry_info: None,
             #[cfg(feature = "demo")]
             demo_questions: None,
             msg_area: Rect::default(),
@@ -328,6 +331,7 @@ impl App {
     fn handle_cancel_press(&mut self) -> Vec<Action> {
         match self.status_bar.handle_cancel_press() {
             CancelResult::Confirmed => {
+                self.retry_info = None;
                 self.question_form.close();
                 self.pending_question = false;
                 for chat in &mut self.chats {
@@ -354,6 +358,24 @@ impl App {
             AgentMode::Plan(p) => Some(p.as_str()),
             AgentMode::Build => None,
         };
+
+        if let AgentEvent::Retry {
+            attempt,
+            message,
+            delay_ms,
+        } = envelope.event
+        {
+            if chat_idx == 0 {
+                self.retry_info = Some(RetryInfo {
+                    attempt,
+                    message,
+                    deadline: Instant::now() + Duration::from_millis(delay_ms),
+                });
+            }
+            return vec![];
+        }
+
+        self.retry_info = None;
 
         if let AgentEvent::TurnComplete { usage, .. } = &envelope.event {
             self.token_usage += usage.clone();
@@ -560,6 +582,7 @@ impl App {
             auto_scroll: chat.auto_scroll(),
             chat_name,
             has_pending_plan: self.pending_plan.is_some(),
+            retry_info: self.retry_info.as_ref(),
         };
         self.status_bar.view(frame, status_area, &ctx);
 

@@ -12,6 +12,7 @@ pub(crate) mod tool_display;
 use crossterm::event::{KeyEvent, KeyModifiers};
 use maki_agent::AgentInput;
 use maki_providers::{ToolInput, ToolOutput};
+use std::time::Instant;
 
 pub(crate) fn visual_line_count(text_len: usize, width: usize) -> usize {
     if width == 0 {
@@ -45,6 +46,12 @@ pub enum Status {
     Idle,
     Streaming,
     Error(String),
+}
+
+pub struct RetryInfo {
+    pub attempt: u32,
+    pub message: String,
+    pub deadline: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

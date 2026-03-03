@@ -1,8 +1,6 @@
 use std::env;
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc::Sender;
-use std::thread;
-use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -18,9 +16,6 @@ use crate::{
 const API_KEY_ENV: &str = "ZHIPU_API_KEY";
 const BASE_STANDARD: &str = "https://api.z.ai/api/paas/v4";
 const BASE_CODING: &str = "https://api.z.ai/api/coding/paas/v4";
-const MAX_RETRIES: u32 = 3;
-const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
-const MAX_RETRY_DELAY: Duration = Duration::from_secs(8);
 const STREAM_DONE: &str = "[DONE]";
 
 #[derive(Debug, Clone, Copy)]
@@ -53,13 +48,6 @@ impl Zai {
             models_url: format!("{base}/models"),
         })
     }
-}
-
-fn retry_delay(attempt: u32) -> Duration {
-    let base = INITIAL_RETRY_DELAY.as_millis() as u64 * 2u64.pow(attempt - 1);
-    let capped = base.min(MAX_RETRY_DELAY.as_millis() as u64);
-    let jitter = capped * 3 / 4;
-    Duration::from_millis(jitter)
 }
 
 fn convert_messages(messages: &[Message], system: &str) -> Vec<Value> {
@@ -184,56 +172,36 @@ impl Provider for Zai {
         }
         let body_str = body.to_string();
 
-        for attempt in 1..=MAX_RETRIES {
-            debug!(attempt, model = %model.id, num_messages = messages.len(), "sending Z.AI API request");
+        debug!(model = %model.id, num_messages = messages.len(), "sending Z.AI API request");
 
-            let req = self
-                .agent
-                .post(&self.completions_url)
-                .header("content-type", "application/json")
-                .header("authorization", &format!("Bearer {}", self.api_key));
-            let response = req.send(body_str.as_str())?;
-            let status = response.status().as_u16();
+        let req = self
+            .agent
+            .post(&self.completions_url)
+            .header("content-type", "application/json")
+            .header("authorization", &format!("Bearer {}", self.api_key));
+        let response = req.send(body_str.as_str())?;
+        let status = response.status().as_u16();
 
-            if status == 429 || status >= 500 {
-                let error_body = response.into_body().read_to_string().unwrap_or_default();
-                if error_body.contains("1113") || error_body.contains("nsufficien") {
-                    warn!(status, "insufficient funds, bailing out");
-                    return Err(AgentError::Api {
-                        status,
-                        message: error_body,
-                    });
-                }
-                let err = AgentError::Api {
-                    status,
+        if status == 429 || status >= 500 {
+            let error_body = response.into_body().read_to_string().unwrap_or_default();
+            if error_body.contains("1113") || error_body.contains("nsufficien") {
+                warn!(status, "insufficient funds, bailing out");
+                return Err(AgentError::Api {
+                    status: 402,
                     message: error_body,
-                };
-                if attempt < MAX_RETRIES {
-                    warn!(attempt, max_retries = MAX_RETRIES, error = %err, "retryable error, will retry");
-                    thread::sleep(retry_delay(attempt));
-                    continue;
-                }
-                return Err(err);
+                });
             }
-
-            let result = if status == 200 {
-                parse_sse(BufReader::new(response.into_body().into_reader()), event_tx)
-            } else {
-                Err(AgentError::from_response(response))
-            };
-
-            match result {
-                Ok(resp) => return Ok(resp),
-                Err(ref e) if e.is_retryable() && attempt < MAX_RETRIES => {
-                    warn!(attempt, max_retries = MAX_RETRIES, error = %e, "retryable error, will retry");
-                    thread::sleep(retry_delay(attempt));
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
+            return Err(AgentError::Api {
+                status,
+                message: error_body,
+            });
         }
 
-        unreachable!()
+        if status == 200 {
+            parse_sse(BufReader::new(response.into_body().into_reader()), event_tx)
+        } else {
+            Err(AgentError::from_response(response))
+        }
     }
 
     fn list_models(&self) -> Result<Vec<String>, AgentError> {
@@ -582,13 +550,6 @@ data: [DONE]\n";
         assert_eq!(wire[3]["role"], "tool");
         assert_eq!(wire[3]["tool_call_id"], "tc_1");
         assert_eq!(wire[3]["content"], "file.txt");
-    }
-
-    #[test]
-    fn retry_delay_bounded_by_max() {
-        for attempt in 1..=5 {
-            assert!(retry_delay(attempt) <= MAX_RETRY_DELAY);
-        }
     }
 
     #[test]

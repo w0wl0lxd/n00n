@@ -5,6 +5,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender};
+use std::thread;
 
 use tracing::{debug, error, info, warn};
 
@@ -16,7 +17,9 @@ use crate::{
     AgentError, AgentEvent, AgentInput, AgentMode, Envelope, Message, TokenUsage, ToolDoneEvent,
 };
 use maki_providers::Model;
+use maki_providers::StreamResponse;
 use maki_providers::provider::Provider;
+use maki_providers::retry::RetryState;
 
 pub type SharedHistory = Arc<Mutex<Vec<Message>>>;
 
@@ -153,6 +156,36 @@ fn parse_tool_calls<'a>(
     (parsed, errors)
 }
 
+fn stream_with_retry(
+    provider: &dyn Provider,
+    model: &Model,
+    messages: &[Message],
+    system: &str,
+    tools: &Value,
+    event_tx: &Sender<Envelope>,
+) -> Result<StreamResponse, AgentError> {
+    let mut retry = RetryState::new();
+    loop {
+        match provider.stream_message(model, messages, system, tools, event_tx) {
+            Ok(r) => return Ok(r),
+            Err(e) if e.is_retryable() => {
+                let (attempt, delay) = retry.next_delay();
+                warn!(attempt, delay_ms = delay.as_millis() as u64, error = %e, "retryable, will retry");
+                event_tx.send(
+                    AgentEvent::Retry {
+                        attempt,
+                        message: e.retry_message(),
+                        delay_ms: delay.as_millis() as u64,
+                    }
+                    .into(),
+                )?;
+                thread::sleep(delay);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDoneEvent> {
     std::thread::scope(|s| {
         let handles: Vec<_> = tool_calls
@@ -221,7 +254,7 @@ pub fn run(
 
     loop {
         let response =
-            match provider.stream_message(model, history.as_slice(), system, tools, event_tx) {
+            match stream_with_retry(provider, model, history.as_slice(), system, tools, event_tx) {
                 Ok(r) => r,
                 Err(e) => {
                     error!(error = %e, model = %model.id, num_turns, "stream_message failed");
@@ -322,7 +355,8 @@ pub fn compact(
     compaction_history.push(Message::user(crate::prompt::COMPACTION_USER.to_string()));
 
     let empty_tools = serde_json::json!([]);
-    let response = provider.stream_message(
+    let response = stream_with_retry(
+        provider,
         model,
         &compaction_history,
         crate::prompt::COMPACTION_SYSTEM,

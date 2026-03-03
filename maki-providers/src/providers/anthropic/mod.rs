@@ -1,7 +1,5 @@
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc::Sender;
-use std::thread;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -17,8 +15,6 @@ use crate::{
 };
 
 const API_VERSION: &str = "2023-06-01";
-const MAX_RETRIES: u32 = 3;
-const RETRY_DELAY: Duration = Duration::from_secs(2);
 const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
 
 /// Anthropic caches conversation by blocks (tools -> system -> messages).
@@ -155,35 +151,21 @@ impl Provider for Anthropic {
         })
         .to_string();
 
-        for attempt in 1..=MAX_RETRIES {
-            debug!(attempt, model = %model.id, num_messages = messages.len(), "sending API request");
+        debug!(model = %model.id, num_messages = messages.len(), "sending API request");
 
-            let req = self.apply_auth(
-                self.agent
-                    .post(&self.auth.api_url)
-                    .header("content-type", "application/json"),
-            );
-            let response = req.send(body_str.as_str())?;
-            let status = response.status().as_u16();
+        let req = self.apply_auth(
+            self.agent
+                .post(&self.auth.api_url)
+                .header("content-type", "application/json"),
+        );
+        let response = req.send(body_str.as_str())?;
+        let status = response.status().as_u16();
 
-            let result = if status == 200 {
-                parse_sse(BufReader::new(response.into_body().into_reader()), event_tx)
-            } else {
-                Err(AgentError::from_response(response))
-            };
-
-            match result {
-                Ok(resp) => return Ok(resp),
-                Err(ref e) if e.is_retryable() && attempt < MAX_RETRIES => {
-                    warn!(attempt, max_retries = MAX_RETRIES, error = %e, "retryable error, will retry");
-                    thread::sleep(RETRY_DELAY);
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
+        if status == 200 {
+            parse_sse(BufReader::new(response.into_body().into_reader()), event_tx)
+        } else {
+            Err(AgentError::from_response(response))
         }
-
-        unreachable!()
     }
 
     fn list_models(&self) -> Result<Vec<String>, AgentError> {

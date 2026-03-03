@@ -2,7 +2,7 @@ use std::env;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use super::Status;
+use super::{RetryInfo, Status};
 
 use crate::animation::spinner_frame;
 use crate::theme;
@@ -43,6 +43,7 @@ pub struct StatusBarContext<'a> {
     pub auto_scroll: bool,
     pub chat_name: Option<&'a str>,
     pub has_pending_plan: bool,
+    pub retry_info: Option<&'a RetryInfo>,
 }
 
 pub enum CancelResult {
@@ -137,6 +138,18 @@ impl StatusBar {
 
         if !ctx.auto_scroll {
             left_spans.push(Span::styled(" auto-scroll paused", theme::COMMENT));
+        }
+
+        if let Some(retry) = ctx.retry_info {
+            let secs = retry
+                .deadline
+                .saturating_duration_since(Instant::now())
+                .as_secs();
+            left_spans.push(Span::styled(format!(" {}", retry.message), theme::ERROR));
+            left_spans.push(Span::styled(
+                format!(" · retrying in {secs}s (#{})", retry.attempt),
+                theme::COMMENT,
+            ));
         }
 
         let mut right_spans = Vec::new();

@@ -416,6 +416,11 @@ pub enum AgentEvent {
         num_turns: u32,
         stop_reason: Option<String>,
     },
+    Retry {
+        attempt: u32,
+        message: String,
+        delay_ms: u64,
+    },
     Error {
         message: String,
     },

@@ -2,6 +2,7 @@ pub(crate) mod error;
 pub mod model;
 pub mod provider;
 pub(crate) mod providers;
+pub mod retry;
 pub(crate) mod types;
 
 use std::path::PathBuf;
