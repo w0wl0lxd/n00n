@@ -960,13 +960,12 @@ mod tests {
         );
         let new_path = path.clone();
 
-        if simulate_write {
-            if let PlanState::Planning {
+        if simulate_write
+            && let PlanState::Planning {
                 ref mut written, ..
             } = app.plan
-            {
-                *written = true;
-            }
+        {
+            *written = true;
         }
 
         app.update(Msg::Key(key(KeyCode::Tab)));
