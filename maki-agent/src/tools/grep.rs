@@ -3,6 +3,7 @@ use std::process::{Command, Stdio};
 
 use maki_providers::{GrepFileEntry, GrepMatch, ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
+use tracing::debug;
 
 use super::{
     NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path, truncate_bytes,
@@ -25,6 +26,14 @@ impl Grep {
     pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let search_path = resolve_search_path(self.path.as_deref())?;
 
+        debug!(
+            pattern = %self.pattern,
+            pattern_debug = ?self.pattern,
+            include = ?self.include,
+            path = %search_path,
+            "grep executing"
+        );
+
         let mut cmd = Command::new("rg");
         cmd.args([
             "-nH",
@@ -44,6 +53,10 @@ impl Grep {
             .stderr(Stdio::piped());
 
         let output = cmd.output().map_err(|e| format!("failed to run rg: {e}"))?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.is_empty() {
+            debug!(stderr = %stderr, status = ?output.status, "rg stderr");
+        }
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         let prefix = search_path.strip_suffix('/').unwrap_or(&search_path);

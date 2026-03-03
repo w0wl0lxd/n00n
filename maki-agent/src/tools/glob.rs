@@ -2,6 +2,7 @@ use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
 use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
+use tracing::debug;
 
 use super::{NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path};
 
@@ -19,6 +20,13 @@ impl Glob {
 
     pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let search_path = resolve_search_path(self.path.as_deref())?;
+
+        debug!(
+            pattern = %self.pattern,
+            pattern_debug = ?self.pattern,
+            path = %search_path,
+            "glob executing"
+        );
 
         let mut overrides = OverrideBuilder::new(&search_path);
         overrides

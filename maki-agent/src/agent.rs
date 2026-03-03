@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender};
 
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use serde_json::Value;
 
@@ -130,6 +130,7 @@ fn parse_tool_calls<'a>(
     let mut errors = Vec::new();
 
     for (id, name, input) in tool_uses {
+        debug!(tool = %name, id = %id, raw_input = %input, "parsing tool call");
         if recent.is_doom_loop(name, input) {
             warn!(tool = %name, "doom loop detected, skipping execution");
             errors.push(ToolDoneEvent::error(id.to_owned(), DOOM_LOOP_MESSAGE));
