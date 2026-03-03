@@ -1,4 +1,5 @@
 pub mod agent;
+pub use agent::{History, SharedHistory};
 pub(crate) mod prompt;
 pub mod template;
 pub mod tools;

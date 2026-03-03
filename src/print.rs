@@ -24,7 +24,7 @@ use std::time::Instant;
 use clap::ValueEnum;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
-use maki_agent::{AgentInput, AgentMode, agent, template};
+use maki_agent::{AgentInput, AgentMode, History, agent, template};
 use maki_providers::model::Model;
 use maki_providers::{AgentEvent, Envelope, TokenUsage};
 use serde::Serialize;
@@ -165,7 +165,7 @@ pub fn run(
                 return;
             }
         };
-        let mut history = Vec::new();
+        let mut history = History::new(Vec::new(), None);
         if let Err(e) = agent::run(
             &*provider,
             &model_clone,

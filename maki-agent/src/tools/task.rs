@@ -77,7 +77,7 @@ impl Task {
             pending_plan: None,
         };
 
-        let mut history = Vec::new();
+        let mut history = crate::History::new(Vec::new(), None);
         agent::run(
             ctx.provider,
             ctx.model,
@@ -92,6 +92,7 @@ impl Task {
         .map_err(|e| format!("sub-agent error: {e}"))?;
 
         let text = history
+            .as_slice()
             .iter()
             .rev()
             .filter(|m| matches!(m.role, maki_providers::Role::Assistant))

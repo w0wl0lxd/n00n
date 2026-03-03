@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -16,6 +17,40 @@ use crate::{
 };
 use maki_providers::Model;
 use maki_providers::provider::Provider;
+
+pub type SharedHistory = Arc<Mutex<Vec<Message>>>;
+
+pub struct History {
+    messages: Vec<Message>,
+    shared: Option<SharedHistory>,
+}
+
+impl History {
+    pub fn new(messages: Vec<Message>, shared: Option<SharedHistory>) -> Self {
+        Self { messages, shared }
+    }
+
+    pub fn as_slice(&self) -> &[Message] {
+        &self.messages
+    }
+
+    pub fn push(&mut self, msg: Message) {
+        self.messages.push(msg);
+        self.sync();
+    }
+
+    pub fn replace(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
+        self.sync();
+    }
+
+    fn sync(&self) {
+        if let Some(shared) = &self.shared {
+            let mut lock = shared.lock().unwrap_or_else(|e| e.into_inner());
+            lock.clone_from(&self.messages);
+        }
+    }
+}
 
 const AGENTS_MD: &str = "AGENTS.md";
 const DOOM_LOOP_THRESHOLD: usize = 3;
@@ -155,7 +190,7 @@ pub fn run(
     provider: &dyn Provider,
     model: &Model,
     input: AgentInput,
-    history: &mut Vec<Message>,
+    history: &mut History,
     system: &str,
     event_tx: &Sender<Envelope>,
     tools: &Value,
@@ -184,13 +219,14 @@ pub fn run(
     );
 
     loop {
-        let response = match provider.stream_message(model, history, system, tools, event_tx) {
-            Ok(r) => r,
-            Err(e) => {
-                error!(error = %e, model = %model.id, num_turns, "stream_message failed");
-                return Err(e);
-            }
-        };
+        let response =
+            match provider.stream_message(model, history.as_slice(), system, tools, event_tx) {
+                Ok(r) => r,
+                Err(e) => {
+                    error!(error = %e, model = %model.id, num_turns, "stream_message failed");
+                    return Err(e);
+                }
+            };
         num_turns += 1;
 
         let has_tools = response.message.has_tool_calls();
@@ -278,10 +314,10 @@ pub fn run(
 pub fn compact(
     provider: &dyn Provider,
     model: &Model,
-    history: &mut Vec<Message>,
+    history: &mut History,
     event_tx: &Sender<Envelope>,
 ) -> Result<(), AgentError> {
-    let mut compaction_history = history.clone();
+    let mut compaction_history: Vec<Message> = history.as_slice().to_vec();
     compaction_history.push(Message::user(crate::prompt::COMPACTION_USER.to_string()));
 
     let empty_tools = serde_json::json!([]);
@@ -302,10 +338,10 @@ pub fn compact(
         .into(),
     )?;
 
-    *history = vec![
+    history.replace(vec![
         Message::user("What did we do so far?".into()),
         response.message,
-    ];
+    ]);
 
     event_tx.send(
         AgentEvent::Done {
@@ -321,8 +357,8 @@ pub fn compact(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
     use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
 
     use test_case::test_case;
 
@@ -421,7 +457,7 @@ mod tests {
             mode: AgentMode::Build,
             pending_plan: None,
         };
-        let mut history = Vec::new();
+        let mut history = History::new(Vec::new(), None);
         let (event_tx, event_rx) = mpsc::channel();
         let tools = serde_json::json!([]);
 
@@ -463,25 +499,33 @@ mod tests {
     }
 
     #[test]
-    fn compact_replaces_history_with_summary() {
+    fn compact_replaces_history_with_summary_and_syncs_shared() {
+        let shared: SharedHistory = Arc::new(Mutex::new(Vec::new()));
         let provider = MockProvider::new(vec![text_response("end_turn")]);
         let model = default_model();
         let (event_tx, _rx) = mpsc::channel();
-        let mut history = vec![
-            Message::user("first".into()),
-            Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::Text {
-                    text: "reply".into(),
-                }],
-            },
-        ];
+        let mut history = History::new(
+            vec![
+                Message::user("first".into()),
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "reply".into(),
+                    }],
+                },
+            ],
+            Some(Arc::clone(&shared)),
+        );
 
         compact(&provider, &model, &mut history, &event_tx).unwrap();
 
-        assert_eq!(history.len(), 2);
-        assert!(matches!(history[0].role, Role::User));
-        assert!(matches!(history[1].role, Role::Assistant));
+        let msgs = history.as_slice();
+        assert_eq!(msgs.len(), 2);
+        assert!(matches!(msgs[0].role, Role::User));
+        assert!(matches!(msgs[1].role, Role::Assistant));
+
+        let shared_msgs = shared.lock().unwrap();
+        assert_eq!(msgs.len(), shared_msgs.len());
     }
 
     fn tool_call_response(tool_name: &str, tool_id: &str) -> StreamResponse {
@@ -510,7 +554,7 @@ mod tests {
             mode: AgentMode::Build,
             pending_plan: None,
         };
-        let mut history = Vec::new();
+        let mut history = History::new(Vec::new(), None);
         let (event_tx, event_rx) = mpsc::channel();
         let tools = serde_json::json!([]);
 
@@ -526,7 +570,7 @@ mod tests {
             Some(interrupt_rx),
         );
         drop(event_tx);
-        (history, event_rx.iter().collect())
+        (history.as_slice().to_vec(), event_rx.iter().collect())
     }
 
     fn has_interrupt_event(events: &[Envelope]) -> bool {
@@ -564,5 +608,34 @@ mod tests {
 
         assert!(!has_interrupt_event(&events));
         assert!(!has_interrupt_in_history(&history));
+    }
+
+    #[test]
+    fn history_push_syncs_to_shared() {
+        let shared: SharedHistory = Arc::new(Mutex::new(Vec::new()));
+        let mut history = History::new(Vec::new(), Some(Arc::clone(&shared)));
+
+        history.push(Message::user("one".into()));
+        assert_eq!(shared.lock().unwrap().len(), 1);
+
+        history.push(Message::user("two".into()));
+        assert_eq!(shared.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn history_replace_syncs_to_shared() {
+        let shared: SharedHistory = Arc::new(Mutex::new(Vec::new()));
+        let mut history =
+            History::new(vec![Message::user("old".into())], Some(Arc::clone(&shared)));
+        assert_eq!(shared.lock().unwrap().len(), 0);
+
+        history.replace(vec![
+            Message::user("new1".into()),
+            Message::user("new2".into()),
+        ]);
+
+        let shared_msgs = shared.lock().unwrap();
+        assert_eq!(shared_msgs.len(), 2);
+        assert_eq!(history.as_slice().len(), 2);
     }
 }

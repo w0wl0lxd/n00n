@@ -25,9 +25,9 @@ use crossterm::event::{
     MouseEvent as CtMouseEvent, MouseEventKind,
 };
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use maki_agent::AgentInput;
 use maki_agent::agent;
 use maki_agent::template;
+use maki_agent::{AgentInput, History, SharedHistory};
 use maki_providers::Model;
 use maki_providers::provider::Provider;
 use maki_providers::{AgentEvent, Envelope, Message};
@@ -180,8 +180,6 @@ fn run_event_loop(
     Ok(())
 }
 
-type SharedHistory = Arc<Mutex<Vec<Message>>>;
-
 enum AgentCommand {
     Run(AgentInput),
     Compact,
@@ -213,13 +211,13 @@ fn spawn_agent(
     let (answer_tx, answer_rx) = mpsc::channel::<String>();
     let (interrupt_tx, interrupt_rx) = mpsc::channel::<String>();
     let model = model.clone();
-    let shared_history: SharedHistory = Arc::new(Mutex::new(initial_history.clone()));
-    let history_ref = Arc::clone(&shared_history);
+    let shared: SharedHistory = Arc::new(Mutex::new(initial_history.clone()));
+    let shared_ref = Arc::clone(&shared);
     let provider = Arc::clone(provider);
 
     thread::spawn(move || {
         let answer_mutex = std::sync::Mutex::new(answer_rx);
-        let mut history = initial_history;
+        let mut history = History::new(initial_history, Some(shared_ref));
         while let Ok(cmd) = cmd_rx.recv() {
             let result = match cmd {
                 AgentCommand::Compact => {
@@ -251,14 +249,13 @@ fn spawn_agent(
                     .into(),
                 );
             }
-            *history_ref.lock().unwrap() = history.clone();
         }
     });
 
     AgentHandles {
         cmd_tx,
         agent_rx,
-        history: shared_history,
+        history: shared,
         answer_tx,
         interrupt_tx,
     }
