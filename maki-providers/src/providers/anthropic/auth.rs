@@ -29,6 +29,7 @@ const REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
 const SCOPES: &str = "org:create_api_key user:profile user:inference";
 const AUTH_FILE: &str = "auth.json";
 const REFRESH_BUFFER_SECS: u64 = 60;
+const BETA_ADVANCED_TOOL_USE: &str = "advanced-tool-use-2025-11-20";
 const RESPONSE_TYPE: &str = "response_type=code";
 const CHALLENGE_METHOD: &str = "code_challenge_method=S256";
 
@@ -220,7 +221,9 @@ pub fn resolve() -> Result<ResolvedAuth, AgentError> {
                 ("authorization".into(), format!("Bearer {}", tokens.access)),
                 (
                     "anthropic-beta".into(),
-                    "oauth-2025-04-20,interleaved-thinking-2025-05-14".into(),
+                    format!(
+                        "oauth-2025-04-20,interleaved-thinking-2025-05-14,{BETA_ADVANCED_TOOL_USE}"
+                    ),
                 ),
             ],
         });
@@ -230,7 +233,10 @@ pub fn resolve() -> Result<ResolvedAuth, AgentError> {
         debug!("using API key authentication");
         return Ok(ResolvedAuth {
             api_url: "https://api.anthropic.com/v1/messages".into(),
-            headers: vec![("x-api-key".into(), key)],
+            headers: vec![
+                ("x-api-key".into(), key),
+                ("anthropic-beta".into(), BETA_ADVANCED_TOOL_USE.into()),
+            ],
         });
     }
 

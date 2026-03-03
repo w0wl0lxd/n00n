@@ -22,6 +22,12 @@ pub struct Edit {
 impl Edit {
     pub const NAME: &str = "edit";
     pub const DESCRIPTION: &str = include_str!("edit.md");
+    pub const EXAMPLES: Option<&str> = Some(
+        r#"[
+  {"path": "/home/user/project/src/main.rs", "old_string": "fn old_name(", "new_string": "fn new_name("},
+  {"path": "/home/user/project/config.toml", "old_string": "v1", "new_string": "v2", "replace_all": true}
+]"#,
+    );
 
     fn diff_output(&self, lines: &[usize]) -> ToolOutput {
         let rel = relative_path(&self.path);

@@ -10,6 +10,7 @@ pub struct TodoWrite {
 impl TodoWrite {
     pub const NAME: &str = "todowrite";
     pub const DESCRIPTION: &str = include_str!("todowrite.md");
+    pub const EXAMPLES: Option<&str> = None;
 
     pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         Ok(ToolOutput::TodoList(self.todos.clone()))

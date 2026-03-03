@@ -38,6 +38,12 @@ pub struct Task {
 impl Task {
     pub const NAME: &str = "task";
     pub const DESCRIPTION: &str = include_str!("task.md");
+    pub const EXAMPLES: Option<&str> = Some(
+        r#"[
+  {"description": "Find auth middleware", "prompt": "Search the codebase for authentication middleware. Return file paths and a summary of how auth is implemented."},
+  {"description": "Refactor error types", "prompt": "In src/errors.rs, replace all uses of String error types with thiserror derive macros. Follow existing patterns.", "subagent_type": "general"}
+]"#,
+    );
 
     pub fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
         let vars = template::env_vars();

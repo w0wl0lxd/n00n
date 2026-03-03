@@ -19,6 +19,13 @@ pub struct Read {
 impl Read {
     pub const NAME: &str = "read";
     pub const DESCRIPTION: &str = include_str!("read.md");
+    pub const EXAMPLES: Option<&str> = Some(
+        r#"[
+  {"path": "/home/user/project/src/main.rs"},
+  {"path": "/home/user/project/src/lib.rs", "offset": 50, "limit": 30},
+  {"path": "/home/user/project/src"}
+]"#,
+    );
 
     pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let raw = fs::read_to_string(&self.path).map_err(|e| format!("read error: {e}"))?;

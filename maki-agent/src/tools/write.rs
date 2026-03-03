@@ -17,6 +17,7 @@ pub struct Write {
 impl Write {
     pub const NAME: &str = "write";
     pub const DESCRIPTION: &str = include_str!("write.md");
+    pub const EXAMPLES: Option<&str> = None;
 
     fn write_output(&self) -> ToolOutput {
         ToolOutput::WriteCode {

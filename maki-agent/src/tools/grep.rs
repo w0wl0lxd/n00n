@@ -22,6 +22,13 @@ pub struct Grep {
 impl Grep {
     pub const NAME: &str = "grep";
     pub const DESCRIPTION: &str = include_str!("grep.md");
+    pub const EXAMPLES: Option<&str> = Some(
+        r#"[
+  {"pattern": "fn main", "include": "*.rs"},
+  {"pattern": "TODO|FIXME", "path": "src/"},
+  {"pattern": "impl\\s+\\w+", "include": "*.rs", "path": "src/models"}
+]"#,
+    );
 
     pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let search_path = resolve_search_path(self.path.as_deref())?;

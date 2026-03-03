@@ -48,6 +48,14 @@ pub struct Batch {
 impl Batch {
     pub const NAME: &str = "batch";
     pub const DESCRIPTION: &str = include_str!("batch.md");
+    pub const EXAMPLES: Option<&str> = Some(
+        r#"[
+  {"tool_calls": [
+    {"tool": "read", "parameters": {"path": "/home/user/project/src/main.rs"}},
+    {"tool": "grep", "parameters": {"pattern": "TODO", "include": "*.rs"}}
+  ]}
+]"#,
+    );
 
     pub fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
         if self.tool_calls.is_empty() {

@@ -33,6 +33,13 @@ pub struct Bash {
 impl Bash {
     pub const NAME: &str = "bash";
     pub const DESCRIPTION: &str = include_str!("bash.md");
+    pub const EXAMPLES: Option<&str> = Some(
+        r#"[
+  {"command": "cargo build --release", "description": "Build release binary"},
+  {"command": "git diff HEAD~1", "description": "Show last commit diff"},
+  {"command": "pytest tests/", "workdir": "/home/user/project", "timeout": 300, "description": "Run test suite"}
+]"#,
+    );
 
     fn resolved(&self) -> (&str, Option<&str>) {
         if self.workdir.is_some() {

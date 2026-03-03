@@ -29,6 +29,12 @@ pub struct WebSearch {
 impl WebSearch {
     pub const NAME: &str = "websearch";
     pub const DESCRIPTION: &str = include_str!("websearch.md");
+    pub const EXAMPLES: Option<&str> = Some(
+        r#"[
+  {"query": "rust tokio spawn blocking best practices"},
+  {"query": "serde deserialize enum tag", "num_results": 5}
+]"#,
+    );
 
     pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let api_key =

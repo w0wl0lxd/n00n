@@ -13,6 +13,7 @@ pub struct Question {
 impl Question {
     pub const NAME: &str = "question";
     pub const DESCRIPTION: &str = include_str!("question.md");
+    pub const EXAMPLES: Option<&str> = None;
 
     pub fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         if self.questions.is_empty() {

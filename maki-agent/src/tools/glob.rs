@@ -17,6 +17,12 @@ pub struct Glob {
 impl Glob {
     pub const NAME: &str = "glob";
     pub const DESCRIPTION: &str = include_str!("glob.md");
+    pub const EXAMPLES: Option<&str> = Some(
+        r#"[
+  {"pattern": "**/*.rs"},
+  {"pattern": "src/**/*.ts", "path": "/home/user/project"}
+]"#,
+    );
 
     pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let search_path = resolve_search_path(self.path.as_deref())?;

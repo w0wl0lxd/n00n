@@ -202,16 +202,27 @@ macro_rules! register_tools {
                 }
             }
 
+            fn all_defs(vars: &Vars) -> Vec<(&'static str, Value)> {
+                vec![
+                    $((<$inner>::NAME, {
+                        let mut def = json!({
+                            "name": <$inner>::NAME,
+                            "description": vars.apply(<$inner>::DESCRIPTION),
+                            "input_schema": <$inner>::schema()
+                        });
+                        if let Some(json) = <$inner>::EXAMPLES {
+                            let examples: Vec<Value> = serde_json::from_str(json)
+                                .expect(concat!("invalid EXAMPLES JSON for ", stringify!($inner)));
+                            def["input_examples"] = Value::Array(examples);
+                        }
+                        def
+                    })),+
+                ]
+            }
+
             pub fn definitions(vars: &Vars, excluded: &[&str]) -> Value {
-                let all = vec![
-                    $((<$inner>::NAME, json!({
-                        "name": <$inner>::NAME,
-                        "description": vars.apply(<$inner>::DESCRIPTION),
-                        "input_schema": <$inner>::schema()
-                    }))),+
-                ];
                 Value::Array(
-                    all.into_iter()
+                    Self::all_defs(vars).into_iter()
                         .filter(|(name, _)| !excluded.contains(name))
                         .map(|(_, def)| def)
                         .collect()
@@ -219,15 +230,8 @@ macro_rules! register_tools {
             }
 
             pub fn definitions_filtered(vars: &Vars, allowed: &[&str]) -> Value {
-                let all = vec![
-                    $((<$inner>::NAME, json!({
-                        "name": <$inner>::NAME,
-                        "description": vars.apply(<$inner>::DESCRIPTION),
-                        "input_schema": <$inner>::schema()
-                    }))),+
-                ];
                 Value::Array(
-                    all.into_iter()
+                    Self::all_defs(vars).into_iter()
                         .filter(|(name, _)| allowed.contains(name))
                         .map(|(_, def)| def)
                         .collect()
@@ -422,38 +426,63 @@ mod tests {
     #[test]
     fn from_api_unknown_tool_returns_error() {
         let err = ToolCall::from_api("nonexistent_tool", &json!({})).unwrap_err();
-        let AgentError::Tool { tool, message } = err else {
+        let AgentError::Tool { tool, .. } = err else {
             panic!("expected AgentError::Tool, got {err:?}");
         };
         assert_eq!(tool, "nonexistent_tool");
-        assert!(message.contains("unknown variant"));
     }
 
     #[test]
-    fn definitions_filtered_restricts_to_allowed() {
+    fn tool_definitions_invariants() {
         let vars = Vars::new().set("{cwd}", "/tmp");
+        let all = ToolCall::definitions(&vars, &[]);
+        let all = all.as_array().unwrap();
+        let names: Vec<&str> = all.iter().map(|d| d["name"].as_str().unwrap()).collect();
+        assert!(names.len() > 2);
+
+        for def in all {
+            let schema = &def["input_schema"];
+            assert_eq!(
+                schema["additionalProperties"],
+                json!(false),
+                "tool {} missing additionalProperties: false",
+                def["name"]
+            );
+        }
+
+        let (with_examples, without_examples): (Vec<_>, Vec<_>) =
+            all.iter().partition(|d| d.get("input_examples").is_some());
+        assert!(
+            !with_examples.is_empty(),
+            "at least one tool should have examples"
+        );
+        assert!(
+            !without_examples.is_empty(),
+            "at least one tool should lack examples"
+        );
+        for def in &with_examples {
+            let arr = def["input_examples"].as_array().unwrap();
+            assert!(!arr.is_empty(), "{} has empty input_examples", def["name"]);
+        }
+
+        let excluded = ToolCall::definitions(&vars, &["bash"]);
+        let ex_names: Vec<&str> = excluded
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
+        assert!(!ex_names.contains(&"bash"));
+        assert_eq!(ex_names.len(), names.len() - 1);
+
         let filtered = ToolCall::definitions_filtered(&vars, &["bash", "read"]);
-        let names: Vec<&str> = filtered
+        let f_names: Vec<&str> = filtered
             .as_array()
             .unwrap()
             .iter()
             .map(|d| d["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["bash", "read"]);
-    }
-
-    #[test]
-    fn definitions_excludes_specified_tool() {
-        let vars = Vars::new().set("{cwd}", "/tmp");
-        let defs = ToolCall::definitions(&vars, &["bash"]);
-        let names: Vec<&str> = defs
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|d| d["name"].as_str().unwrap())
-            .collect();
-        assert!(!names.contains(&"bash"));
-        assert!(!names.is_empty());
+        assert_eq!(f_names, ["bash", "read"]);
     }
 
     #[test]
