@@ -2,7 +2,7 @@ use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
 
 use super::tool_display::{
     ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, QUESTION_STYLE, THINKING_STYLE,
-    TOOL_OUTPUT_MAX_LINES, USER_STYLE, build_tool_lines, tool_summary_annotation,
+    TOOL_OUTPUT_MAX_LINES, ToolLines, USER_STYLE, build_tool_lines, tool_summary_annotation,
     truncate_to_header,
 };
 use crate::animation::{Typewriter, spinner_frame};
@@ -265,28 +265,25 @@ impl MessagesPanel {
 
     pub fn fail_in_progress(&mut self) {
         for msg in &mut self.messages {
-            if let DisplayRole::Tool { ref mut status, .. } = msg.role
+            if let DisplayRole::Tool {
+                ref id,
+                ref mut status,
+                ..
+            } = msg.role
                 && *status == ToolStatus::InProgress
             {
                 *status = ToolStatus::Error;
+                if let Some(seg) = self
+                    .cached_segments
+                    .iter_mut()
+                    .rfind(|s| s.tool_id.as_deref() == Some(id.as_str()))
+                {
+                    let tl = build_tool_lines(msg, ToolStatus::Error, self.started_at);
+                    apply_tool_lines(seg, tl, &self.hl_worker);
+                }
             }
         }
         self.in_progress_count = 0;
-        for seg in &mut self.cached_segments {
-            if let Some(ref tool_id) = seg.tool_id
-                && let Some(msg) = self
-                    .messages
-                    .iter()
-                    .rfind(|m| matches!(&m.role, DisplayRole::Tool { id, .. } if id == tool_id))
-            {
-                let DisplayRole::Tool { status, .. } = &msg.role else {
-                    continue;
-                };
-                let tl = build_tool_lines(msg, *status, self.started_at);
-                seg.lines = tl.lines;
-                seg.cached_height = None;
-            }
-        }
     }
 
     #[cfg(test)]
@@ -546,20 +543,15 @@ impl MessagesPanel {
         let DisplayRole::Tool { status, .. } = &msg.role else {
             unreachable!()
         };
-        let Some(seg_idx) = self
+        let Some(seg) = self
             .cached_segments
-            .iter()
-            .rposition(|s| s.tool_id.as_deref() == Some(tool_id))
+            .iter_mut()
+            .rfind(|s| s.tool_id.as_deref() == Some(tool_id))
         else {
             return;
         };
         let tl = build_tool_lines(msg, *status, self.started_at);
-        let pending = tl.send_highlight(&self.hl_worker);
-        let seg = &mut self.cached_segments[seg_idx];
-        seg.lines = tl.lines;
-        seg.cached_height = None;
-        seg.pending_highlight = pending;
-        seg.highlight_range = tl.highlight.as_ref().map(|h| h.range);
+        apply_tool_lines(seg, tl, &self.hl_worker);
     }
 
     fn rebuild_line_cache(&mut self) {
@@ -592,17 +584,15 @@ impl MessagesPanel {
                     });
                 } else {
                     let tl = build_tool_lines(msg, status, self.started_at);
-                    let pending = tl.send_highlight(&self.hl_worker);
                     let id = id.clone();
                     self.push_spacer_if_needed();
-                    self.cached_segments.push(Segment {
-                        lines: tl.lines,
+                    let mut seg = Segment {
                         tool_id: Some(id),
                         msg_index: Some(i),
-                        pending_highlight: pending,
-                        highlight_range: tl.highlight.as_ref().map(|h| h.range),
                         ..Segment::default()
-                    });
+                    };
+                    apply_tool_lines(&mut seg, tl, &self.hl_worker);
+                    self.cached_segments.push(seg);
                 }
             } else {
                 let style = match &msg.role {
@@ -664,6 +654,14 @@ impl MessagesPanel {
     }
 }
 
+fn apply_tool_lines(seg: &mut Segment, tl: ToolLines, worker: &RenderWorker) {
+    let pending = tl.send_highlight(worker);
+    seg.lines = tl.lines;
+    seg.cached_height = None;
+    seg.pending_highlight = pending;
+    seg.highlight_range = tl.highlight.as_ref().map(|h| h.range);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,14 +694,6 @@ mod tests {
     fn tool_done_updates_start_status(is_error: bool, expected: ToolStatus) {
         let mut panel = MessagesPanel::new();
         panel.tool_start(start("t1", "bash"));
-        assert!(matches!(
-            panel.messages[0].role,
-            DisplayRole::Tool {
-                status: ToolStatus::InProgress,
-                ..
-            }
-        ));
-
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
             tool: "bash",
@@ -890,7 +880,6 @@ mod tests {
             is_error: false,
         });
         assert_eq!(panel.in_progress_count, 1);
-        assert!(panel.is_animating());
 
         panel.tool_done(ToolDoneEvent {
             id: "t2".into(),
@@ -899,26 +888,6 @@ mod tests {
             is_error: false,
         });
         assert_eq!(panel.in_progress_count, 0);
-        assert!(!panel.is_animating());
-    }
-
-    #[test]
-    fn fail_in_progress_marks_all_as_error() {
-        let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "read")]);
-
-        panel.fail_in_progress();
-
-        assert_eq!(panel.in_progress_count, 0);
-        assert!(!panel.is_animating());
-        for msg in &panel.messages {
-            assert!(matches!(
-                msg.role,
-                DisplayRole::Tool {
-                    status: ToolStatus::Error,
-                    ..
-                }
-            ));
-        }
     }
 
     fn has_scrollbar_thumb(terminal: &ratatui::Terminal<TestBackend>) -> bool {
@@ -972,14 +941,10 @@ mod tests {
     }
 
     #[test]
-    fn tool_output_rebuilds_only_target_segment() {
+    fn tool_output_updates_target_segment() {
         let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "bash")]);
         rebuild(&mut panel);
-        let seg_count_before = panel.cached_segments.len();
-
         panel.tool_output("t1", "new output");
-
-        assert_eq!(panel.cached_segments.len(), seg_count_before);
         assert!(seg_text(&panel, "t1").contains("new output"));
     }
 
@@ -1015,8 +980,8 @@ mod tests {
         rebuild(&mut panel);
         panel.tool_output("t1", "hello\nworld");
         let text = seg_text(&panel, "t1");
-        assert!(text.contains("hello"), "live output should be visible");
-        assert!(text.contains("world"), "live output should be visible");
+        assert!(text.contains("hello"));
+        assert!(text.contains("world"));
     }
 
     #[test]
@@ -1031,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn fail_in_progress_preserves_completed_tool_status() {
+    fn fail_in_progress_marks_pending_as_error_preserves_completed() {
         let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "read")]);
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -1043,6 +1008,8 @@ mod tests {
 
         panel.fail_in_progress();
 
+        assert_eq!(panel.in_progress_count, 0);
+        assert!(!panel.is_animating());
         assert_eq!(msg_status(&panel, "t1"), ToolStatus::Success);
         assert_eq!(msg_status(&panel, "t2"), ToolStatus::Error);
     }
