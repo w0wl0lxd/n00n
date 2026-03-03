@@ -154,6 +154,30 @@ pub struct HighlightRequest {
     pub output: Option<ToolOutput>,
 }
 
+impl HighlightRequest {
+    fn new(
+        range: (usize, usize),
+        input: Option<ToolInput>,
+        output: Option<ToolOutput>,
+    ) -> Option<Self> {
+        if range.0 == range.1 {
+            return None;
+        }
+        let output = output.and_then(|o| match o {
+            ToolOutput::ReadCode { .. }
+            | ToolOutput::WriteCode { .. }
+            | ToolOutput::Diff { .. }
+            | ToolOutput::GrepResult { .. } => Some(o),
+            ToolOutput::Plain(_) | ToolOutput::TodoList(_) | ToolOutput::Batch { .. } => None,
+        });
+        Some(Self {
+            range,
+            input,
+            output,
+        })
+    }
+}
+
 impl ToolLines {
     pub fn send_highlight(&self, worker: &RenderWorker) -> Option<u64> {
         let hl = self.highlight.as_ref()?;
@@ -254,11 +278,11 @@ pub fn build_tool_lines(
         _ => {}
     }
 
-    let highlight = (content_start != content_end).then(|| HighlightRequest {
-        range: (content_start, content_end),
-        input: msg.tool_input.clone(),
-        output: msg.tool_output.clone(),
-    });
+    let highlight = HighlightRequest::new(
+        (content_start, content_end),
+        msg.tool_input.clone(),
+        msg.tool_output.clone(),
+    );
 
     ToolLines { lines, highlight }
 }
@@ -304,19 +328,21 @@ mod tests {
         Some(ToolOutput::Plain("ok".into()))
     }
 
-    #[test_case(code_input(),  plain_output(),  true  ; "input_code_needs_highlight")]
-    #[test_case(None,          code_output(),   true  ; "code_output_needs_highlight")]
-    #[test_case(None,          plain_output(),  false ; "plain_no_input_skips_highlight")]
-    fn highlight_job_presence(
+    #[test_case(code_input(),  plain_output(),  true,  false ; "code_input_strips_plain_output")]
+    #[test_case(code_input(),  code_output(),   true,  true  ; "code_input_keeps_code_output")]
+    #[test_case(None,          code_output(),   true,  true  ; "code_output_only")]
+    #[test_case(None,          plain_output(),  false, false ; "no_content_no_highlight")]
+    fn highlight_request(
         input: Option<ToolInput>,
         output: Option<ToolOutput>,
         expect_highlight: bool,
+        expect_output: bool,
     ) {
         let msg = DisplayMessage {
             role: DisplayRole::Tool {
                 id: "t1".into(),
                 status: ToolStatus::Success,
-                name: "bash",
+                name: BASH_TOOL_NAME,
             },
             text: "header\nbody".into(),
             tool_input: input,
@@ -325,6 +351,9 @@ mod tests {
         };
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
         assert_eq!(tl.highlight.is_some(), expect_highlight);
+        if let Some(hl) = &tl.highlight {
+            assert_eq!(hl.output.is_some(), expect_output);
+        }
     }
 
     #[test_case("foo (3 files)", "foo", Some(" (3 files)") ; "with_parens")]
