@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use maki_tool_macro::Tool;
 
-use super::{TASK_TOOL_NAME, ToolCall, ToolContext};
+use super::{ToolCall, ToolContext};
 
 const MAX_BATCH_SIZE: usize = 25;
 
@@ -70,16 +70,6 @@ impl Batch {
             .collect();
 
         let inner_id = |i: usize| format!("{batch_id}__{i}");
-
-        for (i, parsed_call) in parsed.iter().enumerate() {
-            if let Ok(call) = parsed_call
-                && call.name() == TASK_TOOL_NAME
-            {
-                let _ = ctx
-                    .event_tx
-                    .send(AgentEvent::ToolStart(call.start_event(inner_id(i))).into());
-            }
-        }
 
         let send_progress = |index: usize, status: BatchToolStatus| {
             let _ = ctx.event_tx.send(
@@ -213,7 +203,7 @@ mod tests {
     use serde_json::json;
 
     use crate::AgentMode;
-    use crate::tools::test_support::{stub_ctx, stub_ctx_with};
+    use crate::tools::test_support::stub_ctx;
 
     use super::*;
 
@@ -274,35 +264,5 @@ mod tests {
         assert_eq!(entries.len(), MAX_BATCH_SIZE + 2);
         let discarded: Vec<_> = entries[MAX_BATCH_SIZE..].iter().collect();
         assert!(discarded.iter().all(|e| e.status == BatchToolStatus::Error));
-    }
-
-    #[test]
-    fn task_tools_in_batch_emit_tool_start_with_unique_ids() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mode = AgentMode::Build;
-        let batch_id = "batch_99";
-        let ctx = stub_ctx_with(&mode, Some(&tx), Some(batch_id));
-
-        execute_batch(
-            &ctx,
-            json!({
-                "tool_calls": [
-                    {"tool": "task", "parameters": {"description": "A", "prompt": "do A"}},
-                    {"tool": "task", "parameters": {"description": "B", "prompt": "do B"}}
-                ]
-            }),
-        );
-        drop(tx);
-
-        let tool_starts: Vec<_> = rx
-            .iter()
-            .filter_map(|e| match e.event {
-                AgentEvent::ToolStart(ts) if ts.tool == "task" => Some(ts.id),
-                _ => None,
-            })
-            .collect();
-
-        assert_eq!(tool_starts.len(), 2);
-        assert_ne!(tool_starts[0], tool_starts[1]);
     }
 }

@@ -214,6 +214,7 @@ pub fn run(
         let Envelope {
             ref event,
             ref parent_tool_use_id,
+            ..
         } = envelope;
 
         if verbose_out.is_none() && is_stream_json {

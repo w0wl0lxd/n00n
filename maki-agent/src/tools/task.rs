@@ -54,6 +54,7 @@ impl Task {
         let (sub_tx, sub_rx) = mpsc::channel::<crate::Envelope>();
         let parent_tx = ctx.event_tx.clone();
         let parent_id = ctx.tool_use_id.map(String::from);
+        let parent_name = Some(self.description.clone());
         thread::spawn(move || {
             while let Ok(mut envelope) = sub_rx.recv() {
                 if matches!(
@@ -65,6 +66,7 @@ impl Task {
                     continue;
                 }
                 envelope.parent_tool_use_id = parent_id.clone();
+                envelope.parent_name = parent_name.clone();
                 let _ = parent_tx.send(envelope);
             }
         });

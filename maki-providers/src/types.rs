@@ -427,6 +427,8 @@ pub struct Envelope {
     pub event: AgentEvent,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_tool_use_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_name: Option<String>,
 }
 
 impl From<AgentEvent> for Envelope {
@@ -434,6 +436,7 @@ impl From<AgentEvent> for Envelope {
         Self {
             event,
             parent_tool_use_id: None,
+            parent_name: None,
         }
     }
 }
@@ -448,6 +451,7 @@ pub struct StreamResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
 
     #[test]
     fn as_text_diff_covers_all_line_types_and_multiple_hunks() {
@@ -548,44 +552,25 @@ mod tests {
         assert!(text.contains("1: use crate"));
     }
 
-    #[test]
-    fn written_path_returns_path_for_successful_write() {
-        let event = ToolDoneEvent {
-            id: "w1".into(),
-            tool: "write",
-            output: ToolOutput::WriteCode {
+    #[test_case("write", false, Some("src/lib.rs") ; "success")]
+    #[test_case("write", true,  None                 ; "error")]
+    #[test_case("bash",  false, None                 ; "non_write_tool")]
+    fn written_path_cases(tool: &'static str, is_error: bool, expected: Option<&str>) {
+        let output = if tool == "write" {
+            ToolOutput::WriteCode {
                 path: "src/lib.rs".into(),
                 byte_count: 10,
                 lines: vec![],
-            },
-            is_error: false,
+            }
+        } else {
+            ToolOutput::Plain("ok".into())
         };
-        assert_eq!(event.written_path(), Some("src/lib.rs"));
-    }
-
-    #[test]
-    fn written_path_none_on_error() {
         let event = ToolDoneEvent {
-            id: "w1".into(),
-            tool: "write",
-            output: ToolOutput::WriteCode {
-                path: "src/lib.rs".into(),
-                byte_count: 0,
-                lines: vec![],
-            },
-            is_error: true,
+            id: "id".into(),
+            tool,
+            output,
+            is_error,
         };
-        assert_eq!(event.written_path(), None);
-    }
-
-    #[test]
-    fn written_path_none_for_non_write_tool() {
-        let event = ToolDoneEvent {
-            id: "b1".into(),
-            tool: "bash",
-            output: ToolOutput::Plain("ok".into()),
-            is_error: false,
-        };
-        assert_eq!(event.written_path(), None);
+        assert_eq!(event.written_path(), expected);
     }
 }

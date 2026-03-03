@@ -47,7 +47,6 @@ pub struct App {
     chats: Vec<Chat>,
     active_chat: usize,
     chat_index: HashMap<String, usize>,
-    task_names: HashMap<String, String>,
     pub(crate) input_box: InputBox,
     command_palette: CommandPalette,
     chat_picker: ChatPicker,
@@ -81,7 +80,6 @@ impl App {
             chats: vec![Chat::new("Main".into())],
             active_chat: 0,
             chat_index: HashMap::new(),
-            task_names: HashMap::new(),
             input_box: InputBox::new(),
             command_palette: CommandPalette::new(),
             chat_picker: ChatPicker::new(),
@@ -340,7 +338,6 @@ impl App {
                     .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
                 self.queue.clear();
                 self.chat_index.clear();
-                self.task_names.clear();
                 self.status = Status::Idle;
                 vec![Action::CancelAgent]
             }
@@ -349,14 +346,10 @@ impl App {
     }
 
     fn handle_agent_event(&mut self, envelope: Envelope) -> Vec<Action> {
-        if envelope.parent_tool_use_id.is_none()
-            && let AgentEvent::ToolStart(ref e) = envelope.event
-            && e.tool == "task"
-        {
-            self.task_names.insert(e.id.clone(), e.summary.clone());
-        }
-
-        let chat_idx = self.resolve_or_create_chat(envelope.parent_tool_use_id.as_deref());
+        let chat_idx = self.resolve_or_create_chat(
+            envelope.parent_tool_use_id.as_deref(),
+            envelope.parent_name.as_deref(),
+        );
         let plan_path = match &self.mode {
             AgentMode::Plan(p) => Some(p.as_str()),
             AgentMode::Build => None,
@@ -403,19 +396,22 @@ impl App {
         vec![]
     }
 
-    fn resolve_or_create_chat(&mut self, parent_id: Option<&str>) -> usize {
+    fn resolve_or_create_chat(
+        &mut self,
+        parent_id: Option<&str>,
+        parent_name: Option<&str>,
+    ) -> usize {
         let Some(id) = parent_id else { return 0 };
         if let Some(&idx) = self.chat_index.get(id) {
             return idx;
         }
-        let name = self
-            .task_names
-            .remove(id)
+        let name = parent_name
+            .map(String::from)
             .unwrap_or_else(|| format!("Agent {}", self.chats.len()));
         let idx = self.chats.len();
-        self.chats.push(Chat::new(name.clone()));
         self.chat_index.insert(id.to_owned(), idx);
         self.chats[0].update_tool_summary(id, &name);
+        self.chats.push(Chat::new(name));
         idx
     }
 
@@ -464,7 +460,6 @@ impl App {
         self.chats.push(Chat::new("Main".into()));
         self.active_chat = 0;
         self.chat_index.clear();
-        self.task_names.clear();
         self.status = Status::Idle;
         self.token_usage = TokenUsage::default();
         self.queue.clear();
@@ -704,7 +699,6 @@ mod tests {
     use super::*;
     use crate::components::{TEST_CONTEXT_WINDOW, ctrl, key, test_pricing};
     use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
-    use maki_providers::ToolStartEvent;
     use test_case::test_case;
 
     fn test_app() -> App {
@@ -724,13 +718,15 @@ mod tests {
         Msg::Agent(Envelope {
             event,
             parent_tool_use_id: None,
+            parent_name: None,
         })
     }
 
-    fn subagent_msg(event: AgentEvent, parent_id: &str) -> Msg {
+    fn subagent_msg(event: AgentEvent, parent_id: &str, name: Option<&str>) -> Msg {
         Msg::Agent(Envelope {
             event,
             parent_tool_use_id: Some(parent_id.into()),
+            parent_name: name.map(String::from),
         })
     }
 
@@ -843,13 +839,15 @@ mod tests {
         app.update(agent_msg(AgentEvent::TextDelta {
             text: "partial".into(),
         }));
-        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
-            id: "t1".into(),
-            tool: "bash",
-            summary: "running".into(),
-            input: None,
-            output: None,
-        })));
+        app.update(agent_msg(AgentEvent::ToolStart(
+            maki_providers::ToolStartEvent {
+                id: "t1".into(),
+                tool: "bash",
+                summary: "running".into(),
+                input: None,
+                output: None,
+            },
+        )));
 
         let actions = app.update(Msg::Key(key(KeyCode::Esc)));
         assert!(actions.is_empty());
@@ -1021,7 +1019,6 @@ mod tests {
         assert_eq!(app.chats[0].name, "Main");
         assert_eq!(app.active_chat, 0);
         assert!(app.chat_index.is_empty());
-        assert!(app.task_names.is_empty());
     }
 
     #[test]
@@ -1039,16 +1036,10 @@ mod tests {
     fn ctrl_p_n_navigation() {
         let mut app = test_app();
         app.status = Status::Streaming;
-        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
-            id: "task1".into(),
-            tool: "task",
-            summary: "research".into(),
-            input: None,
-            output: None,
-        })));
         app.update(subagent_msg(
             AgentEvent::TextDelta { text: "sub".into() },
             "task1",
+            Some("research"),
         ));
         assert_eq!(app.chats.len(), 2);
         assert_eq!(app.active_chat, 0);
@@ -1070,27 +1061,15 @@ mod tests {
     fn subagents_get_descriptive_names() {
         let mut app = test_app();
         app.status = Status::Streaming;
-        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
-            id: "task1".into(),
-            tool: "task",
-            summary: "first".into(),
-            input: None,
-            output: None,
-        })));
-        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
-            id: "task2".into(),
-            tool: "task",
-            summary: "second".into(),
-            input: None,
-            output: None,
-        })));
         app.update(subagent_msg(
             AgentEvent::TextDelta { text: "a".into() },
             "task1",
+            Some("first"),
         ));
         app.update(subagent_msg(
             AgentEvent::TextDelta { text: "b".into() },
             "task2",
+            Some("second"),
         ));
         assert_eq!(app.chats.len(), 3);
         assert_eq!(app.chats[1].name, "first");
@@ -1124,6 +1103,7 @@ mod tests {
                 model: "test".into(),
             },
             "task1",
+            None,
         ));
 
         assert_eq!(app.token_usage.input, 300);
@@ -1138,7 +1118,7 @@ mod tests {
     fn cancel_resets_all_chats_and_indices() {
         let mut app = app_with_subagent();
         app.update(subagent_msg(
-            AgentEvent::ToolStart(ToolStartEvent {
+            AgentEvent::ToolStart(maki_providers::ToolStartEvent {
                 id: "sub_t1".into(),
                 tool: "bash",
                 summary: "running".into(),
@@ -1146,6 +1126,7 @@ mod tests {
                 output: None,
             }),
             "task1",
+            None,
         ));
 
         app.update(Msg::Key(key(KeyCode::Esc)));
@@ -1166,16 +1147,10 @@ mod tests {
     fn app_with_subagent() -> App {
         let mut app = test_app();
         app.status = Status::Streaming;
-        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
-            id: "task1".into(),
-            tool: "task",
-            summary: "research".into(),
-            input: None,
-            output: None,
-        })));
         app.update(subagent_msg(
             AgentEvent::TextDelta { text: "x".into() },
             "task1",
+            Some("research"),
         ));
         app
     }
