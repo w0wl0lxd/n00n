@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -21,7 +22,52 @@ use maki_providers::QuestionInfo;
 use maki_providers::{AgentEvent, Envelope, ModelPricing, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Widget};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PlanState {
+    Off,
+    Planning {
+        path: String,
+        written: bool,
+        previous: Option<String>,
+    },
+    Active {
+        path: String,
+    },
+}
+
+impl PlanState {
+    fn agent_mode(&self) -> AgentMode {
+        match self {
+            Self::Planning { path, .. } => AgentMode::Plan(path.clone()),
+            _ => AgentMode::Build,
+        }
+    }
+
+    fn plan_path(&self) -> Option<&str> {
+        match self {
+            Self::Planning { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
+    fn pending_plan(&self) -> Option<&str> {
+        match self {
+            Self::Active { path } => Some(path),
+            _ => None,
+        }
+    }
+
+    fn mode_label(&self) -> (&'static str, Style) {
+        match self {
+            Self::Planning { .. } => ("[PLAN]", theme::MODE_PLAN),
+            Self::Active { .. } => ("[BUILD PLAN]", theme::MODE_BUILD),
+            Self::Off => ("[BUILD]", theme::MODE_BUILD),
+        }
+    }
+}
 
 const CANCEL_MSG: &str = "Cancelled.";
 
@@ -55,8 +101,7 @@ pub struct App {
     status_bar: StatusBar,
     pub status: Status,
     pub token_usage: TokenUsage,
-    pub mode: AgentMode,
-    pending_plan: Option<String>,
+    pub(crate) plan: PlanState,
     model_id: String,
     pricing: ModelPricing,
     context_window: u32,
@@ -89,8 +134,7 @@ impl App {
             status_bar: StatusBar::new(),
             status: Status::Idle,
             token_usage: TokenUsage::default(),
-            mode: AgentMode::Build,
-            pending_plan: None,
+            plan: PlanState::Off,
             model_id,
             pricing,
             context_window,
@@ -304,11 +348,10 @@ impl App {
             self.send_answer(text);
             return vec![];
         }
-        let pending_plan = self.pending_plan.take();
         let input = AgentInput {
             message: text.clone(),
-            mode: self.mode.clone(),
-            pending_plan,
+            mode: self.plan.agent_mode(),
+            pending_plan: self.plan.pending_plan().map(String::from),
         };
         if self.status == Status::Streaming {
             self.main_chat().push_user_message(&text);
@@ -354,10 +397,20 @@ impl App {
             envelope.parent_tool_use_id.as_deref(),
             envelope.parent_name.as_deref(),
         );
-        let plan_path = match &self.mode {
-            AgentMode::Plan(p) => Some(p.as_str()),
-            AgentMode::Build => None,
-        };
+
+        if let AgentEvent::ToolDone(ref e) = envelope.event
+            && let PlanState::Planning {
+                ref path,
+                ref mut written,
+                ..
+            } = self.plan
+            && e.written_path()
+                .is_some_and(|wp| wp == path || Path::new(path).ends_with(wp))
+        {
+            *written = true;
+        }
+
+        let plan_path = self.plan.plan_path();
 
         if let AgentEvent::Retry {
             attempt,
@@ -441,15 +494,31 @@ impl App {
         if self.status == Status::Streaming {
             return vec![];
         }
-        match &self.mode {
-            AgentMode::Build => {
-                self.mode = AgentMode::Plan(maki_agent::new_plan_path());
+        self.plan = match std::mem::replace(&mut self.plan, PlanState::Off) {
+            PlanState::Active { path } => PlanState::Planning {
+                path: maki_agent::new_plan_path(),
+                written: false,
+                previous: Some(path),
+            },
+            PlanState::Planning {
+                path,
+                written,
+                previous,
+            } => {
+                if written {
+                    PlanState::Active { path }
+                } else if let Some(prev) = previous {
+                    PlanState::Active { path: prev }
+                } else {
+                    PlanState::Off
+                }
             }
-            AgentMode::Plan(path) => {
-                self.pending_plan = Some(path.clone());
-                self.mode = AgentMode::Build;
-            }
-        }
+            PlanState::Off => PlanState::Planning {
+                path: maki_agent::new_plan_path(),
+                written: false,
+                previous: None,
+            },
+        };
         vec![]
     }
 
@@ -485,7 +554,6 @@ impl App {
         self.status = Status::Idle;
         self.token_usage = TokenUsage::default();
         self.queue.clear();
-        self.pending_plan = None;
         #[cfg(feature = "demo")]
         {
             self.demo_questions = None;
@@ -567,9 +635,11 @@ impl App {
 
         let chat = &self.chats[render_chat];
         let chat_name = (self.chats.len() > 1).then_some(chat.name.as_str());
+        let (mode_label, mode_style) = self.plan.mode_label();
         let ctx = StatusBarContext {
             status: &self.status,
-            mode: &self.mode,
+            mode_label,
+            mode_style,
             model_id: &self.model_id,
             stats: UsageStats {
                 usage: &chat.token_usage,
@@ -581,7 +651,6 @@ impl App {
             },
             auto_scroll: chat.auto_scroll(),
             chat_name,
-            has_pending_plan: self.pending_plan.is_some(),
             retry_info: self.retry_info.as_ref(),
         };
         self.status_bar.view(frame, status_area, &ctx);
@@ -815,29 +884,114 @@ mod tests {
     }
 
     #[test]
-    fn tab_toggles_mode_and_sets_pending_plan() {
+    fn tab_toggles_off_to_planning_and_back() {
         let mut app = test_app();
-        assert_eq!(app.mode, AgentMode::Build);
+        assert_eq!(app.plan, PlanState::Off);
 
         app.update(Msg::Key(key(KeyCode::Tab)));
-        assert!(matches!(app.mode, AgentMode::Plan(ref p) if p.contains(maki_agent::PLANS_DIR)));
+        assert!(
+            matches!(app.plan, PlanState::Planning { ref path, written: false, previous: None } if path.contains(maki_agent::PLANS_DIR))
+        );
 
         app.update(Msg::Key(key(KeyCode::Tab)));
-        assert_eq!(app.mode, AgentMode::Build);
-        assert!(app.pending_plan.is_some());
+        assert_eq!(app.plan, PlanState::Off);
     }
 
     #[test]
-    fn submit_consumes_pending_plan() {
+    fn submit_includes_pending_plan_from_active() {
         let mut app = test_app();
-        app.pending_plan = Some("plan.md".into());
+        app.plan = PlanState::Active {
+            path: "plan.md".into(),
+        };
         app.update(Msg::Key(key(KeyCode::Char('x'))));
         let actions = app.update(Msg::Key(key(KeyCode::Enter)));
         let Action::SendMessage(ref input) = actions[0] else {
             panic!("expected SendMessage");
         };
         assert_eq!(input.pending_plan.as_deref(), Some("plan.md"));
-        assert!(app.pending_plan.is_none());
+        assert_eq!(
+            app.plan,
+            PlanState::Active {
+                path: "plan.md".into()
+            }
+        );
+    }
+
+    #[test_case(false, "old.md"  ; "unwritten_restores_previous")]
+    #[test_case(true,  ""        ; "written_activates_new_plan")]
+    fn tab_cycle_from_active(simulate_write: bool, expect_contains: &str) {
+        let mut app = test_app();
+        app.plan = PlanState::Active {
+            path: "old.md".into(),
+        };
+
+        app.update(Msg::Key(key(KeyCode::Tab)));
+        let PlanState::Planning { ref path, .. } = app.plan else {
+            panic!("expected Planning");
+        };
+        assert_eq!(
+            app.plan.pending_plan(),
+            None,
+            "Planning has no pending_plan"
+        );
+        let new_path = path.clone();
+
+        if simulate_write {
+            if let PlanState::Planning {
+                ref mut written, ..
+            } = app.plan
+            {
+                *written = true;
+            }
+        }
+
+        app.update(Msg::Key(key(KeyCode::Tab)));
+        let PlanState::Active { ref path } = app.plan else {
+            panic!("expected Active");
+        };
+        if simulate_write {
+            assert_eq!(path, &new_path);
+        } else {
+            assert_eq!(path, expect_contains);
+        }
+    }
+
+    #[test_case("plans/test.md", true  ; "matching_path_sets_written")]
+    #[test_case("other.rs",      false ; "non_matching_path_stays_unwritten")]
+    fn write_event_sets_written_flag(written_path: &str, expect_written: bool) {
+        let mut app = test_app();
+        app.plan = PlanState::Planning {
+            path: "plans/test.md".into(),
+            written: false,
+            previous: None,
+        };
+        app.status = Status::Streaming;
+
+        app.update(agent_msg(AgentEvent::ToolDone(
+            maki_providers::ToolDoneEvent {
+                id: "t1".into(),
+                tool: "write",
+                output: maki_providers::ToolOutput::WriteCode {
+                    path: written_path.into(),
+                    byte_count: 100,
+                    lines: vec![],
+                },
+                is_error: false,
+            },
+        )));
+
+        let PlanState::Planning { written, .. } = app.plan else {
+            panic!("expected Planning");
+        };
+        assert_eq!(written, expect_written);
+    }
+
+    #[test]
+    fn tab_blocked_during_streaming() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.update(Msg::Key(key(KeyCode::Tab)));
+        assert_eq!(app.plan, PlanState::Off);
     }
 
     #[test]
@@ -1021,11 +1175,13 @@ mod tests {
     }
 
     #[test]
-    fn reset_session_clears_state() {
+    fn reset_session_preserves_plan() {
         let mut app = test_app();
         app.token_usage.input = 500;
         app.chats[0].context_size = 1000;
-        app.pending_plan = Some("plan.md".into());
+        app.plan = PlanState::Active {
+            path: "plan.md".into(),
+        };
         app.queue.push_back(AgentInput {
             message: "q".into(),
             mode: AgentMode::Build,
@@ -1036,7 +1192,12 @@ mod tests {
         assert_eq!(app.status, Status::Idle);
         assert_eq!(app.token_usage.input, 0);
         assert_eq!(app.chats[0].context_size, 0);
-        assert!(app.pending_plan.is_none());
+        assert_eq!(
+            app.plan,
+            PlanState::Active {
+                path: "plan.md".into()
+            }
+        );
         assert!(app.queue.is_empty());
         assert_eq!(app.chats.len(), 1);
         assert_eq!(app.chats[0].name, "Main");
@@ -1052,7 +1213,7 @@ mod tests {
 
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert!(!app.command_palette.is_active());
-        assert!(matches!(app.mode, AgentMode::Plan(_)));
+        assert!(matches!(app.plan, PlanState::Planning { .. }));
     }
 
     #[test]

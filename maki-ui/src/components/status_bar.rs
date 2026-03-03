@@ -7,10 +7,10 @@ use super::{RetryInfo, Status};
 use crate::animation::spinner_frame;
 use crate::theme;
 
-use maki_agent::AgentMode;
 use maki_providers::{ModelPricing, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -37,12 +37,12 @@ pub struct UsageStats<'a> {
 
 pub struct StatusBarContext<'a> {
     pub status: &'a Status,
-    pub mode: &'a AgentMode,
+    pub mode_label: &'static str,
+    pub mode_style: Style,
     pub model_id: &'a str,
     pub stats: UsageStats<'a>,
     pub auto_scroll: bool,
     pub chat_name: Option<&'a str>,
-    pub has_pending_plan: bool,
     pub retry_info: Option<&'a RetryInfo>,
 }
 
@@ -117,12 +117,6 @@ impl StatusBar {
     }
 
     pub fn view(&self, frame: &mut Frame, area: Rect, ctx: &StatusBarContext) {
-        let (mode_label, mode_style) = match ctx.mode {
-            AgentMode::Build if ctx.has_pending_plan => ("[BUILD PLAN]", theme::MODE_BUILD),
-            AgentMode::Build => ("[BUILD]", theme::MODE_BUILD),
-            AgentMode::Plan(_) => ("[PLAN]", theme::MODE_PLAN),
-        };
-
         let mut left_spans = Vec::new();
 
         if *ctx.status == Status::Streaming {
@@ -130,7 +124,7 @@ impl StatusBar {
             left_spans.push(Span::styled(format!(" {ch}"), theme::STATUS_STREAMING));
         }
 
-        left_spans.push(Span::styled(format!(" {mode_label}"), mode_style));
+        left_spans.push(Span::styled(format!(" {}", ctx.mode_label), ctx.mode_style));
 
         if let Some(name) = ctx.chat_name {
             left_spans.push(Span::styled(format!(" [{name}]"), theme::COMMENT));
