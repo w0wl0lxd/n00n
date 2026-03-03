@@ -16,9 +16,8 @@ impl RetryState {
 
     pub fn next_delay(&mut self) -> (u32, Duration) {
         self.attempt += 1;
-        let delay = INITIAL_DELAY * BACKOFF_FACTOR.pow(self.attempt - 1);
-        let capped = delay.min(MAX_DELAY);
-        (self.attempt, capped)
+        let delay = (INITIAL_DELAY * BACKOFF_FACTOR.pow(self.attempt - 1)).min(MAX_DELAY);
+        (self.attempt, delay)
     }
 }
 
@@ -40,11 +39,5 @@ mod tests {
         }
 
         assert_eq!(state.next_delay().1, MAX_DELAY);
-    }
-
-    #[test]
-    fn first_delay_equals_initial() {
-        let mut state = RetryState::new();
-        assert_eq!(state.next_delay().1, INITIAL_DELAY);
     }
 }

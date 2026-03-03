@@ -69,20 +69,12 @@ mod tests {
     #[test_case(429, "Rate limited"           ; "rate_limited")]
     #[test_case(529, "Provider is overloaded" ; "overloaded")]
     #[test_case(500, "Server error (500)"     ; "server_error")]
+    #[test_case(400, "API error (400): x"     ; "non_retryable_falls_through")]
     fn retry_message_text(status: u16, expected: &str) {
         let err = AgentError::Api {
             status,
-            message: "bad req".into(),
+            message: "x".into(),
         };
         assert_eq!(err.retry_message(), expected);
-    }
-
-    #[test]
-    fn retry_message_non_retryable_falls_through_to_display() {
-        let err = AgentError::Api {
-            status: 400,
-            message: "bad req".into(),
-        };
-        assert_eq!(err.retry_message(), err.to_string());
     }
 }

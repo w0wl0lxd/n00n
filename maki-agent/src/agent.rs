@@ -170,12 +170,13 @@ fn stream_with_retry(
             Ok(r) => return Ok(r),
             Err(e) if e.is_retryable() => {
                 let (attempt, delay) = retry.next_delay();
-                warn!(attempt, delay_ms = delay.as_millis() as u64, error = %e, "retryable, will retry");
+                let delay_ms = delay.as_millis() as u64;
+                warn!(attempt, delay_ms, error = %e, "retryable, will retry");
                 event_tx.send(
                     AgentEvent::Retry {
                         attempt,
                         message: e.retry_message(),
-                        delay_ms: delay.as_millis() as u64,
+                        delay_ms,
                     }
                     .into(),
                 )?;

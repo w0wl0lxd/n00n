@@ -16,6 +16,7 @@ const HINT_BAR: &str = "↑↓ select  Enter confirm  Esc dismiss";
 const HINT_BAR_TOGGLE: &str = "↑↓ select  Enter toggle  Tab submit  Esc dismiss";
 const NO_ANSWER: &str = "(no answer)";
 const MAX_QUESTION_LINES_NO_OPTIONS: usize = 10;
+const SEPARATOR: &str = "─";
 
 pub enum QuestionFormAction {
     Consumed,
@@ -286,7 +287,7 @@ impl QuestionForm {
 
         let inner_width = area.width.saturating_sub(2);
         if self.on_confirm_tab() {
-            self.render_confirm(&mut lines);
+            self.render_confirm(&mut lines, inner_width);
         } else {
             self.render_question(&mut lines, inner_width);
         }
@@ -360,14 +361,25 @@ impl QuestionForm {
         )
     }
 
+    fn separator_line(width: u16) -> Line<'static> {
+        Line::from(Span::styled(
+            SEPARATOR.repeat(width as usize),
+            Style::new().fg(theme::COMMENT),
+        ))
+    }
+
     fn render_question(&self, lines: &mut Vec<Line<'static>>, width: u16) {
         lines.extend(self.question_text_lines(width));
         lines.push(Line::default());
 
         let q = &self.questions[self.current_tab];
         let answers = &self.answers[self.current_tab];
+        let separator = Self::separator_line(width);
 
         for (i, opt) in q.options.iter().enumerate() {
+            if i > 0 {
+                lines.push(separator.clone());
+            }
             let is_selected = i == self.selected;
             let is_picked = answers.contains(&opt.label);
             let marker = if is_picked { "✓ " } else { "  " };
@@ -396,6 +408,9 @@ impl QuestionForm {
             lines.push(Line::from(spans));
         }
 
+        if !q.options.is_empty() {
+            lines.push(separator);
+        }
         let custom_idx = q.options.len();
         let is_custom_selected = self.selected == custom_idx;
         let custom_style = if is_custom_selected {
@@ -432,14 +447,19 @@ impl QuestionForm {
         lines.push(Line::from(spans));
     }
 
-    fn render_confirm(&self, lines: &mut Vec<Line<'static>>) {
+    fn render_confirm(&self, lines: &mut Vec<Line<'static>>, inner_width: u16) {
         lines.push(Line::from(Span::styled(
             "Review your answers:",
             Style::new().fg(theme::FOREGROUND),
         )));
         lines.push(Line::default());
 
+        let separator = Self::separator_line(inner_width);
+
         for (i, q) in self.questions.iter().enumerate() {
+            if i > 0 {
+                lines.push(separator.clone());
+            }
             let answer_text = format_answer(&self.answers[i]);
             lines.push(Line::from(vec![
                 Span::styled(format!("{}. ", i + 1), Style::new().fg(theme::COMMENT)),
@@ -494,13 +514,14 @@ impl QuestionForm {
         let chrome = 2 + 1 + 1; // border(2) + empty line before hint + hint line
 
         if self.on_confirm_tab() {
-            let review_lines = 1 + 1 + self.questions.len() + 1 + 1; // header + empty + questions + empty + instruction
-            let tabs = if self.has_confirm_tab() { 2 } else { 0 };
-            return (chrome + review_lines + tabs) as u16;
+            let separators = self.questions.len().saturating_sub(1);
+            let review_lines = 1 + 1 + self.questions.len() + separators + 1 + 1;
+            return (chrome + review_lines + 2) as u16;
         }
 
         let q = &self.questions[self.current_tab];
         let option_lines = q.options.len() + 1;
+        let option_separators = q.options.len();
         let question_lines: usize = self
             .question_text_lines(inner_width)
             .iter()
@@ -510,7 +531,7 @@ impl QuestionForm {
         let tabs = if self.has_confirm_tab() { 2 } else { 0 };
         let custom_input = if self.editing_custom { 1 } else { 0 };
 
-        (chrome + question_lines + option_lines + tabs + custom_input) as u16
+        (chrome + question_lines + option_lines + option_separators + tabs + custom_input) as u16
     }
 }
 
@@ -964,5 +985,36 @@ mod tests {
 
         form.handle_key(key(KeyCode::Tab));
         assert_eq!(form.current_tab, 1);
+    }
+
+    #[test]
+    fn confirm_tab_height_increases_with_separators() {
+        let one_q = vec![QuestionInfo {
+            question: "Q1".into(),
+            header: String::new(),
+            options: vec![QuestionOption {
+                label: "A".into(),
+                description: String::new(),
+            }],
+            multiple: true,
+        }];
+
+        let mut form1 = QuestionForm::new();
+        form1.open(one_q);
+        form1.handle_key(key(KeyCode::Tab));
+        assert!(form1.on_confirm_tab());
+        let h1 = form1.height(80);
+
+        let mut form2 = QuestionForm::new();
+        form2.open(multi_q());
+        for _ in 0..3 {
+            form2.handle_key(key(KeyCode::Tab));
+        }
+        assert!(form2.on_confirm_tab());
+        let h2 = form2.height(80);
+
+        let extra_questions = 1;
+        let extra_separators = 1;
+        assert_eq!(h2 - h1, (extra_questions + extra_separators) as u16);
     }
 }
