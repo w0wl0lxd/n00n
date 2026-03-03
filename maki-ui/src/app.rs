@@ -514,7 +514,7 @@ impl App {
         } else {
             self.active_chat
         };
-        self.chats[render_chat].view(frame, msg_area);
+        self.chats[render_chat].view(frame, msg_area, self.selection.is_some());
 
         let queue_height = queue_panel::height(self.queue.len());
         let input_height = bottom_area.height.saturating_sub(queue_height);

@@ -335,7 +335,7 @@ impl MessagesPanel {
             || self.streaming_text.is_animating()
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect) {
+    pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool) {
         self.viewport_height = area.height;
         let width = area.width;
         if self.viewport_width != width {
@@ -412,11 +412,13 @@ impl MessagesPanel {
         let total_lines: u16 = heights.iter().sum();
         let max_scroll = total_lines.saturating_sub(area.height);
         self.scroll_top = self.scroll_top.min(max_scroll);
-        if self.scroll_top >= max_scroll {
-            self.auto_scroll = true;
-        }
-        if self.auto_scroll {
-            self.scroll_top = max_scroll;
+        if !has_selection {
+            if self.scroll_top >= max_scroll {
+                self.auto_scroll = true;
+            }
+            if self.auto_scroll {
+                self.scroll_top = max_scroll;
+            }
         }
 
         let mut skip = self.scroll_top;
@@ -819,19 +821,28 @@ mod tests {
         assert_eq!(panel.scroll_top, pinned);
     }
 
-    fn render(
+    fn render_sel(
         panel: &mut MessagesPanel,
         width: u16,
         height: u16,
+        has_selection: bool,
     ) -> ratatui::Terminal<TestBackend> {
         let backend = TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                panel.view(f, f.area());
+                panel.view(f, f.area(), has_selection);
             })
             .unwrap();
         terminal
+    }
+
+    fn render(
+        panel: &mut MessagesPanel,
+        width: u16,
+        height: u16,
+    ) -> ratatui::Terminal<TestBackend> {
+        render_sel(panel, width, height, false)
     }
 
     fn rebuild(panel: &mut MessagesPanel) {
@@ -872,6 +883,11 @@ mod tests {
     fn in_progress_tracking() {
         let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "read")]);
         assert_eq!(panel.in_progress_count, 2);
+        rebuild(&mut panel);
+        assert_eq!(msg_status(&panel, "t1"), ToolStatus::InProgress);
+
+        panel.tool_output("t1", "partial");
+        assert_eq!(msg_status(&panel, "t1"), ToolStatus::InProgress);
 
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -880,6 +896,8 @@ mod tests {
             is_error: false,
         });
         assert_eq!(panel.in_progress_count, 1);
+        assert_eq!(msg_status(&panel, "t1"), ToolStatus::Success);
+        assert!(panel.is_animating());
 
         panel.tool_done(ToolDoneEvent {
             id: "t2".into(),
@@ -888,6 +906,7 @@ mod tests {
             is_error: false,
         });
         assert_eq!(panel.in_progress_count, 0);
+        assert!(!panel.is_animating());
     }
 
     fn has_scrollbar_thumb(terminal: &ratatui::Terminal<TestBackend>) -> bool {
@@ -1028,24 +1047,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_done_after_tool_output_transitions_status() {
-        let mut panel = panel_with_tools(&[("t1", "bash")]);
-        rebuild(&mut panel);
-        assert_eq!(msg_status(&panel, "t1"), ToolStatus::InProgress);
-
-        panel.tool_output("t1", "partial");
-        assert_eq!(msg_status(&panel, "t1"), ToolStatus::InProgress);
-
-        panel.tool_done(ToolDoneEvent {
-            id: "t1".into(),
-            tool: "bash",
-            output: ToolOutput::Plain("final".into()),
-            is_error: false,
-        });
-        assert_eq!(msg_status(&panel, "t1"), ToolStatus::Success);
-    }
-
-    #[test]
     fn fail_in_progress_before_cache_built_no_panic() {
         let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "read")]);
         panel.fail_in_progress();
@@ -1102,5 +1103,24 @@ mod tests {
         assert!(panel.messages[0].text.contains("Question 1?"));
         assert!(panel.messages[0].text.contains("Question 20?"));
         assert!(!has_seg(&panel, "q1"), "question should not have tool_id");
+    }
+
+    #[test]
+    fn selection_freezes_viewport_during_auto_scroll() {
+        let mut panel = MessagesPanel::new();
+        panel.streaming_text.set_buffer(&"a\n".repeat(30));
+        render(&mut panel, 80, 10);
+        assert!(panel.auto_scroll);
+        let scroll_before = panel.scroll_top;
+        assert!(scroll_before > 0);
+
+        panel.streaming_text.set_buffer(&"a\n".repeat(35));
+        render_sel(&mut panel, 80, 10, true);
+        assert_eq!(panel.scroll_top, scroll_before);
+        assert!(panel.auto_scroll);
+
+        render_sel(&mut panel, 80, 10, false);
+        assert!(panel.scroll_top > scroll_before);
+        assert!(panel.auto_scroll);
     }
 }

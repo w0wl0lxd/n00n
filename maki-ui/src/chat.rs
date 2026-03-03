@@ -99,8 +99,8 @@ impl Chat {
         self.messages_panel.is_animating()
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect) {
-        self.messages_panel.view(frame, area);
+    pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool) {
+        self.messages_panel.view(frame, area, has_selection);
     }
 
     pub fn push_content_regions<'a>(&'a self, out: &mut Vec<ContentRegion<'a>>) {
