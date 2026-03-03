@@ -68,6 +68,29 @@ struct Segment {
     cached_height: Option<(u16, u16)>,
     pending_highlight: Option<u64>,
     highlight_range: Option<(usize, usize)>,
+    highlighted_has_output: bool,
+}
+
+impl Segment {
+    fn reuse_highlight(&self, has_output: bool) -> Option<Vec<Line<'static>>> {
+        if self.pending_highlight.is_some() || self.highlighted_has_output != has_output {
+            return None;
+        }
+        let (s, e) = self.highlight_range?;
+        if s > e || e > self.lines.len() {
+            return None;
+        }
+        Some(self.lines[s..e].to_vec())
+    }
+
+    fn apply_highlight(&mut self, tl: ToolLines, worker: &RenderWorker) {
+        self.pending_highlight = tl.send_highlight(worker);
+        let hl = tl.highlight.as_ref();
+        self.highlight_range = hl.map(|h| h.range);
+        self.highlighted_has_output = hl.is_some_and(|h| h.output.is_some());
+        self.lines = tl.lines;
+        self.cached_height = None;
+    }
 }
 
 pub struct MessagesPanel {
@@ -279,7 +302,7 @@ impl MessagesPanel {
                     .rfind(|s| s.tool_id.as_deref() == Some(id.as_str()))
                 {
                     let tl = build_tool_lines(msg, ToolStatus::Error, self.started_at);
-                    apply_tool_lines(seg, tl, &self.hl_worker);
+                    seg.apply_highlight(tl, &self.hl_worker);
                 }
             }
         }
@@ -545,15 +568,35 @@ impl MessagesPanel {
         let DisplayRole::Tool { status, .. } = &msg.role else {
             unreachable!()
         };
-        let Some(seg) = self
+        let Some(seg_idx) = self
             .cached_segments
-            .iter_mut()
-            .rfind(|s| s.tool_id.as_deref() == Some(tool_id))
+            .iter()
+            .rposition(|s| s.tool_id.as_deref() == Some(tool_id))
         else {
             return;
         };
-        let tl = build_tool_lines(msg, *status, self.started_at);
-        apply_tool_lines(seg, tl, &self.hl_worker);
+
+        let mut tl = build_tool_lines(msg, *status, self.started_at);
+        let has_output = tl.highlight.as_ref().is_some_and(|h| h.output.is_some());
+
+        let reused = tl.highlight.as_ref().and_then(|req| {
+            let hl_lines = self.cached_segments[seg_idx].reuse_highlight(has_output)?;
+            let (s, _) = req.range;
+            let new_end = s + hl_lines.len();
+            tl.lines.splice(s..req.range.1, hl_lines);
+            Some((s, new_end))
+        });
+
+        let seg = &mut self.cached_segments[seg_idx];
+        seg.cached_height = None;
+
+        if let Some((s, e)) = reused {
+            seg.lines = tl.lines;
+            seg.highlight_range = Some((s, e));
+            seg.pending_highlight = None;
+        } else {
+            seg.apply_highlight(tl, &self.hl_worker);
+        }
     }
 
     fn rebuild_line_cache(&mut self) {
@@ -593,7 +636,7 @@ impl MessagesPanel {
                         msg_index: Some(i),
                         ..Segment::default()
                     };
-                    apply_tool_lines(&mut seg, tl, &self.hl_worker);
+                    seg.apply_highlight(tl, &self.hl_worker);
                     self.cached_segments.push(seg);
                 }
             } else {
@@ -654,14 +697,6 @@ impl MessagesPanel {
             });
         }
     }
-}
-
-fn apply_tool_lines(seg: &mut Segment, tl: ToolLines, worker: &RenderWorker) {
-    let pending = tl.send_highlight(worker);
-    seg.lines = tl.lines;
-    seg.cached_height = None;
-    seg.pending_highlight = pending;
-    seg.highlight_range = tl.highlight.as_ref().map(|h| h.range);
 }
 
 #[cfg(test)]
@@ -983,24 +1018,45 @@ mod tests {
         assert!(seg_text(&panel, "t2").contains("result"));
     }
 
-    #[test]
-    fn bash_live_output_with_code_input() {
-        let mut panel = MessagesPanel::new();
+    fn bash_code_start(panel: &mut MessagesPanel, id: &str, code: &str) {
         panel.tool_start(ToolStartEvent {
-            id: "t1".into(),
+            id: id.into(),
             tool: BASH_TOOL_NAME,
-            summary: "echo hello".into(),
+            summary: code.into(),
             input: Some(maki_providers::ToolInput::Code {
                 language: "bash",
-                code: "echo hello".into(),
+                code: code.into(),
             }),
             output: None,
         });
+    }
+
+    #[test]
+    fn bash_live_output_with_code_input() {
+        let mut panel = MessagesPanel::new();
+        bash_code_start(&mut panel, "t1", "echo hello");
         rebuild(&mut panel);
+
+        panel.tool_output("t1", "hello");
+        let text = seg_text(&panel, "t1");
+        assert!(text.contains("echo hello"), "code input preserved");
+        assert!(text.contains("hello"), "live output visible");
+
         panel.tool_output("t1", "hello\nworld");
         let text = seg_text(&panel, "t1");
-        assert!(text.contains("hello"));
-        assert!(text.contains("world"));
+        assert!(text.contains("echo hello"), "code input still preserved");
+        assert!(text.contains("world"), "updated output visible");
+
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: BASH_TOOL_NAME,
+            output: ToolOutput::Plain("done".into()),
+            is_error: false,
+        });
+        let text = seg_text(&panel, "t1");
+        assert!(text.contains("echo hello"), "code input after done");
+        assert!(text.contains("done"), "final output visible");
+        assert_eq!(msg_status(&panel, "t1"), ToolStatus::Success);
     }
 
     #[test]
