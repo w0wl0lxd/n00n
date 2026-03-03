@@ -1145,6 +1145,7 @@ dependencies = [
  "arboard",
  "color-eyre",
  "crossterm",
+ "jiff",
  "maki-agent",
  "maki-providers",
  "ratatui",

@@ -7,6 +7,9 @@ use crate::theme;
 
 use std::time::Instant;
 
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
+
 use maki_agent::tools::{
     BASH_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME,
     READ_TOOL_NAME, WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME, WRITE_TOOL_NAME,
@@ -22,6 +25,7 @@ pub const TOOL_INDICATOR: &str = "● ";
 pub const TOOL_OUTPUT_MAX_LINES: usize = 7;
 pub const BASH_OUTPUT_MAX_LINES: usize = 10;
 pub const TOOL_BODY_INDENT: &str = "  ";
+const TIMESTAMP_LEN: usize = 8;
 
 pub fn tool_summary_annotation(tool: &str, text: &str) -> Option<String> {
     match tool {
@@ -33,14 +37,6 @@ pub fn tool_summary_annotation(tool: &str, text: &str) -> Option<String> {
         }
     }
 }
-
-const PATH_FIRST_TOOLS: &[&str] = &[
-    READ_TOOL_NAME,
-    EDIT_TOOL_NAME,
-    WRITE_TOOL_NAME,
-    MULTIEDIT_TOOL_NAME,
-];
-const IN_PATH_TOOLS: &[&str] = &[BASH_TOOL_NAME, GLOB_TOOL_NAME];
 
 fn extract_path_suffix(s: &str) -> Option<(&str, &str)> {
     let i = s.rfind(" in ")?;
@@ -100,6 +96,14 @@ fn style_tool_header(tool: &str, header: &str) -> Vec<Span<'static>> {
     }
     vec![Span::styled(header.to_owned(), theme::TOOL)]
 }
+
+const PATH_FIRST_TOOLS: &[&str] = &[
+    READ_TOOL_NAME,
+    EDIT_TOOL_NAME,
+    WRITE_TOOL_NAME,
+    MULTIEDIT_TOOL_NAME,
+];
+const IN_PATH_TOOLS: &[&str] = &[BASH_TOOL_NAME, GLOB_TOOL_NAME];
 
 pub struct RoleStyle {
     pub prefix: &'static str,
@@ -182,6 +186,22 @@ impl ToolLines {
     pub fn send_highlight(&self, worker: &RenderWorker) -> Option<u64> {
         let hl = self.highlight.as_ref()?;
         Some(worker.send(hl.input.clone(), hl.output.clone()))
+    }
+}
+
+pub fn format_timestamp_now() -> String {
+    let zoned = Timestamp::now().to_zoned(TimeZone::system());
+    zoned.strftime("%H:%M:%S").to_string()
+}
+
+pub fn append_timestamp(line: &mut Line<'static>, timestamp: &str, width: u16) {
+    let header_width: usize = line.spans.iter().map(|s| s.content.len()).sum();
+    let w = width as usize;
+    if header_width + 1 + TIMESTAMP_LEN <= w {
+        let pad = w - header_width - TIMESTAMP_LEN;
+        line.spans.push(Span::raw(" ".repeat(pad)));
+        line.spans
+            .push(Span::styled(timestamp.to_owned(), theme::COMMENT_STYLE));
     }
 }
 
@@ -348,6 +368,7 @@ mod tests {
             tool_input: input,
             tool_output: output,
             plan_path: None,
+            timestamp: None,
         };
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
         assert_eq!(tl.highlight.is_some(), expect_highlight);
@@ -441,6 +462,7 @@ mod tests {
             tool_input: code_input(),
             tool_output: output,
             plan_path: None,
+            timestamp: None,
         };
         let tl = build_tool_lines(&msg, status, Instant::now());
         let text = lines_text(&tl);
@@ -454,5 +476,36 @@ mod tests {
         let mut text = input.to_string();
         truncate_to_header(&mut text);
         assert_eq!(text, expected);
+    }
+
+    fn tool_msg() -> DisplayMessage {
+        DisplayMessage {
+            role: DisplayRole::Tool {
+                id: "t1".into(),
+                status: ToolStatus::Success,
+                name: BASH_TOOL_NAME,
+            },
+            text: "cmd".into(),
+            tool_input: None,
+            tool_output: None,
+            plan_path: None,
+            timestamp: None,
+        }
+    }
+
+    #[test_case(80, true  ; "shown_when_width_sufficient")]
+    #[test_case(10, false ; "hidden_when_too_narrow")]
+    fn append_timestamp_visibility(width: u16, expect_timestamp: bool) {
+        let msg = tool_msg();
+        let mut tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
+        let span_count_before = tl.lines[0].spans.len();
+        append_timestamp(&mut tl.lines[0], "12:34:56", width);
+        let last = tl.lines[0].spans.last().unwrap();
+        if expect_timestamp {
+            assert_eq!(last.style, theme::COMMENT_STYLE);
+            assert_eq!(spans_text(&tl.lines[0].spans).len(), width as usize,);
+        } else {
+            assert_eq!(tl.lines[0].spans.len(), span_count_before);
+        }
     }
 }

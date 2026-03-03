@@ -32,6 +32,7 @@ fn tool(
         tool_input: input,
         tool_output: output,
         plan_path: None,
+        timestamp: None,
     }
 }
 

@@ -2,8 +2,8 @@ use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
 
 use super::tool_display::{
     ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, QUESTION_STYLE, THINKING_STYLE,
-    TOOL_OUTPUT_MAX_LINES, ToolLines, USER_STYLE, build_tool_lines, tool_summary_annotation,
-    truncate_to_header,
+    TOOL_OUTPUT_MAX_LINES, ToolLines, USER_STYLE, append_timestamp, build_tool_lines,
+    format_timestamp_now, tool_summary_annotation, truncate_to_header,
 };
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::CodeHighlighter;
@@ -176,6 +176,7 @@ impl MessagesPanel {
             tool_input: event.input,
             tool_output: event.output,
             plan_path: None,
+            timestamp: Some(format_timestamp_now()),
         });
         self.in_progress_count += 1;
     }
@@ -301,7 +302,10 @@ impl MessagesPanel {
                     .iter_mut()
                     .rfind(|s| s.tool_id.as_deref() == Some(id.as_str()))
                 {
-                    let tl = build_tool_lines(msg, ToolStatus::Error, self.started_at);
+                    let mut tl = build_tool_lines(msg, ToolStatus::Error, self.started_at);
+                    if let Some(ts) = &msg.timestamp {
+                        append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
+                    }
                     seg.apply_highlight(tl, &self.hl_worker);
                 }
             }
@@ -582,6 +586,9 @@ impl MessagesPanel {
         };
 
         let mut tl = build_tool_lines(msg, *status, self.started_at);
+        if let Some(ts) = &msg.timestamp {
+            append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
+        }
         let has_output = tl.highlight.as_ref().is_some_and(|h| h.output.is_some());
 
         let reused = tl.highlight.as_ref().and_then(|req| {
@@ -633,7 +640,10 @@ impl MessagesPanel {
                         ..Segment::default()
                     });
                 } else {
-                    let tl = build_tool_lines(msg, status, self.started_at);
+                    let mut tl = build_tool_lines(msg, status, self.started_at);
+                    if let Some(ts) = &msg.timestamp {
+                        append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
+                    }
                     let id = id.clone();
                     self.push_spacer_if_needed();
                     let mut seg = Segment {

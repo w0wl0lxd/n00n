@@ -14,6 +14,7 @@ syntect = { workspace = true }
 unicode-width = { workspace = true }
 serde_json = { workspace = true }
 arboard = { workspace = true }
+jiff = { workspace = true }
 
 [features]
 demo = []
