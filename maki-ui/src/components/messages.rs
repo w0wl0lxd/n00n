@@ -7,10 +7,11 @@ use super::tool_display::{
 };
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::CodeHighlighter;
-use crate::markdown::{hr_line, plain_lines, tail_lines, text_to_lines, truncate_lines};
+use crate::markdown::{hr_line, plain_lines, tail_plain, text_to_lines, truncate_lines};
 use crate::render_worker::RenderWorker;
 use crate::theme;
 
+use std::borrow::Cow;
 use std::time::Instant;
 
 use maki_agent::tools::{BASH_TOOL_NAME, QUESTION_TOOL_NAME, WEBFETCH_TOOL_NAME};
@@ -190,9 +191,9 @@ impl MessagesPanel {
             return;
         };
         truncate_to_header(&mut msg.text);
-        let truncated = tail_lines(content, BASH_OUTPUT_MAX_LINES);
+        let truncated = tail_plain(content, BASH_OUTPUT_MAX_LINES);
         msg.text.push('\n');
-        msg.text.push_str(&truncated);
+        msg.text.push_str(truncated);
         self.rebuild_tool_segment(tool_id);
     }
 
@@ -223,7 +224,7 @@ impl MessagesPanel {
                     }
                     if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
                         let display = if event.tool == BASH_TOOL_NAME {
-                            tail_lines(text, BASH_OUTPUT_MAX_LINES)
+                            Cow::Borrowed(tail_plain(text, BASH_OUTPUT_MAX_LINES))
                         } else {
                             truncate_lines(text, TOOL_OUTPUT_MAX_LINES)
                         };
