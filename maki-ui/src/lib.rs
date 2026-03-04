@@ -41,11 +41,7 @@ const MOUSE_SCROLL_LINES: i32 = 3;
 const ANIMATION_INTERVAL_MS: u64 = 8;
 const EVENT_POLL_INTERVAL_MS: u64 = 8;
 
-pub fn run(
-    model: Model,
-    #[cfg(feature = "demo")] demo: bool,
-    excluded_tools: &'static [&'static str],
-) -> Result<()> {
+pub fn run(model: Model, #[cfg(feature = "demo")] demo: bool) -> Result<()> {
     let mut terminal = ratatui::init();
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(EnableBracketedPaste)?;
@@ -57,7 +53,6 @@ pub fn run(
         model,
         #[cfg(feature = "demo")]
         demo,
-        excluded_tools,
     );
 
     terminal::disable_raw_mode()?;
@@ -73,7 +68,6 @@ fn run_event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     model: Model,
     #[cfg(feature = "demo")] demo: bool,
-    excluded_tools: &'static [&'static str],
 ) -> Result<()> {
     let mut app = App::new(model.spec(), model.pricing.clone(), model.context_window);
     #[cfg(feature = "demo")]
@@ -93,7 +87,7 @@ fn run_event_loop(
     }
     let provider: Arc<dyn Provider> =
         Arc::from(maki_providers::provider::from_model(&model).context("create provider")?);
-    let mut handles = spawn_agent(&provider, &model, Vec::new(), excluded_tools);
+    let mut handles = spawn_agent(&provider, &model, Vec::new());
     handles.apply_to_app(&mut app);
 
     loop {
@@ -107,7 +101,6 @@ fn run_event_loop(
                 &mut handles,
                 &provider,
                 &model,
-                excluded_tools,
                 &mut app,
             );
         }
@@ -138,7 +131,6 @@ fn run_event_loop(
                                 &mut handles,
                                 &provider,
                                 &model,
-                                excluded_tools,
                                 &mut app,
                             );
                             extra
@@ -153,7 +145,6 @@ fn run_event_loop(
                             &mut handles,
                             &provider,
                             &model,
-                            excluded_tools,
                             &mut app,
                         );
                         if let Some(extra) = extra {
@@ -166,14 +157,7 @@ fn run_event_loop(
                 },
                 _ => continue,
             };
-            dispatch(
-                app.update(msg),
-                &mut handles,
-                &provider,
-                &model,
-                excluded_tools,
-                &mut app,
-            );
+            dispatch(app.update(msg), &mut handles, &provider, &model, &mut app);
         }
     }
 
@@ -204,7 +188,6 @@ fn spawn_agent(
     provider: &Arc<dyn Provider>,
     model: &Model,
     initial_history: Vec<Message>,
-    excluded_tools: &'static [&'static str],
 ) -> AgentHandles {
     let (agent_tx, agent_rx) = mpsc::channel::<Envelope>();
     let (cmd_tx, cmd_rx) = mpsc::channel::<AgentCommand>();
@@ -226,7 +209,7 @@ fn spawn_agent(
                 AgentCommand::Run(input) => {
                     let vars = template::env_vars();
                     let system = agent::build_system_prompt(&vars, &input.mode, &model);
-                    let tools = maki_agent::tools::ToolCall::definitions(&vars, excluded_tools);
+                    let tools = maki_agent::tools::ToolCall::definitions(&vars);
                     agent::run(
                         &*provider,
                         &model,
@@ -266,7 +249,6 @@ fn dispatch(
     handles: &mut AgentHandles,
     provider: &Arc<dyn Provider>,
     model: &Model,
-    excluded_tools: &'static [&'static str],
     app: &mut App,
 ) {
     for action in actions {
@@ -278,17 +260,17 @@ fn dispatch(
                     Err(e) => e.0,
                 };
                 let history = std::mem::take(&mut *handles.history.lock().unwrap());
-                *handles = spawn_agent(provider, model, history, excluded_tools);
+                *handles = spawn_agent(provider, model, history);
                 handles.apply_to_app(app);
                 let _ = handles.cmd_tx.send(cmd);
             }
             Action::CancelAgent => {
                 let history = std::mem::take(&mut *handles.history.lock().unwrap());
-                *handles = spawn_agent(provider, model, history, excluded_tools);
+                *handles = spawn_agent(provider, model, history);
                 handles.apply_to_app(app);
             }
             Action::NewSession => {
-                *handles = spawn_agent(provider, model, Vec::new(), excluded_tools);
+                *handles = spawn_agent(provider, model, Vec::new());
                 handles.apply_to_app(app);
             }
             Action::Compact => {

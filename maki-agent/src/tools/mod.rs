@@ -220,10 +220,9 @@ macro_rules! register_tools {
                 ]
             }
 
-            pub fn definitions(vars: &Vars, excluded: &[&str]) -> Value {
+            pub fn definitions(vars: &Vars) -> Value {
                 Value::Array(
                     Self::all_defs(vars).into_iter()
-                        .filter(|(name, _)| !excluded.contains(name))
                         .map(|(_, def)| def)
                         .collect()
                 )
@@ -435,7 +434,7 @@ mod tests {
     #[test]
     fn tool_definitions_invariants() {
         let vars = Vars::new().set("{cwd}", "/tmp");
-        let all = ToolCall::definitions(&vars, &[]);
+        let all = ToolCall::definitions(&vars);
         let all = all.as_array().unwrap();
         let names: Vec<&str> = all.iter().map(|d| d["name"].as_str().unwrap()).collect();
         assert!(names.len() > 2);
@@ -464,16 +463,6 @@ mod tests {
             let arr = def["input_examples"].as_array().unwrap();
             assert!(!arr.is_empty(), "{} has empty input_examples", def["name"]);
         }
-
-        let excluded = ToolCall::definitions(&vars, &["bash"]);
-        let ex_names: Vec<&str> = excluded
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|d| d["name"].as_str().unwrap())
-            .collect();
-        assert!(!ex_names.contains(&"bash"));
-        assert_eq!(ex_names.len(), names.len() - 1);
 
         let filtered = ToolCall::definitions_filtered(&vars, &["bash", "read"]);
         let f_names: Vec<&str> = filtered
