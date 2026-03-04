@@ -119,13 +119,6 @@ pub const ASSISTANT_STYLE: RoleStyle = RoleStyle {
     use_markdown: true,
 };
 
-pub const QUESTION_STYLE: RoleStyle = RoleStyle {
-    prefix: "maki_asks> ",
-    text_style: theme::ASSISTANT,
-    prefix_style: theme::ASSISTANT_PREFIX,
-    use_markdown: true,
-};
-
 pub const USER_STYLE: RoleStyle = RoleStyle {
     prefix: "you> ",
     text_style: theme::ASSISTANT,
@@ -172,7 +165,10 @@ impl HighlightRequest {
             | ToolOutput::WriteCode { .. }
             | ToolOutput::Diff { .. }
             | ToolOutput::GrepResult { .. } => Some(o),
-            ToolOutput::Plain(_) | ToolOutput::TodoList(_) | ToolOutput::Batch { .. } => None,
+            ToolOutput::Plain(_)
+            | ToolOutput::TodoList(_)
+            | ToolOutput::Batch { .. }
+            | ToolOutput::QuestionAnswers(_) => None,
         });
         Some(Self {
             range,
@@ -293,6 +289,16 @@ pub fn build_tool_lines(
                 ];
                 spans.extend(style_tool_header(&entry.tool, &entry.summary));
                 lines.push(Line::from(spans));
+            }
+        }
+        Some(ToolOutput::QuestionAnswers(pairs)) => {
+            for pair in pairs {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{TOOL_BODY_INDENT}❯ "), theme::TOOL_ANNOTATION),
+                    Span::styled(pair.question.clone(), theme::QUESTION_LABEL),
+                    Span::styled(" → ", theme::TOOL_ANNOTATION),
+                    Span::styled(pair.answer.clone(), theme::QUESTION_ANSWER),
+                ]));
             }
         }
         _ => {}

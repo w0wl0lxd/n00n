@@ -1,9 +1,9 @@
 use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
 
 use super::tool_display::{
-    ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, QUESTION_STYLE, THINKING_STYLE,
-    TOOL_OUTPUT_MAX_LINES, ToolLines, USER_STYLE, append_timestamp, build_tool_lines,
-    format_timestamp_now, tool_summary_annotation, truncate_to_header,
+    ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, THINKING_STYLE, TOOL_OUTPUT_MAX_LINES,
+    ToolLines, USER_STYLE, append_timestamp, build_tool_lines, format_timestamp_now,
+    tool_summary_annotation, truncate_to_header,
 };
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::CodeHighlighter;
@@ -14,7 +14,7 @@ use crate::theme;
 use std::borrow::Cow;
 use std::time::Instant;
 
-use maki_agent::tools::{BASH_TOOL_NAME, QUESTION_TOOL_NAME, WEBFETCH_TOOL_NAME};
+use maki_agent::tools::{BASH_TOOL_NAME, WEBFETCH_TOOL_NAME};
 use maki_providers::{BatchToolStatus, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -216,23 +216,23 @@ impl MessagesPanel {
 
         match &event.output {
             ToolOutput::Plain(text) => {
-                if event.tool == QUESTION_TOOL_NAME {
-                    msg.text = text.clone();
-                } else {
-                    if let Some(annotation) = tool_summary_annotation(event.tool, text) {
-                        msg.text = format!("{} ({annotation})", msg.text);
-                    }
-                    if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
-                        let display = if event.tool == BASH_TOOL_NAME {
-                            Cow::Borrowed(tail_plain(text, BASH_OUTPUT_MAX_LINES))
-                        } else {
-                            truncate_lines(text, TOOL_OUTPUT_MAX_LINES)
-                        };
-                        if !display.is_empty() {
-                            msg.text = format!("{}\n{display}", msg.text);
-                        }
+                if let Some(annotation) = tool_summary_annotation(event.tool, text) {
+                    msg.text = format!("{} ({annotation})", msg.text);
+                }
+                if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
+                    let display = if event.tool == BASH_TOOL_NAME {
+                        Cow::Borrowed(tail_plain(text, BASH_OUTPUT_MAX_LINES))
+                    } else {
+                        truncate_lines(text, TOOL_OUTPUT_MAX_LINES)
+                    };
+                    if !display.is_empty() {
+                        msg.text = format!("{}\n{display}", msg.text);
                     }
                 }
+            }
+            ToolOutput::QuestionAnswers(pairs) => {
+                let n = pairs.len();
+                msg.text = format!("{n} question{} answered", if n == 1 { "" } else { "s" });
             }
             ToolOutput::ReadCode { lines, .. } => {
                 msg.text = format!("{} ({} lines)", msg.text, lines.len());
@@ -619,42 +619,20 @@ impl MessagesPanel {
         for i in self.cached_msg_count..self.messages.len() {
             let msg = &self.messages[i];
 
-            if let DisplayRole::Tool {
-                ref id,
-                status,
-                name,
-            } = msg.role
-            {
-                if name == QUESTION_TOOL_NAME {
-                    let lines = text_to_lines(
-                        &msg.text,
-                        QUESTION_STYLE.prefix,
-                        QUESTION_STYLE.text_style,
-                        QUESTION_STYLE.prefix_style,
-                        None,
-                        self.viewport_width,
-                    );
-                    self.push_spacer_if_needed();
-                    self.cached_segments.push(Segment {
-                        lines,
-                        msg_index: Some(i),
-                        ..Segment::default()
-                    });
-                } else {
-                    let mut tl = build_tool_lines(msg, status, self.started_at);
-                    if let Some(ts) = &msg.timestamp {
-                        append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
-                    }
-                    let id = id.clone();
-                    self.push_spacer_if_needed();
-                    let mut seg = Segment {
-                        tool_id: Some(id),
-                        msg_index: Some(i),
-                        ..Segment::default()
-                    };
-                    seg.apply_highlight(tl, &self.hl_worker);
-                    self.cached_segments.push(seg);
+            if let DisplayRole::Tool { ref id, status, .. } = msg.role {
+                let mut tl = build_tool_lines(msg, status, self.started_at);
+                if let Some(ts) = &msg.timestamp {
+                    append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
                 }
+                let id = id.clone();
+                self.push_spacer_if_needed();
+                let mut seg = Segment {
+                    tool_id: Some(id),
+                    msg_index: Some(i),
+                    ..Segment::default()
+                };
+                seg.apply_highlight(tl, &self.hl_worker);
+                self.cached_segments.push(seg);
             } else {
                 let style = match &msg.role {
                     DisplayRole::User => &USER_STYLE,
@@ -719,7 +697,7 @@ impl MessagesPanel {
 mod tests {
     use super::*;
     use crate::components::scrollbar::SCROLLBAR_THUMB;
-    use maki_agent::tools::WRITE_TOOL_NAME;
+    use maki_agent::tools::{QUESTION_TOOL_NAME, WRITE_TOOL_NAME};
     use maki_providers::{GrepFileEntry, GrepMatch, ToolOutput};
     use ratatui::backend::TestBackend;
     use test_case::test_case;
@@ -1157,24 +1135,33 @@ mod tests {
     }
 
     #[test]
-    fn question_tool_preserves_full_text() {
-        let questions: String = (1..=20)
-            .map(|i| format!("Question {i}?"))
-            .collect::<Vec<_>>()
-            .join("\n");
+    fn question_tool_renders_with_tool_chrome() {
         let mut panel = MessagesPanel::new();
         panel.tool_start(start("q1", QUESTION_TOOL_NAME));
         panel.tool_done(ToolDoneEvent {
             id: "q1".into(),
             tool: QUESTION_TOOL_NAME,
-            output: ToolOutput::Plain(questions.clone()),
+            output: ToolOutput::QuestionAnswers(vec![
+                maki_providers::QuestionAnswer {
+                    question: "DB?".into(),
+                    answer: "PostgreSQL".into(),
+                },
+                maki_providers::QuestionAnswer {
+                    question: "Framework?".into(),
+                    answer: "Axum".into(),
+                },
+            ]),
             is_error: false,
         });
         rebuild(&mut panel);
 
-        assert!(panel.messages[0].text.contains("Question 1?"));
-        assert!(panel.messages[0].text.contains("Question 20?"));
-        assert!(!has_seg(&panel, "q1"), "question should not have tool_id");
+        assert_eq!(panel.messages[0].text, "2 questions answered");
+        assert!(has_seg(&panel, "q1"));
+        let text = seg_text(&panel, "q1");
+        assert!(text.contains("DB?"));
+        assert!(text.contains("PostgreSQL"));
+        assert!(text.contains("Framework?"));
+        assert!(text.contains("Axum"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use maki_providers::{AgentEvent, QuestionInfo, ToolInput, ToolOutput};
+use maki_providers::{AgentEvent, QuestionAnswer, QuestionInfo, ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
 const EMPTY_QUESTIONS: &str = "at least one question is required";
@@ -34,24 +34,24 @@ impl Question {
 
         let rx = rx.lock().map_err(|_| CHANNEL_CLOSED.to_string())?;
         match rx.recv() {
-            Ok(answer) => Ok(ToolOutput::Plain(Self::format_answer(
-                &self.questions,
-                &answer,
-            ))),
+            Ok(answer) => Ok(Self::format_answer(&self.questions, &answer)),
             Err(_) => Err(CHANNEL_CLOSED.into()),
         }
     }
 
-    fn format_answer(questions: &[QuestionInfo], raw: &str) -> String {
+    fn format_answer(questions: &[QuestionInfo], raw: &str) -> ToolOutput {
         let Ok(answers) = serde_json::from_str::<Vec<Vec<String>>>(raw) else {
-            return raw.to_string();
+            return ToolOutput::Plain(raw.to_string());
         };
-        let mut table = String::from("| Question | Answer |\n|----------|--------|\n");
-        for (q, a) in questions.iter().zip(answers.iter()) {
-            table.push_str(&format!("| {} | {} |\n", q.question, a.join(", ")));
-        }
-        table.truncate(table.trim_end().len());
-        table
+        let pairs = questions
+            .iter()
+            .zip(answers.iter())
+            .map(|(q, a)| QuestionAnswer {
+                question: q.question.clone(),
+                answer: a.join(", "),
+            })
+            .collect();
+        ToolOutput::QuestionAnswers(pairs)
     }
 
     fn format_questions(&self) -> String {
@@ -98,6 +98,15 @@ mod tests {
     use crate::tools::test_support::{stub_ctx, stub_ctx_with};
 
     const SINGLE_Q: &str = r#"{"questions": [{"question": "Preferred DB?"}]}"#;
+
+    fn qi(question: &str) -> QuestionInfo {
+        QuestionInfo {
+            question: question.into(),
+            header: String::new(),
+            options: vec![],
+            multiple: false,
+        }
+    }
 
     fn q_with_options() -> serde_json::Value {
         json!({"questions": [{
@@ -151,10 +160,14 @@ mod tests {
 
             answer_tx.send(r#"[["PostgreSQL"]]"#.into()).unwrap();
             let output = handle.join().unwrap().unwrap();
-            assert_eq!(
-                output.as_text(),
-                "| Question | Answer |\n|----------|--------|\n| Preferred DB? | PostgreSQL |"
-            );
+            match output {
+                ToolOutput::QuestionAnswers(pairs) => {
+                    assert_eq!(pairs.len(), 1);
+                    assert_eq!(pairs[0].question, "Preferred DB?");
+                    assert_eq!(pairs[0].answer, "PostgreSQL");
+                }
+                other => panic!("expected QuestionAnswers, got {other:?}"),
+            }
         });
     }
 
@@ -175,39 +188,31 @@ mod tests {
 
     #[test]
     fn format_answer_non_json_passed_through() {
-        let questions = vec![QuestionInfo {
-            question: "Q?".into(),
-            header: String::new(),
-            options: vec![],
-            multiple: false,
-        }];
-        assert_eq!(
+        let questions = vec![qi("Q?")];
+        assert!(matches!(
             Question::format_answer(&questions, "plain text"),
-            "plain text"
-        );
+            ToolOutput::Plain(ref s) if s == "plain text"
+        ));
     }
 
     #[test]
     fn format_answer_multi_question_multi_select() {
-        let questions = vec![
-            QuestionInfo {
-                question: "Language?".into(),
-                header: String::new(),
-                options: vec![],
-                multiple: false,
-            },
-            QuestionInfo {
-                question: "Framework?".into(),
-                header: String::new(),
-                options: vec![],
-                multiple: true,
-            },
-        ];
+        let questions = vec![qi("Language?"), qi("Framework?")];
         let raw = r#"[["Rust"],["Axum","Actix"]]"#;
         let result = Question::format_answer(&questions, raw);
-        assert_eq!(
-            result,
-            "| Question | Answer |\n|----------|--------|\n| Language? | Rust |\n| Framework? | Axum, Actix |"
-        );
+        let expected_pairs = vec![
+            QuestionAnswer {
+                question: "Language?".into(),
+                answer: "Rust".into(),
+            },
+            QuestionAnswer {
+                question: "Framework?".into(),
+                answer: "Axum, Actix".into(),
+            },
+        ];
+        match result {
+            ToolOutput::QuestionAnswers(pairs) => assert_eq!(pairs, expected_pairs),
+            other => panic!("expected QuestionAnswers, got {other:?}"),
+        }
     }
 }

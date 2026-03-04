@@ -53,6 +53,12 @@ pub struct DiffHunk {
     pub lines: Vec<DiffLine>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct QuestionAnswer {
+    pub question: String,
+    pub answer: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuestionOption {
     pub label: String,
@@ -202,6 +208,7 @@ pub enum ToolOutput {
         entries: Vec<BatchToolEntry>,
         text: String,
     },
+    QuestionAnswers(Vec<QuestionAnswer>),
 }
 
 impl ToolOutput {
@@ -273,6 +280,14 @@ impl ToolOutput {
                 out
             }
             Self::Batch { text, .. } => text.clone(),
+            Self::QuestionAnswers(pairs) => {
+                let mut table = String::from("| Question | Answer |\n|----------|--------|\n");
+                for pair in pairs {
+                    table.push_str(&format!("| {} | {} |\n", pair.question, pair.answer));
+                }
+                table.truncate(table.trim_end().len());
+                table
+            }
         }
     }
 }
