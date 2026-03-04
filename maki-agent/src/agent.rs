@@ -302,6 +302,7 @@ pub fn run(
                 message: response.message.clone(),
                 usage: response.usage.clone(),
                 model: model.id.clone(),
+                context_size: None,
             }
             .into(),
         )?;
@@ -387,6 +388,7 @@ pub fn compact(
             message: response.message.clone(),
             usage: response.usage.clone(),
             model: model.id.clone(),
+            context_size: Some(response.usage.output),
         }
         .into(),
     )?;

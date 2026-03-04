@@ -250,6 +250,7 @@ pub fn run(
                 message,
                 usage: turn_usage,
                 model,
+                ..
             } => {
                 if let Some(out) = &mut verbose_out {
                     let content_value = serde_json::to_value(&message.content)?;

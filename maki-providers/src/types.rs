@@ -426,6 +426,8 @@ pub enum AgentEvent {
         message: Message,
         usage: TokenUsage,
         model: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_size: Option<u32>,
     },
     ToolResultsSubmitted {
         message: Message,

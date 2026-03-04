@@ -420,10 +420,16 @@ impl App {
             _ => None,
         };
 
-        if let AgentEvent::TurnComplete { usage, .. } = &envelope.event {
+        if let AgentEvent::TurnComplete {
+            usage,
+            context_size,
+            ..
+        } = &envelope.event
+        {
             self.token_usage += usage.clone();
             self.chats[chat_idx].token_usage += usage.clone();
-            self.chats[chat_idx].context_size = usage.context_tokens();
+            self.chats[chat_idx].context_size =
+                context_size.unwrap_or_else(|| usage.context_tokens());
         }
 
         let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);
@@ -1374,6 +1380,7 @@ mod tests {
             message: Default::default(),
             usage: main_usage.clone(),
             model: "test".into(),
+            context_size: None,
         }));
 
         let sub_usage = TokenUsage {
@@ -1386,6 +1393,7 @@ mod tests {
                 message: Default::default(),
                 usage: sub_usage.clone(),
                 model: "test".into(),
+                context_size: None,
             },
             "task1",
             None,
