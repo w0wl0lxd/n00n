@@ -39,19 +39,18 @@ impl History {
 
     pub fn push(&mut self, msg: Message) {
         self.messages.push(msg);
-        self.sync();
     }
 
-    pub fn replace(&mut self, messages: Vec<Message>) {
-        self.messages = messages;
-        self.sync();
-    }
-
-    fn sync(&self) {
+    pub fn commit(&self) {
         if let Some(shared) = &self.shared {
             let mut lock = shared.lock().unwrap_or_else(|e| e.into_inner());
             lock.clone_from(&self.messages);
         }
+    }
+
+    pub fn replace(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
+        self.commit();
     }
 }
 
@@ -232,6 +231,7 @@ fn consume_interrupt(
             "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{msg}\n</user-interrupt>"
         );
         history.push(Message::user(wrapped));
+        history.commit();
         event_tx.send(AgentEvent::InterruptConsumed { message: msg }.into())?;
         return Ok(true);
     }
@@ -252,6 +252,7 @@ pub fn run(
 ) -> Result<(), AgentError> {
     let user_message = input.effective_message();
     history.push(Message::user(user_message.clone()));
+    history.commit();
     let ctx = ToolContext {
         provider,
         model,
@@ -310,6 +311,7 @@ pub fn run(
         if !has_tools {
             let truncated = response.stop_reason.as_deref() == Some("max_tokens");
             history.push(response.message);
+            history.commit();
 
             if truncated && num_turns <= MAX_CONTINUATION_TURNS {
                 warn!(num_turns, "response truncated (max_tokens), re-prompting");
@@ -355,6 +357,7 @@ pub fn run(
             .into(),
         )?;
         history.push(tool_msg);
+        history.commit();
 
         consume_interrupt(interrupt_rx, history, event_tx)?;
     }
@@ -683,15 +686,29 @@ mod tests {
     }
 
     #[test]
-    fn history_push_syncs_to_shared() {
+    fn history_tool_pair_atomic_commit() {
         let shared: SharedHistory = Arc::new(Mutex::new(Vec::new()));
         let mut history = History::new(Vec::new(), Some(Arc::clone(&shared)));
 
-        history.push(Message::user("one".into()));
-        assert_eq!(shared.lock().unwrap().len(), 1);
+        history.push(Message::user("go".into()));
+        history.commit();
 
-        history.push(Message::user("two".into()));
-        assert_eq!(shared.lock().unwrap().len(), 2);
+        let assistant_msg = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "glob".into(),
+                input: serde_json::json!({}),
+            }],
+        };
+        history.push(assistant_msg);
+        assert_eq!(shared.lock().unwrap().len(), 1, "tool_use not yet visible");
+
+        let result_msg =
+            Message::tool_results(vec![ToolDoneEvent::error("t1".into(), "cancelled")]);
+        history.push(result_msg);
+        history.commit();
+        assert_eq!(shared.lock().unwrap().len(), 3, "both visible after commit");
     }
 
     #[test]
@@ -699,7 +716,6 @@ mod tests {
         let shared: SharedHistory = Arc::new(Mutex::new(Vec::new()));
         let mut history =
             History::new(vec![Message::user("old".into())], Some(Arc::clone(&shared)));
-        assert_eq!(shared.lock().unwrap().len(), 0);
 
         history.replace(vec![
             Message::user("new1".into()),
