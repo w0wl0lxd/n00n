@@ -476,6 +476,9 @@ impl App {
                     self.status_bar.mark_error();
                     self.pending_interrupts.clear();
                     self.queue.clear();
+                    for chat in &mut self.chats {
+                        chat.fail_in_progress();
+                    }
                 }
                 ChatEventResult::QuestionPrompt { questions } => {
                     if QuestionForm::is_form_suitable(&questions) {
