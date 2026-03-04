@@ -338,16 +338,20 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
                 ],
             }),
         ),
-        // Glob - Success, Plain, header+body
+        // Glob - Success, GlobResult, header+body
         tool(
             "t_glob",
             GLOB_TOOL_NAME,
             ToolStatus::Success,
             "**/*.rs (3 files)\nsrc/config/mod.rs\nsrc/config/builder.rs\nsrc/config/validation.rs",
             None,
-            Some(ToolOutput::Plain(
-                "src/config/mod.rs\nsrc/config/builder.rs\nsrc/config/validation.rs".into(),
-            )),
+            Some(ToolOutput::GlobResult {
+                files: vec![
+                    "src/config/mod.rs".into(),
+                    "src/config/builder.rs".into(),
+                    "src/config/validation.rs".into(),
+                ],
+            }),
         ),
         // Grep - Success, GrepResult (pattern + filter + path)
         tool(

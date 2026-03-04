@@ -13,9 +13,9 @@ pub use model::{Model, ModelError, ModelFamily, ModelPricing, TokenUsage};
 pub use providers::auth;
 pub use types::{
     AgentEvent, BatchToolEntry, BatchToolStatus, ContentBlock, DiffHunk, DiffLine, DiffSpan,
-    Envelope, GrepFileEntry, GrepMatch, Message, QuestionAnswer, QuestionInfo, QuestionOption,
-    Role, StreamResponse, TodoItem, TodoPriority, TodoStatus, ToolDoneEvent, ToolInput, ToolOutput,
-    ToolStartEvent,
+    Envelope, GrepFileEntry, GrepMatch, Message, NO_FILES_FOUND, QuestionAnswer, QuestionInfo,
+    QuestionOption, Role, StreamResponse, TodoItem, TodoPriority, TodoStatus, ToolDoneEvent,
+    ToolInput, ToolOutput, ToolStartEvent,
 };
 
 const DATA_DIR_NAME: &str = ".maki";

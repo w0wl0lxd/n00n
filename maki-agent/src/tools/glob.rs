@@ -4,7 +4,7 @@ use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 use tracing::debug;
 
-use super::{NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path};
+use super::{SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Glob {
@@ -54,20 +54,12 @@ impl Glob {
             })
             .collect();
 
-        if entries.is_empty() {
-            return Ok(ToolOutput::Plain(NO_FILES_FOUND.to_string()));
-        }
-
         entries.sort_unstable_by(|a, b| b.0.cmp(&a.0));
         entries.truncate(SEARCH_RESULT_LIMIT);
 
-        Ok(ToolOutput::Plain(
-            entries
-                .into_iter()
-                .map(|(_, p)| p)
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ))
+        Ok(ToolOutput::GlobResult {
+            files: entries.into_iter().map(|(_, p)| p).collect(),
+        })
     }
 
     pub fn start_summary(&self) -> String {

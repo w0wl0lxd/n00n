@@ -15,7 +15,9 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use maki_agent::tools::{BASH_TOOL_NAME, WEBFETCH_TOOL_NAME};
-use maki_providers::{BatchToolStatus, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent};
+use maki_providers::{
+    BatchToolStatus, NO_FILES_FOUND, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
+};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -108,6 +110,7 @@ fn build_copy_text(msg: &DisplayMessage) -> String {
             | ToolOutput::ReadCode { .. }
             | ToolOutput::WriteCode { .. }
             | ToolOutput::GrepResult { .. }
+            | ToolOutput::GlobResult { .. }
             | ToolOutput::TodoList(_)),
         ) => {
             out.push('\n');
@@ -270,6 +273,16 @@ impl MessagesPanel {
             }
             ToolOutput::GrepResult { entries, .. } => {
                 msg.text = format!("{} ({} files)", msg.text, entries.len());
+            }
+            ToolOutput::GlobResult { files } => {
+                if files.is_empty() {
+                    msg.text = format!("{}\n{NO_FILES_FOUND}", msg.text);
+                } else {
+                    msg.text = format!("{} ({} files)", msg.text, files.len());
+                    let joined = files.join("\n");
+                    let display = truncate_lines(&joined, TOOL_OUTPUT_MAX_LINES);
+                    msg.text = format!("{}\n{display}", msg.text);
+                }
             }
             ToolOutput::Batch { entries, .. } => {
                 let failed = entries
@@ -735,7 +748,7 @@ impl MessagesPanel {
 mod tests {
     use super::*;
     use crate::components::scrollbar::SCROLLBAR_THUMB;
-    use maki_agent::tools::{QUESTION_TOOL_NAME, WRITE_TOOL_NAME};
+    use maki_agent::tools::{GLOB_TOOL_NAME, QUESTION_TOOL_NAME, WRITE_TOOL_NAME};
     use maki_providers::{DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, ToolOutput};
     use ratatui::backend::TestBackend;
     use test_case::test_case;
@@ -832,6 +845,32 @@ mod tests {
             is_error: false,
         });
         assert!(panel.messages[0].text.contains("2 files"));
+    }
+
+    #[test_case(
+        ToolOutput::GlobResult { files: vec!["a.rs".into(), "b.rs".into()] },
+        true, false
+        ; "glob_with_files_shows_count"
+    )]
+    #[test_case(
+        ToolOutput::GlobResult { files: vec![] },
+        false, true
+        ; "glob_empty_shows_no_files_found"
+    )]
+    fn tool_done_glob_result(output: ToolOutput, has_file_count: bool, has_no_files_msg: bool) {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(start("t1", GLOB_TOOL_NAME));
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: GLOB_TOOL_NAME,
+            output,
+            is_error: false,
+        });
+        assert_eq!(panel.messages[0].text.contains("files)"), has_file_count);
+        assert_eq!(
+            panel.messages[0].text.contains(NO_FILES_FOUND),
+            has_no_files_msg
+        );
     }
 
     #[test]

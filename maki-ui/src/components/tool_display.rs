@@ -29,7 +29,6 @@ const TIMESTAMP_LEN: usize = 8;
 
 pub fn tool_summary_annotation(tool: &str, text: &str) -> Option<String> {
     match tool {
-        GLOB_TOOL_NAME => Some(format!("{} files", text.lines().count())),
         WEBFETCH_TOOL_NAME | WEBSEARCH_TOOL_NAME => Some(format!("{} lines", text.lines().count())),
         _ => {
             let n = text.lines().count();
@@ -168,6 +167,7 @@ impl HighlightRequest {
             ToolOutput::Plain(_)
             | ToolOutput::TodoList(_)
             | ToolOutput::Batch { .. }
+            | ToolOutput::GlobResult { .. }
             | ToolOutput::QuestionAnswers(_) => None,
         });
         Some(Self {
@@ -238,7 +238,7 @@ pub fn build_tool_lines(
     let content_end = lines.len();
 
     match msg.tool_output.as_ref() {
-        None | Some(ToolOutput::Plain(_)) => {
+        None | Some(ToolOutput::Plain(_)) | Some(ToolOutput::GlobResult { .. }) => {
             if let Some((_, body)) = msg.text.split_once('\n') {
                 for line in body.lines() {
                     let style = if line.starts_with(TRUNCATION_PREFIX) {
@@ -326,7 +326,6 @@ mod tests {
     use maki_providers::{ToolInput, ToolOutput};
     use test_case::test_case;
 
-    #[test_case(GLOB_TOOL_NAME, "src/a.rs\nsrc/b.rs\nsrc/c.rs", Some("3 files") ; "glob_file_count")]
     #[test_case(WEBFETCH_TOOL_NAME, "line1\nline2\nline3", Some("3 lines") ; "webfetch_line_count")]
     #[test_case(WEBSEARCH_TOOL_NAME, "result1\nresult2", Some("2 lines") ; "websearch_line_count")]
     #[test_case("bash", "ok", None ; "short_output_no_annotation")]

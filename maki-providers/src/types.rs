@@ -5,6 +5,8 @@ use serde_json::Value;
 
 use crate::TokenUsage;
 
+pub const NO_FILES_FOUND: &str = "No files found";
+
 #[derive(Debug, Default, Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -204,6 +206,9 @@ pub enum ToolOutput {
     GrepResult {
         entries: Vec<GrepFileEntry>,
     },
+    GlobResult {
+        files: Vec<String>,
+    },
     Batch {
         entries: Vec<BatchToolEntry>,
         text: String,
@@ -265,6 +270,12 @@ impl ToolOutput {
             Self::WriteCode {
                 path, byte_count, ..
             } => format!("wrote {byte_count} bytes to {path}"),
+            Self::GlobResult { files } => {
+                if files.is_empty() {
+                    return NO_FILES_FOUND.into();
+                }
+                files.join("\n")
+            }
             Self::GrepResult { entries } => {
                 let mut out = String::new();
                 for entry in entries {
@@ -539,6 +550,13 @@ mod tests {
         assert!(text.contains("[•] (medium) wip"));
         assert!(text.contains("[ ] (low) todo"));
         assert!(text.contains("[x] (low) nope"));
+    }
+
+    #[test_case(vec!["src/a.rs".into(), "src/b.rs".into()], "src/a.rs\nsrc/b.rs" ; "with_files")]
+    #[test_case(vec![],                                       NO_FILES_FOUND       ; "empty")]
+    fn as_text_glob_result(files: Vec<String>, expected: &str) {
+        let output = ToolOutput::GlobResult { files };
+        assert_eq!(output.as_text(), expected);
     }
 
     #[test]

@@ -24,6 +24,7 @@ use tracing::error;
 use crate::template::Vars;
 use crate::{AgentError, AgentMode, Envelope, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use maki_providers::Model;
+pub(crate) use maki_providers::NO_FILES_FOUND;
 use maki_providers::provider::Provider;
 
 pub const BASH_TOOL_NAME: &str = bash::Bash::NAME;
@@ -44,7 +45,6 @@ pub(crate) const MAX_OUTPUT_LINES: usize = 2000;
 pub(crate) const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 pub(crate) const SEARCH_RESULT_LIMIT: usize = 100;
 pub(crate) const MAX_LINE_BYTES: usize = 500;
-pub(crate) const NO_FILES_FOUND: &str = "No files found";
 const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
 
 pub struct ToolContext<'a> {
@@ -388,12 +388,17 @@ mod tests {
         let ctx = stub_ctx(&AgentMode::Build);
 
         let g = glob::Glob::parse_input(&json!({"pattern": "*.txt", "path": dir_str})).unwrap();
-        let hit = g.execute(&ctx).unwrap().as_text().to_string();
-        assert!(hit.contains("a.txt"));
-        assert!(!hit.contains("c.rs"));
+        let output = g.execute(&ctx).unwrap();
+        let ToolOutput::GlobResult { files } = &output else {
+            panic!("expected GlobResult");
+        };
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|f| f.contains(".txt")));
+        assert!(files.iter().all(|f| !f.contains(".rs")));
 
         let g = glob::Glob::parse_input(&json!({"pattern": "*.nope", "path": dir_str})).unwrap();
-        assert_eq!(g.execute(&ctx).unwrap().as_text(), NO_FILES_FOUND);
+        let output = g.execute(&ctx).unwrap();
+        assert!(matches!(output, ToolOutput::GlobResult { files } if files.is_empty()));
     }
 
     #[test]
