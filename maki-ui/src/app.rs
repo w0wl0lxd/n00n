@@ -42,7 +42,6 @@ struct ViewAreas {
     input_area: Rect,
     status_area: Rect,
     cmd_popup_area: Option<Rect>,
-    picker_inner_area: Option<Rect>,
 }
 
 pub enum Msg {
@@ -158,7 +157,12 @@ impl App {
             Msg::Scroll { column, row, delta } => {
                 self.selection = None;
                 let pos = Position::new(column, row);
-                if self.msg_area.contains(pos) {
+                if self.chat_picker.is_open() {
+                    if self.chat_picker.contains(pos) {
+                        let names = self.chat_names();
+                        self.chat_picker.scroll(delta, &names);
+                    }
+                } else if self.msg_area.contains(pos) {
                     self.active_chat().scroll(delta);
                 } else if self.input_area.contains(pos) {
                     self.input_box.scroll(delta);
@@ -651,12 +655,10 @@ impl App {
             self.command_palette.view(frame, input_area)
         };
 
-        let picker_inner_area = if let Some(names) = names {
+        if let Some(names) = names {
             let full_area = frame.area();
-            self.chat_picker.view(frame, full_area, &names)
-        } else {
-            None
-        };
+            self.chat_picker.view(frame, full_area, &names);
+        }
 
         let chat = &self.chats[render_chat];
         let chat_name = (self.chats.len() > 1).then_some(chat.name.as_str());
@@ -694,7 +696,6 @@ impl App {
                         input_area,
                         status_area,
                         cmd_popup_area,
-                        picker_inner_area,
                     },
                 );
             }
@@ -753,7 +754,7 @@ impl App {
         if let Some(area) = va.cmd_popup_area {
             regions.push(ContentRegion { area, raw_text: "" });
         }
-        if let Some(area) = va.picker_inner_area {
+        if let Some(area) = self.chat_picker.inner_area() {
             regions.push(ContentRegion { area, raw_text: "" });
         }
 

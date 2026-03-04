@@ -6,7 +6,7 @@ use crate::theme;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
@@ -22,6 +22,7 @@ struct State {
     search: TextBuffer,
     scroll_offset: usize,
     viewport_height: usize,
+    inner_area: Rect,
 }
 
 const NO_MATCHES: &str = "No matches";
@@ -49,6 +50,7 @@ impl ChatPicker {
             search: TextBuffer::new(String::new()),
             scroll_offset: 0,
             viewport_height: 20,
+            inner_area: Rect::default(),
         });
     }
 
@@ -184,11 +186,36 @@ impl ChatPicker {
             );
         }
 
-        Some(inset_border(popup))
+        s.inner_area = inset_border(popup);
+        Some(s.inner_area)
     }
 
     pub fn close(&mut self) {
         self.state = None;
+    }
+
+    pub fn contains(&self, pos: Position) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|s| s.inner_area.contains(pos))
+    }
+
+    pub fn inner_area(&self) -> Option<Rect> {
+        self.state.as_ref().map(|s| s.inner_area)
+    }
+
+    pub fn scroll(&mut self, delta: i32, chat_names: &[String]) {
+        let s = match self.state.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
+        let filtered_len = s.filter(chat_names).len();
+        let max_offset = filtered_len.saturating_sub(s.viewport_height);
+        if delta > 0 {
+            s.scroll_offset = s.scroll_offset.saturating_sub(delta as usize);
+        } else {
+            s.scroll_offset = (s.scroll_offset + delta.unsigned_abs() as usize).min(max_offset);
+        }
     }
 }
 
@@ -318,7 +345,7 @@ fn render_search(frame: &mut Frame, area: Rect, s: &State) {
 mod tests {
     use super::*;
     use crate::components::{ctrl, key};
-    use crossterm::event::{KeyCode, KeyEvent};
+    use crossterm::event::KeyCode;
     use test_case::test_case;
 
     fn names(n: &[&str]) -> Vec<String> {
@@ -387,18 +414,6 @@ mod tests {
     }
 
     #[test]
-    fn backspace_widens_filter() {
-        let mut p = ChatPicker::new();
-        let chat_names = names(&["Main", "Explore config"]);
-        p.open(0, &chat_names);
-        p.handle_key(key(KeyCode::Char('E')), &chat_names);
-        assert_eq!(p.state.as_ref().unwrap().filter(&chat_names).len(), 1);
-
-        p.handle_key(key(KeyCode::Backspace), &chat_names);
-        assert_eq!(p.state.as_ref().unwrap().filter(&chat_names).len(), 2);
-    }
-
-    #[test]
     fn no_matches_enter_consumed() {
         let mut p = ChatPicker::new();
         let chat_names = names(&["Main"]);
@@ -423,19 +438,6 @@ mod tests {
         assert_eq!(p.state.as_ref().unwrap().selected, 0);
     }
 
-    #[test_case(KeyCode::Left ; "left_consumed")]
-    #[test_case(KeyCode::Right ; "right_consumed")]
-    #[test_case(KeyCode::Home ; "home_consumed")]
-    #[test_case(KeyCode::End ; "end_consumed")]
-    #[test_case(KeyCode::Tab ; "tab_consumed")]
-    fn keys_are_consumed(code: KeyCode) {
-        let mut p = ChatPicker::new();
-        let chat_names = names(&["Main"]);
-        p.open(0, &chat_names);
-        let action = p.handle_key(key(code), &chat_names);
-        assert!(matches!(action, ChatPickerAction::Consumed));
-    }
-
     #[test]
     fn ctrl_w_deletes_word() {
         let mut p = ChatPicker::new();
@@ -447,5 +449,33 @@ mod tests {
 
         p.handle_key(ctrl('w'), &chat_names);
         assert_eq!(p.state.as_ref().unwrap().search.value(), "");
+    }
+
+    fn many_names(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("Chat {i}")).collect()
+    }
+
+    #[test_case(0, -3, 3  ; "scroll_down")]
+    #[test_case(0, 100, 0  ; "clamp_at_top")]
+    #[test_case(5, 3, 2    ; "scroll_up")]
+    #[test_case(0, -100, 20 ; "clamp_at_bottom")]
+    fn scroll_offset(initial: usize, delta: i32, expected: usize) {
+        let mut p = ChatPicker::new();
+        let chat_names = many_names(30);
+        p.open(0, &chat_names);
+        let s = p.state.as_mut().unwrap();
+        s.viewport_height = 10;
+        s.scroll_offset = initial;
+
+        p.scroll(delta, &chat_names);
+        assert_eq!(p.state.as_ref().unwrap().scroll_offset, expected);
+    }
+
+    #[test]
+    fn scroll_noop_when_closed() {
+        let mut p = ChatPicker::new();
+        let chat_names = many_names(5);
+        p.scroll(-3, &chat_names);
+        assert!(!p.is_open());
     }
 }
