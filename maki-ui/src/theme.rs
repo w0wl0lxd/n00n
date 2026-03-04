@@ -38,6 +38,7 @@ pub const STATUS_GLOBAL_COST: Style = Style::new().fg(FOREGROUND).add_modifier(M
 pub const STATUS_CONTEXT: Style = Style::new().fg(FOREGROUND);
 pub const STATUS_STREAMING: Style = Style::new().fg(YELLOW);
 pub const MODE_BUILD: Style = Style::new().fg(GREEN).add_modifier(Modifier::BOLD);
+pub const MODE_BUILD_PLAN: Style = Style::new().fg(PURPLE).add_modifier(Modifier::BOLD);
 pub const MODE_PLAN: Style = Style::new().fg(PINK).add_modifier(Modifier::BOLD);
 pub const CANCEL_HINT: Style = Style::new().fg(ORANGE);
 

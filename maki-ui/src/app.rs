@@ -26,47 +26,10 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, Widget};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PlanState {
-    Off,
-    Planning {
-        path: String,
-        written: bool,
-        previous: Option<String>,
-    },
-    Active {
-        path: String,
-    },
-}
-
-impl PlanState {
-    fn agent_mode(&self) -> AgentMode {
-        match self {
-            Self::Planning { path, .. } => AgentMode::Plan(path.clone()),
-            _ => AgentMode::Build,
-        }
-    }
-
-    fn plan_path(&self) -> Option<&str> {
-        match self {
-            Self::Planning { path, .. } => Some(path),
-            _ => None,
-        }
-    }
-
-    fn pending_plan(&self) -> Option<&str> {
-        match self {
-            Self::Active { path } => Some(path),
-            _ => None,
-        }
-    }
-
-    fn mode_label(&self) -> (&'static str, Style) {
-        match self {
-            Self::Planning { .. } => ("[PLAN]", theme::MODE_PLAN),
-            Self::Active { .. } => ("[BUILD PLAN]", theme::MODE_BUILD),
-            Self::Off => ("[BUILD]", theme::MODE_BUILD),
-        }
-    }
+pub(crate) enum Mode {
+    Build,
+    Plan { path: String, written: bool },
+    BuildPlan,
 }
 
 const CANCEL_MSG: &str = "Cancelled.";
@@ -101,7 +64,8 @@ pub struct App {
     status_bar: StatusBar,
     pub status: Status,
     pub token_usage: TokenUsage,
-    pub(crate) plan: PlanState,
+    pub(crate) mode: Mode,
+    pub(crate) ready_plan: Option<String>,
     model_id: String,
     pricing: ModelPricing,
     context_window: u32,
@@ -135,7 +99,8 @@ impl App {
             status_bar: StatusBar::new(),
             status: Status::Idle,
             token_usage: TokenUsage::default(),
-            plan: PlanState::Off,
+            mode: Mode::Build,
+            ready_plan: None,
             model_id,
             pricing,
             context_window,
@@ -364,8 +329,8 @@ impl App {
         }
         let input = AgentInput {
             message: text.clone(),
-            mode: self.plan.agent_mode(),
-            pending_plan: self.plan.pending_plan().map(String::from),
+            mode: self.agent_mode(),
+            pending_plan: self.pending_plan().map(String::from),
         };
         if self.status == Status::Streaming {
             if let Some(tx) = &self.interrupt_tx
@@ -414,18 +379,15 @@ impl App {
         );
 
         if let AgentEvent::ToolDone(ref e) = envelope.event
-            && let PlanState::Planning {
+            && let Mode::Plan {
                 ref path,
                 ref mut written,
-                ..
-            } = self.plan
+            } = self.mode
             && e.written_path()
                 .is_some_and(|wp| wp == path || Path::new(path).ends_with(wp))
         {
             *written = true;
         }
-
-        let plan_path = self.plan.plan_path();
 
         if let AgentEvent::Retry {
             attempt,
@@ -444,6 +406,11 @@ impl App {
         }
 
         self.retry_info = None;
+
+        let plan_path = match &self.mode {
+            Mode::Plan { path, .. } => Some(path.as_str()),
+            _ => None,
+        };
 
         if let AgentEvent::TurnComplete { usage, .. } = &envelope.event {
             self.token_usage += usage.clone();
@@ -525,32 +492,46 @@ impl App {
         if self.status == Status::Streaming {
             return vec![];
         }
-        self.plan = match std::mem::replace(&mut self.plan, PlanState::Off) {
-            PlanState::Active { path } => PlanState::Planning {
+        self.mode = match std::mem::replace(&mut self.mode, Mode::Build) {
+            Mode::BuildPlan => Mode::Build,
+            Mode::Build => Mode::Plan {
                 path: maki_agent::new_plan_path(),
                 written: false,
-                previous: Some(path),
             },
-            PlanState::Planning {
-                path,
-                written,
-                previous,
-            } => {
+            Mode::Plan { path, written } => {
                 if written {
-                    PlanState::Active { path }
-                } else if let Some(prev) = previous {
-                    PlanState::Active { path: prev }
+                    self.ready_plan = Some(path);
+                }
+                if self.ready_plan.is_some() {
+                    Mode::BuildPlan
                 } else {
-                    PlanState::Off
+                    Mode::Build
                 }
             }
-            PlanState::Off => PlanState::Planning {
-                path: maki_agent::new_plan_path(),
-                written: false,
-                previous: None,
-            },
         };
         vec![]
+    }
+
+    fn agent_mode(&self) -> AgentMode {
+        match &self.mode {
+            Mode::Plan { path, .. } => AgentMode::Plan(path.clone()),
+            Mode::Build | Mode::BuildPlan => AgentMode::Build,
+        }
+    }
+
+    fn pending_plan(&self) -> Option<&str> {
+        match &self.mode {
+            Mode::BuildPlan => self.ready_plan.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn mode_label(&self) -> (&'static str, Style) {
+        match &self.mode {
+            Mode::Build => ("[BUILD]", theme::MODE_BUILD),
+            Mode::Plan { .. } => ("[PLAN]", theme::MODE_PLAN),
+            Mode::BuildPlan => ("[BUILD PLAN]", theme::MODE_BUILD_PLAN),
+        }
     }
 
     fn chat_names(&self) -> Vec<String> {
@@ -668,7 +649,7 @@ impl App {
 
         let chat = &self.chats[render_chat];
         let chat_name = (self.chats.len() > 1).then_some(chat.name.as_str());
-        let (mode_label, mode_style) = self.plan.mode_label();
+        let (mode_label, mode_style) = self.mode_label();
         let ctx = StatusBarContext {
             status: &self.status,
             mode_label,
@@ -928,85 +909,77 @@ mod tests {
     }
 
     #[test]
-    fn tab_toggles_off_to_planning_and_back() {
-        let mut app = test_app();
-        assert_eq!(app.plan, PlanState::Off);
+    fn toggle_mode_state_machine() {
+        let tab = |app: &mut App| app.update(Msg::Key(key(KeyCode::Tab)));
+        let is_plan = |app: &App| matches!(&app.mode, Mode::Plan { .. });
 
-        app.update(Msg::Key(key(KeyCode::Tab)));
+        let mut app = test_app();
+        assert_eq!(app.mode, Mode::Build);
+
+        // Build -> Plan (generates path under PLANS_DIR)
+        tab(&mut app);
+        assert!(is_plan(&app));
         assert!(
-            matches!(app.plan, PlanState::Planning { ref path, written: false, previous: None } if path.contains(maki_agent::PLANS_DIR))
+            matches!(&app.mode, Mode::Plan { path, .. } if path.contains(maki_agent::PLANS_DIR))
         );
 
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        assert_eq!(app.plan, PlanState::Off);
-    }
+        // Plan(unwritten) -> Build (draft discarded, no ready_plan)
+        tab(&mut app);
+        assert_eq!(app.mode, Mode::Build);
+        assert!(app.ready_plan.is_none());
 
-    #[test]
-    fn submit_includes_pending_plan_from_active() {
-        let mut app = test_app();
-        app.plan = PlanState::Active {
-            path: "plan.md".into(),
-        };
-        app.update(Msg::Key(key(KeyCode::Char('x'))));
-        let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-        let Action::SendMessage(ref input) = actions[0] else {
-            panic!("expected SendMessage");
-        };
-        assert_eq!(input.pending_plan.as_deref(), Some("plan.md"));
-        assert_eq!(
-            app.plan,
-            PlanState::Active {
-                path: "plan.md".into()
-            }
-        );
-    }
-
-    #[test_case(false, "old.md"  ; "unwritten_restores_previous")]
-    #[test_case(true,  ""        ; "written_activates_new_plan")]
-    fn tab_cycle_from_active(simulate_write: bool, expect_contains: &str) {
-        let mut app = test_app();
-        app.plan = PlanState::Active {
-            path: "old.md".into(),
-        };
-
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        let PlanState::Planning { ref path, .. } = app.plan else {
-            panic!("expected Planning");
-        };
-        assert_eq!(
-            app.plan.pending_plan(),
-            None,
-            "Planning has no pending_plan"
-        );
-        let new_path = path.clone();
-
-        if simulate_write
-            && let PlanState::Planning {
-                ref mut written, ..
-            } = app.plan
+        // Plan(written) -> BuildPlan (draft promoted to ready_plan)
+        tab(&mut app);
+        if let Mode::Plan {
+            ref mut written, ..
+        } = app.mode
         {
             *written = true;
         }
+        tab(&mut app);
+        assert_eq!(app.mode, Mode::BuildPlan);
+        assert!(app.ready_plan.is_some());
+        let plan = app.ready_plan.clone().unwrap();
 
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        let PlanState::Active { ref path } = app.plan else {
-            panic!("expected Active");
+        // BuildPlan -> Build -> Plan -> BuildPlan (3-way cycle preserves ready_plan)
+        tab(&mut app);
+        assert_eq!(app.mode, Mode::Build);
+        assert_eq!(app.ready_plan.as_deref(), Some(plan.as_str()));
+
+        tab(&mut app);
+        assert!(is_plan(&app));
+
+        tab(&mut app);
+        assert_eq!(app.mode, Mode::BuildPlan);
+        assert_eq!(app.ready_plan.as_deref(), Some(plan.as_str()));
+
+        // Tab blocked during streaming
+        app.mode = Mode::Build;
+        app.status = Status::Streaming;
+        tab(&mut app);
+        assert_eq!(app.mode, Mode::Build);
+    }
+
+    #[test_case(Mode::BuildPlan, Some("plan.md"), Some("plan.md") ; "build_plan_sends_pending")]
+    #[test_case(Mode::Build,     Some("plan.md"), None            ; "build_ignores_ready_plan")]
+    fn submit_pending_plan(mode: Mode, ready_plan: Option<&str>, expected: Option<&str>) {
+        let mut app = test_app();
+        app.mode = mode;
+        app.ready_plan = ready_plan.map(String::from);
+        let actions = type_and_submit(&mut app, "x");
+        let Action::SendMessage(ref input) = actions[0] else {
+            panic!("expected SendMessage");
         };
-        if simulate_write {
-            assert_eq!(path, &new_path);
-        } else {
-            assert_eq!(path, expect_contains);
-        }
+        assert_eq!(input.pending_plan.as_deref(), expected);
     }
 
     #[test_case("plans/test.md", true  ; "matching_path_sets_written")]
     #[test_case("other.rs",      false ; "non_matching_path_stays_unwritten")]
     fn write_event_sets_written_flag(written_path: &str, expect_written: bool) {
         let mut app = test_app();
-        app.plan = PlanState::Planning {
+        app.mode = Mode::Plan {
             path: "plans/test.md".into(),
             written: false,
-            previous: None,
         };
         app.status = Status::Streaming;
 
@@ -1023,18 +996,7 @@ mod tests {
             },
         )));
 
-        let PlanState::Planning { written, .. } = app.plan else {
-            panic!("expected Planning");
-        };
-        assert_eq!(written, expect_written);
-    }
-
-    #[test]
-    fn tab_blocked_during_streaming() {
-        let mut app = test_app();
-        app.status = Status::Streaming;
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        assert_eq!(app.plan, PlanState::Off);
+        assert!(matches!(&app.mode, Mode::Plan { written, .. } if *written == expect_written));
     }
 
     #[test]
@@ -1279,9 +1241,8 @@ mod tests {
         let mut app = test_app();
         app.token_usage.input = 500;
         app.chats[0].context_size = 1000;
-        app.plan = PlanState::Active {
-            path: "plan.md".into(),
-        };
+        app.mode = Mode::BuildPlan;
+        app.ready_plan = Some("plan.md".into());
         app.queue.push_back(AgentInput {
             message: "q".into(),
             mode: AgentMode::Build,
@@ -1293,12 +1254,8 @@ mod tests {
         assert_eq!(app.status, Status::Idle);
         assert_eq!(app.token_usage.input, 0);
         assert_eq!(app.chats[0].context_size, 0);
-        assert_eq!(
-            app.plan,
-            PlanState::Active {
-                path: "plan.md".into()
-            }
-        );
+        assert_eq!(app.mode, Mode::BuildPlan);
+        assert_eq!(app.ready_plan.as_deref(), Some("plan.md"));
         assert!(app.queue.is_empty());
         assert!(app.pending_interrupts.is_empty());
         assert_eq!(app.chats.len(), 1);
@@ -1315,7 +1272,7 @@ mod tests {
 
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert!(!app.command_palette.is_active());
-        assert!(matches!(app.plan, PlanState::Planning { .. }));
+        assert!(matches!(&app.mode, Mode::Plan { .. }));
     }
 
     #[test]
