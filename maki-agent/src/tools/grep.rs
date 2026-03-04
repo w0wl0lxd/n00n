@@ -95,7 +95,12 @@ impl Grep {
         }
 
         if entries.is_empty() {
-            return Ok(ToolOutput::Plain(NO_FILES_FOUND.to_string()));
+            let msg = if self.pattern.ends_with('"') {
+                format!("{NO_FILES_FOUND}. Pattern ends with a quote - did you mean to omit it?")
+            } else {
+                NO_FILES_FOUND.to_string()
+            };
+            return Ok(ToolOutput::Plain(msg));
         }
 
         entries.sort_by(|a, b| {
