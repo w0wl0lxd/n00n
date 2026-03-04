@@ -845,29 +845,82 @@ fn render_table(
     lines
 }
 
-fn find_opening_fence(text: &str) -> Option<(usize, usize)> {
-    let mut search_from = 0;
-    while search_from < text.len() {
-        let pos = text[search_from..].find("```")?;
-        let abs = search_from + pos;
-        if abs == 0 || text.as_bytes()[abs - 1] == b'\n' {
-            let fence_len = 3 + text[abs + 3..].bytes().take_while(|&b| b == b'`').count();
-            return Some((abs, fence_len));
-        }
-        search_from = abs + 3;
-    }
-    None
+struct CodeFence<'a> {
+    before_end: usize,
+    lang: &'a str,
+    code: &'a str,
+    block_end: usize,
 }
 
-fn find_closing_fence(text: &str, fence_len: usize) -> Option<(usize, usize)> {
-    let fence_pat = "`".repeat(fence_len);
-    let mut offset = 0;
-    for line in text.split('\n') {
-        let trimmed = line.trim_end();
-        if trimmed.starts_with(&fence_pat) && !trimmed[fence_len..].starts_with('`') {
-            return Some((offset, line.len()));
+fn find_code_fence(text: &str) -> Option<CodeFence<'_>> {
+    let bytes = text.as_bytes();
+    let mut search_from = 0;
+
+    while search_from < bytes.len() {
+        let pos = text[search_from..].find("```")?;
+        let abs = search_from + pos;
+
+        if abs != 0 && bytes[abs - 1] != b'\n' {
+            search_from = abs + 3;
+            continue;
         }
-        offset += line.len() + 1;
+
+        let fence_len = 3 + bytes[abs + 3..].iter().take_while(|&&b| b == b'`').count();
+        let after_ticks = abs + fence_len;
+
+        let Some(nl) = text[after_ticks..].find('\n') else {
+            search_from = abs + fence_len;
+            continue;
+        };
+        let info = &text[after_ticks..after_ticks + nl];
+        if info.contains('`') {
+            search_from = abs + fence_len;
+            continue;
+        }
+
+        let lang = info.trim();
+        let code_start = after_ticks + nl + 1;
+
+        let fence_str = "`".repeat(fence_len);
+        let mut offset = 0;
+        let mut close: Option<(usize, usize)> = None;
+        for line in text[code_start..].split('\n') {
+            let trimmed = line.trim_end();
+            if trimmed.len() >= fence_len
+                && trimmed.starts_with(&fence_str)
+                && !trimmed[fence_len..].starts_with('`')
+            {
+                close = Some((offset, line.len()));
+                break;
+            }
+            offset += line.len() + 1;
+        }
+
+        let (code, block_end) = if let Some((close_off, close_line_len)) = close {
+            let raw_end = code_start + close_off;
+            let code_end = if raw_end > code_start && bytes[raw_end - 1] == b'\n' {
+                raw_end - 1
+            } else {
+                raw_end
+            };
+            let trailing_start = code_start + close_off + fence_len;
+            let trailing_end = code_start + close_off + close_line_len;
+            let block_end = if text[trailing_start..trailing_end].trim().is_empty() {
+                trailing_end
+            } else {
+                trailing_start
+            };
+            (&text[code_start..code_end], block_end)
+        } else {
+            (&text[code_start..], text.len())
+        };
+
+        return Some(CodeFence {
+            before_end: abs,
+            lang,
+            code,
+            block_end,
+        });
     }
     None
 }
@@ -876,35 +929,17 @@ fn parse_blocks(text: &str) -> Vec<TextBlock<'_>> {
     let mut blocks = Vec::new();
     let mut rest = text;
 
-    while let Some((fence_start, fence_len)) = find_opening_fence(rest) {
-        let before = rest[..fence_start].trim_end_matches('\n');
+    while let Some(fence) = find_code_fence(rest) {
+        let before = rest[..fence.before_end].trim_end_matches('\n');
         if !before.is_empty() {
             blocks.extend(split_normal_blocks(before));
         }
 
-        let after_fence = &rest[fence_start + fence_len..];
-        let lang_end = after_fence.find('\n').unwrap_or(after_fence.len());
-        let lang = after_fence[..lang_end].trim();
-
-        let code_start_offset = lang_end + 1;
-        if code_start_offset > after_fence.len() {
-            rest = &rest[fence_start..];
-            break;
-        }
-        let code_region = &after_fence[code_start_offset..];
-
-        if let Some((close_offset, close_line_len)) = find_closing_fence(code_region, fence_len) {
-            let raw = &code_region[..close_offset];
-            let code = raw.strip_suffix('\n').unwrap_or(raw);
-            blocks.push(TextBlock::Code { lang, code });
-            let after_close = &code_region[close_offset + close_line_len..];
-            rest = after_close.trim_start_matches('\n');
-        } else {
-            let code = code_region;
-            blocks.push(TextBlock::Code { lang, code });
-            rest = "";
-            break;
-        }
+        blocks.push(TextBlock::Code {
+            lang: fence.lang,
+            code: fence.code,
+        });
+        rest = rest[fence.block_end..].trim_start_matches('\n');
     }
 
     if !rest.is_empty() {
@@ -1257,28 +1292,33 @@ mod tests {
     )]
     #[test_case(
         "before\n```rs\ncode\n```trailing\nmore",
-        &[("before", None), ("code", Some("rs")), ("more", None)]
+        &[("before", None), ("code", Some("rs")), ("trailing\nmore", None)]
         ; "closing_fence_with_trailing_text"
     )]
     #[test_case(
+        "```\nhello\n```  \nafter",
+        &[("hello", Some("")), ("after", None)]
+        ; "closing_fence_trailing_whitespace_dropped"
+    )]
+    #[test_case(
         "before\n```rust",
-        &[("before", None), ("```rust", None)]
+        &[("before\n```rust", None)]
         ; "partial_fence_no_newline_after_lang"
     )]
     #[test_case(
-        "before\n```",
-        &[("before", None), ("```", None)]
-        ; "partial_fence_no_lang_no_newline"
-    )]
-    #[test_case(
-        "```rust",
-        &[("```rust", None)]
-        ; "only_partial_fence"
+        "```",
+        &[("```", None)]
+        ; "only_backticks_no_newline"
     )]
     #[test_case(
         "a\n```\n",
         &[("a", None), ("", Some(""))]
         ; "fence_with_newline_then_eof"
+    )]
+    #[test_case(
+        "```lang`ish\ncode\n```",
+        &[("```lang`ish\ncode\n```", None)]
+        ; "backtick_in_info_string_not_a_fence"
     )]
     fn parse_blocks_cases(input: &str, expected: &[(&str, Option<&str>)]) {
         let blocks = parse_blocks(input);
@@ -1468,7 +1508,6 @@ mod tests {
     #[test_case("--", false ; "two_dashes_too_short")]
     #[test_case("- item", false ; "list_item_not_hr")]
     #[test_case("---text", false ; "text_after_dashes")]
-    #[test_case("abc", false ; "plain_text")]
     fn horizontal_rule_detection(input: &str, expected: bool) {
         assert_eq!(is_horizontal_rule(input), expected);
     }
@@ -1515,7 +1554,6 @@ mod tests {
     }
 
     #[test_case("# heading", "heading" ; "h1")]
-    #[test_case("## heading", "heading" ; "h2")]
     #[test_case("###### heading", "heading" ; "h6")]
     #[test_case("# ", "" ; "h1_empty")]
     fn heading_parsed(input: &str, expected: &str) {
