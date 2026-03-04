@@ -97,7 +97,7 @@ fn run_event_loop(
         while let Ok(envelope) = handles.agent_rx.try_recv() {
             had_agent_msg = true;
             dispatch(
-                app.update(Msg::Agent(envelope)),
+                app.update(Msg::Agent(Box::new(envelope))),
                 &mut handles,
                 &provider,
                 &model,

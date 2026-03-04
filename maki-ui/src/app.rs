@@ -87,7 +87,7 @@ pub enum Msg {
     Paste(String),
     Mouse(MouseEvent),
     Scroll { column: u16, row: u16, delta: i32 },
-    Agent(Envelope),
+    Agent(Box<Envelope>),
 }
 
 pub struct App {
@@ -200,7 +200,7 @@ impl App {
                 }
                 vec![]
             }
-            Msg::Agent(envelope) => self.handle_agent_event(envelope),
+            Msg::Agent(envelope) => self.handle_agent_event(*envelope),
         }
     }
 
@@ -410,6 +410,7 @@ impl App {
         let chat_idx = self.resolve_or_create_chat(
             envelope.parent_tool_use_id.as_deref(),
             envelope.parent_name.as_deref(),
+            envelope.parent_prompt.as_deref(),
         );
 
         if let AgentEvent::ToolDone(ref e) = envelope.event
@@ -500,6 +501,7 @@ impl App {
         &mut self,
         parent_id: Option<&str>,
         parent_name: Option<&str>,
+        parent_prompt: Option<&str>,
     ) -> usize {
         let Some(id) = parent_id else { return 0 };
         if let Some(&idx) = self.chat_index.get(id) {
@@ -511,7 +513,11 @@ impl App {
         let idx = self.chats.len();
         self.chat_index.insert(id.to_owned(), idx);
         self.chats[0].update_tool_summary(id, &name);
-        self.chats.push(Chat::new(name));
+        let mut chat = Chat::new(name);
+        if let Some(prompt) = parent_prompt {
+            chat.push_user_message(prompt);
+        }
+        self.chats.push(chat);
         idx
     }
 
@@ -834,19 +840,30 @@ mod tests {
     }
 
     fn agent_msg(event: AgentEvent) -> Msg {
-        Msg::Agent(Envelope {
+        Msg::Agent(Box::new(Envelope {
             event,
             parent_tool_use_id: None,
             parent_name: None,
-        })
+            parent_prompt: None,
+        }))
     }
 
     fn subagent_msg(event: AgentEvent, parent_id: &str, name: Option<&str>) -> Msg {
-        Msg::Agent(Envelope {
+        subagent_msg_with_prompt(event, parent_id, name, None)
+    }
+
+    fn subagent_msg_with_prompt(
+        event: AgentEvent,
+        parent_id: &str,
+        name: Option<&str>,
+        prompt: Option<&str>,
+    ) -> Msg {
+        Msg::Agent(Box::new(Envelope {
             event,
             parent_tool_use_id: Some(parent_id.into()),
             parent_name: name.map(String::from),
-        })
+            parent_prompt: prompt.map(String::from),
+        }))
     }
 
     #[test]
@@ -1343,6 +1360,40 @@ mod tests {
         assert_eq!(app.chats.len(), 3);
         assert_eq!(app.chats[1].name, "first");
         assert_eq!(app.chats[2].name, "second");
+    }
+
+    #[test]
+    fn subagent_prompt_shown_as_first_message() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.update(subagent_msg_with_prompt(
+            AgentEvent::TextDelta { text: "ok".into() },
+            "task1",
+            Some("research"),
+            Some("Find all TODO comments"),
+        ));
+        assert_eq!(app.chats[1].message_count(), 1);
+        assert_eq!(app.chats[1].last_message_text(), "Find all TODO comments");
+    }
+
+    #[test]
+    fn subagent_prompt_not_duplicated_on_subsequent_events() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.update(subagent_msg_with_prompt(
+            AgentEvent::TextDelta { text: "a".into() },
+            "task1",
+            Some("research"),
+            Some("Find all TODO comments"),
+        ));
+        app.update(subagent_msg(
+            AgentEvent::TextDelta { text: "b".into() },
+            "task1",
+            Some("research"),
+        ));
+        app.chats[1].flush();
+        assert_eq!(app.chats[1].message_count(), 2);
+        assert_eq!(app.chats[1].last_message_text(), "ab");
     }
 
     #[test]

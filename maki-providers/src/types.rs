@@ -434,6 +434,8 @@ pub struct Envelope {
     pub parent_tool_use_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_prompt: Option<String>,
 }
 
 impl From<AgentEvent> for Envelope {
@@ -442,6 +444,7 @@ impl From<AgentEvent> for Envelope {
             event,
             parent_tool_use_id: None,
             parent_name: None,
+            parent_prompt: None,
         }
     }
 }

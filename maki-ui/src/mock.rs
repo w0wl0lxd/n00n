@@ -118,6 +118,10 @@ pub fn mock_question_messages() -> Vec<DisplayMessage> {
 pub fn mock_subagent_messages() -> Vec<DisplayMessage> {
     vec![
         msg(
+            DisplayRole::User,
+            "Search the codebase for existing builder patterns and validation approaches. Return file paths and a summary of how they are implemented.",
+        ),
+        msg(
             DisplayRole::Thinking,
             "The user wants me to explore config patterns in the codebase. Let me search for existing builder patterns and validation approaches.",
         ),
