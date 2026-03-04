@@ -8,7 +8,7 @@ use crate::components::chat_picker::{ChatPicker, ChatPickerAction};
 use crate::components::command::{CommandAction, CommandPalette};
 use crate::components::input::{InputAction, InputBox};
 use crate::components::question_form::{QuestionForm, QuestionFormAction};
-use crate::components::queue_panel;
+use crate::components::queue_panel::{self, QueueEntry};
 use crate::components::status_bar::{CancelResult, StatusBar, StatusBarContext, UsageStats};
 use crate::components::{Action, DisplayMessage, DisplayRole, RetryInfo, Status, is_ctrl};
 use crate::selection::{self, ContentRegion, Selection, inset_border};
@@ -33,6 +33,27 @@ pub(crate) enum Mode {
 }
 
 const CANCEL_MSG: &str = "Cancelled.";
+const COMPACT_LABEL: &str = "/compact";
+
+pub(crate) enum QueuedItem {
+    Message(AgentInput),
+    Compact,
+}
+
+impl QueuedItem {
+    fn as_queue_entry(&self) -> QueueEntry<'_> {
+        match self {
+            Self::Message(input) => QueueEntry {
+                text: &input.message,
+                color: theme::FOREGROUND,
+            },
+            Self::Compact => QueueEntry {
+                text: COMPACT_LABEL,
+                color: theme::PURPLE,
+            },
+        }
+    }
+}
 
 struct ViewAreas {
     render_chat: usize,
@@ -69,7 +90,7 @@ pub struct App {
     pricing: ModelPricing,
     context_window: u32,
     pub should_quit: bool,
-    pub(crate) queue: VecDeque<AgentInput>,
+    pub(crate) queue: VecDeque<QueuedItem>,
     pending_interrupts: Vec<String>,
     pub answer_tx: Option<mpsc::Sender<String>>,
     pub interrupt_tx: Option<mpsc::Sender<String>>,
@@ -133,11 +154,14 @@ impl App {
         self.pending_interrupts.len() + self.queue.len()
     }
 
-    fn visible_queue_texts(&self) -> Vec<&str> {
+    fn visible_queue_entries(&self) -> Vec<QueueEntry<'_>> {
         self.pending_interrupts
             .iter()
-            .map(|s| s.as_str())
-            .chain(self.queue.iter().map(|i| i.message.as_str()))
+            .map(|s| QueueEntry {
+                text: s.as_str(),
+                color: theme::FOREGROUND,
+            })
+            .chain(self.queue.iter().map(|item| item.as_queue_entry()))
             .collect()
     }
 
@@ -351,7 +375,7 @@ impl App {
                 self.pending_interrupts.push(text);
                 return vec![];
             }
-            self.queue.push_back(input);
+            self.queue.push_back(QueuedItem::Message(input));
             vec![]
         } else {
             self.main_chat().push_user_message(&text);
@@ -449,10 +473,15 @@ impl App {
             match result {
                 ChatEventResult::Done => {
                     self.status_bar.clear_cancel_hint();
-                    if let Some(input) = self.queue.pop_front() {
-                        self.main_chat().push_user_message(&input.message);
-                        self.main_chat().enable_auto_scroll();
-                        return vec![Action::SendMessage(input)];
+                    if let Some(item) = self.queue.pop_front() {
+                        return match item {
+                            QueuedItem::Message(input) => {
+                                self.main_chat().push_user_message(&input.message);
+                                self.main_chat().enable_auto_scroll();
+                                vec![Action::SendMessage(input)]
+                            }
+                            QueuedItem::Compact => vec![Action::Compact],
+                        };
                     }
                     self.status = Status::Idle;
                 }
@@ -563,6 +592,7 @@ impl App {
             }
             "/compact" => {
                 if self.status == Status::Streaming {
+                    self.queue.push_back(QueuedItem::Compact);
                     return vec![];
                 }
                 self.status = Status::Streaming;
@@ -648,8 +678,8 @@ impl App {
             self.question_form.view(frame, bottom_area);
             None
         } else {
-            let queue_texts = self.visible_queue_texts();
-            queue_panel::view(frame, queue_area, &queue_texts);
+            let queue_entries = self.visible_queue_entries();
+            queue_panel::view(frame, queue_area, &queue_entries);
             self.input_box
                 .view(frame, input_area, self.status == Status::Streaming);
             self.command_palette.view(frame, input_area)
@@ -720,8 +750,8 @@ impl App {
             });
         } else {
             if va.queue_area.height > 0 {
-                let raw = self.visible_queue_texts();
-                queue_text = raw.join("\n");
+                let raw = self.visible_queue_entries();
+                queue_text = raw.iter().map(|e| e.text).collect::<Vec<_>>().join("\n");
                 regions.push(ContentRegion {
                     area: inset_border(va.queue_area),
                     raw_text: &queue_text,
@@ -1076,7 +1106,7 @@ mod tests {
         let actions = app.update(Msg::Key(key(KeyCode::Enter)));
         assert!(actions.is_empty());
         assert_eq!(app.queue.len(), 1);
-        assert_eq!(app.queue[0].message, "b");
+        assert!(matches!(app.queue[0], QueuedItem::Message(ref i) if i.message == "b"));
     }
 
     #[test]
@@ -1111,14 +1141,18 @@ mod tests {
         assert!(app.queue.is_empty());
     }
 
+    fn queued_msg(text: &str) -> QueuedItem {
+        QueuedItem::Message(AgentInput {
+            message: text.into(),
+            mode: AgentMode::Build,
+            pending_plan: None,
+        })
+    }
+
     fn app_with_queued_message() -> App {
         let mut app = test_app();
         app.status = Status::Streaming;
-        app.queue.push_back(AgentInput {
-            message: "queued".into(),
-            mode: AgentMode::Build,
-            pending_plan: None,
-        });
+        app.queue.push_back(queued_msg("queued"));
         app
     }
 
@@ -1197,7 +1231,7 @@ mod tests {
         let actions = type_and_submit(&mut app, "late");
         assert!(actions.is_empty());
         assert_eq!(app.queue.len(), 1);
-        assert_eq!(app.queue[0].message, "late");
+        assert!(matches!(app.queue[0], QueuedItem::Message(ref i) if i.message == "late"));
     }
 
     #[test]
@@ -1255,11 +1289,7 @@ mod tests {
         app.chats[0].context_size = 1000;
         app.mode = Mode::BuildPlan;
         app.ready_plan = Some("plan.md".into());
-        app.queue.push_back(AgentInput {
-            message: "q".into(),
-            mode: AgentMode::Build,
-            pending_plan: None,
-        });
+        app.queue.push_back(queued_msg("q"));
         app.pending_interrupts.push("p".into());
         let actions = app.reset_session();
         assert!(matches!(&actions[0], Action::NewSession));
@@ -1501,11 +1531,36 @@ mod tests {
     }
 
     #[test]
-    fn compact_during_streaming_ignored() {
+    fn compact_during_streaming_queued() {
         let mut app = test_app();
         app.status = Status::Streaming;
         let actions = app.execute_command("/compact");
         assert!(actions.is_empty());
+        assert_eq!(app.queue.len(), 1);
+        assert!(matches!(app.queue[0], QueuedItem::Compact));
+    }
+
+    #[test]
+    fn compact_fifo_with_messages() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.queue.push_back(queued_msg("first"));
+        app.queue.push_back(QueuedItem::Compact);
+
+        let actions = app.update(agent_msg(AgentEvent::Done {
+            usage: TokenUsage::default(),
+            num_turns: 1,
+            stop_reason: None,
+        }));
+        assert!(matches!(&actions[0], Action::SendMessage(i) if i.message == "first"));
+
+        let actions = app.update(agent_msg(AgentEvent::Done {
+            usage: TokenUsage::default(),
+            num_turns: 1,
+            stop_reason: None,
+        }));
+        assert!(matches!(&actions[0], Action::Compact));
+        assert!(app.queue.is_empty());
     }
 
     fn long_question_no_options() -> AgentEvent {
