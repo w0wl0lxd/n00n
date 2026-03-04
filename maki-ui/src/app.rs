@@ -276,6 +276,14 @@ impl App {
                     self.active_chat().scroll(-1);
                     vec![]
                 }
+                KeyCode::Char('g') => {
+                    self.active_chat().scroll_to_top();
+                    vec![]
+                }
+                KeyCode::Char('b') => {
+                    self.active_chat().enable_auto_scroll();
+                    vec![]
+                }
                 _ => {
                     if let InputAction::PaletteSync(val) = self.input_box.handle_key(key) {
                         self.command_palette.sync(&val);
@@ -1596,6 +1604,15 @@ mod tests {
             delta: 3,
         });
         assert!(app.chats[0].auto_scroll());
+    }
+
+    #[test_case('g', false ; "ctrl_g_disables_auto_scroll")]
+    #[test_case('b', true  ; "ctrl_b_enables_auto_scroll")]
+    fn ctrl_g_scroll_shortcuts(ch: char, expected_auto_scroll: bool) {
+        let mut app = test_app();
+        app.active_chat().enable_auto_scroll();
+        app.update(Msg::Key(ctrl(ch)));
+        assert_eq!(app.chats[0].auto_scroll(), expected_auto_scroll);
     }
 
     #[test_case(20, 10, 80, 30, 20, 10 ; "within_bounds")]

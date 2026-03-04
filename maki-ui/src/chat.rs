@@ -98,6 +98,10 @@ impl Chat {
         self.messages_panel.auto_scroll()
     }
 
+    pub fn scroll_to_top(&mut self) {
+        self.messages_panel.scroll_to_top();
+    }
+
     pub fn enable_auto_scroll(&mut self) {
         self.messages_panel.enable_auto_scroll();
     }

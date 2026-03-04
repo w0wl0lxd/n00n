@@ -382,6 +382,11 @@ impl MessagesPanel {
         self.auto_scroll
     }
 
+    pub fn scroll_to_top(&mut self) {
+        self.scroll_top = 0;
+        self.auto_scroll = false;
+    }
+
     pub fn enable_auto_scroll(&mut self) {
         self.auto_scroll = true;
     }
