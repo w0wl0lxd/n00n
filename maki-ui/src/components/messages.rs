@@ -15,7 +15,7 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use maki_agent::tools::{BASH_TOOL_NAME, WEBFETCH_TOOL_NAME};
-use maki_providers::{BatchToolStatus, ToolDoneEvent, ToolOutput, ToolStartEvent};
+use maki_providers::{BatchToolStatus, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -64,6 +64,7 @@ impl StreamingCache {
 #[derive(Default)]
 struct Segment {
     lines: Vec<Line<'static>>,
+    copy_text: String,
     tool_id: Option<String>,
     msg_index: Option<usize>,
     cached_height: Option<(u16, u16)>,
@@ -92,6 +93,33 @@ impl Segment {
         self.lines = tl.lines;
         self.cached_height = None;
     }
+}
+
+fn build_copy_text(msg: &DisplayMessage) -> String {
+    let (header, body) = msg.text.split_once('\n').unwrap_or((&msg.text, ""));
+    let mut out = header.to_owned();
+    if let Some(ToolInput::Code { code, .. }) = &msg.tool_input {
+        out.push('\n');
+        out.push_str(code.trim_end());
+    }
+    match &msg.tool_output {
+        Some(
+            structured @ (ToolOutput::Diff { .. }
+            | ToolOutput::ReadCode { .. }
+            | ToolOutput::WriteCode { .. }
+            | ToolOutput::GrepResult { .. }
+            | ToolOutput::TodoList(_)),
+        ) => {
+            out.push('\n');
+            out.push_str(&structured.as_text());
+        }
+        _ if !body.is_empty() => {
+            out.push('\n');
+            out.push_str(body);
+        }
+        _ => {}
+    }
+    out
 }
 
 pub struct MessagesPanel {
@@ -479,9 +507,9 @@ impl MessagesPanel {
                 skip = 0;
             }
             frame.render_widget(p, seg_area);
-            if let Some(idx) = *msg_idx {
+            if msg_idx.is_some() {
                 self.visible_regions
-                    .push((Rect::new(area.x, y, width, visible_h), idx));
+                    .push((Rect::new(area.x, y, width, visible_h), i));
             }
             y += visible_h;
         }
@@ -495,9 +523,9 @@ impl MessagesPanel {
         out.extend(
             self.visible_regions
                 .iter()
-                .map(|&(area, idx)| ContentRegion {
+                .map(|&(area, seg_idx)| ContentRegion {
                     area,
-                    raw_text: &self.messages[idx].text,
+                    raw_text: &self.cached_segments[seg_idx].copy_text,
                 }),
         );
     }
@@ -602,6 +630,7 @@ impl MessagesPanel {
 
         let seg = &mut self.cached_segments[seg_idx];
         seg.cached_height = None;
+        seg.copy_text = build_copy_text(msg);
 
         if let Some((s, e)) = reused {
             seg.lines = tl.lines;
@@ -625,8 +654,10 @@ impl MessagesPanel {
                     append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
                 }
                 let id = id.clone();
+                let copy_text = build_copy_text(msg);
                 self.push_spacer_if_needed();
                 let mut seg = Segment {
+                    copy_text,
                     tool_id: Some(id),
                     msg_index: Some(i),
                     ..Segment::default()
@@ -672,9 +703,11 @@ impl MessagesPanel {
                     )));
                 }
 
+                let copy_text = msg.text.clone();
                 self.push_spacer_if_needed();
                 self.cached_segments.push(Segment {
                     lines,
+                    copy_text,
                     msg_index: Some(i),
                     ..Segment::default()
                 });
@@ -698,7 +731,7 @@ mod tests {
     use super::*;
     use crate::components::scrollbar::SCROLLBAR_THUMB;
     use maki_agent::tools::{QUESTION_TOOL_NAME, WRITE_TOOL_NAME};
-    use maki_providers::{GrepFileEntry, GrepMatch, ToolOutput};
+    use maki_providers::{DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, ToolOutput};
     use ratatui::backend::TestBackend;
     use test_case::test_case;
 
@@ -1181,5 +1214,88 @@ mod tests {
         render_sel(&mut panel, 80, 10, false);
         assert!(panel.scroll_top > scroll_before);
         assert!(panel.auto_scroll);
+    }
+
+    fn content_regions(panel: &MessagesPanel) -> Vec<String> {
+        let mut regions = Vec::new();
+        panel.push_content_regions(&mut regions);
+        regions.iter().map(|r| r.raw_text.to_owned()).collect()
+    }
+
+    #[test]
+    fn copy_text_grep_result_includes_structured_output() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(start("t1", "grep"));
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "grep",
+            output: grep_output(2),
+            is_error: false,
+        });
+        render(&mut panel, 80, 24);
+        let regions = content_regions(&panel);
+        assert!(
+            regions[0].contains("0.rs:"),
+            "should contain grep file path"
+        );
+        assert!(
+            regions[0].contains("1.rs:"),
+            "should contain all grep files"
+        );
+    }
+
+    #[test]
+    fn copy_text_diff_output_includes_hunks() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(start("t1", "edit"));
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "edit",
+            output: ToolOutput::Diff {
+                path: "src/main.rs".into(),
+                hunks: vec![DiffHunk {
+                    start_line: 1,
+                    lines: vec![
+                        DiffLine::Removed(vec![DiffSpan::plain("old".into())]),
+                        DiffLine::Added(vec![DiffSpan::plain("new".into())]),
+                    ],
+                }],
+                summary: "1 edit".into(),
+            },
+            is_error: false,
+        });
+        render(&mut panel, 80, 24);
+        let regions = content_regions(&panel);
+        assert!(regions[0].contains("- old"), "should contain removed line");
+        assert!(regions[0].contains("+ new"), "should contain added line");
+    }
+
+    #[test]
+    fn copy_text_bash_with_code_input() {
+        let mut panel = MessagesPanel::new();
+        bash_code_start(&mut panel, "t1", "echo hello");
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: BASH_TOOL_NAME,
+            output: ToolOutput::Plain("hello".into()),
+            is_error: false,
+        });
+        render(&mut panel, 80, 24);
+        let regions = content_regions(&panel);
+        assert!(
+            regions[0].contains("echo hello"),
+            "should include bash command"
+        );
+        assert!(regions[0].contains("hello"), "should include output");
+    }
+
+    #[test]
+    fn copy_text_assistant_preserves_source() {
+        let mut panel = MessagesPanel::new();
+        let md = "# Heading\n\nSome **bold** text";
+        panel.push(DisplayMessage::new(DisplayRole::Assistant, md.into()));
+        render(&mut panel, 80, 24);
+        let regions = content_regions(&panel);
+        assert_eq!(regions[0], md);
     }
 }
