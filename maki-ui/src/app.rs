@@ -503,9 +503,6 @@ impl App {
     }
 
     fn toggle_mode(&mut self) -> Vec<Action> {
-        if self.status == Status::Streaming {
-            return vec![];
-        }
         self.mode = match std::mem::replace(&mut self.mode, Mode::Build) {
             Mode::BuildPlan => Mode::Build,
             Mode::Build => Mode::Plan {
@@ -967,11 +964,11 @@ mod tests {
         assert_eq!(app.mode, Mode::BuildPlan);
         assert_eq!(app.ready_plan.as_deref(), Some(plan.as_str()));
 
-        // Tab blocked during streaming
+        // Tab toggles during streaming
         app.mode = Mode::Build;
         app.status = Status::Streaming;
         tab(&mut app);
-        assert_eq!(app.mode, Mode::Build);
+        assert!(is_plan(&app));
     }
 
     #[test_case(Mode::BuildPlan, Some("plan.md"), Some("plan.md") ; "build_plan_sends_pending")]
