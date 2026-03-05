@@ -106,6 +106,12 @@ fn highlight_code(lang: &str, code: &str, width: u16) -> Vec<Line<'static>> {
 
 pub const TRUNCATION_PREFIX: &str = "...";
 
+#[derive(Clone, Copy)]
+pub enum Keep {
+    Head,
+    Tail,
+}
+
 pub fn truncation_notice(count: usize) -> String {
     let label = if count == 1 { "line" } else { "lines" };
     format!("{TRUNCATION_PREFIX} ({count} {label})")
@@ -1088,21 +1094,24 @@ pub fn text_to_lines(
     lines
 }
 
-pub fn truncate_lines(s: &str, max_lines: usize) -> Cow<'_, str> {
-    match s.match_indices('\n').nth(max_lines.saturating_sub(1)) {
-        Some((i, _)) => {
-            let truncated = s[i..].matches('\n').count();
-            Cow::Owned(format!("{}\n{}", &s[..i], truncation_notice(truncated)))
+pub fn truncate_lines(s: &str, max: usize, keep: Keep) -> Cow<'_, str> {
+    let split = match keep {
+        Keep::Head => s.match_indices('\n').nth(max.saturating_sub(1)),
+        Keep::Tail => s.rmatch_indices('\n').nth(max.saturating_sub(1)),
+    };
+    let Some((i, _)) = split else {
+        return Cow::Borrowed(s);
+    };
+    Cow::Owned(match keep {
+        Keep::Head => {
+            let skipped = s[i..].matches('\n').count();
+            format!("{}\n{}", &s[..i], truncation_notice(skipped))
         }
-        None => Cow::Borrowed(s),
-    }
-}
-
-pub fn tail_plain(s: &str, max_lines: usize) -> &str {
-    match s.rmatch_indices('\n').nth(max_lines.saturating_sub(1)) {
-        Some((i, _)) => &s[i + 1..],
-        None => s,
-    }
+        Keep::Tail => {
+            let skipped = s[..i].matches('\n').count() + 1;
+            format!("{}\n{}", truncation_notice(skipped), &s[i + 1..])
+        }
+    })
 }
 
 #[cfg(test)]
@@ -1204,34 +1213,23 @@ mod tests {
         );
     }
 
-    #[test_case("line1\nline2\nline3", 3, "line1" ; "splits_newlines")]
-    #[test_case("\n\nfirst line\nsecond", 2, "first line" ; "strips_leading_newlines")]
-    fn text_to_lines_cases(input: &str, expected_lines: usize, first_text: &str) {
+    #[test_case("line1\nline2\nline3", 3, "p> line1" ; "splits_newlines")]
+    #[test_case("\n\nfirst line\nsecond", 2, "p> first line" ; "strips_leading_newlines")]
+    fn text_to_lines_cases(input: &str, expected_lines: usize, first_line: &str) {
         let style = Style::default();
         let lines = text_to_lines(input, "p> ", style, style, None, TEST_WIDTH);
         assert_eq!(lines.len(), expected_lines);
-        assert_eq!(lines[0].spans[0].content, "p> ");
-        let text: String = lines[0].spans[1..]
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert_eq!(text, first_text);
+        assert_eq!(lines_text(&lines)[0], first_line);
     }
 
-    #[test_case("a\nb\nc", 5, "a\nb\nc" ; "under_limit")]
-    #[test_case("a\nb\nc\nd", 2, "a\nb\n... (2 lines)" ; "over_limit")]
-    #[test_case("single", 1, "single" ; "single_line")]
-    #[test_case("a\nb\nc", 2, "a\nb\n... (1 line)" ; "singular_line")]
-    fn truncate_lines_cases(input: &str, max: usize, expected: &str) {
-        assert_eq!(truncate_lines(input, max), expected);
-    }
-
-    #[test_case("a\nb\nc", 5, "a\nb\nc" ; "under_limit")]
-    #[test_case("a\nb\nc\nd", 2, "c\nd" ; "over_limit")]
-    #[test_case("single", 1, "single" ; "single_line")]
-    #[test_case("a\nb\nc\nd\ne", 3, "c\nd\ne" ; "keeps_last_three")]
-    fn tail_plain_cases(input: &str, max: usize, expected: &str) {
-        assert_eq!(tail_plain(input, max), expected);
+    #[test_case("a\nb\nc", 5, Keep::Head, "a\nb\nc" ; "under_limit_returns_input")]
+    #[test_case("a\nb\nc\nd", 2, Keep::Head, "a\nb\n... (2 lines)" ; "head_over_limit")]
+    #[test_case("a\nb\nc", 2, Keep::Head, "a\nb\n... (1 line)" ; "head_singular_notice")]
+    #[test_case("a\nb\nc\nd", 2, Keep::Tail, "... (2 lines)\nc\nd" ; "tail_over_limit")]
+    #[test_case("a\nb\nc\nd\ne", 3, Keep::Tail, "... (2 lines)\nc\nd\ne" ; "tail_keeps_last_n")]
+    #[test_case("a\nb\nc", 2, Keep::Tail, "... (1 line)\nb\nc" ; "tail_singular_notice")]
+    fn truncate_lines_cases(input: &str, max: usize, keep: Keep, expected: &str) {
+        assert_eq!(truncate_lines(input, max, keep), expected);
     }
 
     fn block_summary<'a>(blocks: &'a [TextBlock<'a>]) -> Vec<(&'a str, Option<&'a str>)> {

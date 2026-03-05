@@ -7,11 +7,10 @@ use super::tool_display::{
 };
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::CodeHighlighter;
-use crate::markdown::{hr_line, plain_lines, tail_plain, text_to_lines, truncate_lines};
+use crate::markdown::{Keep, hr_line, plain_lines, text_to_lines, truncate_lines};
 use crate::render_worker::RenderWorker;
 use crate::theme;
 
-use std::borrow::Cow;
 use std::time::Instant;
 
 use maki_agent::tools::{BASH_TOOL_NAME, WEBFETCH_TOOL_NAME};
@@ -222,9 +221,9 @@ impl MessagesPanel {
             return;
         };
         truncate_to_header(&mut msg.text);
-        let truncated = tail_plain(content, BASH_OUTPUT_MAX_LINES);
+        let truncated = truncate_lines(content, BASH_OUTPUT_MAX_LINES, Keep::Tail);
         msg.text.push('\n');
-        msg.text.push_str(truncated);
+        msg.text.push_str(&truncated);
         self.rebuild_tool_segment(tool_id);
     }
 
@@ -252,9 +251,9 @@ impl MessagesPanel {
                 }
                 if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
                     let display = if event.tool == BASH_TOOL_NAME {
-                        Cow::Borrowed(tail_plain(text, BASH_OUTPUT_MAX_LINES))
+                        truncate_lines(text, BASH_OUTPUT_MAX_LINES, Keep::Tail)
                     } else {
-                        truncate_lines(text, TOOL_OUTPUT_MAX_LINES)
+                        truncate_lines(text, TOOL_OUTPUT_MAX_LINES, Keep::Head)
                     };
                     if !display.is_empty() {
                         msg.text = format!("{}\n{display}", msg.text);
@@ -280,7 +279,7 @@ impl MessagesPanel {
                 } else {
                     msg.text = format!("{} ({} files)", msg.text, files.len());
                     let joined = files.join("\n");
-                    let display = truncate_lines(&joined, TOOL_OUTPUT_MAX_LINES);
+                    let display = truncate_lines(&joined, TOOL_OUTPUT_MAX_LINES, Keep::Head);
                     msg.text = format!("{}\n{display}", msg.text);
                 }
             }
