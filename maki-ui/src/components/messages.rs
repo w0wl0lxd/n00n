@@ -14,9 +14,7 @@ use crate::theme;
 use std::time::Instant;
 
 use maki_agent::tools::{BASH_TOOL_NAME, WEBFETCH_TOOL_NAME};
-use maki_agent::{
-    BatchToolStatus, NO_FILES_FOUND, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
-};
+use maki_agent::{BatchToolStatus, NO_FILES_FOUND, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -24,7 +22,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use super::scrollbar::render_vertical_scrollbar;
-use crate::selection::ContentRegion;
 
 #[derive(Default)]
 struct StreamingCache {
@@ -62,6 +59,9 @@ impl StreamingCache {
     }
 }
 
+/// `copy_text` holds raw source text for clipboard copy (from
+/// `DisplayMessage::copy_text()`). Fully-selected segments use this instead
+/// of lossy cell scraping.
 #[derive(Default)]
 struct Segment {
     lines: Vec<Line<'static>>,
@@ -121,46 +121,6 @@ impl Segment {
     }
 }
 
-fn build_copy_text(msg: &DisplayMessage) -> String {
-    let (header, body) = msg.text.split_once('\n').unwrap_or((&msg.text, ""));
-    let mut out = header.to_owned();
-    if let Some(ToolInput::Code { code, .. }) = &msg.tool_input {
-        out.push('\n');
-        out.push_str(code.trim_end());
-    }
-    match &msg.tool_output {
-        Some(
-            structured @ (ToolOutput::Diff { .. }
-            | ToolOutput::ReadCode { .. }
-            | ToolOutput::WriteCode { .. }
-            | ToolOutput::GrepResult { .. }
-            | ToolOutput::GlobResult { .. }
-            | ToolOutput::TodoList(_)),
-        ) => {
-            out.push('\n');
-            out.push_str(&structured.as_text());
-        }
-        Some(ToolOutput::Batch { entries, .. }) => {
-            for entry in entries {
-                out.push_str(&format!("\n  {} {}", entry.tool, entry.summary));
-                if let Some(output) = &entry.output {
-                    let text = output.as_text();
-                    if !text.is_empty() {
-                        out.push('\n');
-                        out.push_str(&text);
-                    }
-                }
-            }
-        }
-        _ if !body.is_empty() => {
-            out.push('\n');
-            out.push_str(body);
-        }
-        _ => {}
-    }
-    out
-}
-
 pub struct MessagesPanel {
     messages: Vec<DisplayMessage>,
     streaming_thinking: Typewriter,
@@ -177,6 +137,7 @@ pub struct MessagesPanel {
     cached_streaming_text: StreamingCache,
     hl_worker: RenderWorker,
     visible_regions: Vec<(Rect, usize)>,
+    segment_heights: Vec<u16>,
 }
 
 impl MessagesPanel {
@@ -200,6 +161,7 @@ impl MessagesPanel {
             cached_streaming_text: StreamingCache::default(),
             hl_worker: RenderWorker::new(),
             visible_regions: Vec::new(),
+            segment_heights: Vec::new(),
         }
     }
 
@@ -496,6 +458,8 @@ impl MessagesPanel {
             || self.streaming_text.is_animating()
     }
 
+    /// `has_selection` freezes auto-scroll so the viewport doesn't jump
+    /// while the user is dragging a selection during streaming.
     pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool) {
         self.viewport_height = area.height;
         let width = area.width;
@@ -571,6 +535,7 @@ impl MessagesPanel {
         }
 
         let total_lines: u16 = heights.iter().sum();
+        self.segment_heights = heights.clone();
         let max_scroll = total_lines.saturating_sub(area.height);
         self.scroll_top = self.scroll_top.min(max_scroll);
         if !has_selection {
@@ -619,15 +584,30 @@ impl MessagesPanel {
         }
     }
 
-    pub fn push_content_regions<'a>(&'a self, out: &mut Vec<ContentRegion<'a>>) {
-        out.extend(
-            self.visible_regions
-                .iter()
-                .map(|&(area, seg_idx)| ContentRegion {
-                    area,
-                    raw_text: &self.cached_segments[seg_idx].copy_text,
-                }),
-        );
+    pub fn scroll_top(&self) -> u16 {
+        self.scroll_top
+    }
+
+    /// Used by `extract_doc_range` to map doc-space rows to segments.
+    pub fn segment_heights(&self) -> &[u16] {
+        &self.segment_heights
+    }
+
+    pub fn segment_copy_texts(&self) -> Vec<&str> {
+        self.cached_segments
+            .iter()
+            .map(|s| s.copy_text.as_str())
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub fn push_content_regions<'a>(&'a self, out: &mut Vec<crate::selection::ContentRegion<'a>>) {
+        out.extend(self.visible_regions.iter().map(|&(area, seg_idx)| {
+            crate::selection::ContentRegion {
+                area,
+                raw_text: &self.cached_segments[seg_idx].copy_text,
+            }
+        }));
     }
 
     fn flush_thinking(&mut self) {
@@ -717,7 +697,7 @@ impl MessagesPanel {
         }
 
         let seg = &mut self.cached_segments[seg_idx];
-        seg.copy_text = build_copy_text(msg);
+        seg.copy_text = msg.copy_text();
         seg.update_with_reuse(tl, &self.hl_worker);
 
         let batch_children: Option<Vec<(String, ToolLines)>> =
@@ -782,7 +762,7 @@ impl MessagesPanel {
                     append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
                 }
                 let id = id.clone();
-                let copy_text = build_copy_text(msg);
+                let copy_text = msg.copy_text();
                 push_spacer_if_needed(&mut self.cached_segments);
                 let mut seg = Segment {
                     copy_text,
@@ -874,7 +854,8 @@ mod tests {
     use crate::components::scrollbar::SCROLLBAR_THUMB;
     use maki_agent::tools::{GLOB_TOOL_NAME, QUESTION_TOOL_NAME, WRITE_TOOL_NAME};
     use maki_agent::{
-        DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, QuestionAnswer, ToolOutput,
+        DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, QuestionAnswer, ToolInput,
+        ToolOutput,
     };
     use ratatui::backend::TestBackend;
     use test_case::test_case;

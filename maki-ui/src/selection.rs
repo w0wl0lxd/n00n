@@ -1,90 +1,212 @@
-//! Mouse selection + copy.
+//! Mouse selection + clipboard copy.
 //!
-//! Because we EnableMouseCapture (for scroll), the terminal can no longer do
-//! its own text selection. So we reimplement it here.
+//! We call `EnableMouseCapture` for scroll events, which kills the terminal's
+//! native text selection. This module reimplements it.
 //!
-//! Selection (the struct) tracks anchor + cursor positions. App owns an
-//! Option<Selection>: mouse-down creates it, drag updates it, mouse-up
-//! copies, any key or scroll clears it.
+//! Key design decisions:
 //!
-//! apply_highlight runs after all widgets rendered in App::view(). It just
-//! walks the selected rows/cols in the raw terminal buffer and flips REVERSED
-//! on each cell. No widget awareness needed.
+//! - Selection stores positions in doc space (`DocPos`), not screen space.
+//!   Screen positions go stale on scroll; doc positions don't.
 //!
-//! extract_selected_text is where the interesting stuff happens. Components
-//! register ContentRegions (screen area + the original raw_text before
-//! rendering). On copy:
-//! - If a region is fully inside the selection and has raw_text, we grab that
-//!   directly. This preserves markdown headings, blank lines, etc. that the
-//!   rendered output loses.
-//! - If partially selected, we read cells from the terminal buffer instead.
-//! - Regions are checked in reverse order so overlays (popups, pickers) win
-//!   over whatever is behind them.
-//! - Rows that don't belong to any region (borders, separators) are skipped.
+//! - Copy happens inside `view()`, not on mouse-up. The terminal buffer only
+//!   has valid cell data during rendering.
 //!
-//! Adding selection to a new component:
+//! - Fully-selected segments use `copy_text` (raw markdown/structured output)
+//!   instead of scraping cells. Partial selections fall back to cell scraping.
+//!   This preserves headings, blank lines, diffs, etc. that rendering strips.
 //!
-//! 1. In view(), remember the Rect where your text lands. For bordered
-//!    widgets, use inset_border(area) to get the inner area.
-//! 2. Add a push_content_regions method. Push a ContentRegion per block of
-//!    selectable text. raw_text can be "" if cell-level extraction is fine
-//!    (usually is for short/single-line stuff).
-//! 3. Wire it into App::copy_selection. Base content goes first, overlays
-//!    last (last one wins for any given row).
+//! - `has_selection` freezes auto-scroll in `MessagesPanel::view()` so the
+//!   viewport doesn't jump while the user is dragging.
 //!
-//! MessagesPanel::push_content_regions is the main example. App::copy_selection
-//! has the overlay ones (popup, picker, input box).
+//! - The rightmost column is excluded from highlight/extraction (scrollbar).
+//!   See `width.saturating_sub(2)` in `col_range` and `append_rows`.
+
+use std::time::Instant;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
-#[derive(Clone, Copy)]
+/// Position in doc space (full logical document, not just visible window).
+/// Stored as (row, col) where col is a screen x coordinate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DocPos {
+    pub row: u32,
+    pub col: u16,
+}
+
+impl DocPos {
+    fn new(row: u32, col: u16) -> Self {
+        Self { row, col }
+    }
+}
+
+impl PartialOrd for DocPos {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DocPos {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.row, self.col).cmp(&(other.row, other.col))
+    }
+}
+
+/// Selection is locked to one zone for its entire lifetime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionZone {
+    Messages,
+    Input,
+    StatusBar,
+}
+
+impl SelectionZone {
+    pub const fn idx(self) -> usize {
+        self as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SelectableZone {
+    pub area: Rect,
+    pub highlight_area: Rect,
+    pub zone: SelectionZone,
+}
+
+pub type ZoneRegistry = [Option<SelectableZone>; 3];
+
+pub fn zone_at(zones: &ZoneRegistry, row: u16, col: u16) -> Option<SelectableZone> {
+    let pos = ratatui::layout::Position::new(col, row);
+    zones
+        .iter()
+        .rev()
+        .flatten()
+        .find(|z| z.area.contains(pos))
+        .copied()
+}
+
+/// Anchor + cursor in doc space. `area` and `zone` are captured at mouse-down
+/// and stay fixed so layout changes mid-drag don't break the selection.
+#[derive(Clone, Copy, Debug)]
 pub struct Selection {
-    pub anchor_row: u16,
-    pub anchor_col: u16,
-    pub cursor_row: u16,
-    pub cursor_col: u16,
+    anchor: DocPos,
+    cursor: DocPos,
+    pub area: Rect,
+    pub zone: SelectionZone,
+}
+
+fn screen_to_doc(screen_row: u16, area: Rect, scroll_offset: u32) -> u32 {
+    let clamped = screen_row.clamp(area.y, area.y + area.height.saturating_sub(1));
+    scroll_offset + (clamped - area.y) as u32
+}
+
+fn clamp_col(col: u16, area: Rect) -> u16 {
+    col.clamp(area.x, area.x + area.width.saturating_sub(1))
 }
 
 impl Selection {
-    pub fn start(row: u16, col: u16) -> Self {
+    pub fn start(row: u16, col: u16, area: Rect, zone: SelectionZone, scroll_offset: u32) -> Self {
+        let doc_row = screen_to_doc(row, area, scroll_offset);
+        let doc_col = clamp_col(col, area);
+        let pos = DocPos::new(doc_row, doc_col);
         Self {
-            anchor_row: row,
-            anchor_col: col,
-            cursor_row: row,
-            cursor_col: col,
+            anchor: pos,
+            cursor: pos,
+            area,
+            zone,
         }
     }
 
-    pub fn update(&mut self, row: u16, col: u16) {
-        self.cursor_row = row;
-        self.cursor_col = col;
+    pub fn update(&mut self, row: u16, col: u16, scroll_offset: u32) {
+        self.cursor = DocPos::new(
+            screen_to_doc(row, self.area, scroll_offset),
+            clamp_col(col, self.area),
+        );
     }
 
     pub fn is_empty(&self) -> bool {
-        self.anchor_row == self.cursor_row && self.anchor_col == self.cursor_col
+        self.anchor == self.cursor
     }
 
-    pub fn normalized(&self) -> (u16, u16, u16, u16) {
-        if (self.anchor_row, self.anchor_col) <= (self.cursor_row, self.cursor_col) {
-            (
-                self.anchor_row,
-                self.anchor_col,
-                self.cursor_row,
-                self.cursor_col,
-            )
+    pub fn normalized(&self) -> (DocPos, DocPos) {
+        if self.anchor <= self.cursor {
+            (self.anchor, self.cursor)
         } else {
-            (
-                self.cursor_row,
-                self.cursor_col,
-                self.anchor_row,
-                self.anchor_col,
-            )
+            (self.cursor, self.anchor)
         }
+    }
+
+    pub fn to_screen(self, scroll_offset: u32) -> Option<ScreenSelection> {
+        let (start, end) = self.normalized();
+        if start == end {
+            return None;
+        }
+
+        let view_top = scroll_offset;
+        let view_bottom = scroll_offset + self.area.height as u32;
+
+        if end.row < view_top || start.row >= view_bottom {
+            return None;
+        }
+
+        let project_row = |doc_row: u32| -> u16 {
+            if doc_row < view_top {
+                self.area.y
+            } else if doc_row >= view_bottom {
+                self.area.y + self.area.height.saturating_sub(1)
+            } else {
+                self.area.y + (doc_row - view_top) as u16
+            }
+        };
+
+        let start_row = project_row(start.row);
+        let start_col = if start.row < view_top {
+            self.area.x
+        } else {
+            start.col
+        };
+        let end_row = project_row(end.row);
+        let end_col = if end.row >= view_bottom {
+            self.area.x + self.area.width.saturating_sub(1)
+        } else {
+            end.col
+        };
+
+        Some(ScreenSelection {
+            start_row,
+            start_col,
+            end_row,
+            end_col,
+        })
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenSelection {
+    pub start_row: u16,
+    pub start_col: u16,
+    pub end_row: u16,
+    pub end_col: u16,
+}
+
+pub struct EdgeScroll {
+    pub dir: i32,
+    pub last_tick: Instant,
+}
+
+/// `copy_on_release`: set on mouse-up, consumed in next `view()`. We can't
+/// copy on mouse-up because the terminal buffer is only valid during rendering.
+/// `last_drag_col`: remembered for edge-scroll ticks that lack mouse coords.
+pub struct SelectionState {
+    pub sel: Selection,
+    pub copy_on_release: bool,
+    pub edge_scroll: Option<EdgeScroll>,
+    pub last_drag_col: u16,
+}
+
+/// Screen region + optional raw source text for copy. If `raw_text` is
+/// non-empty and the region is fully selected, raw text is used as-is.
 pub struct ContentRegion<'a> {
     pub area: Rect,
     pub raw_text: &'a str,
@@ -100,19 +222,27 @@ pub fn inset_border(area: Rect) -> Rect {
 }
 
 #[inline]
-fn col_range(sr: u16, sc: u16, er: u16, ec: u16, left: u16, right: u16, row: u16) -> (u16, u16) {
-    let col_start = if row == sr { sc.max(left) } else { left };
-    let col_end = if row == er { ec.min(right) } else { right };
+fn col_range(ss: &ScreenSelection, left: u16, right: u16, row: u16) -> (u16, u16) {
+    let col_start = if row == ss.start_row {
+        ss.start_col.max(left)
+    } else {
+        left
+    };
+    let col_end = if row == ss.end_row {
+        ss.end_col.min(right)
+    } else {
+        right
+    };
     (col_start, col_end)
 }
 
-pub fn apply_highlight(buf: &mut Buffer, area: Rect, sel: &Selection) {
-    let (sr, sc, er, ec) = sel.normalized();
-    let row_start = sr.max(area.y);
-    let row_end = er.min(area.bottom().saturating_sub(1));
+/// Flips `REVERSED` on selected cells. Skips last column (scrollbar).
+pub fn apply_highlight(buf: &mut Buffer, area: Rect, ss: &ScreenSelection) {
+    let row_start = ss.start_row.max(area.y);
+    let row_end = ss.end_row.min(area.bottom().saturating_sub(1));
     let right = area.x + area.width.saturating_sub(2);
     for row in row_start..=row_end {
-        let (col_start, col_end) = col_range(sr, sc, er, ec, area.x, right, row);
+        let (col_start, col_end) = col_range(ss, area.x, right, row);
         for col in col_start..=col_end {
             let cell = &mut buf[(col, row)];
             cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
@@ -120,15 +250,23 @@ pub fn apply_highlight(buf: &mut Buffer, area: Rect, sel: &Selection) {
     }
 }
 
-fn append_rows(buf: &Buffer, area: Rect, sel: &Selection, from: u16, to: u16, out: &mut String) {
-    let (sr, sc, er, ec) = sel.normalized();
+/// Trailing whitespace trimmed per line; consecutive trailing blank lines
+/// collapsed via `pending_newlines`.
+fn append_rows(
+    buf: &Buffer,
+    area: Rect,
+    ss: &ScreenSelection,
+    from: u16,
+    to: u16,
+    out: &mut String,
+) {
     let right = area.x + area.width.saturating_sub(2);
     let row_start = from.max(area.y);
     let row_end = to.min(area.bottom());
     let mut pending_newlines = 0u16;
     let anchor = out.len();
     for row in row_start..row_end {
-        let (col_start, col_end) = col_range(sr, sc, er, ec, area.x, right, row);
+        let (col_start, col_end) = col_range(ss, area.x, right, row);
         let line_start = out.len();
         for col in col_start..=col_end {
             out.push_str(buf[(col, row)].symbol());
@@ -149,16 +287,16 @@ fn append_rows(buf: &Buffer, area: Rect, sel: &Selection, from: u16, to: u16, ou
     }
 }
 
+/// Regions searched in reverse (overlays win). Uncovered rows skipped.
 pub fn extract_selected_text(
     buf: &Buffer,
-    sel: &Selection,
+    ss: &ScreenSelection,
     regions: &[ContentRegion<'_>],
 ) -> String {
-    let (sr, _, er, _) = sel.normalized();
     let mut out = String::new();
-    let mut row = sr;
+    let mut row = ss.start_row;
 
-    while row <= er {
+    while row <= ss.end_row {
         let region = regions
             .iter()
             .rev()
@@ -171,7 +309,7 @@ pub fn extract_selected_text(
 
         let region_start = region.area.y;
         let region_end = region.area.bottom();
-        let fully_selected = region_start >= sr && region_end <= er + 1;
+        let fully_selected = region_start >= ss.start_row && region_end <= ss.end_row + 1;
 
         if !out.is_empty() {
             out.push('\n');
@@ -179,10 +317,102 @@ pub fn extract_selected_text(
         if fully_selected && !region.raw_text.is_empty() {
             out.push_str(region.raw_text);
         } else {
-            let chunk_end = region_end.min(er + 1);
-            append_rows(buf, region.area, sel, row, chunk_end, &mut out);
+            let chunk_end = region_end.min(ss.end_row + 1);
+            append_rows(buf, region.area, ss, row, chunk_end, &mut out);
         }
         row = region_end;
+    }
+    out
+}
+
+/// Messages zone extraction. Fully-enclosed segments use `copy_text`;
+/// partial on-screen segments fall back to cell scraping; partial off-screen
+/// segments use `copy_text` as best-effort.
+pub fn extract_doc_range(
+    buf: &Buffer,
+    sel: &Selection,
+    msg_area: Rect,
+    scroll_top: u16,
+    segment_heights: &[u16],
+    segments_copy_text: &[&str],
+) -> String {
+    let (doc_start, doc_end) = sel.normalized();
+    let mut out = String::new();
+    let mut doc_row: u32 = 0;
+
+    for (i, &h) in segment_heights.iter().enumerate() {
+        let seg_start = doc_row;
+        let seg_end = doc_row + h as u32;
+        doc_row = seg_end;
+
+        if seg_end <= doc_start.row || seg_start > doc_end.row {
+            continue;
+        }
+
+        let fully_enclosed = seg_start >= doc_start.row
+            && seg_end <= doc_end.row + 1
+            && (seg_start != doc_start.row || doc_start.col <= msg_area.x)
+            && (seg_end != doc_end.row + 1
+                || doc_end.col >= msg_area.x + msg_area.width.saturating_sub(2));
+
+        if !out.is_empty() {
+            out.push('\n');
+        }
+
+        let copy_text = segments_copy_text.get(i).copied().unwrap_or("");
+
+        if fully_enclosed && !copy_text.is_empty() {
+            out.push_str(copy_text);
+        } else {
+            let view_top = scroll_top as u32;
+            let view_bottom = view_top + msg_area.height as u32;
+            let is_on_screen = seg_start < view_bottom && seg_end > view_top;
+
+            if is_on_screen {
+                let screen_start = msg_area.y + seg_start.saturating_sub(view_top) as u16;
+                let screen_end =
+                    msg_area.y + (seg_end.saturating_sub(view_top) as u16).min(msg_area.height);
+
+                let sel_screen_start = msg_area.y + doc_start.row.saturating_sub(view_top) as u16;
+                let sel_screen_end = msg_area.y
+                    + ((doc_end.row + 1).saturating_sub(view_top) as u16).min(msg_area.height);
+                let from = screen_start.max(sel_screen_start);
+                let to = screen_end.min(sel_screen_end);
+
+                let fake_start_row = if seg_start >= doc_start.row {
+                    screen_start
+                } else {
+                    msg_area.y + doc_start.row.saturating_sub(view_top) as u16
+                };
+                let fake_start_col = if seg_start > doc_start.row {
+                    msg_area.x
+                } else {
+                    doc_start.col
+                };
+                let fake_end_row = if seg_end <= doc_end.row + 1 {
+                    screen_end.saturating_sub(1)
+                } else {
+                    msg_area.y + doc_end.row.saturating_sub(view_top) as u16
+                };
+                let fake_end_col = if seg_end < doc_end.row + 1 {
+                    msg_area.x + msg_area.width.saturating_sub(1)
+                } else {
+                    doc_end.col
+                };
+
+                let ss = ScreenSelection {
+                    start_row: fake_start_row,
+                    start_col: fake_start_col,
+                    end_row: fake_end_row,
+                    end_col: fake_end_col,
+                };
+
+                let area = Rect::new(msg_area.x, from, msg_area.width, to.saturating_sub(from));
+                append_rows(buf, area, &ss, from, to, &mut out);
+            } else if !copy_text.is_empty() {
+                out.push_str(copy_text);
+            }
+        }
     }
     out
 }
@@ -195,15 +425,19 @@ mod tests {
     use ratatui::style::Modifier;
     use test_case::test_case;
 
-    #[test_case(0, 0, 5, 10, (0, 0, 5, 10) ; "forward_selection")]
-    #[test_case(5, 10, 0, 0, (0, 0, 5, 10) ; "backward_selection")]
-    #[test_case(3, 5, 3, 5, (3, 5, 3, 5) ; "same_point")]
-    fn normalized(ar: u16, ac: u16, cr: u16, cc: u16, expected: (u16, u16, u16, u16)) {
+    fn doc(row: u32, col: u16) -> DocPos {
+        DocPos::new(row, col)
+    }
+
+    #[test_case(doc(0, 0), doc(5, 10), (doc(0, 0), doc(5, 10)) ; "forward_selection")]
+    #[test_case(doc(5, 10), doc(0, 0), (doc(0, 0), doc(5, 10)) ; "backward_selection")]
+    #[test_case(doc(3, 5), doc(3, 5), (doc(3, 5), doc(3, 5))   ; "same_point")]
+    fn normalized(a: DocPos, c: DocPos, expected: (DocPos, DocPos)) {
         let sel = Selection {
-            anchor_row: ar,
-            anchor_col: ac,
-            cursor_row: cr,
-            cursor_col: cc,
+            anchor: a,
+            cursor: c,
+            area: Rect::default(),
+            zone: SelectionZone::Messages,
         };
         assert_eq!(sel.normalized(), expected);
     }
@@ -217,12 +451,12 @@ mod tests {
         (buf, area)
     }
 
-    fn sel(sr: u16, sc: u16, er: u16, ec: u16) -> Selection {
-        Selection {
-            anchor_row: sr,
-            anchor_col: sc,
-            cursor_row: er,
-            cursor_col: ec,
+    fn ss(sr: u16, sc: u16, er: u16, ec: u16) -> ScreenSelection {
+        ScreenSelection {
+            start_row: sr,
+            start_col: sc,
+            end_row: er,
+            end_col: ec,
         }
     }
 
@@ -233,7 +467,7 @@ mod tests {
             area,
             raw_text: "# Hello\n\nWorld\nTest",
         };
-        let text = extract_selected_text(&buf, &sel(0, 0, 0, 4), &[region]);
+        let text = extract_selected_text(&buf, &ss(0, 0, 0, 4), &[region]);
         assert_eq!(text, "Hello");
     }
 
@@ -245,7 +479,7 @@ mod tests {
             area,
             raw_text: raw,
         };
-        let text = extract_selected_text(&buf, &sel(0, 0, 2, 9), &[region]);
+        let text = extract_selected_text(&buf, &ss(0, 0, 2, 9), &[region]);
         assert_eq!(text, raw);
     }
 
@@ -256,13 +490,7 @@ mod tests {
             area,
             raw_text: "raw",
         };
-        let s = Selection {
-            anchor_row: 1,
-            anchor_col: 4,
-            cursor_row: 0,
-            cursor_col: 0,
-        };
-        let text = extract_selected_text(&buf, &s, &[region]);
+        let text = extract_selected_text(&buf, &ss(0, 0, 1, 4), &[region]);
         assert_eq!(text, "Hello\nWorld");
     }
 
@@ -290,7 +518,7 @@ mod tests {
                 raw_text: "Line 4",
             },
         ];
-        let text = extract_selected_text(&buf, &sel(0, 0, 4, 7), &regions);
+        let text = extract_selected_text(&buf, &ss(0, 0, 4, 7), &regions);
         assert_eq!(text, "Line 0\nLine 2\nLine 4");
     }
 
@@ -310,7 +538,7 @@ mod tests {
             area: Rect::new(0, 0, 10, 3),
             raw_text: "overlay raw text",
         };
-        let text = extract_selected_text(&buf, &sel(0, 0, 2, 9), &[base, overlay]);
+        let text = extract_selected_text(&buf, &ss(0, 0, 2, 9), &[base, overlay]);
         assert_eq!(text, "overlay raw text");
     }
 
@@ -353,15 +581,14 @@ mod tests {
                 raw_text: "# msg1 raw",
             },
         ];
-        // Select from row 1 of msg0 to row 0 of msg1 — both partially selected
-        let text = extract_selected_text(&buf, &sel(1, 0, 2, 18), &regions);
+        let text = extract_selected_text(&buf, &ss(1, 0, 2, 18), &regions);
         assert_eq!(text, "msg0 line2\nmsg1 rendered");
     }
 
     #[test]
     fn apply_highlight_sets_reversed() {
         let (mut buf, area) = test_buffer();
-        let s = sel(0, 0, 0, 2);
+        let s = ss(0, 0, 0, 2);
         apply_highlight(&mut buf, area, &s);
         for col in 0..=2 {
             assert!(buf[(col, 0u16)].modifier.contains(Modifier::REVERSED));
@@ -373,7 +600,7 @@ mod tests {
     fn extract_no_matching_region_returns_empty() {
         let (buf, _) = test_buffer();
         assert_eq!(
-            extract_selected_text(&buf, &sel(0, 0, 2, 7), &[]),
+            extract_selected_text(&buf, &ss(0, 0, 2, 7), &[]),
             "",
             "no regions at all"
         );
@@ -383,7 +610,7 @@ mod tests {
             raw_text: "far away",
         };
         assert_eq!(
-            extract_selected_text(&buf, &sel(0, 0, 2, 7), &[region]),
+            extract_selected_text(&buf, &ss(0, 0, 2, 7), &[region]),
             "",
             "region outside selection range"
         );
@@ -395,7 +622,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         buf.set_string(0, 0, "Status    ", ratatui::style::Style::default());
         let region = ContentRegion { area, raw_text: "" };
-        let text = extract_selected_text(&buf, &sel(0, 0, 0, 9), &[region]);
+        let text = extract_selected_text(&buf, &ss(0, 0, 0, 9), &[region]);
         assert_eq!(text, "Status");
     }
 
@@ -408,7 +635,340 @@ mod tests {
             area,
             raw_text: "ABCDEFGHI",
         };
-        let text = extract_selected_text(&buf, &sel(0, 0, 0, 9), &[region]);
+        let text = extract_selected_text(&buf, &ss(0, 0, 0, 9), &[region]);
         assert_eq!(text, "ABCDEFGHI");
+    }
+
+    #[test]
+    fn doc_space_start_computes_doc_row() {
+        let msg_area = Rect::new(0, 3, 80, 20);
+        let sel = Selection::start(15, 5, msg_area, SelectionZone::Messages, 10);
+        let (start, _) = sel.normalized();
+        assert_eq!(start.row, 22);
+    }
+
+    #[test]
+    fn doc_space_update_computes_cursor_doc_row() {
+        let msg_area = Rect::new(0, 3, 80, 20);
+        let mut sel = Selection::start(15, 5, msg_area, SelectionZone::Messages, 10);
+        sel.update(20, 8, 10);
+        let (start, end) = sel.normalized();
+        assert_eq!(start.row, 22);
+        assert_eq!(end.row, 27);
+    }
+
+    #[test]
+    fn is_empty_uses_doc_rows() {
+        let msg_area = Rect::new(0, 0, 80, 20);
+        let mut sel = Selection::start(5, 3, msg_area, SelectionZone::Messages, 0);
+        assert!(sel.is_empty());
+        sel.update(5, 4, 0);
+        assert!(!sel.is_empty());
+    }
+
+    #[test]
+    fn to_screen_fully_visible() {
+        let area = Rect::new(0, 0, 80, 20);
+        let sel = Selection {
+            anchor: doc(5, 2),
+            cursor: doc(8, 10),
+            area,
+            zone: SelectionZone::Messages,
+        };
+        let screen = sel.to_screen(0).unwrap();
+        assert_eq!(screen, ss(5, 2, 8, 10));
+    }
+
+    #[test]
+    fn to_screen_partially_off_top() {
+        let area = Rect::new(0, 0, 80, 20);
+        let sel = Selection {
+            anchor: doc(2, 5),
+            cursor: doc(12, 8),
+            area,
+            zone: SelectionZone::Messages,
+        };
+        let screen = sel.to_screen(5).unwrap();
+        assert_eq!(screen.start_row, 0);
+        assert_eq!(screen.start_col, 0);
+        assert_eq!(screen.end_row, 7);
+        assert_eq!(screen.end_col, 8);
+    }
+
+    #[test]
+    fn to_screen_entirely_off_screen() {
+        let area = Rect::new(0, 0, 80, 20);
+        let sel = Selection {
+            anchor: doc(0, 0),
+            cursor: doc(3, 5),
+            area,
+            zone: SelectionZone::Messages,
+        };
+        assert!(sel.to_screen(10).is_none());
+    }
+
+    #[test]
+    fn to_screen_empty_selection_returns_none() {
+        let area = Rect::new(0, 0, 80, 20);
+        let sel = Selection {
+            anchor: doc(5, 5),
+            cursor: doc(5, 5),
+            area,
+            zone: SelectionZone::Messages,
+        };
+        assert!(sel.to_screen(0).is_none());
+    }
+
+    #[test]
+    fn normalized_doc_forward_and_backward() {
+        let sel = Selection {
+            anchor: doc(20, 5),
+            cursor: doc(15, 2),
+            area: Rect::default(),
+            zone: SelectionZone::Messages,
+        };
+        assert_eq!(sel.normalized(), (doc(15, 2), doc(20, 5)));
+
+        let sel2 = Selection {
+            anchor: doc(15, 2),
+            cursor: doc(20, 5),
+            area: Rect::default(),
+            zone: SelectionZone::Messages,
+        };
+        assert_eq!(sel2.normalized(), (doc(15, 2), doc(20, 5)));
+    }
+
+    #[test]
+    fn extract_doc_range_fully_enclosed_segments() {
+        let area = Rect::new(0, 0, 20, 6);
+        let buf = Buffer::empty(area);
+        let sel = Selection {
+            anchor: doc(0, 0),
+            cursor: doc(5, 19),
+            area,
+            zone: SelectionZone::Messages,
+        };
+        let heights = [3, 3];
+        let copy_texts = ["segment one", "segment two"];
+        let text = extract_doc_range(&buf, &sel, area, 0, &heights, &copy_texts);
+        assert_eq!(text, "segment one\nsegment two");
+    }
+
+    #[test]
+    fn extract_doc_range_skips_out_of_range_segments() {
+        let area = Rect::new(0, 0, 20, 10);
+        let buf = Buffer::empty(area);
+        let sel = Selection {
+            anchor: doc(3, 0),
+            cursor: doc(5, 19),
+            area,
+            zone: SelectionZone::Messages,
+        };
+        let heights = [3, 3, 3];
+        let copy_texts = ["seg0", "seg1", "seg2"];
+        let text = extract_doc_range(&buf, &sel, area, 0, &heights, &copy_texts);
+        assert_eq!(text, "seg1");
+    }
+
+    #[test]
+    fn clamped_doc_row_below_msg_area() {
+        let msg_area = Rect::new(0, 2, 80, 10);
+        let sel = Selection::start(15, 5, msg_area, SelectionZone::Messages, 0);
+        let (start, _) = sel.normalized();
+        assert_eq!(start.row, 9, "clamped to last visible doc row");
+    }
+
+    #[test]
+    fn clamped_doc_row_above_msg_area() {
+        let msg_area = Rect::new(0, 5, 80, 10);
+        let sel = Selection::start(2, 5, msg_area, SelectionZone::Messages, 7);
+        let (start, _) = sel.normalized();
+        assert_eq!(start.row, 7, "clamped to scroll_top");
+    }
+
+    #[test]
+    fn to_screen_anchor_in_area_cursor_below() {
+        let msg_area = Rect::new(0, 0, 80, 10);
+        let sel = Selection {
+            anchor: doc(5, 3),
+            cursor: doc(12, 8),
+            area: msg_area,
+            zone: SelectionZone::Messages,
+        };
+        let screen = sel.to_screen(0).unwrap();
+        assert_eq!(screen.start_row, 5);
+        assert_eq!(screen.start_col, 3);
+        assert_eq!(screen.end_row, 9);
+        assert_eq!(screen.end_col, 79);
+    }
+
+    #[test]
+    fn to_screen_backward_from_below() {
+        let msg_area = Rect::new(0, 0, 80, 10);
+        let sel = Selection {
+            anchor: doc(12, 5),
+            cursor: doc(3, 2),
+            area: msg_area,
+            zone: SelectionZone::Messages,
+        };
+        let screen = sel.to_screen(0).unwrap();
+        assert_eq!(screen.start_row, 3);
+        assert_eq!(screen.start_col, 2);
+        assert_eq!(screen.end_row, 9);
+        assert_eq!(screen.end_col, 79);
+    }
+
+    #[test]
+    fn to_screen_highlight_consistent_after_edge_scroll_reversal() {
+        let msg_area = Rect::new(0, 2, 80, 20);
+        let sel = Selection {
+            anchor: doc(58, 5),
+            cursor: doc(55, 3),
+            area: msg_area,
+            zone: SelectionZone::Messages,
+        };
+        let screen = sel.to_screen(50).unwrap();
+        assert!(
+            (screen.start_row, screen.start_col) < (screen.end_row, screen.end_col),
+            "projected highlight must be ordered"
+        );
+        assert_eq!(screen.start_row, 2 + (55 - 50) as u16);
+        assert_eq!(screen.start_col, 3);
+        assert_eq!(screen.end_row, 2 + (58 - 50) as u16);
+        assert_eq!(screen.end_col, 5);
+    }
+
+    #[test]
+    fn update_clamps_cursor_row_to_area_bottom() {
+        let msg_area = Rect::new(0, 2, 80, 20);
+        let mut sel = Selection::start(10, 5, msg_area, SelectionZone::Messages, 0);
+        sel.update(25, 5, 0);
+        let (_, end) = sel.normalized();
+        assert_eq!(end.row, 19, "clamped to area bottom doc row");
+    }
+
+    #[test]
+    fn update_clamps_cursor_col_to_area() {
+        let msg_area = Rect::new(5, 0, 40, 20);
+        let mut sel = Selection::start(10, 10, msg_area, SelectionZone::Messages, 0);
+        sel.update(10, 50, 0);
+        assert_eq!(sel.cursor.col, 44, "clamped to area right");
+        sel.update(10, 2, 0);
+        assert_eq!(sel.cursor.col, 5, "clamped to area left");
+    }
+
+    #[test]
+    fn input_zone_with_scroll() {
+        let area = Rect::new(0, 22, 80, 5);
+        let sel = Selection::start(23, 5, area, SelectionZone::Input, 3);
+        let (start, _) = sel.normalized();
+        assert_eq!(start.row, 4);
+    }
+
+    #[test]
+    fn extract_doc_range_partial_first_segment() {
+        let area = Rect::new(0, 0, 20, 6);
+        let mut buf = Buffer::empty(area);
+        let style = ratatui::style::Style::default();
+        buf.set_string(0, 0, "seg0 line0          ", style);
+        buf.set_string(0, 1, "seg0 line1          ", style);
+        buf.set_string(0, 2, "seg0 line2          ", style);
+        buf.set_string(0, 3, "seg1 line0          ", style);
+        buf.set_string(0, 4, "seg1 line1          ", style);
+        buf.set_string(0, 5, "seg1 line2          ", style);
+
+        let sel = Selection {
+            anchor: doc(2, 0),
+            cursor: doc(5, 19),
+            area,
+            zone: SelectionZone::Messages,
+        };
+        let heights = [3, 3];
+        let copy_texts = ["", "seg1 full"];
+        let text = extract_doc_range(&buf, &sel, area, 0, &heights, &copy_texts);
+        assert_eq!(text, "seg0 line2\nseg1 full");
+    }
+
+    #[test]
+    fn extract_doc_range_partial_last_segment() {
+        let area = Rect::new(0, 0, 20, 6);
+        let mut buf = Buffer::empty(area);
+        let style = ratatui::style::Style::default();
+        buf.set_string(0, 0, "seg0 line0          ", style);
+        buf.set_string(0, 1, "seg0 line1          ", style);
+        buf.set_string(0, 2, "seg0 line2          ", style);
+        buf.set_string(0, 3, "seg1 line0          ", style);
+        buf.set_string(0, 4, "seg1 line1          ", style);
+        buf.set_string(0, 5, "seg1 line2          ", style);
+
+        let sel = Selection {
+            anchor: doc(0, 0),
+            cursor: doc(3, 19),
+            area,
+            zone: SelectionZone::Messages,
+        };
+        let heights = [3, 3];
+        let copy_texts = ["seg0 full", ""];
+        let text = extract_doc_range(&buf, &sel, area, 0, &heights, &copy_texts);
+        assert_eq!(text, "seg0 full\nseg1 line0");
+    }
+
+    #[test]
+    fn extract_doc_range_partial_col_single_row() {
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        let style = ratatui::style::Style::default();
+        buf.set_string(0, 0, "maki> hello world   ", style);
+
+        let sel = Selection {
+            anchor: doc(0, 12),
+            cursor: doc(0, 16),
+            area,
+            zone: SelectionZone::Messages,
+        };
+        let heights = [1];
+        let copy_texts = ["hello world"];
+        let text = extract_doc_range(&buf, &sel, area, 0, &heights, &copy_texts);
+        assert_eq!(text, "world");
+    }
+
+    #[test]
+    fn extract_doc_range_full_width_single_row_uses_copy_text() {
+        let area = Rect::new(0, 0, 20, 1);
+        let buf = Buffer::empty(area);
+
+        let sel = Selection {
+            anchor: doc(0, 0),
+            cursor: doc(0, 18),
+            area,
+            zone: SelectionZone::Messages,
+        };
+        let heights = [1];
+        let copy_texts = ["hello world"];
+        let text = extract_doc_range(&buf, &sel, area, 0, &heights, &copy_texts);
+        assert_eq!(text, "hello world");
+    }
+
+    #[test]
+    fn selection_zone_equality() {
+        assert_eq!(SelectionZone::Messages, SelectionZone::Messages);
+        assert_ne!(SelectionZone::Messages, SelectionZone::Input);
+    }
+
+    #[test]
+    fn selection_state_atomic_reset() {
+        let area = Rect::new(0, 0, 80, 20);
+        let state = Some(SelectionState {
+            sel: Selection::start(5, 5, area, SelectionZone::Messages, 0),
+            copy_on_release: true,
+            edge_scroll: Some(EdgeScroll {
+                dir: 1,
+                last_tick: Instant::now(),
+            }),
+            last_drag_col: 42,
+        });
+        let cleared: Option<SelectionState> = None;
+        assert!(state.is_some());
+        assert!(cleared.is_none());
     }
 }

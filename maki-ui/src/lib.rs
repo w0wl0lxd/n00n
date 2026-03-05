@@ -105,6 +105,7 @@ fn run_event_loop(
     handles.apply_to_app(&mut app);
 
     loop {
+        app.tick_edge_scroll();
         terminal.draw(|f| app.view(f))?;
 
         let mut had_agent_msg = false;

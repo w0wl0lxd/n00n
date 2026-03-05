@@ -11,7 +11,10 @@ use crate::components::question_form::{QuestionForm, QuestionFormAction};
 use crate::components::queue_panel::{self, QueueEntry};
 use crate::components::status_bar::{CancelResult, StatusBar, StatusBarContext, UsageStats};
 use crate::components::{Action, DisplayMessage, DisplayRole, RetryInfo, Status, is_ctrl};
-use crate::selection::{self, ContentRegion, Selection, inset_border};
+use crate::selection::{
+    self, ContentRegion, EdgeScroll, SelectableZone, Selection, SelectionState, SelectionZone,
+    ZoneRegistry,
+};
 use crate::theme;
 use arboard::Clipboard;
 
@@ -46,6 +49,9 @@ impl Mode {
     }
 }
 
+const EDGE_SCROLL_LINES: i32 = 1;
+const EDGE_SCROLL_INTERVAL: Duration = Duration::from_millis(25);
+
 pub(crate) enum QueuedItem {
     Message(AgentInput),
     Compact,
@@ -64,16 +70,6 @@ impl QueuedItem {
             },
         }
     }
-}
-
-struct ViewAreas {
-    render_chat: usize,
-    form_visible: bool,
-    bottom_area: Rect,
-    queue_area: Rect,
-    input_area: Rect,
-    status_area: Rect,
-    cmd_popup_area: Option<Rect>,
 }
 
 pub enum Msg {
@@ -109,11 +105,8 @@ pub struct App {
     retry_info: Option<RetryInfo>,
     #[cfg(feature = "demo")]
     demo_questions: Option<(usize, Vec<QuestionInfo>)>,
-    msg_area: Rect,
-    input_area: Rect,
-    frame_area: Rect,
-    selection: Option<Selection>,
-    copy_on_next_render: bool,
+    zones: ZoneRegistry,
+    selection_state: Option<SelectionState>,
     clipboard: Option<Clipboard>,
     queue_focus: Option<usize>,
 }
@@ -145,11 +138,8 @@ impl App {
             retry_info: None,
             #[cfg(feature = "demo")]
             demo_questions: None,
-            msg_area: Rect::default(),
-            input_area: Rect::default(),
-            frame_area: Rect::default(),
-            selection: None,
-            copy_on_next_render: false,
+            zones: [None; 3],
+            selection_state: None,
             clipboard: Clipboard::new().ok(),
             queue_focus: None,
         }
@@ -207,6 +197,32 @@ impl App {
         }
     }
 
+    fn zone_at(&self, row: u16, col: u16) -> Option<SelectableZone> {
+        selection::zone_at(&self.zones, row, col)
+    }
+
+    fn scroll_offset(&self, zone: SelectionZone) -> u32 {
+        match zone {
+            SelectionZone::Messages => self.chats[self.active_chat].scroll_top() as u32,
+            SelectionZone::Input => self.input_box.scroll_y() as u32,
+            SelectionZone::StatusBar => 0,
+        }
+    }
+
+    fn scroll_zone(&mut self, zone: SelectionZone, delta: i32) {
+        match zone {
+            SelectionZone::Messages => self.chats[self.active_chat].scroll(delta),
+            SelectionZone::Input => self.input_box.scroll(delta),
+            SelectionZone::StatusBar => {}
+        }
+    }
+
+    fn msg_area(&self) -> Rect {
+        self.zones[SelectionZone::Messages.idx()]
+            .map(|z| z.area)
+            .unwrap_or_default()
+    }
+
     pub fn update(&mut self, msg: Msg) -> Vec<Action> {
         match msg {
             Msg::Key(key) => self.handle_key(key),
@@ -221,17 +237,15 @@ impl App {
                 vec![]
             }
             Msg::Scroll { column, row, delta } => {
-                self.selection = None;
+                self.selection_state = None;
                 let pos = Position::new(column, row);
                 if self.chat_picker.is_open() {
                     if self.chat_picker.contains(pos) {
                         let names = self.chat_names();
                         self.chat_picker.scroll(delta, &names);
                     }
-                } else if self.msg_area.contains(pos) {
-                    self.active_chat().scroll(delta);
-                } else if self.input_area.contains(pos) {
-                    self.input_box.scroll(delta);
+                } else if let Some(zone) = self.zone_at(row, column) {
+                    self.scroll_zone(zone.zone, delta);
                 }
                 vec![]
             }
@@ -248,30 +262,110 @@ impl App {
     fn handle_mouse(&mut self, event: MouseEvent) {
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                self.selection = Some(Selection::start(event.row, event.column));
-                self.copy_on_next_render = false;
+                if let Some(zone) = self.zone_at(event.row, event.column) {
+                    let scroll = self.scroll_offset(zone.zone);
+                    self.selection_state = Some(SelectionState {
+                        sel: Selection::start(
+                            event.row,
+                            event.column,
+                            zone.area,
+                            zone.zone,
+                            scroll,
+                        ),
+                        copy_on_release: false,
+                        edge_scroll: None,
+                        last_drag_col: event.column,
+                    });
+                }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if let Some(ref mut sel) = self.selection {
-                    let row = event.row.clamp(
-                        self.frame_area.y,
-                        self.frame_area.bottom().saturating_sub(1),
-                    );
-                    let col = event
-                        .column
-                        .clamp(self.frame_area.x, self.frame_area.right().saturating_sub(1));
-                    sel.update(row, col);
+                let Some(ref mut state) = self.selection_state else {
+                    return;
+                };
+                let zone = state.sel.zone;
+                let area = state.sel.area;
+
+                let edge_dir = if event.row <= area.y {
+                    Some(EDGE_SCROLL_LINES)
+                } else if event.row + 1 >= area.bottom() {
+                    Some(-EDGE_SCROLL_LINES)
+                } else {
+                    None
+                };
+
+                if let Some(dir) = edge_dir {
+                    match state.edge_scroll.as_mut() {
+                        None => {
+                            self.scroll_zone(zone, dir);
+                            let scroll = self.scroll_offset(zone);
+                            let state = self.selection_state.as_mut().unwrap();
+                            state.edge_scroll = Some(EdgeScroll {
+                                dir,
+                                last_tick: Instant::now(),
+                            });
+                            state.last_drag_col = event.column;
+                            let edge_row = if dir > 0 {
+                                state.sel.area.y
+                            } else {
+                                state.sel.area.bottom().saturating_sub(1)
+                            };
+                            state.sel.update(edge_row, event.column, scroll);
+                        }
+                        Some(es) => {
+                            es.dir = dir;
+                            let state = self.selection_state.as_mut().unwrap();
+                            state.last_drag_col = event.column;
+                        }
+                    }
+                } else {
+                    state.edge_scroll = None;
+                    let state = self.selection_state.as_mut().unwrap();
+                    state.last_drag_col = event.column;
+                    let scroll = self.scroll_offset(zone);
+                    let state = self.selection_state.as_mut().unwrap();
+                    state.sel.update(event.row, event.column, scroll);
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                if self.selection.as_ref().is_some_and(|s| !s.is_empty()) {
-                    self.copy_on_next_render = true;
-                } else {
-                    self.selection = None;
+                if let Some(ref mut state) = self.selection_state {
+                    state.edge_scroll = None;
+                    if !state.sel.is_empty() {
+                        state.copy_on_release = true;
+                    } else {
+                        self.selection_state = None;
+                    }
                 }
             }
             _ => {}
         }
+    }
+
+    pub fn tick_edge_scroll(&mut self) {
+        let Some(ref mut state) = self.selection_state else {
+            return;
+        };
+        let Some(ref mut es) = state.edge_scroll else {
+            return;
+        };
+        if es.last_tick.elapsed() < EDGE_SCROLL_INTERVAL {
+            return;
+        }
+        let dir = es.dir;
+        let zone = state.sel.zone;
+        let last_drag_col = state.last_drag_col;
+        es.last_tick = Instant::now();
+
+        self.scroll_zone(zone, dir);
+
+        let state = self.selection_state.as_mut().unwrap();
+        let edge_row = if dir > 0 {
+            state.sel.area.y
+        } else {
+            state.sel.area.bottom().saturating_sub(1)
+        };
+        let scroll = self.scroll_offset(zone);
+        let state = self.selection_state.as_mut().unwrap();
+        state.sel.update(edge_row, last_drag_col, scroll);
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Vec<Action> {
@@ -290,7 +384,7 @@ impl App {
             self.send_answer(answer);
             return vec![];
         }
-        self.selection = None;
+        self.selection_state = None;
 
         if let Some(selected) = self.queue_focus {
             match key.code {
@@ -747,8 +841,11 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(frame.area());
-        self.msg_area = msg_area;
-        self.frame_area = frame.area();
+        self.zones[SelectionZone::Messages.idx()] = Some(SelectableZone {
+            area: msg_area,
+            highlight_area: msg_area,
+            zone: SelectionZone::Messages,
+        });
         let picker_open = self.chat_picker.is_open();
         let names = if picker_open {
             Some(self.chat_names())
@@ -762,7 +859,7 @@ impl App {
         } else {
             self.active_chat
         };
-        self.chats[render_chat].view(frame, msg_area, self.selection.is_some());
+        self.chats[render_chat].view(frame, msg_area, self.selection_state.is_some());
 
         let queue_height = queue_panel::height(self.visible_queue_len());
         let input_height = bottom_area.height.saturating_sub(queue_height);
@@ -771,11 +868,15 @@ impl App {
             Constraint::Length(input_height),
         ])
         .areas(bottom_area);
-        self.input_area = input_area;
+        let input_inner = selection::inset_border(input_area);
+        self.zones[SelectionZone::Input.idx()] = Some(SelectableZone {
+            area: input_inner,
+            highlight_area: input_inner,
+            zone: SelectionZone::Input,
+        });
 
-        let cmd_popup_area = if form_visible {
+        if form_visible {
             self.question_form.view(frame, bottom_area);
-            None
         } else {
             let queue_entries = self.visible_queue_entries();
             queue_panel::view(frame, queue_area, &queue_entries, self.queue_focus);
@@ -785,8 +886,8 @@ impl App {
                 self.status == Status::Streaming,
                 self.mode.color(),
             );
-            self.command_palette.view(frame, input_area)
-        };
+            self.command_palette.view(frame, input_area);
+        }
 
         if let Some(names) = names {
             let full_area = frame.area();
@@ -815,83 +916,73 @@ impl App {
         };
         self.status_bar.view(frame, status_area, &ctx);
 
-        if let Some(sel) = self.selection {
-            selection::apply_highlight(frame.buffer_mut(), self.frame_area, &sel);
-            if self.copy_on_next_render {
-                self.copy_selection(
-                    frame.buffer_mut(),
-                    &sel,
-                    &ViewAreas {
-                        render_chat,
-                        form_visible,
-                        bottom_area,
-                        queue_area,
-                        input_area,
-                        status_area,
-                        cmd_popup_area,
-                    },
-                );
+        self.zones[SelectionZone::StatusBar.idx()] = Some(SelectableZone {
+            area: status_area,
+            highlight_area: status_area,
+            zone: SelectionZone::StatusBar,
+        });
+
+        if let Some(ref state) = self.selection_state {
+            let zone = state.sel.zone;
+            let scroll = self.scroll_offset(zone);
+            if let Some(screen_sel) = state.sel.to_screen(scroll) {
+                let highlight_area = self.zones[zone.idx()]
+                    .map(|z| z.highlight_area)
+                    .unwrap_or_default();
+                selection::apply_highlight(frame.buffer_mut(), highlight_area, &screen_sel);
+            }
+            if state.copy_on_release {
+                let sel = state.sel;
+                self.copy_selection(frame.buffer_mut(), &sel, render_chat);
             }
         }
     }
 
+    /// Called from `view()` when `copy_on_release` is set. Must happen during
+    /// rendering because the terminal buffer is only valid then.
     fn copy_selection(
         &mut self,
         buf: &mut ratatui::buffer::Buffer,
         sel: &Selection,
-        va: &ViewAreas,
+        render_chat: usize,
     ) {
-        let mut regions = Vec::new();
-        self.chats[va.render_chat].push_content_regions(&mut regions);
-
-        let queue_text;
-        let input_value;
-        if va.form_visible {
-            regions.push(ContentRegion {
-                area: inset_border(va.bottom_area),
-                raw_text: "",
-            });
-        } else {
-            if va.queue_area.height > 0 {
-                let raw = self.visible_queue_entries();
-                queue_text = raw.iter().map(|e| e.text).collect::<Vec<_>>().join("\n");
-                regions.push(ContentRegion {
-                    area: inset_border(va.queue_area),
-                    raw_text: &queue_text,
-                });
+        let text = match sel.zone {
+            SelectionZone::Messages => {
+                let msg_area = self.msg_area();
+                let chat = &self.chats[render_chat];
+                let scroll_top = chat.scroll_top();
+                let heights = chat.segment_heights();
+                let copy_texts = chat.segment_copy_texts();
+                selection::extract_doc_range(buf, sel, msg_area, scroll_top, heights, &copy_texts)
             }
-            regions.push(ContentRegion {
-                area: Rect::new(va.input_area.x, va.input_area.y, va.input_area.width, 1),
-                raw_text: "",
-            });
-            input_value = self.input_box.buffer.value();
-            regions.push(ContentRegion {
-                area: Rect::new(
-                    va.input_area.x,
-                    va.input_area.y + 1,
-                    va.input_area.width,
-                    va.input_area.height.saturating_sub(2),
-                ),
-                raw_text: &input_value,
-            });
-            let input_bottom = va.input_area.y + va.input_area.height.saturating_sub(1);
-            regions.push(ContentRegion {
-                area: Rect::new(va.input_area.x, input_bottom, va.input_area.width, 1),
-                raw_text: "",
-            });
-        }
-        regions.push(ContentRegion {
-            area: va.status_area,
-            raw_text: "",
-        });
-        if let Some(area) = va.cmd_popup_area {
-            regions.push(ContentRegion { area, raw_text: "" });
-        }
-        if let Some(area) = self.chat_picker.inner_area() {
-            regions.push(ContentRegion { area, raw_text: "" });
-        }
+            SelectionZone::Input => {
+                let scroll = self.scroll_offset(sel.zone);
+                let Some(screen_sel) = sel.to_screen(scroll) else {
+                    self.selection_state = None;
+                    return;
+                };
+                let input_value = self.input_box.buffer.value();
+                let input_area = sel.area;
+                let regions = [ContentRegion {
+                    area: input_area,
+                    raw_text: &input_value,
+                }];
+                selection::extract_selected_text(buf, &screen_sel, &regions)
+            }
+            SelectionZone::StatusBar => {
+                let scroll = self.scroll_offset(sel.zone);
+                let Some(screen_sel) = sel.to_screen(scroll) else {
+                    self.selection_state = None;
+                    return;
+                };
+                let regions = [ContentRegion {
+                    area: sel.area,
+                    raw_text: "",
+                }];
+                selection::extract_selected_text(buf, &screen_sel, &regions)
+            }
+        };
 
-        let text = selection::extract_selected_text(buf, sel, &regions);
         if !text.is_empty() {
             match &mut self.clipboard {
                 Some(cb) => match cb.set_text(&text) {
@@ -901,12 +992,14 @@ impl App {
                 None => self.status_bar.flash("Copy failed: no clipboard".into()),
             }
         }
-        self.copy_on_next_render = false;
-        self.selection = None;
+        self.selection_state = None;
     }
 
     pub fn is_animating(&self) -> bool {
-        self.chats.iter().any(|c| c.is_animating())
+        self.selection_state
+            .as_ref()
+            .is_some_and(|s| s.edge_scroll.is_some())
+            || self.chats.iter().any(|c| c.is_animating())
     }
 
     #[cfg(feature = "demo")]
@@ -944,6 +1037,14 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
     use maki_agent::{QuestionInfo, QuestionOption, ToolDoneEvent, ToolOutput, ToolStartEvent};
     use test_case::test_case;
+
+    fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
+        app.zones[zone.idx()] = Some(SelectableZone {
+            area,
+            highlight_area: area,
+            zone,
+        });
+    }
 
     fn test_app() -> App {
         App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW)
@@ -1723,7 +1824,7 @@ mod tests {
     #[test_case(-3 ; "scroll_down")]
     fn scroll_disables_auto_scroll(delta: i32) {
         let mut app = test_app();
-        app.msg_area = Rect::new(0, 0, 80, 20);
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
         app.active_chat().enable_auto_scroll();
 
         let actions = app.update(Msg::Scroll {
@@ -1738,7 +1839,7 @@ mod tests {
     #[test]
     fn scroll_outside_msg_area_ignored() {
         let mut app = test_app();
-        app.msg_area = Rect::new(0, 0, 80, 20);
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
         app.active_chat().enable_auto_scroll();
 
         app.update(Msg::Scroll {
@@ -1758,70 +1859,242 @@ mod tests {
         assert_eq!(app.chats[0].auto_scroll(), expected_auto_scroll);
     }
 
-    #[test_case(20, 10, 80, 30, 20, 10 ; "within_bounds")]
-    #[test_case(100, 50, 80, 30, 79, 29 ; "clamps_to_frame")]
-    fn mouse_drag_updates_selection(
-        drag_col: u16,
-        drag_row: u16,
-        frame_w: u16,
-        frame_h: u16,
-        expect_col: u16,
-        expect_row: u16,
-    ) {
+    #[test]
+    fn mouse_drag_updates_selection() {
         let mut app = test_app();
-        app.msg_area = Rect::new(0, 0, 80, 20);
-        app.frame_area = Rect::new(0, 0, frame_w, frame_h);
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
+        app.active_chat().scroll_to_top();
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
+        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 20, 10));
+
+        let state = app.selection_state.as_ref().unwrap();
+        let (_, end) = state.sel.normalized();
+        assert_eq!(end.row, 10);
+        assert_eq!(end.col, 20);
+    }
+
+    #[test]
+    fn mouse_drag_clamps_to_area() {
+        let mut app = test_app();
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
+        app.active_chat().scroll_to_top();
 
         app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
         app.update(mouse_event(
             MouseEventKind::Drag(MouseButton::Left),
-            drag_col,
-            drag_row,
+            100,
+            50,
         ));
 
-        let sel = app.selection.unwrap();
-        assert_eq!(sel.cursor_col, expect_col);
-        assert_eq!(sel.cursor_row, expect_row);
+        let state = app.selection_state.as_ref().unwrap();
+        let (_, end) = state.sel.normalized();
+        assert_eq!(end.col, 79);
+        assert_eq!(end.row, 20, "clamped to area bottom + edge scroll offset");
+        assert!(
+            state.edge_scroll.is_some(),
+            "outside area triggers edge scroll"
+        );
+    }
+
+    #[test]
+    fn drag_at_top_edge_sets_edge_scroll_and_scrolls() {
+        let mut app = test_app();
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 2, 80, 20));
+        app.active_chat().scroll_to_top();
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 12));
+        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 1));
+
+        let state = app.selection_state.as_ref().unwrap();
+        assert!(state.edge_scroll.is_some());
+        assert_eq!(state.edge_scroll.as_ref().unwrap().dir, EDGE_SCROLL_LINES);
+        assert!(!app.chats[0].auto_scroll(), "scroll disables auto_scroll");
+    }
+
+    #[test]
+    fn drag_at_bottom_edge_sets_edge_scroll() {
+        let mut app = test_app();
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 2, 80, 20));
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
+        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 22));
+
+        let state = app.selection_state.as_ref().unwrap();
+        assert!(state.edge_scroll.is_some());
+        assert_eq!(state.edge_scroll.as_ref().unwrap().dir, -EDGE_SCROLL_LINES);
+    }
+
+    #[test]
+    fn drag_in_middle_does_not_scroll() {
+        let mut app = test_app();
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 2, 80, 20));
+        app.active_chat().enable_auto_scroll();
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
+        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 20, 15));
+
+        let state = app.selection_state.as_ref().unwrap();
+        assert!(app.chats[0].auto_scroll(), "auto_scroll preserved");
+        assert!(state.edge_scroll.is_none(), "no edge scroll in middle");
+    }
+
+    #[test]
+    fn edge_scroll_above_area() {
+        let mut app = test_app();
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 1, 80, 20));
+        app.active_chat().scroll_to_top();
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
+        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 0));
+
+        let state = app.selection_state.as_ref().unwrap();
+        assert!(state.edge_scroll.is_some());
+        assert_eq!(state.edge_scroll.as_ref().unwrap().dir, EDGE_SCROLL_LINES);
+    }
+
+    #[test]
+    fn edge_scroll_on_first_row() {
+        let mut app = test_app();
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
+        app.active_chat().scroll_to_top();
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
+        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 0));
+
+        let state = app.selection_state.as_ref().unwrap();
+        assert!(state.edge_scroll.is_some());
+        assert_eq!(state.edge_scroll.as_ref().unwrap().dir, EDGE_SCROLL_LINES);
+    }
+
+    #[test]
+    fn edge_scroll_below_area() {
+        let mut app = test_app();
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
+        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 20));
+
+        let state = app.selection_state.as_ref().unwrap();
+        assert!(state.edge_scroll.is_some());
+        assert_eq!(state.edge_scroll.as_ref().unwrap().dir, -EDGE_SCROLL_LINES);
+    }
+
+    #[test]
+    fn edge_scroll_on_last_row() {
+        let mut app = test_app();
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
+        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 19));
+
+        let state = app.selection_state.as_ref().unwrap();
+        assert!(state.edge_scroll.is_some());
+        assert_eq!(state.edge_scroll.as_ref().unwrap().dir, -EDGE_SCROLL_LINES);
+    }
+
+    #[test]
+    fn no_edge_scroll_in_interior() {
+        let mut app = test_app();
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
+        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 1));
+
+        let state = app.selection_state.as_ref().unwrap();
+        assert!(
+            state.edge_scroll.is_none(),
+            "row 1 is interior, no edge scroll"
+        );
+    }
+
+    #[test]
+    fn mouse_up_clears_edge_scroll() {
+        let mut app = test_app();
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 2, 80, 20));
+        app.active_chat().scroll_to_top();
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
+        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 1));
+        assert!(app.selection_state.as_ref().unwrap().edge_scroll.is_some());
+
+        app.update(mouse_event(MouseEventKind::Up(MouseButton::Left), 10, 1));
+        let state = app.selection_state.as_ref().unwrap();
+        assert!(state.edge_scroll.is_none());
+    }
+
+    #[test]
+    fn tick_edge_scroll_scrolls_continuously() {
+        let mut app = test_app();
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 2, 80, 20));
+        app.active_chat().scroll_to_top();
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
+        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 1));
+
+        let state = app.selection_state.as_mut().unwrap();
+        state.edge_scroll.as_mut().unwrap().last_tick = Instant::now() - EDGE_SCROLL_INTERVAL;
+        app.tick_edge_scroll();
+        assert!(!app.chats[0].auto_scroll());
+    }
+
+    #[test]
+    fn tick_edge_scroll_noop_without_state() {
+        let mut app = test_app();
+        app.tick_edge_scroll();
+        assert!(app.chats[0].auto_scroll());
+    }
+
+    #[test]
+    fn edge_scroll_makes_app_animating() {
+        let mut app = test_app();
+        assert!(!app.is_animating());
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
+        let state = app.selection_state.as_mut().unwrap();
+        state.edge_scroll = Some(EdgeScroll {
+            dir: 1,
+            last_tick: Instant::now(),
+        });
+        assert!(app.is_animating());
     }
 
     #[test]
     fn mouse_up_behavior() {
         let mut app = test_app();
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
 
         app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
         app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 10));
         app.update(mouse_event(MouseEventKind::Up(MouseButton::Left), 10, 10));
         assert!(
-            app.copy_on_next_render,
+            app.selection_state.as_ref().unwrap().copy_on_release,
             "non-empty selection sets copy flag"
         );
 
-        app.copy_on_next_render = false;
+        app.selection_state.as_mut().unwrap().copy_on_release = false;
+        app.selection_state = None;
         app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
         app.update(mouse_event(MouseEventKind::Up(MouseButton::Left), 5, 5));
-        assert!(
-            !app.copy_on_next_render,
-            "empty selection does not set copy flag"
-        );
-        assert!(app.selection.is_none(), "empty selection is cleared");
+        assert!(app.selection_state.is_none(), "empty selection is cleared");
     }
 
     #[test]
     fn key_and_scroll_clear_selection() {
         let mut app = test_app();
-        app.msg_area = Rect::new(0, 0, 80, 20);
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
 
-        app.selection = Some(Selection::start(5, 5));
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
         app.update(Msg::Key(key(KeyCode::Char('a'))));
-        assert!(app.selection.is_none(), "key press clears selection");
+        assert!(app.selection_state.is_none(), "key press clears selection");
 
-        app.selection = Some(Selection::start(5, 5));
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
         app.update(Msg::Scroll {
             column: 10,
             row: 10,
             delta: 3,
         });
-        assert!(app.selection.is_none(), "scroll clears selection");
+        assert!(app.selection_state.is_none(), "scroll clears selection");
     }
 
     #[test]
@@ -1946,5 +2219,49 @@ mod tests {
         app.queue_focus = Some(0);
         app.reset_session();
         assert!(app.queue_focus.is_none());
+    }
+
+    #[test]
+    fn zone_at_returns_correct_zone() {
+        let mut app = test_app();
+        let msg = Rect::new(0, 0, 80, 15);
+        let input = Rect::new(0, 15, 80, 5);
+        let status = Rect::new(0, 20, 80, 1);
+        set_zone(&mut app, SelectionZone::Messages, msg);
+        set_zone(&mut app, SelectionZone::Input, input);
+        set_zone(&mut app, SelectionZone::StatusBar, status);
+
+        assert_eq!(app.zone_at(5, 10).unwrap().zone, SelectionZone::Messages);
+        assert_eq!(app.zone_at(16, 10).unwrap().zone, SelectionZone::Input);
+        assert_eq!(app.zone_at(20, 10).unwrap().zone, SelectionZone::StatusBar);
+        assert!(app.zone_at(22, 10).is_none());
+    }
+
+    #[test]
+    fn mouse_down_in_input_creates_input_zone_selection() {
+        let mut app = test_app();
+        let input = Rect::new(0, 15, 80, 5);
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 15));
+        set_zone(&mut app, SelectionZone::Input, input);
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 16));
+        let state = app.selection_state.as_ref().unwrap();
+        assert_eq!(state.sel.zone, SelectionZone::Input);
+        assert_eq!(state.sel.area, input);
+    }
+
+    #[test]
+    fn selection_state_cleared_atomically() {
+        let mut app = test_app();
+        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 2, 80, 20));
+        app.active_chat().scroll_to_top();
+
+        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
+        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 1));
+        assert!(app.selection_state.is_some());
+        assert!(app.selection_state.as_ref().unwrap().edge_scroll.is_some());
+
+        app.selection_state = None;
+        assert!(app.selection_state.is_none());
     }
 }

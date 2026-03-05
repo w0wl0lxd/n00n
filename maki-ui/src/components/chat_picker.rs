@@ -200,10 +200,6 @@ impl ChatPicker {
             .is_some_and(|s| s.inner_area.contains(pos))
     }
 
-    pub fn inner_area(&self) -> Option<Rect> {
-        self.state.as_ref().map(|s| s.inner_area)
-    }
-
     pub fn scroll(&mut self, delta: i32, chat_names: &[String]) {
         let s = match self.state.as_mut() {
             Some(s) => s,

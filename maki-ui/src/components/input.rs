@@ -340,6 +340,10 @@ impl InputBox {
         }
     }
 
+    pub fn scroll_y(&self) -> u16 {
+        self.scroll_y
+    }
+
     pub fn scroll(&mut self, delta: i32) {
         self.scroll_y = apply_scroll_delta(self.scroll_y, delta);
         self.follow_cursor = false;

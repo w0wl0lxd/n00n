@@ -85,6 +85,54 @@ impl DisplayMessage {
         }
     }
 
+    /// Source of truth for `Segment::copy_text`. Tool messages reconstruct
+    /// from structured data (diffs, grep, etc.); non-tool messages return raw
+    /// text (preserving markdown).
+    pub fn copy_text(&self) -> String {
+        match &self.role {
+            DisplayRole::Tool { .. } => {
+                let (header, body) = self.text.split_once('\n').unwrap_or((&self.text, ""));
+                let mut out = header.to_owned();
+                if let Some(ToolInput::Code { code, .. }) = &self.tool_input {
+                    out.push('\n');
+                    out.push_str(code.trim_end());
+                }
+                match &self.tool_output {
+                    Some(
+                        structured @ (ToolOutput::Diff { .. }
+                        | ToolOutput::ReadCode { .. }
+                        | ToolOutput::WriteCode { .. }
+                        | ToolOutput::GrepResult { .. }
+                        | ToolOutput::GlobResult { .. }
+                        | ToolOutput::TodoList(_)),
+                    ) => {
+                        out.push('\n');
+                        out.push_str(&structured.as_text());
+                    }
+                    Some(ToolOutput::Batch { entries, .. }) => {
+                        for entry in entries {
+                            out.push_str(&format!("\n  {} {}", entry.tool, entry.summary));
+                            if let Some(output) = &entry.output {
+                                let text = output.as_text();
+                                if !text.is_empty() {
+                                    out.push('\n');
+                                    out.push_str(&text);
+                                }
+                            }
+                        }
+                    }
+                    _ if !body.is_empty() => {
+                        out.push('\n');
+                        out.push_str(body);
+                    }
+                    _ => {}
+                }
+                out
+            }
+            _ => self.text.clone(),
+        }
+    }
+
     pub fn plan(text: String, plan_path: String) -> Self {
         Self {
             role: DisplayRole::Assistant,
@@ -171,5 +219,67 @@ mod tests {
     #[test_case(0, 5, 0    ; "clamp_underflow")]
     fn apply_scroll_delta_cases(offset: u16, delta: i32, expected: u16) {
         assert_eq!(apply_scroll_delta(offset, delta), expected);
+    }
+
+    fn tool_msg(text: &str) -> DisplayMessage {
+        DisplayMessage::new(
+            DisplayRole::Tool {
+                id: "t1".into(),
+                status: ToolStatus::Success,
+                name: "read",
+            },
+            text.into(),
+        )
+    }
+
+    #[test]
+    fn copy_text_non_tool_returns_text() {
+        let msg = DisplayMessage::new(DisplayRole::Assistant, "hello\nworld".into());
+        assert_eq!(msg.copy_text(), "hello\nworld");
+    }
+
+    #[test]
+    fn copy_text_tool_structured_output_uses_as_text() {
+        let mut msg = tool_msg("read /src/main.rs\nignored body");
+        msg.tool_output = Some(ToolOutput::ReadCode {
+            path: "main.rs".into(),
+            start_line: 1,
+            lines: vec!["fn main() {}".into()],
+        });
+        assert_eq!(msg.copy_text(), "read /src/main.rs\n1: fn main() {}");
+    }
+
+    #[test]
+    fn copy_text_tool_with_code_input() {
+        let mut msg = tool_msg("bash\nold body");
+        msg.tool_input = Some(ToolInput::Code {
+            language: "bash",
+            code: "echo hi\n".into(),
+        });
+        msg.tool_output = Some(ToolOutput::Plain("done".into()));
+        assert_eq!(msg.copy_text(), "bash\necho hi\nold body");
+    }
+
+    #[test]
+    fn copy_text_tool_plain_falls_through_to_body() {
+        let mut msg = tool_msg("header\nbody text");
+        msg.tool_output = Some(ToolOutput::Plain("done".into()));
+        assert_eq!(msg.copy_text(), "header\nbody text");
+    }
+
+    #[test]
+    fn copy_text_tool_no_output_no_body() {
+        let msg = tool_msg("header only");
+        assert_eq!(msg.copy_text(), "header only");
+    }
+
+    #[test]
+    fn copy_text_tool_batch_empty_entries() {
+        let mut msg = tool_msg("batch\n3 tools ran");
+        msg.tool_output = Some(ToolOutput::Batch {
+            entries: vec![],
+            text: "ignored".into(),
+        });
+        assert_eq!(msg.copy_text(), "batch");
     }
 }

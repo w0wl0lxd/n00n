@@ -2,7 +2,6 @@ use std::path::Path;
 
 use crate::components::messages::MessagesPanel;
 use crate::components::{DisplayMessage, DisplayRole};
-use crate::selection::ContentRegion;
 
 use maki_agent::{AgentEvent, QuestionInfo};
 use maki_providers::TokenUsage;
@@ -125,8 +124,16 @@ impl Chat {
         self.messages_panel.view(frame, area, has_selection);
     }
 
-    pub fn push_content_regions<'a>(&'a self, out: &mut Vec<ContentRegion<'a>>) {
-        self.messages_panel.push_content_regions(out);
+    pub fn scroll_top(&self) -> u16 {
+        self.messages_panel.scroll_top()
+    }
+
+    pub fn segment_heights(&self) -> &[u16] {
+        self.messages_panel.segment_heights()
+    }
+
+    pub fn segment_copy_texts(&self) -> Vec<&str> {
+        self.messages_panel.segment_copy_texts()
     }
 
     pub fn flush(&mut self) {
