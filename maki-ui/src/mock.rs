@@ -31,6 +31,7 @@ fn tool(
         text: text.into(),
         tool_input: input,
         tool_output: output,
+        annotation: None,
         plan_path: None,
         timestamp: None,
     }
@@ -416,9 +417,9 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             None,
             Some(ToolOutput::Batch {
                 entries: vec![
-                    BatchToolEntry { tool: "read".into(), summary: "src/config/mod.rs".into(), status: BatchToolStatus::Success },
-                    BatchToolEntry { tool: "read".into(), summary: "src/config/builder.rs".into(), status: BatchToolStatus::Success },
-                    BatchToolEntry { tool: "read".into(), summary: "src/config/validation.rs".into(), status: BatchToolStatus::Success },
+                    BatchToolEntry { tool: "read".into(), summary: "src/config/mod.rs".into(), status: BatchToolStatus::Success, input: None, output: None },
+                    BatchToolEntry { tool: "read".into(), summary: "src/config/builder.rs".into(), status: BatchToolStatus::Success, input: None, output: None },
+                    BatchToolEntry { tool: "read".into(), summary: "src/config/validation.rs".into(), status: BatchToolStatus::Success, input: None, output: None },
                 ],
                 text: String::new(),
             }),

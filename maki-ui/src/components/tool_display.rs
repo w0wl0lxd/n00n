@@ -26,14 +26,26 @@ pub const TOOL_OUTPUT_MAX_LINES: usize = 7;
 pub const BASH_OUTPUT_MAX_LINES: usize = 10;
 pub const TOOL_BODY_INDENT: &str = "  ";
 const TIMESTAMP_LEN: usize = 8;
+const PLAIN_ANNOTATION_THRESHOLD: usize = 10;
+const ALWAYS_ANNOTATE_TOOLS: &[&str] = &[WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME];
 
-pub fn tool_summary_annotation(tool: &str, text: &str) -> Option<String> {
-    match tool {
-        WEBFETCH_TOOL_NAME | WEBSEARCH_TOOL_NAME => Some(format!("{} lines", text.lines().count())),
-        _ => {
-            let n = text.lines().count();
-            (n > BASH_OUTPUT_MAX_LINES).then(|| format!("{n} lines"))
+pub(crate) fn tool_output_annotation(output: &ToolOutput, tool: &str) -> Option<String> {
+    match output {
+        ToolOutput::ReadCode { lines, .. } => Some(format!("{} lines", lines.len())),
+        ToolOutput::WriteCode { byte_count, .. } => Some(format!("{byte_count} bytes")),
+        ToolOutput::GrepResult { entries, .. } => Some(format!("{} files", entries.len())),
+        ToolOutput::GlobResult { files } if !files.is_empty() => {
+            Some(format!("{} files", files.len()))
         }
+        ToolOutput::Plain(text) => {
+            let n = text.lines().count();
+            if ALWAYS_ANNOTATE_TOOLS.contains(&tool) || n > PLAIN_ANNOTATION_THRESHOLD {
+                Some(format!("{n} lines"))
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
@@ -41,15 +53,6 @@ fn extract_path_suffix(s: &str) -> Option<(&str, &str)> {
     let i = s.rfind(" in ")?;
     let path = s[i + 4..].split('"').next().unwrap();
     Some((&s[..i], path))
-}
-
-fn split_trailing_annotation(s: &str) -> (&str, Option<&str>) {
-    if let Some(i) = s.rfind(" (")
-        && s.ends_with(')')
-    {
-        return (&s[..i], Some(&s[i..]));
-    }
-    (s, None)
 }
 
 fn style_grep_header(header: &str) -> Vec<Span<'static>> {
@@ -142,6 +145,7 @@ pub const ERROR_STYLE: RoleStyle = RoleStyle {
 pub struct ToolLines {
     pub lines: Vec<Line<'static>>,
     pub highlight: Option<HighlightRequest>,
+    pub spinner_lines: Vec<usize>,
 }
 
 pub struct HighlightRequest {
@@ -210,17 +214,19 @@ pub fn build_tool_lines(
         .text
         .split_once('\n')
         .map_or(msg.text.as_str(), |(h, _)| h);
-    let (header, annotation) = split_trailing_annotation(header);
     let tool_name = msg.role.tool_name().unwrap_or("?");
     let mut header_spans = vec![Span::styled(format!("{tool_name}> "), theme::TOOL_PREFIX)];
     header_spans.extend(style_tool_header(tool_name, header));
-    if let Some(ann) = annotation {
-        header_spans.push(Span::styled(ann.to_owned(), theme::TOOL_ANNOTATION));
+    if let Some(ann) = &msg.annotation {
+        header_spans.push(Span::styled(format!(" ({ann})"), theme::TOOL_ANNOTATION));
     }
     let mut lines = vec![Line::from(header_spans)];
 
+    let mut spinner_lines = Vec::new();
+
     let (indicator, indicator_style) = match status {
         ToolStatus::InProgress => {
+            spinner_lines.push(0);
             let ch = spinner_frame(started_at.elapsed().as_millis());
             (format!("{ch} "), theme::TOOL_IN_PROGRESS)
         }
@@ -288,7 +294,29 @@ pub fn build_tool_lines(
                     Span::styled(format!("{}> ", entry.tool), theme::TOOL_PREFIX),
                 ];
                 spans.extend(style_tool_header(&entry.tool, &entry.summary));
+                if let Some(ann) = entry
+                    .output
+                    .as_ref()
+                    .and_then(|o| tool_output_annotation(o, &entry.tool))
+                {
+                    spans.push(Span::styled(format!(" ({ann})"), theme::TOOL_ANNOTATION));
+                }
+
+                let line_idx = lines.len();
                 lines.push(Line::from(spans));
+
+                if entry.status == BatchToolStatus::InProgress {
+                    spinner_lines.push(line_idx);
+                }
+
+                if let Some(ToolInput::Code { code, .. }) = &entry.input {
+                    for text in code.trim_end_matches('\n').lines() {
+                        lines.push(Line::from(vec![
+                            Span::raw(format!("{TOOL_BODY_INDENT}  ")),
+                            Span::styled(text.to_owned(), theme::CODE_FALLBACK),
+                        ]));
+                    }
+                }
             }
         }
         Some(ToolOutput::QuestionAnswers(pairs)) => {
@@ -310,7 +338,11 @@ pub fn build_tool_lines(
         msg.tool_output.clone(),
     );
 
-    ToolLines { lines, highlight }
+    ToolLines {
+        lines,
+        highlight,
+        spinner_lines,
+    }
 }
 
 pub fn truncate_to_header(text: &mut String) {
@@ -322,17 +354,9 @@ pub fn truncate_to_header(text: &mut String) {
 mod tests {
     use super::*;
     use crate::components::DisplayRole;
-    use maki_agent::tools::{BASH_TOOL_NAME, WRITE_TOOL_NAME};
-    use maki_providers::{ToolInput, ToolOutput};
+    use maki_agent::tools::{BASH_TOOL_NAME, BATCH_TOOL_NAME, WRITE_TOOL_NAME};
+    use maki_providers::{BatchToolEntry, BatchToolStatus, GrepFileEntry, ToolInput, ToolOutput};
     use test_case::test_case;
-
-    #[test_case(WEBFETCH_TOOL_NAME, "line1\nline2\nline3", Some("3 lines") ; "webfetch_line_count")]
-    #[test_case(WEBSEARCH_TOOL_NAME, "result1\nresult2", Some("2 lines") ; "websearch_line_count")]
-    #[test_case("bash", "ok", None ; "short_output_no_annotation")]
-    #[test_case("bash", &(0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"), Some("20 lines") ; "long_output_line_count")]
-    fn summary_annotation(tool: &str, output: &str, expected: Option<&str>) {
-        assert_eq!(tool_summary_annotation(tool, output).as_deref(), expected);
-    }
 
     fn code_input() -> Option<ToolInput> {
         Some(ToolInput::Code {
@@ -372,6 +396,7 @@ mod tests {
             text: "header\nbody".into(),
             tool_input: input,
             tool_output: output,
+            annotation: None,
             plan_path: None,
             timestamp: None,
         };
@@ -380,18 +405,6 @@ mod tests {
         if let Some(hl) = &tl.highlight {
             assert_eq!(hl.output.is_some(), expect_output);
         }
-    }
-
-    #[test_case("foo (3 files)", "foo", Some(" (3 files)") ; "with_parens")]
-    #[test_case("foo bar",       "foo bar", None            ; "without_parens")]
-    fn split_trailing_annotation_cases(
-        input: &str,
-        expected_header: &str,
-        expected_ann: Option<&str>,
-    ) {
-        let (header, ann) = split_trailing_annotation(input);
-        assert_eq!(header, expected_header);
-        assert_eq!(ann, expected_ann);
     }
 
     fn spans_text(spans: &[Span<'_>]) -> String {
@@ -466,6 +479,7 @@ mod tests {
             text: "echo hi\nline1\nline2".into(),
             tool_input: code_input(),
             tool_output: output,
+            annotation: None,
             plan_path: None,
             timestamp: None,
         };
@@ -493,6 +507,7 @@ mod tests {
             text: "cmd".into(),
             tool_input: None,
             tool_output: None,
+            annotation: None,
             plan_path: None,
             timestamp: None,
         }
@@ -512,5 +527,111 @@ mod tests {
         } else {
             assert_eq!(tl.lines[0].spans.len(), span_count_before);
         }
+    }
+
+    fn batch_msg(entries: Vec<BatchToolEntry>) -> DisplayMessage {
+        DisplayMessage {
+            role: DisplayRole::Tool {
+                id: "b1".into(),
+                status: ToolStatus::Success,
+                name: BATCH_TOOL_NAME,
+            },
+            text: "3 tools".into(),
+            tool_input: None,
+            tool_output: Some(ToolOutput::Batch {
+                entries,
+                text: String::new(),
+            }),
+            annotation: None,
+            plan_path: None,
+            timestamp: None,
+        }
+    }
+
+    #[test]
+    fn batch_entry_annotation_rendered() {
+        let msg = batch_msg(vec![BatchToolEntry {
+            tool: "read".into(),
+            summary: "src/main.rs".into(),
+            status: BatchToolStatus::Success,
+            input: None,
+            output: Some(ToolOutput::ReadCode {
+                path: "src/main.rs".into(),
+                start_line: 1,
+                lines: vec!["x".into(); 42],
+            }),
+        }]);
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
+        let text = lines_text(&tl);
+        assert!(text.contains("(42 lines)"));
+    }
+
+    #[test]
+    fn batch_entry_code_input_rendered() {
+        let msg = batch_msg(vec![BatchToolEntry {
+            tool: "bash".into(),
+            summary: "echo hi".into(),
+            status: BatchToolStatus::Success,
+            input: Some(ToolInput::Code {
+                language: "bash",
+                code: "echo hi\n".into(),
+            }),
+            output: None,
+        }]);
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
+        let text = lines_text(&tl);
+        assert!(text.contains("echo hi"));
+    }
+
+    #[test]
+    fn spinner_lines_tracks_in_progress() {
+        let msg = DisplayMessage {
+            role: DisplayRole::Tool {
+                id: "b1".into(),
+                status: ToolStatus::InProgress,
+                name: BATCH_TOOL_NAME,
+            },
+            text: "2 tools".into(),
+            tool_input: None,
+            tool_output: Some(ToolOutput::Batch {
+                entries: vec![
+                    BatchToolEntry {
+                        tool: "read".into(),
+                        summary: "a.rs".into(),
+                        status: BatchToolStatus::Success,
+                        input: None,
+                        output: None,
+                    },
+                    BatchToolEntry {
+                        tool: "bash".into(),
+                        summary: "test".into(),
+                        status: BatchToolStatus::InProgress,
+                        input: None,
+                        output: None,
+                    },
+                ],
+                text: String::new(),
+            }),
+            annotation: None,
+            plan_path: None,
+            timestamp: None,
+        };
+        let tl = build_tool_lines(&msg, ToolStatus::InProgress, Instant::now());
+        assert!(tl.spinner_lines.contains(&0));
+        assert!(tl.spinner_lines.len() == 2);
+    }
+
+    #[test_case("bash",  ToolOutput::Plain("ok".into()),                      None                ; "plain_short_no_annotation")]
+    #[test_case("bash",  ToolOutput::Plain((0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n")), Some("20 lines") ; "plain_long_annotates")]
+    #[test_case("webfetch", ToolOutput::Plain("a\nb".into()),                 Some("2 lines")     ; "webfetch_always_annotates")]
+    #[test_case("websearch", ToolOutput::Plain("r".into()),                   Some("1 lines")     ; "websearch_always_annotates")]
+    #[test_case("read",  ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec!["x".into(); 5] }, Some("5 lines") ; "read_code_lines")]
+    #[test_case("write", ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
+    #[test_case("grep",  ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), matches: vec![] }] }, Some("1 files") ; "grep_file_count")]
+    #[test_case("glob",  ToolOutput::GlobResult { files: vec!["a".into(), "b".into()] }, Some("2 files") ; "glob_file_count")]
+    #[test_case("glob",  ToolOutput::GlobResult { files: vec![] },            None                ; "glob_empty_no_annotation")]
+    #[test_case("edit",  ToolOutput::Diff { path: "a.rs".into(), hunks: vec![], summary: "ok".into() }, None ; "diff_no_annotation")]
+    fn annotation_cases(tool: &str, output: ToolOutput, expected: Option<&str>) {
+        assert_eq!(tool_output_annotation(&output, tool).as_deref(), expected);
     }
 }

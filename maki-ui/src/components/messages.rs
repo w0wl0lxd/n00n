@@ -3,7 +3,7 @@ use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
 use super::tool_display::{
     ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, THINKING_STYLE, TOOL_OUTPUT_MAX_LINES,
     ToolLines, USER_STYLE, append_timestamp, build_tool_lines, format_timestamp_now,
-    tool_summary_annotation, truncate_to_header,
+    tool_output_annotation, truncate_to_header,
 };
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::CodeHighlighter;
@@ -72,6 +72,7 @@ struct Segment {
     pending_highlight: Option<u64>,
     highlight_range: Option<(usize, usize)>,
     highlighted_has_output: bool,
+    spinner_lines: Vec<usize>,
 }
 
 impl Segment {
@@ -91,6 +92,7 @@ impl Segment {
         let hl = tl.highlight.as_ref();
         self.highlight_range = hl.map(|h| h.range);
         self.highlighted_has_output = hl.is_some_and(|h| h.output.is_some());
+        self.spinner_lines = tl.spinner_lines;
         self.lines = tl.lines;
         self.cached_height = None;
     }
@@ -206,6 +208,7 @@ impl MessagesPanel {
             text: event.summary,
             tool_input: event.input,
             tool_output: event.output,
+            annotation: None,
             plan_path: None,
             timestamp: Some(format_timestamp_now()),
         });
@@ -243,12 +246,10 @@ impl MessagesPanel {
             };
         }
         truncate_to_header(&mut msg.text);
+        msg.annotation = tool_output_annotation(&event.output, event.tool);
 
         match &event.output {
             ToolOutput::Plain(text) => {
-                if let Some(annotation) = tool_summary_annotation(event.tool, text) {
-                    msg.text = format!("{} ({annotation})", msg.text);
-                }
                 if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
                     let display = if event.tool == BASH_TOOL_NAME {
                         truncate_lines(text, BASH_OUTPUT_MAX_LINES, Keep::Tail)
@@ -264,20 +265,10 @@ impl MessagesPanel {
                 let n = pairs.len();
                 msg.text = format!("{n} question{} answered", if n == 1 { "" } else { "s" });
             }
-            ToolOutput::ReadCode { lines, .. } => {
-                msg.text = format!("{} ({} lines)", msg.text, lines.len());
-            }
-            ToolOutput::WriteCode { byte_count, .. } => {
-                msg.text = format!("{} ({byte_count} bytes)", msg.text);
-            }
-            ToolOutput::GrepResult { entries, .. } => {
-                msg.text = format!("{} ({} files)", msg.text, entries.len());
-            }
             ToolOutput::GlobResult { files } => {
                 if files.is_empty() {
                     msg.text = format!("{}\n{NO_FILES_FOUND}", msg.text);
                 } else {
-                    msg.text = format!("{} ({} files)", msg.text, files.len());
                     let joined = files.join("\n");
                     let display = truncate_lines(&joined, TOOL_OUTPUT_MAX_LINES, Keep::Head);
                     msg.text = format!("{}\n{display}", msg.text);
@@ -566,28 +557,13 @@ impl MessagesPanel {
             theme::TOOL_IN_PROGRESS,
         );
         for seg in &mut self.cached_segments {
-            let Some(ref tool_id) = seg.tool_id else {
-                continue;
-            };
-            let msg = self.messages.iter().find(|m| {
-                matches!(&m.role, DisplayRole::Tool { id, status: ToolStatus::InProgress, .. } if id == tool_id)
-            });
-            let Some(msg) = msg else { continue };
-            if let Some(first_line) = seg.lines.first_mut()
-                && !first_line.spans.is_empty()
-            {
-                first_line.spans[0] = spinner_span.clone();
-            }
-            if let Some(ToolOutput::Batch { entries, .. }) = &msg.tool_output {
-                let body_start = 1;
-                for (i, entry) in entries.iter().enumerate() {
-                    if entry.status != BatchToolStatus::InProgress {
-                        continue;
-                    }
-                    if let Some(line) = seg.lines.get_mut(body_start + i)
-                        && line.spans.len() > 1
-                    {
-                        line.spans[1] = spinner_span.clone();
+            for &line_idx in &seg.spinner_lines {
+                if let Some(line) = seg.lines.get_mut(line_idx)
+                    && !line.spans.is_empty()
+                {
+                    let span_idx = if line_idx == 0 { 0 } else { 1 };
+                    if line.spans.len() > span_idx {
+                        line.spans[span_idx] = spinner_span.clone();
                     }
                 }
             }
@@ -653,6 +629,7 @@ impl MessagesPanel {
             seg.lines = tl.lines;
             seg.highlight_range = Some((s, e));
             seg.pending_highlight = None;
+            seg.spinner_lines = tl.spinner_lines;
         } else {
             seg.apply_highlight(tl, &self.hl_worker);
         }
@@ -802,21 +779,28 @@ mod tests {
         assert!(!panel.messages[0].text.contains('\n'));
     }
 
-    #[test]
-    fn write_done_shows_bytes_annotation() {
+    #[test_case(
+        WRITE_TOOL_NAME,
+        ToolOutput::WriteCode { path: "src/main.rs".into(), byte_count: 42, lines: vec!["fn main() {}".into()] },
+        Some("42 bytes")
+        ; "write_bytes"
+    )]
+    #[test_case(
+        "grep",
+        grep_output(2),
+        Some("2 files")
+        ; "grep_files"
+    )]
+    fn tool_done_sets_annotation(tool: &'static str, output: ToolOutput, expected: Option<&str>) {
         let mut panel = MessagesPanel::new();
-        panel.tool_start(start("t1", WRITE_TOOL_NAME));
+        panel.tool_start(start("t1", tool));
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
-            tool: WRITE_TOOL_NAME,
-            output: ToolOutput::WriteCode {
-                path: "src/main.rs".into(),
-                byte_count: 42,
-                lines: vec!["fn main() {}".into()],
-            },
+            tool,
+            output,
             is_error: false,
         });
-        assert!(panel.messages[0].text.contains("42 bytes"));
+        assert_eq!(panel.messages[0].annotation.as_deref(), expected);
     }
 
     fn grep_output(n_files: usize) -> ToolOutput {
@@ -831,19 +815,6 @@ mod tests {
                 })
                 .collect(),
         }
-    }
-
-    #[test]
-    fn tool_done_grep_result_annotation() {
-        let mut panel = MessagesPanel::new();
-        panel.tool_start(start("t1", "grep"));
-        panel.tool_done(ToolDoneEvent {
-            id: "t1".into(),
-            tool: "grep",
-            output: grep_output(2),
-            is_error: false,
-        });
-        assert!(panel.messages[0].text.contains("2 files"));
     }
 
     #[test_case(
@@ -865,7 +836,8 @@ mod tests {
             output,
             is_error: false,
         });
-        assert_eq!(panel.messages[0].text.contains("files)"), has_file_count);
+        let has_annotation = panel.messages[0].annotation.is_some();
+        assert_eq!(has_annotation, has_file_count);
         assert_eq!(
             panel.messages[0].text.contains(NO_FILES_FOUND),
             has_no_files_msg

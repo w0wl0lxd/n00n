@@ -67,6 +67,7 @@ pub struct DisplayMessage {
     pub text: String,
     pub tool_input: Option<ToolInput>,
     pub tool_output: Option<ToolOutput>,
+    pub annotation: Option<String>,
     pub plan_path: Option<String>,
     pub timestamp: Option<String>,
 }
@@ -78,6 +79,7 @@ impl DisplayMessage {
             text,
             tool_input: None,
             tool_output: None,
+            annotation: None,
             plan_path: None,
             timestamp: None,
         }
@@ -89,6 +91,7 @@ impl DisplayMessage {
             text,
             tool_input: None,
             tool_output: None,
+            annotation: None,
             plan_path: Some(plan_path),
             timestamp: None,
         }

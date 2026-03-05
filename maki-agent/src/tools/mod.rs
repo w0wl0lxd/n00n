@@ -25,6 +25,7 @@ use crate::template::Vars;
 use crate::{AgentError, AgentMode, Envelope, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use maki_providers::Model;
 pub(crate) use maki_providers::NO_FILES_FOUND;
+use maki_providers::ToolInput;
 use maki_providers::provider::Provider;
 
 pub const BASH_TOOL_NAME: &str = bash::Bash::NAME;
@@ -160,10 +161,14 @@ macro_rules! register_tools {
                 }
             }
 
-            pub fn start_event(&self, id: String) -> ToolStartEvent {
-                let input = match self {
+            pub fn start_input(&self) -> Option<ToolInput> {
+                match self {
                     $(ToolCall::$Variant(inner) => inner.start_input()),+
-                };
+                }
+            }
+
+            pub fn start_event(&self, id: String) -> ToolStartEvent {
+                let input = self.start_input();
                 let output = match self {
                     $(ToolCall::$Variant(inner) => inner.start_output()),+
                 };

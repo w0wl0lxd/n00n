@@ -28,13 +28,18 @@ impl BatchEntry {
         })
     }
 
-    fn to_batch_entry(&self, status: BatchToolStatus) -> BatchToolEntry {
+    fn to_batch_entry(
+        &self,
+        status: BatchToolStatus,
+        output: Option<ToolOutput>,
+    ) -> BatchToolEntry {
+        let call = ToolCall::from_api(&self.tool, &self.parameters).ok();
         BatchToolEntry {
             tool: self.tool.clone(),
-            summary: ToolCall::from_api(&self.tool, &self.parameters)
-                .map(|c| c.start_summary())
-                .unwrap_or_default(),
+            summary: call.as_ref().map(|c| c.start_summary()).unwrap_or_default(),
             status,
+            input: call.and_then(|c| c.start_input()),
+            output,
         }
     }
 }
@@ -90,7 +95,7 @@ impl Batch {
             );
         };
 
-        let results: Vec<Result<String, String>> = std::thread::scope(|s| {
+        let results: Vec<(Result<String, String>, Option<ToolOutput>)> = std::thread::scope(|s| {
             let handles: Vec<_> = parsed
                 .iter()
                 .enumerate()
@@ -98,7 +103,7 @@ impl Batch {
                     let id = inner_id(i);
                     s.spawn(move || {
                         send_progress(i, BatchToolStatus::InProgress);
-                        let result = match parsed_call {
+                        let (result, output) = match parsed_call {
                             Ok(call) => {
                                 let inner_ctx = ToolContext {
                                     tool_use_id: Some(&id),
@@ -106,9 +111,10 @@ impl Batch {
                                 };
                                 let done = call.execute(&inner_ctx, id.clone());
                                 let text = done.output.as_text();
-                                if done.is_error { Err(text) } else { Ok(text) }
+                                let result = if done.is_error { Err(text) } else { Ok(text) };
+                                (result, Some(done.output))
                             }
-                            Err(e) => Err(e.clone()),
+                            Err(e) => (Err(e.clone()), None),
                         };
                         let status = if result.is_ok() {
                             BatchToolStatus::Success
@@ -116,14 +122,17 @@ impl Batch {
                             BatchToolStatus::Error
                         };
                         send_progress(i, status);
-                        result
+                        (result, output)
                     })
                 })
                 .collect();
 
             handles
                 .into_iter()
-                .map(|h| h.join().unwrap_or(Err("tool thread panicked".into())))
+                .map(|h| {
+                    h.join()
+                        .unwrap_or((Err("tool thread panicked".into()), None))
+                })
                 .collect()
         });
 
@@ -133,17 +142,17 @@ impl Batch {
         let mut entries: Vec<BatchToolEntry> = active
             .iter()
             .zip(&results)
-            .map(|(entry, result)| {
+            .map(|(entry, (result, output))| {
                 let status = if result.is_ok() {
                     BatchToolStatus::Success
                 } else {
                     BatchToolStatus::Error
                 };
-                entry.to_batch_entry(status)
+                entry.to_batch_entry(status, output.clone())
             })
             .collect();
 
-        for (entry, result) in active.iter().zip(&results) {
+        for (entry, (result, _)) in active.iter().zip(&results) {
             let _ = writeln!(output, "## {}", entry.tool);
             match result {
                 Ok(content) => output.push_str(content),
@@ -161,7 +170,7 @@ impl Batch {
                 "## {}\n[ERROR] maximum of {MAX_BATCH_SIZE} tools per batch\n\n",
                 entry.tool
             );
-            entries.push(entry.to_batch_entry(BatchToolStatus::Error));
+            entries.push(entry.to_batch_entry(BatchToolStatus::Error, None));
         }
 
         let succeeded = total - failed;
@@ -192,7 +201,7 @@ impl Batch {
         let entries = self
             .tool_calls
             .iter()
-            .map(|entry| entry.to_batch_entry(BatchToolStatus::Pending))
+            .map(|entry| entry.to_batch_entry(BatchToolStatus::Pending, None))
             .collect();
         Some(ToolOutput::Batch {
             entries,

@@ -182,6 +182,8 @@ pub struct BatchToolEntry {
     pub tool: String,
     pub summary: String,
     pub status: BatchToolStatus,
+    pub input: Option<ToolInput>,
+    pub output: Option<ToolOutput>,
 }
 
 #[derive(Debug, Clone, Serialize)]
