@@ -6,7 +6,7 @@ use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
@@ -246,7 +246,7 @@ impl InputBox {
         lines_above + wrap_row
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect, streaming: bool) {
+    pub fn view(&mut self, frame: &mut Frame, area: Rect, streaming: bool, mode_color: Color) {
         let content_height = area.height.saturating_sub(2);
         let content_width = area.width as usize;
 
@@ -316,7 +316,12 @@ impl InputBox {
         };
 
         let text = Text::from(styled_lines);
-        let border_style = Style::new().fg(theme::INPUT_BORDER);
+        let border_color = if streaming {
+            theme::INPUT_BORDER
+        } else {
+            mode_color
+        };
+        let border_style = Style::new().fg(border_color);
         let paragraph = Paragraph::new(text)
             .style(Style::new().fg(theme::FOREGROUND))
             .wrap(Wrap { trim: false })
@@ -501,20 +506,30 @@ mod tests {
         );
     }
 
-    fn render_input(
+    fn render_input_with(
         input: &mut InputBox,
         width: u16,
         height: u16,
+        streaming: bool,
+        mode_color: Color,
     ) -> ratatui::Terminal<ratatui::backend::TestBackend> {
         let backend = ratatui::backend::TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
                 let area = Rect::new(0, 0, width, height);
-                input.view(frame, area, false);
+                input.view(frame, area, streaming, mode_color);
             })
             .unwrap();
         terminal
+    }
+
+    fn render_input(
+        input: &mut InputBox,
+        width: u16,
+        height: u16,
+    ) -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        render_input_with(input, width, height, false, theme::GREEN)
     }
 
     fn has_scrollbar_thumb(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> bool {
@@ -550,6 +565,19 @@ mod tests {
         input.buffer = TextBuffer::new("short".into());
         let _ = render_input(&mut input, 40, area_height);
         assert_eq!(input.scroll_y, 0);
+    }
+
+    fn border_fg(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> Color {
+        let buf = terminal.backend().buffer();
+        buf.cell((0, 0)).unwrap().fg
+    }
+
+    #[test_case(false, theme::PINK,   theme::PINK         ; "idle_uses_mode_color")]
+    #[test_case(true,  theme::PINK,   theme::INPUT_BORDER ; "streaming_uses_default_border")]
+    fn border_color_matches_mode(streaming: bool, mode_color: Color, expected: Color) {
+        let mut input = InputBox::new();
+        let terminal = render_input_with(&mut input, 40, 5, streaming, mode_color);
+        assert_eq!(border_fg(&terminal), expected);
     }
 
     #[test]

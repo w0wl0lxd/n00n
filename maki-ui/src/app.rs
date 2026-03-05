@@ -22,7 +22,7 @@ use maki_providers::QuestionInfo;
 use maki_providers::{AgentEvent, Envelope, ModelPricing, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Widget};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +30,16 @@ pub(crate) enum Mode {
     Build,
     Plan { path: String, written: bool },
     BuildPlan,
+}
+
+impl Mode {
+    fn color(&self) -> Color {
+        match self {
+            Self::Build => theme::CYAN,
+            Self::Plan { .. } => theme::PINK,
+            Self::BuildPlan => theme::PURPLE,
+        }
+    }
 }
 
 const CANCEL_MSG: &str = "Cancelled.";
@@ -571,11 +581,15 @@ impl App {
     }
 
     fn mode_label(&self) -> (&'static str, Style) {
-        match &self.mode {
-            Mode::Build => ("[BUILD]", theme::MODE_BUILD),
-            Mode::Plan { .. } => ("[PLAN]", theme::MODE_PLAN),
-            Mode::BuildPlan => ("[BUILD PLAN]", theme::MODE_BUILD_PLAN),
-        }
+        let label = match &self.mode {
+            Mode::Build => "[BUILD]",
+            Mode::Plan { .. } => "[PLAN]",
+            Mode::BuildPlan => "[BUILD PLAN]",
+        };
+        let style = Style::new()
+            .fg(self.mode.color())
+            .add_modifier(Modifier::BOLD);
+        (label, style)
     }
 
     fn chat_names(&self) -> Vec<String> {
@@ -680,8 +694,12 @@ impl App {
         } else {
             let queue_entries = self.visible_queue_entries();
             queue_panel::view(frame, queue_area, &queue_entries);
-            self.input_box
-                .view(frame, input_area, self.status == Status::Streaming);
+            self.input_box.view(
+                frame,
+                input_area,
+                self.status == Status::Streaming,
+                self.mode.color(),
+            );
             self.command_palette.view(frame, input_area)
         };
 
@@ -1123,21 +1141,11 @@ mod tests {
         assert_eq!(app.status, Status::Streaming);
     }
 
-    #[test]
-    fn error_clears_queue() {
+    #[test_case(error_app as fn(&mut App) ; "error")]
+    #[test_case(cancel_app as fn(&mut App) ; "cancel")]
+    fn clears_queue(terminate: fn(&mut App)) {
         let mut app = app_with_queued_message();
-        app.update(agent_msg(AgentEvent::Error {
-            message: "boom".into(),
-        }));
-        assert!(app.queue.is_empty());
-    }
-
-    #[test]
-    fn cancel_clears_queue() {
-        let mut app = app_with_queued_message();
-        app.update(Msg::Key(key(KeyCode::Esc)));
-        let actions = app.update(Msg::Key(key(KeyCode::Esc)));
-        assert!(matches!(&actions[0], Action::CancelAgent));
+        terminate(&mut app);
         assert!(app.queue.is_empty());
     }
 
@@ -1172,20 +1180,22 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Enter)))
     }
 
-    #[test]
-    fn cancel_clears_pending_interrupts() {
-        let mut app = app_with_pending_interrupt();
+    fn cancel_app(app: &mut App) {
         app.update(Msg::Key(key(KeyCode::Esc)));
         app.update(Msg::Key(key(KeyCode::Esc)));
-        assert!(app.pending_interrupts.is_empty());
     }
 
-    #[test]
-    fn error_clears_pending_interrupts() {
-        let mut app = app_with_pending_interrupt();
+    fn error_app(app: &mut App) {
         app.update(agent_msg(AgentEvent::Error {
             message: "boom".into(),
         }));
+    }
+
+    #[test_case(cancel_app as fn(&mut App) ; "cancel")]
+    #[test_case(error_app as fn(&mut App)  ; "error")]
+    fn clears_pending_interrupts(terminate: fn(&mut App)) {
+        let mut app = app_with_pending_interrupt();
+        terminate(&mut app);
         assert!(app.pending_interrupts.is_empty());
     }
 
