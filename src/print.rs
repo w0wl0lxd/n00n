@@ -24,6 +24,7 @@ use std::time::Instant;
 use clap::ValueEnum;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
+use maki_agent::tools::QUESTION_TOOL_NAME;
 use maki_agent::{AgentInput, AgentMode, History, agent, template};
 use maki_providers::model::Model;
 use maki_providers::{AgentEvent, Envelope, TokenUsage};
@@ -31,8 +32,6 @@ use serde::Serialize;
 use serde_json::Value;
 use tracing::error;
 use uuid::Uuid;
-
-const TOOLS: &[&str] = &["bash", "read", "write", "glob", "grep", "todowrite"];
 
 #[derive(Clone, ValueEnum)]
 pub enum OutputFormat {
@@ -63,7 +62,7 @@ struct InitEvent<'a> {
     subtype: &'static str,
     cwd: &'a str,
     session_id: &'a str,
-    tools: &'static [&'static str],
+    tools: &'a [&'a str],
     model: &'a str,
 }
 
@@ -137,7 +136,8 @@ pub fn run(
     let vars = template::env_vars();
     let mode = AgentMode::Build;
     let system = agent::build_system_prompt(&vars, &mode, model);
-    let tools = maki_agent::tools::ToolCall::definitions(&vars);
+    let (tool_names, tools) =
+        maki_agent::tools::ToolCall::definitions_excluding(&vars, &[QUESTION_TOOL_NAME]);
 
     let (event_tx, event_rx) = mpsc::channel::<Envelope>();
     let input = AgentInput {
@@ -198,7 +198,7 @@ pub fn run(
             subtype: "init",
             cwd: &cwd,
             session_id: &session_id,
-            tools: TOOLS,
+            tools: &tool_names,
             model: &model.id,
         })?;
     }
@@ -239,9 +239,9 @@ pub fn run(
             | AgentEvent::ToolOutput { .. }
             | AgentEvent::ToolDone(_)
             | AgentEvent::BatchProgress { .. }
-            | AgentEvent::QuestionPrompt { .. }
             | AgentEvent::InterruptConsumed { .. }
             | AgentEvent::AutoCompacting
+            | AgentEvent::QuestionPrompt { .. }
             | AgentEvent::Retry { .. } => {
                 if is_stream_json {
                     println!("{}", serde_json::to_string(&envelope)?);
@@ -379,7 +379,7 @@ mod tests {
             subtype: "init",
             cwd: "/tmp",
             session_id: "abc",
-            tools: TOOLS,
+            tools: &["bash", "read"],
             model: "test-model",
         };
         let json: Value = serde_json::to_value(&init).unwrap();

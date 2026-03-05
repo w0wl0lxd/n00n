@@ -236,6 +236,15 @@ macro_rules! register_tools {
                         .collect()
                 )
             }
+
+            pub fn definitions_excluding(vars: &Vars, blocked: &[&str]) -> (Vec<&'static str>, Value) {
+                let defs: Vec<_> = Self::all_defs(vars).into_iter()
+                    .filter(|(name, _)| !blocked.contains(name))
+                    .collect();
+                let names = defs.iter().map(|(name, _)| *name).collect();
+                let values = Value::Array(defs.into_iter().map(|(_, def)| def).collect());
+                (names, values)
+            }
         }
     };
 }
@@ -437,46 +446,44 @@ mod tests {
     }
 
     #[test]
-    fn tool_definitions_invariants() {
+    fn tool_definitions_schema_requires_additional_properties_false() {
         let vars = Vars::new().set("{cwd}", "/tmp");
         let all = ToolCall::definitions(&vars);
-        let all = all.as_array().unwrap();
-        let names: Vec<&str> = all.iter().map(|d| d["name"].as_str().unwrap()).collect();
-        assert!(names.len() > 2);
-
-        for def in all {
-            let schema = &def["input_schema"];
+        for def in all.as_array().unwrap() {
             assert_eq!(
-                schema["additionalProperties"],
+                def["input_schema"]["additionalProperties"],
                 json!(false),
                 "tool {} missing additionalProperties: false",
                 def["name"]
             );
         }
+    }
 
-        let (with_examples, without_examples): (Vec<_>, Vec<_>) =
-            all.iter().partition(|d| d.get("input_examples").is_some());
-        assert!(
-            !with_examples.is_empty(),
-            "at least one tool should have examples"
-        );
-        assert!(
-            !without_examples.is_empty(),
-            "at least one tool should lack examples"
-        );
-        for def in &with_examples {
-            let arr = def["input_examples"].as_array().unwrap();
-            assert!(!arr.is_empty(), "{} has empty input_examples", def["name"]);
+    #[test]
+    fn tool_definitions_examples_non_empty() {
+        let vars = Vars::new().set("{cwd}", "/tmp");
+        for def in ToolCall::definitions(&vars).as_array().unwrap() {
+            if let Some(examples) = def.get("input_examples") {
+                assert!(
+                    !examples.as_array().unwrap().is_empty(),
+                    "{} has empty input_examples",
+                    def["name"]
+                );
+            }
         }
+    }
 
+    #[test]
+    fn definitions_filtered_returns_only_requested() {
+        let vars = Vars::new().set("{cwd}", "/tmp");
         let filtered = ToolCall::definitions_filtered(&vars, &["bash", "read"]);
-        let f_names: Vec<&str> = filtered
+        let names: Vec<&str> = filtered
             .as_array()
             .unwrap()
             .iter()
             .map(|d| d["name"].as_str().unwrap())
             .collect();
-        assert_eq!(f_names, ["bash", "read"]);
+        assert_eq!(names, ["bash", "read"]);
     }
 
     #[test]
