@@ -454,8 +454,8 @@ impl App {
             ..
         } = &envelope.event
         {
-            self.token_usage += usage.clone();
-            self.chats[chat_idx].token_usage += usage.clone();
+            self.token_usage += *usage;
+            self.chats[chat_idx].token_usage += *usage;
             self.chats[chat_idx].context_size =
                 context_size.unwrap_or_else(|| usage.context_tokens());
         }
@@ -1406,7 +1406,7 @@ mod tests {
         };
         app.update(agent_msg(AgentEvent::TurnComplete {
             message: Default::default(),
-            usage: main_usage.clone(),
+            usage: main_usage,
             model: "test".into(),
             context_size: None,
         }));
@@ -1419,7 +1419,7 @@ mod tests {
         app.update(subagent_msg(
             AgentEvent::TurnComplete {
                 message: Default::default(),
-                usage: sub_usage.clone(),
+                usage: sub_usage,
                 model: "test".into(),
                 context_size: None,
             },

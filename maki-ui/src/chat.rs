@@ -67,6 +67,13 @@ impl Chat {
             }
             AgentEvent::TurnComplete { .. } => {}
             AgentEvent::ToolResultsSubmitted { .. } => {}
+            AgentEvent::AutoCompacting => {
+                self.messages_panel.flush();
+                self.messages_panel.push(DisplayMessage::new(
+                    DisplayRole::Assistant,
+                    "Auto-compacting conversation...".into(),
+                ));
+            }
             AgentEvent::InterruptConsumed { message } => {
                 self.messages_panel.flush();
                 self.push_user_message(&message);

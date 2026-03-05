@@ -278,7 +278,7 @@ impl Model {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
 pub struct TokenUsage {
     #[serde(rename = "input_tokens")]
     pub input: u32,

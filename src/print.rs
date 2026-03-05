@@ -241,6 +241,7 @@ pub fn run(
             | AgentEvent::BatchProgress { .. }
             | AgentEvent::QuestionPrompt { .. }
             | AgentEvent::InterruptConsumed { .. }
+            | AgentEvent::AutoCompacting
             | AgentEvent::Retry { .. } => {
                 if is_stream_json {
                     println!("{}", serde_json::to_string(&envelope)?);
@@ -287,7 +288,7 @@ pub fn run(
                 stop_reason: sr,
             } => {
                 num_turns = *turns;
-                usage = u.clone();
+                usage = *u;
                 stop_reason = sr.clone();
                 break;
             }

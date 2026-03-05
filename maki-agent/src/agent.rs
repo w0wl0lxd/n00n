@@ -21,6 +21,13 @@ use maki_providers::StreamResponse;
 use maki_providers::provider::Provider;
 use maki_providers::retry::RetryState;
 
+const AGENTS_MD: &str = "AGENTS.md";
+const DOOM_LOOP_THRESHOLD: usize = 3;
+const MAX_CONTINUATION_TURNS: u32 = 3;
+const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
+const COMPACTION_BUFFER: u32 = 30_000;
+const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.";
+
 pub type SharedHistory = Arc<Mutex<Vec<Message>>>;
 
 pub struct History {
@@ -53,11 +60,6 @@ impl History {
         self.commit();
     }
 }
-
-const AGENTS_MD: &str = "AGENTS.md";
-const DOOM_LOOP_THRESHOLD: usize = 3;
-const MAX_CONTINUATION_TURNS: u32 = 3;
-const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
 
 pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, model: &Model) -> String {
     let mut out = crate::prompt::base_prompt(model.family()).to_string();
@@ -264,6 +266,7 @@ pub fn run(
     let mut total_usage = TokenUsage::default();
     let mut num_turns: u32 = 0;
     let mut recent_calls = RecentCalls::new();
+    let auto_compact = auto_compact_enabled();
 
     info!(
         model = %model.id,
@@ -300,7 +303,7 @@ pub fn run(
         event_tx.send(
             AgentEvent::TurnComplete {
                 message: response.message.clone(),
-                usage: response.usage.clone(),
+                usage: response.usage,
                 model: model.id.clone(),
                 context_size: None,
             }
@@ -308,6 +311,7 @@ pub fn run(
         )?;
 
         total_usage += response.usage;
+        let last_input_tokens = response.usage.input;
 
         if !has_tools {
             let truncated = response.stop_reason.as_deref() == Some("max_tokens");
@@ -316,6 +320,18 @@ pub fn run(
 
             if truncated && num_turns <= MAX_CONTINUATION_TURNS {
                 warn!(num_turns, "response truncated (max_tokens), re-prompting");
+                continue;
+            }
+
+            if try_auto_compact(
+                auto_compact,
+                last_input_tokens,
+                provider,
+                model,
+                history,
+                event_tx,
+                &mut total_usage,
+            )? {
                 continue;
             }
 
@@ -360,16 +376,45 @@ pub fn run(
         history.push(tool_msg);
         history.commit();
 
+        try_auto_compact(
+            auto_compact,
+            last_input_tokens,
+            provider,
+            model,
+            history,
+            event_tx,
+            &mut total_usage,
+        )?;
         consume_interrupt(interrupt_rx, history, event_tx)?;
     }
 }
 
-pub fn compact(
+fn try_auto_compact(
+    enabled: bool,
+    input_tokens: u32,
     provider: &dyn Provider,
     model: &Model,
     history: &mut History,
     event_tx: &Sender<Envelope>,
-) -> Result<(), AgentError> {
+    total_usage: &mut TokenUsage,
+) -> Result<bool, AgentError> {
+    if !enabled || !is_overflow(input_tokens, model) {
+        return Ok(false);
+    }
+    info!(input_tokens, "auto-compacting");
+    event_tx.send(AgentEvent::AutoCompacting.into())?;
+    *total_usage += compact_history(provider, model, history, event_tx)?;
+    history.push(Message::user(CONTINUE_AFTER_COMPACT.into()));
+    history.commit();
+    Ok(true)
+}
+
+fn compact_history(
+    provider: &dyn Provider,
+    model: &Model,
+    history: &mut History,
+    event_tx: &Sender<Envelope>,
+) -> Result<TokenUsage, AgentError> {
     let mut compaction_history: Vec<Message> = history.as_slice().to_vec();
     compaction_history.push(Message::user(crate::prompt::COMPACTION_USER.to_string()));
 
@@ -386,7 +431,7 @@ pub fn compact(
     event_tx.send(
         AgentEvent::TurnComplete {
             message: response.message.clone(),
-            usage: response.usage.clone(),
+            usage: response.usage,
             model: model.id.clone(),
             context_size: Some(response.usage.output),
         }
@@ -398,16 +443,39 @@ pub fn compact(
         response.message,
     ]);
 
+    Ok(response.usage)
+}
+
+pub fn compact(
+    provider: &dyn Provider,
+    model: &Model,
+    history: &mut History,
+    event_tx: &Sender<Envelope>,
+) -> Result<(), AgentError> {
+    let usage = compact_history(provider, model, history, event_tx)?;
+
     event_tx.send(
         AgentEvent::Done {
-            usage: response.usage,
+            usage,
             num_turns: 1,
-            stop_reason: response.stop_reason,
+            stop_reason: None,
         }
         .into(),
     )?;
 
     Ok(())
+}
+
+fn is_overflow(input_tokens: u32, model: &Model) -> bool {
+    let reserved = COMPACTION_BUFFER.min(model.max_output_tokens);
+    let usable = model.context_window.saturating_sub(reserved);
+    input_tokens >= usable
+}
+
+fn auto_compact_enabled() -> bool {
+    std::env::var("MAKI_DISABLE_AUTOCOMPACT")
+        .map(|v| v != "1" && v != "true")
+        .unwrap_or(true)
 }
 
 #[cfg(test)]
@@ -505,8 +573,7 @@ mod tests {
         }
     }
 
-    fn run_agent(provider: &MockProvider) -> (u32, Option<String>) {
-        let model = default_model();
+    fn run_and_collect(provider: &MockProvider, model: &Model) -> Vec<Envelope> {
         let input = AgentInput {
             message: "hello".into(),
             mode: AgentMode::Build,
@@ -518,7 +585,7 @@ mod tests {
 
         let _ = run(
             provider,
-            &model,
+            model,
             input,
             &mut history,
             "system",
@@ -528,9 +595,12 @@ mod tests {
             None,
         );
         drop(event_tx);
+        event_rx.iter().collect()
+    }
 
-        event_rx
-            .iter()
+    fn run_agent(provider: &MockProvider) -> (u32, Option<String>) {
+        run_and_collect(provider, &default_model())
+            .into_iter()
             .find_map(|e| match e.event {
                 AgentEvent::Done {
                     num_turns,
@@ -727,5 +797,56 @@ mod tests {
         let shared_msgs = shared.lock().unwrap();
         assert_eq!(shared_msgs.len(), 2);
         assert_eq!(history.as_slice().len(), 2);
+    }
+
+    fn small_context_model(context_window: u32, max_output_tokens: u32) -> Model {
+        let mut model = default_model();
+        model.context_window = context_window;
+        model.max_output_tokens = max_output_tokens;
+        model
+    }
+
+    #[test_case(179_999, 200_000, 20_000, false ; "below_threshold")]
+    #[test_case(180_000, 200_000, 20_000, true  ; "at_threshold")]
+    #[test_case(195_000, 200_000, 20_000, true  ; "above_threshold")]
+    #[test_case(190_000, 200_000, 10_000, true  ; "small_max_output_uses_it_as_reserve")]
+    #[test_case(0,       200_000, 20_000, false ; "zero_input")]
+    #[test_case(100,     100,     20_000, true  ; "tiny_context_window")]
+    fn overflow_detection(input: u32, ctx_window: u32, max_out: u32, expected: bool) {
+        let model = small_context_model(ctx_window, max_out);
+        assert_eq!(is_overflow(input, &model), expected);
+    }
+
+    #[test_case(true,  900, true  ; "enabled_and_over_threshold")]
+    #[test_case(true,  100, false ; "enabled_but_below_threshold")]
+    #[test_case(false, 900, false ; "disabled_even_over_threshold")]
+    fn try_auto_compact_behavior(enabled: bool, input_tokens: u32, expected: bool) {
+        let model = small_context_model(1000, 200);
+        let provider = MockProvider::new(if expected {
+            vec![text_response("end_turn")]
+        } else {
+            vec![]
+        });
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut history = History::new(vec![Message::user("go".into())], None);
+        let mut usage = TokenUsage::default();
+
+        let result = try_auto_compact(
+            enabled,
+            input_tokens,
+            &provider,
+            &model,
+            &mut history,
+            &event_tx,
+            &mut usage,
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+        drop(event_tx);
+        let has_compact_event = event_rx
+            .iter()
+            .any(|e| matches!(e.event, AgentEvent::AutoCompacting));
+        assert_eq!(has_compact_event, expected);
     }
 }

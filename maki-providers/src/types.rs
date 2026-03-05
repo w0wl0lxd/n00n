@@ -444,6 +444,7 @@ pub enum AgentEvent {
         num_turns: u32,
         stop_reason: Option<String>,
     },
+    AutoCompacting,
     Retry {
         attempt: u32,
         message: String,
