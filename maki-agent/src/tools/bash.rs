@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use maki_tool_macro::Tool;
 
-use maki_providers::{AgentEvent, Envelope, ToolInput, ToolOutput};
+use crate::{AgentEvent, Envelope, ToolInput, ToolOutput};
 
 use super::{relative_path, truncate_output};
 
@@ -220,33 +220,42 @@ mod tests {
     fn bash(cmd: &str) -> Bash {
         Bash {
             command: cmd.into(),
-            timeout: Some(5),
+            timeout: Some(10),
             workdir: None,
             description: None,
         }
     }
 
     #[test]
-    fn execute_success_failure_timeout_and_workdir() {
+    fn execute_echo() {
         let ctx = stub_ctx(&AgentMode::Build);
+        let out = bash("echo hello").execute(&ctx).unwrap().as_text();
+        assert_eq!(out.trim(), "hello");
+    }
 
-        assert_eq!(
-            bash("echo hello").execute(&ctx).unwrap().as_text().trim(),
-            "hello"
-        );
+    #[test]
+    fn execute_nonzero_exit_is_error() {
+        let ctx = stub_ctx(&AgentMode::Build);
         assert!(bash("exit 1").execute(&ctx).is_err());
+    }
 
-        let mut timeout = bash("sleep 10");
-        timeout.timeout = Some(0);
-        assert!(timeout.execute(&ctx).unwrap_err().contains("timed out"));
+    #[test]
+    fn execute_timeout() {
+        let ctx = stub_ctx(&AgentMode::Build);
+        let mut b = bash("sleep 30");
+        b.timeout = Some(0);
+        assert!(b.execute(&ctx).unwrap_err().contains("timed out"));
+    }
 
+    #[test]
+    fn execute_workdir() {
         let dir = tempfile::tempdir().unwrap();
-        let mut in_dir = bash("pwd");
-        in_dir.workdir = Some(dir.path().to_string_lossy().into());
-        let output = in_dir.execute(&ctx).unwrap().as_text().to_string();
+        let ctx = stub_ctx(&AgentMode::Build);
+        let mut b = bash("pwd");
+        b.workdir = Some(dir.path().to_string_lossy().into());
+        let out = b.execute(&ctx).unwrap().as_text();
         assert!(
-            output
-                .trim()
+            out.trim()
                 .ends_with(dir.path().file_name().unwrap().to_str().unwrap())
         );
     }
@@ -254,9 +263,11 @@ mod tests {
     #[test]
     fn large_output_is_truncated() {
         let ctx = stub_ctx(&AgentMode::Build);
-        let mut b = bash("yes | head -n 100000");
-        b.timeout = Some(10);
-        assert!(b.execute(&ctx).unwrap().as_text().contains("[truncated]"));
+        let out = bash("yes | head -n 100000")
+            .execute(&ctx)
+            .unwrap()
+            .as_text();
+        assert!(out.contains("[truncated]"));
     }
 
     #[test_case("ls",              None,           "ls",              None          ; "no_prefix")]

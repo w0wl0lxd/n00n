@@ -4,7 +4,8 @@ use crate::components::messages::MessagesPanel;
 use crate::components::{DisplayMessage, DisplayRole};
 use crate::selection::ContentRegion;
 
-use maki_providers::{AgentEvent, QuestionInfo, TokenUsage};
+use maki_agent::{AgentEvent, QuestionInfo};
+use maki_providers::TokenUsage;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
@@ -174,7 +175,7 @@ impl Chat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maki_providers::{AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
+    use maki_agent::{AgentEvent, ToolDoneEvent, ToolOutput, ToolStartEvent};
 
     fn tool_start(id: &str, tool: &'static str) -> AgentEvent {
         AgentEvent::ToolStart(ToolStartEvent {

@@ -1,6 +1,6 @@
 use std::fs;
 
-use maki_providers::{ToolInput, ToolOutput};
+use crate::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
 use super::fuzzy_replace;

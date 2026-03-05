@@ -1,4 +1,4 @@
-use maki_providers::{AgentEvent, QuestionAnswer, QuestionInfo, ToolInput, ToolOutput};
+use crate::{AgentEvent, QuestionAnswer, QuestionInfo, ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
 const EMPTY_QUESTIONS: &str = "at least one question is required";

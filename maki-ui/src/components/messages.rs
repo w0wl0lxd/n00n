@@ -14,7 +14,7 @@ use crate::theme;
 use std::time::Instant;
 
 use maki_agent::tools::{BASH_TOOL_NAME, WEBFETCH_TOOL_NAME};
-use maki_providers::{
+use maki_agent::{
     BatchToolStatus, NO_FILES_FOUND, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
 };
 use ratatui::Frame;
@@ -725,7 +725,9 @@ mod tests {
     use super::*;
     use crate::components::scrollbar::SCROLLBAR_THUMB;
     use maki_agent::tools::{GLOB_TOOL_NAME, QUESTION_TOOL_NAME, WRITE_TOOL_NAME};
-    use maki_providers::{DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, ToolOutput};
+    use maki_agent::{
+        DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, QuestionAnswer, ToolOutput,
+    };
     use ratatui::backend::TestBackend;
     use test_case::test_case;
 
@@ -1065,7 +1067,7 @@ mod tests {
             id: id.into(),
             tool: BASH_TOOL_NAME,
             summary: code.into(),
-            input: Some(maki_providers::ToolInput::Code {
+            input: Some(ToolInput::Code {
                 language: "bash",
                 code: code.into(),
             }),
@@ -1190,11 +1192,11 @@ mod tests {
             id: "q1".into(),
             tool: QUESTION_TOOL_NAME,
             output: ToolOutput::QuestionAnswers(vec![
-                maki_providers::QuestionAnswer {
+                QuestionAnswer {
                     question: "DB?".into(),
                     answer: "PostgreSQL".into(),
                 },
-                maki_providers::QuestionAnswer {
+                QuestionAnswer {
                     question: "Framework?".into(),
                     answer: "Axum".into(),
                 },

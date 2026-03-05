@@ -1,6 +1,6 @@
 use std::sync::mpsc;
 
-use crate::Envelope;
+use crate::ProviderEvent;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -58,8 +58,8 @@ fn is_transient_http(e: &ureq::Error) -> bool {
     )
 }
 
-impl From<mpsc::SendError<Envelope>> for AgentError {
-    fn from(_: mpsc::SendError<Envelope>) -> Self {
+impl From<mpsc::SendError<ProviderEvent>> for AgentError {
+    fn from(_: mpsc::SendError<ProviderEvent>) -> Self {
         Self::Channel
     }
 }
@@ -69,23 +69,25 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
+    fn api(status: u16) -> AgentError {
+        AgentError::Api {
+            status,
+            message: String::new(),
+        }
+    }
+
     #[test_case(429, true  ; "rate_limit")]
     #[test_case(500, true  ; "server_error")]
     #[test_case(529, true  ; "overloaded")]
     #[test_case(400, false ; "bad_request")]
     #[test_case(401, false ; "unauthorized")]
     fn api_retryable(status: u16, expected: bool) {
-        let err = AgentError::Api {
-            status,
-            message: String::new(),
-        };
-        assert_eq!(err.is_retryable(), expected);
+        assert_eq!(api(status).is_retryable(), expected);
     }
 
     #[test]
     fn io_is_retryable() {
-        let err = AgentError::Io(std::io::ErrorKind::BrokenPipe.into());
-        assert!(err.is_retryable());
+        assert!(AgentError::Io(std::io::ErrorKind::BrokenPipe.into()).is_retryable());
     }
 
     #[test]
@@ -98,30 +100,28 @@ mod tests {
         assert!(!AgentError::Http(ureq::Error::InvalidProxyUrl).is_retryable());
     }
 
-    const RATE_LIMITED: &str = "Rate limited";
-    const OVERLOADED: &str = "Provider is overloaded";
     const CONNECTION: &str = "Connection error";
 
-    #[test_case(429, RATE_LIMITED ; "rate_limited")]
-    #[test_case(529, OVERLOADED  ; "overloaded")]
-    #[test_case(500, "Server error (500)" ; "server_error")]
-    fn retry_message_text(status: u16, expected: &str) {
-        let err = AgentError::Api {
-            status,
-            message: String::new(),
-        };
-        assert_eq!(err.retry_message(), expected);
+    #[test_case(429, "Rate limited"        ; "rate_limited")]
+    #[test_case(529, "Provider is overloaded" ; "overloaded")]
+    #[test_case(500, "Server error (500)"  ; "server_error")]
+    fn retry_message_api(status: u16, expected: &str) {
+        assert_eq!(api(status).retry_message(), expected);
     }
 
     #[test]
     fn retry_message_io() {
-        let err = AgentError::Io(std::io::ErrorKind::BrokenPipe.into());
-        assert_eq!(err.retry_message(), CONNECTION);
+        assert_eq!(
+            AgentError::Io(std::io::ErrorKind::BrokenPipe.into()).retry_message(),
+            CONNECTION
+        );
     }
 
     #[test]
     fn retry_message_http() {
-        let err = AgentError::Http(ureq::Error::ConnectionFailed);
-        assert_eq!(err.retry_message(), CONNECTION);
+        assert_eq!(
+            AgentError::Http(ureq::Error::ConnectionFailed).retry_message(),
+            CONNECTION
+        );
     }
 }

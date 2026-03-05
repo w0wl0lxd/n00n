@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
 
-use maki_providers::{ToolInput, ToolOutput};
+use maki_agent::{ToolInput, ToolOutput};
 use ratatui::text::Line;
 
 struct RenderJob {

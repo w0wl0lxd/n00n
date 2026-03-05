@@ -1,7 +1,8 @@
 use std::sync::mpsc;
 use std::thread;
 
-use maki_providers::{AgentEvent, ContentBlock, ToolInput, ToolOutput};
+use crate::{AgentEvent, ToolInput, ToolOutput};
+use maki_providers::ContentBlock;
 use maki_tool_macro::Tool;
 
 use super::ToolContext;

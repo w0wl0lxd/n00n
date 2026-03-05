@@ -1,4 +1,4 @@
-use maki_providers::{TodoItem, ToolInput, ToolOutput};
+use crate::{TodoItem, ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 
 #[derive(Tool, Debug, Clone)]

@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use maki_providers::{GrepFileEntry, GrepMatch, ToolInput, ToolOutput};
+use crate::{GrepFileEntry, GrepMatch, ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 use tracing::debug;
 

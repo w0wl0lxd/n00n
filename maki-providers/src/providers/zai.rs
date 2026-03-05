@@ -9,9 +9,7 @@ use ureq::Agent;
 
 use crate::model::Model;
 use crate::provider::Provider;
-use crate::{
-    AgentError, AgentEvent, ContentBlock, Envelope, Message, Role, StreamResponse, TokenUsage,
-};
+use crate::{AgentError, ContentBlock, Message, ProviderEvent, Role, StreamResponse, TokenUsage};
 
 const API_KEY_ENV: &str = "ZHIPU_API_KEY";
 const BASE_STANDARD: &str = "https://api.z.ai/api/paas/v4";
@@ -156,7 +154,7 @@ impl Provider for Zai {
         messages: &[Message],
         system: &str,
         tools: &Value,
-        event_tx: &Sender<Envelope>,
+        event_tx: &Sender<ProviderEvent>,
     ) -> Result<StreamResponse, AgentError> {
         let wire_messages = convert_messages(messages, system);
         let wire_tools = convert_tools(tools);
@@ -295,7 +293,7 @@ struct ToolAccumulator {
 
 fn parse_sse(
     reader: impl BufRead,
-    event_tx: &Sender<Envelope>,
+    event_tx: &Sender<ProviderEvent>,
 ) -> Result<StreamResponse, AgentError> {
     let mut text = String::new();
     let mut tool_accumulators: Vec<ToolAccumulator> = Vec::new();
@@ -356,14 +354,14 @@ fn parse_sse(
             && !reasoning.is_empty()
         {
             text.push_str(&reasoning);
-            event_tx.send(AgentEvent::ThinkingDelta { text: reasoning }.into())?;
+            event_tx.send(ProviderEvent::ThinkingDelta { text: reasoning })?;
         }
 
         if let Some(content) = delta.content
             && !content.is_empty()
         {
             text.push_str(&content);
-            event_tx.send(AgentEvent::TextDelta { text: content }.into())?;
+            event_tx.send(ProviderEvent::TextDelta { text: content })?;
         }
 
         if let Some(tc_deltas) = delta.tool_calls {
@@ -456,8 +454,8 @@ data: [DONE]\n";
 
         let deltas: Vec<String> = rx
             .try_iter()
-            .filter_map(|e| match e.event {
-                AgentEvent::TextDelta { text } => Some(text),
+            .filter_map(|e| match e {
+                ProviderEvent::TextDelta { text } => Some(text),
                 _ => None,
             })
             .collect();
@@ -487,15 +485,15 @@ data: [DONE]\n";
         let events: Vec<_> = rx.try_iter().collect();
         let thinking: Vec<&str> = events
             .iter()
-            .filter_map(|e| match &e.event {
-                AgentEvent::ThinkingDelta { text } => Some(text.as_str()),
+            .filter_map(|e| match e {
+                ProviderEvent::ThinkingDelta { text } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
         let text: Vec<&str> = events
             .iter()
-            .filter_map(|e| match &e.event {
-                AgentEvent::TextDelta { text } => Some(text.as_str()),
+            .filter_map(|e| match e {
+                ProviderEvent::TextDelta { text } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
@@ -528,12 +526,14 @@ data: [DONE]\n";
                     },
                 ],
             },
-            Message::tool_results(vec![crate::ToolDoneEvent {
-                id: "tc_1".to_string(),
-                tool: "bash",
-                output: crate::ToolOutput::Plain("file.txt".to_string()),
-                is_error: false,
-            }]),
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tc_1".to_string(),
+                    content: "file.txt".to_string(),
+                    is_error: false,
+                }],
+            },
         ];
 
         let wire = convert_messages(&messages, "be helpful");

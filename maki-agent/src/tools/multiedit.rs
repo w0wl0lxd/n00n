@@ -1,6 +1,6 @@
 use std::fs;
 
-use maki_providers::{DiffHunk, DiffLine, DiffSpan, ToolInput, ToolOutput};
+use crate::{DiffHunk, DiffLine, DiffSpan, ToolInput, ToolOutput};
 use serde::Deserialize;
 use serde_json::Value;
 use similar::ChangeTag;

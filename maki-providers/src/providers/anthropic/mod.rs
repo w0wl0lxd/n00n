@@ -10,9 +10,7 @@ pub mod auth;
 
 use crate::model::Model;
 use crate::provider::Provider;
-use crate::{
-    AgentError, AgentEvent, ContentBlock, Envelope, Message, Role, StreamResponse, TokenUsage,
-};
+use crate::{AgentError, ContentBlock, Message, ProviderEvent, Role, StreamResponse, TokenUsage};
 
 const API_VERSION: &str = "2023-06-01";
 const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
@@ -131,7 +129,7 @@ impl Provider for Anthropic {
         messages: &[Message],
         system: &str,
         tools: &Value,
-        event_tx: &Sender<Envelope>,
+        event_tx: &Sender<ProviderEvent>,
     ) -> Result<StreamResponse, AgentError> {
         let wire_messages = build_wire_messages(messages);
         let wire_tools = build_wire_tools(tools);
@@ -281,7 +279,7 @@ fn build_wire_tools(tools: &Value) -> Value {
 
 fn parse_sse(
     reader: impl BufRead,
-    event_tx: &Sender<Envelope>,
+    event_tx: &Sender<ProviderEvent>,
 ) -> Result<StreamResponse, AgentError> {
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
     let mut current_tool_json = String::new();
@@ -337,12 +335,12 @@ fn parse_sse(
                             {
                                 t.push_str(&text);
                             }
-                            event_tx.send(AgentEvent::TextDelta { text }.into())?;
+                            event_tx.send(ProviderEvent::TextDelta { text })?;
                         }
                     }
                     Delta::Thinking { thinking } => {
                         if !thinking.is_empty() {
-                            event_tx.send(AgentEvent::ThinkingDelta { text: thinking }.into())?;
+                            event_tx.send(ProviderEvent::ThinkingDelta { text: thinking })?;
                         }
                     }
                     Delta::InputJson { partial_json } => {
@@ -452,7 +450,7 @@ data: {\"type\":\"message_stop\"}\n";
         let deltas: Vec<String> = rx
             .try_iter()
             .filter_map(|e| {
-                if let AgentEvent::TextDelta { text: t } = e.event {
+                if let ProviderEvent::TextDelta { text: t } = e {
                     Some(t)
                 } else {
                     None

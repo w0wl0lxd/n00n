@@ -1,6 +1,6 @@
+use crate::{ToolInput, ToolOutput};
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
-use maki_providers::{ToolInput, ToolOutput};
 use maki_tool_macro::Tool;
 use tracing::debug;
 

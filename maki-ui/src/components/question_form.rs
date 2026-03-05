@@ -3,7 +3,7 @@ use crate::text_buffer::TextBuffer;
 use crate::theme;
 
 use crossterm::event::{KeyCode, KeyEvent};
-use maki_providers::QuestionInfo;
+use maki_agent::QuestionInfo;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -537,7 +537,7 @@ impl QuestionForm {
 
 #[cfg(test)]
 mod tests {
-    use maki_providers::{QuestionInfo, QuestionOption};
+    use maki_agent::{QuestionInfo, QuestionOption};
 
     use test_case::test_case;
 

@@ -27,10 +27,10 @@ use crossterm::event::{
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_agent::agent;
 use maki_agent::template;
-use maki_agent::{AgentInput, History, SharedHistory};
+use maki_agent::{AgentEvent, AgentInput, Envelope, History, SharedHistory};
+use maki_providers::Message;
 use maki_providers::Model;
 use maki_providers::provider::Provider;
-use maki_providers::{AgentEvent, Envelope, Message};
 use tracing::error;
 
 use app::{App, Msg};

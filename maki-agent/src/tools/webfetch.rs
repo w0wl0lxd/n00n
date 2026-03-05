@@ -4,7 +4,7 @@ use std::time::Duration;
 use maki_tool_macro::Tool;
 use ureq::Agent;
 
-use maki_providers::{ToolInput, ToolOutput};
+use crate::{ToolInput, ToolOutput};
 
 use super::MAX_RESPONSE_BYTES;
 use super::truncate_output;
@@ -259,37 +259,31 @@ mod tests {
         assert!(validate_and_upgrade_url(input).is_err());
     }
 
-    #[test]
-    fn validated_format_defaults_to_markdown() {
+    #[test_case(None,          Ok("markdown") ; "defaults_to_markdown")]
+    #[test_case(Some("text"),    Ok("text")     ; "valid_text")]
+    #[test_case(Some("html"),    Ok("html")     ; "valid_html")]
+    #[test_case(Some("xml"),     Err(())        ; "rejects_unknown")]
+    fn validated_format_cases(format: Option<&str>, expected: Result<&str, ()>) {
         let wf = WebFetch {
             url: "https://x.com".into(),
-            format: None,
+            format: format.map(Into::into),
             timeout: None,
         };
-        assert_eq!(wf.validated_format().unwrap(), "markdown");
-    }
-
-    #[test]
-    fn validated_format_rejects_unknown() {
-        let wf = WebFetch {
-            url: "https://x.com".into(),
-            format: Some("xml".into()),
-            timeout: None,
-        };
-        assert!(wf.validated_format().is_err());
+        match expected {
+            Ok(fmt) => assert_eq!(wf.validated_format().unwrap(), fmt),
+            Err(()) => assert!(wf.validated_format().is_err()),
+        }
     }
 
     #[test_case("<p>Hello <b>world</b></p>", "Hello world" ; "strips_tags")]
     #[test_case("<p>  hello   \n\t  world  </p>", "hello world" ; "normalizes_whitespace")]
     #[test_case("<script><script>inner</script></script><p>visible</p>", "visible" ; "nested_skip_blocks")]
+    #[test_case(
+        "<div>before</div><script>var x=1;</script><style>.a{}</style><noscript>no</noscript><p>after</p>",
+        "before after" ; "skips_script_style_noscript"
+    )]
     fn strip_html_tags_cases(input: &str, expected: &str) {
         assert_eq!(strip_html_tags(input), expected);
-    }
-
-    #[test]
-    fn strip_html_tags_skips_script_style_noscript() {
-        let html = "<div>before</div><script>var x=1;</script><style>.a{}</style><noscript>no</noscript><p>after</p>";
-        assert_eq!(strip_html_tags(html), "before after");
     }
 
     #[test_case("image/png", true ; "image_detected")]

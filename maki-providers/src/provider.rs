@@ -7,7 +7,7 @@ use tracing::{debug, warn};
 
 use crate::model::Model;
 use crate::providers::zai::{Zai, ZaiPlan};
-use crate::{AgentError, Envelope, Message, StreamResponse};
+use crate::{AgentError, Message, ProviderEvent, StreamResponse};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, EnumIter)]
 #[strum(serialize_all = "kebab-case")]
@@ -34,7 +34,7 @@ pub trait Provider: Send + Sync {
         messages: &[Message],
         system: &str,
         tools: &Value,
-        event_tx: &Sender<Envelope>,
+        event_tx: &Sender<ProviderEvent>,
     ) -> Result<StreamResponse, AgentError>;
 
     fn list_models(&self) -> Result<Vec<String>, AgentError>;

@@ -2,7 +2,7 @@ use crate::highlight::{highlight_code_plain, highlight_line, highlighter_for_pat
 use crate::markdown::truncation_notice;
 use crate::theme;
 
-use maki_providers::{DiffHunk, DiffLine, GrepFileEntry, ToolInput, ToolOutput};
+use maki_agent::{DiffHunk, DiffLine, DiffSpan, GrepFileEntry, ToolInput, ToolOutput};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -254,7 +254,7 @@ pub fn render_tool_content(
 
 fn merge_syntax_with_diff(
     syntax_spans: &[(Style, String)],
-    diff_spans: &[maki_providers::DiffSpan],
+    diff_spans: &[DiffSpan],
     base: Style,
     emphasis: Style,
 ) -> Vec<Span<'static>> {
@@ -311,7 +311,7 @@ fn merge_syntax_with_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maki_providers::{DiffSpan, GrepMatch};
+    use maki_agent::{DiffSpan, GrepMatch};
     use test_case::test_case;
 
     use ratatui::style::Color;

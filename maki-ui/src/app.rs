@@ -16,10 +16,11 @@ use crate::theme;
 use arboard::Clipboard;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
-use maki_agent::{AgentInput, AgentMode};
 #[cfg(feature = "demo")]
-use maki_providers::QuestionInfo;
-use maki_providers::{AgentEvent, Envelope, ModelPricing, TokenUsage};
+use maki_agent::QuestionInfo;
+use maki_agent::{AgentEvent, Envelope};
+use maki_agent::{AgentInput, AgentMode};
+use maki_providers::{ModelPricing, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -865,6 +866,7 @@ mod tests {
     use super::*;
     use crate::components::{TEST_CONTEXT_WINDOW, ctrl, key, test_pricing};
     use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+    use maki_agent::{QuestionInfo, QuestionOption, ToolDoneEvent, ToolOutput, ToolStartEvent};
     use test_case::test_case;
 
     fn test_app() -> App {
@@ -1043,18 +1045,16 @@ mod tests {
         };
         app.status = Status::Streaming;
 
-        app.update(agent_msg(AgentEvent::ToolDone(
-            maki_providers::ToolDoneEvent {
-                id: "t1".into(),
-                tool: "write",
-                output: maki_providers::ToolOutput::WriteCode {
-                    path: written_path.into(),
-                    byte_count: 100,
-                    lines: vec![],
-                },
-                is_error: false,
+        app.update(agent_msg(AgentEvent::ToolDone(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "write",
+            output: ToolOutput::WriteCode {
+                path: written_path.into(),
+                byte_count: 100,
+                lines: vec![],
             },
-        )));
+            is_error: false,
+        })));
 
         assert!(matches!(&app.mode, Mode::Plan { written, .. } if *written == expect_written));
     }
@@ -1081,15 +1081,13 @@ mod tests {
         app.update(agent_msg(AgentEvent::TextDelta {
             text: "partial".into(),
         }));
-        app.update(agent_msg(AgentEvent::ToolStart(
-            maki_providers::ToolStartEvent {
-                id: "t1".into(),
-                tool: "bash",
-                summary: "running".into(),
-                input: None,
-                output: None,
-            },
-        )));
+        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+            id: "t1".into(),
+            tool: "bash",
+            summary: "running".into(),
+            input: None,
+            output: None,
+        })));
 
         let actions = app.update(Msg::Key(key(KeyCode::Esc)));
         assert!(actions.is_empty());
@@ -1449,7 +1447,7 @@ mod tests {
     fn cancel_resets_all_chats_and_indices() {
         let mut app = app_with_subagent();
         app.update(subagent_msg(
-            AgentEvent::ToolStart(maki_providers::ToolStartEvent {
+            AgentEvent::ToolStart(ToolStartEvent {
                 id: "sub_t1".into(),
                 tool: "bash",
                 summary: "running".into(),
@@ -1580,7 +1578,7 @@ mod tests {
             .join("\n");
         AgentEvent::QuestionPrompt {
             id: "q1".into(),
-            questions: vec![maki_providers::QuestionInfo {
+            questions: vec![QuestionInfo {
                 question: long,
                 header: String::new(),
                 options: vec![],
@@ -1592,10 +1590,10 @@ mod tests {
     fn short_question_with_options() -> AgentEvent {
         AgentEvent::QuestionPrompt {
             id: "q2".into(),
-            questions: vec![maki_providers::QuestionInfo {
+            questions: vec![QuestionInfo {
                 question: "Pick a DB".into(),
                 header: "DB".into(),
-                options: vec![maki_providers::QuestionOption {
+                options: vec![QuestionOption {
                     label: "PostgreSQL".into(),
                     description: "Relational".into(),
                 }],

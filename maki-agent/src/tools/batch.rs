@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use maki_providers::{AgentEvent, BatchToolEntry, BatchToolStatus, ToolInput, ToolOutput};
+use crate::{AgentEvent, BatchToolEntry, BatchToolStatus, ToolInput, ToolOutput};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -216,7 +216,7 @@ impl Batch {
 
 #[cfg(test)]
 mod tests {
-    use maki_providers::BatchToolEntry;
+    use crate::BatchToolEntry;
     use serde_json::json;
 
     use crate::AgentMode;

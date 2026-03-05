@@ -13,13 +13,11 @@ use serde_json::Value;
 
 use crate::template::Vars;
 use crate::tools::{ToolCall, ToolContext};
-use crate::{
-    AgentError, AgentEvent, AgentInput, AgentMode, Envelope, Message, TokenUsage, ToolDoneEvent,
-};
-use maki_providers::Model;
-use maki_providers::StreamResponse;
+use crate::types::tool_results;
+use crate::{AgentError, AgentEvent, AgentInput, AgentMode, Envelope, ToolDoneEvent};
 use maki_providers::provider::Provider;
 use maki_providers::retry::RetryState;
+use maki_providers::{Message, Model, ProviderEvent, StreamResponse, TokenUsage};
 
 const AGENTS_MD: &str = "AGENTS.md";
 const DOOM_LOOP_THRESHOLD: usize = 3;
@@ -29,6 +27,10 @@ const COMPACTION_BUFFER: u32 = 30_000;
 const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.";
 
 pub type SharedHistory = Arc<Mutex<Vec<Message>>>;
+
+fn send(tx: &Sender<Envelope>, event: impl Into<Envelope>) -> Result<(), AgentError> {
+    tx.send(event.into()).map_err(|_| AgentError::Channel)
+}
 
 pub struct History {
     messages: Vec<Message>,
@@ -157,6 +159,21 @@ fn parse_tool_calls<'a>(
     (parsed, errors)
 }
 
+fn forward_provider_events(
+    prx: std::sync::mpsc::Receiver<ProviderEvent>,
+    event_tx: &Sender<Envelope>,
+) {
+    for pe in prx {
+        let ae = match pe {
+            ProviderEvent::TextDelta { text } => AgentEvent::TextDelta { text },
+            ProviderEvent::ThinkingDelta { text } => AgentEvent::ThinkingDelta { text },
+        };
+        if send(event_tx, ae).is_err() {
+            break;
+        }
+    }
+}
+
 fn stream_with_retry(
     provider: &dyn Provider,
     model: &Model,
@@ -167,19 +184,27 @@ fn stream_with_retry(
 ) -> Result<StreamResponse, AgentError> {
     let mut retry = RetryState::new();
     loop {
-        match provider.stream_message(model, messages, system, tools, event_tx) {
+        let (ptx, prx) = std::sync::mpsc::channel();
+        let result = thread::scope(|s| {
+            let forwarder = s.spawn(|| forward_provider_events(prx, event_tx));
+            let result = provider.stream_message(model, messages, system, tools, &ptx);
+            drop(ptx);
+            let _ = forwarder.join();
+            result
+        });
+        match result {
             Ok(r) => return Ok(r),
             Err(e) if e.is_retryable() => {
                 let (attempt, delay) = retry.next_delay();
                 let delay_ms = delay.as_millis() as u64;
                 warn!(attempt, delay_ms, error = %e, "retryable, will retry");
-                event_tx.send(
+                send(
+                    event_tx,
                     AgentEvent::Retry {
                         attempt,
                         message: e.retry_message(),
                         delay_ms,
-                    }
-                    .into(),
+                    },
                 )?;
                 thread::sleep(delay);
             }
@@ -202,7 +227,7 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDo
                 let id = parsed.id.clone();
                 s.spawn(move || {
                     let output = parsed.call.execute(&tool_ctx, id);
-                    let _ = tx.send(AgentEvent::ToolDone(output.clone()).into());
+                    let _ = send(&tx, AgentEvent::ToolDone(output.clone()));
                     output
                 })
             })
@@ -234,7 +259,7 @@ fn consume_interrupt(
         );
         history.push(Message::user(wrapped));
         history.commit();
-        event_tx.send(AgentEvent::InterruptConsumed { message: msg }.into())?;
+        send(event_tx, AgentEvent::InterruptConsumed { message: msg })?;
         return Ok(true);
     }
     Ok(false)
@@ -300,14 +325,14 @@ pub fn run(
             "API response received"
         );
 
-        event_tx.send(
+        send(
+            event_tx,
             AgentEvent::TurnComplete {
                 message: response.message.clone(),
                 usage: response.usage,
                 model: model.id.clone(),
                 context_size: None,
-            }
-            .into(),
+            },
         )?;
 
         total_usage += response.usage;
@@ -345,13 +370,13 @@ pub fn run(
                 total_output = total_usage.output,
                 "agent run completed"
             );
-            event_tx.send(
+            send(
+                event_tx,
                 AgentEvent::Done {
                     usage: total_usage,
                     num_turns,
                     stop_reason: response.stop_reason,
-                }
-                .into(),
+                },
             )?;
             return Ok(());
         }
@@ -361,17 +386,20 @@ pub fn run(
         history.push(response.message);
 
         for p in &parsed {
-            event_tx.send(AgentEvent::ToolStart(p.call.start_event(p.id.clone())).into())?;
+            send(
+                event_tx,
+                AgentEvent::ToolStart(p.call.start_event(p.id.clone())),
+            )?;
         }
 
-        let mut tool_results = execute_tools(&parsed, &ctx);
-        tool_results.extend(errors);
-        let tool_msg = Message::tool_results(tool_results);
-        event_tx.send(
+        let mut results = execute_tools(&parsed, &ctx);
+        results.extend(errors);
+        let tool_msg = tool_results(results);
+        send(
+            event_tx,
             AgentEvent::ToolResultsSubmitted {
                 message: tool_msg.clone(),
-            }
-            .into(),
+            },
         )?;
         history.push(tool_msg);
         history.commit();
@@ -402,7 +430,7 @@ fn try_auto_compact(
         return Ok(false);
     }
     info!(input_tokens, "auto-compacting");
-    event_tx.send(AgentEvent::AutoCompacting.into())?;
+    send(event_tx, AgentEvent::AutoCompacting)?;
     *total_usage += compact_history(provider, model, history, event_tx)?;
     history.push(Message::user(CONTINUE_AFTER_COMPACT.into()));
     history.commit();
@@ -428,14 +456,14 @@ fn compact_history(
         event_tx,
     )?;
 
-    event_tx.send(
+    send(
+        event_tx,
         AgentEvent::TurnComplete {
             message: response.message.clone(),
             usage: response.usage,
             model: model.id.clone(),
             context_size: Some(response.usage.output),
-        }
-        .into(),
+        },
     )?;
 
     history.replace(vec![
@@ -454,13 +482,13 @@ pub fn compact(
 ) -> Result<(), AgentError> {
     let usage = compact_history(provider, model, history, event_tx)?;
 
-    event_tx.send(
+    send(
+        event_tx,
         AgentEvent::Done {
             usage,
             num_turns: 1,
             stop_reason: None,
-        }
-        .into(),
+        },
     )?;
 
     Ok(())
@@ -548,7 +576,7 @@ mod tests {
             _: &[Message],
             _: &str,
             _: &Value,
-            _: &Sender<Envelope>,
+            _: &Sender<maki_providers::ProviderEvent>,
         ) -> Result<StreamResponse, AgentError> {
             let mut responses = self.responses.lock().unwrap();
             assert!(!responses.is_empty(), "MockProvider: no more responses");
@@ -776,8 +804,7 @@ mod tests {
         history.push(assistant_msg);
         assert_eq!(shared.lock().unwrap().len(), 1, "tool_use not yet visible");
 
-        let result_msg =
-            Message::tool_results(vec![ToolDoneEvent::error("t1".into(), "cancelled")]);
+        let result_msg = tool_results(vec![ToolDoneEvent::error("t1".into(), "cancelled")]);
         history.push(result_msg);
         history.commit();
         assert_eq!(shared.lock().unwrap().len(), 3, "both visible after commit");

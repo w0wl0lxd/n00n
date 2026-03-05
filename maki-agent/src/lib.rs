@@ -3,14 +3,17 @@ pub use agent::{History, SharedHistory};
 pub(crate) mod prompt;
 pub mod template;
 pub mod tools;
+pub mod types;
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use maki_providers::AgentError;
 pub(crate) use maki_providers::model::ModelFamily;
-pub(crate) use maki_providers::{
-    AgentError, AgentEvent, Envelope, Message, TokenUsage, ToolDoneEvent, ToolOutput,
-    ToolStartEvent,
+pub use types::{
+    AgentEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, Envelope,
+    GrepFileEntry, GrepMatch, NO_FILES_FOUND, QuestionAnswer, QuestionInfo, QuestionOption,
+    TodoItem, TodoPriority, TodoStatus, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
 };
 
 pub const PLANS_DIR: &str = "plans";

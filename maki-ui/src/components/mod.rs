@@ -11,7 +11,7 @@ pub(crate) mod tool_display;
 
 use crossterm::event::{KeyEvent, KeyModifiers};
 use maki_agent::AgentInput;
-use maki_providers::{ToolInput, ToolOutput};
+use maki_agent::{ToolInput, ToolOutput};
 use std::time::Instant;
 
 pub(crate) fn visual_line_count(text_len: usize, width: usize) -> usize {

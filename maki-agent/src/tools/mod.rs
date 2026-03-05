@@ -22,10 +22,11 @@ use serde_json::{Value, json};
 use tracing::error;
 
 use crate::template::Vars;
-use crate::{AgentError, AgentMode, Envelope, ToolDoneEvent, ToolOutput, ToolStartEvent};
+use crate::{
+    AgentError, AgentMode, Envelope, NO_FILES_FOUND, ToolDoneEvent, ToolInput, ToolOutput,
+    ToolStartEvent,
+};
 use maki_providers::Model;
-pub(crate) use maki_providers::NO_FILES_FOUND;
-use maki_providers::ToolInput;
 use maki_providers::provider::Provider;
 
 pub const BASH_TOOL_NAME: &str = bash::Bash::NAME;
@@ -275,7 +276,7 @@ pub(crate) mod test_support {
     use std::sync::mpsc::Sender;
 
     use maki_providers::provider::Provider;
-    use maki_providers::{AgentError, Envelope, Model, StreamResponse};
+    use maki_providers::{AgentError, Model, ProviderEvent, StreamResponse};
     use serde_json::Value;
 
     use super::*;
@@ -289,7 +290,7 @@ pub(crate) mod test_support {
             _: &[maki_providers::Message],
             _: &str,
             _: &Value,
-            _: &Sender<Envelope>,
+            _: &Sender<ProviderEvent>,
         ) -> Result<StreamResponse, AgentError> {
             unimplemented!()
         }

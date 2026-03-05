@@ -3,7 +3,7 @@ use maki_agent::tools::{
     MULTIEDIT_TOOL_NAME, QUESTION_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, TODOWRITE_TOOL_NAME,
     WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
-use maki_providers::{
+use maki_agent::{
     BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch,
     QuestionInfo, QuestionOption, TodoItem, TodoPriority, TodoStatus, ToolInput, ToolOutput,
 };

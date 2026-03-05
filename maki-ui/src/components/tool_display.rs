@@ -14,7 +14,7 @@ use maki_agent::tools::{
     BASH_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME,
     READ_TOOL_NAME, WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
-use maki_providers::{BatchToolStatus, ToolInput, ToolOutput};
+use maki_agent::{BatchToolStatus, TodoStatus, ToolInput, ToolOutput};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -262,10 +262,10 @@ pub fn build_tool_lines(
         Some(ToolOutput::TodoList(items)) => {
             for item in items {
                 let style = match item.status {
-                    maki_providers::TodoStatus::Completed => theme::TODO_COMPLETED,
-                    maki_providers::TodoStatus::InProgress => theme::TODO_IN_PROGRESS,
-                    maki_providers::TodoStatus::Pending => theme::TODO_PENDING,
-                    maki_providers::TodoStatus::Cancelled => theme::TODO_CANCELLED,
+                    TodoStatus::Completed => theme::TODO_COMPLETED,
+                    TodoStatus::InProgress => theme::TODO_IN_PROGRESS,
+                    TodoStatus::Pending => theme::TODO_PENDING,
+                    TodoStatus::Cancelled => theme::TODO_CANCELLED,
                 };
                 lines.push(Line::from(Span::styled(
                     format!(
@@ -355,7 +355,7 @@ mod tests {
     use super::*;
     use crate::components::DisplayRole;
     use maki_agent::tools::{BASH_TOOL_NAME, BATCH_TOOL_NAME, WRITE_TOOL_NAME};
-    use maki_providers::{BatchToolEntry, BatchToolStatus, GrepFileEntry, ToolInput, ToolOutput};
+    use maki_agent::{BatchToolEntry, BatchToolStatus, GrepFileEntry, ToolInput, ToolOutput};
     use test_case::test_case;
 
     fn code_input() -> Option<ToolInput> {
