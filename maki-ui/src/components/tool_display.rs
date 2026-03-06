@@ -207,7 +207,172 @@ pub fn append_timestamp(line: &mut Line<'static>, timestamp: &str, width: u16) {
     }
 }
 
-fn push_text_output_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &str) {
+enum Indicator {
+    Pending,
+    InProgress,
+    Success,
+    Error,
+}
+
+impl From<ToolStatus> for Indicator {
+    fn from(s: ToolStatus) -> Self {
+        match s {
+            ToolStatus::InProgress => Self::InProgress,
+            ToolStatus::Success => Self::Success,
+            ToolStatus::Error => Self::Error,
+        }
+    }
+}
+
+impl From<BatchToolStatus> for Indicator {
+    fn from(s: BatchToolStatus) -> Self {
+        match s {
+            BatchToolStatus::Pending => Self::Pending,
+            BatchToolStatus::InProgress => Self::InProgress,
+            BatchToolStatus::Success => Self::Success,
+            BatchToolStatus::Error => Self::Error,
+        }
+    }
+}
+
+enum OutputMode<'a> {
+    Fallback { body: Option<&'a str> },
+    Truncated { tool: &'a str },
+}
+
+struct ToolLineBuilder {
+    lines: Vec<Line<'static>>,
+    spinner_lines: Vec<usize>,
+    content_range: (usize, usize),
+}
+
+impl ToolLineBuilder {
+    fn new() -> Self {
+        Self {
+            lines: Vec::new(),
+            spinner_lines: Vec::new(),
+            content_range: (0, 0),
+        }
+    }
+
+    fn push_header(&mut self, tool_name: &str, header: &str, annotation: Option<&str>) {
+        let mut spans = vec![Span::styled(format!("{tool_name}> "), theme::TOOL_PREFIX)];
+        spans.extend(style_tool_header(tool_name, header));
+        if let Some(ann) = annotation {
+            spans.push(Span::styled(format!(" ({ann})"), theme::TOOL_ANNOTATION));
+        }
+        self.lines.push(Line::from(spans));
+    }
+
+    fn prepend_indicator(&mut self, indicator: Indicator, started_at: Instant) {
+        let (text, style) = match indicator {
+            Indicator::Pending => ("○ ".into(), theme::TOOL_DIM),
+            Indicator::InProgress => {
+                self.spinner_lines.push(0);
+                let ch = spinner_frame(started_at.elapsed().as_millis());
+                (format!("{ch} "), theme::TOOL_IN_PROGRESS)
+            }
+            Indicator::Success => (TOOL_INDICATOR.into(), theme::TOOL_SUCCESS),
+            Indicator::Error => (TOOL_INDICATOR.into(), theme::TOOL_ERROR),
+        };
+        self.lines[0].spans.insert(0, Span::styled(text, style));
+    }
+
+    fn push_code_content(&mut self, input: Option<&ToolInput>, output: Option<&ToolOutput>) {
+        let content = code_view::render_tool_content(input, output, false);
+        let start = self.lines.len();
+        for mut line in content {
+            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
+            self.lines.push(line);
+        }
+        self.content_range = (start, self.lines.len());
+    }
+
+    fn push_output(&mut self, output: Option<&ToolOutput>, mode: OutputMode<'_>) {
+        match mode {
+            OutputMode::Fallback { body } => self.push_output_fallback(output, body),
+            OutputMode::Truncated { tool } => self.push_output_truncated(output, tool),
+        }
+    }
+
+    fn push_output_fallback(&mut self, output: Option<&ToolOutput>, body: Option<&str>) {
+        match output {
+            None | Some(ToolOutput::Plain(_)) | Some(ToolOutput::GlobResult { .. }) => {
+                if let Some(text) = body {
+                    push_text_lines(&mut self.lines, text, TOOL_BODY_INDENT);
+                }
+            }
+            Some(ToolOutput::Batch { .. }) => {}
+            other => push_structured_lines(&mut self.lines, other, TOOL_BODY_INDENT),
+        }
+    }
+
+    fn push_output_truncated(&mut self, output: Option<&ToolOutput>, tool: &str) {
+        match output {
+            None => {}
+            Some(ToolOutput::Plain(text)) => {
+                let (max, keep) = if tool == BASH_TOOL_NAME {
+                    (BASH_OUTPUT_MAX_LINES, Keep::Tail)
+                } else {
+                    (TOOL_OUTPUT_MAX_LINES, Keep::Head)
+                };
+                push_text_lines(
+                    &mut self.lines,
+                    &truncate_lines(text, max, keep),
+                    TOOL_BODY_INDENT,
+                );
+            }
+            Some(ToolOutput::GlobResult { files }) => {
+                let joined = files.join("\n");
+                push_text_lines(
+                    &mut self.lines,
+                    &truncate_lines(&joined, TOOL_OUTPUT_MAX_LINES, Keep::Head),
+                    TOOL_BODY_INDENT,
+                );
+            }
+            other => push_structured_lines(&mut self.lines, other, TOOL_BODY_INDENT),
+        }
+    }
+
+    fn indent_all(&mut self, prefix: &str) {
+        for line in &mut self.lines {
+            line.spans.insert(0, Span::raw(prefix.to_owned()));
+        }
+    }
+
+    fn prepend_separator(&mut self, index: usize) {
+        if index == 0 {
+            return;
+        }
+        self.lines.insert(
+            0,
+            Line::from(Span::styled(
+                format!("{BATCH_INDENT}{}", BATCH_SEPARATOR.repeat(40)),
+                theme::TOOL_DIM,
+            )),
+        );
+        self.spinner_lines.iter_mut().for_each(|l| *l += 1);
+        self.content_range.0 += 1;
+        self.content_range.1 += 1;
+    }
+
+    fn finish(
+        self,
+        input: Option<ToolInput>,
+        output: Option<ToolOutput>,
+        content_indent: &'static str,
+    ) -> ToolLines {
+        let highlight = HighlightRequest::new(self.content_range, input, output);
+        ToolLines {
+            lines: self.lines,
+            highlight,
+            spinner_lines: self.spinner_lines,
+            content_indent,
+        }
+    }
+}
+
+fn push_text_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &str) {
     for line in text.lines() {
         let style = if line.starts_with(TRUNCATION_PREFIX) {
             theme::TOOL_ANNOTATION
@@ -218,7 +383,7 @@ fn push_text_output_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &s
     }
 }
 
-fn push_structured_output_lines(
+fn push_structured_lines(
     lines: &mut Vec<Line<'static>>,
     output: Option<&ToolOutput>,
     indent: &str,
@@ -257,64 +422,22 @@ pub fn build_tool_lines(
     status: ToolStatus,
     started_at: Instant,
 ) -> ToolLines {
-    let header = msg
-        .text
-        .split_once('\n')
-        .map_or(msg.text.as_str(), |(h, _)| h);
     let tool_name = msg.role.tool_name().unwrap_or("?");
-    let mut header_spans = vec![Span::styled(format!("{tool_name}> "), theme::TOOL_PREFIX)];
-    header_spans.extend(style_tool_header(tool_name, header));
-    if let Some(ann) = &msg.annotation {
-        header_spans.push(Span::styled(format!(" ({ann})"), theme::TOOL_ANNOTATION));
-    }
-    let mut lines = vec![Line::from(header_spans)];
-
-    let mut spinner_lines = Vec::new();
-
-    let (indicator, indicator_style) = match status {
-        ToolStatus::InProgress => {
-            spinner_lines.push(0);
-            let ch = spinner_frame(started_at.elapsed().as_millis());
-            (format!("{ch} "), theme::TOOL_IN_PROGRESS)
-        }
-        ToolStatus::Success => (TOOL_INDICATOR.into(), theme::TOOL_SUCCESS),
-        ToolStatus::Error => (TOOL_INDICATOR.into(), theme::TOOL_ERROR),
+    let (header, body) = match msg.text.split_once('\n') {
+        Some((h, b)) => (h, Some(b)),
+        None => (msg.text.as_str(), None),
     };
-    lines[0]
-        .spans
-        .insert(0, Span::styled(indicator, indicator_style));
 
-    let content =
-        code_view::render_tool_content(msg.tool_input.as_ref(), msg.tool_output.as_ref(), false);
-    let content_start = lines.len();
-    for mut line in content {
-        line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
-        lines.push(line);
-    }
-    let content_end = lines.len();
-
-    match msg.tool_output.as_ref() {
-        None | Some(ToolOutput::Plain(_)) | Some(ToolOutput::GlobResult { .. }) => {
-            if let Some((_, body)) = msg.text.split_once('\n') {
-                push_text_output_lines(&mut lines, body, TOOL_BODY_INDENT);
-            }
-        }
-        Some(ToolOutput::Batch { .. }) => {}
-        other => push_structured_output_lines(&mut lines, other, TOOL_BODY_INDENT),
-    }
-
-    let highlight = HighlightRequest::new(
-        (content_start, content_end),
+    let mut b = ToolLineBuilder::new();
+    b.push_header(tool_name, header, msg.annotation.as_deref());
+    b.prepend_indicator(status.into(), started_at);
+    b.push_code_content(msg.tool_input.as_ref(), msg.tool_output.as_ref());
+    b.push_output(msg.tool_output.as_ref(), OutputMode::Fallback { body });
+    b.finish(
         msg.tool_input.clone(),
         msg.tool_output.clone(),
-    );
-
-    ToolLines {
-        lines,
-        highlight,
-        spinner_lines,
-        content_indent: TOOL_BODY_INDENT,
-    }
+        TOOL_BODY_INDENT,
+    )
 }
 
 pub fn truncate_to_header(text: &mut String) {
@@ -326,109 +449,31 @@ const BATCH_INDENT: &str = "  ";
 const BATCH_CONTENT_INDENT: &str = "    ";
 const BATCH_SEPARATOR: &str = "─";
 
-fn indent_lines(lines: &mut [Line<'static>]) {
-    for line in lines {
-        line.spans.insert(0, Span::raw(BATCH_INDENT.to_owned()));
-    }
-}
-
 pub fn build_batch_entry_lines(
     entry: &BatchToolEntry,
     index: usize,
     started_at: Instant,
 ) -> ToolLines {
-    let mut header_spans = vec![Span::styled(
-        format!("{}> ", entry.tool),
-        theme::TOOL_PREFIX,
-    )];
-    header_spans.extend(style_tool_header(&entry.tool, &entry.summary));
-    if let Some(ann) = entry
+    let annotation = entry
         .output
         .as_ref()
-        .and_then(|o| tool_output_annotation(o, &entry.tool))
-    {
-        header_spans.push(Span::styled(format!(" ({ann})"), theme::TOOL_ANNOTATION));
-    }
-    let mut lines = vec![Line::from(header_spans)];
+        .and_then(|o| tool_output_annotation(o, &entry.tool));
 
-    let mut spinner_lines = Vec::new();
-
-    let (indicator, indicator_style) = match entry.status {
-        BatchToolStatus::Pending => ("○ ".into(), theme::TOOL_DIM),
-        BatchToolStatus::InProgress => {
-            spinner_lines.push(0);
-            let ch = spinner_frame(started_at.elapsed().as_millis());
-            (format!("{ch} "), theme::TOOL_IN_PROGRESS)
-        }
-        BatchToolStatus::Success => (TOOL_INDICATOR.into(), theme::TOOL_SUCCESS),
-        BatchToolStatus::Error => (TOOL_INDICATOR.into(), theme::TOOL_ERROR),
-    };
-    lines[0]
-        .spans
-        .insert(0, Span::styled(indicator, indicator_style));
-
-    let content =
-        code_view::render_tool_content(entry.input.as_ref(), entry.output.as_ref(), false);
-    let mut content_start = lines.len();
-    for mut line in content {
-        line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
-        lines.push(line);
-    }
-    let mut content_end = lines.len();
-
-    match entry.output.as_ref() {
-        None => {}
-        Some(ToolOutput::Plain(text)) => {
-            let (max, keep) = if entry.tool == BASH_TOOL_NAME {
-                (BASH_OUTPUT_MAX_LINES, Keep::Tail)
-            } else {
-                (TOOL_OUTPUT_MAX_LINES, Keep::Head)
-            };
-            push_text_output_lines(
-                &mut lines,
-                &truncate_lines(text, max, keep),
-                TOOL_BODY_INDENT,
-            );
-        }
-        Some(ToolOutput::GlobResult { files }) => {
-            let joined = files.join("\n");
-            push_text_output_lines(
-                &mut lines,
-                &truncate_lines(&joined, TOOL_OUTPUT_MAX_LINES, Keep::Head),
-                TOOL_BODY_INDENT,
-            );
-        }
-        other => push_structured_output_lines(&mut lines, other, TOOL_BODY_INDENT),
-    }
-
-    indent_lines(&mut lines);
-
-    if index > 0 {
-        lines.insert(
-            0,
-            Line::from(Span::styled(
-                format!("{BATCH_INDENT}{}", BATCH_SEPARATOR.repeat(40)),
-                theme::TOOL_DIM,
-            )),
-        );
-        let offset = 1;
-        spinner_lines.iter_mut().for_each(|l| *l += offset);
-        content_start += offset;
-        content_end += offset;
-    }
-
-    let highlight = HighlightRequest::new(
-        (content_start, content_end),
+    let mut b = ToolLineBuilder::new();
+    b.push_header(&entry.tool, &entry.summary, annotation.as_deref());
+    b.prepend_indicator(entry.status.into(), started_at);
+    b.push_code_content(entry.input.as_ref(), entry.output.as_ref());
+    b.push_output(
+        entry.output.as_ref(),
+        OutputMode::Truncated { tool: &entry.tool },
+    );
+    b.indent_all(BATCH_INDENT);
+    b.prepend_separator(index);
+    b.finish(
         entry.input.clone(),
         entry.output.clone(),
-    );
-
-    ToolLines {
-        lines,
-        highlight,
-        spinner_lines,
-        content_indent: BATCH_CONTENT_INDENT,
-    }
+        BATCH_CONTENT_INDENT,
+    )
 }
 
 #[cfg(test)]
