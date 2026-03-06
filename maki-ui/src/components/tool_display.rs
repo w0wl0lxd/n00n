@@ -10,11 +10,12 @@ use std::time::Instant;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
+use crate::markdown::{Keep, truncate_lines};
 use maki_agent::tools::{
     BASH_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME,
     READ_TOOL_NAME, WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
-use maki_agent::{BatchToolStatus, TodoStatus, ToolInput, ToolOutput};
+use maki_agent::{BatchToolEntry, BatchToolStatus, TodoStatus, ToolInput, ToolOutput};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -146,6 +147,7 @@ pub struct ToolLines {
     pub lines: Vec<Line<'static>>,
     pub highlight: Option<HighlightRequest>,
     pub spinner_lines: Vec<usize>,
+    pub content_indent: &'static str,
 }
 
 pub struct HighlightRequest {
@@ -205,6 +207,51 @@ pub fn append_timestamp(line: &mut Line<'static>, timestamp: &str, width: u16) {
     }
 }
 
+fn push_text_output_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &str) {
+    for line in text.lines() {
+        let style = if line.starts_with(TRUNCATION_PREFIX) {
+            theme::TOOL_ANNOTATION
+        } else {
+            theme::TOOL
+        };
+        lines.push(Line::from(Span::styled(format!("{indent}{line}"), style)));
+    }
+}
+
+fn push_structured_output_lines(
+    lines: &mut Vec<Line<'static>>,
+    output: Option<&ToolOutput>,
+    indent: &str,
+) {
+    match output {
+        Some(ToolOutput::TodoList(items)) => {
+            for item in items {
+                let style = match item.status {
+                    TodoStatus::Completed => theme::TODO_COMPLETED,
+                    TodoStatus::InProgress => theme::TODO_IN_PROGRESS,
+                    TodoStatus::Pending => theme::TODO_PENDING,
+                    TodoStatus::Cancelled => theme::TODO_CANCELLED,
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("{indent}{} {}", item.status.marker(), item.content),
+                    style,
+                )));
+            }
+        }
+        Some(ToolOutput::QuestionAnswers(pairs)) => {
+            for pair in pairs {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{indent}❯ "), theme::TOOL_ANNOTATION),
+                    Span::styled(pair.question.clone(), theme::QUESTION_LABEL),
+                    Span::styled(" → ", theme::TOOL_ANNOTATION),
+                    Span::styled(pair.answer.clone(), theme::QUESTION_ANSWER),
+                ]));
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn build_tool_lines(
     msg: &DisplayMessage,
     status: ToolStatus,
@@ -240,96 +287,20 @@ pub fn build_tool_lines(
     let content =
         code_view::render_tool_content(msg.tool_input.as_ref(), msg.tool_output.as_ref(), false);
     let content_start = lines.len();
-    lines.extend(content);
+    for mut line in content {
+        line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
+        lines.push(line);
+    }
     let content_end = lines.len();
 
     match msg.tool_output.as_ref() {
         None | Some(ToolOutput::Plain(_)) | Some(ToolOutput::GlobResult { .. }) => {
             if let Some((_, body)) = msg.text.split_once('\n') {
-                for line in body.lines() {
-                    let style = if line.starts_with(TRUNCATION_PREFIX) {
-                        theme::TOOL_ANNOTATION
-                    } else {
-                        theme::TOOL
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!("{TOOL_BODY_INDENT}{line}"),
-                        style,
-                    )));
-                }
+                push_text_output_lines(&mut lines, body, TOOL_BODY_INDENT);
             }
         }
-        Some(ToolOutput::TodoList(items)) => {
-            for item in items {
-                let style = match item.status {
-                    TodoStatus::Completed => theme::TODO_COMPLETED,
-                    TodoStatus::InProgress => theme::TODO_IN_PROGRESS,
-                    TodoStatus::Pending => theme::TODO_PENDING,
-                    TodoStatus::Cancelled => theme::TODO_CANCELLED,
-                };
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "{TOOL_BODY_INDENT}{} {}",
-                        item.status.marker(),
-                        item.content
-                    ),
-                    style,
-                )));
-            }
-        }
-        Some(ToolOutput::Batch { entries, .. }) => {
-            for entry in entries {
-                let (indicator, style) = match entry.status {
-                    BatchToolStatus::Pending => ("○ ".into(), theme::TOOL_DIM),
-                    BatchToolStatus::InProgress => {
-                        let ch = spinner_frame(started_at.elapsed().as_millis());
-                        (format!("{ch} "), theme::TOOL_IN_PROGRESS)
-                    }
-                    BatchToolStatus::Success => (TOOL_INDICATOR.into(), theme::TOOL_SUCCESS),
-                    BatchToolStatus::Error => (TOOL_INDICATOR.into(), theme::TOOL_ERROR),
-                };
-                let mut spans = vec![
-                    Span::styled(TOOL_BODY_INDENT.to_owned(), style),
-                    Span::styled(indicator, style),
-                    Span::styled(format!("{}> ", entry.tool), theme::TOOL_PREFIX),
-                ];
-                spans.extend(style_tool_header(&entry.tool, &entry.summary));
-                if let Some(ann) = entry
-                    .output
-                    .as_ref()
-                    .and_then(|o| tool_output_annotation(o, &entry.tool))
-                {
-                    spans.push(Span::styled(format!(" ({ann})"), theme::TOOL_ANNOTATION));
-                }
-
-                let line_idx = lines.len();
-                lines.push(Line::from(spans));
-
-                if entry.status == BatchToolStatus::InProgress {
-                    spinner_lines.push(line_idx);
-                }
-
-                if let Some(ToolInput::Code { code, .. }) = &entry.input {
-                    for text in code.trim_end_matches('\n').lines() {
-                        lines.push(Line::from(vec![
-                            Span::raw(format!("{TOOL_BODY_INDENT}  ")),
-                            Span::styled(text.to_owned(), theme::CODE_FALLBACK),
-                        ]));
-                    }
-                }
-            }
-        }
-        Some(ToolOutput::QuestionAnswers(pairs)) => {
-            for pair in pairs {
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{TOOL_BODY_INDENT}❯ "), theme::TOOL_ANNOTATION),
-                    Span::styled(pair.question.clone(), theme::QUESTION_LABEL),
-                    Span::styled(" → ", theme::TOOL_ANNOTATION),
-                    Span::styled(pair.answer.clone(), theme::QUESTION_ANSWER),
-                ]));
-            }
-        }
-        _ => {}
+        Some(ToolOutput::Batch { .. }) => {}
+        other => push_structured_output_lines(&mut lines, other, TOOL_BODY_INDENT),
     }
 
     let highlight = HighlightRequest::new(
@@ -342,6 +313,7 @@ pub fn build_tool_lines(
         lines,
         highlight,
         spinner_lines,
+        content_indent: TOOL_BODY_INDENT,
     }
 }
 
@@ -350,11 +322,120 @@ pub fn truncate_to_header(text: &mut String) {
     text.truncate(end);
 }
 
+const BATCH_INDENT: &str = "  ";
+const BATCH_CONTENT_INDENT: &str = "    ";
+const BATCH_SEPARATOR: &str = "─";
+
+fn indent_lines(lines: &mut [Line<'static>]) {
+    for line in lines {
+        line.spans.insert(0, Span::raw(BATCH_INDENT.to_owned()));
+    }
+}
+
+pub fn build_batch_entry_lines(
+    entry: &BatchToolEntry,
+    index: usize,
+    started_at: Instant,
+) -> ToolLines {
+    let mut header_spans = vec![Span::styled(
+        format!("{}> ", entry.tool),
+        theme::TOOL_PREFIX,
+    )];
+    header_spans.extend(style_tool_header(&entry.tool, &entry.summary));
+    if let Some(ann) = entry
+        .output
+        .as_ref()
+        .and_then(|o| tool_output_annotation(o, &entry.tool))
+    {
+        header_spans.push(Span::styled(format!(" ({ann})"), theme::TOOL_ANNOTATION));
+    }
+    let mut lines = vec![Line::from(header_spans)];
+
+    let mut spinner_lines = Vec::new();
+
+    let (indicator, indicator_style) = match entry.status {
+        BatchToolStatus::Pending => ("○ ".into(), theme::TOOL_DIM),
+        BatchToolStatus::InProgress => {
+            spinner_lines.push(0);
+            let ch = spinner_frame(started_at.elapsed().as_millis());
+            (format!("{ch} "), theme::TOOL_IN_PROGRESS)
+        }
+        BatchToolStatus::Success => (TOOL_INDICATOR.into(), theme::TOOL_SUCCESS),
+        BatchToolStatus::Error => (TOOL_INDICATOR.into(), theme::TOOL_ERROR),
+    };
+    lines[0]
+        .spans
+        .insert(0, Span::styled(indicator, indicator_style));
+
+    let content =
+        code_view::render_tool_content(entry.input.as_ref(), entry.output.as_ref(), false);
+    let mut content_start = lines.len();
+    for mut line in content {
+        line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
+        lines.push(line);
+    }
+    let mut content_end = lines.len();
+
+    match entry.output.as_ref() {
+        None => {}
+        Some(ToolOutput::Plain(text)) => {
+            let (max, keep) = if entry.tool == BASH_TOOL_NAME {
+                (BASH_OUTPUT_MAX_LINES, Keep::Tail)
+            } else {
+                (TOOL_OUTPUT_MAX_LINES, Keep::Head)
+            };
+            push_text_output_lines(
+                &mut lines,
+                &truncate_lines(text, max, keep),
+                TOOL_BODY_INDENT,
+            );
+        }
+        Some(ToolOutput::GlobResult { files }) => {
+            let joined = files.join("\n");
+            push_text_output_lines(
+                &mut lines,
+                &truncate_lines(&joined, TOOL_OUTPUT_MAX_LINES, Keep::Head),
+                TOOL_BODY_INDENT,
+            );
+        }
+        other => push_structured_output_lines(&mut lines, other, TOOL_BODY_INDENT),
+    }
+
+    indent_lines(&mut lines);
+
+    if index > 0 {
+        lines.insert(
+            0,
+            Line::from(Span::styled(
+                format!("{BATCH_INDENT}{}", BATCH_SEPARATOR.repeat(40)),
+                theme::TOOL_DIM,
+            )),
+        );
+        let offset = 1;
+        spinner_lines.iter_mut().for_each(|l| *l += offset);
+        content_start += offset;
+        content_end += offset;
+    }
+
+    let highlight = HighlightRequest::new(
+        (content_start, content_end),
+        entry.input.clone(),
+        entry.output.clone(),
+    );
+
+    ToolLines {
+        lines,
+        highlight,
+        spinner_lines,
+        content_indent: BATCH_CONTENT_INDENT,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::components::DisplayRole;
-    use maki_agent::tools::{BASH_TOOL_NAME, BATCH_TOOL_NAME, WRITE_TOOL_NAME};
+    use maki_agent::tools::{BASH_TOOL_NAME, WRITE_TOOL_NAME};
     use maki_agent::{BatchToolEntry, BatchToolStatus, GrepFileEntry, ToolInput, ToolOutput};
     use test_case::test_case;
 
@@ -529,28 +610,9 @@ mod tests {
         }
     }
 
-    fn batch_msg(entries: Vec<BatchToolEntry>) -> DisplayMessage {
-        DisplayMessage {
-            role: DisplayRole::Tool {
-                id: "b1".into(),
-                status: ToolStatus::Success,
-                name: BATCH_TOOL_NAME,
-            },
-            text: "3 tools".into(),
-            tool_input: None,
-            tool_output: Some(ToolOutput::Batch {
-                entries,
-                text: String::new(),
-            }),
-            annotation: None,
-            plan_path: None,
-            timestamp: None,
-        }
-    }
-
     #[test]
     fn batch_entry_annotation_rendered() {
-        let msg = batch_msg(vec![BatchToolEntry {
+        let entry = BatchToolEntry {
             tool: "read".into(),
             summary: "src/main.rs".into(),
             status: BatchToolStatus::Success,
@@ -560,15 +622,15 @@ mod tests {
                 start_line: 1,
                 lines: vec!["x".into(); 42],
             }),
-        }]);
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
+        };
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now());
         let text = lines_text(&tl);
         assert!(text.contains("(42 lines)"));
     }
 
     #[test]
     fn batch_entry_code_input_rendered() {
-        let msg = batch_msg(vec![BatchToolEntry {
+        let entry = BatchToolEntry {
             tool: "bash".into(),
             summary: "echo hi".into(),
             status: BatchToolStatus::Success,
@@ -577,48 +639,67 @@ mod tests {
                 code: "echo hi\n".into(),
             }),
             output: None,
-        }]);
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
+        };
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now());
         let text = lines_text(&tl);
         assert!(text.contains("echo hi"));
     }
 
-    #[test]
-    fn spinner_lines_tracks_in_progress() {
-        let msg = DisplayMessage {
-            role: DisplayRole::Tool {
-                id: "b1".into(),
-                status: ToolStatus::InProgress,
-                name: BATCH_TOOL_NAME,
-            },
-            text: "2 tools".into(),
-            tool_input: None,
-            tool_output: Some(ToolOutput::Batch {
-                entries: vec![
-                    BatchToolEntry {
-                        tool: "read".into(),
-                        summary: "a.rs".into(),
-                        status: BatchToolStatus::Success,
-                        input: None,
-                        output: None,
-                    },
-                    BatchToolEntry {
-                        tool: "bash".into(),
-                        summary: "test".into(),
-                        status: BatchToolStatus::InProgress,
-                        input: None,
-                        output: None,
-                    },
-                ],
-                text: String::new(),
-            }),
-            annotation: None,
-            plan_path: None,
-            timestamp: None,
+    #[test_case(BatchToolStatus::InProgress, &[0]    ; "in_progress_has_spinner")]
+    #[test_case(BatchToolStatus::Pending,    &[]     ; "pending_no_spinner")]
+    #[test_case(BatchToolStatus::Success,    &[]     ; "success_no_spinner")]
+    fn batch_entry_spinner(status: BatchToolStatus, expected: &[usize]) {
+        let entry = BatchToolEntry {
+            tool: "bash".into(),
+            summary: "test".into(),
+            status,
+            input: None,
+            output: None,
         };
-        let tl = build_tool_lines(&msg, ToolStatus::InProgress, Instant::now());
-        assert!(tl.spinner_lines.contains(&0));
-        assert!(tl.spinner_lines.len() == 2);
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now());
+        assert_eq!(tl.spinner_lines, expected);
+    }
+
+    #[test]
+    fn batch_entry_separator_on_nonzero_index() {
+        let entry = BatchToolEntry {
+            tool: "bash".into(),
+            summary: "test".into(),
+            status: BatchToolStatus::Success,
+            input: None,
+            output: None,
+        };
+        let first = build_batch_entry_lines(&entry, 0, Instant::now());
+        let second = build_batch_entry_lines(&entry, 1, Instant::now());
+        assert!(second.lines.len() > first.lines.len());
+        assert!(spans_text(&second.lines[0].spans).contains(BATCH_SEPARATOR));
+    }
+
+    #[test]
+    fn batch_entry_spinner_offset_with_separator() {
+        let entry = BatchToolEntry {
+            tool: "bash".into(),
+            summary: "test".into(),
+            status: BatchToolStatus::InProgress,
+            input: None,
+            output: None,
+        };
+        let tl = build_batch_entry_lines(&entry, 1, Instant::now());
+        assert_eq!(tl.spinner_lines, &[1]);
+    }
+
+    #[test]
+    fn batch_entry_plain_output_rendered() {
+        let entry = BatchToolEntry {
+            tool: "bash".into(),
+            summary: "echo hello".into(),
+            status: BatchToolStatus::Success,
+            input: None,
+            output: Some(ToolOutput::Plain("hello world".into())),
+        };
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now());
+        let text = lines_text(&tl);
+        assert!(text.contains("hello world"));
     }
 
     #[test_case("bash",  ToolOutput::Plain("ok".into()),                      None                ; "plain_short_no_annotation")]

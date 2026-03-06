@@ -2,8 +2,8 @@ use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
 
 use super::tool_display::{
     ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, THINKING_STYLE, TOOL_OUTPUT_MAX_LINES,
-    ToolLines, USER_STYLE, append_timestamp, build_tool_lines, format_timestamp_now,
-    tool_output_annotation, truncate_to_header,
+    ToolLines, USER_STYLE, append_timestamp, build_batch_entry_lines, build_tool_lines,
+    format_timestamp_now, tool_output_annotation, truncate_to_header,
 };
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::CodeHighlighter;
@@ -73,6 +73,7 @@ struct Segment {
     highlight_range: Option<(usize, usize)>,
     highlighted_has_output: bool,
     spinner_lines: Vec<usize>,
+    content_indent: &'static str,
 }
 
 impl Segment {
@@ -93,8 +94,30 @@ impl Segment {
         self.highlight_range = hl.map(|h| h.range);
         self.highlighted_has_output = hl.is_some_and(|h| h.output.is_some());
         self.spinner_lines = tl.spinner_lines;
+        self.content_indent = tl.content_indent;
         self.lines = tl.lines;
         self.cached_height = None;
+    }
+
+    fn update_with_reuse(&mut self, mut tl: ToolLines, worker: &RenderWorker) {
+        let has_output = tl.highlight.as_ref().is_some_and(|h| h.output.is_some());
+        let reused = tl.highlight.as_ref().and_then(|req| {
+            let hl_lines = self.reuse_highlight(has_output)?;
+            let (s, _) = req.range;
+            let new_end = s + hl_lines.len();
+            tl.lines.splice(s..req.range.1, hl_lines);
+            Some((s, new_end))
+        });
+        self.cached_height = None;
+        if let Some((s, e)) = reused {
+            self.lines = tl.lines;
+            self.highlight_range = Some((s, e));
+            self.pending_highlight = None;
+            self.spinner_lines = tl.spinner_lines;
+            self.content_indent = tl.content_indent;
+        } else {
+            self.apply_highlight(tl, worker);
+        }
     }
 }
 
@@ -116,6 +139,18 @@ fn build_copy_text(msg: &DisplayMessage) -> String {
         ) => {
             out.push('\n');
             out.push_str(&structured.as_text());
+        }
+        Some(ToolOutput::Batch { entries, .. }) => {
+            for entry in entries {
+                out.push_str(&format!("\n  {} {}", entry.tool, entry.summary));
+                if let Some(output) = &entry.output {
+                    let text = output.as_text();
+                    if !text.is_empty() {
+                        out.push('\n');
+                        out.push_str(&text);
+                    }
+                }
+            }
         }
         _ if !body.is_empty() => {
             out.push('\n');
@@ -291,7 +326,13 @@ impl MessagesPanel {
         self.rebuild_tool_segment(&event.id);
     }
 
-    pub fn batch_progress(&mut self, batch_id: &str, index: usize, status: BatchToolStatus) {
+    pub fn batch_progress(
+        &mut self,
+        batch_id: &str,
+        index: usize,
+        status: BatchToolStatus,
+        output: Option<ToolOutput>,
+    ) {
         let Some(msg) = self
             .messages
             .iter_mut()
@@ -303,6 +344,9 @@ impl MessagesPanel {
             && let Some(entry) = entries.get_mut(index)
         {
             entry.status = status;
+            if output.is_some() {
+                entry.output = output;
+            }
         }
         self.rebuild_tool_segment(batch_id);
     }
@@ -320,6 +364,7 @@ impl MessagesPanel {
     }
 
     pub fn fail_in_progress(&mut self) {
+        let mut batch_ids = Vec::new();
         for msg in &mut self.messages {
             if let DisplayRole::Tool {
                 ref id,
@@ -329,6 +374,16 @@ impl MessagesPanel {
                 && *status == ToolStatus::InProgress
             {
                 *status = ToolStatus::Error;
+                if let Some(ToolOutput::Batch { entries, .. }) = &mut msg.tool_output {
+                    for entry in entries.iter_mut() {
+                        if entry.status == BatchToolStatus::InProgress
+                            || entry.status == BatchToolStatus::Pending
+                        {
+                            entry.status = BatchToolStatus::Error;
+                        }
+                    }
+                    batch_ids.push(id.clone());
+                }
                 if let Some(seg) = self
                     .cached_segments
                     .iter_mut()
@@ -339,6 +394,43 @@ impl MessagesPanel {
                         append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
                     }
                     seg.apply_highlight(tl, &self.hl_worker);
+                }
+            }
+        }
+        for batch_id in &batch_ids {
+            if let Some(msg) = self
+                .messages
+                .iter()
+                .rfind(|m| matches!(&m.role, DisplayRole::Tool { id, .. } if id == batch_id))
+                && let Some(ToolOutput::Batch { entries, .. }) = &msg.tool_output
+            {
+                let child_prefix = format!("{batch_id}__");
+                for (j, entry) in entries.iter().enumerate() {
+                    let child_id = format!("{batch_id}__{j}");
+                    let tl = build_batch_entry_lines(entry, j, self.started_at);
+                    if let Some(idx) = self
+                        .cached_segments
+                        .iter()
+                        .rposition(|s| s.tool_id.as_deref() == Some(&child_id))
+                    {
+                        self.cached_segments[idx].apply_highlight(tl, &self.hl_worker);
+                    } else {
+                        let parent_idx = self.cached_segments.iter().rposition(|s| {
+                            s.tool_id.as_deref().is_some_and(|id| {
+                                id == batch_id.as_str() || id.starts_with(&child_prefix)
+                            })
+                        });
+                        if let Some(pos) = parent_idx {
+                            let msg_index = self.cached_segments[pos].msg_index;
+                            let mut seg = Segment {
+                                tool_id: Some(child_id),
+                                msg_index,
+                                ..Segment::default()
+                            };
+                            seg.apply_highlight(tl, &self.hl_worker);
+                            self.cached_segments.insert(pos + 1, seg);
+                        }
+                    }
                 }
             }
         }
@@ -557,11 +649,12 @@ impl MessagesPanel {
             theme::TOOL_IN_PROGRESS,
         );
         for seg in &mut self.cached_segments {
+            let is_child = seg.tool_id.as_deref().is_some_and(|id| id.contains("__"));
             for &line_idx in &seg.spinner_lines {
                 if let Some(line) = seg.lines.get_mut(line_idx)
                     && !line.spans.is_empty()
                 {
-                    let span_idx = if line_idx == 0 { 0 } else { 1 };
+                    let span_idx = if line_idx == 0 && !is_child { 0 } else { 1 };
                     if line.spans.len() > span_idx {
                         line.spans[span_idx] = spinner_span.clone();
                     }
@@ -578,8 +671,19 @@ impl MessagesPanel {
                 .find(|s| s.pending_highlight == Some(result.id))
             {
                 if let Some((start, end)) = seg.highlight_range {
-                    let new_end = start + result.lines.len();
-                    seg.lines.splice(start..end, result.lines);
+                    let indent = seg.content_indent;
+                    let indented: Vec<Line<'static>> = result
+                        .lines
+                        .into_iter()
+                        .map(|mut line| {
+                            if !indent.is_empty() {
+                                line.spans.insert(0, Span::raw(indent));
+                            }
+                            line
+                        })
+                        .collect();
+                    let new_end = start + indented.len();
+                    seg.lines.splice(start..end, indented);
                     seg.highlight_range = Some((start, new_end));
                 }
                 seg.cached_height = None;
@@ -611,27 +715,57 @@ impl MessagesPanel {
         if let Some(ts) = &msg.timestamp {
             append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
         }
-        let has_output = tl.highlight.as_ref().is_some_and(|h| h.output.is_some());
-
-        let reused = tl.highlight.as_ref().and_then(|req| {
-            let hl_lines = self.cached_segments[seg_idx].reuse_highlight(has_output)?;
-            let (s, _) = req.range;
-            let new_end = s + hl_lines.len();
-            tl.lines.splice(s..req.range.1, hl_lines);
-            Some((s, new_end))
-        });
 
         let seg = &mut self.cached_segments[seg_idx];
-        seg.cached_height = None;
         seg.copy_text = build_copy_text(msg);
+        seg.update_with_reuse(tl, &self.hl_worker);
 
-        if let Some((s, e)) = reused {
-            seg.lines = tl.lines;
-            seg.highlight_range = Some((s, e));
-            seg.pending_highlight = None;
-            seg.spinner_lines = tl.spinner_lines;
-        } else {
-            seg.apply_highlight(tl, &self.hl_worker);
+        let batch_children: Option<Vec<(String, ToolLines)>> =
+            if let Some(ToolOutput::Batch { entries, .. }) = &msg.tool_output {
+                Some(
+                    entries
+                        .iter()
+                        .enumerate()
+                        .map(|(j, entry)| {
+                            let child_id = format!("{tool_id}__{j}");
+                            let tl = build_batch_entry_lines(entry, j, self.started_at);
+                            (child_id, tl)
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
+
+        if let Some(children) = batch_children {
+            let child_prefix = format!("{tool_id}__");
+            let msg_index = self.cached_segments[seg_idx].msg_index;
+            for (child_id, tl) in children {
+                if let Some(cseg_idx) = self
+                    .cached_segments
+                    .iter()
+                    .rposition(|s| s.tool_id.as_deref() == Some(&child_id))
+                {
+                    self.cached_segments[cseg_idx].update_with_reuse(tl, &self.hl_worker);
+                } else {
+                    let mut seg = Segment {
+                        tool_id: Some(child_id),
+                        msg_index,
+                        ..Segment::default()
+                    };
+                    seg.apply_highlight(tl, &self.hl_worker);
+                    let insert_pos = self
+                        .cached_segments
+                        .iter()
+                        .rposition(|s| {
+                            s.tool_id
+                                .as_deref()
+                                .is_some_and(|id| id == tool_id || id.starts_with(&child_prefix))
+                        })
+                        .map_or(seg_idx + 1, |p| p + 1);
+                    self.cached_segments.insert(insert_pos, seg);
+                }
+            }
         }
     }
 
@@ -649,15 +783,29 @@ impl MessagesPanel {
                 }
                 let id = id.clone();
                 let copy_text = build_copy_text(msg);
-                self.push_spacer_if_needed();
+                push_spacer_if_needed(&mut self.cached_segments);
                 let mut seg = Segment {
                     copy_text,
-                    tool_id: Some(id),
+                    tool_id: Some(id.clone()),
                     msg_index: Some(i),
                     ..Segment::default()
                 };
                 seg.apply_highlight(tl, &self.hl_worker);
                 self.cached_segments.push(seg);
+
+                if let Some(ToolOutput::Batch { entries, .. }) = &msg.tool_output {
+                    for (j, entry) in entries.iter().enumerate() {
+                        let child_id = format!("{id}__{j}");
+                        let tl = build_batch_entry_lines(entry, j, self.started_at);
+                        let mut seg = Segment {
+                            tool_id: Some(child_id),
+                            msg_index: Some(i),
+                            ..Segment::default()
+                        };
+                        seg.apply_highlight(tl, &self.hl_worker);
+                        self.cached_segments.push(seg);
+                    }
+                }
             } else {
                 let style = match &msg.role {
                     DisplayRole::User => &USER_STYLE,
@@ -698,7 +846,7 @@ impl MessagesPanel {
                 }
 
                 let copy_text = msg.text.clone();
-                self.push_spacer_if_needed();
+                push_spacer_if_needed(&mut self.cached_segments);
                 self.cached_segments.push(Segment {
                     lines,
                     copy_text,
@@ -709,14 +857,14 @@ impl MessagesPanel {
         }
         self.cached_msg_count = self.messages.len();
     }
+}
 
-    fn push_spacer_if_needed(&mut self) {
-        if !self.cached_segments.is_empty() {
-            self.cached_segments.push(Segment {
-                lines: vec![Line::default()],
-                ..Segment::default()
-            });
-        }
+fn push_spacer_if_needed(segments: &mut Vec<Segment>) {
+    if !segments.is_empty() {
+        segments.push(Segment {
+            lines: vec![Line::default()],
+            ..Segment::default()
+        });
     }
 }
 

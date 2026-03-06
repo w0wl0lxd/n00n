@@ -367,6 +367,7 @@ pub enum AgentEvent {
         batch_id: String,
         index: usize,
         status: BatchToolStatus,
+        output: Option<ToolOutput>,
     },
     TurnComplete {
         message: Message,

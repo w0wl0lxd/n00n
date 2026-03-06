@@ -84,12 +84,13 @@ impl Batch {
 
         let inner_id = |i: usize| format!("{batch_id}__{i}");
 
-        let send_progress = |index: usize, status: BatchToolStatus| {
+        let send_progress = |index: usize, status: BatchToolStatus, output: Option<ToolOutput>| {
             let _ = ctx.event_tx.send(
                 AgentEvent::BatchProgress {
                     batch_id: batch_id.clone(),
                     index,
                     status,
+                    output,
                 }
                 .into(),
             );
@@ -102,7 +103,7 @@ impl Batch {
                 .map(|(i, parsed_call)| {
                     let id = inner_id(i);
                     s.spawn(move || {
-                        send_progress(i, BatchToolStatus::InProgress);
+                        send_progress(i, BatchToolStatus::InProgress, None);
                         let (result, output) = match parsed_call {
                             Ok(call) => {
                                 let inner_ctx = ToolContext {
@@ -121,7 +122,7 @@ impl Batch {
                         } else {
                             BatchToolStatus::Error
                         };
-                        send_progress(i, status);
+                        send_progress(i, status, output.clone());
                         (result, output)
                     })
                 })

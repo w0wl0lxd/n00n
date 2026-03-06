@@ -101,12 +101,13 @@ pub fn load_instruction_files(cwd: &str) -> String {
     for filename in INSTRUCTION_FILES {
         let path = root.join(filename);
         if let Ok(content) = fs::read_to_string(&path) {
-            out.push_str(&format!("\n\nProject instructions ({filename}):\n{content}"));
+            out.push_str(&format!(
+                "\n\nProject instructions ({filename}):\n{content}"
+            ));
         }
     }
     out
 }
-
 
 struct ParsedToolCall {
     id: String,

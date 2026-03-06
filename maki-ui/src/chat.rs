@@ -60,8 +60,10 @@ impl Chat {
                 batch_id,
                 index,
                 status,
+                output,
             } => {
-                self.messages_panel.batch_progress(&batch_id, index, status);
+                self.messages_panel
+                    .batch_progress(&batch_id, index, status, output);
             }
             AgentEvent::QuestionPrompt { questions, .. } => {
                 return ChatEventResult::QuestionPrompt { questions };

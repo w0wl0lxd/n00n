@@ -6,8 +6,6 @@ use maki_agent::{DiffHunk, DiffLine, DiffSpan, GrepFileEntry, ToolInput, ToolOut
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-const INDENT: &str = "  ";
-
 const MAX_CODE_LINES: usize = 7;
 const MAX_WRITE_LINES: usize = 30;
 const MAX_GREP_LINES: usize = 100;
@@ -17,16 +15,19 @@ fn nr_width(max_nr: usize) -> usize {
 }
 
 fn gutter(nr_str: &str) -> Span<'static> {
-    Span::styled(format!("{INDENT}{nr_str} "), theme::DIFF_LINE_NR)
+    Span::styled(format!("{nr_str} "), theme::DIFF_LINE_NR)
 }
 
 fn gap_ellipsis() -> Line<'static> {
-    Line::from(Span::styled(format!("{INDENT}..."), theme::DIFF_LINE_NR))
+    Line::from(vec![
+        Span::styled("...".to_owned(), theme::DIFF_LINE_NR),
+        Span::raw("  ".to_owned()),
+    ])
 }
 
 fn truncation_line(truncated: usize) -> Line<'static> {
     Line::from(Span::styled(
-        format!("{INDENT}{}", truncation_notice(truncated)),
+        truncation_notice(truncated),
         theme::TOOL_ANNOTATION,
     ))
 }
@@ -36,17 +37,11 @@ fn code_spans(
     text: &str,
 ) -> Vec<Span<'static>> {
     match hl {
-        Some(h) => {
-            let mut spans = vec![Span::raw(INDENT)];
-            for (style, chunk) in highlight_line(h, text) {
-                spans.push(Span::styled(chunk, style));
-            }
-            spans
-        }
-        None => vec![
-            Span::raw(INDENT),
-            Span::styled(text.to_owned(), theme::CODE_FALLBACK),
-        ],
+        Some(h) => highlight_line(h, text)
+            .into_iter()
+            .map(|(style, chunk)| Span::styled(chunk, style))
+            .collect(),
+        None => vec![Span::styled(text.to_owned(), theme::CODE_FALLBACK)],
     }
 }
 
@@ -115,6 +110,7 @@ fn render_diff(path: Option<&str>, hunks: &[DiffHunk]) -> Vec<Line<'static>> {
             let mut spans = vec![gutter(&nr_str)];
             match dl {
                 DiffLine::Unchanged(t) => {
+                    spans.push(Span::raw("  ".to_owned()));
                     spans.extend(code_spans(&mut hl, t));
                 }
                 DiffLine::Removed(ds) | DiffLine::Added(ds) => {
@@ -165,7 +161,7 @@ fn render_grep_results(
 
         if multi {
             out.push(Line::from(Span::styled(
-                format!("{INDENT}{}", entry.path),
+                entry.path.clone(),
                 theme::TOOL_PATH,
             )));
         }
@@ -177,11 +173,7 @@ fn render_grep_results(
         };
 
         for m in entry.matches.iter().take(take) {
-            let mut spans = if multi {
-                vec![Span::raw(INDENT), gutter(&format!("{:>w$}", m.line_nr))]
-            } else {
-                vec![gutter(&format!("{:>w$}", m.line_nr))]
-            };
+            let mut spans = vec![gutter(&format!("{:>w$}", m.line_nr))];
             spans.extend(code_spans(&mut hl, &m.text));
             out.push(Line::from(spans));
             budget -= 1;
@@ -201,16 +193,15 @@ pub fn render_tool_content(
     let mut lines = Vec::new();
     if let Some(ToolInput::Code { language, code }) = input {
         if highlight {
-            for mut line in highlight_code_plain(language, code) {
-                line.spans.insert(0, Span::raw(INDENT.to_owned()));
+            for line in highlight_code_plain(language, code) {
                 lines.push(line);
             }
         } else {
             for text in code.trim_end_matches('\n').lines() {
-                lines.push(Line::from(vec![
-                    Span::raw(INDENT.to_owned()),
-                    Span::styled(text.to_owned(), theme::CODE_FALLBACK),
-                ]));
+                lines.push(Line::from(Span::styled(
+                    text.to_owned(),
+                    theme::CODE_FALLBACK,
+                )));
             }
         }
     }
