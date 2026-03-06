@@ -1,5 +1,5 @@
 pub mod agent;
-pub use agent::{History, SharedHistory};
+pub use agent::History;
 pub(crate) mod prompt;
 pub mod template;
 pub mod tools;
@@ -34,6 +34,12 @@ pub enum AgentMode {
     #[default]
     Build,
     Plan(String),
+}
+
+pub enum ExtractedCommand {
+    Interrupt(AgentInput),
+    Cancel,
+    Ignore,
 }
 
 pub struct AgentInput {

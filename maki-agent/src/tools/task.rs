@@ -87,7 +87,7 @@ impl Task {
             pending_plan: None,
         };
 
-        let mut history = crate::History::new(Vec::new(), None);
+        let mut history = crate::History::new(Vec::new());
         agent::run(
             ctx.provider,
             ctx.model,
@@ -97,7 +97,8 @@ impl Task {
             &sub_tx,
             &tools,
             None,
-            None,
+            None::<&std::sync::mpsc::Receiver<()>>,
+            |_| crate::ExtractedCommand::Ignore,
         )
         .map_err(|e| format!("sub-agent error: {e}"))?;
 

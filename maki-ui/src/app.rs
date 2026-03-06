@@ -102,10 +102,10 @@ pub struct App {
     context_window: u32,
     pub should_quit: bool,
     pub(crate) queue: VecDeque<QueuedItem>,
-    pending_interrupts: Vec<String>,
     pub answer_tx: Option<mpsc::Sender<String>>,
-    pub interrupt_tx: Option<mpsc::Sender<String>>,
+    pub(crate) cmd_tx: Option<mpsc::Sender<super::AgentCommand>>,
     pending_question: bool,
+    cancel_pending: bool,
     retry_info: Option<RetryInfo>,
     #[cfg(feature = "demo")]
     demo_questions: Option<(usize, Vec<QuestionInfo>)>,
@@ -137,10 +137,10 @@ impl App {
             context_window,
             should_quit: false,
             queue: VecDeque::new(),
-            pending_interrupts: Vec::new(),
             answer_tx: None,
-            interrupt_tx: None,
+            cmd_tx: None,
             pending_question: false,
+            cancel_pending: false,
             retry_info: None,
             #[cfg(feature = "demo")]
             demo_questions: None,
@@ -162,17 +162,13 @@ impl App {
     }
 
     fn visible_queue_len(&self) -> usize {
-        self.pending_interrupts.len() + self.queue.len()
+        self.queue.len()
     }
 
     fn visible_queue_entries(&self) -> Vec<QueueEntry<'_>> {
-        self.pending_interrupts
+        self.queue
             .iter()
-            .map(|s| QueueEntry {
-                text: s.as_str(),
-                color: theme::FOREGROUND,
-            })
-            .chain(self.queue.iter().map(|item| item.as_queue_entry()))
+            .map(|item| item.as_queue_entry())
             .collect()
     }
 
@@ -380,13 +376,17 @@ impl App {
             pending_plan: self.pending_plan().map(String::from),
         };
         if self.status == Status::Streaming {
-            if let Some(tx) = &self.interrupt_tx
-                && tx.send(text.clone()).is_ok()
-            {
-                self.pending_interrupts.push(text);
-                return vec![];
-            }
             self.queue.push_back(QueuedItem::Message(input));
+            if self.queue.len() == 1 {
+                if let Some(tx) = &self.cmd_tx {
+                    let cmd = super::AgentCommand::Run(AgentInput {
+                        message: text,
+                        mode: self.agent_mode(),
+                        pending_plan: self.pending_plan().map(String::from),
+                    });
+                    let _ = tx.send(cmd);
+                }
+            }
             vec![]
         } else {
             self.main_chat().push_user_message(&text);
@@ -408,10 +408,10 @@ impl App {
                 }
                 self.main_chat()
                     .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
-                self.pending_interrupts.clear();
                 self.queue.clear();
                 self.chat_index.clear();
                 self.status = Status::Idle;
+                self.cancel_pending = true;
                 vec![Action::CancelAgent]
             }
             CancelResult::FirstPress => vec![],
@@ -419,6 +419,16 @@ impl App {
     }
 
     fn handle_agent_event(&mut self, envelope: Envelope) -> Vec<Action> {
+        if self.cancel_pending {
+            if matches!(
+                envelope.event,
+                AgentEvent::Cancelled | AgentEvent::Done { .. } | AgentEvent::Error { .. }
+            ) {
+                self.cancel_pending = false;
+            }
+            return vec![];
+        }
+
         let chat_idx = self.resolve_or_create_chat(
             envelope.parent_tool_use_id.as_deref(),
             envelope.parent_name.as_deref(),
@@ -463,10 +473,10 @@ impl App {
             usage,
             context_size,
             ..
-        } = &envelope.event
+        } = envelope.event
         {
-            self.token_usage += *usage;
-            self.chats[chat_idx].token_usage += *usage;
+            self.token_usage += usage;
+            self.chats[chat_idx].token_usage += usage;
             self.chats[chat_idx].context_size =
                 context_size.unwrap_or_else(|| usage.context_tokens());
         }
@@ -474,8 +484,12 @@ impl App {
         let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);
 
         if matches!(result, ChatEventResult::InterruptConsumed) && chat_idx == 0 {
-            if !self.pending_interrupts.is_empty() {
-                self.pending_interrupts.remove(0);
+            let pos = self
+                .queue
+                .iter()
+                .position(|item| matches!(item, QueuedItem::Message(_)));
+            if let Some(pos) = pos {
+                self.queue.remove(pos);
             }
             return vec![];
         }
@@ -500,7 +514,6 @@ impl App {
                     self.status = Status::Error(message);
                     self.status_bar.clear_cancel_hint();
                     self.status_bar.mark_error();
-                    self.pending_interrupts.clear();
                     self.queue.clear();
                     for chat in &mut self.chats {
                         chat.fail_in_progress();
@@ -625,8 +638,8 @@ impl App {
         self.chat_index.clear();
         self.status = Status::Idle;
         self.token_usage = TokenUsage::default();
-        self.pending_interrupts.clear();
         self.queue.clear();
+        self.cancel_pending = false;
         #[cfg(feature = "demo")]
         {
             self.demo_questions = None;
@@ -1154,12 +1167,10 @@ mod tests {
         app
     }
 
-    fn app_with_pending_interrupt() -> App {
+    fn app_with_queued_interrupt() -> App {
         let mut app = test_app();
-        let (tx, _rx) = mpsc::channel();
-        app.interrupt_tx = Some(tx);
         app.status = Status::Streaming;
-        app.pending_interrupts.push("pending".into());
+        app.queue.push_back(queued_msg("pending"));
         app
     }
 
@@ -1183,66 +1194,68 @@ mod tests {
 
     #[test_case(cancel_app as fn(&mut App) ; "cancel")]
     #[test_case(error_app as fn(&mut App)  ; "error")]
-    fn clears_pending_interrupts(terminate: fn(&mut App)) {
-        let mut app = app_with_pending_interrupt();
+    fn clears_queue_on_terminate(terminate: fn(&mut App)) {
+        let mut app = app_with_queued_interrupt();
         terminate(&mut app);
-        assert!(app.pending_interrupts.is_empty());
+        assert!(app.queue.is_empty());
     }
 
     #[test]
     fn multiple_interrupts_drained_in_order() {
-        let mut app = app_with_pending_interrupt();
-        app.pending_interrupts.push("second".into());
+        let mut app = app_with_queued_interrupt();
+        app.queue.push_back(queued_msg("second"));
 
         app.update(agent_msg(AgentEvent::InterruptConsumed {
             message: "pending".into(),
         }));
-        assert_eq!(app.pending_interrupts, vec!["second"]);
+        assert_eq!(app.queue.len(), 1);
 
         app.update(agent_msg(AgentEvent::InterruptConsumed {
             message: "second".into(),
         }));
-        assert!(app.pending_interrupts.is_empty());
+        assert!(app.queue.is_empty());
     }
 
     #[test]
-    fn submit_during_streaming_sends_via_interrupt_channel() {
+    fn submit_during_streaming_queues_and_sends_on_cmd_tx() {
         let mut app = test_app();
-        let (tx, rx) = mpsc::channel();
-        app.interrupt_tx = Some(tx);
+        let (tx, rx) = mpsc::channel::<crate::AgentCommand>();
+        app.cmd_tx = Some(tx);
         app.status = Status::Streaming;
 
         let actions = type_and_submit(&mut app, "urgent");
         assert!(actions.is_empty());
-        assert!(app.queue.is_empty());
-        assert_eq!(rx.try_recv().unwrap(), "urgent");
-        assert_ne!(app.chats[0].last_message_text(), "urgent");
-        assert_eq!(app.pending_interrupts, vec!["urgent"]);
+        assert_eq!(app.queue.len(), 1);
+        assert!(rx.try_recv().is_ok());
     }
 
     #[test]
-    fn submit_during_streaming_falls_back_to_queue_when_channel_closed() {
+    fn second_submit_during_streaming_does_not_send_on_cmd_tx() {
         let mut app = test_app();
-        let (tx, rx) = mpsc::channel();
-        app.interrupt_tx = Some(tx);
+        let (tx, rx) = mpsc::channel::<crate::AgentCommand>();
+        app.cmd_tx = Some(tx);
         app.status = Status::Streaming;
-        drop(rx);
 
-        let actions = type_and_submit(&mut app, "late");
-        assert!(actions.is_empty());
-        assert_eq!(app.queue.len(), 1);
-        assert!(matches!(app.queue[0], QueuedItem::Message(ref i) if i.message == "late"));
+        type_and_submit(&mut app, "first");
+        assert!(rx.try_recv().is_ok());
+
+        type_and_submit(&mut app, "second");
+        assert_eq!(app.queue.len(), 2);
+        assert!(
+            rx.try_recv().is_err(),
+            "second message should not be sent on cmd_tx"
+        );
     }
 
     #[test]
     fn interrupt_displayed_only_on_consumed_event() {
-        let mut app = app_with_pending_interrupt();
+        let mut app = app_with_queued_interrupt();
         let before = app.chats[0].message_count();
 
         app.update(agent_msg(AgentEvent::InterruptConsumed {
             message: "pending".into(),
         }));
-        assert!(app.pending_interrupts.is_empty());
+        assert!(app.queue.is_empty());
         assert_eq!(app.chats[0].message_count(), before + 1);
         assert_eq!(app.chats[0].last_message_text(), "pending");
     }
@@ -1290,7 +1303,6 @@ mod tests {
         app.mode = Mode::BuildPlan;
         app.ready_plan = Some("plan.md".into());
         app.queue.push_back(queued_msg("q"));
-        app.pending_interrupts.push("p".into());
         let actions = app.reset_session();
         assert!(matches!(&actions[0], Action::NewSession));
         assert_eq!(app.status, Status::Idle);
@@ -1299,7 +1311,6 @@ mod tests {
         assert_eq!(app.mode, Mode::BuildPlan);
         assert_eq!(app.ready_plan.as_deref(), Some("plan.md"));
         assert!(app.queue.is_empty());
-        assert!(app.pending_interrupts.is_empty());
         assert_eq!(app.chats.len(), 1);
         assert_eq!(app.chats[0].name, "Main");
         assert_eq!(app.active_chat, 0);

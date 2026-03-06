@@ -394,6 +394,7 @@ pub enum AgentEvent {
         stop_reason: Option<String>,
     },
     AutoCompacting,
+    Cancelled,
     Retry {
         attempt: u32,
         message: String,

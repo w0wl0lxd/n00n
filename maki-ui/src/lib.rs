@@ -12,8 +12,8 @@ mod text_buffer;
 mod theme;
 
 use std::io::stdout;
+use std::sync::Arc;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -27,7 +27,8 @@ use crossterm::event::{
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_agent::agent;
 use maki_agent::template;
-use maki_agent::{AgentEvent, AgentInput, Envelope, History, SharedHistory};
+use maki_agent::{AgentEvent, AgentInput, Envelope, ExtractedCommand, History};
+use maki_providers::AgentError;
 use maki_providers::Message;
 use maki_providers::Model;
 use maki_providers::provider::Provider;
@@ -173,23 +174,22 @@ fn run_event_loop(
     Ok(())
 }
 
-enum AgentCommand {
+pub(crate) enum AgentCommand {
     Run(AgentInput),
     Compact,
+    Cancel,
 }
 
 struct AgentHandles {
     cmd_tx: mpsc::Sender<AgentCommand>,
     agent_rx: mpsc::Receiver<Envelope>,
-    history: SharedHistory,
     answer_tx: mpsc::Sender<String>,
-    interrupt_tx: mpsc::Sender<String>,
 }
 
 impl AgentHandles {
     fn apply_to_app(&self, app: &mut App) {
         app.answer_tx = Some(self.answer_tx.clone());
-        app.interrupt_tx = Some(self.interrupt_tx.clone());
+        app.cmd_tx = Some(self.cmd_tx.clone());
     }
 }
 
@@ -201,15 +201,12 @@ fn spawn_agent(
     let (agent_tx, agent_rx) = mpsc::channel::<Envelope>();
     let (cmd_tx, cmd_rx) = mpsc::channel::<AgentCommand>();
     let (answer_tx, answer_rx) = mpsc::channel::<String>();
-    let (interrupt_tx, interrupt_rx) = mpsc::channel::<String>();
     let model = model.clone();
-    let shared: SharedHistory = Arc::new(Mutex::new(initial_history.clone()));
-    let shared_ref = Arc::clone(&shared);
     let provider = Arc::clone(provider);
 
     thread::spawn(move || {
         let answer_mutex = std::sync::Mutex::new(answer_rx);
-        let mut history = History::new(initial_history, Some(shared_ref));
+        let mut history = History::new(initial_history);
         let vars = template::env_vars();
         let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
         let tools = maki_agent::tools::ToolCall::definitions(&vars);
@@ -218,6 +215,7 @@ fn spawn_agent(
                 AgentCommand::Compact => {
                     agent::compact(&*provider, &model, &mut history, &agent_tx)
                 }
+                AgentCommand::Cancel => continue,
                 AgentCommand::Run(input) => {
                     let system =
                         agent::build_system_prompt(&vars, &input.mode, &model, &instructions);
@@ -230,18 +228,25 @@ fn spawn_agent(
                         &agent_tx,
                         &tools,
                         Some(&answer_mutex),
-                        Some(&interrupt_rx),
+                        Some(&cmd_rx),
+                        extract_interrupt,
                     )
                 }
             };
-            if let Err(e) = result {
-                error!(error = %e, "agent error");
-                let _ = agent_tx.send(
-                    AgentEvent::Error {
-                        message: e.to_string(),
-                    }
-                    .into(),
-                );
+            match result {
+                Ok(()) => {}
+                Err(AgentError::Cancelled) => {
+                    let _ = agent_tx.send(AgentEvent::Cancelled.into());
+                }
+                Err(e) => {
+                    error!(error = %e, "agent error");
+                    let _ = agent_tx.send(
+                        AgentEvent::Error {
+                            message: e.to_string(),
+                        }
+                        .into(),
+                    );
+                }
             }
         }
     });
@@ -249,9 +254,15 @@ fn spawn_agent(
     AgentHandles {
         cmd_tx,
         agent_rx,
-        history: shared,
         answer_tx,
-        interrupt_tx,
+    }
+}
+
+fn extract_interrupt(cmd: AgentCommand) -> ExtractedCommand {
+    match cmd {
+        AgentCommand::Run(input) => ExtractedCommand::Interrupt(input),
+        AgentCommand::Cancel => ExtractedCommand::Cancel,
+        AgentCommand::Compact => ExtractedCommand::Ignore,
     }
 }
 
@@ -266,19 +277,13 @@ fn dispatch(
         match action {
             Action::SendMessage(input) => {
                 let cmd = AgentCommand::Run(input);
-                let cmd = match handles.cmd_tx.send(cmd) {
-                    Ok(()) => continue,
-                    Err(e) => e.0,
-                };
-                let history = std::mem::take(&mut *handles.history.lock().unwrap());
-                *handles = spawn_agent(provider, model, history);
-                handles.apply_to_app(app);
-                let _ = handles.cmd_tx.send(cmd);
+                if handles.cmd_tx.send(cmd).is_err() {
+                    *handles = spawn_agent(provider, model, Vec::new());
+                    handles.apply_to_app(app);
+                }
             }
             Action::CancelAgent => {
-                let history = std::mem::take(&mut *handles.history.lock().unwrap());
-                *handles = spawn_agent(provider, model, history);
-                handles.apply_to_app(app);
+                let _ = handles.cmd_tx.send(AgentCommand::Cancel);
             }
             Action::NewSession => {
                 *handles = spawn_agent(provider, model, Vec::new());

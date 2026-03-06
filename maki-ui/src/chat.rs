@@ -84,6 +84,7 @@ impl Chat {
                 return ChatEventResult::InterruptConsumed;
             }
             AgentEvent::Retry { .. } => {}
+            AgentEvent::Cancelled => {}
             AgentEvent::Done { .. } => {
                 self.messages_panel.flush();
                 return ChatEventResult::Done;

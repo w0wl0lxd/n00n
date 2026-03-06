@@ -16,6 +16,8 @@ pub enum AgentError {
     Json(#[from] serde_json::Error),
     #[error("channel send failed")]
     Channel,
+    #[error("cancelled")]
+    Cancelled,
 }
 
 impl AgentError {
@@ -24,7 +26,7 @@ impl AgentError {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
             Self::Io(_) => true,
             Self::Http(e) => is_transient_http(e),
-            Self::Tool { .. } | Self::Channel | Self::Json(_) => false,
+            Self::Tool { .. } | Self::Channel | Self::Json(_) | Self::Cancelled => false,
         }
     }
 

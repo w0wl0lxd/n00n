@@ -1,9 +1,9 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
+
 use std::sync::Mutex;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 use std::thread;
 
 use tracing::{debug, error, info, warn};
@@ -13,7 +13,9 @@ use serde_json::Value;
 use crate::template::Vars;
 use crate::tools::{ToolCall, ToolContext};
 use crate::types::tool_results;
-use crate::{AgentError, AgentEvent, AgentInput, AgentMode, Envelope, ToolDoneEvent};
+use crate::{
+    AgentError, AgentEvent, AgentInput, AgentMode, Envelope, ExtractedCommand, ToolDoneEvent,
+};
 use maki_providers::provider::Provider;
 use maki_providers::retry::RetryState;
 use maki_providers::{Message, Model, ProviderEvent, StreamResponse, TokenUsage};
@@ -36,20 +38,17 @@ const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 
 const COMPACTION_BUFFER: u32 = 30_000;
 const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.";
 
-pub type SharedHistory = Arc<Mutex<Vec<Message>>>;
-
 fn send(tx: &Sender<Envelope>, event: impl Into<Envelope>) -> Result<(), AgentError> {
     tx.send(event.into()).map_err(|_| AgentError::Channel)
 }
 
 pub struct History {
     messages: Vec<Message>,
-    shared: Option<SharedHistory>,
 }
 
 impl History {
-    pub fn new(messages: Vec<Message>, shared: Option<SharedHistory>) -> Self {
-        Self { messages, shared }
+    pub fn new(messages: Vec<Message>) -> Self {
+        Self { messages }
     }
 
     pub fn as_slice(&self) -> &[Message] {
@@ -60,16 +59,8 @@ impl History {
         self.messages.push(msg);
     }
 
-    pub fn commit(&self) {
-        if let Some(shared) = &self.shared {
-            let mut lock = shared.lock().unwrap_or_else(|e| e.into_inner());
-            lock.clone_from(&self.messages);
-        }
-    }
-
     pub fn replace(&mut self, messages: Vec<Message>) {
         self.messages = messages;
-        self.commit();
     }
 }
 
@@ -257,27 +248,34 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDo
     })
 }
 
-fn consume_interrupt(
-    interrupt_rx: Option<&Receiver<String>>,
+fn consume_interrupt<T>(
+    cmd_rx: Option<&std::sync::mpsc::Receiver<T>>,
     history: &mut History,
     event_tx: &Sender<Envelope>,
+    extract: impl Fn(T) -> ExtractedCommand,
 ) -> Result<bool, AgentError> {
-    if let Some(rx) = interrupt_rx
-        && let Ok(msg) = rx.try_recv()
-    {
-        let wrapped = format!(
-            "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{msg}\n</user-interrupt>"
-        );
-        history.push(Message::user(wrapped));
-        history.commit();
-        send(event_tx, AgentEvent::InterruptConsumed { message: msg })?;
-        return Ok(true);
+    let Some(rx) = cmd_rx else { return Ok(false) };
+    let Ok(cmd) = rx.try_recv() else {
+        return Ok(false);
+    };
+    match extract(cmd) {
+        ExtractedCommand::Interrupt(input) => {
+            let msg = input.effective_message();
+            let raw = input.message;
+            let wrapped = format!(
+                "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{msg}\n</user-interrupt>"
+            );
+            history.push(Message::user(wrapped));
+            send(event_tx, AgentEvent::InterruptConsumed { message: raw })?;
+            Ok(true)
+        }
+        ExtractedCommand::Cancel => Err(AgentError::Cancelled),
+        ExtractedCommand::Ignore => Ok(false),
     }
-    Ok(false)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn run(
+pub fn run<T>(
     provider: &dyn Provider,
     model: &Model,
     input: AgentInput,
@@ -285,12 +283,12 @@ pub fn run(
     system: &str,
     event_tx: &Sender<Envelope>,
     tools: &Value,
-    user_response_rx: Option<&Mutex<Receiver<String>>>,
-    interrupt_rx: Option<&Receiver<String>>,
+    user_response_rx: Option<&Mutex<std::sync::mpsc::Receiver<String>>>,
+    cmd_rx: Option<&std::sync::mpsc::Receiver<T>>,
+    extract_interrupt: impl Fn(T) -> ExtractedCommand + Copy,
 ) -> Result<(), AgentError> {
     let user_message = input.effective_message();
     history.push(Message::user(user_message.clone()));
-    history.commit();
     let ctx = ToolContext {
         provider,
         model,
@@ -352,7 +350,6 @@ pub fn run(
         if !has_tools {
             let truncated = response.stop_reason.as_deref() == Some("max_tokens");
             history.push(response.message);
-            history.commit();
 
             if truncated && num_turns <= MAX_CONTINUATION_TURNS {
                 warn!(num_turns, "response truncated (max_tokens), re-prompting");
@@ -371,7 +368,7 @@ pub fn run(
                 continue;
             }
 
-            if consume_interrupt(interrupt_rx, history, event_tx)? {
+            if consume_interrupt(cmd_rx, history, event_tx, extract_interrupt)? {
                 continue;
             }
 
@@ -413,7 +410,6 @@ pub fn run(
             },
         )?;
         history.push(tool_msg);
-        history.commit();
 
         try_auto_compact(
             auto_compact,
@@ -424,7 +420,7 @@ pub fn run(
             event_tx,
             &mut total_usage,
         )?;
-        consume_interrupt(interrupt_rx, history, event_tx)?;
+        consume_interrupt(cmd_rx, history, event_tx, extract_interrupt)?;
     }
 }
 
@@ -444,7 +440,6 @@ fn try_auto_compact(
     send(event_tx, AgentEvent::AutoCompacting)?;
     *total_usage += compact_history(provider, model, history, event_tx)?;
     history.push(Message::user(CONTINUE_AFTER_COMPACT.into()));
-    history.commit();
     Ok(true)
 }
 
@@ -477,10 +472,11 @@ fn compact_history(
         },
     )?;
 
-    history.replace(vec![
+    let new_history = vec![
         Message::user("What did we do so far?".into()),
         response.message,
-    ]);
+    ];
+    history.replace(new_history);
 
     Ok(response.usage)
 }
@@ -519,8 +515,8 @@ fn auto_compact_enabled() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
     use std::sync::mpsc;
-    use std::sync::{Arc, Mutex};
 
     use test_case::test_case;
 
@@ -618,7 +614,7 @@ mod tests {
             mode: AgentMode::Build,
             pending_plan: None,
         };
-        let mut history = History::new(Vec::new(), None);
+        let mut history = History::new(Vec::new());
         let (event_tx, event_rx) = mpsc::channel();
         let tools = serde_json::json!([]);
 
@@ -631,7 +627,8 @@ mod tests {
             &event_tx,
             &tools,
             None,
-            None,
+            None::<&std::sync::mpsc::Receiver<()>>,
+            |_| crate::ExtractedCommand::Ignore,
         );
         drop(event_tx);
         event_rx.iter().collect()
@@ -663,23 +660,19 @@ mod tests {
     }
 
     #[test]
-    fn compact_replaces_history_with_summary_and_syncs_shared() {
-        let shared: SharedHistory = Arc::new(Mutex::new(Vec::new()));
+    fn compact_replaces_history_with_summary() {
         let provider = MockProvider::new(vec![text_response("end_turn")]);
         let model = default_model();
         let (event_tx, _rx) = mpsc::channel();
-        let mut history = History::new(
-            vec![
-                Message::user("first".into()),
-                Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::Text {
-                        text: "reply".into(),
-                    }],
-                },
-            ],
-            Some(Arc::clone(&shared)),
-        );
+        let mut history = History::new(vec![
+            Message::user("first".into()),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "reply".into(),
+                }],
+            },
+        ]);
 
         compact(&provider, &model, &mut history, &event_tx).unwrap();
 
@@ -687,9 +680,6 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert!(matches!(msgs[0].role, Role::User));
         assert!(matches!(msgs[1].role, Role::Assistant));
-
-        let shared_msgs = shared.lock().unwrap();
-        assert_eq!(msgs.len(), shared_msgs.len());
     }
 
     fn tool_call_response(tool_name: &str, tool_id: &str) -> StreamResponse {
@@ -709,7 +699,7 @@ mod tests {
 
     fn run_with_interrupt(
         provider: MockProvider,
-        interrupt_rx: &Receiver<String>,
+        cmd_rx: &std::sync::mpsc::Receiver<AgentInput>,
     ) -> (Vec<Message>, Vec<Envelope>) {
         let model = default_model();
         let input = AgentInput {
@@ -717,7 +707,7 @@ mod tests {
             mode: AgentMode::Build,
             pending_plan: None,
         };
-        let mut history = History::new(Vec::new(), None);
+        let mut history = History::new(Vec::new());
         let (event_tx, event_rx) = mpsc::channel();
         let tools = serde_json::json!([]);
 
@@ -730,7 +720,8 @@ mod tests {
             &event_tx,
             &tools,
             None,
-            Some(interrupt_rx),
+            Some(cmd_rx),
+            ExtractedCommand::Interrupt,
         );
         drop(event_tx);
         (history.as_slice().to_vec(), event_rx.iter().collect())
@@ -752,14 +743,20 @@ mod tests {
 
     #[test]
     fn interrupt_injects_user_message_between_turns() {
-        let (interrupt_tx, interrupt_rx) = mpsc::channel();
-        interrupt_tx.send("fix the bug".into()).unwrap();
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        cmd_tx
+            .send(AgentInput {
+                message: "fix the bug".into(),
+                mode: AgentMode::Build,
+                pending_plan: None,
+            })
+            .unwrap();
 
         let provider = MockProvider::new(vec![
             tool_call_response("glob", "t1"),
             text_response("end_turn"),
         ]);
-        let (history, events) = run_with_interrupt(provider, &interrupt_rx);
+        let (history, events) = run_with_interrupt(provider, &cmd_rx);
 
         assert!(events.iter().any(|e| {
             matches!(e.event, AgentEvent::InterruptConsumed { ref message } if message == "fix the bug")
@@ -769,13 +766,13 @@ mod tests {
 
     #[test]
     fn no_interrupt_when_channel_empty() {
-        let (_interrupt_tx, interrupt_rx) = mpsc::channel();
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<AgentInput>();
 
         let provider = MockProvider::new(vec![
             tool_call_response("glob", "t1"),
             text_response("end_turn"),
         ]);
-        let (history, events) = run_with_interrupt(provider, &interrupt_rx);
+        let (history, events) = run_with_interrupt(provider, &cmd_rx);
 
         assert!(!has_interrupt_event(&events));
         assert!(!has_interrupt_in_history(&history));
@@ -783,58 +780,23 @@ mod tests {
 
     #[test]
     fn interrupt_consumed_during_text_only_response() {
-        let (interrupt_tx, interrupt_rx) = mpsc::channel();
-        interrupt_tx.send("new task".into()).unwrap();
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        cmd_tx
+            .send(AgentInput {
+                message: "new task".into(),
+                mode: AgentMode::Build,
+                pending_plan: None,
+            })
+            .unwrap();
 
         let provider =
             MockProvider::new(vec![text_response("end_turn"), text_response("end_turn")]);
-        let (history, events) = run_with_interrupt(provider, &interrupt_rx);
+        let (history, events) = run_with_interrupt(provider, &cmd_rx);
 
         assert!(events.iter().any(|e| {
             matches!(e.event, AgentEvent::InterruptConsumed { ref message } if message == "new task")
         }));
         assert!(has_interrupt_in_history(history.as_slice()));
-    }
-
-    #[test]
-    fn history_tool_pair_atomic_commit() {
-        let shared: SharedHistory = Arc::new(Mutex::new(Vec::new()));
-        let mut history = History::new(Vec::new(), Some(Arc::clone(&shared)));
-
-        history.push(Message::user("go".into()));
-        history.commit();
-
-        let assistant_msg = Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolUse {
-                id: "t1".into(),
-                name: "glob".into(),
-                input: serde_json::json!({}),
-            }],
-        };
-        history.push(assistant_msg);
-        assert_eq!(shared.lock().unwrap().len(), 1, "tool_use not yet visible");
-
-        let result_msg = tool_results(vec![ToolDoneEvent::error("t1".into(), "cancelled")]);
-        history.push(result_msg);
-        history.commit();
-        assert_eq!(shared.lock().unwrap().len(), 3, "both visible after commit");
-    }
-
-    #[test]
-    fn history_replace_syncs_to_shared() {
-        let shared: SharedHistory = Arc::new(Mutex::new(Vec::new()));
-        let mut history =
-            History::new(vec![Message::user("old".into())], Some(Arc::clone(&shared)));
-
-        history.replace(vec![
-            Message::user("new1".into()),
-            Message::user("new2".into()),
-        ]);
-
-        let shared_msgs = shared.lock().unwrap();
-        assert_eq!(shared_msgs.len(), 2);
-        assert_eq!(history.as_slice().len(), 2);
     }
 
     fn small_context_model(context_window: u32, max_output_tokens: u32) -> Model {
@@ -866,7 +828,7 @@ mod tests {
             vec![]
         });
         let (event_tx, event_rx) = mpsc::channel();
-        let mut history = History::new(vec![Message::user("go".into())], None);
+        let mut history = History::new(vec![Message::user("go".into())]);
         let mut usage = TokenUsage::default();
 
         let result = try_auto_compact(

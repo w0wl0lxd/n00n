@@ -165,7 +165,7 @@ pub fn run(
                 return;
             }
         };
-        let mut history = History::new(Vec::new(), None);
+        let mut history = History::new(Vec::new());
         if let Err(e) = agent::run(
             &*provider,
             &model_clone,
@@ -175,7 +175,8 @@ pub fn run(
             &event_tx,
             &tools,
             None,
-            None,
+            None::<&std::sync::mpsc::Receiver<()>>,
+            |_| maki_agent::ExtractedCommand::Ignore,
         ) {
             error!(error = %e, "agent error");
             let _ = event_tx.send(
@@ -242,6 +243,7 @@ pub fn run(
             | AgentEvent::BatchProgress { .. }
             | AgentEvent::InterruptConsumed { .. }
             | AgentEvent::AutoCompacting
+            | AgentEvent::Cancelled
             | AgentEvent::QuestionPrompt { .. }
             | AgentEvent::Retry { .. } => {
                 if is_stream_json {
