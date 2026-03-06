@@ -4,6 +4,8 @@ use maki_providers::{ContentBlock, Message, Role, TokenUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::tools::WRITE_TOOL_NAME;
+
 pub const NO_FILES_FOUND: &str = "No files found";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -324,7 +326,7 @@ impl ToolDoneEvent {
     }
 
     pub fn written_path(&self) -> Option<&str> {
-        if self.is_error || self.tool != "write" {
+        if self.is_error || self.tool != WRITE_TOOL_NAME {
             return None;
         }
         match &self.output {

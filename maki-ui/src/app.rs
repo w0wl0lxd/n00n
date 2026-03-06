@@ -26,6 +26,9 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Widget};
 
+const CANCEL_MSG: &str = "Cancelled.";
+const COMPACT_LABEL: &str = "/compact";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Mode {
     Build,
@@ -42,9 +45,6 @@ impl Mode {
         }
     }
 }
-
-const CANCEL_MSG: &str = "Cancelled.";
-const COMPACT_LABEL: &str = "/compact";
 
 pub(crate) enum QueuedItem {
     Message(AgentInput),
