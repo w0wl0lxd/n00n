@@ -377,15 +377,15 @@ impl App {
         };
         if self.status == Status::Streaming {
             self.queue.push_back(QueuedItem::Message(input));
-            if self.queue.len() == 1 {
-                if let Some(tx) = &self.cmd_tx {
-                    let cmd = super::AgentCommand::Run(AgentInput {
-                        message: text,
-                        mode: self.agent_mode(),
-                        pending_plan: self.pending_plan().map(String::from),
-                    });
-                    let _ = tx.send(cmd);
-                }
+            if self.queue.len() == 1
+                && let Some(tx) = &self.cmd_tx
+            {
+                let cmd = super::AgentCommand::Run(AgentInput {
+                    message: text,
+                    mode: self.agent_mode(),
+                    pending_plan: self.pending_plan().map(String::from),
+                });
+                let _ = tx.send(cmd);
             }
             vec![]
         } else {
