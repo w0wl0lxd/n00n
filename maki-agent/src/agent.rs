@@ -1,7 +1,6 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender};
@@ -19,7 +18,18 @@ use maki_providers::provider::Provider;
 use maki_providers::retry::RetryState;
 use maki_providers::{Message, Model, ProviderEvent, StreamResponse, TokenUsage};
 
-const AGENTS_MD: &str = "AGENTS.md";
+const INSTRUCTION_FILES: &[&str] = &[
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".github/copilot-instructions.md",
+    "COPILOT.md",
+    ".cursorrules",
+    ".windsurfrules",
+    ".clinerules",
+    "CONVENTIONS.md",
+    "GEMINI.md",
+    "CODING_AGENT.md",
+];
 const DOOM_LOOP_THRESHOLD: usize = 3;
 const MAX_CONTINUATION_TURNS: u32 = 3;
 const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
@@ -63,15 +73,19 @@ impl History {
     }
 }
 
-pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, model: &Model) -> String {
+pub fn build_system_prompt(
+    vars: &Vars,
+    mode: &AgentMode,
+    model: &Model,
+    instructions: &str,
+) -> String {
     let mut out = crate::prompt::base_prompt(model.family()).to_string();
 
-    out.push_str(&vars.apply(&format!(
-        "\n\nEnvironment:\n- Working directory: {{cwd}}\n- Platform: {{platform}}\n- Date: {}",
-        current_date(),
-    )));
+    out.push_str(&vars.apply(
+        "\n\nEnvironment:\n- Working directory: {cwd}\n- Platform: {platform}\n- Date: {date}",
+    ));
 
-    append_agents_md(&mut out, &vars.apply("{cwd}"));
+    out.push_str(instructions);
 
     if let AgentMode::Plan(plan_path) = mode {
         let plan_vars = Vars::new().set("{plan_path}", plan_path);
@@ -81,22 +95,18 @@ pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, model: &Model) -> Stri
     out
 }
 
-pub fn append_agents_md(system: &mut String, cwd: &str) {
-    let agents_path = Path::new(cwd).join(AGENTS_MD);
-    if let Ok(content) = fs::read_to_string(&agents_path) {
-        system.push_str(&format!(
-            "\n\nProject instructions ({AGENTS_MD}):\n{content}"
-        ));
+pub fn load_instruction_files(cwd: &str) -> String {
+    let root = Path::new(cwd);
+    let mut out = String::new();
+    for filename in INSTRUCTION_FILES {
+        let path = root.join(filename);
+        if let Ok(content) = fs::read_to_string(&path) {
+            out.push_str(&format!("\n\nProject instructions ({filename}):\n{content}"));
+        }
     }
+    out
 }
 
-fn current_date() -> String {
-    let output = Command::new("date").arg("+%Y-%m-%d").output();
-    match output {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        Err(_) => "unknown".to_string(),
-    }
-}
 
 struct ParsedToolCall {
     id: String,
@@ -528,7 +538,7 @@ mod tests {
     #[test_case(&AgentMode::Plan(PLAN_PATH.into()), true ; "plan_includes_plan")]
     fn plan_section_presence(mode: &AgentMode, expect_plan: bool) {
         let vars = Vars::new().set("{cwd}", "/tmp").set("{platform}", "linux");
-        let prompt = build_system_prompt(&vars, mode, &default_model());
+        let prompt = build_system_prompt(&vars, mode, &default_model(), "");
         assert_eq!(prompt.contains("Plan Mode"), expect_plan);
         if expect_plan {
             assert!(prompt.contains(PLAN_PATH));

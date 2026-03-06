@@ -135,7 +135,8 @@ pub fn run(
         .unwrap_or_else(|_| ".".into());
     let vars = template::env_vars();
     let mode = AgentMode::Build;
-    let system = agent::build_system_prompt(&vars, &mode, model);
+    let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
+    let system = agent::build_system_prompt(&vars, &mode, model, &instructions);
     let (tool_names, tools) =
         maki_agent::tools::ToolCall::definitions_excluding(&vars, &[QUESTION_TOOL_NAME]);
 

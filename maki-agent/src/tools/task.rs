@@ -55,7 +55,8 @@ impl Task {
             other => return Err(format!("unknown subagent type: {other}")),
         };
         let mut system = vars.apply(prompt).into_owned();
-        agent::append_agents_md(&mut system, &vars.apply("{cwd}"));
+        let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
+        system.push_str(&instructions);
         let tools = ToolCall::definitions_filtered(&vars, tool_names);
 
         let (sub_tx, sub_rx) = mpsc::channel::<crate::Envelope>();

@@ -201,15 +201,17 @@ fn spawn_agent(
     thread::spawn(move || {
         let answer_mutex = std::sync::Mutex::new(answer_rx);
         let mut history = History::new(initial_history, Some(shared_ref));
+        let vars = template::env_vars();
+        let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
+        let tools = maki_agent::tools::ToolCall::definitions(&vars);
         while let Ok(cmd) = cmd_rx.recv() {
             let result = match cmd {
                 AgentCommand::Compact => {
                     agent::compact(&*provider, &model, &mut history, &agent_tx)
                 }
                 AgentCommand::Run(input) => {
-                    let vars = template::env_vars();
-                    let system = agent::build_system_prompt(&vars, &input.mode, &model);
-                    let tools = maki_agent::tools::ToolCall::definitions(&vars);
+                    let system =
+                        agent::build_system_prompt(&vars, &input.mode, &model, &instructions);
                     agent::run(
                         &*provider,
                         &model,
