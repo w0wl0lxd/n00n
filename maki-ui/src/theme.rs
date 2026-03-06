@@ -72,8 +72,8 @@ pub const CMD_SELECTED: Style = Style::new().fg(BACKGROUND).bg(PURPLE);
 pub const CMD_NAME: Style = Style::new().fg(FOREGROUND);
 pub const CMD_DESC: Style = Style::new().fg(COMMENT_LIGHTER);
 
-pub const PICKER_BORDER: Style = Style::new().fg(PURPLE);
-pub const PICKER_TITLE: Style = Style::new().fg(PURPLE).add_modifier(Modifier::BOLD);
+pub const PANEL_BORDER: Style = Style::new().fg(PURPLE);
+pub const PANEL_TITLE: Style = Style::new().fg(PURPLE).add_modifier(Modifier::BOLD);
 pub const PICKER_SEARCH_PREFIX: Style = Style::new().fg(COMMENT_LIGHTER);
 pub const CURSOR: Style = Style::new().fg(BACKGROUND).bg(FOREGROUND);
 

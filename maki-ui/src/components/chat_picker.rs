@@ -163,9 +163,9 @@ impl ChatPicker {
 
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
-            .border_style(theme::PICKER_BORDER)
+            .border_style(theme::PANEL_BORDER)
             .title(TITLE)
-            .title_style(theme::PICKER_TITLE)
+            .title_style(theme::PANEL_TITLE)
             .style(Style::new().bg(theme::BACKGROUND));
 
         let inner = block.inner(popup);

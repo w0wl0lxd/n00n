@@ -38,8 +38,9 @@ pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry]) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::INPUT_BORDER))
-        .title_top(Line::from(QUEUE_LABEL).left_aligned());
+        .border_style(theme::PANEL_BORDER)
+        .title_top(Line::from(QUEUE_LABEL).left_aligned())
+        .title_style(theme::PANEL_TITLE);
 
     let paragraph = Paragraph::new(lines)
         .style(Style::new().fg(theme::FOREGROUND))
