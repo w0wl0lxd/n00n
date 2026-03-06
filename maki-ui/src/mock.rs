@@ -4,41 +4,66 @@ use maki_agent::tools::{
     WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
 use maki_agent::{
-    BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch,
-    QuestionInfo, QuestionOption, TodoItem, TodoPriority, TodoStatus, ToolInput, ToolOutput,
+    AgentEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, Envelope,
+    GrepFileEntry, GrepMatch, QuestionInfo, QuestionOption, TodoItem, TodoPriority, TodoStatus,
+    ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
 };
+use maki_providers::TokenUsage;
 
-use crate::components::{DisplayMessage, DisplayRole, ToolStatus};
-
-fn msg(role: DisplayRole, text: &str) -> DisplayMessage {
-    DisplayMessage::new(role, text.into())
+pub enum MockEvent {
+    User(String),
+    Error(String),
+    Flush,
+    Agent(Envelope),
 }
 
-fn tool(
-    id: &str,
-    name: &'static str,
-    status: ToolStatus,
-    text: &str,
-    input: Option<ToolInput>,
-    output: Option<ToolOutput>,
-) -> DisplayMessage {
-    DisplayMessage {
-        role: DisplayRole::Tool {
-            id: id.into(),
-            status,
-            name,
-        },
-        text: text.into(),
-        tool_input: input,
-        tool_output: output,
-        annotation: None,
-        plan_path: None,
-        timestamp: None,
+const TASK_TOOL_ID: &str = "t_task";
+const QUESTION_TOOL_ID: &str = "t_qform";
+
+fn user(text: &str) -> MockEvent {
+    MockEvent::User(text.into())
+}
+
+fn evt(event: AgentEvent) -> MockEvent {
+    MockEvent::Agent(event.into())
+}
+
+fn sub_evt(event: AgentEvent, parent_id: &str, name: &str, prompt: Option<&str>) -> MockEvent {
+    MockEvent::Agent(Envelope {
+        event,
+        parent_tool_use_id: Some(parent_id.into()),
+        parent_name: Some(name.into()),
+        parent_prompt: prompt.map(String::from),
+    })
+}
+
+fn tool_start(id: &str, tool: &'static str, summary: &str, input: Option<ToolInput>) -> AgentEvent {
+    AgentEvent::ToolStart(ToolStartEvent {
+        id: id.into(),
+        tool,
+        summary: summary.into(),
+        input,
+        output: None,
+    })
+}
+
+fn tool_done(id: &str, tool: &'static str, output: ToolOutput, is_error: bool) -> AgentEvent {
+    AgentEvent::ToolDone(ToolDoneEvent {
+        id: id.into(),
+        tool,
+        output,
+        is_error,
+    })
+}
+
+fn turn_complete() -> AgentEvent {
+    AgentEvent::TurnComplete {
+        message: maki_providers::Message::user(String::new()),
+        usage: TokenUsage::default(),
+        model: "mock".into(),
+        context_size: None,
     }
 }
-
-pub const MOCK_TASK_TOOL_ID: &str = "t_task";
-pub const MOCK_QUESTION_TOOL_ID: &str = "t_qform";
 
 pub fn mock_questions() -> Vec<QuestionInfo> {
     vec![
@@ -98,148 +123,24 @@ pub fn mock_questions() -> Vec<QuestionInfo> {
     ]
 }
 
-pub fn mock_question_messages() -> Vec<DisplayMessage> {
-    vec![
-        msg(DisplayRole::User, "Help me set up a new web project."),
-        msg(
-            DisplayRole::Thinking,
-            "I need to ask the user about their preferences before scaffolding the project.",
-        ),
-        tool(
-            MOCK_QUESTION_TOOL_ID,
-            QUESTION_TOOL_NAME,
-            ToolStatus::InProgress,
-            "3 questions",
-            None,
-            None,
-        ),
-    ]
+pub fn question_tool_id() -> &'static str {
+    QUESTION_TOOL_ID
 }
 
-pub fn mock_subagent_messages() -> Vec<DisplayMessage> {
-    vec![
-        msg(
-            DisplayRole::User,
-            "Search the codebase for existing builder patterns and validation approaches. Return file paths and a summary of how they are implemented.",
-        ),
-        msg(
-            DisplayRole::Thinking,
-            "The user wants me to explore config patterns in the codebase. Let me search for existing builder patterns and validation approaches.",
-        ),
-        tool(
-            "s_grep1",
-            GREP_TOOL_NAME,
-            ToolStatus::Success,
-            "\\bBuilder\\b [*.rs]",
-            None,
-            Some(ToolOutput::GrepResult {
-                entries: vec![
-                    GrepFileEntry {
-                        path: "src/http/client.rs".into(),
-                        matches: vec![
-                            GrepMatch {
-                                line_nr: 22,
-                                text: "pub struct ClientBuilder {".into(),
-                            },
-                            GrepMatch {
-                                line_nr: 45,
-                                text: "impl ClientBuilder {".into(),
-                            },
-                        ],
-                    },
-                    GrepFileEntry {
-                        path: "src/db/pool.rs".into(),
-                        matches: vec![GrepMatch {
-                            line_nr: 8,
-                            text: "pub struct PoolBuilder {".into(),
-                        }],
-                    },
-                ],
-            }),
-        ),
-        tool(
-            "s_read1",
-            READ_TOOL_NAME,
-            ToolStatus::Success,
-            "src/http/client.rs (12 lines)",
-            None,
-            Some(ToolOutput::ReadCode {
-                path: "src/http/client.rs".into(),
-                start_line: 22,
-                lines: vec![
-                    "pub struct ClientBuilder {".into(),
-                    "    timeout: Option<Duration>,".into(),
-                    "    retries: u32,".into(),
-                    "    base_url: String,".into(),
-                    "}".into(),
-                    "".into(),
-                    "impl ClientBuilder {".into(),
-                    "    pub fn new(base_url: impl Into<String>) -> Self {".into(),
-                    "        Self { timeout: None, retries: 3, base_url: base_url.into() }".into(),
-                    "    }".into(),
-                    "".into(),
-                    "    pub fn build(self) -> Result<Client, ConfigError> {".into(),
-                ],
-            }),
-        ),
-        tool(
-            "s_grep2",
-            GREP_TOOL_NAME,
-            ToolStatus::Success,
-            "validate [*.rs] in src/",
-            None,
-            Some(ToolOutput::GrepResult {
-                entries: vec![GrepFileEntry {
-                    path: "src/auth/token.rs".into(),
-                    matches: vec![GrepMatch {
-                        line_nr: 31,
-                        text: "fn validate_token(token: &str) -> Result<Claims> {".into(),
-                    }],
-                }],
-            }),
-        ),
-        tool(
-            "s_read2",
-            READ_TOOL_NAME,
-            ToolStatus::Success,
-            "src/db/pool.rs (8 lines)",
-            None,
-            Some(ToolOutput::ReadCode {
-                path: "src/db/pool.rs".into(),
-                start_line: 1,
-                lines: vec![
-                    "use std::time::Duration;".into(),
-                    "".into(),
-                    "pub struct PoolBuilder {".into(),
-                    "    max_connections: u32,".into(),
-                    "    idle_timeout: Duration,".into(),
-                    "}".into(),
-                    "".into(),
-                    "impl Default for PoolBuilder {".into(),
-                ],
-            }),
-        ),
-        msg(
-            DisplayRole::Assistant,
-            concat!(
-                "Found 3 relevant patterns in the codebase:\n",
-                "\n",
-                "- **Builder pattern** in `src/http/client.rs` — uses `ClientBuilder` with fluent setters and a `build()` that returns `Result<Client, ConfigError>`\n",
-                "- **Validation** in `src/auth/token.rs` — `validate_token()` returns `Result<Claims>` with descriptive errors\n",
-                "- **Default impl** in `src/db/pool.rs` — `PoolBuilder` implements `Default` for sensible defaults",
-            ),
-        ),
-    ]
-}
+pub fn mock_events() -> Vec<MockEvent> {
+    let mut events = Vec::new();
 
-pub fn mock_messages() -> Vec<DisplayMessage> {
-    vec![
-        // User
-        msg(DisplayRole::User, "Refactor the config module to use builder pattern and add validation."),
-        // Thinking
-        msg(DisplayRole::Thinking, "Let me analyze the config module structure. I'll need to look at the existing implementation, understand the current API surface, and plan the refactor to use a builder pattern with proper validation."),
-        // Assistant (rich markdown)
-        msg(DisplayRole::Assistant, concat!(
+    // === Main chat: config refactor conversation ===
+    events.push(user(
+        "Refactor the config module to use builder pattern and add validation.",
+    ));
+
+    events.push(evt(AgentEvent::ThinkingDelta {
+        text: "Let me analyze the config module structure. I'll need to look at the existing implementation, understand the current API surface, and plan the refactor to use a builder pattern with proper validation.".into(),
+    }));
+
+    events.push(evt(AgentEvent::TextDelta {
+        text: concat!(
             "I'll refactor the config module. Let me start by reading the current implementation.\n",
             "\n",
             "## Plan\n",
@@ -264,228 +165,340 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             "```\n",
             "\n",
             "I'll transform this into a *builder* with **compile-time** guarantees.",
-        )),
-        // Bash - Success, Plain, header+body
-        tool(
-            "t_bash",
-            BASH_TOOL_NAME,
-            ToolStatus::Success,
-            "ls -la src/config/ (12 lines)\n-rw-r--r-- 1 user staff  2048 Jan 15 10:30 mod.rs\n-rw-r--r-- 1 user staff  1024 Jan 15 10:30 builder.rs\n-rw-r--r-- 1 user staff   512 Jan 15 10:30 validation.rs",
-            Some(ToolInput::Code {
-                language: "bash",
-                code: "ls -la src/config/".into(),
-            }),
-            Some(ToolOutput::Plain(
-                "-rw-r--r-- 1 user staff  2048 Jan 15 10:30 mod.rs\n\
-                 -rw-r--r-- 1 user staff  1024 Jan 15 10:30 builder.rs\n\
-                 -rw-r--r-- 1 user staff   512 Jan 15 10:30 validation.rs"
-                    .into(),
-            )),
+        ).into(),
+    }));
+
+    events.push(evt(turn_complete()));
+
+    // Bash - Success
+    events.push(evt(tool_start(
+        "t_bash",
+        BASH_TOOL_NAME,
+        "ls -la src/config/",
+        Some(ToolInput::Code {
+            language: "bash",
+            code: "ls -la src/config/".into(),
+        }),
+    )));
+    events.push(evt(tool_done(
+        "t_bash",
+        BASH_TOOL_NAME,
+        ToolOutput::Plain(
+            "-rw-r--r-- 1 user staff  2048 Jan 15 10:30 mod.rs\n\
+             -rw-r--r-- 1 user staff  1024 Jan 15 10:30 builder.rs\n\
+             -rw-r--r-- 1 user staff   512 Jan 15 10:30 validation.rs"
+                .into(),
         ),
-        // Read - Success, ReadCode
-        tool(
-            "t_read",
-            READ_TOOL_NAME,
-            ToolStatus::Success,
-            "src/config/mod.rs (5 lines)",
-            None,
-            Some(ToolOutput::ReadCode {
-                path: "src/config/mod.rs".into(),
+        false,
+    )));
+
+    // Read - Success
+    events.push(evt(tool_start(
+        "t_read",
+        READ_TOOL_NAME,
+        "src/config/mod.rs (5 lines)",
+        None,
+    )));
+    events.push(evt(tool_done(
+        "t_read",
+        READ_TOOL_NAME,
+        ToolOutput::ReadCode {
+            path: "src/config/mod.rs".into(),
+            start_line: 1,
+            lines: vec![
+                "use std::path::PathBuf;".into(),
+                "".into(),
+                "pub struct Config {".into(),
+                "    pub port: u16,".into(),
+                "}".into(),
+            ],
+        },
+        false,
+    )));
+
+    // Edit - Success
+    events.push(evt(tool_start(
+        "t_edit",
+        EDIT_TOOL_NAME,
+        "src/config/mod.rs",
+        None,
+    )));
+    events.push(evt(tool_done(
+        "t_edit",
+        EDIT_TOOL_NAME,
+        ToolOutput::Diff {
+            path: "src/config/mod.rs".into(),
+            hunks: vec![DiffHunk {
+                start_line: 3,
+                lines: vec![
+                    DiffLine::Removed(vec![DiffSpan::plain("pub struct Config {".into())]),
+                    DiffLine::Added(vec![DiffSpan::plain("pub struct ConfigBuilder {".into())]),
+                    DiffLine::Unchanged("    pub port: u16,".into()),
+                    DiffLine::Added(vec![DiffSpan::plain("    pub host: String,".into())]),
+                ],
+            }],
+            summary: "Renamed Config to ConfigBuilder, added host field".into(),
+        },
+        false,
+    )));
+
+    // Write - Success
+    events.push(evt(tool_start(
+        "t_write",
+        WRITE_TOOL_NAME,
+        "src/config/validation.rs (87 bytes)",
+        None,
+    )));
+    events.push(evt(tool_done(
+        "t_write",
+        WRITE_TOOL_NAME,
+        ToolOutput::WriteCode {
+            path: "src/config/validation.rs".into(),
+            byte_count: 87,
+            lines: vec![
+                "pub fn validate_port(port: u16) -> bool {".into(),
+                "    port > 0 && port < 65535".into(),
+                "}".into(),
+            ],
+        },
+        false,
+    )));
+
+    // Glob - Success
+    events.push(evt(tool_start(
+        "t_glob",
+        GLOB_TOOL_NAME,
+        "**/*.rs (3 files)",
+        None,
+    )));
+    events.push(evt(tool_done(
+        "t_glob",
+        GLOB_TOOL_NAME,
+        ToolOutput::GlobResult {
+            files: vec![
+                "src/config/mod.rs".into(),
+                "src/config/builder.rs".into(),
+                "src/config/validation.rs".into(),
+            ],
+        },
+        false,
+    )));
+
+    // Grep - Success
+    events.push(evt(tool_start(
+        "t_grep",
+        GREP_TOOL_NAME,
+        "\\b(Config|Builder)\\b [*.rs] in src/config/",
+        None,
+    )));
+    events.push(evt(tool_done(
+        "t_grep",
+        GREP_TOOL_NAME,
+        ToolOutput::GrepResult {
+            entries: vec![
+                GrepFileEntry {
+                    path: "src/config/mod.rs".into(),
+                    matches: vec![GrepMatch {
+                        line_nr: 3,
+                        text: "pub struct ConfigBuilder {".into(),
+                    }],
+                },
+                GrepFileEntry {
+                    path: "src/main.rs".into(),
+                    matches: vec![GrepMatch {
+                        line_nr: 12,
+                        text: "use config::ConfigBuilder;".into(),
+                    }],
+                },
+            ],
+        },
+        false,
+    )));
+
+    // TodoWrite - Success
+    events.push(evt(tool_start(
+        "t_todo",
+        TODOWRITE_TOOL_NAME,
+        "Updated todo list",
+        None,
+    )));
+    events.push(evt(tool_done(
+        "t_todo",
+        TODOWRITE_TOOL_NAME,
+        ToolOutput::TodoList(vec![
+            TodoItem {
+                content: "Read existing config".into(),
+                status: TodoStatus::Completed,
+                priority: TodoPriority::High,
+            },
+            TodoItem {
+                content: "Create builder struct".into(),
+                status: TodoStatus::Completed,
+                priority: TodoPriority::High,
+            },
+            TodoItem {
+                content: "Add validation".into(),
+                status: TodoStatus::InProgress,
+                priority: TodoPriority::Medium,
+            },
+            TodoItem {
+                content: "Update tests".into(),
+                status: TodoStatus::Pending,
+                priority: TodoPriority::Low,
+            },
+        ]),
+        false,
+    )));
+
+    // WebFetch - Success
+    events.push(evt(tool_start(
+        "t_web",
+        WEBFETCH_TOOL_NAME,
+        "https://docs.rs/config (42 lines)",
+        None,
+    )));
+    events.push(evt(tool_done(
+        "t_web",
+        WEBFETCH_TOOL_NAME,
+        ToolOutput::Plain("Configuration crate docs content...".into()),
+        false,
+    )));
+
+    // Task - Success (main chat side; subagent events follow below)
+    events.push(evt(tool_start(
+        TASK_TOOL_ID,
+        TASK_TOOL_NAME,
+        "Explore config patterns",
+        None,
+    )));
+    events.push(evt(tool_done(
+        TASK_TOOL_ID,
+        TASK_TOOL_NAME,
+        ToolOutput::Plain(
+            "Found 3 relevant patterns in the codebase:\n- Builder pattern in src/http/\n- Validation in src/auth/\n- Default impl in src/db/".into(),
+        ),
+        false,
+    )));
+
+    // Batch - Success
+    events.push(evt(tool_start(
+        "t_batch",
+        BATCH_TOOL_NAME,
+        "Batch (3 tools)",
+        None,
+    )));
+    events.push(evt(tool_done(
+        "t_batch",
+        BATCH_TOOL_NAME,
+        ToolOutput::Batch {
+            entries: vec![
+                BatchToolEntry {
+                    tool: "read".into(),
+                    summary: "src/config/mod.rs".into(),
+                    status: BatchToolStatus::Success,
+                    input: None,
+                    output: None,
+                },
+                BatchToolEntry {
+                    tool: "read".into(),
+                    summary: "src/config/builder.rs".into(),
+                    status: BatchToolStatus::Success,
+                    input: None,
+                    output: None,
+                },
+                BatchToolEntry {
+                    tool: "read".into(),
+                    summary: "src/config/validation.rs".into(),
+                    status: BatchToolStatus::Success,
+                    input: None,
+                    output: None,
+                },
+            ],
+            text: String::new(),
+        },
+        false,
+    )));
+
+    // Question - Success
+    events.push(evt(tool_start(
+        "t_question",
+        QUESTION_TOOL_NAME,
+        "2 questions",
+        None,
+    )));
+    events.push(evt(tool_done(
+        "t_question",
+        QUESTION_TOOL_NAME,
+        ToolOutput::Plain(
+            "What testing framework do you prefer?\nShould I add integration tests as well?".into(),
+        ),
+        false,
+    )));
+
+    // MultiEdit - Success
+    events.push(evt(tool_start(
+        "t_multiedit",
+        MULTIEDIT_TOOL_NAME,
+        "src/main.rs",
+        None,
+    )));
+    events.push(evt(tool_done(
+        "t_multiedit",
+        MULTIEDIT_TOOL_NAME,
+        ToolOutput::Diff {
+            path: "src/main.rs".into(),
+            hunks: vec![DiffHunk {
                 start_line: 1,
                 lines: vec![
-                    "use std::path::PathBuf;".into(),
-                    "".into(),
-                    "pub struct Config {".into(),
-                    "    pub port: u16,".into(),
-                    "}".into(),
+                    DiffLine::Removed(vec![DiffSpan::plain("use config::Config;".into())]),
+                    DiffLine::Added(vec![DiffSpan::plain("use config::ConfigBuilder;".into())]),
                 ],
-            }),
+            }],
+            summary: "Updated import to use ConfigBuilder".into(),
+        },
+        false,
+    )));
+
+    // Bash - Error
+    events.push(evt(tool_start(
+        "t_bash_err",
+        BASH_TOOL_NAME,
+        "cargo test",
+        Some(ToolInput::Code {
+            language: "bash",
+            code: "cargo test".into(),
+        }),
+    )));
+    events.push(evt(tool_done(
+        "t_bash_err",
+        BASH_TOOL_NAME,
+        ToolOutput::Plain(
+            "error[E0433]: failed to resolve: use of undeclared type `Config`\n  --> src/main.rs:15:5".into(),
         ),
-        // Edit - Success, Diff
-        tool(
-            "t_edit",
-            EDIT_TOOL_NAME,
-            ToolStatus::Success,
-            "src/config/mod.rs",
-            None,
-            Some(ToolOutput::Diff {
-                path: "src/config/mod.rs".into(),
-                hunks: vec![DiffHunk {
-                    start_line: 3,
-                    lines: vec![
-                        DiffLine::Removed(vec![DiffSpan::plain("pub struct Config {".into())]),
-                        DiffLine::Added(vec![DiffSpan::plain("pub struct ConfigBuilder {".into())]),
-                        DiffLine::Unchanged("    pub port: u16,".into()),
-                        DiffLine::Added(vec![DiffSpan::plain("    pub host: String,".into())]),
-                    ],
-                }],
-                summary: "Renamed Config to ConfigBuilder, added host field".into(),
-            }),
-        ),
-        // Write - Success, WriteCode
-        tool(
-            "t_write",
-            WRITE_TOOL_NAME,
-            ToolStatus::Success,
-            "src/config/validation.rs (87 bytes)",
-            None,
-            Some(ToolOutput::WriteCode {
-                path: "src/config/validation.rs".into(),
-                byte_count: 87,
-                lines: vec![
-                    "pub fn validate_port(port: u16) -> bool {".into(),
-                    "    port > 0 && port < 65535".into(),
-                    "}".into(),
-                ],
-            }),
-        ),
-        // Glob - Success, GlobResult, header+body
-        tool(
-            "t_glob",
-            GLOB_TOOL_NAME,
-            ToolStatus::Success,
-            "**/*.rs (3 files)\nsrc/config/mod.rs\nsrc/config/builder.rs\nsrc/config/validation.rs",
-            None,
-            Some(ToolOutput::GlobResult {
-                files: vec![
-                    "src/config/mod.rs".into(),
-                    "src/config/builder.rs".into(),
-                    "src/config/validation.rs".into(),
-                ],
-            }),
-        ),
-        // Grep - Success, GrepResult (pattern + filter + path)
-        tool(
-            "t_grep",
-            GREP_TOOL_NAME,
-            ToolStatus::Success,
-            "\\b(Config|Builder)\\b [*.rs] in src/config/",
-            None,
-            Some(ToolOutput::GrepResult {
-                entries: vec![
-                    GrepFileEntry {
-                        path: "src/config/mod.rs".into(),
-                        matches: vec![GrepMatch { line_nr: 3, text: "pub struct ConfigBuilder {".into() }],
-                    },
-                    GrepFileEntry {
-                        path: "src/main.rs".into(),
-                        matches: vec![GrepMatch { line_nr: 12, text: "use config::ConfigBuilder;".into() }],
-                    },
-                ],
-            }),
-        ),
-        // TodoWrite - Success, TodoList
-        tool(
-            "t_todo",
-            TODOWRITE_TOOL_NAME,
-            ToolStatus::Success,
-            "Updated todo list",
-            None,
-            Some(ToolOutput::TodoList(vec![
-                TodoItem { content: "Read existing config".into(), status: TodoStatus::Completed, priority: TodoPriority::High },
-                TodoItem { content: "Create builder struct".into(), status: TodoStatus::Completed, priority: TodoPriority::High },
-                TodoItem { content: "Add validation".into(), status: TodoStatus::InProgress, priority: TodoPriority::Medium },
-                TodoItem { content: "Update tests".into(), status: TodoStatus::Pending, priority: TodoPriority::Low },
-            ])),
-        ),
-        // WebFetch - Success, Plain, header only (body hidden)
-        tool(
-            "t_web",
-            WEBFETCH_TOOL_NAME,
-            ToolStatus::Success,
-            "https://docs.rs/config (42 lines)",
-            None,
-            Some(ToolOutput::Plain("Configuration crate docs content...".into())),
-        ),
-        // Task - Success, Plain, header+body
-        tool(
-            MOCK_TASK_TOOL_ID,
-            TASK_TOOL_NAME,
-            ToolStatus::Success,
-            "Explore config patterns: Found 3 relevant patterns in the codebase:\n- Builder pattern in src/http/\n- Validation in src/auth/\n- Default impl in src/db/",
-            None,
-            Some(ToolOutput::Plain(
-                "Found 3 relevant patterns in the codebase:\n- Builder pattern in src/http/\n- Validation in src/auth/\n- Default impl in src/db/".into(),
-            )),
-        ),
-        // Batch - Success, Batch
-        tool(
-            "t_batch",
-            BATCH_TOOL_NAME,
-            ToolStatus::Success,
-            "Batch (3 tools)",
-            None,
-            Some(ToolOutput::Batch {
-                entries: vec![
-                    BatchToolEntry { tool: "read".into(), summary: "src/config/mod.rs".into(), status: BatchToolStatus::Success, input: None, output: None },
-                    BatchToolEntry { tool: "read".into(), summary: "src/config/builder.rs".into(), status: BatchToolStatus::Success, input: None, output: None },
-                    BatchToolEntry { tool: "read".into(), summary: "src/config/validation.rs".into(), status: BatchToolStatus::Success, input: None, output: None },
-                ],
-                text: String::new(),
-            }),
-        ),
-        // Question - Success, Plain
-        tool(
-            "t_question",
-            QUESTION_TOOL_NAME,
-            ToolStatus::Success,
-            "2 questions",
-            None,
-            Some(ToolOutput::Plain(
-                "What testing framework do you prefer?
-\
-                 Should I add integration tests as well?".into(),
-            )),
-        ),
-        // MultiEdit - Success, Diff
-        tool(
-            "t_multiedit",
-            MULTIEDIT_TOOL_NAME,
-            ToolStatus::Success,
-            "src/main.rs",
-            None,
-            Some(ToolOutput::Diff {
-                path: "src/main.rs".into(),
-                hunks: vec![DiffHunk {
-                    start_line: 1,
-                    lines: vec![
-                        DiffLine::Removed(vec![DiffSpan::plain("use config::Config;".into())]),
-                        DiffLine::Added(vec![DiffSpan::plain("use config::ConfigBuilder;".into())]),
-                    ],
-                }],
-                summary: "Updated import to use ConfigBuilder".into(),
-            }),
-        ),
-        // Bash - Error, Plain, header+stderr
-        tool(
-            "t_bash_err",
-            BASH_TOOL_NAME,
-            ToolStatus::Error,
-            "cargo test (3 lines)\nerror[E0433]: failed to resolve: use of undeclared type `Config`\n  --> src/main.rs:15:5",
-            Some(ToolInput::Code {
-                language: "bash",
-                code: "cargo test".into(),
-            }),
-            Some(ToolOutput::Plain(
-                "error[E0433]: failed to resolve: use of undeclared type `Config`\n  --> src/main.rs:15:5".into(),
-            )),
-        ),
-        // Bash - InProgress (spinner animates)
-        tool(
-            "t_bash_ip",
-            BASH_TOOL_NAME,
-            ToolStatus::InProgress,
-            "cargo build --release",
-            Some(ToolInput::Code {
-                language: "bash",
-                code: "cargo build --release".into(),
-            }),
-            None,
-        ),
-        // Error
-        msg(DisplayRole::Error, "Connection timed out after 30s. Retrying..."),
-        // Assistant - plain code block (no language)
-        msg(DisplayRole::Assistant, concat!(
+        true,
+    )));
+
+    // Bash - InProgress (spinner animates)
+    events.push(evt(tool_start(
+        "t_bash_ip",
+        BASH_TOOL_NAME,
+        "cargo build --release",
+        Some(ToolInput::Code {
+            language: "bash",
+            code: "cargo build --release".into(),
+        }),
+    )));
+
+    events.push(evt(turn_complete()));
+
+    // Error message (pushed directly, not via AgentEvent to avoid side effects)
+    events.push(MockEvent::Error(
+        "Connection timed out after 30s. Retrying...".into(),
+    ));
+
+    // New turn after error — assistant code block
+    events.push(evt(AgentEvent::TextDelta {
+        text: concat!(
             "Here's what the output looks like:\n",
             "\n",
             "```\n",
@@ -495,9 +508,16 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             "```\n",
             "\n",
             "All good.",
-        )),
-        // Assistant - final summary
-        msg(DisplayRole::Assistant, concat!(
+        )
+        .into(),
+    }));
+
+    events.push(evt(turn_complete()));
+    events.push(MockEvent::Flush);
+
+    // Assistant final summary
+    events.push(evt(AgentEvent::TextDelta {
+        text: concat!(
             "Done! The config module now uses a ***builder pattern*** with validation.\n",
             "\n",
             "## Summary\n",
@@ -532,8 +552,203 @@ pub fn mock_messages() -> Vec<DisplayMessage> {
             "```\n",
             "\n",
             "All **396** tests pass. Run `cargo test` to verify.",
-        )),
-    ]
+        ).into(),
+    }));
+
+    // === Subagent: task tool ("Explore config patterns") ===
+    let task_prompt = "Search the codebase for existing builder patterns and validation approaches. Return file paths and a summary of how they are implemented.";
+
+    sub_evt(
+        AgentEvent::ThinkingDelta {
+            text: "The user wants me to explore config patterns in the codebase. Let me search for existing builder patterns and validation approaches.".into(),
+        },
+        TASK_TOOL_ID,
+        "Explore config patterns",
+        Some(task_prompt),
+    );
+    // ^ First subagent event creates the chat with prompt as user message
+
+    events.push(sub_evt(
+        AgentEvent::ThinkingDelta {
+            text: "The user wants me to explore config patterns in the codebase. Let me search for existing builder patterns and validation approaches.".into(),
+        },
+        TASK_TOOL_ID,
+        "Explore config patterns",
+        Some(task_prompt),
+    ));
+
+    events.push(sub_evt(
+        tool_start("s_grep1", GREP_TOOL_NAME, "\\bBuilder\\b [*.rs]", None),
+        TASK_TOOL_ID,
+        "Explore config patterns",
+        None,
+    ));
+    events.push(sub_evt(
+        tool_done(
+            "s_grep1",
+            GREP_TOOL_NAME,
+            ToolOutput::GrepResult {
+                entries: vec![
+                    GrepFileEntry {
+                        path: "src/http/client.rs".into(),
+                        matches: vec![
+                            GrepMatch {
+                                line_nr: 22,
+                                text: "pub struct ClientBuilder {".into(),
+                            },
+                            GrepMatch {
+                                line_nr: 45,
+                                text: "impl ClientBuilder {".into(),
+                            },
+                        ],
+                    },
+                    GrepFileEntry {
+                        path: "src/db/pool.rs".into(),
+                        matches: vec![GrepMatch {
+                            line_nr: 8,
+                            text: "pub struct PoolBuilder {".into(),
+                        }],
+                    },
+                ],
+            },
+            false,
+        ),
+        TASK_TOOL_ID,
+        "Explore config patterns",
+        None,
+    ));
+
+    events.push(sub_evt(
+        tool_start(
+            "s_read1",
+            READ_TOOL_NAME,
+            "src/http/client.rs (12 lines)",
+            None,
+        ),
+        TASK_TOOL_ID,
+        "Explore config patterns",
+        None,
+    ));
+    events.push(sub_evt(
+        tool_done(
+            "s_read1",
+            READ_TOOL_NAME,
+            ToolOutput::ReadCode {
+                path: "src/http/client.rs".into(),
+                start_line: 22,
+                lines: vec![
+                    "pub struct ClientBuilder {".into(),
+                    "    timeout: Option<Duration>,".into(),
+                    "    retries: u32,".into(),
+                    "    base_url: String,".into(),
+                    "}".into(),
+                    "".into(),
+                    "impl ClientBuilder {".into(),
+                    "    pub fn new(base_url: impl Into<String>) -> Self {".into(),
+                    "        Self { timeout: None, retries: 3, base_url: base_url.into() }".into(),
+                    "    }".into(),
+                    "".into(),
+                    "    pub fn build(self) -> Result<Client, ConfigError> {".into(),
+                ],
+            },
+            false,
+        ),
+        TASK_TOOL_ID,
+        "Explore config patterns",
+        None,
+    ));
+
+    events.push(sub_evt(
+        tool_start("s_grep2", GREP_TOOL_NAME, "validate [*.rs] in src/", None),
+        TASK_TOOL_ID,
+        "Explore config patterns",
+        None,
+    ));
+    events.push(sub_evt(
+        tool_done(
+            "s_grep2",
+            GREP_TOOL_NAME,
+            ToolOutput::GrepResult {
+                entries: vec![GrepFileEntry {
+                    path: "src/auth/token.rs".into(),
+                    matches: vec![GrepMatch {
+                        line_nr: 31,
+                        text: "fn validate_token(token: &str) -> Result<Claims> {".into(),
+                    }],
+                }],
+            },
+            false,
+        ),
+        TASK_TOOL_ID,
+        "Explore config patterns",
+        None,
+    ));
+
+    events.push(sub_evt(
+        tool_start("s_read2", READ_TOOL_NAME, "src/db/pool.rs (8 lines)", None),
+        TASK_TOOL_ID,
+        "Explore config patterns",
+        None,
+    ));
+    events.push(sub_evt(
+        tool_done(
+            "s_read2",
+            READ_TOOL_NAME,
+            ToolOutput::ReadCode {
+                path: "src/db/pool.rs".into(),
+                start_line: 1,
+                lines: vec![
+                    "use std::time::Duration;".into(),
+                    "".into(),
+                    "pub struct PoolBuilder {".into(),
+                    "    max_connections: u32,".into(),
+                    "    idle_timeout: Duration,".into(),
+                    "}".into(),
+                    "".into(),
+                    "impl Default for PoolBuilder {".into(),
+                ],
+            },
+            false,
+        ),
+        TASK_TOOL_ID,
+        "Explore config patterns",
+        None,
+    ));
+
+    events.push(sub_evt(
+        AgentEvent::TextDelta {
+            text: concat!(
+                "Found 3 relevant patterns in the codebase:\n",
+                "\n",
+                "- **Builder pattern** in `src/http/client.rs` — uses `ClientBuilder` with fluent setters and a `build()` that returns `Result<Client, ConfigError>`\n",
+                "- **Validation** in `src/auth/token.rs` — `validate_token()` returns `Result<Claims>` with descriptive errors\n",
+                "- **Default impl** in `src/db/pool.rs` — `PoolBuilder` implements `Default` for sensible defaults",
+            ).into(),
+        },
+        TASK_TOOL_ID,
+        "Explore config patterns",
+        None,
+    ));
+
+    // === Subagent: question form ("Project setup") ===
+    events.push(sub_evt(
+        AgentEvent::ThinkingDelta {
+            text: "I need to ask the user about their preferences before scaffolding the project."
+                .into(),
+        },
+        QUESTION_TOOL_ID,
+        "Project setup",
+        Some("Help me set up a new web project."),
+    ));
+
+    events.push(sub_evt(
+        tool_start(QUESTION_TOOL_ID, QUESTION_TOOL_NAME, "3 questions", None),
+        QUESTION_TOOL_ID,
+        "Project setup",
+        None,
+    ));
+
+    events
 }
 
 #[cfg(test)]
@@ -542,37 +757,53 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn mock_data_invariants() {
-        check_invariants(&mock_messages());
-    }
-
-    #[test]
-    fn mock_question_data_invariants() {
-        check_invariants(&mock_question_messages());
-    }
-
-    #[test]
-    fn mock_subagent_data_invariants() {
-        check_invariants(&mock_subagent_messages());
-    }
-
-    fn check_invariants(msgs: &[DisplayMessage]) {
+    fn mock_events_no_duplicate_tool_ids() {
         let mut ids = HashSet::new();
-        for msg in msgs {
-            if let DisplayRole::Tool { id, status, name } = &msg.role {
-                assert!(ids.insert(id), "duplicate tool id: {id}");
-                match status {
-                    ToolStatus::Success | ToolStatus::Error => {
-                        assert!(msg.tool_output.is_some(), "tool {name} missing output");
-                    }
-                    ToolStatus::InProgress => {
-                        assert!(
-                            msg.tool_output.is_none(),
-                            "in-progress tool {name} has output"
-                        );
-                    }
-                }
+        for event in mock_events() {
+            let MockEvent::Agent(envelope) = event else {
+                continue;
+            };
+            if let AgentEvent::ToolStart(ref e) = envelope.event {
+                assert!(ids.insert(e.id.clone()), "duplicate tool id: {}", e.id);
             }
         }
+    }
+
+    #[test]
+    fn mock_events_tool_starts_have_matching_dones() {
+        let mut starts = HashSet::new();
+        let mut dones = HashSet::new();
+        let intentionally_in_progress = ["t_bash_ip", QUESTION_TOOL_ID];
+
+        for event in mock_events() {
+            let MockEvent::Agent(envelope) = event else {
+                continue;
+            };
+            match envelope.event {
+                AgentEvent::ToolStart(e) => {
+                    starts.insert(e.id);
+                }
+                AgentEvent::ToolDone(e) => {
+                    dones.insert(e.id);
+                }
+                _ => {}
+            }
+        }
+
+        for id in &starts {
+            if intentionally_in_progress.contains(&id.as_str()) {
+                assert!(
+                    !dones.contains(id),
+                    "in-progress tool {id} has a done event"
+                );
+            } else {
+                assert!(dones.contains(id), "tool {id} started but never finished");
+            }
+        }
+    }
+
+    #[test]
+    fn mock_questions_non_empty() {
+        assert!(!mock_questions().is_empty());
     }
 }

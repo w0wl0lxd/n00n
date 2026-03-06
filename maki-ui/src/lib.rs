@@ -72,18 +72,27 @@ fn run_event_loop(
     let mut app = App::new(model.spec(), model.pricing.clone(), model.context_window);
     #[cfg(feature = "demo")]
     if demo {
-        app.load_messages(mock::mock_messages());
-        app.load_subagent(
-            mock::MOCK_TASK_TOOL_ID,
-            "Explore config patterns",
-            mock::mock_subagent_messages(),
-        );
-        let question_chat_idx = app.load_subagent(
-            mock::MOCK_QUESTION_TOOL_ID,
-            "Project setup",
-            mock::mock_question_messages(),
-        );
-        app.set_demo_questions(question_chat_idx, mock::mock_questions());
+        app.status = components::Status::Streaming;
+        for event in mock::mock_events() {
+            match event {
+                mock::MockEvent::User(text) => app.main_chat().push_user_message(&text),
+                mock::MockEvent::Error(text) => {
+                    app.main_chat().push(components::DisplayMessage::new(
+                        components::DisplayRole::Error,
+                        text,
+                    ));
+                }
+                mock::MockEvent::Flush => app.flush_all_chats(),
+                mock::MockEvent::Agent(envelope) => {
+                    app.update(Msg::Agent(Box::new(envelope)));
+                }
+            }
+        }
+        app.flush_all_chats();
+        if let Some(idx) = app.chat_index_for(mock::question_tool_id()) {
+            app.set_demo_questions(idx, mock::mock_questions());
+        }
+        app.status = components::Status::Idle;
     }
     let provider: Arc<dyn Provider> =
         Arc::from(maki_providers::provider::from_model(&model).context("create provider")?);

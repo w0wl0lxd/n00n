@@ -153,7 +153,7 @@ impl App {
         }
     }
 
-    fn main_chat(&mut self) -> &mut Chat {
+    pub(crate) fn main_chat(&mut self) -> &mut Chat {
         &mut self.chats[0]
     }
 
@@ -826,23 +826,15 @@ impl App {
     }
 
     #[cfg(feature = "demo")]
-    pub fn load_messages(&mut self, msgs: Vec<DisplayMessage>) {
-        self.main_chat().load_messages(msgs);
+    pub fn flush_all_chats(&mut self) {
+        for chat in &mut self.chats {
+            chat.flush();
+        }
     }
 
     #[cfg(feature = "demo")]
-    pub fn load_subagent(
-        &mut self,
-        parent_tool_id: &str,
-        name: &str,
-        msgs: Vec<DisplayMessage>,
-    ) -> usize {
-        let idx = self.chats.len();
-        let mut chat = Chat::new(name.to_owned());
-        chat.load_messages(msgs);
-        self.chats.push(chat);
-        self.chat_index.insert(parent_tool_id.to_owned(), idx);
-        idx
+    pub fn chat_index_for(&self, tool_id: &str) -> Option<usize> {
+        self.chat_index.get(tool_id).copied()
     }
 
     #[cfg(feature = "demo")]
