@@ -196,7 +196,7 @@ pub fn mock_events() -> Vec<MockEvent> {
     events.push(evt(tool_start(
         "t_read",
         READ_TOOL_NAME,
-        "src/config/mod.rs (5 lines)",
+        "src/config/mod.rs",
         None,
     )));
     events.push(evt(tool_done(
@@ -354,7 +354,7 @@ pub fn mock_events() -> Vec<MockEvent> {
     events.push(evt(tool_start(
         "t_web",
         WEBFETCH_TOOL_NAME,
-        "https://docs.rs/config (42 lines)",
+        "https://docs.rs/config",
         None,
     )));
     events.push(evt(tool_done(
@@ -619,12 +619,7 @@ pub fn mock_events() -> Vec<MockEvent> {
     ));
 
     events.push(sub_evt(
-        tool_start(
-            "s_read1",
-            READ_TOOL_NAME,
-            "src/http/client.rs (12 lines)",
-            None,
-        ),
+        tool_start("s_read1", READ_TOOL_NAME, "src/http/client.rs", None),
         TASK_TOOL_ID,
         "Explore config patterns",
         None,
@@ -685,7 +680,7 @@ pub fn mock_events() -> Vec<MockEvent> {
     ));
 
     events.push(sub_evt(
-        tool_start("s_read2", READ_TOOL_NAME, "src/db/pool.rs (8 lines)", None),
+        tool_start("s_read2", READ_TOOL_NAME, "src/db/pool.rs", None),
         TASK_TOOL_ID,
         "Explore config patterns",
         None,
