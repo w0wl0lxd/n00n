@@ -32,6 +32,10 @@ const COMMANDS: &[Command] = &[
         name: "/new",
         description: "Start a new session",
     },
+    Command {
+        name: "/queue",
+        description: "Remove items from queue",
+    },
 ];
 
 pub struct CommandPalette {

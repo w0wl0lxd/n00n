@@ -115,6 +115,7 @@ pub struct App {
     selection: Option<Selection>,
     copy_on_next_render: bool,
     clipboard: Option<Clipboard>,
+    queue_focus: Option<usize>,
 }
 
 impl App {
@@ -150,6 +151,7 @@ impl App {
             selection: None,
             copy_on_next_render: false,
             clipboard: Clipboard::new().ok(),
+            queue_focus: None,
         }
     }
 
@@ -170,6 +172,39 @@ impl App {
             .iter()
             .map(|item| item.as_queue_entry())
             .collect()
+    }
+
+    fn clear_queue(&mut self) {
+        self.queue.clear();
+        self.queue_focus = None;
+    }
+
+    fn remove_queue_item(&mut self, index: usize) {
+        if index < self.queue.len() {
+            self.queue.remove(index);
+            self.queue_focus = if self.queue.is_empty() {
+                None
+            } else {
+                Some(self.queue_focus.unwrap_or(0).min(self.queue.len() - 1))
+            };
+        }
+    }
+
+    fn pop_queue_front(&mut self) {
+        self.queue.pop_front();
+        match self.queue_focus {
+            Some(sel) if sel >= self.queue.len() && !self.queue.is_empty() => {
+                self.queue_focus = Some(self.queue.len() - 1);
+            }
+            Some(_) if self.queue.is_empty() => self.queue_focus = None,
+            _ => {}
+        }
+    }
+
+    fn focus_queue(&mut self) {
+        if !self.queue.is_empty() {
+            self.queue_focus = Some(0);
+        }
     }
 
     pub fn update(&mut self, msg: Msg) -> Vec<Action> {
@@ -257,6 +292,32 @@ impl App {
         }
         self.selection = None;
 
+        if let Some(selected) = self.queue_focus {
+            match key.code {
+                KeyCode::Up => {
+                    if selected > 0 {
+                        self.queue_focus = Some(selected - 1);
+                    }
+                    return vec![];
+                }
+                KeyCode::Down => {
+                    if selected < self.queue.len() - 1 {
+                        self.queue_focus = Some(selected + 1);
+                    }
+                    return vec![];
+                }
+                KeyCode::Enter => {
+                    self.remove_queue_item(selected);
+                    return vec![];
+                }
+                KeyCode::Esc => {
+                    self.queue_focus = None;
+                    return vec![];
+                }
+                _ => {}
+            }
+        }
+
         if self.chat_picker.is_open() {
             let names = self.chat_names();
             return match self.chat_picker.handle_key(key, &names) {
@@ -317,6 +378,12 @@ impl App {
                 }
                 KeyCode::Char('b') => {
                     self.active_chat().enable_auto_scroll();
+                    vec![]
+                }
+                KeyCode::Char('q') => {
+                    if !self.queue.is_empty() {
+                        self.pop_queue_front();
+                    }
                     vec![]
                 }
                 _ => {
@@ -408,7 +475,7 @@ impl App {
                 }
                 self.main_chat()
                     .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
-                self.queue.clear();
+                self.clear_queue();
                 self.chat_index.clear();
                 self.status = Status::Idle;
                 self.cancel_pending = true;
@@ -514,7 +581,7 @@ impl App {
                     self.status = Status::Error(message);
                     self.status_bar.clear_cancel_hint();
                     self.status_bar.mark_error();
-                    self.queue.clear();
+                    self.clear_queue();
                     for chat in &mut self.chats {
                         chat.fail_in_progress();
                     }
@@ -627,6 +694,10 @@ impl App {
                 vec![Action::Compact]
             }
             "/new" => self.reset_session(),
+            "/queue" => {
+                self.focus_queue();
+                vec![]
+            }
             _ => vec![],
         }
     }
@@ -638,7 +709,7 @@ impl App {
         self.chat_index.clear();
         self.status = Status::Idle;
         self.token_usage = TokenUsage::default();
-        self.queue.clear();
+        self.clear_queue();
         self.cancel_pending = false;
         #[cfg(feature = "demo")]
         {
@@ -707,7 +778,7 @@ impl App {
             None
         } else {
             let queue_entries = self.visible_queue_entries();
-            queue_panel::view(frame, queue_area, &queue_entries);
+            queue_panel::view(frame, queue_area, &queue_entries, self.queue_focus);
             self.input_box.view(
                 frame,
                 input_area,
@@ -1781,5 +1852,99 @@ mod tests {
         assert!(!app.question_form.is_visible());
         assert_eq!(app.chats[0].last_message_text(), "");
         assert_eq!(rx.try_recv().unwrap(), "");
+    }
+
+    #[test_case(true  ; "non_empty")]
+    #[test_case(false ; "empty")]
+    fn queue_command_sets_focus(has_queue: bool) {
+        let mut app = if has_queue {
+            app_with_queued_message()
+        } else {
+            test_app()
+        };
+        app.execute_command("/queue");
+        assert_eq!(app.queue_focus.is_some(), has_queue);
+    }
+
+    #[test]
+    fn queue_navigation_clamps() {
+        let mut app = app_with_queued_message();
+        app.queue.push_back(queued_msg("second"));
+        app.queue_focus = Some(0);
+
+        app.update(Msg::Key(key(KeyCode::Up)));
+        assert_eq!(app.queue_focus, Some(0));
+
+        app.queue_focus = Some(1);
+        app.update(Msg::Key(key(KeyCode::Down)));
+        assert_eq!(app.queue_focus, Some(1));
+    }
+
+    #[test]
+    fn queue_enter_removes_selected() {
+        let mut app = app_with_queued_message();
+        app.queue.push_back(queued_msg("second"));
+        app.queue_focus = Some(0);
+
+        app.update(Msg::Key(key(KeyCode::Enter)));
+        assert_eq!(app.queue.len(), 1);
+        match &app.queue[0] {
+            QueuedItem::Message(input) => assert_eq!(input.message, "second"),
+            _ => panic!("expected Message variant"),
+        }
+        assert_eq!(app.queue_focus, Some(0));
+    }
+
+    #[test]
+    fn queue_enter_deletes_last_unfocuses() {
+        let mut app = app_with_queued_message();
+        app.queue_focus = Some(0);
+
+        app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(app.queue.is_empty());
+        assert!(app.queue_focus.is_none());
+    }
+
+    #[test]
+    fn queue_esc_unfocuses_without_removing() {
+        let mut app = app_with_queued_message();
+        app.queue_focus = Some(0);
+
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(app.queue_focus.is_none());
+        assert_eq!(app.queue.len(), 1);
+    }
+
+    #[test_case(None    ; "unfocused")]
+    #[test_case(Some(1) ; "focused_on_second")]
+    fn ctrl_q_pops_front(initial_focus: Option<usize>) {
+        let mut app = app_with_queued_message();
+        app.queue.push_back(queued_msg("second"));
+        app.queue_focus = initial_focus;
+
+        app.update(Msg::Key(ctrl('q')));
+        assert_eq!(app.queue.len(), 1);
+        match &app.queue[0] {
+            QueuedItem::Message(input) => assert_eq!(input.message, "second"),
+            _ => panic!("expected Message variant"),
+        }
+        assert_eq!(app.queue_focus, initial_focus.map(|_| 0));
+    }
+
+    #[test_case(cancel_app as fn(&mut App) ; "cancel")]
+    #[test_case(error_app as fn(&mut App)  ; "error")]
+    fn clears_queue_focus_on_terminate(terminate: fn(&mut App)) {
+        let mut app = app_with_queued_message();
+        app.queue_focus = Some(0);
+        terminate(&mut app);
+        assert!(app.queue_focus.is_none());
+    }
+
+    #[test]
+    fn new_session_clears_queue_focus() {
+        let mut app = app_with_queued_message();
+        app.queue_focus = Some(0);
+        app.reset_session();
+        assert!(app.queue_focus.is_none());
     }
 }

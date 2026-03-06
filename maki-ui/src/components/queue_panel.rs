@@ -2,12 +2,13 @@ use crate::theme;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 const ELLIPSIS: &str = "...";
 const QUEUE_LABEL: &str = " Queue ";
+const DELETE_HINT: &str = " - Enter to delete";
 
 pub struct QueueEntry<'a> {
     pub text: &'a str,
@@ -22,23 +23,32 @@ pub fn height(queue_len: usize) -> u16 {
     }
 }
 
-pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry]) {
+pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry], focus: Option<usize>) {
     if entries.is_empty() {
         return;
     }
     let content_width = area.width.saturating_sub(2) as usize;
     let lines: Vec<Line> = entries
         .iter()
-        .map(|entry| {
+        .enumerate()
+        .map(|(i, entry)| {
             let flat = entry.text.replace('\n', " ");
-            Line::from(truncate_line(&flat, content_width, entry.color))
+            if focus == Some(i) {
+                truncate_line_selected(&flat, content_width)
+            } else {
+                Line::from(truncate_line(&flat, content_width, entry.color))
+            }
         })
         .collect();
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(theme::PANEL_BORDER)
+        .border_style(if focus.is_some() {
+            Style::new().fg(theme::RED)
+        } else {
+            theme::PANEL_BORDER
+        })
         .title_top(Line::from(QUEUE_LABEL).left_aligned())
         .title_style(theme::PANEL_TITLE);
 
@@ -59,6 +69,26 @@ fn truncate_line(text: &str, max_width: usize, color: ratatui::style::Color) -> 
         Span::styled(text[..truncated_len].to_string(), style),
         Span::styled(ELLIPSIS, Style::new().fg(theme::COMMENT)),
     ]
+}
+
+fn truncate_line_selected(text: &str, max_width: usize) -> Line<'static> {
+    let hint_len = DELETE_HINT.len();
+    let available = max_width.saturating_sub(hint_len);
+    let selected_style = Style::new().fg(theme::RED).add_modifier(Modifier::BOLD);
+    let hint_style = Style::new().fg(theme::COMMENT);
+
+    if text.len() <= available {
+        return Line::from(vec![
+            Span::styled(text.to_string(), selected_style),
+            Span::styled(DELETE_HINT, hint_style),
+        ]);
+    }
+    let truncated_len = text.floor_char_boundary(available.saturating_sub(ELLIPSIS.len()));
+    Line::from(vec![
+        Span::styled(text[..truncated_len].to_string(), selected_style),
+        Span::styled(ELLIPSIS, hint_style),
+        Span::styled(DELETE_HINT, hint_style),
+    ])
 }
 
 #[cfg(test)]
