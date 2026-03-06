@@ -2,7 +2,7 @@ use std::time::Duration;
 
 const INITIAL_DELAY: Duration = Duration::from_secs(2);
 const BACKOFF_FACTOR: u32 = 2;
-const MAX_DELAY: Duration = Duration::from_secs(30);
+const MAX_DELAY: Duration = Duration::from_secs(6);
 
 #[derive(Default)]
 pub struct RetryState {
