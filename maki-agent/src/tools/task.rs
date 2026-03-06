@@ -96,6 +96,7 @@ impl Task {
             &system,
             &sub_tx,
             &tools,
+            ctx.skills,
             None,
             None::<&std::sync::mpsc::Receiver<()>>,
             |_| crate::ExtractedCommand::Ignore,

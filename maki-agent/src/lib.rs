@@ -1,6 +1,7 @@
 pub mod agent;
 pub use agent::History;
 pub(crate) mod prompt;
+pub mod skill;
 pub mod template;
 pub mod tools;
 pub mod types;

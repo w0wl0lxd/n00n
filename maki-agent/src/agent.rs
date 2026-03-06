@@ -10,6 +10,7 @@ use tracing::{debug, error, info, warn};
 
 use serde_json::Value;
 
+use crate::skill::Skill;
 use crate::template::Vars;
 use crate::tools::{ToolCall, ToolContext};
 use crate::types::tool_results;
@@ -283,6 +284,7 @@ pub fn run<T>(
     system: &str,
     event_tx: &Sender<Envelope>,
     tools: &Value,
+    skills: &[Skill],
     user_response_rx: Option<&Mutex<std::sync::mpsc::Receiver<String>>>,
     cmd_rx: Option<&std::sync::mpsc::Receiver<T>>,
     extract_interrupt: impl Fn(T) -> ExtractedCommand + Copy,
@@ -296,6 +298,7 @@ pub fn run<T>(
         mode: &input.mode,
         tool_use_id: None,
         user_response_rx,
+        skills,
     };
     let mut total_usage = TokenUsage::default();
     let mut num_turns: u32 = 0;
@@ -617,6 +620,7 @@ mod tests {
         let mut history = History::new(Vec::new());
         let (event_tx, event_rx) = mpsc::channel();
         let tools = serde_json::json!([]);
+        let skills: Vec<crate::skill::Skill> = Vec::new();
 
         let _ = run(
             provider,
@@ -626,6 +630,7 @@ mod tests {
             "system",
             &event_tx,
             &tools,
+            &skills,
             None,
             None::<&std::sync::mpsc::Receiver<()>>,
             |_| crate::ExtractedCommand::Ignore,
@@ -710,6 +715,7 @@ mod tests {
         let mut history = History::new(Vec::new());
         let (event_tx, event_rx) = mpsc::channel();
         let tools = serde_json::json!([]);
+        let skills: Vec<crate::skill::Skill> = Vec::new();
 
         let _ = run(
             &provider,
@@ -719,6 +725,7 @@ mod tests {
             "system",
             &event_tx,
             &tools,
+            &skills,
             None,
             Some(cmd_rx),
             ExtractedCommand::Interrupt,

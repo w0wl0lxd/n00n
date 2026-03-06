@@ -3,9 +3,10 @@ mod print;
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use color_eyre::eyre::Context;
-use maki_providers::model::Model;
+use maki_agent::skill::{self, Skill};
 use tracing_subscriber::EnvFilter;
 
+use maki_providers::model::Model;
 use print::OutputFormat;
 
 const LOG_FILE_NAME: &str = "maki.log";
@@ -32,7 +33,18 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     output_format: OutputFormat,
 
+    #[arg(long)]
+    disable_skills: bool,
+
     prompt: Option<String>,
+}
+
+fn discover(disable: bool) -> Vec<Skill> {
+    if disable {
+        return Vec::new();
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    skill::discover_skills(&cwd)
 }
 
 #[derive(Subcommand)]
@@ -69,12 +81,14 @@ fn main() -> Result<()> {
         None => {
             let model = Model::from_spec(&cli.model).context("parse model spec")?;
             init_logging();
+            let skills = discover(cli.disable_skills);
             if cli.print {
-                print::run(&model, cli.prompt, cli.output_format, cli.verbose)
+                print::run(&model, cli.prompt, cli.output_format, cli.verbose, skills)
                     .context("run print mode")?;
             } else {
                 maki_ui::run(
                     model,
+                    skills,
                     #[cfg(feature = "demo")]
                     cli.demo,
                 )

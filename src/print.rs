@@ -24,6 +24,7 @@ use std::time::Instant;
 use clap::ValueEnum;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
+use maki_agent::skill::Skill;
 use maki_agent::tools::QUESTION_TOOL_NAME;
 use maki_agent::{AgentEvent, AgentInput, AgentMode, Envelope, History, agent, template};
 use maki_providers::TokenUsage;
@@ -120,6 +121,7 @@ pub fn run(
     prompt_arg: Option<String>,
     format: OutputFormat,
     verbose: bool,
+    skills: Vec<Skill>,
 ) -> Result<()> {
     let prompt = match prompt_arg {
         Some(p) => p,
@@ -130,15 +132,14 @@ pub fn run(
         }
     };
 
-    let cwd = env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| ".".into());
+    let cwd_path = env::current_dir().unwrap_or_else(|_| ".".into());
+    let cwd = cwd_path.to_string_lossy().into_owned();
     let vars = template::env_vars();
     let mode = AgentMode::Build;
     let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
     let system = agent::build_system_prompt(&vars, &mode, model, &instructions);
     let (tool_names, tools) =
-        maki_agent::tools::ToolCall::definitions_excluding(&vars, &[QUESTION_TOOL_NAME]);
+        maki_agent::tools::ToolCall::definitions_excluding(&vars, &skills, &[QUESTION_TOOL_NAME]);
 
     let (event_tx, event_rx) = mpsc::channel::<Envelope>();
     let input = AgentInput {
@@ -174,6 +175,7 @@ pub fn run(
             &system,
             &event_tx,
             &tools,
+            &skills,
             None,
             None::<&std::sync::mpsc::Receiver<()>>,
             |_| maki_agent::ExtractedCommand::Ignore,

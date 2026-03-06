@@ -7,6 +7,7 @@ mod grep;
 mod multiedit;
 mod question;
 mod read;
+mod skill;
 mod task;
 mod todowrite;
 mod webfetch;
@@ -21,6 +22,7 @@ use std::time::SystemTime;
 use serde_json::{Value, json};
 use tracing::error;
 
+use crate::skill::Skill;
 use crate::template::Vars;
 use crate::{
     AgentError, AgentMode, Envelope, NO_FILES_FOUND, ToolDoneEvent, ToolInput, ToolOutput,
@@ -37,6 +39,7 @@ pub const GREP_TOOL_NAME: &str = grep::Grep::NAME;
 pub const MULTIEDIT_TOOL_NAME: &str = multiedit::MultiEdit::NAME;
 pub const QUESTION_TOOL_NAME: &str = question::Question::NAME;
 pub const READ_TOOL_NAME: &str = read::Read::NAME;
+pub const SKILL_TOOL_NAME: &str = skill::SkillTool::NAME;
 pub const TASK_TOOL_NAME: &str = task::Task::NAME;
 pub const TODOWRITE_TOOL_NAME: &str = todowrite::TodoWrite::NAME;
 pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
@@ -56,6 +59,7 @@ pub struct ToolContext<'a> {
     pub mode: &'a AgentMode,
     pub tool_use_id: Option<&'a str>,
     pub user_response_rx: Option<&'a Mutex<Receiver<String>>>,
+    pub skills: &'a [Skill],
 }
 
 pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
@@ -208,12 +212,16 @@ macro_rules! register_tools {
                 }
             }
 
-            fn all_defs(vars: &Vars) -> Vec<(&'static str, Value)> {
+            fn all_defs(vars: &Vars, skills: &[Skill]) -> Vec<(&'static str, Value)> {
                 vec![
                     $((<$inner>::NAME, {
+                        let mut description = vars.apply(<$inner>::DESCRIPTION).into_owned();
+                        if <$inner>::NAME == SKILL_TOOL_NAME {
+                            description.push_str(&crate::skill::build_skill_list_description(skills));
+                        }
                         let mut def = json!({
                             "name": <$inner>::NAME,
-                            "description": vars.apply(<$inner>::DESCRIPTION),
+                            "description": description,
                             "input_schema": <$inner>::schema()
                         });
                         if let Some(json) = <$inner>::EXAMPLES {
@@ -226,9 +234,9 @@ macro_rules! register_tools {
                 ]
             }
 
-            pub fn definitions(vars: &Vars) -> Value {
+            pub fn definitions(vars: &Vars, skills: &[Skill]) -> Value {
                 Value::Array(
-                    Self::all_defs(vars).into_iter()
+                    Self::all_defs(vars, skills).into_iter()
                         .map(|(_, def)| def)
                         .collect()
                 )
@@ -236,15 +244,15 @@ macro_rules! register_tools {
 
             pub fn definitions_filtered(vars: &Vars, allowed: &[&str]) -> Value {
                 Value::Array(
-                    Self::all_defs(vars).into_iter()
+                    Self::all_defs(vars, &[]).into_iter()
                         .filter(|(name, _)| allowed.contains(name))
                         .map(|(_, def)| def)
                         .collect()
                 )
             }
 
-            pub fn definitions_excluding(vars: &Vars, blocked: &[&str]) -> (Vec<&'static str>, Value) {
-                let defs: Vec<_> = Self::all_defs(vars).into_iter()
+            pub fn definitions_excluding(vars: &Vars, skills: &[Skill], blocked: &[&str]) -> (Vec<&'static str>, Value) {
+                let defs: Vec<_> = Self::all_defs(vars, skills).into_iter()
                     .filter(|(name, _)| !blocked.contains(name))
                     .collect();
                 let names = defs.iter().map(|(name, _)| *name).collect();
@@ -267,6 +275,7 @@ register_tools! {
     TodoWrite(todowrite::TodoWrite),
     WebFetch(webfetch::WebFetch),
     WebSearch(websearch::WebSearch),
+    Skill(skill::SkillTool),
     Task(task::Task),
     Batch(batch::Batch),
 }
@@ -318,6 +327,7 @@ pub(crate) mod test_support {
             mode,
             tool_use_id,
             user_response_rx: None,
+            skills: &[],
         }
     }
 
@@ -454,7 +464,7 @@ mod tests {
     #[test]
     fn tool_definitions_schema_requires_additional_properties_false() {
         let vars = Vars::new().set("{cwd}", "/tmp");
-        let all = ToolCall::definitions(&vars);
+        let all = ToolCall::definitions(&vars, &[]);
         for def in all.as_array().unwrap() {
             assert_eq!(
                 def["input_schema"]["additionalProperties"],
@@ -468,7 +478,7 @@ mod tests {
     #[test]
     fn tool_definitions_examples_non_empty() {
         let vars = Vars::new().set("{cwd}", "/tmp");
-        for def in ToolCall::definitions(&vars).as_array().unwrap() {
+        for def in ToolCall::definitions(&vars, &[]).as_array().unwrap() {
             if let Some(examples) = def.get("input_examples") {
                 assert!(
                     !examples.as_array().unwrap().is_empty(),

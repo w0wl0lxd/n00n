@@ -26,6 +26,7 @@ use crossterm::event::{
 };
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_agent::agent;
+use maki_agent::skill::Skill;
 use maki_agent::template;
 use maki_agent::{AgentEvent, AgentInput, Envelope, ExtractedCommand, History};
 use maki_providers::AgentError;
@@ -42,7 +43,7 @@ const MOUSE_SCROLL_LINES: i32 = 3;
 const ANIMATION_INTERVAL_MS: u64 = 8;
 const EVENT_POLL_INTERVAL_MS: u64 = 8;
 
-pub fn run(model: Model, #[cfg(feature = "demo")] demo: bool) -> Result<()> {
+pub fn run(model: Model, skills: Vec<Skill>, #[cfg(feature = "demo")] demo: bool) -> Result<()> {
     let mut terminal = ratatui::init();
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(EnableBracketedPaste)?;
@@ -52,6 +53,7 @@ pub fn run(model: Model, #[cfg(feature = "demo")] demo: bool) -> Result<()> {
     let result = run_event_loop(
         &mut terminal,
         model,
+        skills,
         #[cfg(feature = "demo")]
         demo,
     );
@@ -68,6 +70,7 @@ pub fn run(model: Model, #[cfg(feature = "demo")] demo: bool) -> Result<()> {
 fn run_event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     model: Model,
+    skills: Vec<Skill>,
     #[cfg(feature = "demo")] demo: bool,
 ) -> Result<()> {
     let mut app = App::new(model.spec(), model.pricing.clone(), model.context_window);
@@ -97,7 +100,8 @@ fn run_event_loop(
     }
     let provider: Arc<dyn Provider> =
         Arc::from(maki_providers::provider::from_model(&model).context("create provider")?);
-    let mut handles = spawn_agent(&provider, &model, Vec::new());
+    let skills: Arc<[Skill]> = Arc::from(skills);
+    let mut handles = spawn_agent(&provider, &model, Vec::new(), &skills);
     handles.apply_to_app(&mut app);
 
     loop {
@@ -111,6 +115,7 @@ fn run_event_loop(
                 &mut handles,
                 &provider,
                 &model,
+                &skills,
                 &mut app,
             );
         }
@@ -141,6 +146,7 @@ fn run_event_loop(
                                 &mut handles,
                                 &provider,
                                 &model,
+                                &skills,
                                 &mut app,
                             );
                             extra
@@ -155,6 +161,7 @@ fn run_event_loop(
                             &mut handles,
                             &provider,
                             &model,
+                            &skills,
                             &mut app,
                         );
                         if let Some(extra) = extra {
@@ -167,7 +174,14 @@ fn run_event_loop(
                 },
                 _ => continue,
             };
-            dispatch(app.update(msg), &mut handles, &provider, &model, &mut app);
+            dispatch(
+                app.update(msg),
+                &mut handles,
+                &provider,
+                &model,
+                &skills,
+                &mut app,
+            );
         }
     }
 
@@ -197,19 +211,21 @@ fn spawn_agent(
     provider: &Arc<dyn Provider>,
     model: &Model,
     initial_history: Vec<Message>,
+    skills: &Arc<[Skill]>,
 ) -> AgentHandles {
     let (agent_tx, agent_rx) = mpsc::channel::<Envelope>();
     let (cmd_tx, cmd_rx) = mpsc::channel::<AgentCommand>();
     let (answer_tx, answer_rx) = mpsc::channel::<String>();
     let model = model.clone();
     let provider = Arc::clone(provider);
+    let skills = Arc::clone(skills);
 
     thread::spawn(move || {
         let answer_mutex = std::sync::Mutex::new(answer_rx);
         let mut history = History::new(initial_history);
         let vars = template::env_vars();
         let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
-        let tools = maki_agent::tools::ToolCall::definitions(&vars);
+        let tools = maki_agent::tools::ToolCall::definitions(&vars, &skills);
         while let Ok(cmd) = cmd_rx.recv() {
             let result = match cmd {
                 AgentCommand::Compact => {
@@ -227,6 +243,7 @@ fn spawn_agent(
                         &system,
                         &agent_tx,
                         &tools,
+                        &skills,
                         Some(&answer_mutex),
                         Some(&cmd_rx),
                         extract_interrupt,
@@ -271,6 +288,7 @@ fn dispatch(
     handles: &mut AgentHandles,
     provider: &Arc<dyn Provider>,
     model: &Model,
+    skills: &Arc<[Skill]>,
     app: &mut App,
 ) {
     for action in actions {
@@ -278,7 +296,7 @@ fn dispatch(
             Action::SendMessage(input) => {
                 let cmd = AgentCommand::Run(input);
                 if handles.cmd_tx.send(cmd).is_err() {
-                    *handles = spawn_agent(provider, model, Vec::new());
+                    *handles = spawn_agent(provider, model, Vec::new(), skills);
                     handles.apply_to_app(app);
                 }
             }
@@ -286,7 +304,7 @@ fn dispatch(
                 let _ = handles.cmd_tx.send(AgentCommand::Cancel);
             }
             Action::NewSession => {
-                *handles = spawn_agent(provider, model, Vec::new());
+                *handles = spawn_agent(provider, model, Vec::new(), skills);
                 handles.apply_to_app(app);
             }
             Action::Compact => {
