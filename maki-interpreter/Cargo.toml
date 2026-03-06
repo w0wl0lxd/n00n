@@ -1,0 +1,13 @@
+[package]
+name = "maki-interpreter"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+monty = { git = "https://github.com/pydantic/monty.git", package = "monty" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+test-case = { workspace = true }

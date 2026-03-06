@@ -1,14 +1,18 @@
-use crate::highlight::{highlight_code_plain, highlight_line, highlighter_for_path};
+use crate::highlight::{
+    highlight_code_plain, highlight_line, highlighter_for_path, highlighter_for_token,
+};
 use crate::markdown::truncation_notice;
 use crate::theme;
 
 use maki_agent::{DiffHunk, DiffLine, DiffSpan, GrepFileEntry, ToolInput, ToolOutput};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use syntect::easy::HighlightLines;
 
 const MAX_CODE_LINES: usize = 7;
 const MAX_WRITE_LINES: usize = 30;
 const MAX_GREP_LINES: usize = 100;
+const MAX_CODE_EXECUTION_LINES: usize = 100;
 
 fn nr_width(max_nr: usize) -> usize {
     max_nr.max(1).ilog10() as usize + 1
@@ -37,16 +41,19 @@ fn code_spans(
     text: &str,
 ) -> Vec<Span<'static>> {
     match hl {
-        Some(h) => highlight_line(h, text)
-            .into_iter()
-            .map(|(style, chunk)| Span::styled(chunk, style))
-            .collect(),
+        Some(h) => {
+            let with_nl = format!("{text}\n");
+            highlight_line(h, &with_nl)
+                .into_iter()
+                .map(|(style, chunk)| Span::styled(chunk, style))
+                .collect()
+        }
         None => vec![Span::styled(text.to_owned(), theme::CODE_FALLBACK)],
     }
 }
 
 fn render_code(
-    path: Option<&str>,
+    mut hl: Option<HighlightLines<'static>>,
     start_line: usize,
     code_lines: &[String],
     total_count: usize,
@@ -55,7 +62,6 @@ fn render_code(
     let display_count = code_lines.len().min(max_lines);
     let max_nr = start_line + display_count.saturating_sub(1);
     let w = nr_width(max_nr);
-    let mut hl = path.map(highlighter_for_path);
 
     let mut lines: Vec<Line<'static>> = code_lines
         .iter()
@@ -191,19 +197,38 @@ pub fn render_tool_content(
     highlight: bool,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    if let Some(ToolInput::Code { language, code }) = input {
-        if highlight {
-            for line in highlight_code_plain(language, code) {
-                lines.push(line);
-            }
-        } else {
-            for text in code.trim_end_matches('\n').lines() {
-                lines.push(Line::from(Span::styled(
-                    text.to_owned(),
-                    theme::CODE_FALLBACK,
-                )));
+    match input {
+        Some(ToolInput::Script { language, code }) => {
+            let code_lines: Vec<String> = code
+                .trim_end_matches('\n')
+                .lines()
+                .map(String::from)
+                .collect();
+            let total = code_lines.len();
+            let hl = highlight.then(|| highlighter_for_token(language));
+            lines.extend(render_code(
+                hl,
+                1,
+                &code_lines,
+                total,
+                MAX_CODE_EXECUTION_LINES,
+            ));
+        }
+        Some(ToolInput::Code { language, code }) => {
+            if highlight {
+                for line in highlight_code_plain(language, code) {
+                    lines.push(line);
+                }
+            } else {
+                for text in code.trim_end_matches('\n').lines() {
+                    lines.push(Line::from(Span::styled(
+                        text.to_owned(),
+                        theme::CODE_FALLBACK,
+                    )));
+                }
             }
         }
+        None => {}
     }
     let output_lines = match output {
         Some(ToolOutput::ReadCode {
@@ -211,7 +236,7 @@ pub fn render_tool_content(
             start_line,
             lines: code_lines,
         }) => render_code(
-            highlight.then_some(path.as_str()),
+            highlight.then(|| highlighter_for_path(path)),
             *start_line,
             code_lines,
             code_lines.len(),
@@ -222,7 +247,7 @@ pub fn render_tool_content(
             lines: code_lines,
             ..
         }) => render_code(
-            highlight.then_some(path.as_str()),
+            highlight.then(|| highlighter_for_path(path)),
             1,
             code_lines,
             code_lines.len(),
@@ -320,7 +345,13 @@ mod tests {
     #[test_case(5,  50, 5 + 1                ; "total_exceeds_available_lines")]
     fn render_code_line_count(input_lines: usize, total: usize, expected: usize) {
         let code_lines: Vec<String> = (0..input_lines).map(|i| format!("line {i}")).collect();
-        let result = render_code(Some("test.rs"), 1, &code_lines, total, MAX_CODE_LINES);
+        let result = render_code(
+            Some(highlighter_for_path("test.rs")),
+            1,
+            &code_lines,
+            total,
+            MAX_CODE_LINES,
+        );
         assert_eq!(result.len(), expected);
     }
 

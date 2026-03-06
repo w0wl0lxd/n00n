@@ -98,6 +98,8 @@ impl WebSearch {
     pub fn mutable_path(&self) -> Option<&str> {
         None
     }
+
+    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 fn parse_sse_response(body: &str) -> Result<String, String> {

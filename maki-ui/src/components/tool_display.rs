@@ -12,8 +12,8 @@ use jiff::tz::TimeZone;
 
 use crate::markdown::{Keep, truncate_lines};
 use maki_agent::tools::{
-    BASH_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME,
-    READ_TOOL_NAME, WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME, WRITE_TOOL_NAME,
+    BASH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME,
+    MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
 use maki_agent::{BatchToolEntry, BatchToolStatus, TodoStatus, ToolInput, ToolOutput};
 use ratatui::style::Style;
@@ -26,6 +26,15 @@ pub const TOOL_INDICATOR: &str = "● ";
 pub const TOOL_OUTPUT_MAX_LINES: usize = 7;
 pub const BASH_OUTPUT_MAX_LINES: usize = 10;
 pub const TOOL_BODY_INDENT: &str = "  ";
+pub const CODE_EXECUTION_OUTPUT_MAX_LINES: usize = 30;
+
+pub(crate) fn output_limits(tool: &str) -> (usize, Keep) {
+    match tool {
+        BASH_TOOL_NAME => (BASH_OUTPUT_MAX_LINES, Keep::Tail),
+        CODE_EXECUTION_TOOL_NAME => (CODE_EXECUTION_OUTPUT_MAX_LINES, Keep::Tail),
+        _ => (TOOL_OUTPUT_MAX_LINES, Keep::Head),
+    }
+}
 const TIMESTAMP_LEN: usize = 8;
 const PLAIN_ANNOTATION_THRESHOLD: usize = 10;
 const ALWAYS_ANNOTATE_TOOLS: &[&str] = &[WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME];
@@ -88,6 +97,9 @@ fn style_tool_header(tool: &str, header: &str) -> Vec<Span<'static>> {
     }
     if tool == GREP_TOOL_NAME {
         return style_grep_header(header);
+    }
+    if tool == CODE_EXECUTION_TOOL_NAME {
+        return vec![Span::styled(header.to_owned(), theme::FOREGROUND_STYLE)];
     }
     if IN_PATH_TOOLS.contains(&tool)
         && let Some((cmd, path)) = extract_path_suffix(header)
@@ -236,8 +248,13 @@ impl From<BatchToolStatus> for Indicator {
 }
 
 enum OutputMode<'a> {
-    Fallback { body: Option<&'a str> },
-    Truncated { tool: &'a str },
+    Fallback {
+        body: Option<&'a str>,
+        tool: &'a str,
+    },
+    Truncated {
+        tool: &'a str,
+    },
 }
 
 struct ToolLineBuilder {
@@ -290,15 +307,27 @@ impl ToolLineBuilder {
 
     fn push_output(&mut self, output: Option<&ToolOutput>, mode: OutputMode<'_>) {
         match mode {
-            OutputMode::Fallback { body } => self.push_output_fallback(output, body),
+            OutputMode::Fallback { body, tool } => self.push_output_fallback(output, body, tool),
             OutputMode::Truncated { tool } => self.push_output_truncated(output, tool),
         }
     }
 
-    fn push_output_fallback(&mut self, output: Option<&ToolOutput>, body: Option<&str>) {
+    fn push_output_fallback(
+        &mut self,
+        output: Option<&ToolOutput>,
+        body: Option<&str>,
+        tool: &str,
+    ) {
         match output {
             None | Some(ToolOutput::Plain(_)) | Some(ToolOutput::GlobResult { .. }) => {
                 if let Some(text) = body {
+                    let has_code = self.content_range.1 > self.content_range.0;
+                    if tool == CODE_EXECUTION_TOOL_NAME && has_code {
+                        self.lines.push(Line::from(Span::styled(
+                            format!("{TOOL_BODY_INDENT}{}", BATCH_SEPARATOR.repeat(40)),
+                            theme::TOOL_DIM,
+                        )));
+                    }
                     push_text_lines(&mut self.lines, text, TOOL_BODY_INDENT);
                 }
             }
@@ -311,11 +340,7 @@ impl ToolLineBuilder {
         match output {
             None => {}
             Some(ToolOutput::Plain(text)) => {
-                let (max, keep) = if tool == BASH_TOOL_NAME {
-                    (BASH_OUTPUT_MAX_LINES, Keep::Tail)
-                } else {
-                    (TOOL_OUTPUT_MAX_LINES, Keep::Head)
-                };
+                let (max, keep) = output_limits(tool);
                 push_text_lines(
                     &mut self.lines,
                     &truncate_lines(text, max, keep),
@@ -432,7 +457,13 @@ pub fn build_tool_lines(
     b.push_header(tool_name, header, msg.annotation.as_deref());
     b.prepend_indicator(status.into(), started_at);
     b.push_code_content(msg.tool_input.as_ref(), msg.tool_output.as_ref());
-    b.push_output(msg.tool_output.as_ref(), OutputMode::Fallback { body });
+    b.push_output(
+        msg.tool_output.as_ref(),
+        OutputMode::Fallback {
+            body,
+            tool: tool_name,
+        },
+    );
     b.finish(
         msg.tool_input.clone(),
         msg.tool_output.clone(),

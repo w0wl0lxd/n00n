@@ -5,24 +5,11 @@ use crate::{AgentEvent, ToolInput, ToolOutput};
 use maki_providers::ContentBlock;
 use maki_tool_macro::Tool;
 
-use super::ToolContext;
+use super::{GENERAL_SUBAGENT_TOOLS, RESEARCH_SUBAGENT_TOOLS, ToolContext};
 use crate::agent;
 use crate::template;
 use crate::tools::ToolCall;
 use crate::{AgentInput, AgentMode};
-
-const RESEARCH_TOOLS: &[&str] = &["bash", "read", "glob", "grep", "webfetch"];
-const GENERAL_TOOLS: &[&str] = &[
-    "bash",
-    "read",
-    "write",
-    "edit",
-    "multiedit",
-    "glob",
-    "grep",
-    "webfetch",
-    "batch",
-];
 
 #[derive(Tool, Debug, Clone)]
 pub struct Task {
@@ -50,14 +37,18 @@ impl Task {
         let vars = template::env_vars();
         let agent_type = self.subagent_type.as_deref().unwrap_or("research");
         let (prompt, tool_names) = match agent_type {
-            "research" => (crate::prompt::RESEARCH_PROMPT, RESEARCH_TOOLS),
-            "general" => (crate::prompt::GENERAL_PROMPT, GENERAL_TOOLS),
+            "research" => (crate::prompt::RESEARCH_PROMPT, RESEARCH_SUBAGENT_TOOLS),
+            "general" => (crate::prompt::GENERAL_PROMPT, GENERAL_SUBAGENT_TOOLS),
             other => return Err(format!("unknown subagent type: {other}")),
         };
         let mut system = vars.apply(prompt).into_owned();
         let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
         system.push_str(&instructions);
-        let tools = ToolCall::definitions_filtered(&vars, tool_names);
+        let tools = ToolCall::definitions_filtered(
+            &vars,
+            tool_names,
+            ctx.model.family().supports_tool_examples(),
+        );
 
         let (sub_tx, sub_rx) = mpsc::channel::<crate::Envelope>();
         let parent_tx = ctx.event_tx.clone();
@@ -133,6 +124,8 @@ impl Task {
     pub fn mutable_path(&self) -> Option<&str> {
         None
     }
+
+    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 #[cfg(test)]
@@ -140,11 +133,11 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case(RESEARCH_TOOLS ; "research_tools")]
-    #[test_case(GENERAL_TOOLS  ; "general_tools")]
+    #[test_case(RESEARCH_SUBAGENT_TOOLS ; "research_subagent_tools")]
+    #[test_case(GENERAL_SUBAGENT_TOOLS  ; "general_subagent_tools")]
     fn subagent_tools_all_registered(tools: &[&str]) {
         let vars = template::Vars::new();
-        let filtered = ToolCall::definitions_filtered(&vars, tools);
+        let filtered = ToolCall::definitions_filtered(&vars, tools, true);
         assert_eq!(filtered.as_array().unwrap().len(), tools.len());
     }
 }

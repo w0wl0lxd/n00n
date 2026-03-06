@@ -40,6 +40,10 @@ impl SkillTool {
     pub fn mutable_path(&self) -> Option<&str> {
         None
     }
+
+    pub fn augment_description(description: &mut String, ctx: &super::DescriptionContext) {
+        description.push_str(&crate::skill::build_skill_list_description(ctx.skills));
+    }
 }
 
 #[cfg(test)]

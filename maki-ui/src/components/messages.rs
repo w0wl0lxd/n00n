@@ -1,19 +1,19 @@
 use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
 
 use super::tool_display::{
-    ASSISTANT_STYLE, BASH_OUTPUT_MAX_LINES, ERROR_STYLE, THINKING_STYLE, TOOL_OUTPUT_MAX_LINES,
-    ToolLines, USER_STYLE, append_timestamp, build_batch_entry_lines, build_tool_lines,
-    format_timestamp_now, tool_output_annotation, truncate_to_header,
+    ASSISTANT_STYLE, ERROR_STYLE, THINKING_STYLE, ToolLines, USER_STYLE, append_timestamp,
+    build_batch_entry_lines, build_tool_lines, format_timestamp_now, output_limits,
+    tool_output_annotation, truncate_to_header,
 };
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::CodeHighlighter;
-use crate::markdown::{Keep, hr_line, plain_lines, text_to_lines, truncate_lines};
+use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_lines};
 use crate::render_worker::RenderWorker;
 use crate::theme;
 
 use std::time::Instant;
 
-use maki_agent::tools::{BASH_TOOL_NAME, WEBFETCH_TOOL_NAME};
+use maki_agent::tools::WEBFETCH_TOOL_NAME;
 use maki_agent::{BatchToolStatus, NO_FILES_FOUND, ToolDoneEvent, ToolOutput, ToolStartEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -220,8 +220,10 @@ impl MessagesPanel {
         else {
             return;
         };
+        let tool_name = msg.role.tool_name().unwrap_or("");
+        let (max_lines, keep) = output_limits(tool_name);
         truncate_to_header(&mut msg.text);
-        let truncated = truncate_lines(content, BASH_OUTPUT_MAX_LINES, Keep::Tail);
+        let truncated = truncate_lines(content, max_lines, keep);
         msg.text.push('\n');
         msg.text.push_str(&truncated);
         self.rebuild_tool_segment(tool_id);
@@ -248,11 +250,8 @@ impl MessagesPanel {
         match &event.output {
             ToolOutput::Plain(text) => {
                 if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
-                    let display = if event.tool == BASH_TOOL_NAME {
-                        truncate_lines(text, BASH_OUTPUT_MAX_LINES, Keep::Tail)
-                    } else {
-                        truncate_lines(text, TOOL_OUTPUT_MAX_LINES, Keep::Head)
-                    };
+                    let (max, keep) = output_limits(event.tool);
+                    let display = truncate_lines(text, max, keep);
                     if !display.is_empty() {
                         msg.text = format!("{}\n{display}", msg.text);
                     }
@@ -267,7 +266,8 @@ impl MessagesPanel {
                     msg.text = format!("{}\n{NO_FILES_FOUND}", msg.text);
                 } else {
                     let joined = files.join("\n");
-                    let display = truncate_lines(&joined, TOOL_OUTPUT_MAX_LINES, Keep::Head);
+                    let (max, keep) = output_limits(event.tool);
+                    let display = truncate_lines(&joined, max, keep);
                     msg.text = format!("{}\n{display}", msg.text);
                 }
             }
@@ -852,7 +852,7 @@ fn push_spacer_if_needed(segments: &mut Vec<Segment>) {
 mod tests {
     use super::*;
     use crate::components::scrollbar::SCROLLBAR_THUMB;
-    use maki_agent::tools::{GLOB_TOOL_NAME, QUESTION_TOOL_NAME, WRITE_TOOL_NAME};
+    use maki_agent::tools::{BASH_TOOL_NAME, GLOB_TOOL_NAME, QUESTION_TOOL_NAME, WRITE_TOOL_NAME};
     use maki_agent::{
         DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, QuestionAnswer, ToolInput,
         ToolOutput,

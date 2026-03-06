@@ -1,5 +1,6 @@
 mod bash;
 mod batch;
+mod code_execution;
 mod edit;
 mod fuzzy_replace;
 mod glob;
@@ -31,6 +32,10 @@ use crate::{
 use maki_providers::Model;
 use maki_providers::provider::Provider;
 
+pub struct DescriptionContext<'a> {
+    pub skills: &'a [Skill],
+}
+
 pub const BASH_TOOL_NAME: &str = bash::Bash::NAME;
 pub const BATCH_TOOL_NAME: &str = batch::Batch::NAME;
 pub const EDIT_TOOL_NAME: &str = edit::Edit::NAME;
@@ -45,6 +50,35 @@ pub const TODOWRITE_TOOL_NAME: &str = todowrite::TodoWrite::NAME;
 pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
 pub const WEBSEARCH_TOOL_NAME: &str = websearch::WebSearch::NAME;
 pub const WRITE_TOOL_NAME: &str = write::Write::NAME;
+pub const CODE_EXECUTION_TOOL_NAME: &str = code_execution::CodeInterpreter::NAME;
+
+pub(crate) const INTERPRETER_TOOLS: &[&str] = &[
+    "read",
+    "write",
+    "edit",
+    "multiedit",
+    "glob",
+    "grep",
+    "bash",
+    "webfetch",
+    "websearch",
+];
+
+pub(crate) const RESEARCH_SUBAGENT_TOOLS: &[&str] = &["bash", "read", "glob", "grep", "webfetch"];
+
+pub(crate) const GENERAL_SUBAGENT_TOOLS: &[&str] = &[
+    "bash",
+    "read",
+    "write",
+    "edit",
+    "multiedit",
+    "glob",
+    "grep",
+    "webfetch",
+    "batch",
+    "code_execution",
+];
+
 const MAX_OUTPUT_BYTES: usize = 50 * 1024;
 pub(crate) const MAX_OUTPUT_LINES: usize = 2000;
 pub(crate) const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
@@ -132,6 +166,70 @@ pub(crate) fn truncate_output(text: String) -> String {
     result
 }
 
+fn format_examples_as_text(examples: &[Value]) -> Option<String> {
+    if examples.is_empty() {
+        return None;
+    }
+    let mut text = String::from("Examples:");
+    for ex in examples {
+        if let Some(code) = ex.get("code").and_then(|c| c.as_str()) {
+            text.push_str("\n```\n");
+            text.push_str(code);
+            text.push_str("\n```");
+        }
+    }
+    Some(text)
+}
+
+fn format_tool_signature(name: &str, schema: &Value) -> String {
+    let empty_props = serde_json::Map::new();
+    let props = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .unwrap_or(&empty_props);
+    let required: std::collections::HashSet<&str> = schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+
+    let params: Vec<String> = props
+        .iter()
+        .map(|(pname, pschema)| {
+            let ptype = pschema
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("any");
+            let ptype_py = match ptype {
+                "string" => "str",
+                "integer" => "int",
+                "boolean" => "bool",
+                "array" => "list",
+                _ => "any",
+            };
+            if required.contains(pname.as_str()) {
+                format!("{pname}: {ptype_py}")
+            } else {
+                format!("{pname}: {ptype_py} = None")
+            }
+        })
+        .collect();
+
+    format!("- {name}({}) -> str", params.join(", "))
+}
+
+pub(crate) fn build_interpreter_tools_description() -> String {
+    let mut desc =
+        String::from("\n\nAvailable tools (called as Python functions with keyword arguments):\n");
+    for name in INTERPRETER_TOOLS {
+        if let Some(schema) = ToolCall::schema_for(name) {
+            desc.push_str(&format_tool_signature(name, &schema));
+            desc.push('\n');
+        }
+    }
+    desc
+}
+
 macro_rules! register_tools {
     ($($Variant:ident($inner:path)),+ $(,)?) => {
         #[derive(Debug, Clone)]
@@ -212,47 +310,57 @@ macro_rules! register_tools {
                 }
             }
 
-            fn all_defs(vars: &Vars, skills: &[Skill]) -> Vec<(&'static str, Value)> {
+            pub fn schema_for(name: &str) -> Option<Value> {
+                match name {
+                    $(<$inner>::NAME => Some(<$inner>::schema()),)+
+                    _ => None,
+                }
+            }
+
+            fn all_defs(vars: &Vars, skills: &[Skill], supports_examples: bool) -> Vec<(&'static str, Value)> {
+                let ctx = DescriptionContext { skills };
                 vec![
                     $((<$inner>::NAME, {
                         let mut description = vars.apply(<$inner>::DESCRIPTION).into_owned();
-                        if <$inner>::NAME == SKILL_TOOL_NAME {
-                            description.push_str(&crate::skill::build_skill_list_description(skills));
-                        }
+                        <$inner>::augment_description(&mut description, &ctx);
                         let mut def = json!({
                             "name": <$inner>::NAME,
-                            "description": description,
+                            "description": &description,
                             "input_schema": <$inner>::schema()
                         });
                         if let Some(json) = <$inner>::EXAMPLES {
                             let examples: Vec<Value> = serde_json::from_str(json)
                                 .expect(concat!("invalid EXAMPLES JSON for ", stringify!($inner)));
-                            def["input_examples"] = Value::Array(examples);
+                            if supports_examples {
+                                def["input_examples"] = Value::Array(examples);
+                            } else if let Some(text) = format_examples_as_text(&examples) {
+                                def["description"] = Value::String(format!("{}\n\n{}", description, text));
+                            }
                         }
                         def
                     })),+
                 ]
             }
 
-            pub fn definitions(vars: &Vars, skills: &[Skill]) -> Value {
+            pub fn definitions(vars: &Vars, skills: &[Skill], supports_examples: bool) -> Value {
                 Value::Array(
-                    Self::all_defs(vars, skills).into_iter()
+                    Self::all_defs(vars, skills, supports_examples).into_iter()
                         .map(|(_, def)| def)
                         .collect()
                 )
             }
 
-            pub fn definitions_filtered(vars: &Vars, allowed: &[&str]) -> Value {
+            pub fn definitions_filtered(vars: &Vars, allowed: &[&str], supports_examples: bool) -> Value {
                 Value::Array(
-                    Self::all_defs(vars, &[]).into_iter()
+                    Self::all_defs(vars, &[], supports_examples).into_iter()
                         .filter(|(name, _)| allowed.contains(name))
                         .map(|(_, def)| def)
                         .collect()
                 )
             }
 
-            pub fn definitions_excluding(vars: &Vars, skills: &[Skill], blocked: &[&str]) -> (Vec<&'static str>, Value) {
-                let defs: Vec<_> = Self::all_defs(vars, skills).into_iter()
+            pub fn definitions_excluding(vars: &Vars, skills: &[Skill], blocked: &[&str], supports_examples: bool) -> (Vec<&'static str>, Value) {
+                let defs: Vec<_> = Self::all_defs(vars, skills, supports_examples).into_iter()
                     .filter(|(name, _)| !blocked.contains(name))
                     .collect();
                 let names = defs.iter().map(|(name, _)| *name).collect();
@@ -278,36 +386,52 @@ register_tools! {
     Skill(skill::SkillTool),
     Task(task::Task),
     Batch(batch::Batch),
+    CodeInterpreter(code_execution::CodeInterpreter),
+}
+
+struct NullProvider;
+
+impl Provider for NullProvider {
+    fn stream_message(
+        &self,
+        _: &Model,
+        _: &[maki_providers::Message],
+        _: &str,
+        _: &Value,
+        _: &Sender<maki_providers::ProviderEvent>,
+    ) -> Result<maki_providers::StreamResponse, AgentError> {
+        unimplemented!()
+    }
+
+    fn list_models(&self) -> Result<Vec<String>, AgentError> {
+        unimplemented!()
+    }
+}
+
+pub(crate) fn interpreter_ctx<'a>(
+    mode: &'a AgentMode,
+    event_tx: &'a Sender<Envelope>,
+) -> ToolContext<'a> {
+    use std::sync::LazyLock;
+    static PROVIDER: NullProvider = NullProvider;
+    static MODEL: LazyLock<Model> =
+        LazyLock::new(|| Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap());
+    ToolContext {
+        provider: &PROVIDER,
+        model: &MODEL,
+        event_tx,
+        mode,
+        tool_use_id: None,
+        user_response_rx: None,
+        skills: &[],
+    }
 }
 
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::sync::mpsc::Sender;
 
-    use maki_providers::provider::Provider;
-    use maki_providers::{AgentError, Model, ProviderEvent, StreamResponse};
-    use serde_json::Value;
-
     use super::*;
-
-    struct StubProvider;
-
-    impl Provider for StubProvider {
-        fn stream_message(
-            &self,
-            _: &Model,
-            _: &[maki_providers::Message],
-            _: &str,
-            _: &Value,
-            _: &Sender<ProviderEvent>,
-        ) -> Result<StreamResponse, AgentError> {
-            unimplemented!()
-        }
-
-        fn list_models(&self) -> Result<Vec<String>, AgentError> {
-            unimplemented!()
-        }
-    }
 
     pub(crate) fn stub_ctx_with<'a>(
         mode: &'a AgentMode,
@@ -316,19 +440,8 @@ pub(crate) mod test_support {
     ) -> ToolContext<'a> {
         let event_tx =
             event_tx.unwrap_or_else(|| Box::leak(Box::new(std::sync::mpsc::channel().0)));
-        let model: &Model = Box::leak(Box::new(
-            Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap(),
-        ));
-        let provider: &dyn Provider = Box::leak(Box::new(StubProvider));
-        ToolContext {
-            provider,
-            model,
-            event_tx,
-            mode,
-            tool_use_id,
-            user_response_rx: None,
-            skills: &[],
-        }
+        let ctx = interpreter_ctx(mode, event_tx);
+        ToolContext { tool_use_id, ..ctx }
     }
 
     pub(crate) fn stub_ctx(mode: &AgentMode) -> ToolContext<'_> {
@@ -464,7 +577,7 @@ mod tests {
     #[test]
     fn tool_definitions_schema_requires_additional_properties_false() {
         let vars = Vars::new().set("{cwd}", "/tmp");
-        let all = ToolCall::definitions(&vars, &[]);
+        let all = ToolCall::definitions(&vars, &[], true);
         for def in all.as_array().unwrap() {
             assert_eq!(
                 def["input_schema"]["additionalProperties"],
@@ -478,7 +591,7 @@ mod tests {
     #[test]
     fn tool_definitions_examples_non_empty() {
         let vars = Vars::new().set("{cwd}", "/tmp");
-        for def in ToolCall::definitions(&vars, &[]).as_array().unwrap() {
+        for def in ToolCall::definitions(&vars, &[], true).as_array().unwrap() {
             if let Some(examples) = def.get("input_examples") {
                 assert!(
                     !examples.as_array().unwrap().is_empty(),
@@ -492,7 +605,7 @@ mod tests {
     #[test]
     fn definitions_filtered_returns_only_requested() {
         let vars = Vars::new().set("{cwd}", "/tmp");
-        let filtered = ToolCall::definitions_filtered(&vars, &["bash", "read"]);
+        let filtered = ToolCall::definitions_filtered(&vars, &["bash", "read"], true);
         let names: Vec<&str> = filtered
             .as_array()
             .unwrap()

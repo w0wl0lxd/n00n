@@ -146,6 +146,8 @@ impl WebFetch {
     pub fn mutable_path(&self) -> Option<&str> {
         None
     }
+
+    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 fn validate_and_upgrade_url(url: &str) -> Result<String, String> {

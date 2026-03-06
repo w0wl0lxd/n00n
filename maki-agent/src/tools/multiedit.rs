@@ -114,6 +114,8 @@ impl MultiEdit {
     pub fn mutable_path(&self) -> Option<&str> {
         Some(&self.path)
     }
+
+    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 pub(super) fn build_hunk(start_line: usize, old: &str, new: &str) -> DiffHunk {

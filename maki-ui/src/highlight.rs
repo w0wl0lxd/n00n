@@ -38,6 +38,10 @@ pub fn highlight_line(hl: &mut HighlightLines<'_>, text: &str) -> Vec<(Style, St
     }
 }
 
+pub fn highlighter_for_token(lang: &str) -> HighlightLines<'static> {
+    HighlightLines::new(syntax_for_token(lang), &THEME)
+}
+
 fn syntax_for_token(lang: &str) -> &'static SyntaxReference {
     let ss = &*SYNTAX_SET;
     ss.find_syntax_by_token(lang)

@@ -138,8 +138,12 @@ pub fn run(
     let mode = AgentMode::Build;
     let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
     let system = agent::build_system_prompt(&vars, &mode, model, &instructions);
-    let (tool_names, tools) =
-        maki_agent::tools::ToolCall::definitions_excluding(&vars, &skills, &[QUESTION_TOOL_NAME]);
+    let (tool_names, tools) = maki_agent::tools::ToolCall::definitions_excluding(
+        &vars,
+        &skills,
+        &[QUESTION_TOOL_NAME],
+        model.family().supports_tool_examples(),
+    );
 
     let (event_tx, event_rx) = mpsc::channel::<Envelope>();
     let input = AgentInput {

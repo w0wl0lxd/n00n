@@ -165,6 +165,8 @@ impl Bash {
             code: command.to_string(),
         })
     }
+
+    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 fn spawn_line_reader(pipe: impl Read + Send + 'static, tx: Sender<String>) {

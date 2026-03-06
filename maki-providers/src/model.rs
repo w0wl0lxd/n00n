@@ -247,6 +247,15 @@ fn lookup_tier<'a>(tiers: &'a [ModelTier], model_id: &str) -> Result<&'a ModelTi
         .ok_or_else(|| ModelError::UnknownModel(model_id.to_string()))
 }
 
+impl ModelFamily {
+    pub fn supports_tool_examples(self) -> bool {
+        match self {
+            ModelFamily::Claude => true,
+            ModelFamily::Glm => false,
+        }
+    }
+}
+
 impl Model {
     pub fn spec(&self) -> String {
         format!("{}/{}", self.provider, self.id)

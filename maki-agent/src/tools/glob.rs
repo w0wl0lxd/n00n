@@ -82,6 +82,8 @@ impl Glob {
     pub fn mutable_path(&self) -> Option<&str> {
         None
     }
+
+    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 #[cfg(test)]

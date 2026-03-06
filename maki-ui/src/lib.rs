@@ -226,7 +226,11 @@ fn spawn_agent(
         let mut history = History::new(initial_history);
         let vars = template::env_vars();
         let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
-        let tools = maki_agent::tools::ToolCall::definitions(&vars, &skills);
+        let tools = maki_agent::tools::ToolCall::definitions(
+            &vars,
+            &skills,
+            model.family().supports_tool_examples(),
+        );
         while let Ok(cmd) = cmd_rx.recv() {
             let result = match cmd {
                 AgentCommand::Compact => {

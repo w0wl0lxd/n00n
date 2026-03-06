@@ -1,7 +1,7 @@
 use maki_agent::tools::{
-    BASH_TOOL_NAME, BATCH_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME,
-    MULTIEDIT_TOOL_NAME, QUESTION_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, TODOWRITE_TOOL_NAME,
-    WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME,
+    BASH_TOOL_NAME, BATCH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME,
+    GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME, QUESTION_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME,
+    TODOWRITE_TOOL_NAME, WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
 use maki_agent::{
     AgentEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, Envelope,
@@ -432,6 +432,29 @@ pub fn mock_events() -> Vec<MockEvent> {
         ToolOutput::Plain(
             "What testing framework do you prefer?\nShould I add integration tests as well?".into(),
         ),
+        false,
+    )));
+
+    // CodeExecution - Success
+    events.push(evt(tool_start(
+        "t_code_exec",
+        CODE_EXECUTION_TOOL_NAME,
+        "6 lines",
+        Some(ToolInput::Script {
+            language: "python",
+            code: "files = glob(pattern='**/*.rs', path='src/config')
+total = 0
+for f in files:
+    content = read(path=f)
+    total += len(content.split('\\n'))
+print(f'Total lines across config: {total}')"
+                .into(),
+        }),
+    )));
+    events.push(evt(tool_done(
+        "t_code_exec",
+        CODE_EXECUTION_TOOL_NAME,
+        ToolOutput::Plain("Total lines across config: 47".into()),
         false,
     )));
 

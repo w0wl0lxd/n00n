@@ -55,4 +55,6 @@ impl Write {
     pub fn mutable_path(&self) -> Option<&str> {
         Some(&self.path)
     }
+
+    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }

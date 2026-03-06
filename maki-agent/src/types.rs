@@ -160,6 +160,10 @@ pub enum ToolInput {
         language: &'static str,
         code: String,
     },
+    Script {
+        language: &'static str,
+        code: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
