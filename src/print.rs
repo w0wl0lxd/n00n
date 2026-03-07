@@ -218,9 +218,10 @@ pub fn run(
     for envelope in event_rx {
         let Envelope {
             ref event,
-            ref parent_tool_use_id,
+            ref subagent,
             ..
         } = envelope;
+        let parent_tool_use_id = subagent.as_ref().map(|s| s.parent_tool_use_id.as_str());
 
         if verbose_out.is_none() && is_stream_json {
             let done = matches!(event, AgentEvent::Done { .. });
@@ -271,7 +272,7 @@ pub fn run(
                             usage: turn_usage,
                         },
                         session_id: &session_id,
-                        parent_tool_use_id: parent_tool_use_id.as_deref(),
+                        parent_tool_use_id,
                     })?;
                 }
             }
@@ -285,7 +286,7 @@ pub fn run(
                             content: &content_value,
                         },
                         session_id: &session_id,
-                        parent_tool_use_id: parent_tool_use_id.as_deref(),
+                        parent_tool_use_id,
                     })?;
                 }
             }

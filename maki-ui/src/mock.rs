@@ -5,8 +5,8 @@ use maki_agent::tools::{
 };
 use maki_agent::{
     AgentEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, Envelope,
-    GrepFileEntry, GrepMatch, QuestionInfo, QuestionOption, TodoItem, TodoPriority, TodoStatus,
-    ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
+    GrepFileEntry, GrepMatch, QuestionInfo, QuestionOption, SubagentInfo, TodoItem, TodoPriority,
+    TodoStatus, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
 };
 use maki_providers::TokenUsage;
 
@@ -18,6 +18,7 @@ pub enum MockEvent {
 }
 
 const TASK_TOOL_ID: &str = "t_task";
+const TASK_TOOL_ID_2: &str = "t_task2";
 const QUESTION_TOOL_ID: &str = "t_qform";
 
 fn user(text: &str) -> MockEvent {
@@ -29,11 +30,24 @@ fn evt(event: AgentEvent) -> MockEvent {
 }
 
 fn sub_evt(event: AgentEvent, parent_id: &str, name: &str, prompt: Option<&str>) -> MockEvent {
+    sub_evt_with(event, parent_id, name, prompt, None)
+}
+
+fn sub_evt_with(
+    event: AgentEvent,
+    parent_id: &str,
+    name: &str,
+    prompt: Option<&str>,
+    model: Option<&str>,
+) -> MockEvent {
     MockEvent::Agent(Envelope {
         event,
-        parent_tool_use_id: Some(parent_id.into()),
-        parent_name: Some(name.into()),
-        parent_prompt: prompt.map(String::from),
+        subagent: Some(SubagentInfo {
+            parent_tool_use_id: parent_id.into(),
+            name: name.into(),
+            prompt: prompt.map(String::from),
+            model: model.map(String::from),
+        }),
     })
 }
 
@@ -383,6 +397,22 @@ pub fn mock_events() -> Vec<MockEvent> {
         TASK_TOOL_NAME,
         ToolOutput::Plain(
             "Found 3 relevant patterns in the codebase:\n- Builder pattern in src/http/\n- Validation in src/auth/\n- Default impl in src/db/".into(),
+        ),
+        false,
+    )));
+
+    // Task - Success with model_tier weak (main chat side; subagent events follow below)
+    events.push(evt(tool_start(
+        TASK_TOOL_ID_2,
+        TASK_TOOL_NAME,
+        "Summarize test coverage",
+        None,
+    )));
+    events.push(evt(tool_done(
+        TASK_TOOL_ID_2,
+        TASK_TOOL_NAME,
+        ToolOutput::Plain(
+            "Test coverage summary:\n- Unit tests: 82% (src/)\n- Integration: 64% (tests/)\n- Missing: src/config/validation.rs".into(),
         ),
         false,
     )));
@@ -755,6 +785,79 @@ print(f'Total lines across config: {total}')"
         TASK_TOOL_ID,
         "Explore config patterns",
         None,
+    ));
+
+    // === Subagent: task tool with weak model ("Summarize test coverage") ===
+    let task2_prompt = "Gather test coverage stats across the codebase. Return a summary of unit and integration test coverage.";
+    const WEAK_MODEL: &str = "anthropic/claude-3-5-haiku-20241022";
+
+    events.push(sub_evt_with(
+        AgentEvent::ThinkingDelta {
+            text: "Let me check the test coverage across the project.".into(),
+        },
+        TASK_TOOL_ID_2,
+        "Summarize test coverage",
+        Some(task2_prompt),
+        Some(WEAK_MODEL),
+    ));
+
+    events.push(sub_evt_with(
+        tool_start("s2_grep1", GREP_TOOL_NAME, "#[test] [*.rs]", None),
+        TASK_TOOL_ID_2,
+        "Summarize test coverage",
+        None,
+        Some(WEAK_MODEL),
+    ));
+    events.push(sub_evt_with(
+        tool_done(
+            "s2_grep1",
+            GREP_TOOL_NAME,
+            ToolOutput::GrepResult {
+                entries: vec![
+                    GrepFileEntry {
+                        path: "src/http/client.rs".into(),
+                        matches: vec![
+                            GrepMatch {
+                                line_nr: 90,
+                                text: "#[test]".into(),
+                            },
+                            GrepMatch {
+                                line_nr: 105,
+                                text: "#[test]".into(),
+                            },
+                        ],
+                    },
+                    GrepFileEntry {
+                        path: "src/db/pool.rs".into(),
+                        matches: vec![GrepMatch {
+                            line_nr: 44,
+                            text: "#[test]".into(),
+                        }],
+                    },
+                ],
+            },
+            false,
+        ),
+        TASK_TOOL_ID_2,
+        "Summarize test coverage",
+        None,
+        Some(WEAK_MODEL),
+    ));
+
+    events.push(sub_evt_with(
+        AgentEvent::TextDelta {
+            text: concat!(
+                "Test coverage summary:\n",
+                "\n",
+                "- **Unit tests**: 82% coverage in `src/` — 2 test functions in `client.rs`, 1 in `pool.rs`\n",
+                "- **Integration**: 64% coverage in `tests/`\n",
+                "- **Missing**: `src/config/validation.rs` has no tests",
+            ).into(),
+        },
+        TASK_TOOL_ID_2,
+        "Summarize test coverage",
+        None,
+        Some(WEAK_MODEL),
     ));
 
     // === Subagent: question form ("Project setup") ===

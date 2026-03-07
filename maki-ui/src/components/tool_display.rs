@@ -265,11 +265,20 @@ impl ToolLineBuilder {
         }
     }
 
-    fn push_header(&mut self, tool_name: &str, header: &str, annotation: Option<&str>) {
+    fn push_header(
+        &mut self,
+        tool_name: &str,
+        header: &str,
+        annotation: Option<&str>,
+        model_annotation: Option<&str>,
+    ) {
         let mut spans = vec![Span::styled(format!("{tool_name}> "), theme::TOOL_PREFIX)];
         spans.extend(style_tool_header(tool_name, header));
         if let Some(ann) = annotation {
             spans.push(Span::styled(format!(" ({ann})"), theme::TOOL_ANNOTATION));
+        }
+        if let Some(model) = model_annotation {
+            spans.push(Span::styled(format!(" [{model}]"), theme::TOOL_ANNOTATION));
         }
         self.lines.push(Line::from(spans));
     }
@@ -447,7 +456,12 @@ pub fn build_tool_lines(
     };
 
     let mut b = ToolLineBuilder::new();
-    b.push_header(tool_name, header, msg.annotation.as_deref());
+    b.push_header(
+        tool_name,
+        header,
+        msg.annotation.as_deref(),
+        msg.model_annotation.as_deref(),
+    );
     b.prepend_indicator(status.into(), started_at);
     b.push_code_content(msg.tool_input.as_ref(), msg.tool_output.as_ref());
     b.push_output(
@@ -484,7 +498,7 @@ pub fn build_batch_entry_lines(
         .and_then(|o| tool_output_annotation(o, &entry.tool));
 
     let mut b = ToolLineBuilder::new();
-    b.push_header(&entry.tool, &entry.summary, annotation.as_deref());
+    b.push_header(&entry.tool, &entry.summary, annotation.as_deref(), None);
     b.prepend_indicator(entry.status.into(), started_at);
     b.push_code_content(entry.input.as_ref(), entry.output.as_ref());
     b.push_output(
@@ -547,6 +561,7 @@ mod tests {
             tool_input: input,
             tool_output: output,
             annotation: None,
+            model_annotation: None,
             plan_path: None,
             timestamp: None,
         };
@@ -630,6 +645,7 @@ mod tests {
             tool_input: code_input(),
             tool_output: output,
             annotation: None,
+            model_annotation: None,
             plan_path: None,
             timestamp: None,
         };
@@ -658,6 +674,7 @@ mod tests {
             tool_input: None,
             tool_output: None,
             annotation: None,
+            model_annotation: None,
             plan_path: None,
             timestamp: None,
         }
@@ -769,6 +786,17 @@ mod tests {
         let tl = build_batch_entry_lines(&entry, 0, Instant::now());
         let text = lines_text(&tl);
         assert!(text.contains("hello world"));
+    }
+
+    #[test]
+    fn model_annotation_renders_independently() {
+        let mut msg = tool_msg();
+        msg.annotation = Some("2m timeout".into());
+        msg.model_annotation = Some("anthropic/claude-haiku-4-20250414".into());
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
+        let text = lines_text(&tl);
+        assert!(text.contains("(2m timeout)"));
+        assert!(text.contains("[anthropic/claude-haiku-4-20250414]"));
     }
 
     #[test_case("bash",  ToolOutput::Plain("ok".into()),                      None                ; "plain_short_no_annotation")]

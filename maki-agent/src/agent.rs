@@ -13,8 +13,8 @@ use crate::skill::Skill;
 use crate::template::Vars;
 use crate::tools::{
     BASH_TOOL_NAME, BATCH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME,
-    GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, WRITE_TOOL_NAME, ToolCall,
-    ToolContext,
+    GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, ToolCall, ToolContext,
+    WRITE_TOOL_NAME,
 };
 use crate::types::tool_results;
 use crate::{
@@ -104,22 +104,44 @@ pub fn build_system_prompt(
 }
 
 const EFFICIENCY_TIERS: &[(&str, &[&str], &str)] = &[
-    ("Best", &[CODE_EXECUTION_TOOL_NAME, BATCH_TOOL_NAME, TASK_TOOL_NAME], "Batch/chained calls, delegatable work"),
-    ("Good", &[EDIT_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, GREP_TOOL_NAME, GLOB_TOOL_NAME], "Targeted reads and edits"),
+    (
+        "Best",
+        &[CODE_EXECUTION_TOOL_NAME, BATCH_TOOL_NAME, TASK_TOOL_NAME],
+        "Batch/chained calls, delegatable work",
+    ),
+    (
+        "Good",
+        &[
+            EDIT_TOOL_NAME,
+            MULTIEDIT_TOOL_NAME,
+            READ_TOOL_NAME,
+            GREP_TOOL_NAME,
+            GLOB_TOOL_NAME,
+        ],
+        "Targeted reads and edits",
+    ),
     ("Costly", &[WRITE_TOOL_NAME], "Full file replacement"),
     ("Last", &[BASH_TOOL_NAME], "Only when no other tool works"),
 ];
 
 pub fn tool_efficiency_table(tool_names: &[&str]) -> String {
     let mut rows = Vec::new();
-    let has_edit = tool_names.contains(&EDIT_TOOL_NAME) || tool_names.contains(&MULTIEDIT_TOOL_NAME);
+    let has_edit =
+        tool_names.contains(&EDIT_TOOL_NAME) || tool_names.contains(&MULTIEDIT_TOOL_NAME);
     for &(tier, tools, when) in EFFICIENCY_TIERS {
-        let available: Vec<&str> = tools.iter().copied().filter(|t| tool_names.contains(t)).collect();
+        let available: Vec<&str> = tools
+            .iter()
+            .copied()
+            .filter(|t| tool_names.contains(t))
+            .collect();
         if available.is_empty() {
             continue;
         }
         let desc = if tier == "Costly" && has_edit {
-            let edits: Vec<&str> = [EDIT_TOOL_NAME, MULTIEDIT_TOOL_NAME].into_iter().filter(|t| tool_names.contains(t)).collect();
+            let edits: Vec<&str> = [EDIT_TOOL_NAME, MULTIEDIT_TOOL_NAME]
+                .into_iter()
+                .filter(|t| tool_names.contains(t))
+                .collect();
             format!("{when} (prefer {})", edits.join(" & "))
         } else {
             when.to_string()

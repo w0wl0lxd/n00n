@@ -13,7 +13,8 @@ pub use maki_providers::AgentError;
 pub use types::{
     AgentEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, Envelope,
     GrepFileEntry, GrepMatch, NO_FILES_FOUND, QuestionAnswer, QuestionInfo, QuestionOption,
-    TodoItem, TodoPriority, TodoStatus, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
+    SubagentInfo, TodoItem, TodoPriority, TodoStatus, ToolDoneEvent, ToolInput, ToolOutput,
+    ToolStartEvent,
 };
 
 pub const PLANS_DIR: &str = "plans";

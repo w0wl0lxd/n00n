@@ -1,7 +1,7 @@
 use std::sync::mpsc;
 use std::thread;
 
-use crate::{AgentEvent, ToolOutput};
+use crate::{AgentEvent, SubagentInfo, ToolOutput};
 use maki_providers::ContentBlock;
 use maki_providers::model::ModelTier;
 use maki_providers::provider;
@@ -75,9 +75,12 @@ impl Tool for Task {
 
         let (sub_tx, sub_rx) = mpsc::channel::<crate::Envelope>();
         let parent_tx = ctx.event_tx.clone();
-        let parent_id = ctx.tool_use_id.map(String::from);
-        let mut parent_name = Some(self.description.clone());
-        let mut parent_prompt = Some(self.prompt.clone());
+        let subagent_info = ctx.tool_use_id.map(|id| SubagentInfo {
+            parent_tool_use_id: id.to_owned(),
+            name: self.description.clone(),
+            prompt: Some(self.prompt.clone()),
+            model: Some(model.spec()),
+        });
         thread::spawn(move || {
             while let Ok(mut envelope) = sub_rx.recv() {
                 if matches!(
@@ -88,9 +91,7 @@ impl Tool for Task {
                 ) {
                     continue;
                 }
-                envelope.parent_tool_use_id = parent_id.clone();
-                envelope.parent_name = parent_name.take();
-                envelope.parent_prompt = parent_prompt.take();
+                envelope.subagent = subagent_info.clone();
                 let _ = parent_tx.send(envelope);
             }
         });

@@ -632,7 +632,11 @@ mod tests {
     #[test]
     fn tool_definitions_examples_non_empty() {
         let vars = Vars::new().set("{cwd}", "/tmp");
-        for def in ToolCall::definitions(&vars, &[], true).1.as_array().unwrap() {
+        for def in ToolCall::definitions(&vars, &[], true)
+            .1
+            .as_array()
+            .unwrap()
+        {
             if let Some(examples) = def.get("input_examples") {
                 assert!(
                     !examples.as_array().unwrap().is_empty(),

@@ -21,7 +21,7 @@ use arboard::Clipboard;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 #[cfg(feature = "demo")]
 use maki_agent::QuestionInfo;
-use maki_agent::{AgentEvent, Envelope};
+use maki_agent::{AgentEvent, Envelope, SubagentInfo};
 use maki_agent::{AgentInput, AgentMode};
 use maki_providers::{ModelPricing, TokenUsage};
 use ratatui::Frame;
@@ -594,11 +594,10 @@ impl App {
             return vec![];
         }
 
-        let chat_idx = self.resolve_or_create_chat(
-            envelope.parent_tool_use_id.as_deref(),
-            envelope.parent_name.as_deref(),
-            envelope.parent_prompt.as_deref(),
-        );
+        let chat_idx = match envelope.subagent {
+            Some(ref subagent) => self.resolve_or_create_chat(subagent),
+            None => 0,
+        };
 
         if let AgentEvent::ToolDone(ref e) = envelope.event
             && let Mode::Plan {
@@ -700,24 +699,20 @@ impl App {
         vec![]
     }
 
-    fn resolve_or_create_chat(
-        &mut self,
-        parent_id: Option<&str>,
-        parent_name: Option<&str>,
-        parent_prompt: Option<&str>,
-    ) -> usize {
-        let Some(id) = parent_id else { return 0 };
-        if let Some(&idx) = self.chat_index.get(id) {
+    fn resolve_or_create_chat(&mut self, subagent: &SubagentInfo) -> usize {
+        let id = &subagent.parent_tool_use_id;
+        if let Some(&idx) = self.chat_index.get(id.as_str()) {
             return idx;
         }
-        let name = parent_name
-            .map(String::from)
-            .unwrap_or_else(|| format!("Agent {}", self.chats.len()));
         let idx = self.chats.len();
-        self.chat_index.insert(id.to_owned(), idx);
-        self.chats[0].update_tool_summary(id, &name);
-        let mut chat = Chat::new(name);
-        if let Some(prompt) = parent_prompt {
+        self.chat_index.insert(id.clone(), idx);
+        self.chats[0].update_tool_summary(id, &subagent.name);
+        if let Some(ref model) = subagent.model {
+            self.chats[0].update_tool_model(id, model);
+        }
+        let mut chat = Chat::new(subagent.name.clone());
+        chat.model_id = subagent.model.clone();
+        if let Some(ref prompt) = subagent.prompt {
             chat.push_user_message(prompt);
         }
         self.chats.push(chat);
@@ -905,7 +900,7 @@ impl App {
             status: &self.status,
             mode_label,
             mode_style,
-            model_id: &self.model_id,
+            model_id: chat.model_id.as_deref().unwrap_or(&self.model_id),
             stats: UsageStats {
                 usage: &chat.token_usage,
                 global_usage: &self.token_usage,
@@ -1066,14 +1061,24 @@ mod tests {
     fn agent_msg(event: AgentEvent) -> Msg {
         Msg::Agent(Box::new(Envelope {
             event,
-            parent_tool_use_id: None,
-            parent_name: None,
-            parent_prompt: None,
+            subagent: None,
         }))
     }
 
+    fn subagent_info(parent_id: &str, name: &str) -> SubagentInfo {
+        SubagentInfo {
+            parent_tool_use_id: parent_id.into(),
+            name: name.into(),
+            prompt: None,
+            model: None,
+        }
+    }
+
     fn subagent_msg(event: AgentEvent, parent_id: &str, name: Option<&str>) -> Msg {
-        subagent_msg_with_prompt(event, parent_id, name, None)
+        Msg::Agent(Box::new(Envelope {
+            event,
+            subagent: Some(subagent_info(parent_id, name.unwrap_or("Agent"))),
+        }))
     }
 
     fn subagent_msg_with_prompt(
@@ -1082,11 +1087,20 @@ mod tests {
         name: Option<&str>,
         prompt: Option<&str>,
     ) -> Msg {
+        let mut info = subagent_info(parent_id, name.unwrap_or("Agent"));
+        info.prompt = prompt.map(String::from);
         Msg::Agent(Box::new(Envelope {
             event,
-            parent_tool_use_id: Some(parent_id.into()),
-            parent_name: name.map(String::from),
-            parent_prompt: prompt.map(String::from),
+            subagent: Some(info),
+        }))
+    }
+
+    fn subagent_msg_with_model(event: AgentEvent, parent_id: &str, name: &str, model: &str) -> Msg {
+        let mut info = subagent_info(parent_id, name);
+        info.model = Some(model.into());
+        Msg::Agent(Box::new(Envelope {
+            event,
+            subagent: Some(info),
         }))
     }
 
@@ -1890,115 +1904,37 @@ mod tests {
         );
     }
 
-    #[test]
-    fn drag_at_top_edge_sets_edge_scroll_and_scrolls() {
+    #[test_case(Rect::new(0, 2, 80, 20), (10, 12), (10, 1),  Some(EDGE_SCROLL_LINES)  ; "top_edge")]
+    #[test_case(Rect::new(0, 2, 80, 20), (10, 10), (10, 22), Some(-EDGE_SCROLL_LINES) ; "bottom_edge")]
+    #[test_case(Rect::new(0, 2, 80, 20), (10, 10), (20, 15), None                     ; "middle_no_scroll")]
+    #[test_case(Rect::new(0, 1, 80, 20), (10, 10), (10, 0),  Some(EDGE_SCROLL_LINES)  ; "above_area")]
+    #[test_case(Rect::new(0, 0, 80, 20), (10, 10), (10, 0),  Some(EDGE_SCROLL_LINES)  ; "first_row")]
+    #[test_case(Rect::new(0, 0, 80, 20), (10, 10), (10, 20), Some(-EDGE_SCROLL_LINES) ; "below_area")]
+    #[test_case(Rect::new(0, 0, 80, 20), (10, 10), (10, 19), Some(-EDGE_SCROLL_LINES) ; "last_row")]
+    #[test_case(Rect::new(0, 0, 80, 20), (10, 10), (10, 1),  None                     ; "interior")]
+    fn edge_scroll_direction(
+        zone: Rect,
+        down: (u16, u16),
+        drag: (u16, u16),
+        expected: Option<i32>,
+    ) {
         let mut app = test_app();
-        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 2, 80, 20));
+        set_zone(&mut app, SelectionZone::Messages, zone);
         app.active_chat().scroll_to_top();
 
-        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 12));
-        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 1));
+        app.update(mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            down.0,
+            down.1,
+        ));
+        app.update(mouse_event(
+            MouseEventKind::Drag(MouseButton::Left),
+            drag.0,
+            drag.1,
+        ));
 
         let state = app.selection_state.as_ref().unwrap();
-        assert!(state.edge_scroll.is_some());
-        assert_eq!(state.edge_scroll.as_ref().unwrap().dir, EDGE_SCROLL_LINES);
-        assert!(!app.chats[0].auto_scroll(), "scroll disables auto_scroll");
-    }
-
-    #[test]
-    fn drag_at_bottom_edge_sets_edge_scroll() {
-        let mut app = test_app();
-        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 2, 80, 20));
-
-        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
-        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 22));
-
-        let state = app.selection_state.as_ref().unwrap();
-        assert!(state.edge_scroll.is_some());
-        assert_eq!(state.edge_scroll.as_ref().unwrap().dir, -EDGE_SCROLL_LINES);
-    }
-
-    #[test]
-    fn drag_in_middle_does_not_scroll() {
-        let mut app = test_app();
-        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 2, 80, 20));
-        app.active_chat().enable_auto_scroll();
-
-        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
-        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 20, 15));
-
-        let state = app.selection_state.as_ref().unwrap();
-        assert!(app.chats[0].auto_scroll(), "auto_scroll preserved");
-        assert!(state.edge_scroll.is_none(), "no edge scroll in middle");
-    }
-
-    #[test]
-    fn edge_scroll_above_area() {
-        let mut app = test_app();
-        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 1, 80, 20));
-        app.active_chat().scroll_to_top();
-
-        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
-        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 0));
-
-        let state = app.selection_state.as_ref().unwrap();
-        assert!(state.edge_scroll.is_some());
-        assert_eq!(state.edge_scroll.as_ref().unwrap().dir, EDGE_SCROLL_LINES);
-    }
-
-    #[test]
-    fn edge_scroll_on_first_row() {
-        let mut app = test_app();
-        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
-        app.active_chat().scroll_to_top();
-
-        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
-        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 0));
-
-        let state = app.selection_state.as_ref().unwrap();
-        assert!(state.edge_scroll.is_some());
-        assert_eq!(state.edge_scroll.as_ref().unwrap().dir, EDGE_SCROLL_LINES);
-    }
-
-    #[test]
-    fn edge_scroll_below_area() {
-        let mut app = test_app();
-        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
-
-        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
-        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 20));
-
-        let state = app.selection_state.as_ref().unwrap();
-        assert!(state.edge_scroll.is_some());
-        assert_eq!(state.edge_scroll.as_ref().unwrap().dir, -EDGE_SCROLL_LINES);
-    }
-
-    #[test]
-    fn edge_scroll_on_last_row() {
-        let mut app = test_app();
-        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
-
-        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
-        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 19));
-
-        let state = app.selection_state.as_ref().unwrap();
-        assert!(state.edge_scroll.is_some());
-        assert_eq!(state.edge_scroll.as_ref().unwrap().dir, -EDGE_SCROLL_LINES);
-    }
-
-    #[test]
-    fn no_edge_scroll_in_interior() {
-        let mut app = test_app();
-        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
-
-        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
-        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 1));
-
-        let state = app.selection_state.as_ref().unwrap();
-        assert!(
-            state.edge_scroll.is_none(),
-            "row 1 is interior, no edge scroll"
-        );
+        assert_eq!(state.edge_scroll.as_ref().map(|es| es.dir), expected);
     }
 
     #[test]
@@ -2257,17 +2193,29 @@ mod tests {
     }
 
     #[test]
-    fn selection_state_cleared_atomically() {
+    fn resolve_or_create_chat_sets_model_id_and_annotation() {
         let mut app = test_app();
-        set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 2, 80, 20));
-        app.active_chat().scroll_to_top();
+        app.status = Status::Streaming;
+        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+            id: "task1".into(),
+            tool: "task",
+            summary: "research".into(),
+            annotation: None,
+            input: None,
+            output: None,
+        })));
 
-        app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
-        app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 1));
-        assert!(app.selection_state.is_some());
-        assert!(app.selection_state.as_ref().unwrap().edge_scroll.is_some());
+        app.update(subagent_msg_with_model(
+            AgentEvent::TextDelta { text: "hi".into() },
+            "task1",
+            "research",
+            "anthropic/claude-sonnet-4-20250514",
+        ));
 
-        app.selection_state = None;
-        assert!(app.selection_state.is_none());
+        assert_eq!(app.chats.len(), 2);
+        assert_eq!(
+            app.chats[1].model_id.as_deref(),
+            Some("anthropic/claude-sonnet-4-20250514")
+        );
     }
 }

@@ -20,6 +20,7 @@ pub struct Chat {
     pub name: String,
     pub token_usage: TokenUsage,
     pub context_size: u32,
+    pub model_id: Option<String>,
     messages_panel: MessagesPanel,
 }
 
@@ -29,6 +30,7 @@ impl Chat {
             name,
             token_usage: TokenUsage::default(),
             context_size: 0,
+            model_id: None,
             messages_panel: MessagesPanel::new(),
         }
     }
@@ -150,6 +152,10 @@ impl Chat {
 
     pub fn update_tool_summary(&mut self, tool_id: &str, summary: &str) {
         self.messages_panel.update_tool_summary(tool_id, summary);
+    }
+
+    pub fn update_tool_model(&mut self, tool_id: &str, model: &str) {
+        self.messages_panel.update_tool_model(tool_id, model);
     }
 
     pub fn load_messages(&mut self, msgs: Vec<DisplayMessage>) {

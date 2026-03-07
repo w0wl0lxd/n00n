@@ -410,25 +410,30 @@ pub enum AgentEvent {
     },
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SubagentInfo {
+    pub parent_tool_use_id: String,
+    #[serde(rename = "parent_name")]
+    pub name: String,
+    #[serde(rename = "parent_prompt", skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(rename = "parent_model", skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Envelope {
     #[serde(flatten)]
     pub event: AgentEvent,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_tool_use_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_prompt: Option<String>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<SubagentInfo>,
 }
 
 impl From<AgentEvent> for Envelope {
     fn from(event: AgentEvent) -> Self {
         Self {
             event,
-            parent_tool_use_id: None,
-            parent_name: None,
-            parent_prompt: None,
+            subagent: None,
         }
     }
 }

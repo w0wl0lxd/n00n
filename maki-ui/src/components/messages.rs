@@ -207,6 +207,7 @@ impl MessagesPanel {
             tool_input: event.input,
             tool_output: event.output,
             annotation: event.annotation,
+            model_annotation: None,
             plan_path: None,
             timestamp: Some(format_timestamp_now()),
         });
@@ -336,6 +337,18 @@ impl MessagesPanel {
             return;
         };
         msg.text = summary.to_owned();
+        self.rebuild_tool_segment(tool_id);
+    }
+
+    pub fn update_tool_model(&mut self, tool_id: &str, model: &str) {
+        let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == tool_id))
+        else {
+            return;
+        };
+        msg.model_annotation = Some(model.to_owned());
         self.rebuild_tool_segment(tool_id);
     }
 
@@ -1533,5 +1546,20 @@ mod tests {
             .map(|s| Line::from(Span::raw(s.to_string())))
             .collect();
         assert_eq!(wrapped_line_count(&lines, width), expected);
+    }
+
+    #[test]
+    fn update_tool_model_sets_model_annotation() {
+        let mut panel = panel_with_tools(&[("t1", "task"), ("t2", "bash")]);
+        rebuild(&mut panel);
+
+        panel.update_tool_model("t1", "anthropic/claude-sonnet-4-20250514");
+
+        let msg = &panel.messages[0];
+        assert_eq!(
+            msg.model_annotation.as_deref(),
+            Some("anthropic/claude-sonnet-4-20250514")
+        );
+        assert!(msg.annotation.is_none(), "annotation should be unaffected");
     }
 }
