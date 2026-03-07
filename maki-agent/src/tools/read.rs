@@ -1,10 +1,10 @@
 use std::fmt::Write;
 use std::fs;
 
-use crate::{ToolInput, ToolOutput};
+use crate::ToolOutput;
 use maki_tool_macro::Tool;
 
-use super::{MAX_OUTPUT_LINES, relative_path, truncate_bytes};
+use super::{MAX_OUTPUT_LINES, Tool, relative_path, truncate_bytes};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Read {
@@ -16,10 +16,10 @@ pub struct Read {
     limit: Option<usize>,
 }
 
-impl Read {
-    pub const NAME: &str = "read";
-    pub const DESCRIPTION: &str = include_str!("read.md");
-    pub const EXAMPLES: Option<&str> = Some(
+impl Tool for Read {
+    const NAME: &str = "read";
+    const DESCRIPTION: &str = include_str!("read.md");
+    const EXAMPLES: Option<&str> = Some(
         r#"[
   {"path": "/home/user/project/src/main.rs"},
   {"path": "/home/user/project/src/lib.rs", "offset": 50, "limit": 30},
@@ -27,7 +27,7 @@ impl Read {
 ]"#,
     );
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let raw = fs::read_to_string(&self.path).map_err(|e| format!("read error: {e}"))?;
 
         let start = self.offset.unwrap_or(1).saturating_sub(1);
@@ -47,7 +47,7 @@ impl Read {
         })
     }
 
-    pub fn start_summary(&self) -> String {
+    fn start_summary(&self) -> String {
         let mut s = relative_path(&self.path);
         let start = self.offset.unwrap_or(1);
         match (self.offset.is_some(), self.limit) {
@@ -61,20 +61,6 @@ impl Read {
         }
         s
     }
-
-    pub fn start_input(&self) -> Option<ToolInput> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
-        None
-    }
-
-    pub fn mutable_path(&self) -> Option<&str> {
-        None
-    }
-
-    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 #[cfg(test)]

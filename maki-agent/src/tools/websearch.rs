@@ -5,10 +5,9 @@ use maki_tool_macro::Tool;
 use serde_json::{Value, json};
 use ureq::Agent;
 
-use crate::{ToolInput, ToolOutput};
+use crate::ToolOutput;
 
-use super::MAX_RESPONSE_BYTES;
-use super::truncate_output;
+use super::{MAX_RESPONSE_BYTES, Tool, truncate_output};
 
 const EXA_MCP_ENDPOINT: &str = "https://mcp.exa.ai/mcp";
 const REQUEST_TIMEOUT_SECS: u64 = 25;
@@ -23,17 +22,17 @@ pub struct WebSearch {
     num_results: Option<u64>,
 }
 
-impl WebSearch {
-    pub const NAME: &str = "websearch";
-    pub const DESCRIPTION: &str = include_str!("websearch.md");
-    pub const EXAMPLES: Option<&str> = Some(
+impl Tool for WebSearch {
+    const NAME: &str = "websearch";
+    const DESCRIPTION: &str = include_str!("websearch.md");
+    const EXAMPLES: Option<&str> = Some(
         r#"[
   {"query": "rust tokio spawn blocking best practices"},
   {"query": "serde deserialize enum tag", "num_results": 5}
 ]"#,
     );
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let num_results = self.num_results.unwrap_or(DEFAULT_NUM_RESULTS);
 
         let payload = json!({
@@ -83,23 +82,9 @@ impl WebSearch {
         Ok(ToolOutput::Plain(truncate_output(text)))
     }
 
-    pub fn start_summary(&self) -> String {
+    fn start_summary(&self) -> String {
         self.query.clone()
     }
-
-    pub fn start_input(&self) -> Option<ToolInput> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
-        None
-    }
-
-    pub fn mutable_path(&self) -> Option<&str> {
-        None
-    }
-
-    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 fn parse_sse_response(body: &str) -> Result<String, String> {

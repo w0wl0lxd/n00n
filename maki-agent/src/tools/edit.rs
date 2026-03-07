@@ -1,11 +1,11 @@
 use std::fs;
 
-use crate::{ToolInput, ToolOutput};
+use crate::ToolOutput;
 use maki_tool_macro::Tool;
 
 use super::fuzzy_replace;
 use super::multiedit::build_hunk;
-use super::{line_at_offset, relative_path};
+use super::{Tool, line_at_offset, relative_path};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Edit {
@@ -20,15 +20,6 @@ pub struct Edit {
 }
 
 impl Edit {
-    pub const NAME: &str = "edit";
-    pub const DESCRIPTION: &str = include_str!("edit.md");
-    pub const EXAMPLES: Option<&str> = Some(
-        r#"[
-  {"path": "/home/user/project/src/main.rs", "old_string": "fn old_name(", "new_string": "fn new_name("},
-  {"path": "/home/user/project/config.toml", "old_string": "v1", "new_string": "v2", "replace_all": true}
-]"#,
-    );
-
     fn diff_output(&self, lines: &[usize]) -> ToolOutput {
         let rel = relative_path(&self.path);
         let hunks = lines
@@ -41,8 +32,19 @@ impl Edit {
             path: rel,
         }
     }
+}
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+impl Tool for Edit {
+    const NAME: &str = "edit";
+    const DESCRIPTION: &str = include_str!("edit.md");
+    const EXAMPLES: Option<&str> = Some(
+        r#"[
+  {"path": "/home/user/project/src/main.rs", "old_string": "fn old_name(", "new_string": "fn new_name("},
+  {"path": "/home/user/project/config.toml", "old_string": "v1", "new_string": "v2", "replace_all": true}
+]"#,
+    );
+
+    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let content = fs::read_to_string(&self.path).map_err(|e| format!("read error: {e}"))?;
         let replace_all = self.replace_all.unwrap_or(false);
         let result =
@@ -56,23 +58,17 @@ impl Edit {
         Ok(self.diff_output(&lines))
     }
 
-    pub fn start_summary(&self) -> String {
+    fn start_summary(&self) -> String {
         relative_path(&self.path)
     }
 
-    pub fn start_input(&self) -> Option<ToolInput> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
+    fn start_output(&self) -> Option<ToolOutput> {
         Some(self.diff_output(&[1]))
     }
 
-    pub fn mutable_path(&self) -> Option<&str> {
+    fn mutable_path(&self) -> Option<&str> {
         Some(&self.path)
     }
-
-    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 #[cfg(test)]

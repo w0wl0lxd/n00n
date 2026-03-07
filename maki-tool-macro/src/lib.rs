@@ -147,7 +147,7 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         impl #name {
-            pub fn schema() -> serde_json::Value {
+            pub(crate) fn schema() -> serde_json::Value {
                 let mut props = serde_json::Map::new();
                 #(#prop_entries)*
                 let mut required = Vec::<String>::new();
@@ -160,7 +160,7 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
                 })
             }
 
-            pub fn parse_input(input: &serde_json::Value) -> Result<Self, String> {
+            pub(crate) fn parse_input(input: &serde_json::Value) -> Result<Self, String> {
                 #(#field_extractions)*
                 Ok(Self { #(#field_names),* })
             }

@@ -8,7 +8,7 @@ use maki_tool_macro::Tool;
 
 use crate::{AgentEvent, Envelope, ToolInput, ToolOutput};
 
-use super::{relative_path, truncate_output};
+use super::{Tool, relative_path, truncate_output};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const POLL_INTERVAL_MS: u64 = 10;
@@ -30,10 +30,10 @@ pub struct Bash {
     description: Option<String>,
 }
 
-impl Bash {
-    pub const NAME: &str = "bash";
-    pub const DESCRIPTION: &str = include_str!("bash.md");
-    pub const EXAMPLES: Option<&str> = Some(
+impl Tool for Bash {
+    const NAME: &str = "bash";
+    const DESCRIPTION: &str = include_str!("bash.md");
+    const EXAMPLES: Option<&str> = Some(
         r#"[
   {"command": "cargo build --release", "description": "Build release binary"},
   {"command": "git diff HEAD~1", "description": "Show last commit diff"},
@@ -41,22 +41,7 @@ impl Bash {
 ]"#,
     );
 
-    fn resolved(&self) -> (&str, Option<&str>) {
-        if self.workdir.is_some() {
-            return (&self.command, self.workdir.as_deref());
-        }
-        if let Some(rest) = self.command.strip_prefix("cd ")
-            && let Some(idx) = rest.find(" && ")
-        {
-            let dir = rest[..idx].trim();
-            if !dir.is_empty() {
-                return (&rest[idx + 4..], Some(dir));
-            }
-        }
-        (&self.command, None)
-    }
-
-    pub fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let timeout_secs = self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let (command, workdir) = self.resolved();
         let mut cmd = Command::new("bash");
@@ -137,7 +122,7 @@ impl Bash {
         }
     }
 
-    pub fn start_summary(&self) -> String {
+    fn start_summary(&self) -> String {
         let (command, workdir) = self.resolved();
         let mut s = self
             .description
@@ -150,23 +135,30 @@ impl Bash {
         s
     }
 
-    pub fn mutable_path(&self) -> Option<&str> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
-        None
-    }
-
-    pub fn start_input(&self) -> Option<ToolInput> {
+    fn start_input(&self) -> Option<ToolInput> {
         let (command, _) = self.resolved();
         Some(ToolInput::Code {
             language: "bash",
             code: command.to_string(),
         })
     }
+}
 
-    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
+impl Bash {
+    fn resolved(&self) -> (&str, Option<&str>) {
+        if self.workdir.is_some() {
+            return (&self.command, self.workdir.as_deref());
+        }
+        if let Some(rest) = self.command.strip_prefix("cd ")
+            && let Some(idx) = rest.find(" && ")
+        {
+            let dir = rest[..idx].trim();
+            if !dir.is_empty() {
+                return (&rest[idx + 4..], Some(dir));
+            }
+        }
+        (&self.command, None)
+    }
 }
 
 fn spawn_line_reader(pipe: impl Read + Send + 'static, tx: Sender<String>) {

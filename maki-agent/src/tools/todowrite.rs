@@ -1,4 +1,5 @@
-use crate::{TodoItem, ToolInput, ToolOutput};
+use super::Tool;
+use crate::{TodoItem, ToolOutput};
 use maki_tool_macro::Tool;
 
 #[derive(Tool, Debug, Clone)]
@@ -7,30 +8,15 @@ pub struct TodoWrite {
     todos: Vec<TodoItem>,
 }
 
-impl TodoWrite {
-    pub const NAME: &str = "todowrite";
-    pub const DESCRIPTION: &str = include_str!("todowrite.md");
-    pub const EXAMPLES: Option<&str> = None;
+impl Tool for TodoWrite {
+    const NAME: &str = "todowrite";
+    const DESCRIPTION: &str = include_str!("todowrite.md");
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         Ok(ToolOutput::TodoList(self.todos.clone()))
     }
 
-    pub fn start_summary(&self) -> String {
+    fn start_summary(&self) -> String {
         format!("{} todos", self.todos.len())
     }
-
-    pub fn start_input(&self) -> Option<ToolInput> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
-        None
-    }
-
-    pub fn mutable_path(&self) -> Option<&str> {
-        None
-    }
-
-    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }

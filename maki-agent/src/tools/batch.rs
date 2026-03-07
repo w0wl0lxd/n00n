@@ -1,12 +1,12 @@
 use std::fmt::Write;
 
-use crate::{AgentEvent, BatchToolEntry, BatchToolStatus, ToolInput, ToolOutput};
+use crate::{AgentEvent, BatchToolEntry, BatchToolStatus, ToolOutput};
 use serde::Deserialize;
 use serde_json::Value;
 
 use maki_tool_macro::Tool;
 
-use super::{ToolCall, ToolContext};
+use super::{Tool, ToolCall, ToolContext};
 
 const MAX_BATCH_SIZE: usize = 25;
 
@@ -50,10 +50,10 @@ pub struct Batch {
     tool_calls: Vec<BatchEntry>,
 }
 
-impl Batch {
-    pub const NAME: &str = "batch";
-    pub const DESCRIPTION: &str = include_str!("batch.md");
-    pub const EXAMPLES: Option<&str> = Some(
+impl Tool for Batch {
+    const NAME: &str = "batch";
+    const DESCRIPTION: &str = include_str!("batch.md");
+    const EXAMPLES: Option<&str> = Some(
         r#"[
   {"tool_calls": [
     {"tool": "read", "parameters": {"path": "/home/user/project/src/main.rs"}},
@@ -62,7 +62,7 @@ impl Batch {
 ]"#,
     );
 
-    pub fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
         if self.tool_calls.is_empty() {
             return Err("provide at least one tool call".into());
         }
@@ -190,15 +190,11 @@ impl Batch {
         })
     }
 
-    pub fn start_summary(&self) -> String {
+    fn start_summary(&self) -> String {
         format!("{} tools", self.tool_calls.len())
     }
 
-    pub fn start_input(&self) -> Option<ToolInput> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
+    fn start_output(&self) -> Option<ToolOutput> {
         let entries = self
             .tool_calls
             .iter()
@@ -209,12 +205,6 @@ impl Batch {
             text: String::new(),
         })
     }
-
-    pub fn mutable_path(&self) -> Option<&str> {
-        None
-    }
-
-    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 #[cfg(test)]

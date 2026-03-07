@@ -1,10 +1,10 @@
-use crate::{ToolInput, ToolOutput};
+use crate::ToolOutput;
 use ignore::WalkBuilder;
 use ignore::overrides::OverrideBuilder;
 use maki_tool_macro::Tool;
 use tracing::debug;
 
-use super::{SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path};
+use super::{SEARCH_RESULT_LIMIT, Tool, mtime, relative_path, resolve_search_path};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Glob {
@@ -14,17 +14,17 @@ pub struct Glob {
     path: Option<String>,
 }
 
-impl Glob {
-    pub const NAME: &str = "glob";
-    pub const DESCRIPTION: &str = include_str!("glob.md");
-    pub const EXAMPLES: Option<&str> = Some(
+impl Tool for Glob {
+    const NAME: &str = "glob";
+    const DESCRIPTION: &str = include_str!("glob.md");
+    const EXAMPLES: Option<&str> = Some(
         r#"[
   {"pattern": "**/*.rs"},
   {"pattern": "src/**/*.ts", "path": "/home/user/project"}
 ]"#,
     );
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let search_path = resolve_search_path(self.path.as_deref())?;
 
         debug!(
@@ -62,7 +62,7 @@ impl Glob {
         })
     }
 
-    pub fn start_summary(&self) -> String {
+    fn start_summary(&self) -> String {
         let mut s = self.pattern.clone();
         if let Some(dir) = &self.path {
             s.push_str(" in ");
@@ -70,20 +70,6 @@ impl Glob {
         }
         s
     }
-
-    pub fn start_input(&self) -> Option<ToolInput> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
-        None
-    }
-
-    pub fn mutable_path(&self) -> Option<&str> {
-        None
-    }
-
-    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 #[cfg(test)]

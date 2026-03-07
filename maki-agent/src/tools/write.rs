@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::Path;
 
-use crate::{ToolInput, ToolOutput};
+use crate::ToolOutput;
 use maki_tool_macro::Tool;
 
-use super::{MAX_OUTPUT_LINES, relative_path};
+use super::{MAX_OUTPUT_LINES, Tool, relative_path};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Write {
@@ -14,11 +14,32 @@ pub struct Write {
     content: String,
 }
 
-impl Write {
-    pub const NAME: &str = "write";
-    pub const DESCRIPTION: &str = include_str!("write.md");
-    pub const EXAMPLES: Option<&str> = None;
+impl Tool for Write {
+    const NAME: &str = "write";
+    const DESCRIPTION: &str = include_str!("write.md");
 
+    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+        if let Some(parent) = Path::new(&self.path).parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("mkdir error: {e}"))?;
+        }
+        fs::write(&self.path, &self.content).map_err(|e| format!("write error: {e}"))?;
+        Ok(self.write_output())
+    }
+
+    fn start_summary(&self) -> String {
+        relative_path(&self.path)
+    }
+
+    fn start_output(&self) -> Option<ToolOutput> {
+        Some(self.write_output())
+    }
+
+    fn mutable_path(&self) -> Option<&str> {
+        Some(&self.path)
+    }
+}
+
+impl Write {
     fn write_output(&self) -> ToolOutput {
         ToolOutput::WriteCode {
             path: relative_path(&self.path),
@@ -31,30 +52,4 @@ impl Write {
                 .collect(),
         }
     }
-
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        if let Some(parent) = Path::new(&self.path).parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("mkdir error: {e}"))?;
-        }
-        fs::write(&self.path, &self.content).map_err(|e| format!("write error: {e}"))?;
-        Ok(self.write_output())
-    }
-
-    pub fn start_summary(&self) -> String {
-        relative_path(&self.path)
-    }
-
-    pub fn start_input(&self) -> Option<ToolInput> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
-        Some(self.write_output())
-    }
-
-    pub fn mutable_path(&self) -> Option<&str> {
-        Some(&self.path)
-    }
-
-    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }

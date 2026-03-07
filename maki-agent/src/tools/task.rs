@@ -1,11 +1,11 @@
 use std::sync::mpsc;
 use std::thread;
 
-use crate::{AgentEvent, ToolInput, ToolOutput};
+use crate::{AgentEvent, ToolOutput};
 use maki_providers::ContentBlock;
 use maki_tool_macro::Tool;
 
-use super::{GENERAL_SUBAGENT_TOOLS, RESEARCH_SUBAGENT_TOOLS, ToolContext};
+use super::{GENERAL_SUBAGENT_TOOLS, RESEARCH_SUBAGENT_TOOLS, Tool, ToolContext};
 use crate::agent;
 use crate::template;
 use crate::tools::ToolCall;
@@ -23,17 +23,17 @@ pub struct Task {
     subagent_type: Option<String>,
 }
 
-impl Task {
-    pub const NAME: &str = "task";
-    pub const DESCRIPTION: &str = include_str!("task.md");
-    pub const EXAMPLES: Option<&str> = Some(
+impl Tool for Task {
+    const NAME: &str = "task";
+    const DESCRIPTION: &str = include_str!("task.md");
+    const EXAMPLES: Option<&str> = Some(
         r#"[
   {"description": "Find auth middleware", "prompt": "Search the codebase for authentication middleware. Return file paths and a summary of how auth is implemented."},
   {"description": "Refactor error types", "prompt": "In src/errors.rs, replace all uses of String error types with thiserror derive macros. Follow existing patterns.", "subagent_type": "general"}
 ]"#,
     );
 
-    pub fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
         let vars = template::env_vars();
         let agent_type = self.subagent_type.as_deref().unwrap_or("research");
         let (prompt, tool_names) = match agent_type {
@@ -107,23 +107,9 @@ impl Task {
         Ok(ToolOutput::Plain(text.to_string()))
     }
 
-    pub fn start_summary(&self) -> String {
+    fn start_summary(&self) -> String {
         self.description.clone()
     }
-
-    pub fn start_input(&self) -> Option<ToolInput> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
-        None
-    }
-
-    pub fn mutable_path(&self) -> Option<&str> {
-        None
-    }
-
-    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 #[cfg(test)]

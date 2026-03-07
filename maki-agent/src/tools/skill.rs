@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ToolOutput;
-use crate::skill::Skill;
+use crate::skill::{Skill, build_skill_list_description};
 use maki_tool_macro::Tool;
 
-use super::ToolContext;
+use super::{Tool, ToolContext};
 
 const NOT_FOUND: &str = "skill not found: ";
 
@@ -14,35 +14,23 @@ pub struct SkillTool {
     name: String,
 }
 
-impl SkillTool {
-    pub const NAME: &str = "skill";
-    pub const DESCRIPTION: &str = "Load a skill by name to get detailed instructions.";
-    pub const EXAMPLES: Option<&str> = None;
+impl Tool for SkillTool {
+    const NAME: &str = "skill";
+    const DESCRIPTION: &str = "Load a skill by name to get detailed instructions.";
 
-    pub fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
         Skill::find(&self.name, ctx.skills)
             .map(|s| ToolOutput::Plain(s.format_content()))
             .ok_or_else(|| format!("{NOT_FOUND}{}", self.name))
     }
 
-    pub fn start_summary(&self) -> String {
+    fn start_summary(&self) -> String {
         self.name.clone()
     }
 
-    pub fn start_input(&self) -> Option<super::ToolInput> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
-        None
-    }
-
-    pub fn mutable_path(&self) -> Option<&str> {
-        None
-    }
-
-    pub fn augment_description(description: &mut String, ctx: &super::DescriptionContext) {
-        description.push_str(&crate::skill::build_skill_list_description(ctx.skills));
+    fn description_extra(skills: &[Skill]) -> Option<String> {
+        let desc = build_skill_list_description(skills);
+        if desc.is_empty() { None } else { Some(desc) }
     }
 }
 
@@ -54,7 +42,6 @@ mod tests {
 
     use super::*;
     use crate::AgentMode;
-    use crate::skill::Skill;
     use crate::tools::test_support::stub_ctx;
 
     fn test_skill() -> Skill {

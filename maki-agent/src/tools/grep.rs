@@ -1,12 +1,13 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::{GrepFileEntry, GrepMatch, ToolInput, ToolOutput};
+use crate::{GrepFileEntry, GrepMatch, ToolOutput};
 use maki_tool_macro::Tool;
 use tracing::debug;
 
 use super::{
-    NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path, truncate_bytes,
+    NO_FILES_FOUND, SEARCH_RESULT_LIMIT, Tool, mtime, relative_path, resolve_search_path,
+    truncate_bytes,
 };
 
 #[derive(Tool, Debug, Clone)]
@@ -19,10 +20,10 @@ pub struct Grep {
     include: Option<String>,
 }
 
-impl Grep {
-    pub const NAME: &str = "grep";
-    pub const DESCRIPTION: &str = include_str!("grep.md");
-    pub const EXAMPLES: Option<&str> = Some(
+impl Tool for Grep {
+    const NAME: &str = "grep";
+    const DESCRIPTION: &str = include_str!("grep.md");
+    const EXAMPLES: Option<&str> = Some(
         r#"[
   {"pattern": "fn main", "include": "*.rs"},
   {"pattern": "TODO|FIXME", "path": "src/"},
@@ -30,7 +31,7 @@ impl Grep {
 ]"#,
     );
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let search_path = resolve_search_path(self.path.as_deref())?;
 
         debug!(
@@ -120,7 +121,7 @@ impl Grep {
         Ok(ToolOutput::GrepResult { entries })
     }
 
-    pub fn start_summary(&self) -> String {
+    fn start_summary(&self) -> String {
         let mut s = self.pattern.clone();
         if let Some(inc) = &self.include {
             s.push_str(" [");
@@ -133,20 +134,6 @@ impl Grep {
         }
         s
     }
-
-    pub fn start_input(&self) -> Option<ToolInput> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
-        None
-    }
-
-    pub fn mutable_path(&self) -> Option<&str> {
-        None
-    }
-
-    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 #[cfg(test)]

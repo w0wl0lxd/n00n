@@ -7,10 +7,11 @@ use maki_interpreter::runner::{self, ToolFn};
 use maki_tool_macro::Tool;
 use serde_json::Value;
 
+use crate::skill::Skill;
 use crate::{AgentEvent, AgentMode, Envelope, ToolInput, ToolOutput};
 
-use super::INTERPRETER_TOOLS;
 use super::truncate_output;
+use super::{INTERPRETER_TOOLS, Tool};
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -22,10 +23,10 @@ pub struct CodeInterpreter {
     code: String,
 }
 
-impl CodeInterpreter {
-    pub const NAME: &str = "code_execution";
-    pub const DESCRIPTION: &str = include_str!("code_execution.md");
-    pub const EXAMPLES: Option<&str> = Some(
+impl Tool for CodeInterpreter {
+    const NAME: &str = "code_execution";
+    const DESCRIPTION: &str = include_str!("code_execution.md");
+    const EXAMPLES: Option<&str> = Some(
         r##"[
   {"code": "# Tools return strings, parse them as needed\nresult = grep(pattern='TODO', include='*.rs')\nlines = result.strip().split('\\n')\nprint(f'{len(lines)} TODOs found')"},
   {"code": "# Batch file reading\nfiles = glob(pattern='**/*.rs')\nfor f in files.strip().split('\\n'):\n    if f.strip():\n        content = read(path=f)\n        if 'fn main' in content:\n            print(f)"},
@@ -35,7 +36,7 @@ impl CodeInterpreter {
 ]"##,
     );
 
-    pub fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let tools = build_tool_fns(ctx.event_tx, ctx.mode);
 
         let result = if let Some(id) = ctx.tool_use_id {
@@ -78,28 +79,20 @@ impl CodeInterpreter {
         Ok(ToolOutput::Plain(truncate_output(output)))
     }
 
-    pub fn start_summary(&self) -> String {
+    fn start_summary(&self) -> String {
         let lines = self.code.lines().count();
         format!("{lines} lines")
     }
 
-    pub fn start_input(&self) -> Option<ToolInput> {
+    fn start_input(&self) -> Option<ToolInput> {
         Some(ToolInput::Script {
             language: "python",
             code: self.code.clone(),
         })
     }
 
-    pub fn start_output(&self) -> Option<ToolOutput> {
-        None
-    }
-
-    pub fn mutable_path(&self) -> Option<&str> {
-        None
-    }
-
-    pub fn augment_description(description: &mut String, _ctx: &super::DescriptionContext) {
-        description.push_str(&super::build_interpreter_tools_description());
+    fn description_extra(_skills: &[Skill]) -> Option<String> {
+        Some(super::build_interpreter_tools_description())
     }
 }
 

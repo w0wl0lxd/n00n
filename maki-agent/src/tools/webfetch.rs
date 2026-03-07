@@ -4,10 +4,9 @@ use std::time::Duration;
 use maki_tool_macro::Tool;
 use ureq::Agent;
 
-use crate::{ToolInput, ToolOutput};
+use crate::ToolOutput;
 
-use super::MAX_RESPONSE_BYTES;
-use super::truncate_output;
+use super::{MAX_RESPONSE_BYTES, Tool, truncate_output};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 120;
@@ -26,17 +25,17 @@ pub struct WebFetch {
     timeout: Option<u64>,
 }
 
-impl WebFetch {
-    pub const NAME: &str = "webfetch";
-    pub const DESCRIPTION: &str = include_str!("webfetch.md");
-    pub const EXAMPLES: Option<&str> = Some(
+impl Tool for WebFetch {
+    const NAME: &str = "webfetch";
+    const DESCRIPTION: &str = include_str!("webfetch.md");
+    const EXAMPLES: Option<&str> = Some(
         r#"[
   {"url": "https://docs.rs/serde/latest/serde/"},
   {"url": "https://example.com/api/spec", "format": "text", "timeout": 60}
 ]"#,
     );
 
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let url = validate_and_upgrade_url(&self.url)?;
         let format = self.validated_format()?;
         let timeout = Duration::from_secs(
@@ -119,6 +118,15 @@ impl WebFetch {
         Ok(ToolOutput::Plain(truncate_output(output)))
     }
 
+    fn start_summary(&self) -> String {
+        match self.format.as_deref() {
+            Some(f) if f != "markdown" => format!("{} [{f}]", self.url),
+            _ => self.url.clone(),
+        }
+    }
+}
+
+impl WebFetch {
     fn validated_format(&self) -> Result<&'static str, String> {
         match self.format.as_deref() {
             None | Some("markdown") => Ok("markdown"),
@@ -127,27 +135,6 @@ impl WebFetch {
             Some(other) => Err(format!("unknown format: {other}")),
         }
     }
-
-    pub fn start_summary(&self) -> String {
-        match self.format.as_deref() {
-            Some(f) if f != "markdown" => format!("{} [{f}]", self.url),
-            _ => self.url.clone(),
-        }
-    }
-
-    pub fn start_input(&self) -> Option<ToolInput> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
-        None
-    }
-
-    pub fn mutable_path(&self) -> Option<&str> {
-        None
-    }
-
-    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 fn validate_and_upgrade_url(url: &str) -> Result<String, String> {

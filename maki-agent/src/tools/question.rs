@@ -1,4 +1,5 @@
-use crate::{AgentEvent, QuestionAnswer, QuestionInfo, ToolInput, ToolOutput};
+use super::Tool;
+use crate::{AgentEvent, QuestionAnswer, QuestionInfo, ToolOutput};
 use maki_tool_macro::Tool;
 
 const EMPTY_QUESTIONS: &str = "at least one question is required";
@@ -10,12 +11,11 @@ pub struct Question {
     questions: Vec<QuestionInfo>,
 }
 
-impl Question {
-    pub const NAME: &str = "question";
-    pub const DESCRIPTION: &str = include_str!("question.md");
-    pub const EXAMPLES: Option<&str> = None;
+impl Tool for Question {
+    const NAME: &str = "question";
+    const DESCRIPTION: &str = include_str!("question.md");
 
-    pub fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         if self.questions.is_empty() {
             return Err(EMPTY_QUESTIONS.into());
         }
@@ -39,6 +39,13 @@ impl Question {
         }
     }
 
+    fn start_summary(&self) -> String {
+        let n = self.questions.len();
+        format!("{n} question{}", if n == 1 { "" } else { "s" })
+    }
+}
+
+impl Question {
     fn format_answer(questions: &[QuestionInfo], raw: &str) -> ToolOutput {
         let Ok(answers) = serde_json::from_str::<Vec<Vec<String>>>(raw) else {
             return ToolOutput::Plain(raw.to_string());
@@ -68,25 +75,6 @@ impl Question {
             .collect::<Vec<_>>()
             .join("\n")
     }
-
-    pub fn start_summary(&self) -> String {
-        let n = self.questions.len();
-        format!("{n} question{}", if n == 1 { "" } else { "s" })
-    }
-
-    pub fn start_input(&self) -> Option<ToolInput> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
-        None
-    }
-
-    pub fn mutable_path(&self) -> Option<&str> {
-        None
-    }
-
-    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
 }
 
 #[cfg(test)]

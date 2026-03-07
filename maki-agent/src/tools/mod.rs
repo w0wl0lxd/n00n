@@ -32,25 +32,42 @@ use crate::{
 use maki_providers::Model;
 use maki_providers::provider::Provider;
 
-pub struct DescriptionContext<'a> {
-    pub skills: &'a [Skill],
+pub(crate) trait Tool: Sized + Send + Sync {
+    const NAME: &str;
+    const DESCRIPTION: &str;
+    const EXAMPLES: Option<&str> = None;
+
+    fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String>;
+    fn start_summary(&self) -> String;
+    fn start_input(&self) -> Option<ToolInput> {
+        None
+    }
+    fn start_output(&self) -> Option<ToolOutput> {
+        None
+    }
+    fn mutable_path(&self) -> Option<&str> {
+        None
+    }
+    fn description_extra(_skills: &[Skill]) -> Option<String> {
+        None
+    }
 }
 
-pub const BASH_TOOL_NAME: &str = bash::Bash::NAME;
-pub const BATCH_TOOL_NAME: &str = batch::Batch::NAME;
-pub const EDIT_TOOL_NAME: &str = edit::Edit::NAME;
-pub const GLOB_TOOL_NAME: &str = glob::Glob::NAME;
-pub const GREP_TOOL_NAME: &str = grep::Grep::NAME;
-pub const MULTIEDIT_TOOL_NAME: &str = multiedit::MultiEdit::NAME;
-pub const QUESTION_TOOL_NAME: &str = question::Question::NAME;
-pub const READ_TOOL_NAME: &str = read::Read::NAME;
-pub const SKILL_TOOL_NAME: &str = skill::SkillTool::NAME;
-pub const TASK_TOOL_NAME: &str = task::Task::NAME;
-pub const TODOWRITE_TOOL_NAME: &str = todowrite::TodoWrite::NAME;
-pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
-pub const WEBSEARCH_TOOL_NAME: &str = websearch::WebSearch::NAME;
-pub const WRITE_TOOL_NAME: &str = write::Write::NAME;
-pub const CODE_EXECUTION_TOOL_NAME: &str = code_execution::CodeInterpreter::NAME;
+pub const BASH_TOOL_NAME: &str = <bash::Bash as Tool>::NAME;
+pub const BATCH_TOOL_NAME: &str = <batch::Batch as Tool>::NAME;
+pub const EDIT_TOOL_NAME: &str = <edit::Edit as Tool>::NAME;
+pub const GLOB_TOOL_NAME: &str = <glob::Glob as Tool>::NAME;
+pub const GREP_TOOL_NAME: &str = <grep::Grep as Tool>::NAME;
+pub const MULTIEDIT_TOOL_NAME: &str = <multiedit::MultiEdit as Tool>::NAME;
+pub const QUESTION_TOOL_NAME: &str = <question::Question as Tool>::NAME;
+pub const READ_TOOL_NAME: &str = <read::Read as Tool>::NAME;
+pub const SKILL_TOOL_NAME: &str = <skill::SkillTool as Tool>::NAME;
+pub const TASK_TOOL_NAME: &str = <task::Task as Tool>::NAME;
+pub const TODOWRITE_TOOL_NAME: &str = <todowrite::TodoWrite as Tool>::NAME;
+pub const WEBFETCH_TOOL_NAME: &str = <webfetch::WebFetch as Tool>::NAME;
+pub const WEBSEARCH_TOOL_NAME: &str = <websearch::WebSearch as Tool>::NAME;
+pub const WRITE_TOOL_NAME: &str = <write::Write as Tool>::NAME;
+pub const CODE_EXECUTION_TOOL_NAME: &str = <code_execution::CodeInterpreter as Tool>::NAME;
 
 pub(crate) const INTERPRETER_TOOLS: &[&str] = &[
     "read",
@@ -232,15 +249,46 @@ pub(crate) fn build_interpreter_tools_description() -> String {
 
 macro_rules! register_tools {
     ($($Variant:ident($inner:path)),+ $(,)?) => {
+        $(const _: () = { fn _assert_tool<T: Tool>() {} fn _check() { _assert_tool::<$inner>() } };)+
+
+        const _: () = {
+            const NAMES: &[&str] = &[$(<$inner as Tool>::NAME),+];
+            const fn str_eq(a: &str, b: &str) -> bool {
+                let (a, b) = (a.as_bytes(), b.as_bytes());
+                if a.len() != b.len() { return false; }
+                let mut i = 0;
+                while i < a.len() {
+                    if a[i] != b[i] { return false; }
+                    i += 1;
+                }
+                true
+            }
+            let mut i = 0;
+            while i < NAMES.len() {
+                let mut j = i + 1;
+                while j < NAMES.len() {
+                    assert!(!str_eq(NAMES[i], NAMES[j]), "duplicate tool NAME detected");
+                    j += 1;
+                }
+                i += 1;
+            }
+        };
+
         #[derive(Debug, Clone)]
         pub enum ToolCall {
             $($Variant($inner)),+
         }
 
+        macro_rules! dispatch {
+            ($self:expr, |$t:ident| $body:expr) => {
+                match $self { $(ToolCall::$Variant($t) => $body),+ }
+            };
+        }
+
         impl ToolCall {
             pub fn from_api(name: &str, input: &Value) -> Result<Self, AgentError> {
                 match name {
-                    $(<$inner>::NAME => {
+                    $(<$inner as Tool>::NAME => {
                         <$inner>::parse_input(input)
                             .map(ToolCall::$Variant)
                             .map_err(|msg| AgentError::Tool { tool: name.to_string(), message: msg })
@@ -254,32 +302,30 @@ macro_rules! register_tools {
 
             pub fn name(&self) -> &'static str {
                 match self {
-                    $(ToolCall::$Variant(_) => <$inner>::NAME),+
+                    $(ToolCall::$Variant(_) => <$inner as Tool>::NAME),+
                 }
             }
 
             pub fn start_summary(&self) -> String {
-                match self {
-                    $(ToolCall::$Variant(inner) => inner.start_summary()),+
-                }
+                dispatch!(self, |t| t.start_summary())
             }
 
             pub fn start_input(&self) -> Option<ToolInput> {
-                match self {
-                    $(ToolCall::$Variant(inner) => inner.start_input()),+
-                }
+                dispatch!(self, |t| t.start_input())
             }
 
             pub fn start_event(&self, id: String) -> ToolStartEvent {
-                let input = self.start_input();
-                let output = match self {
-                    $(ToolCall::$Variant(inner) => inner.start_output()),+
-                };
-                ToolStartEvent { id, tool: self.name(), summary: self.start_summary(), input, output }
+                dispatch!(self, |t| ToolStartEvent {
+                    id,
+                    tool: self.name(),
+                    summary: t.start_summary(),
+                    input: t.start_input(),
+                    output: t.start_output(),
+                })
             }
 
             pub fn execute(&self, ctx: &ToolContext, id: String) -> ToolDoneEvent {
-                if let Some(path) = self.mutable_path()
+                if let Some(path) = dispatch!(self, |t| t.mutable_path())
                     && let AgentMode::Plan(plan_path) = ctx.mode
                     && path != plan_path
                 {
@@ -291,9 +337,7 @@ macro_rules! register_tools {
                     };
                 }
 
-                let result = match self {
-                    $(ToolCall::$Variant(inner) => inner.execute(ctx)),+
-                };
+                let result = dispatch!(self, |t| t.execute(ctx));
                 let (output, is_error) = match result {
                     Ok(o) => (o, false),
                     Err(e) => {
@@ -304,31 +348,26 @@ macro_rules! register_tools {
                 ToolDoneEvent { id, tool: self.name(), output, is_error }
             }
 
-            fn mutable_path(&self) -> Option<&str> {
-                match self {
-                    $(ToolCall::$Variant(inner) => inner.mutable_path()),+
-                }
-            }
-
             pub fn schema_for(name: &str) -> Option<Value> {
                 match name {
-                    $(<$inner>::NAME => Some(<$inner>::schema()),)+
+                    $(<$inner as Tool>::NAME => Some(<$inner>::schema()),)+
                     _ => None,
                 }
             }
 
             fn all_defs(vars: &Vars, skills: &[Skill], supports_examples: bool) -> Vec<(&'static str, Value)> {
-                let ctx = DescriptionContext { skills };
                 vec![
-                    $((<$inner>::NAME, {
-                        let mut description = vars.apply(<$inner>::DESCRIPTION).into_owned();
-                        <$inner>::augment_description(&mut description, &ctx);
+                    $((<$inner as Tool>::NAME, {
+                        let mut description = vars.apply(<$inner as Tool>::DESCRIPTION).into_owned();
+                        if let Some(extra) = <$inner as Tool>::description_extra(skills) {
+                            description.push_str(&extra);
+                        }
                         let mut def = json!({
-                            "name": <$inner>::NAME,
+                            "name": <$inner as Tool>::NAME,
                             "description": &description,
                             "input_schema": <$inner>::schema()
                         });
-                        if let Some(json) = <$inner>::EXAMPLES {
+                        if let Some(json) = <$inner as Tool>::EXAMPLES {
                             let examples: Vec<Value> = serde_json::from_str(json)
                                 .expect(concat!("invalid EXAMPLES JSON for ", stringify!($inner)));
                             if supports_examples {
@@ -478,7 +517,6 @@ mod tests {
 
     #[test]
     fn truncate_output_respects_line_and_byte_limits() {
-        // exceed limit so truncation kicks in
         let many_lines: String = (0..MAX_OUTPUT_LINES + 500)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()

@@ -1,6 +1,6 @@
 use std::fs;
 
-use crate::{DiffHunk, DiffLine, DiffSpan, ToolInput, ToolOutput};
+use crate::{DiffHunk, DiffLine, DiffSpan, ToolOutput};
 use serde::Deserialize;
 use serde_json::Value;
 use similar::ChangeTag;
@@ -8,7 +8,7 @@ use similar::ChangeTag;
 use maki_tool_macro::Tool;
 
 use super::fuzzy_replace;
-use super::{line_at_offset, relative_path};
+use super::{Tool, line_at_offset, relative_path};
 
 #[derive(Debug, Clone, Deserialize)]
 struct EditEntry {
@@ -39,10 +39,10 @@ pub struct MultiEdit {
     edits: Vec<EditEntry>,
 }
 
-impl MultiEdit {
-    pub const NAME: &str = "multiedit";
-    pub const DESCRIPTION: &str = include_str!("multiedit.md");
-    pub const EXAMPLES: Option<&str> = Some(
+impl Tool for MultiEdit {
+    const NAME: &str = "multiedit";
+    const DESCRIPTION: &str = include_str!("multiedit.md");
+    const EXAMPLES: Option<&str> = Some(
         r#"[
   {"path": "/home/user/project/src/lib.rs", "edits": [
     {"old_string": "use old_crate::Foo;", "new_string": "use new_crate::Foo;"},
@@ -51,13 +51,7 @@ impl MultiEdit {
 ]"#,
     );
 
-    fn edit_count_label(&self) -> String {
-        let n = self.edits.len();
-        let s = if n == 1 { "" } else { "s" };
-        format!("{n} edit{s}")
-    }
-
-    pub fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         if self.edits.is_empty() {
             return Err("provide at least one edit".into());
         }
@@ -85,7 +79,7 @@ impl MultiEdit {
         })
     }
 
-    pub fn start_summary(&self) -> String {
+    fn start_summary(&self) -> String {
         format!(
             "{} ({})",
             relative_path(&self.path),
@@ -93,11 +87,7 @@ impl MultiEdit {
         )
     }
 
-    pub fn start_input(&self) -> Option<ToolInput> {
-        None
-    }
-
-    pub fn start_output(&self) -> Option<ToolOutput> {
+    fn start_output(&self) -> Option<ToolOutput> {
         let hunks: Vec<DiffHunk> = self
             .edits
             .iter()
@@ -111,11 +101,17 @@ impl MultiEdit {
         })
     }
 
-    pub fn mutable_path(&self) -> Option<&str> {
+    fn mutable_path(&self) -> Option<&str> {
         Some(&self.path)
     }
+}
 
-    pub fn augment_description(_description: &mut String, _ctx: &super::DescriptionContext) {}
+impl MultiEdit {
+    fn edit_count_label(&self) -> String {
+        let n = self.edits.len();
+        let s = if n == 1 { "" } else { "s" };
+        format!("{n} edit{s}")
+    }
 }
 
 pub(super) fn build_hunk(start_line: usize, old: &str, new: &str) -> DiffHunk {
