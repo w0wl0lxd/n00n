@@ -1266,6 +1266,7 @@ mod tests {
             id: "t1".into(),
             tool: "bash",
             summary: "running".into(),
+            annotation: None,
             input: None,
             output: None,
         })));
@@ -1617,6 +1618,7 @@ mod tests {
                 id: "sub_t1".into(),
                 tool: "bash",
                 summary: "running".into(),
+                annotation: None,
                 input: None,
                 output: None,
             }),

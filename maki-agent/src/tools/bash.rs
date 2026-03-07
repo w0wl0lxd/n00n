@@ -4,6 +4,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use humantime::format_duration;
+
 use maki_tool_macro::Tool;
 
 use crate::{AgentEvent, Envelope, ToolInput, ToolOutput};
@@ -133,6 +135,16 @@ impl Tool for Bash {
             s.push_str(&relative_path(dir));
         }
         s
+    }
+
+    fn start_annotation(&self) -> Option<String> {
+        let timeout = Duration::from_secs(self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS));
+        let formatted: String = format_duration(timeout)
+            .to_string()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        Some(format!("{formatted} timeout"))
     }
 
     fn start_input(&self) -> Option<ToolInput> {
@@ -291,5 +303,18 @@ mod tests {
             description: desc.map(Into::into),
         };
         assert_eq!(b.start_summary(), expected);
+    }
+
+    #[test_case(None,      "2m timeout"    ; "default_timeout")]
+    #[test_case(Some(300), "5m timeout"    ; "custom_timeout")]
+    #[test_case(Some(90),  "1m30s timeout" ; "mixed_timeout")]
+    fn start_annotation_cases(timeout: Option<u64>, expected: &str) {
+        let b = Bash {
+            command: "ls".into(),
+            timeout,
+            workdir: None,
+            description: None,
+        };
+        assert_eq!(b.start_annotation().unwrap(), expected);
     }
 }

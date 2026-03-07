@@ -192,6 +192,7 @@ mod tests {
             id: id.into(),
             tool,
             summary: String::new(),
+            annotation: None,
             input: None,
             output: None,
         })

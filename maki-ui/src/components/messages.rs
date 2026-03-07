@@ -205,7 +205,7 @@ impl MessagesPanel {
             text: event.summary,
             tool_input: event.input,
             tool_output: event.output,
-            annotation: None,
+            annotation: event.annotation,
             plan_path: None,
             timestamp: Some(format_timestamp_now()),
         });
@@ -252,7 +252,11 @@ impl MessagesPanel {
             };
         }
         truncate_to_header(&mut msg.text);
-        msg.annotation = tool_output_annotation(&event.output, event.tool);
+        let done_annotation = tool_output_annotation(&event.output, event.tool);
+        msg.annotation = match (msg.annotation.take(), done_annotation) {
+            (Some(a), Some(b)) => Some(format!("{a} · {b}")),
+            (a, b) => a.or(b),
+        };
 
         match &event.output {
             ToolOutput::Plain(text) => {
@@ -874,6 +878,7 @@ mod tests {
             id: id.into(),
             tool,
             summary: id.into(),
+            annotation: None,
             input: None,
             output: None,
         }
@@ -941,6 +946,39 @@ mod tests {
             is_error: false,
         });
         assert_eq!(panel.messages[0].annotation.as_deref(), expected);
+    }
+
+    #[test]
+    fn tool_done_merges_start_and_output_annotations() {
+        let mut panel = MessagesPanel::new();
+        let mut event = start("t1", BASH_TOOL_NAME);
+        event.annotation = Some("2m timeout".into());
+        panel.tool_start(event);
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: BASH_TOOL_NAME,
+            output: ToolOutput::Plain("line\n".repeat(200)),
+            is_error: false,
+        });
+        assert_eq!(
+            panel.messages[0].annotation.as_deref(),
+            Some("2m timeout · 200 lines")
+        );
+    }
+
+    #[test]
+    fn tool_done_keeps_start_annotation_when_output_has_none() {
+        let mut panel = MessagesPanel::new();
+        let mut event = start("t1", BASH_TOOL_NAME);
+        event.annotation = Some("2m timeout".into());
+        panel.tool_start(event);
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: BASH_TOOL_NAME,
+            output: ToolOutput::Plain("ok".into()),
+            is_error: false,
+        });
+        assert_eq!(panel.messages[0].annotation.as_deref(), Some("2m timeout"));
     }
 
     fn grep_output(n_files: usize) -> ToolOutput {
@@ -1205,6 +1243,7 @@ mod tests {
             id: id.into(),
             tool: BASH_TOOL_NAME,
             summary: code.into(),
+            annotation: None,
             input: Some(ToolInput::Code {
                 language: "bash",
                 code: code.into(),

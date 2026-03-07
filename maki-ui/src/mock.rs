@@ -38,10 +38,21 @@ fn sub_evt(event: AgentEvent, parent_id: &str, name: &str, prompt: Option<&str>)
 }
 
 fn tool_start(id: &str, tool: &'static str, summary: &str, input: Option<ToolInput>) -> AgentEvent {
+    tool_start_with(id, tool, summary, input, None)
+}
+
+fn tool_start_with(
+    id: &str,
+    tool: &'static str,
+    summary: &str,
+    input: Option<ToolInput>,
+    annotation: Option<&str>,
+) -> AgentEvent {
     AgentEvent::ToolStart(ToolStartEvent {
         id: id.into(),
         tool,
         summary: summary.into(),
+        annotation: annotation.map(Into::into),
         input,
         output: None,
     })
@@ -171,7 +182,7 @@ pub fn mock_events() -> Vec<MockEvent> {
     events.push(evt(turn_complete()));
 
     // Bash - Success
-    events.push(evt(tool_start(
+    events.push(evt(tool_start_with(
         "t_bash",
         BASH_TOOL_NAME,
         "ls -la src/config/",
@@ -179,6 +190,7 @@ pub fn mock_events() -> Vec<MockEvent> {
             language: "bash",
             code: "ls -la src/config/".into(),
         }),
+        Some("2m timeout"),
     )));
     events.push(evt(tool_done(
         "t_bash",
@@ -478,7 +490,7 @@ print(f'Total lines across config: {total}')"
     )));
 
     // Bash - Error
-    events.push(evt(tool_start(
+    events.push(evt(tool_start_with(
         "t_bash_err",
         BASH_TOOL_NAME,
         "cargo test",
@@ -486,6 +498,7 @@ print(f'Total lines across config: {total}')"
             language: "bash",
             code: "cargo test".into(),
         }),
+        Some("2m timeout"),
     )));
     events.push(evt(tool_done(
         "t_bash_err",
@@ -497,7 +510,7 @@ print(f'Total lines across config: {total}')"
     )));
 
     // Bash - InProgress (spinner animates)
-    events.push(evt(tool_start(
+    events.push(evt(tool_start_with(
         "t_bash_ip",
         BASH_TOOL_NAME,
         "cargo build --release",
@@ -505,6 +518,7 @@ print(f'Total lines across config: {total}')"
             language: "bash",
             code: "cargo build --release".into(),
         }),
+        Some("2m timeout"),
     )));
 
     events.push(evt(turn_complete()));

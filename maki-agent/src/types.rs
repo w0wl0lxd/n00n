@@ -307,6 +307,7 @@ pub struct ToolStartEvent {
     pub id: String,
     pub tool: &'static str,
     pub summary: String,
+    pub annotation: Option<String>,
     pub input: Option<ToolInput>,
     pub output: Option<ToolOutput>,
 }

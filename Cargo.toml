@@ -62,3 +62,4 @@ unicode-width = "0.2"
 similar = { version = "2", features = ["inline"] }
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 arboard = { version = "3", default-features = false }
+humantime = "2"

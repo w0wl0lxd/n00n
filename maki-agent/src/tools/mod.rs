@@ -45,6 +45,9 @@ pub(crate) trait Tool: Sized + Send + Sync {
     fn start_output(&self) -> Option<ToolOutput> {
         None
     }
+    fn start_annotation(&self) -> Option<String> {
+        None
+    }
     fn mutable_path(&self) -> Option<&str> {
         None
     }
@@ -319,6 +322,7 @@ macro_rules! register_tools {
                     id,
                     tool: self.name(),
                     summary: t.start_summary(),
+                    annotation: t.start_annotation(),
                     input: t.start_input(),
                     output: t.start_output(),
                 })
