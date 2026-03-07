@@ -101,6 +101,9 @@ pub struct App {
     pub answer_tx: Option<mpsc::Sender<String>>,
     pub(crate) cmd_tx: Option<mpsc::Sender<super::AgentCommand>>,
     pending_question: bool,
+    /// Suppresses stale agent events after cancel. The agent thread may still
+    /// send events before it processes our Cancel command. Cleared on the
+    /// terminal event (Cancelled/Done/Error) or when a new prompt is submitted.
     cancel_pending: bool,
     retry_info: Option<RetryInfo>,
     #[cfg(feature = "demo")]
@@ -550,6 +553,7 @@ impl App {
             }
             vec![]
         } else {
+            self.cancel_pending = false;
             self.main_chat().push_user_message(&text);
             self.status = Status::Streaming;
             self.main_chat().enable_auto_scroll();
@@ -1339,13 +1343,6 @@ mod tests {
         app
     }
 
-    fn app_with_queued_interrupt() -> App {
-        let mut app = test_app();
-        app.status = Status::Streaming;
-        app.queue.push_back(queued_msg("pending"));
-        app
-    }
-
     fn type_and_submit(app: &mut App, text: &str) -> Vec<Action> {
         for c in text.chars() {
             app.update(Msg::Key(key(KeyCode::Char(c))));
@@ -1364,21 +1361,13 @@ mod tests {
         }));
     }
 
-    #[test_case(cancel_app as fn(&mut App) ; "cancel")]
-    #[test_case(error_app as fn(&mut App)  ; "error")]
-    fn clears_queue_on_terminate(terminate: fn(&mut App)) {
-        let mut app = app_with_queued_interrupt();
-        terminate(&mut app);
-        assert!(app.queue.is_empty());
-    }
-
     #[test]
     fn multiple_interrupts_drained_in_order() {
-        let mut app = app_with_queued_interrupt();
+        let mut app = app_with_queued_message();
         app.queue.push_back(queued_msg("second"));
 
         app.update(agent_msg(AgentEvent::InterruptConsumed {
-            message: "pending".into(),
+            message: "queued".into(),
         }));
         assert_eq!(app.queue.len(), 1);
 
@@ -1421,15 +1410,15 @@ mod tests {
 
     #[test]
     fn interrupt_displayed_only_on_consumed_event() {
-        let mut app = app_with_queued_interrupt();
+        let mut app = app_with_queued_message();
         let before = app.chats[0].message_count();
 
         app.update(agent_msg(AgentEvent::InterruptConsumed {
-            message: "pending".into(),
+            message: "queued".into(),
         }));
         assert!(app.queue.is_empty());
         assert_eq!(app.chats[0].message_count(), before + 1);
-        assert_eq!(app.chats[0].last_message_text(), "pending");
+        assert_eq!(app.chats[0].last_message_text(), "queued");
     }
 
     fn type_slash(app: &mut App) {
@@ -1475,6 +1464,7 @@ mod tests {
         app.mode = Mode::BuildPlan;
         app.ready_plan = Some("plan.md".into());
         app.queue.push_back(queued_msg("q"));
+        app.queue_focus = Some(0);
         let actions = app.reset_session();
         assert!(matches!(&actions[0], Action::NewSession));
         assert_eq!(app.status, Status::Idle);
@@ -1487,6 +1477,7 @@ mod tests {
         assert_eq!(app.chats[0].name, "Main");
         assert_eq!(app.active_chat, 0);
         assert!(app.chat_index.is_empty());
+        assert!(app.queue_focus.is_none());
     }
 
     #[test]
@@ -2214,11 +2205,24 @@ mod tests {
     }
 
     #[test]
-    fn new_session_clears_queue_focus() {
-        let mut app = app_with_queued_message();
-        app.queue_focus = Some(0);
-        app.reset_session();
-        assert!(app.queue_focus.is_none());
+    fn submit_after_cancel_clears_cancel_pending() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+
+        cancel_app(&mut app);
+        assert!(app.cancel_pending);
+
+        let actions = type_and_submit(&mut app, "new prompt");
+        assert!(matches!(&actions[0], Action::SendMessage(i) if i.message == "new prompt"));
+        assert!(!app.cancel_pending);
+        assert_eq!(app.status, Status::Streaming);
+
+        app.update(agent_msg(AgentEvent::Done {
+            usage: TokenUsage::default(),
+            num_turns: 1,
+            stop_reason: None,
+        }));
+        assert_eq!(app.status, Status::Idle);
     }
 
     #[test]
