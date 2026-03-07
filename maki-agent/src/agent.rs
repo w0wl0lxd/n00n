@@ -76,13 +76,8 @@ impl History {
     }
 }
 
-pub fn build_system_prompt(
-    vars: &Vars,
-    mode: &AgentMode,
-    model: &Model,
-    instructions: &str,
-) -> String {
-    let mut out = crate::prompt::base_prompt(model.family()).to_string();
+pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, instructions: &str) -> String {
+    let mut out = crate::prompt::SYSTEM_PROMPT.to_string();
 
     out.push_str(&vars.apply(
         "\n\nEnvironment:\n- Working directory: {cwd}\n- Platform: {platform}\n- Date: {date}",
@@ -615,7 +610,7 @@ mod tests {
     #[test_case(&AgentMode::Plan(PLAN_PATH.into()), true ; "plan_includes_plan")]
     fn plan_section_presence(mode: &AgentMode, expect_plan: bool) {
         let vars = Vars::new().set("{cwd}", "/tmp").set("{platform}", "linux");
-        let prompt = build_system_prompt(&vars, mode, &default_model(), "");
+        let prompt = build_system_prompt(&vars, mode, "");
         assert_eq!(prompt.contains("Plan Mode"), expect_plan);
         if expect_plan {
             assert!(prompt.contains(PLAN_PATH));

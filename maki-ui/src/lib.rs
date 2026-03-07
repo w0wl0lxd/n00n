@@ -253,8 +253,7 @@ fn spawn_agent(
                 }
                 ExtractedCommand::Cancel | ExtractedCommand::Ignore => continue,
                 ExtractedCommand::Interrupt(input) => {
-                    let system =
-                        agent::build_system_prompt(&vars, &input.mode, &model, &instructions);
+                    let system = agent::build_system_prompt(&vars, &input.mode, &instructions);
                     let mut agent = Agent::new(
                         &*provider,
                         &model,
