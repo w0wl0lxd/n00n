@@ -24,5 +24,6 @@ When NOT to use:
 Usage notes:
 1. Launch multiple tasks concurrently when possible by calling this tool multiple times in the same response.
 2. The agent's result is not visible to the user. Summarize it in your response.
-3. Each invocation starts a fresh conversation. Your prompt should be detailed and self-contained.
+3. Each invocation starts a fresh conversation with no access to your history. Your prompt is its ONLY context.
 4. Clearly state what information the agent should return.
+5. Inline any known context (type definitions, signatures, patterns, code snippets) directly into the prompt - don't make the subagent rediscover what you already know. Especially important for parallel tasks sharing context: embed it in each prompt.

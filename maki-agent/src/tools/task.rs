@@ -29,7 +29,7 @@ impl Tool for Task {
     const EXAMPLES: Option<&str> = Some(
         r#"[
   {"description": "Find auth middleware", "prompt": "Search the codebase for authentication middleware. Return file paths and a summary of how auth is implemented."},
-  {"description": "Refactor error types", "prompt": "In src/errors.rs, replace all uses of String error types with thiserror derive macros. Follow existing patterns.", "subagent_type": "general"}
+  {"description": "Refactor error types", "prompt": "In src/errors.rs, replace all uses of String error types with thiserror derive macros.\n\nHere is the pattern to follow (from src/api/errors.rs):\n```rust\n#[derive(Debug, thiserror::Error)]\npub enum ApiError {\n    #[error(\"not found: {0}\")]\n    NotFound(String),\n    #[error(\"unauthorized\")]\n    Unauthorized,\n}\n```\n\nApply this same pattern to all error variants in src/errors.rs.", "subagent_type": "general"}
 ]"#,
     );
 
