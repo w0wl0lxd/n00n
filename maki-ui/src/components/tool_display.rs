@@ -65,6 +65,16 @@ fn extract_path_suffix(s: &str) -> Option<(&str, &str)> {
     Some((&s[..i], path))
 }
 
+fn style_command_with_path(header: &str) -> Vec<Span<'static>> {
+    match extract_path_suffix(header) {
+        Some((cmd, path)) => vec![
+            Span::styled(format!("{cmd} "), theme::TOOL),
+            Span::styled(path.to_owned(), theme::TOOL_PATH),
+        ],
+        None => vec![Span::styled(header.to_owned(), theme::TOOL)],
+    }
+}
+
 fn style_grep_header(header: &str) -> Vec<Span<'static>> {
     let (pattern, rest) = match header.find(" [") {
         Some(i) => (&header[..i], &header[i..]),
@@ -92,33 +102,16 @@ fn style_grep_header(header: &str) -> Vec<Span<'static>> {
 }
 
 fn style_tool_header(tool: &str, header: &str) -> Vec<Span<'static>> {
-    if PATH_FIRST_TOOLS.contains(&tool) {
-        return vec![Span::styled(header.to_owned(), theme::TOOL_PATH)];
+    match tool {
+        READ_TOOL_NAME | EDIT_TOOL_NAME | WRITE_TOOL_NAME | MULTIEDIT_TOOL_NAME => {
+            vec![Span::styled(header.to_owned(), theme::TOOL_PATH)]
+        }
+        BASH_TOOL_NAME | GLOB_TOOL_NAME => style_command_with_path(header),
+        GREP_TOOL_NAME => style_grep_header(header),
+        CODE_EXECUTION_TOOL_NAME => vec![Span::styled(header.to_owned(), theme::FOREGROUND_STYLE)],
+        _ => vec![Span::styled(header.to_owned(), theme::TOOL)],
     }
-    if tool == GREP_TOOL_NAME {
-        return style_grep_header(header);
-    }
-    if tool == CODE_EXECUTION_TOOL_NAME {
-        return vec![Span::styled(header.to_owned(), theme::FOREGROUND_STYLE)];
-    }
-    if IN_PATH_TOOLS.contains(&tool)
-        && let Some((cmd, path)) = extract_path_suffix(header)
-    {
-        return vec![
-            Span::styled(format!("{cmd} "), theme::TOOL),
-            Span::styled(path.to_owned(), theme::TOOL_PATH),
-        ];
-    }
-    vec![Span::styled(header.to_owned(), theme::TOOL)]
 }
-
-const PATH_FIRST_TOOLS: &[&str] = &[
-    READ_TOOL_NAME,
-    EDIT_TOOL_NAME,
-    WRITE_TOOL_NAME,
-    MULTIEDIT_TOOL_NAME,
-];
-const IN_PATH_TOOLS: &[&str] = &[BASH_TOOL_NAME, GLOB_TOOL_NAME];
 
 pub struct RoleStyle {
     pub prefix: &'static str,

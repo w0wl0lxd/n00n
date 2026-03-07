@@ -265,12 +265,7 @@ pub fn mock_events() -> Vec<MockEvent> {
     )));
 
     // Glob - Success
-    events.push(evt(tool_start(
-        "t_glob",
-        GLOB_TOOL_NAME,
-        "**/*.rs (3 files)",
-        None,
-    )));
+    events.push(evt(tool_start("t_glob", GLOB_TOOL_NAME, "**/*.rs", None)));
     events.push(evt(tool_done(
         "t_glob",
         GLOB_TOOL_NAME,
