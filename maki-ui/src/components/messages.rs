@@ -20,6 +20,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use super::scrollbar::render_vertical_scrollbar;
 
@@ -499,9 +500,7 @@ impl MessagesPanel {
                 {
                     return h;
                 }
-                let h = Paragraph::new(seg.lines.clone())
-                    .wrap(Wrap { trim: false })
-                    .line_count(width) as u16;
+                let h = wrapped_line_count(&seg.lines, width);
                 seg.cached_height = Some((width, h));
                 h
             })
@@ -539,11 +538,7 @@ impl MessagesPanel {
                 segments.push((&spacer_line, false, None));
                 heights.push(1);
             }
-            heights.push(
-                Paragraph::new(lines.to_vec())
-                    .wrap(Wrap { trim: false })
-                    .line_count(width) as u16,
-            );
+            heights.push(wrapped_line_count(lines, width));
             segments.push((lines, false, None));
         }
 
@@ -850,6 +845,24 @@ impl MessagesPanel {
         }
         self.cached_msg_count = self.messages.len();
     }
+}
+
+fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {
+    let w = width as usize;
+    if w == 0 {
+        return lines.len() as u16;
+    }
+    lines
+        .iter()
+        .map(|line| {
+            let line_w: usize = line.spans.iter().map(|s| s.content.width()).sum();
+            if line_w == 0 {
+                1
+            } else {
+                line_w.div_ceil(w) as u16
+            }
+        })
+        .sum()
 }
 
 fn push_spacer_if_needed(segments: &mut Vec<Segment>) {
@@ -1507,5 +1520,18 @@ mod tests {
         render(&mut panel, 80, 24);
         let regions = content_regions(&panel);
         assert_eq!(regions[0], md);
+    }
+
+    #[test_case(&["short", &"x".repeat(200)], 80, 4 ; "long_line_wraps")]
+    #[test_case(&["", "a", ""],                 40, 3 ; "empty_lines_count_as_one")]
+    #[test_case(&[&"a".repeat(80)],              80, 1 ; "exactly_width_no_wrap")]
+    #[test_case(&[&"a".repeat(81)],              80, 2 ; "one_over_width_wraps")]
+    #[test_case(&["hello", "world"],              0, 2 ; "zero_width_returns_line_count")]
+    fn wrapped_line_count_cases(input: &[&str], width: u16, expected: u16) {
+        let lines: Vec<Line<'static>> = input
+            .iter()
+            .map(|s| Line::from(Span::raw(s.to_string())))
+            .collect();
+        assert_eq!(wrapped_line_count(&lines, width), expected);
     }
 }

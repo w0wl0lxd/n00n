@@ -33,20 +33,14 @@ pub(crate) fn wrap_code_lines(lines: &mut Vec<Line<'static>>, start: usize, widt
     if width == 0 {
         return;
     }
-    let mut i = start;
-    while i < lines.len() {
-        let line_width: usize = lines[i].spans.iter().map(|s| s.content.width()).sum();
+    let tail = lines.split_off(start);
+    for line in tail {
+        let line_width: usize = line.spans.iter().map(|s| s.content.width()).sum();
         if line_width <= width {
-            i += 1;
-            continue;
+            lines.push(line);
+        } else {
+            lines.extend(split_line_with_bar(line, width));
         }
-        let line = lines.remove(i);
-        let wrapped = split_line_with_bar(line, width);
-        let count = wrapped.len();
-        for (j, wl) in wrapped.into_iter().enumerate() {
-            lines.insert(i + j, wl);
-        }
-        i += count;
     }
 }
 
@@ -1899,5 +1893,35 @@ mod tests {
     fn wrap_zero_width_does_not_panic() {
         let lines = highlight_code("txt", "hello", 0);
         assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn wrap_code_lines_preserves_prefix() {
+        let style = Style::default();
+        let input = format!("```\n{}\n```", "a".repeat(30));
+        let lines = text_to_lines(&input, "", style, style, None, 15);
+        for line in &lines {
+            if is_blank_line(line) {
+                continue;
+            }
+            let first = &line.spans[0].content;
+            assert!(
+                first.as_ref() == CODE_BAR || first.as_ref() == CODE_BAR_WRAP,
+                "code line missing bar prefix: {first:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_code_lines_preserves_lines_before_start() {
+        let mut lines = vec![
+            Line::from("header"),
+            Line::from(vec![
+                Span::styled(CODE_BAR, theme::CODE_BAR_STYLE),
+                Span::raw("short"),
+            ]),
+        ];
+        wrap_code_lines(&mut lines, 1, 80);
+        assert_eq!(lines[0].spans[0].content, "header");
     }
 }
