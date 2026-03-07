@@ -240,7 +240,7 @@ fn spawn_agent(
                 AgentCommand::Run(input) => {
                     let system =
                         agent::build_system_prompt(&vars, &input.mode, &model, &instructions);
-                    agent::run(
+                    let result = agent::run(
                         &*provider,
                         &model,
                         input,
@@ -252,7 +252,11 @@ fn spawn_agent(
                         Some(&answer_mutex),
                         Some(&cmd_rx),
                         extract_interrupt,
-                    )
+                    );
+                    if matches!(result, Err(AgentError::Cancelled)) {
+                        while cmd_rx.try_recv().is_ok() {}
+                    }
+                    result
                 }
             };
             match result {

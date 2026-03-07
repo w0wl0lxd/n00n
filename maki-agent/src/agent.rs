@@ -60,8 +60,20 @@ impl History {
         self.messages.push(msg);
     }
 
+    pub fn len(&self) -> usize {
+        self.messages.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+
     pub fn replace(&mut self, messages: Vec<Message>) {
         self.messages = messages;
+    }
+
+    pub fn truncate(&mut self, len: usize) {
+        self.messages.truncate(len);
     }
 }
 
@@ -254,6 +266,7 @@ fn consume_interrupt<T>(
     history: &mut History,
     event_tx: &Sender<Envelope>,
     extract: impl Fn(T) -> ExtractedCommand,
+    interrupt_snapshot: &mut Option<usize>,
 ) -> Result<bool, AgentError> {
     let Some(rx) = cmd_rx else { return Ok(false) };
     let Ok(cmd) = rx.try_recv() else {
@@ -261,6 +274,7 @@ fn consume_interrupt<T>(
     };
     match extract(cmd) {
         ExtractedCommand::Interrupt(input) => {
+            *interrupt_snapshot = Some(history.len());
             let msg = input.effective_message();
             let raw = input.message;
             let wrapped = format!(
@@ -304,6 +318,7 @@ pub fn run<T>(
     let mut num_turns: u32 = 0;
     let mut recent_calls = RecentCalls::new();
     let auto_compact = auto_compact_enabled();
+    let mut interrupt_snapshot: Option<usize> = None;
 
     info!(
         model = %model.id,
@@ -312,54 +327,123 @@ pub fn run<T>(
         "agent run started"
     );
 
-    loop {
-        let response =
-            match stream_with_retry(provider, model, history.as_slice(), system, tools, event_tx) {
+    let result: Result<(), AgentError> = (|| {
+        loop {
+            let response = match stream_with_retry(
+                provider,
+                model,
+                history.as_slice(),
+                system,
+                tools,
+                event_tx,
+            ) {
                 Ok(r) => r,
                 Err(e) => {
                     error!(error = %e, model = %model.id, num_turns, "stream_message failed");
                     return Err(e);
                 }
             };
-        num_turns += 1;
+            num_turns += 1;
 
-        let has_tools = response.message.has_tool_calls();
+            let has_tools = response.message.has_tool_calls();
 
-        info!(
-            input_tokens = response.usage.input,
-            output_tokens = response.usage.output,
-            cache_creation = response.usage.cache_creation,
-            cache_read = response.usage.cache_read,
-            has_tools,
-            num_turns,
-            model = %model.id,
-            stop_reason = response.stop_reason.map_or("none", Into::into),
-            "API response received"
-        );
+            info!(
+                input_tokens = response.usage.input,
+                output_tokens = response.usage.output,
+                cache_creation = response.usage.cache_creation,
+                cache_read = response.usage.cache_read,
+                has_tools,
+                num_turns,
+                model = %model.id,
+                stop_reason = response.stop_reason.map_or("none", Into::into),
+                "API response received"
+            );
 
-        send(
-            event_tx,
-            AgentEvent::TurnComplete {
-                message: response.message.clone(),
-                usage: response.usage,
-                model: model.id.clone(),
-                context_size: None,
-            },
-        )?;
+            send(
+                event_tx,
+                AgentEvent::TurnComplete {
+                    message: response.message.clone(),
+                    usage: response.usage,
+                    model: model.id.clone(),
+                    context_size: None,
+                },
+            )?;
 
-        total_usage += response.usage;
-        let last_input_tokens = response.usage.input;
+            total_usage += response.usage;
+            let last_input_tokens = response.usage.input;
 
-        if !has_tools {
-            let truncated = response.stop_reason == Some(StopReason::MaxTokens);
-            history.push(response.message);
+            if !has_tools {
+                let truncated = response.stop_reason == Some(StopReason::MaxTokens);
+                history.push(response.message);
 
-            if truncated && num_turns <= MAX_CONTINUATION_TURNS {
-                warn!(num_turns, "response truncated (max_tokens), re-prompting");
-                continue;
+                if truncated && num_turns <= MAX_CONTINUATION_TURNS {
+                    warn!(num_turns, "response truncated (max_tokens), re-prompting");
+                    continue;
+                }
+
+                if try_auto_compact(
+                    auto_compact,
+                    last_input_tokens,
+                    provider,
+                    model,
+                    history,
+                    event_tx,
+                    &mut total_usage,
+                )? {
+                    continue;
+                }
+
+                if consume_interrupt(
+                    cmd_rx,
+                    history,
+                    event_tx,
+                    extract_interrupt,
+                    &mut interrupt_snapshot,
+                )? {
+                    continue;
+                }
+
+                info!(
+                    num_turns,
+                    total_input = total_usage.input,
+                    total_output = total_usage.output,
+                    "agent run completed"
+                );
+                send(
+                    event_tx,
+                    AgentEvent::Done {
+                        usage: total_usage,
+                        num_turns,
+                        stop_reason: response.stop_reason,
+                    },
+                )?;
+                return Ok(());
             }
 
-            if try_auto_compact(
+            let (parsed, errors) =
+                parse_tool_calls(response.message.tool_uses(), &mut recent_calls);
+
+            history.push(response.message);
+
+            for p in &parsed {
+                send(
+                    event_tx,
+                    AgentEvent::ToolStart(p.call.start_event(p.id.clone())),
+                )?;
+            }
+
+            let mut results = execute_tools(&parsed, &ctx);
+            results.extend(errors);
+            let tool_msg = tool_results(results);
+            send(
+                event_tx,
+                AgentEvent::ToolResultsSubmitted {
+                    message: tool_msg.clone(),
+                },
+            )?;
+            history.push(tool_msg);
+
+            try_auto_compact(
                 auto_compact,
                 last_input_tokens,
                 provider,
@@ -367,64 +451,24 @@ pub fn run<T>(
                 history,
                 event_tx,
                 &mut total_usage,
-            )? {
-                continue;
-            }
-
-            if consume_interrupt(cmd_rx, history, event_tx, extract_interrupt)? {
-                continue;
-            }
-
-            info!(
-                num_turns,
-                total_input = total_usage.input,
-                total_output = total_usage.output,
-                "agent run completed"
-            );
-            send(
-                event_tx,
-                AgentEvent::Done {
-                    usage: total_usage,
-                    num_turns,
-                    stop_reason: response.stop_reason,
-                },
             )?;
-            return Ok(());
-        }
-
-        let (parsed, errors) = parse_tool_calls(response.message.tool_uses(), &mut recent_calls);
-
-        history.push(response.message);
-
-        for p in &parsed {
-            send(
+            consume_interrupt(
+                cmd_rx,
+                history,
                 event_tx,
-                AgentEvent::ToolStart(p.call.start_event(p.id.clone())),
+                extract_interrupt,
+                &mut interrupt_snapshot,
             )?;
         }
+    })();
 
-        let mut results = execute_tools(&parsed, &ctx);
-        results.extend(errors);
-        let tool_msg = tool_results(results);
-        send(
-            event_tx,
-            AgentEvent::ToolResultsSubmitted {
-                message: tool_msg.clone(),
-            },
-        )?;
-        history.push(tool_msg);
-
-        try_auto_compact(
-            auto_compact,
-            last_input_tokens,
-            provider,
-            model,
-            history,
-            event_tx,
-            &mut total_usage,
-        )?;
-        consume_interrupt(cmd_rx, history, event_tx, extract_interrupt)?;
+    if matches!(result, Err(AgentError::Cancelled))
+        && let Some(len) = interrupt_snapshot
+    {
+        history.truncate(len);
     }
+
+    result
 }
 
 fn try_auto_compact(
@@ -806,6 +850,55 @@ mod tests {
             matches!(e.event, AgentEvent::InterruptConsumed { ref message } if message == "new task")
         }));
         assert!(has_interrupt_in_history(history.as_slice()));
+    }
+
+    #[test]
+    fn cancel_after_interrupt_removes_interrupt_from_history() {
+        let (cmd_tx, cmd_rx) = mpsc::channel::<ExtractedCommand>();
+        cmd_tx
+            .send(ExtractedCommand::Interrupt(AgentInput {
+                message: "there".into(),
+                mode: AgentMode::Build,
+                pending_plan: None,
+            }))
+            .unwrap();
+        cmd_tx.send(ExtractedCommand::Cancel).unwrap();
+
+        let model = default_model();
+        let input = AgentInput {
+            message: "hello".into(),
+            mode: AgentMode::Build,
+            pending_plan: None,
+        };
+        let mut history = History::new(Vec::new());
+        let (event_tx, _event_rx) = mpsc::channel();
+        let tools = serde_json::json!([]);
+        let skills: Vec<crate::skill::Skill> = Vec::new();
+
+        let provider = MockProvider::new(vec![
+            tool_call_response("glob", "t1"),
+            text_response(StopReason::EndTurn),
+        ]);
+
+        let result = run(
+            &provider,
+            &model,
+            input,
+            &mut history,
+            "system",
+            &event_tx,
+            &tools,
+            &skills,
+            None,
+            Some(&cmd_rx),
+            std::convert::identity,
+        );
+
+        assert!(matches!(result, Err(AgentError::Cancelled)));
+        assert!(
+            !has_interrupt_in_history(history.as_slice()),
+            "interrupt should be removed from history on cancel"
+        );
     }
 
     fn small_context_model(context_window: u32, max_output_tokens: u32) -> Model {
