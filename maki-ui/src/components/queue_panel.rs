@@ -8,7 +8,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 const ELLIPSIS: &str = "...";
 const QUEUE_LABEL: &str = " Queue ";
-const DELETE_HINT: &str = " - Enter to delete";
+const FOCUSED_HINT: &str = " - Enter to delete";
+const UNFOCUSED_HINT: &str = " - Ctrl-q to delete";
 
 pub struct QueueEntry<'a> {
     pub text: &'a str,
@@ -33,11 +34,17 @@ pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry], focus: Option
         .enumerate()
         .map(|(i, entry)| {
             let flat = entry.text.replace('\n', " ");
-            if focus == Some(i) {
-                truncate_line_selected(&flat, content_width)
+            let (style, hint) = if focus == Some(i) {
+                (
+                    Style::new().fg(theme::RED).add_modifier(Modifier::BOLD),
+                    FOCUSED_HINT,
+                )
+            } else if i == 0 {
+                (Style::new().fg(entry.color), UNFOCUSED_HINT)
             } else {
-                Line::from(truncate_line(&flat, content_width, entry.color))
-            }
+                (Style::new().fg(entry.color), "")
+            };
+            truncate_line(&flat, content_width, style, hint)
         })
         .collect();
 
@@ -59,36 +66,26 @@ pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry], focus: Option
     frame.render_widget(paragraph, area);
 }
 
-fn truncate_line(text: &str, max_width: usize, color: ratatui::style::Color) -> Vec<Span<'static>> {
-    let style = Style::new().fg(color);
-    if text.len() <= max_width {
-        return vec![Span::styled(text.to_string(), style)];
-    }
-    let truncated_len = text.floor_char_boundary(max_width.saturating_sub(ELLIPSIS.len()));
-    vec![
-        Span::styled(text[..truncated_len].to_string(), style),
-        Span::styled(ELLIPSIS, Style::new().fg(theme::COMMENT)),
-    ]
-}
-
-fn truncate_line_selected(text: &str, max_width: usize) -> Line<'static> {
-    let hint_len = DELETE_HINT.len();
-    let available = max_width.saturating_sub(hint_len);
-    let selected_style = Style::new().fg(theme::RED).add_modifier(Modifier::BOLD);
+fn truncate_line(text: &str, max_width: usize, style: Style, hint: &'static str) -> Line<'static> {
     let hint_style = Style::new().fg(theme::COMMENT);
+    let available = max_width.saturating_sub(hint.len());
 
-    if text.len() <= available {
-        return Line::from(vec![
-            Span::styled(text.to_string(), selected_style),
-            Span::styled(DELETE_HINT, hint_style),
-        ]);
+    let (text_span, ellipsis) = if text.len() <= available {
+        (Span::styled(text.to_string(), style), None)
+    } else {
+        let truncated_len = text.floor_char_boundary(available.saturating_sub(ELLIPSIS.len()));
+        (
+            Span::styled(text[..truncated_len].to_string(), style),
+            Some(Span::styled(ELLIPSIS, hint_style)),
+        )
+    };
+
+    let mut spans = vec![text_span];
+    spans.extend(ellipsis);
+    if !hint.is_empty() {
+        spans.push(Span::styled(hint, hint_style));
     }
-    let truncated_len = text.floor_char_boundary(available.saturating_sub(ELLIPSIS.len()));
-    Line::from(vec![
-        Span::styled(text[..truncated_len].to_string(), selected_style),
-        Span::styled(ELLIPSIS, hint_style),
-        Span::styled(DELETE_HINT, hint_style),
-    ])
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -104,15 +101,28 @@ mod tests {
         assert_eq!(height(3), 5);
     }
 
-    #[test_case("hello", 10, &["hello"]                ; "short_text_unchanged")]
-    #[test_case("abcdefghij", 7, &["abcd", ELLIPSIS]    ; "long_text_with_ellipsis")]
-    #[test_case("abcde", 5, &["abcde"]                  ; "at_exact_width")]
-    #[test_case("abcdef", 2, &["", ELLIPSIS]              ; "tiny_width")]
-    #[test_case("●abc", 5, &["", ELLIPSIS]                ; "multibyte_too_narrow")]
-    #[test_case("●●●", 8, &["●", ELLIPSIS]              ; "multibyte_fits_one")]
-    fn truncate_line_cases(input: &str, width: usize, expected: &[&str]) {
-        let spans = truncate_line(input, width, theme::FOREGROUND);
-        let texts: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(texts, expected);
+    const HINT: &str = " - hint";
+    const NO_HINT: &str = "";
+    fn style() -> Style {
+        Style::new().fg(theme::FOREGROUND)
+    }
+    fn span_texts<'a>(line: &'a Line<'a>) -> Vec<&'a str> {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test_case("hello", 10, NO_HINT, &["hello"]                                     ; "no_hint_short")]
+    #[test_case("abcdefghij", 7, NO_HINT, &["abcd", ELLIPSIS]                        ; "no_hint_truncated")]
+    #[test_case("abcde", 5, NO_HINT, &["abcde"]                                      ; "no_hint_exact_width")]
+    #[test_case("abcdef", 2, NO_HINT, &["", ELLIPSIS]                                ; "no_hint_tiny_width")]
+    #[test_case("●abc", 5, NO_HINT, &["", ELLIPSIS]                                  ; "no_hint_multibyte_narrow")]
+    #[test_case("●●●", 8, NO_HINT, &["●", ELLIPSIS]                                 ; "no_hint_multibyte_fits_one")]
+    #[test_case("hello", 20, HINT, &["hello", HINT]                                  ; "hint_short")]
+    #[test_case("abcdefghijklmnopqrstuvwxyz", 18, HINT, &["abcdefgh", ELLIPSIS, HINT] ; "hint_truncated")]
+    #[test_case("ab", 9, HINT, &["ab", HINT]                                         ; "hint_exact_fit")]
+    fn truncate_line_cases(input: &str, width: usize, hint: &'static str, expected: &[&str]) {
+        assert_eq!(
+            span_texts(&truncate_line(input, width, style(), hint)),
+            expected
+        );
     }
 }
