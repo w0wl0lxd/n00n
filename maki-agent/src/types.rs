@@ -395,7 +395,7 @@ pub enum AgentEvent {
     Done {
         usage: TokenUsage,
         num_turns: u32,
-        stop_reason: Option<String>,
+        stop_reason: Option<maki_providers::StopReason>,
     },
     AutoCompacting,
     Cancelled,

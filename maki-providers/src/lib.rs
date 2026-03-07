@@ -11,7 +11,7 @@ use std::{env, fs};
 pub use error::AgentError;
 pub use model::{Model, ModelError, ModelFamily, ModelPricing, TokenUsage};
 pub use providers::auth;
-pub use types::{ContentBlock, Message, ProviderEvent, Role, StreamResponse};
+pub use types::{ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse};
 
 const DATA_DIR_NAME: &str = ".maki";
 

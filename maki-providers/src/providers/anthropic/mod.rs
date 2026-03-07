@@ -10,7 +10,9 @@ pub mod auth;
 
 use crate::model::Model;
 use crate::provider::Provider;
-use crate::{AgentError, ContentBlock, Message, ProviderEvent, Role, StreamResponse, TokenUsage};
+use crate::{
+    AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
+};
 
 const API_VERSION: &str = "2023-06-01";
 const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
@@ -285,7 +287,7 @@ fn parse_sse(
     let mut current_tool_json = String::new();
     let mut current_event = String::new();
     let mut usage = TokenUsage::default();
-    let mut stop_reason: Option<String> = None;
+    let mut stop_reason: Option<StopReason> = None;
 
     for line in reader.lines() {
         let line = line?;
@@ -370,7 +372,10 @@ fn parse_sse(
                         usage.output = u.output_tokens;
                     }
                     if let Some(d) = ev.delta {
-                        stop_reason = d.stop_reason.or(stop_reason);
+                        stop_reason = d
+                            .stop_reason
+                            .map(|s| StopReason::from_anthropic(&s))
+                            .or(stop_reason);
                     }
                 }
             }
@@ -445,7 +450,7 @@ data: {\"type\":\"message_stop\"}\n";
             matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Hello world")
         );
         assert!(!resp.message.has_tool_calls());
-        assert_eq!(resp.stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
 
         let deltas: Vec<String> = rx
             .try_iter()

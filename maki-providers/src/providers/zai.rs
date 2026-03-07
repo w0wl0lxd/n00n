@@ -9,7 +9,9 @@ use ureq::Agent;
 
 use crate::model::Model;
 use crate::provider::Provider;
-use crate::{AgentError, ContentBlock, Message, ProviderEvent, Role, StreamResponse, TokenUsage};
+use crate::{
+    AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
+};
 
 const API_KEY_ENV: &str = "ZHIPU_API_KEY";
 const BASE_STANDARD: &str = "https://api.z.ai/api/paas/v4";
@@ -136,15 +138,6 @@ fn convert_tools(anthropic_tools: &Value) -> Value {
             })
             .collect(),
     )
-}
-
-fn map_finish_reason(reason: &str) -> &'static str {
-    match reason {
-        "stop" => "end_turn",
-        "tool_calls" => "tool_use",
-        "length" => "max_tokens",
-        _ => "end_turn",
-    }
 }
 
 impl Provider for Zai {
@@ -298,7 +291,7 @@ fn parse_sse(
     let mut text = String::new();
     let mut tool_accumulators: Vec<ToolAccumulator> = Vec::new();
     let mut usage = TokenUsage::default();
-    let mut stop_reason: Option<String> = None;
+    let mut stop_reason: Option<StopReason> = None;
 
     for line in reader.lines() {
         let line = line?;
@@ -343,7 +336,7 @@ fn parse_sse(
         };
 
         if let Some(reason) = choice.finish_reason {
-            stop_reason = Some(map_finish_reason(&reason).to_string());
+            stop_reason = Some(StopReason::from_openai(&reason));
         }
 
         let Some(delta) = choice.delta else {
@@ -427,7 +420,6 @@ fn parse_sse(
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use test_case::test_case;
 
     #[test]
     fn parse_sse_text_and_usage() {
@@ -446,7 +438,7 @@ data: [DONE]\n";
         assert_eq!(resp.usage.input, 100);
         assert_eq!(resp.usage.output, 10);
         assert_eq!(resp.usage.cache_read, 40);
-        assert_eq!(resp.stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
         assert!(
             matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Hello world")
         );
@@ -499,14 +491,6 @@ data: [DONE]\n";
             .collect();
         assert_eq!(thinking, vec!["Let me think", "..."]);
         assert_eq!(text, vec!["Hello"]);
-    }
-
-    #[test_case("stop", "end_turn" ; "stop_maps_to_end_turn")]
-    #[test_case("tool_calls", "tool_use" ; "tool_calls_maps_to_tool_use")]
-    #[test_case("length", "max_tokens" ; "length_maps_to_max_tokens")]
-    #[test_case("unknown", "end_turn" ; "unknown_defaults_to_end_turn")]
-    fn finish_reason_mapping(input: &str, expected: &str) {
-        assert_eq!(map_finish_reason(input), expected);
     }
 
     #[test]
@@ -598,7 +582,7 @@ data: [DONE]\n";
         assert_eq!(tools[1].0, "c2");
         assert_eq!(tools[1].1, "read");
         assert_eq!(tools[1].2["path"], "/tmp");
-        assert_eq!(resp.stop_reason.as_deref(), Some("tool_use"));
+        assert_eq!(resp.stop_reason, Some(StopReason::ToolUse));
     }
 
     #[test]

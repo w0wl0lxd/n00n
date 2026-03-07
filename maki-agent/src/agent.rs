@@ -19,7 +19,7 @@ use crate::{
 };
 use maki_providers::provider::Provider;
 use maki_providers::retry::RetryState;
-use maki_providers::{Message, Model, ProviderEvent, StreamResponse, TokenUsage};
+use maki_providers::{Message, Model, ProviderEvent, StopReason, StreamResponse, TokenUsage};
 
 const INSTRUCTION_FILES: &[&str] = &[
     "AGENTS.md",
@@ -333,7 +333,7 @@ pub fn run<T>(
             has_tools,
             num_turns,
             model = %model.id,
-            stop_reason = response.stop_reason.as_deref().unwrap_or("none"),
+            stop_reason = response.stop_reason.map_or("none", Into::into),
             "API response received"
         );
 
@@ -351,7 +351,7 @@ pub fn run<T>(
         let last_input_tokens = response.usage.input;
 
         if !has_tools {
-            let truncated = response.stop_reason.as_deref() == Some("max_tokens");
+            let truncated = response.stop_reason == Some(StopReason::MaxTokens);
             history.push(response.message);
 
             if truncated && num_turns <= MAX_CONTINUATION_TURNS {
@@ -524,7 +524,7 @@ mod tests {
     use test_case::test_case;
 
     use maki_providers::provider::Provider;
-    use maki_providers::{ContentBlock, Message, Role, StreamResponse, TokenUsage};
+    use maki_providers::{ContentBlock, Message, Role, StopReason, StreamResponse, TokenUsage};
 
     use super::*;
 
@@ -598,7 +598,7 @@ mod tests {
         }
     }
 
-    fn text_response(stop_reason: &str) -> StreamResponse {
+    fn text_response(stop_reason: StopReason) -> StreamResponse {
         StreamResponse {
             message: Message {
                 role: Role::Assistant,
@@ -607,7 +607,7 @@ mod tests {
                 }],
             },
             usage: TokenUsage::default(),
-            stop_reason: Some(stop_reason.into()),
+            stop_reason: Some(stop_reason),
         }
     }
 
@@ -639,7 +639,7 @@ mod tests {
         event_rx.iter().collect()
     }
 
-    fn run_agent(provider: &MockProvider) -> (u32, Option<String>) {
+    fn run_agent(provider: &MockProvider) -> (u32, Option<StopReason>) {
         run_and_collect(provider, &default_model())
             .into_iter()
             .find_map(|e| match e.event {
@@ -653,20 +653,20 @@ mod tests {
             .expect("expected Done event")
     }
 
-    #[test_case(&["end_turn"],                                                     1, Some("end_turn")  ; "end_turn_completes")]
-    #[test_case(&["max_tokens", "end_turn"],                                         2, Some("end_turn")  ; "max_tokens_continues")]
-    #[test_case(&["max_tokens", "max_tokens", "max_tokens", "max_tokens"], 4, Some("max_tokens") ; "max_tokens_gives_up_after_limit")]
-    fn turn_counting(stops: &[&str], expected_turns: u32, expected_stop: Option<&str>) {
-        let responses: Vec<_> = stops.iter().map(|s| text_response(s)).collect();
+    #[test_case(&[StopReason::EndTurn],                                                     1, Some(StopReason::EndTurn)  ; "end_turn_completes")]
+    #[test_case(&[StopReason::MaxTokens, StopReason::EndTurn],                                 2, Some(StopReason::EndTurn)  ; "max_tokens_continues")]
+    #[test_case(&[StopReason::MaxTokens, StopReason::MaxTokens, StopReason::MaxTokens, StopReason::MaxTokens], 4, Some(StopReason::MaxTokens) ; "max_tokens_gives_up_after_limit")]
+    fn turn_counting(stops: &[StopReason], expected_turns: u32, expected_stop: Option<StopReason>) {
+        let responses: Vec<_> = stops.iter().map(|s| text_response(*s)).collect();
         let provider = MockProvider::new(responses);
         let (turns, stop_reason) = run_agent(&provider);
         assert_eq!(turns, expected_turns);
-        assert_eq!(stop_reason.as_deref(), expected_stop);
+        assert_eq!(stop_reason, expected_stop);
     }
 
     #[test]
     fn compact_replaces_history_with_summary() {
-        let provider = MockProvider::new(vec![text_response("end_turn")]);
+        let provider = MockProvider::new(vec![text_response(StopReason::EndTurn)]);
         let model = default_model();
         let (event_tx, _rx) = mpsc::channel();
         let mut history = History::new(vec![
@@ -698,7 +698,7 @@ mod tests {
                 }],
             },
             usage: TokenUsage::default(),
-            stop_reason: Some("tool_use".into()),
+            stop_reason: Some(StopReason::ToolUse),
         }
     }
 
@@ -761,7 +761,7 @@ mod tests {
 
         let provider = MockProvider::new(vec![
             tool_call_response("glob", "t1"),
-            text_response("end_turn"),
+            text_response(StopReason::EndTurn),
         ]);
         let (history, events) = run_with_interrupt(provider, &cmd_rx);
 
@@ -777,7 +777,7 @@ mod tests {
 
         let provider = MockProvider::new(vec![
             tool_call_response("glob", "t1"),
-            text_response("end_turn"),
+            text_response(StopReason::EndTurn),
         ]);
         let (history, events) = run_with_interrupt(provider, &cmd_rx);
 
@@ -796,8 +796,10 @@ mod tests {
             })
             .unwrap();
 
-        let provider =
-            MockProvider::new(vec![text_response("end_turn"), text_response("end_turn")]);
+        let provider = MockProvider::new(vec![
+            text_response(StopReason::EndTurn),
+            text_response(StopReason::EndTurn),
+        ]);
         let (history, events) = run_with_interrupt(provider, &cmd_rx);
 
         assert!(events.iter().any(|e| {
@@ -830,7 +832,7 @@ mod tests {
     fn try_auto_compact_behavior(enabled: bool, input_tokens: u32, expected: bool) {
         let model = small_context_model(1000, 200);
         let provider = MockProvider::new(if expected {
-            vec![text_response("end_turn")]
+            vec![text_response(StopReason::EndTurn)]
         } else {
             vec![]
         });

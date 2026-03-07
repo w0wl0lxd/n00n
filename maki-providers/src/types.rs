@@ -1,5 +1,6 @@
 use serde::Serialize;
 use serde_json::Value;
+use strum::{Display, IntoStaticStr};
 
 use crate::TokenUsage;
 
@@ -64,9 +65,60 @@ pub enum ProviderEvent {
     ThinkingDelta { text: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Display, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    EndTurn,
+    ToolUse,
+    MaxTokens,
+}
+
+impl StopReason {
+    pub fn from_anthropic(s: &str) -> Self {
+        match s {
+            "end_turn" => Self::EndTurn,
+            "tool_use" => Self::ToolUse,
+            "max_tokens" => Self::MaxTokens,
+            _ => Self::EndTurn,
+        }
+    }
+
+    pub fn from_openai(s: &str) -> Self {
+        match s {
+            "stop" => Self::EndTurn,
+            "tool_calls" => Self::ToolUse,
+            "length" => Self::MaxTokens,
+            _ => Self::EndTurn,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct StreamResponse {
     pub message: Message,
     pub usage: TokenUsage,
-    pub stop_reason: Option<String>,
+    pub stop_reason: Option<StopReason>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_case::test_case;
+
+    #[test_case("end_turn", StopReason::EndTurn   ; "end_turn")]
+    #[test_case("tool_use", StopReason::ToolUse   ; "tool_use")]
+    #[test_case("max_tokens", StopReason::MaxTokens ; "max_tokens")]
+    #[test_case("unknown", StopReason::EndTurn    ; "unknown_defaults_to_end_turn")]
+    fn stop_reason_from_anthropic(input: &str, expected: StopReason) {
+        assert_eq!(StopReason::from_anthropic(input), expected);
+    }
+
+    #[test_case("stop", StopReason::EndTurn       ; "stop_maps_to_end_turn")]
+    #[test_case("tool_calls", StopReason::ToolUse ; "tool_calls_maps_to_tool_use")]
+    #[test_case("length", StopReason::MaxTokens   ; "length_maps_to_max_tokens")]
+    #[test_case("unknown", StopReason::EndTurn    ; "unknown_defaults_to_end_turn")]
+    fn stop_reason_from_openai(input: &str, expected: StopReason) {
+        assert_eq!(StopReason::from_openai(input), expected);
+    }
 }

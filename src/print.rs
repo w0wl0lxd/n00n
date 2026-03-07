@@ -27,6 +27,7 @@ use color_eyre::eyre::Context;
 use maki_agent::skill::Skill;
 use maki_agent::tools::QUESTION_TOOL_NAME;
 use maki_agent::{AgentEvent, AgentInput, AgentMode, Envelope, History, agent, template};
+use maki_providers::StopReason;
 use maki_providers::TokenUsage;
 use maki_providers::model::Model;
 use serde::Serialize;
@@ -50,7 +51,7 @@ struct PrintResult {
     duration_ms: u128,
     num_turns: u32,
     result: String,
-    stop_reason: Option<String>,
+    stop_reason: Option<StopReason>,
     session_id: String,
     total_cost_usd: f64,
     usage: TokenUsage,
@@ -215,7 +216,7 @@ pub fn run(
     let mut is_error = false;
     let mut num_turns: u32 = 0;
     let mut usage = TokenUsage::default();
-    let mut stop_reason: Option<String> = None;
+    let mut stop_reason: Option<StopReason> = None;
 
     for envelope in event_rx {
         let Envelope {
@@ -298,7 +299,7 @@ pub fn run(
             } => {
                 num_turns = *turns;
                 usage = *u;
-                stop_reason = sr.clone();
+                stop_reason = *sr;
                 break;
             }
             AgentEvent::Error { message } => {
@@ -373,7 +374,7 @@ mod tests {
             duration_ms: 1234,
             num_turns: 2,
             result: "done".into(),
-            stop_reason: Some("end_turn".into()),
+            stop_reason: Some(StopReason::EndTurn),
             session_id: "sess-123".into(),
             total_cost_usd: 0.003,
             usage: TokenUsage::default(),
