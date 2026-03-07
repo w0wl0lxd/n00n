@@ -17,6 +17,7 @@ When to use `general`:
 
 When NOT to use:
 - Reading a specific known file (use read directly)
+- Reading multiple files (use batch or code_execution; subagent output returns to main context, no savings, just latency)
 - Searching for a specific string (use grep directly)
 - Simple glob lookups (use glob directly)
 - Tasks requiring user interaction or clarification
