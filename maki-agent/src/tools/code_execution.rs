@@ -30,7 +30,8 @@ impl CodeInterpreter {
   {"code": "# Tools return strings, parse them as needed\nresult = grep(pattern='TODO', include='*.rs')\nlines = result.strip().split('\\n')\nprint(f'{len(lines)} TODOs found')"},
   {"code": "# Batch file reading\nfiles = glob(pattern='**/*.rs')\nfor f in files.strip().split('\\n'):\n    if f.strip():\n        content = read(path=f)\n        if 'fn main' in content:\n            print(f)"},
   {"code": "# Aggregate data from multiple files\ntotal = 0\nfor f in glob(pattern='**/*.rs').strip().split('\\n'):\n    if f.strip():\n        content = read(path=f)\n        total += len(content.split('\\n'))\nprint(f'Total lines: {total}')"},
-  {"code": "# Chain web requests\nurls = ['https://api.example.com/status', 'https://api.example.com/health']\nfor url in urls:\n    result = webfetch(url=url, timeout=5)\n    print(f'{url}: {len(result)} bytes')"}
+  {"code": "# Chain web requests\nurls = ['https://api.example.com/status', 'https://api.example.com/health']\nfor url in urls:\n    result = webfetch(url=url, timeout=5)\n    print(f'{url}: {len(result)} bytes')"},
+  {"code": "# Fetch a page and extract only relevant sections\ncontent = webfetch(url='https://docs.example.com/api')\nfor line in content.split('\\n'):\n    if 'authentication' in line.lower():\n        print(line)"}
 ]"##,
     );
 
