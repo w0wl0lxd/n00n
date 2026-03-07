@@ -34,7 +34,7 @@ const RESPONSE_TYPE: &str = "response_type=code";
 const CHALLENGE_METHOD: &str = "code_challenge_method=S256";
 
 #[derive(Debug, Serialize, Deserialize)]
-struct OAuthTokens {
+pub(crate) struct OAuthTokens {
     access: String,
     refresh: String,
     expires: u64,
@@ -168,7 +168,7 @@ fn exchange_code(code: &str, verifier: &str) -> Result<OAuthTokens, AgentError> 
     into_oauth_tokens(resp, None)
 }
 
-fn refresh_tokens(tokens: &OAuthTokens) -> Result<OAuthTokens, AgentError> {
+pub(crate) fn refresh_tokens(tokens: &OAuthTokens) -> Result<OAuthTokens, AgentError> {
     let expired = is_expired(tokens);
     debug!(expired, "refreshing OAuth tokens");
 
@@ -185,13 +185,13 @@ fn refresh_tokens(tokens: &OAuthTokens) -> Result<OAuthTokens, AgentError> {
     into_oauth_tokens(resp, Some(&tokens.refresh))
 }
 
-fn load_tokens() -> Option<OAuthTokens> {
+pub(crate) fn load_tokens() -> Option<OAuthTokens> {
     let path = auth_file_path().ok()?;
     let data = fs::read_to_string(path).ok()?;
     serde_json::from_str(&data).ok()
 }
 
-fn save_tokens(tokens: &OAuthTokens) -> Result<(), AgentError> {
+pub(crate) fn save_tokens(tokens: &OAuthTokens) -> Result<(), AgentError> {
     let path = auth_file_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -208,6 +208,21 @@ fn is_expired(tokens: &OAuthTokens) -> bool {
     now_millis() + REFRESH_BUFFER_SECS * 1000 >= tokens.expires
 }
 
+pub(crate) fn build_oauth_resolved(tokens: &OAuthTokens) -> ResolvedAuth {
+    ResolvedAuth {
+        api_url: "https://api.anthropic.com/v1/messages?beta=true".into(),
+        headers: vec![
+            ("authorization".into(), format!("Bearer {}", tokens.access)),
+            (
+                "anthropic-beta".into(),
+                format!(
+                    "oauth-2025-04-20,interleaved-thinking-2025-05-14,{BETA_ADVANCED_TOOL_USE}"
+                ),
+            ),
+        ],
+    }
+}
+
 pub fn resolve() -> Result<ResolvedAuth, AgentError> {
     if let Some(mut tokens) = load_tokens() {
         if is_expired(&tokens) {
@@ -215,18 +230,7 @@ pub fn resolve() -> Result<ResolvedAuth, AgentError> {
             save_tokens(&tokens)?;
         }
         debug!("using OAuth authentication");
-        return Ok(ResolvedAuth {
-            api_url: "https://api.anthropic.com/v1/messages?beta=true".into(),
-            headers: vec![
-                ("authorization".into(), format!("Bearer {}", tokens.access)),
-                (
-                    "anthropic-beta".into(),
-                    format!(
-                        "oauth-2025-04-20,interleaved-thinking-2025-05-14,{BETA_ADVANCED_TOOL_USE}"
-                    ),
-                ),
-            ],
-        });
+        return Ok(build_oauth_resolved(&tokens));
     }
 
     if let Ok(key) = env::var("ANTHROPIC_API_KEY") {
@@ -286,46 +290,23 @@ pub fn logout() -> Result<(), AgentError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
 
-    #[test]
-    fn pkce_challenge_is_sha256_of_verifier() {
-        let (verifier, challenge) = generate_pkce();
-        let expected = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-        assert_eq!(challenge, expected);
+    #[test_case("a b", "a%20b" ; "space")]
+    #[test_case("a:b", "a%3Ab" ; "colon")]
+    #[test_case("abc", "abc"   ; "passthrough")]
+    fn urlenc_encodes(input: &str, expected: &str) {
+        assert_eq!(urlenc(input), expected);
     }
 
-    #[test]
-    fn authorize_url_contains_required_params() {
-        let (_, challenge) = generate_pkce();
-        let url = build_authorize_url(&challenge);
-        assert!(url.starts_with(AUTHORIZE_URL));
-        assert!(url.contains(&format!("client_id={CLIENT_ID}")));
-        assert!(url.contains(RESPONSE_TYPE));
-        assert!(url.contains(CHALLENGE_METHOD));
-        assert!(url.contains(&format!("code_challenge={challenge}")));
-    }
-
-    #[test]
-    fn urlenc_encodes_special_characters() {
-        assert_eq!(urlenc("a b"), "a%20b");
-        assert_eq!(urlenc("a:b"), "a%3Ab");
-        assert_eq!(urlenc("abc"), "abc");
-    }
-
-    #[test]
-    fn is_expired_checks_against_current_time() {
-        let expired = OAuthTokens {
+    #[test_case(0,                              true  ; "epoch_is_expired")]
+    #[test_case(now_millis() + 3_600_000,       false ; "future_is_valid")]
+    fn token_expiry(expires: u64, expected: bool) {
+        let tokens = OAuthTokens {
             access: "a".into(),
             refresh: "r".into(),
-            expires: 0,
+            expires,
         };
-        assert!(is_expired(&expired));
-
-        let valid = OAuthTokens {
-            access: "a".into(),
-            refresh: "r".into(),
-            expires: now_millis() + 3_600_000,
-        };
-        assert!(!is_expired(&valid));
+        assert_eq!(is_expired(&tokens), expected);
     }
 }

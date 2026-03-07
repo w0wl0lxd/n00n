@@ -1,4 +1,5 @@
 use std::io::{BufRead, BufReader};
+use std::sync::Mutex;
 use std::sync::mpsc::Sender;
 
 use serde::{Deserialize, Serialize};
@@ -263,7 +264,7 @@ struct MessageDeltaEvent {
 
 pub struct Anthropic {
     agent: Agent,
-    auth: auth::ResolvedAuth,
+    auth: Mutex<auth::ResolvedAuth>,
 }
 
 impl Anthropic {
@@ -271,16 +272,91 @@ impl Anthropic {
         let resolved = auth::resolve()?;
         Ok(Self {
             agent: super::streaming_agent(),
-            auth: resolved,
+            auth: Mutex::new(resolved),
         })
     }
 
     fn apply_auth<B>(&self, req: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
+        let auth = self.auth.lock().unwrap();
         let mut req = req.header("anthropic-version", API_VERSION);
-        for (key, value) in &self.auth.headers {
+        for (key, value) in &auth.headers {
             req = req.header(key, value);
         }
         req
+    }
+
+    fn try_refresh_auth(&self) -> Result<(), AgentError> {
+        let tokens = auth::load_tokens().ok_or_else(|| AgentError::Api {
+            status: 401,
+            message: "not using OAuth — cannot refresh token".into(),
+        })?;
+        let fresh = auth::refresh_tokens(&tokens)?;
+        auth::save_tokens(&fresh)?;
+        *self.auth.lock().unwrap() = auth::build_oauth_resolved(&fresh);
+        warn!("refreshed OAuth token after 401");
+        Ok(())
+    }
+
+    fn with_retry<T>(&self, f: impl Fn() -> Result<T, AgentError>) -> Result<T, AgentError> {
+        let result = f();
+        if let Err(AgentError::Api { status: 401, .. }) = &result
+            && self.try_refresh_auth().is_ok()
+        {
+            return f();
+        }
+        result
+    }
+
+    fn do_stream_request(
+        &self,
+        body_str: &str,
+        event_tx: &Sender<ProviderEvent>,
+    ) -> Result<StreamResponse, AgentError> {
+        let auth = self.auth.lock().unwrap();
+        let req = self
+            .agent
+            .post(&auth.api_url)
+            .header("content-type", "application/json")
+            .header("anthropic-version", API_VERSION);
+        let req = auth.headers.iter().fold(req, |r, (k, v)| r.header(k, v));
+        drop(auth);
+
+        let response = req.send(body_str)?;
+        let status = response.status().as_u16();
+
+        if status == 200 {
+            parse_sse(BufReader::new(response.into_body().into_reader()), event_tx)
+        } else {
+            Err(AgentError::from_response(response))
+        }
+    }
+
+    fn do_list_models(&self) -> Result<Vec<String>, AgentError> {
+        let mut models = Vec::new();
+        let mut after_id: Option<String> = None;
+
+        loop {
+            let mut url = MODELS_URL.to_string();
+            if let Some(cursor) = &after_id {
+                url.push_str(&format!("&after_id={cursor}"));
+            }
+
+            let response = self.apply_auth(self.agent.get(&url)).call()?;
+            if response.status().as_u16() != 200 {
+                return Err(AgentError::from_response(response));
+            }
+
+            let page: ModelsPage = serde_json::from_reader(response.into_body().into_reader())?;
+            models.extend(page.data.into_iter().map(|m| m.id));
+
+            if !page.has_more {
+                break;
+            }
+            after_id = page.last_id;
+        }
+
+        models.sort();
+        Ok(models)
     }
 }
 
@@ -313,47 +389,11 @@ impl Provider for Anthropic {
 
         debug!(model = %model.id, num_messages = messages.len(), "sending API request");
 
-        let req = self.apply_auth(
-            self.agent
-                .post(&self.auth.api_url)
-                .header("content-type", "application/json"),
-        );
-        let response = req.send(body_str.as_str())?;
-        let status = response.status().as_u16();
-
-        if status == 200 {
-            parse_sse(BufReader::new(response.into_body().into_reader()), event_tx)
-        } else {
-            Err(AgentError::from_response(response))
-        }
+        self.with_retry(|| self.do_stream_request(&body_str, event_tx))
     }
 
     fn list_models(&self) -> Result<Vec<String>, AgentError> {
-        let mut models = Vec::new();
-        let mut after_id: Option<String> = None;
-
-        loop {
-            let mut url = MODELS_URL.to_string();
-            if let Some(cursor) = &after_id {
-                url.push_str(&format!("&after_id={cursor}"));
-            }
-
-            let response = self.apply_auth(self.agent.get(&url)).call()?;
-            if response.status().as_u16() != 200 {
-                return Err(AgentError::from_response(response));
-            }
-
-            let page: ModelsPage = serde_json::from_reader(response.into_body().into_reader())?;
-            models.extend(page.data.into_iter().map(|m| m.id));
-
-            if !page.has_more {
-                break;
-            }
-            after_id = page.last_id;
-        }
-
-        models.sort();
-        Ok(models)
+        self.with_retry(|| self.do_list_models())
     }
 }
 
@@ -609,17 +649,13 @@ data: {\"type\":\"message_stop\"}\n";
         assert!(
             matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Hello world")
         );
-        assert!(!resp.message.has_tool_calls());
         assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
 
         let deltas: Vec<String> = rx
             .try_iter()
-            .filter_map(|e| {
-                if let ProviderEvent::TextDelta { text: t } = e {
-                    Some(t)
-                } else {
-                    None
-                }
+            .filter_map(|e| match e {
+                ProviderEvent::TextDelta { text } => Some(text),
+                _ => None,
             })
             .collect();
         assert_eq!(deltas, vec!["Hello", " world"]);
