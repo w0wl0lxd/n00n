@@ -1,3 +1,4 @@
+use std::fmt;
 use std::ops::AddAssign;
 use std::str::FromStr;
 
@@ -15,6 +16,10 @@ pub enum ModelError {
     UnsupportedProvider(String),
     #[error("unknown model '{0}'")]
     UnknownModel(String),
+    #[error("invalid model tier '{0}' (expected: strong, medium, weak)")]
+    InvalidTier(String),
+    #[error("no default model for {0}/{1}")]
+    NoDefault(ProviderKind, ModelTier),
 }
 
 #[derive(Debug, Clone)]
@@ -31,220 +36,62 @@ pub enum ModelFamily {
     Glm,
 }
 
-#[derive(Debug, Clone)]
-pub struct Model {
-    pub id: String,
-    pub provider: ProviderKind,
-    pub pricing: ModelPricing,
-    pub max_output_tokens: u32,
-    pub context_window: u32,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ModelTier {
+    Weak,
+    Medium,
+    Strong,
 }
 
-struct ModelTier {
-    prefixes: &'static [&'static str],
-    pricing: ModelPricing,
-    max_output_tokens: u32,
-    context_window: u32,
+impl fmt::Display for ModelTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Weak => "weak",
+            Self::Medium => "medium",
+            Self::Strong => "strong",
+        })
+    }
 }
 
-const ANTHROPIC_TIERS: &[ModelTier] = &[
-    ModelTier {
-        prefixes: &["claude-3-haiku"],
-        pricing: ModelPricing {
-            input: 0.25,
-            output: 1.25,
-            cache_write: 0.30,
-            cache_read: 0.03,
-        },
-        max_output_tokens: 4096,
-        context_window: 200_000,
-    },
-    ModelTier {
-        prefixes: &["claude-3-5-haiku"],
-        pricing: ModelPricing {
-            input: 0.80,
-            output: 4.00,
-            cache_write: 1.00,
-            cache_read: 0.08,
-        },
-        max_output_tokens: 8192,
-        context_window: 200_000,
-    },
-    ModelTier {
-        prefixes: &["claude-haiku-4-5"],
-        pricing: ModelPricing {
-            input: 1.00,
-            output: 5.00,
-            cache_write: 1.25,
-            cache_read: 0.10,
-        },
-        max_output_tokens: 64000,
-        context_window: 200_000,
-    },
-    ModelTier {
-        prefixes: &["claude-3-sonnet"],
-        pricing: ModelPricing {
-            input: 3.00,
-            output: 15.00,
-            cache_write: 0.30,
-            cache_read: 0.30,
-        },
-        max_output_tokens: 4096,
-        context_window: 200_000,
-    },
-    ModelTier {
-        prefixes: &["claude-3-5-sonnet"],
-        pricing: ModelPricing {
-            input: 3.00,
-            output: 15.00,
-            cache_write: 3.75,
-            cache_read: 0.30,
-        },
-        max_output_tokens: 8192,
-        context_window: 200_000,
-    },
-    ModelTier {
-        prefixes: &["claude-3-7-sonnet", "claude-sonnet-4"],
-        pricing: ModelPricing {
-            input: 3.00,
-            output: 15.00,
-            cache_write: 3.75,
-            cache_read: 0.30,
-        },
-        max_output_tokens: 64000,
-        context_window: 200_000,
-    },
-    ModelTier {
-        prefixes: &["claude-sonnet-4-5", "claude-sonnet-4-6"],
-        pricing: ModelPricing {
-            input: 3.00,
-            output: 15.00,
-            cache_write: 3.75,
-            cache_read: 0.30,
-        },
-        max_output_tokens: 64000,
-        context_window: 200_000,
-    },
-    ModelTier {
-        prefixes: &["claude-opus-4-5"],
-        pricing: ModelPricing {
-            input: 5.00,
-            output: 25.00,
-            cache_write: 6.25,
-            cache_read: 0.50,
-        },
-        max_output_tokens: 64000,
-        context_window: 200_000,
-    },
-    ModelTier {
-        prefixes: &["claude-opus-4-6"],
-        pricing: ModelPricing {
-            input: 5.00,
-            output: 25.00,
-            cache_write: 6.25,
-            cache_read: 0.50,
-        },
-        max_output_tokens: 128000,
-        context_window: 200_000,
-    },
-    ModelTier {
-        prefixes: &["claude-3-opus", "claude-opus-4-0", "claude-opus-4-1"],
-        pricing: ModelPricing {
-            input: 15.00,
-            output: 75.00,
-            cache_write: 18.75,
-            cache_read: 1.50,
-        },
-        max_output_tokens: 32000,
-        context_window: 200_000,
-    },
-];
+impl FromStr for ModelTier {
+    type Err = ModelError;
 
-const ZAI_TIERS: &[ModelTier] = &[
-    ModelTier {
-        prefixes: &["glm-5-code"],
-        pricing: ModelPricing {
-            input: 1.20,
-            output: 5.00,
-            cache_write: 0.00,
-            cache_read: 0.30,
-        },
-        max_output_tokens: 131072,
-        context_window: 200_000,
-    },
-    ModelTier {
-        prefixes: &["glm-5"],
-        pricing: ModelPricing {
-            input: 1.00,
-            output: 3.20,
-            cache_write: 0.00,
-            cache_read: 0.20,
-        },
-        max_output_tokens: 131072,
-        context_window: 200_000,
-    },
-    ModelTier {
-        prefixes: &["glm-4.7-flash"],
-        pricing: ModelPricing {
-            input: 0.00,
-            output: 0.00,
-            cache_write: 0.00,
-            cache_read: 0.00,
-        },
-        max_output_tokens: 131072,
-        context_window: 200_000,
-    },
-    ModelTier {
-        prefixes: &["glm-4.7", "glm-4.6"],
-        pricing: ModelPricing {
-            input: 0.60,
-            output: 2.20,
-            cache_write: 0.00,
-            cache_read: 0.11,
-        },
-        max_output_tokens: 131072,
-        context_window: 200_000,
-    },
-    ModelTier {
-        prefixes: &["glm-4.5-flash"],
-        pricing: ModelPricing {
-            input: 0.00,
-            output: 0.00,
-            cache_write: 0.00,
-            cache_read: 0.00,
-        },
-        max_output_tokens: 98304,
-        context_window: 131_072,
-    },
-    ModelTier {
-        prefixes: &["glm-4.5-air"],
-        pricing: ModelPricing {
-            input: 0.20,
-            output: 1.10,
-            cache_write: 0.00,
-            cache_read: 0.03,
-        },
-        max_output_tokens: 98304,
-        context_window: 131_072,
-    },
-    ModelTier {
-        prefixes: &["glm-4.5"],
-        pricing: ModelPricing {
-            input: 0.60,
-            output: 2.20,
-            cache_write: 0.00,
-            cache_read: 0.11,
-        },
-        max_output_tokens: 98304,
-        context_window: 131_072,
-    },
-];
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "weak" => Ok(Self::Weak),
+            "medium" => Ok(Self::Medium),
+            "strong" => Ok(Self::Strong),
+            other => Err(ModelError::InvalidTier(other.to_string())),
+        }
+    }
+}
 
-fn lookup_tier<'a>(tiers: &'a [ModelTier], model_id: &str) -> Result<&'a ModelTier, ModelError> {
-    tiers
+pub(crate) struct ModelEntry {
+    pub(crate) prefixes: &'static [&'static str],
+    pub(crate) tier: ModelTier,
+    pub(crate) family: ModelFamily,
+    pub(crate) default: bool,
+    pub(crate) pricing: ModelPricing,
+    pub(crate) max_output_tokens: u32,
+    pub(crate) context_window: u32,
+}
+
+fn lookup_entry<'a>(
+    entries: &'a [ModelEntry],
+    model_id: &str,
+) -> Result<&'a ModelEntry, ModelError> {
+    entries
         .iter()
-        .find(|t| t.prefixes.iter().any(|p| model_id.starts_with(p)))
+        .find(|e| e.prefixes.iter().any(|p| model_id.starts_with(p)))
         .ok_or_else(|| ModelError::UnknownModel(model_id.to_string()))
+}
+
+pub(crate) fn models_for_provider(provider: ProviderKind) -> &'static [ModelEntry] {
+    use crate::providers::{anthropic, zai};
+    match provider {
+        ProviderKind::Anthropic => anthropic::models(),
+        ProviderKind::Zai | ProviderKind::ZaiCodingPlan => zai::models(),
+    }
 }
 
 impl ModelFamily {
@@ -256,33 +103,46 @@ impl ModelFamily {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Model {
+    pub id: String,
+    pub provider: ProviderKind,
+    pub tier: ModelTier,
+    pub family: ModelFamily,
+    pub pricing: ModelPricing,
+    pub max_output_tokens: u32,
+    pub context_window: u32,
+}
+
 impl Model {
     pub fn spec(&self) -> String {
         format!("{}/{}", self.provider, self.id)
     }
 
-    pub fn family(&self) -> ModelFamily {
-        match self.provider {
-            ProviderKind::Zai | ProviderKind::ZaiCodingPlan => ModelFamily::Glm,
-            ProviderKind::Anthropic => ModelFamily::Claude,
-        }
+    pub fn from_tier(provider: ProviderKind, tier: ModelTier) -> Result<Self, ModelError> {
+        let entries = models_for_provider(provider);
+        let entry = entries
+            .iter()
+            .find(|e| e.default && e.tier == tier)
+            .ok_or(ModelError::NoDefault(provider, tier))?;
+        let model_id = entry.prefixes[0];
+        Self::from_spec(&format!("{provider}/{model_id}"))
     }
 
     pub fn from_spec(spec: &str) -> Result<Self, ModelError> {
         let (provider_str, model_id) = spec.split_once('/').ok_or(ModelError::InvalidFormat)?;
         let provider = ProviderKind::from_str(provider_str)
             .map_err(|_| ModelError::UnsupportedProvider(provider_str.to_string()))?;
-        let tiers = match provider {
-            ProviderKind::Anthropic => ANTHROPIC_TIERS,
-            ProviderKind::Zai | ProviderKind::ZaiCodingPlan => ZAI_TIERS,
-        };
-        let tier = lookup_tier(tiers, model_id)?;
+        let entries = models_for_provider(provider);
+        let entry = lookup_entry(entries, model_id)?;
         Ok(Self {
             id: model_id.to_string(),
             provider,
-            pricing: tier.pricing.clone(),
-            max_output_tokens: tier.max_output_tokens,
-            context_window: tier.context_window,
+            tier: entry.tier,
+            family: entry.family,
+            pricing: entry.pricing.clone(),
+            max_output_tokens: entry.max_output_tokens,
+            context_window: entry.context_window,
         })
     }
 }
@@ -382,5 +242,90 @@ mod tests {
         let round = Model::from_spec(&spec).unwrap();
         assert_eq!(round.id, model.id);
         assert_eq!(round.max_output_tokens, model.max_output_tokens);
+    }
+
+    #[test]
+    fn tier_ord_weak_lt_medium_lt_strong() {
+        assert!(ModelTier::Weak < ModelTier::Medium);
+        assert!(ModelTier::Medium < ModelTier::Strong);
+    }
+
+    #[test_case("anthropic/claude-opus-4-6-20260101",    ModelTier::Strong ; "anthropic_opus_strong")]
+    #[test_case("anthropic/claude-3-opus-20240229",      ModelTier::Strong ; "anthropic_opus3_strong")]
+    #[test_case("anthropic/claude-sonnet-4-20250514",    ModelTier::Medium ; "anthropic_sonnet_medium")]
+    #[test_case("anthropic/claude-3-7-sonnet-20250219",  ModelTier::Medium ; "anthropic_37sonnet_medium")]
+    #[test_case("anthropic/claude-3-5-haiku-20241022",   ModelTier::Weak   ; "anthropic_35haiku_weak")]
+    #[test_case("anthropic/claude-haiku-4-5-20250506",   ModelTier::Weak   ; "anthropic_haiku45_weak")]
+    #[test_case("zai/glm-5-code",                       ModelTier::Strong ; "zai_glm5code_strong")]
+    #[test_case("zai/glm-5",                            ModelTier::Strong ; "zai_glm5_strong")]
+    #[test_case("zai/glm-4.7",                          ModelTier::Medium ; "zai_glm47_medium")]
+    #[test_case("zai/glm-4.5",                          ModelTier::Medium ; "zai_glm45_medium")]
+    #[test_case("zai/glm-4.7-flash",                    ModelTier::Weak   ; "zai_glm47flash_weak")]
+    #[test_case("zai/glm-4.5-flash",                    ModelTier::Weak   ; "zai_glm45flash_weak")]
+    #[test_case("zai/glm-4.5-air",                      ModelTier::Weak   ; "zai_glm45air_weak")]
+    fn model_tier_classification(spec: &str, expected: ModelTier) {
+        let model = Model::from_spec(spec).unwrap();
+        assert_eq!(model.tier, expected);
+    }
+
+    #[test_case(ProviderKind::Anthropic,     ModelTier::Strong ; "anthropic_strong")]
+    #[test_case(ProviderKind::Anthropic,     ModelTier::Medium ; "anthropic_medium")]
+    #[test_case(ProviderKind::Anthropic,     ModelTier::Weak   ; "anthropic_weak")]
+    #[test_case(ProviderKind::Zai,           ModelTier::Strong ; "zai_strong")]
+    #[test_case(ProviderKind::Zai,           ModelTier::Medium ; "zai_medium")]
+    #[test_case(ProviderKind::Zai,           ModelTier::Weak   ; "zai_weak")]
+    #[test_case(ProviderKind::ZaiCodingPlan, ModelTier::Strong ; "zai_coding_plan_strong")]
+    fn from_tier_produces_valid_model(provider: ProviderKind, tier: ModelTier) {
+        let model = Model::from_tier(provider, tier).unwrap();
+        assert_eq!(model.provider, provider);
+        assert_eq!(model.tier, tier);
+    }
+
+    #[test_case("strong", ModelTier::Strong ; "parse_strong")]
+    #[test_case("medium", ModelTier::Medium ; "parse_medium")]
+    #[test_case("weak",   ModelTier::Weak   ; "parse_weak")]
+    fn tier_parse_valid(input: &str, expected: ModelTier) {
+        assert_eq!(input.parse::<ModelTier>().unwrap(), expected);
+    }
+
+    #[test]
+    fn tier_parse_invalid() {
+        assert!(matches!(
+            "turbo".parse::<ModelTier>(),
+            Err(ModelError::InvalidTier(_))
+        ));
+    }
+
+    #[test]
+    fn tier_clamping_via_min() {
+        let requested = ModelTier::Strong;
+        let parent = ModelTier::Medium;
+        assert_eq!(requested.min(parent), ModelTier::Medium);
+
+        let requested = ModelTier::Weak;
+        let parent = ModelTier::Strong;
+        assert_eq!(requested.min(parent), ModelTier::Weak);
+    }
+
+    #[test]
+    fn exactly_one_default_per_provider_tier() {
+        for (provider, entries) in [
+            (
+                ProviderKind::Anthropic,
+                models_for_provider(ProviderKind::Anthropic),
+            ),
+            (ProviderKind::Zai, models_for_provider(ProviderKind::Zai)),
+        ] {
+            for tier in [ModelTier::Weak, ModelTier::Medium, ModelTier::Strong] {
+                let count = entries
+                    .iter()
+                    .filter(|e| e.tier == tier && e.default)
+                    .count();
+                assert_eq!(
+                    count, 1,
+                    "{provider}/{tier}: expected exactly 1 default, found {count}"
+                );
+            }
+        }
     }
 }

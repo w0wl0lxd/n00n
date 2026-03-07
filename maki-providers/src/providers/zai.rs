@@ -8,10 +8,114 @@ use tracing::{debug, warn};
 use ureq::Agent;
 
 use crate::model::Model;
+use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::Provider;
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
 };
+
+pub(crate) fn models() -> &'static [ModelEntry] {
+    &[
+        ModelEntry {
+            prefixes: &["glm-5-code"],
+            tier: ModelTier::Strong,
+            family: ModelFamily::Glm,
+            default: true,
+            pricing: ModelPricing {
+                input: 1.20,
+                output: 5.00,
+                cache_write: 0.00,
+                cache_read: 0.30,
+            },
+            max_output_tokens: 131072,
+            context_window: 200_000,
+        },
+        ModelEntry {
+            prefixes: &["glm-5"],
+            tier: ModelTier::Strong,
+            family: ModelFamily::Glm,
+            default: false,
+            pricing: ModelPricing {
+                input: 1.00,
+                output: 3.20,
+                cache_write: 0.00,
+                cache_read: 0.20,
+            },
+            max_output_tokens: 131072,
+            context_window: 200_000,
+        },
+        ModelEntry {
+            prefixes: &["glm-4.7-flash"],
+            tier: ModelTier::Weak,
+            family: ModelFamily::Glm,
+            default: true,
+            pricing: ModelPricing {
+                input: 0.00,
+                output: 0.00,
+                cache_write: 0.00,
+                cache_read: 0.00,
+            },
+            max_output_tokens: 131072,
+            context_window: 200_000,
+        },
+        ModelEntry {
+            prefixes: &["glm-4.7", "glm-4.6"],
+            tier: ModelTier::Medium,
+            family: ModelFamily::Glm,
+            default: true,
+            pricing: ModelPricing {
+                input: 0.60,
+                output: 2.20,
+                cache_write: 0.00,
+                cache_read: 0.11,
+            },
+            max_output_tokens: 131072,
+            context_window: 200_000,
+        },
+        ModelEntry {
+            prefixes: &["glm-4.5-flash"],
+            tier: ModelTier::Weak,
+            family: ModelFamily::Glm,
+            default: false,
+            pricing: ModelPricing {
+                input: 0.00,
+                output: 0.00,
+                cache_write: 0.00,
+                cache_read: 0.00,
+            },
+            max_output_tokens: 98304,
+            context_window: 131_072,
+        },
+        ModelEntry {
+            prefixes: &["glm-4.5-air"],
+            tier: ModelTier::Weak,
+            family: ModelFamily::Glm,
+            default: false,
+            pricing: ModelPricing {
+                input: 0.20,
+                output: 1.10,
+                cache_write: 0.00,
+                cache_read: 0.03,
+            },
+            max_output_tokens: 98304,
+            context_window: 131_072,
+        },
+        ModelEntry {
+            prefixes: &["glm-4.5"],
+            tier: ModelTier::Medium,
+            family: ModelFamily::Glm,
+            default: false,
+            pricing: ModelPricing {
+                input: 0.60,
+                output: 2.20,
+                cache_write: 0.00,
+                cache_read: 0.11,
+            },
+            max_output_tokens: 98304,
+            context_window: 131_072,
+        },
+    ]
+}
 
 const API_KEY_ENV: &str = "ZHIPU_API_KEY";
 const BASE_STANDARD: &str = "https://api.z.ai/api/paas/v4";

@@ -143,7 +143,7 @@ pub fn run(
         &vars,
         &skills,
         &[QUESTION_TOOL_NAME],
-        model.family().supports_tool_examples(),
+        model.family.supports_tool_examples(),
     );
 
     let (event_tx, event_rx) = mpsc::channel::<Envelope>();

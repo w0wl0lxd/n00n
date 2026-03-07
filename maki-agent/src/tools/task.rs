@@ -3,6 +3,8 @@ use std::thread;
 
 use crate::{AgentEvent, ToolOutput};
 use maki_providers::ContentBlock;
+use maki_providers::model::ModelTier;
+use maki_providers::provider;
 use maki_tool_macro::Tool;
 
 use super::{GENERAL_SUBAGENT_TOOLS, RESEARCH_SUBAGENT_TOOLS, Tool, ToolContext};
@@ -21,6 +23,10 @@ pub struct Task {
         description = "Subagent type: \"research\" (read-only, default) or \"general\" (can modify files)"
     )]
     subagent_type: Option<String>,
+    #[param(
+        description = "Model tier (optional, omit to use current model, capped at current tier):\n- \"strong\" (e.g. Opus): Deep reasoning, complex architecture, subtle bugs. ~5x cost of medium.\n- \"medium\" (e.g. Sonnet): Balanced. Refactors, features, multi-file changes.\n- \"weak\" (e.g. Haiku): Fast/cheap. Search, summarize, boilerplate, simple edits."
+    )]
+    model_tier: Option<String>,
 }
 
 impl Tool for Task {
@@ -28,8 +34,9 @@ impl Tool for Task {
     const DESCRIPTION: &str = include_str!("task.md");
     const EXAMPLES: Option<&str> = Some(
         r#"[
-  {"description": "Find auth middleware", "prompt": "Search the codebase for authentication middleware. Return file paths and a summary of how auth is implemented."},
-  {"description": "Refactor error types", "prompt": "In src/errors.rs, replace all uses of String error types with thiserror derive macros.\n\nHere is the pattern to follow (from src/api/errors.rs):\n```rust\n#[derive(Debug, thiserror::Error)]\npub enum ApiError {\n    #[error(\"not found: {0}\")]\n    NotFound(String),\n    #[error(\"unauthorized\")]\n    Unauthorized,\n}\n```\n\nApply this same pattern to all error variants in src/errors.rs.", "subagent_type": "general"}
+  {"description": "Find auth middleware", "prompt": "Search the codebase for authentication middleware. Return file paths and a summary of how auth is implemented.", "model_tier": "weak"},
+  {"description": "Refactor error types", "prompt": "In src/errors.rs, replace all uses of String error types with thiserror derive macros.\n\nHere is the pattern to follow (from src/api/errors.rs):\n```rust\n#[derive(Debug, thiserror::Error)]\npub enum ApiError {\n    #[error(\"not found: {0}\")]\n    NotFound(String),\n    #[error(\"unauthorized\")]\n    Unauthorized,\n}\n```\n\nApply this same pattern to all error variants in src/errors.rs.", "subagent_type": "general"},
+  {"description": "Debug race condition", "prompt": "Analyze the locking strategy in src/cache.rs. Identify potential deadlocks or race conditions.", "model_tier": "strong"}
 ]"#,
     );
 
@@ -41,13 +48,28 @@ impl Tool for Task {
             "general" => (crate::prompt::GENERAL_PROMPT, GENERAL_SUBAGENT_TOOLS),
             other => return Err(format!("unknown subagent type: {other}")),
         };
+
+        let (resolved_model, resolved_provider);
+        let (model, provider) = if let Some(ref tier_str) = self.model_tier {
+            let requested: ModelTier = tier_str
+                .parse()
+                .map_err(|e: maki_providers::ModelError| e.to_string())?;
+            let effective = requested.min(ctx.model.tier);
+            resolved_model = maki_providers::Model::from_tier(ctx.model.provider, effective)
+                .map_err(|e| e.to_string())?;
+            resolved_provider = provider::from_model(&resolved_model).map_err(|e| e.to_string())?;
+            (&resolved_model, resolved_provider.as_ref())
+        } else {
+            (ctx.model, ctx.provider)
+        };
+
         let mut system = vars.apply(prompt).into_owned();
         let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
         system.push_str(&instructions);
         let tools = ToolCall::definitions_filtered(
             &vars,
             tool_names,
-            ctx.model.family().supports_tool_examples(),
+            model.family.supports_tool_examples(),
         );
 
         let (sub_tx, sub_rx) = mpsc::channel::<crate::Envelope>();
@@ -80,8 +102,8 @@ impl Tool for Task {
 
         let mut history = crate::History::new(Vec::new());
         let mut agent = Agent::new(
-            ctx.provider,
-            ctx.model,
+            provider,
+            model,
             &mut history,
             &system,
             &sub_tx,

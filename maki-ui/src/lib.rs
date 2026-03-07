@@ -230,7 +230,7 @@ fn spawn_agent(
         let tools = maki_agent::tools::ToolCall::definitions(
             &vars,
             &skills,
-            model.family().supports_tool_examples(),
+            model.family.supports_tool_examples(),
         );
 
         thread::spawn(move || {

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::{env, fs};
 
 pub use error::AgentError;
-pub use model::{Model, ModelError, ModelFamily, ModelPricing, TokenUsage};
+pub use model::{Model, ModelError, ModelFamily, ModelPricing, ModelTier, TokenUsage};
 pub use providers::auth;
 pub use types::{ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse};
 
