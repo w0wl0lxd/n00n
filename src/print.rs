@@ -254,7 +254,6 @@ pub fn run(
             | AgentEvent::BatchProgress { .. }
             | AgentEvent::InterruptConsumed { .. }
             | AgentEvent::AutoCompacting
-            | AgentEvent::Cancelled
             | AgentEvent::QuestionPrompt { .. }
             | AgentEvent::Retry { .. } => {
                 if is_stream_json {

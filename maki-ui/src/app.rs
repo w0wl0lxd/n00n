@@ -103,7 +103,7 @@ pub struct App {
     pending_question: bool,
     /// Suppresses stale agent events after cancel. The agent thread may still
     /// send events before it processes our Cancel command. Cleared on the
-    /// terminal event (Cancelled/Done/Error) or when a new prompt is submitted.
+    /// terminal event (Done/Error) or when a new prompt is submitted.
     cancel_pending: bool,
     retry_info: Option<RetryInfo>,
     #[cfg(feature = "demo")]
@@ -589,7 +589,7 @@ impl App {
         if self.cancel_pending {
             if matches!(
                 envelope.event,
-                AgentEvent::Cancelled | AgentEvent::Done { .. } | AgentEvent::Error { .. }
+                AgentEvent::Done { .. } | AgentEvent::Error { .. }
             ) {
                 self.cancel_pending = false;
             }
@@ -2164,12 +2164,13 @@ mod tests {
     }
 
     #[test]
-    fn submit_after_cancel_clears_cancel_pending() {
+    fn cancel_then_submit_processes_new_events() {
         let mut app = test_app();
         app.status = Status::Streaming;
 
         cancel_app(&mut app);
         assert!(app.cancel_pending);
+        assert_eq!(app.status, Status::Idle);
 
         let actions = type_and_submit(&mut app, "new prompt");
         assert!(matches!(&actions[0], Action::SendMessage(i) if i.message == "new prompt"));
@@ -2181,6 +2182,45 @@ mod tests {
             num_turns: 1,
             stop_reason: None,
         }));
+        assert_eq!(app.status, Status::Idle);
+    }
+
+    #[test]
+    fn cancel_suppresses_stale_events_until_done() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+
+        cancel_app(&mut app);
+        assert!(app.cancel_pending);
+
+        app.update(agent_msg(AgentEvent::TextDelta {
+            text: "stale text".into(),
+        }));
+        assert_eq!(app.chats[0].last_message_text(), CANCEL_MSG);
+
+        app.update(agent_msg(AgentEvent::Done {
+            usage: TokenUsage::default(),
+            num_turns: 1,
+            stop_reason: None,
+        }));
+        assert!(!app.cancel_pending);
+        assert_eq!(app.status, Status::Idle);
+    }
+
+    #[test]
+    fn cancel_does_not_drain_queue_on_stale_done() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+
+        cancel_app(&mut app);
+        app.queue.push_back(queued_msg("next"));
+
+        app.update(agent_msg(AgentEvent::Done {
+            usage: TokenUsage::default(),
+            num_turns: 1,
+            stop_reason: None,
+        }));
+        assert_eq!(app.queue.len(), 1);
         assert_eq!(app.status, Status::Idle);
     }
 

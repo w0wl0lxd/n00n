@@ -399,7 +399,6 @@ pub enum AgentEvent {
         stop_reason: Option<maki_providers::StopReason>,
     },
     AutoCompacting,
-    Cancelled,
     Retry {
         attempt: u32,
         message: String,

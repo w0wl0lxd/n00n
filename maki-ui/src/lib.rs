@@ -32,6 +32,7 @@ use maki_agent::{Agent, AgentEvent, AgentInput, Envelope, ExtractedCommand, Hist
 use maki_providers::AgentError;
 use maki_providers::Message;
 use maki_providers::Model;
+use maki_providers::TokenUsage;
 use maki_providers::provider::Provider;
 use tracing::error;
 
@@ -292,7 +293,14 @@ fn spawn_agent(
             match result {
                 Ok(()) => {}
                 Err(AgentError::Cancelled) => {
-                    let _ = agent_tx.send(AgentEvent::Cancelled.into());
+                    let _ = agent_tx.send(
+                        AgentEvent::Done {
+                            usage: TokenUsage::default(),
+                            num_turns: 0,
+                            stop_reason: None,
+                        }
+                        .into(),
+                    );
                 }
                 Err(e) => {
                     error!(error = %e, "agent error");

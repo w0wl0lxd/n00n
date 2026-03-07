@@ -346,7 +346,6 @@ pub struct Agent {
     num_turns: u32,
     recent_calls: RecentCalls,
     auto_compact: bool,
-    interrupt_snapshot: Option<usize>,
 }
 
 impl Agent {
@@ -374,7 +373,6 @@ impl Agent {
             num_turns: 0,
             recent_calls: RecentCalls::new(),
             auto_compact: auto_compact_enabled(),
-            interrupt_snapshot: None,
         }
     }
 
@@ -396,6 +394,7 @@ impl Agent {
 
     pub async fn run(mut self, input: AgentInput) -> RunOutcome {
         let user_message = input.effective_message();
+        let history_snapshot = self.history.len();
         self.history.push(Message::user(user_message.clone()));
         self.mode = input.mode;
 
@@ -408,10 +407,8 @@ impl Agent {
 
         let result = self.run_loop().await;
 
-        if matches!(result, Err(AgentError::Cancelled))
-            && let Some(len) = self.interrupt_snapshot
-        {
-            self.history.truncate(len);
+        if matches!(result, Err(AgentError::Cancelled)) {
+            self.history.truncate(history_snapshot);
         }
 
         RunOutcome {
@@ -589,7 +586,6 @@ impl Agent {
         };
         match cmd {
             ExtractedCommand::Interrupt(input) => {
-                self.interrupt_snapshot = Some(self.history.len());
                 let msg = input.effective_message();
                 let raw = input.message;
                 let wrapped = format!(
@@ -983,33 +979,30 @@ mod tests {
         assert!(has_interrupt_in_history(history.as_slice()));
     }
 
+    fn small_context_model(context_window: u32, max_output_tokens: u32) -> Model {
+        let mut model = default_model();
+        model.context_window = context_window;
+        model.max_output_tokens = max_output_tokens;
+        model
+    }
+
     #[tokio::test]
-    async fn cancel_after_interrupt_removes_interrupt_from_history() {
+    async fn cancel_truncates_history_to_pre_run_state() {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ExtractedCommand>();
-        cmd_tx
-            .send(ExtractedCommand::Interrupt(AgentInput {
-                message: "there".into(),
-                mode: AgentMode::Build,
-                pending_plan: None,
-            }))
-            .unwrap();
         cmd_tx.send(ExtractedCommand::Cancel).unwrap();
 
+        let provider = MockProvider::new(vec![text_response(StopReason::EndTurn)]);
         let model = default_model();
         let input = AgentInput {
             message: "hello".into(),
             mode: AgentMode::Build,
             pending_plan: None,
         };
-        let history = History::new(Vec::new());
+        let prior = vec![Message::user("old".into())];
+        let history = History::new(prior.clone());
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
         let tools = serde_json::json!([]);
         let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
-
-        let provider = MockProvider::new(vec![
-            tool_call_response("glob", "t1"),
-            text_response(StopReason::EndTurn),
-        ]);
 
         let agent = Agent::new(
             Arc::new(provider),
@@ -1024,17 +1017,11 @@ mod tests {
         let outcome = agent.run(input).await;
 
         assert!(matches!(outcome.result, Err(AgentError::Cancelled)));
-        assert!(
-            !has_interrupt_in_history(outcome.history.as_slice()),
-            "interrupt should be removed from history on cancel"
+        assert_eq!(
+            outcome.history.len(),
+            prior.len(),
+            "history should be truncated to pre-run state on cancel"
         );
-    }
-
-    fn small_context_model(context_window: u32, max_output_tokens: u32) -> Model {
-        let mut model = default_model();
-        model.context_window = context_window;
-        model.max_output_tokens = max_output_tokens;
-        model
     }
 
     #[test_case(179_999, 200_000, 20_000, false ; "below_threshold")]
