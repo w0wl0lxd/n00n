@@ -28,7 +28,7 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_agent::agent;
 use maki_agent::skill::Skill;
 use maki_agent::template;
-use maki_agent::{Agent, AgentEvent, AgentInput, Envelope, ExtractedCommand, History};
+use maki_agent::{Agent, AgentEvent, AgentInput, Envelope, EventSender, ExtractedCommand, History};
 use maki_providers::AgentError;
 use maki_providers::Message;
 use maki_providers::Model;
@@ -202,8 +202,8 @@ fn run_event_loop(
 }
 
 pub(crate) enum AgentCommand {
-    Run(AgentInput),
-    Compact,
+    Run(AgentInput, u64),
+    Compact(u64),
     Cancel,
 }
 
@@ -248,9 +248,9 @@ fn spawn_agent(
         tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
                 let extracted = match cmd {
-                    AgentCommand::Run(input) => ExtractedCommand::Interrupt(input),
+                    AgentCommand::Run(input, run_id) => ExtractedCommand::Interrupt(input, run_id),
                     AgentCommand::Cancel => ExtractedCommand::Cancel,
-                    AgentCommand::Compact => ExtractedCommand::Compact,
+                    AgentCommand::Compact(run_id) => ExtractedCommand::Compact(run_id),
                 };
                 if ecmd_tx.send(extracted).is_err() {
                     break;
@@ -262,12 +262,18 @@ fn spawn_agent(
         let mut history = History::new(initial_history);
 
         while let Some(cmd) = ecmd_rx.recv().await {
-            let result = match cmd {
-                ExtractedCommand::Compact => {
-                    agent::compact(&*provider, &model, &mut history, &agent_tx).await
+            let (event_tx, current_run_id) = match &cmd {
+                ExtractedCommand::Interrupt(_, run_id) | ExtractedCommand::Compact(run_id) => {
+                    (EventSender::new(agent_tx.clone(), *run_id), *run_id)
                 }
                 ExtractedCommand::Cancel | ExtractedCommand::Ignore => continue,
-                ExtractedCommand::Interrupt(input) => {
+            };
+            let result = match cmd {
+                ExtractedCommand::Compact(_) => {
+                    agent::compact(&*provider, &model, &mut history, &event_tx).await
+                }
+                ExtractedCommand::Cancel | ExtractedCommand::Ignore => unreachable!(),
+                ExtractedCommand::Interrupt(input, _) => {
                     let system =
                         agent::build_system_prompt(&vars, &input.mode, &instructions, &tool_names);
                     let agent = Agent::new(
@@ -275,7 +281,7 @@ fn spawn_agent(
                         model.clone(),
                         std::mem::replace(&mut history, History::new(Vec::new())),
                         system,
-                        agent_tx.clone(),
+                        event_tx,
                         tools.clone(),
                         Arc::clone(&skills),
                     )
@@ -293,23 +299,19 @@ fn spawn_agent(
             match result {
                 Ok(()) => {}
                 Err(AgentError::Cancelled) => {
-                    let _ = agent_tx.send(
-                        AgentEvent::Done {
-                            usage: TokenUsage::default(),
-                            num_turns: 0,
-                            stop_reason: None,
-                        }
-                        .into(),
-                    );
+                    let event_tx = EventSender::new(agent_tx.clone(), current_run_id);
+                    let _ = event_tx.send(AgentEvent::Done {
+                        usage: TokenUsage::default(),
+                        num_turns: 0,
+                        stop_reason: None,
+                    });
                 }
                 Err(e) => {
                     error!(error = %e, "agent error");
-                    let _ = agent_tx.send(
-                        AgentEvent::Error {
-                            message: e.to_string(),
-                        }
-                        .into(),
-                    );
+                    let event_tx = EventSender::new(agent_tx.clone(), current_run_id);
+                    let _ = event_tx.send(AgentEvent::Error {
+                        message: e.to_string(),
+                    });
                 }
             }
         }
@@ -334,7 +336,7 @@ fn dispatch(
     for action in actions {
         match action {
             Action::SendMessage(input) => {
-                let cmd = AgentCommand::Run(input);
+                let cmd = AgentCommand::Run(input, app.run_id);
                 if handles.cmd_tx.send(cmd).is_err() {
                     *handles = spawn_agent(handle, provider, model, Vec::new(), skills);
                     handles.apply_to_app(app);
@@ -348,7 +350,7 @@ fn dispatch(
                 handles.apply_to_app(app);
             }
             Action::Compact => {
-                let _ = handles.cmd_tx.send(AgentCommand::Compact);
+                let _ = handles.cmd_tx.send(AgentCommand::Compact(app.run_id));
             }
             Action::Quit => {}
         }

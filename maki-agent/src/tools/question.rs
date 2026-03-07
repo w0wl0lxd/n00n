@@ -26,13 +26,10 @@ impl Question {
             return Ok(ToolOutput::Plain(self.format_questions()));
         };
 
-        let _ = ctx.event_tx.send(
-            AgentEvent::QuestionPrompt {
-                id: tool_use_id.to_owned(),
-                questions: self.questions.clone(),
-            }
-            .into(),
-        );
+        ctx.event_tx.try_send(AgentEvent::QuestionPrompt {
+            id: tool_use_id.to_owned(),
+            questions: self.questions.clone(),
+        });
 
         let mut rx = rx.lock().await;
         match rx.recv().await {
@@ -133,7 +130,8 @@ mod tests {
 
     #[tokio::test]
     async fn blocks_on_channel_and_returns_structured_answer() {
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (raw_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let event_tx = crate::EventSender::new(raw_tx, 0);
         let (answer_tx, answer_rx) = tokio::sync::mpsc::unbounded_channel();
         let answer_mutex = Mutex::new(answer_rx);
         let mode = AgentMode::Build;
@@ -170,7 +168,8 @@ mod tests {
 
     #[tokio::test]
     async fn channel_closed_returns_error() {
-        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (raw_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let event_tx = crate::EventSender::new(raw_tx, 0);
         let (_, answer_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let answer_mutex = Mutex::new(answer_rx);
         let mode = AgentMode::Build;

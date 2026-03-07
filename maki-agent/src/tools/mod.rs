@@ -22,13 +22,12 @@ use std::time::SystemTime;
 
 use futures::Future;
 use serde_json::{Value, json};
-use tokio::sync::mpsc::UnboundedSender;
 use tracing::error;
 
 use crate::skill::Skill;
 use crate::template::Vars;
 use crate::{
-    AgentError, AgentMode, Envelope, NO_FILES_FOUND, ToolDoneEvent, ToolInput, ToolOutput,
+    AgentError, AgentMode, EventSender, NO_FILES_FOUND, ToolDoneEvent, ToolInput, ToolOutput,
     ToolStartEvent,
 };
 use maki_providers::Model;
@@ -92,7 +91,7 @@ const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode"
 pub struct ToolContext {
     pub provider: Arc<dyn Provider>,
     pub model: Model,
-    pub event_tx: UnboundedSender<Envelope>,
+    pub event_tx: EventSender,
     pub mode: AgentMode,
     pub tool_use_id: Option<String>,
     pub user_response_rx:
@@ -448,7 +447,7 @@ impl Provider for NullProvider {
         _: &[maki_providers::Message],
         _: &str,
         _: &Value,
-        _: &UnboundedSender<maki_providers::ProviderEvent>,
+        _: &tokio::sync::mpsc::UnboundedSender<maki_providers::ProviderEvent>,
     ) -> Result<maki_providers::StreamResponse, AgentError> {
         unimplemented!()
     }
@@ -458,10 +457,7 @@ impl Provider for NullProvider {
     }
 }
 
-pub(crate) fn interpreter_ctx(
-    mode: &AgentMode,
-    event_tx: &UnboundedSender<Envelope>,
-) -> ToolContext {
+pub(crate) fn interpreter_ctx(mode: &AgentMode, event_tx: &EventSender) -> ToolContext {
     static PROVIDER: LazyLock<Arc<dyn Provider>> = LazyLock::new(|| Arc::new(NullProvider));
     static MODEL: LazyLock<Model> =
         LazyLock::new(|| Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap());
@@ -479,20 +475,21 @@ pub(crate) fn interpreter_ctx(
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use tokio::sync::mpsc::UnboundedSender;
+    use crate::{Envelope, EventSender};
 
     use super::*;
 
     pub(crate) fn stub_ctx_with(
         mode: &AgentMode,
-        event_tx: Option<&UnboundedSender<Envelope>>,
+        event_tx: Option<&EventSender>,
         tool_use_id: Option<&str>,
     ) -> ToolContext {
         let fallback_tx;
         let event_tx = match event_tx {
             Some(tx) => tx,
             None => {
-                fallback_tx = tokio::sync::mpsc::unbounded_channel().0;
+                fallback_tx =
+                    EventSender::new(tokio::sync::mpsc::unbounded_channel::<Envelope>().0, 0);
                 &fallback_tx
             }
         };

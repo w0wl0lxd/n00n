@@ -8,7 +8,7 @@ use humantime::format_duration;
 
 use maki_tool_macro::Tool;
 
-use crate::{AgentEvent, Envelope, ToolInput, ToolOutput};
+use crate::{AgentEvent, EventSender, ToolInput, ToolOutput};
 
 use super::{relative_path, truncate_output};
 
@@ -200,14 +200,11 @@ fn flush_output(ctx: &super::ToolContext, output: &str, last_len: &mut usize) {
     }
 }
 
-fn send_output(event_tx: &tokio::sync::mpsc::UnboundedSender<Envelope>, id: &str, content: &str) {
-    let _ = event_tx.send(
-        AgentEvent::ToolOutput {
-            id: id.to_string(),
-            content: content.to_owned(),
-        }
-        .into(),
-    );
+fn send_output(event_tx: &EventSender, id: &str, content: &str) {
+    event_tx.try_send(AgentEvent::ToolOutput {
+        id: id.to_string(),
+        content: content.to_owned(),
+    });
 }
 
 #[cfg(test)]

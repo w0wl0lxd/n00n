@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::{AgentEvent, SubagentInfo, ToolOutput};
+use crate::{AgentEvent, EventSender, SubagentInfo, ToolOutput};
 use maki_providers::ContentBlock;
 use maki_providers::model::ModelTier;
 use maki_providers::provider;
@@ -78,6 +78,7 @@ impl Task {
         );
 
         let (sub_tx, mut sub_rx) = mpsc::unbounded_channel::<crate::Envelope>();
+        let sub_event_tx = EventSender::new(sub_tx, ctx.event_tx.run_id());
         let parent_tx = ctx.event_tx.clone();
         let subagent_info = ctx.tool_use_id.as_ref().map(|id| SubagentInfo {
             parent_tool_use_id: id.to_owned(),
@@ -96,7 +97,7 @@ impl Task {
                     continue;
                 }
                 envelope.subagent = subagent_info.clone();
-                let _ = parent_tx.send(envelope);
+                let _ = parent_tx.send_envelope(envelope);
             }
         });
 
@@ -111,7 +112,7 @@ impl Task {
             model,
             crate::History::new(Vec::new()),
             system,
-            sub_tx,
+            sub_event_tx,
             tools,
             Arc::clone(&ctx.skills),
         );

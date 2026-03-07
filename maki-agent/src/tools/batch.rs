@@ -94,15 +94,12 @@ impl Batch {
                 let ctx = ctx.clone();
                 let parsed_call = parsed_call.clone();
                 tokio::spawn(async move {
-                    let _ = ctx.event_tx.send(
-                        AgentEvent::BatchProgress {
-                            batch_id: batch_id.clone(),
-                            index: i,
-                            status: BatchToolStatus::InProgress,
-                            output: None,
-                        }
-                        .into(),
-                    );
+                    ctx.event_tx.try_send(AgentEvent::BatchProgress {
+                        batch_id: batch_id.clone(),
+                        index: i,
+                        status: BatchToolStatus::InProgress,
+                        output: None,
+                    });
                     let (result, output) = match parsed_call {
                         Ok(call) => {
                             let inner_ctx = ToolContext {
@@ -121,15 +118,12 @@ impl Batch {
                     } else {
                         BatchToolStatus::Error
                     };
-                    let _ = ctx.event_tx.send(
-                        AgentEvent::BatchProgress {
-                            batch_id,
-                            index: i,
-                            status,
-                            output: output.clone(),
-                        }
-                        .into(),
-                    );
+                    ctx.event_tx.try_send(AgentEvent::BatchProgress {
+                        batch_id,
+                        index: i,
+                        status,
+                        output: output.clone(),
+                    });
                     (result, output)
                 })
             })

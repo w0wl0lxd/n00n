@@ -12,9 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub use maki_providers::AgentError;
 pub use types::{
     AgentEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, Envelope,
-    GrepFileEntry, GrepMatch, NO_FILES_FOUND, QuestionAnswer, QuestionInfo, QuestionOption,
-    SubagentInfo, TodoItem, TodoPriority, TodoStatus, ToolDoneEvent, ToolInput, ToolOutput,
-    ToolStartEvent,
+    EventSender, GrepFileEntry, GrepMatch, NO_FILES_FOUND, QuestionAnswer, QuestionInfo,
+    QuestionOption, SubagentInfo, TodoItem, TodoPriority, TodoStatus, ToolDoneEvent, ToolInput,
+    ToolOutput, ToolStartEvent,
 };
 
 pub const PLANS_DIR: &str = "plans";
@@ -38,12 +38,13 @@ pub enum AgentMode {
 }
 
 pub enum ExtractedCommand {
-    Interrupt(AgentInput),
+    Interrupt(AgentInput, u64),
     Cancel,
-    Compact,
+    Compact(u64),
     Ignore,
 }
 
+#[derive(Default)]
 pub struct AgentInput {
     pub message: String,
     pub mode: AgentMode,

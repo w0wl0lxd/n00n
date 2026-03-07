@@ -5,9 +5,8 @@ use std::time::{Duration, Instant};
 use maki_interpreter::runner::{self, ToolFn};
 use maki_tool_macro::Tool;
 use serde_json::Value;
-use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{AgentEvent, AgentMode, Envelope, ToolInput, ToolOutput};
+use crate::{AgentEvent, AgentMode, EventSender, ToolInput, ToolOutput};
 
 use super::INTERPRETER_TOOLS;
 use super::truncate_output;
@@ -49,13 +48,10 @@ impl CodeInterpreter {
                 let mut last_flush = Instant::now();
                 runner::run_streaming(&code, &tools, &mut |stdout| {
                     if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && stdout.len() > last_len {
-                        let _ = event_tx.send(
-                            AgentEvent::ToolOutput {
-                                id: id.to_string(),
-                                content: stdout.to_owned(),
-                            }
-                            .into(),
-                        );
+                        event_tx.try_send(AgentEvent::ToolOutput {
+                            id: id.to_string(),
+                            content: stdout.to_owned(),
+                        });
                         last_len = stdout.len();
                         last_flush = Instant::now();
                     }
@@ -105,10 +101,7 @@ impl super::ToolDefaults for CodeInterpreter {
     }
 }
 
-fn build_tool_fns(
-    event_tx: &UnboundedSender<Envelope>,
-    mode: &AgentMode,
-) -> HashMap<String, ToolFn> {
+fn build_tool_fns(event_tx: &EventSender, mode: &AgentMode) -> HashMap<String, ToolFn> {
     let mut tools: HashMap<String, ToolFn> = HashMap::new();
     let rt = tokio::runtime::Handle::current();
 

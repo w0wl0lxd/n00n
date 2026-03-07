@@ -4,7 +4,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use futures::future::join_all;
-use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, info, warn};
 
 use serde_json::Value;
@@ -18,7 +17,7 @@ use crate::tools::{
 };
 use crate::types::tool_results;
 use crate::{
-    AgentError, AgentEvent, AgentInput, AgentMode, Envelope, ExtractedCommand, ToolDoneEvent,
+    AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand, ToolDoneEvent,
 };
 use maki_providers::provider::Provider;
 use maki_providers::retry::RetryState;
@@ -41,10 +40,6 @@ const MAX_CONTINUATION_TURNS: u32 = 3;
 const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
 const COMPACTION_BUFFER: u32 = 30_000;
 const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.";
-
-fn send(tx: &UnboundedSender<Envelope>, event: impl Into<Envelope>) -> Result<(), AgentError> {
-    tx.send(event.into()).map_err(|_| AgentError::Channel)
-}
 
 pub struct History {
     messages: Vec<Message>,
@@ -234,14 +229,14 @@ fn parse_tool_calls<'a>(
 
 async fn forward_provider_events(
     mut prx: tokio::sync::mpsc::UnboundedReceiver<ProviderEvent>,
-    event_tx: &UnboundedSender<Envelope>,
+    event_tx: &EventSender,
 ) {
     while let Some(pe) = prx.recv().await {
         let ae = match pe {
             ProviderEvent::TextDelta { text } => AgentEvent::TextDelta { text },
             ProviderEvent::ThinkingDelta { text } => AgentEvent::ThinkingDelta { text },
         };
-        if send(event_tx, ae).is_err() {
+        if event_tx.send(ae).is_err() {
             break;
         }
     }
@@ -253,7 +248,7 @@ async fn stream_with_retry(
     messages: &[Message],
     system: &str,
     tools: &Value,
-    event_tx: &UnboundedSender<Envelope>,
+    event_tx: &EventSender,
 ) -> Result<StreamResponse, AgentError> {
     let mut retry = RetryState::new();
     loop {
@@ -273,14 +268,11 @@ async fn stream_with_retry(
                 let (attempt, delay) = retry.next_delay();
                 let delay_ms = delay.as_millis() as u64;
                 warn!(attempt, delay_ms, error = %e, "retryable, will retry");
-                send(
-                    event_tx,
-                    AgentEvent::Retry {
-                        attempt,
-                        message: e.retry_message(),
-                        delay_ms,
-                    },
-                )?;
+                event_tx.send(AgentEvent::Retry {
+                    attempt,
+                    message: e.retry_message(),
+                    delay_ms,
+                })?;
                 tokio::time::sleep(delay).await;
             }
             Err(e) => return Err(e),
@@ -292,7 +284,7 @@ async fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<
     let futures: Vec<_> = tool_calls
         .iter()
         .map(|parsed| {
-            let tx = ctx.event_tx.clone();
+            let event_tx = ctx.event_tx.clone();
             let tool_ctx = ToolContext {
                 tool_use_id: Some(parsed.id.clone()),
                 ..ctx.clone()
@@ -301,7 +293,7 @@ async fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<
             let call = parsed.call.clone();
             tokio::spawn(async move {
                 let output = call.execute(&tool_ctx, id).await;
-                let _ = tx.send(AgentEvent::ToolDone(output.clone()).into());
+                event_tx.try_send(AgentEvent::ToolDone(output.clone()));
                 output
             })
         })
@@ -336,7 +328,7 @@ pub struct Agent {
     model: Model,
     history: History,
     system: String,
-    event_tx: UnboundedSender<Envelope>,
+    event_tx: EventSender,
     tools: Value,
     skills: Arc<[Skill]>,
     mode: AgentMode,
@@ -354,7 +346,7 @@ impl Agent {
         model: Model,
         history: History,
         system: String,
-        event_tx: UnboundedSender<Envelope>,
+        event_tx: EventSender,
         tools: Value,
         skills: Arc<[Skill]>,
     ) -> Self {
@@ -492,15 +484,12 @@ impl Agent {
     }
 
     fn emit_turn_complete(&self, response: &StreamResponse) -> Result<(), AgentError> {
-        send(
-            &self.event_tx,
-            AgentEvent::TurnComplete {
-                message: response.message.clone(),
-                usage: response.usage,
-                model: self.model.id.clone(),
-                context_size: None,
-            },
-        )
+        self.event_tx.send(AgentEvent::TurnComplete {
+            message: response.message.clone(),
+            usage: response.usage,
+            model: self.model.id.clone(),
+            context_size: None,
+        })
     }
 
     fn emit_done(&self, stop_reason: Option<StopReason>) -> Result<(), AgentError> {
@@ -510,14 +499,11 @@ impl Agent {
             total_output = self.total_usage.output,
             "agent run completed"
         );
-        send(
-            &self.event_tx,
-            AgentEvent::Done {
-                usage: self.total_usage,
-                num_turns: self.num_turns,
-                stop_reason,
-            },
-        )
+        self.event_tx.send(AgentEvent::Done {
+            usage: self.total_usage,
+            num_turns: self.num_turns,
+            stop_reason,
+        })
     }
 
     async fn process_tool_calls(&mut self, response: StreamResponse) -> Result<(), AgentError> {
@@ -527,22 +513,17 @@ impl Agent {
         self.history.push(response.message);
 
         for p in &parsed {
-            send(
-                &self.event_tx,
-                AgentEvent::ToolStart(p.call.start_event(p.id.clone())),
-            )?;
+            self.event_tx
+                .send(AgentEvent::ToolStart(p.call.start_event(p.id.clone())))?;
         }
 
         let ctx = self.tool_context();
         let mut results = execute_tools(&parsed, &ctx).await;
         results.extend(errors);
         let tool_msg = tool_results(results);
-        send(
-            &self.event_tx,
-            AgentEvent::ToolResultsSubmitted {
-                message: tool_msg.clone(),
-            },
-        )?;
+        self.event_tx.send(AgentEvent::ToolResultsSubmitted {
+            message: tool_msg.clone(),
+        })?;
         self.history.push(tool_msg);
         Ok(())
     }
@@ -564,7 +545,7 @@ impl Agent {
             return Ok(false);
         }
         info!(input_tokens, "auto-compacting");
-        send(&self.event_tx, AgentEvent::AutoCompacting)?;
+        self.event_tx.send(AgentEvent::AutoCompacting)?;
         self.total_usage += compact_history(
             &*self.provider,
             &self.model,
@@ -585,21 +566,19 @@ impl Agent {
             return Ok(false);
         };
         match cmd {
-            ExtractedCommand::Interrupt(input) => {
+            ExtractedCommand::Interrupt(input, _) => {
                 let msg = input.effective_message();
                 let raw = input.message;
                 let wrapped = format!(
                     "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{msg}\n</user-interrupt>"
                 );
                 self.history.push(Message::user(wrapped));
-                send(
-                    &self.event_tx,
-                    AgentEvent::InterruptConsumed { message: raw },
-                )?;
+                self.event_tx
+                    .send(AgentEvent::InterruptConsumed { message: raw })?;
                 Ok(true)
             }
             ExtractedCommand::Cancel => Err(AgentError::Cancelled),
-            ExtractedCommand::Compact | ExtractedCommand::Ignore => Ok(false),
+            ExtractedCommand::Compact(_) | ExtractedCommand::Ignore => Ok(false),
         }
     }
 }
@@ -608,7 +587,7 @@ async fn compact_history(
     provider: &dyn Provider,
     model: &Model,
     history: &mut History,
-    event_tx: &UnboundedSender<Envelope>,
+    event_tx: &EventSender,
 ) -> Result<TokenUsage, AgentError> {
     let mut compaction_history: Vec<Message> = history.as_slice().to_vec();
     compaction_history.push(Message::user(crate::prompt::COMPACTION_USER.to_string()));
@@ -624,15 +603,12 @@ async fn compact_history(
     )
     .await?;
 
-    send(
-        event_tx,
-        AgentEvent::TurnComplete {
-            message: response.message.clone(),
-            usage: response.usage,
-            model: model.id.clone(),
-            context_size: Some(response.usage.output),
-        },
-    )?;
+    event_tx.send(AgentEvent::TurnComplete {
+        message: response.message.clone(),
+        usage: response.usage,
+        model: model.id.clone(),
+        context_size: Some(response.usage.output),
+    })?;
 
     let new_history = vec![
         Message::user("What did we do so far?".into()),
@@ -647,18 +623,15 @@ pub async fn compact(
     provider: &dyn Provider,
     model: &Model,
     history: &mut History,
-    event_tx: &UnboundedSender<Envelope>,
+    event_tx: &EventSender,
 ) -> Result<(), AgentError> {
     let usage = compact_history(provider, model, history, event_tx).await?;
 
-    send(
-        event_tx,
-        AgentEvent::Done {
-            usage,
-            num_turns: 1,
-            stop_reason: None,
-        },
-    )?;
+    event_tx.send(AgentEvent::Done {
+        usage,
+        num_turns: 1,
+        stop_reason: None,
+    })?;
 
     Ok(())
 }
@@ -684,6 +657,8 @@ mod tests {
 
     use maki_providers::provider::Provider;
     use maki_providers::{ContentBlock, Message, Role, StopReason, StreamResponse, TokenUsage};
+
+    use crate::Envelope;
 
     use super::*;
 
@@ -746,7 +721,7 @@ mod tests {
             _: &[Message],
             _: &str,
             _: &Value,
-            _: &UnboundedSender<maki_providers::ProviderEvent>,
+            _: &tokio::sync::mpsc::UnboundedSender<maki_providers::ProviderEvent>,
         ) -> Result<StreamResponse, AgentError> {
             let mut responses = self.responses.lock().unwrap();
             assert!(!responses.is_empty(), "MockProvider: no more responses");
@@ -778,7 +753,8 @@ mod tests {
             pending_plan: None,
         };
         let history = History::new(Vec::new());
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (raw_tx, mut event_rx) = mpsc::unbounded_channel();
+        let event_tx = EventSender::new(raw_tx, 0);
         let tools = serde_json::json!([]);
         let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
 
@@ -835,7 +811,8 @@ mod tests {
         let provider: Arc<dyn Provider> =
             Arc::new(MockProvider::new(vec![text_response(StopReason::EndTurn)]));
         let model = default_model();
-        let (event_tx, _rx) = mpsc::unbounded_channel();
+        let (raw_tx, _rx) = mpsc::unbounded_channel();
+        let event_tx = EventSender::new(raw_tx, 0);
         let mut history = History::new(vec![
             Message::user("first".into()),
             Message {
@@ -882,7 +859,8 @@ mod tests {
             pending_plan: None,
         };
         let history = History::new(Vec::new());
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (raw_tx, mut event_rx) = mpsc::unbounded_channel();
+        let event_tx = EventSender::new(raw_tx, 0);
         let tools = serde_json::json!([]);
         let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
 
@@ -921,13 +899,16 @@ mod tests {
 
     #[tokio::test]
     async fn interrupt_injects_user_message_between_turns() {
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ExtractedCommand>();
         cmd_tx
-            .send(ExtractedCommand::Interrupt(AgentInput {
-                message: "fix the bug".into(),
-                mode: AgentMode::Build,
-                pending_plan: None,
-            }))
+            .send(ExtractedCommand::Interrupt(
+                AgentInput {
+                    message: "fix the bug".into(),
+                    mode: AgentMode::Build,
+                    pending_plan: None,
+                },
+                0,
+            ))
             .unwrap();
 
         let provider = MockProvider::new(vec![
@@ -958,13 +939,16 @@ mod tests {
 
     #[tokio::test]
     async fn interrupt_consumed_during_text_only_response() {
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ExtractedCommand>();
         cmd_tx
-            .send(ExtractedCommand::Interrupt(AgentInput {
-                message: "new task".into(),
-                mode: AgentMode::Build,
-                pending_plan: None,
-            }))
+            .send(ExtractedCommand::Interrupt(
+                AgentInput {
+                    message: "new task".into(),
+                    mode: AgentMode::Build,
+                    pending_plan: None,
+                },
+                0,
+            ))
             .unwrap();
 
         let provider = MockProvider::new(vec![
@@ -1000,7 +984,8 @@ mod tests {
         };
         let prior = vec![Message::user("old".into())];
         let history = History::new(prior.clone());
-        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let (raw_tx, _event_rx) = mpsc::unbounded_channel();
+        let event_tx = EventSender::new(raw_tx, 0);
         let tools = serde_json::json!([]);
         let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
 
@@ -1046,7 +1031,8 @@ mod tests {
         } else {
             vec![]
         });
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (raw_tx, mut event_rx) = mpsc::unbounded_channel();
+        let event_tx = EventSender::new(raw_tx, 0);
         let history = History::new(vec![Message::user("go".into())]);
         let tools = serde_json::json!([]);
         let skills: Arc<[crate::skill::Skill]> = Arc::from([]);

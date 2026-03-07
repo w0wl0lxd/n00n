@@ -101,10 +101,9 @@ pub struct App {
     pub answer_tx: Option<tokio_mpsc::UnboundedSender<String>>,
     pub(crate) cmd_tx: Option<tokio_mpsc::UnboundedSender<super::AgentCommand>>,
     pending_question: bool,
-    /// Suppresses stale agent events after cancel. The agent thread may still
-    /// send events before it processes our Cancel command. Cleared on the
-    /// terminal event (Done/Error) or when a new prompt is submitted.
-    cancel_pending: bool,
+    /// Current agent run ID. Incremented on each new prompt submission.
+    /// Events with mismatched run_id are ignored (stale events from cancelled runs).
+    pub(crate) run_id: u64,
     retry_info: Option<RetryInfo>,
     #[cfg(feature = "demo")]
     demo_questions: Option<(usize, Vec<QuestionInfo>)>,
@@ -137,7 +136,7 @@ impl App {
             answer_tx: None,
             cmd_tx: None,
             pending_question: false,
-            cancel_pending: false,
+            run_id: 0,
             retry_info: None,
             #[cfg(feature = "demo")]
             demo_questions: None,
@@ -546,16 +545,19 @@ impl App {
             if self.queue.len() == 1
                 && let Some(tx) = &self.cmd_tx
             {
-                let cmd = super::AgentCommand::Run(AgentInput {
-                    message: text,
-                    mode: self.agent_mode(),
-                    pending_plan: self.pending_plan().map(String::from),
-                });
+                let cmd = super::AgentCommand::Run(
+                    AgentInput {
+                        message: text,
+                        mode: self.agent_mode(),
+                        pending_plan: self.pending_plan().map(String::from),
+                    },
+                    self.run_id,
+                );
                 let _ = tx.send(cmd);
             }
             vec![]
         } else {
-            self.cancel_pending = false;
+            self.run_id += 1;
             self.main_chat().push_user_message(&text);
             self.status = Status::Streaming;
             self.main_chat().enable_auto_scroll();
@@ -566,6 +568,7 @@ impl App {
     fn handle_cancel_press(&mut self) -> Vec<Action> {
         match self.status_bar.handle_cancel_press() {
             CancelResult::Confirmed => {
+                self.run_id += 1;
                 self.retry_info = None;
                 self.question_form.close();
                 self.pending_question = false;
@@ -578,7 +581,6 @@ impl App {
                 self.clear_queue();
                 self.chat_index.clear();
                 self.status = Status::Idle;
-                self.cancel_pending = true;
                 vec![Action::CancelAgent]
             }
             CancelResult::FirstPress => vec![],
@@ -586,13 +588,7 @@ impl App {
     }
 
     fn handle_agent_event(&mut self, envelope: Envelope) -> Vec<Action> {
-        if self.cancel_pending {
-            if matches!(
-                envelope.event,
-                AgentEvent::Done { .. } | AgentEvent::Error { .. }
-            ) {
-                self.cancel_pending = false;
-            }
+        if envelope.run_id != self.run_id {
             return vec![];
         }
 
@@ -805,7 +801,6 @@ impl App {
         self.status = Status::Idle;
         self.token_usage = TokenUsage::default();
         self.clear_queue();
-        self.cancel_pending = false;
         #[cfg(feature = "demo")]
         {
             self.demo_questions = None;
@@ -1061,9 +1056,14 @@ mod tests {
     }
 
     fn agent_msg(event: AgentEvent) -> Msg {
+        agent_msg_with_run_id(event, 1)
+    }
+
+    fn agent_msg_with_run_id(event: AgentEvent, run_id: u64) -> Msg {
         Msg::Agent(Box::new(Envelope {
             event,
             subagent: None,
+            run_id,
         }))
     }
 
@@ -1077,9 +1077,19 @@ mod tests {
     }
 
     fn subagent_msg(event: AgentEvent, parent_id: &str, name: Option<&str>) -> Msg {
+        subagent_msg_with_run_id(event, parent_id, name, 1)
+    }
+
+    fn subagent_msg_with_run_id(
+        event: AgentEvent,
+        parent_id: &str,
+        name: Option<&str>,
+        run_id: u64,
+    ) -> Msg {
         Msg::Agent(Box::new(Envelope {
             event,
             subagent: Some(subagent_info(parent_id, name.unwrap_or("Agent"))),
+            run_id,
         }))
     }
 
@@ -1094,6 +1104,7 @@ mod tests {
         Msg::Agent(Box::new(Envelope {
             event,
             subagent: Some(info),
+            run_id: 1,
         }))
     }
 
@@ -1103,6 +1114,7 @@ mod tests {
         Msg::Agent(Box::new(Envelope {
             event,
             subagent: Some(info),
+            run_id: 1,
         }))
     }
 
@@ -1142,25 +1154,10 @@ mod tests {
     }
 
     #[test]
-    fn done_flushes_text_and_sets_idle() {
-        let mut app = test_app();
-        app.status = Status::Streaming;
-        app.update(agent_msg(AgentEvent::TextDelta {
-            text: "response text".into(),
-        }));
-        app.update(agent_msg(AgentEvent::Done {
-            usage: TokenUsage::default(),
-            num_turns: 1,
-            stop_reason: None,
-        }));
-
-        assert_eq!(app.status, Status::Idle);
-    }
-
-    #[test]
     fn error_event_sets_status() {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
         app.update(agent_msg(AgentEvent::Error {
             message: "boom".into(),
         }));
@@ -1215,6 +1212,7 @@ mod tests {
         // Tab toggles during streaming
         app.mode = Mode::Build;
         app.status = Status::Streaming;
+        app.run_id = 1;
         tab(&mut app);
         assert!(is_plan(&app));
     }
@@ -1241,6 +1239,7 @@ mod tests {
             written: false,
         };
         app.status = Status::Streaming;
+        app.run_id = 1;
 
         app.update(agent_msg(AgentEvent::ToolDone(ToolDoneEvent {
             id: "t1".into(),
@@ -1269,31 +1268,6 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Char('i'))));
         app.update(Msg::Key(altgr_backslash));
         assert_eq!(app.input_box.buffer.value(), "hi\\");
-    }
-
-    #[test]
-    fn double_esc_cancels_flushes_and_fails_tools() {
-        let mut app = test_app();
-        app.status = Status::Streaming;
-        app.update(agent_msg(AgentEvent::TextDelta {
-            text: "partial".into(),
-        }));
-        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
-            id: "t1".into(),
-            tool: "bash",
-            summary: "running".into(),
-            annotation: None,
-            input: None,
-            output: None,
-        })));
-
-        let actions = app.update(Msg::Key(key(KeyCode::Esc)));
-        assert!(actions.is_empty());
-
-        let actions = app.update(Msg::Key(key(KeyCode::Esc)));
-        assert!(matches!(&actions[0], Action::CancelAgent));
-        assert_eq!(app.status, Status::Idle);
-        assert_eq!(app.chats[0].in_progress_count(), 0);
     }
 
     #[test]
@@ -1375,6 +1349,7 @@ mod tests {
     fn app_with_queued_message() -> App {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
         app.queue.push_back(queued_msg("queued"));
         app
     }
@@ -1419,6 +1394,7 @@ mod tests {
         let (tx, mut rx) = tokio_mpsc::unbounded_channel::<crate::AgentCommand>();
         app.cmd_tx = Some(tx);
         app.status = Status::Streaming;
+        app.run_id = 1;
 
         let actions = type_and_submit(&mut app, "urgent");
         assert!(actions.is_empty());
@@ -1432,6 +1408,7 @@ mod tests {
         let (tx, mut rx) = tokio_mpsc::unbounded_channel::<crate::AgentCommand>();
         app.cmd_tx = Some(tx);
         app.status = Status::Streaming;
+        app.run_id = 1;
 
         type_and_submit(&mut app, "first");
         assert!(rx.try_recv().is_ok());
@@ -1531,6 +1508,7 @@ mod tests {
     fn ctrl_p_n_navigation() {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
         app.update(subagent_msg(
             AgentEvent::TextDelta { text: "sub".into() },
             "task1",
@@ -1556,6 +1534,7 @@ mod tests {
     fn subagents_get_descriptive_names() {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
         app.update(subagent_msg(
             AgentEvent::TextDelta { text: "a".into() },
             "task1",
@@ -1575,6 +1554,7 @@ mod tests {
     fn subagent_prompt_shown_as_first_message() {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
         app.update(subagent_msg_with_prompt(
             AgentEvent::TextDelta { text: "ok".into() },
             "task1",
@@ -1589,6 +1569,7 @@ mod tests {
     fn subagent_prompt_not_duplicated_on_subsequent_events() {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
         app.update(subagent_msg_with_prompt(
             AgentEvent::TextDelta { text: "a".into() },
             "task1",
@@ -1676,9 +1657,17 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Enter)));
     }
 
+    #[test]
+    fn chats_command_opens_picker() {
+        let mut app = test_app();
+        open_chats_picker(&mut app);
+        assert!(app.chat_picker.is_open());
+    }
+
     fn app_with_subagent() -> App {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
         app.update(subagent_msg(
             AgentEvent::TextDelta { text: "x".into() },
             "task1",
@@ -1688,10 +1677,20 @@ mod tests {
     }
 
     #[test]
-    fn chats_command_opens_picker() {
+    fn done_flushes_text_and_sets_idle() {
         let mut app = test_app();
-        open_chats_picker(&mut app);
-        assert!(app.chat_picker.is_open());
+        app.status = Status::Streaming;
+        app.run_id = 1;
+        app.update(agent_msg(AgentEvent::TextDelta {
+            text: "response text".into(),
+        }));
+        app.update(agent_msg(AgentEvent::Done {
+            usage: TokenUsage::default(),
+            num_turns: 1,
+            stop_reason: None,
+        }));
+
+        assert_eq!(app.status, Status::Idle);
     }
 
     #[test]
@@ -1745,33 +1744,11 @@ mod tests {
     fn compact_during_streaming_queued() {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
         let actions = app.execute_command("/compact");
         assert!(actions.is_empty());
         assert_eq!(app.queue.len(), 1);
         assert!(matches!(app.queue[0], QueuedItem::Compact));
-    }
-
-    #[test]
-    fn compact_fifo_with_messages() {
-        let mut app = test_app();
-        app.status = Status::Streaming;
-        app.queue.push_back(queued_msg("first"));
-        app.queue.push_back(QueuedItem::Compact);
-
-        let actions = app.update(agent_msg(AgentEvent::Done {
-            usage: TokenUsage::default(),
-            num_turns: 1,
-            stop_reason: None,
-        }));
-        assert!(matches!(&actions[0], Action::SendMessage(i) if i.message == "first"));
-
-        let actions = app.update(agent_msg(AgentEvent::Done {
-            usage: TokenUsage::default(),
-            num_turns: 1,
-            stop_reason: None,
-        }));
-        assert!(matches!(&actions[0], Action::Compact));
-        assert!(app.queue.is_empty());
     }
 
     fn long_question_no_options() -> AgentEvent {
@@ -1814,6 +1791,7 @@ mod tests {
         for (event, expect_form, expect_pending) in cases {
             let mut app = test_app();
             app.status = Status::Streaming;
+            app.run_id = 1;
             app.update(agent_msg(event));
             assert_eq!(app.question_form.is_visible(), expect_form);
             assert_eq!(app.pending_question, expect_pending);
@@ -1824,6 +1802,7 @@ mod tests {
     fn pending_question_submit_routes_through_answer_tx() {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
         let (tx, mut rx) = tokio_mpsc::unbounded_channel();
         app.answer_tx = Some(tx);
 
@@ -1840,6 +1819,7 @@ mod tests {
     fn cancel_clears_pending_question() {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
         app.update(agent_msg(long_question_no_options()));
         assert!(app.pending_question);
 
@@ -1885,6 +1865,13 @@ mod tests {
         app.active_chat().enable_auto_scroll();
         app.update(Msg::Key(ctrl(ch)));
         assert_eq!(app.chats[0].auto_scroll(), expected_auto_scroll);
+    }
+
+    #[test]
+    fn tick_edge_scroll_noop_without_state() {
+        let mut app = test_app();
+        app.tick_edge_scroll();
+        assert!(app.chats[0].auto_scroll());
     }
 
     #[test]
@@ -1989,10 +1976,29 @@ mod tests {
     }
 
     #[test]
-    fn tick_edge_scroll_noop_without_state() {
+    fn double_esc_cancels_flushes_and_fails_tools() {
         let mut app = test_app();
-        app.tick_edge_scroll();
-        assert!(app.chats[0].auto_scroll());
+        app.status = Status::Streaming;
+        app.run_id = 1;
+        app.update(agent_msg(AgentEvent::TextDelta {
+            text: "partial".into(),
+        }));
+        app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+            id: "t1".into(),
+            tool: "bash",
+            summary: "running".into(),
+            annotation: None,
+            input: None,
+            output: None,
+        })));
+
+        let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(actions.is_empty());
+
+        let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(matches!(&actions[0], Action::CancelAgent));
+        assert_eq!(app.status, Status::Idle);
+        assert_eq!(app.chats[0].in_progress_count(), 0);
     }
 
     #[test]
@@ -2051,6 +2057,7 @@ mod tests {
     fn form_submit_pushes_answer_to_chat() {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
         let (tx, mut rx) = tokio_mpsc::unbounded_channel();
         app.answer_tx = Some(tx);
 
@@ -2067,6 +2074,7 @@ mod tests {
     fn form_dismiss_does_not_push_to_chat() {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
         let (tx, mut rx) = tokio_mpsc::unbounded_channel();
         app.answer_tx = Some(tx);
 
@@ -2164,62 +2172,80 @@ mod tests {
     }
 
     #[test]
-    fn cancel_then_submit_processes_new_events() {
+    fn compact_fifo_with_messages() {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
+        app.queue.push_back(queued_msg("first"));
+        app.queue.push_back(QueuedItem::Compact);
+
+        let actions = app.update(agent_msg(AgentEvent::Done {
+            usage: TokenUsage::default(),
+            num_turns: 1,
+            stop_reason: None,
+        }));
+        assert!(matches!(&actions[0], Action::SendMessage(i) if i.message == "first"));
+
+        let actions = app.update(agent_msg(AgentEvent::Done {
+            usage: TokenUsage::default(),
+            num_turns: 1,
+            stop_reason: None,
+        }));
+        assert!(matches!(&actions[0], Action::Compact));
+        assert!(app.queue.is_empty());
+    }
+
+    #[test]
+    fn stale_events_ignored_after_run_id_increment() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        app.run_id = 1;
 
         cancel_app(&mut app);
-        assert!(app.cancel_pending);
-        assert_eq!(app.status, Status::Idle);
+        assert_eq!(app.run_id, 2);
 
         let actions = type_and_submit(&mut app, "new prompt");
         assert!(matches!(&actions[0], Action::SendMessage(i) if i.message == "new prompt"));
-        assert!(!app.cancel_pending);
-        assert_eq!(app.status, Status::Streaming);
+        assert_eq!(app.run_id, 3);
 
-        app.update(agent_msg(AgentEvent::Done {
-            usage: TokenUsage::default(),
-            num_turns: 1,
-            stop_reason: None,
-        }));
-        assert_eq!(app.status, Status::Idle);
+        // Stale event with run_id 1 should be ignored
+        app.update(agent_msg_with_run_id(
+            AgentEvent::TextDelta {
+                text: "stale text".into(),
+            },
+            1,
+        ));
+        assert_eq!(app.chats[0].last_message_text(), "new prompt");
+
+        // New event with run_id 3 should be processed
+        app.update(agent_msg_with_run_id(
+            AgentEvent::TextDelta {
+                text: "new text".into(),
+            },
+            3,
+        ));
+        app.chats[0].flush();
+        assert_eq!(app.chats[0].last_message_text(), "new text");
     }
 
     #[test]
-    fn cancel_suppresses_stale_events_until_done() {
+    fn stale_done_does_not_drain_queue() {
         let mut app = test_app();
         app.status = Status::Streaming;
-
-        cancel_app(&mut app);
-        assert!(app.cancel_pending);
-
-        app.update(agent_msg(AgentEvent::TextDelta {
-            text: "stale text".into(),
-        }));
-        assert_eq!(app.chats[0].last_message_text(), CANCEL_MSG);
-
-        app.update(agent_msg(AgentEvent::Done {
-            usage: TokenUsage::default(),
-            num_turns: 1,
-            stop_reason: None,
-        }));
-        assert!(!app.cancel_pending);
-        assert_eq!(app.status, Status::Idle);
-    }
-
-    #[test]
-    fn cancel_does_not_drain_queue_on_stale_done() {
-        let mut app = test_app();
-        app.status = Status::Streaming;
+        app.run_id = 1;
 
         cancel_app(&mut app);
         app.queue.push_back(queued_msg("next"));
 
-        app.update(agent_msg(AgentEvent::Done {
-            usage: TokenUsage::default(),
-            num_turns: 1,
-            stop_reason: None,
-        }));
+        // Stale done with old run_id (1) should be ignored, not drain queue
+        app.update(agent_msg_with_run_id(
+            AgentEvent::Done {
+                usage: TokenUsage::default(),
+                num_turns: 1,
+                stop_reason: None,
+            },
+            1,
+        ));
         assert_eq!(app.queue.len(), 1);
         assert_eq!(app.status, Status::Idle);
     }
@@ -2257,6 +2283,7 @@ mod tests {
     fn resolve_or_create_chat_sets_model_id_and_annotation() {
         let mut app = test_app();
         app.status = Status::Streaming;
+        app.run_id = 1;
         app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
             id: "task1".into(),
             tool: "task",

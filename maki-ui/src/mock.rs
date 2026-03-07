@@ -26,7 +26,11 @@ fn user(text: &str) -> MockEvent {
 }
 
 fn evt(event: AgentEvent) -> MockEvent {
-    MockEvent::Agent(event.into())
+    MockEvent::Agent(Envelope {
+        event,
+        subagent: None,
+        run_id: 1,
+    })
 }
 
 fn sub_evt(event: AgentEvent, parent_id: &str, name: &str, prompt: Option<&str>) -> MockEvent {
@@ -48,6 +52,7 @@ fn sub_evt_with(
             prompt: prompt.map(String::from),
             model: model.map(String::from),
         }),
+        run_id: 1,
     })
 }
 

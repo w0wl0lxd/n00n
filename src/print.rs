@@ -28,7 +28,9 @@ use color_eyre::Result;
 use color_eyre::eyre::Context;
 use maki_agent::skill::Skill;
 use maki_agent::tools::QUESTION_TOOL_NAME;
-use maki_agent::{Agent, AgentEvent, AgentInput, AgentMode, Envelope, History, agent, template};
+use maki_agent::{
+    Agent, AgentEvent, AgentInput, AgentMode, Envelope, EventSender, History, agent, template,
+};
 use maki_providers::StopReason;
 use maki_providers::TokenUsage;
 use maki_providers::model::Model;
@@ -149,7 +151,7 @@ pub fn run(
     );
     let system = agent::build_system_prompt(&vars, &mode, &instructions, &tool_names);
 
-    let (event_tx, mut event_rx) = tokio_mpsc::unbounded_channel::<Envelope>();
+    let (raw_tx, mut event_rx) = tokio_mpsc::unbounded_channel::<Envelope>();
     let input = AgentInput {
         message: prompt,
         mode,
@@ -161,17 +163,15 @@ pub fn run(
 
     let model_clone = model.clone();
     handle.spawn(async move {
+        let event_tx = EventSender::new(raw_tx, 0);
         let provider: Arc<dyn maki_providers::provider::Provider> =
             match maki_providers::provider::from_model(&model_clone) {
                 Ok(p) => Arc::from(p),
                 Err(e) => {
                     error!(error = %e, "provider error");
-                    let _ = event_tx.send(
-                        AgentEvent::Error {
-                            message: e.to_string(),
-                        }
-                        .into(),
-                    );
+                    let _ = event_tx.send(AgentEvent::Error {
+                        message: e.to_string(),
+                    });
                     return;
                 }
             };
@@ -189,12 +189,9 @@ pub fn run(
         let outcome = agent.run(input).await;
         if let Err(e) = outcome.result {
             error!(error = %e, "agent error");
-            let _ = error_tx.send(
-                AgentEvent::Error {
-                    message: e.to_string(),
-                }
-                .into(),
-            );
+            let _ = error_tx.send(AgentEvent::Error {
+                message: e.to_string(),
+            });
         }
     });
 
