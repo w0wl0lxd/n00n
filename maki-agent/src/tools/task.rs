@@ -1,5 +1,6 @@
-use std::sync::mpsc;
-use std::thread;
+use std::sync::Arc;
+
+use tokio::sync::mpsc;
 
 use crate::{AgentEvent, SubagentInfo, ToolOutput};
 use maki_providers::ContentBlock;
@@ -7,7 +8,7 @@ use maki_providers::model::ModelTier;
 use maki_providers::provider;
 use maki_tool_macro::Tool;
 
-use super::{GENERAL_SUBAGENT_TOOLS, RESEARCH_SUBAGENT_TOOLS, Tool, ToolContext};
+use super::{GENERAL_SUBAGENT_TOOLS, RESEARCH_SUBAGENT_TOOLS, ToolContext};
 use crate::agent;
 use crate::template;
 use crate::tools::ToolCall;
@@ -29,10 +30,10 @@ pub struct Task {
     model_tier: Option<String>,
 }
 
-impl Tool for Task {
-    const NAME: &str = "task";
-    const DESCRIPTION: &str = include_str!("task.md");
-    const EXAMPLES: Option<&str> = Some(
+impl Task {
+    pub const NAME: &str = "task";
+    pub const DESCRIPTION: &str = include_str!("task.md");
+    pub const EXAMPLES: Option<&str> = Some(
         r#"[
   {"description": "Find auth middleware", "prompt": "Search the codebase for authentication middleware. Return file paths and a summary of how auth is implemented.", "model_tier": "weak"},
   {"description": "Refactor error types", "prompt": "In src/errors.rs, replace all uses of String error types with thiserror derive macros.\n\nHere is the pattern to follow (from src/api/errors.rs):\n```rust\n#[derive(Debug, thiserror::Error)]\npub enum ApiError {\n    #[error(\"not found: {0}\")]\n    NotFound(String),\n    #[error(\"unauthorized\")]\n    Unauthorized,\n}\n```\n\nApply this same pattern to all error variants in src/errors.rs.", "subagent_type": "general"},
@@ -40,7 +41,7 @@ impl Tool for Task {
 ]"#,
     );
 
-    fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
         let vars = template::env_vars();
         let agent_type = self.subagent_type.as_deref().unwrap_or("research");
         let (prompt, tool_names) = match agent_type {
@@ -49,18 +50,21 @@ impl Tool for Task {
             other => return Err(format!("unknown subagent type: {other}")),
         };
 
-        let (resolved_model, resolved_provider);
-        let (model, provider) = if let Some(ref tier_str) = self.model_tier {
+        let (model, provider): (
+            maki_providers::Model,
+            Arc<dyn maki_providers::provider::Provider>,
+        ) = if let Some(ref tier_str) = self.model_tier {
             let requested: ModelTier = tier_str
                 .parse()
                 .map_err(|e: maki_providers::ModelError| e.to_string())?;
             let effective = requested.min(ctx.model.tier);
-            resolved_model = maki_providers::Model::from_tier(ctx.model.provider, effective)
+            let resolved_model = maki_providers::Model::from_tier(ctx.model.provider, effective)
                 .map_err(|e| e.to_string())?;
-            resolved_provider = provider::from_model(&resolved_model).map_err(|e| e.to_string())?;
-            (&resolved_model, resolved_provider.as_ref())
+            let resolved_provider =
+                provider::from_model(&resolved_model).map_err(|e| e.to_string())?;
+            (resolved_model, Arc::from(resolved_provider))
         } else {
-            (ctx.model, ctx.provider)
+            (ctx.model.clone(), Arc::clone(&ctx.provider))
         };
 
         let mut system = vars.apply(prompt).into_owned();
@@ -73,16 +77,16 @@ impl Tool for Task {
             model.family.supports_tool_examples(),
         );
 
-        let (sub_tx, sub_rx) = mpsc::channel::<crate::Envelope>();
+        let (sub_tx, mut sub_rx) = mpsc::unbounded_channel::<crate::Envelope>();
         let parent_tx = ctx.event_tx.clone();
-        let subagent_info = ctx.tool_use_id.map(|id| SubagentInfo {
+        let subagent_info = ctx.tool_use_id.as_ref().map(|id| SubagentInfo {
             parent_tool_use_id: id.to_owned(),
             name: self.description.clone(),
             prompt: Some(self.prompt.clone()),
             model: Some(model.spec()),
         });
-        thread::spawn(move || {
-            while let Ok(mut envelope) = sub_rx.recv() {
+        tokio::spawn(async move {
+            while let Some(mut envelope) = sub_rx.recv().await {
                 if matches!(
                     envelope.event,
                     AgentEvent::Done { .. }
@@ -102,21 +106,22 @@ impl Tool for Task {
             pending_plan: None,
         };
 
-        let mut history = crate::History::new(Vec::new());
-        let mut agent = Agent::new(
+        let agent = Agent::new(
             provider,
             model,
-            &mut history,
-            &system,
-            &sub_tx,
-            &tools,
-            ctx.skills,
+            crate::History::new(Vec::new()),
+            system,
+            sub_tx,
+            tools,
+            Arc::clone(&ctx.skills),
         );
-        agent
-            .run(input)
+        let outcome = agent.run(input).await;
+        outcome
+            .result
             .map_err(|e| format!("sub-agent error: {e}"))?;
 
-        let text = history
+        let text = outcome
+            .history
             .as_slice()
             .iter()
             .rev()
@@ -131,10 +136,12 @@ impl Tool for Task {
         Ok(ToolOutput::Plain(text.to_string()))
     }
 
-    fn start_summary(&self) -> String {
+    pub fn start_summary(&self) -> String {
         self.description.clone()
     }
 }
+
+impl super::ToolDefaults for Task {}
 
 #[cfg(test)]
 mod tests {

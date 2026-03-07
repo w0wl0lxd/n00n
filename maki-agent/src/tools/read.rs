@@ -4,7 +4,7 @@ use std::fs;
 use crate::ToolOutput;
 use maki_tool_macro::Tool;
 
-use super::{MAX_OUTPUT_LINES, Tool, relative_path, truncate_bytes};
+use super::{MAX_OUTPUT_LINES, relative_path, truncate_bytes};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Read {
@@ -16,10 +16,10 @@ pub struct Read {
     limit: Option<usize>,
 }
 
-impl Tool for Read {
-    const NAME: &str = "read";
-    const DESCRIPTION: &str = include_str!("read.md");
-    const EXAMPLES: Option<&str> = Some(
+impl Read {
+    pub const NAME: &str = "read";
+    pub const DESCRIPTION: &str = include_str!("read.md");
+    pub const EXAMPLES: Option<&str> = Some(
         r#"[
   {"path": "/home/user/project/src/main.rs"},
   {"path": "/home/user/project/src/lib.rs", "offset": 50, "limit": 30},
@@ -27,27 +27,34 @@ impl Tool for Read {
 ]"#,
     );
 
-    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let raw = fs::read_to_string(&self.path).map_err(|e| format!("read error: {e}"))?;
+    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+        let path = self.path.clone();
+        let offset = self.offset;
+        let limit = self.limit;
+        tokio::task::spawn_blocking(move || {
+            let raw = fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
 
-        let start = self.offset.unwrap_or(1).saturating_sub(1);
-        let limit = self.limit.unwrap_or(MAX_OUTPUT_LINES);
+            let start = offset.unwrap_or(1).saturating_sub(1);
+            let limit = limit.unwrap_or(MAX_OUTPUT_LINES);
 
-        let lines: Vec<String> = raw
-            .lines()
-            .skip(start)
-            .take(limit)
-            .map(truncate_bytes)
-            .collect();
+            let lines: Vec<String> = raw
+                .lines()
+                .skip(start)
+                .take(limit)
+                .map(truncate_bytes)
+                .collect();
 
-        Ok(ToolOutput::ReadCode {
-            path: self.path.clone(),
-            start_line: start + 1,
-            lines,
+            Ok(ToolOutput::ReadCode {
+                path,
+                start_line: start + 1,
+                lines,
+            })
         })
+        .await
+        .unwrap_or_else(|e| Err(format!("task panicked: {e}")))
     }
 
-    fn start_summary(&self) -> String {
+    pub fn start_summary(&self) -> String {
         let mut s = relative_path(&self.path);
         let start = self.offset.unwrap_or(1);
         match (self.offset.is_some(), self.limit) {
@@ -62,6 +69,8 @@ impl Tool for Read {
         s
     }
 }
+
+impl super::ToolDefaults for Read {}
 
 #[cfg(test)]
 mod tests {

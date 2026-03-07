@@ -1,5 +1,5 @@
 pub mod agent;
-pub use agent::{Agent, History};
+pub use agent::{Agent, History, RunOutcome};
 pub(crate) mod prompt;
 pub mod skill;
 pub mod template;

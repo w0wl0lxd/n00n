@@ -5,6 +5,7 @@ use std::str::FromStr;
 use serde::Serialize;
 
 use crate::provider::ProviderKind;
+use crate::providers::{anthropic, zai};
 
 const PER_MILLION: f64 = 1_000_000.0;
 
@@ -87,7 +88,6 @@ fn lookup_entry<'a>(
 }
 
 pub(crate) fn models_for_provider(provider: ProviderKind) -> &'static [ModelEntry] {
-    use crate::providers::{anthropic, zai};
     match provider {
         ProviderKind::Anthropic => anthropic::models(),
         ProviderKind::Zai | ProviderKind::ZaiCodingPlan => zai::models(),

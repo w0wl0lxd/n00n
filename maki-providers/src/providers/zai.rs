@@ -1,11 +1,12 @@
 use std::env;
-use std::io::{BufRead, BufReader};
-use std::sync::mpsc::Sender;
 
+use futures::TryStreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::mpsc::UnboundedSender;
+use tokio_util::io::StreamReader;
 use tracing::{debug, warn};
-use ureq::Agent;
 
 use crate::model::Model;
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
@@ -129,7 +130,7 @@ pub enum ZaiPlan {
 }
 
 pub struct Zai {
-    agent: Agent,
+    client: reqwest::Client,
     api_key: String,
     completions_url: String,
     models_url: String,
@@ -146,7 +147,7 @@ impl Zai {
             ZaiPlan::Coding => BASE_CODING,
         };
         Ok(Self {
-            agent: super::streaming_agent(),
+            client: super::http_client(),
             api_key,
             completions_url: format!("{base}/chat/completions"),
             models_url: format!("{base}/models"),
@@ -244,14 +245,15 @@ fn convert_tools(anthropic_tools: &Value) -> Value {
     )
 }
 
+#[async_trait::async_trait]
 impl Provider for Zai {
-    fn stream_message(
+    async fn stream_message(
         &self,
         model: &Model,
         messages: &[Message],
         system: &str,
         tools: &Value,
-        event_tx: &Sender<ProviderEvent>,
+        event_tx: &UnboundedSender<ProviderEvent>,
     ) -> Result<StreamResponse, AgentError> {
         let wire_messages = convert_messages(messages, system);
         let wire_tools = convert_tools(tools);
@@ -265,20 +267,21 @@ impl Provider for Zai {
         if wire_tools.as_array().is_some_and(|a| !a.is_empty()) {
             body["tools"] = wire_tools;
         }
-        let body_str = body.to_string();
 
         debug!(model = %model.id, num_messages = messages.len(), "sending Z.AI API request");
 
-        let req = self
-            .agent
+        let response = self
+            .client
             .post(&self.completions_url)
             .header("content-type", "application/json")
-            .header("authorization", &format!("Bearer {}", self.api_key));
-        let response = req.send(body_str.as_str())?;
+            .header("authorization", &format!("Bearer {}", self.api_key))
+            .json(&body)
+            .send()
+            .await?;
         let status = response.status().as_u16();
 
         if status == 429 || status >= 500 {
-            let error_body = response.into_body().read_to_string().unwrap_or_default();
+            let error_body = response.text().await.unwrap_or_default();
             if error_body.contains("1113") || error_body.contains("nsufficien") {
                 warn!(status, "insufficient funds, bailing out");
                 return Err(AgentError::Api {
@@ -293,23 +296,24 @@ impl Provider for Zai {
         }
 
         if status == 200 {
-            parse_sse(BufReader::new(response.into_body().into_reader()), event_tx)
+            parse_sse(response, event_tx).await
         } else {
-            Err(AgentError::from_response(response))
+            Err(AgentError::from_response(response).await)
         }
     }
 
-    fn list_models(&self) -> Result<Vec<String>, AgentError> {
+    async fn list_models(&self) -> Result<Vec<String>, AgentError> {
         let response = self
-            .agent
+            .client
             .get(&self.models_url)
             .header("authorization", &format!("Bearer {}", self.api_key))
-            .call()?;
+            .send()
+            .await?;
         if response.status().as_u16() != 200 {
-            return Err(AgentError::from_response(response));
+            return Err(AgentError::from_response(response).await);
         }
 
-        let body: Value = serde_json::from_reader(response.into_body().into_reader())?;
+        let body: Value = response.json().await?;
         let mut models: Vec<String> = body["data"]
             .as_array()
             .map(|arr| {
@@ -388,17 +392,20 @@ struct ToolAccumulator {
     arguments: String,
 }
 
-fn parse_sse(
-    reader: impl BufRead,
-    event_tx: &Sender<ProviderEvent>,
+async fn parse_sse(
+    response: reqwest::Response,
+    event_tx: &UnboundedSender<ProviderEvent>,
 ) -> Result<StreamResponse, AgentError> {
+    let stream = response.bytes_stream().map_err(std::io::Error::other);
+    let reader = BufReader::new(StreamReader::new(stream));
+    let mut lines = reader.lines();
+
     let mut text = String::new();
     let mut tool_accumulators: Vec<ToolAccumulator> = Vec::new();
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
 
-    for line in reader.lines() {
-        let line = line?;
+    while let Some(line) = lines.next_line().await? {
         let data = match line.strip_prefix("data: ") {
             Some(d) => d.trim(),
             None => continue,
@@ -523,10 +530,22 @@ fn parse_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
+    use futures::stream;
+    use tokio::sync::mpsc;
 
-    #[test]
-    fn parse_sse_text_and_usage() {
+    fn bytes_stream(data: &[u8]) -> reqwest::Response {
+        let bytes = bytes::Bytes::from(data.to_vec());
+        let body =
+            reqwest::Body::wrap_stream(stream::once(async move { Ok::<_, std::io::Error>(bytes) }));
+        http::Response::builder()
+            .status(200)
+            .body(body)
+            .unwrap()
+            .into()
+    }
+
+    #[tokio::test]
+    async fn parse_sse_text_and_usage() {
         let sse = "\
 data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
 \n\
@@ -536,8 +555,8 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prom
 \n\
 data: [DONE]\n";
 
-        let (tx, rx) = mpsc::channel();
-        let resp = parse_sse(sse.as_bytes(), &tx).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
 
         assert_eq!(resp.usage.input, 100);
         assert_eq!(resp.usage.output, 10);
@@ -548,18 +567,17 @@ data: [DONE]\n";
         );
         assert!(!resp.message.has_tool_calls());
 
-        let deltas: Vec<String> = rx
-            .try_iter()
-            .filter_map(|e| match e {
-                ProviderEvent::TextDelta { text } => Some(text),
-                _ => None,
-            })
-            .collect();
+        let mut deltas = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            if let ProviderEvent::TextDelta { text } = e {
+                deltas.push(text);
+            }
+        }
         assert_eq!(deltas, vec!["Hello", " world"]);
     }
 
-    #[test]
-    fn parse_sse_reasoning_and_content() {
+    #[tokio::test]
+    async fn parse_sse_reasoning_and_content() {
         let sse = "\
 data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Let me think\"}}]}\n\
 \n\
@@ -571,30 +589,23 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prom
 \n\
 data: [DONE]\n";
 
-        let (tx, rx) = mpsc::channel();
-        let resp = parse_sse(sse.as_bytes(), &tx).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
 
         assert!(
             matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Let me think...Hello")
         );
 
-        let events: Vec<_> = rx.try_iter().collect();
-        let thinking: Vec<&str> = events
-            .iter()
-            .filter_map(|e| match e {
-                ProviderEvent::ThinkingDelta { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        let text: Vec<&str> = events
-            .iter()
-            .filter_map(|e| match e {
-                ProviderEvent::TextDelta { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
+        let mut thinking = Vec::new();
+        let mut text_deltas = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            match e {
+                ProviderEvent::ThinkingDelta { text } => thinking.push(text),
+                ProviderEvent::TextDelta { text } => text_deltas.push(text),
+            }
+        }
         assert_eq!(thinking, vec!["Let me think", "..."]);
-        assert_eq!(text, vec!["Hello"]);
+        assert_eq!(text_deltas, vec!["Hello"]);
     }
 
     #[test]
@@ -660,8 +671,8 @@ data: [DONE]\n";
         assert_eq!(tool["function"]["parameters"]["type"], "object");
     }
 
-    #[test]
-    fn parse_sse_multiple_parallel_tool_calls() {
+    #[tokio::test]
+    async fn parse_sse_multiple_parallel_tool_calls() {
         let sse = "\
 data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}]}\n\
 \n\
@@ -675,8 +686,8 @@ data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}],\"usage\":{
 \n\
 data: [DONE]\n";
 
-        let (tx, _rx) = mpsc::channel();
-        let resp = parse_sse(sse.as_bytes(), &tx).unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
 
         let tools: Vec<_> = resp.message.tool_uses().collect();
         assert_eq!(tools.len(), 2);
@@ -689,13 +700,15 @@ data: [DONE]\n";
         assert_eq!(resp.stop_reason, Some(StopReason::ToolUse));
     }
 
-    #[test]
-    fn parse_sse_error_payload_returns_err() {
+    #[tokio::test]
+    async fn parse_sse_error_payload_returns_err() {
         let sse = "\
 data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\"}}\n";
 
-        let (tx, _rx) = mpsc::channel();
-        let err = parse_sse(sse.as_bytes(), &tx).unwrap_err();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let err = parse_sse(bytes_stream(sse.as_bytes()), &tx)
+            .await
+            .unwrap_err();
 
         match err {
             AgentError::Api { status, message } => {
@@ -706,8 +719,8 @@ data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\
         }
     }
 
-    #[test]
-    fn parse_sse_malformed_tool_json_yields_empty_object() {
+    #[tokio::test]
+    async fn parse_sse_malformed_tool_json_yields_empty_object() {
         let sse = "\
 data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}]}\n\
 \n\
@@ -717,8 +730,8 @@ data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}],\"usage\":{
 \n\
 data: [DONE]\n";
 
-        let (tx, _rx) = mpsc::channel();
-        let resp = parse_sse(sse.as_bytes(), &tx).unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
 
         let tools: Vec<_> = resp.message.tool_uses().collect();
         assert_eq!(tools.len(), 1);

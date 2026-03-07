@@ -1,13 +1,13 @@
 use std::path::Path;
-use std::process::{Command, Stdio};
+
+use tokio::process::Command;
 
 use crate::{GrepFileEntry, GrepMatch, ToolOutput};
 use maki_tool_macro::Tool;
 use tracing::debug;
 
 use super::{
-    NO_FILES_FOUND, SEARCH_RESULT_LIMIT, Tool, mtime, relative_path, resolve_search_path,
-    truncate_bytes,
+    NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path, truncate_bytes,
 };
 
 #[derive(Tool, Debug, Clone)]
@@ -20,10 +20,10 @@ pub struct Grep {
     include: Option<String>,
 }
 
-impl Tool for Grep {
-    const NAME: &str = "grep";
-    const DESCRIPTION: &str = include_str!("grep.md");
-    const EXAMPLES: Option<&str> = Some(
+impl Grep {
+    pub const NAME: &str = "grep";
+    pub const DESCRIPTION: &str = include_str!("grep.md");
+    pub const EXAMPLES: Option<&str> = Some(
         r#"[
   {"pattern": "fn main", "include": "*.rs"},
   {"pattern": "TODO|FIXME", "path": "src/"},
@@ -31,7 +31,7 @@ impl Tool for Grep {
 ]"#,
     );
 
-    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let search_path = resolve_search_path(self.path.as_deref())?;
 
         debug!(
@@ -56,11 +56,14 @@ impl Tool for Grep {
             cmd.args(["--glob", glob]);
         }
         cmd.arg(&search_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
 
-        let output = cmd.output().map_err(|e| format!("failed to run rg: {e}"))?;
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| format!("failed to run rg: {e}"))?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         if !stderr.is_empty() {
             debug!(stderr = %stderr, status = ?output.status, "rg stderr");
@@ -121,7 +124,7 @@ impl Tool for Grep {
         Ok(ToolOutput::GrepResult { entries })
     }
 
-    fn start_summary(&self) -> String {
+    pub fn start_summary(&self) -> String {
         let mut s = self.pattern.clone();
         if let Some(inc) = &self.include {
             s.push_str(" [");
@@ -135,6 +138,8 @@ impl Tool for Grep {
         s
     }
 }
+
+impl super::ToolDefaults for Grep {}
 
 #[cfg(test)]
 mod tests {

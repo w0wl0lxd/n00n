@@ -1,8 +1,8 @@
-use std::io::{BufRead, BufReader, Read};
-use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use humantime::format_duration;
 
@@ -10,10 +10,9 @@ use maki_tool_macro::Tool;
 
 use crate::{AgentEvent, Envelope, ToolInput, ToolOutput};
 
-use super::{Tool, relative_path, truncate_output};
+use super::{relative_path, truncate_output};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
-const POLL_INTERVAL_MS: u64 = 10;
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
 fn timed_out_msg(secs: u64) -> String {
@@ -32,10 +31,10 @@ pub struct Bash {
     description: Option<String>,
 }
 
-impl Tool for Bash {
-    const NAME: &str = "bash";
-    const DESCRIPTION: &str = include_str!("bash.md");
-    const EXAMPLES: Option<&str> = Some(
+impl Bash {
+    pub const NAME: &str = "bash";
+    pub const DESCRIPTION: &str = include_str!("bash.md");
+    pub const EXAMPLES: Option<&str> = Some(
         r#"[
   {"command": "cargo build --release", "description": "Build release binary"},
   {"command": "git diff HEAD~1", "description": "Show last commit diff"},
@@ -43,120 +42,6 @@ impl Tool for Bash {
 ]"#,
     );
 
-    fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let timeout_secs = self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
-        let (command, workdir) = self.resolved();
-        let mut cmd = Command::new("bash");
-        cmd.arg("-c")
-            .arg(command)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if let Some(dir) = workdir {
-            cmd.current_dir(dir);
-        }
-        let mut child = cmd.spawn().map_err(|e| format!("failed to spawn: {e}"))?;
-
-        let (line_tx, line_rx) = mpsc::channel::<String>();
-        if let Some(stdout) = child.stdout.take() {
-            spawn_line_reader(stdout, line_tx.clone());
-        }
-        if let Some(stderr) = child.stderr.take() {
-            spawn_line_reader(stderr, line_tx.clone());
-        }
-        drop(line_tx);
-
-        let mut output = String::new();
-        let mut last_len = 0usize;
-        let mut last_flush = Instant::now();
-
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-        loop {
-            drain_available(&line_rx, &mut output);
-
-            if let Some(id) = ctx.tool_use_id
-                && last_flush.elapsed() >= STREAM_FLUSH_INTERVAL
-                && output.len() > last_len
-            {
-                send_output(ctx.event_tx, id, &output);
-                last_len = output.len();
-                last_flush = Instant::now();
-            }
-
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    drain_remaining(&line_rx, &mut output);
-                    if let Some(id) = ctx.tool_use_id
-                        && output.len() > last_len
-                    {
-                        send_output(ctx.event_tx, id, &output);
-                    }
-
-                    let content = truncate_output(output);
-                    if !status.success() {
-                        if content.is_empty() {
-                            return Err(format!(
-                                "exited with code {}",
-                                status.code().unwrap_or(-1)
-                            ));
-                        }
-                        return Err(content);
-                    }
-                    return Ok(ToolOutput::Plain(content));
-                }
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        drain_remaining(&line_rx, &mut output);
-                        let mut msg = timed_out_msg(timeout_secs);
-                        if !output.is_empty() {
-                            let content = truncate_output(output);
-                            msg.push('\n');
-                            msg.push_str(&content);
-                        }
-                        return Err(msg);
-                    }
-                    thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
-                }
-                Err(e) => return Err(format!("wait error: {e}")),
-            }
-        }
-    }
-
-    fn start_summary(&self) -> String {
-        let (command, workdir) = self.resolved();
-        let mut s = self
-            .description
-            .clone()
-            .unwrap_or_else(|| command.to_string());
-        if let Some(dir) = workdir {
-            s.push_str(" in ");
-            s.push_str(&relative_path(dir));
-        }
-        s
-    }
-
-    fn start_annotation(&self) -> Option<String> {
-        let timeout = Duration::from_secs(self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS));
-        let formatted: String = format_duration(timeout)
-            .to_string()
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        Some(format!("{formatted} timeout"))
-    }
-
-    fn start_input(&self) -> Option<ToolInput> {
-        let (command, _) = self.resolved();
-        Some(ToolInput::Code {
-            language: "bash",
-            code: command.to_string(),
-        })
-    }
-}
-
-impl Bash {
     fn resolved(&self) -> (&str, Option<&str>) {
         if self.workdir.is_some() {
             return (&self.command, self.workdir.as_deref());
@@ -171,13 +56,121 @@ impl Bash {
         }
         (&self.command, None)
     }
+
+    pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+        let timeout_secs = self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let (command, workdir) = self.resolved();
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c")
+            .arg(command)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if let Some(dir) = workdir {
+            cmd.current_dir(dir);
+        }
+        let mut child = cmd.spawn().map_err(|e| format!("failed to spawn: {e}"))?;
+
+        let (line_tx, line_rx) = mpsc::unbounded_channel::<String>();
+        if let Some(stdout) = child.stdout.take() {
+            spawn_line_reader(BufReader::new(stdout), line_tx.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_line_reader(BufReader::new(stderr), line_tx.clone());
+        }
+        drop(line_tx);
+
+        let mut output = String::new();
+        let mut last_len = 0usize;
+        let mut last_flush = tokio::time::Instant::now();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+        let mut line_rx = line_rx;
+        loop {
+            tokio::select! {
+                line = line_rx.recv() => {
+                    match line {
+                        Some(l) => append_line(&mut output, &l),
+                        None => {
+                            let status = child.wait().await.map_err(|e| format!("wait error: {e}"))?;
+                            flush_output(ctx, &output, &mut last_len);
+                            let content = truncate_output(output);
+                            if !status.success() {
+                                if content.is_empty() {
+                                    return Err(format!("exited with code {}", status.code().unwrap_or(-1)));
+                                }
+                                return Err(content);
+                            }
+                            return Ok(ToolOutput::Plain(content));
+                        }
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    drain_remaining(&mut line_rx, &mut output);
+                    let mut msg = timed_out_msg(timeout_secs);
+                    if !output.is_empty() {
+                        let content = truncate_output(output);
+                        msg.push('\n');
+                        msg.push_str(&content);
+                    }
+                    return Err(msg);
+                }
+            }
+
+            if let Some(ref id) = ctx.tool_use_id
+                && last_flush.elapsed() >= STREAM_FLUSH_INTERVAL
+                && output.len() > last_len
+            {
+                send_output(&ctx.event_tx, id, &output);
+                last_len = output.len();
+                last_flush = tokio::time::Instant::now();
+            }
+        }
+    }
+
+    pub fn start_summary(&self) -> String {
+        let (command, workdir) = self.resolved();
+        let mut s = self
+            .description
+            .clone()
+            .unwrap_or_else(|| command.to_string());
+        if let Some(dir) = workdir {
+            s.push_str(" in ");
+            s.push_str(&relative_path(dir));
+        }
+        s
+    }
 }
 
-fn spawn_line_reader(pipe: impl Read + Send + 'static, tx: Sender<String>) {
-    thread::spawn(move || {
-        let reader = BufReader::new(pipe);
-        for line in reader.lines() {
-            let line = line.unwrap_or_else(|_| "\u{FFFD}".into());
+impl super::ToolDefaults for Bash {
+    fn start_input(&self) -> Option<ToolInput> {
+        let (command, _) = self.resolved();
+        Some(ToolInput::Code {
+            language: "bash",
+            code: command.to_string(),
+        })
+    }
+
+    fn start_annotation(&self) -> Option<String> {
+        let timeout = Duration::from_secs(self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS));
+        let formatted: String = format_duration(timeout)
+            .to_string()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        Some(format!("{formatted} timeout"))
+    }
+}
+
+fn spawn_line_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
+    reader: BufReader<R>,
+    tx: UnboundedSender<String>,
+) {
+    tokio::spawn(async move {
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
             if tx.send(line).is_err() {
                 break;
             }
@@ -192,19 +185,22 @@ fn append_line(output: &mut String, line: &str) {
     output.push_str(line);
 }
 
-fn drain_available(rx: &Receiver<String>, output: &mut String) {
+fn drain_remaining(rx: &mut UnboundedReceiver<String>, output: &mut String) {
     while let Ok(line) = rx.try_recv() {
         append_line(output, &line);
     }
 }
 
-fn drain_remaining(rx: &Receiver<String>, output: &mut String) {
-    for line in rx.iter() {
-        append_line(output, &line);
+fn flush_output(ctx: &super::ToolContext, output: &str, last_len: &mut usize) {
+    if let Some(ref id) = ctx.tool_use_id
+        && output.len() > *last_len
+    {
+        send_output(&ctx.event_tx, id, output);
+        *last_len = output.len();
     }
 }
 
-fn send_output(event_tx: &Sender<Envelope>, id: &str, content: &str) {
+fn send_output(event_tx: &tokio::sync::mpsc::UnboundedSender<Envelope>, id: &str, content: &str) {
     let _ = event_tx.send(
         AgentEvent::ToolOutput {
             id: id.to_string(),
@@ -221,6 +217,7 @@ mod tests {
     use crate::AgentMode;
     use crate::tools::test_support::stub_ctx;
 
+    use super::super::ToolDefaults;
     use super::*;
 
     fn bash(cmd: &str) -> Bash {
@@ -232,45 +229,46 @@ mod tests {
         }
     }
 
-    #[test]
-    fn execute_echo() {
+    #[tokio::test]
+    async fn execute_echo() {
         let ctx = stub_ctx(&AgentMode::Build);
-        let out = bash("echo hello").execute(&ctx).unwrap().as_text();
+        let out = bash("echo hello").execute(&ctx).await.unwrap().as_text();
         assert_eq!(out.trim(), "hello");
     }
 
-    #[test]
-    fn execute_nonzero_exit_is_error() {
+    #[tokio::test]
+    async fn execute_nonzero_exit_is_error() {
         let ctx = stub_ctx(&AgentMode::Build);
-        assert!(bash("exit 1").execute(&ctx).is_err());
+        assert!(bash("exit 1").execute(&ctx).await.is_err());
     }
 
-    #[test]
-    fn execute_timeout() {
+    #[tokio::test]
+    async fn execute_timeout() {
         let ctx = stub_ctx(&AgentMode::Build);
         let mut b = bash("sleep 30");
         b.timeout = Some(0);
-        assert!(b.execute(&ctx).unwrap_err().contains("timed out"));
+        assert!(b.execute(&ctx).await.unwrap_err().contains("timed out"));
     }
 
-    #[test]
-    fn execute_workdir() {
+    #[tokio::test]
+    async fn execute_workdir() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = stub_ctx(&AgentMode::Build);
         let mut b = bash("pwd");
         b.workdir = Some(dir.path().to_string_lossy().into());
-        let out = b.execute(&ctx).unwrap().as_text();
+        let out = b.execute(&ctx).await.unwrap().as_text();
         assert!(
             out.trim()
                 .ends_with(dir.path().file_name().unwrap().to_str().unwrap())
         );
     }
 
-    #[test]
-    fn large_output_is_truncated() {
+    #[tokio::test]
+    async fn large_output_is_truncated() {
         let ctx = stub_ctx(&AgentMode::Build);
         let out = bash("yes | head -n 100000")
             .execute(&ctx)
+            .await
             .unwrap()
             .as_text();
         assert!(out.contains("[truncated]"));

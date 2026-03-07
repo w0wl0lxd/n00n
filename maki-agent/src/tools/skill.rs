@@ -4,7 +4,7 @@ use crate::ToolOutput;
 use crate::skill::{Skill, build_skill_list_description};
 use maki_tool_macro::Tool;
 
-use super::{Tool, ToolContext};
+use super::ToolContext;
 
 const NOT_FOUND: &str = "skill not found: ";
 
@@ -14,29 +14,35 @@ pub struct SkillTool {
     name: String,
 }
 
-impl Tool for SkillTool {
-    const NAME: &str = "skill";
-    const DESCRIPTION: &str = "Load a skill by name to get detailed instructions.";
+impl SkillTool {
+    pub const NAME: &str = "skill";
+    pub const DESCRIPTION: &str = "Load a skill by name to get detailed instructions.";
+    pub const EXAMPLES: Option<&str> = None;
 
-    fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
-        Skill::find(&self.name, ctx.skills)
+    pub async fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
+        Skill::find(&self.name, &ctx.skills)
             .map(|s| ToolOutput::Plain(s.format_content()))
             .ok_or_else(|| format!("{NOT_FOUND}{}", self.name))
     }
 
-    fn start_summary(&self) -> String {
+    pub fn start_summary(&self) -> String {
         self.name.clone()
     }
+}
 
-    fn description_extra(skills: &[Skill]) -> Option<String> {
-        let desc = build_skill_list_description(skills);
-        if desc.is_empty() { None } else { Some(desc) }
+impl super::ToolDefaults for SkillTool {
+    fn augment_description(description: &mut String, ctx: &super::DescriptionContext) {
+        let desc = build_skill_list_description(ctx.skills);
+        if !desc.is_empty() {
+            description.push_str(&desc);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use serde_json::json;
 
@@ -53,25 +59,25 @@ mod tests {
         }
     }
 
-    #[test]
-    fn execute_loads_skill_content() {
+    #[tokio::test]
+    async fn execute_loads_skill_content() {
         let skill = test_skill();
         let skills = [skill];
         let mut ctx = stub_ctx(&AgentMode::Build);
-        ctx.skills = &skills;
+        ctx.skills = Arc::from(skills);
 
         let tool = SkillTool::parse_input(&json!({"name": "test-skill"})).unwrap();
-        let output = tool.execute(&ctx).unwrap();
+        let output = tool.execute(&ctx).await.unwrap();
         assert!(output.as_text().contains("Do the thing"));
     }
 
-    #[test]
-    fn execute_returns_error_when_not_found() {
+    #[tokio::test]
+    async fn execute_returns_error_when_not_found() {
         let skills = [test_skill()];
         let mut ctx = stub_ctx(&AgentMode::Build);
-        ctx.skills = &skills;
+        ctx.skills = Arc::from(skills);
 
         let tool = SkillTool::parse_input(&json!({"name": "nonexistent"})).unwrap();
-        assert!(tool.execute(&ctx).unwrap_err().starts_with(NOT_FOUND));
+        assert!(tool.execute(&ctx).await.unwrap_err().starts_with(NOT_FOUND));
     }
 }

@@ -1,6 +1,4 @@
-use std::sync::mpsc;
-
-use crate::ProviderEvent;
+use tokio::sync::mpsc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -11,7 +9,7 @@ pub enum AgentError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("http: {0}")]
-    Http(#[from] ureq::Error),
+    Http(#[from] reqwest::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
     #[error("channel send failed")]
@@ -25,16 +23,22 @@ impl AgentError {
         match self {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
             Self::Io(_) => true,
-            Self::Http(e) => is_transient_http(e),
+            Self::Http(e) => {
+                e.is_timeout()
+                    || e.is_connect()
+                    || e.is_request()
+                    || e.status()
+                        .is_some_and(|s| s.as_u16() == 429 || s.as_u16() >= 500)
+            }
             Self::Tool { .. } | Self::Channel | Self::Json(_) | Self::Cancelled => false,
         }
     }
 
-    pub fn from_response(response: ureq::http::Response<ureq::Body>) -> Self {
+    pub async fn from_response(response: reqwest::Response) -> Self {
         let status = response.status().as_u16();
         let message = response
-            .into_body()
-            .read_to_string()
+            .text()
+            .await
             .unwrap_or_else(|_| "unable to read error body".into());
         Self::Api { status, message }
     }
@@ -50,18 +54,8 @@ impl AgentError {
     }
 }
 
-fn is_transient_http(e: &ureq::Error) -> bool {
-    !matches!(
-        e,
-        ureq::Error::BadUri(_)
-            | ureq::Error::RequireHttpsOnly(_)
-            | ureq::Error::BodyExceedsLimit(_)
-            | ureq::Error::InvalidProxyUrl
-    )
-}
-
-impl From<mpsc::SendError<ProviderEvent>> for AgentError {
-    fn from(_: mpsc::SendError<ProviderEvent>) -> Self {
+impl<T> From<mpsc::error::SendError<T>> for AgentError {
+    fn from(_: mpsc::error::SendError<T>) -> Self {
         Self::Channel
     }
 }
@@ -92,16 +86,6 @@ mod tests {
         assert!(AgentError::Io(std::io::ErrorKind::BrokenPipe.into()).is_retryable());
     }
 
-    #[test]
-    fn transient_http_is_retryable() {
-        assert!(AgentError::Http(ureq::Error::ConnectionFailed).is_retryable());
-    }
-
-    #[test]
-    fn permanent_http_not_retryable() {
-        assert!(!AgentError::Http(ureq::Error::InvalidProxyUrl).is_retryable());
-    }
-
     const CONNECTION: &str = "Connection error";
 
     #[test_case(429, "Rate limited"        ; "rate_limited")]
@@ -115,14 +99,6 @@ mod tests {
     fn retry_message_io() {
         assert_eq!(
             AgentError::Io(std::io::ErrorKind::BrokenPipe.into()).retry_message(),
-            CONNECTION
-        );
-    }
-
-    #[test]
-    fn retry_message_http() {
-        assert_eq!(
-            AgentError::Http(ureq::Error::ConnectionFailed).retry_message(),
             CONNECTION
         );
     }

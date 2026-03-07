@@ -15,6 +15,7 @@ unicode-width = { workspace = true }
 serde_json = { workspace = true }
 arboard = { workspace = true }
 jiff = { workspace = true }
+tokio = { workspace = true }
 
 [features]
 demo = []

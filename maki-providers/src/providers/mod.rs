@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use serde::Deserialize;
-use ureq::Agent;
 
 use crate::AgentError;
 
@@ -38,14 +37,12 @@ impl SseErrorPayload {
     }
 }
 
-pub(crate) fn streaming_agent() -> Agent {
-    Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_connect(Some(CONNECT_TIMEOUT))
-        .timeout_recv_response(Some(RECV_TIMEOUT))
-        .timeout_recv_body(Some(RECV_TIMEOUT))
+pub(crate) fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(RECV_TIMEOUT)
         .build()
-        .into()
+        .expect("failed to build HTTP client")
 }
 
 #[cfg(test)]

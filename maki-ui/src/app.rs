@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::chat::{Chat, ChatEventResult};
 use crate::components::chat_picker::{ChatPicker, ChatPickerAction};
@@ -98,8 +98,8 @@ pub struct App {
     context_window: u32,
     pub should_quit: bool,
     pub(crate) queue: VecDeque<QueuedItem>,
-    pub answer_tx: Option<mpsc::Sender<String>>,
-    pub(crate) cmd_tx: Option<mpsc::Sender<super::AgentCommand>>,
+    pub answer_tx: Option<tokio_mpsc::UnboundedSender<String>>,
+    pub(crate) cmd_tx: Option<tokio_mpsc::UnboundedSender<super::AgentCommand>>,
     pending_question: bool,
     /// Suppresses stale agent events after cancel. The agent thread may still
     /// send events before it processes our Cancel command. Cleared on the
@@ -1416,7 +1416,7 @@ mod tests {
     #[test]
     fn submit_during_streaming_queues_and_sends_on_cmd_tx() {
         let mut app = test_app();
-        let (tx, rx) = mpsc::channel::<crate::AgentCommand>();
+        let (tx, mut rx) = tokio_mpsc::unbounded_channel::<crate::AgentCommand>();
         app.cmd_tx = Some(tx);
         app.status = Status::Streaming;
 
@@ -1429,7 +1429,7 @@ mod tests {
     #[test]
     fn second_submit_during_streaming_does_not_send_on_cmd_tx() {
         let mut app = test_app();
-        let (tx, rx) = mpsc::channel::<crate::AgentCommand>();
+        let (tx, mut rx) = tokio_mpsc::unbounded_channel::<crate::AgentCommand>();
         app.cmd_tx = Some(tx);
         app.status = Status::Streaming;
 
@@ -1824,7 +1824,7 @@ mod tests {
     fn pending_question_submit_routes_through_answer_tx() {
         let mut app = test_app();
         app.status = Status::Streaming;
-        let (tx, rx) = mpsc::channel();
+        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
         app.answer_tx = Some(tx);
 
         app.update(agent_msg(long_question_no_options()));
@@ -2051,7 +2051,7 @@ mod tests {
     fn form_submit_pushes_answer_to_chat() {
         let mut app = test_app();
         app.status = Status::Streaming;
-        let (tx, rx) = mpsc::channel();
+        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
         app.answer_tx = Some(tx);
 
         app.update(agent_msg(short_question_with_options()));
@@ -2067,7 +2067,7 @@ mod tests {
     fn form_dismiss_does_not_push_to_chat() {
         let mut app = test_app();
         app.status = Status::Streaming;
-        let (tx, rx) = mpsc::channel();
+        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
         app.answer_tx = Some(tx);
 
         app.update(agent_msg(short_question_with_options()));

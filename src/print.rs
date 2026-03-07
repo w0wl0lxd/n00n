@@ -17,9 +17,11 @@
 
 use std::env;
 use std::io::{self, Read};
-use std::sync::mpsc;
-use std::thread;
+use std::sync::Arc;
 use std::time::Instant;
+
+use tokio::runtime::Handle;
+use tokio::sync::mpsc as tokio_mpsc;
 
 use clap::ValueEnum;
 use color_eyre::Result;
@@ -123,6 +125,7 @@ pub fn run(
     format: OutputFormat,
     verbose: bool,
     skills: Vec<Skill>,
+    handle: &Handle,
 ) -> Result<()> {
     let prompt = match prompt_arg {
         Some(p) => p,
@@ -146,7 +149,7 @@ pub fn run(
     );
     let system = agent::build_system_prompt(&vars, &mode, &instructions, &tool_names);
 
-    let (event_tx, event_rx) = mpsc::channel::<Envelope>();
+    let (event_tx, mut event_rx) = tokio_mpsc::unbounded_channel::<Envelope>();
     let input = AgentInput {
         message: prompt,
         mode,
@@ -157,33 +160,36 @@ pub fn run(
     let start = Instant::now();
 
     let model_clone = model.clone();
-    thread::spawn(move || {
-        let provider = match maki_providers::provider::from_model(&model_clone) {
-            Ok(p) => p,
-            Err(e) => {
-                error!(error = %e, "provider error");
-                let _ = event_tx.send(
-                    AgentEvent::Error {
-                        message: e.to_string(),
-                    }
-                    .into(),
-                );
-                return;
-            }
-        };
-        let mut history = History::new(Vec::new());
-        let mut agent = Agent::new(
-            &*provider,
-            &model_clone,
-            &mut history,
-            &system,
-            &event_tx,
-            &tools,
-            &skills,
+    handle.spawn(async move {
+        let provider: Arc<dyn maki_providers::provider::Provider> =
+            match maki_providers::provider::from_model(&model_clone) {
+                Ok(p) => Arc::from(p),
+                Err(e) => {
+                    error!(error = %e, "provider error");
+                    let _ = event_tx.send(
+                        AgentEvent::Error {
+                            message: e.to_string(),
+                        }
+                        .into(),
+                    );
+                    return;
+                }
+            };
+        let skills: Arc<[Skill]> = Arc::from(skills);
+        let error_tx = event_tx.clone();
+        let agent = Agent::new(
+            provider,
+            model_clone,
+            History::new(Vec::new()),
+            system,
+            event_tx,
+            tools,
+            skills,
         );
-        if let Err(e) = agent.run(input) {
+        let outcome = agent.run(input).await;
+        if let Err(e) = outcome.result {
             error!(error = %e, "agent error");
-            let _ = event_tx.send(
+            let _ = error_tx.send(
                 AgentEvent::Error {
                     message: e.to_string(),
                 }
@@ -215,7 +221,7 @@ pub fn run(
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
 
-    for envelope in event_rx {
+    while let Some(envelope) = handle.block_on(event_rx.recv()) {
         let Envelope {
             ref event,
             ref subagent,

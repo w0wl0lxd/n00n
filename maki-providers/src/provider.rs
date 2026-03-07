@@ -1,8 +1,7 @@
-use std::sync::mpsc::Sender;
-use std::thread;
-
+use async_trait::async_trait;
 use serde_json::Value;
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, warn};
 
 use crate::model::Model;
@@ -27,17 +26,18 @@ impl ProviderKind {
     }
 }
 
+#[async_trait]
 pub trait Provider: Send + Sync {
-    fn stream_message(
+    async fn stream_message(
         &self,
         model: &Model,
         messages: &[Message],
         system: &str,
         tools: &Value,
-        event_tx: &Sender<ProviderEvent>,
+        event_tx: &UnboundedSender<ProviderEvent>,
     ) -> Result<StreamResponse, AgentError>;
 
-    fn list_models(&self) -> Result<Vec<String>, AgentError>;
+    async fn list_models(&self) -> Result<Vec<String>, AgentError>;
 }
 
 pub fn from_model(model: &Model) -> Result<Box<dyn Provider>, AgentError> {
@@ -46,8 +46,8 @@ pub fn from_model(model: &Model) -> Result<Box<dyn Provider>, AgentError> {
     Ok(provider)
 }
 
-pub fn fetch_all_models(mut on_ready: impl FnMut(Vec<String>)) {
-    let (tx, rx) = std::sync::mpsc::channel();
+pub async fn fetch_all_models(mut on_ready: impl FnMut(Vec<String>)) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
     for kind in ProviderKind::iter() {
         let Ok(provider) = kind.create() else {
@@ -55,8 +55,8 @@ pub fn fetch_all_models(mut on_ready: impl FnMut(Vec<String>)) {
             continue;
         };
         let tx = tx.clone();
-        thread::spawn(move || {
-            let models = match provider.list_models() {
+        tokio::spawn(async move {
+            let models = match provider.list_models().await {
                 Ok(ids) => ids.into_iter().map(|id| format!("{kind}/{id}")).collect(),
                 Err(e) => {
                     eprintln!("warning: {kind}: {e}");
@@ -68,7 +68,7 @@ pub fn fetch_all_models(mut on_ready: impl FnMut(Vec<String>)) {
     }
     drop(tx);
 
-    while let Ok(models) = rx.recv() {
+    while let Some(models) = rx.recv().await {
         on_ready(models);
     }
 }

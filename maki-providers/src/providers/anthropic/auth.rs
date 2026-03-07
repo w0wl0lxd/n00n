@@ -10,7 +10,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, warn};
-use ureq::Agent;
 
 use crate::AgentError;
 use crate::providers::CONNECT_TIMEOUT;
@@ -96,34 +95,34 @@ fn urlenc(s: &str) -> String {
 }
 
 fn post_token_request(body: serde_json::Value, context: &str) -> Result<TokenResponse, AgentError> {
-    let agent: Agent = Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_connect(Some(CONNECT_TIMEOUT))
-        .timeout_global(Some(Duration::from_secs(30)))
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(Duration::from_secs(30))
         .build()
-        .into();
+        .map_err(|e| AgentError::Api {
+            status: 0,
+            message: format!("{context}: {e}"),
+        })?;
 
-    let resp = agent
+    let resp = client
         .post(TOKEN_URL)
         .header("content-type", "application/json")
-        .send(body.to_string().as_str())
+        .json(&body)
+        .send()
         .map_err(|e| AgentError::Api {
             status: 0,
             message: format!("{context}: {e}"),
         })?;
 
     if resp.status().as_u16() != 200 {
-        let body_text = resp
-            .into_body()
-            .read_to_string()
-            .unwrap_or_else(|_| "unknown error".into());
+        let body_text = resp.text().unwrap_or_else(|_| "unknown error".into());
         return Err(AgentError::Api {
             status: 0,
             message: format!("{context}: {body_text}"),
         });
     }
 
-    let body_text = resp.into_body().read_to_string()?;
+    let body_text = resp.text()?;
     serde_json::from_str(&body_text).map_err(Into::into)
 }
 

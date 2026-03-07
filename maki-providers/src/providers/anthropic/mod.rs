@@ -1,11 +1,12 @@
-use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
-use std::sync::mpsc::Sender;
 
+use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::mpsc::UnboundedSender;
+use tokio_util::io::StreamReader;
 use tracing::{debug, warn};
-use ureq::Agent;
 
 pub mod auth;
 
@@ -263,7 +264,7 @@ struct MessageDeltaEvent {
 }
 
 pub struct Anthropic {
-    agent: Agent,
+    client: reqwest::Client,
     auth: Mutex<auth::ResolvedAuth>,
 }
 
@@ -271,14 +272,18 @@ impl Anthropic {
     pub fn new() -> Result<Self, AgentError> {
         let resolved = auth::resolve()?;
         Ok(Self {
-            agent: super::streaming_agent(),
+            client: super::http_client(),
             auth: Mutex::new(resolved),
         })
     }
 
-    fn apply_auth<B>(&self, req: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
+    fn build_request(&self, method: reqwest::Method, url: Option<&str>) -> reqwest::RequestBuilder {
         let auth = self.auth.lock().unwrap();
-        let mut req = req.header("anthropic-version", API_VERSION);
+        let url = url.unwrap_or(&auth.api_url);
+        let mut req = self
+            .client
+            .request(method, url)
+            .header("anthropic-version", API_VERSION);
         for (key, value) in &auth.headers {
             req = req.header(key, value);
         }
@@ -288,7 +293,7 @@ impl Anthropic {
     fn try_refresh_auth(&self) -> Result<(), AgentError> {
         let tokens = auth::load_tokens().ok_or_else(|| AgentError::Api {
             status: 401,
-            message: "not using OAuth — cannot refresh token".into(),
+            message: "not using OAuth \u{2014} cannot refresh token".into(),
         })?;
         let fresh = auth::refresh_tokens(&tokens)?;
         auth::save_tokens(&fresh)?;
@@ -297,41 +302,25 @@ impl Anthropic {
         Ok(())
     }
 
-    fn with_retry<T>(&self, f: impl Fn() -> Result<T, AgentError>) -> Result<T, AgentError> {
-        let result = f();
-        if let Err(AgentError::Api { status: 401, .. }) = &result
-            && self.try_refresh_auth().is_ok()
-        {
-            return f();
-        }
-        result
-    }
-
-    fn do_stream_request(
+    async fn do_stream_request(
         &self,
-        body_str: &str,
-        event_tx: &Sender<ProviderEvent>,
+        body: &Value,
+        event_tx: &UnboundedSender<ProviderEvent>,
     ) -> Result<StreamResponse, AgentError> {
-        let auth = self.auth.lock().unwrap();
         let req = self
-            .agent
-            .post(&auth.api_url)
-            .header("content-type", "application/json")
-            .header("anthropic-version", API_VERSION);
-        let req = auth.headers.iter().fold(req, |r, (k, v)| r.header(k, v));
-        drop(auth);
-
-        let response = req.send(body_str)?;
+            .build_request(reqwest::Method::POST, None)
+            .header("content-type", "application/json");
+        let response = req.json(body).send().await?;
         let status = response.status().as_u16();
 
         if status == 200 {
-            parse_sse(BufReader::new(response.into_body().into_reader()), event_tx)
+            parse_sse(response, event_tx).await
         } else {
-            Err(AgentError::from_response(response))
+            Err(AgentError::from_response(response).await)
         }
     }
 
-    fn do_list_models(&self) -> Result<Vec<String>, AgentError> {
+    async fn do_list_models(&self) -> Result<Vec<String>, AgentError> {
         let mut models = Vec::new();
         let mut after_id: Option<String> = None;
 
@@ -341,12 +330,15 @@ impl Anthropic {
                 url.push_str(&format!("&after_id={cursor}"));
             }
 
-            let response = self.apply_auth(self.agent.get(&url)).call()?;
+            let response = self
+                .build_request(reqwest::Method::GET, Some(&url))
+                .send()
+                .await?;
             if response.status().as_u16() != 200 {
-                return Err(AgentError::from_response(response));
+                return Err(AgentError::from_response(response).await);
             }
 
-            let page: ModelsPage = serde_json::from_reader(response.into_body().into_reader())?;
+            let page: ModelsPage = response.json().await?;
             models.extend(page.data.into_iter().map(|m| m.id));
 
             if !page.has_more {
@@ -360,14 +352,15 @@ impl Anthropic {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for Anthropic {
-    fn stream_message(
+    async fn stream_message(
         &self,
         model: &Model,
         messages: &[Message],
         system: &str,
         tools: &Value,
-        event_tx: &Sender<ProviderEvent>,
+        event_tx: &UnboundedSender<ProviderEvent>,
     ) -> Result<StreamResponse, AgentError> {
         let wire_messages = build_wire_messages(messages);
         let wire_tools = build_wire_tools(tools);
@@ -377,23 +370,34 @@ impl Provider for Anthropic {
             cache_control: EPHEMERAL,
         };
 
-        let body_str = json!({
+        let body = json!({
             "model": model.id,
             "max_tokens": model.max_output_tokens,
             "system": [system_block],
             "messages": wire_messages,
             "tools": wire_tools,
             "stream": true,
-        })
-        .to_string();
+        });
 
         debug!(model = %model.id, num_messages = messages.len(), "sending API request");
 
-        self.with_retry(|| self.do_stream_request(&body_str, event_tx))
+        let result = self.do_stream_request(&body, event_tx).await;
+        if let Err(AgentError::Api { status: 401, .. }) = &result
+            && self.try_refresh_auth().is_ok()
+        {
+            return self.do_stream_request(&body, event_tx).await;
+        }
+        result
     }
 
-    fn list_models(&self) -> Result<Vec<String>, AgentError> {
-        self.with_retry(|| self.do_list_models())
+    async fn list_models(&self) -> Result<Vec<String>, AgentError> {
+        let result = self.do_list_models().await;
+        if let Err(AgentError::Api { status: 401, .. }) = &result
+            && self.try_refresh_auth().is_ok()
+        {
+            return self.do_list_models().await;
+        }
+        result
     }
 }
 
@@ -479,19 +483,21 @@ fn build_wire_tools(tools: &Value) -> Value {
     Value::Array(out)
 }
 
-fn parse_sse(
-    reader: impl BufRead,
-    event_tx: &Sender<ProviderEvent>,
+async fn parse_sse(
+    response: reqwest::Response,
+    event_tx: &UnboundedSender<ProviderEvent>,
 ) -> Result<StreamResponse, AgentError> {
+    let stream = response.bytes_stream().map_err(std::io::Error::other);
+    let reader = BufReader::new(StreamReader::new(stream));
+    let mut lines = reader.lines();
+
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
     let mut current_tool_json = String::new();
     let mut current_event = String::new();
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
 
-    for line in reader.lines() {
-        let line = line?;
-
+    while let Some(line) = lines.next_line().await? {
         if let Some(event_type) = line.strip_prefix("event: ") {
             current_event = event_type.to_string();
             continue;
@@ -607,11 +613,22 @@ fn parse_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
-    use test_case::test_case;
+    use futures::stream;
+    use tokio::sync::mpsc;
 
-    #[test]
-    fn parse_sse_text_and_usage() {
+    fn bytes_stream(data: &[u8]) -> reqwest::Response {
+        let bytes = bytes::Bytes::from(data.to_vec());
+        let body =
+            reqwest::Body::wrap_stream(stream::once(async move { Ok::<_, std::io::Error>(bytes) }));
+        http::Response::builder()
+            .status(200)
+            .body(body)
+            .unwrap()
+            .into()
+    }
+
+    #[tokio::test]
+    async fn parse_sse_text_and_usage() {
         let sse_data = b"\
 event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":42,\"cache_creation_input_tokens\":5,\"cache_read_input_tokens\":8}}}\n\
@@ -634,8 +651,8 @@ data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usa
 event: message_stop\n\
 data: {\"type\":\"message_stop\"}\n";
 
-        let (tx, rx) = mpsc::channel();
-        let resp = parse_sse(sse_data.as_slice(), &tx).unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let resp = parse_sse(bytes_stream(sse_data), &tx).await.unwrap();
 
         assert_eq!(
             resp.usage,
@@ -651,18 +668,17 @@ data: {\"type\":\"message_stop\"}\n";
         );
         assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
 
-        let deltas: Vec<String> = rx
-            .try_iter()
-            .filter_map(|e| match e {
-                ProviderEvent::TextDelta { text } => Some(text),
-                _ => None,
-            })
-            .collect();
+        let mut deltas = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            if let ProviderEvent::TextDelta { text: t } = e {
+                deltas.push(t);
+            }
+        }
         assert_eq!(deltas, vec!["Hello", " world"]);
     }
 
-    #[test]
-    fn parse_sse_tool_use() {
+    #[tokio::test]
+    async fn parse_sse_tool_use() {
         let sse_data = "\
 event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\
@@ -682,8 +698,10 @@ data: {\"type\":\"content_block_stop\"}\n\
 event: message_delta\n\
 data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
 
-        let (tx, _rx) = mpsc::channel();
-        let resp = parse_sse(sse_data.as_bytes(), &tx).unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let resp = parse_sse(bytes_stream(sse_data.as_bytes()), &tx)
+            .await
+            .unwrap();
 
         let tools: Vec<_> = resp.message.tool_uses().collect();
         assert_eq!(tools.len(), 1);
@@ -738,29 +756,36 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
         );
     }
 
-    #[test_case(
-        b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n",
-        529, "Overloaded" ; "overloaded_error"
-    )]
-    #[test_case(
-        b"event: error\ndata: not-json\n",
-        0, "not-json" ; "unparseable_error"
-    )]
-    fn parse_sse_error_event(input: &[u8], expected_status: u16, expected_message: &str) {
-        let (tx, _rx) = mpsc::channel();
-        let err = parse_sse(input, &tx).unwrap_err();
-
+    #[tokio::test]
+    async fn parse_sse_overloaded_error() {
+        let input = b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n";
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let err = parse_sse(bytes_stream(input), &tx).await.unwrap_err();
         match err {
             AgentError::Api { status, message } => {
-                assert_eq!(status, expected_status);
-                assert_eq!(message, expected_message);
+                assert_eq!(status, 529);
+                assert_eq!(message, "Overloaded");
             }
             other => panic!("expected Api error, got: {other:?}"),
         }
     }
 
-    #[test]
-    fn parse_sse_malformed_tool_json_yields_empty_object() {
+    #[tokio::test]
+    async fn parse_sse_unparseable_error() {
+        let input = b"event: error\ndata: not-json\n";
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let err = parse_sse(bytes_stream(input), &tx).await.unwrap_err();
+        match err {
+            AgentError::Api { status, message } => {
+                assert_eq!(status, 0);
+                assert_eq!(message, "not-json");
+            }
+            other => panic!("expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn parse_sse_malformed_tool_json_yields_empty_object() {
         let sse_data = "\
 event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\
@@ -777,8 +802,10 @@ data: {\"type\":\"content_block_stop\"}\n\
 event: message_delta\n\
 data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n";
 
-        let (tx, _rx) = mpsc::channel();
-        let resp = parse_sse(sse_data.as_bytes(), &tx).unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let resp = parse_sse(bytes_stream(sse_data.as_bytes()), &tx)
+            .await
+            .unwrap();
 
         let tools: Vec<_> = resp.message.tool_uses().collect();
         assert_eq!(tools.len(), 1);

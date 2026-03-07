@@ -1,12 +1,11 @@
-use std::io::Read;
+use reqwest::Client;
 use std::time::Duration;
 
 use maki_tool_macro::Tool;
-use ureq::Agent;
 
 use crate::ToolOutput;
 
-use super::{MAX_RESPONSE_BYTES, Tool, truncate_output};
+use super::{MAX_RESPONSE_BYTES, truncate_output};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 120;
@@ -25,17 +24,17 @@ pub struct WebFetch {
     timeout: Option<u64>,
 }
 
-impl Tool for WebFetch {
-    const NAME: &str = "webfetch";
-    const DESCRIPTION: &str = include_str!("webfetch.md");
-    const EXAMPLES: Option<&str> = Some(
+impl WebFetch {
+    pub const NAME: &str = "webfetch";
+    pub const DESCRIPTION: &str = include_str!("webfetch.md");
+    pub const EXAMPLES: Option<&str> = Some(
         r#"[
   {"url": "https://docs.rs/serde/latest/serde/"},
   {"url": "https://example.com/api/spec", "format": "text", "timeout": 60}
 ]"#,
     );
 
-    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let url = validate_and_upgrade_url(&self.url)?;
         let format = self.validated_format()?;
         let timeout = Duration::from_secs(
@@ -44,19 +43,19 @@ impl Tool for WebFetch {
                 .min(MAX_TIMEOUT_SECS),
         );
 
-        let agent: Agent = Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(timeout))
+        let client = Client::builder()
+            .timeout(timeout)
             .build()
-            .into();
+            .map_err(|e| format!("client error: {e}"))?;
 
         let accept = accept_header(format);
 
-        let response = agent
+        let response = client
             .get(&url)
             .header("User-Agent", USER_AGENT)
             .header("Accept", accept)
-            .call()
+            .send()
+            .await
             .map_err(|e| format!("request failed: {e}"))?;
 
         let is_cf_challenge = response.status().as_u16() == 403
@@ -66,11 +65,12 @@ impl Tool for WebFetch {
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|v| v.contains(CF_CHALLENGE));
         let response = if is_cf_challenge {
-            agent
+            client
                 .get(&url)
                 .header("User-Agent", FALLBACK_USER_AGENT)
                 .header("Accept", accept)
-                .call()
+                .send()
+                .await
                 .map_err(|e| format!("request failed: {e}"))?
         } else {
             response
@@ -84,8 +84,8 @@ impl Tool for WebFetch {
         if let Some(len) = response
             .headers()
             .get("content-length")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<usize>().ok())
+            .and_then(|v: &reqwest::header::HeaderValue| v.to_str().ok())
+            .and_then(|v: &str| v.parse::<usize>().ok())
             && len > MAX_RESPONSE_BYTES
         {
             return Err(format!("response too large: {len} bytes"));
@@ -98,13 +98,20 @@ impl Tool for WebFetch {
             .unwrap_or("")
             .to_string();
 
-        let body = read_body(response.into_body().into_reader())?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| format!("read error: {e}"))?;
+
+        if bytes.len() > MAX_RESPONSE_BYTES {
+            return Err(format!("response too large: {} bytes", bytes.len()));
+        }
 
         if is_image_content(&content_type) {
             return Err("image content cannot be displayed as text".into());
         }
 
-        let text = String::from_utf8_lossy(&body).into_owned();
+        let text = String::from_utf8_lossy(&bytes).into_owned();
         let is_html = content_type.contains("text/html");
 
         let output = match format {
@@ -118,13 +125,15 @@ impl Tool for WebFetch {
         Ok(ToolOutput::Plain(truncate_output(output)))
     }
 
-    fn start_summary(&self) -> String {
+    pub fn start_summary(&self) -> String {
         match self.format.as_deref() {
             Some(f) if f != "markdown" => format!("{} [{f}]", self.url),
             _ => self.url.clone(),
         }
     }
 }
+
+impl super::ToolDefaults for WebFetch {}
 
 impl WebFetch {
     fn validated_format(&self) -> Result<&'static str, String> {
@@ -155,19 +164,6 @@ fn accept_header(format: &str) -> &'static str {
         "text" => "text/plain,text/html;q=0.9,*/*;q=0.5",
         _ => "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.5",
     }
-}
-
-fn read_body(reader: impl Read) -> Result<Vec<u8>, String> {
-    let mut buf = Vec::new();
-    let limit = MAX_RESPONSE_BYTES + 1;
-    reader
-        .take(limit as u64)
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("read error: {e}"))?;
-    if buf.len() > MAX_RESPONSE_BYTES {
-        return Err(format!("response too large: {} bytes", buf.len()));
-    }
-    Ok(buf)
 }
 
 fn is_image_content(content_type: &str) -> bool {
@@ -279,12 +275,6 @@ mod tests {
     #[test_case("image/svg+xml", false ; "svg_allowed")]
     fn is_image_content_cases(ct: &str, expected: bool) {
         assert_eq!(is_image_content(ct), expected);
-    }
-
-    #[test]
-    fn read_body_rejects_oversized() {
-        let data = vec![0u8; MAX_RESPONSE_BYTES + 1];
-        assert!(read_body(data.as_slice()).is_err());
     }
 
     #[test_case(None,                "https://x.com"        ; "default_format")]

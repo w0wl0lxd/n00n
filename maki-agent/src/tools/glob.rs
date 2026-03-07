@@ -4,7 +4,7 @@ use ignore::overrides::OverrideBuilder;
 use maki_tool_macro::Tool;
 use tracing::debug;
 
-use super::{SEARCH_RESULT_LIMIT, Tool, mtime, relative_path, resolve_search_path};
+use super::{SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Glob {
@@ -14,55 +14,61 @@ pub struct Glob {
     path: Option<String>,
 }
 
-impl Tool for Glob {
-    const NAME: &str = "glob";
-    const DESCRIPTION: &str = include_str!("glob.md");
-    const EXAMPLES: Option<&str> = Some(
+impl Glob {
+    pub const NAME: &str = "glob";
+    pub const DESCRIPTION: &str = include_str!("glob.md");
+    pub const EXAMPLES: Option<&str> = Some(
         r#"[
   {"pattern": "**/*.rs"},
   {"pattern": "src/**/*.ts", "path": "/home/user/project"}
 ]"#,
     );
 
-    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let search_path = resolve_search_path(self.path.as_deref())?;
+    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+        let pattern = self.pattern.clone();
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let search_path = resolve_search_path(path.as_deref())?;
 
-        debug!(
-            pattern = %self.pattern,
-            pattern_debug = ?self.pattern,
-            path = %search_path,
-            "glob executing"
-        );
+            debug!(
+                pattern = %pattern,
+                pattern_debug = ?pattern,
+                path = %search_path,
+                "glob executing"
+            );
 
-        let mut overrides = OverrideBuilder::new(&search_path);
-        overrides
-            .add(&self.pattern)
-            .map_err(|e| format!("invalid glob pattern: {e}"))?;
-        let overrides = overrides
-            .build()
-            .map_err(|e| format!("glob build error: {e}"))?;
+            let mut overrides = OverrideBuilder::new(&search_path);
+            overrides
+                .add(&pattern)
+                .map_err(|e| format!("invalid glob pattern: {e}"))?;
+            let overrides = overrides
+                .build()
+                .map_err(|e| format!("glob build error: {e}"))?;
 
-        let mut entries: Vec<_> = WalkBuilder::new(&search_path)
-            .hidden(false)
-            .overrides(overrides)
-            .build()
-            .flatten()
-            .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
-            .map(|e| {
-                let p = e.into_path();
-                (mtime(&p), relative_path(&p.to_string_lossy()))
+            let mut entries: Vec<_> = WalkBuilder::new(&search_path)
+                .hidden(false)
+                .overrides(overrides)
+                .build()
+                .flatten()
+                .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
+                .map(|e| {
+                    let p = e.into_path();
+                    (mtime(&p), relative_path(&p.to_string_lossy()))
+                })
+                .collect();
+
+            entries.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            entries.truncate(SEARCH_RESULT_LIMIT);
+
+            Ok(ToolOutput::GlobResult {
+                files: entries.into_iter().map(|(_, p)| p).collect(),
             })
-            .collect();
-
-        entries.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-        entries.truncate(SEARCH_RESULT_LIMIT);
-
-        Ok(ToolOutput::GlobResult {
-            files: entries.into_iter().map(|(_, p)| p).collect(),
         })
+        .await
+        .unwrap_or_else(|e| Err(format!("task panicked: {e}")))
     }
 
-    fn start_summary(&self) -> String {
+    pub fn start_summary(&self) -> String {
         let mut s = self.pattern.clone();
         if let Some(dir) = &self.path {
             s.push_str(" in ");
@@ -71,6 +77,8 @@ impl Tool for Glob {
         s
     }
 }
+
+impl super::ToolDefaults for Glob {}
 
 #[cfg(test)]
 mod tests {

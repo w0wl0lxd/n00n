@@ -1,4 +1,3 @@
-use super::Tool;
 use crate::{AgentEvent, QuestionAnswer, QuestionInfo, ToolOutput};
 use maki_tool_macro::Tool;
 
@@ -11,16 +10,19 @@ pub struct Question {
     questions: Vec<QuestionInfo>,
 }
 
-impl Tool for Question {
-    const NAME: &str = "question";
-    const DESCRIPTION: &str = include_str!("question.md");
+impl Question {
+    pub const NAME: &str = "question";
+    pub const DESCRIPTION: &str = include_str!("question.md");
+    pub const EXAMPLES: Option<&str> = None;
 
-    fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         if self.questions.is_empty() {
             return Err(EMPTY_QUESTIONS.into());
         }
 
-        let (Some(tool_use_id), Some(rx)) = (ctx.tool_use_id, ctx.user_response_rx) else {
+        let (Some(tool_use_id), Some(rx)) =
+            (ctx.tool_use_id.as_deref(), ctx.user_response_rx.as_ref())
+        else {
             return Ok(ToolOutput::Plain(self.format_questions()));
         };
 
@@ -32,18 +34,20 @@ impl Tool for Question {
             .into(),
         );
 
-        let rx = rx.lock().map_err(|_| CHANNEL_CLOSED.to_string())?;
-        match rx.recv() {
-            Ok(answer) => Ok(Self::format_answer(&self.questions, &answer)),
-            Err(_) => Err(CHANNEL_CLOSED.into()),
+        let mut rx = rx.lock().await;
+        match rx.recv().await {
+            Some(answer) => Ok(Self::format_answer(&self.questions, &answer)),
+            None => Err(CHANNEL_CLOSED.into()),
         }
     }
 
-    fn start_summary(&self) -> String {
+    pub fn start_summary(&self) -> String {
         let n = self.questions.len();
         format!("{n} question{}", if n == 1 { "" } else { "s" })
     }
 }
+
+impl super::ToolDefaults for Question {}
 
 impl Question {
     fn format_answer(questions: &[QuestionInfo], raw: &str) -> ToolOutput {
@@ -79,9 +83,10 @@ impl Question {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, mpsc};
+    use std::sync::Arc;
 
     use serde_json::json;
+    use tokio::sync::Mutex;
 
     use super::*;
     use crate::AgentMode;
@@ -109,70 +114,72 @@ mod tests {
         }]})
     }
 
-    #[test]
-    fn empty_questions_returns_error() {
+    #[tokio::test]
+    async fn empty_questions_returns_error() {
         let q = Question::parse_input(&json!({"questions": []})).unwrap();
-        let err = q.execute(&stub_ctx(&AgentMode::Build)).unwrap_err();
+        let err = q.execute(&stub_ctx(&AgentMode::Build)).await.unwrap_err();
         assert_eq!(err, EMPTY_QUESTIONS);
     }
 
-    #[test]
-    fn formats_questions_with_options_without_channel() {
+    #[tokio::test]
+    async fn formats_questions_with_options_without_channel() {
         let q = Question::parse_input(&q_with_options()).unwrap();
-        let output = q.execute(&stub_ctx(&AgentMode::Build)).unwrap();
+        let output = q.execute(&stub_ctx(&AgentMode::Build)).await.unwrap();
         let text = output.as_text();
         assert!(text.contains("Pick a DB"));
         assert!(text.contains("- PostgreSQL"));
         assert!(text.contains("- Redis"));
     }
 
-    #[test]
-    fn blocks_on_channel_and_returns_structured_answer() {
-        let (event_tx, event_rx) = mpsc::channel();
-        let (answer_tx, answer_rx) = mpsc::channel();
+    #[tokio::test]
+    async fn blocks_on_channel_and_returns_structured_answer() {
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (answer_tx, answer_rx) = tokio::sync::mpsc::unbounded_channel();
         let answer_mutex = Mutex::new(answer_rx);
         let mode = AgentMode::Build;
         let mut ctx = stub_ctx_with(&mode, Some(&event_tx), Some("q1"));
-        ctx.user_response_rx = Some(&answer_mutex);
+        ctx.user_response_rx = Some(Arc::new(answer_mutex));
 
         let input: serde_json::Value = serde_json::from_str(SINGLE_Q).unwrap();
         let q = Question::parse_input(&input).unwrap();
 
-        std::thread::scope(|s| {
-            let handle = s.spawn(|| q.execute(&ctx));
-
-            let prompt_event = event_rx.recv().unwrap();
-            assert!(matches!(
-                prompt_event.event,
-                AgentEvent::QuestionPrompt { ref id, ref questions }
-                if id == "q1" && questions[0].question == "Preferred DB?"
-            ));
-
-            answer_tx.send(r#"[["PostgreSQL"]]"#.into()).unwrap();
-            let output = handle.join().unwrap().unwrap();
-            match output {
-                ToolOutput::QuestionAnswers(pairs) => {
-                    assert_eq!(pairs.len(), 1);
-                    assert_eq!(pairs[0].question, "Preferred DB?");
-                    assert_eq!(pairs[0].answer, "PostgreSQL");
-                }
-                other => panic!("expected QuestionAnswers, got {other:?}"),
-            }
+        let handle = tokio::spawn({
+            let ctx = ctx.clone();
+            let q = q.clone();
+            async move { q.execute(&ctx).await }
         });
+
+        let prompt_event = event_rx.recv().await.unwrap();
+        assert!(matches!(
+            prompt_event.event,
+            AgentEvent::QuestionPrompt { ref id, ref questions }
+            if id == "q1" && questions[0].question == "Preferred DB?"
+        ));
+
+        answer_tx.send(r#"[["PostgreSQL"]]"#.into()).unwrap();
+        let output = handle.await.unwrap().unwrap();
+        match output {
+            ToolOutput::QuestionAnswers(pairs) => {
+                assert_eq!(pairs.len(), 1);
+                assert_eq!(pairs[0].question, "Preferred DB?");
+                assert_eq!(pairs[0].answer, "PostgreSQL");
+            }
+            other => panic!("expected QuestionAnswers, got {other:?}"),
+        }
     }
 
-    #[test]
-    fn channel_closed_returns_error() {
-        let (event_tx, _event_rx) = mpsc::channel();
-        let (_, answer_rx) = mpsc::channel::<String>();
+    #[tokio::test]
+    async fn channel_closed_returns_error() {
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_, answer_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let answer_mutex = Mutex::new(answer_rx);
         let mode = AgentMode::Build;
         let mut ctx = stub_ctx_with(&mode, Some(&event_tx), Some("q2"));
-        ctx.user_response_rx = Some(&answer_mutex);
+        ctx.user_response_rx = Some(Arc::new(answer_mutex));
 
         let input: serde_json::Value = serde_json::from_str(SINGLE_Q).unwrap();
         let q = Question::parse_input(&input).unwrap();
-        let err = q.execute(&ctx).unwrap_err();
+        let err = q.execute(&ctx).await.unwrap_err();
         assert_eq!(err, CHANNEL_CLOSED);
     }
 

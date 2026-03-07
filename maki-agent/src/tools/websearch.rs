@@ -1,13 +1,12 @@
-use std::io::Read;
 use std::time::Duration;
 
 use maki_tool_macro::Tool;
+use reqwest::Client;
 use serde_json::{Value, json};
-use ureq::Agent;
 
 use crate::ToolOutput;
 
-use super::{MAX_RESPONSE_BYTES, Tool, truncate_output};
+use super::{MAX_RESPONSE_BYTES, truncate_output};
 
 const EXA_MCP_ENDPOINT: &str = "https://mcp.exa.ai/mcp";
 const REQUEST_TIMEOUT_SECS: u64 = 25;
@@ -22,17 +21,17 @@ pub struct WebSearch {
     num_results: Option<u64>,
 }
 
-impl Tool for WebSearch {
-    const NAME: &str = "websearch";
-    const DESCRIPTION: &str = include_str!("websearch.md");
-    const EXAMPLES: Option<&str> = Some(
+impl WebSearch {
+    pub const NAME: &str = "websearch";
+    pub const DESCRIPTION: &str = include_str!("websearch.md");
+    pub const EXAMPLES: Option<&str> = Some(
         r#"[
   {"query": "rust tokio spawn blocking best practices"},
   {"query": "serde deserialize enum tag", "num_results": 5}
 ]"#,
     );
 
-    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let num_results = self.num_results.unwrap_or(DEFAULT_NUM_RESULTS);
 
         let payload = json!({
@@ -50,29 +49,29 @@ impl Tool for WebSearch {
             }
         });
 
-        let agent: Agent = Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
+        let client = Client::builder()
+            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
             .build()
-            .into();
+            .map_err(|e| format!("client error: {e}"))?;
 
-        let body = serde_json::to_string(&payload).map_err(|e| format!("serialize: {e}"))?;
-
-        let response = agent
+        let response = client
             .post(EXA_MCP_ENDPOINT)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
-            .send(body.as_str())
+            .json(&payload)
+            .send()
+            .await
             .map_err(|e| format!("request failed: {e}"))?;
 
         let status = response.status().as_u16();
-        let mut body = String::new();
-        response
-            .into_body()
-            .into_reader()
-            .take(MAX_RESPONSE_BYTES as u64)
-            .read_to_string(&mut body)
+        let body = response
+            .text()
+            .await
             .map_err(|e| format!("read error: {e}"))?;
+
+        if body.len() > MAX_RESPONSE_BYTES {
+            return Err(format!("response too large: {} bytes", body.len()));
+        }
 
         if !(200..300).contains(&status) {
             return Err(format!("HTTP {status}: {}", &body[..body.len().min(200)]));
@@ -82,10 +81,12 @@ impl Tool for WebSearch {
         Ok(ToolOutput::Plain(truncate_output(text)))
     }
 
-    fn start_summary(&self) -> String {
+    pub fn start_summary(&self) -> String {
         self.query.clone()
     }
 }
+
+impl super::ToolDefaults for WebSearch {}
 
 fn parse_sse_response(body: &str) -> Result<String, String> {
     for line in body.lines() {

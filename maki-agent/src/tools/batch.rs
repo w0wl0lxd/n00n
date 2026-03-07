@@ -1,12 +1,13 @@
 use std::fmt::Write;
 
 use crate::{AgentEvent, BatchToolEntry, BatchToolStatus, ToolOutput};
+use futures::future::join_all;
 use serde::Deserialize;
 use serde_json::Value;
 
 use maki_tool_macro::Tool;
 
-use super::{Tool, ToolCall, ToolContext};
+use super::{ToolCall, ToolContext};
 
 const MAX_BATCH_SIZE: usize = 25;
 
@@ -50,10 +51,10 @@ pub struct Batch {
     tool_calls: Vec<BatchEntry>,
 }
 
-impl Tool for Batch {
-    const NAME: &str = "batch";
-    const DESCRIPTION: &str = include_str!("batch.md");
-    const EXAMPLES: Option<&str> = Some(
+impl Batch {
+    pub const NAME: &str = "batch";
+    pub const DESCRIPTION: &str = include_str!("batch.md");
+    pub const EXAMPLES: Option<&str> = Some(
         r#"[
   {"tool_calls": [
     {"tool": "read", "parameters": {"path": "/home/user/project/src/main.rs"}},
@@ -62,12 +63,12 @@ impl Tool for Batch {
 ]"#,
     );
 
-    fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
         if self.tool_calls.is_empty() {
             return Err("provide at least one tool call".into());
         }
 
-        let batch_id = ctx.tool_use_id.unwrap_or_default().to_owned();
+        let batch_id = ctx.tool_use_id.clone().unwrap_or_default();
 
         let active = &self.tool_calls[..self.tool_calls.len().min(MAX_BATCH_SIZE)];
         let discarded = &self.tool_calls[active.len()..];
@@ -84,58 +85,61 @@ impl Tool for Batch {
 
         let inner_id = |i: usize| format!("{batch_id}__{i}");
 
-        let send_progress = |index: usize, status: BatchToolStatus, output: Option<ToolOutput>| {
-            let _ = ctx.event_tx.send(
-                AgentEvent::BatchProgress {
-                    batch_id: batch_id.clone(),
-                    index,
-                    status,
-                    output,
-                }
-                .into(),
-            );
-        };
-
-        let results: Vec<(Result<String, String>, Option<ToolOutput>)> = std::thread::scope(|s| {
-            let handles: Vec<_> = parsed
-                .iter()
-                .enumerate()
-                .map(|(i, parsed_call)| {
-                    let id = inner_id(i);
-                    s.spawn(move || {
-                        send_progress(i, BatchToolStatus::InProgress, None);
-                        let (result, output) = match parsed_call {
-                            Ok(call) => {
-                                let inner_ctx = ToolContext {
-                                    tool_use_id: Some(&id),
-                                    ..*ctx
-                                };
-                                let done = call.execute(&inner_ctx, id.clone());
-                                let text = done.output.as_text();
-                                let result = if done.is_error { Err(text) } else { Ok(text) };
-                                (result, Some(done.output))
-                            }
-                            Err(e) => (Err(e.clone()), None),
-                        };
-                        let status = if result.is_ok() {
-                            BatchToolStatus::Success
-                        } else {
-                            BatchToolStatus::Error
-                        };
-                        send_progress(i, status, output.clone());
-                        (result, output)
-                    })
+        let futures: Vec<_> = parsed
+            .iter()
+            .enumerate()
+            .map(|(i, parsed_call)| {
+                let id = inner_id(i);
+                let batch_id = batch_id.clone();
+                let ctx = ctx.clone();
+                let parsed_call = parsed_call.clone();
+                tokio::spawn(async move {
+                    let _ = ctx.event_tx.send(
+                        AgentEvent::BatchProgress {
+                            batch_id: batch_id.clone(),
+                            index: i,
+                            status: BatchToolStatus::InProgress,
+                            output: None,
+                        }
+                        .into(),
+                    );
+                    let (result, output) = match parsed_call {
+                        Ok(call) => {
+                            let inner_ctx = ToolContext {
+                                tool_use_id: Some(id.clone()),
+                                ..ctx.clone()
+                            };
+                            let done = call.execute(&inner_ctx, id).await;
+                            let text = done.output.as_text();
+                            let result = if done.is_error { Err(text) } else { Ok(text) };
+                            (result, Some(done.output))
+                        }
+                        Err(e) => (Err(e), None),
+                    };
+                    let status = if result.is_ok() {
+                        BatchToolStatus::Success
+                    } else {
+                        BatchToolStatus::Error
+                    };
+                    let _ = ctx.event_tx.send(
+                        AgentEvent::BatchProgress {
+                            batch_id,
+                            index: i,
+                            status,
+                            output: output.clone(),
+                        }
+                        .into(),
+                    );
+                    (result, output)
                 })
-                .collect();
+            })
+            .collect();
 
-            handles
-                .into_iter()
-                .map(|h| {
-                    h.join()
-                        .unwrap_or((Err("tool thread panicked".into()), None))
-                })
-                .collect()
-        });
+        let join_results = join_all(futures).await;
+        let results: Vec<(Result<String, String>, Option<ToolOutput>)> = join_results
+            .into_iter()
+            .map(|r| r.unwrap_or((Err("tool task panicked".into()), None)))
+            .collect();
 
         let total = results.len() + discarded.len();
         let mut failed = discarded.len();
@@ -190,10 +194,12 @@ impl Tool for Batch {
         })
     }
 
-    fn start_summary(&self) -> String {
+    pub fn start_summary(&self) -> String {
         format!("{} tools", self.tool_calls.len())
     }
+}
 
+impl super::ToolDefaults for Batch {
     fn start_output(&self) -> Option<ToolOutput> {
         let entries = self
             .tool_calls
@@ -217,38 +223,39 @@ mod tests {
 
     use super::*;
 
-    fn run_batch(input: Value) -> (Vec<BatchToolEntry>, String) {
+    async fn run_batch(input: Value) -> (Vec<BatchToolEntry>, String) {
         let ctx = stub_ctx(&AgentMode::Build);
-        execute_batch(&ctx, input)
+        execute_batch(&ctx, input).await
     }
 
-    fn execute_batch(ctx: &ToolContext, input: Value) -> (Vec<BatchToolEntry>, String) {
+    async fn execute_batch(ctx: &ToolContext, input: Value) -> (Vec<BatchToolEntry>, String) {
         let batch = Batch::parse_input(&input).unwrap();
-        match batch.execute(ctx).unwrap() {
+        match batch.execute(ctx).await.unwrap() {
             ToolOutput::Batch { entries, text } => (entries, text),
             other => panic!("expected Batch, got {other:?}"),
         }
     }
 
-    #[test]
-    fn empty_batch_returns_error() {
+    #[tokio::test]
+    async fn empty_batch_returns_error() {
         let ctx = stub_ctx(&AgentMode::Build);
         let batch = Batch::parse_input(&json!({"tool_calls": []})).unwrap();
-        assert!(batch.execute(&ctx).is_err());
+        assert!(batch.execute(&ctx).await.is_err());
     }
 
-    #[test]
-    fn nested_batch_rejected() {
+    #[tokio::test]
+    async fn nested_batch_rejected() {
         let (entries, _) = run_batch(json!({
             "tool_calls": [{"tool": "batch", "parameters": {"tool_calls": []}}]
-        }));
+        }))
+        .await;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, BatchToolStatus::Error);
         assert_eq!(entries[0].tool, "batch");
     }
 
-    #[test]
-    fn parallel_execution_with_mixed_results() {
+    #[tokio::test]
+    async fn parallel_execution_with_mixed_results() {
         let dir = tempfile::TempDir::new().unwrap();
         let f = dir.path().join("a.txt");
         std::fs::write(&f, "content").unwrap();
@@ -258,19 +265,20 @@ mod tests {
                 {"tool": "read", "parameters": {"path": f.to_str().unwrap()}},
                 {"tool": "read", "parameters": {"path": "/nonexistent/path.txt"}}
             ]
-        }));
+        }))
+        .await;
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].status, BatchToolStatus::Success);
         assert_eq!(entries[1].status, BatchToolStatus::Error);
         assert!(text.contains("content"));
     }
 
-    #[test]
-    fn exceeds_max_batch_size_discards_excess() {
+    #[tokio::test]
+    async fn exceeds_max_batch_size_discards_excess() {
         let calls: Vec<Value> = (0..MAX_BATCH_SIZE + 2)
             .map(|_| json!({"tool": "read", "parameters": {"path": "/tmp"}}))
             .collect();
-        let (entries, _) = run_batch(json!({"tool_calls": calls}));
+        let (entries, _) = run_batch(json!({"tool_calls": calls})).await;
         assert_eq!(entries.len(), MAX_BATCH_SIZE + 2);
         let discarded: Vec<_> = entries[MAX_BATCH_SIZE..].iter().collect();
         assert!(discarded.iter().all(|e| e.status == BatchToolStatus::Error));

@@ -1,17 +1,16 @@
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use maki_interpreter::runner::{self, ToolFn};
 use maki_tool_macro::Tool;
 use serde_json::Value;
+use tokio::sync::mpsc::UnboundedSender;
 
-use crate::skill::Skill;
 use crate::{AgentEvent, AgentMode, Envelope, ToolInput, ToolOutput};
 
+use super::INTERPRETER_TOOLS;
 use super::truncate_output;
-use super::{INTERPRETER_TOOLS, Tool};
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -23,10 +22,10 @@ pub struct CodeInterpreter {
     code: String,
 }
 
-impl Tool for CodeInterpreter {
-    const NAME: &str = "code_execution";
-    const DESCRIPTION: &str = include_str!("code_execution.md");
-    const EXAMPLES: Option<&str> = Some(
+impl CodeInterpreter {
+    pub const NAME: &str = "code_execution";
+    pub const DESCRIPTION: &str = include_str!("code_execution.md");
+    pub const EXAMPLES: Option<&str> = Some(
         r##"[
   {"code": "# Tools return strings, parse them as needed\nresult = grep(pattern='TODO', include='*.rs')\nlines = result.strip().split('\\n')\nprint(f'{len(lines)} TODOs found')"},
   {"code": "# Batch file reading\nfiles = glob(pattern='**/*.rs')\nfor f in files.strip().split('\\n'):\n    if f.strip():\n        content = read(path=f)\n        if 'fn main' in content:\n            print(f)"},
@@ -36,54 +35,64 @@ impl Tool for CodeInterpreter {
 ]"##,
     );
 
-    fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let tools = build_tool_fns(ctx.event_tx, ctx.mode);
+    pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+        let code = self.code.clone();
+        let tool_use_id = ctx.tool_use_id.clone();
+        let event_tx = ctx.event_tx.clone();
+        let mode = ctx.mode.clone();
 
-        let result = if let Some(id) = ctx.tool_use_id {
-            let tx = ctx.event_tx;
-            let mut last_len = 0usize;
-            let mut last_flush = Instant::now();
-            runner::run_streaming(&self.code, &tools, &mut |stdout| {
-                if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && stdout.len() > last_len {
-                    let _ = tx.send(
-                        AgentEvent::ToolOutput {
-                            id: id.to_string(),
-                            content: stdout.to_owned(),
-                        }
-                        .into(),
-                    );
-                    last_len = stdout.len();
-                    last_flush = Instant::now();
-                }
-            })
-        } else {
-            runner::run(&self.code, &tools)
-        }
-        .map_err(|e| e.to_string())?;
+        tokio::task::spawn_blocking(move || {
+            let tools = build_tool_fns(&event_tx, &mode);
 
-        let mut output = String::new();
-        if !result.stdout.is_empty() {
-            output.push_str(result.stdout.trim_end());
-            output.push('\n');
-        }
-        if let Some(ref val) = result.output {
-            if !output.is_empty() {
+            let result = if let Some(ref id) = tool_use_id {
+                let mut last_len = 0usize;
+                let mut last_flush = Instant::now();
+                runner::run_streaming(&code, &tools, &mut |stdout| {
+                    if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && stdout.len() > last_len {
+                        let _ = event_tx.send(
+                            AgentEvent::ToolOutput {
+                                id: id.to_string(),
+                                content: stdout.to_owned(),
+                            }
+                            .into(),
+                        );
+                        last_len = stdout.len();
+                        last_flush = Instant::now();
+                    }
+                })
+            } else {
+                runner::run(&code, &tools)
+            }
+            .map_err(|e| e.to_string())?;
+
+            let mut output = String::new();
+            if !result.stdout.is_empty() {
+                output.push_str(result.stdout.trim_end());
                 output.push('\n');
             }
-            let _ = write!(output, "return: {val}");
-        }
-        if output.is_empty() {
-            output.push_str("(no output)");
-        }
+            if let Some(ref val) = result.output {
+                if !output.is_empty() {
+                    output.push('\n');
+                }
+                let _ = write!(output, "return: {val}");
+            }
+            if output.is_empty() {
+                output.push_str("(no output)");
+            }
 
-        Ok(ToolOutput::Plain(truncate_output(output)))
+            Ok(ToolOutput::Plain(truncate_output(output)))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("task panicked: {e}")))
     }
 
-    fn start_summary(&self) -> String {
+    pub fn start_summary(&self) -> String {
         let lines = self.code.lines().count();
         format!("{lines} lines")
     }
+}
 
+impl super::ToolDefaults for CodeInterpreter {
     fn start_input(&self) -> Option<ToolInput> {
         Some(ToolInput::Script {
             language: "python",
@@ -91,18 +100,23 @@ impl Tool for CodeInterpreter {
         })
     }
 
-    fn description_extra(_skills: &[Skill]) -> Option<String> {
-        Some(super::build_interpreter_tools_description())
+    fn augment_description(description: &mut String, _ctx: &super::DescriptionContext) {
+        description.push_str(&super::build_interpreter_tools_description());
     }
 }
 
-fn build_tool_fns(event_tx: &Sender<Envelope>, mode: &AgentMode) -> HashMap<String, ToolFn> {
+fn build_tool_fns(
+    event_tx: &UnboundedSender<Envelope>,
+    mode: &AgentMode,
+) -> HashMap<String, ToolFn> {
     let mut tools: HashMap<String, ToolFn> = HashMap::new();
+    let rt = tokio::runtime::Handle::current();
 
     for &tool_name in INTERPRETER_TOOLS {
         let name = tool_name.to_string();
         let tx = event_tx.clone();
         let mode = mode.clone();
+        let rt = rt.clone();
 
         tools.insert(
             name.clone(),
@@ -113,7 +127,7 @@ fn build_tool_fns(event_tx: &Sender<Envelope>, mode: &AgentMode) -> HashMap<Stri
                         .map_err(|e| format!("tool parse error: {e}"))?;
 
                     let inner_ctx = super::interpreter_ctx(&mode, &tx);
-                    let done = call.execute(&inner_ctx, String::new());
+                    let done = rt.block_on(call.execute(&inner_ctx, String::new()));
                     if done.is_error {
                         Err(done.output.as_text())
                     } else {
@@ -159,18 +173,18 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn execute_wraps_output() {
+    #[tokio::test]
+    async fn execute_wraps_output() {
         let ctx = stub_ctx(&AgentMode::Build);
         let ci = CodeInterpreter {
             code: "2 + 3".into(),
         };
-        let output = ci.execute(&ctx).unwrap().as_text();
+        let output = ci.execute(&ctx).await.unwrap().as_text();
         assert!(output.contains("5"));
     }
 
-    #[test]
-    fn read_tool_via_interpreter() {
+    #[tokio::test]
+    async fn read_tool_via_interpreter() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("test.txt");
         std::fs::write(&path, "line1\nline2\n").unwrap();
@@ -180,7 +194,7 @@ mod tests {
         let ci = CodeInterpreter {
             code: format!("result = read(path='{path_str}')\nprint(result)"),
         };
-        let output = ci.execute(&ctx).unwrap().as_text();
+        let output = ci.execute(&ctx).await.unwrap().as_text();
         assert!(output.contains("line1"));
     }
 

@@ -16,11 +16,13 @@ mod websearch;
 mod write;
 
 use std::path::Path;
-use std::sync::Mutex;
-use std::sync::mpsc::{Receiver, Sender};
+use std::pin::Pin;
+use std::sync::{Arc, LazyLock};
 use std::time::SystemTime;
 
+use futures::Future;
 use serde_json::{Value, json};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::error;
 
 use crate::skill::Skill;
@@ -32,45 +34,25 @@ use crate::{
 use maki_providers::Model;
 use maki_providers::provider::Provider;
 
-pub(crate) trait Tool: Sized + Send + Sync {
-    const NAME: &str;
-    const DESCRIPTION: &str;
-    const EXAMPLES: Option<&str> = None;
-
-    fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String>;
-    fn start_summary(&self) -> String;
-    fn start_input(&self) -> Option<ToolInput> {
-        None
-    }
-    fn start_output(&self) -> Option<ToolOutput> {
-        None
-    }
-    fn start_annotation(&self) -> Option<String> {
-        None
-    }
-    fn mutable_path(&self) -> Option<&str> {
-        None
-    }
-    fn description_extra(_skills: &[Skill]) -> Option<String> {
-        None
-    }
+pub struct DescriptionContext<'a> {
+    pub skills: &'a [Skill],
 }
 
-pub const BASH_TOOL_NAME: &str = <bash::Bash as Tool>::NAME;
-pub const BATCH_TOOL_NAME: &str = <batch::Batch as Tool>::NAME;
-pub const EDIT_TOOL_NAME: &str = <edit::Edit as Tool>::NAME;
-pub const GLOB_TOOL_NAME: &str = <glob::Glob as Tool>::NAME;
-pub const GREP_TOOL_NAME: &str = <grep::Grep as Tool>::NAME;
-pub const MULTIEDIT_TOOL_NAME: &str = <multiedit::MultiEdit as Tool>::NAME;
-pub const QUESTION_TOOL_NAME: &str = <question::Question as Tool>::NAME;
-pub const READ_TOOL_NAME: &str = <read::Read as Tool>::NAME;
-pub const SKILL_TOOL_NAME: &str = <skill::SkillTool as Tool>::NAME;
-pub const TASK_TOOL_NAME: &str = <task::Task as Tool>::NAME;
-pub const TODOWRITE_TOOL_NAME: &str = <todowrite::TodoWrite as Tool>::NAME;
-pub const WEBFETCH_TOOL_NAME: &str = <webfetch::WebFetch as Tool>::NAME;
-pub const WEBSEARCH_TOOL_NAME: &str = <websearch::WebSearch as Tool>::NAME;
-pub const WRITE_TOOL_NAME: &str = <write::Write as Tool>::NAME;
-pub const CODE_EXECUTION_TOOL_NAME: &str = <code_execution::CodeInterpreter as Tool>::NAME;
+pub const BASH_TOOL_NAME: &str = bash::Bash::NAME;
+pub const BATCH_TOOL_NAME: &str = batch::Batch::NAME;
+pub const EDIT_TOOL_NAME: &str = edit::Edit::NAME;
+pub const GLOB_TOOL_NAME: &str = glob::Glob::NAME;
+pub const GREP_TOOL_NAME: &str = grep::Grep::NAME;
+pub const MULTIEDIT_TOOL_NAME: &str = multiedit::MultiEdit::NAME;
+pub const QUESTION_TOOL_NAME: &str = question::Question::NAME;
+pub const READ_TOOL_NAME: &str = read::Read::NAME;
+pub const SKILL_TOOL_NAME: &str = skill::SkillTool::NAME;
+pub const TASK_TOOL_NAME: &str = task::Task::NAME;
+pub const TODOWRITE_TOOL_NAME: &str = todowrite::TodoWrite::NAME;
+pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
+pub const WEBSEARCH_TOOL_NAME: &str = websearch::WebSearch::NAME;
+pub const WRITE_TOOL_NAME: &str = write::Write::NAME;
+pub const CODE_EXECUTION_TOOL_NAME: &str = code_execution::CodeInterpreter::NAME;
 
 pub(crate) const INTERPRETER_TOOLS: &[&str] = &[
     "read",
@@ -106,14 +88,16 @@ pub(crate) const SEARCH_RESULT_LIMIT: usize = 100;
 pub(crate) const MAX_LINE_BYTES: usize = 500;
 const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
 
-pub struct ToolContext<'a> {
-    pub provider: &'a dyn Provider,
-    pub model: &'a Model,
-    pub event_tx: &'a Sender<Envelope>,
-    pub mode: &'a AgentMode,
-    pub tool_use_id: Option<&'a str>,
-    pub user_response_rx: Option<&'a Mutex<Receiver<String>>>,
-    pub skills: &'a [Skill],
+#[derive(Clone)]
+pub struct ToolContext {
+    pub provider: Arc<dyn Provider>,
+    pub model: Model,
+    pub event_tx: UnboundedSender<Envelope>,
+    pub mode: AgentMode,
+    pub tool_use_id: Option<String>,
+    pub user_response_rx:
+        Option<Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>>>,
+    pub skills: Arc<[Skill]>,
 }
 
 pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
@@ -250,12 +234,28 @@ pub(crate) fn build_interpreter_tools_description() -> String {
     desc
 }
 
+pub(crate) trait ToolDefaults {
+    fn start_input(&self) -> Option<ToolInput> {
+        None
+    }
+    fn start_output(&self) -> Option<ToolOutput> {
+        None
+    }
+    fn start_annotation(&self) -> Option<String> {
+        None
+    }
+    fn mutable_path(&self) -> Option<&str> {
+        None
+    }
+    fn augment_description(_description: &mut String, _ctx: &DescriptionContext) {}
+}
+
 macro_rules! register_tools {
     ($($Variant:ident($inner:path)),+ $(,)?) => {
-        $(const _: () = { fn _assert_tool<T: Tool>() {} fn _check() { _assert_tool::<$inner>() } };)+
+        $(const _: () = { fn _assert_defaults<T: ToolDefaults>() {} fn _check() { _assert_defaults::<$inner>() } };)+
 
         const _: () = {
-            const NAMES: &[&str] = &[$(<$inner as Tool>::NAME),+];
+            const NAMES: &[&str] = &[$(<$inner>::NAME),+];
             const fn str_eq(a: &str, b: &str) -> bool {
                 let (a, b) = (a.as_bytes(), b.as_bytes());
                 if a.len() != b.len() { return false; }
@@ -291,7 +291,7 @@ macro_rules! register_tools {
         impl ToolCall {
             pub fn from_api(name: &str, input: &Value) -> Result<Self, AgentError> {
                 match name {
-                    $(<$inner as Tool>::NAME => {
+                    $(<$inner>::NAME => {
                         <$inner>::parse_input(input)
                             .map(ToolCall::$Variant)
                             .map_err(|msg| AgentError::Tool { tool: name.to_string(), message: msg })
@@ -305,7 +305,7 @@ macro_rules! register_tools {
 
             pub fn name(&self) -> &'static str {
                 match self {
-                    $(ToolCall::$Variant(_) => <$inner as Tool>::NAME),+
+                    $(ToolCall::$Variant(_) => <$inner>::NAME),+
                 }
             }
 
@@ -328,50 +328,57 @@ macro_rules! register_tools {
                 })
             }
 
-            pub fn execute(&self, ctx: &ToolContext, id: String) -> ToolDoneEvent {
-                if let Some(path) = dispatch!(self, |t| t.mutable_path())
-                    && let AgentMode::Plan(plan_path) = ctx.mode
-                    && path != plan_path
-                {
-                    return ToolDoneEvent {
-                        id,
-                        tool: self.name(),
-                        output: ToolOutput::Plain(PLAN_WRITE_RESTRICTED.into()),
-                        is_error: true,
-                    };
-                }
-
-                let result = dispatch!(self, |t| t.execute(ctx));
-                let (output, is_error) = match result {
-                    Ok(o) => (o, false),
-                    Err(e) => {
-                        error!(tool = self.name(), error = %e, "tool execution failed");
-                        (ToolOutput::Plain(e), true)
+            pub fn execute<'a>(&'a self, ctx: &'a ToolContext, id: String) -> Pin<Box<dyn Future<Output = ToolDoneEvent> + Send + 'a>> {
+                Box::pin(async move {
+                    if let Some(path) = self.mutable_path()
+                        && let AgentMode::Plan(plan_path) = &ctx.mode
+                        && path != plan_path
+                    {
+                        return ToolDoneEvent {
+                            id,
+                            tool: self.name(),
+                            output: ToolOutput::Plain(PLAN_WRITE_RESTRICTED.into()),
+                            is_error: true,
+                        };
                     }
-                };
-                ToolDoneEvent { id, tool: self.name(), output, is_error }
+
+                    let result = match self {
+                        $(ToolCall::$Variant(inner) => inner.execute(ctx).await),+
+                    };
+                    let (output, is_error) = match result {
+                        Ok(o) => (o, false),
+                        Err(e) => {
+                            error!(tool = self.name(), error = %e, "tool execution failed");
+                            (ToolOutput::Plain(e), true)
+                        }
+                    };
+                    ToolDoneEvent { id, tool: self.name(), output, is_error }
+                })
+            }
+
+            fn mutable_path(&self) -> Option<&str> {
+                dispatch!(self, |t| t.mutable_path())
             }
 
             pub fn schema_for(name: &str) -> Option<Value> {
                 match name {
-                    $(<$inner as Tool>::NAME => Some(<$inner>::schema()),)+
+                    $(<$inner>::NAME => Some(<$inner>::schema()),)+
                     _ => None,
                 }
             }
 
             fn all_defs(vars: &Vars, skills: &[Skill], supports_examples: bool) -> Vec<(&'static str, Value)> {
+                let ctx = DescriptionContext { skills };
                 vec![
-                    $((<$inner as Tool>::NAME, {
-                        let mut description = vars.apply(<$inner as Tool>::DESCRIPTION).into_owned();
-                        if let Some(extra) = <$inner as Tool>::description_extra(skills) {
-                            description.push_str(&extra);
-                        }
+                    $((<$inner>::NAME, {
+                        let mut description = vars.apply(<$inner>::DESCRIPTION).into_owned();
+                        <$inner>::augment_description(&mut description, &ctx);
                         let mut def = json!({
-                            "name": <$inner as Tool>::NAME,
+                            "name": <$inner>::NAME,
                             "description": &description,
                             "input_schema": <$inner>::schema()
                         });
-                        if let Some(json) = <$inner as Tool>::EXAMPLES {
+                        if let Some(json) = <$inner>::EXAMPLES {
                             let examples: Vec<Value> = serde_json::from_str(json)
                                 .expect(concat!("invalid EXAMPLES JSON for ", stringify!($inner)));
                             if supports_examples {
@@ -433,60 +440,68 @@ register_tools! {
 
 struct NullProvider;
 
+#[async_trait::async_trait]
 impl Provider for NullProvider {
-    fn stream_message(
+    async fn stream_message(
         &self,
         _: &Model,
         _: &[maki_providers::Message],
         _: &str,
         _: &Value,
-        _: &Sender<maki_providers::ProviderEvent>,
+        _: &UnboundedSender<maki_providers::ProviderEvent>,
     ) -> Result<maki_providers::StreamResponse, AgentError> {
         unimplemented!()
     }
 
-    fn list_models(&self) -> Result<Vec<String>, AgentError> {
+    async fn list_models(&self) -> Result<Vec<String>, AgentError> {
         unimplemented!()
     }
 }
 
-pub(crate) fn interpreter_ctx<'a>(
-    mode: &'a AgentMode,
-    event_tx: &'a Sender<Envelope>,
-) -> ToolContext<'a> {
-    use std::sync::LazyLock;
-    static PROVIDER: NullProvider = NullProvider;
+pub(crate) fn interpreter_ctx(
+    mode: &AgentMode,
+    event_tx: &UnboundedSender<Envelope>,
+) -> ToolContext {
+    static PROVIDER: LazyLock<Arc<dyn Provider>> = LazyLock::new(|| Arc::new(NullProvider));
     static MODEL: LazyLock<Model> =
         LazyLock::new(|| Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap());
+    static SKILLS: LazyLock<Arc<[Skill]>> = LazyLock::new(|| Arc::from([]));
     ToolContext {
-        provider: &PROVIDER,
-        model: &MODEL,
-        event_tx,
-        mode,
+        provider: Arc::clone(&PROVIDER),
+        model: MODEL.clone(),
+        event_tx: event_tx.clone(),
+        mode: mode.clone(),
         tool_use_id: None,
         user_response_rx: None,
-        skills: &[],
+        skills: Arc::clone(&SKILLS),
     }
 }
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::sync::mpsc::Sender;
+    use tokio::sync::mpsc::UnboundedSender;
 
     use super::*;
 
-    pub(crate) fn stub_ctx_with<'a>(
-        mode: &'a AgentMode,
-        event_tx: Option<&'a Sender<Envelope>>,
-        tool_use_id: Option<&'a str>,
-    ) -> ToolContext<'a> {
-        let event_tx =
-            event_tx.unwrap_or_else(|| Box::leak(Box::new(std::sync::mpsc::channel().0)));
-        let ctx = interpreter_ctx(mode, event_tx);
-        ToolContext { tool_use_id, ..ctx }
+    pub(crate) fn stub_ctx_with(
+        mode: &AgentMode,
+        event_tx: Option<&UnboundedSender<Envelope>>,
+        tool_use_id: Option<&str>,
+    ) -> ToolContext {
+        let fallback_tx;
+        let event_tx = match event_tx {
+            Some(tx) => tx,
+            None => {
+                fallback_tx = tokio::sync::mpsc::unbounded_channel().0;
+                &fallback_tx
+            }
+        };
+        let mut ctx = interpreter_ctx(mode, event_tx);
+        ctx.tool_use_id = tool_use_id.map(String::from);
+        ctx
     }
 
-    pub(crate) fn stub_ctx(mode: &AgentMode) -> ToolContext<'_> {
+    pub(crate) fn stub_ctx(mode: &AgentMode) -> ToolContext {
         stub_ctx_with(mode, None, None)
     }
 }
@@ -532,8 +547,8 @@ mod tests {
         assert!(result.ends_with("[truncated]"));
     }
 
-    #[test]
-    fn read_write_roundtrip_with_offset() {
+    #[tokio::test]
+    async fn read_write_roundtrip_with_offset() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.txt").to_string_lossy().to_string();
         let content = (1..=10)
@@ -543,22 +558,22 @@ mod tests {
         let ctx = stub_ctx(&AgentMode::Build);
 
         let w = write::Write::parse_input(&json!({"path": path, "content": content})).unwrap();
-        w.execute(&ctx).unwrap();
+        w.execute(&ctx).await.unwrap();
 
         let r = read::Read::parse_input(&json!({"path": path})).unwrap();
-        let full = r.execute(&ctx).unwrap().as_text().to_string();
+        let full = r.execute(&ctx).await.unwrap().as_text().to_string();
         assert!(full.contains("1: line1"));
         assert!(full.contains("10: line10"));
 
         let r = read::Read::parse_input(&json!({"path": path, "offset": 3, "limit": 2})).unwrap();
-        let slice = r.execute(&ctx).unwrap().as_text().to_string();
+        let slice = r.execute(&ctx).await.unwrap().as_text().to_string();
         assert!(slice.contains("3: line3"));
         assert!(slice.contains("4: line4"));
         assert!(!slice.contains("5: line5"));
     }
 
-    #[test]
-    fn glob_finds_and_misses() {
+    #[tokio::test]
+    async fn glob_finds_and_misses() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("a.txt"), "hello").unwrap();
         fs::write(dir.path().join("b.txt"), "world").unwrap();
@@ -567,7 +582,7 @@ mod tests {
         let ctx = stub_ctx(&AgentMode::Build);
 
         let g = glob::Glob::parse_input(&json!({"pattern": "*.txt", "path": dir_str})).unwrap();
-        let output = g.execute(&ctx).unwrap();
+        let output = g.execute(&ctx).await.unwrap();
         let ToolOutput::GlobResult { files } = &output else {
             panic!("expected GlobResult");
         };
@@ -576,12 +591,12 @@ mod tests {
         assert!(files.iter().all(|f| !f.contains(".rs")));
 
         let g = glob::Glob::parse_input(&json!({"pattern": "*.nope", "path": dir_str})).unwrap();
-        let output = g.execute(&ctx).unwrap();
+        let output = g.execute(&ctx).await.unwrap();
         assert!(matches!(output, ToolOutput::GlobResult { files } if files.is_empty()));
     }
 
-    #[test]
-    fn grep_finds_filters_and_misses() {
+    #[tokio::test]
+    async fn grep_finds_filters_and_misses() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("a.txt"), "hello world\ngoodbye world").unwrap();
         fs::write(dir.path().join("b.rs"), "hello rust").unwrap();
@@ -589,7 +604,7 @@ mod tests {
         let ctx = stub_ctx(&AgentMode::Build);
 
         let g = grep::Grep::parse_input(&json!({"pattern": "hello", "path": dir_str})).unwrap();
-        let hit = g.execute(&ctx).unwrap().as_text().to_string();
+        let hit = g.execute(&ctx).await.unwrap().as_text().to_string();
         assert!(hit.contains("a.txt"));
         assert!(hit.contains("b.rs"));
 
@@ -597,13 +612,13 @@ mod tests {
             &json!({"pattern": "hello", "path": dir_str, "include": "*.rs"}),
         )
         .unwrap();
-        let filtered = g.execute(&ctx).unwrap().as_text().to_string();
+        let filtered = g.execute(&ctx).await.unwrap().as_text().to_string();
         assert!(filtered.contains("b.rs"));
         assert!(!filtered.contains("a.txt"));
 
         let g =
             grep::Grep::parse_input(&json!({"pattern": "zzzznotfound", "path": dir_str})).unwrap();
-        assert_eq!(g.execute(&ctx).unwrap().as_text(), NO_FILES_FOUND);
+        assert_eq!(g.execute(&ctx).await.unwrap().as_text(), NO_FILES_FOUND);
     }
 
     #[test]
@@ -660,8 +675,8 @@ mod tests {
         assert_eq!(names, ["bash", "read"]);
     }
 
-    #[test]
-    fn plan_mode_restricts_mutations() {
+    #[tokio::test]
+    async fn plan_mode_restricts_mutations() {
         let dir = TempDir::new().unwrap();
         let plan_path = dir.path().join("plan.md").to_string_lossy().to_string();
         let mode = AgentMode::Plan(plan_path.clone());
@@ -669,13 +684,13 @@ mod tests {
 
         let other = dir.path().join("other.rs").to_string_lossy().to_string();
         let blocked = ToolCall::from_api("write", &json!({"path": other, "content": "x"})).unwrap();
-        assert!(blocked.execute(&ctx, "t1".into()).is_error);
+        assert!(blocked.execute(&ctx, "t1".into()).await.is_error);
 
         let allowed = ToolCall::from_api(
             "write",
             &json!({"path": plan_path, "content": "plan content"}),
         )
         .unwrap();
-        assert!(!allowed.execute(&ctx, "t2".into()).is_error);
+        assert!(!allowed.execute(&ctx, "t2".into()).await.is_error);
     }
 }

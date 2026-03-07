@@ -8,7 +8,7 @@ use similar::ChangeTag;
 use maki_tool_macro::Tool;
 
 use super::fuzzy_replace;
-use super::{Tool, line_at_offset, relative_path};
+use super::{line_at_offset, relative_path};
 
 #[derive(Debug, Clone, Deserialize)]
 struct EditEntry {
@@ -39,10 +39,10 @@ pub struct MultiEdit {
     edits: Vec<EditEntry>,
 }
 
-impl Tool for MultiEdit {
-    const NAME: &str = "multiedit";
-    const DESCRIPTION: &str = include_str!("multiedit.md");
-    const EXAMPLES: Option<&str> = Some(
+impl MultiEdit {
+    pub const NAME: &str = "multiedit";
+    pub const DESCRIPTION: &str = include_str!("multiedit.md");
+    pub const EXAMPLES: Option<&str> = Some(
         r#"[
   {"path": "/home/user/project/src/lib.rs", "edits": [
     {"old_string": "use old_crate::Foo;", "new_string": "use new_crate::Foo;"},
@@ -51,42 +51,61 @@ impl Tool for MultiEdit {
 ]"#,
     );
 
-    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        if self.edits.is_empty() {
-            return Err("provide at least one edit".into());
-        }
-        let mut content = fs::read_to_string(&self.path).map_err(|e| format!("read error: {e}"))?;
-
-        let mut hunks = Vec::with_capacity(self.edits.len());
-        for (i, edit) in self.edits.iter().enumerate() {
-            let replace_all = edit.replace_all.unwrap_or(false);
-            let result =
-                fuzzy_replace::replace(&content, &edit.old_string, &edit.new_string, replace_all)
-                    .map_err(|e| format!("edit {i}: {e}"))?;
-            for &off in &result.match_offsets {
-                let line = line_at_offset(&content, off);
-                hunks.push(build_hunk(line, &edit.old_string, &edit.new_string));
-            }
-            content = result.content;
-        }
-
-        fs::write(&self.path, &content).map_err(|e| format!("write error: {e}"))?;
-        let rel = relative_path(&self.path);
-        Ok(ToolOutput::Diff {
-            hunks,
-            summary: format!("applied {} to {rel}", self.edit_count_label()),
-            path: rel,
-        })
+    fn edit_count_label(&self) -> String {
+        let n = self.edits.len();
+        let s = if n == 1 { "" } else { "s" };
+        format!("{n} edit{s}")
     }
 
-    fn start_summary(&self) -> String {
+    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+        let path = self.path.clone();
+        let edits = self.edits.clone();
+        let edit_count_label = self.edit_count_label();
+        tokio::task::spawn_blocking(move || {
+            if edits.is_empty() {
+                return Err("provide at least one edit".into());
+            }
+            let mut content = fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
+
+            let mut hunks = Vec::with_capacity(edits.len());
+            for (i, edit) in edits.iter().enumerate() {
+                let replace_all = edit.replace_all.unwrap_or(false);
+                let result = fuzzy_replace::replace(
+                    &content,
+                    &edit.old_string,
+                    &edit.new_string,
+                    replace_all,
+                )
+                .map_err(|e| format!("edit {i}: {e}"))?;
+                for &off in &result.match_offsets {
+                    let line = line_at_offset(&content, off);
+                    hunks.push(build_hunk(line, &edit.old_string, &edit.new_string));
+                }
+                content = result.content;
+            }
+
+            fs::write(&path, &content).map_err(|e| format!("write error: {e}"))?;
+            let rel = relative_path(&path);
+            Ok(ToolOutput::Diff {
+                hunks,
+                summary: format!("applied {edit_count_label} to {rel}"),
+                path: rel,
+            })
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("task panicked: {e}")))
+    }
+
+    pub fn start_summary(&self) -> String {
         format!(
             "{} ({})",
             relative_path(&self.path),
             self.edit_count_label()
         )
     }
+}
 
+impl super::ToolDefaults for MultiEdit {
     fn start_output(&self) -> Option<ToolOutput> {
         let hunks: Vec<DiffHunk> = self
             .edits
@@ -105,15 +124,6 @@ impl Tool for MultiEdit {
         Some(&self.path)
     }
 }
-
-impl MultiEdit {
-    fn edit_count_label(&self) -> String {
-        let n = self.edits.len();
-        let s = if n == 1 { "" } else { "s" };
-        format!("{n} edit{s}")
-    }
-}
-
 pub(super) fn build_hunk(start_line: usize, old: &str, new: &str) -> DiffHunk {
     let diff = similar::TextDiff::from_lines(old, new);
     let mut lines = Vec::new();
@@ -168,8 +178,8 @@ mod tests {
         path.to_string_lossy().to_string()
     }
 
-    #[test]
-    fn sequential_edits_compose() {
+    #[tokio::test]
+    async fn sequential_edits_compose() {
         let dir = TempDir::new().unwrap();
         let ctx = stub_ctx(&AgentMode::Build);
         let path = temp_file(&dir, "f.rs", "fn alpha() {}\nfn beta() {}");
@@ -181,7 +191,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let msg = tool.execute(&ctx).unwrap().as_text().to_string();
+        let msg = tool.execute(&ctx).await.unwrap().as_text().to_string();
         assert!(msg.contains("2 edits"));
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
@@ -189,8 +199,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn failure_leaves_file_unchanged() {
+    #[tokio::test]
+    async fn failure_leaves_file_unchanged() {
         let dir = TempDir::new().unwrap();
         let ctx = stub_ctx(&AgentMode::Build);
         let original = "let a = 1;\nlet b = 2;";
@@ -203,19 +213,19 @@ mod tests {
             ]
         }))
         .unwrap();
-        let err = tool.execute(&ctx).unwrap_err();
+        let err = tool.execute(&ctx).await.unwrap_err();
         assert!(err.contains("edit 1"));
         assert!(err.contains(fuzzy_replace::NO_MATCH));
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
     }
 
-    #[test]
-    fn empty_edits_rejected() {
+    #[tokio::test]
+    async fn empty_edits_rejected() {
         let dir = TempDir::new().unwrap();
         let ctx = stub_ctx(&AgentMode::Build);
         let path = temp_file(&dir, "f.rs", "content");
         let tool = MultiEdit::parse_input(&json!({ "path": path, "edits": [] })).unwrap();
-        assert_eq!(tool.execute(&ctx).unwrap_err(), EMPTY_ERR);
+        assert_eq!(tool.execute(&ctx).await.unwrap_err(), EMPTY_ERR);
     }
 
     fn tags(hunk: &DiffHunk) -> Vec<char> {

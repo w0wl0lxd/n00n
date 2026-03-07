@@ -13,9 +13,9 @@ mod theme;
 
 use std::io::stdout;
 use std::sync::Arc;
-use std::sync::mpsc;
-use std::thread;
 use std::time::Duration;
+
+use tokio::sync::mpsc as tokio_mpsc;
 
 use color_eyre::Result;
 use color_eyre::eyre::Context;
@@ -43,7 +43,12 @@ const MOUSE_SCROLL_LINES: i32 = 3;
 const ANIMATION_INTERVAL_MS: u64 = 8;
 const EVENT_POLL_INTERVAL_MS: u64 = 8;
 
-pub fn run(model: Model, skills: Vec<Skill>, #[cfg(feature = "demo")] demo: bool) -> Result<()> {
+pub fn run(
+    model: Model,
+    skills: Vec<Skill>,
+    handle: &tokio::runtime::Handle,
+    #[cfg(feature = "demo")] demo: bool,
+) -> Result<()> {
     let mut terminal = ratatui::init();
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(EnableBracketedPaste)?;
@@ -54,6 +59,7 @@ pub fn run(model: Model, skills: Vec<Skill>, #[cfg(feature = "demo")] demo: bool
         &mut terminal,
         model,
         skills,
+        handle,
         #[cfg(feature = "demo")]
         demo,
     );
@@ -71,6 +77,7 @@ fn run_event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     model: Model,
     skills: Vec<Skill>,
+    handle: &tokio::runtime::Handle,
     #[cfg(feature = "demo")] demo: bool,
 ) -> Result<()> {
     let mut app = App::new(model.spec(), model.pricing.clone(), model.context_window);
@@ -101,7 +108,7 @@ fn run_event_loop(
     let provider: Arc<dyn Provider> =
         Arc::from(maki_providers::provider::from_model(&model).context("create provider")?);
     let skills: Arc<[Skill]> = Arc::from(skills);
-    let mut handles = spawn_agent(&provider, &model, Vec::new(), &skills);
+    let mut handles = spawn_agent(handle, &provider, &model, Vec::new(), &skills);
     handles.apply_to_app(&mut app);
 
     loop {
@@ -114,6 +121,7 @@ fn run_event_loop(
             dispatch(
                 app.update(Msg::Agent(Box::new(envelope))),
                 &mut handles,
+                handle,
                 &provider,
                 &model,
                 &skills,
@@ -145,6 +153,7 @@ fn run_event_loop(
                             dispatch(
                                 app.update(scroll),
                                 &mut handles,
+                                handle,
                                 &provider,
                                 &model,
                                 &skills,
@@ -160,6 +169,7 @@ fn run_event_loop(
                         dispatch(
                             app.update(Msg::Mouse(drag)),
                             &mut handles,
+                            handle,
                             &provider,
                             &model,
                             &skills,
@@ -178,6 +188,7 @@ fn run_event_loop(
             dispatch(
                 app.update(msg),
                 &mut handles,
+                handle,
                 &provider,
                 &model,
                 &skills,
@@ -196,9 +207,9 @@ pub(crate) enum AgentCommand {
 }
 
 struct AgentHandles {
-    cmd_tx: mpsc::Sender<AgentCommand>,
-    agent_rx: mpsc::Receiver<Envelope>,
-    answer_tx: mpsc::Sender<String>,
+    cmd_tx: tokio_mpsc::UnboundedSender<AgentCommand>,
+    agent_rx: tokio_mpsc::UnboundedReceiver<Envelope>,
+    answer_tx: tokio_mpsc::UnboundedSender<String>,
 }
 
 impl AgentHandles {
@@ -209,22 +220,22 @@ impl AgentHandles {
 }
 
 fn spawn_agent(
+    handle: &tokio::runtime::Handle,
     provider: &Arc<dyn Provider>,
     model: &Model,
     initial_history: Vec<Message>,
     skills: &Arc<[Skill]>,
 ) -> AgentHandles {
-    let (agent_tx, agent_rx) = mpsc::channel::<Envelope>();
-    let (cmd_tx, cmd_rx) = mpsc::channel::<AgentCommand>();
-    let (answer_tx, answer_rx) = mpsc::channel::<String>();
-    let (ecmd_tx, ecmd_rx) = mpsc::channel::<ExtractedCommand>();
+    let (agent_tx, agent_rx) = tokio_mpsc::unbounded_channel::<Envelope>();
+    let (cmd_tx, mut cmd_rx) = tokio_mpsc::unbounded_channel::<AgentCommand>();
+    let (answer_tx, answer_rx) = tokio_mpsc::unbounded_channel::<String>();
+    let (ecmd_tx, ecmd_rx) = tokio_mpsc::unbounded_channel::<ExtractedCommand>();
     let model = model.clone();
     let provider = Arc::clone(provider);
     let skills = Arc::clone(skills);
 
-    thread::spawn(move || {
-        let answer_mutex = std::sync::Mutex::new(answer_rx);
-        let mut history = History::new(initial_history);
+    handle.spawn(async move {
+        let answer_mutex = Arc::new(tokio::sync::Mutex::new(answer_rx));
         let vars = template::env_vars();
         let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
         let (tool_names, tools) = maki_agent::tools::ToolCall::definitions(
@@ -233,8 +244,8 @@ fn spawn_agent(
             model.family.supports_tool_examples(),
         );
 
-        thread::spawn(move || {
-            for cmd in cmd_rx {
+        tokio::spawn(async move {
+            while let Some(cmd) = cmd_rx.recv().await {
                 let extracted = match cmd {
                     AgentCommand::Run(input) => ExtractedCommand::Interrupt(input),
                     AgentCommand::Cancel => ExtractedCommand::Cancel,
@@ -246,31 +257,36 @@ fn spawn_agent(
             }
         });
 
-        while let Ok(cmd) = ecmd_rx.recv() {
+        let mut ecmd_rx = ecmd_rx;
+        let mut history = History::new(initial_history);
+
+        while let Some(cmd) = ecmd_rx.recv().await {
             let result = match cmd {
                 ExtractedCommand::Compact => {
-                    agent::compact(&*provider, &model, &mut history, &agent_tx)
+                    agent::compact(&*provider, &model, &mut history, &agent_tx).await
                 }
                 ExtractedCommand::Cancel | ExtractedCommand::Ignore => continue,
                 ExtractedCommand::Interrupt(input) => {
                     let system =
                         agent::build_system_prompt(&vars, &input.mode, &instructions, &tool_names);
-                    let mut agent = Agent::new(
-                        &*provider,
-                        &model,
-                        &mut history,
-                        &system,
-                        &agent_tx,
-                        &tools,
-                        &skills,
+                    let agent = Agent::new(
+                        Arc::clone(&provider),
+                        model.clone(),
+                        std::mem::replace(&mut history, History::new(Vec::new())),
+                        system,
+                        agent_tx.clone(),
+                        tools.clone(),
+                        Arc::clone(&skills),
                     )
-                    .with_user_response_rx(&answer_mutex)
-                    .with_cmd_rx(&ecmd_rx);
-                    let result = agent.run(input);
-                    if matches!(result, Err(AgentError::Cancelled)) {
+                    .with_user_response_rx(Arc::clone(&answer_mutex))
+                    .with_cmd_rx(ecmd_rx);
+                    let outcome = agent.run(input).await;
+                    history = outcome.history;
+                    ecmd_rx = outcome.cmd_rx.expect("cmd_rx was set");
+                    if matches!(outcome.result, Err(AgentError::Cancelled)) {
                         while ecmd_rx.try_recv().is_ok() {}
                     }
-                    result
+                    outcome.result
                 }
             };
             match result {
@@ -301,6 +317,7 @@ fn spawn_agent(
 fn dispatch(
     actions: Vec<Action>,
     handles: &mut AgentHandles,
+    handle: &tokio::runtime::Handle,
     provider: &Arc<dyn Provider>,
     model: &Model,
     skills: &Arc<[Skill]>,
@@ -311,7 +328,7 @@ fn dispatch(
             Action::SendMessage(input) => {
                 let cmd = AgentCommand::Run(input);
                 if handles.cmd_tx.send(cmd).is_err() {
-                    *handles = spawn_agent(provider, model, Vec::new(), skills);
+                    *handles = spawn_agent(handle, provider, model, Vec::new(), skills);
                     handles.apply_to_app(app);
                 }
             }
@@ -319,7 +336,7 @@ fn dispatch(
                 let _ = handles.cmd_tx.send(AgentCommand::Cancel);
             }
             Action::NewSession => {
-                *handles = spawn_agent(provider, model, Vec::new(), skills);
+                *handles = spawn_agent(handle, provider, model, Vec::new(), skills);
                 handles.apply_to_app(app);
             }
             Action::Compact => {

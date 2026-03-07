@@ -1,4 +1,3 @@
-use super::Tool;
 use crate::{TodoItem, ToolOutput};
 use maki_tool_macro::Tool;
 
@@ -8,15 +7,18 @@ pub struct TodoWrite {
     todos: Vec<TodoItem>,
 }
 
-impl Tool for TodoWrite {
-    const NAME: &str = "todowrite";
-    const DESCRIPTION: &str = include_str!("todowrite.md");
+impl TodoWrite {
+    pub const NAME: &str = "todowrite";
+    pub const DESCRIPTION: &str = include_str!("todowrite.md");
+    pub const EXAMPLES: Option<&str> = None;
 
-    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         Ok(ToolOutput::TodoList(self.todos.clone()))
     }
 
-    fn start_summary(&self) -> String {
+    pub fn start_summary(&self) -> String {
         format!("{} todos", self.todos.len())
     }
 }
+
+impl super::ToolDefaults for TodoWrite {}

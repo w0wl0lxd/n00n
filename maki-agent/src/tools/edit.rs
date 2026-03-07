@@ -5,7 +5,7 @@ use maki_tool_macro::Tool;
 
 use super::fuzzy_replace;
 use super::multiedit::build_hunk;
-use super::{Tool, line_at_offset, relative_path};
+use super::{line_at_offset, relative_path};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Edit {
@@ -20,6 +20,15 @@ pub struct Edit {
 }
 
 impl Edit {
+    pub const NAME: &str = "edit";
+    pub const DESCRIPTION: &str = include_str!("edit.md");
+    pub const EXAMPLES: Option<&str> = Some(
+        r#"[
+  {"path": "/home/user/project/src/main.rs", "old_string": "fn old_name(", "new_string": "fn new_name("},
+  {"path": "/home/user/project/config.toml", "old_string": "v1", "new_string": "v2", "replace_all": true}
+]"#,
+    );
+
     fn diff_output(&self, lines: &[usize]) -> ToolOutput {
         let rel = relative_path(&self.path);
         let hunks = lines
@@ -32,36 +41,34 @@ impl Edit {
             path: rel,
         }
     }
-}
 
-impl Tool for Edit {
-    const NAME: &str = "edit";
-    const DESCRIPTION: &str = include_str!("edit.md");
-    const EXAMPLES: Option<&str> = Some(
-        r#"[
-  {"path": "/home/user/project/src/main.rs", "old_string": "fn old_name(", "new_string": "fn new_name("},
-  {"path": "/home/user/project/config.toml", "old_string": "v1", "new_string": "v2", "replace_all": true}
-]"#,
-    );
-
-    fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let content = fs::read_to_string(&self.path).map_err(|e| format!("read error: {e}"))?;
+    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+        let path = self.path.clone();
+        let old_string = self.old_string.clone();
+        let new_string = self.new_string.clone();
         let replace_all = self.replace_all.unwrap_or(false);
-        let result =
-            fuzzy_replace::replace(&content, &self.old_string, &self.new_string, replace_all)?;
-        fs::write(&self.path, &result.content).map_err(|e| format!("write error: {e}"))?;
-        let lines: Vec<usize> = result
-            .match_offsets
-            .iter()
-            .map(|&off| line_at_offset(&content, off))
-            .collect();
-        Ok(self.diff_output(&lines))
+        let diff_self = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let content = fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
+            let result = fuzzy_replace::replace(&content, &old_string, &new_string, replace_all)?;
+            fs::write(&path, &result.content).map_err(|e| format!("write error: {e}"))?;
+            let lines: Vec<usize> = result
+                .match_offsets
+                .iter()
+                .map(|&off| line_at_offset(&content, off))
+                .collect();
+            Ok(diff_self.diff_output(&lines))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("task panicked: {e}")))
     }
 
-    fn start_summary(&self) -> String {
+    pub fn start_summary(&self) -> String {
         relative_path(&self.path)
     }
+}
 
+impl super::ToolDefaults for Edit {
     fn start_output(&self) -> Option<ToolOutput> {
         Some(self.diff_output(&[1]))
     }
@@ -86,8 +93,8 @@ mod tests {
         path.to_string_lossy().to_string()
     }
 
-    #[test]
-    fn edit_reads_replaces_writes() {
+    #[tokio::test]
+    async fn edit_reads_replaces_writes() {
         let dir = TempDir::new().unwrap();
         let ctx = stub_ctx(&AgentMode::Build);
 
@@ -99,6 +106,7 @@ mod tests {
             replace_all: None,
         }
         .execute(&ctx)
+        .await
         .unwrap();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
@@ -113,6 +121,7 @@ mod tests {
             replace_all: Some(true),
         }
         .execute(&ctx)
+        .await
         .unwrap();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
