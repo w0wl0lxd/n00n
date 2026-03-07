@@ -66,6 +66,7 @@ impl Tool for Task {
         let mut system = vars.apply(prompt).into_owned();
         let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
         system.push_str(&instructions);
+        system.push_str(&agent::tool_efficiency_table(tool_names));
         let tools = ToolCall::definitions_filtered(
             &vars,
             tool_names,

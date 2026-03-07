@@ -11,7 +11,11 @@ use serde_json::Value;
 
 use crate::skill::Skill;
 use crate::template::Vars;
-use crate::tools::{ToolCall, ToolContext};
+use crate::tools::{
+    BASH_TOOL_NAME, BATCH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME,
+    GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, WRITE_TOOL_NAME, ToolCall,
+    ToolContext,
+};
 use crate::types::tool_results;
 use crate::{
     AgentError, AgentEvent, AgentInput, AgentMode, Envelope, ExtractedCommand, ToolDoneEvent,
@@ -76,7 +80,12 @@ impl History {
     }
 }
 
-pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, instructions: &str) -> String {
+pub fn build_system_prompt(
+    vars: &Vars,
+    mode: &AgentMode,
+    instructions: &str,
+    tool_names: &[&str],
+) -> String {
     let mut out = crate::prompt::SYSTEM_PROMPT.to_string();
 
     out.push_str(&vars.apply(
@@ -84,6 +93,7 @@ pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, instructions: &str) ->
     ));
 
     out.push_str(instructions);
+    out.push_str(&tool_efficiency_table(tool_names));
 
     if let AgentMode::Plan(plan_path) = mode {
         let plan_vars = Vars::new().set("{plan_path}", plan_path);
@@ -91,6 +101,38 @@ pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, instructions: &str) ->
     }
 
     out
+}
+
+const EFFICIENCY_TIERS: &[(&str, &[&str], &str)] = &[
+    ("Best", &[CODE_EXECUTION_TOOL_NAME, BATCH_TOOL_NAME, TASK_TOOL_NAME], "Batch/chained calls, delegatable work"),
+    ("Good", &[EDIT_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, GREP_TOOL_NAME, GLOB_TOOL_NAME], "Targeted reads and edits"),
+    ("Costly", &[WRITE_TOOL_NAME], "Full file replacement"),
+    ("Last", &[BASH_TOOL_NAME], "Only when no other tool works"),
+];
+
+pub fn tool_efficiency_table(tool_names: &[&str]) -> String {
+    let mut rows = Vec::new();
+    let has_edit = tool_names.contains(&EDIT_TOOL_NAME) || tool_names.contains(&MULTIEDIT_TOOL_NAME);
+    for &(tier, tools, when) in EFFICIENCY_TIERS {
+        let available: Vec<&str> = tools.iter().copied().filter(|t| tool_names.contains(t)).collect();
+        if available.is_empty() {
+            continue;
+        }
+        let desc = if tier == "Costly" && has_edit {
+            let edits: Vec<&str> = [EDIT_TOOL_NAME, MULTIEDIT_TOOL_NAME].into_iter().filter(|t| tool_names.contains(t)).collect();
+            format!("{when} (prefer {})", edits.join(" & "))
+        } else {
+            when.to_string()
+        };
+        rows.push(format!("| {tier} | {} | {desc} |", available.join(", ")));
+    }
+    if rows.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\n# Tool efficiency (prefer higher tiers)\n| Tier | Tools | When |\n|------|-------|------|\n{}",
+        rows.join("\n")
+    )
 }
 
 pub fn load_instruction_files(cwd: &str) -> String {
@@ -610,7 +652,7 @@ mod tests {
     #[test_case(&AgentMode::Plan(PLAN_PATH.into()), true ; "plan_includes_plan")]
     fn plan_section_presence(mode: &AgentMode, expect_plan: bool) {
         let vars = Vars::new().set("{cwd}", "/tmp").set("{platform}", "linux");
-        let prompt = build_system_prompt(&vars, mode, "");
+        let prompt = build_system_prompt(&vars, mode, "", &[]);
         assert_eq!(prompt.contains("Plan Mode"), expect_plan);
         if expect_plan {
             assert!(prompt.contains(PLAN_PATH));

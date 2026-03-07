@@ -385,12 +385,11 @@ macro_rules! register_tools {
                 ]
             }
 
-            pub fn definitions(vars: &Vars, skills: &[Skill], supports_examples: bool) -> Value {
-                Value::Array(
-                    Self::all_defs(vars, skills, supports_examples).into_iter()
-                        .map(|(_, def)| def)
-                        .collect()
-                )
+            pub fn definitions(vars: &Vars, skills: &[Skill], supports_examples: bool) -> (Vec<&'static str>, Value) {
+                let defs = Self::all_defs(vars, skills, supports_examples);
+                let names = defs.iter().map(|(name, _)| *name).collect();
+                let values = Value::Array(defs.into_iter().map(|(_, def)| def).collect());
+                (names, values)
             }
 
             pub fn definitions_filtered(vars: &Vars, allowed: &[&str], supports_examples: bool) -> Value {
@@ -619,7 +618,7 @@ mod tests {
     #[test]
     fn tool_definitions_schema_requires_additional_properties_false() {
         let vars = Vars::new().set("{cwd}", "/tmp");
-        let all = ToolCall::definitions(&vars, &[], true);
+        let (_, all) = ToolCall::definitions(&vars, &[], true);
         for def in all.as_array().unwrap() {
             assert_eq!(
                 def["input_schema"]["additionalProperties"],
@@ -633,7 +632,7 @@ mod tests {
     #[test]
     fn tool_definitions_examples_non_empty() {
         let vars = Vars::new().set("{cwd}", "/tmp");
-        for def in ToolCall::definitions(&vars, &[], true).as_array().unwrap() {
+        for def in ToolCall::definitions(&vars, &[], true).1.as_array().unwrap() {
             if let Some(examples) = def.get("input_examples") {
                 assert!(
                     !examples.as_array().unwrap().is_empty(),
