@@ -237,6 +237,13 @@ impl MessagesPanel {
         else {
             return;
         };
+        let was_in_progress = matches!(
+            msg.role,
+            DisplayRole::Tool {
+                status: ToolStatus::InProgress,
+                ..
+            }
+        );
         if let DisplayRole::Tool { ref mut status, .. } = msg.role {
             *status = if event.is_error {
                 ToolStatus::Error
@@ -284,7 +291,9 @@ impl MessagesPanel {
             _ => {}
         }
         msg.tool_output = Some(event.output);
-        self.in_progress_count -= 1;
+        if was_in_progress {
+            self.in_progress_count -= 1;
+        }
         self.rebuild_tool_segment(&event.id);
     }
 
@@ -1283,6 +1292,22 @@ mod tests {
         rebuild(&mut panel);
         assert_eq!(msg_status(&panel, "t1"), ToolStatus::Error);
         assert_eq!(msg_status(&panel, "t2"), ToolStatus::Error);
+    }
+
+    #[test]
+    fn tool_done_after_fail_in_progress_does_not_underflow() {
+        let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "read")]);
+        panel.fail_in_progress();
+        assert_eq!(panel.in_progress_count, 0);
+
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: "bash",
+            output: ToolOutput::Plain("late".into()),
+            is_error: false,
+        });
+        assert_eq!(panel.in_progress_count, 0);
+        assert_eq!(msg_status(&panel, "t1"), ToolStatus::Success);
     }
 
     fn tool_msg(id: &str, name: &'static str, status: ToolStatus) -> DisplayMessage {
