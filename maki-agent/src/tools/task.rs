@@ -9,7 +9,7 @@ use super::{GENERAL_SUBAGENT_TOOLS, RESEARCH_SUBAGENT_TOOLS, ToolContext};
 use crate::agent;
 use crate::template;
 use crate::tools::ToolCall;
-use crate::{AgentInput, AgentMode};
+use crate::{Agent, AgentInput, AgentMode};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Task {
@@ -79,20 +79,18 @@ impl Task {
         };
 
         let mut history = crate::History::new(Vec::new());
-        agent::run(
+        let mut agent = Agent::new(
             ctx.provider,
             ctx.model,
-            input,
             &mut history,
             &system,
             &sub_tx,
             &tools,
             ctx.skills,
-            None,
-            None::<&std::sync::mpsc::Receiver<()>>,
-            |_| crate::ExtractedCommand::Ignore,
-        )
-        .map_err(|e| format!("sub-agent error: {e}"))?;
+        );
+        agent
+            .run(input)
+            .map_err(|e| format!("sub-agent error: {e}"))?;
 
         let text = history
             .as_slice()

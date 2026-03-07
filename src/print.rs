@@ -26,7 +26,7 @@ use color_eyre::Result;
 use color_eyre::eyre::Context;
 use maki_agent::skill::Skill;
 use maki_agent::tools::QUESTION_TOOL_NAME;
-use maki_agent::{AgentEvent, AgentInput, AgentMode, Envelope, History, agent, template};
+use maki_agent::{Agent, AgentEvent, AgentInput, AgentMode, Envelope, History, agent, template};
 use maki_providers::StopReason;
 use maki_providers::TokenUsage;
 use maki_providers::model::Model;
@@ -172,19 +172,16 @@ pub fn run(
             }
         };
         let mut history = History::new(Vec::new());
-        if let Err(e) = agent::run(
+        let mut agent = Agent::new(
             &*provider,
             &model_clone,
-            input,
             &mut history,
             &system,
             &event_tx,
             &tools,
             &skills,
-            None,
-            None::<&std::sync::mpsc::Receiver<()>>,
-            |_| maki_agent::ExtractedCommand::Ignore,
-        ) {
+        );
+        if let Err(e) = agent.run(input) {
             error!(error = %e, "agent error");
             let _ = event_tx.send(
                 AgentEvent::Error {

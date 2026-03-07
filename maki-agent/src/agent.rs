@@ -1,9 +1,8 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
-
 use std::sync::Mutex;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 
 use tracing::{debug, error, info, warn};
@@ -174,10 +173,7 @@ fn parse_tool_calls<'a>(
     (parsed, errors)
 }
 
-fn forward_provider_events(
-    prx: std::sync::mpsc::Receiver<ProviderEvent>,
-    event_tx: &Sender<Envelope>,
-) {
+fn forward_provider_events(prx: Receiver<ProviderEvent>, event_tx: &Sender<Envelope>) {
     for pe in prx {
         let ae = match pe {
             ProviderEvent::TextDelta { text } => AgentEvent::TextDelta { text },
@@ -261,233 +257,270 @@ fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDo
     })
 }
 
-fn consume_interrupt<T>(
-    cmd_rx: Option<&std::sync::mpsc::Receiver<T>>,
-    history: &mut History,
-    event_tx: &Sender<Envelope>,
-    extract: impl Fn(T) -> ExtractedCommand,
-    interrupt_snapshot: &mut Option<usize>,
-) -> Result<bool, AgentError> {
-    let Some(rx) = cmd_rx else { return Ok(false) };
-    let Ok(cmd) = rx.try_recv() else {
-        return Ok(false);
-    };
-    match extract(cmd) {
-        ExtractedCommand::Interrupt(input) => {
-            *interrupt_snapshot = Some(history.len());
-            let msg = input.effective_message();
-            let raw = input.message;
-            let wrapped = format!(
-                "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{msg}\n</user-interrupt>"
-            );
-            history.push(Message::user(wrapped));
-            send(event_tx, AgentEvent::InterruptConsumed { message: raw })?;
-            Ok(true)
-        }
-        ExtractedCommand::Cancel => Err(AgentError::Cancelled),
-        ExtractedCommand::Ignore => Ok(false),
-    }
+enum TurnOutcome {
+    Continue,
+    Done(Option<StopReason>),
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn run<T>(
-    provider: &dyn Provider,
-    model: &Model,
-    input: AgentInput,
-    history: &mut History,
-    system: &str,
-    event_tx: &Sender<Envelope>,
-    tools: &Value,
-    skills: &[Skill],
-    user_response_rx: Option<&Mutex<std::sync::mpsc::Receiver<String>>>,
-    cmd_rx: Option<&std::sync::mpsc::Receiver<T>>,
-    extract_interrupt: impl Fn(T) -> ExtractedCommand + Copy,
-) -> Result<(), AgentError> {
-    let user_message = input.effective_message();
-    history.push(Message::user(user_message.clone()));
-    let ctx = ToolContext {
-        provider,
-        model,
-        event_tx,
-        mode: &input.mode,
-        tool_use_id: None,
-        user_response_rx,
-        skills,
-    };
-    let mut total_usage = TokenUsage::default();
-    let mut num_turns: u32 = 0;
-    let mut recent_calls = RecentCalls::new();
-    let auto_compact = auto_compact_enabled();
-    let mut interrupt_snapshot: Option<usize> = None;
+pub struct Agent<'a> {
+    provider: &'a dyn Provider,
+    model: &'a Model,
+    history: &'a mut History,
+    system: &'a str,
+    event_tx: &'a Sender<Envelope>,
+    tools: &'a Value,
+    skills: &'a [Skill],
+    mode: AgentMode,
+    user_response_rx: Option<&'a Mutex<Receiver<String>>>,
+    cmd_rx: Option<&'a Receiver<ExtractedCommand>>,
+    total_usage: TokenUsage,
+    num_turns: u32,
+    recent_calls: RecentCalls,
+    auto_compact: bool,
+    interrupt_snapshot: Option<usize>,
+}
 
-    info!(
-        model = %model.id,
-        mode = ?input.mode,
-        message_len = user_message.len(),
-        "agent run started"
-    );
+impl<'a> Agent<'a> {
+    pub fn new(
+        provider: &'a dyn Provider,
+        model: &'a Model,
+        history: &'a mut History,
+        system: &'a str,
+        event_tx: &'a Sender<Envelope>,
+        tools: &'a Value,
+        skills: &'a [Skill],
+    ) -> Self {
+        Self {
+            provider,
+            model,
+            history,
+            system,
+            event_tx,
+            tools,
+            skills,
+            mode: AgentMode::default(),
+            user_response_rx: None,
+            cmd_rx: None,
+            total_usage: TokenUsage::default(),
+            num_turns: 0,
+            recent_calls: RecentCalls::new(),
+            auto_compact: auto_compact_enabled(),
+            interrupt_snapshot: None,
+        }
+    }
 
-    let result: Result<(), AgentError> = (|| {
+    pub fn with_user_response_rx(mut self, rx: &'a Mutex<Receiver<String>>) -> Self {
+        self.user_response_rx = Some(rx);
+        self
+    }
+
+    pub fn with_cmd_rx(mut self, rx: &'a Receiver<ExtractedCommand>) -> Self {
+        self.cmd_rx = Some(rx);
+        self
+    }
+
+    pub fn run(&mut self, input: AgentInput) -> Result<(), AgentError> {
+        let user_message = input.effective_message();
+        self.history.push(Message::user(user_message.clone()));
+        self.mode = input.mode;
+
+        info!(
+            model = %self.model.id,
+            mode = ?self.mode,
+            message_len = user_message.len(),
+            "agent run started"
+        );
+
+        let result = self.run_loop();
+
+        if matches!(result, Err(AgentError::Cancelled))
+            && let Some(len) = self.interrupt_snapshot
+        {
+            self.history.truncate(len);
+        }
+
+        result
+    }
+
+    fn run_loop(&mut self) -> Result<(), AgentError> {
         loop {
-            let response = match stream_with_retry(
-                provider,
-                model,
-                history.as_slice(),
-                system,
-                tools,
-                event_tx,
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    error!(error = %e, model = %model.id, num_turns, "stream_message failed");
-                    return Err(e);
+            match self.turn()? {
+                TurnOutcome::Continue => {}
+                TurnOutcome::Done(stop_reason) => {
+                    self.emit_done(stop_reason)?;
+                    return Ok(());
                 }
-            };
-            num_turns += 1;
+            }
+        }
+    }
 
-            let has_tools = response.message.has_tool_calls();
+    fn turn(&mut self) -> Result<TurnOutcome, AgentError> {
+        let response = stream_with_retry(
+            self.provider,
+            self.model,
+            self.history.as_slice(),
+            self.system,
+            self.tools,
+            self.event_tx,
+        )
+        .inspect_err(|e| {
+            error!(error = %e, model = %self.model.id, self.num_turns, "stream_message failed");
+        })?;
+        self.num_turns += 1;
 
-            info!(
-                input_tokens = response.usage.input,
-                output_tokens = response.usage.output,
-                cache_creation = response.usage.cache_creation,
-                cache_read = response.usage.cache_read,
-                has_tools,
-                num_turns,
-                model = %model.id,
-                stop_reason = response.stop_reason.map_or("none", Into::into),
-                "API response received"
-            );
+        let has_tools = response.message.has_tool_calls();
+        let stop_reason = response.stop_reason;
+        let input_tokens = response.usage.input;
 
-            send(
-                event_tx,
-                AgentEvent::TurnComplete {
-                    message: response.message.clone(),
-                    usage: response.usage,
-                    model: model.id.clone(),
-                    context_size: None,
-                },
-            )?;
+        info!(
+            input_tokens,
+            output_tokens = response.usage.output,
+            cache_creation = response.usage.cache_creation,
+            cache_read = response.usage.cache_read,
+            has_tools,
+            self.num_turns,
+            model = %self.model.id,
+            stop_reason = stop_reason.map_or("none", Into::into),
+            "API response received"
+        );
 
-            total_usage += response.usage;
-            let last_input_tokens = response.usage.input;
+        self.emit_turn_complete(&response)?;
+        self.total_usage += response.usage;
 
-            if !has_tools {
-                let truncated = response.stop_reason == Some(StopReason::MaxTokens);
-                history.push(response.message);
+        if has_tools {
+            self.process_tool_calls(response)?;
+        } else {
+            self.history.push(response.message);
 
-                if truncated && num_turns <= MAX_CONTINUATION_TURNS {
-                    warn!(num_turns, "response truncated (max_tokens), re-prompting");
-                    continue;
-                }
-
-                if try_auto_compact(
-                    auto_compact,
-                    last_input_tokens,
-                    provider,
-                    model,
-                    history,
-                    event_tx,
-                    &mut total_usage,
-                )? {
-                    continue;
-                }
-
-                if consume_interrupt(
-                    cmd_rx,
-                    history,
-                    event_tx,
-                    extract_interrupt,
-                    &mut interrupt_snapshot,
-                )? {
-                    continue;
-                }
-
-                info!(
-                    num_turns,
-                    total_input = total_usage.input,
-                    total_output = total_usage.output,
-                    "agent run completed"
+            if stop_reason == Some(StopReason::MaxTokens)
+                && self.num_turns <= MAX_CONTINUATION_TURNS
+            {
+                warn!(
+                    self.num_turns,
+                    "response truncated (max_tokens), re-prompting"
                 );
-                send(
-                    event_tx,
-                    AgentEvent::Done {
-                        usage: total_usage,
-                        num_turns,
-                        stop_reason: response.stop_reason,
-                    },
-                )?;
-                return Ok(());
+                return Ok(TurnOutcome::Continue);
             }
+        }
 
-            let (parsed, errors) =
-                parse_tool_calls(response.message.tool_uses(), &mut recent_calls);
+        if self.try_auto_compact(input_tokens)? || self.check_interrupt()? {
+            return Ok(TurnOutcome::Continue);
+        }
 
-            history.push(response.message);
+        if has_tools {
+            Ok(TurnOutcome::Continue)
+        } else {
+            Ok(TurnOutcome::Done(stop_reason))
+        }
+    }
 
-            for p in &parsed {
-                send(
-                    event_tx,
-                    AgentEvent::ToolStart(p.call.start_event(p.id.clone())),
-                )?;
-            }
+    fn emit_turn_complete(&self, response: &StreamResponse) -> Result<(), AgentError> {
+        send(
+            self.event_tx,
+            AgentEvent::TurnComplete {
+                message: response.message.clone(),
+                usage: response.usage,
+                model: self.model.id.clone(),
+                context_size: None,
+            },
+        )
+    }
 
-            let mut results = execute_tools(&parsed, &ctx);
-            results.extend(errors);
-            let tool_msg = tool_results(results);
+    fn emit_done(&self, stop_reason: Option<StopReason>) -> Result<(), AgentError> {
+        info!(
+            self.num_turns,
+            total_input = self.total_usage.input,
+            total_output = self.total_usage.output,
+            "agent run completed"
+        );
+        send(
+            self.event_tx,
+            AgentEvent::Done {
+                usage: self.total_usage,
+                num_turns: self.num_turns,
+                stop_reason,
+            },
+        )
+    }
+
+    fn process_tool_calls(&mut self, response: StreamResponse) -> Result<(), AgentError> {
+        let (parsed, errors) =
+            parse_tool_calls(response.message.tool_uses(), &mut self.recent_calls);
+
+        self.history.push(response.message);
+
+        for p in &parsed {
             send(
-                event_tx,
-                AgentEvent::ToolResultsSubmitted {
-                    message: tool_msg.clone(),
-                },
-            )?;
-            history.push(tool_msg);
-
-            try_auto_compact(
-                auto_compact,
-                last_input_tokens,
-                provider,
-                model,
-                history,
-                event_tx,
-                &mut total_usage,
-            )?;
-            consume_interrupt(
-                cmd_rx,
-                history,
-                event_tx,
-                extract_interrupt,
-                &mut interrupt_snapshot,
+                self.event_tx,
+                AgentEvent::ToolStart(p.call.start_event(p.id.clone())),
             )?;
         }
-    })();
 
-    if matches!(result, Err(AgentError::Cancelled))
-        && let Some(len) = interrupt_snapshot
-    {
-        history.truncate(len);
+        let ctx = self.tool_context();
+        let mut results = execute_tools(&parsed, &ctx);
+        results.extend(errors);
+        let tool_msg = tool_results(results);
+        send(
+            self.event_tx,
+            AgentEvent::ToolResultsSubmitted {
+                message: tool_msg.clone(),
+            },
+        )?;
+        self.history.push(tool_msg);
+        Ok(())
     }
 
-    result
-}
-
-fn try_auto_compact(
-    enabled: bool,
-    input_tokens: u32,
-    provider: &dyn Provider,
-    model: &Model,
-    history: &mut History,
-    event_tx: &Sender<Envelope>,
-    total_usage: &mut TokenUsage,
-) -> Result<bool, AgentError> {
-    if !enabled || !is_overflow(input_tokens, model) {
-        return Ok(false);
+    fn tool_context(&self) -> ToolContext<'_> {
+        ToolContext {
+            provider: self.provider,
+            model: self.model,
+            event_tx: self.event_tx,
+            mode: &self.mode,
+            tool_use_id: None,
+            user_response_rx: self.user_response_rx,
+            skills: self.skills,
+        }
     }
-    info!(input_tokens, "auto-compacting");
-    send(event_tx, AgentEvent::AutoCompacting)?;
-    *total_usage += compact_history(provider, model, history, event_tx)?;
-    history.push(Message::user(CONTINUE_AFTER_COMPACT.into()));
-    Ok(true)
+
+    fn try_auto_compact(&mut self, input_tokens: u32) -> Result<bool, AgentError> {
+        if !self.auto_compact || !is_overflow(input_tokens, self.model) {
+            return Ok(false);
+        }
+        info!(input_tokens, "auto-compacting");
+        send(self.event_tx, AgentEvent::AutoCompacting)?;
+        self.total_usage +=
+            compact_history(self.provider, self.model, self.history, self.event_tx)?;
+        self.history
+            .push(Message::user(CONTINUE_AFTER_COMPACT.into()));
+        Ok(true)
+    }
+
+    fn check_interrupt(&mut self) -> Result<bool, AgentError> {
+        let Some(rx) = self.cmd_rx else {
+            return Ok(false);
+        };
+        let Ok(cmd) = rx.try_recv() else {
+            return Ok(false);
+        };
+        match cmd {
+            ExtractedCommand::Interrupt(input) => {
+                self.interrupt_snapshot = Some(self.history.len());
+                let msg = input.effective_message();
+                let raw = input.message;
+                let wrapped = format!(
+                    "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{msg}\n</user-interrupt>"
+                );
+                self.history.push(Message::user(wrapped));
+                send(
+                    self.event_tx,
+                    AgentEvent::InterruptConsumed { message: raw },
+                )?;
+                Ok(true)
+            }
+            ExtractedCommand::Cancel => Err(AgentError::Cancelled),
+            ExtractedCommand::Compact | ExtractedCommand::Ignore => Ok(false),
+        }
+    }
 }
 
 fn compact_history(
@@ -666,19 +699,16 @@ mod tests {
         let tools = serde_json::json!([]);
         let skills: Vec<crate::skill::Skill> = Vec::new();
 
-        let _ = run(
+        let mut agent = Agent::new(
             provider,
             model,
-            input,
             &mut history,
             "system",
             &event_tx,
             &tools,
             &skills,
-            None,
-            None::<&std::sync::mpsc::Receiver<()>>,
-            |_| crate::ExtractedCommand::Ignore,
         );
+        let _ = agent.run(input);
         drop(event_tx);
         event_rx.iter().collect()
     }
@@ -748,7 +778,7 @@ mod tests {
 
     fn run_with_interrupt(
         provider: MockProvider,
-        cmd_rx: &std::sync::mpsc::Receiver<AgentInput>,
+        cmd_rx: &Receiver<ExtractedCommand>,
     ) -> (Vec<Message>, Vec<Envelope>) {
         let model = default_model();
         let input = AgentInput {
@@ -761,19 +791,17 @@ mod tests {
         let tools = serde_json::json!([]);
         let skills: Vec<crate::skill::Skill> = Vec::new();
 
-        let _ = run(
+        let mut agent = Agent::new(
             &provider,
             &model,
-            input,
             &mut history,
             "system",
             &event_tx,
             &tools,
             &skills,
-            None,
-            Some(cmd_rx),
-            ExtractedCommand::Interrupt,
-        );
+        )
+        .with_cmd_rx(cmd_rx);
+        let _ = agent.run(input);
         drop(event_tx);
         (history.as_slice().to_vec(), event_rx.iter().collect())
     }
@@ -796,11 +824,11 @@ mod tests {
     fn interrupt_injects_user_message_between_turns() {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         cmd_tx
-            .send(AgentInput {
+            .send(ExtractedCommand::Interrupt(AgentInput {
                 message: "fix the bug".into(),
                 mode: AgentMode::Build,
                 pending_plan: None,
-            })
+            }))
             .unwrap();
 
         let provider = MockProvider::new(vec![
@@ -817,7 +845,7 @@ mod tests {
 
     #[test]
     fn no_interrupt_when_channel_empty() {
-        let (_cmd_tx, cmd_rx) = mpsc::channel::<AgentInput>();
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExtractedCommand>();
 
         let provider = MockProvider::new(vec![
             tool_call_response("glob", "t1"),
@@ -833,11 +861,11 @@ mod tests {
     fn interrupt_consumed_during_text_only_response() {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         cmd_tx
-            .send(AgentInput {
+            .send(ExtractedCommand::Interrupt(AgentInput {
                 message: "new task".into(),
                 mode: AgentMode::Build,
                 pending_plan: None,
-            })
+            }))
             .unwrap();
 
         let provider = MockProvider::new(vec![
@@ -880,19 +908,17 @@ mod tests {
             text_response(StopReason::EndTurn),
         ]);
 
-        let result = run(
+        let mut agent = Agent::new(
             &provider,
             &model,
-            input,
             &mut history,
             "system",
             &event_tx,
             &tools,
             &skills,
-            None,
-            Some(&cmd_rx),
-            std::convert::identity,
-        );
+        )
+        .with_cmd_rx(&cmd_rx);
+        let result = agent.run(input);
 
         assert!(matches!(result, Err(AgentError::Cancelled)));
         assert!(
@@ -931,18 +957,21 @@ mod tests {
         });
         let (event_tx, event_rx) = mpsc::channel();
         let mut history = History::new(vec![Message::user("go".into())]);
-        let mut usage = TokenUsage::default();
+        let tools = serde_json::json!([]);
+        let skills: Vec<crate::skill::Skill> = Vec::new();
 
-        let result = try_auto_compact(
-            enabled,
-            input_tokens,
+        let mut agent = Agent::new(
             &provider,
             &model,
             &mut history,
+            "system",
             &event_tx,
-            &mut usage,
-        )
-        .unwrap();
+            &tools,
+            &skills,
+        );
+        agent.auto_compact = enabled;
+
+        let result = agent.try_auto_compact(input_tokens).unwrap();
 
         assert_eq!(result, expected);
         drop(event_tx);

@@ -28,7 +28,7 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_agent::agent;
 use maki_agent::skill::Skill;
 use maki_agent::template;
-use maki_agent::{AgentEvent, AgentInput, Envelope, ExtractedCommand, History};
+use maki_agent::{Agent, AgentEvent, AgentInput, Envelope, ExtractedCommand, History};
 use maki_providers::AgentError;
 use maki_providers::Message;
 use maki_providers::Model;
@@ -217,6 +217,7 @@ fn spawn_agent(
     let (agent_tx, agent_rx) = mpsc::channel::<Envelope>();
     let (cmd_tx, cmd_rx) = mpsc::channel::<AgentCommand>();
     let (answer_tx, answer_rx) = mpsc::channel::<String>();
+    let (ecmd_tx, ecmd_rx) = mpsc::channel::<ExtractedCommand>();
     let model = model.clone();
     let provider = Arc::clone(provider);
     let skills = Arc::clone(skills);
@@ -231,30 +232,43 @@ fn spawn_agent(
             &skills,
             model.family().supports_tool_examples(),
         );
-        while let Ok(cmd) = cmd_rx.recv() {
+
+        thread::spawn(move || {
+            for cmd in cmd_rx {
+                let extracted = match cmd {
+                    AgentCommand::Run(input) => ExtractedCommand::Interrupt(input),
+                    AgentCommand::Cancel => ExtractedCommand::Cancel,
+                    AgentCommand::Compact => ExtractedCommand::Compact,
+                };
+                if ecmd_tx.send(extracted).is_err() {
+                    break;
+                }
+            }
+        });
+
+        while let Ok(cmd) = ecmd_rx.recv() {
             let result = match cmd {
-                AgentCommand::Compact => {
+                ExtractedCommand::Compact => {
                     agent::compact(&*provider, &model, &mut history, &agent_tx)
                 }
-                AgentCommand::Cancel => continue,
-                AgentCommand::Run(input) => {
+                ExtractedCommand::Cancel | ExtractedCommand::Ignore => continue,
+                ExtractedCommand::Interrupt(input) => {
                     let system =
                         agent::build_system_prompt(&vars, &input.mode, &model, &instructions);
-                    let result = agent::run(
+                    let mut agent = Agent::new(
                         &*provider,
                         &model,
-                        input,
                         &mut history,
                         &system,
                         &agent_tx,
                         &tools,
                         &skills,
-                        Some(&answer_mutex),
-                        Some(&cmd_rx),
-                        extract_interrupt,
-                    );
+                    )
+                    .with_user_response_rx(&answer_mutex)
+                    .with_cmd_rx(&ecmd_rx);
+                    let result = agent.run(input);
                     if matches!(result, Err(AgentError::Cancelled)) {
-                        while cmd_rx.try_recv().is_ok() {}
+                        while ecmd_rx.try_recv().is_ok() {}
                     }
                     result
                 }
@@ -281,14 +295,6 @@ fn spawn_agent(
         cmd_tx,
         agent_rx,
         answer_tx,
-    }
-}
-
-fn extract_interrupt(cmd: AgentCommand) -> ExtractedCommand {
-    match cmd {
-        AgentCommand::Run(input) => ExtractedCommand::Interrupt(input),
-        AgentCommand::Cancel => ExtractedCommand::Cancel,
-        AgentCommand::Compact => ExtractedCommand::Ignore,
     }
 }
 

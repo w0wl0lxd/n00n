@@ -1,5 +1,5 @@
 pub mod agent;
-pub use agent::History;
+pub use agent::{Agent, History};
 pub(crate) mod prompt;
 pub mod skill;
 pub mod template;
@@ -40,6 +40,7 @@ pub enum AgentMode {
 pub enum ExtractedCommand {
     Interrupt(AgentInput),
     Cancel,
+    Compact,
     Ignore,
 }
 
