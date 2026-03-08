@@ -230,7 +230,9 @@ impl App {
         match msg {
             Msg::Key(key) => self.handle_key(key),
             Msg::Paste(text) => {
-                if let InputAction::PaletteSync(val) = self.input_box.handle_paste(&text) {
+                if !self.question_form.handle_paste(&text)
+                    && let InputAction::PaletteSync(val) = self.input_box.handle_paste(&text)
+                {
                     self.command_palette.sync(&val);
                 }
                 vec![]
@@ -1303,6 +1305,25 @@ mod tests {
             assert!(actions.is_empty());
             assert_eq!(app.input_box.buffer.value(), "pasted");
         }
+    }
+
+    #[test]
+    fn paste_routed_to_question_form_in_custom_mode() {
+        let mut app = test_app();
+        app.question_form.open(vec![QuestionInfo {
+            question: "Pick one".into(),
+            header: String::new(),
+            options: vec![QuestionOption {
+                label: "A".into(),
+                description: String::new(),
+            }],
+            multiple: false,
+        }]);
+        app.update(Msg::Key(key(KeyCode::Down)));
+        app.update(Msg::Key(key(KeyCode::Enter)));
+
+        app.update(Msg::Paste("pasted".into()));
+        assert_eq!(app.input_box.buffer.value(), "");
     }
 
     #[test]

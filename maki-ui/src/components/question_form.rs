@@ -219,6 +219,14 @@ impl QuestionForm {
         }
     }
 
+    pub fn handle_paste(&mut self, text: &str) -> bool {
+        if self.visible && self.editing_custom {
+            self.buffer.insert_text(text);
+            return true;
+        }
+        false
+    }
+
     fn buffer_key(&mut self, f: impl FnOnce(&mut TextBuffer)) -> QuestionFormAction {
         f(&mut self.buffer);
         QuestionFormAction::Consumed
@@ -887,6 +895,19 @@ mod tests {
 
         form.handle_key(key(KeyCode::Up));
         assert_eq!(form.scroll_offset, 0);
+    }
+
+    #[test]
+    fn paste_only_works_in_custom_mode() {
+        let mut form = QuestionForm::new();
+        form.open(single_q_with_options());
+        assert!(!form.handle_paste("ignored"));
+
+        enter_custom_mode(&mut form);
+        assert!(form.handle_paste("pasted text"));
+
+        let action = form.handle_key(key(KeyCode::Enter));
+        assert_eq!(assert_submit(action), vec![vec!["pasted text"]]);
     }
 
     #[test]
