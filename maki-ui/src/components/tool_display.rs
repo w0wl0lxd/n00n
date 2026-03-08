@@ -440,16 +440,7 @@ fn push_structured_lines(
                 )));
             }
         }
-        Some(ToolOutput::QuestionAnswers(pairs)) => {
-            for pair in pairs {
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{indent}❯ "), theme::TOOL_ANNOTATION),
-                    Span::styled(pair.question.clone(), theme::QUESTION_LABEL),
-                    Span::styled(" → ", theme::TOOL_ANNOTATION),
-                    Span::styled(pair.answer.clone(), theme::QUESTION_ANSWER),
-                ]));
-            }
-        }
+        Some(ToolOutput::QuestionAnswers(_)) => {}
         _ => {}
     }
 }

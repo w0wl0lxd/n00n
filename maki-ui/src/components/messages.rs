@@ -1459,11 +1459,6 @@ mod tests {
 
         assert_eq!(panel.messages[0].text, "2 questions answered");
         assert!(has_seg(&panel, "q1"));
-        let text = seg_text(&panel, "q1");
-        assert!(text.contains("DB?"));
-        assert!(text.contains("PostgreSQL"));
-        assert!(text.contains("Framework?"));
-        assert!(text.contains("Axum"));
     }
 
     #[test]

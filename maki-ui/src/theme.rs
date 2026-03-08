@@ -65,8 +65,6 @@ pub const TODO_COMPLETED: Style = Style::new().fg(GREEN);
 pub const TODO_IN_PROGRESS: Style = Style::new().fg(YELLOW);
 pub const TODO_PENDING: Style = Style::new().fg(FOREGROUND);
 pub const TODO_CANCELLED: Style = Style::new().fg(COMMENT);
-pub const QUESTION_LABEL: Style = Style::new().fg(CYAN);
-pub const QUESTION_ANSWER: Style = Style::new().fg(GREEN);
 
 pub const CMD_SELECTED: Style = Style::new().fg(BACKGROUND).bg(PURPLE);
 pub const CMD_NAME: Style = Style::new().fg(FOREGROUND);
