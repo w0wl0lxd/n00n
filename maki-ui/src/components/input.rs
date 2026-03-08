@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use super::scrollbar::render_vertical_scrollbar;
 use super::{apply_scroll_delta, visual_line_count};
@@ -22,6 +22,9 @@ pub enum InputAction {
 }
 
 const MAX_INPUT_LINES: u16 = 10;
+const CHEVRON: &str = "> ";
+const NEWLINE_PAD: &str = "  ";
+const PREFIX_WIDTH: u16 = 2;
 const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
     "research how something works",
     "fix a bug",
@@ -149,9 +152,22 @@ impl InputBox {
         }
     }
 
+    pub fn copy_text(&self) -> String {
+        self.buffer
+            .lines()
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let prefix = if i == 0 { CHEVRON } else { NEWLINE_PAD };
+                format!("{prefix}{l}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     pub fn height(&self, width: u16) -> u16 {
-        let content_width = width as usize;
-        let visual_lines = total_visual_lines(&self.buffer, content_width, true);
+        let ew = effective_width(width as usize);
+        let visual_lines = total_visual_lines(&self.buffer, ew, true);
         (visual_lines as u16).min(MAX_INPUT_LINES) + 2
     }
 
@@ -228,19 +244,19 @@ impl InputBox {
         }
     }
 
-    fn visual_cursor_y(&self, content_width: usize) -> u16 {
+    fn visual_cursor_y(&self, ew: usize) -> u16 {
         let lines_above: u16 = self
             .buffer
             .lines()
             .iter()
             .take(self.buffer.y())
-            .map(|line| visual_line_count(line.chars().count(), content_width) as u16)
+            .map(|line| visual_line_count(line.chars().count(), ew) as u16)
             .sum();
 
-        let wrap_row = if content_width == 0 {
+        let wrap_row = if ew == 0 {
             0
         } else {
-            (self.buffer.x() / content_width) as u16
+            (self.buffer.x() / ew) as u16
         };
 
         lines_above + wrap_row
@@ -248,10 +264,10 @@ impl InputBox {
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect, streaming: bool, mode_color: Color) {
         let content_height = area.height.saturating_sub(2);
-        let content_width = area.width as usize;
+        let ew = effective_width(area.width as usize);
 
         if self.follow_cursor {
-            let visual_cursor_y = self.visual_cursor_y(content_width);
+            let visual_cursor_y = self.visual_cursor_y(ew);
             if visual_cursor_y < self.scroll_y {
                 self.scroll_y = visual_cursor_y;
             } else if visual_cursor_y >= self.scroll_y + content_height {
@@ -259,20 +275,23 @@ impl InputBox {
             }
         }
 
-        let total_vl = total_visual_lines(&self.buffer, content_width, true) as u16;
+        let total_vl = total_visual_lines(&self.buffer, ew, true) as u16;
         let max_scroll = total_vl.saturating_sub(content_height);
         self.scroll_y = self.scroll_y.min(max_scroll);
 
+        let prefix_style = Style::new().fg(theme::COMMENT);
         let is_empty = self.buffer.value().is_empty();
         let styled_lines: Vec<Line> = if is_empty {
             let placeholder_base = Style::new().fg(theme::COMMENT);
             if streaming {
                 vec![Line::from(vec![
+                    Span::styled(CHEVRON, prefix_style),
                     Span::styled("Q", placeholder_base.reversed()),
                     Span::styled("ueue another prompt...", placeholder_base),
                 ])]
             } else {
                 vec![Line::from(vec![
+                    Span::styled(CHEVRON, prefix_style),
                     Span::styled("A", placeholder_base.reversed()),
                     Span::styled("sk maki to ", placeholder_base),
                     Span::styled(
@@ -283,34 +302,15 @@ impl InputBox {
                 ])]
             }
         } else {
+            let cursor_y = self.buffer.y();
+            let cursor_x = self.buffer.x();
             self.buffer
                 .lines()
                 .iter()
                 .enumerate()
-                .map(|(i, line)| {
-                    let mut spans = Vec::new();
-
-                    if i == self.buffer.y() {
-                        let byte_x = TextBuffer::char_to_byte(line, self.buffer.x());
-                        let (before, after) = line.split_at(byte_x);
-                        if after.is_empty() {
-                            spans.push(Span::raw(before.to_string()));
-                            spans.push(Span::styled(" ", Style::new().reversed()));
-                        } else {
-                            let mut chars = after.chars();
-                            let cursor_char = chars.next().unwrap();
-                            spans.push(Span::raw(before.to_string()));
-                            spans.push(Span::styled(
-                                cursor_char.to_string(),
-                                Style::new().reversed(),
-                            ));
-                            let rest: String = chars.collect();
-                            spans.push(Span::raw(rest));
-                        }
-                    } else {
-                        spans.push(Span::raw(line.clone()));
-                    }
-                    Line::from(spans)
+                .flat_map(|(i, line)| {
+                    let is_cursor_line = i == cursor_y;
+                    wrap_line(line, ew, is_cursor_line, cursor_x, i == 0, prefix_style)
                 })
                 .collect()
         };
@@ -324,7 +324,6 @@ impl InputBox {
         let border_style = Style::new().fg(border_color);
         let paragraph = Paragraph::new(text)
             .style(Style::new().fg(theme::FOREGROUND))
-            .wrap(Wrap { trim: false })
             .scroll((self.scroll_y, 0))
             .block(
                 Block::default()
@@ -358,7 +357,75 @@ fn random_placeholder_hint() -> &'static str {
     PLACEHOLDER_SUGGESTIONS[idx]
 }
 
-fn total_visual_lines(buffer: &TextBuffer, content_width: usize, cursor_visible: bool) -> usize {
+fn effective_width(content_width: usize) -> usize {
+    content_width.saturating_sub(PREFIX_WIDTH as usize)
+}
+
+fn wrap_line(
+    line: &str,
+    ew: usize,
+    is_cursor_line: bool,
+    cursor_x: usize,
+    is_first_line: bool,
+    prefix_style: Style,
+) -> Vec<Line<'static>> {
+    let chars: Vec<char> = line.chars().collect();
+    let chunk_size = ew.max(1);
+    let total_chars = if is_cursor_line {
+        chars.len() + 1
+    } else {
+        chars.len().max(1)
+    };
+    let num_rows = total_chars.div_ceil(chunk_size).max(1);
+
+    (0..num_rows)
+        .map(|row| {
+            let start = row * chunk_size;
+            let end = (start + chunk_size).min(chars.len());
+            let prefix = if row == 0 && is_first_line {
+                CHEVRON
+            } else if row == 0 {
+                NEWLINE_PAD
+            } else {
+                ""
+            };
+            let mut spans = vec![Span::styled(prefix.to_owned(), prefix_style)];
+
+            if is_cursor_line {
+                let chunk_text: String = chars[start..end].iter().collect();
+                let local_cursor = cursor_x.saturating_sub(start);
+                if cursor_x >= start && cursor_x < start + chunk_size {
+                    let byte_cx = TextBuffer::char_to_byte(&chunk_text, local_cursor);
+                    let (before, after) = chunk_text.split_at(byte_cx);
+                    spans.push(Span::raw(before.to_string()));
+                    if after.is_empty() {
+                        spans.push(Span::styled(" ", Style::new().reversed()));
+                    } else {
+                        let mut cs = after.chars();
+                        let cursor_char = cs.next().unwrap();
+                        spans.push(Span::styled(
+                            cursor_char.to_string(),
+                            Style::new().reversed(),
+                        ));
+                        let rest: String = cs.collect();
+                        if !rest.is_empty() {
+                            spans.push(Span::raw(rest));
+                        }
+                    }
+                } else {
+                    spans.push(Span::raw(chunk_text));
+                }
+            } else {
+                let chunk_text: String = chars[start..end].iter().collect();
+                spans.push(Span::raw(chunk_text));
+            }
+
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn total_visual_lines(buffer: &TextBuffer, ew: usize, cursor_visible: bool) -> usize {
     let cursor_y = buffer.y();
     buffer
         .lines()
@@ -369,7 +436,7 @@ fn total_visual_lines(buffer: &TextBuffer, content_width: usize, cursor_visible:
             if cursor_visible && i == cursor_y {
                 text_len += 1;
             }
-            visual_line_count(text_len, content_width)
+            visual_line_count(text_len, ew)
         })
         .sum()
 }
@@ -491,17 +558,14 @@ mod tests {
 
     #[test]
     fn cursor_adds_extra_wrap_row_at_boundary() {
-        let content_width: u16 = 12;
-        let width = content_width;
+        let width: u16 = 12;
+        let ew = effective_width(width as usize);
 
         let mut at_boundary = InputBox::new();
-        type_text(&mut at_boundary, &"x".repeat(content_width as usize));
+        type_text(&mut at_boundary, &"x".repeat(ew));
 
         let mut before_boundary = InputBox::new();
-        type_text(
-            &mut before_boundary,
-            &"x".repeat(content_width as usize - 1),
-        );
+        type_text(&mut before_boundary, &"x".repeat(ew - 1));
 
         assert_eq!(
             at_boundary.height(width),
@@ -600,5 +664,82 @@ mod tests {
         let mut input_box = InputBox::new();
         type_text(&mut input_box, input);
         assert_eq!(input_box.char_before_cursor_is_backslash(), expected);
+    }
+
+    fn rendered_row(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+        row: u16,
+    ) -> String {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.width)
+            .map(|col| buf.cell((col, row)).unwrap().symbol().to_string())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn prefix_on_single_line() {
+        let mut input = InputBox::new();
+        type_text(&mut input, "hello");
+        let terminal = render_input(&mut input, 20, 4);
+        let row = rendered_row(&terminal, 1);
+        assert!(row.starts_with(CHEVRON), "row: {row:?}");
+        assert!(row.contains("hello"));
+    }
+
+    #[test]
+    fn prefix_on_multiline() {
+        let mut input = InputBox::new();
+        type_text(&mut input, "aaa");
+        input.buffer.add_line();
+        type_text(&mut input, "bbb");
+        let terminal = render_input(&mut input, 20, 5);
+        let row0 = rendered_row(&terminal, 1);
+        let row1 = rendered_row(&terminal, 2);
+        assert!(row0.starts_with(CHEVRON), "row0: {row0:?}");
+        assert!(row1.starts_with(NEWLINE_PAD), "row1: {row1:?}");
+    }
+
+    #[test]
+    fn wrapped_line_gets_no_padding() {
+        let mut input = InputBox::new();
+        let ew = effective_width(14);
+        type_text(&mut input, &"x".repeat(ew + 3));
+        let terminal = render_input(&mut input, 14, 5);
+        let row0 = rendered_row(&terminal, 1);
+        let row1 = rendered_row(&terminal, 2);
+        assert!(row0.starts_with(CHEVRON), "row0: {row0:?}");
+        assert!(
+            !row1.starts_with(CHEVRON) && !row1.starts_with(NEWLINE_PAD),
+            "wrapped row should have no padding: {row1:?}"
+        );
+        assert!(
+            row1.starts_with("x"),
+            "wrapped row should start with content: {row1:?}"
+        );
+    }
+
+    #[test]
+    fn copy_text_includes_prefix() {
+        let mut input = InputBox::new();
+        type_text(&mut input, "line1");
+        input.buffer.add_line();
+        type_text(&mut input, "line2");
+        assert_eq!(input.copy_text(), "> line1\n  line2");
+    }
+
+    #[test]
+    fn copy_text_empty() {
+        let input = InputBox::new();
+        assert_eq!(input.copy_text(), "> ");
+    }
+
+    #[test]
+    fn placeholder_has_prefix() {
+        let mut input = InputBox::new();
+        let terminal = render_input(&mut input, 40, 4);
+        let row = rendered_row(&terminal, 1);
+        assert!(row.starts_with(CHEVRON), "placeholder row: {row:?}");
     }
 }

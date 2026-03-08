@@ -962,11 +962,11 @@ impl App {
                     self.selection_state = None;
                     return;
                 };
-                let input_value = self.input_box.buffer.value();
+                let copy_text = self.input_box.copy_text();
                 let input_area = sel.area;
                 let regions = [ContentRegion {
                     area: input_area,
-                    raw_text: &input_value,
+                    raw_text: &copy_text,
                 }];
                 selection::extract_selected_text(buf, &screen_sel, &regions)
             }
