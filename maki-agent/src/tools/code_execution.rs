@@ -12,6 +12,7 @@ use super::INTERPRETER_TOOLS;
 use super::truncate_output;
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+const PREAMBLE: &str = "import re\n";
 
 #[derive(Tool, Debug, Clone)]
 pub struct CodeInterpreter {
@@ -42,6 +43,7 @@ impl CodeInterpreter {
 
         tokio::task::spawn_blocking(move || {
             let tools = build_tool_fns(&event_tx, &mode);
+            let code = format!("{PREAMBLE}{code}");
 
             let result = if let Some(ref id) = tool_use_id {
                 let mut last_len = 0usize;
@@ -196,5 +198,15 @@ mod tests {
     #[test_case(&[], &[],                                json!({})               ; "no_args")]
     fn build_tool_input_cases(args: &[Value], kwargs: &[(String, Value)], expected: Value) {
         assert_eq!(build_tool_input(args, kwargs).unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn re_module_available_by_default() {
+        let ctx = stub_ctx(&AgentMode::Build);
+        let ci = CodeInterpreter {
+            code: r"re.findall(r'\d+', 'abc123def456')".into(),
+        };
+        let output = ci.execute(&ctx).await.unwrap().as_text();
+        assert!(output.contains("123") && output.contains("456"));
     }
 }
