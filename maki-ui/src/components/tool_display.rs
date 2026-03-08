@@ -278,7 +278,7 @@ impl ToolLineBuilder {
             spans.push(Span::styled(format!(" ({ann})"), theme::TOOL_ANNOTATION));
         }
         if let Some(model) = model_annotation {
-            spans.push(Span::styled(format!(" [{model}]"), theme::TOOL_ANNOTATION));
+            spans.push(Span::styled(format!(" ({model})"), theme::TOOL_ANNOTATION));
         }
         self.lines.push(Line::from(spans));
     }
@@ -872,7 +872,7 @@ mod tests {
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
         let text = lines_text(&tl);
         assert!(text.contains("(2m timeout)"));
-        assert!(text.contains("[anthropic/claude-haiku-4-20250414]"));
+        assert!(text.contains("(anthropic/claude-haiku-4-20250414)"));
     }
 
     #[test_case("bash",  ToolOutput::Plain("ok".into()),                      None                ; "plain_short_no_annotation")]
