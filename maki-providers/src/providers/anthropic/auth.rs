@@ -95,7 +95,10 @@ fn urlenc(s: &str) -> String {
 }
 
 fn post_token_request(body: serde_json::Value, context: &str) -> Result<TokenResponse, AgentError> {
-    let client = reqwest::blocking::Client::builder()
+    use isahc::ReadResponseExt;
+    use isahc::config::Configurable;
+
+    let client = isahc::HttpClient::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(30))
         .build()
@@ -104,15 +107,25 @@ fn post_token_request(body: serde_json::Value, context: &str) -> Result<TokenRes
             message: format!("{context}: {e}"),
         })?;
 
-    let resp = client
-        .post(TOKEN_URL)
+    let json_body = serde_json::to_vec(&body).map_err(|e| AgentError::Api {
+        status: 0,
+        message: format!("{context}: {e}"),
+    })?;
+
+    let request = isahc::Request::builder()
+        .method("POST")
+        .uri(TOKEN_URL)
         .header("content-type", "application/json")
-        .json(&body)
-        .send()
+        .body(json_body)
         .map_err(|e| AgentError::Api {
             status: 0,
             message: format!("{context}: {e}"),
         })?;
+
+    let mut resp = client.send(request).map_err(|e| AgentError::Api {
+        status: 0,
+        message: format!("{context}: {e}"),
+    })?;
 
     if resp.status().as_u16() != 200 {
         let body_text = resp.text().unwrap_or_else(|_| "unknown error".into());

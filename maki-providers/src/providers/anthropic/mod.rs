@@ -1,13 +1,11 @@
 use std::sync::Mutex;
 
 use flume::Sender;
-use futures::TryStreamExt;
 use futures_lite::StreamExt;
 use futures_lite::io::{AsyncBufReadExt, BufReader};
+use isahc::{AsyncReadResponseExt, HttpClient, Request};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio_util::compat::TokioAsyncReadCompatExt;
-use tokio_util::io::StreamReader;
 use tracing::{debug, warn};
 
 pub mod auth;
@@ -266,7 +264,7 @@ struct MessageDeltaEvent {
 }
 
 pub struct Anthropic {
-    client: reqwest::Client,
+    client: HttpClient,
     auth: Mutex<auth::ResolvedAuth>,
 }
 
@@ -279,17 +277,17 @@ impl Anthropic {
         })
     }
 
-    fn build_request(&self, method: reqwest::Method, url: Option<&str>) -> reqwest::RequestBuilder {
+    fn build_request(&self, method: &str, url: Option<&str>) -> isahc::http::request::Builder {
         let auth = self.auth.lock().unwrap();
         let url = url.unwrap_or(&auth.api_url);
-        let mut req = self
-            .client
-            .request(method, url)
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(url)
             .header("anthropic-version", API_VERSION);
         for (key, value) in &auth.headers {
-            req = req.header(key, value);
+            builder = builder.header(key.as_str(), value.as_str());
         }
-        req
+        builder
     }
 
     fn try_refresh_auth(&self) -> Result<(), AgentError> {
@@ -309,10 +307,12 @@ impl Anthropic {
         body: &Value,
         event_tx: &Sender<ProviderEvent>,
     ) -> Result<StreamResponse, AgentError> {
-        let req = self
-            .build_request(reqwest::Method::POST, None)
-            .header("content-type", "application/json");
-        let response = req.json(body).send().await?;
+        let json_body = serde_json::to_vec(body)?;
+        let request = self
+            .build_request("POST", None)
+            .header("content-type", "application/json")
+            .body(json_body)?;
+        let response = self.client.send_async(request).await?;
         let status = response.status().as_u16();
 
         if status == 200 {
@@ -332,15 +332,14 @@ impl Anthropic {
                 url.push_str(&format!("&after_id={cursor}"));
             }
 
-            let response = self
-                .build_request(reqwest::Method::GET, Some(&url))
-                .send()
-                .await?;
+            let request = self.build_request("GET", Some(&url)).body(())?;
+            let mut response = self.client.send_async(request).await?;
             if response.status().as_u16() != 200 {
                 return Err(AgentError::from_response(response).await);
             }
 
-            let page: ModelsPage = response.json().await?;
+            let body_text = response.text().await?;
+            let page: ModelsPage = serde_json::from_str(&body_text)?;
             models.extend(page.data.into_iter().map(|m| m.id));
 
             if !page.has_more {
@@ -489,11 +488,10 @@ fn build_wire_tools(tools: &Value) -> Value {
 }
 
 async fn parse_sse(
-    response: reqwest::Response,
+    response: isahc::Response<isahc::AsyncBody>,
     event_tx: &Sender<ProviderEvent>,
 ) -> Result<StreamResponse, AgentError> {
-    let stream = response.bytes_stream().map_err(std::io::Error::other);
-    let reader = BufReader::new(StreamReader::new(stream).compat());
+    let reader = BufReader::new(response.into_body());
     let mut lines = reader.lines();
 
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
@@ -623,17 +621,10 @@ async fn parse_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::stream;
 
-    fn bytes_stream(data: &[u8]) -> reqwest::Response {
-        let bytes = bytes::Bytes::from(data.to_vec());
-        let body =
-            reqwest::Body::wrap_stream(stream::once(async move { Ok::<_, std::io::Error>(bytes) }));
-        http::Response::builder()
-            .status(200)
-            .body(body)
-            .unwrap()
-            .into()
+    fn mock_response(data: &[u8]) -> isahc::Response<isahc::AsyncBody> {
+        let body = isahc::AsyncBody::from_bytes_static(data.to_vec());
+        isahc::Response::builder().status(200).body(body).unwrap()
     }
 
     #[test]
@@ -662,7 +653,7 @@ event: message_stop\n\
 data: {\"type\":\"message_stop\"}\n";
 
             let (tx, rx) = flume::unbounded();
-            let resp = parse_sse(bytes_stream(sse_data), &tx).await.unwrap();
+            let resp = parse_sse(mock_response(sse_data), &tx).await.unwrap();
 
             assert_eq!(
                 resp.usage,
@@ -711,7 +702,7 @@ event: message_delta\n\
 data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
 
             let (tx, _rx) = flume::unbounded();
-            let resp = parse_sse(bytes_stream(sse_data.as_bytes()), &tx)
+            let resp = parse_sse(mock_response(sse_data.as_bytes()), &tx)
                 .await
                 .unwrap();
 
@@ -774,7 +765,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
         smol::block_on(async {
             let input = b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n";
             let (tx, _rx) = flume::unbounded();
-            let err = parse_sse(bytes_stream(input), &tx).await.unwrap_err();
+            let err = parse_sse(mock_response(input), &tx).await.unwrap_err();
             match err {
                 AgentError::Api { status, message } => {
                     assert_eq!(status, 529);
@@ -790,7 +781,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
         smol::block_on(async {
             let input = b"event: error\ndata: not-json\n";
             let (tx, _rx) = flume::unbounded();
-            let err = parse_sse(bytes_stream(input), &tx).await.unwrap_err();
+            let err = parse_sse(mock_response(input), &tx).await.unwrap_err();
             match err {
                 AgentError::Api { status, message } => {
                     assert_eq!(status, 0);
@@ -821,7 +812,7 @@ event: message_delta\n\
 data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n";
 
             let (tx, _rx) = flume::unbounded();
-            let resp = parse_sse(bytes_stream(sse_data.as_bytes()), &tx)
+            let resp = parse_sse(mock_response(sse_data.as_bytes()), &tx)
                 .await
                 .unwrap();
 

@@ -1,7 +1,8 @@
 use std::time::Duration;
 
+use isahc::config::Configurable;
+use isahc::{AsyncReadResponseExt, HttpClient, Request};
 use maki_tool_macro::Tool;
-use reqwest::Client;
 use serde_json::{Value, json};
 
 use crate::ToolOutput;
@@ -49,17 +50,22 @@ impl WebSearch {
             }
         });
 
-        let client = Client::builder()
+        let client = HttpClient::builder()
             .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
             .build()
             .map_err(|e| format!("client error: {e}"))?;
 
-        let response = client
-            .post(EXA_MCP_ENDPOINT)
+        let json_body = serde_json::to_vec(&payload).map_err(|e| format!("json error: {e}"))?;
+        let request = Request::builder()
+            .method("POST")
+            .uri(EXA_MCP_ENDPOINT)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
-            .json(&payload)
-            .send()
+            .body(json_body)
+            .map_err(|e| format!("request build error: {e}"))?;
+
+        let mut response = client
+            .send_async(request)
             .await
             .map_err(|e| format!("request failed: {e}"))?;
 

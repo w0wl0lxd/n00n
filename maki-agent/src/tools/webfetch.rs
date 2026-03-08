@@ -1,5 +1,7 @@
-use reqwest::Client;
 use std::time::Duration;
+
+use isahc::config::Configurable;
+use isahc::{AsyncReadResponseExt, HttpClient, Request};
 
 use maki_tool_macro::Tool;
 
@@ -43,18 +45,22 @@ impl WebFetch {
                 .min(MAX_TIMEOUT_SECS),
         );
 
-        let client = Client::builder()
+        let client = HttpClient::builder()
             .timeout(timeout)
             .build()
             .map_err(|e| format!("client error: {e}"))?;
 
         let accept = accept_header(format);
 
-        let response = client
-            .get(&url)
+        let request = Request::builder()
+            .method("GET")
+            .uri(&url)
             .header("User-Agent", USER_AGENT)
             .header("Accept", accept)
-            .send()
+            .body(())
+            .map_err(|e| format!("request build error: {e}"))?;
+        let response = client
+            .send_async(request)
             .await
             .map_err(|e| format!("request failed: {e}"))?;
 
@@ -64,12 +70,16 @@ impl WebFetch {
                 .get(CF_MITIGATED)
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|v| v.contains(CF_CHALLENGE));
-        let response = if is_cf_challenge {
-            client
-                .get(&url)
+        let mut response = if is_cf_challenge {
+            let retry_request = Request::builder()
+                .method("GET")
+                .uri(&url)
                 .header("User-Agent", FALLBACK_USER_AGENT)
                 .header("Accept", accept)
-                .send()
+                .body(())
+                .map_err(|e| format!("request build error: {e}"))?;
+            client
+                .send_async(retry_request)
                 .await
                 .map_err(|e| format!("request failed: {e}"))?
         } else {
@@ -84,8 +94,8 @@ impl WebFetch {
         if let Some(len) = response
             .headers()
             .get("content-length")
-            .and_then(|v: &reqwest::header::HeaderValue| v.to_str().ok())
-            .and_then(|v: &str| v.parse::<usize>().ok())
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<usize>().ok())
             && len > MAX_RESPONSE_BYTES
         {
             return Err(format!("response too large: {len} bytes"));

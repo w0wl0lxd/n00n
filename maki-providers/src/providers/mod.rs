@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use isahc::config::Configurable;
 use serde::Deserialize;
 
 use crate::AgentError;
@@ -37,8 +38,8 @@ impl SseErrorPayload {
     }
 }
 
-pub(crate) fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
+pub(crate) fn http_client() -> isahc::HttpClient {
+    isahc::HttpClient::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(RECV_TIMEOUT)
         .build()

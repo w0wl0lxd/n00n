@@ -1,13 +1,11 @@
 use std::env;
 
 use flume::Sender;
-use futures::TryStreamExt;
 use futures_lite::StreamExt;
 use futures_lite::io::{AsyncBufReadExt, BufReader};
+use isahc::{AsyncReadResponseExt, HttpClient, Request};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio_util::compat::TokioAsyncReadCompatExt;
-use tokio_util::io::StreamReader;
 use tracing::{debug, warn};
 
 use crate::model::Model;
@@ -132,7 +130,7 @@ pub enum ZaiPlan {
 }
 
 pub struct Zai {
-    client: reqwest::Client,
+    client: HttpClient,
     api_key: String,
     completions_url: String,
     models_url: String,
@@ -272,14 +270,14 @@ impl Provider for Zai {
 
             debug!(model = %model.id, num_messages = messages.len(), "sending Z.AI API request");
 
-            let response = self
-                .client
-                .post(&self.completions_url)
+            let json_body = serde_json::to_vec(&body)?;
+            let request = Request::builder()
+                .method("POST")
+                .uri(&self.completions_url)
                 .header("content-type", "application/json")
                 .header("authorization", &format!("Bearer {}", self.api_key))
-                .json(&body)
-                .send()
-                .await?;
+                .body(json_body)?;
+            let mut response = self.client.send_async(request).await?;
             let status = response.status().as_u16();
 
             if status == 429 || status >= 500 {
@@ -307,17 +305,17 @@ impl Provider for Zai {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
         Box::pin(async move {
-            let response = self
-                .client
-                .get(&self.models_url)
+            let request = Request::builder()
+                .method("GET")
+                .uri(&self.models_url)
                 .header("authorization", &format!("Bearer {}", self.api_key))
-                .send()
-                .await?;
+                .body(())?;
+            let mut response = self.client.send_async(request).await?;
             if response.status().as_u16() != 200 {
                 return Err(AgentError::from_response(response).await);
             }
 
-            let body: Value = response.json().await?;
+            let body: Value = serde_json::from_str(&response.text().await?)?;
             let mut models: Vec<String> = body["data"]
                 .as_array()
                 .map(|arr| {
@@ -398,11 +396,10 @@ struct ToolAccumulator {
 }
 
 async fn parse_sse(
-    response: reqwest::Response,
+    response: isahc::Response<isahc::AsyncBody>,
     event_tx: &Sender<ProviderEvent>,
 ) -> Result<StreamResponse, AgentError> {
-    let stream = response.bytes_stream().map_err(std::io::Error::other);
-    let reader = BufReader::new(StreamReader::new(stream).compat());
+    let reader = BufReader::new(response.into_body());
     let mut lines = reader.lines();
 
     let mut text = String::new();
@@ -541,17 +538,11 @@ async fn parse_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::stream;
 
-    fn bytes_stream(data: &[u8]) -> reqwest::Response {
-        let bytes = bytes::Bytes::from(data.to_vec());
-        let body =
-            reqwest::Body::wrap_stream(stream::once(async move { Ok::<_, std::io::Error>(bytes) }));
-        http::Response::builder()
-            .status(200)
-            .body(body)
-            .unwrap()
-            .into()
+    #[allow(clippy::unnecessary_to_owned)]
+    fn mock_response(data: &[u8]) -> isahc::Response<isahc::AsyncBody> {
+        let body = isahc::AsyncBody::from_bytes_static(data.to_vec());
+        isahc::Response::builder().status(200).body(body).unwrap()
     }
 
     #[test]
@@ -567,7 +558,7 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prom
 data: [DONE]\n";
 
             let (tx, rx) = flume::unbounded();
-            let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
+            let resp = parse_sse(mock_response(sse.as_bytes()), &tx).await.unwrap();
 
             assert_eq!(resp.usage.input, 60);
             assert_eq!(resp.usage.output, 10);
@@ -603,7 +594,7 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prom
 data: [DONE]\n";
 
             let (tx, rx) = flume::unbounded();
-            let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
+            let resp = parse_sse(mock_response(sse.as_bytes()), &tx).await.unwrap();
 
             assert!(
                 matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Let me think...Hello")
@@ -702,7 +693,7 @@ data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}],\"usage\":{
 data: [DONE]\n";
 
             let (tx, _rx) = flume::unbounded();
-            let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
+            let resp = parse_sse(mock_response(sse.as_bytes()), &tx).await.unwrap();
 
             let tools: Vec<_> = resp.message.tool_uses().collect();
             assert_eq!(tools.len(), 2);
@@ -723,7 +714,7 @@ data: [DONE]\n";
 data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\"}}\n";
 
             let (tx, _rx) = flume::unbounded();
-            let err = parse_sse(bytes_stream(sse.as_bytes()), &tx)
+            let err = parse_sse(mock_response(sse.as_bytes()), &tx)
                 .await
                 .unwrap_err();
 
@@ -750,7 +741,7 @@ data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}],\"usage\":{
 data: [DONE]\n";
 
             let (tx, _rx) = flume::unbounded();
-            let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
+            let resp = parse_sse(mock_response(sse.as_bytes()), &tx).await.unwrap();
 
             let tools: Vec<_> = resp.message.tool_uses().collect();
             assert_eq!(tools.len(), 1);

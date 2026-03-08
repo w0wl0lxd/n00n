@@ -7,7 +7,9 @@ pub enum AgentError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("http: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[from] isahc::Error),
+    #[error("http request: {0}")]
+    HttpRequest(#[from] isahc::http::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
     #[error("channel send failed")]
@@ -21,18 +23,17 @@ impl AgentError {
         match self {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
             Self::Io(_) => true,
-            Self::Http(e) => {
-                e.is_timeout()
-                    || e.is_connect()
-                    || e.is_request()
-                    || e.status()
-                        .is_some_and(|s| s.as_u16() == 429 || s.as_u16() >= 500)
-            }
-            Self::Tool { .. } | Self::Channel | Self::Json(_) | Self::Cancelled => false,
+            Self::Http(_) => true,
+            Self::Tool { .. }
+            | Self::Channel
+            | Self::Json(_)
+            | Self::Cancelled
+            | Self::HttpRequest(_) => false,
         }
     }
 
-    pub async fn from_response(response: reqwest::Response) -> Self {
+    pub async fn from_response(mut response: isahc::Response<isahc::AsyncBody>) -> Self {
+        use isahc::AsyncReadResponseExt;
         let status = response.status().as_u16();
         let message = response
             .text()

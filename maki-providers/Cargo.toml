@@ -15,11 +15,7 @@ strum = { workspace = true }
 smol = { workspace = true }
 flume = { workspace = true }
 futures-lite = { workspace = true }
-tokio-util = { workspace = true }
-reqwest = { workspace = true }
-futures = { workspace = true }
+isahc = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }
-bytes = { workspace = true }
-http = { workspace = true }

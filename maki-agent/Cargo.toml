@@ -24,7 +24,7 @@ flume = { workspace = true }
 async-lock = { workspace = true }
 async-io = { workspace = true }
 futures-lite = { workspace = true }
-reqwest = { workspace = true }
+isahc = { workspace = true }
 
 
 [dev-dependencies]
