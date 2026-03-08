@@ -1,9 +1,13 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::thread;
+use std::time::Duration;
 
 use maki_agent::{ToolInput, ToolOutput};
 use ratatui::text::Line;
+
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const FALLBACK_MAX_THREADS: usize = 4;
 
 struct RenderJob {
     id: u64,
@@ -18,50 +22,122 @@ pub struct RenderResult {
 
 static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(0);
 
+struct PoolInner {
+    job_rx: flume::Receiver<RenderJob>,
+    result_tx: flume::Sender<RenderResult>,
+    active_threads: AtomicUsize,
+    max_threads: usize,
+}
+
 pub struct RenderWorker {
-    tx: mpsc::Sender<RenderJob>,
-    rx: mpsc::Receiver<RenderResult>,
+    job_tx: flume::Sender<RenderJob>,
+    inner: Arc<PoolInner>,
+    result_rx: flume::Receiver<RenderResult>,
 }
 
 impl RenderWorker {
     pub fn new() -> Self {
-        let (req_tx, req_rx) = mpsc::channel::<RenderJob>();
-        let (res_tx, res_rx) = mpsc::channel::<RenderResult>();
-
-        thread::Builder::new()
-            .name("render".into())
-            .spawn(move || {
-                use crate::components::code_view;
-                while let Ok(job) = req_rx.recv() {
-                    let lines = code_view::render_tool_content(
-                        job.tool_input.as_ref(),
-                        job.tool_output.as_ref(),
-                        true,
-                    );
-                    if res_tx.send(RenderResult { id: job.id, lines }).is_err() {
-                        break;
-                    }
-                }
-            })
-            .expect("spawn highlight thread");
+        let (job_tx, job_rx) = flume::unbounded();
+        let (result_tx, result_rx) = flume::unbounded();
+        let max_threads = thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(FALLBACK_MAX_THREADS);
 
         Self {
-            tx: req_tx,
-            rx: res_rx,
+            job_tx,
+            inner: Arc::new(PoolInner {
+                job_rx,
+                result_tx,
+                active_threads: AtomicUsize::new(0),
+                max_threads,
+            }),
+            result_rx,
         }
     }
 
     pub fn send(&self, tool_input: Option<ToolInput>, tool_output: Option<ToolOutput>) -> u64 {
         let id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
-        let _ = self.tx.send(RenderJob {
+        let _ = self.job_tx.send(RenderJob {
             id,
             tool_input,
             tool_output,
         });
+        self.maybe_spawn_thread();
         id
     }
 
     pub fn try_recv(&self) -> Option<RenderResult> {
-        self.rx.try_recv().ok()
+        self.result_rx.try_recv().ok()
+    }
+
+    fn maybe_spawn_thread(&self) {
+        let current = self.inner.active_threads.load(Ordering::Acquire);
+        if current >= self.inner.max_threads {
+            return;
+        }
+        if self
+            .inner
+            .active_threads
+            .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+
+        let inner = Arc::clone(&self.inner);
+        thread::Builder::new()
+            .name("render".into())
+            .spawn(move || worker_loop(&inner))
+            .expect("spawn render pool thread");
+    }
+}
+
+fn worker_loop(inner: &PoolInner) {
+    use crate::components::code_view;
+    while let Ok(job) = inner.job_rx.recv_timeout(IDLE_TIMEOUT) {
+        let lines =
+            code_view::render_tool_content(job.tool_input.as_ref(), job.tool_output.as_ref(), true);
+        if inner
+            .result_tx
+            .send(RenderResult { id: job.id, lines })
+            .is_err()
+        {
+            break;
+        }
+    }
+    inner.active_threads.fetch_sub(1, Ordering::AcqRel);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_worker(active: usize, max: usize) -> RenderWorker {
+        let (job_tx, job_rx) = flume::unbounded();
+        let (result_tx, result_rx) = flume::unbounded();
+        RenderWorker {
+            job_tx,
+            inner: Arc::new(PoolInner {
+                job_rx,
+                result_tx,
+                active_threads: AtomicUsize::new(active),
+                max_threads: max,
+            }),
+            result_rx,
+        }
+    }
+
+    #[test]
+    fn does_not_spawn_when_at_cap() {
+        let worker = make_worker(2, 2);
+        worker.maybe_spawn_thread();
+        assert_eq!(worker.inner.active_threads.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn increments_active_count_when_below_max() {
+        let worker = make_worker(0, 4);
+        worker.maybe_spawn_thread();
+        assert!(worker.inner.active_threads.load(Ordering::SeqCst) >= 1);
     }
 }
