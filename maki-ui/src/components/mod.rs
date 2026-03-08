@@ -9,6 +9,8 @@ pub(crate) mod scrollbar;
 pub mod status_bar;
 pub(crate) mod tool_display;
 
+pub(crate) const TOOL_SEPARATOR: &str = "────────────";
+
 use crossterm::event::{KeyEvent, KeyModifiers};
 use maki_agent::AgentInput;
 use maki_agent::{ToolInput, ToolOutput};
