@@ -1,7 +1,9 @@
 pub mod chat_picker;
 pub(crate) mod code_view;
 pub mod command;
+pub(crate) mod help_modal;
 pub mod input;
+pub(crate) mod keybindings;
 pub mod messages;
 pub mod question_form;
 pub mod queue_panel;

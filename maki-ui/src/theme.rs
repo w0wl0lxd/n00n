@@ -79,6 +79,9 @@ pub const CURSOR: Style = Style::new().fg(BACKGROUND).bg(FOREGROUND);
 
 pub const INPUT_BORDER: Color = COMMENT;
 
+pub const KEYBIND_KEY: Style = Style::new().fg(CYAN).add_modifier(Modifier::BOLD);
+pub const KEYBIND_SECTION: Style = Style::new().fg(COMMENT_LIGHTER);
+
 const fn midpoint(a: u8, b: u8) -> u8 {
     (a as u16 / 2 + b as u16 / 2) as u8
 }

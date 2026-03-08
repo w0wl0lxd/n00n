@@ -6,7 +6,9 @@ use tokio::sync::mpsc as tokio_mpsc;
 use crate::chat::{Chat, ChatEventResult};
 use crate::components::chat_picker::{ChatPicker, ChatPickerAction};
 use crate::components::command::{CommandAction, CommandPalette};
+use crate::components::help_modal::HelpModal;
 use crate::components::input::{InputAction, InputBox};
+use crate::components::keybindings::KeybindContext;
 use crate::components::question_form::{QuestionForm, QuestionFormAction};
 use crate::components::queue_panel::{self, QueueEntry};
 use crate::components::status_bar::{CancelResult, StatusBar, StatusBarContext, UsageStats};
@@ -87,6 +89,7 @@ pub struct App {
     pub(crate) input_box: InputBox,
     command_palette: CommandPalette,
     chat_picker: ChatPicker,
+    help_modal: HelpModal,
     question_form: QuestionForm,
     status_bar: StatusBar,
     pub status: Status,
@@ -122,6 +125,7 @@ impl App {
             input_box: InputBox::new(),
             command_palette: CommandPalette::new(),
             chat_picker: ChatPicker::new(),
+            help_modal: HelpModal::new(),
             question_form: QuestionForm::new(),
             status_bar: StatusBar::new(),
             status: Status::Idle,
@@ -201,6 +205,26 @@ impl App {
 
     fn zone_at(&self, row: u16, col: u16) -> Option<SelectableZone> {
         selection::zone_at(&self.zones, row, col)
+    }
+
+    /// Keep in sync with the priority chain in `handle_key`.
+    fn active_keybind_contexts(&self) -> Vec<KeybindContext> {
+        let mut contexts = vec![KeybindContext::General];
+        if self.question_form.is_visible() {
+            contexts.push(KeybindContext::QuestionForm);
+        } else if self.queue_focus.is_some() {
+            contexts.push(KeybindContext::QueueFocus);
+        } else if self.chat_picker.is_open() {
+            contexts.push(KeybindContext::ChatPicker);
+        } else if self.command_palette.is_active() {
+            contexts.push(KeybindContext::CommandPalette);
+        } else {
+            if self.status == Status::Streaming {
+                contexts.push(KeybindContext::Streaming);
+            }
+            contexts.push(KeybindContext::Editing);
+        }
+        contexts
     }
 
     fn scroll_offset(&self, zone: SelectionZone) -> u32 {
@@ -390,6 +414,11 @@ impl App {
         }
         self.selection_state = None;
 
+        if self.help_modal.is_open() {
+            self.help_modal.handle_key(key);
+            return vec![];
+        }
+
         if let Some(selected) = self.queue_focus {
             match key.code {
                 KeyCode::Up => {
@@ -429,6 +458,7 @@ impl App {
             };
         }
 
+        // Keep in sync with: `KEYBINDS` in keybindings.rs
         if is_ctrl(&key) {
             let half = self.chats[self.active_chat].half_page();
             return match key.code {
@@ -482,6 +512,10 @@ impl App {
                     if !self.queue.is_empty() {
                         self.pop_queue_front();
                     }
+                    vec![]
+                }
+                KeyCode::Char('h') if is_ctrl(&key) => {
+                    self.help_modal.toggle();
                     vec![]
                 }
                 _ => {
@@ -806,6 +840,7 @@ impl App {
             self.demo_questions = None;
         }
         self.question_form.close();
+        self.help_modal.close();
         self.pending_question = false;
         self.status_bar.clear_cancel_hint();
         self.chat_picker.close();
@@ -922,6 +957,9 @@ impl App {
             highlight_area: status_area,
             zone: SelectionZone::StatusBar,
         });
+
+        let help_contexts = self.active_keybind_contexts();
+        self.help_modal.view(frame, frame.area(), &help_contexts);
 
         if let Some(ref state) = self.selection_state {
             let zone = state.sel.zone;
@@ -2310,5 +2348,84 @@ mod tests {
             app.chats[1].model_id.as_deref(),
             Some("anthropic/claude-sonnet-4-20250514")
         );
+    }
+
+    #[test]
+    fn ctrl_h_toggles_help_modal() {
+        let mut app = test_app();
+        assert!(!app.help_modal.is_open());
+
+        app.update(Msg::Key(ctrl('h')));
+        assert!(app.help_modal.is_open());
+
+        app.update(Msg::Key(ctrl('h')));
+        assert!(!app.help_modal.is_open());
+    }
+
+    #[test]
+    fn help_modal_esc_closes() {
+        let mut app = test_app();
+        app.update(Msg::Key(ctrl('h')));
+        assert!(app.help_modal.is_open());
+
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(!app.help_modal.is_open());
+    }
+
+    #[test]
+    fn help_modal_consumes_keys() {
+        let mut app = test_app();
+        app.update(Msg::Key(ctrl('h')));
+
+        app.update(Msg::Key(key(KeyCode::Char('h'))));
+        app.update(Msg::Key(key(KeyCode::Char('i'))));
+        assert_eq!(app.input_box.buffer.value(), "");
+    }
+
+    #[test]
+    fn help_modal_closed_on_reset() {
+        let mut app = test_app();
+        app.update(Msg::Key(ctrl('h')));
+        assert!(app.help_modal.is_open());
+
+        app.reset_session();
+        assert!(!app.help_modal.is_open());
+    }
+
+    #[test]
+    fn active_contexts_idle() {
+        let app = test_app();
+        let contexts = app.active_keybind_contexts();
+        assert!(contexts.contains(&KeybindContext::General));
+        assert!(contexts.contains(&KeybindContext::Editing));
+        assert!(!contexts.contains(&KeybindContext::Streaming));
+    }
+
+    #[test]
+    fn active_contexts_streaming() {
+        let mut app = test_app();
+        app.status = Status::Streaming;
+        let contexts = app.active_keybind_contexts();
+        assert!(contexts.contains(&KeybindContext::General));
+        assert!(contexts.contains(&KeybindContext::Streaming));
+        assert!(contexts.contains(&KeybindContext::Editing));
+    }
+
+    #[test]
+    fn active_contexts_queue_focus() {
+        let mut app = app_with_queued_message();
+        app.queue_focus = Some(0);
+        let contexts = app.active_keybind_contexts();
+        assert!(contexts.contains(&KeybindContext::QueueFocus));
+        assert!(!contexts.contains(&KeybindContext::Editing));
+    }
+
+    #[test]
+    fn active_contexts_chat_picker() {
+        let mut app = test_app();
+        open_chats_picker(&mut app);
+        let contexts = app.active_keybind_contexts();
+        assert!(contexts.contains(&KeybindContext::ChatPicker));
+        assert!(!contexts.contains(&KeybindContext::Editing));
     }
 }
