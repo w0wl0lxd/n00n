@@ -85,6 +85,7 @@ fn run_event_loop(
     #[cfg(feature = "demo")]
     if demo {
         app.status = components::Status::Streaming;
+        app.run_id = 1;
         for event in mock::mock_events() {
             match event {
                 mock::MockEvent::User(text) => app.main_chat().push_user_message(&text),
