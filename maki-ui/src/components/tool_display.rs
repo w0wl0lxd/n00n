@@ -241,13 +241,8 @@ impl From<BatchToolStatus> for Indicator {
 }
 
 enum OutputMode<'a> {
-    Fallback {
-        body: Option<&'a str>,
-        tool: &'a str,
-    },
-    Truncated {
-        tool: &'a str,
-    },
+    Fallback { body: Option<&'a str> },
+    Truncated { tool: &'a str },
 }
 
 struct ToolLineBuilder {
@@ -309,26 +304,18 @@ impl ToolLineBuilder {
 
     fn push_output(&mut self, output: Option<&ToolOutput>, mode: OutputMode<'_>) {
         match mode {
-            OutputMode::Fallback { body, tool } => self.push_output_fallback(output, body, tool),
+            OutputMode::Fallback { body } => self.push_output_fallback(output, body),
             OutputMode::Truncated { tool } => self.push_output_truncated(output, tool),
         }
     }
 
-    fn push_output_fallback(
-        &mut self,
-        output: Option<&ToolOutput>,
-        body: Option<&str>,
-        tool: &str,
-    ) {
+    fn push_output_fallback(&mut self, output: Option<&ToolOutput>, body: Option<&str>) {
         match output {
             None | Some(ToolOutput::Plain(_)) | Some(ToolOutput::GlobResult { .. }) => {
                 if let Some(text) = body {
                     let has_code = self.content_range.1 > self.content_range.0;
-                    if tool == CODE_EXECUTION_TOOL_NAME && has_code {
-                        self.lines.push(Line::from(Span::styled(
-                            format!("{TOOL_BODY_INDENT}{}", BATCH_SEPARATOR.repeat(40)),
-                            theme::TOOL_DIM,
-                        )));
+                    if has_code {
+                        self.push_separator(TOOL_BODY_INDENT);
                     }
                     push_text_lines(&mut self.lines, text, TOOL_BODY_INDENT);
                 }
@@ -338,7 +325,17 @@ impl ToolLineBuilder {
         }
     }
 
+    fn push_separator(&mut self, indent: &str) {
+        self.lines.push(Line::from(Span::styled(
+            format!("{indent}{TOOL_OUTPUT_SEPARATOR}"),
+            theme::TOOL_DIM,
+        )));
+    }
+
     fn push_output_truncated(&mut self, output: Option<&ToolOutput>, tool: &str) {
+        if self.content_range.1 > self.content_range.0 {
+            self.push_separator(TOOL_BODY_INDENT);
+        }
         match output {
             None => {}
             Some(ToolOutput::Plain(text)) => {
@@ -374,7 +371,7 @@ impl ToolLineBuilder {
         self.lines.insert(
             0,
             Line::from(Span::styled(
-                format!("{BATCH_INDENT}{}", BATCH_SEPARATOR.repeat(40)),
+                format!("{BATCH_INDENT}{TOOL_OUTPUT_SEPARATOR}"),
                 theme::TOOL_DIM,
             )),
         );
@@ -464,13 +461,7 @@ pub fn build_tool_lines(
     );
     b.prepend_indicator(status.into(), started_at);
     b.push_code_content(msg.tool_input.as_ref(), msg.tool_output.as_ref());
-    b.push_output(
-        msg.tool_output.as_ref(),
-        OutputMode::Fallback {
-            body,
-            tool: tool_name,
-        },
-    );
+    b.push_output(msg.tool_output.as_ref(), OutputMode::Fallback { body });
     b.finish(
         msg.tool_input.clone(),
         msg.tool_output.clone(),
@@ -485,7 +476,7 @@ pub fn truncate_to_header(text: &mut String) {
 
 const BATCH_INDENT: &str = "  ";
 const BATCH_CONTENT_INDENT: &str = "    ";
-const BATCH_SEPARATOR: &str = "─";
+const TOOL_OUTPUT_SEPARATOR: &str = "────";
 
 pub fn build_batch_entry_lines(
     entry: &BatchToolEntry,
@@ -655,6 +646,46 @@ mod tests {
         assert!(text.contains("line2"));
     }
 
+    fn has_separator(tl: &ToolLines) -> bool {
+        tl.lines
+            .iter()
+            .any(|l| has_styled_span(&l.spans, TOOL_OUTPUT_SEPARATOR, theme::TOOL_DIM))
+    }
+
+    #[test_case(code_input(), true  ; "with_code_input")]
+    #[test_case(None,         false ; "without_code_input")]
+    fn tool_separator_presence(input: Option<ToolInput>, expect: bool) {
+        let msg = DisplayMessage {
+            role: DisplayRole::Tool {
+                id: "t1".into(),
+                status: ToolStatus::Success,
+                name: BASH_TOOL_NAME,
+            },
+            text: "echo hi\nhello".into(),
+            tool_input: input,
+            tool_output: plain_output(),
+            annotation: None,
+            model_annotation: None,
+            plan_path: None,
+            timestamp: None,
+        };
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
+        assert_eq!(has_separator(&tl), expect);
+    }
+
+    #[test]
+    fn batch_separator_between_code_and_output() {
+        let entry = BatchToolEntry {
+            tool: "bash".into(),
+            summary: "echo hi".into(),
+            status: BatchToolStatus::Success,
+            input: code_input(),
+            output: Some(ToolOutput::Plain("hello".into())),
+        };
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now());
+        assert!(has_separator(&tl));
+    }
+
     #[test_case("header\nbody\nmore", "header" ; "multiline")]
     #[test_case("header",            "header" ; "single_line")]
     fn truncate_to_header_cases(input: &str, expected: &str) {
@@ -758,7 +789,7 @@ mod tests {
         let first = build_batch_entry_lines(&entry, 0, Instant::now());
         let second = build_batch_entry_lines(&entry, 1, Instant::now());
         assert!(second.lines.len() > first.lines.len());
-        assert!(spans_text(&second.lines[0].spans).contains(BATCH_SEPARATOR));
+        assert!(spans_text(&second.lines[0].spans).contains(TOOL_OUTPUT_SEPARATOR));
     }
 
     #[test]
