@@ -1,5 +1,3 @@
-use tokio::sync::mpsc;
-
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error("API error ({status}): {message}")]
@@ -54,8 +52,8 @@ impl AgentError {
     }
 }
 
-impl<T> From<mpsc::error::SendError<T>> for AgentError {
-    fn from(_: mpsc::error::SendError<T>) -> Self {
+impl<T> From<flume::SendError<T>> for AgentError {
+    fn from(_: flume::SendError<T>) -> Self {
         Self::Channel
     }
 }

@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
-
 use crate::{AgentEvent, EventSender, SubagentInfo, ToolOutput};
 use maki_providers::ContentBlock;
 use maki_providers::model::ModelTier;
@@ -77,7 +75,7 @@ impl Task {
             model.family.supports_tool_examples(),
         );
 
-        let (sub_tx, mut sub_rx) = mpsc::unbounded_channel::<crate::Envelope>();
+        let (sub_tx, sub_rx) = flume::unbounded::<crate::Envelope>();
         let sub_event_tx = EventSender::new(sub_tx, ctx.event_tx.run_id());
         let parent_tx = ctx.event_tx.clone();
         let subagent_info = ctx.tool_use_id.as_ref().map(|id| SubagentInfo {
@@ -86,8 +84,8 @@ impl Task {
             prompt: Some(self.prompt.clone()),
             model: Some(model.spec()),
         });
-        tokio::spawn(async move {
-            while let Some(mut envelope) = sub_rx.recv().await {
+        smol::spawn(async move {
+            while let Ok(mut envelope) = sub_rx.recv_async().await {
                 if matches!(
                     envelope.event,
                     AgentEvent::Done { .. }
@@ -99,7 +97,8 @@ impl Task {
                 envelope.subagent = subagent_info.clone();
                 let _ = parent_tx.send_envelope(envelope);
             }
-        });
+        })
+        .detach();
 
         let input = AgentInput {
             message: self.prompt.clone(),

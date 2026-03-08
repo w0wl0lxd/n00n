@@ -1,4 +1,5 @@
 pub mod agent;
+pub(crate) mod task_set;
 pub use agent::{Agent, History, RunOutcome};
 pub(crate) mod prompt;
 pub mod skill;

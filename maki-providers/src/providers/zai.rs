@@ -1,16 +1,18 @@
 use std::env;
 
+use flume::Sender;
 use futures::TryStreamExt;
+use futures_lite::StreamExt;
+use futures_lite::io::{AsyncBufReadExt, BufReader};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::io::StreamReader;
 use tracing::{debug, warn};
 
 use crate::model::Model;
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
-use crate::provider::Provider;
+use crate::provider::{BoxFuture, Provider};
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
 };
@@ -245,85 +247,88 @@ fn convert_tools(anthropic_tools: &Value) -> Value {
     )
 }
 
-#[async_trait::async_trait]
 impl Provider for Zai {
-    async fn stream_message(
-        &self,
-        model: &Model,
-        messages: &[Message],
-        system: &str,
-        tools: &Value,
-        event_tx: &UnboundedSender<ProviderEvent>,
-    ) -> Result<StreamResponse, AgentError> {
-        let wire_messages = convert_messages(messages, system);
-        let wire_tools = convert_tools(tools);
+    fn stream_message<'a>(
+        &'a self,
+        model: &'a Model,
+        messages: &'a [Message],
+        system: &'a str,
+        tools: &'a Value,
+        event_tx: &'a Sender<ProviderEvent>,
+    ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+        Box::pin(async move {
+            let wire_messages = convert_messages(messages, system);
+            let wire_tools = convert_tools(tools);
 
-        let mut body = json!({
-            "model": model.id,
-            "messages": wire_messages,
-            "stream": true,
-            "max_tokens": model.max_output_tokens,
-        });
-        if wire_tools.as_array().is_some_and(|a| !a.is_empty()) {
-            body["tools"] = wire_tools;
-        }
+            let mut body = json!({
+                "model": model.id,
+                "messages": wire_messages,
+                "stream": true,
+                "max_tokens": model.max_output_tokens,
+            });
+            if wire_tools.as_array().is_some_and(|a| !a.is_empty()) {
+                body["tools"] = wire_tools;
+            }
 
-        debug!(model = %model.id, num_messages = messages.len(), "sending Z.AI API request");
+            debug!(model = %model.id, num_messages = messages.len(), "sending Z.AI API request");
 
-        let response = self
-            .client
-            .post(&self.completions_url)
-            .header("content-type", "application/json")
-            .header("authorization", &format!("Bearer {}", self.api_key))
-            .json(&body)
-            .send()
-            .await?;
-        let status = response.status().as_u16();
+            let response = self
+                .client
+                .post(&self.completions_url)
+                .header("content-type", "application/json")
+                .header("authorization", &format!("Bearer {}", self.api_key))
+                .json(&body)
+                .send()
+                .await?;
+            let status = response.status().as_u16();
 
-        if status == 429 || status >= 500 {
-            let error_body = response.text().await.unwrap_or_default();
-            if error_body.contains("1113") || error_body.contains("nsufficien") {
-                warn!(status, "insufficient funds, bailing out");
+            if status == 429 || status >= 500 {
+                let error_body = response.text().await.unwrap_or_default();
+                if error_body.contains("1113") || error_body.contains("nsufficien") {
+                    warn!(status, "insufficient funds, bailing out");
+                    return Err(AgentError::Api {
+                        status: 402,
+                        message: error_body,
+                    });
+                }
                 return Err(AgentError::Api {
-                    status: 402,
+                    status,
                     message: error_body,
                 });
             }
-            return Err(AgentError::Api {
-                status,
-                message: error_body,
-            });
-        }
 
-        if status == 200 {
-            parse_sse(response, event_tx).await
-        } else {
-            Err(AgentError::from_response(response).await)
-        }
+            if status == 200 {
+                parse_sse(response, event_tx).await
+            } else {
+                Err(AgentError::from_response(response).await)
+            }
+        })
     }
 
-    async fn list_models(&self) -> Result<Vec<String>, AgentError> {
-        let response = self
-            .client
-            .get(&self.models_url)
-            .header("authorization", &format!("Bearer {}", self.api_key))
-            .send()
-            .await?;
-        if response.status().as_u16() != 200 {
-            return Err(AgentError::from_response(response).await);
-        }
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+        Box::pin(async move {
+            let response = self
+                .client
+                .get(&self.models_url)
+                .header("authorization", &format!("Bearer {}", self.api_key))
+                .send()
+                .await?;
+            if response.status().as_u16() != 200 {
+                return Err(AgentError::from_response(response).await);
+            }
 
-        let body: Value = response.json().await?;
-        let mut models: Vec<String> = body["data"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|m| m["id"].as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        models.sort();
-        Ok(models)
+            let body: Value = response.json().await?;
+            let mut models: Vec<String> = body["data"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|m| m["id"].as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            models.sort();
+            Ok(models)
+        })
     }
 }
 
@@ -394,10 +399,10 @@ struct ToolAccumulator {
 
 async fn parse_sse(
     response: reqwest::Response,
-    event_tx: &UnboundedSender<ProviderEvent>,
+    event_tx: &Sender<ProviderEvent>,
 ) -> Result<StreamResponse, AgentError> {
     let stream = response.bytes_stream().map_err(std::io::Error::other);
-    let reader = BufReader::new(StreamReader::new(stream));
+    let reader = BufReader::new(StreamReader::new(stream).compat());
     let mut lines = reader.lines();
 
     let mut text = String::new();
@@ -405,7 +410,8 @@ async fn parse_sse(
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
 
-    while let Some(line) = lines.next_line().await? {
+    while let Some(line) = lines.next().await {
+        let line = line?;
         let data = match line.strip_prefix("data: ") {
             Some(d) => d.trim(),
             None => continue,
@@ -459,14 +465,18 @@ async fn parse_sse(
             && !reasoning.is_empty()
         {
             text.push_str(&reasoning);
-            event_tx.send(ProviderEvent::ThinkingDelta { text: reasoning })?;
+            event_tx
+                .send_async(ProviderEvent::ThinkingDelta { text: reasoning })
+                .await?;
         }
 
         if let Some(content) = delta.content
             && !content.is_empty()
         {
             text.push_str(&content);
-            event_tx.send(ProviderEvent::TextDelta { text: content })?;
+            event_tx
+                .send_async(ProviderEvent::TextDelta { text: content })
+                .await?;
         }
 
         if let Some(tc_deltas) = delta.tool_calls {
@@ -532,7 +542,6 @@ async fn parse_sse(
 mod tests {
     use super::*;
     use futures::stream;
-    use tokio::sync::mpsc;
 
     fn bytes_stream(data: &[u8]) -> reqwest::Response {
         let bytes = bytes::Bytes::from(data.to_vec());
@@ -545,9 +554,10 @@ mod tests {
             .into()
     }
 
-    #[tokio::test]
-    async fn parse_sse_text_and_usage() {
-        let sse = "\
+    #[test]
+    fn parse_sse_text_and_usage() {
+        smol::block_on(async {
+            let sse = "\
 data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
 \n\
 data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\
@@ -556,30 +566,32 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prom
 \n\
 data: [DONE]\n";
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
+            let (tx, rx) = flume::unbounded();
+            let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
 
-        assert_eq!(resp.usage.input, 60);
-        assert_eq!(resp.usage.output, 10);
-        assert_eq!(resp.usage.cache_read, 40);
-        assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
-        assert!(
-            matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Hello world")
-        );
-        assert!(!resp.message.has_tool_calls());
+            assert_eq!(resp.usage.input, 60);
+            assert_eq!(resp.usage.output, 10);
+            assert_eq!(resp.usage.cache_read, 40);
+            assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
+            assert!(
+                matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Hello world")
+            );
+            assert!(!resp.message.has_tool_calls());
 
-        let mut deltas = Vec::new();
-        while let Ok(e) = rx.try_recv() {
-            if let ProviderEvent::TextDelta { text } = e {
-                deltas.push(text);
+            let mut deltas = Vec::new();
+            while let Ok(e) = rx.try_recv() {
+                if let ProviderEvent::TextDelta { text } = e {
+                    deltas.push(text);
+                }
             }
-        }
-        assert_eq!(deltas, vec!["Hello", " world"]);
+            assert_eq!(deltas, vec!["Hello", " world"]);
+        })
     }
 
-    #[tokio::test]
-    async fn parse_sse_reasoning_and_content() {
-        let sse = "\
+    #[test]
+    fn parse_sse_reasoning_and_content() {
+        smol::block_on(async {
+            let sse = "\
 data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Let me think\"}}]}\n\
 \n\
 data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"...\"}}]}\n\
@@ -590,23 +602,24 @@ data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prom
 \n\
 data: [DONE]\n";
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
+            let (tx, rx) = flume::unbounded();
+            let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
 
-        assert!(
-            matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Let me think...Hello")
-        );
+            assert!(
+                matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Let me think...Hello")
+            );
 
-        let mut thinking = Vec::new();
-        let mut text_deltas = Vec::new();
-        while let Ok(e) = rx.try_recv() {
-            match e {
-                ProviderEvent::ThinkingDelta { text } => thinking.push(text),
-                ProviderEvent::TextDelta { text } => text_deltas.push(text),
+            let mut thinking = Vec::new();
+            let mut text_deltas = Vec::new();
+            while let Ok(e) = rx.try_recv() {
+                match e {
+                    ProviderEvent::ThinkingDelta { text } => thinking.push(text),
+                    ProviderEvent::TextDelta { text } => text_deltas.push(text),
+                }
             }
-        }
-        assert_eq!(thinking, vec!["Let me think", "..."]);
-        assert_eq!(text_deltas, vec!["Hello"]);
+            assert_eq!(thinking, vec!["Let me think", "..."]);
+            assert_eq!(text_deltas, vec!["Hello"]);
+        })
     }
 
     #[test]
@@ -672,9 +685,10 @@ data: [DONE]\n";
         assert_eq!(tool["function"]["parameters"]["type"], "object");
     }
 
-    #[tokio::test]
-    async fn parse_sse_multiple_parallel_tool_calls() {
-        let sse = "\
+    #[test]
+    fn parse_sse_multiple_parallel_tool_calls() {
+        smol::block_on(async {
+            let sse = "\
 data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}]}\n\
 \n\
 data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c2\",\"function\":{\"name\":\"read\",\"arguments\":\"\"}}]}}]}\n\
@@ -687,42 +701,46 @@ data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}],\"usage\":{
 \n\
 data: [DONE]\n";
 
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
+            let (tx, _rx) = flume::unbounded();
+            let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
 
-        let tools: Vec<_> = resp.message.tool_uses().collect();
-        assert_eq!(tools.len(), 2);
-        assert_eq!(tools[0].0, "c1");
-        assert_eq!(tools[0].1, "bash");
-        assert_eq!(tools[0].2["command"], "ls");
-        assert_eq!(tools[1].0, "c2");
-        assert_eq!(tools[1].1, "read");
-        assert_eq!(tools[1].2["path"], "/tmp");
-        assert_eq!(resp.stop_reason, Some(StopReason::ToolUse));
+            let tools: Vec<_> = resp.message.tool_uses().collect();
+            assert_eq!(tools.len(), 2);
+            assert_eq!(tools[0].0, "c1");
+            assert_eq!(tools[0].1, "bash");
+            assert_eq!(tools[0].2["command"], "ls");
+            assert_eq!(tools[1].0, "c2");
+            assert_eq!(tools[1].1, "read");
+            assert_eq!(tools[1].2["path"], "/tmp");
+            assert_eq!(resp.stop_reason, Some(StopReason::ToolUse));
+        })
     }
 
-    #[tokio::test]
-    async fn parse_sse_error_payload_returns_err() {
-        let sse = "\
+    #[test]
+    fn parse_sse_error_payload_returns_err() {
+        smol::block_on(async {
+            let sse = "\
 data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\"}}\n";
 
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let err = parse_sse(bytes_stream(sse.as_bytes()), &tx)
-            .await
-            .unwrap_err();
+            let (tx, _rx) = flume::unbounded();
+            let err = parse_sse(bytes_stream(sse.as_bytes()), &tx)
+                .await
+                .unwrap_err();
 
-        match err {
-            AgentError::Api { status, message } => {
-                assert_eq!(status, 529);
-                assert_eq!(message, "Server overloaded");
+            match err {
+                AgentError::Api { status, message } => {
+                    assert_eq!(status, 529);
+                    assert_eq!(message, "Server overloaded");
+                }
+                other => panic!("expected Api error, got: {other:?}"),
             }
-            other => panic!("expected Api error, got: {other:?}"),
-        }
+        })
     }
 
-    #[tokio::test]
-    async fn parse_sse_malformed_tool_json_yields_empty_object() {
-        let sse = "\
+    #[test]
+    fn parse_sse_malformed_tool_json_yields_empty_object() {
+        smol::block_on(async {
+            let sse = "\
 data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}]}\n\
 \n\
 data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{broken\"}}]}}]}\n\
@@ -731,12 +749,13 @@ data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}],\"usage\":{
 \n\
 data: [DONE]\n";
 
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
+            let (tx, _rx) = flume::unbounded();
+            let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
 
-        let tools: Vec<_> = resp.message.tool_uses().collect();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].1, "bash");
-        assert_eq!(*tools[0].2, Value::Object(Default::default()));
+            let tools: Vec<_> = resp.message.tool_uses().collect();
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].1, "bash");
+            assert_eq!(*tools[0].2, Value::Object(Default::default()));
+        })
     }
 }

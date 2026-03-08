@@ -36,7 +36,7 @@ impl Write {
         let path = self.path.clone();
         let content = self.content.clone();
         let output = self.write_output();
-        tokio::task::spawn_blocking(move || {
+        smol::unblock(move || {
             if let Some(parent) = Path::new(&path).parent() {
                 fs::create_dir_all(parent).map_err(|e| format!("mkdir error: {e}"))?;
             }
@@ -44,7 +44,6 @@ impl Write {
             Ok(output)
         })
         .await
-        .unwrap_or_else(|e| Err(format!("task panicked: {e}")))
     }
 
     pub fn start_summary(&self) -> String {

@@ -12,10 +12,11 @@ sha2 = { workspace = true }
 base64 = { workspace = true }
 getrandom = { workspace = true }
 strum = { workspace = true }
-tokio = { workspace = true }
+smol = { workspace = true }
+flume = { workspace = true }
+futures-lite = { workspace = true }
 tokio-util = { workspace = true }
 reqwest = { workspace = true }
-async-trait = { workspace = true }
 futures = { workspace = true }
 
 [dev-dependencies]

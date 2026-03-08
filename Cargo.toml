@@ -22,7 +22,8 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
-tokio = { workspace = true }
+smol = { workspace = true }
+flume = { workspace = true }
 
 [workspace]
 members = ["maki-agent", "maki-interpreter", "maki-providers", "maki-tool-macro", "maki-ui"]
@@ -64,10 +65,13 @@ jiff = { version = "0.2", default-features = false, features = ["std"] }
 arboard = { version = "3", default-features = false }
 flume = "0.11"
 humantime = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time", "process"] }
-tokio-util = "0.7"
+smol = "2"
+async-process = "2"
+async-lock = "3"
+async-io = "2"
+futures-lite = "2"
+tokio-util = { version = "0.7", features = ["compat"] }
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "blocking", "json"] }
-async-trait = "0.1"
 futures = "0.3"
 bytes = "1"
 http = "1"

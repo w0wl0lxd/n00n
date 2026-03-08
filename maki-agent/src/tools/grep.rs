@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use tokio::process::Command;
+use async_process::Command;
 
 use crate::{GrepFileEntry, GrepMatch, ToolOutput};
 use maki_tool_macro::Tool;

@@ -1,10 +1,12 @@
 use std::sync::Mutex;
 
+use flume::Sender;
 use futures::TryStreamExt;
+use futures_lite::StreamExt;
+use futures_lite::io::{AsyncBufReadExt, BufReader};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::io::StreamReader;
 use tracing::{debug, warn};
 
@@ -12,7 +14,7 @@ pub mod auth;
 
 use crate::model::Model;
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
-use crate::provider::Provider;
+use crate::provider::{BoxFuture, Provider};
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
 };
@@ -305,7 +307,7 @@ impl Anthropic {
     async fn do_stream_request(
         &self,
         body: &Value,
-        event_tx: &UnboundedSender<ProviderEvent>,
+        event_tx: &Sender<ProviderEvent>,
     ) -> Result<StreamResponse, AgentError> {
         let req = self
             .build_request(reqwest::Method::POST, None)
@@ -352,52 +354,55 @@ impl Anthropic {
     }
 }
 
-#[async_trait::async_trait]
 impl Provider for Anthropic {
-    async fn stream_message(
-        &self,
-        model: &Model,
-        messages: &[Message],
-        system: &str,
-        tools: &Value,
-        event_tx: &UnboundedSender<ProviderEvent>,
-    ) -> Result<StreamResponse, AgentError> {
-        let wire_messages = build_wire_messages(messages);
-        let wire_tools = build_wire_tools(tools);
-        let system_block = SystemBlock {
-            r#type: "text",
-            text: system,
-            cache_control: EPHEMERAL,
-        };
+    fn stream_message<'a>(
+        &'a self,
+        model: &'a Model,
+        messages: &'a [Message],
+        system: &'a str,
+        tools: &'a Value,
+        event_tx: &'a Sender<ProviderEvent>,
+    ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+        Box::pin(async move {
+            let wire_messages = build_wire_messages(messages);
+            let wire_tools = build_wire_tools(tools);
+            let system_block = SystemBlock {
+                r#type: "text",
+                text: system,
+                cache_control: EPHEMERAL,
+            };
 
-        let body = json!({
-            "model": model.id,
-            "max_tokens": model.max_output_tokens,
-            "system": [system_block],
-            "messages": wire_messages,
-            "tools": wire_tools,
-            "stream": true,
-        });
+            let body = json!({
+                "model": model.id,
+                "max_tokens": model.max_output_tokens,
+                "system": [system_block],
+                "messages": wire_messages,
+                "tools": wire_tools,
+                "stream": true,
+            });
 
-        debug!(model = %model.id, num_messages = messages.len(), "sending API request");
+            debug!(model = %model.id, num_messages = messages.len(), "sending API request");
 
-        let result = self.do_stream_request(&body, event_tx).await;
-        if let Err(AgentError::Api { status: 401, .. }) = &result
-            && self.try_refresh_auth().is_ok()
-        {
-            return self.do_stream_request(&body, event_tx).await;
-        }
-        result
+            let result = self.do_stream_request(&body, event_tx).await;
+            if let Err(AgentError::Api { status: 401, .. }) = &result
+                && self.try_refresh_auth().is_ok()
+            {
+                return self.do_stream_request(&body, event_tx).await;
+            }
+            result
+        })
     }
 
-    async fn list_models(&self) -> Result<Vec<String>, AgentError> {
-        let result = self.do_list_models().await;
-        if let Err(AgentError::Api { status: 401, .. }) = &result
-            && self.try_refresh_auth().is_ok()
-        {
-            return self.do_list_models().await;
-        }
-        result
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+        Box::pin(async move {
+            let result = self.do_list_models().await;
+            if let Err(AgentError::Api { status: 401, .. }) = &result
+                && self.try_refresh_auth().is_ok()
+            {
+                return self.do_list_models().await;
+            }
+            result
+        })
     }
 }
 
@@ -485,10 +490,10 @@ fn build_wire_tools(tools: &Value) -> Value {
 
 async fn parse_sse(
     response: reqwest::Response,
-    event_tx: &UnboundedSender<ProviderEvent>,
+    event_tx: &Sender<ProviderEvent>,
 ) -> Result<StreamResponse, AgentError> {
     let stream = response.bytes_stream().map_err(std::io::Error::other);
-    let reader = BufReader::new(StreamReader::new(stream));
+    let reader = BufReader::new(StreamReader::new(stream).compat());
     let mut lines = reader.lines();
 
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
@@ -497,7 +502,8 @@ async fn parse_sse(
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
 
-    while let Some(line) = lines.next_line().await? {
+    while let Some(line) = lines.next().await {
+        let line = line?;
         if let Some(event_type) = line.strip_prefix("event: ") {
             current_event = event_type.to_string();
             continue;
@@ -543,12 +549,16 @@ async fn parse_sse(
                             {
                                 t.push_str(&text);
                             }
-                            event_tx.send(ProviderEvent::TextDelta { text })?;
+                            event_tx
+                                .send_async(ProviderEvent::TextDelta { text })
+                                .await?;
                         }
                     }
                     Delta::Thinking { thinking } => {
                         if !thinking.is_empty() {
-                            event_tx.send(ProviderEvent::ThinkingDelta { text: thinking })?;
+                            event_tx
+                                .send_async(ProviderEvent::ThinkingDelta { text: thinking })
+                                .await?;
                         }
                     }
                     Delta::InputJson { partial_json } => {
@@ -614,7 +624,6 @@ async fn parse_sse(
 mod tests {
     use super::*;
     use futures::stream;
-    use tokio::sync::mpsc;
 
     fn bytes_stream(data: &[u8]) -> reqwest::Response {
         let bytes = bytes::Bytes::from(data.to_vec());
@@ -627,9 +636,10 @@ mod tests {
             .into()
     }
 
-    #[tokio::test]
-    async fn parse_sse_text_and_usage() {
-        let sse_data = b"\
+    #[test]
+    fn parse_sse_text_and_usage() {
+        smol::block_on(async {
+            let sse_data = b"\
 event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":42,\"cache_creation_input_tokens\":5,\"cache_read_input_tokens\":8}}}\n\
 \n\
@@ -651,35 +661,37 @@ data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usa
 event: message_stop\n\
 data: {\"type\":\"message_stop\"}\n";
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let resp = parse_sse(bytes_stream(sse_data), &tx).await.unwrap();
+            let (tx, rx) = flume::unbounded();
+            let resp = parse_sse(bytes_stream(sse_data), &tx).await.unwrap();
 
-        assert_eq!(
-            resp.usage,
-            TokenUsage {
-                input: 42,
-                output: 10,
-                cache_creation: 5,
-                cache_read: 8
-            }
-        );
-        assert!(
-            matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Hello world")
-        );
-        assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
+            assert_eq!(
+                resp.usage,
+                TokenUsage {
+                    input: 42,
+                    output: 10,
+                    cache_creation: 5,
+                    cache_read: 8
+                }
+            );
+            assert!(
+                matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Hello world")
+            );
+            assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
 
-        let mut deltas = Vec::new();
-        while let Ok(e) = rx.try_recv() {
-            if let ProviderEvent::TextDelta { text: t } = e {
-                deltas.push(t);
+            let mut deltas = Vec::new();
+            while let Ok(e) = rx.try_recv() {
+                if let ProviderEvent::TextDelta { text: t } = e {
+                    deltas.push(t);
+                }
             }
-        }
-        assert_eq!(deltas, vec!["Hello", " world"]);
+            assert_eq!(deltas, vec!["Hello", " world"]);
+        })
     }
 
-    #[tokio::test]
-    async fn parse_sse_tool_use() {
-        let sse_data = "\
+    #[test]
+    fn parse_sse_tool_use() {
+        smol::block_on(async {
+            let sse_data = "\
 event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\
 \n\
@@ -698,15 +710,16 @@ data: {\"type\":\"content_block_stop\"}\n\
 event: message_delta\n\
 data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
 
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let resp = parse_sse(bytes_stream(sse_data.as_bytes()), &tx)
-            .await
-            .unwrap();
+            let (tx, _rx) = flume::unbounded();
+            let resp = parse_sse(bytes_stream(sse_data.as_bytes()), &tx)
+                .await
+                .unwrap();
 
-        let tools: Vec<_> = resp.message.tool_uses().collect();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0, "tu_1");
-        assert_eq!(tools[0].1, "bash");
+            let tools: Vec<_> = resp.message.tool_uses().collect();
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].0, "tu_1");
+            assert_eq!(tools[0].1, "bash");
+        })
     }
 
     #[test]
@@ -756,37 +769,42 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
         );
     }
 
-    #[tokio::test]
-    async fn parse_sse_overloaded_error() {
-        let input = b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n";
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let err = parse_sse(bytes_stream(input), &tx).await.unwrap_err();
-        match err {
-            AgentError::Api { status, message } => {
-                assert_eq!(status, 529);
-                assert_eq!(message, "Overloaded");
+    #[test]
+    fn parse_sse_overloaded_error() {
+        smol::block_on(async {
+            let input = b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n";
+            let (tx, _rx) = flume::unbounded();
+            let err = parse_sse(bytes_stream(input), &tx).await.unwrap_err();
+            match err {
+                AgentError::Api { status, message } => {
+                    assert_eq!(status, 529);
+                    assert_eq!(message, "Overloaded");
+                }
+                other => panic!("expected Api error, got: {other:?}"),
             }
-            other => panic!("expected Api error, got: {other:?}"),
-        }
+        })
     }
 
-    #[tokio::test]
-    async fn parse_sse_unparseable_error() {
-        let input = b"event: error\ndata: not-json\n";
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let err = parse_sse(bytes_stream(input), &tx).await.unwrap_err();
-        match err {
-            AgentError::Api { status, message } => {
-                assert_eq!(status, 0);
-                assert_eq!(message, "not-json");
+    #[test]
+    fn parse_sse_unparseable_error() {
+        smol::block_on(async {
+            let input = b"event: error\ndata: not-json\n";
+            let (tx, _rx) = flume::unbounded();
+            let err = parse_sse(bytes_stream(input), &tx).await.unwrap_err();
+            match err {
+                AgentError::Api { status, message } => {
+                    assert_eq!(status, 0);
+                    assert_eq!(message, "not-json");
+                }
+                other => panic!("expected Api error, got: {other:?}"),
             }
-            other => panic!("expected Api error, got: {other:?}"),
-        }
+        })
     }
 
-    #[tokio::test]
-    async fn parse_sse_malformed_tool_json_yields_empty_object() {
-        let sse_data = "\
+    #[test]
+    fn parse_sse_malformed_tool_json_yields_empty_object() {
+        smol::block_on(async {
+            let sse_data = "\
 event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\
 \n\
@@ -802,14 +820,15 @@ data: {\"type\":\"content_block_stop\"}\n\
 event: message_delta\n\
 data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n";
 
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let resp = parse_sse(bytes_stream(sse_data.as_bytes()), &tx)
-            .await
-            .unwrap();
+            let (tx, _rx) = flume::unbounded();
+            let resp = parse_sse(bytes_stream(sse_data.as_bytes()), &tx)
+                .await
+                .unwrap();
 
-        let tools: Vec<_> = resp.message.tool_uses().collect();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].1, "read");
-        assert_eq!(*tools[0].2, Value::Object(Default::default()));
+            let tools: Vec<_> = resp.message.tool_uses().collect();
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].1, "read");
+            assert_eq!(*tools[0].2, Value::Object(Default::default()));
+        })
     }
 }

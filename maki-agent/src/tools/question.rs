@@ -31,10 +31,10 @@ impl Question {
             questions: self.questions.clone(),
         });
 
-        let mut rx = rx.lock().await;
-        match rx.recv().await {
-            Some(answer) => Ok(Self::format_answer(&self.questions, &answer)),
-            None => Err(CHANNEL_CLOSED.into()),
+        let rx = rx.lock().await;
+        match rx.recv_async().await {
+            Ok(answer) => Ok(Self::format_answer(&self.questions, &answer)),
+            Err(_) => Err(CHANNEL_CLOSED.into()),
         }
     }
 
@@ -82,8 +82,8 @@ impl Question {
 mod tests {
     use std::sync::Arc;
 
+    use async_lock::Mutex;
     use serde_json::json;
-    use tokio::sync::Mutex;
 
     use super::*;
     use crate::AgentMode;
@@ -111,75 +111,83 @@ mod tests {
         }]})
     }
 
-    #[tokio::test]
-    async fn empty_questions_returns_error() {
-        let q = Question::parse_input(&json!({"questions": []})).unwrap();
-        let err = q.execute(&stub_ctx(&AgentMode::Build)).await.unwrap_err();
-        assert_eq!(err, EMPTY_QUESTIONS);
-    }
-
-    #[tokio::test]
-    async fn formats_questions_with_options_without_channel() {
-        let q = Question::parse_input(&q_with_options()).unwrap();
-        let output = q.execute(&stub_ctx(&AgentMode::Build)).await.unwrap();
-        let text = output.as_text();
-        assert!(text.contains("Pick a DB"));
-        assert!(text.contains("- PostgreSQL"));
-        assert!(text.contains("- Redis"));
-    }
-
-    #[tokio::test]
-    async fn blocks_on_channel_and_returns_structured_answer() {
-        let (raw_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        let event_tx = crate::EventSender::new(raw_tx, 0);
-        let (answer_tx, answer_rx) = tokio::sync::mpsc::unbounded_channel();
-        let answer_mutex = Mutex::new(answer_rx);
-        let mode = AgentMode::Build;
-        let mut ctx = stub_ctx_with(&mode, Some(&event_tx), Some("q1"));
-        ctx.user_response_rx = Some(Arc::new(answer_mutex));
-
-        let input: serde_json::Value = serde_json::from_str(SINGLE_Q).unwrap();
-        let q = Question::parse_input(&input).unwrap();
-
-        let handle = tokio::spawn({
-            let ctx = ctx.clone();
-            let q = q.clone();
-            async move { q.execute(&ctx).await }
+    #[test]
+    fn empty_questions_returns_error() {
+        smol::block_on(async {
+            let q = Question::parse_input(&json!({"questions": []})).unwrap();
+            let err = q.execute(&stub_ctx(&AgentMode::Build)).await.unwrap_err();
+            assert_eq!(err, EMPTY_QUESTIONS);
         });
-
-        let prompt_event = event_rx.recv().await.unwrap();
-        assert!(matches!(
-            prompt_event.event,
-            AgentEvent::QuestionPrompt { ref id, ref questions }
-            if id == "q1" && questions[0].question == "Preferred DB?"
-        ));
-
-        answer_tx.send(r#"[["PostgreSQL"]]"#.into()).unwrap();
-        let output = handle.await.unwrap().unwrap();
-        match output {
-            ToolOutput::QuestionAnswers(pairs) => {
-                assert_eq!(pairs.len(), 1);
-                assert_eq!(pairs[0].question, "Preferred DB?");
-                assert_eq!(pairs[0].answer, "PostgreSQL");
-            }
-            other => panic!("expected QuestionAnswers, got {other:?}"),
-        }
     }
 
-    #[tokio::test]
-    async fn channel_closed_returns_error() {
-        let (raw_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
-        let event_tx = crate::EventSender::new(raw_tx, 0);
-        let (_, answer_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let answer_mutex = Mutex::new(answer_rx);
-        let mode = AgentMode::Build;
-        let mut ctx = stub_ctx_with(&mode, Some(&event_tx), Some("q2"));
-        ctx.user_response_rx = Some(Arc::new(answer_mutex));
+    #[test]
+    fn formats_questions_with_options_without_channel() {
+        smol::block_on(async {
+            let q = Question::parse_input(&q_with_options()).unwrap();
+            let output = q.execute(&stub_ctx(&AgentMode::Build)).await.unwrap();
+            let text = output.as_text();
+            assert!(text.contains("Pick a DB"));
+            assert!(text.contains("- PostgreSQL"));
+            assert!(text.contains("- Redis"));
+        });
+    }
 
-        let input: serde_json::Value = serde_json::from_str(SINGLE_Q).unwrap();
-        let q = Question::parse_input(&input).unwrap();
-        let err = q.execute(&ctx).await.unwrap_err();
-        assert_eq!(err, CHANNEL_CLOSED);
+    #[test]
+    fn blocks_on_channel_and_returns_structured_answer() {
+        smol::block_on(async {
+            let (raw_tx, event_rx) = flume::unbounded();
+            let event_tx = crate::EventSender::new(raw_tx, 0);
+            let (answer_tx, answer_rx) = flume::unbounded();
+            let answer_mutex = Mutex::new(answer_rx);
+            let mode = AgentMode::Build;
+            let mut ctx = stub_ctx_with(&mode, Some(&event_tx), Some("q1"));
+            ctx.user_response_rx = Some(Arc::new(answer_mutex));
+
+            let input: serde_json::Value = serde_json::from_str(SINGLE_Q).unwrap();
+            let q = Question::parse_input(&input).unwrap();
+
+            let handle = smol::spawn({
+                let ctx = ctx.clone();
+                let q = q.clone();
+                async move { q.execute(&ctx).await }
+            });
+
+            let prompt_event = event_rx.recv_async().await.unwrap();
+            assert!(matches!(
+                prompt_event.event,
+                AgentEvent::QuestionPrompt { ref id, ref questions }
+                if id == "q1" && questions[0].question == "Preferred DB?"
+            ));
+
+            answer_tx.try_send(r#"[["PostgreSQL"]]"#.into()).unwrap();
+            let output = handle.await.unwrap();
+            match output {
+                ToolOutput::QuestionAnswers(pairs) => {
+                    assert_eq!(pairs.len(), 1);
+                    assert_eq!(pairs[0].question, "Preferred DB?");
+                    assert_eq!(pairs[0].answer, "PostgreSQL");
+                }
+                other => panic!("expected QuestionAnswers, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn channel_closed_returns_error() {
+        smol::block_on(async {
+            let (raw_tx, _event_rx) = flume::unbounded();
+            let event_tx = crate::EventSender::new(raw_tx, 0);
+            let (_, answer_rx) = flume::unbounded::<String>();
+            let answer_mutex = Mutex::new(answer_rx);
+            let mode = AgentMode::Build;
+            let mut ctx = stub_ctx_with(&mode, Some(&event_tx), Some("q2"));
+            ctx.user_response_rx = Some(Arc::new(answer_mutex));
+
+            let input: serde_json::Value = serde_json::from_str(SINGLE_Q).unwrap();
+            let q = Question::parse_input(&input).unwrap();
+            let err = q.execute(&ctx).await.unwrap_err();
+            assert_eq!(err, CHANNEL_CLOSED);
+        });
     }
 
     #[test]

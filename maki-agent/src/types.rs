@@ -1,9 +1,9 @@
 use std::fmt::Write;
 
+use flume::Sender;
 use maki_providers::{AgentError, ContentBlock, Message, Role, TokenUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::tools::WRITE_TOOL_NAME;
 
@@ -423,18 +423,18 @@ pub struct SubagentInfo {
 
 #[derive(Debug, Clone)]
 pub struct EventSender {
-    tx: UnboundedSender<Envelope>,
+    tx: Sender<Envelope>,
     run_id: u64,
 }
 
 impl EventSender {
-    pub fn new(tx: UnboundedSender<Envelope>, run_id: u64) -> Self {
+    pub fn new(tx: Sender<Envelope>, run_id: u64) -> Self {
         Self { tx, run_id }
     }
 
     pub fn send(&self, event: impl Into<AgentEvent>) -> Result<(), AgentError> {
         self.tx
-            .send(Envelope {
+            .try_send(Envelope {
                 event: event.into(),
                 subagent: None,
                 run_id: self.run_id,
@@ -443,11 +443,11 @@ impl EventSender {
     }
 
     pub fn send_envelope(&self, envelope: Envelope) -> Result<(), AgentError> {
-        self.tx.send(envelope).map_err(|_| AgentError::Channel)
+        self.tx.try_send(envelope).map_err(|_| AgentError::Channel)
     }
 
     pub fn try_send(&self, event: impl Into<AgentEvent>) {
-        let _ = self.tx.send(Envelope {
+        let _ = self.tx.try_send(Envelope {
             event: event.into(),
             subagent: None,
             run_id: self.run_id,
@@ -458,7 +458,7 @@ impl EventSender {
         self.run_id
     }
 
-    pub fn raw_tx(&self) -> &UnboundedSender<Envelope> {
+    pub fn raw_tx(&self) -> &Sender<Envelope> {
         &self.tx
     }
 }

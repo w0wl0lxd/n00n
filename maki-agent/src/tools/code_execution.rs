@@ -41,7 +41,7 @@ impl CodeInterpreter {
         let event_tx = ctx.event_tx.clone();
         let mode = ctx.mode.clone();
 
-        tokio::task::spawn_blocking(move || {
+        smol::unblock(move || {
             let tools = build_tool_fns(&event_tx, &mode);
             let code = format!("{PREAMBLE}{code}");
 
@@ -81,7 +81,6 @@ impl CodeInterpreter {
             Ok(ToolOutput::Plain(truncate_output(output)))
         })
         .await
-        .unwrap_or_else(|e| Err(format!("task panicked: {e}")))
     }
 
     pub fn start_summary(&self) -> String {
@@ -105,13 +104,11 @@ impl super::ToolDefaults for CodeInterpreter {
 
 fn build_tool_fns(event_tx: &EventSender, mode: &AgentMode) -> HashMap<String, ToolFn> {
     let mut tools: HashMap<String, ToolFn> = HashMap::new();
-    let rt = tokio::runtime::Handle::current();
 
     for &tool_name in INTERPRETER_TOOLS {
         let name = tool_name.to_string();
         let tx = event_tx.clone();
         let mode = mode.clone();
-        let rt = rt.clone();
 
         tools.insert(
             name.clone(),
@@ -122,7 +119,7 @@ fn build_tool_fns(event_tx: &EventSender, mode: &AgentMode) -> HashMap<String, T
                         .map_err(|e| format!("tool parse error: {e}"))?;
 
                     let inner_ctx = super::interpreter_ctx(&mode, &tx);
-                    let done = rt.block_on(call.execute(&inner_ctx, String::new()));
+                    let done = smol::future::block_on(call.execute(&inner_ctx, String::new()));
                     if done.is_error {
                         Err(done.output.as_text())
                     } else {
@@ -168,29 +165,33 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
-    async fn execute_wraps_output() {
-        let ctx = stub_ctx(&AgentMode::Build);
-        let ci = CodeInterpreter {
-            code: "2 + 3".into(),
-        };
-        let output = ci.execute(&ctx).await.unwrap().as_text();
-        assert!(output.contains("5"));
+    #[test]
+    fn execute_wraps_output() {
+        smol::block_on(async {
+            let ctx = stub_ctx(&AgentMode::Build);
+            let ci = CodeInterpreter {
+                code: "2 + 3".into(),
+            };
+            let output = ci.execute(&ctx).await.unwrap().as_text();
+            assert!(output.contains("5"));
+        });
     }
 
-    #[tokio::test]
-    async fn read_tool_via_interpreter() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("test.txt");
-        std::fs::write(&path, "line1\nline2\n").unwrap();
-        let path_str = path.to_string_lossy();
+    #[test]
+    fn read_tool_via_interpreter() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("test.txt");
+            std::fs::write(&path, "line1\nline2\n").unwrap();
+            let path_str = path.to_string_lossy();
 
-        let ctx = stub_ctx(&AgentMode::Build);
-        let ci = CodeInterpreter {
-            code: format!("result = read(path='{path_str}')\nprint(result)"),
-        };
-        let output = ci.execute(&ctx).await.unwrap().as_text();
-        assert!(output.contains("line1"));
+            let ctx = stub_ctx(&AgentMode::Build);
+            let ci = CodeInterpreter {
+                code: format!("result = read(path='{path_str}')\nprint(result)"),
+            };
+            let output = ci.execute(&ctx).await.unwrap().as_text();
+            assert!(output.contains("line1"));
+        });
     }
 
     #[test_case(&[], &[("path".into(), json!("/foo"))],  json!({"path": "/foo"}) ; "kwargs")]
@@ -200,13 +201,15 @@ mod tests {
         assert_eq!(build_tool_input(args, kwargs).unwrap(), expected);
     }
 
-    #[tokio::test]
-    async fn re_module_available_by_default() {
-        let ctx = stub_ctx(&AgentMode::Build);
-        let ci = CodeInterpreter {
-            code: r"re.findall(r'\d+', 'abc123def456')".into(),
-        };
-        let output = ci.execute(&ctx).await.unwrap().as_text();
-        assert!(output.contains("123") && output.contains("456"));
+    #[test]
+    fn re_module_available_by_default() {
+        smol::block_on(async {
+            let ctx = stub_ctx(&AgentMode::Build);
+            let ci = CodeInterpreter {
+                code: r"re.findall(r'\d+', 'abc123def456')".into(),
+            };
+            let output = ci.execute(&ctx).await.unwrap().as_text();
+            assert!(output.contains("123") && output.contains("456"));
+        })
     }
 }

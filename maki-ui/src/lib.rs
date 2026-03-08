@@ -15,8 +15,6 @@ use std::io::stdout;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::mpsc as tokio_mpsc;
-
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 use crossterm::ExecutableCommand;
@@ -44,12 +42,7 @@ const MOUSE_SCROLL_LINES: i32 = 3;
 const ANIMATION_INTERVAL_MS: u64 = 8;
 const EVENT_POLL_INTERVAL_MS: u64 = 8;
 
-pub fn run(
-    model: Model,
-    skills: Vec<Skill>,
-    handle: &tokio::runtime::Handle,
-    #[cfg(feature = "demo")] demo: bool,
-) -> Result<()> {
+pub fn run(model: Model, skills: Vec<Skill>, #[cfg(feature = "demo")] demo: bool) -> Result<()> {
     let mut terminal = ratatui::init();
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(EnableBracketedPaste)?;
@@ -60,7 +53,6 @@ pub fn run(
         &mut terminal,
         model,
         skills,
-        handle,
         #[cfg(feature = "demo")]
         demo,
     );
@@ -78,7 +70,6 @@ fn run_event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     model: Model,
     skills: Vec<Skill>,
-    handle: &tokio::runtime::Handle,
     #[cfg(feature = "demo")] demo: bool,
 ) -> Result<()> {
     let mut app = App::new(model.spec(), model.pricing.clone(), model.context_window);
@@ -110,7 +101,7 @@ fn run_event_loop(
     let provider: Arc<dyn Provider> =
         Arc::from(maki_providers::provider::from_model(&model).context("create provider")?);
     let skills: Arc<[Skill]> = Arc::from(skills);
-    let mut handles = spawn_agent(handle, &provider, &model, Vec::new(), &skills);
+    let mut handles = spawn_agent(&provider, &model, Vec::new(), &skills);
     handles.apply_to_app(&mut app);
 
     loop {
@@ -123,7 +114,6 @@ fn run_event_loop(
             dispatch(
                 app.update(Msg::Agent(Box::new(envelope))),
                 &mut handles,
-                handle,
                 &provider,
                 &model,
                 &skills,
@@ -155,7 +145,6 @@ fn run_event_loop(
                             dispatch(
                                 app.update(scroll),
                                 &mut handles,
-                                handle,
                                 &provider,
                                 &model,
                                 &skills,
@@ -171,7 +160,6 @@ fn run_event_loop(
                         dispatch(
                             app.update(Msg::Mouse(drag)),
                             &mut handles,
-                            handle,
                             &provider,
                             &model,
                             &skills,
@@ -190,7 +178,6 @@ fn run_event_loop(
             dispatch(
                 app.update(msg),
                 &mut handles,
-                handle,
                 &provider,
                 &model,
                 &skills,
@@ -209,9 +196,9 @@ pub(crate) enum AgentCommand {
 }
 
 struct AgentHandles {
-    cmd_tx: tokio_mpsc::UnboundedSender<AgentCommand>,
-    agent_rx: tokio_mpsc::UnboundedReceiver<Envelope>,
-    answer_tx: tokio_mpsc::UnboundedSender<String>,
+    cmd_tx: flume::Sender<AgentCommand>,
+    agent_rx: flume::Receiver<Envelope>,
+    answer_tx: flume::Sender<String>,
 }
 
 impl AgentHandles {
@@ -222,22 +209,21 @@ impl AgentHandles {
 }
 
 fn spawn_agent(
-    handle: &tokio::runtime::Handle,
     provider: &Arc<dyn Provider>,
     model: &Model,
     initial_history: Vec<Message>,
     skills: &Arc<[Skill]>,
 ) -> AgentHandles {
-    let (agent_tx, agent_rx) = tokio_mpsc::unbounded_channel::<Envelope>();
-    let (cmd_tx, mut cmd_rx) = tokio_mpsc::unbounded_channel::<AgentCommand>();
-    let (answer_tx, answer_rx) = tokio_mpsc::unbounded_channel::<String>();
-    let (ecmd_tx, ecmd_rx) = tokio_mpsc::unbounded_channel::<ExtractedCommand>();
+    let (agent_tx, agent_rx) = flume::unbounded::<Envelope>();
+    let (cmd_tx, cmd_rx) = flume::unbounded::<AgentCommand>();
+    let (answer_tx, answer_rx) = flume::unbounded::<String>();
+    let (ecmd_tx, ecmd_rx) = flume::unbounded::<ExtractedCommand>();
     let model = model.clone();
     let provider = Arc::clone(provider);
     let skills = Arc::clone(skills);
 
-    handle.spawn(async move {
-        let answer_mutex = Arc::new(tokio::sync::Mutex::new(answer_rx));
+    smol::spawn(async move {
+        let answer_mutex = Arc::new(async_lock::Mutex::new(answer_rx));
         let vars = template::env_vars();
         let (instructions, loaded_instructions) =
             agent::load_instruction_files(&vars.apply("{cwd}"));
@@ -247,23 +233,24 @@ fn spawn_agent(
             model.family.supports_tool_examples(),
         );
 
-        tokio::spawn(async move {
-            while let Some(cmd) = cmd_rx.recv().await {
+        smol::spawn(async move {
+            while let Ok(cmd) = cmd_rx.recv_async().await {
                 let extracted = match cmd {
                     AgentCommand::Run(input, run_id) => ExtractedCommand::Interrupt(input, run_id),
                     AgentCommand::Cancel => ExtractedCommand::Cancel,
                     AgentCommand::Compact(run_id) => ExtractedCommand::Compact(run_id),
                 };
-                if ecmd_tx.send(extracted).is_err() {
+                if ecmd_tx.try_send(extracted).is_err() {
                     break;
                 }
             }
-        });
+        })
+        .detach();
 
         let mut ecmd_rx = ecmd_rx;
         let mut history = History::new(initial_history);
 
-        while let Some(cmd) = ecmd_rx.recv().await {
+        while let Ok(cmd) = ecmd_rx.recv_async().await {
             let (event_tx, current_run_id) = match &cmd {
                 ExtractedCommand::Interrupt(_, run_id) | ExtractedCommand::Compact(run_id) => {
                     (EventSender::new(agent_tx.clone(), *run_id), *run_id)
@@ -318,7 +305,8 @@ fn spawn_agent(
                 }
             }
         }
-    });
+    })
+    .detach();
 
     AgentHandles {
         cmd_tx,
@@ -330,7 +318,6 @@ fn spawn_agent(
 fn dispatch(
     actions: Vec<Action>,
     handles: &mut AgentHandles,
-    handle: &tokio::runtime::Handle,
     provider: &Arc<dyn Provider>,
     model: &Model,
     skills: &Arc<[Skill]>,
@@ -340,20 +327,20 @@ fn dispatch(
         match action {
             Action::SendMessage(input) => {
                 let cmd = AgentCommand::Run(input, app.run_id);
-                if handles.cmd_tx.send(cmd).is_err() {
-                    *handles = spawn_agent(handle, provider, model, Vec::new(), skills);
+                if handles.cmd_tx.try_send(cmd).is_err() {
+                    *handles = spawn_agent(provider, model, Vec::new(), skills);
                     handles.apply_to_app(app);
                 }
             }
             Action::CancelAgent => {
-                let _ = handles.cmd_tx.send(AgentCommand::Cancel);
+                let _ = handles.cmd_tx.try_send(AgentCommand::Cancel);
             }
             Action::NewSession => {
-                *handles = spawn_agent(handle, provider, model, Vec::new(), skills);
+                *handles = spawn_agent(provider, model, Vec::new(), skills);
                 handles.apply_to_app(app);
             }
             Action::Compact => {
-                let _ = handles.cmd_tx.send(AgentCommand::Compact(app.run_id));
+                let _ = handles.cmd_tx.try_send(AgentCommand::Compact(app.run_id));
             }
             Action::Quit => {}
         }

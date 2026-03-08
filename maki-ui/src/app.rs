@@ -1,7 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::chat::{Chat, ChatEventResult};
 use crate::components::chat_picker::{ChatPicker, ChatPickerAction};
@@ -101,8 +100,8 @@ pub struct App {
     context_window: u32,
     pub should_quit: bool,
     pub(crate) queue: VecDeque<QueuedItem>,
-    pub answer_tx: Option<tokio_mpsc::UnboundedSender<String>>,
-    pub(crate) cmd_tx: Option<tokio_mpsc::UnboundedSender<super::AgentCommand>>,
+    pub answer_tx: Option<flume::Sender<String>>,
+    pub(crate) cmd_tx: Option<flume::Sender<super::AgentCommand>>,
     pending_question: bool,
     /// Current agent run ID. Incremented on each new prompt submission.
     /// Events with mismatched run_id are ignored (stale events from cancelled runs).
@@ -283,7 +282,7 @@ impl App {
 
     fn send_answer(&self, answer: String) {
         if let Some(tx) = &self.answer_tx {
-            let _ = tx.send(answer);
+            let _ = tx.try_send(answer);
         }
     }
 
@@ -587,7 +586,7 @@ impl App {
                     },
                     self.run_id,
                 );
-                let _ = tx.send(cmd);
+                let _ = tx.try_send(cmd);
             }
             vec![]
         } else {
@@ -1434,7 +1433,7 @@ mod tests {
     #[test]
     fn submit_during_streaming_queues_and_sends_on_cmd_tx() {
         let mut app = test_app();
-        let (tx, mut rx) = tokio_mpsc::unbounded_channel::<crate::AgentCommand>();
+        let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
         app.cmd_tx = Some(tx);
         app.status = Status::Streaming;
         app.run_id = 1;
@@ -1448,7 +1447,7 @@ mod tests {
     #[test]
     fn second_submit_during_streaming_does_not_send_on_cmd_tx() {
         let mut app = test_app();
-        let (tx, mut rx) = tokio_mpsc::unbounded_channel::<crate::AgentCommand>();
+        let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
         app.cmd_tx = Some(tx);
         app.status = Status::Streaming;
         app.run_id = 1;
@@ -1846,7 +1845,7 @@ mod tests {
         let mut app = test_app();
         app.status = Status::Streaming;
         app.run_id = 1;
-        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        let (tx, rx) = flume::unbounded();
         app.answer_tx = Some(tx);
 
         app.update(agent_msg(long_question_no_options()));
@@ -2101,7 +2100,7 @@ mod tests {
         let mut app = test_app();
         app.status = Status::Streaming;
         app.run_id = 1;
-        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        let (tx, rx) = flume::unbounded();
         app.answer_tx = Some(tx);
 
         app.update(agent_msg(short_question_with_options()));
@@ -2118,7 +2117,7 @@ mod tests {
         let mut app = test_app();
         app.status = Status::Streaming;
         app.run_id = 1;
-        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        let (tx, rx) = flume::unbounded();
         app.answer_tx = Some(tx);
 
         app.update(agent_msg(short_question_with_options()));

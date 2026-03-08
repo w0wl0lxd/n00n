@@ -65,9 +65,6 @@ enum AuthAction {
 fn main() -> Result<()> {
     color_eyre::install()?;
 
-    let rt = tokio::runtime::Runtime::new().context("create tokio runtime")?;
-    let handle = rt.handle().clone();
-
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Auth { action }) => match action {
@@ -75,7 +72,7 @@ fn main() -> Result<()> {
             AuthAction::Logout => maki_providers::auth::logout()?,
         },
         Some(Command::Models) => {
-            rt.block_on(maki_providers::provider::fetch_all_models(|models| {
+            smol::block_on(maki_providers::provider::fetch_all_models(|models| {
                 for model in models {
                     println!("{model}");
                 }
@@ -86,20 +83,12 @@ fn main() -> Result<()> {
             init_logging();
             let skills = discover(cli.disable_skills);
             if cli.print {
-                print::run(
-                    &model,
-                    cli.prompt,
-                    cli.output_format,
-                    cli.verbose,
-                    skills,
-                    &handle,
-                )
-                .context("run print mode")?;
+                print::run(&model, cli.prompt, cli.output_format, cli.verbose, skills)
+                    .context("run print mode")?;
             } else {
                 maki_ui::run(
                     model,
                     skills,
-                    &handle,
                     #[cfg(feature = "demo")]
                     cli.demo,
                 )

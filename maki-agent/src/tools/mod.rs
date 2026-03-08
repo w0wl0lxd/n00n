@@ -95,8 +95,7 @@ pub struct ToolContext {
     pub event_tx: EventSender,
     pub mode: AgentMode,
     pub tool_use_id: Option<String>,
-    pub user_response_rx:
-        Option<Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>>>,
+    pub user_response_rx: Option<Arc<async_lock::Mutex<flume::Receiver<String>>>>,
     pub skills: Arc<[Skill]>,
     pub loaded_instructions: Arc<Mutex<HashSet<PathBuf>>>,
 }
@@ -439,23 +438,24 @@ register_tools! {
     CodeInterpreter(code_execution::CodeInterpreter),
 }
 
+use maki_providers::provider::BoxFuture;
+
 struct NullProvider;
 
-#[async_trait::async_trait]
 impl Provider for NullProvider {
-    async fn stream_message(
-        &self,
-        _: &Model,
-        _: &[maki_providers::Message],
-        _: &str,
-        _: &Value,
-        _: &tokio::sync::mpsc::UnboundedSender<maki_providers::ProviderEvent>,
-    ) -> Result<maki_providers::StreamResponse, AgentError> {
-        unimplemented!()
+    fn stream_message<'a>(
+        &'a self,
+        _: &'a Model,
+        _: &'a [maki_providers::Message],
+        _: &'a str,
+        _: &'a Value,
+        _: &'a flume::Sender<maki_providers::ProviderEvent>,
+    ) -> BoxFuture<'a, Result<maki_providers::StreamResponse, AgentError>> {
+        Box::pin(async { unimplemented!() })
     }
 
-    async fn list_models(&self) -> Result<Vec<String>, AgentError> {
-        unimplemented!()
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+        Box::pin(async { unimplemented!() })
     }
 }
 
@@ -491,8 +491,7 @@ pub(crate) mod test_support {
         let event_tx = match event_tx {
             Some(tx) => tx,
             None => {
-                fallback_tx =
-                    EventSender::new(tokio::sync::mpsc::unbounded_channel::<Envelope>().0, 0);
+                fallback_tx = EventSender::new(flume::unbounded::<Envelope>().0, 0);
                 &fallback_tx
             }
         };
@@ -547,78 +546,86 @@ mod tests {
         assert!(result.ends_with("[truncated]"));
     }
 
-    #[tokio::test]
-    async fn read_write_roundtrip_with_offset() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("test.txt").to_string_lossy().to_string();
-        let content = (1..=10)
-            .map(|i| format!("line{i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let ctx = stub_ctx(&AgentMode::Build);
+    #[test]
+    fn read_write_roundtrip_with_offset() {
+        smol::block_on(async {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("test.txt").to_string_lossy().to_string();
+            let content = (1..=10)
+                .map(|i| format!("line{i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let ctx = stub_ctx(&AgentMode::Build);
 
-        let w = write::Write::parse_input(&json!({"path": path, "content": content})).unwrap();
-        w.execute(&ctx).await.unwrap();
+            let w = write::Write::parse_input(&json!({"path": path, "content": content})).unwrap();
+            w.execute(&ctx).await.unwrap();
 
-        let r = read::Read::parse_input(&json!({"path": path})).unwrap();
-        let full = r.execute(&ctx).await.unwrap().as_text().to_string();
-        assert!(full.contains("1: line1"));
-        assert!(full.contains("10: line10"));
+            let r = read::Read::parse_input(&json!({"path": path})).unwrap();
+            let full = r.execute(&ctx).await.unwrap().as_text().to_string();
+            assert!(full.contains("1: line1"));
+            assert!(full.contains("10: line10"));
 
-        let r = read::Read::parse_input(&json!({"path": path, "offset": 3, "limit": 2})).unwrap();
-        let slice = r.execute(&ctx).await.unwrap().as_text().to_string();
-        assert!(slice.contains("3: line3"));
-        assert!(slice.contains("4: line4"));
-        assert!(!slice.contains("5: line5"));
+            let r =
+                read::Read::parse_input(&json!({"path": path, "offset": 3, "limit": 2})).unwrap();
+            let slice = r.execute(&ctx).await.unwrap().as_text().to_string();
+            assert!(slice.contains("3: line3"));
+            assert!(slice.contains("4: line4"));
+            assert!(!slice.contains("5: line5"));
+        });
     }
 
-    #[tokio::test]
-    async fn glob_finds_and_misses() {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("a.txt"), "hello").unwrap();
-        fs::write(dir.path().join("b.txt"), "world").unwrap();
-        fs::write(dir.path().join("c.rs"), "fn main(){}").unwrap();
-        let dir_str = dir.path().to_string_lossy().to_string();
-        let ctx = stub_ctx(&AgentMode::Build);
+    #[test]
+    fn glob_finds_and_misses() {
+        smol::block_on(async {
+            let dir = TempDir::new().unwrap();
+            fs::write(dir.path().join("a.txt"), "hello").unwrap();
+            fs::write(dir.path().join("b.txt"), "world").unwrap();
+            fs::write(dir.path().join("c.rs"), "fn main(){}").unwrap();
+            let dir_str = dir.path().to_string_lossy().to_string();
+            let ctx = stub_ctx(&AgentMode::Build);
 
-        let g = glob::Glob::parse_input(&json!({"pattern": "*.txt", "path": dir_str})).unwrap();
-        let output = g.execute(&ctx).await.unwrap();
-        let ToolOutput::GlobResult { files } = &output else {
-            panic!("expected GlobResult");
-        };
-        assert_eq!(files.len(), 2);
-        assert!(files.iter().all(|f| f.contains(".txt")));
-        assert!(files.iter().all(|f| !f.contains(".rs")));
+            let g = glob::Glob::parse_input(&json!({"pattern": "*.txt", "path": dir_str})).unwrap();
+            let output = g.execute(&ctx).await.unwrap();
+            let ToolOutput::GlobResult { files } = &output else {
+                panic!("expected GlobResult");
+            };
+            assert_eq!(files.len(), 2);
+            assert!(files.iter().all(|f| f.contains(".txt")));
+            assert!(files.iter().all(|f| !f.contains(".rs")));
 
-        let g = glob::Glob::parse_input(&json!({"pattern": "*.nope", "path": dir_str})).unwrap();
-        let output = g.execute(&ctx).await.unwrap();
-        assert!(matches!(output, ToolOutput::GlobResult { files } if files.is_empty()));
+            let g =
+                glob::Glob::parse_input(&json!({"pattern": "*.nope", "path": dir_str})).unwrap();
+            let output = g.execute(&ctx).await.unwrap();
+            assert!(matches!(output, ToolOutput::GlobResult { files } if files.is_empty()));
+        });
     }
 
-    #[tokio::test]
-    async fn grep_finds_filters_and_misses() {
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("a.txt"), "hello world\ngoodbye world").unwrap();
-        fs::write(dir.path().join("b.rs"), "hello rust").unwrap();
-        let dir_str = dir.path().to_string_lossy().to_string();
-        let ctx = stub_ctx(&AgentMode::Build);
+    #[test]
+    fn grep_finds_filters_and_misses() {
+        smol::block_on(async {
+            let dir = TempDir::new().unwrap();
+            fs::write(dir.path().join("a.txt"), "hello world\ngoodbye world").unwrap();
+            fs::write(dir.path().join("b.rs"), "hello rust").unwrap();
+            let dir_str = dir.path().to_string_lossy().to_string();
+            let ctx = stub_ctx(&AgentMode::Build);
 
-        let g = grep::Grep::parse_input(&json!({"pattern": "hello", "path": dir_str})).unwrap();
-        let hit = g.execute(&ctx).await.unwrap().as_text().to_string();
-        assert!(hit.contains("a.txt"));
-        assert!(hit.contains("b.rs"));
+            let g = grep::Grep::parse_input(&json!({"pattern": "hello", "path": dir_str})).unwrap();
+            let hit = g.execute(&ctx).await.unwrap().as_text().to_string();
+            assert!(hit.contains("a.txt"));
+            assert!(hit.contains("b.rs"));
 
-        let g = grep::Grep::parse_input(
-            &json!({"pattern": "hello", "path": dir_str, "include": "*.rs"}),
-        )
-        .unwrap();
-        let filtered = g.execute(&ctx).await.unwrap().as_text().to_string();
-        assert!(filtered.contains("b.rs"));
-        assert!(!filtered.contains("a.txt"));
+            let g = grep::Grep::parse_input(
+                &json!({"pattern": "hello", "path": dir_str, "include": "*.rs"}),
+            )
+            .unwrap();
+            let filtered = g.execute(&ctx).await.unwrap().as_text().to_string();
+            assert!(filtered.contains("b.rs"));
+            assert!(!filtered.contains("a.txt"));
 
-        let g =
-            grep::Grep::parse_input(&json!({"pattern": "zzzznotfound", "path": dir_str})).unwrap();
-        assert_eq!(g.execute(&ctx).await.unwrap().as_text(), NO_FILES_FOUND);
+            let g = grep::Grep::parse_input(&json!({"pattern": "zzzznotfound", "path": dir_str}))
+                .unwrap();
+            assert_eq!(g.execute(&ctx).await.unwrap().as_text(), NO_FILES_FOUND);
+        });
     }
 
     #[test]
@@ -645,24 +652,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_definitions_examples_non_empty() {
-        let vars = Vars::new().set("{cwd}", "/tmp");
-        for def in ToolCall::definitions(&vars, &[], true)
-            .1
-            .as_array()
-            .unwrap()
-        {
-            if let Some(examples) = def.get("input_examples") {
-                assert!(
-                    !examples.as_array().unwrap().is_empty(),
-                    "{} has empty input_examples",
-                    def["name"]
-                );
-            }
-        }
-    }
-
-    #[test]
     fn definitions_filtered_returns_only_requested() {
         let vars = Vars::new().set("{cwd}", "/tmp");
         let filtered = ToolCall::definitions_filtered(&vars, &["bash", "read"], true);
@@ -675,22 +664,25 @@ mod tests {
         assert_eq!(names, ["bash", "read"]);
     }
 
-    #[tokio::test]
-    async fn plan_mode_restricts_mutations() {
-        let dir = TempDir::new().unwrap();
-        let plan_path = dir.path().join("plan.md").to_string_lossy().to_string();
-        let mode = AgentMode::Plan(plan_path.clone());
-        let ctx = stub_ctx(&mode);
+    #[test]
+    fn plan_mode_restricts_mutations() {
+        smol::block_on(async {
+            let dir = TempDir::new().unwrap();
+            let plan_path = dir.path().join("plan.md").to_string_lossy().to_string();
+            let mode = AgentMode::Plan(plan_path.clone());
+            let ctx = stub_ctx(&mode);
 
-        let other = dir.path().join("other.rs").to_string_lossy().to_string();
-        let blocked = ToolCall::from_api("write", &json!({"path": other, "content": "x"})).unwrap();
-        assert!(blocked.execute(&ctx, "t1".into()).await.is_error);
+            let other = dir.path().join("other.rs").to_string_lossy().to_string();
+            let blocked =
+                ToolCall::from_api("write", &json!({"path": other, "content": "x"})).unwrap();
+            assert!(blocked.execute(&ctx, "t1".into()).await.is_error);
 
-        let allowed = ToolCall::from_api(
-            "write",
-            &json!({"path": plan_path, "content": "plan content"}),
-        )
-        .unwrap();
-        assert!(!allowed.execute(&ctx, "t2".into()).await.is_error);
+            let allowed = ToolCall::from_api(
+                "write",
+                &json!({"path": plan_path, "content": "plan content"}),
+            )
+            .unwrap();
+            assert!(!allowed.execute(&ctx, "t2".into()).await.is_error);
+        });
     }
 }

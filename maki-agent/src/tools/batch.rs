@@ -4,7 +4,7 @@ use crate::{AgentEvent, BatchToolEntry, BatchToolStatus, ToolOutput};
 use serde::Deserialize;
 use serde_json::Value;
 
-use tokio::task::JoinSet;
+use crate::task_set::TaskSet;
 
 use maki_tool_macro::Tool;
 
@@ -86,7 +86,7 @@ impl Batch {
 
         let inner_id = |i: usize| format!("{batch_id}__{i}");
 
-        let mut set = JoinSet::new();
+        let mut set = TaskSet::new();
         for (i, parsed_call) in parsed.iter().enumerate() {
             let id = inner_id(i);
             let batch_id = batch_id.clone();
@@ -129,10 +129,8 @@ impl Batch {
 
         let mut results: Vec<(Result<String, String>, Option<ToolOutput>)> =
             vec![(Err("tool task panicked".into()), None); parsed.len()];
-        while let Some(res) = set.join_next().await {
-            if let Ok((i, result, output)) = res {
-                results[i] = (result, output);
-            }
+        for (i, result, output) in set.join_all().await.into_iter().flatten() {
+            results[i] = (result, output);
         }
 
         let total = results.len() + discarded.len();
@@ -230,51 +228,59 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn empty_batch_returns_error() {
-        let ctx = stub_ctx(&AgentMode::Build);
-        let batch = Batch::parse_input(&json!({"tool_calls": []})).unwrap();
-        assert!(batch.execute(&ctx).await.is_err());
+    #[test]
+    fn empty_batch_returns_error() {
+        smol::block_on(async {
+            let ctx = stub_ctx(&AgentMode::Build);
+            let batch = Batch::parse_input(&json!({"tool_calls": []})).unwrap();
+            assert!(batch.execute(&ctx).await.is_err());
+        });
     }
 
-    #[tokio::test]
-    async fn nested_batch_rejected() {
-        let (entries, _) = run_batch(json!({
-            "tool_calls": [{"tool": "batch", "parameters": {"tool_calls": []}}]
-        }))
-        .await;
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].status, BatchToolStatus::Error);
-        assert_eq!(entries[0].tool, "batch");
+    #[test]
+    fn nested_batch_rejected() {
+        smol::block_on(async {
+            let (entries, _) = run_batch(json!({
+                "tool_calls": [{"tool": "batch", "parameters": {"tool_calls": []}}]
+            }))
+            .await;
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].status, BatchToolStatus::Error);
+            assert_eq!(entries[0].tool, "batch");
+        });
     }
 
-    #[tokio::test]
-    async fn parallel_execution_with_mixed_results() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let f = dir.path().join("a.txt");
-        std::fs::write(&f, "content").unwrap();
+    #[test]
+    fn parallel_execution_with_mixed_results() {
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let f = dir.path().join("a.txt");
+            std::fs::write(&f, "content").unwrap();
 
-        let (entries, text) = run_batch(json!({
-            "tool_calls": [
-                {"tool": "read", "parameters": {"path": f.to_str().unwrap()}},
-                {"tool": "read", "parameters": {"path": "/nonexistent/path.txt"}}
-            ]
-        }))
-        .await;
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].status, BatchToolStatus::Success);
-        assert_eq!(entries[1].status, BatchToolStatus::Error);
-        assert!(text.contains("content"));
+            let (entries, text) = run_batch(json!({
+                "tool_calls": [
+                    {"tool": "read", "parameters": {"path": f.to_str().unwrap()}},
+                    {"tool": "read", "parameters": {"path": "/nonexistent/path.txt"}}
+                ]
+            }))
+            .await;
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].status, BatchToolStatus::Success);
+            assert_eq!(entries[1].status, BatchToolStatus::Error);
+            assert!(text.contains("content"));
+        });
     }
 
-    #[tokio::test]
-    async fn exceeds_max_batch_size_discards_excess() {
-        let calls: Vec<Value> = (0..MAX_BATCH_SIZE + 2)
-            .map(|_| json!({"tool": "read", "parameters": {"path": "/tmp"}}))
-            .collect();
-        let (entries, _) = run_batch(json!({"tool_calls": calls})).await;
-        assert_eq!(entries.len(), MAX_BATCH_SIZE + 2);
-        let discarded: Vec<_> = entries[MAX_BATCH_SIZE..].iter().collect();
-        assert!(discarded.iter().all(|e| e.status == BatchToolStatus::Error));
+    #[test]
+    fn exceeds_max_batch_size_discards_excess() {
+        smol::block_on(async {
+            let calls: Vec<Value> = (0..MAX_BATCH_SIZE + 2)
+                .map(|_| json!({"tool": "read", "parameters": {"path": "/tmp"}}))
+                .collect();
+            let (entries, _) = run_batch(json!({"tool_calls": calls})).await;
+            assert_eq!(entries.len(), MAX_BATCH_SIZE + 2);
+            let discarded: Vec<_> = entries[MAX_BATCH_SIZE..].iter().collect();
+            assert!(discarded.iter().all(|e| e.status == BatchToolStatus::Error));
+        });
     }
 }

@@ -20,9 +20,6 @@ use std::io::{self, Read};
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::runtime::Handle;
-use tokio::sync::mpsc as tokio_mpsc;
-
 use clap::ValueEnum;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
@@ -127,7 +124,6 @@ pub fn run(
     format: OutputFormat,
     verbose: bool,
     skills: Vec<Skill>,
-    handle: &Handle,
 ) -> Result<()> {
     let prompt = match prompt_arg {
         Some(p) => p,
@@ -151,7 +147,7 @@ pub fn run(
     );
     let system = agent::build_system_prompt(&vars, &mode, &instructions, &tool_names);
 
-    let (raw_tx, mut event_rx) = tokio_mpsc::unbounded_channel::<Envelope>();
+    let (raw_tx, event_rx) = flume::unbounded::<Envelope>();
     let input = AgentInput {
         message: prompt,
         mode,
@@ -162,7 +158,7 @@ pub fn run(
     let start = Instant::now();
 
     let model_clone = model.clone();
-    handle.spawn(async move {
+    smol::spawn(async move {
         let event_tx = EventSender::new(raw_tx, 0);
         let provider: Arc<dyn maki_providers::provider::Provider> =
             match maki_providers::provider::from_model(&model_clone) {
@@ -194,7 +190,8 @@ pub fn run(
                 message: e.to_string(),
             });
         }
-    });
+    })
+    .detach();
 
     let is_stream_json = matches!(format, OutputFormat::StreamJson);
     let mut verbose_out = verbose.then(|| match format {
@@ -219,7 +216,7 @@ pub fn run(
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
 
-    while let Some(envelope) = handle.block_on(event_rx.recv()) {
+    while let Ok(envelope) = smol::block_on(event_rx.recv_async()) {
         let Envelope {
             ref event,
             ref subagent,

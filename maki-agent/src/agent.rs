@@ -3,8 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use tokio::task::JoinSet;
 use tracing::{debug, error, info, warn};
+
+use crate::task_set::TaskSet;
 
 use serde_json::Value;
 
@@ -282,11 +283,8 @@ fn parse_tool_calls<'a>(
     (parsed, errors)
 }
 
-async fn forward_provider_events(
-    mut prx: tokio::sync::mpsc::UnboundedReceiver<ProviderEvent>,
-    event_tx: &EventSender,
-) {
-    while let Some(pe) = prx.recv().await {
+async fn forward_provider_events(prx: flume::Receiver<ProviderEvent>, event_tx: &EventSender) {
+    while let Ok(pe) = prx.recv_async().await {
         let ae = match pe {
             ProviderEvent::TextDelta { text } => AgentEvent::TextDelta { text },
             ProviderEvent::ThinkingDelta { text } => AgentEvent::ThinkingDelta { text },
@@ -307,8 +305,8 @@ async fn stream_with_retry(
 ) -> Result<StreamResponse, AgentError> {
     let mut retry = RetryState::new();
     loop {
-        let (ptx, prx) = tokio::sync::mpsc::unbounded_channel();
-        let forwarder = tokio::spawn({
+        let (ptx, prx) = flume::unbounded();
+        let forwarder = smol::spawn({
             let event_tx = event_tx.clone();
             async move { forward_provider_events(prx, &event_tx).await }
         });
@@ -328,7 +326,7 @@ async fn stream_with_retry(
                     message: e.retry_message(),
                     delay_ms,
                 })?;
-                tokio::time::sleep(delay).await;
+                async_io::Timer::after(delay).await;
             }
             Err(e) => return Err(e),
         }
@@ -336,8 +334,8 @@ async fn stream_with_retry(
 }
 
 async fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDoneEvent> {
-    let mut set = JoinSet::new();
-    for (i, parsed) in tool_calls.iter().enumerate() {
+    let mut set = TaskSet::new();
+    for parsed in tool_calls {
         let event_tx = ctx.event_tx.clone();
         let tool_ctx = ToolContext {
             tool_use_id: Some(parsed.id.clone()),
@@ -348,25 +346,20 @@ async fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<
         set.spawn(async move {
             let output = call.execute(&tool_ctx, id).await;
             event_tx.try_send(AgentEvent::ToolDone(output.clone()));
-            (i, output)
+            output
         });
     }
 
-    let mut results = vec![None; tool_calls.len()];
-    while let Some(res) = set.join_next().await {
-        match res {
-            Ok((i, output)) => results[i] = Some(output),
-            Err(e) => warn!(error = %e, "tool task panicked"),
-        }
-    }
-
-    results
+    set.join_all()
+        .await
         .into_iter()
         .enumerate()
-        .map(|(i, r)| {
-            r.unwrap_or_else(|| {
+        .map(|(i, r)| match r {
+            Ok(output) => output,
+            Err(e) => {
+                warn!(error = %e, "tool task panicked");
                 ToolDoneEvent::error(tool_calls[i].id.clone(), "tool task panicked")
-            })
+            }
         })
         .collect()
 }
@@ -378,7 +371,7 @@ enum TurnOutcome {
 
 pub struct RunOutcome {
     pub history: History,
-    pub cmd_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ExtractedCommand>>,
+    pub cmd_rx: Option<flume::Receiver<ExtractedCommand>>,
     pub result: Result<(), AgentError>,
 }
 
@@ -391,8 +384,8 @@ pub struct Agent {
     tools: Value,
     skills: Arc<[Skill]>,
     mode: AgentMode,
-    user_response_rx: Option<Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>>>,
-    cmd_rx: Option<tokio::sync::mpsc::UnboundedReceiver<ExtractedCommand>>,
+    user_response_rx: Option<Arc<async_lock::Mutex<flume::Receiver<String>>>>,
+    cmd_rx: Option<flume::Receiver<ExtractedCommand>>,
     total_usage: TokenUsage,
     num_turns: u32,
     recent_calls: RecentCalls,
@@ -431,16 +424,13 @@ impl Agent {
 
     pub fn with_user_response_rx(
         mut self,
-        rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>>,
+        rx: Arc<async_lock::Mutex<flume::Receiver<String>>>,
     ) -> Self {
         self.user_response_rx = Some(rx);
         self
     }
 
-    pub fn with_cmd_rx(
-        mut self,
-        rx: tokio::sync::mpsc::UnboundedReceiver<ExtractedCommand>,
-    ) -> Self {
+    pub fn with_cmd_rx(mut self, rx: flume::Receiver<ExtractedCommand>) -> Self {
         self.cmd_rx = Some(rx);
         self
     }
@@ -720,9 +710,8 @@ mod tests {
     use std::sync::Arc;
 
     use test_case::test_case;
-    use tokio::sync::mpsc;
 
-    use maki_providers::provider::Provider;
+    use maki_providers::provider::{BoxFuture, Provider};
     use maki_providers::{ContentBlock, Message, Role, StopReason, StreamResponse, TokenUsage};
 
     use crate::Envelope;
@@ -780,23 +769,24 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
     impl Provider for MockProvider {
-        async fn stream_message(
-            &self,
-            _: &Model,
-            _: &[Message],
-            _: &str,
-            _: &Value,
-            _: &tokio::sync::mpsc::UnboundedSender<maki_providers::ProviderEvent>,
-        ) -> Result<StreamResponse, AgentError> {
-            let mut responses = self.responses.lock().unwrap();
-            assert!(!responses.is_empty(), "MockProvider: no more responses");
-            Ok(responses.remove(0))
+        fn stream_message<'a>(
+            &'a self,
+            _: &'a Model,
+            _: &'a [Message],
+            _: &'a str,
+            _: &'a Value,
+            _: &'a flume::Sender<maki_providers::ProviderEvent>,
+        ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+            Box::pin(async {
+                let mut responses = self.responses.lock().unwrap();
+                assert!(!responses.is_empty(), "MockProvider: no more responses");
+                Ok(responses.remove(0))
+            })
         }
 
-        async fn list_models(&self) -> Result<Vec<String>, AgentError> {
-            unimplemented!()
+        fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+            Box::pin(async { unimplemented!() })
         }
     }
 
@@ -820,7 +810,7 @@ mod tests {
             pending_plan: None,
         };
         let history = History::new(Vec::new());
-        let (raw_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (raw_tx, event_rx) = flume::unbounded();
         let event_tx = EventSender::new(raw_tx, 0);
         let tools = serde_json::json!([]);
         let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
@@ -857,47 +847,46 @@ mod tests {
             .expect("expected Done event")
     }
 
-    #[tokio::test]
     #[test_case(&[StopReason::EndTurn],                                                     1, Some(StopReason::EndTurn)  ; "end_turn_completes")]
     #[test_case(&[StopReason::MaxTokens, StopReason::EndTurn],                                 2, Some(StopReason::EndTurn)  ; "max_tokens_continues")]
     #[test_case(&[StopReason::MaxTokens, StopReason::MaxTokens, StopReason::MaxTokens, StopReason::MaxTokens], 4, Some(StopReason::MaxTokens) ; "max_tokens_gives_up_after_limit")]
-    async fn turn_counting(
-        stops: &[StopReason],
-        expected_turns: u32,
-        expected_stop: Option<StopReason>,
-    ) {
-        let responses: Vec<_> = stops.iter().map(|s| text_response(*s)).collect();
-        let provider = MockProvider::new(responses);
-        let (turns, stop_reason) = run_agent(provider).await;
-        assert_eq!(turns, expected_turns);
-        assert_eq!(stop_reason, expected_stop);
+    fn turn_counting(stops: &[StopReason], expected_turns: u32, expected_stop: Option<StopReason>) {
+        smol::block_on(async {
+            let responses: Vec<_> = stops.iter().map(|s| text_response(*s)).collect();
+            let provider = MockProvider::new(responses);
+            let (turns, stop_reason) = run_agent(provider).await;
+            assert_eq!(turns, expected_turns);
+            assert_eq!(stop_reason, expected_stop);
+        });
     }
 
-    #[tokio::test]
-    async fn compact_replaces_history_with_summary() {
-        let provider: Arc<dyn Provider> =
-            Arc::new(MockProvider::new(vec![text_response(StopReason::EndTurn)]));
-        let model = default_model();
-        let (raw_tx, _rx) = mpsc::unbounded_channel();
-        let event_tx = EventSender::new(raw_tx, 0);
-        let mut history = History::new(vec![
-            Message::user("first".into()),
-            Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::Text {
-                    text: "reply".into(),
-                }],
-            },
-        ]);
+    #[test]
+    fn compact_replaces_history_with_summary() {
+        smol::block_on(async {
+            let provider: Arc<dyn Provider> =
+                Arc::new(MockProvider::new(vec![text_response(StopReason::EndTurn)]));
+            let model = default_model();
+            let (raw_tx, _rx) = flume::unbounded();
+            let event_tx = EventSender::new(raw_tx, 0);
+            let mut history = History::new(vec![
+                Message::user("first".into()),
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "reply".into(),
+                    }],
+                },
+            ]);
 
-        compact(&*provider, &model, &mut history, &event_tx)
-            .await
-            .unwrap();
+            compact(&*provider, &model, &mut history, &event_tx)
+                .await
+                .unwrap();
 
-        let msgs = history.as_slice();
-        assert_eq!(msgs.len(), 2);
-        assert!(matches!(msgs[0].role, Role::User));
-        assert!(matches!(msgs[1].role, Role::Assistant));
+            let msgs = history.as_slice();
+            assert_eq!(msgs.len(), 2);
+            assert!(matches!(msgs[0].role, Role::User));
+            assert!(matches!(msgs[1].role, Role::Assistant));
+        });
     }
 
     fn tool_call_response(tool_name: &str, tool_id: &str) -> StreamResponse {
@@ -917,7 +906,7 @@ mod tests {
 
     async fn run_with_interrupt(
         provider: MockProvider,
-        cmd_rx: tokio::sync::mpsc::UnboundedReceiver<ExtractedCommand>,
+        cmd_rx: flume::Receiver<ExtractedCommand>,
     ) -> (Vec<Message>, Vec<Envelope>) {
         let model = default_model();
         let input = AgentInput {
@@ -926,7 +915,7 @@ mod tests {
             pending_plan: None,
         };
         let history = History::new(Vec::new());
-        let (raw_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (raw_tx, event_rx) = flume::unbounded();
         let event_tx = EventSender::new(raw_tx, 0);
         let tools = serde_json::json!([]);
         let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
@@ -964,70 +953,76 @@ mod tests {
         })
     }
 
-    #[tokio::test]
-    async fn interrupt_injects_user_message_between_turns() {
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ExtractedCommand>();
-        cmd_tx
-            .send(ExtractedCommand::Interrupt(
-                AgentInput {
-                    message: "fix the bug".into(),
-                    mode: AgentMode::Build,
-                    pending_plan: None,
-                },
-                0,
-            ))
-            .unwrap();
+    #[test]
+    fn interrupt_injects_user_message_between_turns() {
+        smol::block_on(async {
+            let (cmd_tx, cmd_rx) = flume::unbounded::<ExtractedCommand>();
+            cmd_tx
+                .try_send(ExtractedCommand::Interrupt(
+                    AgentInput {
+                        message: "fix the bug".into(),
+                        mode: AgentMode::Build,
+                        pending_plan: None,
+                    },
+                    0,
+                ))
+                .unwrap();
 
-        let provider = MockProvider::new(vec![
-            tool_call_response("glob", "t1"),
-            text_response(StopReason::EndTurn),
-        ]);
-        let (history, events) = run_with_interrupt(provider, cmd_rx).await;
+            let provider = MockProvider::new(vec![
+                tool_call_response("glob", "t1"),
+                text_response(StopReason::EndTurn),
+            ]);
+            let (history, events) = run_with_interrupt(provider, cmd_rx).await;
 
-        assert!(events.iter().any(|e| {
-            matches!(e.event, AgentEvent::InterruptConsumed { ref message } if message == "fix the bug")
-        }));
-        assert!(has_interrupt_in_history(&history));
+            assert!(events.iter().any(|e| {
+                matches!(e.event, AgentEvent::InterruptConsumed { ref message } if message == "fix the bug")
+            }));
+            assert!(has_interrupt_in_history(&history));
+        });
     }
 
-    #[tokio::test]
-    async fn no_interrupt_when_channel_empty() {
-        let (_cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ExtractedCommand>();
+    #[test]
+    fn no_interrupt_when_channel_empty() {
+        smol::block_on(async {
+            let (_cmd_tx, cmd_rx) = flume::unbounded::<ExtractedCommand>();
 
-        let provider = MockProvider::new(vec![
-            tool_call_response("glob", "t1"),
-            text_response(StopReason::EndTurn),
-        ]);
-        let (history, events) = run_with_interrupt(provider, cmd_rx).await;
+            let provider = MockProvider::new(vec![
+                tool_call_response("glob", "t1"),
+                text_response(StopReason::EndTurn),
+            ]);
+            let (history, events) = run_with_interrupt(provider, cmd_rx).await;
 
-        assert!(!has_interrupt_event(&events));
-        assert!(!has_interrupt_in_history(&history));
+            assert!(!has_interrupt_event(&events));
+            assert!(!has_interrupt_in_history(&history));
+        });
     }
 
-    #[tokio::test]
-    async fn interrupt_consumed_during_text_only_response() {
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ExtractedCommand>();
-        cmd_tx
-            .send(ExtractedCommand::Interrupt(
-                AgentInput {
-                    message: "new task".into(),
-                    mode: AgentMode::Build,
-                    pending_plan: None,
-                },
-                0,
-            ))
-            .unwrap();
+    #[test]
+    fn interrupt_consumed_during_text_only_response() {
+        smol::block_on(async {
+            let (cmd_tx, cmd_rx) = flume::unbounded::<ExtractedCommand>();
+            cmd_tx
+                .try_send(ExtractedCommand::Interrupt(
+                    AgentInput {
+                        message: "new task".into(),
+                        mode: AgentMode::Build,
+                        pending_plan: None,
+                    },
+                    0,
+                ))
+                .unwrap();
 
-        let provider = MockProvider::new(vec![
-            text_response(StopReason::EndTurn),
-            text_response(StopReason::EndTurn),
-        ]);
-        let (history, events) = run_with_interrupt(provider, cmd_rx).await;
+            let provider = MockProvider::new(vec![
+                text_response(StopReason::EndTurn),
+                text_response(StopReason::EndTurn),
+            ]);
+            let (history, events) = run_with_interrupt(provider, cmd_rx).await;
 
-        assert!(events.iter().any(|e| {
-            matches!(e.event, AgentEvent::InterruptConsumed { ref message } if message == "new task")
-        }));
-        assert!(has_interrupt_in_history(history.as_slice()));
+            assert!(events.iter().any(|e| {
+                matches!(e.event, AgentEvent::InterruptConsumed { ref message } if message == "new task")
+            }));
+            assert!(has_interrupt_in_history(history.as_slice()));
+        });
     }
 
     fn small_context_model(context_window: u32, max_output_tokens: u32) -> Model {
@@ -1037,43 +1032,45 @@ mod tests {
         model
     }
 
-    #[tokio::test]
-    async fn cancel_truncates_history_to_pre_run_state() {
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ExtractedCommand>();
-        cmd_tx.send(ExtractedCommand::Cancel).unwrap();
+    #[test]
+    fn cancel_truncates_history_to_pre_run_state() {
+        smol::block_on(async {
+            let (cmd_tx, cmd_rx) = flume::unbounded::<ExtractedCommand>();
+            cmd_tx.try_send(ExtractedCommand::Cancel).unwrap();
 
-        let provider = MockProvider::new(vec![text_response(StopReason::EndTurn)]);
-        let model = default_model();
-        let input = AgentInput {
-            message: "hello".into(),
-            mode: AgentMode::Build,
-            pending_plan: None,
-        };
-        let prior = vec![Message::user("old".into())];
-        let history = History::new(prior.clone());
-        let (raw_tx, _event_rx) = mpsc::unbounded_channel();
-        let event_tx = EventSender::new(raw_tx, 0);
-        let tools = serde_json::json!([]);
-        let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
+            let provider = MockProvider::new(vec![text_response(StopReason::EndTurn)]);
+            let model = default_model();
+            let input = AgentInput {
+                message: "hello".into(),
+                mode: AgentMode::Build,
+                pending_plan: None,
+            };
+            let prior = vec![Message::user("old".into())];
+            let history = History::new(prior.clone());
+            let (raw_tx, _event_rx) = flume::unbounded();
+            let event_tx = EventSender::new(raw_tx, 0);
+            let tools = serde_json::json!([]);
+            let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
 
-        let agent = Agent::new(
-            Arc::new(provider),
-            model,
-            history,
-            "system".into(),
-            event_tx,
-            tools,
-            skills,
-        )
-        .with_cmd_rx(cmd_rx);
-        let outcome = agent.run(input).await;
+            let agent = Agent::new(
+                Arc::new(provider),
+                model,
+                history,
+                "system".into(),
+                event_tx,
+                tools,
+                skills,
+            )
+            .with_cmd_rx(cmd_rx);
+            let outcome = agent.run(input).await;
 
-        assert!(matches!(outcome.result, Err(AgentError::Cancelled)));
-        assert_eq!(
-            outcome.history.len(),
-            prior.len(),
-            "history should be truncated to pre-run state on cancel"
-        );
+            assert!(matches!(outcome.result, Err(AgentError::Cancelled)));
+            assert_eq!(
+                outcome.history.len(),
+                prior.len(),
+                "history should be truncated to pre-run state on cancel"
+            );
+        });
     }
 
     #[test_case(179_999, 200_000, 20_000, false ; "below_threshold")]
@@ -1087,45 +1084,46 @@ mod tests {
         assert_eq!(is_overflow(input, &model), expected);
     }
 
-    #[tokio::test]
     #[test_case(true,  900, true  ; "enabled_and_over_threshold")]
     #[test_case(true,  100, false ; "enabled_but_below_threshold")]
     #[test_case(false, 900, false ; "disabled_even_over_threshold")]
-    async fn try_auto_compact_behavior(enabled: bool, input_tokens: u32, expected: bool) {
-        let model = small_context_model(1000, 200);
-        let provider = MockProvider::new(if expected {
-            vec![text_response(StopReason::EndTurn)]
-        } else {
-            vec![]
-        });
-        let (raw_tx, mut event_rx) = mpsc::unbounded_channel();
-        let event_tx = EventSender::new(raw_tx, 0);
-        let history = History::new(vec![Message::user("go".into())]);
-        let tools = serde_json::json!([]);
-        let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
+    fn try_auto_compact_behavior(enabled: bool, input_tokens: u32, expected: bool) {
+        smol::block_on(async {
+            let model = small_context_model(1000, 200);
+            let provider = MockProvider::new(if expected {
+                vec![text_response(StopReason::EndTurn)]
+            } else {
+                vec![]
+            });
+            let (raw_tx, event_rx) = flume::unbounded();
+            let event_tx = EventSender::new(raw_tx, 0);
+            let history = History::new(vec![Message::user("go".into())]);
+            let tools = serde_json::json!([]);
+            let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
 
-        let mut agent = Agent::new(
-            Arc::new(provider),
-            model,
-            history,
-            "system".into(),
-            event_tx,
-            tools,
-            skills,
-        );
-        agent.auto_compact = enabled;
+            let mut agent = Agent::new(
+                Arc::new(provider),
+                model,
+                history,
+                "system".into(),
+                event_tx,
+                tools,
+                skills,
+            );
+            agent.auto_compact = enabled;
 
-        let result = agent.try_auto_compact(input_tokens).await.unwrap();
+            let result = agent.try_auto_compact(input_tokens).await.unwrap();
 
-        assert_eq!(result, expected);
-        drop(agent);
-        let mut has_compact_event = false;
-        while let Ok(e) = event_rx.try_recv() {
-            if matches!(e.event, AgentEvent::AutoCompacting) {
-                has_compact_event = true;
+            assert_eq!(result, expected);
+            drop(agent);
+            let mut has_compact_event = false;
+            while let Ok(e) = event_rx.try_recv() {
+                if matches!(e.event, AgentEvent::AutoCompacting) {
+                    has_compact_event = true;
+                }
             }
-        }
-        assert_eq!(has_compact_event, expected);
+            assert_eq!(has_compact_event, expected);
+        });
     }
 
     #[test]

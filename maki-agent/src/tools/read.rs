@@ -34,7 +34,7 @@ impl Read {
         let offset = self.offset;
         let limit = self.limit;
         let loaded = ctx.loaded_instructions.clone();
-        tokio::task::spawn_blocking(move || {
+        smol::unblock(move || {
             let raw = fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
 
             let start = offset.unwrap_or(1).saturating_sub(1);
@@ -64,7 +64,6 @@ impl Read {
             })
         })
         .await
-        .unwrap_or_else(|e| Err(format!("task panicked: {e}")))
     }
 
     pub fn start_summary(&self) -> String {

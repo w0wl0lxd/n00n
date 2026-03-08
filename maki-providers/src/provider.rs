@@ -1,7 +1,9 @@
-use async_trait::async_trait;
+use std::future::Future;
+use std::pin::Pin;
+
+use flume::Sender;
 use serde_json::Value;
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
-use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, warn};
 
 use crate::model::Model;
@@ -26,18 +28,19 @@ impl ProviderKind {
     }
 }
 
-#[async_trait]
-pub trait Provider: Send + Sync {
-    async fn stream_message(
-        &self,
-        model: &Model,
-        messages: &[Message],
-        system: &str,
-        tools: &Value,
-        event_tx: &UnboundedSender<ProviderEvent>,
-    ) -> Result<StreamResponse, AgentError>;
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-    async fn list_models(&self) -> Result<Vec<String>, AgentError>;
+pub trait Provider: Send + Sync {
+    fn stream_message<'a>(
+        &'a self,
+        model: &'a Model,
+        messages: &'a [Message],
+        system: &'a str,
+        tools: &'a Value,
+        event_tx: &'a Sender<ProviderEvent>,
+    ) -> BoxFuture<'a, Result<StreamResponse, AgentError>>;
+
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>>;
 }
 
 pub fn from_model(model: &Model) -> Result<Box<dyn Provider>, AgentError> {
@@ -47,7 +50,7 @@ pub fn from_model(model: &Model) -> Result<Box<dyn Provider>, AgentError> {
 }
 
 pub async fn fetch_all_models(mut on_ready: impl FnMut(Vec<String>)) {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, rx) = flume::unbounded();
 
     for kind in ProviderKind::iter() {
         let Ok(provider) = kind.create() else {
@@ -55,7 +58,7 @@ pub async fn fetch_all_models(mut on_ready: impl FnMut(Vec<String>)) {
             continue;
         };
         let tx = tx.clone();
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let models = match provider.list_models().await {
                 Ok(ids) => ids.into_iter().map(|id| format!("{kind}/{id}")).collect(),
                 Err(e) => {
@@ -63,12 +66,13 @@ pub async fn fetch_all_models(mut on_ready: impl FnMut(Vec<String>)) {
                     Vec::new()
                 }
             };
-            let _ = tx.send(models);
-        });
+            let _ = tx.send_async(models).await;
+        })
+        .detach();
     }
     drop(tx);
 
-    while let Some(models) = rx.recv().await {
+    while let Ok(models) = rx.recv_async().await {
         on_ready(models);
     }
 }

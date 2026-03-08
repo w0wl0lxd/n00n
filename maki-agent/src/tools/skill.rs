@@ -59,25 +59,29 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn execute_loads_skill_content() {
-        let skill = test_skill();
-        let skills = [skill];
-        let mut ctx = stub_ctx(&AgentMode::Build);
-        ctx.skills = Arc::from(skills);
+    #[test]
+    fn execute_loads_skill_content() {
+        smol::block_on(async {
+            let skill = test_skill();
+            let skills = [skill];
+            let mut ctx = stub_ctx(&AgentMode::Build);
+            ctx.skills = Arc::from(skills);
 
-        let tool = SkillTool::parse_input(&json!({"name": "test-skill"})).unwrap();
-        let output = tool.execute(&ctx).await.unwrap();
-        assert!(output.as_text().contains("Do the thing"));
+            let tool = SkillTool::parse_input(&json!({"name": "test-skill"})).unwrap();
+            let output = tool.execute(&ctx).await.unwrap();
+            assert!(output.as_text().contains("Do the thing"));
+        });
     }
 
-    #[tokio::test]
-    async fn execute_returns_error_when_not_found() {
-        let skills = [test_skill()];
-        let mut ctx = stub_ctx(&AgentMode::Build);
-        ctx.skills = Arc::from(skills);
+    #[test]
+    fn execute_returns_error_when_not_found() {
+        smol::block_on(async {
+            let skills = [test_skill()];
+            let mut ctx = stub_ctx(&AgentMode::Build);
+            ctx.skills = Arc::from(skills);
 
-        let tool = SkillTool::parse_input(&json!({"name": "nonexistent"})).unwrap();
-        assert!(tool.execute(&ctx).await.unwrap_err().starts_with(NOT_FOUND));
+            let tool = SkillTool::parse_input(&json!({"name": "nonexistent"})).unwrap();
+            assert!(tool.execute(&ctx).await.unwrap_err().starts_with(NOT_FOUND));
+        });
     }
 }

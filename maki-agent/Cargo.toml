@@ -18,9 +18,13 @@ regex = { workspace = true }
 similar = { workspace = true }
 jiff = { workspace = true }
 humantime = { workspace = true }
-tokio = { workspace = true }
+smol = { workspace = true }
+async-process = { workspace = true }
+flume = { workspace = true }
+async-lock = { workspace = true }
+async-io = { workspace = true }
+futures-lite = { workspace = true }
 reqwest = { workspace = true }
-async-trait = { workspace = true }
 
 
 [dev-dependencies]

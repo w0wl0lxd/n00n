@@ -48,7 +48,7 @@ impl Edit {
         let new_string = self.new_string.clone();
         let replace_all = self.replace_all.unwrap_or(false);
         let diff_self = self.clone();
-        tokio::task::spawn_blocking(move || {
+        smol::unblock(move || {
             let content = fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
             let result = fuzzy_replace::replace(&content, &old_string, &new_string, replace_all)?;
             fs::write(&path, &result.content).map_err(|e| format!("write error: {e}"))?;
@@ -60,7 +60,6 @@ impl Edit {
             Ok(diff_self.diff_output(&lines))
         })
         .await
-        .unwrap_or_else(|e| Err(format!("task panicked: {e}")))
     }
 
     pub fn start_summary(&self) -> String {
@@ -93,39 +92,41 @@ mod tests {
         path.to_string_lossy().to_string()
     }
 
-    #[tokio::test]
-    async fn edit_reads_replaces_writes() {
-        let dir = TempDir::new().unwrap();
-        let ctx = stub_ctx(&AgentMode::Build);
+    #[test]
+    fn edit_reads_replaces_writes() {
+        smol::block_on(async {
+            let dir = TempDir::new().unwrap();
+            let ctx = stub_ctx(&AgentMode::Build);
 
-        let path = temp_file(&dir, "f.rs", "fn old() {}\nfn keep() {}");
-        Edit {
-            path: path.clone(),
-            old_string: "fn old() {}".into(),
-            new_string: "fn new() {}".into(),
-            replace_all: None,
-        }
-        .execute(&ctx)
-        .await
-        .unwrap();
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "fn new() {}\nfn keep() {}"
-        );
+            let path = temp_file(&dir, "f.rs", "fn old() {}\nfn keep() {}");
+            Edit {
+                path: path.clone(),
+                old_string: "fn old() {}".into(),
+                new_string: "fn new() {}".into(),
+                replace_all: None,
+            }
+            .execute(&ctx)
+            .await
+            .unwrap();
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                "fn new() {}\nfn keep() {}"
+            );
 
-        let path = temp_file(&dir, "g.rs", "let x = 1;\nlet x = 1;\nlet y = 2;");
-        Edit {
-            path: path.clone(),
-            old_string: "let x = 1;".into(),
-            new_string: "let x = 9;".into(),
-            replace_all: Some(true),
-        }
-        .execute(&ctx)
-        .await
-        .unwrap();
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "let x = 9;\nlet x = 9;\nlet y = 2;"
-        );
+            let path = temp_file(&dir, "g.rs", "let x = 1;\nlet x = 1;\nlet y = 2;");
+            Edit {
+                path: path.clone(),
+                old_string: "let x = 1;".into(),
+                new_string: "let x = 9;".into(),
+                replace_all: Some(true),
+            }
+            .execute(&ctx)
+            .await
+            .unwrap();
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                "let x = 9;\nlet x = 9;\nlet y = 2;"
+            );
+        });
     }
 }

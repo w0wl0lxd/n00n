@@ -1,8 +1,9 @@
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use futures_lite::StreamExt;
+use futures_lite::io::{AsyncBufReadExt, BufReader};
+
+use async_process::Command;
 
 use humantime::format_duration;
 
@@ -71,7 +72,7 @@ impl Bash {
         }
         let mut child = cmd.spawn().map_err(|e| format!("failed to spawn: {e}"))?;
 
-        let (line_tx, line_rx) = mpsc::unbounded_channel::<String>();
+        let (line_tx, line_rx) = flume::unbounded::<String>();
         if let Some(stdout) = child.stdout.take() {
             spawn_line_reader(BufReader::new(stdout), line_tx.clone());
         }
@@ -82,33 +83,46 @@ impl Bash {
 
         let mut output = String::new();
         let mut last_len = 0usize;
-        let mut last_flush = tokio::time::Instant::now();
+        let mut last_flush = std::time::Instant::now();
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
-        let mut line_rx = line_rx;
+        let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+        enum Event {
+            Line(Option<String>),
+            Timeout,
+        }
         loop {
-            tokio::select! {
-                line = line_rx.recv() => {
-                    match line {
-                        Some(l) => append_line(&mut output, &l),
-                        None => {
-                            let status = child.wait().await.map_err(|e| format!("wait error: {e}"))?;
-                            flush_output(ctx, &output, &mut last_len);
-                            let content = truncate_output(output);
-                            if !status.success() {
-                                if content.is_empty() {
-                                    return Err(format!("exited with code {}", status.code().unwrap_or(-1)));
-                                }
-                                return Err(content);
-                            }
-                            return Ok(ToolOutput::Plain(content));
+            match futures_lite::future::race(
+                async { Event::Line(line_rx.recv_async().await.ok()) },
+                async {
+                    async_io::Timer::at(deadline).await;
+                    Event::Timeout
+                },
+            )
+            .await
+            {
+                Event::Line(Some(l)) => append_line(&mut output, &l),
+                Event::Line(None) => {
+                    let status = child
+                        .status()
+                        .await
+                        .map_err(|e| format!("wait error: {e}"))?;
+                    flush_output(ctx, &output, &mut last_len);
+                    let content = truncate_output(output);
+                    if !status.success() {
+                        if content.is_empty() {
+                            return Err(format!(
+                                "exited with code {}",
+                                status.code().unwrap_or(-1)
+                            ));
                         }
+                        return Err(content);
                     }
+                    return Ok(ToolOutput::Plain(content));
                 }
-                _ = tokio::time::sleep_until(deadline) => {
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                    drain_remaining(&mut line_rx, &mut output);
+                Event::Timeout => {
+                    let _ = child.kill();
+                    let _ = child.status().await;
+                    drain_remaining(&line_rx, &mut output);
                     let mut msg = timed_out_msg(timeout_secs);
                     if !output.is_empty() {
                         let content = truncate_output(output);
@@ -125,7 +139,7 @@ impl Bash {
             {
                 send_output(&ctx.event_tx, id, &output);
                 last_len = output.len();
-                last_flush = tokio::time::Instant::now();
+                last_flush = std::time::Instant::now();
             }
         }
     }
@@ -164,18 +178,20 @@ impl super::ToolDefaults for Bash {
     }
 }
 
-fn spawn_line_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
+fn spawn_line_reader<R: futures_lite::io::AsyncRead + Unpin + Send + 'static>(
     reader: BufReader<R>,
-    tx: UnboundedSender<String>,
+    tx: flume::Sender<String>,
 ) {
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if tx.send(line).is_err() {
+        while let Some(line) = lines.next().await {
+            let Ok(line) = line else { break };
+            if tx.try_send(line).is_err() {
                 break;
             }
         }
-    });
+    })
+    .detach();
 }
 
 fn append_line(output: &mut String, line: &str) {
@@ -185,7 +201,7 @@ fn append_line(output: &mut String, line: &str) {
     output.push_str(line);
 }
 
-fn drain_remaining(rx: &mut UnboundedReceiver<String>, output: &mut String) {
+fn drain_remaining(rx: &flume::Receiver<String>, output: &mut String) {
     while let Ok(line) = rx.try_recv() {
         append_line(output, &line);
     }
@@ -226,49 +242,59 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn execute_echo() {
-        let ctx = stub_ctx(&AgentMode::Build);
-        let out = bash("echo hello").execute(&ctx).await.unwrap().as_text();
-        assert_eq!(out.trim(), "hello");
+    #[test]
+    fn execute_echo() {
+        smol::block_on(async {
+            let ctx = stub_ctx(&AgentMode::Build);
+            let out = bash("echo hello").execute(&ctx).await.unwrap().as_text();
+            assert_eq!(out.trim(), "hello");
+        });
     }
 
-    #[tokio::test]
-    async fn execute_nonzero_exit_is_error() {
-        let ctx = stub_ctx(&AgentMode::Build);
-        assert!(bash("exit 1").execute(&ctx).await.is_err());
+    #[test]
+    fn execute_nonzero_exit_is_error() {
+        smol::block_on(async {
+            let ctx = stub_ctx(&AgentMode::Build);
+            assert!(bash("exit 1").execute(&ctx).await.is_err());
+        });
     }
 
-    #[tokio::test]
-    async fn execute_timeout() {
-        let ctx = stub_ctx(&AgentMode::Build);
-        let mut b = bash("sleep 30");
-        b.timeout = Some(0);
-        assert!(b.execute(&ctx).await.unwrap_err().contains("timed out"));
+    #[test]
+    fn execute_timeout() {
+        smol::block_on(async {
+            let ctx = stub_ctx(&AgentMode::Build);
+            let mut b = bash("sleep 60");
+            b.timeout = Some(1);
+            assert!(b.execute(&ctx).await.unwrap_err().contains("timed out"));
+        });
     }
 
-    #[tokio::test]
-    async fn execute_workdir() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = stub_ctx(&AgentMode::Build);
-        let mut b = bash("pwd");
-        b.workdir = Some(dir.path().to_string_lossy().into());
-        let out = b.execute(&ctx).await.unwrap().as_text();
-        assert!(
-            out.trim()
-                .ends_with(dir.path().file_name().unwrap().to_str().unwrap())
-        );
+    #[test]
+    fn execute_workdir() {
+        smol::block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = stub_ctx(&AgentMode::Build);
+            let mut b = bash("pwd");
+            b.workdir = Some(dir.path().to_string_lossy().into());
+            let out = b.execute(&ctx).await.unwrap().as_text();
+            assert!(
+                out.trim()
+                    .ends_with(dir.path().file_name().unwrap().to_str().unwrap())
+            );
+        });
     }
 
-    #[tokio::test]
-    async fn large_output_is_truncated() {
-        let ctx = stub_ctx(&AgentMode::Build);
-        let out = bash("yes | head -n 100000")
-            .execute(&ctx)
-            .await
-            .unwrap()
-            .as_text();
-        assert!(out.contains("[truncated]"));
+    #[test]
+    fn large_output_is_truncated() {
+        smol::block_on(async {
+            let ctx = stub_ctx(&AgentMode::Build);
+            let out = bash("yes | head -n 100000")
+                .execute(&ctx)
+                .await
+                .unwrap()
+                .as_text();
+            assert!(out.contains("[truncated]"));
+        });
     }
 
     #[test_case("ls",              None,           "ls",              None          ; "no_prefix")]

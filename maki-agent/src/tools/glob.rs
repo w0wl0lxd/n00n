@@ -27,7 +27,7 @@ impl Glob {
     pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let pattern = self.pattern.clone();
         let path = self.path.clone();
-        tokio::task::spawn_blocking(move || {
+        smol::unblock(move || {
             let search_path = resolve_search_path(path.as_deref())?;
 
             debug!(
@@ -65,7 +65,6 @@ impl Glob {
             })
         })
         .await
-        .unwrap_or_else(|e| Err(format!("task panicked: {e}")))
     }
 
     pub fn start_summary(&self) -> String {

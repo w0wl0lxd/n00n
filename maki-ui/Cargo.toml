@@ -15,8 +15,9 @@ unicode-width = { workspace = true }
 serde_json = { workspace = true }
 arboard = { workspace = true }
 jiff = { workspace = true }
-tokio = { workspace = true }
+smol = { workspace = true }
 flume = { workspace = true }
+async-lock = { workspace = true }
 
 [features]
 demo = []
