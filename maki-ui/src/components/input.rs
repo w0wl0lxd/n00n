@@ -22,7 +22,7 @@ pub enum InputAction {
 }
 
 const MAX_INPUT_LINES: u16 = 10;
-const CHEVRON: &str = "> ";
+const CHEVRON: &str = super::CHEVRON;
 const NEWLINE_PAD: &str = "  ";
 const PREFIX_WIDTH: u16 = 2;
 const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
@@ -732,7 +732,7 @@ mod tests {
     #[test]
     fn copy_text_empty() {
         let input = InputBox::new();
-        assert_eq!(input.copy_text(), "> ");
+        assert_eq!(input.copy_text(), super::CHEVRON);
     }
 
     #[test]

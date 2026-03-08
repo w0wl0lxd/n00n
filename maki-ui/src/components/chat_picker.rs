@@ -26,7 +26,7 @@ struct State {
 }
 
 const NO_MATCHES: &str = "No matches";
-const SEARCH_PREFIX: &str = "> ";
+const SEARCH_PREFIX: &str = super::CHEVRON;
 const TITLE: &str = " Chats ";
 const MIN_WIDTH_PERCENT: u16 = 60;
 const MAX_HEIGHT_PERCENT: u16 = 80;

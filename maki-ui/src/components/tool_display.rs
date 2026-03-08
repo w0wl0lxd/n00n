@@ -272,7 +272,10 @@ impl ToolLineBuilder {
         annotation: Option<&str>,
         model_annotation: Option<&str>,
     ) {
-        let mut spans = vec![Span::styled(format!("{tool_name}> "), theme::TOOL_PREFIX)];
+        let mut spans = vec![Span::styled(
+            format!("{tool_name}{}", super::CHEVRON),
+            theme::TOOL_PREFIX,
+        )];
         spans.extend(style_tool_header(tool_name, header));
         if let Some(ann) = annotation {
             spans.push(Span::styled(format!(" ({ann})"), theme::TOOL_ANNOTATION));
