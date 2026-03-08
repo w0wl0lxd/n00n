@@ -203,7 +203,7 @@ pub fn format_timestamp_now() -> String {
 
 pub fn append_timestamp(line: &mut Line<'static>, timestamp: &str, width: u16) {
     let header_width: usize = line.spans.iter().map(|s| s.content.len()).sum();
-    let w = width as usize;
+    let w = width as usize + 1;
     if header_width + 1 + TIMESTAMP_LEN <= w {
         let pad = w - header_width - TIMESTAMP_LEN;
         line.spans.push(Span::raw(" ".repeat(pad)));
@@ -766,7 +766,7 @@ mod tests {
         let last = tl.lines[0].spans.last().unwrap();
         if expect_timestamp {
             assert_eq!(last.style, theme::COMMENT_STYLE);
-            assert_eq!(spans_text(&tl.lines[0].spans).len(), width as usize,);
+            assert_eq!(spans_text(&tl.lines[0].spans).len(), width as usize + 1);
         } else {
             assert_eq!(tl.lines[0].spans.len(), span_count_before);
         }
