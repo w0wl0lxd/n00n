@@ -142,7 +142,7 @@ pub fn run(
     let cwd = cwd_path.to_string_lossy().into_owned();
     let vars = template::env_vars();
     let mode = AgentMode::Build;
-    let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
+    let (instructions, loaded_instructions) = agent::load_instruction_files(&vars.apply("{cwd}"));
     let (tool_names, tools) = maki_agent::tools::ToolCall::definitions_excluding(
         &vars,
         &skills,
@@ -185,7 +185,8 @@ pub fn run(
             event_tx,
             tools,
             skills,
-        );
+        )
+        .with_loaded_instructions(loaded_instructions);
         let outcome = agent.run(input).await;
         if let Err(e) = outcome.result {
             error!(error = %e, "agent error");

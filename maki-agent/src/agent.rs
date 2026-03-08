@@ -1,7 +1,7 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use tokio::task::JoinSet;
 use tracing::{debug, error, info, warn};
@@ -152,18 +152,73 @@ pub fn tool_efficiency_table(tool_names: &[&str]) -> String {
     )
 }
 
-pub fn load_instruction_files(cwd: &str) -> String {
+pub fn load_instruction_files(cwd: &str) -> (String, HashSet<PathBuf>) {
     let root = Path::new(cwd);
     let mut out = String::new();
+    let mut loaded = HashSet::new();
     for filename in INSTRUCTION_FILES {
         let path = root.join(filename);
         if let Ok(content) = fs::read_to_string(&path) {
             out.push_str(&format!(
                 "\n\nProject instructions ({filename}):\n{content}"
             ));
+            if let Ok(canonical) = path.canonicalize() {
+                loaded.insert(canonical);
+            }
         }
     }
-    out
+    (out, loaded)
+}
+
+pub fn find_subdirectory_instructions(
+    filepath: &Path,
+    cwd: &Path,
+    loaded: &Mutex<HashSet<PathBuf>>,
+) -> Vec<(String, String)> {
+    let Some(file_dir) = filepath.parent() else {
+        return Vec::new();
+    };
+
+    if INSTRUCTION_FILES.iter().any(|f| filepath.ends_with(f)) {
+        return Vec::new();
+    }
+
+    let Ok(cwd) = cwd.canonicalize() else {
+        return Vec::new();
+    };
+    let Ok(file_dir) = file_dir.canonicalize() else {
+        return Vec::new();
+    };
+
+    if !file_dir.starts_with(&cwd) || file_dir == cwd {
+        return Vec::new();
+    }
+
+    let mut results = Vec::new();
+    let Ok(mut set) = loaded.lock() else {
+        return Vec::new();
+    };
+    let mut dir = file_dir.as_path();
+    while dir != cwd {
+        for filename in INSTRUCTION_FILES {
+            let Ok(canonical) = dir.join(filename).canonicalize() else {
+                continue;
+            };
+            if set.contains(&canonical) {
+                continue;
+            }
+            if let Ok(content) = fs::read_to_string(&canonical) {
+                let display = canonical.display().to_string();
+                set.insert(canonical);
+                results.push((display, content));
+            }
+        }
+        dir = match dir.parent() {
+            Some(p) => p,
+            None => break,
+        };
+    }
+    results
 }
 
 struct ParsedToolCall {
@@ -342,6 +397,7 @@ pub struct Agent {
     num_turns: u32,
     recent_calls: RecentCalls,
     auto_compact: bool,
+    loaded_instructions: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 impl Agent {
@@ -369,6 +425,7 @@ impl Agent {
             num_turns: 0,
             recent_calls: RecentCalls::new(),
             auto_compact: auto_compact_enabled(),
+            loaded_instructions: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -385,6 +442,11 @@ impl Agent {
         rx: tokio::sync::mpsc::UnboundedReceiver<ExtractedCommand>,
     ) -> Self {
         self.cmd_rx = Some(rx);
+        self
+    }
+
+    pub fn with_loaded_instructions(mut self, loaded: HashSet<PathBuf>) -> Self {
+        self.loaded_instructions = Arc::new(Mutex::new(loaded));
         self
     }
 
@@ -541,6 +603,7 @@ impl Agent {
             tool_use_id: None,
             user_response_rx: self.user_response_rx.clone(),
             skills: Arc::clone(&self.skills),
+            loaded_instructions: Arc::clone(&self.loaded_instructions),
         }
     }
 
@@ -1063,5 +1126,81 @@ mod tests {
             }
         }
         assert_eq!(has_compact_event, expected);
+    }
+
+    #[test]
+    fn find_subdirectory_instructions_discovers_agents_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("src").join("api");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("handler.rs"), "fn handle() {}").unwrap();
+        fs::write(dir.path().join("src").join("AGENTS.md"), "api rules").unwrap();
+
+        let loaded = Mutex::new(HashSet::new());
+        let results = find_subdirectory_instructions(&sub.join("handler.rs"), dir.path(), &loaded);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].0.ends_with("AGENTS.md"));
+        assert_eq!(results[0].1, "api rules");
+    }
+
+    #[test]
+    fn find_subdirectory_instructions_skips_root_and_instruction_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("src");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "root rules").unwrap();
+        fs::write(sub.join("AGENTS.md"), "sub rules").unwrap();
+
+        let loaded = Mutex::new(HashSet::new());
+
+        let from_root =
+            find_subdirectory_instructions(&dir.path().join("main.rs"), dir.path(), &loaded);
+        assert!(from_root.is_empty(), "should skip root-level files");
+
+        let from_instruction_file =
+            find_subdirectory_instructions(&sub.join("AGENTS.md"), dir.path(), &loaded);
+        assert!(
+            from_instruction_file.is_empty(),
+            "should skip when filepath is an instruction file"
+        );
+    }
+
+    #[test]
+    fn find_subdirectory_instructions_deduplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("src");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("a.rs"), "").unwrap();
+        fs::write(sub.join("b.rs"), "").unwrap();
+        let agents_path = sub.join("AGENTS.md");
+        fs::write(&agents_path, "rules").unwrap();
+
+        let canonical = agents_path.canonicalize().unwrap();
+        let loaded = Mutex::new(HashSet::from([canonical]));
+        let pre_loaded = find_subdirectory_instructions(&sub.join("a.rs"), dir.path(), &loaded);
+        assert!(pre_loaded.is_empty(), "should skip already-loaded files");
+
+        let loaded = Mutex::new(HashSet::new());
+        let first = find_subdirectory_instructions(&sub.join("a.rs"), dir.path(), &loaded);
+        let second = find_subdirectory_instructions(&sub.join("b.rs"), dir.path(), &loaded);
+        assert_eq!(first.len(), 1);
+        assert!(
+            second.is_empty(),
+            "should not return same file twice across calls"
+        );
+    }
+
+    #[test]
+    fn load_instruction_files_populates_loaded_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents_path = dir.path().join("AGENTS.md");
+        fs::write(&agents_path, "project rules").unwrap();
+        let expected_canonical = agents_path.canonicalize().unwrap();
+
+        let (text, loaded) = load_instruction_files(dir.path().to_str().unwrap());
+
+        assert!(text.contains("project rules"));
+        assert!(loaded.contains(&expected_canonical));
     }
 }

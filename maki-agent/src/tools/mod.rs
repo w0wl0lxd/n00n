@@ -15,9 +15,10 @@ mod webfetch;
 mod websearch;
 mod write;
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
 use serde_json::{Value, json};
@@ -97,6 +98,7 @@ pub struct ToolContext {
     pub user_response_rx:
         Option<Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>>>,
     pub skills: Arc<[Skill]>,
+    pub loaded_instructions: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
@@ -470,6 +472,7 @@ pub(crate) fn interpreter_ctx(mode: &AgentMode, event_tx: &EventSender) -> ToolC
         tool_use_id: None,
         user_response_rx: None,
         skills: Arc::clone(&SKILLS),
+        loaded_instructions: Arc::new(Mutex::new(HashSet::new())),
     }
 }
 

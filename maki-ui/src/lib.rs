@@ -238,7 +238,8 @@ fn spawn_agent(
     handle.spawn(async move {
         let answer_mutex = Arc::new(tokio::sync::Mutex::new(answer_rx));
         let vars = template::env_vars();
-        let instructions = agent::load_instruction_files(&vars.apply("{cwd}"));
+        let (instructions, loaded_instructions) =
+            agent::load_instruction_files(&vars.apply("{cwd}"));
         let (tool_names, tools) = maki_agent::tools::ToolCall::definitions(
             &vars,
             &skills,
@@ -285,6 +286,7 @@ fn spawn_agent(
                         tools.clone(),
                         Arc::clone(&skills),
                     )
+                    .with_loaded_instructions(loaded_instructions.clone())
                     .with_user_response_rx(Arc::clone(&answer_mutex))
                     .with_cmd_rx(ecmd_rx);
                     let outcome = agent.run(input).await;

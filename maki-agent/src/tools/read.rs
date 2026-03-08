@@ -1,7 +1,9 @@
 use std::fmt::Write;
 use std::fs;
+use std::path::Path;
 
 use crate::ToolOutput;
+use crate::agent;
 use maki_tool_macro::Tool;
 
 use super::{MAX_OUTPUT_LINES, relative_path, truncate_bytes};
@@ -27,22 +29,33 @@ impl Read {
 ]"#,
     );
 
-    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let path = self.path.clone();
         let offset = self.offset;
         let limit = self.limit;
+        let loaded = ctx.loaded_instructions.clone();
         tokio::task::spawn_blocking(move || {
             let raw = fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
 
             let start = offset.unwrap_or(1).saturating_sub(1);
             let limit = limit.unwrap_or(MAX_OUTPUT_LINES);
 
-            let lines: Vec<String> = raw
+            let mut lines: Vec<String> = raw
                 .lines()
                 .skip(start)
                 .take(limit)
                 .map(truncate_bytes)
                 .collect();
+
+            if let Ok(cwd) = std::env::current_dir() {
+                let instructions =
+                    agent::find_subdirectory_instructions(Path::new(&path), &cwd, &loaded);
+                for (display, content) in instructions {
+                    lines.push(String::new());
+                    lines.push(format!("---\nInstructions from: {display}"));
+                    lines.extend(content.lines().map(String::from));
+                }
+            }
 
             Ok(ToolOutput::ReadCode {
                 path,
