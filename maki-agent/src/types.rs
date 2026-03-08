@@ -182,6 +182,8 @@ pub struct BatchToolEntry {
     pub status: BatchToolStatus,
     pub input: Option<ToolInput>,
     pub output: Option<ToolOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

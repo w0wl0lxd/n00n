@@ -5,6 +5,7 @@ use crate::animation::spinner_frame;
 use crate::markdown::TRUNCATION_PREFIX;
 use crate::theme;
 
+use std::fmt::Write;
 use std::time::Instant;
 
 use jiff::Timestamp;
@@ -265,20 +266,11 @@ impl ToolLineBuilder {
         }
     }
 
-    fn push_header(
-        &mut self,
-        tool_name: &str,
-        header: &str,
-        annotation: Option<&str>,
-        model_annotation: Option<&str>,
-    ) {
+    fn push_header(&mut self, tool_name: &str, header: &str, annotation: Option<&str>) {
         let mut spans = vec![Span::styled(format!("{tool_name}> "), theme::TOOL_PREFIX)];
         spans.extend(style_tool_header(tool_name, header));
         if let Some(ann) = annotation {
             spans.push(Span::styled(format!(" ({ann})"), theme::TOOL_ANNOTATION));
-        }
-        if let Some(model) = model_annotation {
-            spans.push(Span::styled(format!(" ({model})"), theme::TOOL_ANNOTATION));
         }
         self.lines.push(Line::from(spans));
     }
@@ -474,12 +466,7 @@ pub fn build_tool_lines(
     };
 
     let mut b = ToolLineBuilder::new();
-    b.push_header(
-        tool_name,
-        header,
-        msg.annotation.as_deref(),
-        msg.model_annotation.as_deref(),
-    );
+    b.push_header(tool_name, header, msg.annotation.as_deref());
     b.prepend_indicator(status.into(), started_at);
     b.push_code_content(msg.tool_input.as_ref(), msg.tool_output.as_ref());
     b.push_output(
@@ -509,13 +496,17 @@ pub fn build_batch_entry_lines(
     index: usize,
     started_at: Instant,
 ) -> ToolLines {
-    let annotation = entry
+    let mut annotation = entry.annotation.clone();
+    if let Some(suffix) = entry
         .output
         .as_ref()
-        .and_then(|o| tool_output_annotation(o, &entry.tool));
+        .and_then(|o| tool_output_annotation(o, &entry.tool))
+    {
+        append_annotation(&mut annotation, &suffix);
+    }
 
     let mut b = ToolLineBuilder::new();
-    b.push_header(&entry.tool, &entry.summary, annotation.as_deref(), None);
+    b.push_header(&entry.tool, &entry.summary, annotation.as_deref());
     b.prepend_indicator(entry.status.into(), started_at);
     b.push_code_content(entry.input.as_ref(), entry.output.as_ref());
     b.push_output(
@@ -529,6 +520,13 @@ pub fn build_batch_entry_lines(
         entry.output.clone(),
         BATCH_CONTENT_INDENT,
     )
+}
+
+pub(crate) fn append_annotation(ann: &mut Option<String>, suffix: &str) {
+    match ann {
+        Some(a) => write!(a, " · {suffix}").unwrap(),
+        None => *ann = Some(suffix.to_owned()),
+    }
 }
 
 #[cfg(test)]
@@ -578,7 +576,6 @@ mod tests {
             tool_input: input,
             tool_output: output,
             annotation: None,
-            model_annotation: None,
             plan_path: None,
             timestamp: None,
         };
@@ -662,7 +659,6 @@ mod tests {
             tool_input: code_input(),
             tool_output: output,
             annotation: None,
-            model_annotation: None,
             plan_path: None,
             timestamp: None,
         };
@@ -690,7 +686,6 @@ mod tests {
             tool_input: code_input(),
             tool_output: plain_output(),
             annotation: None,
-            model_annotation: None,
             plan_path: None,
             timestamp: None,
         };
@@ -710,7 +705,6 @@ mod tests {
             tool_input: None,
             tool_output: plain_output(),
             annotation: None,
-            model_annotation: None,
             plan_path: None,
             timestamp: None,
         };
@@ -726,6 +720,7 @@ mod tests {
             status: BatchToolStatus::Success,
             input: code_input(),
             output: Some(ToolOutput::Plain("hello".into())),
+            annotation: None,
         };
         let tl = build_batch_entry_lines(&entry, 0, Instant::now());
         assert!(line_has_styled(&tl, TOOL_SEPARATOR, theme::TOOL_DIM));
@@ -750,7 +745,6 @@ mod tests {
             tool_input: None,
             tool_output: None,
             annotation: None,
-            model_annotation: None,
             plan_path: None,
             timestamp: None,
         }
@@ -784,6 +778,7 @@ mod tests {
                 start_line: 1,
                 lines: vec!["x".into(); 42],
             }),
+            annotation: None,
         };
         let tl = build_batch_entry_lines(&entry, 0, Instant::now());
         let text = lines_text(&tl);
@@ -801,6 +796,7 @@ mod tests {
                 code: "echo hi\n".into(),
             }),
             output: None,
+            annotation: None,
         };
         let tl = build_batch_entry_lines(&entry, 0, Instant::now());
         let text = lines_text(&tl);
@@ -817,6 +813,7 @@ mod tests {
             status,
             input: None,
             output: None,
+            annotation: None,
         };
         let tl = build_batch_entry_lines(&entry, 0, Instant::now());
         assert_eq!(tl.spinner_lines, expected);
@@ -830,6 +827,7 @@ mod tests {
             status: BatchToolStatus::Success,
             input: None,
             output: None,
+            annotation: None,
         };
         let first = build_batch_entry_lines(&entry, 0, Instant::now());
         let second = build_batch_entry_lines(&entry, 1, Instant::now());
@@ -845,6 +843,7 @@ mod tests {
             status: BatchToolStatus::InProgress,
             input: None,
             output: None,
+            annotation: None,
         };
         let tl = build_batch_entry_lines(&entry, 1, Instant::now());
         assert_eq!(tl.spinner_lines, &[1]);
@@ -858,6 +857,7 @@ mod tests {
             status: BatchToolStatus::Success,
             input: None,
             output: Some(ToolOutput::Plain("hello world".into())),
+            annotation: None,
         };
         let tl = build_batch_entry_lines(&entry, 0, Instant::now());
         let text = lines_text(&tl);
@@ -865,13 +865,26 @@ mod tests {
     }
 
     #[test]
-    fn model_annotation_renders_independently() {
+    fn annotation_rendered_on_header() {
         let mut msg = tool_msg();
         msg.annotation = Some("2m timeout".into());
-        msg.model_annotation = Some("anthropic/claude-haiku-4-20250414".into());
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
         let text = lines_text(&tl);
         assert!(text.contains("(2m timeout)"));
+    }
+
+    #[test]
+    fn batch_entry_stored_annotation_rendered() {
+        let entry = BatchToolEntry {
+            tool: "task".into(),
+            summary: "research".into(),
+            status: BatchToolStatus::Success,
+            input: None,
+            output: None,
+            annotation: Some("anthropic/claude-haiku-4-20250414".into()),
+        };
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now());
+        let text = lines_text(&tl);
         assert!(text.contains("(anthropic/claude-haiku-4-20250414)"));
     }
 

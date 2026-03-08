@@ -1,9 +1,9 @@
 use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
 
 use super::tool_display::{
-    ASSISTANT_STYLE, ERROR_STYLE, THINKING_STYLE, ToolLines, USER_STYLE, append_timestamp,
-    build_batch_entry_lines, build_tool_lines, format_timestamp_now, output_limits,
-    tool_output_annotation, truncate_to_header,
+    ASSISTANT_STYLE, ERROR_STYLE, THINKING_STYLE, ToolLines, USER_STYLE, append_annotation,
+    append_timestamp, build_batch_entry_lines, build_tool_lines, format_timestamp_now,
+    output_limits, tool_output_annotation, truncate_to_header,
 };
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::CodeHighlighter;
@@ -14,7 +14,9 @@ use crate::theme;
 use std::time::Instant;
 
 use maki_agent::tools::WEBFETCH_TOOL_NAME;
-use maki_agent::{BatchToolStatus, NO_FILES_FOUND, ToolDoneEvent, ToolOutput, ToolStartEvent};
+use maki_agent::{
+    BatchToolEntry, BatchToolStatus, NO_FILES_FOUND, ToolDoneEvent, ToolOutput, ToolStartEvent,
+};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -207,7 +209,6 @@ impl MessagesPanel {
             tool_input: event.input,
             tool_output: event.output,
             annotation: event.annotation,
-            model_annotation: None,
             plan_path: None,
             timestamp: Some(format_timestamp_now()),
         });
@@ -255,10 +256,9 @@ impl MessagesPanel {
         }
         truncate_to_header(&mut msg.text);
         let done_annotation = tool_output_annotation(&event.output, event.tool);
-        msg.annotation = match (msg.annotation.take(), done_annotation) {
-            (Some(a), Some(b)) => Some(format!("{a} · {b}")),
-            (a, b) => a.or(b),
-        };
+        if let Some(suffix) = &done_annotation {
+            append_annotation(&mut msg.annotation, suffix);
+        }
 
         match &event.output {
             ToolOutput::Plain(text) => {
@@ -329,27 +329,54 @@ impl MessagesPanel {
     }
 
     pub fn update_tool_summary(&mut self, tool_id: &str, summary: &str) {
-        let Some(msg) = self
-            .messages
-            .iter_mut()
-            .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == tool_id))
-        else {
-            return;
-        };
-        msg.text = summary.to_owned();
-        self.rebuild_tool_segment(tool_id);
+        self.update_tool(
+            tool_id,
+            |msg| msg.text = summary.to_owned(),
+            |entry| entry.summary = summary.to_owned(),
+        );
     }
 
     pub fn update_tool_model(&mut self, tool_id: &str, model: &str) {
-        let Some(msg) = self
-            .messages
-            .iter_mut()
-            .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == tool_id))
-        else {
-            return;
-        };
-        msg.model_annotation = Some(model.to_owned());
-        self.rebuild_tool_segment(tool_id);
+        self.update_tool(
+            tool_id,
+            |msg| append_annotation(&mut msg.annotation, model),
+            |entry| append_annotation(&mut entry.annotation, model),
+        );
+    }
+
+    fn update_tool(
+        &mut self,
+        tool_id: &str,
+        update_msg: impl FnOnce(&mut DisplayMessage),
+        update_entry: impl FnOnce(&mut BatchToolEntry),
+    ) {
+        let rebuild_id;
+        if let Some((batch_id, idx)) = parse_batch_inner_id(tool_id) {
+            let Some(msg) = self
+                .messages
+                .iter_mut()
+                .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == batch_id))
+            else {
+                return;
+            };
+            if let Some(ToolOutput::Batch { entries, .. }) = &mut msg.tool_output
+                && let Some(entry) = entries.get_mut(idx)
+            {
+                update_entry(entry);
+            }
+            rebuild_id = batch_id.to_owned();
+        } else {
+            let Some(msg) = self
+                .messages
+                .iter_mut()
+                .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == tool_id))
+            else {
+                return;
+            };
+            update_msg(msg);
+            rebuild_id = tool_id.to_owned();
+        }
+        self.rebuild_tool_segment(&rebuild_id);
     }
 
     pub fn fail_in_progress(&mut self) {
@@ -860,6 +887,12 @@ impl MessagesPanel {
     }
 }
 
+fn parse_batch_inner_id(tool_id: &str) -> Option<(&str, usize)> {
+    let (batch_id, idx_str) = tool_id.rsplit_once("__")?;
+    let idx = idx_str.parse().ok()?;
+    Some((batch_id, idx))
+}
+
 fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {
     let w = width as usize;
     if w == 0 {
@@ -893,8 +926,8 @@ mod tests {
     use crate::components::scrollbar::SCROLLBAR_THUMB;
     use maki_agent::tools::{BASH_TOOL_NAME, GLOB_TOOL_NAME, QUESTION_TOOL_NAME, WRITE_TOOL_NAME};
     use maki_agent::{
-        DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, QuestionAnswer, ToolInput,
-        ToolOutput,
+        BatchToolEntry, DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, QuestionAnswer,
+        ToolInput, ToolOutput,
     };
     use ratatui::backend::TestBackend;
     use test_case::test_case;
@@ -1549,7 +1582,7 @@ mod tests {
     }
 
     #[test]
-    fn update_tool_model_sets_model_annotation() {
+    fn update_tool_model_sets_annotation() {
         let mut panel = panel_with_tools(&[("t1", "task"), ("t2", "bash")]);
         rebuild(&mut panel);
 
@@ -1557,9 +1590,95 @@ mod tests {
 
         let msg = &panel.messages[0];
         assert_eq!(
-            msg.model_annotation.as_deref(),
+            msg.annotation.as_deref(),
             Some("anthropic/claude-sonnet-4-20250514")
         );
-        assert!(msg.annotation.is_none(), "annotation should be unaffected");
+    }
+
+    #[test]
+    fn update_tool_model_batch_inner_id() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(ToolStartEvent {
+            id: "b1".into(),
+            tool: "batch",
+            summary: "2 tools".into(),
+            annotation: None,
+            input: None,
+            output: Some(ToolOutput::Batch {
+                entries: vec![
+                    BatchToolEntry {
+                        tool: "task".into(),
+                        summary: "research".into(),
+                        status: BatchToolStatus::InProgress,
+                        input: None,
+                        output: None,
+                        annotation: None,
+                    },
+                    BatchToolEntry {
+                        tool: "read".into(),
+                        summary: "file.rs".into(),
+                        status: BatchToolStatus::Pending,
+                        input: None,
+                        output: None,
+                        annotation: None,
+                    },
+                ],
+                text: String::new(),
+            }),
+        });
+        rebuild(&mut panel);
+
+        panel.update_tool_model("b1__0", "anthropic/claude-haiku-4-20250414");
+
+        let batch_output = panel.messages[0].tool_output.as_ref().unwrap();
+        let ToolOutput::Batch { entries, .. } = batch_output else {
+            panic!("expected Batch");
+        };
+        assert_eq!(
+            entries[0].annotation.as_deref(),
+            Some("anthropic/claude-haiku-4-20250414")
+        );
+        assert!(entries[1].annotation.is_none());
+    }
+
+    #[test]
+    fn update_tool_summary_batch_inner_id() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(ToolStartEvent {
+            id: "b1".into(),
+            tool: "batch",
+            summary: "2 tools".into(),
+            annotation: None,
+            input: None,
+            output: Some(ToolOutput::Batch {
+                entries: vec![BatchToolEntry {
+                    tool: "task".into(),
+                    summary: "old".into(),
+                    status: BatchToolStatus::InProgress,
+                    input: None,
+                    output: None,
+                    annotation: None,
+                }],
+                text: String::new(),
+            }),
+        });
+        rebuild(&mut panel);
+
+        panel.update_tool_summary("b1__0", "new name");
+
+        let ToolOutput::Batch { entries, .. } = panel.messages[0].tool_output.as_ref().unwrap()
+        else {
+            panic!("expected Batch");
+        };
+        assert_eq!(entries[0].summary, "new name");
+    }
+
+    #[test]
+    fn parse_batch_inner_id_cases() {
+        assert_eq!(parse_batch_inner_id("b1__0"), Some(("b1", 0)));
+        assert_eq!(parse_batch_inner_id("b1__2"), Some(("b1", 2)));
+        assert_eq!(parse_batch_inner_id("a__b__1"), Some(("a__b", 1)));
+        assert_eq!(parse_batch_inner_id("no_separator"), None);
+        assert_eq!(parse_batch_inner_id("b1__notnum"), None);
     }
 }

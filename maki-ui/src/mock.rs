@@ -440,6 +440,7 @@ pub fn mock_events() -> Vec<MockEvent> {
                     status: BatchToolStatus::Success,
                     input: None,
                     output: None,
+                    annotation: None,
                 },
                 BatchToolEntry {
                     tool: "read".into(),
@@ -447,6 +448,7 @@ pub fn mock_events() -> Vec<MockEvent> {
                     status: BatchToolStatus::Success,
                     input: None,
                     output: None,
+                    annotation: None,
                 },
                 BatchToolEntry {
                     tool: "read".into(),
@@ -454,6 +456,7 @@ pub fn mock_events() -> Vec<MockEvent> {
                     status: BatchToolStatus::Success,
                     input: None,
                     output: None,
+                    annotation: None,
                 },
             ],
             text: String::new(),

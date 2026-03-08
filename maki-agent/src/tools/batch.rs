@@ -42,6 +42,7 @@ impl BatchEntry {
             status,
             input: call.and_then(|c| c.start_input()),
             output,
+            annotation: None,
         }
     }
 }
