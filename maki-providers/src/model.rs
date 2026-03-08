@@ -149,6 +149,7 @@ impl Model {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
 pub struct TokenUsage {
+    /// Non-cached input tokens. Total input = `input + cache_read + cache_creation`.
     #[serde(rename = "input_tokens")]
     pub input: u32,
     #[serde(rename = "output_tokens")]

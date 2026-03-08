@@ -431,13 +431,14 @@ async fn parse_sse(
         };
 
         if let Some(u) = chunk.usage {
+            let cached = u
+                .prompt_tokens_details
+                .map(|d| d.cached_tokens)
+                .unwrap_or(0);
             usage = TokenUsage {
-                input: u.prompt_tokens,
+                input: u.prompt_tokens.saturating_sub(cached),
                 output: u.completion_tokens,
-                cache_read: u
-                    .prompt_tokens_details
-                    .map(|d| d.cached_tokens)
-                    .unwrap_or(0),
+                cache_read: cached,
                 cache_creation: 0,
             };
         }
@@ -558,7 +559,7 @@ data: [DONE]\n";
         let (tx, mut rx) = mpsc::unbounded_channel();
         let resp = parse_sse(bytes_stream(sse.as_bytes()), &tx).await.unwrap();
 
-        assert_eq!(resp.usage.input, 100);
+        assert_eq!(resp.usage.input, 60);
         assert_eq!(resp.usage.output, 10);
         assert_eq!(resp.usage.cache_read, 40);
         assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));

@@ -554,7 +554,7 @@ impl Agent {
             message: response.message.clone(),
             usage: response.usage,
             model: self.model.id.clone(),
-            context_size: None,
+            context_size: Some(response.usage.context_tokens()),
         })
     }
 
