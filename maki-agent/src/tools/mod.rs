@@ -20,8 +20,8 @@ use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use std::time::SystemTime;
 
-use futures::Future;
 use serde_json::{Value, json};
+use std::future::Future;
 use tracing::error;
 
 use crate::skill::Skill;

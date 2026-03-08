@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use futures::future::join_all;
+use tokio::task::JoinSet;
 use tracing::{debug, error, info, warn};
 
 use serde_json::Value;
@@ -281,32 +281,36 @@ async fn stream_with_retry(
 }
 
 async fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDoneEvent> {
-    let futures: Vec<_> = tool_calls
-        .iter()
-        .map(|parsed| {
-            let event_tx = ctx.event_tx.clone();
-            let tool_ctx = ToolContext {
-                tool_use_id: Some(parsed.id.clone()),
-                ..ctx.clone()
-            };
-            let id = parsed.id.clone();
-            let call = parsed.call.clone();
-            tokio::spawn(async move {
-                let output = call.execute(&tool_ctx, id).await;
-                event_tx.try_send(AgentEvent::ToolDone(output.clone()));
-                output
-            })
-        })
-        .collect();
+    let mut set = JoinSet::new();
+    for (i, parsed) in tool_calls.iter().enumerate() {
+        let event_tx = ctx.event_tx.clone();
+        let tool_ctx = ToolContext {
+            tool_use_id: Some(parsed.id.clone()),
+            ..ctx.clone()
+        };
+        let id = parsed.id.clone();
+        let call = parsed.call.clone();
+        set.spawn(async move {
+            let output = call.execute(&tool_ctx, id).await;
+            event_tx.try_send(AgentEvent::ToolDone(output.clone()));
+            (i, output)
+        });
+    }
 
-    let results = join_all(futures).await;
-    tool_calls
-        .iter()
-        .zip(results)
-        .map(|(parsed, r)| {
-            r.unwrap_or_else(|_| {
-                warn!(tool = parsed.call.name(), "tool task panicked");
-                ToolDoneEvent::error(parsed.id.clone(), "tool task panicked")
+    let mut results = vec![None; tool_calls.len()];
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok((i, output)) => results[i] = Some(output),
+            Err(e) => warn!(error = %e, "tool task panicked"),
+        }
+    }
+
+    results
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| {
+            r.unwrap_or_else(|| {
+                ToolDoneEvent::error(tool_calls[i].id.clone(), "tool task panicked")
             })
         })
         .collect()

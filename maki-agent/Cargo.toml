@@ -22,7 +22,7 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 reqwest = { workspace = true }
 async-trait = { workspace = true }
-futures = { workspace = true }
+
 
 [dev-dependencies]
 test-case = { workspace = true }

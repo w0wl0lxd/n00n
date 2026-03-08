@@ -1,9 +1,10 @@
 use std::fmt::Write;
 
 use crate::{AgentEvent, BatchToolEntry, BatchToolStatus, ToolOutput};
-use futures::future::join_all;
 use serde::Deserialize;
 use serde_json::Value;
+
+use tokio::task::JoinSet;
 
 use maki_tool_macro::Tool;
 
@@ -85,55 +86,54 @@ impl Batch {
 
         let inner_id = |i: usize| format!("{batch_id}__{i}");
 
-        let futures: Vec<_> = parsed
-            .iter()
-            .enumerate()
-            .map(|(i, parsed_call)| {
-                let id = inner_id(i);
-                let batch_id = batch_id.clone();
-                let ctx = ctx.clone();
-                let parsed_call = parsed_call.clone();
-                tokio::spawn(async move {
-                    ctx.event_tx.try_send(AgentEvent::BatchProgress {
-                        batch_id: batch_id.clone(),
-                        index: i,
-                        status: BatchToolStatus::InProgress,
-                        output: None,
-                    });
-                    let (result, output) = match parsed_call {
-                        Ok(call) => {
-                            let inner_ctx = ToolContext {
-                                tool_use_id: Some(id.clone()),
-                                ..ctx.clone()
-                            };
-                            let done = call.execute(&inner_ctx, id).await;
-                            let text = done.output.as_text();
-                            let result = if done.is_error { Err(text) } else { Ok(text) };
-                            (result, Some(done.output))
-                        }
-                        Err(e) => (Err(e), None),
-                    };
-                    let status = if result.is_ok() {
-                        BatchToolStatus::Success
-                    } else {
-                        BatchToolStatus::Error
-                    };
-                    ctx.event_tx.try_send(AgentEvent::BatchProgress {
-                        batch_id,
-                        index: i,
-                        status,
-                        output: output.clone(),
-                    });
-                    (result, output)
-                })
-            })
-            .collect();
+        let mut set = JoinSet::new();
+        for (i, parsed_call) in parsed.iter().enumerate() {
+            let id = inner_id(i);
+            let batch_id = batch_id.clone();
+            let ctx = ctx.clone();
+            let parsed_call = parsed_call.clone();
+            set.spawn(async move {
+                ctx.event_tx.try_send(AgentEvent::BatchProgress {
+                    batch_id: batch_id.clone(),
+                    index: i,
+                    status: BatchToolStatus::InProgress,
+                    output: None,
+                });
+                let (result, output) = match parsed_call {
+                    Ok(call) => {
+                        let inner_ctx = ToolContext {
+                            tool_use_id: Some(id.clone()),
+                            ..ctx.clone()
+                        };
+                        let done = call.execute(&inner_ctx, id).await;
+                        let text = done.output.as_text();
+                        let result = if done.is_error { Err(text) } else { Ok(text) };
+                        (result, Some(done.output))
+                    }
+                    Err(e) => (Err(e), None),
+                };
+                let status = if result.is_ok() {
+                    BatchToolStatus::Success
+                } else {
+                    BatchToolStatus::Error
+                };
+                ctx.event_tx.try_send(AgentEvent::BatchProgress {
+                    batch_id,
+                    index: i,
+                    status,
+                    output: output.clone(),
+                });
+                (i, result, output)
+            });
+        }
 
-        let join_results = join_all(futures).await;
-        let results: Vec<(Result<String, String>, Option<ToolOutput>)> = join_results
-            .into_iter()
-            .map(|r| r.unwrap_or((Err("tool task panicked".into()), None)))
-            .collect();
+        let mut results: Vec<(Result<String, String>, Option<ToolOutput>)> =
+            vec![(Err("tool task panicked".into()), None); parsed.len()];
+        while let Some(res) = set.join_next().await {
+            if let Ok((i, result, output)) = res {
+                results[i] = (result, output);
+            }
+        }
 
         let total = results.len() + discarded.len();
         let mut failed = discarded.len();

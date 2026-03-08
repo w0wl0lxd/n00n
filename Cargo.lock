@@ -1636,7 +1636,6 @@ name = "maki-agent"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "futures",
  "htmd",
  "humantime",
  "ignore",
