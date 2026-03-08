@@ -249,13 +249,16 @@ fn spawn_agent(
 
         let mut ecmd_rx = ecmd_rx;
         let mut history = History::new(initial_history);
+        let mut min_run_id = 0u64;
 
         while let Ok(cmd) = ecmd_rx.recv_async().await {
             let (event_tx, current_run_id) = match &cmd {
-                ExtractedCommand::Interrupt(_, run_id) | ExtractedCommand::Compact(run_id) => {
+                ExtractedCommand::Interrupt(_, run_id) | ExtractedCommand::Compact(run_id)
+                    if *run_id >= min_run_id =>
+                {
                     (EventSender::new(agent_tx.clone(), *run_id), *run_id)
                 }
-                ExtractedCommand::Cancel | ExtractedCommand::Ignore => continue,
+                _ => continue,
             };
             let result = match cmd {
                 ExtractedCommand::Compact(_) => {
@@ -281,7 +284,7 @@ fn spawn_agent(
                     history = outcome.history;
                     ecmd_rx = outcome.cmd_rx.expect("cmd_rx was set");
                     if matches!(outcome.result, Err(AgentError::Cancelled)) {
-                        while ecmd_rx.try_recv().is_ok() {}
+                        min_run_id = current_run_id + 1;
                     }
                     outcome.result
                 }
