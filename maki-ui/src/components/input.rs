@@ -726,7 +726,7 @@ mod tests {
         type_text(&mut input, "line1");
         input.buffer.add_line();
         type_text(&mut input, "line2");
-        assert_eq!(input.copy_text(), "> line1\n  line2");
+        assert_eq!(input.copy_text(), "❯ line1\n  line2");
     }
 
     #[test]
