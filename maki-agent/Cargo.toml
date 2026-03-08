@@ -19,7 +19,6 @@ similar = { workspace = true }
 jiff = { workspace = true }
 humantime = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
 reqwest = { workspace = true }
 async-trait = { workspace = true }
 
