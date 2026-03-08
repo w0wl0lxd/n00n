@@ -9,7 +9,7 @@ use syntect::highlighting::{FontStyle, HighlightState, Highlighter};
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
-static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
 
 const DRACULA_TMTHEME: &[u8] = include_bytes!("dracula.tmTheme");
 static THEME: LazyLock<syntect::highlighting::Theme> = LazyLock::new(|| {
@@ -17,13 +17,17 @@ static THEME: LazyLock<syntect::highlighting::Theme> = LazyLock::new(|| {
     syntect::highlighting::ThemeSet::load_from_reader(&mut cursor).expect("embedded Dracula theme")
 });
 
+const TOKEN_ALIASES: &[(&str, &str)] = &[("jsx", "js")];
+
 pub fn highlighter_for_path(path: &str) -> HighlightLines<'static> {
-    let ss = &*SYNTAX_SET;
-    let syntax = ss
+    let syntax = SYNTAX_SET
         .find_syntax_for_file(path)
         .ok()
         .flatten()
-        .unwrap_or_else(|| ss.find_syntax_plain_text());
+        .unwrap_or_else(|| {
+            let ext = path.rsplit('.').next().unwrap_or(path);
+            syntax_for_token(ext)
+        });
     HighlightLines::new(syntax, &THEME)
 }
 
@@ -45,6 +49,12 @@ pub fn highlighter_for_token(lang: &str) -> HighlightLines<'static> {
 fn syntax_for_token(lang: &str) -> &'static SyntaxReference {
     let ss = &*SYNTAX_SET;
     ss.find_syntax_by_token(lang)
+        .or_else(|| {
+            TOKEN_ALIASES
+                .iter()
+                .find(|(from, _)| *from == lang)
+                .and_then(|(_, to)| ss.find_syntax_by_token(to))
+        })
         .unwrap_or_else(|| ss.find_syntax_plain_text())
 }
 
@@ -220,6 +230,22 @@ mod tests {
     fn highlighter_for_path_falls_back_on_unknown_extension() {
         let mut hl = highlighter_for_path("data.xyznonexistent");
         highlight_line(&mut hl, "hello");
+    }
+
+    #[test]
+    fn tsx_and_typescript_syntaxes_resolve() {
+        let ss = &*SYNTAX_SET;
+        assert!(ss.find_syntax_for_file("foo.tsx").ok().flatten().is_some());
+        assert!(ss.find_syntax_for_file("foo.ts").ok().flatten().is_some());
+        assert!(ss.find_syntax_by_token("tsx").is_some());
+        assert!(ss.find_syntax_by_token("typescript").is_some());
+    }
+
+    #[test]
+    fn jsx_falls_back_to_javascript() {
+        let token_syntax = syntax_for_token("jsx");
+        let js = SYNTAX_SET.find_syntax_by_token("js").unwrap();
+        assert_eq!(token_syntax.name, js.name);
     }
 
     #[test]
