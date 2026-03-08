@@ -221,7 +221,7 @@ impl App {
 
     fn msg_area(&self) -> Rect {
         self.zones[SelectionZone::Messages.idx()]
-            .map(|z| z.area)
+            .map(|z| z.highlight_area)
             .unwrap_or_default()
     }
 
@@ -839,7 +839,12 @@ impl App {
         .areas(frame.area());
         self.zones[SelectionZone::Messages.idx()] = Some(SelectableZone {
             area: msg_area,
-            highlight_area: msg_area,
+            highlight_area: Rect::new(
+                msg_area.x,
+                msg_area.y,
+                msg_area.width.saturating_sub(1),
+                msg_area.height,
+            ),
             zone: SelectionZone::Messages,
         });
         let picker_open = self.chat_picker.is_open();

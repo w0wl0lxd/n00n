@@ -18,8 +18,10 @@
 //! - `has_selection` freezes auto-scroll in `MessagesPanel::view()` so the
 //!   viewport doesn't jump while the user is dragging.
 //!
-//! - The rightmost column is excluded from highlight/extraction (scrollbar).
-//!   See `width.saturating_sub(2)` in `col_range` and `append_rows`.
+//! - Content is rendered 1 column narrower than the area to reserve space for
+//!   the scrollbar. `highlight_area` and `msg_area()` reflect this content
+//!   width. `apply_highlight` and `append_rows` use `area.width - 1` for the
+//!   rightmost content column index.
 
 use std::time::Instant;
 
@@ -240,7 +242,7 @@ fn col_range(ss: &ScreenSelection, left: u16, right: u16, row: u16) -> (u16, u16
 pub fn apply_highlight(buf: &mut Buffer, area: Rect, ss: &ScreenSelection) {
     let row_start = ss.start_row.max(area.y);
     let row_end = ss.end_row.min(area.bottom().saturating_sub(1));
-    let right = area.x + area.width.saturating_sub(2);
+    let right = area.x + area.width.saturating_sub(1);
     for row in row_start..=row_end {
         let (col_start, col_end) = col_range(ss, area.x, right, row);
         for col in col_start..=col_end {
@@ -260,7 +262,7 @@ fn append_rows(
     to: u16,
     out: &mut String,
 ) {
-    let right = area.x + area.width.saturating_sub(2);
+    let right = area.x + area.width.saturating_sub(1);
     let row_start = from.max(area.y);
     let row_end = to.min(area.bottom());
     let mut pending_newlines = 0u16;
@@ -353,7 +355,7 @@ pub fn extract_doc_range(
             && seg_end <= doc_end.row + 1
             && (seg_start != doc_start.row || doc_start.col <= msg_area.x)
             && (seg_end != doc_end.row + 1
-                || doc_end.col >= msg_area.x + msg_area.width.saturating_sub(2));
+                || doc_end.col >= msg_area.x + msg_area.width.saturating_sub(1));
 
         if !out.is_empty() {
             out.push('\n');
@@ -934,18 +936,18 @@ mod tests {
 
     #[test]
     fn extract_doc_range_full_width_single_row_uses_copy_text() {
-        let area = Rect::new(0, 0, 20, 1);
-        let buf = Buffer::empty(area);
+        let content_area = Rect::new(0, 0, 19, 1);
+        let buf = Buffer::empty(Rect::new(0, 0, 20, 1));
 
         let sel = Selection {
             anchor: doc(0, 0),
             cursor: doc(0, 18),
-            area,
+            area: content_area,
             zone: SelectionZone::Messages,
         };
         let heights = [1];
         let copy_texts = ["hello world"];
-        let text = extract_doc_range(&buf, &sel, area, 0, &heights, &copy_texts);
+        let text = extract_doc_range(&buf, &sel, content_area, 0, &heights, &copy_texts);
         assert_eq!(text, "hello world");
     }
 
