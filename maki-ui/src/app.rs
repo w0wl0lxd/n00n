@@ -71,6 +71,20 @@ impl QueuedItem {
             },
         }
     }
+
+    fn to_agent_command(&self, run_id: u64) -> super::AgentCommand {
+        match self {
+            Self::Message(input) => super::AgentCommand::Run(
+                AgentInput {
+                    message: input.message.clone(),
+                    mode: input.mode.clone(),
+                    pending_plan: input.pending_plan.clone(),
+                },
+                run_id,
+            ),
+            Self::Compact => super::AgentCommand::Compact(run_id),
+        }
+    }
 }
 
 pub enum Msg {
@@ -169,6 +183,34 @@ impl App {
             .collect()
     }
 
+    fn queue_and_notify(&mut self, item: QueuedItem) {
+        self.queue.push_back(item);
+        if self.queue.len() == 1 {
+            self.send_front_to_agent();
+        }
+    }
+
+    fn send_front_to_agent(&self) {
+        if let Some(front) = self.queue.front()
+            && let Some(tx) = &self.cmd_tx
+        {
+            let _ = tx.try_send(front.to_agent_command(self.run_id));
+        }
+    }
+
+    fn drain_consumed_item(&mut self) {
+        let Some(item) = self.queue.pop_front() else {
+            return;
+        };
+        if let QueuedItem::Message(ref input) = item {
+            self.main_chat().flush();
+            self.main_chat().push_user_message(&input.message);
+            self.main_chat().enable_auto_scroll();
+        }
+        self.clamp_queue_focus();
+        self.send_front_to_agent();
+    }
+
     fn clear_queue(&mut self) {
         self.queue.clear();
         self.queue_focus = None;
@@ -185,8 +227,7 @@ impl App {
         }
     }
 
-    fn pop_queue_front(&mut self) {
-        self.queue.pop_front();
+    fn clamp_queue_focus(&mut self) {
         match self.queue_focus {
             Some(sel) if sel >= self.queue.len() && !self.queue.is_empty() => {
                 self.queue_focus = Some(self.queue.len() - 1);
@@ -493,7 +534,8 @@ impl App {
                 self.active_chat().enable_auto_scroll();
             } else if key::POP_QUEUE.matches(key) {
                 if !self.queue.is_empty() {
-                    self.pop_queue_front();
+                    self.queue.pop_front();
+                    self.clamp_queue_focus();
                 }
             } else if key::HELP.matches(key) {
                 self.help_modal.toggle();
@@ -551,20 +593,7 @@ impl App {
             pending_plan: self.pending_plan().map(String::from),
         };
         if self.status == Status::Streaming {
-            self.queue.push_back(QueuedItem::Message(input));
-            if self.queue.len() == 1
-                && let Some(tx) = &self.cmd_tx
-            {
-                let cmd = super::AgentCommand::Run(
-                    AgentInput {
-                        message: text,
-                        mode: self.agent_mode(),
-                        pending_plan: self.pending_plan().map(String::from),
-                    },
-                    self.run_id,
-                );
-                let _ = tx.try_send(cmd);
-            }
+            self.queue_and_notify(QueuedItem::Message(input));
             vec![]
         } else {
             self.run_id += 1;
@@ -655,14 +684,8 @@ impl App {
 
         let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);
 
-        if matches!(result, ChatEventResult::InterruptConsumed) && chat_idx == 0 {
-            let pos = self
-                .queue
-                .iter()
-                .position(|item| matches!(item, QueuedItem::Message(_)));
-            if let Some(pos) = pos {
-                self.queue.remove(pos);
-            }
+        if matches!(result, ChatEventResult::QueueItemConsumed) && chat_idx == 0 {
+            self.drain_consumed_item();
             return vec![];
         }
 
@@ -671,6 +694,7 @@ impl App {
                 ChatEventResult::Done => {
                     self.status_bar.clear_cancel_hint();
                     if let Some(item) = self.queue.pop_front() {
+                        self.clamp_queue_focus();
                         return match item {
                             QueuedItem::Message(input) => {
                                 self.main_chat().push_user_message(&input.message);
@@ -701,7 +725,7 @@ impl App {
                         self.pending_question = true;
                     }
                 }
-                ChatEventResult::Continue | ChatEventResult::InterruptConsumed => {}
+                ChatEventResult::Continue | ChatEventResult::QueueItemConsumed => {}
             }
         }
         vec![]
@@ -788,7 +812,7 @@ impl App {
             }
             "/compact" => {
                 if self.status == Status::Streaming {
-                    self.queue.push_back(QueuedItem::Compact);
+                    self.queue_and_notify(QueuedItem::Compact);
                     return vec![];
                 }
                 self.status = Status::Streaming;
@@ -1393,18 +1417,14 @@ mod tests {
     }
 
     #[test]
-    fn multiple_interrupts_drained_in_order() {
+    fn multiple_queue_items_drained_in_order() {
         let mut app = app_with_queued_message();
         app.queue.push_back(queued_msg("second"));
 
-        app.update(agent_msg(AgentEvent::InterruptConsumed {
-            message: "queued".into(),
-        }));
+        app.update(agent_msg(AgentEvent::QueueItemConsumed));
         assert_eq!(app.queue.len(), 1);
 
-        app.update(agent_msg(AgentEvent::InterruptConsumed {
-            message: "second".into(),
-        }));
+        app.update(agent_msg(AgentEvent::QueueItemConsumed));
         assert!(app.queue.is_empty());
     }
 
@@ -1442,15 +1462,17 @@ mod tests {
     }
 
     #[test]
-    fn interrupt_displayed_only_on_consumed_event() {
+    fn consumed_event_flushes_and_displays_queued_message() {
         let mut app = app_with_queued_message();
-        let before = app.chats[0].message_count();
+        app.main_chat().handle_event(
+            AgentEvent::TextDelta {
+                text: "partial".into(),
+            },
+            None,
+        );
 
-        app.update(agent_msg(AgentEvent::InterruptConsumed {
-            message: "queued".into(),
-        }));
+        app.update(agent_msg(AgentEvent::QueueItemConsumed));
         assert!(app.queue.is_empty());
-        assert_eq!(app.chats[0].message_count(), before + 1);
         assert_eq!(app.chats[0].last_message_text(), "queued");
     }
 
@@ -1761,14 +1783,41 @@ mod tests {
     }
 
     #[test]
-    fn compact_during_streaming_queued() {
+    fn compact_during_streaming_queues_and_sends_cmd() {
         let mut app = test_app();
+        let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
+        app.cmd_tx = Some(tx);
         app.status = Status::Streaming;
         app.run_id = 1;
+
         let actions = app.execute_command("/compact");
         assert!(actions.is_empty());
         assert_eq!(app.queue.len(), 1);
         assert!(matches!(app.queue[0], QueuedItem::Compact));
+        let cmd = rx.try_recv().expect("compact should be sent on cmd_tx");
+        assert!(matches!(cmd, crate::AgentCommand::Compact(1)));
+    }
+
+    #[test_case(queued_msg("first"),  true  ; "message_then_sends_next")]
+    #[test_case(QueuedItem::Compact, false ; "compact_then_sends_next")]
+    fn consumed_item_sends_next_to_agent(first: QueuedItem, expect_user_msg: bool) {
+        let mut app = test_app();
+        let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
+        app.cmd_tx = Some(tx);
+        app.status = Status::Streaming;
+        app.run_id = 1;
+        let before = app.chats[0].message_count();
+        app.queue.push_back(first);
+        app.queue.push_back(queued_msg("second"));
+
+        app.update(agent_msg(AgentEvent::QueueItemConsumed));
+        assert_eq!(app.queue.len(), 1);
+        assert_eq!(
+            app.chats[0].message_count(),
+            if expect_user_msg { before + 1 } else { before }
+        );
+        let cmd = rx.try_recv().expect("next item should be sent to agent");
+        assert!(matches!(cmd, crate::AgentCommand::Run(_, 1)));
     }
 
     fn long_question_no_options() -> AgentEvent {

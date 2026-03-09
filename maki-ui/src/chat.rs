@@ -12,7 +12,7 @@ pub enum ChatEventResult {
     Continue,
     Done,
     Error(String),
-    InterruptConsumed,
+    QueueItemConsumed,
     QuestionPrompt { questions: Vec<QuestionInfo> },
 }
 
@@ -78,11 +78,8 @@ impl Chat {
                     "Auto-compacting conversation...".into(),
                 ));
             }
-            AgentEvent::InterruptConsumed { message } => {
-                self.messages_panel.flush();
-                self.push_user_message(&message);
-                self.messages_panel.enable_auto_scroll();
-                return ChatEventResult::InterruptConsumed;
+            AgentEvent::QueueItemConsumed => {
+                return ChatEventResult::QueueItemConsumed;
             }
             AgentEvent::Retry { .. } => {}
             AgentEvent::Done { .. } => {
@@ -257,27 +254,5 @@ mod tests {
         chat.handle_event(tool_start("w1", "write"), Some("/plans/123.md"));
         chat.handle_event(write_done("w1", "src/main.rs"), Some("/plans/123.md"));
         assert!(!chat.last_message_is_plan());
-    }
-
-    #[test]
-    fn interrupt_consumed_flushes_and_displays_user_message() {
-        let mut chat = Chat::new("Main".into());
-        chat.handle_event(
-            AgentEvent::TextDelta {
-                text: "partial".into(),
-            },
-            None,
-        );
-
-        let result = chat.handle_event(
-            AgentEvent::InterruptConsumed {
-                message: "urgent".into(),
-            },
-            None,
-        );
-
-        assert!(matches!(result, ChatEventResult::InterruptConsumed));
-        assert_eq!(chat.message_count(), 2);
-        assert_eq!(chat.last_message_text(), "urgent");
     }
 }

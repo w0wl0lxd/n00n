@@ -247,7 +247,7 @@ pub fn run(
             | AgentEvent::ToolOutput { .. }
             | AgentEvent::ToolDone(_)
             | AgentEvent::BatchProgress { .. }
-            | AgentEvent::InterruptConsumed { .. }
+            | AgentEvent::QueueItemConsumed
             | AgentEvent::AutoCompacting
             | AgentEvent::QuestionPrompt { .. }
             | AgentEvent::Retry { .. } => {

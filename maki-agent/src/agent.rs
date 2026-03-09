@@ -555,7 +555,7 @@ impl Agent {
             }
         }
 
-        if self.try_auto_compact(&usage).await? || self.check_interrupt()? {
+        if self.try_auto_compact(&usage).await? || self.handle_queued_command().await? {
             return Ok(TurnOutcome::Continue);
         }
 
@@ -635,6 +635,11 @@ impl Agent {
             return Ok(false);
         }
         info!(total_input = usage.total_input(), "auto-compacting");
+        self.do_compact().await?;
+        Ok(true)
+    }
+
+    async fn do_compact(&mut self) -> Result<(), AgentError> {
         self.event_tx.send(AgentEvent::AutoCompacting)?;
         self.total_usage += compact_history(
             &*self.provider,
@@ -646,10 +651,10 @@ impl Agent {
         .await?;
         self.history
             .push(Message::user(CONTINUE_AFTER_COMPACT.into()));
-        Ok(true)
+        Ok(())
     }
 
-    fn check_interrupt(&mut self) -> Result<bool, AgentError> {
+    async fn handle_queued_command(&mut self) -> Result<bool, AgentError> {
         let Some(rx) = self.cmd_rx.as_mut() else {
             return Ok(false);
         };
@@ -659,18 +664,19 @@ impl Agent {
         match cmd {
             ExtractedCommand::Interrupt(input, _) => {
                 let msg = input.effective_message();
-                let raw = input.message;
                 let wrapped = format!(
                     "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{msg}\n</user-interrupt>"
                 );
                 self.history.push(Message::user(wrapped));
-                self.event_tx
-                    .send(AgentEvent::InterruptConsumed { message: raw })?;
-                Ok(true)
             }
-            ExtractedCommand::Cancel => Err(AgentError::Cancelled),
-            ExtractedCommand::Compact(_) | ExtractedCommand::Ignore => Ok(false),
+            ExtractedCommand::Compact(_) => {
+                self.do_compact().await?;
+            }
+            ExtractedCommand::Cancel => return Err(AgentError::Cancelled),
+            ExtractedCommand::Ignore => unreachable!("Ignore is never constructed"),
         }
+        self.event_tx.send(AgentEvent::QueueItemConsumed)?;
+        Ok(true)
     }
 }
 
@@ -976,10 +982,10 @@ mod tests {
         (history, events)
     }
 
-    fn has_interrupt_event(events: &[Envelope]) -> bool {
+    fn has_queue_item_consumed(events: &[Envelope]) -> bool {
         events
             .iter()
-            .any(|e| matches!(e.event, AgentEvent::InterruptConsumed { .. }))
+            .any(|e| matches!(e.event, AgentEvent::QueueItemConsumed))
     }
 
     fn has_interrupt_in_history(history: &[Message]) -> bool {
@@ -990,14 +996,29 @@ mod tests {
         })
     }
 
-    #[test]
-    fn interrupt_injects_user_message_between_turns() {
+    fn interrupt_responses(tool_use: bool) -> Vec<StreamResponse> {
+        if tool_use {
+            vec![
+                tool_call_response("glob", "t1"),
+                text_response(StopReason::EndTurn),
+            ]
+        } else {
+            vec![
+                text_response(StopReason::EndTurn),
+                text_response(StopReason::EndTurn),
+            ]
+        }
+    }
+
+    #[test_case(true  ; "after_tool_use_turn")]
+    #[test_case(false ; "after_text_only_turn")]
+    fn interrupt_injects_user_message(tool_use: bool) {
         smol::block_on(async {
             let (cmd_tx, cmd_rx) = flume::unbounded::<ExtractedCommand>();
             cmd_tx
                 .try_send(ExtractedCommand::Interrupt(
                     AgentInput {
-                        message: "fix the bug".into(),
+                        message: "new task".into(),
                         mode: AgentMode::Build,
                         pending_plan: None,
                     },
@@ -1005,15 +1026,10 @@ mod tests {
                 ))
                 .unwrap();
 
-            let provider = MockProvider::new(vec![
-                tool_call_response("glob", "t1"),
-                text_response(StopReason::EndTurn),
-            ]);
+            let provider = MockProvider::new(interrupt_responses(tool_use));
             let (history, events) = run_with_interrupt(provider, cmd_rx).await;
 
-            assert!(events.iter().any(|e| {
-                matches!(e.event, AgentEvent::InterruptConsumed { ref message } if message == "fix the bug")
-            }));
+            assert!(has_queue_item_consumed(&events));
             assert!(has_interrupt_in_history(&history));
         });
     }
@@ -1029,36 +1045,8 @@ mod tests {
             ]);
             let (history, events) = run_with_interrupt(provider, cmd_rx).await;
 
-            assert!(!has_interrupt_event(&events));
+            assert!(!has_queue_item_consumed(&events));
             assert!(!has_interrupt_in_history(&history));
-        });
-    }
-
-    #[test]
-    fn interrupt_consumed_during_text_only_response() {
-        smol::block_on(async {
-            let (cmd_tx, cmd_rx) = flume::unbounded::<ExtractedCommand>();
-            cmd_tx
-                .try_send(ExtractedCommand::Interrupt(
-                    AgentInput {
-                        message: "new task".into(),
-                        mode: AgentMode::Build,
-                        pending_plan: None,
-                    },
-                    0,
-                ))
-                .unwrap();
-
-            let provider = MockProvider::new(vec![
-                text_response(StopReason::EndTurn),
-                text_response(StopReason::EndTurn),
-            ]);
-            let (history, events) = run_with_interrupt(provider, cmd_rx).await;
-
-            assert!(events.iter().any(|e| {
-                matches!(e.event, AgentEvent::InterruptConsumed { ref message } if message == "new task")
-            }));
-            assert!(has_interrupt_in_history(history.as_slice()));
         });
     }
 
