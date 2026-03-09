@@ -1947,7 +1947,7 @@ mod tests {
         let state = app.selection_state.as_ref().unwrap();
         let (_, end) = state.sel.normalized();
         assert_eq!(end.col, 79);
-        assert_eq!(end.row, 20, "clamped to area bottom + edge scroll offset");
+        assert_eq!(end.row, 19, "clamped to area bottom");
         assert!(
             state.edge_scroll.is_some(),
             "outside area triggers edge scroll"

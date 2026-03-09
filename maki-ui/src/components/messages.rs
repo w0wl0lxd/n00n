@@ -485,7 +485,7 @@ impl MessagesPanel {
     }
 
     pub fn scroll(&mut self, delta: i32) {
-        self.scroll_top = apply_scroll_delta(self.scroll_top, delta);
+        self.scroll_top = apply_scroll_delta(self.scroll_top, delta).min(self.max_scroll());
         self.auto_scroll = false;
     }
 
@@ -582,9 +582,9 @@ impl MessagesPanel {
             segments.push((lines, false, None));
         }
 
-        let total_lines: u16 = heights.iter().sum();
         self.segment_heights = heights.clone();
-        let max_scroll = total_lines.saturating_sub(area.height);
+        let total_lines: u16 = self.segment_heights.iter().sum();
+        let max_scroll = total_lines.saturating_sub(self.viewport_height);
         self.scroll_top = self.scroll_top.min(max_scroll);
         if !has_selection {
             if self.scroll_top >= max_scroll {
@@ -630,6 +630,11 @@ impl MessagesPanel {
         if total_lines > area.height {
             render_vertical_scrollbar(frame, area, total_lines, self.scroll_top);
         }
+    }
+
+    fn max_scroll(&self) -> u16 {
+        let total: u16 = self.segment_heights.iter().sum();
+        total.saturating_sub(self.viewport_height)
     }
 
     pub fn scroll_top(&self) -> u16 {
@@ -1666,6 +1671,17 @@ mod tests {
             panic!("expected Batch");
         };
         assert_eq!(entries[0].summary, "new name");
+    }
+
+    #[test]
+    fn scroll_clamps_to_max_scroll() {
+        let mut panel = MessagesPanel::new();
+        panel.streaming_text.set_buffer(&"a\n".repeat(15));
+        render(&mut panel, 80, 10);
+        let max = panel.max_scroll();
+
+        panel.scroll(-3);
+        assert_eq!(panel.scroll_top, max);
     }
 
     #[test]
