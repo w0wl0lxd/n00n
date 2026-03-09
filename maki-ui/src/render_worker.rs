@@ -6,7 +6,7 @@ use std::time::Duration;
 use maki_agent::{ToolInput, ToolOutput};
 use ratatui::text::Line;
 
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 const FALLBACK_MAX_THREADS: usize = 4;
 
 struct RenderJob {
