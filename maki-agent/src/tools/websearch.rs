@@ -32,7 +32,11 @@ impl WebSearch {
 ]"#,
     );
 
-    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+        ctx.cancel.race(self.do_search()).await?
+    }
+
+    async fn do_search(&self) -> Result<ToolOutput, String> {
         let num_results = self.num_results.unwrap_or(DEFAULT_NUM_RESULTS);
 
         let payload = json!({

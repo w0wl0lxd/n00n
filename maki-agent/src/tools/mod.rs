@@ -461,7 +461,11 @@ impl Provider for NullProvider {
     }
 }
 
-pub(crate) fn interpreter_ctx(mode: &AgentMode, event_tx: &EventSender) -> ToolContext {
+pub(crate) fn interpreter_ctx(
+    mode: &AgentMode,
+    event_tx: &EventSender,
+    cancel: CancelToken,
+) -> ToolContext {
     static PROVIDER: LazyLock<Arc<dyn Provider>> = LazyLock::new(|| Arc::new(NullProvider));
     static MODEL: LazyLock<Model> =
         LazyLock::new(|| Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap());
@@ -475,7 +479,7 @@ pub(crate) fn interpreter_ctx(mode: &AgentMode, event_tx: &EventSender) -> ToolC
         user_response_rx: None,
         skills: Arc::clone(&SKILLS),
         loaded_instructions: Arc::new(Mutex::new(HashSet::new())),
-        cancel: CancelToken::none(),
+        cancel,
     }
 }
 
@@ -498,7 +502,7 @@ pub(crate) mod test_support {
                 &fallback_tx
             }
         };
-        let mut ctx = interpreter_ctx(mode, event_tx);
+        let mut ctx = interpreter_ctx(mode, event_tx, CancelToken::none());
         ctx.tool_use_id = tool_use_id.map(String::from);
         ctx
     }

@@ -36,7 +36,11 @@ impl WebFetch {
 ]"#,
     );
 
-    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+        ctx.cancel.race(self.do_fetch()).await?
+    }
+
+    async fn do_fetch(&self) -> Result<ToolOutput, String> {
         let url = validate_and_upgrade_url(&self.url)?;
         let format = self.validated_format()?;
         let timeout = Duration::from_secs(

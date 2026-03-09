@@ -130,7 +130,8 @@ impl Batch {
 
         let mut results: Vec<(Result<String, String>, Option<ToolOutput>)> =
             vec![(Err("tool task panicked".into()), None); parsed.len()];
-        for (i, result, output) in set.join_all().await.into_iter().flatten() {
+        let all = ctx.cancel.race(set.join_all()).await?;
+        for (i, result, output) in all.into_iter().flatten() {
             results[i] = (result, output);
         }
 
@@ -269,6 +270,24 @@ mod tests {
             assert_eq!(entries[0].status, BatchToolStatus::Success);
             assert_eq!(entries[1].status, BatchToolStatus::Error);
             assert!(text.contains("content"));
+        });
+    }
+
+    #[test]
+    fn cancel_stops_batch() {
+        smol::block_on(async {
+            let (trigger, cancel) = crate::cancel::CancelToken::new();
+            let mut ctx = stub_ctx(&AgentMode::Build);
+            ctx.cancel = cancel;
+            let batch = Batch::parse_input(&json!({
+                "tool_calls": [
+                    {"tool": "read", "parameters": {"path": "/dev/null"}}
+                ]
+            }))
+            .unwrap();
+            trigger.cancel();
+            let err = batch.execute(&ctx).await.unwrap_err();
+            assert!(err.contains("cancelled"));
         });
     }
 

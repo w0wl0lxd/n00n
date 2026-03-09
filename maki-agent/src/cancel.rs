@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -38,6 +39,14 @@ impl CancelToken {
 
     pub fn is_cancelled(&self) -> bool {
         self.0.cancelled.load(Ordering::Acquire)
+    }
+
+    pub async fn race<T>(&self, future: impl Future<Output = T>) -> Result<T, String> {
+        futures_lite::future::race(async { Ok(future.await) }, async {
+            self.cancelled().await;
+            Err("cancelled".into())
+        })
+        .await
     }
 
     pub async fn cancelled(&self) {
@@ -123,6 +132,25 @@ mod tests {
             drop(trigger);
             token.cancelled().await;
             assert!(token.is_cancelled());
+        });
+    }
+
+    #[test]
+    fn race_returns_value_when_not_cancelled() {
+        smol::block_on(async {
+            let (_trigger, token) = CancelToken::new();
+            let result = token.race(async { 42 }).await;
+            assert_eq!(result.unwrap(), 42);
+        });
+    }
+
+    #[test]
+    fn race_returns_error_when_already_cancelled() {
+        smol::block_on(async {
+            let (trigger, token) = CancelToken::new();
+            trigger.cancel();
+            let result = token.race(std::future::pending::<()>()).await;
+            assert!(result.unwrap_err().contains("cancelled"));
         });
     }
 }

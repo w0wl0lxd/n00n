@@ -6,6 +6,7 @@ use maki_interpreter::runner::{self, ToolFn};
 use maki_tool_macro::Tool;
 use serde_json::Value;
 
+use crate::cancel::CancelToken;
 use crate::{AgentEvent, AgentMode, EventSender, ToolInput, ToolOutput};
 
 use super::INTERPRETER_TOOLS;
@@ -40,13 +41,14 @@ impl CodeInterpreter {
         let tool_use_id = ctx.tool_use_id.clone();
         let event_tx = ctx.event_tx.clone();
         let mode = ctx.mode.clone();
+        let cancel = ctx.cancel.clone();
 
         // NOTE: cancel races the smol::unblock future. When cancel wins, the
         // blocking thread pool task keeps running until the Python code finishes.
         // There is no safe way to kill a blocking thread.
-        futures_lite::future::race(
-            smol::unblock(move || {
-                let tools = build_tool_fns(&event_tx, &mode);
+        ctx.cancel
+            .race(smol::unblock(move || {
+                let tools = build_tool_fns(&event_tx, &mode, &cancel);
                 let code = format!("{PREAMBLE}{code}");
 
                 let result = if let Some(ref id) = tool_use_id {
@@ -84,13 +86,8 @@ impl CodeInterpreter {
                 }
 
                 Ok(ToolOutput::Plain(truncate_output(output)))
-            }),
-            async {
-                ctx.cancel.cancelled().await;
-                Err("cancelled".into())
-            },
-        )
-        .await
+            }))
+            .await?
     }
 
     pub fn start_summary(&self) -> String {
@@ -112,13 +109,18 @@ impl super::ToolDefaults for CodeInterpreter {
     }
 }
 
-fn build_tool_fns(event_tx: &EventSender, mode: &AgentMode) -> HashMap<String, ToolFn> {
+fn build_tool_fns(
+    event_tx: &EventSender,
+    mode: &AgentMode,
+    cancel: &CancelToken,
+) -> HashMap<String, ToolFn> {
     let mut tools: HashMap<String, ToolFn> = HashMap::new();
 
     for &tool_name in INTERPRETER_TOOLS {
         let name = tool_name.to_string();
         let tx = event_tx.clone();
         let mode = mode.clone();
+        let cancel = cancel.clone();
 
         tools.insert(
             name.clone(),
@@ -128,7 +130,7 @@ fn build_tool_fns(event_tx: &EventSender, mode: &AgentMode) -> HashMap<String, T
                     let call = super::ToolCall::from_api(fn_name, &input)
                         .map_err(|e| format!("tool parse error: {e}"))?;
 
-                    let inner_ctx = super::interpreter_ctx(&mode, &tx);
+                    let inner_ctx = super::interpreter_ctx(&mode, &tx, cancel.clone());
                     let done = smol::future::block_on(call.execute(&inner_ctx, String::new()));
                     if done.is_error {
                         Err(done.output.as_text())
