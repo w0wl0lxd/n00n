@@ -409,6 +409,7 @@ pub struct Agent {
     recent_calls: RecentCalls,
     auto_compact: bool,
     loaded_instructions: Arc<Mutex<HashSet<PathBuf>>>,
+    rollback_len: usize,
 }
 
 impl Agent {
@@ -438,6 +439,7 @@ impl Agent {
             recent_calls: RecentCalls::new(),
             auto_compact: auto_compact_enabled(),
             loaded_instructions: Arc::new(Mutex::new(HashSet::new())),
+            rollback_len: 0,
         }
     }
 
@@ -466,7 +468,7 @@ impl Agent {
 
     pub async fn run(mut self, input: AgentInput) -> RunOutcome {
         let user_message = input.effective_message();
-        let history_snapshot = self.history.len();
+        self.rollback_len = self.history.len();
         self.history.push(Message::user(user_message.clone()));
         self.mode = input.mode;
 
@@ -480,7 +482,7 @@ impl Agent {
         let result = self.run_loop().await;
 
         if matches!(result, Err(AgentError::Cancelled)) {
-            self.history.truncate(history_snapshot);
+            self.history.truncate(self.rollback_len);
         }
 
         RunOutcome {
@@ -649,6 +651,7 @@ impl Agent {
             &self.cancel,
         )
         .await?;
+        self.rollback_len = self.history.len();
         self.history
             .push(Message::user(CONTINUE_AFTER_COMPACT.into()));
         Ok(())
@@ -846,38 +849,40 @@ mod tests {
         }
     }
 
-    async fn run_and_collect(provider: MockProvider, model: &Model) -> Vec<Envelope> {
-        let input = AgentInput {
+    fn make_agent(provider: MockProvider, history: History) -> (Agent, flume::Receiver<Envelope>) {
+        let (raw_tx, event_rx) = flume::unbounded();
+        let agent = Agent::new(
+            Arc::new(provider),
+            default_model(),
+            history,
+            "system".into(),
+            EventSender::new(raw_tx, 0),
+            serde_json::json!([]),
+            Arc::from([]) as Arc<[Skill]>,
+        );
+        (agent, event_rx)
+    }
+
+    fn default_input() -> AgentInput {
+        AgentInput {
             message: "hello".into(),
             mode: AgentMode::Build,
             pending_plan: None,
-        };
-        let history = History::new(Vec::new());
-        let (raw_tx, event_rx) = flume::unbounded();
-        let event_tx = EventSender::new(raw_tx, 0);
-        let tools = serde_json::json!([]);
-        let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
+        }
+    }
 
-        let agent = Agent::new(
-            Arc::new(provider),
-            model.clone(),
-            history,
-            "system".into(),
-            event_tx,
-            tools,
-            skills,
-        );
-        let _ = agent.run(input).await;
+    fn drain_events(rx: &flume::Receiver<Envelope>) -> Vec<Envelope> {
         let mut events = Vec::new();
-        while let Ok(e) = event_rx.try_recv() {
+        while let Ok(e) = rx.try_recv() {
             events.push(e);
         }
         events
     }
 
     async fn run_agent(provider: MockProvider) -> (u32, Option<StopReason>) {
-        run_and_collect(provider, &default_model())
-            .await
+        let (agent, event_rx) = make_agent(provider, History::new(Vec::new()));
+        let _ = agent.run(default_input()).await;
+        drain_events(&event_rx)
             .into_iter()
             .find_map(|e| match e.event {
                 AgentEvent::Done {
@@ -910,7 +915,6 @@ mod tests {
                 Arc::new(MockProvider::new(vec![text_response(StopReason::EndTurn)]));
             let model = default_model();
             let (raw_tx, _rx) = flume::unbounded();
-            let event_tx = EventSender::new(raw_tx, 0);
             let mut history = History::new(vec![
                 Message::user("first".into()),
                 Message {
@@ -921,9 +925,14 @@ mod tests {
                 },
             ]);
 
-            compact(&*provider, &model, &mut history, &event_tx)
-                .await
-                .unwrap();
+            compact(
+                &*provider,
+                &model,
+                &mut history,
+                &EventSender::new(raw_tx, 0),
+            )
+            .await
+            .unwrap();
 
             let msgs = history.as_slice();
             assert_eq!(msgs.len(), 2);
@@ -947,45 +956,8 @@ mod tests {
         }
     }
 
-    async fn run_with_interrupt(
-        provider: MockProvider,
-        cmd_rx: flume::Receiver<ExtractedCommand>,
-    ) -> (Vec<Message>, Vec<Envelope>) {
-        let model = default_model();
-        let input = AgentInput {
-            message: "hello".into(),
-            mode: AgentMode::Build,
-            pending_plan: None,
-        };
-        let history = History::new(Vec::new());
-        let (raw_tx, event_rx) = flume::unbounded();
-        let event_tx = EventSender::new(raw_tx, 0);
-        let tools = serde_json::json!([]);
-        let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
-
-        let agent = Agent::new(
-            Arc::new(provider),
-            model,
-            history,
-            "system".into(),
-            event_tx,
-            tools,
-            skills,
-        )
-        .with_cmd_rx(cmd_rx);
-        let outcome = agent.run(input).await;
-        let history = outcome.history.as_slice().to_vec();
-        let mut events = Vec::new();
-        while let Ok(e) = event_rx.try_recv() {
-            events.push(e);
-        }
-        (history, events)
-    }
-
-    fn has_queue_item_consumed(events: &[Envelope]) -> bool {
-        events
-            .iter()
-            .any(|e| matches!(e.event, AgentEvent::QueueItemConsumed))
+    fn has_event(events: &[Envelope], predicate: fn(&AgentEvent) -> bool) -> bool {
+        events.iter().any(|e| predicate(&e.event))
     }
 
     fn has_interrupt_in_history(history: &[Message]) -> bool {
@@ -996,57 +968,44 @@ mod tests {
         })
     }
 
-    fn interrupt_responses(tool_use: bool) -> Vec<StreamResponse> {
-        if tool_use {
-            vec![
-                tool_call_response("glob", "t1"),
-                text_response(StopReason::EndTurn),
-            ]
-        } else {
-            vec![
-                text_response(StopReason::EndTurn),
-                text_response(StopReason::EndTurn),
-            ]
-        }
-    }
-
-    #[test_case(true  ; "after_tool_use_turn")]
-    #[test_case(false ; "after_text_only_turn")]
-    fn interrupt_injects_user_message(tool_use: bool) {
+    #[test_case(Some(true),  true,  true  ; "after_tool_use_turn")]
+    #[test_case(Some(false), true,  true  ; "after_text_only_turn")]
+    #[test_case(None,        false, false ; "channel_empty")]
+    fn interrupt_handling(queued: Option<bool>, expect_consumed: bool, expect_injected: bool) {
         smol::block_on(async {
             let (cmd_tx, cmd_rx) = flume::unbounded::<ExtractedCommand>();
-            cmd_tx
-                .try_send(ExtractedCommand::Interrupt(
-                    AgentInput {
-                        message: "new task".into(),
-                        mode: AgentMode::Build,
-                        pending_plan: None,
-                    },
-                    0,
-                ))
-                .unwrap();
+            if queued.is_some() {
+                cmd_tx
+                    .send(ExtractedCommand::Interrupt(default_input(), 0))
+                    .unwrap();
+            }
 
-            let provider = MockProvider::new(interrupt_responses(tool_use));
-            let (history, events) = run_with_interrupt(provider, cmd_rx).await;
+            let tool_use = queued.unwrap_or(true);
+            let responses = if tool_use {
+                vec![
+                    tool_call_response("glob", "t1"),
+                    text_response(StopReason::EndTurn),
+                ]
+            } else {
+                vec![
+                    text_response(StopReason::EndTurn),
+                    text_response(StopReason::EndTurn),
+                ]
+            };
 
-            assert!(has_queue_item_consumed(&events));
-            assert!(has_interrupt_in_history(&history));
-        });
-    }
+            let (agent, event_rx) =
+                make_agent(MockProvider::new(responses), History::new(Vec::new()));
+            let outcome = agent.with_cmd_rx(cmd_rx).run(default_input()).await;
+            let events = drain_events(&event_rx);
 
-    #[test]
-    fn no_interrupt_when_channel_empty() {
-        smol::block_on(async {
-            let (_cmd_tx, cmd_rx) = flume::unbounded::<ExtractedCommand>();
-
-            let provider = MockProvider::new(vec![
-                tool_call_response("glob", "t1"),
-                text_response(StopReason::EndTurn),
-            ]);
-            let (history, events) = run_with_interrupt(provider, cmd_rx).await;
-
-            assert!(!has_queue_item_consumed(&events));
-            assert!(!has_interrupt_in_history(&history));
+            assert_eq!(
+                has_event(&events, |e| matches!(e, AgentEvent::QueueItemConsumed)),
+                expect_consumed,
+            );
+            assert_eq!(
+                has_interrupt_in_history(outcome.history.as_slice()),
+                expect_injected
+            );
         });
     }
 
@@ -1057,44 +1016,44 @@ mod tests {
         model
     }
 
-    #[test]
-    fn cancel_truncates_history_to_pre_run_state() {
+    #[test_case(
+        vec![],
+        vec![ExtractedCommand::Cancel],
+        vec![text_response(StopReason::EndTurn)],
+        0
+        ; "simple_cancel_restores_empty_history"
+    )]
+    #[test_case(
+        vec![Message::user("old".into())],
+        vec![ExtractedCommand::Cancel],
+        vec![text_response(StopReason::EndTurn)],
+        1
+        ; "cancel_preserves_prior_history"
+    )]
+    #[test_case(
+        (0..10).map(|i| Message::user(format!("msg {i}"))).collect(),
+        vec![ExtractedCommand::Compact(0), ExtractedCommand::Cancel],
+        vec![tool_call_response("glob", "t1"), text_response(StopReason::EndTurn), text_response(StopReason::EndTurn)],
+        2
+        ; "cancel_after_compaction_preserves_summary"
+    )]
+    fn cancel_rollback(
+        prior: Vec<Message>,
+        commands: Vec<ExtractedCommand>,
+        responses: Vec<StreamResponse>,
+        expected_len: usize,
+    ) {
         smol::block_on(async {
             let (cmd_tx, cmd_rx) = flume::unbounded::<ExtractedCommand>();
-            cmd_tx.try_send(ExtractedCommand::Cancel).unwrap();
+            for cmd in commands {
+                cmd_tx.send(cmd).unwrap();
+            }
 
-            let provider = MockProvider::new(vec![text_response(StopReason::EndTurn)]);
-            let model = default_model();
-            let input = AgentInput {
-                message: "hello".into(),
-                mode: AgentMode::Build,
-                pending_plan: None,
-            };
-            let prior = vec![Message::user("old".into())];
-            let history = History::new(prior.clone());
-            let (raw_tx, _event_rx) = flume::unbounded();
-            let event_tx = EventSender::new(raw_tx, 0);
-            let tools = serde_json::json!([]);
-            let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
-
-            let agent = Agent::new(
-                Arc::new(provider),
-                model,
-                history,
-                "system".into(),
-                event_tx,
-                tools,
-                skills,
-            )
-            .with_cmd_rx(cmd_rx);
-            let outcome = agent.run(input).await;
+            let (agent, _event_rx) = make_agent(MockProvider::new(responses), History::new(prior));
+            let outcome = agent.with_cmd_rx(cmd_rx).run(default_input()).await;
 
             assert!(matches!(outcome.result, Err(AgentError::Cancelled)));
-            assert_eq!(
-                outcome.history.len(),
-                prior.len(),
-                "history should be truncated to pre-run state on cancel"
-            );
+            assert_eq!(outcome.history.len(), expected_len);
         });
     }
 
@@ -1128,27 +1087,16 @@ mod tests {
     #[test_case(false, 900, false ; "disabled_even_over_threshold")]
     fn try_auto_compact_behavior(enabled: bool, total_input: u32, expected: bool) {
         smol::block_on(async {
-            let model = small_context_model(1000, 200);
-            let provider = MockProvider::new(if expected {
+            let responses = if expected {
                 vec![text_response(StopReason::EndTurn)]
             } else {
                 vec![]
-            });
-            let (raw_tx, event_rx) = flume::unbounded();
-            let event_tx = EventSender::new(raw_tx, 0);
-            let history = History::new(vec![Message::user("go".into())]);
-            let tools = serde_json::json!([]);
-            let skills: Arc<[crate::skill::Skill]> = Arc::from([]);
-
-            let mut agent = Agent::new(
-                Arc::new(provider),
-                model,
-                history,
-                "system".into(),
-                event_tx,
-                tools,
-                skills,
+            };
+            let (mut agent, event_rx) = make_agent(
+                MockProvider::new(responses),
+                History::new(vec![Message::user("go".into())]),
             );
+            agent.model = small_context_model(1000, 200);
             agent.auto_compact = enabled;
 
             let usage = TokenUsage {
@@ -1159,13 +1107,13 @@ mod tests {
 
             assert_eq!(result, expected);
             drop(agent);
-            let mut has_compact_event = false;
-            while let Ok(e) = event_rx.try_recv() {
-                if matches!(e.event, AgentEvent::AutoCompacting) {
-                    has_compact_event = true;
-                }
-            }
-            assert_eq!(has_compact_event, expected);
+            assert_eq!(
+                has_event(&drain_events(&event_rx), |e| matches!(
+                    e,
+                    AgentEvent::AutoCompacting
+                )),
+                expected,
+            );
         });
     }
 
@@ -1248,8 +1196,8 @@ mod tests {
     #[test]
     fn cancel_token_aborts_during_api_call() {
         smol::block_on(async {
-            struct SlowProvider;
-            impl Provider for SlowProvider {
+            struct HangingProvider;
+            impl Provider for HangingProvider {
                 fn stream_message<'a>(
                     &'a self,
                     _: &'a Model,
@@ -1269,32 +1217,21 @@ mod tests {
             }
 
             let (trigger, cancel) = crate::cancel::CancelToken::new();
-            let model = default_model();
-            let input = AgentInput {
-                message: "hello".into(),
-                mode: AgentMode::Build,
-                pending_plan: None,
-            };
-            let history = History::new(Vec::new());
-            let (raw_tx, _rx) = flume::unbounded();
-            let event_tx = EventSender::new(raw_tx, 0);
-            let tools = serde_json::json!([]);
-            let skills: Arc<[Skill]> = Arc::from([]);
-
             trigger.cancel();
 
+            let (raw_tx, _rx) = flume::unbounded();
             let agent = Agent::new(
-                Arc::new(SlowProvider),
-                model,
-                history,
+                Arc::new(HangingProvider),
+                default_model(),
+                History::new(Vec::new()),
                 "system".into(),
-                event_tx,
-                tools,
-                skills,
+                EventSender::new(raw_tx, 0),
+                serde_json::json!([]),
+                Arc::from([]) as Arc<[Skill]>,
             )
             .with_cancel(cancel);
 
-            let outcome = agent.run(input).await;
+            let outcome = agent.run(default_input()).await;
             assert!(matches!(outcome.result, Err(AgentError::Cancelled)));
         });
     }
