@@ -10,6 +10,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
+use super::keybindings::key;
 use super::scrollbar::render_vertical_scrollbar;
 use super::{apply_scroll_delta, visual_line_count};
 
@@ -55,11 +56,11 @@ impl InputBox {
     pub fn handle_key(&mut self, key: KeyEvent) -> InputAction {
         self.follow_cursor = true;
         if super::is_ctrl(&key) {
+            if key::DELETE_WORD.matches(key) {
+                self.buffer.remove_word_before_cursor();
+                return InputAction::PaletteSync(self.buffer.value());
+            }
             return match key.code {
-                KeyCode::Char('w') => {
-                    self.buffer.remove_word_before_cursor();
-                    InputAction::PaletteSync(self.buffer.value())
-                }
                 KeyCode::Left => {
                     self.buffer.move_word_left();
                     InputAction::None

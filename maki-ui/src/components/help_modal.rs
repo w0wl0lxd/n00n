@@ -1,7 +1,7 @@
-use crate::components::keybindings::{KeybindContext, active_keybinds};
+use crate::components::keybindings::{KeybindContext, active_keybinds, key};
 use crate::theme;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::Style;
@@ -37,9 +37,7 @@ impl HelpModal {
 
     /// Returns `true` if the key closed the modal.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
-        let close = key.code == KeyCode::Esc
-            || (key.modifiers.contains(KeyModifiers::CONTROL)
-                && matches!(key.code, KeyCode::Char('h') | KeyCode::Char('c')));
+        let close = key.code == KeyCode::Esc || key::HELP.matches(key) || key::QUIT.matches(key);
         if close {
             self.open = false;
         }
@@ -107,38 +105,19 @@ impl HelpModal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{ctrl, key};
-    use crossterm::event::KeyCode;
+    use crate::components::key as key_ev;
+    use crate::components::keybindings::key as kb;
+    use crossterm::event::{KeyCode, KeyEvent};
+    use test_case::test_case;
 
-    #[test]
-    fn esc_closes() {
+    #[test_case(key_ev(KeyCode::Esc),        true  ; "esc_closes")]
+    #[test_case(kb::QUIT.to_key_event(),     true  ; "ctrl_c_closes")]
+    #[test_case(kb::HELP.to_key_event(),     true  ; "ctrl_h_closes")]
+    #[test_case(key_ev(KeyCode::Char('a')),  false ; "other_key_stays_open")]
+    fn handle_key_close_behavior(key: KeyEvent, should_close: bool) {
         let mut modal = HelpModal::new();
         modal.toggle();
-        assert!(modal.handle_key(key(KeyCode::Esc)));
-        assert!(!modal.is_open());
-    }
-
-    #[test]
-    fn ctrl_c_closes() {
-        let mut modal = HelpModal::new();
-        modal.toggle();
-        assert!(modal.handle_key(ctrl('c')));
-        assert!(!modal.is_open());
-    }
-
-    #[test]
-    fn ctrl_h_closes() {
-        let mut modal = HelpModal::new();
-        modal.toggle();
-        assert!(modal.handle_key(ctrl('h')));
-        assert!(!modal.is_open());
-    }
-
-    #[test]
-    fn other_keys_consumed() {
-        let mut modal = HelpModal::new();
-        modal.toggle();
-        assert!(!modal.handle_key(key(KeyCode::Char('a'))));
-        assert!(modal.is_open());
+        assert_eq!(modal.handle_key(key), should_close);
+        assert_eq!(modal.is_open(), !should_close);
     }
 }

@@ -1,4 +1,5 @@
 use crate::components::is_ctrl;
+use crate::components::keybindings::key;
 use crate::components::scrollbar::render_vertical_scrollbar;
 use crate::selection::inset_border;
 use crate::text_buffer::TextBuffer;
@@ -64,20 +65,18 @@ impl ChatPicker {
             None => return ChatPickerAction::Consumed,
         };
 
+        if key::QUIT.matches(key) {
+            let orig = s.original_chat;
+            self.state = None;
+            return ChatPickerAction::Select(orig);
+        }
+        if key::DELETE_WORD.matches(key) {
+            s.search.remove_word_before_cursor();
+            s.clamp_selection(chat_names);
+            return ChatPickerAction::Consumed;
+        }
         if is_ctrl(&key) {
-            return match key.code {
-                KeyCode::Char('c') => {
-                    let orig = s.original_chat;
-                    self.state = None;
-                    ChatPickerAction::Select(orig)
-                }
-                KeyCode::Char('w') => {
-                    s.search.remove_word_before_cursor();
-                    s.clamp_selection(chat_names);
-                    ChatPickerAction::Consumed
-                }
-                _ => ChatPickerAction::Consumed,
-            };
+            return ChatPickerAction::Consumed;
         }
         match key.code {
             KeyCode::Up => {
@@ -340,7 +339,8 @@ fn render_search(frame: &mut Frame, area: Rect, s: &State) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{ctrl, key};
+    use crate::components::key;
+    use crate::components::keybindings::key as kb;
     use crossterm::event::KeyCode;
     use test_case::test_case;
 
@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test_case(key(KeyCode::Esc) ; "escape_returns_original")]
-    #[test_case(ctrl('c') ; "ctrl_c_returns_original")]
+    #[test_case(kb::QUIT.to_key_event() ; "ctrl_c_returns_original")]
     fn cancel_returns_original(cancel_key: KeyEvent) {
         let mut p = ChatPicker::new();
         let chat_names = names(&["Main", "Explore config"]);
@@ -443,7 +443,7 @@ mod tests {
         p.handle_key(key(KeyCode::Char('i')), &chat_names);
         assert_eq!(p.state.as_ref().unwrap().search.value(), "hi");
 
-        p.handle_key(ctrl('w'), &chat_names);
+        p.handle_key(kb::DELETE_WORD.to_key_event(), &chat_names);
         assert_eq!(p.state.as_ref().unwrap().search.value(), "");
     }
 

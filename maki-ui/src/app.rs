@@ -7,7 +7,7 @@ use crate::components::chat_picker::{ChatPicker, ChatPickerAction};
 use crate::components::command::{CommandAction, CommandPalette};
 use crate::components::help_modal::HelpModal;
 use crate::components::input::{InputAction, InputBox};
-use crate::components::keybindings::KeybindContext;
+use crate::components::keybindings::{KeybindContext, key};
 use crate::components::question_form::{QuestionForm, QuestionFormAction};
 use crate::components::queue_panel::{self, QueueEntry};
 use crate::components::status_bar::{CancelResult, StatusBar, StatusBarContext, UsageStats};
@@ -457,73 +457,50 @@ impl App {
             };
         }
 
-        // Keep in sync with: `KEYBINDS` in keybindings.rs
         if is_ctrl(&key) {
-            let half = self.chats[self.active_chat].half_page();
-            return match key.code {
-                KeyCode::Char('c') => {
-                    self.command_palette.close();
-                    if self.input_box.buffer.value().trim().is_empty() {
-                        self.should_quit = true;
-                        vec![Action::Quit]
-                    } else {
-                        self.input_box.buffer.clear();
-                        vec![]
-                    }
-                }
-                KeyCode::Char('p') => {
-                    self.active_chat = self.active_chat.saturating_sub(1);
-                    #[cfg(feature = "demo")]
-                    self.check_demo_questions();
+            if key::QUIT.matches(key) {
+                self.command_palette.close();
+                return if self.input_box.buffer.value().trim().is_empty() {
+                    self.should_quit = true;
+                    vec![Action::Quit]
+                } else {
+                    self.input_box.buffer.clear();
                     vec![]
+                };
+            }
+
+            if key::PREV_CHAT.matches(key) {
+                self.active_chat = self.active_chat.saturating_sub(1);
+                #[cfg(feature = "demo")]
+                self.check_demo_questions();
+            } else if key::NEXT_CHAT.matches(key) {
+                self.active_chat = (self.active_chat + 1).min(self.chats.len() - 1);
+                #[cfg(feature = "demo")]
+                self.check_demo_questions();
+            } else if key::SCROLL_HALF_UP.matches(key) {
+                let half = self.chats[self.active_chat].half_page();
+                self.active_chat().scroll(half);
+            } else if key::SCROLL_HALF_DOWN.matches(key) {
+                let half = self.chats[self.active_chat].half_page();
+                self.active_chat().scroll(-half);
+            } else if key::SCROLL_LINE_UP.matches(key) {
+                self.active_chat().scroll(1);
+            } else if key::SCROLL_LINE_DOWN.matches(key) {
+                self.active_chat().scroll(-1);
+            } else if key::SCROLL_TOP.matches(key) {
+                self.active_chat().scroll_to_top();
+            } else if key::SCROLL_BOTTOM.matches(key) {
+                self.active_chat().enable_auto_scroll();
+            } else if key::POP_QUEUE.matches(key) {
+                if !self.queue.is_empty() {
+                    self.pop_queue_front();
                 }
-                KeyCode::Char('n') => {
-                    self.active_chat = (self.active_chat + 1).min(self.chats.len() - 1);
-                    #[cfg(feature = "demo")]
-                    self.check_demo_questions();
-                    vec![]
-                }
-                KeyCode::Char('u') => {
-                    self.active_chat().scroll(half);
-                    vec![]
-                }
-                KeyCode::Char('d') => {
-                    self.active_chat().scroll(-half);
-                    vec![]
-                }
-                KeyCode::Char('y') => {
-                    self.active_chat().scroll(1);
-                    vec![]
-                }
-                KeyCode::Char('e') => {
-                    self.active_chat().scroll(-1);
-                    vec![]
-                }
-                KeyCode::Char('g') => {
-                    self.active_chat().scroll_to_top();
-                    vec![]
-                }
-                KeyCode::Char('b') => {
-                    self.active_chat().enable_auto_scroll();
-                    vec![]
-                }
-                KeyCode::Char('q') => {
-                    if !self.queue.is_empty() {
-                        self.pop_queue_front();
-                    }
-                    vec![]
-                }
-                KeyCode::Char('h') if is_ctrl(&key) => {
-                    self.help_modal.toggle();
-                    vec![]
-                }
-                _ => {
-                    if let InputAction::PaletteSync(val) = self.input_box.handle_key(key) {
-                        self.command_palette.sync(&val);
-                    }
-                    vec![]
-                }
-            };
+            } else if key::HELP.matches(key) {
+                self.help_modal.toggle();
+            } else if let InputAction::PaletteSync(val) = self.input_box.handle_key(key) {
+                self.command_palette.sync(&val);
+            }
+            return vec![];
         }
 
         match self.command_palette.handle_key(key) {
@@ -1071,8 +1048,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{TEST_CONTEXT_WINDOW, ctrl, key, test_pricing};
-    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+    use crate::components::keybindings::key as kb;
+    use crate::components::{TEST_CONTEXT_WINDOW, key, test_pricing};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
     use maki_agent::{QuestionInfo, QuestionOption, ToolDoneEvent, ToolOutput, ToolStartEvent};
     use test_case::test_case;
 
@@ -1178,7 +1156,7 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Char('h'))));
         app.update(Msg::Key(key(KeyCode::Char('i'))));
 
-        let actions = app.update(Msg::Key(ctrl('c')));
+        let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
         assert!(actions.is_empty());
         assert!(!app.should_quit);
         assert_eq!(app.input_box.buffer.value(), "");
@@ -1189,7 +1167,7 @@ mod tests {
         for status in [Status::Idle, Status::Streaming] {
             let mut app = test_app();
             app.status = status;
-            let actions = app.update(Msg::Key(ctrl('c')));
+            let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
             assert!(app.should_quit);
             assert!(matches!(&actions[0], Action::Quit));
         }
@@ -1507,7 +1485,7 @@ mod tests {
         type_slash(&mut app);
         assert!(app.command_palette.is_active());
 
-        app.update(Msg::Key(ctrl('c')));
+        app.update(Msg::Key(kb::QUIT.to_key_event()));
         assert!(!app.command_palette.is_active());
     }
 
@@ -1559,16 +1537,16 @@ mod tests {
         assert_eq!(app.chats.len(), 2);
         assert_eq!(app.active_chat, 0);
 
-        app.update(Msg::Key(ctrl('n')));
+        app.update(Msg::Key(kb::NEXT_CHAT.to_key_event()));
         assert_eq!(app.active_chat, 1);
 
-        app.update(Msg::Key(ctrl('n')));
+        app.update(Msg::Key(kb::NEXT_CHAT.to_key_event()));
         assert_eq!(app.active_chat, 1);
 
-        app.update(Msg::Key(ctrl('p')));
+        app.update(Msg::Key(kb::PREV_CHAT.to_key_event()));
         assert_eq!(app.active_chat, 0);
 
-        app.update(Msg::Key(ctrl('p')));
+        app.update(Msg::Key(kb::PREV_CHAT.to_key_event()));
         assert_eq!(app.active_chat, 0);
     }
 
@@ -1765,10 +1743,10 @@ mod tests {
         let mut app = app_with_subagent();
 
         open_chats_picker(&mut app);
-        app.update(Msg::Key(ctrl('n')));
-        app.update(Msg::Key(ctrl('p')));
-        app.update(Msg::Key(ctrl('u')));
-        app.update(Msg::Key(ctrl('d')));
+        app.update(Msg::Key(kb::NEXT_CHAT.to_key_event()));
+        app.update(Msg::Key(kb::PREV_CHAT.to_key_event()));
+        app.update(Msg::Key(kb::SCROLL_HALF_UP.to_key_event()));
+        app.update(Msg::Key(kb::SCROLL_HALF_DOWN.to_key_event()));
 
         assert!(app.chat_picker.is_open());
         assert_eq!(app.active_chat, 0);
@@ -1900,12 +1878,12 @@ mod tests {
         assert!(app.chats[0].auto_scroll());
     }
 
-    #[test_case('g', false ; "ctrl_g_disables_auto_scroll")]
-    #[test_case('b', true  ; "ctrl_b_enables_auto_scroll")]
-    fn ctrl_g_scroll_shortcuts(ch: char, expected_auto_scroll: bool) {
+    #[test_case(kb::SCROLL_TOP.to_key_event(), false ; "ctrl_g_disables_auto_scroll")]
+    #[test_case(kb::SCROLL_BOTTOM.to_key_event(), true  ; "ctrl_b_enables_auto_scroll")]
+    fn ctrl_g_scroll_shortcuts(key: KeyEvent, expected_auto_scroll: bool) {
         let mut app = test_app();
         app.active_chat().enable_auto_scroll();
-        app.update(Msg::Key(ctrl(ch)));
+        app.update(Msg::Key(key));
         assert_eq!(app.chats[0].auto_scroll(), expected_auto_scroll);
     }
 
@@ -2195,7 +2173,7 @@ mod tests {
         app.queue.push_back(queued_msg("second"));
         app.queue_focus = initial_focus;
 
-        app.update(Msg::Key(ctrl('q')));
+        app.update(Msg::Key(kb::POP_QUEUE.to_key_event()));
         assert_eq!(app.queue.len(), 1);
         match &app.queue[0] {
             QueuedItem::Message(input) => assert_eq!(input.message, "second"),
@@ -2350,21 +2328,21 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_h_toggles_help_modal() {
+    fn ctrl_slash_toggles_help_modal() {
         let mut app = test_app();
         assert!(!app.help_modal.is_open());
 
-        app.update(Msg::Key(ctrl('h')));
+        app.update(Msg::Key(kb::HELP.to_key_event()));
         assert!(app.help_modal.is_open());
 
-        app.update(Msg::Key(ctrl('h')));
+        app.update(Msg::Key(kb::HELP.to_key_event()));
         assert!(!app.help_modal.is_open());
     }
 
     #[test]
     fn help_modal_esc_closes() {
         let mut app = test_app();
-        app.update(Msg::Key(ctrl('h')));
+        app.update(Msg::Key(kb::HELP.to_key_event()));
         assert!(app.help_modal.is_open());
 
         app.update(Msg::Key(key(KeyCode::Esc)));
@@ -2374,7 +2352,7 @@ mod tests {
     #[test]
     fn help_modal_consumes_keys() {
         let mut app = test_app();
-        app.update(Msg::Key(ctrl('h')));
+        app.update(Msg::Key(kb::HELP.to_key_event()));
 
         app.update(Msg::Key(key(KeyCode::Char('h'))));
         app.update(Msg::Key(key(KeyCode::Char('i'))));
@@ -2384,47 +2362,50 @@ mod tests {
     #[test]
     fn help_modal_closed_on_reset() {
         let mut app = test_app();
-        app.update(Msg::Key(ctrl('h')));
+        app.update(Msg::Key(kb::HELP.to_key_event()));
         assert!(app.help_modal.is_open());
 
         app.reset_session();
         assert!(!app.help_modal.is_open());
     }
 
-    #[test]
-    fn active_contexts_idle() {
-        let app = test_app();
-        let contexts = app.active_keybind_contexts();
-        assert!(contexts.contains(&KeybindContext::General));
-        assert!(contexts.contains(&KeybindContext::Editing));
-        assert!(!contexts.contains(&KeybindContext::Streaming));
-    }
-
-    #[test]
-    fn active_contexts_streaming() {
+    #[test_case(
+        |_: &mut App| {},
+        &[KeybindContext::General, KeybindContext::Editing],
+        &[KeybindContext::Streaming]
+        ; "idle"
+    )]
+    #[test_case(
+        |app: &mut App| { app.status = Status::Streaming; },
+        &[KeybindContext::General, KeybindContext::Streaming, KeybindContext::Editing],
+        &[]
+        ; "streaming"
+    )]
+    #[test_case(
+        |app: &mut App| { app.status = Status::Streaming; app.run_id = 1; app.queue.push_back(queued_msg("q")); app.queue_focus = Some(0); },
+        &[KeybindContext::QueueFocus],
+        &[KeybindContext::Editing]
+        ; "queue_focus"
+    )]
+    #[test_case(
+        |app: &mut App| { open_chats_picker(app); },
+        &[KeybindContext::ChatPicker],
+        &[KeybindContext::Editing]
+        ; "chat_picker"
+    )]
+    fn active_contexts(
+        setup: fn(&mut App),
+        expected: &[KeybindContext],
+        absent: &[KeybindContext],
+    ) {
         let mut app = test_app();
-        app.status = Status::Streaming;
+        setup(&mut app);
         let contexts = app.active_keybind_contexts();
-        assert!(contexts.contains(&KeybindContext::General));
-        assert!(contexts.contains(&KeybindContext::Streaming));
-        assert!(contexts.contains(&KeybindContext::Editing));
-    }
-
-    #[test]
-    fn active_contexts_queue_focus() {
-        let mut app = app_with_queued_message();
-        app.queue_focus = Some(0);
-        let contexts = app.active_keybind_contexts();
-        assert!(contexts.contains(&KeybindContext::QueueFocus));
-        assert!(!contexts.contains(&KeybindContext::Editing));
-    }
-
-    #[test]
-    fn active_contexts_chat_picker() {
-        let mut app = test_app();
-        open_chats_picker(&mut app);
-        let contexts = app.active_keybind_contexts();
-        assert!(contexts.contains(&KeybindContext::ChatPicker));
-        assert!(!contexts.contains(&KeybindContext::Editing));
+        for ctx in expected {
+            assert!(contexts.contains(ctx), "{ctx:?} should be present");
+        }
+        for ctx in absent {
+            assert!(!contexts.contains(ctx), "{ctx:?} should be absent");
+        }
     }
 }

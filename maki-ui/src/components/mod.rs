@@ -197,16 +197,6 @@ pub(crate) fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent
 }
 
 #[cfg(test)]
-pub(crate) fn ctrl(c: char) -> crossterm::event::KeyEvent {
-    crossterm::event::KeyEvent {
-        code: crossterm::event::KeyCode::Char(c),
-        modifiers: crossterm::event::KeyModifiers::CONTROL,
-        kind: crossterm::event::KeyEventKind::Press,
-        state: crossterm::event::KeyEventState::NONE,
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use test_case::test_case;

@@ -1,3 +1,4 @@
+use crate::components::keybindings::key;
 use crate::markdown::text_to_lines;
 use crate::text_buffer::TextBuffer;
 use crate::theme;
@@ -142,10 +143,10 @@ impl QuestionForm {
             return self.handle_custom_key(key);
         }
 
+        if key::QUIT.matches(key) {
+            return QuestionFormAction::Dismiss;
+        }
         if super::is_ctrl(&key) {
-            if key.code == KeyCode::Char('c') {
-                return QuestionFormAction::Dismiss;
-            }
             return QuestionFormAction::Consumed;
         }
 
@@ -181,11 +182,11 @@ impl QuestionForm {
     }
 
     fn handle_custom_key(&mut self, key: KeyEvent) -> QuestionFormAction {
+        if key::QUIT.matches(key) {
+            return QuestionFormAction::Dismiss;
+        }
         if super::is_ctrl(&key) {
-            if key.code == KeyCode::Char('c') {
-                return QuestionFormAction::Dismiss;
-            }
-            if key.code == KeyCode::Char('w') {
+            if key::DELETE_WORD.matches(key) {
                 self.buffer.remove_word_before_cursor();
             }
             return QuestionFormAction::Consumed;
@@ -538,7 +539,8 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
-    use crate::components::{ctrl, key};
+    use crate::components::key;
+    use crate::components::keybindings::key as kb;
 
     fn assert_submit(action: QuestionFormAction) -> Vec<Vec<String>> {
         match action {
@@ -648,7 +650,7 @@ mod tests {
     }
 
     #[test_case(key(KeyCode::Esc) ; "esc_in_normal_mode")]
-    #[test_case(ctrl('c') ; "ctrl_c_in_normal_mode")]
+    #[test_case(kb::QUIT.to_key_event() ; "ctrl_c_in_normal_mode")]
     fn dismiss_from_normal_mode(dismiss_key: KeyEvent) {
         let mut form = QuestionForm::new();
         form.open(single_q_with_options());
@@ -662,7 +664,7 @@ mod tests {
         form.open(single_q_with_options());
         enter_custom_mode(&mut form);
 
-        let action = form.handle_key(ctrl('c'));
+        let action = form.handle_key(kb::QUIT.to_key_event());
         assert!(matches!(action, QuestionFormAction::Dismiss));
     }
 

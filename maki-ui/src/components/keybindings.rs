@@ -1,6 +1,50 @@
-/// Central keybinding registry.
-///
-/// Keep in sync with: `App::handle_key`, `App::active_keybind_contexts`.
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bind {
+    pub code: KeyCode,
+    pub modifiers: KeyModifiers,
+}
+
+impl Bind {
+    pub const fn ctrl(c: char) -> Self {
+        Self {
+            code: KeyCode::Char(c),
+            modifiers: KeyModifiers::CONTROL,
+        }
+    }
+
+    pub fn matches(&self, key: KeyEvent) -> bool {
+        key.code == self.code && key.modifiers.contains(self.modifiers)
+    }
+
+    #[cfg(test)]
+    pub const fn to_key_event(self) -> KeyEvent {
+        KeyEvent {
+            code: self.code,
+            modifiers: self.modifiers,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+}
+
+pub mod key {
+    use super::Bind;
+
+    pub const QUIT: Bind = Bind::ctrl('c');
+    pub const HELP: Bind = Bind::ctrl('h');
+    pub const PREV_CHAT: Bind = Bind::ctrl('p');
+    pub const NEXT_CHAT: Bind = Bind::ctrl('n');
+    pub const SCROLL_HALF_UP: Bind = Bind::ctrl('u');
+    pub const SCROLL_HALF_DOWN: Bind = Bind::ctrl('d');
+    pub const SCROLL_LINE_UP: Bind = Bind::ctrl('y');
+    pub const SCROLL_LINE_DOWN: Bind = Bind::ctrl('e');
+    pub const SCROLL_TOP: Bind = Bind::ctrl('g');
+    pub const SCROLL_BOTTOM: Bind = Bind::ctrl('b');
+    pub const POP_QUEUE: Bind = Bind::ctrl('q');
+    pub const DELETE_WORD: Bind = Bind::ctrl('w');
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeybindContext {
@@ -33,8 +77,7 @@ pub struct Keybind {
     pub context: KeybindContext,
 }
 
-pub const KEYBINDS: &[Keybind] = &[
-    // General
+const KEYBINDS: &[Keybind] = &[
     Keybind {
         key: "Ctrl+C",
         description: "Quit / clear input",
@@ -50,7 +93,6 @@ pub const KEYBINDS: &[Keybind] = &[
         description: "Previous/next chat",
         context: KeybindContext::General,
     },
-    // Editing
     Keybind {
         key: "Enter",
         description: "Submit prompt",
@@ -101,7 +143,6 @@ pub const KEYBINDS: &[Keybind] = &[
         description: "Pop front of queue",
         context: KeybindContext::Editing,
     },
-    // Streaming
     Keybind {
         key: "↑/↓",
         description: "Scroll messages",
@@ -112,7 +153,6 @@ pub const KEYBINDS: &[Keybind] = &[
         description: "Cancel agent",
         context: KeybindContext::Streaming,
     },
-    // QuestionForm
     Keybind {
         key: "↑/↓",
         description: "Select option",
@@ -128,7 +168,6 @@ pub const KEYBINDS: &[Keybind] = &[
         description: "Dismiss",
         context: KeybindContext::QuestionForm,
     },
-    // ChatPicker
     Keybind {
         key: "↑/↓",
         description: "Navigate chats",
@@ -149,7 +188,6 @@ pub const KEYBINDS: &[Keybind] = &[
         description: "Filter chats",
         context: KeybindContext::ChatPicker,
     },
-    // QueueFocus
     Keybind {
         key: "↑/↓",
         description: "Navigate queue",
@@ -165,7 +203,6 @@ pub const KEYBINDS: &[Keybind] = &[
         description: "Exit queue focus",
         context: KeybindContext::QueueFocus,
     },
-    // CommandPalette
     Keybind {
         key: "↑/↓",
         description: "Navigate commands",
