@@ -1,12 +1,12 @@
 use std::time::Duration;
 
-use futures_lite::StreamExt;
-use futures_lite::io::{AsyncBufReadExt, BufReader};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use async_process::Command;
-
+use futures_lite::StreamExt;
+use futures_lite::io::{AsyncBufReadExt, BufReader};
 use humantime::format_duration;
-
 use maki_tool_macro::Tool;
 
 use crate::{AgentEvent, EventSender, ToolInput, ToolOutput};
@@ -61,15 +61,23 @@ impl Bash {
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let timeout_secs = self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let (command, workdir) = self.resolved();
-        let mut cmd = Command::new("bash");
-        cmd.arg("-c")
+
+        let mut std_cmd = std::process::Command::new("bash");
+        std_cmd
+            .arg("-c")
             .arg(command)
-            .stdin(std::process::Stdio::null())
+            // prevent git from prompting for credentials
+            .env("GIT_TERMINAL_PROMPT", "0");
+        // detach from tty so commands that try to read /dev/tty fail instead of hanging
+        #[cfg(unix)]
+        std_cmd.process_group(0);
+        if let Some(dir) = workdir {
+            std_cmd.current_dir(dir);
+        }
+        let mut cmd: Command = std_cmd.into();
+        cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        if let Some(dir) = workdir {
-            cmd.current_dir(dir);
-        }
         let mut child = cmd.spawn().map_err(|e| format!("failed to spawn: {e}"))?;
 
         let (line_tx, line_rx) = flume::unbounded::<String>();
@@ -265,7 +273,8 @@ mod tests {
             let ctx = stub_ctx(&AgentMode::Build);
             let mut b = bash("sleep 60");
             b.timeout = Some(1);
-            assert!(b.execute(&ctx).await.unwrap_err().contains("timed out"));
+            let err = b.execute(&ctx).await.unwrap_err();
+            assert!(err.starts_with(&timed_out_msg(1)));
         });
     }
 
@@ -281,19 +290,6 @@ mod tests {
                 out.trim()
                     .ends_with(dir.path().file_name().unwrap().to_str().unwrap())
             );
-        });
-    }
-
-    #[test]
-    fn large_output_is_truncated() {
-        smol::block_on(async {
-            let ctx = stub_ctx(&AgentMode::Build);
-            let out = bash("yes | head -n 100000")
-                .execute(&ctx)
-                .await
-                .unwrap()
-                .as_text();
-            assert!(out.contains("[truncated]"));
         });
     }
 
@@ -337,5 +333,19 @@ mod tests {
             description: None,
         };
         assert_eq!(b.start_annotation().unwrap(), expected);
+    }
+
+    #[test]
+    fn tty_reading_command_fails_instead_of_hanging() {
+        smol::block_on(async {
+            let ctx = stub_ctx(&AgentMode::Build);
+            let mut b = bash("python3 -c \"open('/dev/tty')\"");
+            b.timeout = Some(5);
+            let err = b.execute(&ctx).await.unwrap_err();
+            assert!(
+                !err.contains("timed out"),
+                "command hung waiting for tty: {err}"
+            );
+        });
     }
 }

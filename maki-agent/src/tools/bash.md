@@ -22,3 +22,5 @@ Commands run in {cwd} by default.
   - If dependent, chain with '&&' in a single call.
 - Provide a short `description` (3-5 words) of what the command does.
 - Output truncated beyond 2000 lines or 50KB.
+- Commands requiring interactive input (sudo, ssh password prompts) will fail immediately.
+  Use non-interactive alternatives (e.g. `sudo -n`, `ssh -o BatchMode=yes`, `-y` flags).
