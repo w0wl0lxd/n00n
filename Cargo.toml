@@ -40,16 +40,16 @@ maki-providers = { path = "maki-providers" }
 maki-tool-macro = { path = "maki-tool-macro" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", default-features = false, features = ["v4"] }
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = "0.29"
-color-eyre = "0.6"
+color-eyre = { version = "0.6", default-features = false, features = ["track-caller"] }
 thiserror = "2"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "json"] }
 tracing-appender = "0.2"
 clap = { version = "4", features = ["derive"] }
-sha2 = "0.10"
+sha2 = { version = "0.10", default-features = false }
 base64 = "0.22"
 getrandom = "0.3"
 test-case = "3"
@@ -57,14 +57,14 @@ ignore = "0.4"
 strum = { version = "0.27", features = ["derive"] }
 htmd = "0.5"
 tempfile = "3"
-regex = "1"
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl"] }
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
 unicode-width = "0.2"
 similar = { version = "2", features = ["inline"] }
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 arboard = { version = "3", default-features = false }
-flume = "0.11"
+flume = { version = "0.11", default-features = false, features = ["async"] }
 humantime = "2"
 smol = "2"
 async-process = "2"
