@@ -26,6 +26,7 @@ async-lock = { workspace = true }
 async-io = { workspace = true }
 futures-lite = { workspace = true }
 isahc = { workspace = true }
+libc = { workspace = true }
 
 
 [dev-dependencies]

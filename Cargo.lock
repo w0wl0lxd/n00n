@@ -1763,6 +1763,7 @@ dependencies = [
  "ignore",
  "isahc",
  "jiff",
+ "libc",
  "maki-interpreter",
  "maki-providers",
  "maki-tool-macro",

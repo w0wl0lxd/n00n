@@ -73,3 +73,4 @@ async-io = "2"
 event-listener = "5"
 futures-lite = "2"
 isahc = { version = "1.7", default-features = false, features = ["text-decoding"] }
+libc = "0.2"

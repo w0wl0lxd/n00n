@@ -68,9 +68,16 @@ impl Bash {
             .arg(command)
             // prevent git from prompting for credentials
             .env("GIT_TERMINAL_PROMPT", "0");
+
         // detach from tty so commands that try to read /dev/tty fail instead of hanging
         #[cfg(unix)]
-        std_cmd.process_group(0);
+        unsafe {
+            std_cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+
         if let Some(dir) = workdir {
             std_cmd.current_dir(dir);
         }
