@@ -39,6 +39,7 @@ impl Chat {
         match event {
             AgentEvent::ThinkingDelta { text } => self.messages_panel.thinking_delta(&text),
             AgentEvent::TextDelta { text } => self.messages_panel.text_delta(&text),
+            AgentEvent::ToolPending { id, name } => self.messages_panel.tool_pending(id, &name),
             AgentEvent::ToolStart(e) => self.messages_panel.tool_start(e),
             AgentEvent::ToolOutput { id, content } => {
                 self.messages_panel.tool_output(&id, &content)

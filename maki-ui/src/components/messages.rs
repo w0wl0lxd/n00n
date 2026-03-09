@@ -13,7 +13,7 @@ use crate::theme;
 
 use std::time::Instant;
 
-use maki_agent::tools::WEBFETCH_TOOL_NAME;
+use maki_agent::tools::{ToolCall, WEBFETCH_TOOL_NAME};
 use maki_agent::{
     BatchToolEntry, BatchToolStatus, NO_FILES_FOUND, ToolDoneEvent, ToolOutput, ToolStartEvent,
 };
@@ -197,7 +197,38 @@ impl MessagesPanel {
         self.streaming_text.push(text);
     }
 
+    pub fn tool_pending(&mut self, id: String, name: &str) {
+        let Some(name) = ToolCall::name_static(name) else {
+            return;
+        };
+        self.flush();
+        let role = DisplayRole::Tool {
+            id,
+            status: ToolStatus::InProgress,
+            name,
+        };
+        let mut msg = DisplayMessage::new(role, String::new());
+        msg.timestamp = Some(format_timestamp_now());
+        self.messages.push(msg);
+        self.in_progress_count += 1;
+    }
+
     pub fn tool_start(&mut self, event: ToolStartEvent) {
+        if let Some(msg) = self
+            .messages
+            .iter_mut()
+            .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == event.id))
+        {
+            if let DisplayRole::Tool { ref mut name, .. } = msg.role {
+                *name = event.tool;
+            }
+            msg.text = event.summary;
+            msg.tool_input = event.input;
+            msg.tool_output = event.output;
+            msg.annotation = event.annotation;
+            self.rebuild_tool_segment(&event.id);
+            return;
+        }
         self.flush();
         self.messages.push(DisplayMessage {
             role: DisplayRole::Tool {
@@ -1691,5 +1722,40 @@ mod tests {
         assert_eq!(parse_batch_inner_id("a__b__1"), Some(("a__b", 1)));
         assert_eq!(parse_batch_inner_id("no_separator"), None);
         assert_eq!(parse_batch_inner_id("b1__notnum"), None);
+    }
+
+    #[test]
+    fn tool_pending_shows_in_progress() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_pending("t1".into(), "bash");
+        assert_eq!(panel.messages.len(), 1);
+        assert_eq!(msg_status(&panel, "t1"), ToolStatus::InProgress);
+        assert_eq!(panel.in_progress_count, 1);
+        assert!(panel.messages[0].text.is_empty());
+    }
+
+    #[test]
+    fn tool_pending_unknown_name_ignored() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_pending("t1".into(), "nonexistent_tool");
+        assert_eq!(panel.messages.len(), 0);
+        assert_eq!(panel.in_progress_count, 0);
+    }
+
+    #[test]
+    fn tool_start_upgrades_pending_in_place() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_pending("t1".into(), "bash");
+        assert_eq!(panel.messages.len(), 1);
+        assert_eq!(panel.in_progress_count, 1);
+
+        let mut event = start("t1", BASH_TOOL_NAME);
+        event.annotation = Some("note".into());
+        panel.tool_start(event);
+
+        assert_eq!(panel.messages.len(), 1);
+        assert_eq!(panel.in_progress_count, 1);
+        assert_eq!(panel.messages[0].text, "t1");
+        assert_eq!(panel.messages[0].annotation.as_deref(), Some("note"));
     }
 }

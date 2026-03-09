@@ -486,6 +486,7 @@ async fn parse_sse(
                     });
                 }
                 let acc = &mut tool_accumulators[tc.index];
+                let was_unnamed = acc.name.is_empty();
                 if let Some(id) = tc.id {
                     acc.id = id;
                 }
@@ -496,6 +497,14 @@ async fn parse_sse(
                     if let Some(args) = func.arguments {
                         acc.arguments.push_str(&args);
                     }
+                }
+                if was_unnamed && !acc.name.is_empty() {
+                    event_tx
+                        .send_async(ProviderEvent::ToolUseStart {
+                            id: acc.id.clone(),
+                            name: acc.name.clone(),
+                        })
+                        .await?;
                 }
             }
         }
@@ -606,6 +615,7 @@ data: [DONE]\n";
                 match e {
                     ProviderEvent::ThinkingDelta { text } => thinking.push(text),
                     ProviderEvent::TextDelta { text } => text_deltas.push(text),
+                    ProviderEvent::ToolUseStart { .. } => {}
                 }
             }
             assert_eq!(thinking, vec!["Let me think", "..."]);
@@ -692,7 +702,7 @@ data: {\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}],\"usage\":{
 \n\
 data: [DONE]\n";
 
-            let (tx, _rx) = flume::unbounded();
+            let (tx, rx) = flume::unbounded();
             let resp = parse_sse(mock_response(sse.as_bytes()), &tx).await.unwrap();
 
             let tools: Vec<_> = resp.message.tool_uses().collect();
@@ -704,6 +714,18 @@ data: [DONE]\n";
             assert_eq!(tools[1].1, "read");
             assert_eq!(tools[1].2["path"], "/tmp");
             assert_eq!(resp.stop_reason, Some(StopReason::ToolUse));
+
+            let starts: Vec<_> = rx
+                .drain()
+                .filter_map(|e| match e {
+                    ProviderEvent::ToolUseStart { id, name } => Some((id, name)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                starts,
+                vec![("c1".into(), "bash".into()), ("c2".into(), "read".into()),]
+            );
         })
     }
 

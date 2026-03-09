@@ -367,6 +367,10 @@ pub enum AgentEvent {
     ThinkingDelta {
         text: String,
     },
+    ToolPending {
+        id: String,
+        name: String,
+    },
     ToolStart(ToolStartEvent),
     ToolOutput {
         id: String,

@@ -311,6 +311,13 @@ macro_rules! register_tools {
                 }
             }
 
+            pub fn name_static(name: &str) -> Option<&'static str> {
+                match name {
+                    $(<$inner>::NAME => Some(<$inner>::NAME),)+
+                    _ => None,
+                }
+            }
+
             pub fn start_summary(&self) -> String {
                 dispatch!(self, |t| t.start_summary())
             }

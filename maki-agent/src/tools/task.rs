@@ -94,6 +94,7 @@ impl Task {
                     AgentEvent::Done { .. }
                         | AgentEvent::Error { .. }
                         | AgentEvent::ToolOutput { .. }
+                        | AgentEvent::ToolPending { .. }
                 ) {
                     continue;
                 }

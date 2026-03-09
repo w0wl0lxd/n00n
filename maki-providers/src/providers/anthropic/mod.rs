@@ -534,6 +534,12 @@ async fn parse_sse(
                     SseContentBlock::Thinking => {}
                     SseContentBlock::ToolUse { id, name } => {
                         current_tool_json.clear();
+                        event_tx
+                            .send_async(ProviderEvent::ToolUseStart {
+                                id: id.clone(),
+                                name: name.clone(),
+                            })
+                            .await?;
                         content_blocks.push(ContentBlock::ToolUse {
                             id,
                             name,
@@ -705,7 +711,7 @@ data: {\"type\":\"content_block_stop\"}\n\
 event: message_delta\n\
 data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
 
-            let (tx, _rx) = flume::unbounded();
+            let (tx, rx) = flume::unbounded();
             let resp = parse_sse(mock_response(sse_data.as_bytes()), &tx)
                 .await
                 .unwrap();
@@ -714,6 +720,15 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].0, "tu_1");
             assert_eq!(tools[0].1, "bash");
+
+            let starts: Vec<_> = rx
+                .drain()
+                .filter_map(|e| match e {
+                    ProviderEvent::ToolUseStart { id, name } => Some((id, name)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(starts, vec![("tu_1".to_string(), "bash".to_string())]);
         })
     }
 

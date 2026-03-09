@@ -63,6 +63,7 @@ impl Message {
 pub enum ProviderEvent {
     TextDelta { text: String },
     ThinkingDelta { text: String },
+    ToolUseStart { id: String, name: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Display, IntoStaticStr)]
