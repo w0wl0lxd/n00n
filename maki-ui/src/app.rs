@@ -818,6 +818,10 @@ impl App {
                 self.status = Status::Streaming;
                 vec![Action::Compact]
             }
+            "/help" => {
+                self.help_modal.toggle();
+                vec![]
+            }
             "/new" => self.reset_session(),
             "/queue" => {
                 self.focus_queue();
@@ -2374,6 +2378,18 @@ mod tests {
             app.chats[1].model_id.as_deref(),
             Some("anthropic/claude-sonnet-4-20250514")
         );
+    }
+
+    #[test]
+    fn slash_help_toggles_help_modal() {
+        let mut app = test_app();
+        assert!(!app.help_modal.is_open());
+
+        app.execute_command("/help");
+        assert!(app.help_modal.is_open());
+
+        app.execute_command("/help");
+        assert!(!app.help_modal.is_open());
     }
 
     #[test]

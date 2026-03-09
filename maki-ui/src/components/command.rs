@@ -33,6 +33,10 @@ const COMMANDS: &[Command] = &[
         description: "Start a new session",
     },
     Command {
+        name: "/help",
+        description: "Show keybindings",
+    },
+    Command {
         name: "/queue",
         description: "Remove items from queue",
     },
