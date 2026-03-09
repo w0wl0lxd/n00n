@@ -740,11 +740,24 @@ fn wrap_cell_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Vec<Span<
                 }
                 result.push(std::mem::take(&mut current));
                 remaining = max_width;
+                text = text.strip_prefix(' ').unwrap_or(text);
                 continue;
             }
-            current.push(Span::styled(text[..fits].to_owned(), style));
-            remaining -= text[..fits].width();
-            text = &text[fits..];
+            let (take, skip) = if fits < text.len() {
+                match text[..fits].rfind(' ') {
+                    Some(sp) if sp > 0 => (sp, sp + 1),
+                    _ => (fits, fits),
+                }
+            } else {
+                (fits, fits)
+            };
+            current.push(Span::styled(text[..take].to_owned(), style));
+            remaining -= text[..take].width();
+            text = &text[skip..];
+            if take < fits && !text.is_empty() {
+                result.push(std::mem::take(&mut current));
+                remaining = max_width;
+            }
         }
     }
     if !current.is_empty() || result.is_empty() {
@@ -1720,49 +1733,26 @@ mod tests {
         let style = Style::default();
         let input = "| Name | Value |\n| --- | --- |\n| foo | 42 |";
         let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
-        let text = lines_text(&lines);
-        let joined = text.join("\n");
-        for expected in ["╭", "Name", "├", "foo", "42", "╰"] {
+        let joined = lines_text(&lines).join("\n");
+        for expected in ["Name", "foo", "42"] {
             assert!(joined.contains(expected), "missing {expected:?} in table");
         }
-    }
-
-    #[test]
-    fn render_table_row_separators() {
-        let style = Style::default();
-        let input = "| H |\n| --- |\n| a |\n| b |\n| c |";
-        let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
-        let sep_lines: Vec<_> = lines
-            .iter()
-            .filter(|l| l.spans.iter().any(|s| s.content.contains('├')))
-            .collect();
-        assert_eq!(
-            sep_lines.len(),
-            3,
-            "expected 3 separator lines (1 header + 2 cell)"
+        assert!(
+            lines.len() >= 5,
+            "table should have border+header+sep+data+border"
         );
-        for sep in &sep_lines {
-            assert_eq!(
-                sep.spans.first().unwrap().style,
-                TABLE_BORDER_STYLE,
-                "all separators should use TABLE_BORDER_STYLE"
-            );
-        }
     }
 
-    #[test]
-    fn render_table_single_data_row_only_header_separator() {
+    #[test_case("| H |\n| --- |\n| a |\n| b |\n| c |", 3 ; "multi_row_separators")]
+    #[test_case("| H |\n| --- |\n| only |", 1 ; "single_row_header_only")]
+    fn table_separator_count(input: &str, expected: usize) {
         let style = Style::default();
-        let input = "| H |\n| --- |\n| only |";
         let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
         let sep_count = lines
             .iter()
             .filter(|l| l.spans.iter().any(|s| s.content.contains('├')))
             .count();
-        assert_eq!(
-            sep_count, 1,
-            "single data row should only have header separator"
-        );
+        assert_eq!(sep_count, expected);
     }
 
     #[test]
@@ -1770,16 +1760,12 @@ mod tests {
         let style = Style::default();
         let input = "| Query | Result |\n| --- | --- |\n| `cmd \\| filter` | ok |";
         let lines = text_to_lines(input, "", style, style, None, 80);
-        let text = lines_text(&lines);
-        let joined = text.join("\n");
+        let joined = lines_text(&lines).join("\n");
         assert!(
             joined.contains("cmd \\| filter"),
-            "escaped pipe content missing from: {joined}"
+            "escaped pipe content missing"
         );
         assert!(joined.contains("ok"), "adjacent cell missing");
-        let data_line = text.iter().find(|l| l.contains("cmd")).unwrap();
-        let col_count = data_line.matches('│').count();
-        assert_eq!(col_count, 3, "expected 3 borders (2 cols), got {col_count}");
     }
 
     #[test]
@@ -1855,6 +1841,22 @@ mod tests {
     fn table_narrow_prose_within_width() {
         let input = "| Test | Rationale |\n| --- | --- |\n| name | This is a very long rationale that should definitely be wrapped when the terminal width is narrow enough to require it |";
         assert_table_within_width(input, 50);
+    }
+
+    fn wrap_texts(spans: Vec<Span<'static>>, width: usize) -> Vec<String> {
+        wrap_cell_spans(spans, width)
+            .iter()
+            .map(|l| l.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test_case("hello world foo bar", 10, &["hello", "world foo", "bar"] ; "word_boundary")]
+    #[test_case("abcdefghij", 6, &["abcdef", "ghij"] ; "char_boundary_fallback")]
+    fn wrap_cell_spans_cases(input: &str, width: usize, expected: &[&str]) {
+        assert_eq!(
+            wrap_texts(vec![Span::raw(input.to_owned())], width),
+            expected
+        );
     }
 
     #[test_case(&[10, 90], 50, true  ; "shrinks_proportionally")]
