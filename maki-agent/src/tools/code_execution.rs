@@ -41,45 +41,55 @@ impl CodeInterpreter {
         let event_tx = ctx.event_tx.clone();
         let mode = ctx.mode.clone();
 
-        smol::unblock(move || {
-            let tools = build_tool_fns(&event_tx, &mode);
-            let code = format!("{PREAMBLE}{code}");
+        // NOTE: cancel races the smol::unblock future. When cancel wins, the
+        // blocking thread pool task keeps running until the Python code finishes.
+        // There is no safe way to kill a blocking thread.
+        futures_lite::future::race(
+            smol::unblock(move || {
+                let tools = build_tool_fns(&event_tx, &mode);
+                let code = format!("{PREAMBLE}{code}");
 
-            let result = if let Some(ref id) = tool_use_id {
-                let mut last_len = 0usize;
-                let mut last_flush = Instant::now();
-                runner::run_streaming(&code, &tools, &mut |stdout| {
-                    if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && stdout.len() > last_len {
-                        event_tx.try_send(AgentEvent::ToolOutput {
-                            id: id.to_string(),
-                            content: stdout.to_owned(),
-                        });
-                        last_len = stdout.len();
-                        last_flush = Instant::now();
-                    }
-                })
-            } else {
-                runner::run(&code, &tools)
-            }
-            .map_err(|e| e.to_string())?;
+                let result = if let Some(ref id) = tool_use_id {
+                    let mut last_len = 0usize;
+                    let mut last_flush = Instant::now();
+                    runner::run_streaming(&code, &tools, &mut |stdout| {
+                        if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && stdout.len() > last_len
+                        {
+                            event_tx.try_send(AgentEvent::ToolOutput {
+                                id: id.to_string(),
+                                content: stdout.to_owned(),
+                            });
+                            last_len = stdout.len();
+                            last_flush = Instant::now();
+                        }
+                    })
+                } else {
+                    runner::run(&code, &tools)
+                }
+                .map_err(|e| e.to_string())?;
 
-            let mut output = String::new();
-            if !result.stdout.is_empty() {
-                output.push_str(result.stdout.trim_end());
-                output.push('\n');
-            }
-            if let Some(ref val) = result.output {
-                if !output.is_empty() {
+                let mut output = String::new();
+                if !result.stdout.is_empty() {
+                    output.push_str(result.stdout.trim_end());
                     output.push('\n');
                 }
-                let _ = write!(output, "return: {val}");
-            }
-            if output.is_empty() {
-                output.push_str("(no output)");
-            }
+                if let Some(ref val) = result.output {
+                    if !output.is_empty() {
+                        output.push('\n');
+                    }
+                    let _ = write!(output, "return: {val}");
+                }
+                if output.is_empty() {
+                    output.push_str("(no output)");
+                }
 
-            Ok(ToolOutput::Plain(truncate_output(output)))
-        })
+                Ok(ToolOutput::Plain(truncate_output(output)))
+            }),
+            async {
+                ctx.cancel.cancelled().await;
+                Err("cancelled".into())
+            },
+        )
         .await
     }
 
@@ -211,5 +221,20 @@ mod tests {
             let output = ci.execute(&ctx).await.unwrap().as_text();
             assert!(output.contains("123") && output.contains("456"));
         })
+    }
+
+    #[test]
+    fn cancel_returns_error() {
+        smol::block_on(async {
+            let (trigger, cancel) = crate::cancel::CancelToken::new();
+            let mut ctx = stub_ctx(&AgentMode::Build);
+            ctx.cancel = cancel;
+            let ci = CodeInterpreter {
+                code: "1 + 1".into(),
+            };
+            trigger.cancel();
+            let result = ci.execute(&ctx).await;
+            assert!(result.is_err());
+        });
     }
 }

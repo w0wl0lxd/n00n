@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use tracing::{debug, error, info, warn};
 
+use crate::cancel::CancelToken;
 use crate::task_set::TaskSet;
 
 use serde_json::Value;
@@ -302,6 +303,7 @@ async fn stream_with_retry(
     system: &str,
     tools: &Value,
     event_tx: &EventSender,
+    cancel: &CancelToken,
 ) -> Result<StreamResponse, AgentError> {
     let mut retry = RetryState::new();
     loop {
@@ -310,13 +312,19 @@ async fn stream_with_retry(
             let event_tx = event_tx.clone();
             async move { forward_provider_events(prx, &event_tx).await }
         });
-        let result = provider
-            .stream_message(model, messages, system, tools, &ptx)
-            .await;
+        let result = futures_lite::future::race(
+            provider.stream_message(model, messages, system, tools, &ptx),
+            async {
+                cancel.cancelled().await;
+                Err(AgentError::Cancelled)
+            },
+        )
+        .await;
         drop(ptx);
         let _ = forwarder.await;
         match result {
             Ok(r) => return Ok(r),
+            Err(AgentError::Cancelled) => return Err(AgentError::Cancelled),
             Err(e) if e.is_retryable() => {
                 let (attempt, delay) = retry.next_delay();
                 let delay_ms = delay.as_millis() as u64;
@@ -326,7 +334,16 @@ async fn stream_with_retry(
                     message: e.retry_message(),
                     delay_ms,
                 })?;
-                async_io::Timer::after(delay).await;
+                futures_lite::future::race(
+                    async {
+                        async_io::Timer::after(delay).await;
+                    },
+                    cancel.cancelled(),
+                )
+                .await;
+                if cancel.is_cancelled() {
+                    return Err(AgentError::Cancelled);
+                }
             }
             Err(e) => return Err(e),
         }
@@ -386,6 +403,7 @@ pub struct Agent {
     mode: AgentMode,
     user_response_rx: Option<Arc<async_lock::Mutex<flume::Receiver<String>>>>,
     cmd_rx: Option<flume::Receiver<ExtractedCommand>>,
+    cancel: CancelToken,
     total_usage: TokenUsage,
     num_turns: u32,
     recent_calls: RecentCalls,
@@ -414,6 +432,7 @@ impl Agent {
             mode: AgentMode::default(),
             user_response_rx: None,
             cmd_rx: None,
+            cancel: CancelToken::none(),
             total_usage: TokenUsage::default(),
             num_turns: 0,
             recent_calls: RecentCalls::new(),
@@ -432,6 +451,11 @@ impl Agent {
 
     pub fn with_cmd_rx(mut self, rx: flume::Receiver<ExtractedCommand>) -> Self {
         self.cmd_rx = Some(rx);
+        self
+    }
+
+    pub fn with_cancel(mut self, cancel: CancelToken) -> Self {
+        self.cancel = cancel;
         self
     }
 
@@ -479,6 +503,9 @@ impl Agent {
     }
 
     async fn turn(&mut self) -> Result<TurnOutcome, AgentError> {
+        if self.cancel.is_cancelled() {
+            return Err(AgentError::Cancelled);
+        }
         let response = stream_with_retry(
             &*self.provider,
             &self.model,
@@ -486,6 +513,7 @@ impl Agent {
             &self.system,
             &self.tools,
             &self.event_tx,
+            &self.cancel,
         )
         .await
         .inspect_err(|e| {
@@ -574,6 +602,11 @@ impl Agent {
 
         let ctx = self.tool_context();
         let mut results = execute_tools(&parsed, &ctx).await;
+
+        if self.cancel.is_cancelled() {
+            return Err(AgentError::Cancelled);
+        }
+
         results.extend(errors);
         let tool_msg = tool_results(results);
         self.event_tx.send(AgentEvent::ToolResultsSubmitted {
@@ -593,6 +626,7 @@ impl Agent {
             user_response_rx: self.user_response_rx.clone(),
             skills: Arc::clone(&self.skills),
             loaded_instructions: Arc::clone(&self.loaded_instructions),
+            cancel: self.cancel.clone(),
         }
     }
 
@@ -607,6 +641,7 @@ impl Agent {
             &self.model,
             &mut self.history,
             &self.event_tx,
+            &self.cancel,
         )
         .await?;
         self.history
@@ -644,6 +679,7 @@ async fn compact_history(
     model: &Model,
     history: &mut History,
     event_tx: &EventSender,
+    cancel: &CancelToken,
 ) -> Result<TokenUsage, AgentError> {
     let mut compaction_history: Vec<Message> = history.as_slice().to_vec();
     compaction_history.push(Message::user(crate::prompt::COMPACTION_USER.to_string()));
@@ -656,6 +692,7 @@ async fn compact_history(
         crate::prompt::COMPACTION_SYSTEM,
         &empty_tools,
         event_tx,
+        cancel,
     )
     .await?;
 
@@ -681,7 +718,8 @@ pub async fn compact(
     history: &mut History,
     event_tx: &EventSender,
 ) -> Result<(), AgentError> {
-    let usage = compact_history(provider, model, history, event_tx).await?;
+    let cancel = CancelToken::none();
+    let usage = compact_history(provider, model, history, event_tx, &cancel).await?;
 
     event_tx.send(AgentEvent::Done {
         usage,
@@ -1217,5 +1255,59 @@ mod tests {
 
         assert!(text.contains("project rules"));
         assert!(loaded.contains(&expected_canonical));
+    }
+
+    #[test]
+    fn cancel_token_aborts_during_api_call() {
+        smol::block_on(async {
+            struct SlowProvider;
+            impl Provider for SlowProvider {
+                fn stream_message<'a>(
+                    &'a self,
+                    _: &'a Model,
+                    _: &'a [Message],
+                    _: &'a str,
+                    _: &'a Value,
+                    _: &'a flume::Sender<maki_providers::ProviderEvent>,
+                ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
+                    Box::pin(async {
+                        futures_lite::future::pending::<()>().await;
+                        unreachable!()
+                    })
+                }
+                fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+                    Box::pin(async { unimplemented!() })
+                }
+            }
+
+            let (trigger, cancel) = crate::cancel::CancelToken::new();
+            let model = default_model();
+            let input = AgentInput {
+                message: "hello".into(),
+                mode: AgentMode::Build,
+                pending_plan: None,
+            };
+            let history = History::new(Vec::new());
+            let (raw_tx, _rx) = flume::unbounded();
+            let event_tx = EventSender::new(raw_tx, 0);
+            let tools = serde_json::json!([]);
+            let skills: Arc<[Skill]> = Arc::from([]);
+
+            trigger.cancel();
+
+            let agent = Agent::new(
+                Arc::new(SlowProvider),
+                model,
+                history,
+                "system".into(),
+                event_tx,
+                tools,
+                skills,
+            )
+            .with_cancel(cancel);
+
+            let outcome = agent.run(input).await;
+            assert!(matches!(outcome.result, Err(AgentError::Cancelled)));
+        });
     }
 }

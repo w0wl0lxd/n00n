@@ -100,6 +100,7 @@ impl Task {
         })
         .detach();
 
+        let (child_trigger, child_cancel) = ctx.cancel.child();
         let input = AgentInput {
             message: self.prompt.clone(),
             mode: AgentMode::Build,
@@ -114,8 +115,10 @@ impl Task {
             sub_event_tx,
             tools,
             Arc::clone(&ctx.skills),
-        );
+        )
+        .with_cancel(child_cancel);
         let outcome = agent.run(input).await;
+        drop(child_trigger);
         outcome
             .result
             .map_err(|e| format!("sub-agent error: {e}"))?;

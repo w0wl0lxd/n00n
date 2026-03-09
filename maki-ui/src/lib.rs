@@ -12,7 +12,7 @@ mod text_buffer;
 mod theme;
 
 use std::io::stdout;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use color_eyre::Result;
@@ -26,7 +26,10 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_agent::agent;
 use maki_agent::skill::Skill;
 use maki_agent::template;
-use maki_agent::{Agent, AgentEvent, AgentInput, Envelope, EventSender, ExtractedCommand, History};
+use maki_agent::{
+    Agent, AgentEvent, AgentInput, CancelToken, CancelTrigger, Envelope, EventSender,
+    ExtractedCommand, History,
+};
 use maki_providers::AgentError;
 use maki_providers::Message;
 use maki_providers::Model;
@@ -233,11 +236,19 @@ fn spawn_agent(
             model.family.supports_tool_examples(),
         );
 
+        let cancel_trigger: Arc<Mutex<Option<CancelTrigger>>> = Arc::new(Mutex::new(None));
+        let cancel_trigger_fwd = Arc::clone(&cancel_trigger);
+
         smol::spawn(async move {
             while let Ok(cmd) = cmd_rx.recv_async().await {
                 let extracted = match cmd {
                     AgentCommand::Run(input, run_id) => ExtractedCommand::Interrupt(input, run_id),
-                    AgentCommand::Cancel => ExtractedCommand::Cancel,
+                    AgentCommand::Cancel => {
+                        if let Some(trigger) = cancel_trigger_fwd.lock().unwrap().take() {
+                            trigger.cancel();
+                        }
+                        ExtractedCommand::Cancel
+                    }
                     AgentCommand::Compact(run_id) => ExtractedCommand::Compact(run_id),
                 };
                 if ecmd_tx.try_send(extracted).is_err() {
@@ -268,6 +279,8 @@ fn spawn_agent(
                 ExtractedCommand::Interrupt(input, _) => {
                     let system =
                         agent::build_system_prompt(&vars, &input.mode, &instructions, &tool_names);
+                    let (trigger, cancel) = CancelToken::new();
+                    *cancel_trigger.lock().unwrap() = Some(trigger);
                     let agent = Agent::new(
                         Arc::clone(&provider),
                         model.clone(),
@@ -279,8 +292,10 @@ fn spawn_agent(
                     )
                     .with_loaded_instructions(loaded_instructions.clone())
                     .with_user_response_rx(Arc::clone(&answer_mutex))
-                    .with_cmd_rx(ecmd_rx);
+                    .with_cmd_rx(ecmd_rx)
+                    .with_cancel(cancel);
                     let outcome = agent.run(input).await;
+                    *cancel_trigger.lock().unwrap() = None;
                     history = outcome.history;
                     ecmd_rx = outcome.cmd_rx.expect("cmd_rx was set");
                     if matches!(outcome.result, Err(AgentError::Cancelled)) {

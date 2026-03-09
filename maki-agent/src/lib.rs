@@ -1,6 +1,8 @@
 pub mod agent;
+pub mod cancel;
 pub(crate) mod task_set;
 pub use agent::{Agent, History, RunOutcome};
+pub use cancel::{CancelToken, CancelTrigger};
 pub(crate) mod prompt;
 pub mod skill;
 pub mod template;

@@ -97,14 +97,21 @@ impl Bash {
         enum Event {
             Line(Option<String>),
             Timeout,
+            Cancel,
         }
         loop {
             match futures_lite::future::race(
                 async { Event::Line(line_rx.recv_async().await.ok()) },
-                async {
-                    async_io::Timer::at(deadline).await;
-                    Event::Timeout
-                },
+                futures_lite::future::race(
+                    async {
+                        async_io::Timer::at(deadline).await;
+                        Event::Timeout
+                    },
+                    async {
+                        ctx.cancel.cancelled().await;
+                        Event::Cancel
+                    },
+                ),
             )
             .await
             {
@@ -138,6 +145,11 @@ impl Bash {
                         msg.push_str(&content);
                     }
                     return Err(msg);
+                }
+                Event::Cancel => {
+                    let _ = child.kill();
+                    let _ = child.status().await;
+                    return Err("cancelled".into());
                 }
             }
 
@@ -346,6 +358,19 @@ mod tests {
                 !err.contains("timed out"),
                 "command hung waiting for tty: {err}"
             );
+        });
+    }
+
+    #[test]
+    fn cancel_kills_child() {
+        smol::block_on(async {
+            let (trigger, cancel) = crate::cancel::CancelToken::new();
+            let mut ctx = stub_ctx(&AgentMode::Build);
+            ctx.cancel = cancel;
+            let b = bash("sleep 60");
+            trigger.cancel();
+            let err = b.execute(&ctx).await.unwrap_err();
+            assert!(err.contains("cancelled"));
         });
     }
 }

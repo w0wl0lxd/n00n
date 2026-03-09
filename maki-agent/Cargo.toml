@@ -21,6 +21,7 @@ humantime = { workspace = true }
 smol = { workspace = true }
 async-process = { workspace = true }
 flume = { workspace = true }
+event-listener = { workspace = true }
 async-lock = { workspace = true }
 async-io = { workspace = true }
 futures-lite = { workspace = true }
