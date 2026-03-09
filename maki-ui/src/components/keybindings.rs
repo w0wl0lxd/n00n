@@ -53,6 +53,7 @@ pub enum KeybindContext {
     Streaming,
     QuestionForm,
     ChatPicker,
+    ThemePicker,
     QueueFocus,
     CommandPalette,
 }
@@ -65,6 +66,7 @@ impl KeybindContext {
             Self::Streaming => "While Streaming",
             Self::QuestionForm => "Question Form",
             Self::ChatPicker => "Chat Picker",
+            Self::ThemePicker => "Theme Picker",
             Self::QueueFocus => "Queue Focus",
             Self::CommandPalette => "Command Palette",
         }
@@ -190,6 +192,26 @@ const KEYBINDS: &[Keybind] = &[
     },
     Keybind {
         key: "↑/↓",
+        description: "Navigate themes",
+        context: KeybindContext::ThemePicker,
+    },
+    Keybind {
+        key: "Enter",
+        description: "Select theme",
+        context: KeybindContext::ThemePicker,
+    },
+    Keybind {
+        key: "Esc",
+        description: "Cancel",
+        context: KeybindContext::ThemePicker,
+    },
+    Keybind {
+        key: "Type",
+        description: "Filter themes",
+        context: KeybindContext::ThemePicker,
+    },
+    Keybind {
+        key: "↑/↓",
         description: "Navigate queue",
         context: KeybindContext::QueueFocus,
     },
@@ -255,6 +277,7 @@ mod tests {
             KeybindContext::Streaming,
             KeybindContext::QuestionForm,
             KeybindContext::ChatPicker,
+            KeybindContext::ThemePicker,
             KeybindContext::QueueFocus,
             KeybindContext::CommandPalette,
         ];

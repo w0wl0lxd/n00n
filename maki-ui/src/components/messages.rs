@@ -1,9 +1,9 @@
 use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
 
 use super::tool_display::{
-    ASSISTANT_STYLE, ERROR_STYLE, THINKING_STYLE, ToolLines, USER_STYLE, append_annotation,
-    append_timestamp, build_batch_entry_lines, build_tool_lines, format_timestamp_now,
-    output_limits, tool_output_annotation, truncate_to_header,
+    ToolLines, append_annotation, append_timestamp, assistant_style, build_batch_entry_lines,
+    build_tool_lines, error_style, format_timestamp_now, output_limits, thinking_style,
+    tool_output_annotation, truncate_to_header, user_style,
 };
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::CodeHighlighter;
@@ -19,7 +19,7 @@ use maki_agent::{
 };
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
@@ -35,6 +35,12 @@ struct StreamingCache {
 }
 
 impl StreamingCache {
+    fn invalidate(&mut self) {
+        self.byte_len = 0;
+        self.lines.clear();
+        self.highlighters.clear();
+    }
+
     fn get_or_update(
         &mut self,
         visible: &str,
@@ -141,6 +147,7 @@ pub struct MessagesPanel {
     hl_worker: RenderWorker,
     visible_regions: Vec<(Rect, usize)>,
     segment_heights: Vec<u16>,
+    theme_generation: u64,
 }
 
 impl MessagesPanel {
@@ -165,6 +172,7 @@ impl MessagesPanel {
             hl_worker: RenderWorker::new(),
             visible_regions: Vec::new(),
             segment_heights: Vec::new(),
+            theme_generation: theme::generation(),
         }
     }
 
@@ -550,10 +558,14 @@ impl MessagesPanel {
     pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool) {
         self.viewport_height = area.height;
         let width = area.width.saturating_sub(1);
-        if self.viewport_width != width {
+        let theme_gen = theme::generation();
+        if self.viewport_width != width || self.theme_generation != theme_gen {
             self.viewport_width = width;
+            self.theme_generation = theme_gen;
             self.cached_msg_count = 0;
             self.cached_segments.clear();
+            self.cached_streaming_thinking.invalidate();
+            self.cached_streaming_text.invalidate();
         }
         self.drain_highlights();
         self.rebuild_line_cache();
@@ -586,20 +598,22 @@ impl MessagesPanel {
             .collect();
 
         let spacer_line = vec![Line::default()];
+        let thinking = thinking_style();
+        let assistant = assistant_style();
         let streaming_sources: [(&Typewriter, &mut StreamingCache, &str, Style, Style); 2] = [
             (
                 &self.streaming_thinking,
                 &mut self.cached_streaming_thinking,
-                THINKING_STYLE.prefix,
-                THINKING_STYLE.text_style,
-                THINKING_STYLE.prefix_style,
+                thinking.prefix,
+                thinking.text_style,
+                thinking.prefix_style,
             ),
             (
                 &self.streaming_text,
                 &mut self.cached_streaming_text,
-                ASSISTANT_STYLE.prefix,
-                ASSISTANT_STYLE.text_style,
-                ASSISTANT_STYLE.prefix_style,
+                assistant.prefix,
+                assistant.text_style,
+                assistant.prefix_style,
             ),
         ];
         for (tw, cache, prefix, text_style, prefix_style) in streaming_sources {
@@ -646,7 +660,7 @@ impl MessagesPanel {
             let seg_area = Rect::new(area.x, y, width, visible_h);
             let mut p = Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false });
             if *is_tool {
-                p = p.style(theme::TOOL_BG);
+                p = p.style(theme::current().tool_bg);
             }
             if skip > 0 {
                 p = p.scroll((skip, 0));
@@ -712,7 +726,7 @@ impl MessagesPanel {
     fn update_spinners(&mut self) {
         let spinner_span = Span::styled(
             format!("{} ", spinner_frame(self.started_at.elapsed().as_millis())),
-            theme::TOOL_IN_PROGRESS,
+            theme::current().spinner,
         );
         for seg in &mut self.cached_segments {
             let is_child = seg.tool_id.as_deref().is_some_and(|id| id.contains("__"));
@@ -874,10 +888,10 @@ impl MessagesPanel {
                 }
             } else {
                 let style = match &msg.role {
-                    DisplayRole::User => &USER_STYLE,
-                    DisplayRole::Assistant => &ASSISTANT_STYLE,
-                    DisplayRole::Thinking => &THINKING_STYLE,
-                    DisplayRole::Error => &ERROR_STYLE,
+                    DisplayRole::User => user_style(),
+                    DisplayRole::Assistant => assistant_style(),
+                    DisplayRole::Thinking => thinking_style(),
+                    DisplayRole::Error => error_style(),
                     DisplayRole::Tool { .. } => unreachable!(),
                 };
                 let prefix = if msg.plan_path.is_some() {
@@ -901,13 +915,13 @@ impl MessagesPanel {
                     theme::dim_lines(&mut lines);
                 }
                 if let Some(pp) = &msg.plan_path {
-                    let rule = hr_line(self.viewport_width, theme::PLAN_RULE);
+                    let rule = hr_line(self.viewport_width, theme::current().plan_rule);
                     lines.insert(0, rule.clone());
                     lines.push(rule);
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         pp.to_owned(),
-                        theme::TOOL_PATH.add_modifier(Modifier::BOLD),
+                        theme::current().plan_path,
                     )));
                 }
 

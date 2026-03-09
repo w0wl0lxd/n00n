@@ -72,10 +72,10 @@ fn extract_path_suffix(s: &str) -> Option<(&str, &str)> {
 fn style_command_with_path(header: &str) -> Vec<Span<'static>> {
     match extract_path_suffix(header) {
         Some((cmd, path)) => vec![
-            Span::styled(format!("{cmd} "), theme::TOOL),
-            Span::styled(path.to_owned(), theme::TOOL_PATH),
+            Span::styled(format!("{cmd} "), theme::current().tool),
+            Span::styled(path.to_owned(), theme::current().tool_path),
         ],
-        None => vec![Span::styled(header.to_owned(), theme::TOOL)],
+        None => vec![Span::styled(header.to_owned(), theme::current().tool)],
     }
 }
 
@@ -92,14 +92,17 @@ fn style_grep_header(header: &str) -> Vec<Span<'static>> {
 
     let after_pattern = if let Some(bracket_end) = rest.find(']') {
         let filter = &rest[..bracket_end + 1];
-        spans.push(Span::styled(filter.to_owned(), theme::TOOL_ANNOTATION));
+        spans.push(Span::styled(
+            filter.to_owned(),
+            theme::current().tool_annotation,
+        ));
         &rest[bracket_end + 1..]
     } else {
         rest
     };
 
     if let Some((_, path)) = extract_path_suffix(after_pattern) {
-        spans.push(Span::styled(format!(" {path}"), theme::TOOL_PATH));
+        spans.push(Span::styled(format!(" {path}"), theme::current().tool_path));
     }
 
     spans
@@ -108,12 +111,12 @@ fn style_grep_header(header: &str) -> Vec<Span<'static>> {
 fn style_tool_header(tool: &str, header: &str) -> Vec<Span<'static>> {
     match tool {
         READ_TOOL_NAME | EDIT_TOOL_NAME | WRITE_TOOL_NAME | MULTIEDIT_TOOL_NAME => {
-            vec![Span::styled(header.to_owned(), theme::TOOL_PATH)]
+            vec![Span::styled(header.to_owned(), theme::current().tool_path)]
         }
         BASH_TOOL_NAME | GLOB_TOOL_NAME => style_command_with_path(header),
         GREP_TOOL_NAME => style_grep_header(header),
-        CODE_EXECUTION_TOOL_NAME => vec![Span::styled(header.to_owned(), theme::FOREGROUND_STYLE)],
-        _ => vec![Span::styled(header.to_owned(), theme::TOOL)],
+        CODE_EXECUTION_TOOL_NAME => vec![Span::styled(header.to_owned(), theme::current().tool)],
+        _ => vec![Span::styled(header.to_owned(), theme::current().tool)],
     }
 }
 
@@ -124,33 +127,41 @@ pub struct RoleStyle {
     pub use_markdown: bool,
 }
 
-pub const ASSISTANT_STYLE: RoleStyle = RoleStyle {
-    prefix: "maki> ",
-    text_style: theme::ASSISTANT,
-    prefix_style: theme::ASSISTANT_PREFIX,
-    use_markdown: true,
-};
+pub fn assistant_style() -> RoleStyle {
+    RoleStyle {
+        prefix: "maki> ",
+        text_style: theme::current().assistant,
+        prefix_style: theme::current().assistant_prefix,
+        use_markdown: true,
+    }
+}
 
-pub const USER_STYLE: RoleStyle = RoleStyle {
-    prefix: "you> ",
-    text_style: theme::ASSISTANT,
-    prefix_style: theme::USER,
-    use_markdown: true,
-};
+pub fn user_style() -> RoleStyle {
+    RoleStyle {
+        prefix: "you> ",
+        text_style: theme::current().assistant,
+        prefix_style: theme::current().user,
+        use_markdown: true,
+    }
+}
 
-pub const THINKING_STYLE: RoleStyle = RoleStyle {
-    prefix: "thinking> ",
-    text_style: theme::THINKING,
-    prefix_style: theme::THINKING,
-    use_markdown: true,
-};
+pub fn thinking_style() -> RoleStyle {
+    RoleStyle {
+        prefix: "thinking> ",
+        text_style: theme::current().thinking,
+        prefix_style: theme::current().thinking,
+        use_markdown: true,
+    }
+}
 
-pub const ERROR_STYLE: RoleStyle = RoleStyle {
-    prefix: "",
-    text_style: theme::ERROR,
-    prefix_style: theme::ERROR,
-    use_markdown: false,
-};
+pub fn error_style() -> RoleStyle {
+    RoleStyle {
+        prefix: "",
+        text_style: theme::current().error,
+        prefix_style: theme::current().error,
+        use_markdown: false,
+    }
+}
 
 pub struct ToolLines {
     pub lines: Vec<Line<'static>>,
@@ -211,8 +222,10 @@ pub fn append_timestamp(line: &mut Line<'static>, timestamp: &str, width: u16) {
     if header_width + 1 + TIMESTAMP_LEN <= w {
         let pad = w - header_width - TIMESTAMP_LEN;
         line.spans.push(Span::raw(" ".repeat(pad)));
-        line.spans
-            .push(Span::styled(timestamp.to_owned(), theme::COMMENT_STYLE));
+        line.spans.push(Span::styled(
+            timestamp.to_owned(),
+            theme::current().timestamp,
+        ));
     }
 }
 
@@ -272,24 +285,30 @@ impl ToolLineBuilder {
     }
 
     fn push_header(&mut self, tool_name: &str, header: &str, annotation: Option<&str>) {
-        let mut spans = vec![Span::styled(format!("{tool_name}> "), theme::TOOL_PREFIX)];
+        let mut spans = vec![Span::styled(
+            format!("{tool_name}> "),
+            theme::current().tool_prefix,
+        )];
         spans.extend(style_tool_header(tool_name, header));
         if let Some(ann) = annotation {
-            spans.push(Span::styled(format!(" ({ann})"), theme::TOOL_ANNOTATION));
+            spans.push(Span::styled(
+                format!(" ({ann})"),
+                theme::current().tool_annotation,
+            ));
         }
         self.lines.push(Line::from(spans));
     }
 
     fn prepend_indicator(&mut self, indicator: Indicator, started_at: Instant) {
         let (text, style) = match indicator {
-            Indicator::Pending => ("○ ".into(), theme::TOOL_DIM),
+            Indicator::Pending => ("○ ".into(), theme::current().tool_dim),
             Indicator::InProgress => {
                 self.spinner_lines.push(0);
                 let ch = spinner_frame(started_at.elapsed().as_millis());
-                (format!("{ch} "), theme::TOOL_IN_PROGRESS)
+                (format!("{ch} "), theme::current().spinner)
             }
-            Indicator::Success => (TOOL_INDICATOR.into(), theme::TOOL_SUCCESS),
-            Indicator::Error => (TOOL_INDICATOR.into(), theme::TOOL_ERROR),
+            Indicator::Success => (TOOL_INDICATOR.into(), theme::current().tool_success),
+            Indicator::Error => (TOOL_INDICATOR.into(), theme::current().tool_error),
         };
         self.lines[0].spans.insert(0, Span::styled(text, style));
     }
@@ -349,7 +368,7 @@ impl ToolLineBuilder {
         };
         self.lines.push(Line::from(Span::styled(
             format!("{indent}{label}"),
-            theme::COMMENT_STYLE,
+            theme::current().tool_dim,
         )));
     }
 
@@ -357,7 +376,7 @@ impl ToolLineBuilder {
         if tool == CODE_EXECUTION_TOOL_NAME {
             self.lines.push(Line::from(Span::styled(
                 format!("{indent}{}", super::TOOL_SEPARATOR),
-                theme::TOOL_DIM,
+                theme::current().tool_dim,
             )));
         }
     }
@@ -406,7 +425,7 @@ impl ToolLineBuilder {
             0,
             Line::from(Span::styled(
                 format!("{BATCH_INDENT}{}", super::TOOL_SEPARATOR),
-                theme::TOOL_DIM,
+                theme::current().tool_dim,
             )),
         );
         self.spinner_lines.iter_mut().for_each(|l| *l += 1);
@@ -433,9 +452,9 @@ impl ToolLineBuilder {
 fn push_text_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &str) {
     for line in text.lines() {
         let style = if line.starts_with(TRUNCATION_PREFIX) {
-            theme::TOOL_ANNOTATION
+            theme::current().tool_dim
         } else {
-            theme::TOOL
+            theme::current().tool
         };
         lines.push(Line::from(Span::styled(format!("{indent}{line}"), style)));
     }
@@ -450,10 +469,10 @@ fn push_structured_lines(
         Some(ToolOutput::TodoList(items)) => {
             for item in items {
                 let style = match item.status {
-                    TodoStatus::Completed => theme::TODO_COMPLETED,
-                    TodoStatus::InProgress => theme::TODO_IN_PROGRESS,
-                    TodoStatus::Pending => theme::TODO_PENDING,
-                    TodoStatus::Cancelled => theme::TODO_CANCELLED,
+                    TodoStatus::Completed => theme::current().todo_completed,
+                    TodoStatus::InProgress => theme::current().todo_in_progress,
+                    TodoStatus::Pending => theme::current().todo_pending,
+                    TodoStatus::Cancelled => theme::current().todo_cancelled,
                 };
                 lines.push(Line::from(Span::styled(
                     format!("{indent}{} {}", item.status.marker(), item.content),
@@ -628,7 +647,7 @@ mod tests {
         let spans = style_tool_header(BASH_TOOL_NAME, "echo hi in /tmp");
         let text = spans_text(&spans);
         assert!(text.contains("echo hi"));
-        assert!(has_styled_span(&spans, "/tmp", theme::TOOL_PATH));
+        assert!(has_styled_span(&spans, "/tmp", theme::current().tool_path));
     }
 
     #[test]
@@ -654,8 +673,12 @@ mod tests {
     #[test]
     fn grep_header_styles_filter_and_path() {
         let spans = style_grep_header("TODO [*.rs] in src/");
-        assert!(has_styled_span(&spans, "[*.rs]", theme::TOOL_ANNOTATION));
-        assert!(has_styled_span(&spans, "src/", theme::TOOL_PATH));
+        assert!(has_styled_span(
+            &spans,
+            "[*.rs]",
+            theme::current().tool_annotation
+        ));
+        assert!(has_styled_span(&spans, "src/", theme::current().tool_path));
     }
 
     fn lines_text(tl: &ToolLines) -> String {
@@ -714,7 +737,7 @@ mod tests {
         assert!(line_has_styled(
             &tl,
             BASH_OUTPUT_LABEL,
-            theme::COMMENT_STYLE
+            theme::current().tool_dim
         ));
     }
 
@@ -737,7 +760,7 @@ mod tests {
         assert!(!line_has_styled(
             &tl,
             BASH_OUTPUT_LABEL,
-            theme::COMMENT_STYLE
+            theme::current().tool_dim
         ));
     }
 
@@ -760,7 +783,7 @@ mod tests {
         assert!(line_has_styled(
             &tl,
             BASH_WAITING_LABEL,
-            theme::COMMENT_STYLE
+            theme::current().tool_dim
         ));
     }
 
@@ -783,7 +806,7 @@ mod tests {
         assert!(line_has_styled(
             &tl,
             BASH_NO_OUTPUT_LABEL,
-            theme::COMMENT_STYLE
+            theme::current().tool_dim
         ));
     }
 
@@ -801,7 +824,7 @@ mod tests {
         assert!(line_has_styled(
             &tl,
             BASH_OUTPUT_LABEL,
-            theme::COMMENT_STYLE
+            theme::current().tool_dim
         ));
     }
 
@@ -838,7 +861,7 @@ mod tests {
         append_timestamp(&mut tl.lines[0], "12:34:56", width);
         let last = tl.lines[0].spans.last().unwrap();
         if expect_timestamp {
-            assert_eq!(last.style, theme::COMMENT_STYLE);
+            assert_eq!(last.style, theme::current().timestamp);
             assert_eq!(spans_text(&tl.lines[0].spans).len(), width as usize + 1);
         } else {
             assert_eq!(tl.lines[0].spans.len(), span_count_before);

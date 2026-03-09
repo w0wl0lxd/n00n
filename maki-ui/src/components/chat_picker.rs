@@ -1,16 +1,15 @@
 use crate::components::is_ctrl;
 use crate::components::keybindings::key;
+use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
-use crate::selection::inset_border;
 use crate::text_buffer::TextBuffer;
 use crate::theme;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
-use ratatui::style::Style;
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 pub enum ChatPickerAction {
     Consumed,
@@ -31,7 +30,7 @@ const SEARCH_PREFIX: &str = super::CHEVRON;
 const TITLE: &str = " Chats ";
 const MIN_WIDTH_PERCENT: u16 = 60;
 const MAX_HEIGHT_PERCENT: u16 = 80;
-const CHROME_LINES: u16 = 3;
+const SEARCH_ROW: u16 = 1;
 
 pub struct ChatPicker {
     state: Option<State>,
@@ -139,36 +138,19 @@ impl ChatPicker {
         let s = self.state.as_mut()?;
 
         let filtered = s.filter(chat_names);
-        let max_h = (area.height as u32 * MAX_HEIGHT_PERCENT as u32 / 100) as u16;
         let content_rows = if filtered.is_empty() {
             1
         } else {
             filtered.len() as u16
         };
-        let total_h = (content_rows + CHROME_LINES)
-            .min(max_h)
-            .max(CHROME_LINES + 1);
-        let viewport_h = total_h.saturating_sub(CHROME_LINES);
+        let modal = Modal {
+            title: TITLE,
+            width_percent: MIN_WIDTH_PERCENT,
+            max_height_percent: MAX_HEIGHT_PERCENT,
+        };
+        let inner = modal.render(frame, area, content_rows + SEARCH_ROW);
+        let viewport_h = inner.height.saturating_sub(SEARCH_ROW);
         s.viewport_height = viewport_h as usize;
-
-        let [popup] = Layout::vertical([Constraint::Length(total_h)])
-            .flex(Flex::Center)
-            .areas(area);
-        let [popup] = Layout::horizontal([Constraint::Percentage(MIN_WIDTH_PERCENT)])
-            .flex(Flex::Center)
-            .areas(popup);
-
-        frame.render_widget(Clear, popup);
-
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(theme::PANEL_BORDER)
-            .title(TITLE)
-            .title_style(theme::PANEL_TITLE)
-            .style(Style::new().bg(theme::BACKGROUND));
-
-        let inner = block.inner(popup);
-        frame.render_widget(block, popup);
 
         let [list_area, search_area] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
@@ -185,7 +167,7 @@ impl ChatPicker {
             );
         }
 
-        s.inner_area = inset_border(popup);
+        s.inner_area = inner;
         Some(s.inner_area)
     }
 
@@ -292,7 +274,7 @@ fn render_list(
     s: &State,
 ) {
     if filtered.is_empty() {
-        let line = Line::from(Span::styled(NO_MATCHES, theme::CMD_DESC));
+        let line = Line::from(Span::styled(NO_MATCHES, theme::current().picker_no_match));
         frame.render_widget(Paragraph::new(vec![line]), area);
         return;
     }
@@ -307,9 +289,9 @@ fn render_list(
             let abs_idx = s.scroll_offset + vi;
             let name = &chat_names[chat_idx];
             let style = if abs_idx == s.selected {
-                theme::CMD_SELECTED
+                theme::current().cmd_selected
             } else {
-                theme::CMD_NAME
+                theme::current().picker_item
             };
             Line::from(Span::styled(format!("  {name}"), style))
         })
@@ -328,10 +310,10 @@ fn render_search(frame: &mut Frame, area: Rect, s: &State) {
     let after: String = chars[after_start..].iter().collect();
 
     let line = Line::from(vec![
-        Span::styled(SEARCH_PREFIX, theme::PICKER_SEARCH_PREFIX),
-        Span::styled(before, theme::FOREGROUND_STYLE),
-        Span::styled(cursor_char.to_string(), theme::CURSOR),
-        Span::styled(after, theme::FOREGROUND_STYLE),
+        Span::styled(SEARCH_PREFIX, theme::current().picker_search_prefix),
+        Span::styled(before, theme::current().picker_search_text),
+        Span::styled(cursor_char.to_string(), theme::current().cursor),
+        Span::styled(after, theme::current().picker_search_text),
     ]);
     frame.render_widget(Paragraph::new(vec![line]), area);
 }

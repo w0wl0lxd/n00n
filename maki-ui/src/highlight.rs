@@ -1,4 +1,4 @@
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 use crate::theme;
 
@@ -11,11 +11,21 @@ use syntect::util::LinesWithEndings;
 
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
 
-const DRACULA_TMTHEME: &[u8] = include_bytes!("dracula.tmTheme");
-static THEME: LazyLock<syntect::highlighting::Theme> = LazyLock::new(|| {
-    let mut cursor = std::io::Cursor::new(DRACULA_TMTHEME);
-    syntect::highlighting::ThemeSet::load_from_reader(&mut cursor).expect("embedded Dracula theme")
-});
+static LEAKED_SYNTAX_THEME: LazyLock<Mutex<&'static syntect::highlighting::Theme>> =
+    LazyLock::new(|| {
+        let theme = theme::current();
+        Mutex::new(Box::leak(Box::new(theme.syntax.clone())))
+    });
+
+pub(crate) fn refresh_syntax_theme() {
+    let theme = theme::current();
+    let leaked: &'static syntect::highlighting::Theme = Box::leak(Box::new(theme.syntax.clone()));
+    *LEAKED_SYNTAX_THEME.lock().unwrap() = leaked;
+}
+
+fn syntax_theme() -> &'static syntect::highlighting::Theme {
+    *LEAKED_SYNTAX_THEME.lock().unwrap()
+}
 
 const TOKEN_ALIASES: &[(&str, &str)] = &[("jsx", "js")];
 
@@ -28,7 +38,7 @@ pub fn highlighter_for_path(path: &str) -> HighlightLines<'static> {
             let ext = path.rsplit('.').next().unwrap_or(path);
             syntax_for_token(ext)
         });
-    HighlightLines::new(syntax, &THEME)
+    HighlightLines::new(syntax, syntax_theme())
 }
 
 pub fn highlight_line(hl: &mut HighlightLines<'_>, text: &str) -> Vec<(Style, String)> {
@@ -38,12 +48,12 @@ pub fn highlight_line(hl: &mut HighlightLines<'_>, text: &str) -> Vec<(Style, St
             .into_iter()
             .map(|(style, text)| (convert_style(style), text.trim_end_matches('\n').to_owned()))
             .collect(),
-        Err(_) => vec![(theme::CODE_FALLBACK, text.to_owned())],
+        Err(_) => vec![(theme::current().code_fallback, text.to_owned())],
     }
 }
 
 pub fn highlighter_for_token(lang: &str) -> HighlightLines<'static> {
-    HighlightLines::new(syntax_for_token(lang), &THEME)
+    HighlightLines::new(syntax_for_token(lang), syntax_theme())
 }
 
 fn syntax_for_token(lang: &str) -> &'static SyntaxReference {
@@ -60,7 +70,7 @@ fn syntax_for_token(lang: &str) -> &'static SyntaxReference {
 
 pub fn highlight_code_plain(lang: &str, code: &str) -> Vec<Line<'static>> {
     let ss = &*SYNTAX_SET;
-    let mut h = HighlightLines::new(syntax_for_token(lang), &THEME);
+    let mut h = HighlightLines::new(syntax_for_token(lang), syntax_theme());
     LinesWithEndings::from(code)
         .map(|raw| highlight_single_line(&mut h, raw, ss))
         .collect()
@@ -76,7 +86,7 @@ pub struct CodeHighlighter {
 impl CodeHighlighter {
     pub fn new(lang: &str) -> Self {
         let syntax = syntax_for_token(lang);
-        let highlighter = Highlighter::new(&THEME);
+        let highlighter = Highlighter::new(syntax_theme());
         Self {
             lines: Vec::new(),
             checkpoint_parse: ParseState::new(syntax),
@@ -103,7 +113,7 @@ impl CodeHighlighter {
 
         if new_completed > self.completed_lines {
             let mut hl = HighlightLines::from_state(
-                &THEME,
+                syntax_theme(),
                 self.checkpoint_highlight.clone(),
                 self.checkpoint_parse.clone(),
             );
@@ -124,7 +134,7 @@ impl CodeHighlighter {
 
         if new_completed < total {
             let mut hl = HighlightLines::from_state(
-                &THEME,
+                syntax_theme(),
                 self.checkpoint_highlight.clone(),
                 self.checkpoint_parse.clone(),
             );
@@ -158,7 +168,7 @@ fn highlight_to_spans(
             .collect(),
         Err(_) => vec![Span::styled(
             text.trim_end_matches('\n').to_owned(),
-            theme::CODE_FALLBACK,
+            theme::current().code_fallback,
         )],
     }
 }
@@ -170,9 +180,12 @@ fn highlight_single_line(hl: &mut HighlightLines<'_>, raw: &str, ss: &SyntaxSet)
 pub fn highlight_regex_inline(pattern: &str) -> Vec<Span<'static>> {
     let ss = &*SYNTAX_SET;
     let Some(syntax) = ss.find_syntax_by_token("re") else {
-        return vec![Span::styled(pattern.to_owned(), theme::CODE_FALLBACK)];
+        return vec![Span::styled(
+            pattern.to_owned(),
+            theme::current().code_fallback,
+        )];
     };
-    let mut hl = HighlightLines::new(syntax, &THEME);
+    let mut hl = HighlightLines::new(syntax, syntax_theme());
     highlight_to_spans(&mut hl, pattern, ss)
 }
 

@@ -280,14 +280,10 @@ impl InputBox {
         let max_scroll = total_vl.saturating_sub(content_height);
         self.scroll_y = self.scroll_y.min(max_scroll);
 
-        let prefix_style = if streaming {
-            theme::COMMENT_STYLE
-        } else {
-            theme::FOREGROUND_STYLE
-        };
+        let prefix_style = theme::current().input_placeholder;
         let is_empty = self.buffer.value().is_empty();
         let styled_lines: Vec<Line> = if is_empty {
-            let placeholder_base = Style::new().fg(theme::COMMENT);
+            let placeholder_base = theme::current().input_placeholder;
             if streaming {
                 vec![Line::from(vec![
                     Span::styled(CHEVRON, prefix_style),
@@ -321,14 +317,13 @@ impl InputBox {
         };
 
         let text = Text::from(styled_lines);
-        let border_color = if streaming {
-            theme::INPUT_BORDER
+        let border_style = if streaming {
+            theme::current().input_border
         } else {
-            mode_color
+            Style::new().fg(mode_color)
         };
-        let border_style = Style::new().fg(border_color);
         let paragraph = Paragraph::new(text)
-            .style(Style::new().fg(theme::FOREGROUND))
+            .style(Style::new().fg(theme::current().foreground))
             .scroll((self.scroll_y, 0))
             .block(
                 Block::default()
@@ -602,7 +597,7 @@ mod tests {
         width: u16,
         height: u16,
     ) -> ratatui::Terminal<ratatui::backend::TestBackend> {
-        render_input_with(input, width, height, false, theme::GREEN)
+        render_input_with(input, width, height, false, theme::current().mode_build)
     }
 
     fn has_scrollbar_thumb(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> bool {
@@ -645,8 +640,8 @@ mod tests {
         buf.cell((0, 0)).unwrap().fg
     }
 
-    #[test_case(false, theme::PINK,   theme::PINK         ; "idle_uses_mode_color")]
-    #[test_case(true,  theme::PINK,   theme::INPUT_BORDER ; "streaming_uses_default_border")]
+    #[test_case(false, theme::current().mode_plan,   theme::current().mode_plan         ; "idle_uses_mode_color")]
+    #[test_case(true,  theme::current().mode_plan,   theme::current().input_border.fg.unwrap()  ; "streaming_uses_default_border")]
     fn border_color_matches_mode(streaming: bool, mode_color: Color, expected: Color) {
         let mut input = InputBox::new();
         let terminal = render_input_with(&mut input, 40, 5, streaming, mode_color);

@@ -5,10 +5,12 @@ pub(crate) mod help_modal;
 pub mod input;
 pub(crate) mod keybindings;
 pub mod messages;
+pub(crate) mod modal;
 pub mod question_form;
 pub mod queue_panel;
 pub(crate) mod scrollbar;
 pub mod status_bar;
+pub(crate) mod theme_picker;
 pub(crate) mod tool_display;
 
 pub(crate) const TOOL_SEPARATOR: &str = "────────────";

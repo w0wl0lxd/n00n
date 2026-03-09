@@ -25,7 +25,7 @@ fn fit_width(text: &str, max_width: usize) -> usize {
 
 fn prepend_code_bar(line: &mut Line<'static>) {
     line.spans
-        .insert(0, Span::styled(CODE_BAR, theme::CODE_BAR_STYLE));
+        .insert(0, Span::styled(CODE_BAR, theme::current().code_bar));
 }
 
 pub(crate) fn wrap_code_lines(lines: &mut Vec<Line<'static>>, start: usize, width: u16) {
@@ -76,7 +76,7 @@ fn split_line_with_bar(line: Line<'static>, width: usize) -> Vec<Line<'static>> 
             }
             if !text.is_empty() {
                 result.push(Line::from(current_spans));
-                current_spans = vec![Span::styled(CODE_BAR_WRAP, theme::CODE_BAR_STYLE)];
+                current_spans = vec![Span::styled(CODE_BAR_WRAP, theme::current().code_bar)];
                 remaining = cont_avail;
             }
         }
@@ -111,20 +111,12 @@ pub fn truncation_notice(count: usize) -> String {
     format!("{TRUNCATION_PREFIX} ({count} {label})")
 }
 
-pub const BOLD_STYLE: Style = theme::BOLD;
-pub const CODE_STYLE: Style = theme::INLINE_CODE;
-pub const STRIKETHROUGH_STYLE: Style = theme::STRIKETHROUGH;
-pub const HEADING_STYLE: Style = theme::HEADING;
-pub const LIST_MARKER_STYLE: Style = theme::LIST_MARKER;
-pub const HORIZONTAL_RULE_STYLE: Style = theme::HORIZONTAL_RULE;
-pub const TABLE_BORDER_STYLE: Style = theme::TABLE_BORDER;
-
 const BULLET: &str = "• ";
 const HR_CHAR: char = '─';
 const LIST_INDENT: &str = "  ";
 
 fn code_style(base: Style) -> Style {
-    CODE_STYLE.add_modifier(base.add_modifier)
+    theme::current().inline_code.add_modifier(base.add_modifier)
 }
 
 pub(crate) fn hr_line(width: u16, style: Style) -> Line<'static> {
@@ -132,16 +124,18 @@ pub(crate) fn hr_line(width: u16, style: Style) -> Line<'static> {
     Line::from(Span::styled(hr, style))
 }
 
-fn bold_style(base: Style) -> Style {
-    BOLD_STYLE.add_modifier(base.add_modifier)
+fn bold_style_fn(base: Style) -> Style {
+    theme::current().bold.add_modifier(base.add_modifier)
 }
 
 fn italic_style(base: Style) -> Style {
     base.add_modifier(Modifier::ITALIC)
 }
 
-fn strikethrough_style(base: Style) -> Style {
-    STRIKETHROUGH_STYLE.add_modifier(base.add_modifier)
+fn strikethrough_style_fn(base: Style) -> Style {
+    theme::current()
+        .strikethrough
+        .add_modifier(base.add_modifier)
 }
 
 fn count_run(bytes: &[u8], pos: usize, ch: u8) -> usize {
@@ -306,7 +300,7 @@ fn try_star_emphasis(bytes: &[u8], pos: usize) -> Option<EmphasisMatch> {
         && close > pos + 3
     {
         return Some(EmphasisMatch {
-            style_fn: |s| italic_style(bold_style(s)),
+            style_fn: |s| italic_style(bold_style_fn(s)),
             content_start: pos + 3,
             close,
             delim_len: 3,
@@ -319,7 +313,7 @@ fn try_star_emphasis(bytes: &[u8], pos: usize) -> Option<EmphasisMatch> {
             && close > pos + 2
         {
             return Some(EmphasisMatch {
-                style_fn: bold_style,
+                style_fn: bold_style_fn,
                 content_start: pos + 2,
                 close,
                 delim_len: 2,
@@ -365,7 +359,7 @@ fn try_strike_emphasis(bytes: &[u8], pos: usize) -> Option<EmphasisMatch> {
         && close > pos + 2
     {
         return Some(EmphasisMatch {
-            style_fn: strikethrough_style,
+            style_fn: strikethrough_style_fn,
             content_start: pos + 2,
             close,
             delim_len: 2,
@@ -531,7 +525,7 @@ fn is_horizontal_rule(line: &str) -> bool {
 
 fn parse_line_prefix(line: &str, base_style: Style) -> (Option<String>, &str, Style) {
     if let Some(heading_text) = parse_heading(line) {
-        return (None, heading_text, HEADING_STYLE);
+        return (None, heading_text, theme::current().heading);
     }
     if let Some((indent, content)) = parse_unordered_marker(line) {
         let depth = indent / 2;
@@ -795,14 +789,15 @@ fn render_table(
     let mut lines = Vec::new();
 
     let border = |left: &str, mid: &str, right: &str, fill: &str| -> Line<'static> {
-        let mut spans = vec![Span::styled(left.to_owned(), TABLE_BORDER_STYLE)];
+        let tbs = theme::current().table_border;
+        let mut spans = vec![Span::styled(left.to_owned(), tbs)];
         for (i, &w) in col_widths.iter().enumerate() {
-            spans.push(Span::styled(fill.repeat(w + 2), TABLE_BORDER_STYLE));
+            spans.push(Span::styled(fill.repeat(w + 2), tbs));
             if i < col_count - 1 {
-                spans.push(Span::styled(mid.to_owned(), TABLE_BORDER_STYLE));
+                spans.push(Span::styled(mid.to_owned(), tbs));
             }
         }
-        spans.push(Span::styled(right.to_owned(), TABLE_BORDER_STYLE));
+        spans.push(Span::styled(right.to_owned(), tbs));
         Line::from(spans)
     };
 
@@ -810,7 +805,7 @@ fn render_table(
 
     for (ri, row) in rows.iter().enumerate() {
         let base = if ri < header_end {
-            bold_style(text_style)
+            bold_style_fn(text_style)
         } else {
             text_style
         };
@@ -829,7 +824,7 @@ fn render_table(
         let row_height = wrapped_cells.iter().map(|c| c.len()).max().unwrap_or(1);
 
         for line_idx in 0..row_height {
-            let mut spans = vec![Span::styled("│ ".to_owned(), TABLE_BORDER_STYLE)];
+            let mut spans = vec![Span::styled("│ ".to_owned(), theme::current().table_border)];
             for (c, &w) in col_widths.iter().enumerate() {
                 let sub_line = wrapped_cells[c].get(line_idx);
                 let content_width = sub_line.map_or(0, |sl| spans_width(sl));
@@ -840,9 +835,9 @@ fn render_table(
                 }
                 spans.push(Span::styled(" ".repeat(pad + 1), base));
                 if c < col_count - 1 {
-                    spans.push(Span::styled("│ ".to_owned(), TABLE_BORDER_STYLE));
+                    spans.push(Span::styled("│ ".to_owned(), theme::current().table_border));
                 } else {
-                    spans.push(Span::styled("│".to_owned(), TABLE_BORDER_STYLE));
+                    spans.push(Span::styled("│".to_owned(), theme::current().table_border));
                 }
             }
             lines.push(Line::from(spans));
@@ -1028,7 +1023,7 @@ pub fn text_to_lines(
                             }
                             first_line = false;
                         }
-                        lines.push(hr_line(width, HORIZONTAL_RULE_STYLE));
+                        lines.push(hr_line(width, theme::current().horizontal_rule));
                         continue;
                     }
                     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -1038,7 +1033,7 @@ pub fn text_to_lines(
                     }
                     let (line_prefix, rest, style) = parse_line_prefix(line, text_style);
                     if let Some(lp) = line_prefix {
-                        spans.push(Span::styled(lp, LIST_MARKER_STYLE));
+                        spans.push(Span::styled(lp, theme::current().list_marker));
                     }
                     spans.extend(
                         parse_inline_markdown(rest, style)
@@ -1126,51 +1121,25 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    const BOLD_ITALIC: Style = BOLD_STYLE.add_modifier(Modifier::ITALIC);
-    const BOLD_CODE_STYLE: Style = CODE_STYLE.add_modifier(Modifier::BOLD);
-    const ITALIC_STYLE: Style = Style::new().add_modifier(Modifier::ITALIC);
+    fn bs() -> Style {
+        theme::current().bold
+    }
+    fn cs() -> Style {
+        theme::current().inline_code
+    }
+    fn ss() -> Style {
+        theme::current().strikethrough
+    }
+    fn bcs() -> Style {
+        cs().add_modifier(Modifier::BOLD)
+    }
+    fn bis() -> Style {
+        bs().add_modifier(Modifier::ITALIC)
+    }
+    const IS: Style = Style::new().add_modifier(Modifier::ITALIC);
     const TEST_WIDTH: u16 = 80;
 
-    #[test_case("a **bold** b", &[("a ", None), ("bold", Some(BOLD_STYLE)), (" b", None)] ; "bold")]
-    #[test_case("use `foo` here", &[("use ", None), ("foo", Some(CODE_STYLE)), (" here", None)] ; "inline_code")]
-    #[test_case("a `code` then **bold**", &[("a ", None), ("code", Some(CODE_STYLE)), (" then ", None), ("bold", Some(BOLD_STYLE))] ; "code_before_bold")]
-    #[test_case("a **unclosed", &[("a **unclosed", None)] ; "unclosed_bold")]
-    #[test_case("a `unclosed", &[("a `unclosed", None)] ; "unclosed_backtick")]
-    #[test_case("**bold `code` bold**", &[("bold ", Some(BOLD_STYLE)), ("code", Some(BOLD_CODE_STYLE)), (" bold", Some(BOLD_STYLE))] ; "code_inside_bold")]
-    #[test_case("`code **bold** code`", &[("code **bold** code", Some(CODE_STYLE))] ; "bold_inside_code")]
-    #[test_case("**`all`**", &[("all", Some(BOLD_CODE_STYLE))] ; "entire_bold_is_code")]
-    #[test_case("`**all**`", &[("**all**", Some(CODE_STYLE))] ; "entire_code_is_bold")]
-    #[test_case("**bold `unclosed**", &[("bold `unclosed", Some(BOLD_STYLE))] ; "unclosed_nested_code_in_bold")]
-    #[test_case("`code **unclosed`", &[("code **unclosed", Some(CODE_STYLE))] ; "unclosed_nested_bold_in_code")]
-    #[test_case("plain text", &[("plain text", None)] ; "no_delimiters")]
-    #[test_case("``", &[("``", None)] ; "empty_code_span")]
-    #[test_case("****", &[("****", None)] ; "empty_bold_span")]
-    #[test_case("a * b", &[("a * b", None)] ; "star_with_spaces_not_italic")]
-    #[test_case("a*b*c", &[("a*b*c", None)] ; "intraword_stars_not_italic")]
-    #[test_case("`a` middle `b`", &[("a", Some(CODE_STYLE)), (" middle ", None), ("b", Some(CODE_STYLE))] ; "two_code_spans_with_text")]
-    #[test_case("`a` **b**", &[("a", Some(CODE_STYLE)), (" ", None), ("b", Some(BOLD_STYLE))] ; "code_then_bold")]
-    #[test_case("**a** `b`", &[("a", Some(BOLD_STYLE)), (" ", None), ("b", Some(CODE_STYLE))] ; "bold_then_code")]
-    #[test_case("a `b` c `unclosed", &[("a ", None), ("b", Some(CODE_STYLE)), (" c `unclosed", None)] ; "code_then_unclosed_backtick")]
-    #[test_case("a **b** c **unclosed", &[("a ", None), ("b", Some(BOLD_STYLE)), (" c **unclosed", None)] ; "bold_then_unclosed_bold")]
-    #[test_case("**a `b** c`", &[("**a ", None), ("b** c", Some(CODE_STYLE))] ; "interleaved_bold_code")]
-    #[test_case("`a **b` c**", &[("a **b", Some(CODE_STYLE)), (" c**", None)] ; "interleaved_code_bold")]
-    #[test_case("***bold italic***", &[("bold italic", Some(BOLD_ITALIC))] ; "triple_star_bold_italic")]
-    #[test_case("**`**`", &[("**", None), ("**", Some(CODE_STYLE))] ; "code_span_captures_bold_delim")]
-    // Italic
-    #[test_case("some *emphasized* word", &[("some ", None), ("emphasized", Some(ITALIC_STYLE)), (" word", None)] ; "italic_star")]
-    #[test_case("_italic_", &[("italic", Some(ITALIC_STYLE))] ; "italic_underscore")]
-    #[test_case("file_name_here", &[("file_name_here", None)] ; "intraword_underscores_not_italic")]
-    #[test_case("__dunder__", &[("__dunder__", None)] ; "double_underscore_not_italic")]
-    // Strikethrough
-    #[test_case("a ~~struck~~ b", &[("a ", None), ("struck", Some(STRIKETHROUGH_STYLE)), (" b", None)] ; "strikethrough")]
-    #[test_case("~~~~", &[("~~~~", None)] ; "empty_strikethrough")]
-    // Backtick runs
-    #[test_case("``code with ` inside``", &[("code with ` inside", Some(CODE_STYLE))] ; "double_backtick_code_span")]
-    #[test_case("```code```", &[("code", Some(CODE_STYLE))] ; "triple_backtick_inline_code")]
-    // Nesting
-    #[test_case("**bold *italic* bold**", &[("bold ", Some(BOLD_STYLE)), ("italic", Some(BOLD_ITALIC)), (" bold", Some(BOLD_STYLE))] ; "italic_inside_bold")]
-    #[test_case("**bold `code**` bold**", &[("bold ", Some(BOLD_STYLE)), ("code**", Some(BOLD_CODE_STYLE)), (" bold", Some(BOLD_STYLE))] ; "bold_closer_inside_code_ignored")]
-    fn parse_inline_markdown_cases(input: &str, expected: &[(&str, Option<Style>)]) {
+    fn assert_inline(input: &str, expected: &[(&str, Option<Style>)]) {
         let base = Style::default();
         let spans = parse_inline_markdown(input, base);
         assert_eq!(
@@ -1182,6 +1151,209 @@ mod tests {
             assert_eq!(span.content, *text);
             assert_eq!(span.style, style.unwrap_or(base));
         }
+    }
+
+    #[test]
+    fn inline_bold() {
+        assert_inline(
+            "a **bold** b",
+            &[("a ", None), ("bold", Some(bs())), (" b", None)],
+        );
+    }
+    #[test]
+    fn inline_code() {
+        assert_inline(
+            "use `foo` here",
+            &[("use ", None), ("foo", Some(cs())), (" here", None)],
+        );
+    }
+    #[test]
+    fn code_before_bold() {
+        assert_inline(
+            "a `code` then **bold**",
+            &[
+                ("a ", None),
+                ("code", Some(cs())),
+                (" then ", None),
+                ("bold", Some(bs())),
+            ],
+        );
+    }
+    #[test]
+    fn unclosed_bold() {
+        assert_inline("a **unclosed", &[("a **unclosed", None)]);
+    }
+    #[test]
+    fn unclosed_backtick() {
+        assert_inline("a `unclosed", &[("a `unclosed", None)]);
+    }
+    #[test]
+    fn code_inside_bold() {
+        assert_inline(
+            "**bold `code` bold**",
+            &[
+                ("bold ", Some(bs())),
+                ("code", Some(bcs())),
+                (" bold", Some(bs())),
+            ],
+        );
+    }
+    #[test]
+    fn bold_inside_code() {
+        assert_inline(
+            "`code **bold** code`",
+            &[("code **bold** code", Some(cs()))],
+        );
+    }
+    #[test]
+    fn entire_bold_is_code() {
+        assert_inline("**`all`**", &[("all", Some(bcs()))]);
+    }
+    #[test]
+    fn entire_code_is_bold() {
+        assert_inline("`**all**`", &[("**all**", Some(cs()))]);
+    }
+    #[test]
+    fn unclosed_nested_code_in_bold() {
+        assert_inline("**bold `unclosed**", &[("bold `unclosed", Some(bs()))]);
+    }
+    #[test]
+    fn unclosed_nested_bold_in_code() {
+        assert_inline("`code **unclosed`", &[("code **unclosed", Some(cs()))]);
+    }
+    #[test]
+    fn no_delimiters() {
+        assert_inline("plain text", &[("plain text", None)]);
+    }
+    #[test]
+    fn empty_code_span() {
+        assert_inline("``", &[("``", None)]);
+    }
+    #[test]
+    fn empty_bold_span() {
+        assert_inline("****", &[("****", None)]);
+    }
+    #[test]
+    fn star_with_spaces_not_italic() {
+        assert_inline("a * b", &[("a * b", None)]);
+    }
+    #[test]
+    fn intraword_stars_not_italic() {
+        assert_inline("a*b*c", &[("a*b*c", None)]);
+    }
+    #[test]
+    fn two_code_spans_with_text() {
+        assert_inline(
+            "`a` middle `b`",
+            &[("a", Some(cs())), (" middle ", None), ("b", Some(cs()))],
+        );
+    }
+    #[test]
+    fn code_then_bold() {
+        assert_inline(
+            "`a` **b**",
+            &[("a", Some(cs())), (" ", None), ("b", Some(bs()))],
+        );
+    }
+    #[test]
+    fn bold_then_code() {
+        assert_inline(
+            "**a** `b`",
+            &[("a", Some(bs())), (" ", None), ("b", Some(cs()))],
+        );
+    }
+    #[test]
+    fn code_then_unclosed_backtick() {
+        assert_inline(
+            "a `b` c `unclosed",
+            &[("a ", None), ("b", Some(cs())), (" c `unclosed", None)],
+        );
+    }
+    #[test]
+    fn bold_then_unclosed_bold() {
+        assert_inline(
+            "a **b** c **unclosed",
+            &[("a ", None), ("b", Some(bs())), (" c **unclosed", None)],
+        );
+    }
+    #[test]
+    fn interleaved_bold_code() {
+        assert_inline("**a `b** c`", &[("**a ", None), ("b** c", Some(cs()))]);
+    }
+    #[test]
+    fn interleaved_code_bold() {
+        assert_inline("`a **b` c**", &[("a **b", Some(cs())), (" c**", None)]);
+    }
+    #[test]
+    fn triple_star_bold_italic() {
+        assert_inline("***bold italic***", &[("bold italic", Some(bis()))]);
+    }
+    #[test]
+    fn code_span_captures_bold_delim() {
+        assert_inline("**`**`", &[("**", None), ("**", Some(cs()))]);
+    }
+    #[test]
+    fn italic_star() {
+        assert_inline(
+            "some *emphasized* word",
+            &[("some ", None), ("emphasized", Some(IS)), (" word", None)],
+        );
+    }
+    #[test]
+    fn italic_underscore() {
+        assert_inline("_italic_", &[("italic", Some(IS))]);
+    }
+    #[test]
+    fn intraword_underscores_not_italic() {
+        assert_inline("file_name_here", &[("file_name_here", None)]);
+    }
+    #[test]
+    fn double_underscore_not_italic() {
+        assert_inline("__dunder__", &[("__dunder__", None)]);
+    }
+    #[test]
+    fn strikethrough_test() {
+        assert_inline(
+            "a ~~struck~~ b",
+            &[("a ", None), ("struck", Some(ss())), (" b", None)],
+        );
+    }
+    #[test]
+    fn empty_strikethrough() {
+        assert_inline("~~~~", &[("~~~~", None)]);
+    }
+    #[test]
+    fn double_backtick_code_span() {
+        assert_inline(
+            "``code with ` inside``",
+            &[("code with ` inside", Some(cs()))],
+        );
+    }
+    #[test]
+    fn triple_backtick_inline_code() {
+        assert_inline("```code```", &[("code", Some(cs()))]);
+    }
+    #[test]
+    fn italic_inside_bold() {
+        assert_inline(
+            "**bold *italic* bold**",
+            &[
+                ("bold ", Some(bs())),
+                ("italic", Some(bis())),
+                (" bold", Some(bs())),
+            ],
+        );
+    }
+    #[test]
+    fn bold_closer_inside_code_ignored() {
+        assert_inline(
+            "**bold `code**` bold**",
+            &[
+                ("bold ", Some(bs())),
+                ("code**", Some(bcs())),
+                (" bold", Some(bs())),
+            ],
+        );
     }
 
     #[test_case("here is `/home/tony/file.rs` path" ; "path_in_backticks")]
@@ -1573,9 +1745,9 @@ mod tests {
         let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "bold and code");
         let styles: Vec<_> = lines[0].spans.iter().map(|s| s.style).collect();
-        assert!(styles.contains(&BOLD_STYLE));
-        assert!(styles.contains(&HEADING_STYLE));
-        assert!(styles.contains(&code_style(HEADING_STYLE)));
+        assert!(styles.contains(&theme::current().bold));
+        assert!(styles.contains(&theme::current().heading));
+        assert!(styles.contains(&code_style(theme::current().heading)));
     }
 
     #[test_case("##nospace" ; "no_space_not_heading")]
@@ -1625,7 +1797,10 @@ mod tests {
     fn list_marker_styled(input: &str, expected_marker: &str) {
         let style = Style::default();
         let lines = text_to_lines(input, "", style, style, None, TEST_WIDTH);
-        let marker = lines[0].spans.iter().find(|s| s.style == LIST_MARKER_STYLE);
+        let marker = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.style == theme::current().list_marker);
         assert_eq!(marker.unwrap().content, expected_marker);
     }
 
@@ -1741,6 +1916,17 @@ mod tests {
             lines.len() >= 5,
             "table should have border+header+sep+data+border"
         );
+        let sep_lines: Vec<_> = lines
+            .iter()
+            .filter(|l| l.spans.iter().any(|s| s.content.contains('├')))
+            .collect();
+        for sep in &sep_lines {
+            assert_eq!(
+                sep.spans.first().unwrap().style,
+                theme::current().table_border,
+                "all separators should use table_border_style"
+            );
+        }
     }
 
     #[test_case("| H |\n| --- |\n| a |\n| b |\n| c |", 3 ; "multi_row_separators")]
@@ -1919,7 +2105,7 @@ mod tests {
         let mut lines = vec![
             Line::from("header"),
             Line::from(vec![
-                Span::styled(CODE_BAR, theme::CODE_BAR_STYLE),
+                Span::styled(CODE_BAR, theme::current().code_bar),
                 Span::raw("short"),
             ]),
         ];

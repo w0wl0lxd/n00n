@@ -2,7 +2,7 @@ use crate::theme;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
@@ -35,10 +35,7 @@ pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry], focus: Option
         .map(|(i, entry)| {
             let flat = entry.text.replace('\n', " ");
             let (style, hint) = if focus == Some(i) {
-                (
-                    Style::new().fg(theme::RED).add_modifier(Modifier::BOLD),
-                    FOCUSED_HINT,
-                )
+                (theme::current().queue_delete, FOCUSED_HINT)
             } else if i == 0 {
                 (Style::new().fg(entry.color), UNFOCUSED_HINT)
             } else {
@@ -52,22 +49,22 @@ pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry], focus: Option
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(if focus.is_some() {
-            Style::new().fg(theme::RED)
+            theme::current().queue_delete
         } else {
-            theme::PANEL_BORDER
+            theme::current().panel_border
         })
         .title_top(Line::from(QUEUE_LABEL).left_aligned())
-        .title_style(theme::PANEL_TITLE);
+        .title_style(theme::current().panel_title);
 
     let paragraph = Paragraph::new(lines)
-        .style(Style::new().fg(theme::FOREGROUND))
+        .style(Style::new().fg(theme::current().foreground))
         .block(block);
 
     frame.render_widget(paragraph, area);
 }
 
 fn truncate_line(text: &str, max_width: usize, style: Style, hint: &'static str) -> Line<'static> {
-    let hint_style = Style::new().fg(theme::COMMENT);
+    let hint_style = theme::current().tool_dim;
     let available = max_width.saturating_sub(hint.len());
 
     let (text_span, ellipsis) = if text.len() <= available {
@@ -104,7 +101,7 @@ mod tests {
     const HINT: &str = " - hint";
     const NO_HINT: &str = "";
     fn style() -> Style {
-        Style::new().fg(theme::FOREGROUND)
+        Style::new().fg(theme::current().foreground)
     }
     fn span_texts<'a>(line: &'a Line<'a>) -> Vec<&'a str> {
         line.spans.iter().map(|s| s.content.as_ref()).collect()

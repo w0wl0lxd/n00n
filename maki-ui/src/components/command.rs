@@ -40,6 +40,10 @@ const COMMANDS: &[Command] = &[
         name: "/queue",
         description: "Remove items from queue",
     },
+    Command {
+        name: "/theme",
+        description: "Switch color theme",
+    },
 ];
 
 pub struct CommandPalette {
@@ -180,7 +184,7 @@ impl CommandPalette {
                 let selected = i == self.selected;
                 let name_pad = max_name - cmd.name.len() + GAP;
                 if selected {
-                    let s = theme::CMD_SELECTED;
+                    let s = theme::current().cmd_selected;
                     Line::from(vec![
                         Span::styled(" ".repeat(PAD), s),
                         Span::styled(cmd.name, s),
@@ -191,9 +195,9 @@ impl CommandPalette {
                 } else {
                     Line::from(vec![
                         Span::raw(" ".repeat(PAD)),
-                        Span::styled(cmd.name, theme::CMD_NAME),
+                        Span::styled(cmd.name, theme::current().cmd_name),
                         Span::raw(" ".repeat(name_pad)),
-                        Span::styled(cmd.description, theme::CMD_DESC),
+                        Span::styled(cmd.description, theme::current().cmd_desc),
                         Span::raw(" ".repeat(PAD)),
                     ])
                 }
@@ -202,7 +206,7 @@ impl CommandPalette {
 
         frame.render_widget(Clear, popup);
         frame.render_widget(
-            Paragraph::new(lines).style(Style::new().bg(theme::BACKGROUND)),
+            Paragraph::new(lines).style(Style::new().bg(theme::current().background)),
             popup,
         );
 

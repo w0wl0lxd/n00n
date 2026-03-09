@@ -302,10 +302,7 @@ impl QuestionForm {
         } else {
             HINT_BAR
         };
-        lines.push(Line::from(Span::styled(
-            hint,
-            Style::new().fg(theme::COMMENT),
-        )));
+        lines.push(Line::from(Span::styled(hint, theme::current().form_hint)));
 
         lines
     }
@@ -321,12 +318,12 @@ impl QuestionForm {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(theme::PANEL_BORDER)
+            .border_style(theme::current().panel_border)
             .title_top(Line::from(FORM_LABEL).left_aligned())
-            .title_style(theme::PANEL_TITLE);
+            .title_style(theme::current().panel_title);
 
         let paragraph = Paragraph::new(lines)
-            .style(Style::new().fg(theme::FOREGROUND))
+            .style(Style::new().fg(theme::current().foreground))
             .wrap(Wrap { trim: false })
             .block(block)
             .scroll((self.scroll_offset, 0));
@@ -338,7 +335,7 @@ impl QuestionForm {
         let mut spans = Vec::new();
         for (i, q) in self.questions.iter().enumerate() {
             if i > 0 {
-                spans.push(Span::styled(" │ ", Style::new().fg(theme::COMMENT)));
+                spans.push(Span::styled(" │ ", theme::current().form_separator));
             }
             let label = if q.header.is_empty() {
                 format!("Q{}", i + 1)
@@ -347,26 +344,26 @@ impl QuestionForm {
             };
             let has_answer = !self.answers[i].is_empty();
             let style = if i == self.current_tab {
-                Style::new().fg(theme::CYAN)
+                theme::current().form_active
             } else if has_answer {
-                Style::new().fg(theme::GREEN)
+                theme::current().form_answered
             } else {
-                Style::new().fg(theme::COMMENT)
+                theme::current().form_inactive
             };
             spans.push(Span::styled(label, style));
         }
-        spans.push(Span::styled(" │ ", Style::new().fg(theme::COMMENT)));
+        spans.push(Span::styled(" │ ", theme::current().form_separator));
         let confirm_style = if self.on_confirm_tab() {
-            Style::new().fg(theme::CYAN)
+            theme::current().form_active
         } else {
-            Style::new().fg(theme::COMMENT)
+            theme::current().form_inactive
         };
         spans.push(Span::styled("Confirm", confirm_style));
         Line::from(spans)
     }
 
     fn question_text_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let base = Style::new().fg(theme::FOREGROUND);
+        let base = Style::new().fg(theme::current().foreground);
         text_to_lines(
             &self.questions[self.current_tab].question,
             "",
@@ -380,7 +377,7 @@ impl QuestionForm {
     fn separator_line(width: u16) -> Line<'static> {
         Line::from(Span::styled(
             SEPARATOR.repeat(width as usize),
-            Style::new().fg(theme::COMMENT),
+            theme::current().form_separator,
         ))
     }
 
@@ -402,23 +399,23 @@ impl QuestionForm {
             let prefix = if is_selected { "▸ " } else { "  " };
 
             let style = if is_selected {
-                Style::new().fg(theme::CYAN)
+                theme::current().form_active
             } else if is_picked {
-                Style::new().fg(theme::GREEN)
+                theme::current().form_answered
             } else {
-                Style::new().fg(theme::FOREGROUND)
+                Style::new().fg(theme::current().foreground)
             };
 
             let mut spans = vec![
                 Span::styled(prefix.to_string(), style),
-                Span::styled(marker.to_string(), Style::new().fg(theme::GREEN)),
+                Span::styled(marker.to_string(), theme::current().form_check),
                 Span::styled(opt.label.clone(), style),
             ];
 
             if !opt.description.is_empty() {
                 spans.push(Span::styled(
                     format!(" — {}", opt.description),
-                    Style::new().fg(theme::COMMENT),
+                    theme::current().form_description,
                 ));
             }
             lines.push(Line::from(spans));
@@ -430,9 +427,9 @@ impl QuestionForm {
         let custom_idx = q.options.len();
         let is_custom_selected = self.selected == custom_idx;
         let custom_style = if is_custom_selected {
-            Style::new().fg(theme::CYAN)
+            theme::current().form_active
         } else {
-            Style::new().fg(theme::FOREGROUND)
+            Style::new().fg(theme::current().foreground)
         };
         let prefix = if is_custom_selected { "▸ " } else { "  " };
         lines.push(Line::from(vec![
@@ -452,7 +449,7 @@ impl QuestionForm {
         let mut chars = after.chars();
         let cursor_ch = chars.next().map_or(" ".to_string(), |c| c.to_string());
         let mut spans = vec![
-            Span::styled("  → ", Style::new().fg(theme::COMMENT)),
+            Span::styled("  → ", theme::current().form_arrow),
             Span::raw(before.to_string()),
             Span::styled(cursor_ch, Style::new().reversed()),
         ];
@@ -466,7 +463,7 @@ impl QuestionForm {
     fn render_confirm(&self, lines: &mut Vec<Line<'static>>, inner_width: u16) {
         lines.push(Line::from(Span::styled(
             "Review your answers:",
-            Style::new().fg(theme::FOREGROUND),
+            Style::new().fg(theme::current().foreground),
         )));
         lines.push(Line::default());
 
@@ -478,17 +475,20 @@ impl QuestionForm {
             }
             let answer_text = format_answer(&self.answers[i]);
             lines.push(Line::from(vec![
-                Span::styled(format!("{}. ", i + 1), Style::new().fg(theme::COMMENT)),
-                Span::styled(q.question.clone(), Style::new().fg(theme::FOREGROUND)),
-                Span::styled(" → ", Style::new().fg(theme::COMMENT)),
-                Span::styled(answer_text, Style::new().fg(theme::GREEN)),
+                Span::styled(format!("{}. ", i + 1), theme::current().form_inactive),
+                Span::styled(
+                    q.question.clone(),
+                    Style::new().fg(theme::current().foreground),
+                ),
+                Span::styled(" → ", theme::current().form_arrow),
+                Span::styled(answer_text, theme::current().form_answer),
             ]));
         }
 
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             "Press Enter to submit, or navigate back to edit.",
-            Style::new().fg(theme::COMMENT),
+            theme::current().form_hint,
         )));
     }
 

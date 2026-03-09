@@ -121,17 +121,23 @@ impl StatusBar {
 
         if *ctx.status == Status::Streaming {
             let ch = spinner_frame(self.started_at.elapsed().as_millis());
-            left_spans.push(Span::styled(format!(" {ch}"), theme::STATUS_STREAMING));
+            left_spans.push(Span::styled(format!(" {ch}"), theme::current().spinner));
         }
 
         left_spans.push(Span::styled(format!(" {}", ctx.mode_label), ctx.mode_style));
 
         if let Some(name) = ctx.chat_name {
-            left_spans.push(Span::styled(format!(" [{name}]"), theme::COMMENT));
+            left_spans.push(Span::styled(
+                format!(" [{name}]"),
+                theme::current().status_context,
+            ));
         }
 
         if !ctx.auto_scroll {
-            left_spans.push(Span::styled(" auto-scroll paused", theme::COMMENT));
+            left_spans.push(Span::styled(
+                " auto-scroll paused",
+                theme::current().status_context,
+            ));
         }
 
         if let Some(retry) = ctx.retry_info {
@@ -139,10 +145,13 @@ impl StatusBar {
                 .deadline
                 .saturating_duration_since(Instant::now())
                 .as_secs();
-            left_spans.push(Span::styled(format!(" {}", retry.message), theme::ERROR));
+            left_spans.push(Span::styled(
+                format!(" {}", retry.message),
+                theme::current().status_retry_error,
+            ));
             left_spans.push(Span::styled(
                 format!(" · retrying in {secs}s (#{})", retry.attempt),
-                theme::COMMENT,
+                theme::current().status_retry_info,
             ));
         }
 
@@ -150,7 +159,7 @@ impl StatusBar {
 
         match ctx.status {
             Status::Error(e) => {
-                left_spans.push(Span::styled(format!(" error: {e}"), theme::ERROR));
+                left_spans.push(Span::styled(format!(" error: {e}"), theme::current().error));
             }
             _ => {
                 let pct = if ctx.stats.context_window > 0 {
@@ -159,9 +168,15 @@ impl StatusBar {
                     0
                 };
 
-                right_spans.push(Span::styled(self.cwd_branch.clone(), theme::COMMENT_STYLE));
+                right_spans.push(Span::styled(
+                    self.cwd_branch.clone(),
+                    theme::current().status_context,
+                ));
                 right_spans.push(Span::raw("  "));
-                right_spans.push(Span::styled(ctx.model_id.to_string(), theme::STATUS_IDLE));
+                right_spans.push(Span::styled(
+                    ctx.model_id.to_string(),
+                    theme::current().status_context,
+                ));
 
                 let rest_text = format!(
                     "  {} ({}%) ${:.3} ",
@@ -169,20 +184,29 @@ impl StatusBar {
                     pct,
                     ctx.stats.usage.cost(ctx.stats.pricing),
                 );
-                right_spans.push(Span::styled(rest_text, theme::STATUS_CONTEXT));
+                right_spans.push(Span::styled(
+                    rest_text,
+                    Style::new().fg(theme::current().foreground),
+                ));
 
                 if ctx.stats.show_global {
                     let global_text = format!(
                         " \u{03a3}${:.3} ",
                         ctx.stats.global_usage.cost(ctx.stats.pricing),
                     );
-                    right_spans.push(Span::styled(global_text, theme::STATUS_GLOBAL_COST));
+                    right_spans.push(Span::styled(
+                        global_text,
+                        Style::new().fg(theme::current().foreground),
+                    ));
                 }
             }
         }
 
         if let Some((ref msg, _)) = self.flash {
-            left_spans.push(Span::styled(format!(" {msg}"), theme::CANCEL_HINT));
+            left_spans.push(Span::styled(
+                format!(" {msg}"),
+                theme::current().status_flash,
+            ));
         }
 
         let [left_area, right_area] = Layout::horizontal([

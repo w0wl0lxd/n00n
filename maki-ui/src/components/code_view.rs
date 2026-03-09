@@ -19,12 +19,12 @@ fn nr_width(max_nr: usize) -> usize {
 }
 
 fn gutter(nr_str: &str) -> Span<'static> {
-    Span::styled(format!("{nr_str} "), theme::DIFF_LINE_NR)
+    Span::styled(format!("{nr_str} "), theme::current().diff_line_nr)
 }
 
 fn gap_ellipsis() -> Line<'static> {
     Line::from(vec![
-        Span::styled("...".to_owned(), theme::DIFF_LINE_NR),
+        Span::styled("...".to_owned(), theme::current().tool_dim),
         Span::raw("  ".to_owned()),
     ])
 }
@@ -32,7 +32,7 @@ fn gap_ellipsis() -> Line<'static> {
 fn truncation_line(truncated: usize) -> Line<'static> {
     Line::from(Span::styled(
         truncation_notice(truncated),
-        theme::TOOL_ANNOTATION,
+        theme::current().tool_dim,
     ))
 }
 
@@ -48,7 +48,10 @@ fn code_spans(
                 .map(|(style, chunk)| Span::styled(chunk, style))
                 .collect()
         }
-        None => vec![Span::styled(text.to_owned(), theme::CODE_FALLBACK)],
+        None => vec![Span::styled(
+            text.to_owned(),
+            theme::current().code_fallback,
+        )],
     }
 }
 
@@ -122,17 +125,31 @@ fn render_diff(path: Option<&str>, hunks: &[DiffHunk]) -> Vec<Line<'static>> {
                 DiffLine::Removed(ds) | DiffLine::Added(ds) => {
                     let is_add = matches!(dl, DiffLine::Added(_));
                     let (prefix, base, emph) = if is_add {
-                        ("+ ", theme::DIFF_NEW, theme::DIFF_NEW_EMPHASIS)
+                        (
+                            "+ ",
+                            theme::current().diff_new,
+                            theme::current().diff_new_emphasis,
+                        )
                     } else {
-                        ("- ", theme::DIFF_OLD, theme::DIFF_OLD_EMPHASIS)
+                        (
+                            "- ",
+                            theme::current().diff_old,
+                            theme::current().diff_old_emphasis,
+                        )
                     };
-                    spans.push(Span::styled(prefix, base.fg(theme::FOREGROUND)));
+                    spans.push(Span::styled(
+                        prefix,
+                        base.patch(theme::current().code_fallback),
+                    ));
                     let full: String = ds.iter().map(|s| s.text.as_str()).collect();
                     if let Some(ref mut h) = hl {
                         let syn = highlight_line(h, &full);
                         spans.extend(merge_syntax_with_diff(&syn, ds, base, emph));
                     } else {
-                        spans.push(Span::styled(full, base.fg(theme::FOREGROUND)));
+                        spans.push(Span::styled(
+                            full,
+                            base.patch(theme::current().code_fallback),
+                        ));
                     }
                 }
             }
@@ -168,7 +185,7 @@ fn render_grep_results(
         if multi {
             out.push(Line::from(Span::styled(
                 entry.path.clone(),
-                theme::TOOL_PATH,
+                theme::current().tool_path,
             )));
         }
 
@@ -223,7 +240,7 @@ pub fn render_tool_content(
                 for text in code.trim_end_matches('\n').lines() {
                     lines.push(Line::from(Span::styled(
                         text.to_owned(),
-                        theme::CODE_FALLBACK,
+                        theme::current().code_fallback,
                     )));
                 }
             }
@@ -426,7 +443,12 @@ mod tests {
         assert!(texts[0].contains("a.rs"));
         assert!(texts[2].contains("b.rs"));
 
-        assert!(lines[0].spans.iter().any(|s| s.style == theme::TOOL_PATH));
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|s| s.style == theme::current().tool_path)
+        );
 
         let gutter_width = |line: &str| line.find(|c: char| c.is_alphabetic()).unwrap_or(0);
         assert_eq!(gutter_width(&texts[1]), gutter_width(&texts[3]));

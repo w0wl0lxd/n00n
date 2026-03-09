@@ -11,6 +11,7 @@ use crate::components::keybindings::{KeybindContext, key};
 use crate::components::question_form::{QuestionForm, QuestionFormAction};
 use crate::components::queue_panel::{self, QueueEntry};
 use crate::components::status_bar::{CancelResult, StatusBar, StatusBarContext, UsageStats};
+use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
 use crate::components::{Action, DisplayMessage, DisplayRole, RetryInfo, Status, is_ctrl};
 use crate::selection::{
     self, ContentRegion, EdgeScroll, SelectableZone, Selection, SelectionState, SelectionZone,
@@ -44,9 +45,9 @@ pub(crate) enum Mode {
 impl Mode {
     fn color(&self) -> Color {
         match self {
-            Self::Build => theme::CYAN,
-            Self::Plan { .. } => theme::PINK,
-            Self::BuildPlan => theme::PURPLE,
+            Self::Build => theme::current().mode_build,
+            Self::Plan { .. } => theme::current().mode_plan,
+            Self::BuildPlan => theme::current().mode_build_plan,
         }
     }
 }
@@ -64,11 +65,14 @@ impl QueuedItem {
         match self {
             Self::Message(input) => QueueEntry {
                 text: &input.message,
-                color: theme::FOREGROUND,
+                color: theme::current().foreground,
             },
             Self::Compact => QueueEntry {
                 text: COMPACT_LABEL,
-                color: theme::PURPLE,
+                color: theme::current()
+                    .queue_compact
+                    .fg
+                    .unwrap_or(theme::current().foreground),
             },
         }
     }
@@ -103,6 +107,7 @@ pub struct App {
     pub(crate) input_box: InputBox,
     command_palette: CommandPalette,
     chat_picker: ChatPicker,
+    theme_picker: ThemePicker,
     help_modal: HelpModal,
     question_form: QuestionForm,
     status_bar: StatusBar,
@@ -150,6 +155,7 @@ impl App {
             input_box: InputBox::new(),
             command_palette: CommandPalette::new(),
             chat_picker: ChatPicker::new(),
+            theme_picker: ThemePicker::new(),
             help_modal: HelpModal::new(),
             question_form: QuestionForm::new(),
             status_bar: StatusBar::new(),
@@ -271,6 +277,8 @@ impl App {
             contexts.push(KeybindContext::QueueFocus);
         } else if self.chat_picker.is_open() {
             contexts.push(KeybindContext::ChatPicker);
+        } else if self.theme_picker.is_open() {
+            contexts.push(KeybindContext::ThemePicker);
         } else if self.command_palette.is_active() {
             contexts.push(KeybindContext::CommandPalette);
         } else {
@@ -510,6 +518,13 @@ impl App {
                     self.check_demo_questions();
                     vec![]
                 }
+            };
+        }
+
+        if self.theme_picker.is_open() {
+            return match self.theme_picker.handle_key(key) {
+                ThemePickerAction::Consumed => vec![],
+                ThemePickerAction::Closed => vec![],
             };
         }
 
@@ -851,6 +866,10 @@ impl App {
                 self.focus_queue();
                 vec![]
             }
+            "/theme" => {
+                self.theme_picker.open();
+                vec![]
+            }
             _ => vec![],
         }
     }
@@ -883,6 +902,7 @@ impl App {
         }
         self.question_form.close();
         self.help_modal.close();
+        self.theme_picker.close();
         self.pending_question = false;
         self.status_bar.clear_cancel_hint();
         self.chat_picker.close();
@@ -896,7 +916,8 @@ impl App {
             self.status = Status::Idle;
         }
 
-        let bg = Block::default().style(ratatui::style::Style::new().bg(theme::BACKGROUND));
+        let bg =
+            Block::default().style(ratatui::style::Style::new().bg(theme::current().background));
         bg.render(frame.area(), frame.buffer_mut());
 
         let form_visible = self.question_form.is_visible();
@@ -971,6 +992,10 @@ impl App {
         if let Some(names) = names {
             let full_area = frame.area();
             self.chat_picker.view(frame, full_area, &names);
+        }
+
+        if self.theme_picker.is_open() {
+            self.theme_picker.view(frame, frame.area());
         }
 
         let chat = &self.chats[render_chat];
