@@ -58,15 +58,18 @@ impl Task {
             let effective = requested.min(ctx.model.tier);
             let resolved_model = maki_providers::Model::from_tier(ctx.model.provider, effective)
                 .map_err(|e| e.to_string())?;
-            let resolved_provider =
-                provider::from_model(&resolved_model).map_err(|e| e.to_string())?;
+            let resolved_provider = provider::from_model_async(&resolved_model)
+                .await
+                .map_err(|e| e.to_string())?;
             (resolved_model, Arc::from(resolved_provider))
         } else {
             (ctx.model.clone(), Arc::clone(&ctx.provider))
         };
 
         let mut system = vars.apply(prompt).into_owned();
-        let (instructions, _) = agent::load_instruction_files(&vars.apply("{cwd}"));
+        let cwd_owned = vars.apply("{cwd}").into_owned();
+        let (instructions, _) =
+            smol::unblock(move || agent::load_instruction_files(&cwd_owned)).await;
         system.push_str(&instructions);
         system.push_str(&agent::tool_efficiency_table(tool_names));
         let tools = ToolCall::definitions_filtered(

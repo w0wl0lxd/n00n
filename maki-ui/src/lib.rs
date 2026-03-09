@@ -228,8 +228,9 @@ fn spawn_agent(
     smol::spawn(async move {
         let answer_mutex = Arc::new(async_lock::Mutex::new(answer_rx));
         let vars = template::env_vars();
+        let cwd_owned = vars.apply("{cwd}").into_owned();
         let (instructions, loaded_instructions) =
-            agent::load_instruction_files(&vars.apply("{cwd}"));
+            smol::unblock(move || agent::load_instruction_files(&cwd_owned)).await;
         let (tool_names, tools) = maki_agent::tools::ToolCall::definitions(
             &vars,
             &skills,

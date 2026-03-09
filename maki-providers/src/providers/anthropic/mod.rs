@@ -290,14 +290,18 @@ impl Anthropic {
         builder
     }
 
-    fn try_refresh_auth(&self) -> Result<(), AgentError> {
-        let tokens = auth::load_tokens().ok_or_else(|| AgentError::Api {
-            status: 401,
-            message: "not using OAuth \u{2014} cannot refresh token".into(),
-        })?;
-        let fresh = auth::refresh_tokens(&tokens)?;
-        auth::save_tokens(&fresh)?;
-        *self.auth.lock().unwrap() = auth::build_oauth_resolved(&fresh);
+    async fn try_refresh_auth(&self) -> Result<(), AgentError> {
+        let resolved = smol::unblock(|| {
+            let tokens = auth::load_tokens().ok_or_else(|| AgentError::Api {
+                status: 401,
+                message: "not using OAuth \u{2014} cannot refresh token".into(),
+            })?;
+            let fresh = auth::refresh_tokens(&tokens)?;
+            auth::save_tokens(&fresh)?;
+            Ok::<_, AgentError>(auth::build_oauth_resolved(&fresh))
+        })
+        .await?;
+        *self.auth.lock().unwrap() = resolved;
         warn!("refreshed OAuth token after 401");
         Ok(())
     }
@@ -384,7 +388,7 @@ impl Provider for Anthropic {
 
             let result = self.do_stream_request(&body, event_tx).await;
             if let Err(AgentError::Api { status: 401, .. }) = &result
-                && self.try_refresh_auth().is_ok()
+                && self.try_refresh_auth().await.is_ok()
             {
                 return self.do_stream_request(&body, event_tx).await;
             }
@@ -396,7 +400,7 @@ impl Provider for Anthropic {
         Box::pin(async move {
             let result = self.do_list_models().await;
             if let Err(AgentError::Api { status: 401, .. }) = &result
-                && self.try_refresh_auth().is_ok()
+                && self.try_refresh_auth().await.is_ok()
             {
                 return self.do_list_models().await;
             }

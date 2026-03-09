@@ -161,7 +161,7 @@ pub fn run(
     smol::spawn(async move {
         let event_tx = EventSender::new(raw_tx, 0);
         let provider: Arc<dyn maki_providers::provider::Provider> =
-            match maki_providers::provider::from_model(&model_clone) {
+            match maki_providers::provider::from_model_async(&model_clone).await {
                 Ok(p) => Arc::from(p),
                 Err(e) => {
                     error!(error = %e, "provider error");

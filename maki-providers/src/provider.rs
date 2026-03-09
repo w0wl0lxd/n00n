@@ -19,7 +19,7 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    fn create(self) -> Result<Box<dyn Provider>, AgentError> {
+    pub fn create(self) -> Result<Box<dyn Provider>, AgentError> {
         match self {
             Self::Anthropic => Ok(Box::new(crate::providers::anthropic::Anthropic::new()?)),
             Self::Zai => Ok(Box::new(Zai::new(ZaiPlan::Standard)?)),
@@ -49,11 +49,19 @@ pub fn from_model(model: &Model) -> Result<Box<dyn Provider>, AgentError> {
     Ok(provider)
 }
 
+pub async fn from_model_async(model: &Model) -> Result<Box<dyn Provider>, AgentError> {
+    let kind = model.provider;
+    let id = model.id.clone();
+    let provider = smol::unblock(move || kind.create()).await?;
+    debug!(provider = %kind, model = %id, "provider created");
+    Ok(provider)
+}
+
 pub async fn fetch_all_models(mut on_ready: impl FnMut(Vec<String>)) {
     let (tx, rx) = flume::unbounded();
 
     for kind in ProviderKind::iter() {
-        let Ok(provider) = kind.create() else {
+        let Ok(provider) = smol::unblock(move || kind.create()).await else {
             warn!(provider = %kind, "failed to create provider, skipping");
             continue;
         };

@@ -107,11 +107,16 @@ impl Grep {
             return Ok(ToolOutput::Plain(msg));
         }
 
-        entries.sort_by(|a, b| {
-            let a_abs = Path::new(prefix).join(&a.path);
-            let b_abs = Path::new(prefix).join(&b.path);
-            mtime(&b_abs).cmp(&mtime(&a_abs))
-        });
+        let prefix_owned = prefix.to_string();
+        let mut entries = smol::unblock(move || {
+            entries.sort_by(|a, b| {
+                let a_abs = Path::new(&prefix_owned).join(&a.path);
+                let b_abs = Path::new(&prefix_owned).join(&b.path);
+                mtime(&b_abs).cmp(&mtime(&a_abs))
+            });
+            entries
+        })
+        .await;
 
         let mut total = 0;
         for entry in &mut entries {
