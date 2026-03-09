@@ -495,10 +495,8 @@ impl Agent {
 
         let has_tools = response.message.has_tool_calls();
         let stop_reason = response.stop_reason;
-        let input_tokens = response.usage.input;
-
         info!(
-            input_tokens,
+            input_tokens = response.usage.input,
             output_tokens = response.usage.output,
             cache_creation = response.usage.cache_creation,
             cache_read = response.usage.cache_read,
@@ -510,7 +508,8 @@ impl Agent {
         );
 
         self.emit_turn_complete(&response)?;
-        self.total_usage += response.usage;
+        let usage = response.usage;
+        self.total_usage += usage;
 
         if has_tools {
             self.process_tool_calls(response).await?;
@@ -528,7 +527,7 @@ impl Agent {
             }
         }
 
-        if self.try_auto_compact(input_tokens).await? || self.check_interrupt()? {
+        if self.try_auto_compact(&usage).await? || self.check_interrupt()? {
             return Ok(TurnOutcome::Continue);
         }
 
@@ -597,11 +596,11 @@ impl Agent {
         }
     }
 
-    async fn try_auto_compact(&mut self, input_tokens: u32) -> Result<bool, AgentError> {
-        if !self.auto_compact || !is_overflow(input_tokens, &self.model) {
+    async fn try_auto_compact(&mut self, usage: &TokenUsage) -> Result<bool, AgentError> {
+        if !self.auto_compact || !is_overflow(usage, &self.model) {
             return Ok(false);
         }
-        info!(input_tokens, "auto-compacting");
+        info!(total_input = usage.total_input(), "auto-compacting");
         self.event_tx.send(AgentEvent::AutoCompacting)?;
         self.total_usage += compact_history(
             &*self.provider,
@@ -693,10 +692,10 @@ pub async fn compact(
     Ok(())
 }
 
-fn is_overflow(input_tokens: u32, model: &Model) -> bool {
+fn is_overflow(usage: &TokenUsage, model: &Model) -> bool {
     let reserved = COMPACTION_BUFFER.min(model.max_output_tokens);
     let usable = model.context_window.saturating_sub(reserved);
-    input_tokens >= usable
+    usage.total_input() >= usable
 }
 
 fn auto_compact_enabled() -> bool {
@@ -1073,21 +1072,35 @@ mod tests {
         });
     }
 
-    #[test_case(179_999, 200_000, 20_000, false ; "below_threshold")]
-    #[test_case(180_000, 200_000, 20_000, true  ; "at_threshold")]
-    #[test_case(195_000, 200_000, 20_000, true  ; "above_threshold")]
-    #[test_case(190_000, 200_000, 10_000, true  ; "small_max_output_uses_it_as_reserve")]
-    #[test_case(0,       200_000, 20_000, false ; "zero_input")]
-    #[test_case(100,     100,     20_000, true  ; "tiny_context_window")]
-    fn overflow_detection(input: u32, ctx_window: u32, max_out: u32, expected: bool) {
+    #[test_case(179_999, 0,       0,       200_000, 20_000, false ; "below_threshold")]
+    #[test_case(180_000, 0,       0,       200_000, 20_000, true  ; "at_threshold")]
+    #[test_case(195_000, 0,       0,       200_000, 20_000, true  ; "above_threshold")]
+    #[test_case(190_000, 0,       0,       200_000, 10_000, true  ; "small_max_output_uses_it_as_reserve")]
+    #[test_case(0,       0,       0,       200_000, 20_000, false ; "zero_input")]
+    #[test_case(100,     0,       0,       100,     20_000, true  ; "tiny_context_window")]
+    #[test_case(5_000,   165_000, 10_000,  200_000, 20_000, true  ; "cached_tokens_count_toward_overflow")]
+    fn overflow_detection(
+        input: u32,
+        cache_read: u32,
+        cache_creation: u32,
+        ctx_window: u32,
+        max_out: u32,
+        expected: bool,
+    ) {
         let model = small_context_model(ctx_window, max_out);
-        assert_eq!(is_overflow(input, &model), expected);
+        let usage = TokenUsage {
+            input,
+            cache_read,
+            cache_creation,
+            ..Default::default()
+        };
+        assert_eq!(is_overflow(&usage, &model), expected);
     }
 
     #[test_case(true,  900, true  ; "enabled_and_over_threshold")]
     #[test_case(true,  100, false ; "enabled_but_below_threshold")]
     #[test_case(false, 900, false ; "disabled_even_over_threshold")]
-    fn try_auto_compact_behavior(enabled: bool, input_tokens: u32, expected: bool) {
+    fn try_auto_compact_behavior(enabled: bool, total_input: u32, expected: bool) {
         smol::block_on(async {
             let model = small_context_model(1000, 200);
             let provider = MockProvider::new(if expected {
@@ -1112,7 +1125,11 @@ mod tests {
             );
             agent.auto_compact = enabled;
 
-            let result = agent.try_auto_compact(input_tokens).await.unwrap();
+            let usage = TokenUsage {
+                input: total_input,
+                ..Default::default()
+            };
+            let result = agent.try_auto_compact(&usage).await.unwrap();
 
             assert_eq!(result, expected);
             drop(agent);

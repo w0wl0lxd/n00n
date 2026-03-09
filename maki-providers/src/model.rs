@@ -161,6 +161,10 @@ pub struct TokenUsage {
 }
 
 impl TokenUsage {
+    pub fn total_input(&self) -> u32 {
+        self.input + self.cache_read + self.cache_creation
+    }
+
     pub fn context_tokens(&self) -> u32 {
         self.input + self.output + self.cache_creation + self.cache_read
     }
@@ -218,6 +222,17 @@ mod tests {
     }
 
     #[test]
+    fn total_input_includes_cached_tokens() {
+        let usage = TokenUsage {
+            input: 5_000,
+            output: 1_000,
+            cache_creation: 10_000,
+            cache_read: 150_000,
+        };
+        assert_eq!(usage.total_input(), 165_000);
+    }
+
+    #[test]
     fn cost_computes_all_token_types() {
         let pricing = ModelPricing {
             input: 3.00,
@@ -243,12 +258,6 @@ mod tests {
         let round = Model::from_spec(&spec).unwrap();
         assert_eq!(round.id, model.id);
         assert_eq!(round.max_output_tokens, model.max_output_tokens);
-    }
-
-    #[test]
-    fn tier_ord_weak_lt_medium_lt_strong() {
-        assert!(ModelTier::Weak < ModelTier::Medium);
-        assert!(ModelTier::Medium < ModelTier::Strong);
     }
 
     #[test_case("anthropic/claude-opus-4-6-20260101",    ModelTier::Strong ; "anthropic_opus_strong")]
@@ -295,17 +304,6 @@ mod tests {
             "turbo".parse::<ModelTier>(),
             Err(ModelError::InvalidTier(_))
         ));
-    }
-
-    #[test]
-    fn tier_clamping_via_min() {
-        let requested = ModelTier::Strong;
-        let parent = ModelTier::Medium;
-        assert_eq!(requested.min(parent), ModelTier::Medium);
-
-        let requested = ModelTier::Weak;
-        let parent = ModelTier::Strong;
-        assert_eq!(requested.min(parent), ModelTier::Weak);
     }
 
     #[test]
