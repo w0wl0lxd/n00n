@@ -38,6 +38,9 @@ pub(crate) fn output_limits(tool: &str) -> (usize, Keep) {
 }
 const TIMESTAMP_LEN: usize = 8;
 const PLAIN_ANNOTATION_THRESHOLD: usize = 10;
+const BASH_OUTPUT_LABEL: &str = "· Output:";
+const BASH_WAITING_LABEL: &str = "· Waiting for output...";
+const BASH_NO_OUTPUT_LABEL: &str = "· No output.";
 const ALWAYS_ANNOTATE_TOOLS: &[&str] = &[WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME];
 
 pub(crate) fn tool_output_annotation(output: &ToolOutput, tool: &str) -> Option<String> {
@@ -245,9 +248,11 @@ enum OutputMode<'a> {
     Fallback {
         body: Option<&'a str>,
         tool: &'a str,
+        is_done: bool,
     },
     Truncated {
         tool: &'a str,
+        is_done: bool,
     },
 }
 
@@ -301,8 +306,14 @@ impl ToolLineBuilder {
 
     fn push_output(&mut self, output: Option<&ToolOutput>, mode: OutputMode<'_>) {
         match mode {
-            OutputMode::Fallback { body, tool } => self.push_output_fallback(output, body, tool),
-            OutputMode::Truncated { tool } => self.push_output_truncated(output, tool),
+            OutputMode::Fallback {
+                body,
+                tool,
+                is_done,
+            } => self.push_output_fallback(output, body, tool, is_done),
+            OutputMode::Truncated { tool, is_done } => {
+                self.push_output_truncated(output, tool, is_done)
+            }
         }
     }
 
@@ -311,14 +322,17 @@ impl ToolLineBuilder {
         output: Option<&ToolOutput>,
         body: Option<&str>,
         tool: &str,
+        is_done: bool,
     ) {
         match output {
             None | Some(ToolOutput::Plain(_)) | Some(ToolOutput::GlobResult { .. }) => {
+                let has_code = self.content_range.1 > self.content_range.0;
+                if has_code && tool == BASH_TOOL_NAME {
+                    self.push_bash_output_label(TOOL_BODY_INDENT, is_done, body.is_some());
+                } else if has_code && body.is_some() {
+                    self.push_code_output_separator(tool, TOOL_BODY_INDENT);
+                }
                 if let Some(text) = body {
-                    let has_code = self.content_range.1 > self.content_range.0;
-                    if has_code {
-                        self.push_code_output_separator(tool, TOOL_BODY_INDENT);
-                    }
                     push_text_lines(&mut self.lines, text, TOOL_BODY_INDENT);
                 }
             }
@@ -327,26 +341,33 @@ impl ToolLineBuilder {
         }
     }
 
-    fn push_code_output_separator(&mut self, tool: &str, indent: &str) {
-        let sep = match tool {
-            BASH_TOOL_NAME => super::TOOL_SEPARATOR,
-            CODE_EXECUTION_TOOL_NAME => {
-                return self.lines.push(Line::from(Span::styled(
-                    format!("{indent}{}", super::TOOL_SEPARATOR),
-                    theme::TOOL_DIM,
-                )));
-            }
-            _ => return,
+    fn push_bash_output_label(&mut self, indent: &str, is_done: bool, has_output: bool) {
+        let label = match (has_output, is_done) {
+            (true, _) => BASH_OUTPUT_LABEL,
+            (false, false) => BASH_WAITING_LABEL,
+            (false, true) => BASH_NO_OUTPUT_LABEL,
         };
         self.lines.push(Line::from(Span::styled(
-            format!("{indent}{sep}"),
-            theme::TOOL_DIM,
+            format!("{indent}{label}"),
+            theme::COMMENT_STYLE,
         )));
     }
 
-    fn push_output_truncated(&mut self, output: Option<&ToolOutput>, tool: &str) {
+    fn push_code_output_separator(&mut self, tool: &str, indent: &str) {
+        if tool == CODE_EXECUTION_TOOL_NAME {
+            self.lines.push(Line::from(Span::styled(
+                format!("{indent}{}", super::TOOL_SEPARATOR),
+                theme::TOOL_DIM,
+            )));
+        }
+    }
+
+    fn push_output_truncated(&mut self, output: Option<&ToolOutput>, tool: &str, is_done: bool) {
         let has_code = self.content_range.1 > self.content_range.0;
-        if has_code {
+        if has_code && tool == BASH_TOOL_NAME {
+            let has_output = matches!(output, Some(ToolOutput::Plain(t)) if !t.is_empty());
+            self.push_bash_output_label(TOOL_BODY_INDENT, is_done, has_output);
+        } else if has_code {
             self.push_code_output_separator(tool, TOOL_BODY_INDENT);
         }
         match output {
@@ -460,11 +481,13 @@ pub fn build_tool_lines(
     b.push_header(tool_name, header, msg.annotation.as_deref());
     b.prepend_indicator(status.into(), started_at);
     b.push_code_content(msg.tool_input.as_ref(), msg.tool_output.as_ref());
+    let is_done = status != ToolStatus::InProgress;
     b.push_output(
         msg.tool_output.as_ref(),
         OutputMode::Fallback {
             body,
             tool: tool_name,
+            is_done,
         },
     );
     b.finish(
@@ -500,9 +523,16 @@ pub fn build_batch_entry_lines(
     b.push_header(&entry.tool, &entry.summary, annotation.as_deref());
     b.prepend_indicator(entry.status.into(), started_at);
     b.push_code_content(entry.input.as_ref(), entry.output.as_ref());
+    let is_done = matches!(
+        entry.status,
+        BatchToolStatus::Success | BatchToolStatus::Error
+    );
     b.push_output(
         entry.output.as_ref(),
-        OutputMode::Truncated { tool: &entry.tool },
+        OutputMode::Truncated {
+            tool: &entry.tool,
+            is_done,
+        },
     );
     b.indent_all(BATCH_INDENT);
     b.prepend_separator(index);
@@ -666,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn bash_separator_between_code_and_output() {
+    fn bash_output_label_when_has_output() {
         let msg = DisplayMessage {
             role: DisplayRole::Tool {
                 id: "t1".into(),
@@ -681,11 +711,15 @@ mod tests {
             timestamp: None,
         };
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
-        assert!(line_has_styled(&tl, TOOL_SEPARATOR, theme::TOOL_DIM));
+        assert!(line_has_styled(
+            &tl,
+            BASH_OUTPUT_LABEL,
+            theme::COMMENT_STYLE
+        ));
     }
 
     #[test]
-    fn bash_no_separator_without_code_input() {
+    fn bash_no_label_without_code_input() {
         let msg = DisplayMessage {
             role: DisplayRole::Tool {
                 id: "t1".into(),
@@ -700,11 +734,61 @@ mod tests {
             timestamp: None,
         };
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
-        assert!(!line_has_styled(&tl, TOOL_SEPARATOR, theme::TOOL_DIM));
+        assert!(!line_has_styled(
+            &tl,
+            BASH_OUTPUT_LABEL,
+            theme::COMMENT_STYLE
+        ));
     }
 
     #[test]
-    fn batch_bash_separator_between_code_and_output() {
+    fn bash_waiting_label_when_in_progress_no_output() {
+        let msg = DisplayMessage {
+            role: DisplayRole::Tool {
+                id: "t1".into(),
+                status: ToolStatus::InProgress,
+                name: BASH_TOOL_NAME,
+            },
+            text: "echo hi".into(),
+            tool_input: code_input(),
+            tool_output: None,
+            annotation: None,
+            plan_path: None,
+            timestamp: None,
+        };
+        let tl = build_tool_lines(&msg, ToolStatus::InProgress, Instant::now());
+        assert!(line_has_styled(
+            &tl,
+            BASH_WAITING_LABEL,
+            theme::COMMENT_STYLE
+        ));
+    }
+
+    #[test]
+    fn bash_no_output_label_when_done_empty() {
+        let msg = DisplayMessage {
+            role: DisplayRole::Tool {
+                id: "t1".into(),
+                status: ToolStatus::Success,
+                name: BASH_TOOL_NAME,
+            },
+            text: "echo hi".into(),
+            tool_input: code_input(),
+            tool_output: Some(ToolOutput::Plain(String::new())),
+            annotation: None,
+            plan_path: None,
+            timestamp: None,
+        };
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
+        assert!(line_has_styled(
+            &tl,
+            BASH_NO_OUTPUT_LABEL,
+            theme::COMMENT_STYLE
+        ));
+    }
+
+    #[test]
+    fn batch_bash_output_label_between_code_and_output() {
         let entry = BatchToolEntry {
             tool: "bash".into(),
             summary: "echo hi".into(),
@@ -714,7 +798,11 @@ mod tests {
             annotation: None,
         };
         let tl = build_batch_entry_lines(&entry, 0, Instant::now());
-        assert!(line_has_styled(&tl, TOOL_SEPARATOR, theme::TOOL_DIM));
+        assert!(line_has_styled(
+            &tl,
+            BASH_OUTPUT_LABEL,
+            theme::COMMENT_STYLE
+        ));
     }
 
     #[test_case("header\nbody\nmore", "header" ; "multiline")]
