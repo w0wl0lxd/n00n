@@ -622,8 +622,8 @@ async fn parse_sse(
 mod tests {
     use super::*;
 
-    fn mock_response(data: &[u8]) -> isahc::Response<isahc::AsyncBody> {
-        let body = isahc::AsyncBody::from_bytes_static(data.to_vec());
+    fn mock_response(data: &'static [u8]) -> isahc::Response<isahc::AsyncBody> {
+        let body = isahc::AsyncBody::from_bytes_static(data);
         isahc::Response::builder().status(200).body(body).unwrap()
     }
 
