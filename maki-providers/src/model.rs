@@ -2,7 +2,7 @@ use std::fmt;
 use std::ops::AddAssign;
 use std::str::FromStr;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::provider::ProviderKind;
 use crate::providers::{anthropic, zai};
@@ -147,7 +147,7 @@ impl Model {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TokenUsage {
     /// Non-cached input tokens. Total input = `input + cache_read + cache_creation`.
     #[serde(rename = "input_tokens")]

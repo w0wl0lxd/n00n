@@ -99,7 +99,7 @@ impl CodeInterpreter {
 impl super::ToolDefaults for CodeInterpreter {
     fn start_input(&self) -> Option<ToolInput> {
         Some(ToolInput::Script {
-            language: "python",
+            language: "python".into(),
             code: self.code.clone(),
         })
     }

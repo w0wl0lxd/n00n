@@ -11,6 +11,7 @@ mod selection;
 mod text_buffer;
 mod theme;
 
+use std::collections::HashMap;
 use std::io::stdout;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -24,6 +25,7 @@ use crossterm::event::{
 };
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_agent::agent;
+use maki_agent::session::Session;
 use maki_agent::skill::Skill;
 use maki_agent::template;
 use maki_agent::{
@@ -38,6 +40,7 @@ use maki_providers::provider::Provider;
 use tracing::error;
 
 use app::{App, Msg};
+use chat::history_to_display;
 use components::Action;
 
 const MOUSE_SCROLL_LINES: i32 = 3;
@@ -45,17 +48,23 @@ const MOUSE_SCROLL_LINES: i32 = 3;
 const ANIMATION_INTERVAL_MS: u64 = 8;
 const EVENT_POLL_INTERVAL_MS: u64 = 8;
 
-pub fn run(model: Model, skills: Vec<Skill>, #[cfg(feature = "demo")] demo: bool) -> Result<()> {
+pub fn run(
+    model: Model,
+    skills: Vec<Skill>,
+    session: Session,
+    #[cfg(feature = "demo")] demo: bool,
+) -> Result<String> {
     let mut terminal = ratatui::init();
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(EnableBracketedPaste)?;
     stdout().execute(EnableMouseCapture)?;
     terminal::enable_raw_mode()?;
 
-    let result = run_event_loop(
+    let session_id = run_event_loop(
         &mut terminal,
         model,
         skills,
+        session,
         #[cfg(feature = "demo")]
         demo,
     );
@@ -66,16 +75,24 @@ pub fn run(model: Model, skills: Vec<Skill>, #[cfg(feature = "demo")] demo: bool
     stdout().execute(LeaveAlternateScreen)?;
     ratatui::restore();
 
-    result
+    session_id
 }
 
 fn run_event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     model: Model,
     skills: Vec<Skill>,
+    session: Session,
     #[cfg(feature = "demo")] demo: bool,
-) -> Result<()> {
-    let mut app = App::new(model.spec(), model.pricing.clone(), model.context_window);
+) -> Result<String> {
+    let initial_history = session.messages.clone();
+    let resumed = !initial_history.is_empty();
+    let mut app = App::new(
+        model.spec(),
+        model.pricing.clone(),
+        model.context_window,
+        session,
+    );
     #[cfg(feature = "demo")]
     if demo {
         app.status = components::Status::Streaming;
@@ -104,8 +121,14 @@ fn run_event_loop(
     let provider: Arc<dyn Provider> =
         Arc::from(maki_providers::provider::from_model(&model).context("create provider")?);
     let skills: Arc<[Skill]> = Arc::from(skills);
-    let mut handles = spawn_agent(&provider, &model, Vec::new(), &skills);
+    let mut handles = spawn_agent(&provider, &model, initial_history, &skills);
     handles.apply_to_app(&mut app);
+    if resumed {
+        app.token_usage = app.session.token_usage;
+        *handles.tool_outputs.lock().unwrap() = app.session.tool_outputs.clone();
+        let display_msgs = history_to_display(&app.session.messages, &app.session.tool_outputs);
+        app.main_chat().load_messages(display_msgs);
+    }
 
     loop {
         app.tick_edge_scroll();
@@ -125,7 +148,7 @@ fn run_event_loop(
         }
 
         if app.should_quit {
-            break;
+            return Ok(app.session.id.clone());
         }
 
         let poll_duration = if had_agent_msg {
@@ -188,8 +211,6 @@ fn run_event_loop(
             );
         }
     }
-
-    Ok(())
 }
 
 pub(crate) enum AgentCommand {
@@ -202,12 +223,16 @@ struct AgentHandles {
     cmd_tx: flume::Sender<AgentCommand>,
     agent_rx: flume::Receiver<Envelope>,
     answer_tx: flume::Sender<String>,
+    history: Arc<Mutex<Vec<Message>>>,
+    tool_outputs: Arc<Mutex<HashMap<String, maki_agent::ToolOutput>>>,
 }
 
 impl AgentHandles {
     fn apply_to_app(&self, app: &mut App) {
         app.answer_tx = Some(self.answer_tx.clone());
         app.cmd_tx = Some(self.cmd_tx.clone());
+        app.shared_history = Some(Arc::clone(&self.history));
+        app.shared_tool_outputs = Some(Arc::clone(&self.tool_outputs));
     }
 }
 
@@ -221,6 +246,10 @@ fn spawn_agent(
     let (cmd_tx, cmd_rx) = flume::unbounded::<AgentCommand>();
     let (answer_tx, answer_rx) = flume::unbounded::<String>();
     let (ecmd_tx, ecmd_rx) = flume::unbounded::<ExtractedCommand>();
+    let shared_history: Arc<Mutex<Vec<Message>>> = Arc::new(Mutex::new(initial_history.clone()));
+    let shared_history_inner = Arc::clone(&shared_history);
+    let shared_tool_outputs: Arc<Mutex<HashMap<String, maki_agent::ToolOutput>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let model = model.clone();
     let provider = Arc::clone(provider);
     let skills = Arc::clone(skills);
@@ -274,7 +303,9 @@ fn spawn_agent(
             };
             let result = match cmd {
                 ExtractedCommand::Compact(_) => {
-                    agent::compact(&*provider, &model, &mut history, &event_tx).await
+                    let r = agent::compact(&*provider, &model, &mut history, &event_tx).await;
+                    *shared_history_inner.lock().unwrap() = history.as_slice().to_vec();
+                    r
                 }
                 ExtractedCommand::Cancel | ExtractedCommand::Ignore => unreachable!(),
                 ExtractedCommand::Interrupt(input, _) => {
@@ -298,6 +329,7 @@ fn spawn_agent(
                     let outcome = agent.run(input).await;
                     *cancel_trigger.lock().unwrap() = None;
                     history = outcome.history;
+                    *shared_history_inner.lock().unwrap() = history.as_slice().to_vec();
                     ecmd_rx = outcome.cmd_rx.expect("cmd_rx was set");
                     if matches!(outcome.result, Err(AgentError::Cancelled)) {
                         min_run_id = current_run_id + 1;
@@ -331,6 +363,8 @@ fn spawn_agent(
         cmd_tx,
         agent_rx,
         answer_tx,
+        history: shared_history,
+        tool_outputs: shared_tool_outputs,
     }
 }
 

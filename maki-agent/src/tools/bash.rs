@@ -189,7 +189,7 @@ impl super::ToolDefaults for Bash {
     fn start_input(&self) -> Option<ToolInput> {
         let (command, _) = self.resolved();
         Some(ToolInput::Code {
-            language: "bash",
+            language: "bash".into(),
             code: command.to_string(),
         })
     }

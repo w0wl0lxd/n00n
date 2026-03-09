@@ -3,6 +3,7 @@ mod print;
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use color_eyre::eyre::Context;
+use maki_agent::session::Session;
 use maki_agent::skill::{self, Skill};
 use tracing_subscriber::EnvFilter;
 
@@ -25,6 +26,12 @@ struct Cli {
 
     #[arg(long)]
     verbose: bool,
+
+    #[arg(short = 'c', long = "continue")]
+    continue_session: bool,
+
+    #[arg(short = 's', long)]
+    session: Option<String>,
 
     #[arg(long)]
     #[cfg(feature = "demo")]
@@ -86,17 +93,48 @@ fn main() -> Result<()> {
                 print::run(&model, cli.prompt, cli.output_format, cli.verbose, skills)
                     .context("run print mode")?;
             } else {
-                maki_ui::run(
+                let cwd = std::env::current_dir()
+                    .unwrap_or_else(|_| ".".into())
+                    .to_string_lossy()
+                    .into_owned();
+                let session =
+                    resolve_session(cli.continue_session, cli.session, &model.spec(), &cwd)?;
+                let session_id = maki_ui::run(
                     model,
                     skills,
+                    session,
                     #[cfg(feature = "demo")]
                     cli.demo,
                 )
                 .context("run UI")?;
+                eprintln!("session: {session_id}");
             }
         }
     }
     Ok(())
+}
+
+fn resolve_session(
+    continue_session: bool,
+    session_id: Option<String>,
+    model: &str,
+    cwd: &str,
+) -> Result<Session> {
+    if let Some(id) = session_id {
+        return Session::load(&id).map_err(|e| color_eyre::eyre::eyre!("{e}"));
+    }
+    if continue_session {
+        match Session::latest(cwd) {
+            Ok(Some(session)) => return Ok(session),
+            Ok(None) => {
+                tracing::info!("no previous session found for this directory, starting new");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load latest session, starting new");
+            }
+        }
+    }
+    Ok(Session::new(model, cwd))
 }
 
 fn init_logging() {

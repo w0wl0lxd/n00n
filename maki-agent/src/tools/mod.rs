@@ -417,6 +417,13 @@ macro_rules! register_tools {
                 )
             }
 
+            pub fn static_name(name: &str) -> Option<&'static str> {
+                match name {
+                    $(<$inner>::NAME => Some(<$inner>::NAME),)+
+                    _ => None,
+                }
+            }
+
             pub fn definitions_excluding(vars: &Vars, skills: &[Skill], blocked: &[&str], supports_examples: bool) -> (Vec<&'static str>, Value) {
                 let defs: Vec<_> = Self::all_defs(vars, skills, supports_examples).into_iter()
                     .filter(|(name, _)| !blocked.contains(name))

@@ -186,6 +186,8 @@ impl MessagesPanel {
             })
             .count();
         self.messages = msgs;
+        self.cached_segments.clear();
+        self.cached_msg_count = 0;
     }
 
     pub fn thinking_delta(&mut self, text: &str) {
@@ -1340,7 +1342,7 @@ mod tests {
             summary: code.into(),
             annotation: None,
             input: Some(ToolInput::Code {
-                language: "bash",
+                language: "bash".into(),
                 code: code.into(),
             }),
             output: None,

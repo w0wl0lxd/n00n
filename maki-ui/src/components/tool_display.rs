@@ -560,7 +560,7 @@ mod tests {
 
     fn code_input() -> Option<ToolInput> {
         Some(ToolInput::Code {
-            language: "sh",
+            language: "sh".into(),
             code: "echo hi\n".into(),
         })
     }
@@ -871,7 +871,7 @@ mod tests {
             summary: "echo hi".into(),
             status: BatchToolStatus::Success,
             input: Some(ToolInput::Code {
-                language: "bash",
+                language: "bash".into(),
                 code: "echo hi\n".into(),
             }),
             output: None,

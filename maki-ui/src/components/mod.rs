@@ -248,7 +248,7 @@ mod tests {
     fn copy_text_tool_with_code_input() {
         let mut msg = tool_msg("bash\nold body");
         msg.tool_input = Some(ToolInput::Code {
-            language: "bash",
+            language: "bash".into(),
             code: "echo hi\n".into(),
         });
         msg.tool_output = Some(ToolOutput::Plain("done".into()));

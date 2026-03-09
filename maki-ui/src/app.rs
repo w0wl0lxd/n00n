@@ -22,6 +22,7 @@ use arboard::Clipboard;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 #[cfg(feature = "demo")]
 use maki_agent::QuestionInfo;
+use maki_agent::session::Session;
 use maki_agent::{AgentEvent, Envelope, SubagentInfo};
 use maki_agent::{AgentInput, AgentMode};
 use maki_providers::{ModelPricing, TokenUsage};
@@ -127,10 +128,21 @@ pub struct App {
     selection_state: Option<SelectionState>,
     clipboard: Option<Clipboard>,
     queue_focus: Option<usize>,
+    pub(crate) session: Session,
+    pub(crate) shared_history:
+        Option<std::sync::Arc<std::sync::Mutex<Vec<maki_providers::Message>>>>,
+    pub(crate) shared_tool_outputs: Option<
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, maki_agent::ToolOutput>>>,
+    >,
 }
 
 impl App {
-    pub fn new(model_id: String, pricing: ModelPricing, context_window: u32) -> Self {
+    pub fn new(
+        model_id: String,
+        pricing: ModelPricing,
+        context_window: u32,
+        session: Session,
+    ) -> Self {
         Self {
             chats: vec![Chat::new("Main".into())],
             active_chat: 0,
@@ -161,6 +173,9 @@ impl App {
             selection_state: None,
             clipboard: Clipboard::new().ok(),
             queue_focus: None,
+            session,
+            shared_history: None,
+            shared_tool_outputs: None,
         }
     }
 
@@ -636,15 +651,22 @@ impl App {
             None => 0,
         };
 
-        if let AgentEvent::ToolDone(ref e) = envelope.event
-            && let Mode::Plan {
+        if let AgentEvent::ToolDone(ref e) = envelope.event {
+            if let Mode::Plan {
                 ref path,
                 ref mut written,
             } = self.mode
-            && e.written_path()
-                .is_some_and(|wp| wp == path || Path::new(path).ends_with(wp))
-        {
-            *written = true;
+                && e.written_path()
+                    .is_some_and(|wp| wp == path || Path::new(path).ends_with(wp))
+            {
+                *written = true;
+            }
+            if let Some(ref outputs) = self.shared_tool_outputs {
+                outputs
+                    .lock()
+                    .unwrap()
+                    .insert(e.id.clone(), e.output.clone());
+            }
         }
 
         if let AgentEvent::Retry {
@@ -693,6 +715,7 @@ impl App {
             match result {
                 ChatEventResult::Done => {
                     self.status_bar.clear_cancel_hint();
+                    self.save_session();
                     if let Some(item) = self.queue.pop_front() {
                         self.clamp_queue_focus();
                         return match item {
@@ -831,6 +854,20 @@ impl App {
         }
     }
 
+    fn save_session(&mut self) {
+        if let Some(ref history) = self.shared_history {
+            self.session.messages = history.lock().unwrap().clone();
+        }
+        if let Some(ref outputs) = self.shared_tool_outputs {
+            self.session.tool_outputs = outputs.lock().unwrap().clone();
+        }
+        self.session.token_usage = self.token_usage;
+        self.session.update_title_if_default();
+        if let Err(e) = self.session.save() {
+            tracing::warn!(error = %e, "failed to save session");
+        }
+    }
+
     fn reset_session(&mut self) -> Vec<Action> {
         self.chats.clear();
         self.chats.push(Chat::new("Main".into()));
@@ -848,6 +885,7 @@ impl App {
         self.pending_question = false;
         self.status_bar.clear_cancel_hint();
         self.chat_picker.close();
+        self.session = Session::new(&self.session.model, &self.session.cwd);
         vec![Action::NewSession]
     }
 
@@ -1091,7 +1129,12 @@ mod tests {
     }
 
     fn test_app() -> App {
-        App::new("test-model".into(), test_pricing(), TEST_CONTEXT_WINDOW)
+        App::new(
+            "test-model".into(),
+            test_pricing(),
+            TEST_CONTEXT_WINDOW,
+            Session::new("test-model", "/tmp/test"),
+        )
     }
 
     fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> Msg {

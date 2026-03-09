@@ -206,7 +206,7 @@ pub fn mock_events() -> Vec<MockEvent> {
         BASH_TOOL_NAME,
         "ls -la src/config/",
         Some(ToolInput::Code {
-            language: "bash",
+            language: "bash".into(),
             code: "ls -la src/config/".into(),
         }),
         Some("2m timeout"),
@@ -486,7 +486,7 @@ pub fn mock_events() -> Vec<MockEvent> {
         CODE_EXECUTION_TOOL_NAME,
         "6 lines",
         Some(ToolInput::Script {
-            language: "python",
+            language: "python".into(),
             code: "files = glob(pattern='**/*.rs', path='src/config')
 total = 0
 for f in files:
@@ -533,7 +533,7 @@ print(f'Total lines across config: {total}')"
         BASH_TOOL_NAME,
         "cargo test",
         Some(ToolInput::Code {
-            language: "bash",
+            language: "bash".into(),
             code: "cargo test".into(),
         }),
         Some("2m timeout"),
@@ -553,7 +553,7 @@ print(f'Total lines across config: {total}')"
         BASH_TOOL_NAME,
         "cargo build --release",
         Some(ToolInput::Code {
-            language: "bash",
+            language: "bash".into(),
             code: "cargo build --release".into(),
         }),
         Some("2m timeout"),

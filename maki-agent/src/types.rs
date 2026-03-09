@@ -9,13 +9,13 @@ use crate::tools::WRITE_TOOL_NAME;
 
 pub const NO_FILES_FOUND: &str = "No files found";
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiffSpan {
     pub text: String,
     pub emphasized: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DiffLine {
     Unchanged(String),
     Added(Vec<DiffSpan>),
@@ -31,25 +31,25 @@ impl DiffSpan {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffHunk {
     pub start_line: usize,
     pub lines: Vec<DiffLine>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrepFileEntry {
     pub path: String,
     pub matches: Vec<GrepMatch>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrepMatch {
     pub line_nr: usize,
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuestionAnswer {
     pub question: String,
     pub answer: String,
@@ -105,7 +105,7 @@ impl QuestionInfo {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TodoItem {
     pub content: String,
     pub status: TodoStatus,
@@ -155,19 +155,13 @@ pub enum TodoPriority {
     Low,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ToolInput {
-    Code {
-        language: &'static str,
-        code: String,
-    },
-    Script {
-        language: &'static str,
-        code: String,
-    },
+    Code { language: String, code: String },
+    Script { language: String, code: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum BatchToolStatus {
     Pending,
     InProgress,
@@ -175,7 +169,7 @@ pub enum BatchToolStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchToolEntry {
     pub tool: String,
     pub summary: String,
@@ -186,7 +180,7 @@ pub struct BatchToolEntry {
     pub annotation: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolOutput {
     Plain(String),
     ReadCode {

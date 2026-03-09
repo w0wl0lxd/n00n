@@ -4,6 +4,7 @@ pub(crate) mod task_set;
 pub use agent::{Agent, History, RunOutcome};
 pub use cancel::{CancelToken, CancelTrigger};
 pub(crate) mod prompt;
+pub mod session;
 pub mod skill;
 pub mod template;
 pub mod tools;
