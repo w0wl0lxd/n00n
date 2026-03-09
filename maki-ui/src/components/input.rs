@@ -280,7 +280,11 @@ impl InputBox {
         let max_scroll = total_vl.saturating_sub(content_height);
         self.scroll_y = self.scroll_y.min(max_scroll);
 
-        let prefix_style = Style::new().fg(theme::COMMENT);
+        let prefix_style = if streaming {
+            theme::COMMENT_STYLE
+        } else {
+            theme::FOREGROUND_STYLE
+        };
         let is_empty = self.buffer.value().is_empty();
         let styled_lines: Vec<Line> = if is_empty {
             let placeholder_base = Style::new().fg(theme::COMMENT);
