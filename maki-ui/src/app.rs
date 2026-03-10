@@ -635,6 +635,7 @@ impl App {
                 self.clear_queue();
                 self.chat_index.clear();
                 self.status = Status::Idle;
+                self.save_session();
                 vec![Action::CancelAgent]
             }
             CancelResult::FirstPress => vec![],

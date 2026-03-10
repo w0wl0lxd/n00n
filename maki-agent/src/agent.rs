@@ -23,7 +23,9 @@ use crate::{
 };
 use maki_providers::provider::Provider;
 use maki_providers::retry::RetryState;
-use maki_providers::{Message, Model, ProviderEvent, StopReason, StreamResponse, TokenUsage};
+use maki_providers::{
+    ContentBlock, Message, Model, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
+};
 
 const INSTRUCTION_FILES: &[&str] = &[
     "AGENTS.md",
@@ -42,6 +44,7 @@ const MAX_CONTINUATION_TURNS: u32 = 3;
 const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
 const COMPACTION_BUFFER: u32 = 30_000;
 const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.";
+const CANCEL_MARKER: &str = "[Cancelled by user]";
 
 pub struct History {
     messages: Vec<Message>,
@@ -483,7 +486,7 @@ impl Agent {
         let result = self.run_loop().await;
 
         if matches!(result, Err(AgentError::Cancelled)) {
-            self.history.truncate(self.rollback_len);
+            sanitize_cancelled_history(&mut self.history, self.rollback_len);
         }
 
         RunOutcome {
@@ -606,10 +609,6 @@ impl Agent {
         let ctx = self.tool_context();
         let mut results = execute_tools(&parsed, &ctx).await;
 
-        if self.cancel.is_cancelled() {
-            return Err(AgentError::Cancelled);
-        }
-
         results.extend(errors);
         let tool_msg = tool_results(results);
         self.event_tx.send(AgentEvent::ToolResultsSubmitted {
@@ -682,6 +681,28 @@ impl Agent {
         self.event_tx.send(AgentEvent::QueueItemConsumed)?;
         Ok(true)
     }
+}
+
+fn sanitize_cancelled_history(history: &mut History, rollback_len: usize) {
+    if history.len() <= rollback_len {
+        return;
+    }
+    let last = history.as_slice().last().unwrap();
+    if matches!(last.role, Role::Assistant) && last.has_tool_calls() {
+        let error_results: Vec<ContentBlock> = last
+            .tool_uses()
+            .map(|(id, _, _)| ContentBlock::ToolResult {
+                tool_use_id: id.to_owned(),
+                content: CANCEL_MARKER.to_owned(),
+                is_error: true,
+            })
+            .collect();
+        history.push(Message {
+            role: Role::User,
+            content: error_results,
+        });
+    }
+    history.push(Message::user(CANCEL_MARKER.into()));
 }
 
 async fn compact_history(
@@ -766,6 +787,13 @@ mod tests {
     use super::*;
 
     const PLAN_PATH: &str = ".maki/plans/123.md";
+
+    #[track_caller]
+    fn assert_ends_with_cancel_marker(history: &History) {
+        let last = history.as_slice().last().unwrap();
+        assert!(matches!(last.role, Role::User));
+        assert!(matches!(&last.content[0], ContentBlock::Text { text } if text == CANCEL_MARKER));
+    }
 
     fn default_model() -> Model {
         Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap()
@@ -1020,29 +1048,25 @@ mod tests {
     #[test_case(
         vec![],
         vec![ExtractedCommand::Cancel],
-        vec![text_response(StopReason::EndTurn)],
-        0
-        ; "simple_cancel_restores_empty_history"
+        vec![text_response(StopReason::EndTurn)]
+        ; "cancel_keeps_turn_and_adds_marker"
     )]
     #[test_case(
         vec![Message::user("old".into())],
         vec![ExtractedCommand::Cancel],
-        vec![text_response(StopReason::EndTurn)],
-        1
-        ; "cancel_preserves_prior_history"
+        vec![text_response(StopReason::EndTurn)]
+        ; "cancel_preserves_prior_and_turn"
     )]
     #[test_case(
         (0..10).map(|i| Message::user(format!("msg {i}"))).collect(),
         vec![ExtractedCommand::Compact(0), ExtractedCommand::Cancel],
-        vec![tool_call_response("glob", "t1"), text_response(StopReason::EndTurn), text_response(StopReason::EndTurn)],
-        2
+        vec![tool_call_response("glob", "t1"), text_response(StopReason::EndTurn), text_response(StopReason::EndTurn)]
         ; "cancel_after_compaction_preserves_summary"
     )]
     fn cancel_rollback(
         prior: Vec<Message>,
         commands: Vec<ExtractedCommand>,
         responses: Vec<StreamResponse>,
-        expected_len: usize,
     ) {
         smol::block_on(async {
             let (cmd_tx, cmd_rx) = flume::unbounded::<ExtractedCommand>();
@@ -1054,7 +1078,8 @@ mod tests {
             let outcome = agent.with_cmd_rx(cmd_rx).run(default_input()).await;
 
             assert!(matches!(outcome.result, Err(AgentError::Cancelled)));
-            assert_eq!(outcome.history.len(), expected_len);
+            assert!(!outcome.history.as_slice().is_empty());
+            assert_ends_with_cancel_marker(&outcome.history);
         });
     }
 
@@ -1234,6 +1259,75 @@ mod tests {
 
             let outcome = agent.run(default_input()).await;
             assert!(matches!(outcome.result, Err(AgentError::Cancelled)));
+            assert_ends_with_cancel_marker(&outcome.history);
         });
+    }
+
+    #[test]
+    fn sanitize_no_new_messages_is_noop() {
+        let mut history = History::new(vec![Message::user("old".into())]);
+        sanitize_cancelled_history(&mut history, 1);
+        assert_eq!(history.len(), 1);
+    }
+
+    #[test_case(
+        vec![Message::user("hello".into())]
+        ; "user_message_only"
+    )]
+    #[test_case(
+        vec![
+            Message::user("hello".into()),
+            Message { role: Role::Assistant, content: vec![ContentBlock::Text { text: "hi".into() }] },
+        ]
+        ; "complete_turn"
+    )]
+    fn sanitize_appends_marker(messages: Vec<Message>) {
+        let initial_len = messages.len();
+        let mut history = History::new(messages);
+        sanitize_cancelled_history(&mut history, 0);
+        assert!(history.len() > initial_len);
+        assert_ends_with_cancel_marker(&history);
+    }
+
+    #[test]
+    fn sanitize_dangling_tool_use_adds_error_results() {
+        let mut history = History::new(vec![
+            Message::user("hello".into()),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "let me check".into(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "t1".into(),
+                        name: "read".into(),
+                        input: serde_json::json!({"path": "/tmp"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "t2".into(),
+                        name: "glob".into(),
+                        input: serde_json::json!({"pattern": "*.rs"}),
+                    },
+                ],
+            },
+        ]);
+        sanitize_cancelled_history(&mut history, 0);
+
+        let tool_result_msg = &history.as_slice()[2];
+        let error_ids: Vec<&str> = tool_result_msg
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    is_error: true,
+                    ..
+                } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(error_ids, ["t1", "t2"]);
+        assert_ends_with_cancel_marker(&history);
     }
 }
