@@ -7,7 +7,10 @@ use super::tool_display::{
 };
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::CodeHighlighter;
-use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_lines};
+use crate::markdown::{
+    RenderCtx, RenderState, finalize_lines, hr_line, parse_blocks_with_offsets, plain_lines,
+    render_block, text_to_lines, truncate_lines,
+};
 use crate::render_worker::RenderWorker;
 use crate::theme;
 
@@ -26,12 +29,25 @@ use unicode_width::UnicodeWidthStr;
 
 use super::scrollbar::render_vertical_scrollbar;
 
+/// Block-level cache for streaming markdown. All blocks except the last
+/// are "stable" (won't change as tokens arrive), so we render them once
+/// into `stable_lines` and only re-render the last block each frame.
+///
+/// Invalidation: `stable_offsets` stores byte offsets per cached block.
+/// If any offset shifts (e.g. a code fence closes and reshuffles block
+/// boundaries), the entire cache is rebuilt.
+///
+/// `stable_state` captures RenderState after the last stable block so
+/// we can resume rendering without replaying stable blocks.
 #[derive(Default)]
 struct StreamingCache {
     byte_len: usize,
     lines: Vec<Line<'static>>,
     highlighters: Vec<CodeHighlighter>,
     dim: bool,
+    stable_offsets: Vec<usize>,
+    stable_lines: Vec<Line<'static>>,
+    stable_state: Option<RenderState>,
 }
 
 impl StreamingCache {
@@ -50,20 +66,78 @@ impl StreamingCache {
         width: u16,
     ) -> &[Line<'static>] {
         let len = visible.len();
-        if len != self.byte_len || self.lines.is_empty() {
-            self.lines = text_to_lines(
-                visible,
+        if len == self.byte_len && !self.lines.is_empty() {
+            return &self.lines;
+        }
+        self.byte_len = len;
+
+        let text = visible.trim_start_matches('\n');
+        let blocks = parse_blocks_with_offsets(text);
+        let total = blocks.len();
+        let completed = total.saturating_sub(1);
+
+        let stable_count = self.stable_offsets.len();
+        let reusable = if completed > 0
+            && completed >= stable_count
+            && self
+                .stable_offsets
+                .iter()
+                .zip(&blocks)
+                .all(|(cached, pb)| *cached == pb.byte_offset)
+        {
+            stable_count
+        } else {
+            if completed > 0 {
+                self.stable_lines.clear();
+                self.stable_offsets.clear();
+            }
+            0
+        };
+
+        let mut state = self
+            .stable_state
+            .clone()
+            .filter(|_| reusable > 0)
+            .unwrap_or_else(RenderState::new);
+
+        if reusable < completed {
+            let mut hl_opt: Option<&mut Vec<CodeHighlighter>> = Some(&mut self.highlighters);
+            let mut ctx = RenderCtx {
                 prefix,
                 text_style,
                 prefix_style,
-                Some(&mut self.highlighters),
+                highlighters: &mut hl_opt,
                 width,
-            );
-            if self.dim {
-                theme::dim_lines(&mut self.lines);
+            };
+            for pb in &blocks[reusable..completed] {
+                render_block(&pb.block, &mut self.stable_lines, &mut state, &mut ctx);
             }
-            self.byte_len = len;
+            self.stable_offsets.truncate(reusable);
+            self.stable_offsets
+                .extend(blocks[reusable..completed].iter().map(|pb| pb.byte_offset));
+            self.stable_state = Some(state.clone());
         }
+
+        let mut lines = self.stable_lines.clone();
+        if total > 0 {
+            let mut hl_opt: Option<&mut Vec<CodeHighlighter>> = Some(&mut self.highlighters);
+            let mut ctx = RenderCtx {
+                prefix,
+                text_style,
+                prefix_style,
+                highlighters: &mut hl_opt,
+                width,
+            };
+            render_block(&blocks[total - 1].block, &mut lines, &mut state, &mut ctx);
+            self.highlighters.truncate(state.code_idx);
+        }
+
+        finalize_lines(&mut lines, prefix, prefix_style);
+
+        if self.dim {
+            theme::dim_lines(&mut lines);
+        }
+        self.lines = lines;
         &self.lines
     }
 }
@@ -1773,5 +1847,56 @@ mod tests {
         assert_eq!(panel.in_progress_count, 1);
         assert_eq!(panel.messages[0].text, "t1");
         assert_eq!(panel.messages[0].annotation.as_deref(), Some("note"));
+    }
+
+    fn cache_lines_text(cache: &StreamingCache) -> Vec<String> {
+        cache
+            .lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    fn full_render_lines(text: &str, prefix: &str, width: u16) -> Vec<String> {
+        let style = Style::default();
+        let mut hl = Vec::new();
+        text_to_lines(text, prefix, style, style, Some(&mut hl), width)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test_case(
+        "Hello **bold**\n```rust\nfn main() {}\n```\nAfter code\n- list item",
+        "p> "
+        ; "single_code_block_with_prefix"
+    )]
+    #[test_case(
+        "text\n```py\nx=1\n```\nmiddle\n```js\ny=2\n```\ntail",
+        ""
+        ; "multiple_code_blocks"
+    )]
+    fn streaming_cache_incremental_matches_full_render(full_text: &str, prefix: &str) {
+        let style = Style::default();
+        let width = 80;
+        let mut cache = StreamingCache::default();
+
+        let step = 3;
+        let mut end = step;
+        while end <= full_text.len() {
+            if !full_text.is_char_boundary(end) {
+                end += 1;
+                continue;
+            }
+            let slice = &full_text[..end];
+            cache.get_or_update(slice, prefix, style, style, width);
+            let incremental = cache_lines_text(&cache);
+            let expected = full_render_lines(slice, prefix, width);
+            assert_eq!(
+                incremental, expected,
+                "mismatch at byte {end}:\n  slice: {slice:?}"
+            );
+            end += step;
+        }
     }
 }

@@ -540,7 +540,7 @@ fn parse_line_prefix(line: &str, base_style: Style) -> (Option<String>, &str, St
     (None, line, base_style)
 }
 
-enum TextBlock<'a> {
+pub(crate) enum TextBlock<'a> {
     Normal(&'a str),
     Code {
         lang: &'a str,
@@ -550,6 +550,11 @@ enum TextBlock<'a> {
         rows: Vec<Vec<String>>,
         header_end: usize,
     },
+}
+
+pub(crate) struct ParsedBlock<'a> {
+    pub block: TextBlock<'a>,
+    pub byte_offset: usize,
 }
 
 fn is_table_row(line: &str) -> bool {
@@ -934,27 +939,65 @@ fn find_code_fence(text: &str) -> Option<CodeFence<'_>> {
 }
 
 fn parse_blocks(text: &str) -> Vec<TextBlock<'_>> {
+    parse_blocks_with_offsets(text)
+        .into_iter()
+        .map(|pb| pb.block)
+        .collect()
+}
+
+fn push_normal_blocks<'a>(
+    blocks: &mut Vec<ParsedBlock<'a>>,
+    text: &'a str,
+    context: &str,
+    base_offset: usize,
+) {
+    for nb in split_normal_blocks(text) {
+        let off = match &nb {
+            TextBlock::Normal(s) => base_offset + byte_offset_in(context, s),
+            _ => base_offset,
+        };
+        blocks.push(ParsedBlock {
+            block: nb,
+            byte_offset: off,
+        });
+    }
+}
+
+pub(crate) fn parse_blocks_with_offsets(text: &str) -> Vec<ParsedBlock<'_>> {
     let mut blocks = Vec::new();
     let mut rest = text;
+    let mut consumed = 0;
 
     while let Some(fence) = find_code_fence(rest) {
         let before = rest[..fence.before_end].trim_end_matches('\n');
         if !before.is_empty() {
-            blocks.extend(split_normal_blocks(before));
+            push_normal_blocks(&mut blocks, before, rest, consumed);
         }
 
-        blocks.push(TextBlock::Code {
-            lang: fence.lang,
-            code: fence.code,
+        blocks.push(ParsedBlock {
+            block: TextBlock::Code {
+                lang: fence.lang,
+                code: fence.code,
+            },
+            byte_offset: consumed + fence.before_end,
         });
-        rest = rest[fence.block_end..].trim_start_matches('\n');
+        let skip = fence.block_end + rest[fence.block_end..].len()
+            - rest[fence.block_end..].trim_start_matches('\n').len();
+        consumed += skip;
+        rest = &rest[skip..];
     }
 
     if !rest.is_empty() {
-        blocks.extend(split_normal_blocks(rest));
+        push_normal_blocks(&mut blocks, rest, rest, consumed);
     }
 
     blocks
+}
+
+fn byte_offset_in(haystack: &str, needle: &str) -> usize {
+    let h = haystack.as_ptr() as usize;
+    let n = needle.as_ptr() as usize;
+    n.saturating_sub(h)
 }
 
 fn is_blank_line(line: &Line<'_>) -> bool {
@@ -998,101 +1041,141 @@ pub fn plain_lines(
     lines
 }
 
-pub fn text_to_lines(
+#[derive(Clone)]
+pub(crate) struct RenderState {
+    pub first_line: bool,
+    pub code_idx: usize,
+}
+
+impl RenderState {
+    pub fn new() -> Self {
+        Self {
+            first_line: true,
+            code_idx: 0,
+        }
+    }
+}
+
+pub(crate) struct RenderCtx<'a, 'b> {
+    pub prefix: &'a str,
+    pub text_style: Style,
+    pub prefix_style: Style,
+    pub highlighters: &'b mut Option<&'a mut Vec<CodeHighlighter>>,
+    pub width: u16,
+}
+
+pub(crate) fn render_block(
+    block: &TextBlock<'_>,
+    lines: &mut Vec<Line<'static>>,
+    state: &mut RenderState,
+    ctx: &mut RenderCtx<'_, '_>,
+) {
+    match block {
+        TextBlock::Normal(content) => {
+            for line in content.split('\n') {
+                if is_horizontal_rule(line) {
+                    if state.first_line {
+                        if !ctx.prefix.is_empty() {
+                            lines.push(Line::from(prefix_span(ctx.prefix, ctx.prefix_style)));
+                        }
+                        state.first_line = false;
+                    }
+                    lines.push(hr_line(ctx.width, theme::current().horizontal_rule));
+                    continue;
+                }
+                let mut spans: Vec<Span<'static>> = Vec::new();
+                if state.first_line {
+                    spans.push(prefix_span(ctx.prefix, ctx.prefix_style));
+                    state.first_line = false;
+                }
+                let (line_prefix, rest, style) = parse_line_prefix(line, ctx.text_style);
+                if let Some(lp) = line_prefix {
+                    spans.push(Span::styled(lp, theme::current().list_marker));
+                }
+                spans.extend(
+                    parse_inline_markdown(rest, style)
+                        .into_iter()
+                        .map(|s| Span::styled(s.content.into_owned(), s.style)),
+                );
+                lines.push(Line::from(spans));
+            }
+        }
+        TextBlock::Code { lang, code } => {
+            if state.first_line {
+                lines.push(Line::from(prefix_span(ctx.prefix, ctx.prefix_style)));
+                state.first_line = false;
+            }
+            ensure_blank_line(lines);
+            if let Some(hl) = ctx.highlighters {
+                if state.code_idx >= hl.len() {
+                    hl.push(CodeHighlighter::new(lang));
+                }
+                let unwrapped = hl[state.code_idx].update(code);
+                let start = lines.len();
+                for src_line in unwrapped {
+                    let mut line = src_line.clone();
+                    prepend_code_bar(&mut line);
+                    lines.push(line);
+                }
+                wrap_code_lines(lines, start, ctx.width);
+            } else {
+                lines.extend(highlight_code(lang, code, ctx.width));
+            }
+            ensure_blank_line(lines);
+            state.code_idx += 1;
+        }
+        TextBlock::Table { rows, header_end } => {
+            if state.first_line {
+                if !ctx.prefix.is_empty() {
+                    lines.push(Line::from(prefix_span(ctx.prefix, ctx.prefix_style)));
+                }
+                state.first_line = false;
+            }
+            ensure_blank_line(lines);
+            lines.extend(render_table(rows, *header_end, ctx.text_style, ctx.width));
+            ensure_blank_line(lines);
+        }
+    }
+}
+
+pub(crate) fn finalize_lines(lines: &mut Vec<Line<'static>>, prefix: &str, prefix_style: Style) {
+    while lines.last().is_some_and(is_blank_line) {
+        lines.pop();
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(prefix_span(prefix, prefix_style)));
+    }
+}
+
+pub fn text_to_lines<'a>(
     text: &str,
-    prefix: &str,
+    prefix: &'a str,
     text_style: Style,
     prefix_style: Style,
-    mut highlighters: Option<&mut Vec<CodeHighlighter>>,
+    mut highlighters: Option<&'a mut Vec<CodeHighlighter>>,
     width: u16,
 ) -> Vec<Line<'static>> {
     let text = text.trim_start_matches('\n');
     let blocks = parse_blocks(text);
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut first_line = true;
-    let mut code_idx = 0;
+    let mut state = RenderState::new();
+    let mut ctx = RenderCtx {
+        prefix,
+        text_style,
+        prefix_style,
+        highlighters: &mut highlighters,
+        width,
+    };
 
-    for block in blocks {
-        match block {
-            TextBlock::Normal(content) => {
-                for line in content.split('\n') {
-                    if is_horizontal_rule(line) {
-                        if first_line {
-                            if !prefix.is_empty() {
-                                lines.push(Line::from(prefix_span(prefix, prefix_style)));
-                            }
-                            first_line = false;
-                        }
-                        lines.push(hr_line(width, theme::current().horizontal_rule));
-                        continue;
-                    }
-                    let mut spans: Vec<Span<'static>> = Vec::new();
-                    if first_line {
-                        spans.push(prefix_span(prefix, prefix_style));
-                        first_line = false;
-                    }
-                    let (line_prefix, rest, style) = parse_line_prefix(line, text_style);
-                    if let Some(lp) = line_prefix {
-                        spans.push(Span::styled(lp, theme::current().list_marker));
-                    }
-                    spans.extend(
-                        parse_inline_markdown(rest, style)
-                            .into_iter()
-                            .map(|s| Span::styled(s.content.into_owned(), s.style)),
-                    );
-                    lines.push(Line::from(spans));
-                }
-            }
-            TextBlock::Code { lang, code } => {
-                if first_line {
-                    lines.push(Line::from(prefix_span(prefix, prefix_style)));
-                    first_line = false;
-                }
-                ensure_blank_line(&mut lines);
-                if let Some(ref mut hl) = highlighters {
-                    if code_idx >= hl.len() {
-                        hl.push(CodeHighlighter::new(lang));
-                    }
-                    let unwrapped = hl[code_idx].update(code);
-                    let start = lines.len();
-                    for src_line in unwrapped {
-                        let mut line = src_line.clone();
-                        prepend_code_bar(&mut line);
-                        lines.push(line);
-                    }
-                    wrap_code_lines(&mut lines, start, width);
-                } else {
-                    lines.extend(highlight_code(lang, code, width));
-                }
-                ensure_blank_line(&mut lines);
-                code_idx += 1;
-            }
-            TextBlock::Table { rows, header_end } => {
-                if first_line {
-                    if !prefix.is_empty() {
-                        lines.push(Line::from(prefix_span(prefix, prefix_style)));
-                    }
-                    first_line = false;
-                }
-                ensure_blank_line(&mut lines);
-                lines.extend(render_table(&rows, header_end, text_style, width));
-                ensure_blank_line(&mut lines);
-            }
-        }
+    for block in &blocks {
+        render_block(block, &mut lines, &mut state, &mut ctx);
     }
 
-    if let Some(hl) = highlighters {
-        hl.truncate(code_idx);
+    if let Some(hl) = ctx.highlighters {
+        hl.truncate(state.code_idx);
     }
 
-    while lines.last().is_some_and(is_blank_line) {
-        lines.pop();
-    }
-
-    if lines.is_empty() {
-        lines.push(Line::from(prefix_span(prefix, prefix_style)));
-    }
-
+    finalize_lines(&mut lines, prefix, prefix_style);
     lines
 }
 
@@ -1548,7 +1631,7 @@ mod tests {
     }
 
     #[test]
-    fn incremental_matches_non_incremental() {
+    fn highlighter_reuse_matches_fresh_render() {
         let style = Style::default();
         let text = "hello\n```rust\nfn main() {}\n```\nbye";
         let full = text_to_lines(text, "p> ", style, style, None, TEST_WIDTH);
