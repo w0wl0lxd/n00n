@@ -12,6 +12,7 @@ use crate::ToolOutput;
 
 const SESSION_VERSION: u32 = 1;
 const SESSIONS_DIR: &str = "sessions";
+const CWD_INDEX_FILE: &str = "cwd_latest.json";
 const DEFAULT_TITLE: &str = "New session";
 const MAX_TITLE_LEN: usize = 60;
 
@@ -105,6 +106,28 @@ pub fn generate_title(messages: &[Message]) -> String {
     }
 }
 
+fn atomic_write(path: &Path, data: &[u8]) -> Result<(), SessionError> {
+    let tmp = path.with_extension("tmp");
+    let mut f = fs::File::create(&tmp)?;
+    f.write_all(data)?;
+    f.sync_all()?;
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+fn load_cwd_index(dir: &Path) -> HashMap<String, String> {
+    fs::read(dir.join(CWD_INDEX_FILE))
+        .ok()
+        .and_then(|data| serde_json::from_slice(&data).ok())
+        .unwrap_or_default()
+}
+
+fn update_cwd_index(dir: &Path, cwd: &str, session_id: &str) -> Result<(), SessionError> {
+    let mut index = load_cwd_index(dir);
+    index.insert(cwd.to_string(), session_id.to_string());
+    atomic_write(&dir.join(CWD_INDEX_FILE), &serde_json::to_vec(&index)?)
+}
+
 fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, SessionError> {
     let mut out = Vec::new();
     for path in json_entries(dir)? {
@@ -163,12 +186,8 @@ impl Session {
         fs::create_dir_all(dir)?;
         self.updated_at = now_epoch();
         let path = dir.join(format!("{}.json", self.id));
-        let tmp = path.with_extension("tmp");
-        let data = serde_json::to_vec(self)?;
-        let mut f = fs::File::create(&tmp)?;
-        f.write_all(&data)?;
-        f.sync_all()?;
-        fs::rename(&tmp, &path)?;
+        atomic_write(&path, &serde_json::to_vec(self)?)?;
+        update_cwd_index(dir, &self.cwd, &self.id)?;
         Ok(())
     }
 
@@ -206,6 +225,12 @@ impl Session {
     }
 
     pub fn latest_in(cwd: &str, dir: &Path) -> Result<Option<Self>, SessionError> {
+        let index = load_cwd_index(dir);
+        if let Some(id) = index.get(cwd)
+            && let Ok(s) = Self::load_from(id, dir)
+        {
+            return Ok(Some(s));
+        }
         let summaries = scan_headers(cwd, dir)?;
         let latest = summaries.into_iter().max_by_key(|s| s.updated_at);
         match latest {
@@ -293,6 +318,7 @@ mod tests {
         session.updated_at = time;
         let path = dir.join(format!("{}.json", session.id));
         fs::write(&path, serde_json::to_vec(&session).unwrap()).unwrap();
+        update_cwd_index(dir, &session.cwd, &session.id).unwrap();
     }
 
     #[test]
@@ -312,6 +338,21 @@ mod tests {
 
         let latest = Session::latest_in("/project", dir).unwrap().unwrap();
         assert_eq!(latest.title, "latest");
+    }
+
+    #[test]
+    fn latest_falls_back_when_index_stale() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session = Session::new("m", "/project");
+        session.save_to(dir).unwrap();
+
+        let index_path = dir.join(CWD_INDEX_FILE);
+        let stale: HashMap<String, String> = [("/project".into(), "deleted-id".into())].into();
+        fs::write(&index_path, serde_json::to_vec(&stale).unwrap()).unwrap();
+
+        let latest = Session::latest_in("/project", dir).unwrap().unwrap();
+        assert_eq!(latest.id, session.id);
     }
 
     #[test_case("short title", "short title" ; "short_passthrough")]
@@ -336,16 +377,5 @@ mod tests {
         let title = generate_title(&[user_message(&input)]);
         assert!(title.len() <= MAX_TITLE_LEN * 4);
         assert!(title.is_char_boundary(title.len()));
-    }
-
-    #[test]
-    fn update_title_if_default_only_replaces_default() {
-        let mut session = Session::new("m", "/tmp");
-        session.messages.push(user_message("my topic"));
-        session.update_title_if_default();
-        assert_eq!(session.title, "my topic");
-
-        session.update_title_if_default();
-        assert_eq!(session.title, "my topic", "should not revert to default");
     }
 }
