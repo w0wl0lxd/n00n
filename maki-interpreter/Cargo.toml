@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-monty = { git = "https://github.com/pydantic/monty.git", package = "monty" }
+monty = { git = "https://github.com/pydantic/monty.git", rev = "e59c8fa", package = "monty" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

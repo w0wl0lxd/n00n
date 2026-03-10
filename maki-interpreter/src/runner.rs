@@ -50,12 +50,9 @@ pub fn run(
     code: &str,
     tools: &HashMap<String, ToolFn>,
 ) -> Result<InterpreterResult, InterpreterError> {
-    let mut print_writer = PrintWriter::Collect(String::new());
+    let mut stdout = String::new();
+    let mut print_writer = PrintWriter::Collect(&mut stdout);
     let output = run_inner(code, tools, default_limits(), &mut print_writer)?;
-    let stdout = print_writer
-        .collected_output()
-        .unwrap_or_default()
-        .to_owned();
     Ok(InterpreterResult { output, stdout })
 }
 
@@ -86,7 +83,7 @@ fn run_inner(
     let tracker = LimitedTracker::new(limits);
 
     let mut progress = runner
-        .start(vec![], tracker, print_writer)
+        .start(vec![], tracker, print_writer.reborrow())
         .map_err(|e| InterpreterError::Runtime(e.to_string()))?;
 
     loop {
@@ -123,7 +120,10 @@ fn run_inner(
                     })?,
                     None => {
                         progress = call
-                            .resume(monty::ExtFunctionResult::NotFound(name), print_writer)
+                            .resume(
+                                monty::ExtFunctionResult::NotFound(name),
+                                print_writer.reborrow(),
+                            )
                             .map_err(|e| InterpreterError::Runtime(e.to_string()))?;
                         continue;
                     }
@@ -131,7 +131,7 @@ fn run_inner(
 
                 let return_value = json_to_monty(result);
                 progress = call
-                    .resume(return_value, print_writer)
+                    .resume(return_value, print_writer.reborrow())
                     .map_err(|e| InterpreterError::Runtime(e.to_string()))?;
             }
             RunProgress::NameLookup(lookup) => {
@@ -148,7 +148,7 @@ fn run_inner(
                 };
 
                 progress = lookup
-                    .resume(result, print_writer)
+                    .resume(result, print_writer.reborrow())
                     .map_err(|e| InterpreterError::Runtime(e.to_string()))?;
             }
             RunProgress::OsCall(_) => {
@@ -177,12 +177,9 @@ pub fn run_with_limits(
     tools: &HashMap<String, ToolFn>,
     limits: ResourceLimits,
 ) -> Result<InterpreterResult, InterpreterError> {
-    let mut print_writer = PrintWriter::Collect(String::new());
+    let mut stdout = String::new();
+    let mut print_writer = PrintWriter::Collect(&mut stdout);
     let output = run_inner(code, tools, limits, &mut print_writer)?;
-    let stdout = print_writer
-        .collected_output()
-        .unwrap_or_default()
-        .to_owned();
     Ok(InterpreterResult { output, stdout })
 }
 
