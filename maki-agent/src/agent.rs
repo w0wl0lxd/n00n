@@ -471,15 +471,20 @@ impl Agent {
     }
 
     pub async fn run(mut self, input: AgentInput) -> RunOutcome {
-        let user_message = input.effective_message();
+        let ai_text = input.effective_message();
         self.rollback_len = self.history.len();
-        self.history.push(Message::user(user_message.clone()));
+        if ai_text == input.message {
+            self.history.push(Message::user(ai_text.clone()));
+        } else {
+            self.history
+                .push(Message::user_display(ai_text.clone(), input.message));
+        }
         self.mode = input.mode;
 
         info!(
             model = %self.model.id,
             mode = ?self.mode,
-            message_len = user_message.len(),
+            message_len = ai_text.len(),
             "agent run started"
         );
 
@@ -653,7 +658,7 @@ impl Agent {
         .await?;
         self.rollback_len = self.history.len();
         self.history
-            .push(Message::user(CONTINUE_AFTER_COMPACT.into()));
+            .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
         Ok(())
     }
 
@@ -667,11 +672,12 @@ impl Agent {
         self.event_tx.send(AgentEvent::QueueItemConsumed)?;
         match cmd {
             ExtractedCommand::Interrupt(input, _) => {
+                let display = input.message.clone();
                 let msg = input.effective_message();
                 let wrapped = format!(
                     "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{msg}\n</user-interrupt>"
                 );
-                self.history.push(Message::user(wrapped));
+                self.history.push(Message::user_display(wrapped, display));
             }
             ExtractedCommand::Compact(_) => {
                 self.do_compact().await?;
@@ -700,9 +706,10 @@ fn sanitize_cancelled_history(history: &mut History, rollback_len: usize) {
         history.push(Message {
             role: Role::User,
             content: error_results,
+            display_text: Some(String::new()),
         });
     }
-    history.push(Message::user(CANCEL_MARKER.into()));
+    history.push(Message::synthetic(CANCEL_MARKER.into()));
 }
 
 async fn compact_history(
@@ -872,6 +879,7 @@ mod tests {
                 content: vec![ContentBlock::Text {
                     text: "response".into(),
                 }],
+                ..Default::default()
             },
             usage: TokenUsage::default(),
             stop_reason: Some(stop_reason),
@@ -951,6 +959,7 @@ mod tests {
                     content: vec![ContentBlock::Text {
                         text: "reply".into(),
                     }],
+                    ..Default::default()
                 },
             ]);
 
@@ -979,6 +988,7 @@ mod tests {
                     name: tool_name.into(),
                     input: serde_json::json!({"pattern": "*.nonexistent_test_xyz", "path": "/tmp"}),
                 }],
+                ..Default::default()
             },
             usage: TokenUsage::default(),
             stop_reason: Some(StopReason::ToolUse),
@@ -1286,7 +1296,7 @@ mod tests {
     #[test_case(
         vec![
             Message::user("hello".into()),
-            Message { role: Role::Assistant, content: vec![ContentBlock::Text { text: "hi".into() }] },
+            Message { role: Role::Assistant, content: vec![ContentBlock::Text { text: "hi".into() }], ..Default::default() },
         ]
         ; "complete_turn"
     )]
@@ -1319,6 +1329,7 @@ mod tests {
                         input: serde_json::json!({"pattern": "*.rs"}),
                     },
                 ],
+                ..Default::default()
             },
         ]);
         sanitize_cancelled_history(&mut history, 0);

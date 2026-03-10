@@ -41,6 +41,10 @@ const COMMANDS: &[Command] = &[
         description: "Remove items from queue",
     },
     Command {
+        name: "/sessions",
+        description: "Browse and switch sessions",
+    },
+    Command {
         name: "/theme",
         description: "Switch color theme",
     },

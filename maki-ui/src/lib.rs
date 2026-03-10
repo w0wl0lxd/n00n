@@ -399,6 +399,11 @@ fn dispatch(
                 *handles = spawn_agent(provider, model, Vec::new(), skills);
                 handles.apply_to_app(app);
             }
+            Action::LoadSession(loaded) => {
+                *handles = spawn_agent(provider, model, loaded.messages, skills);
+                handles.apply_to_app(app);
+                *handles.tool_outputs.lock().unwrap() = loaded.tool_outputs;
+            }
             Action::Compact => {
                 let _ = handles.cmd_tx.try_send(AgentCommand::Compact(app.run_id));
             }

@@ -14,9 +14,8 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-const CANCEL_WINDOW: Duration = Duration::from_secs(3);
 const ERROR_DISPLAY: Duration = Duration::from_secs(5);
-const FLASH_DURATION: Duration = Duration::from_secs(2);
+pub const FLASH_DURATION: Duration = Duration::from_millis(1500);
 
 fn format_tokens(n: u32) -> String {
     match n {
@@ -46,13 +45,7 @@ pub struct StatusBarContext<'a> {
     pub retry_info: Option<&'a RetryInfo>,
 }
 
-pub enum CancelResult {
-    FirstPress,
-    Confirmed,
-}
-
 pub struct StatusBar {
-    cancel_hint_since: Option<Instant>,
     flash: Option<(String, Instant)>,
     error_since: Option<Instant>,
     started_at: Instant,
@@ -62,7 +55,6 @@ pub struct StatusBar {
 impl StatusBar {
     pub fn new() -> Self {
         Self {
-            cancel_hint_since: None,
             flash: None,
             error_since: None,
             started_at: Instant::now(),
@@ -70,34 +62,15 @@ impl StatusBar {
         }
     }
 
-    pub fn handle_cancel_press(&mut self) -> CancelResult {
-        if let Some(t) = self.cancel_hint_since
-            && t.elapsed() < CANCEL_WINDOW
-        {
-            self.cancel_hint_since = None;
-            return CancelResult::Confirmed;
-        }
-        self.cancel_hint_since = Some(Instant::now());
-        self.flash("Press esc again to stop...".into());
-        CancelResult::FirstPress
-    }
-
     pub fn flash(&mut self, msg: String) {
         self.flash = Some((msg, Instant::now()));
     }
 
-    pub fn clear_cancel_hint(&mut self) {
-        self.cancel_hint_since = None;
+    pub fn clear_flash(&mut self) {
         self.flash = None;
     }
 
     pub fn clear_expired_hint(&mut self) {
-        if self
-            .cancel_hint_since
-            .is_some_and(|t| t.elapsed() >= CANCEL_WINDOW)
-        {
-            self.cancel_hint_since = None;
-        }
         if self
             .flash
             .as_ref()
@@ -275,40 +248,12 @@ mod tests {
     }
 
     #[test]
-    fn cancel_hint_lifecycle() {
+    fn clear_flash_clears() {
         let mut bar = StatusBar::new();
-
-        bar.cancel_hint_since = Some(Instant::now() - CANCEL_WINDOW - Duration::from_millis(1));
-        let result = bar.handle_cancel_press();
-        assert!(
-            matches!(result, CancelResult::FirstPress),
-            "expired window resets to first press"
-        );
-        assert!(bar.flash.is_some(), "first press sets flash");
-
-        let result = bar.handle_cancel_press();
-        assert!(
-            matches!(result, CancelResult::Confirmed),
-            "second press within window confirms"
-        );
-        assert!(bar.cancel_hint_since.is_none());
-
-        bar.clear_cancel_hint();
-        assert!(bar.flash.is_none(), "clear_cancel_hint clears flash");
-    }
-
-    #[test_case(true, false  ; "removes_stale")]
-    #[test_case(false, true ; "keeps_fresh")]
-    fn clear_expired_hint(stale: bool, expect_some: bool) {
-        let mut bar = StatusBar::new();
-        let offset = if stale {
-            CANCEL_WINDOW + Duration::from_millis(1)
-        } else {
-            Duration::ZERO
-        };
-        bar.cancel_hint_since = Some(Instant::now() - offset);
-        bar.clear_expired_hint();
-        assert_eq!(bar.cancel_hint_since.is_some(), expect_some);
+        bar.flash("test".into());
+        assert!(bar.flash.is_some());
+        bar.clear_flash();
+        assert!(bar.flash.is_none());
     }
 
     #[test_case("/home/user/projects/app", "/home/user", "~/projects/app" ; "inside_home")]

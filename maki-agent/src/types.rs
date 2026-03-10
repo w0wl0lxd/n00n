@@ -349,6 +349,7 @@ pub fn tool_results(results: Vec<ToolDoneEvent>) -> Message {
                 is_error: r.is_error,
             })
             .collect(),
+        ..Default::default()
     }
 }
 

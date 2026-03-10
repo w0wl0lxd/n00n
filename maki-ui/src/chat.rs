@@ -198,12 +198,8 @@ pub fn history_to_display(
     for msg in messages {
         match msg.role {
             Role::User => {
-                for block in &msg.content {
-                    if let ContentBlock::Text { text } = block
-                        && !text.is_empty()
-                    {
-                        display.push(DisplayMessage::new(DisplayRole::User, text.clone()));
-                    }
+                if let Some(text) = msg.user_text() {
+                    display.push(DisplayMessage::new(DisplayRole::User, text.to_owned()));
                 }
             }
             Role::Assistant => {
@@ -428,6 +424,7 @@ mod tests {
             content: vec![ContentBlock::Text {
                 text: "response".into(),
             }],
+            ..Default::default()
         }];
         let display = history_to_display(&msgs, &empty_outputs());
         assert_eq!(display.len(), 1);
@@ -442,6 +439,7 @@ mod tests {
             content: vec![ContentBlock::Text {
                 text: String::new(),
             }],
+            ..Default::default()
         }];
         assert!(history_to_display(&msgs, &empty_outputs()).is_empty());
     }
@@ -456,6 +454,7 @@ mod tests {
                     name: "bash".into(),
                     input: serde_json::json!({"command": "ls", "description": "list files"}),
                 }],
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -464,6 +463,7 @@ mod tests {
                     content: "file.txt".into(),
                     is_error: false,
                 }],
+                ..Default::default()
             },
         ];
         let display = history_to_display(&msgs, &empty_outputs());
@@ -489,6 +489,7 @@ mod tests {
                     name: "read".into(),
                     input: serde_json::json!({"path": "/missing"}),
                 }],
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -497,6 +498,7 @@ mod tests {
                     content: "not found".into(),
                     is_error: true,
                 }],
+                ..Default::default()
             },
         ];
         let display = history_to_display(&msgs, &empty_outputs());
@@ -526,6 +528,7 @@ mod tests {
                         input: serde_json::json!({"command": "echo hi"}),
                     },
                 ],
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -534,12 +537,14 @@ mod tests {
                     content: "hi".into(),
                     is_error: false,
                 }],
+                ..Default::default()
             },
             Message {
                 role: Role::Assistant,
                 content: vec![ContentBlock::Text {
                     text: "Done!".into(),
                 }],
+                ..Default::default()
             },
         ];
         let display = history_to_display(&msgs, &empty_outputs());
@@ -599,6 +604,7 @@ mod tests {
                         name: tool_name.into(),
                         input: input_json,
                     }],
+                    ..Default::default()
                 },
                 Message {
                     role: Role::User,
@@ -607,6 +613,7 @@ mod tests {
                         content: "ok".into(),
                         is_error: false,
                     }],
+                    ..Default::default()
                 },
             ];
             let outputs = HashMap::from([("t1".into(), output)]);
@@ -637,6 +644,7 @@ mod tests {
                         "content": "fn main() {}"
                     }),
                 }],
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -645,6 +653,7 @@ mod tests {
                     content: "wrote 12 bytes".into(),
                     is_error: false,
                 }],
+                ..Default::default()
             },
         ];
         let outputs = HashMap::from([("t1".into(), write_output)]);
@@ -661,6 +670,7 @@ mod tests {
                 name: "bash".into(),
                 input: serde_json::json!({"command": "echo hi"}),
             }],
+            ..Default::default()
         }];
         let display = history_to_display(&msgs, &empty_outputs());
         assert!(
@@ -681,6 +691,7 @@ mod tests {
                     name: "bash".into(),
                     input: serde_json::json!({"command": "cmd", "description": "test"}),
                 }],
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -689,6 +700,7 @@ mod tests {
                     content: joined,
                     is_error: false,
                 }],
+                ..Default::default()
             },
         ];
         let display = history_to_display(&msgs, &empty_outputs());
@@ -710,6 +722,7 @@ mod tests {
                     name: "webfetch".into(),
                     input: serde_json::json!({"url": "https://example.com"}),
                 }],
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -718,6 +731,7 @@ mod tests {
                     content: "fetched content\nmore lines".into(),
                     is_error: false,
                 }],
+                ..Default::default()
             },
         ];
         let display = history_to_display(&msgs, &empty_outputs());
@@ -758,6 +772,7 @@ mod tests {
                     name: "batch".into(),
                     input: serde_json::json!({"tool_calls": []}),
                 }],
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -766,6 +781,7 @@ mod tests {
                     content: String::new(),
                     is_error: false,
                 }],
+                ..Default::default()
             },
         ];
         let outputs = HashMap::from([("b1".into(), batch_output)]);
@@ -788,6 +804,7 @@ mod tests {
                     name: "read".into(),
                     input: serde_json::json!({"path": "/src/main.rs"}),
                 }],
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -796,6 +813,7 @@ mod tests {
                     content: "1: fn main() {}".into(),
                     is_error: false,
                 }],
+                ..Default::default()
             },
         ];
         let display = history_to_display(&msgs, &empty_outputs());

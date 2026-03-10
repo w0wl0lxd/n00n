@@ -537,6 +537,7 @@ async fn parse_sse(
         message: Message {
             role: Role::Assistant,
             content: content_blocks,
+            ..Default::default()
         },
         usage,
         stop_reason,
@@ -638,6 +639,7 @@ data: [DONE]\n";
                         input: json!({"command": "ls"}),
                     },
                 ],
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -646,6 +648,7 @@ data: [DONE]\n";
                     content: "file.txt".to_string(),
                     is_error: false,
                 }],
+                ..Default::default()
             },
         ];
 

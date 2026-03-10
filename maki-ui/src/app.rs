@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::chat::history_to_display;
 use crate::chat::{Chat, ChatEventResult};
 use crate::components::chat_picker::{ChatPicker, ChatPickerAction};
 use crate::components::command::{CommandAction, CommandPalette};
@@ -10,9 +11,13 @@ use crate::components::input::{InputAction, InputBox};
 use crate::components::keybindings::{KeybindContext, key};
 use crate::components::question_form::{QuestionForm, QuestionFormAction};
 use crate::components::queue_panel::{self, QueueEntry};
-use crate::components::status_bar::{CancelResult, StatusBar, StatusBarContext, UsageStats};
+use crate::components::rewind_picker::{RewindEntry, RewindPicker, RewindPickerAction};
+use crate::components::session_picker::{SessionPicker, SessionPickerAction};
+use crate::components::status_bar::{FLASH_DURATION, StatusBar, StatusBarContext, UsageStats};
 use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
-use crate::components::{Action, DisplayMessage, DisplayRole, RetryInfo, Status, is_ctrl};
+use crate::components::{
+    Action, DisplayMessage, DisplayRole, LoadedSession, RetryInfo, Status, is_ctrl,
+};
 use crate::selection::{
     self, ContentRegion, EdgeScroll, SelectableZone, Selection, SelectionState, SelectionZone,
     ZoneRegistry,
@@ -35,6 +40,8 @@ use ratatui::widgets::{Block, Widget};
 
 const CANCEL_MSG: &str = "Cancelled.";
 const COMPACT_LABEL: &str = "/compact";
+const FLASH_CANCEL: &str = "Press esc again to stop...";
+const FLASH_REWIND: &str = "Press esc again to rewind...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Mode {
@@ -109,6 +116,8 @@ pub struct App {
     command_palette: CommandPalette,
     chat_picker: ChatPicker,
     theme_picker: ThemePicker,
+    session_picker: SessionPicker,
+    rewind_picker: RewindPicker,
     help_modal: HelpModal,
     question_form: QuestionForm,
     status_bar: StatusBar,
@@ -134,6 +143,7 @@ pub struct App {
     selection_state: Option<SelectionState>,
     clipboard: Option<Clipboard>,
     queue_focus: Option<usize>,
+    last_esc: Option<Instant>,
     pub(crate) session: AppSession,
     pub(crate) storage: DataDir,
     pub(crate) shared_history:
@@ -159,6 +169,8 @@ impl App {
             command_palette: CommandPalette::new(),
             chat_picker: ChatPicker::new(),
             theme_picker: ThemePicker::new(),
+            session_picker: SessionPicker::new(),
+            rewind_picker: RewindPicker::new(),
             help_modal: HelpModal::new(),
             question_form: QuestionForm::new(),
             status_bar: StatusBar::new(),
@@ -182,6 +194,7 @@ impl App {
             selection_state: None,
             clipboard: Clipboard::new().ok(),
             queue_focus: None,
+            last_esc: None,
             session,
             storage,
             shared_history: None,
@@ -279,6 +292,10 @@ impl App {
             contexts.push(KeybindContext::QuestionForm);
         } else if self.queue_focus.is_some() {
             contexts.push(KeybindContext::QueueFocus);
+        } else if self.session_picker.is_open() {
+            contexts.push(KeybindContext::SessionPicker);
+        } else if self.rewind_picker.is_open() {
+            contexts.push(KeybindContext::RewindPicker);
         } else if self.chat_picker.is_open() {
             contexts.push(KeybindContext::ChatPicker);
         } else if self.theme_picker.is_open() {
@@ -334,10 +351,17 @@ impl App {
             Msg::Scroll { column, row, delta } => {
                 self.selection_state = None;
                 let pos = Position::new(column, row);
-                if self.chat_picker.is_open() {
+                if self.session_picker.is_open() {
+                    if self.session_picker.contains(pos) {
+                        self.session_picker.scroll(delta);
+                    }
+                } else if self.rewind_picker.is_open() {
+                    if self.rewind_picker.contains(pos) {
+                        self.rewind_picker.scroll(delta);
+                    }
+                } else if self.chat_picker.is_open() {
                     if self.chat_picker.contains(pos) {
-                        let names = self.chat_names();
-                        self.chat_picker.scroll(delta, &names);
+                        self.chat_picker.scroll(delta);
                     }
                 } else if let Some(zone) = self.zone_at(row, column) {
                     self.scroll_zone(zone.zone, delta);
@@ -513,8 +537,7 @@ impl App {
         }
 
         if self.chat_picker.is_open() {
-            let names = self.chat_names();
-            return match self.chat_picker.handle_key(key, &names) {
+            return match self.chat_picker.handle_key(key) {
                 ChatPickerAction::Consumed => vec![],
                 ChatPickerAction::Select(idx) => {
                     self.active_chat = idx;
@@ -522,6 +545,22 @@ impl App {
                     self.check_demo_questions();
                     vec![]
                 }
+            };
+        }
+
+        if self.session_picker.is_open() {
+            return match self.session_picker.handle_key(key) {
+                SessionPickerAction::Consumed => vec![],
+                SessionPickerAction::Select(id) => self.load_session(id),
+                SessionPickerAction::Close => vec![],
+            };
+        }
+
+        if self.rewind_picker.is_open() {
+            return match self.rewind_picker.handle_key(key) {
+                RewindPickerAction::Consumed => vec![],
+                RewindPickerAction::Select(entry) => self.rewind_to(entry),
+                RewindPickerAction::Close => vec![],
             };
         }
 
@@ -592,23 +631,45 @@ impl App {
                 self.command_palette.sync(&val);
                 vec![]
             }
-            InputAction::Passthrough(key) => match key.code {
-                KeyCode::Up if streaming => {
-                    self.active_chat().scroll(1);
-                    vec![]
+            InputAction::Passthrough(key) => {
+                if key.code != KeyCode::Esc {
+                    self.last_esc = None;
                 }
-                KeyCode::Down if streaming => {
-                    self.active_chat().scroll(-1);
-                    vec![]
+                match key.code {
+                    KeyCode::Up if streaming => {
+                        self.active_chat().scroll(1);
+                        vec![]
+                    }
+                    KeyCode::Down if streaming => {
+                        self.active_chat().scroll(-1);
+                        vec![]
+                    }
+                    KeyCode::Tab => self.toggle_mode(),
+                    KeyCode::Esc => {
+                        if let Some(t) = self.last_esc.take()
+                            && t.elapsed() < FLASH_DURATION
+                        {
+                            if streaming {
+                                self.handle_cancel()
+                            } else {
+                                self.open_rewind_picker()
+                            }
+                        } else {
+                            self.last_esc = Some(Instant::now());
+                            self.status_bar.flash(
+                                if streaming {
+                                    FLASH_CANCEL
+                                } else {
+                                    FLASH_REWIND
+                                }
+                                .into(),
+                            );
+                            vec![]
+                        }
+                    }
+                    _ => vec![],
                 }
-                KeyCode::Tab => self.toggle_mode(),
-                KeyCode::Esc if streaming => self.handle_cancel_press(),
-                KeyCode::Esc => {
-                    self.status_bar.clear_cancel_hint();
-                    vec![]
-                }
-                _ => vec![],
-            },
+            }
             InputAction::ContinueLine | InputAction::None => vec![],
         }
     }
@@ -645,27 +706,22 @@ impl App {
         }
     }
 
-    fn handle_cancel_press(&mut self) -> Vec<Action> {
-        match self.status_bar.handle_cancel_press() {
-            CancelResult::Confirmed => {
-                self.run_id += 1;
-                self.retry_info = None;
-                self.question_form.close();
-                self.pending_question = false;
-                for chat in &mut self.chats {
-                    chat.flush();
-                    chat.fail_in_progress();
-                }
-                self.main_chat()
-                    .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
-                self.clear_queue();
-                self.chat_index.clear();
-                self.status = Status::Idle;
-                self.save_session();
-                vec![Action::CancelAgent]
-            }
-            CancelResult::FirstPress => vec![],
+    fn handle_cancel(&mut self) -> Vec<Action> {
+        self.run_id += 1;
+        self.retry_info = None;
+        self.question_form.close();
+        self.pending_question = false;
+        for chat in &mut self.chats {
+            chat.flush();
+            chat.fail_in_progress();
         }
+        self.main_chat()
+            .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
+        self.clear_queue();
+        self.chat_index.clear();
+        self.status = Status::Idle;
+        self.save_session();
+        vec![Action::CancelAgent]
     }
 
     fn handle_agent_event(&mut self, envelope: Envelope) -> Vec<Action> {
@@ -741,7 +797,7 @@ impl App {
         if chat_idx == 0 {
             match result {
                 ChatEventResult::Done => {
-                    self.status_bar.clear_cancel_hint();
+                    self.status_bar.clear_flash();
                     self.save_session();
                     if let Some(item) = self.queue.pop_front() {
                         self.clamp_queue_focus();
@@ -758,7 +814,7 @@ impl App {
                 }
                 ChatEventResult::Error(message) => {
                     self.status = Status::Error(message);
-                    self.status_bar.clear_cancel_hint();
+                    self.status_bar.clear_flash();
                     self.status_bar.mark_error();
                     self.clear_queue();
                     for chat in &mut self.chats {
@@ -878,6 +934,7 @@ impl App {
                 self.focus_queue();
                 vec![]
             }
+            "/sessions" => self.open_session_picker(),
             "/theme" => {
                 self.theme_picker.open();
                 vec![]
@@ -901,7 +958,7 @@ impl App {
         }
     }
 
-    fn reset_session(&mut self) -> Vec<Action> {
+    fn reset_session_state(&mut self) {
         self.chats.clear();
         self.chats.push(Chat::new("Main".into()));
         self.active_chat = 0;
@@ -916,11 +973,95 @@ impl App {
         self.question_form.close();
         self.help_modal.close();
         self.theme_picker.close();
+        self.session_picker.close();
+        self.rewind_picker.close();
         self.pending_question = false;
-        self.status_bar.clear_cancel_hint();
+        self.status_bar.clear_flash();
         self.chat_picker.close();
+        self.last_esc = None;
+    }
+
+    fn reset_session(&mut self) -> Vec<Action> {
+        self.reset_session_state();
         self.session = AppSession::new(&self.session.model, &self.session.cwd);
         vec![Action::NewSession]
+    }
+
+    fn open_rewind_picker(&mut self) -> Vec<Action> {
+        self.save_session();
+        match self.rewind_picker.open(&self.session.messages) {
+            Ok(()) => vec![],
+            Err(msg) => {
+                self.status_bar.flash(msg);
+                vec![]
+            }
+        }
+    }
+
+    fn rewind_to(&mut self, entry: RewindEntry) -> Vec<Action> {
+        self.run_id += 1;
+
+        let stale_ids: Vec<String> = self.session.messages[entry.turn_index..]
+            .iter()
+            .flat_map(|m| m.tool_uses())
+            .map(|(id, _, _)| id.to_owned())
+            .collect();
+        self.session.messages.truncate(entry.turn_index);
+        for id in &stale_ids {
+            self.session.tool_outputs.remove(id);
+        }
+        self.session.token_usage = self.token_usage;
+
+        self.reset_session_state();
+        let display_msgs = history_to_display(&self.session.messages, &self.session.tool_outputs);
+        self.main_chat().load_messages(display_msgs);
+        self.token_usage = self.session.token_usage;
+
+        self.input_box.set_input(entry.prompt_text);
+
+        self.session.update_title_if_default();
+        if let Err(e) = self.session.save(&self.storage) {
+            tracing::warn!(error = %e, "failed to save session");
+        }
+
+        vec![Action::LoadSession(LoadedSession {
+            messages: self.session.messages.clone(),
+            tool_outputs: self.session.tool_outputs.clone(),
+        })]
+    }
+
+    fn open_session_picker(&mut self) -> Vec<Action> {
+        match self
+            .session_picker
+            .open(&self.session.cwd, &self.session.id, &self.storage)
+        {
+            Ok(()) => vec![],
+            Err(msg) => {
+                self.status_bar.flash(msg);
+                vec![]
+            }
+        }
+    }
+
+    fn load_session(&mut self, session_id: String) -> Vec<Action> {
+        let session = match AppSession::load(&session_id, &self.storage) {
+            Ok(s) => s,
+            Err(e) => {
+                self.status_bar
+                    .flash(format!("Failed to load session: {e}"));
+                return vec![];
+            }
+        };
+        self.save_session();
+        self.reset_session_state();
+        self.session = session;
+        let display_msgs = history_to_display(&self.session.messages, &self.session.tool_outputs);
+        self.main_chat().load_messages(display_msgs);
+        self.token_usage = self.session.token_usage;
+        vec![Action::LoadSession(LoadedSession {
+            messages: self.session.messages.clone(),
+            tool_outputs: self.session.tool_outputs.clone(),
+        })]
     }
 
     pub fn view(&mut self, frame: &mut Frame) {
@@ -960,15 +1101,8 @@ impl App {
             zone: SelectionZone::Messages,
         });
         let picker_open = self.chat_picker.is_open();
-        let names = if picker_open {
-            Some(self.chat_names())
-        } else {
-            None
-        };
-        let render_chat = if let Some(ref names) = names {
-            self.chat_picker
-                .selected_chat(names)
-                .unwrap_or(self.active_chat)
+        let render_chat = if picker_open {
+            self.chat_picker.selected_chat().unwrap_or(self.active_chat)
         } else {
             self.active_chat
         };
@@ -1002,9 +1136,17 @@ impl App {
             self.command_palette.view(frame, input_area);
         }
 
-        if let Some(names) = names {
+        if picker_open {
             let full_area = frame.area();
-            self.chat_picker.view(frame, full_area, &names);
+            self.chat_picker.view(frame, full_area);
+        }
+
+        if self.session_picker.is_open() {
+            self.session_picker.view(frame, frame.area());
+        }
+
+        if self.rewind_picker.is_open() {
+            self.rewind_picker.view(frame, frame.area());
         }
 
         if self.theme_picker.is_open() {
@@ -2152,6 +2294,29 @@ mod tests {
     }
 
     #[test]
+    fn double_esc_idle_opens_rewind_picker() {
+        let mut app = test_app();
+        type_and_submit(&mut app, "hello");
+        app.status = Status::Idle;
+        app.run_id = 1;
+        app.session
+            .messages
+            .push(maki_providers::Message::user("hello".into()));
+
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(app.rewind_picker.is_open());
+    }
+
+    #[test]
+    fn double_esc_idle_no_user_turns_flashes_error() {
+        let mut app = test_app();
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(!app.rewind_picker.is_open());
+    }
+
+    #[test]
     fn edge_scroll_makes_app_animating() {
         let mut app = test_app();
         assert!(!app.is_animating());
@@ -2528,6 +2693,15 @@ mod tests {
         &[KeybindContext::Editing]
         ; "chat_picker"
     )]
+    #[test_case(
+        |app: &mut App| {
+            app.session.messages.push(maki_providers::Message::user("test".into()));
+            app.open_rewind_picker();
+        },
+        &[KeybindContext::RewindPicker],
+        &[KeybindContext::Editing]
+        ; "rewind_picker"
+    )]
     fn active_contexts(
         setup: fn(&mut App),
         expected: &[KeybindContext],
@@ -2559,5 +2733,84 @@ mod tests {
         let actions = app.execute_command("/exit");
         assert!(app.should_quit);
         assert!(matches!(&actions[0], Action::Quit));
+    }
+
+    fn build_rewind_app() -> App {
+        let mut app = test_app();
+        use maki_providers::{ContentBlock, Message, Role};
+
+        app.session.messages = vec![
+            Message::user("first prompt".into()),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "response 1".into(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-1".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({}),
+                    },
+                ],
+                ..Default::default()
+            },
+            Message::user("second prompt".into()),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "response 2".into(),
+                }],
+                ..Default::default()
+            },
+            Message::user("third prompt".into()),
+        ];
+        app.session.tool_outputs.insert(
+            "tool-1".into(),
+            maki_agent::ToolOutput::Plain("output".into()),
+        );
+        app
+    }
+
+    #[test]
+    fn rewind_to_middle_truncates_and_populates_input() {
+        let mut app = build_rewind_app();
+        let old_run_id = app.run_id;
+        let entry = crate::components::rewind_picker::RewindEntry {
+            turn_index: 2,
+            prompt_preview: "2: second".into(),
+            prompt_text: "second prompt".into(),
+        };
+        let actions = app.rewind_to(entry);
+
+        assert_eq!(app.session.messages.len(), 2);
+        assert!(app.session.tool_outputs.contains_key("tool-1"));
+        assert_eq!(app.input_box.buffer.value(), "second prompt");
+        assert_eq!(app.run_id, old_run_id + 1);
+
+        let Action::LoadSession(ref loaded) = actions[0] else {
+            panic!("expected LoadSession");
+        };
+        assert_eq!(loaded.messages.len(), 2);
+        assert!(loaded.tool_outputs.contains_key("tool-1"));
+    }
+
+    #[test]
+    fn rewind_to_first_turn_clears_everything() {
+        let mut app = build_rewind_app();
+        app.token_usage.input = 500;
+        app.token_usage.output = 200;
+        let entry = crate::components::rewind_picker::RewindEntry {
+            turn_index: 0,
+            prompt_preview: "1: first".into(),
+            prompt_text: "first prompt".into(),
+        };
+        let actions = app.rewind_to(entry);
+
+        assert!(app.session.messages.is_empty());
+        assert!(!app.session.tool_outputs.contains_key("tool-1"));
+        assert_eq!(app.token_usage.input, 500);
+        assert_eq!(app.token_usage.output, 200);
+        assert!(matches!(&actions[0], Action::LoadSession(_)));
     }
 }

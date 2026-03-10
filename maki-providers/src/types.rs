@@ -42,6 +42,8 @@ pub enum ContentBlock {
 pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_text: Option<String>,
 }
 
 impl Message {
@@ -49,7 +51,39 @@ impl Message {
         Self {
             role: Role::User,
             content: vec![ContentBlock::Text { text }],
+            ..Default::default()
         }
+    }
+
+    pub fn user_display(ai_text: String, display: String) -> Self {
+        Self {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: ai_text }],
+            display_text: Some(display),
+        }
+    }
+
+    pub fn synthetic(text: String) -> Self {
+        Self {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text }],
+            display_text: Some(String::new()),
+        }
+    }
+
+    pub fn user_text(&self) -> Option<&str> {
+        match &self.display_text {
+            Some(t) if t.is_empty() => None,
+            Some(t) => Some(t),
+            None => self.first_text_content(),
+        }
+    }
+
+    fn first_text_content(&self) -> Option<&str> {
+        self.content.iter().find_map(|b| match b {
+            ContentBlock::Text { text } if !text.is_empty() => Some(text.as_str()),
+            _ => None,
+        })
     }
 
     pub fn tool_uses(&self) -> impl Iterator<Item = (&str, &str, &Value)> {
@@ -71,10 +105,7 @@ impl TitleSource for Message {
         if !self.role.is_user() {
             return None;
         }
-        self.content.iter().find_map(|b| match b {
-            ContentBlock::Text { text } if !text.is_empty() => Some(text.as_str()),
-            _ => None,
-        })
+        self.user_text()
     }
 }
 

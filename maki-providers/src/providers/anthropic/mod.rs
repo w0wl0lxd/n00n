@@ -627,6 +627,7 @@ async fn parse_sse(
         message: Message {
             role: Role::Assistant,
             content: content_blocks,
+            ..Default::default()
         },
         usage,
         stop_reason,
@@ -754,6 +755,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
                 content: vec![ContentBlock::Text {
                     text: "reply".into(),
                 }],
+                ..Default::default()
             },
             Message {
                 role: Role::User,
@@ -767,6 +769,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
                         text: "second".into(),
                     },
                 ],
+                ..Default::default()
             },
         ];
         let wire = build_wire_messages(&multi);

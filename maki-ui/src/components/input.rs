@@ -208,7 +208,7 @@ impl InputBox {
         Some(text)
     }
 
-    fn set_input(&mut self, s: String) {
+    pub fn set_input(&mut self, s: String) {
         self.buffer = TextBuffer::new(s);
         self.buffer.move_to_end();
     }

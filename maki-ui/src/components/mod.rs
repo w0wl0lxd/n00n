@@ -4,11 +4,14 @@ pub mod command;
 pub(crate) mod help_modal;
 pub mod input;
 pub(crate) mod keybindings;
+pub(crate) mod list_picker;
 pub mod messages;
 pub(crate) mod modal;
 pub mod question_form;
 pub mod queue_panel;
+pub(crate) mod rewind_picker;
 pub(crate) mod scrollbar;
+pub(crate) mod session_picker;
 pub mod status_bar;
 pub(crate) mod theme_picker;
 pub(crate) mod tool_display;
@@ -16,10 +19,13 @@ pub(crate) mod tool_display;
 pub(crate) const TOOL_SEPARATOR: &str = "────────────";
 pub(crate) const CHEVRON: &str = "❯ ";
 
+use std::collections::HashMap;
+use std::time::Instant;
+
 use crossterm::event::{KeyEvent, KeyModifiers};
 use maki_agent::AgentInput;
 use maki_agent::{ToolInput, ToolOutput};
-use std::time::Instant;
+use maki_providers::Message;
 
 pub(crate) fn visual_line_count(text_len: usize, width: usize) -> usize {
     if width == 0 {
@@ -40,10 +46,16 @@ pub fn is_ctrl(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT)
 }
 
+pub struct LoadedSession {
+    pub messages: Vec<Message>,
+    pub tool_outputs: HashMap<String, ToolOutput>,
+}
+
 pub enum Action {
     SendMessage(AgentInput),
     CancelAgent,
     NewSession,
+    LoadSession(LoadedSession),
     Compact,
     Quit,
 }
