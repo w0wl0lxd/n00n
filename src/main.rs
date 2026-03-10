@@ -13,23 +13,28 @@ use print::OutputFormat;
 const LOG_FILE_NAME: &str = "maki.log";
 
 #[derive(Parser)]
-#[command(name = "maki", version, about = "AI coding assistant")]
+#[command(name = "maki", version, about = "AI coding agent for the terminal")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
+    /// Non-interactive mode. Runs the prompt and exits. Compatible with Claude Code's --print flag
     #[arg(short, long)]
     print: bool,
 
+    /// Model as provider/model-id (e.g. anthropic/claude-sonnet-4, zai/claude-sonnet-4)
     #[arg(short, long, default_value = "anthropic/claude-opus-4-6")]
     model: String,
 
+    /// Include full turn-by-turn messages in --print output
     #[arg(long)]
     verbose: bool,
 
+    /// Resume the most recent session in this directory
     #[arg(short = 'c', long = "continue")]
     continue_session: bool,
 
+    /// Resume a specific session by its ID
     #[arg(short = 's', long)]
     session: Option<String>,
 
@@ -37,12 +42,15 @@ struct Cli {
     #[cfg(feature = "demo")]
     demo: bool,
 
+    /// Output format for --print mode
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     output_format: OutputFormat,
 
+    /// Skip loading skill files from .maki/skills, .claude/skills, etc.
     #[arg(long)]
-    disable_skills: bool,
+    no_skills: bool,
 
+    /// Initial prompt (reads stdin if omitted in --print mode)
     prompt: Option<String>,
 }
 
@@ -56,16 +64,20 @@ fn discover(disable: bool) -> Vec<Skill> {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Manage API authentication
     Auth {
         #[command(subcommand)]
         action: AuthAction,
     },
+    /// List all available models
     Models,
 }
 
 #[derive(Subcommand)]
 enum AuthAction {
+    /// Save API keys for configured providers
     Login,
+    /// Remove stored API keys
     Logout,
 }
 
@@ -88,7 +100,7 @@ fn main() -> Result<()> {
         None => {
             let model = Model::from_spec(&cli.model).context("parse model spec")?;
             init_logging();
-            let skills = discover(cli.disable_skills);
+            let skills = discover(cli.no_skills);
             if cli.print {
                 print::run(&model, cli.prompt, cli.output_format, cli.verbose, skills)
                     .context("run print mode")?;
