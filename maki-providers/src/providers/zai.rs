@@ -138,8 +138,7 @@ pub struct Zai {
 
 impl Zai {
     pub fn new(plan: ZaiPlan) -> Result<Self, AgentError> {
-        let api_key = env::var(API_KEY_ENV).map_err(|_| AgentError::Api {
-            status: 0,
+        let api_key = env::var(API_KEY_ENV).map_err(|_| AgentError::Config {
             message: format!("{API_KEY_ENV} not set"),
         })?;
         let base = match plan {

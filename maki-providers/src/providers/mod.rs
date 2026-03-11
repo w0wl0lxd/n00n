@@ -29,7 +29,7 @@ impl SseErrorPayload {
     pub fn into_agent_error(self) -> AgentError {
         let status = match self.error.r#type.as_str() {
             "overloaded_error" => 529,
-            _ => 0,
+            _ => 400,
         };
         AgentError::Api {
             status,
@@ -52,7 +52,7 @@ mod tests {
     use test_case::test_case;
 
     #[test_case("overloaded_error", "Overloaded", 529, "Overloaded" ; "overloaded_maps_to_529")]
-    #[test_case("invalid_request_error", "Bad request", 0, "Bad request" ; "non_overloaded_maps_to_zero")]
+    #[test_case("invalid_request_error", "Bad request", 400, "Bad request" ; "non_overloaded_maps_to_400")]
     fn sse_error_into_agent_error(
         error_type: &str,
         message: &str,

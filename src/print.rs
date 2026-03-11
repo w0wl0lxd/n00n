@@ -166,7 +166,7 @@ pub fn run(
                 Err(e) => {
                     error!(error = %e, "provider error");
                     let _ = event_tx.send(AgentEvent::Error {
-                        message: e.to_string(),
+                        message: e.user_message(),
                     });
                     return;
                 }
@@ -187,7 +187,7 @@ pub fn run(
         if let Err(e) = outcome.result {
             error!(error = %e, "agent error");
             let _ = error_tx.send(AgentEvent::Error {
-                message: e.to_string(),
+                message: e.user_message(),
             });
         }
     })

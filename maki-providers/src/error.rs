@@ -2,6 +2,8 @@
 pub enum AgentError {
     #[error("API error ({status}): {message}")]
     Api { status: u16, message: String },
+    #[error("{message}")]
+    Config { message: String },
     #[error("tool error in {tool}: {message}")]
     Tool { tool: String, message: String },
     #[error(transparent)]
@@ -24,11 +26,32 @@ impl AgentError {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
             Self::Io(_) => true,
             Self::Http(_) => true,
-            Self::Tool { .. }
+            Self::Config { .. }
+            | Self::Tool { .. }
             | Self::Channel
             | Self::Json(_)
             | Self::Cancelled
             | Self::HttpRequest(_) => false,
+        }
+    }
+
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::Config { message } => message.clone(),
+            Self::Api { status: 429, .. } => "rate limited, try again in a moment".into(),
+            Self::Api { status: 529, .. } => "provider is overloaded, try again later".into(),
+            Self::Api { status, .. } if *status >= 500 => format!("server error ({status})"),
+            Self::Api { status: 401, .. } => {
+                "authentication failed, run `maki auth login` or check your API key".into()
+            }
+            Self::Api { status, message } => format!("API error ({status}): {message}"),
+            Self::Tool { tool, message } => format!("{tool}: {message}"),
+            Self::Io(e) => format!("I/O error: {e}"),
+            Self::Http(_) => "connection error, check your network".into(),
+            Self::HttpRequest(e) => format!("request error: {e}"),
+            Self::Json(_) => "received an invalid response from the API".into(),
+            Self::Channel => "internal error, try again".into(),
+            Self::Cancelled => "cancelled".into(),
         }
     }
 
@@ -84,6 +107,12 @@ mod tests {
         }
     }
 
+    fn config(msg: &str) -> AgentError {
+        AgentError::Config {
+            message: msg.into(),
+        }
+    }
+
     #[test_case(429, true  ; "rate_limit")]
     #[test_case(500, true  ; "server_error")]
     #[test_case(529, true  ; "overloaded")]
@@ -96,6 +125,11 @@ mod tests {
     #[test]
     fn io_is_retryable() {
         assert!(AgentError::Io(std::io::ErrorKind::BrokenPipe.into()).is_retryable());
+    }
+
+    #[test]
+    fn config_not_retryable() {
+        assert!(!config("HOME not set").is_retryable());
     }
 
     const CONNECTION: &str = "Connection error";
@@ -112,6 +146,50 @@ mod tests {
         assert_eq!(
             AgentError::Io(std::io::ErrorKind::BrokenPipe.into()).retry_message(),
             CONNECTION
+        );
+    }
+
+    #[test]
+    fn config_display_is_just_message() {
+        let msg = "HOME not set";
+        assert_eq!(config(msg).to_string(), msg);
+    }
+
+    #[test_case(429, "rate limited, try again in a moment"                              ; "user_msg_429")]
+    #[test_case(529, "provider is overloaded, try again later"                           ; "user_msg_529")]
+    #[test_case(500, "server error (500)"                                                 ; "user_msg_500")]
+    #[test_case(401, "authentication failed, run `maki auth login` or check your API key" ; "user_msg_401")]
+    #[test_case(400, "API error (400): bad input"                                         ; "user_msg_400")]
+    fn user_message_api(status: u16, expected: &str) {
+        let err = AgentError::Api {
+            status,
+            message: "bad input".into(),
+        };
+        assert_eq!(err.user_message(), expected);
+    }
+
+    #[test]
+    fn user_message_config() {
+        assert_eq!(
+            config("not authenticated").user_message(),
+            "not authenticated"
+        );
+    }
+
+    #[test]
+    fn user_message_json() {
+        let err = AgentError::Json(serde_json::from_str::<bool>("{").unwrap_err());
+        assert_eq!(
+            err.user_message(),
+            "received an invalid response from the API"
+        );
+    }
+
+    #[test]
+    fn user_message_channel() {
+        assert_eq!(
+            AgentError::Channel.user_message(),
+            "internal error, try again"
         );
     }
 }

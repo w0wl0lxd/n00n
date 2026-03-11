@@ -615,7 +615,7 @@ async fn parse_sse(
                 }
                 warn!(raw = %data, "unparseable SSE error event");
                 return Err(AgentError::Api {
-                    status: 0,
+                    status: 400,
                     message: data.to_string(),
                 });
             }
@@ -808,7 +808,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
             let err = parse_sse(mock_response(input), &tx).await.unwrap_err();
             match err {
                 AgentError::Api { status, message } => {
-                    assert_eq!(status, 0);
+                    assert_eq!(status, 400);
                     assert_eq!(message, "not-json");
                 }
                 other => panic!("expected Api error, got: {other:?}"),

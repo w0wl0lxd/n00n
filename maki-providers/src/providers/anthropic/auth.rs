@@ -90,13 +90,11 @@ fn post_token_request(body: serde_json::Value, context: &str) -> Result<TokenRes
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(30))
         .build()
-        .map_err(|e| AgentError::Api {
-            status: 0,
+        .map_err(|e| AgentError::Config {
             message: format!("{context}: {e}"),
         })?;
 
-    let json_body = serde_json::to_vec(&body).map_err(|e| AgentError::Api {
-        status: 0,
+    let json_body = serde_json::to_vec(&body).map_err(|e| AgentError::Config {
         message: format!("{context}: {e}"),
     })?;
 
@@ -105,20 +103,17 @@ fn post_token_request(body: serde_json::Value, context: &str) -> Result<TokenRes
         .uri(TOKEN_URL)
         .header("content-type", "application/json")
         .body(json_body)
-        .map_err(|e| AgentError::Api {
-            status: 0,
+        .map_err(|e| AgentError::Config {
             message: format!("{context}: {e}"),
         })?;
 
-    let mut resp = client.send(request).map_err(|e| AgentError::Api {
-        status: 0,
+    let mut resp = client.send(request).map_err(|e| AgentError::Config {
         message: format!("{context}: {e}"),
     })?;
 
     if resp.status().as_u16() != 200 {
         let body_text = resp.text().unwrap_or_else(|_| "unknown error".into());
-        return Err(AgentError::Api {
-            status: 0,
+        return Err(AgentError::Config {
             message: format!("{context}: {body_text}"),
         });
     }
@@ -135,8 +130,7 @@ fn into_oauth_tokens(
         .refresh_token
         .filter(|s| !s.is_empty())
         .or_else(|| fallback_refresh.map(String::from))
-        .ok_or_else(|| AgentError::Api {
-            status: 0,
+        .ok_or_else(|| AgentError::Config {
             message: "missing refresh_token in token response".into(),
         })?;
 
@@ -226,9 +220,8 @@ pub fn resolve(dir: &DataDir) -> Result<ResolvedAuth, AgentError> {
     }
 
     warn!("no OAuth tokens or API key found");
-    Err(AgentError::Api {
-        status: 0,
-        message: "not authenticated — run `maki auth login` or set ANTHROPIC_API_KEY".into(),
+    Err(AgentError::Config {
+        message: "not authenticated, run `maki auth login` or set ANTHROPIC_API_KEY".into(),
     })
 }
 
@@ -245,8 +238,7 @@ pub fn login(dir: &DataDir) -> Result<(), AgentError> {
     let code = code.trim();
 
     if code.is_empty() {
-        return Err(AgentError::Api {
-            status: 0,
+        return Err(AgentError::Config {
             message: "no authorization code provided".into(),
         });
     }

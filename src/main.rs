@@ -80,9 +80,18 @@ enum AuthAction {
     Logout,
 }
 
-fn main() -> Result<()> {
-    color_eyre::install()?;
+fn main() {
+    color_eyre::install().ok();
+    if let Err(e) = run() {
+        eprintln!("error: {e}");
+        for cause in e.chain().skip(1) {
+            eprintln!("  caused by: {cause}");
+        }
+        std::process::exit(1);
+    }
+}
 
+fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Auth { action }) => {

@@ -358,7 +358,7 @@ fn spawn_agent(
                     error!(error = %e, "agent error");
                     let event_tx = EventSender::new(agent_tx.clone(), current_run_id);
                     let _ = event_tx.send(AgentEvent::Error {
-                        message: e.to_string(),
+                        message: e.user_message(),
                     });
                 }
             }
