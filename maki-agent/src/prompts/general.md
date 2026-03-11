@@ -7,8 +7,9 @@ Environment:
 - Platform: {platform}
 
 # Tool usage
-- Reserve bash exclusively for system commands and terminal operations (git, builds, tests). Do NOT use bash for file operations - use the specialized tools instead.
-- Call multiple tools in parallel using batch when they are independent.
+- **Prefer code_execution** when you need 2+ tool calls, dependent calls, or any filtering/processing of results.
+- Use batch only when all calls are independent and you need full unprocessed output.
+- Reserve bash for system commands (git, builds, tests). Do NOT use bash for file operations.
 - Read files before editing them. Look at surrounding context and imports to match conventions.
 - NEVER create files unless absolutely necessary. Prefer editing existing files.
 
