@@ -16,6 +16,7 @@ use std::io::stdout;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use arc_swap::ArcSwapOption;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 use crossterm::ExecutableCommand;
@@ -91,6 +92,30 @@ fn run_event_loop(
     storage: DataDir,
     #[cfg(feature = "demo")] demo: bool,
 ) -> Result<String> {
+    let available_models: Arc<ArcSwapOption<Vec<String>>> = Arc::new(ArcSwapOption::empty());
+    let available_models_bg = Arc::clone(&available_models);
+    let (warn_tx, warn_rx) = flume::unbounded::<String>();
+    smol::spawn(async move {
+        let warn_tx = warn_tx;
+        maki_providers::provider::fetch_all_models(|batch| {
+            for w in batch.warnings {
+                let _ = warn_tx.try_send(w);
+            }
+            if batch.models.is_empty() {
+                return;
+            }
+            let mut merged = available_models_bg
+                .load()
+                .as_deref()
+                .cloned()
+                .unwrap_or_default();
+            merged.extend(batch.models);
+            available_models_bg.store(Some(Arc::new(merged)));
+        })
+        .await;
+    })
+    .detach();
+
     let resumed = !session.messages.is_empty();
     let initial_history = session.messages.clone();
     let mut app = App::new(
@@ -99,6 +124,7 @@ fn run_event_loop(
         model.context_window,
         session,
         storage,
+        available_models,
     );
     #[cfg(feature = "demo")]
     if demo {
@@ -125,9 +151,10 @@ fn run_event_loop(
         }
         app.status = components::Status::Idle;
     }
-    let provider: Arc<dyn Provider> =
+    let mut provider: Arc<dyn Provider> =
         Arc::from(maki_providers::provider::from_model(&model).context("create provider")?);
     let skills: Arc<[Skill]> = Arc::from(skills);
+    let mut model = model;
     let mut handles = spawn_agent(&provider, &model, initial_history, &skills);
     handles.apply_to_app(&mut app);
     if resumed {
@@ -147,11 +174,15 @@ fn run_event_loop(
             dispatch(
                 app.update(Msg::Agent(Box::new(envelope))),
                 &mut handles,
-                &provider,
-                &model,
+                &mut provider,
+                &mut model,
                 &skills,
                 &mut app,
             );
+        }
+
+        while let Ok(warning) = warn_rx.try_recv() {
+            app.flash(warning);
         }
 
         if app.should_quit {
@@ -178,8 +209,8 @@ fn run_event_loop(
                             dispatch(
                                 app.update(scroll),
                                 &mut handles,
-                                &provider,
-                                &model,
+                                &mut provider,
+                                &mut model,
                                 &skills,
                                 &mut app,
                             );
@@ -193,8 +224,8 @@ fn run_event_loop(
                         dispatch(
                             app.update(Msg::Mouse(drag)),
                             &mut handles,
-                            &provider,
-                            &model,
+                            &mut provider,
+                            &mut model,
                             &skills,
                             &mut app,
                         );
@@ -211,8 +242,8 @@ fn run_event_loop(
             dispatch(
                 app.update(msg),
                 &mut handles,
-                &provider,
-                &model,
+                &mut provider,
+                &mut model,
                 &skills,
                 &mut app,
             );
@@ -378,8 +409,8 @@ fn spawn_agent(
 fn dispatch(
     actions: Vec<Action>,
     handles: &mut AgentHandles,
-    provider: &Arc<dyn Provider>,
-    model: &Model,
+    provider: &mut Arc<dyn Provider>,
+    model: &mut Model,
     skills: &Arc<[Skill]>,
     app: &mut App,
 ) {
@@ -404,6 +435,24 @@ fn dispatch(
                 handles.apply_to_app(app);
                 *handles.tool_outputs.lock().unwrap() = loaded.tool_outputs;
             }
+            Action::ChangeModel(spec) => match Model::from_spec(&spec) {
+                Ok(new_model) => match maki_providers::provider::from_model(&new_model) {
+                    Ok(new_provider) => {
+                        app.update_model(&new_model);
+                        let history = handles.history.lock().unwrap().clone();
+                        *provider = Arc::from(new_provider);
+                        *model = new_model;
+                        *handles = spawn_agent(provider, model, history, skills);
+                        handles.apply_to_app(app);
+                    }
+                    Err(e) => {
+                        app.flash(format!("Failed to create provider: {e}"));
+                    }
+                },
+                Err(e) => {
+                    app.flash(format!("Invalid model: {e}"));
+                }
+            },
             Action::Compact => {
                 let _ = handles.cmd_tx.try_send(AgentCommand::Compact(app.run_id));
             }

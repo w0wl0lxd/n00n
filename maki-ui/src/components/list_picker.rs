@@ -16,6 +16,9 @@ pub trait PickerItem {
     fn detail(&self) -> Option<&str> {
         None
     }
+    fn section(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl PickerItem for String {
@@ -64,6 +67,12 @@ impl<T: PickerItem> State<T> {
             inner_area: Rect::default(),
             title,
         }
+    }
+
+    fn replace_items(&mut self, items: Vec<T>) {
+        self.items = items;
+        self.rebuild_filter();
+        self.clamp_selection();
     }
 
     fn rebuild_filter(&mut self) {
@@ -127,8 +136,19 @@ impl<T: PickerItem> State<T> {
         if self.selected < self.scroll_offset {
             self.scroll_offset = self.selected;
         }
-        if self.selected >= self.scroll_offset + self.viewport_height {
-            self.scroll_offset = self.selected - self.viewport_height + 1;
+        let visual = visual_rows_in_range(
+            &self.filtered,
+            &self.items,
+            self.scroll_offset,
+            self.selected + 1,
+        );
+        if visual > self.viewport_height {
+            self.scroll_offset = find_scroll_offset_for(
+                &self.filtered,
+                &self.items,
+                self.selected,
+                self.viewport_height,
+            );
         }
     }
 
@@ -144,6 +164,12 @@ impl<T: PickerItem> ListPicker<T> {
 
     pub fn open(&mut self, items: Vec<T>, title: &'static str) {
         self.state = Some(State::new(items, title));
+    }
+
+    pub fn replace_items(&mut self, items: Vec<T>) {
+        if let Some(s) = self.state.as_mut() {
+            s.replace_items(items);
+        }
     }
 
     pub fn is_open(&self) -> bool {
@@ -242,10 +268,15 @@ impl<T: PickerItem> ListPicker<T> {
             Some(s) => s,
             None => return,
         };
-        let max_offset = s.filtered.len().saturating_sub(s.viewport_height);
         if delta > 0 {
             s.scroll_offset = s.scroll_offset.saturating_sub(delta as usize);
         } else {
+            let total_visual = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len());
+            let max_offset = if total_visual <= s.viewport_height {
+                0
+            } else {
+                find_scroll_offset_for_bottom(&s.filtered, &s.items, s.viewport_height)
+            };
             s.scroll_offset = (s.scroll_offset + delta.unsigned_abs() as usize).min(max_offset);
         }
     }
@@ -259,7 +290,7 @@ impl<T: PickerItem> ListPicker<T> {
         let content_rows = if s.filtered.is_empty() {
             1
         } else {
-            s.filtered.len() as u16
+            visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len()) as u16
         };
         let modal = Modal {
             title: s.title,
@@ -284,17 +315,69 @@ impl<T: PickerItem> ListPicker<T> {
         );
         render_search(frame, search_area, &s.search);
 
-        if s.filtered.len() as u16 > viewport_h {
-            render_vertical_scrollbar(
-                frame,
-                list_area,
-                s.filtered.len() as u16,
-                s.scroll_offset as u16,
-            );
+        let total_visual = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len());
+        if total_visual as u16 > viewport_h {
+            let visual_offset = visual_rows_in_range(&s.filtered, &s.items, 0, s.scroll_offset);
+            render_vertical_scrollbar(frame, list_area, total_visual as u16, visual_offset as u16);
         }
 
         s.inner_area = inner;
     }
+}
+
+fn section_gap<T: PickerItem>(filtered: &[usize], items: &[T], idx: usize) -> usize {
+    let item = &items[filtered[idx]];
+    let is_break = match item.section() {
+        None => false,
+        Some(sec) => {
+            idx == 0
+                || items[filtered[idx - 1]]
+                    .section()
+                    .is_none_or(|prev| prev != sec)
+        }
+    };
+    if !is_break {
+        return 0;
+    }
+    if idx == 0 { 1 } else { 2 }
+}
+
+fn visual_rows_in_range<T: PickerItem>(
+    filtered: &[usize],
+    items: &[T],
+    start: usize,
+    end: usize,
+) -> usize {
+    let item_count = end.saturating_sub(start);
+    let section_rows: usize = (start..end).map(|i| section_gap(filtered, items, i)).sum();
+    item_count + section_rows
+}
+
+fn find_scroll_offset_for<T: PickerItem>(
+    filtered: &[usize],
+    items: &[T],
+    target: usize,
+    viewport_height: usize,
+) -> usize {
+    for start in (0..=target).rev() {
+        let rows = visual_rows_in_range(filtered, items, start, target + 1);
+        if rows > viewport_height {
+            return (start + 1).min(target);
+        }
+    }
+    0
+}
+
+fn find_scroll_offset_for_bottom<T: PickerItem>(
+    filtered: &[usize],
+    items: &[T],
+    viewport_height: usize,
+) -> usize {
+    let len = filtered.len();
+    if len == 0 {
+        return 0;
+    }
+    find_scroll_offset_for(filtered, items, len - 1, viewport_height)
 }
 
 fn render_list<T: PickerItem>(
@@ -312,37 +395,65 @@ fn render_list<T: PickerItem>(
         return;
     }
 
-    let end = (scroll_offset + viewport_height).min(filtered.len());
-    let visible = &filtered[scroll_offset..end];
+    let mut lines: Vec<Line> = Vec::new();
+    let mut i = scroll_offset;
+    let mut last_section: Option<&str> = if scroll_offset > 0 {
+        items[filtered[scroll_offset - 1]].section()
+    } else {
+        None
+    };
 
-    let lines: Vec<Line> = visible
-        .iter()
-        .enumerate()
-        .map(|(vi, &item_idx)| {
-            let abs_idx = scroll_offset + vi;
-            let item = &items[item_idx];
-            let style = if abs_idx == selected {
-                theme::current().cmd_selected
-            } else {
-                theme::current().cmd_name
-            };
-            let label = format!("  {}", item.label());
-            match item.detail() {
-                Some(detail) => {
-                    let pad = area
-                        .width
-                        .saturating_sub(label.len() as u16 + detail.len() as u16 + 1)
-                        as usize;
-                    Line::from(vec![
-                        Span::styled(label, style),
-                        Span::styled(" ".repeat(pad), style),
-                        Span::styled(detail.to_string(), theme::current().cmd_desc),
-                    ])
-                }
-                None => Line::from(Span::styled(label, style)),
+    while lines.len() < viewport_height && i < filtered.len() {
+        let item_idx = filtered[i];
+        let item = &items[item_idx];
+
+        if let Some(sec) = item.section()
+            && last_section.is_none_or(|prev| prev != sec)
+        {
+            if !lines.is_empty() && lines.len() < viewport_height {
+                lines.push(Line::raw(""));
             }
-        })
-        .collect();
+            if lines.len() < viewport_height {
+                lines.push(Line::from(Span::styled(
+                    format!("  {sec}"),
+                    theme::current().keybind_section,
+                )));
+            }
+            last_section = Some(sec);
+        }
+
+        if lines.len() >= viewport_height {
+            break;
+        }
+
+        let style = if i == selected {
+            theme::current().cmd_selected
+        } else {
+            theme::current().cmd_name
+        };
+        let label = format!("  {}", item.label());
+        let line = match item.detail() {
+            Some(detail) => {
+                let pad = area
+                    .width
+                    .saturating_sub(label.len() as u16 + detail.len() as u16 + 1)
+                    as usize;
+                let detail_style = if i == selected {
+                    style
+                } else {
+                    theme::current().cmd_desc
+                };
+                Line::from(vec![
+                    Span::styled(label, style),
+                    Span::styled(" ".repeat(pad), style),
+                    Span::styled(detail.to_string(), detail_style),
+                ])
+            }
+            None => Line::from(Span::styled(label, style)),
+        };
+        lines.push(line);
+        i += 1;
+    }
 
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -483,5 +594,56 @@ mod tests {
 
         p.handle_key(kb::DELETE_WORD.to_key_event());
         assert_eq!(p.state.as_ref().unwrap().search.value(), "");
+    }
+
+    struct SectionEntry {
+        label: String,
+        section: &'static str,
+    }
+
+    impl PickerItem for SectionEntry {
+        fn label(&self) -> &str {
+            &self.label
+        }
+        fn section(&self) -> Option<&str> {
+            Some(self.section)
+        }
+    }
+
+    fn section_entries() -> Vec<SectionEntry> {
+        vec![
+            SectionEntry {
+                label: "a1".into(),
+                section: "A",
+            },
+            SectionEntry {
+                label: "a2".into(),
+                section: "A",
+            },
+            SectionEntry {
+                label: "b1".into(),
+                section: "B",
+            },
+        ]
+    }
+
+    #[test]
+    fn section_headers_counted_in_visual_rows() {
+        let items = section_entries();
+        let filtered: Vec<usize> = (0..items.len()).collect();
+        let rows = visual_rows_in_range(&filtered, &items, 0, items.len());
+        assert_eq!(rows, 6);
+    }
+
+    #[test]
+    fn section_navigation_accounts_for_headers() {
+        let mut p = ListPicker::new();
+        p.open(section_entries(), " Test ");
+        let s = p.state.as_mut().unwrap();
+        s.viewport_height = 3;
+
+        s.selected = 2;
+        s.ensure_visible();
+        assert!(s.scroll_offset > 0);
     }
 }

@@ -113,9 +113,12 @@ fn run() -> Result<()> {
             }
         }
         Some(Command::Models) => {
-            smol::block_on(maki_providers::provider::fetch_all_models(|models| {
-                for model in models {
+            smol::block_on(maki_providers::provider::fetch_all_models(|batch| {
+                for model in batch.models {
                     println!("{model}");
+                }
+                for warning in batch.warnings {
+                    eprintln!("warning: {warning}");
                 }
             }));
         }

@@ -56,6 +56,7 @@ pub enum KeybindContext {
     SessionPicker,
     RewindPicker,
     ThemePicker,
+    ModelPicker,
     QueueFocus,
     CommandPalette,
 }
@@ -71,6 +72,7 @@ impl KeybindContext {
             Self::SessionPicker => "Session Picker",
             Self::RewindPicker => "Rewind Picker",
             Self::ThemePicker => "Theme Picker",
+            Self::ModelPicker => "Model Picker",
             Self::QueueFocus => "Queue Focus",
             Self::CommandPalette => "Command Palette",
         }
@@ -281,6 +283,26 @@ const KEYBINDS: &[Keybind] = &[
     },
     Keybind {
         key: "↑/↓",
+        description: "Navigate models",
+        context: KeybindContext::ModelPicker,
+    },
+    Keybind {
+        key: "Enter",
+        description: "Select model",
+        context: KeybindContext::ModelPicker,
+    },
+    Keybind {
+        key: "Esc",
+        description: "Cancel",
+        context: KeybindContext::ModelPicker,
+    },
+    Keybind {
+        key: "Type",
+        description: "Filter models",
+        context: KeybindContext::ModelPicker,
+    },
+    Keybind {
+        key: "↑/↓",
         description: "Navigate queue",
         context: KeybindContext::QueueFocus,
     },
@@ -349,6 +371,7 @@ mod tests {
             KeybindContext::SessionPicker,
             KeybindContext::RewindPicker,
             KeybindContext::ThemePicker,
+            KeybindContext::ModelPicker,
             KeybindContext::QueueFocus,
             KeybindContext::CommandPalette,
         ];

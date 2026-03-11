@@ -19,6 +19,14 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Anthropic => "Anthropic",
+            Self::Zai => "Z.AI",
+            Self::ZaiCodingPlan => "Z.AI Coding",
+        }
+    }
+
     pub fn create(self) -> Result<Box<dyn Provider>, AgentError> {
         match self {
             Self::Anthropic => Ok(Box::new(crate::providers::anthropic::Anthropic::new()?)),
@@ -57,7 +65,12 @@ pub async fn from_model_async(model: &Model) -> Result<Box<dyn Provider>, AgentE
     Ok(provider)
 }
 
-pub async fn fetch_all_models(mut on_ready: impl FnMut(Vec<String>)) {
+pub struct ModelBatch {
+    pub models: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+pub async fn fetch_all_models(mut on_ready: impl FnMut(ModelBatch)) {
     let (tx, rx) = flume::unbounded();
 
     for kind in ProviderKind::iter() {
@@ -67,20 +80,26 @@ pub async fn fetch_all_models(mut on_ready: impl FnMut(Vec<String>)) {
         };
         let tx = tx.clone();
         smol::spawn(async move {
-            let models = match provider.list_models().await {
-                Ok(ids) => ids.into_iter().map(|id| format!("{kind}/{id}")).collect(),
+            let batch = match provider.list_models().await {
+                Ok(ids) => ModelBatch {
+                    models: ids.into_iter().map(|id| format!("{kind}/{id}")).collect(),
+                    warnings: Vec::new(),
+                },
                 Err(e) => {
-                    eprintln!("warning: {kind}: {e}");
-                    Vec::new()
+                    warn!(provider = %kind, error = %e, "failed to list models");
+                    ModelBatch {
+                        models: Vec::new(),
+                        warnings: vec![format!("{}: {e}", kind.display_name())],
+                    }
                 }
             };
-            let _ = tx.send_async(models).await;
+            let _ = tx.send_async(batch).await;
         })
         .detach();
     }
     drop(tx);
 
-    while let Ok(models) = rx.recv_async().await {
-        on_ready(models);
+    while let Ok(batch) = rx.recv_async().await {
+        on_ready(batch);
     }
 }

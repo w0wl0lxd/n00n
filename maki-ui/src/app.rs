@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::chat::history_to_display;
@@ -9,6 +10,7 @@ use crate::components::command::{CommandAction, CommandPalette};
 use crate::components::help_modal::HelpModal;
 use crate::components::input::{InputAction, InputBox};
 use crate::components::keybindings::{KeybindContext, key};
+use crate::components::model_picker::{ModelPicker, ModelPickerAction};
 use crate::components::question_form::{QuestionForm, QuestionFormAction};
 use crate::components::queue_panel::{self, QueueEntry};
 use crate::components::rewind_picker::{RewindEntry, RewindPicker, RewindPickerAction};
@@ -24,6 +26,7 @@ use crate::selection::{
 };
 use crate::theme;
 use arboard::Clipboard;
+use arc_swap::ArcSwapOption;
 
 use crate::AppSession;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
@@ -116,6 +119,7 @@ pub struct App {
     command_palette: CommandPalette,
     chat_picker: ChatPicker,
     theme_picker: ThemePicker,
+    model_picker: ModelPicker,
     session_picker: SessionPicker,
     rewind_picker: RewindPicker,
     help_modal: HelpModal,
@@ -160,6 +164,7 @@ impl App {
         context_window: u32,
         session: AppSession,
         storage: DataDir,
+        available_models: Arc<ArcSwapOption<Vec<String>>>,
     ) -> Self {
         Self {
             chats: vec![Chat::new("Main".into())],
@@ -169,6 +174,7 @@ impl App {
             command_palette: CommandPalette::new(),
             chat_picker: ChatPicker::new(),
             theme_picker: ThemePicker::new(),
+            model_picker: ModelPicker::new(available_models),
             session_picker: SessionPicker::new(),
             rewind_picker: RewindPicker::new(),
             help_modal: HelpModal::new(),
@@ -204,6 +210,17 @@ impl App {
 
     pub(crate) fn main_chat(&mut self) -> &mut Chat {
         &mut self.chats[0]
+    }
+
+    pub(crate) fn update_model(&mut self, model: &maki_providers::Model) {
+        self.session.model = model.spec();
+        self.model_id = model.spec();
+        self.pricing = model.pricing.clone();
+        self.context_window = model.context_window;
+    }
+
+    pub(crate) fn flash(&mut self, msg: String) {
+        self.status_bar.flash(msg);
     }
 
     fn active_chat(&mut self) -> &mut Chat {
@@ -300,6 +317,8 @@ impl App {
             contexts.push(KeybindContext::ChatPicker);
         } else if self.theme_picker.is_open() {
             contexts.push(KeybindContext::ThemePicker);
+        } else if self.model_picker.is_open() {
+            contexts.push(KeybindContext::ModelPicker);
         } else if self.command_palette.is_active() {
             contexts.push(KeybindContext::CommandPalette);
         } else {
@@ -362,6 +381,10 @@ impl App {
                 } else if self.chat_picker.is_open() {
                     if self.chat_picker.contains(pos) {
                         self.chat_picker.scroll(delta);
+                    }
+                } else if self.model_picker.is_open() {
+                    if self.model_picker.contains(pos) {
+                        self.model_picker.scroll(delta);
                     }
                 } else if let Some(zone) = self.zone_at(row, column) {
                     self.scroll_zone(zone.zone, delta);
@@ -568,6 +591,16 @@ impl App {
             return match self.theme_picker.handle_key(key) {
                 ThemePickerAction::Consumed => vec![],
                 ThemePickerAction::Closed => vec![],
+            };
+        }
+
+        if self.model_picker.is_open() {
+            return match self.model_picker.handle_key(key) {
+                ModelPickerAction::Consumed => vec![],
+                ModelPickerAction::Select(spec) => {
+                    vec![Action::ChangeModel(spec)]
+                }
+                ModelPickerAction::Close => vec![],
             };
         }
 
@@ -935,6 +968,10 @@ impl App {
                 vec![]
             }
             "/sessions" => self.open_session_picker(),
+            "/model" => {
+                self.model_picker.open();
+                vec![]
+            }
             "/theme" => {
                 self.theme_picker.open();
                 vec![]
@@ -973,6 +1010,7 @@ impl App {
         self.question_form.close();
         self.help_modal.close();
         self.theme_picker.close();
+        self.model_picker.close();
         self.session_picker.close();
         self.rewind_picker.close();
         self.pending_question = false;
@@ -1153,6 +1191,10 @@ impl App {
             self.theme_picker.view(frame, frame.area());
         }
 
+        if self.model_picker.is_open() {
+            self.model_picker.view(frame, frame.area());
+        }
+
         let chat = &self.chats[render_chat];
         let chat_name = (self.chats.len() > 1).then_some(chat.name.as_str());
         let (mode_label, mode_style) = self.mode_label();
@@ -1316,6 +1358,7 @@ mod tests {
             TEST_CONTEXT_WINDOW,
             AppSession::new("test-model", "/tmp/test"),
             DataDir::from_path(std::env::temp_dir()),
+            Arc::new(ArcSwapOption::empty()),
         )
     }
 

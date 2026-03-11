@@ -45,6 +45,10 @@ const COMMANDS: &[Command] = &[
         description: "Browse and switch sessions",
     },
     Command {
+        name: "/model",
+        description: "Switch model",
+    },
+    Command {
         name: "/theme",
         description: "Switch color theme",
     },

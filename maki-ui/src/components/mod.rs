@@ -7,6 +7,7 @@ pub(crate) mod keybindings;
 pub(crate) mod list_picker;
 pub mod messages;
 pub(crate) mod modal;
+pub(crate) mod model_picker;
 pub mod question_form;
 pub mod queue_panel;
 pub(crate) mod rewind_picker;
@@ -56,6 +57,7 @@ pub enum Action {
     CancelAgent,
     NewSession,
     LoadSession(LoadedSession),
+    ChangeModel(String),
     Compact,
     Quit,
 }
