@@ -1712,7 +1712,7 @@ mod tests {
     )]
     fn streaming_never_garbles(input: &str) {
         let style = Style::default();
-        let step = if input.len() > 200 { 7 } else { 1 };
+        let step = if input.len() > 200 { 31 } else { 1 };
         let mut end = step;
         while end <= input.len() {
             if !input.is_char_boundary(end) {

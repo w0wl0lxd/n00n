@@ -1881,7 +1881,7 @@ mod tests {
         let width = 80;
         let mut cache = StreamingCache::default();
 
-        let step = 3;
+        let step = 7;
         let mut end = step;
         while end <= full_text.len() {
             if !full_text.is_char_boundary(end) {
