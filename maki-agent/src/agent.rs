@@ -664,6 +664,7 @@ impl Agent {
         let Ok(cmd) = rx.try_recv() else {
             return Ok(false);
         };
+        self.event_tx.send(AgentEvent::QueueItemConsumed)?;
         match cmd {
             ExtractedCommand::Interrupt(input, _) => {
                 let msg = input.effective_message();
@@ -678,7 +679,6 @@ impl Agent {
             ExtractedCommand::Cancel => return Err(AgentError::Cancelled),
             ExtractedCommand::Ignore => unreachable!("Ignore is never constructed"),
         }
-        self.event_tx.send(AgentEvent::QueueItemConsumed)?;
         Ok(true)
     }
 }
