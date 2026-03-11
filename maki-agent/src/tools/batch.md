@@ -1,6 +1,6 @@
 Executes multiple independent tool calls concurrently to reduce round-trips.
 
-Use when you have multiple independent tool calls and need full unprocessed output of each.
+ALWAYS USE THE BATCH TOOL WHEN YOU HAVE MULTIPLE INDEPENDENT TOOL CALLS. This dramatically improves performance.
 
 Payload format:
 [{"tool": "read", "parameters": {"path": "src/main.rs"}}, {"tool": "grep", "parameters": {"pattern": "TODO"}}]
