@@ -160,6 +160,7 @@ pub fn run(
         message: prompt,
         mode,
         pending_plan: None,
+        images: Vec::new(),
     };
 
     let session_id = Uuid::new_v4().to_string();

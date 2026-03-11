@@ -1,9 +1,45 @@
+use std::sync::Arc;
+
 use maki_storage::sessions::TitleSource;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum::{Display, IntoStaticStr};
 
 use crate::TokenUsage;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ImageMediaType {
+    #[serde(rename = "image/png")]
+    Png,
+    #[serde(rename = "image/jpeg")]
+    Jpeg,
+    #[serde(rename = "image/gif")]
+    Gif,
+    #[serde(rename = "image/webp")]
+    Webp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageSource {
+    pub media_type: ImageMediaType,
+    pub data: Arc<str>,
+}
+
+impl ImageSource {
+    pub fn new(media_type: ImageMediaType, data: Arc<str>) -> Self {
+        Self { media_type, data }
+    }
+
+    pub fn to_data_url(&self) -> String {
+        let mime = match self.media_type {
+            ImageMediaType::Png => "image/png",
+            ImageMediaType::Jpeg => "image/jpeg",
+            ImageMediaType::Gif => "image/gif",
+            ImageMediaType::Webp => "image/webp",
+        };
+        format!("data:{mime};base64,{}", self.data)
+    }
+}
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -36,6 +72,9 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
+    Image {
+        source: ImageSource,
+    },
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -60,6 +99,21 @@ impl Message {
             role: Role::User,
             content: vec![ContentBlock::Text { text: ai_text }],
             display_text: Some(display),
+        }
+    }
+
+    pub fn user_with_images(text: String, images: Vec<ImageSource>) -> Self {
+        let mut content: Vec<ContentBlock> = images
+            .into_iter()
+            .map(|source| ContentBlock::Image { source })
+            .collect();
+        if !text.is_empty() {
+            content.push(ContentBlock::Text { text });
+        }
+        Self {
+            role: Role::User,
+            content,
+            ..Default::default()
         }
     }
 
@@ -154,6 +208,8 @@ pub struct StreamResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use test_case::test_case;
 
@@ -171,5 +227,31 @@ mod tests {
     #[test_case("unknown", StopReason::EndTurn    ; "unknown_defaults_to_end_turn")]
     fn stop_reason_from_openai(input: &str, expected: StopReason) {
         assert_eq!(StopReason::from_openai(input), expected);
+    }
+
+    #[test]
+    fn user_with_images_text_and_images() {
+        let source = ImageSource::new(ImageMediaType::Png, Arc::from("abc123"));
+        let msg = Message::user_with_images("hello".into(), vec![source]);
+        assert_eq!(msg.content.len(), 2);
+        assert!(matches!(&msg.content[0], ContentBlock::Image { .. }));
+        assert!(matches!(&msg.content[1], ContentBlock::Text { text } if text == "hello"));
+    }
+
+    #[test]
+    fn user_with_images_empty_text_only_images() {
+        let source = ImageSource::new(ImageMediaType::Png, Arc::from("abc123"));
+        let msg = Message::user_with_images(String::new(), vec![source]);
+        assert_eq!(msg.content.len(), 1);
+        assert!(matches!(&msg.content[0], ContentBlock::Image { .. }));
+    }
+
+    #[test_case(ImageMediaType::Png,  "image/png"  ; "png")]
+    #[test_case(ImageMediaType::Jpeg, "image/jpeg" ; "jpeg")]
+    #[test_case(ImageMediaType::Gif,  "image/gif"  ; "gif")]
+    #[test_case(ImageMediaType::Webp, "image/webp" ; "webp")]
+    fn image_source_data_url(media: ImageMediaType, mime: &str) {
+        let source = ImageSource::new(media, Arc::from("dGVzdA=="));
+        assert_eq!(source.to_data_url(), format!("data:{mime};base64,dGVzdA=="));
     }
 }

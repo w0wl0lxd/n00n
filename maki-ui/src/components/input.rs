@@ -4,6 +4,7 @@ use crate::text_buffer::{EditResult, TextBuffer};
 use crate::theme;
 
 use crossterm::event::{KeyCode, KeyEvent};
+use maki_providers::ImageSource;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -14,11 +15,16 @@ use super::scrollbar::render_vertical_scrollbar;
 use super::{apply_scroll_delta, visual_line_count};
 
 pub enum InputAction {
-    Submit(String),
+    Submit(Submission),
     ContinueLine,
     PaletteSync(String),
     Passthrough(KeyEvent),
     None,
+}
+
+pub struct Submission {
+    pub text: String,
+    pub images: Vec<ImageSource>,
 }
 
 const MAX_INPUT_LINES: u16 = 10;
@@ -49,6 +55,7 @@ pub struct InputBox {
     scroll_y: u16,
     follow_cursor: bool,
     placeholder_hint: &'static str,
+    pending_images: Vec<ImageSource>,
 }
 
 impl InputBox {
@@ -79,7 +86,7 @@ impl InputBox {
             }
             KeyCode::Enter => {
                 return match self.submit() {
-                    Some(text) => InputAction::Submit(text),
+                    Some(sub) => InputAction::Submit(sub),
                     None => InputAction::None,
                 };
             }
@@ -107,6 +114,7 @@ impl InputBox {
             scroll_y: 0,
             follow_cursor: true,
             placeholder_hint: random_placeholder_hint(),
+            pending_images: Vec::new(),
         }
     }
 
@@ -125,7 +133,10 @@ impl InputBox {
 
     pub fn height(&self, width: u16) -> u16 {
         let ew = effective_width(width as usize);
-        let visual_lines = total_visual_lines(&self.buffer, ew, true);
+        let mut visual_lines = total_visual_lines(&self.buffer, ew, true);
+        if !self.pending_images.is_empty() {
+            visual_lines += 1;
+        }
         (visual_lines as u16).min(MAX_INPUT_LINES) + 2
     }
 
@@ -152,17 +163,24 @@ impl InputBox {
         self.buffer.add_line();
     }
 
-    pub fn submit(&mut self) -> Option<String> {
+    pub fn submit(&mut self) -> Option<Submission> {
         let text = self.buffer.value().trim().to_string();
-        if text.is_empty() {
+        let images = std::mem::take(&mut self.pending_images);
+        if text.is_empty() && images.is_empty() {
             return None;
         }
-        self.history.push(text.clone());
+        if !text.is_empty() {
+            self.history.push(text.clone());
+        }
         self.history_index = None;
         self.draft.clear();
         self.buffer.clear();
         self.scroll_y = 0;
-        Some(text)
+        Some(Submission { text, images })
+    }
+
+    pub fn attach_image(&mut self, source: ImageSource) {
+        self.pending_images.push(source);
     }
 
     pub fn set_input(&mut self, s: String) {
@@ -233,13 +251,16 @@ impl InputBox {
             }
         }
 
-        let total_vl = total_visual_lines(&self.buffer, ew, true) as u16;
+        let mut total_vl = total_visual_lines(&self.buffer, ew, true) as u16;
+        if !self.pending_images.is_empty() {
+            total_vl += 1;
+        }
         let max_scroll = total_vl.saturating_sub(content_height);
         self.scroll_y = self.scroll_y.min(max_scroll);
 
         let prefix_style = theme::current().input_placeholder;
         let is_empty = self.buffer.value().is_empty();
-        let styled_lines: Vec<Line> = if is_empty {
+        let mut styled_lines: Vec<Line> = if is_empty && self.pending_images.is_empty() {
             let placeholder_base = theme::current().input_placeholder;
             if streaming {
                 vec![Line::from(vec![
@@ -272,6 +293,18 @@ impl InputBox {
                 })
                 .collect()
         };
+
+        if !self.pending_images.is_empty() {
+            let n = self.pending_images.len();
+            let label = match n {
+                1 => "1 image".to_string(),
+                _ => format!("{n} images"),
+            };
+            styled_lines.push(Line::from(Span::styled(
+                label,
+                theme::current().input_placeholder,
+            )));
+        }
 
         let text = Text::from(styled_lines);
         let border_style = if streaming {
@@ -424,13 +457,15 @@ mod tests {
         assert!(input.submit().is_none());
 
         type_text(&mut input, " x ");
-        assert_eq!(input.submit().as_deref(), Some("x"));
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.text, "x");
+        assert!(sub.images.is_empty());
         assert_eq!(input.buffer.value(), "");
 
         type_text(&mut input, "line1");
         input.buffer.add_line();
         type_text(&mut input, "line2");
-        assert_eq!(input.submit().as_deref(), Some("line1\nline2"));
+        assert_eq!(input.submit().unwrap().text, "line1\nline2");
     }
 
     #[test]
@@ -698,5 +733,53 @@ mod tests {
         let terminal = render_input(&mut input, 40, 4);
         let row = rendered_row(&terminal, 1);
         assert!(row.starts_with(CHEVRON), "placeholder row: {row:?}");
+    }
+
+    fn test_image() -> maki_providers::ImageSource {
+        maki_providers::ImageSource::new(
+            maki_providers::ImageMediaType::Png,
+            std::sync::Arc::from("dGVzdA=="),
+        )
+    }
+
+    #[test]
+    fn submit_with_images() {
+        let mut input = InputBox::new();
+        input.attach_image(test_image());
+        let sub = input.submit().unwrap();
+        assert!(sub.text.is_empty());
+        assert_eq!(sub.images.len(), 1);
+
+        input.attach_image(test_image());
+        input.attach_image(test_image());
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.images.len(), 2);
+        assert!(input.submit().is_none(), "images cleared after submit");
+
+        type_text(&mut input, "describe this");
+        input.attach_image(test_image());
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.text, "describe this");
+        assert_eq!(sub.images.len(), 1);
+    }
+
+    const IMAGE_LABEL: &str = "1 image";
+
+    #[test]
+    fn image_label_rendered() {
+        let mut input = InputBox::new();
+        input.attach_image(test_image());
+        let h = input.height(40);
+        let terminal = render_input(&mut input, 40, h);
+        let found = (0..h).any(|row| rendered_row(&terminal, row).contains(IMAGE_LABEL));
+        assert!(found, "image label not found in rendered output");
+    }
+
+    #[test]
+    fn height_accounts_for_pending_images() {
+        let mut input = InputBox::new();
+        let base_height = input.height(TEST_WIDTH);
+        input.attach_image(test_image());
+        assert_eq!(input.height(TEST_WIDTH), base_height + 1);
     }
 }

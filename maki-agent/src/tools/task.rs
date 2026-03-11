@@ -109,6 +109,7 @@ impl Task {
             message: self.prompt.clone(),
             mode: AgentMode::Build,
             pending_plan: None,
+            images: Vec::new(),
         };
 
         let agent = Agent::new(

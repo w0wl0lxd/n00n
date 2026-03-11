@@ -3,6 +3,7 @@ pub mod app;
 pub mod chat;
 mod components;
 mod highlight;
+mod image;
 mod markdown;
 #[cfg(feature = "demo")]
 mod mock;
@@ -167,6 +168,7 @@ fn run_event_loop(
 
     loop {
         app.tick_edge_scroll();
+        app.poll_image_paste();
         terminal.draw(|f| app.view(f))?;
 
         let mut had_agent_msg = false;

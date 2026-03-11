@@ -567,12 +567,11 @@ impl Agent {
     pub async fn run(mut self, input: AgentInput) -> RunOutcome {
         let ai_text = input.effective_message();
         self.rollback_len = self.history.len();
-        if ai_text == input.message {
-            self.history.push(Message::user(ai_text.clone()));
-        } else {
-            self.history
-                .push(Message::user_display(ai_text.clone(), input.message));
+        let mut msg = Message::user_with_images(ai_text.clone(), input.images);
+        if ai_text != input.message {
+            msg.display_text = Some(input.message);
         }
+        self.history.push(msg);
         self.mode = input.mode;
 
         info!(
@@ -819,6 +818,7 @@ async fn compact_history(
     cancel: &CancelToken,
 ) -> Result<TokenUsage, AgentError> {
     let mut compaction_history: Vec<Message> = history.as_slice().to_vec();
+    strip_images(&mut compaction_history);
     compaction_history.push(Message::user(crate::prompt::COMPACTION_USER.to_string()));
 
     let empty_tools = serde_json::json!([]);
@@ -871,6 +871,20 @@ fn is_overflow(usage: &TokenUsage, model: &Model) -> bool {
     let reserved = COMPACTION_BUFFER.min(model.max_output_tokens);
     let usable = model.context_window.saturating_sub(reserved);
     usage.context_tokens() >= usable
+}
+
+const IMAGE_PLACEHOLDER: &str = "[image]";
+
+fn strip_images(messages: &mut [Message]) {
+    for msg in messages {
+        for block in &mut msg.content {
+            if matches!(block, ContentBlock::Image { .. }) {
+                *block = ContentBlock::Text {
+                    text: IMAGE_PLACEHOLDER.into(),
+                };
+            }
+        }
+    }
 }
 
 fn auto_compact_enabled() -> bool {
@@ -1004,6 +1018,7 @@ mod tests {
             message: "hello".into(),
             mode: AgentMode::Build,
             pending_plan: None,
+            images: Vec::new(),
         }
     }
 
@@ -1484,5 +1499,18 @@ mod tests {
             assert!(result.is_error);
             assert!(result.output.as_text().contains("not available"));
         });
+    }
+
+    #[test]
+    fn strip_images_replaces_with_placeholder() {
+        use maki_providers::{ImageMediaType, ImageSource};
+        let source = ImageSource::new(ImageMediaType::Png, Arc::from("abc"));
+        let mut messages = vec![Message::user_with_images("hello".into(), vec![source])];
+        strip_images(&mut messages);
+        assert_eq!(messages[0].content.len(), 2);
+        assert!(
+            matches!(&messages[0].content[0], ContentBlock::Text { text } if text == IMAGE_PLACEHOLDER)
+        );
+        assert!(matches!(&messages[0].content[1], ContentBlock::Text { text } if text == "hello"));
     }
 }

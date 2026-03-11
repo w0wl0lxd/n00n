@@ -13,6 +13,7 @@ pub mod types;
 use std::path::Path;
 
 pub use maki_providers::AgentError;
+pub use maki_providers::{ImageMediaType, ImageSource};
 pub use types::{
     AgentEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, Envelope,
     EventSender, GrepFileEntry, GrepMatch, NO_FILES_FOUND, QuestionAnswer, QuestionInfo,
@@ -39,6 +40,7 @@ pub struct AgentInput {
     pub message: String,
     pub mode: AgentMode,
     pub pending_plan: Option<String>,
+    pub images: Vec<ImageSource>,
 }
 
 impl AgentInput {
@@ -68,7 +70,7 @@ mod tests {
         let input = AgentInput {
             message: "do stuff".into(),
             mode: AgentMode::Build,
-            pending_plan: None,
+            ..Default::default()
         };
         assert_eq!(input.effective_message(), "do stuff");
     }
@@ -84,6 +86,7 @@ mod tests {
             message: "go".into(),
             mode: AgentMode::Build,
             pending_plan: Some(path_str.clone()),
+            ..Default::default()
         };
         let msg = input.effective_message();
         assert!(msg.contains(&path_str));
@@ -96,6 +99,7 @@ mod tests {
             message: "go".into(),
             mode: AgentMode::Build,
             pending_plan: Some("/nonexistent/plan.md".into()),
+            ..Default::default()
         };
         assert_eq!(input.effective_message(), "go");
     }
@@ -106,6 +110,7 @@ mod tests {
             message: "plan this".into(),
             mode: AgentMode::Plan("/tmp/p.md".into()),
             pending_plan: Some("/tmp/p.md".into()),
+            ..Default::default()
         };
         assert_eq!(input.effective_message(), "plan this");
     }

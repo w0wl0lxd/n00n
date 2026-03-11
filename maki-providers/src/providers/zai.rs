@@ -162,10 +162,17 @@ fn convert_messages(messages: &[Message], system: &str) -> Vec<Value> {
             Role::User => {
                 let mut tool_results = Vec::new();
                 let mut text_parts = Vec::new();
+                let mut image_parts = Vec::new();
 
                 for block in &msg.content {
                     match block {
                         ContentBlock::Text { text } => text_parts.push(text.clone()),
+                        ContentBlock::Image { source } => {
+                            image_parts.push(json!({
+                                "type": "image_url",
+                                "image_url": { "url": source.to_data_url() }
+                            }));
+                        }
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
@@ -181,7 +188,13 @@ fn convert_messages(messages: &[Message], system: &str) -> Vec<Value> {
                     }
                 }
 
-                if !text_parts.is_empty() {
+                if !image_parts.is_empty() {
+                    let mut parts = image_parts;
+                    if !text_parts.is_empty() {
+                        parts.push(json!({"type": "text", "text": text_parts.join("\n")}));
+                    }
+                    out.push(json!({"role": "user", "content": parts}));
+                } else if !text_parts.is_empty() {
                     out.push(json!({"role": "user", "content": text_parts.join("\n")}));
                 }
                 out.extend(tool_results);
@@ -203,7 +216,7 @@ fn convert_messages(messages: &[Message], system: &str) -> Vec<Value> {
                                 }
                             }));
                         }
-                        ContentBlock::ToolResult { .. } => {}
+                        ContentBlock::ToolResult { .. } | ContentBlock::Image { .. } => {}
                     }
                 }
 
@@ -772,5 +785,33 @@ data: [DONE]\n";
             assert_eq!(tools[0].1, "bash");
             assert_eq!(*tools[0].2, Value::Object(Default::default()));
         })
+    }
+
+    #[test]
+    fn convert_messages_user_with_image() {
+        use crate::types::{ImageMediaType, ImageSource};
+        use std::sync::Arc;
+        let source = ImageSource::new(ImageMediaType::Png, Arc::from("abc123"));
+        let msgs = vec![Message::user_with_images("describe".into(), vec![source])];
+        let result = convert_messages(&msgs, "system");
+        let user = &result[1];
+        let content = user["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "image_url");
+        assert!(
+            content[0]["image_url"]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/png;base64,")
+        );
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "describe");
+    }
+
+    #[test]
+    fn convert_messages_user_text_only_stays_string() {
+        let msgs = vec![Message::user("hello".into())];
+        let result = convert_messages(&msgs, "system");
+        assert!(result[1]["content"].is_string());
     }
 }

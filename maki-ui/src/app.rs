@@ -8,7 +8,7 @@ use crate::chat::{Chat, ChatEventResult};
 use crate::components::chat_picker::{ChatPicker, ChatPickerAction};
 use crate::components::command::{CommandAction, CommandPalette};
 use crate::components::help_modal::HelpModal;
-use crate::components::input::{InputAction, InputBox};
+use crate::components::input::{InputAction, InputBox, Submission};
 use crate::components::keybindings::{KeybindContext, key};
 use crate::components::model_picker::{ModelPicker, ModelPickerAction};
 use crate::components::question_form::{QuestionForm, QuestionFormAction};
@@ -20,6 +20,7 @@ use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
 use crate::components::{
     Action, DisplayMessage, DisplayRole, LoadedSession, RetryInfo, Status, is_ctrl,
 };
+use crate::image;
 use crate::selection::{
     self, ContentRegion, EdgeScroll, SelectableZone, Selection, SelectionState, SelectionZone,
     ZoneRegistry,
@@ -32,7 +33,7 @@ use crate::AppSession;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 #[cfg(feature = "demo")]
 use maki_agent::QuestionInfo;
-use maki_agent::{AgentEvent, Envelope, SubagentInfo};
+use maki_agent::{AgentEvent, Envelope, ImageSource, SubagentInfo};
 use maki_agent::{AgentInput, AgentMode};
 use maki_providers::{ModelPricing, TokenUsage};
 use maki_storage::DataDir;
@@ -95,6 +96,7 @@ impl QueuedItem {
                     message: input.message.clone(),
                     mode: input.mode.clone(),
                     pending_plan: input.pending_plan.clone(),
+                    images: input.images.clone(),
                 },
                 run_id,
             ),
@@ -155,6 +157,7 @@ pub struct App {
     pub(crate) shared_tool_outputs: Option<
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, maki_agent::ToolOutput>>>,
     >,
+    pub(crate) image_paste_rx: Option<flume::Receiver<Result<ImageSource, String>>>,
 }
 
 impl App {
@@ -205,6 +208,7 @@ impl App {
             storage,
             shared_history: None,
             shared_tool_outputs: None,
+            image_paste_rx: None,
         }
     }
 
@@ -259,7 +263,8 @@ impl App {
         };
         if let QueuedItem::Message(ref input) = item {
             self.main_chat().flush();
-            self.main_chat().push_user_message(&input.message);
+            self.main_chat()
+                .push_user_message(&format_with_images(&input.message, input.images.len()));
             self.main_chat().enable_auto_scroll();
         }
         self.clamp_queue_focus();
@@ -356,7 +361,15 @@ impl App {
         match msg {
             Msg::Key(key) => self.handle_key(key),
             Msg::Paste(text) => {
-                if !self.question_form.handle_paste(&text)
+                if text.is_empty() {
+                    if self.image_paste_rx.is_none() {
+                        self.start_image_paste();
+                    }
+                } else if let Some((path, media_type)) = image::try_parse_image_path(&text) {
+                    if self.image_paste_rx.is_none() {
+                        self.start_file_image_paste(path, media_type);
+                    }
+                } else if !self.question_form.handle_paste(&text)
                     && let InputAction::PaletteSync(val) = self.input_box.handle_paste(&text)
                 {
                     self.command_palette.sync(&val);
@@ -644,6 +657,8 @@ impl App {
                 }
             } else if key::HELP.matches(key) {
                 self.help_modal.toggle();
+            } else if key.code == KeyCode::Char('v') && self.image_paste_rx.is_none() {
+                self.start_image_paste();
             } else if let InputAction::PaletteSync(val) = self.input_box.handle_key(key) {
                 self.command_palette.sync(&val);
             }
@@ -659,7 +674,7 @@ impl App {
 
         let streaming = self.status == Status::Streaming;
         match self.input_box.handle_key(key) {
-            InputAction::Submit(text) => self.handle_submit(text),
+            InputAction::Submit(sub) => self.handle_submit(sub),
             InputAction::PaletteSync(val) => {
                 self.command_palette.sync(&val);
                 vec![]
@@ -712,27 +727,29 @@ impl App {
         vec![Action::Quit]
     }
 
-    fn handle_submit(&mut self, text: String) -> Vec<Action> {
+    fn handle_submit(&mut self, sub: Submission) -> Vec<Action> {
         if self.pending_question {
             self.pending_question = false;
-            self.main_chat().push_user_message(&text);
-            self.send_answer(text);
+            self.main_chat().push_user_message(&sub.text);
+            self.send_answer(sub.text);
             return vec![];
         }
-        if text.trim() == "exit" {
+        if sub.text.trim() == "exit" {
             return self.quit();
         }
         let input = AgentInput {
-            message: text.clone(),
+            message: sub.text.clone(),
             mode: self.agent_mode(),
             pending_plan: self.pending_plan().map(String::from),
+            images: sub.images,
         };
         if self.status == Status::Streaming {
             self.queue_and_notify(QueuedItem::Message(input));
             vec![]
         } else {
             self.run_id += 1;
-            self.main_chat().push_user_message(&text);
+            self.main_chat()
+                .push_user_message(&format_with_images(&input.message, input.images.len()));
             self.status = Status::Streaming;
             self.main_chat().enable_auto_scroll();
             vec![Action::SendMessage(input)]
@@ -836,7 +853,10 @@ impl App {
                         self.clamp_queue_focus();
                         return match item {
                             QueuedItem::Message(input) => {
-                                self.main_chat().push_user_message(&input.message);
+                                self.main_chat().push_user_message(&format_with_images(
+                                    &input.message,
+                                    input.images.len(),
+                                ));
                                 self.main_chat().enable_auto_scroll();
                                 vec![Action::SendMessage(input)]
                             }
@@ -1300,10 +1320,55 @@ impl App {
     }
 
     pub fn is_animating(&self) -> bool {
-        self.selection_state
-            .as_ref()
-            .is_some_and(|s| s.edge_scroll.is_some())
+        self.image_paste_rx.is_some()
+            || self
+                .selection_state
+                .as_ref()
+                .is_some_and(|s| s.edge_scroll.is_some())
             || self.chats.iter().any(|c| c.is_animating())
+    }
+
+    fn start_file_image_paste(
+        &mut self,
+        path: std::path::PathBuf,
+        media_type: maki_agent::ImageMediaType,
+    ) {
+        let msg = format!("Reading {}...", path.display());
+        self.spawn_image_load(msg, move || image::load_file_image(&path, media_type));
+    }
+
+    fn start_image_paste(&mut self) {
+        self.spawn_image_load("Reading clipboard...".into(), image::load_clipboard_image);
+    }
+
+    fn spawn_image_load(
+        &mut self,
+        flash: String,
+        f: impl FnOnce() -> Result<ImageSource, String> + Send + 'static,
+    ) {
+        let (tx, rx) = flume::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        self.image_paste_rx = Some(rx);
+        self.status_bar.flash(flash);
+    }
+
+    pub fn poll_image_paste(&mut self) {
+        let Some(ref rx) = self.image_paste_rx else {
+            return;
+        };
+        let Ok(result) = rx.try_recv() else {
+            return;
+        };
+        self.image_paste_rx = None;
+        match result {
+            Ok(source) => {
+                self.input_box.attach_image(source);
+                self.status_bar.flash("Image attached".into());
+            }
+            Err(e) => self.status_bar.flash(format!("Image paste failed: {e}")),
+        }
     }
 
     #[cfg(feature = "demo")]
@@ -1331,6 +1396,14 @@ impl App {
             let (_, questions) = self.demo_questions.take().unwrap();
             self.question_form.open(questions);
         }
+    }
+}
+
+fn format_with_images(text: &str, image_count: usize) -> String {
+    match image_count {
+        0 => text.to_string(),
+        1 => format!("{text} [1 image]"),
+        n => format!("{text} [{n} images]"),
     }
 }
 
@@ -1615,6 +1688,14 @@ mod tests {
     }
 
     #[test]
+    fn paste_file_path_triggers_image_load() {
+        let mut app = test_app();
+        app.update(Msg::Paste("file:///tmp/nonexistent.png".into()));
+        assert!(app.image_paste_rx.is_some());
+        assert_eq!(app.input_box.buffer.value(), "");
+    }
+
+    #[test]
     fn submit_during_streaming_queues_message() {
         let mut app = test_app();
         app.update(Msg::Key(key(KeyCode::Char('a'))));
@@ -1656,7 +1737,7 @@ mod tests {
         QueuedItem::Message(AgentInput {
             message: text.into(),
             mode: AgentMode::Build,
-            pending_plan: None,
+            ..Default::default()
         })
     }
 
@@ -2765,9 +2846,19 @@ mod tests {
     #[test_case("  exit " ; "exit_with_whitespace")]
     fn submit_exit_quits(input: &str) {
         let mut app = test_app();
-        let actions = app.handle_submit(input.into());
+        let actions = app.handle_submit(Submission {
+            text: input.into(),
+            images: vec![],
+        });
         assert!(app.should_quit);
         assert!(matches!(&actions[0], Action::Quit));
+    }
+
+    #[test_case(0, "hello"            ; "no_images")]
+    #[test_case(1, "hello [1 image]"  ; "one_image")]
+    #[test_case(3, "hello [3 images]" ; "multiple_images")]
+    fn format_with_images_label(count: usize, expected: &str) {
+        assert_eq!(format_with_images("hello", count), expected);
     }
 
     #[test]
