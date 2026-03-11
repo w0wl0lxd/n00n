@@ -185,12 +185,6 @@ impl QuestionForm {
         if key::QUIT.matches(key) {
             return QuestionFormAction::Dismiss;
         }
-        if super::is_ctrl(&key) {
-            if key::DELETE_WORD.matches(key) {
-                self.buffer.remove_word_before_cursor();
-            }
-            return QuestionFormAction::Consumed;
-        }
 
         match key.code {
             KeyCode::Enter => {
@@ -209,14 +203,10 @@ impl QuestionForm {
                 self.editing_custom = false;
                 QuestionFormAction::Consumed
             }
-            KeyCode::Char(c) => self.buffer_key(|b| b.push_char(c)),
-            KeyCode::Backspace => self.buffer_key(|b| b.remove_char()),
-            KeyCode::Delete => self.buffer_key(|b| b.delete_char()),
-            KeyCode::Left => self.buffer_key(|b| b.move_left()),
-            KeyCode::Right => self.buffer_key(|b| b.move_right()),
-            KeyCode::Home => self.buffer_key(|b| b.move_home()),
-            KeyCode::End => self.buffer_key(|b| b.move_end()),
-            _ => QuestionFormAction::Consumed,
+            _ => {
+                self.buffer.handle_key(key);
+                QuestionFormAction::Consumed
+            }
         }
     }
 
@@ -226,11 +216,6 @@ impl QuestionForm {
             return true;
         }
         false
-    }
-
-    fn buffer_key(&mut self, f: impl FnOnce(&mut TextBuffer)) -> QuestionFormAction {
-        f(&mut self.buffer);
-        QuestionFormAction::Consumed
     }
 
     fn handle_enter(&mut self) -> QuestionFormAction {

@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::text_buffer::TextBuffer;
+use crate::text_buffer::{EditResult, TextBuffer};
 use crate::theme;
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -10,7 +10,6 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
-use super::keybindings::key;
 use super::scrollbar::render_vertical_scrollbar;
 use super::{apply_scroll_delta, visual_line_count};
 
@@ -55,23 +54,6 @@ pub struct InputBox {
 impl InputBox {
     pub fn handle_key(&mut self, key: KeyEvent) -> InputAction {
         self.follow_cursor = true;
-        if super::is_ctrl(&key) {
-            if key::DELETE_WORD.matches(key) {
-                self.buffer.remove_word_before_cursor();
-                return InputAction::PaletteSync(self.buffer.value());
-            }
-            return match key.code {
-                KeyCode::Left => {
-                    self.buffer.move_word_left();
-                    InputAction::None
-                }
-                KeyCode::Right => {
-                    self.buffer.move_word_right();
-                    InputAction::None
-                }
-                _ => InputAction::None,
-            };
-        }
 
         match key.code {
             KeyCode::Up if self.is_at_first_line() => {
@@ -91,47 +73,22 @@ impl InputBox {
                 return InputAction::None;
             }
             KeyCode::Tab | KeyCode::Esc => return InputAction::Passthrough(key),
+            KeyCode::Enter if self.char_before_cursor_is_backslash() => {
+                self.continue_line();
+                return InputAction::ContinueLine;
+            }
+            KeyCode::Enter => {
+                return match self.submit() {
+                    Some(text) => InputAction::Submit(text),
+                    None => InputAction::None,
+                };
+            }
             _ => {}
         }
 
-        match key.code {
-            KeyCode::Enter if self.char_before_cursor_is_backslash() => {
-                self.continue_line();
-                InputAction::ContinueLine
-            }
-            KeyCode::Enter => match self.submit() {
-                Some(text) => InputAction::Submit(text),
-                None => InputAction::None,
-            },
-            KeyCode::Char(c) => {
-                self.buffer.push_char(c);
-                InputAction::PaletteSync(self.buffer.value())
-            }
-            KeyCode::Backspace => {
-                self.buffer.remove_char();
-                InputAction::PaletteSync(self.buffer.value())
-            }
-            KeyCode::Delete => {
-                self.buffer.delete_char();
-                InputAction::None
-            }
-            KeyCode::Left => {
-                self.buffer.move_left();
-                InputAction::None
-            }
-            KeyCode::Right => {
-                self.buffer.move_right();
-                InputAction::None
-            }
-            KeyCode::Home => {
-                self.buffer.move_home();
-                InputAction::None
-            }
-            KeyCode::End => {
-                self.buffer.move_end();
-                InputAction::None
-            }
-            _ => InputAction::None,
+        match self.buffer.handle_key(key) {
+            EditResult::Changed => InputAction::PaletteSync(self.buffer.value()),
+            EditResult::Moved | EditResult::Ignored => InputAction::None,
         }
     }
 

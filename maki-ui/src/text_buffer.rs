@@ -1,3 +1,12 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditResult {
+    Ignored,
+    Moved,
+    Changed,
+}
+
 pub struct TextBuffer {
     lines: Vec<String>,
     raw_x: usize,
@@ -95,10 +104,7 @@ impl TextBuffer {
     pub fn delete_char(&mut self) {
         let x = self.x();
         if x == self.current_line_len() {
-            if self.cursor_y + 1 < self.lines.len() {
-                let next_line = self.lines.remove(self.cursor_y + 1);
-                self.lines[self.cursor_y].push_str(&next_line);
-            }
+            self.merge_with_next_line();
         } else {
             let bx = self.byte_x();
             self.lines[self.cursor_y].remove(bx);
@@ -148,6 +154,23 @@ impl TextBuffer {
             i += 1;
         }
         i
+    }
+
+    pub fn delete_word_after_cursor(&mut self) {
+        let x = self.x();
+        if x == self.current_line_len() {
+            self.merge_with_next_line();
+            return;
+        }
+        let new_x = self.find_next_word_boundary(x);
+        let byte_start = Self::char_to_byte(self.current_line(), x);
+        let byte_end = Self::char_to_byte(self.current_line(), new_x);
+        self.lines[self.cursor_y].replace_range(byte_start..byte_end, "");
+    }
+
+    pub fn kill_to_end_of_line(&mut self) {
+        let bx = self.byte_x();
+        self.lines[self.cursor_y].truncate(bx);
     }
 
     pub fn remove_word_before_cursor(&mut self) {
@@ -231,20 +254,93 @@ impl TextBuffer {
         self.raw_x = self.current_line_len();
     }
 
+    fn merge_with_next_line(&mut self) {
+        if self.cursor_y + 1 < self.lines.len() {
+            let next = self.lines.remove(self.cursor_y + 1);
+            self.lines[self.cursor_y].push_str(&next);
+        }
+    }
+
     fn merge_with_previous_line(&mut self) {
         if self.cursor_y == 0 {
             return;
         }
         self.cursor_y -= 1;
         self.raw_x = self.current_line_len();
-        let line = self.lines.remove(self.cursor_y + 1);
-        self.lines[self.cursor_y].push_str(&line);
+        self.merge_with_next_line();
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) -> EditResult {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT);
+
+        if ctrl {
+            return match key.code {
+                KeyCode::Left => {
+                    self.move_word_left();
+                    EditResult::Moved
+                }
+                KeyCode::Right => {
+                    self.move_word_right();
+                    EditResult::Moved
+                }
+                KeyCode::Backspace | KeyCode::Char('w') => {
+                    self.remove_word_before_cursor();
+                    EditResult::Changed
+                }
+                KeyCode::Delete => {
+                    self.delete_word_after_cursor();
+                    EditResult::Changed
+                }
+                KeyCode::Char('k') => {
+                    self.kill_to_end_of_line();
+                    EditResult::Changed
+                }
+                KeyCode::Char('a') => {
+                    self.move_home();
+                    EditResult::Moved
+                }
+                _ => EditResult::Ignored,
+            };
+        }
+
+        match key.code {
+            KeyCode::Char(c) => {
+                self.push_char(c);
+                EditResult::Changed
+            }
+            KeyCode::Backspace => {
+                self.remove_char();
+                EditResult::Changed
+            }
+            KeyCode::Delete => {
+                self.delete_char();
+                EditResult::Changed
+            }
+            KeyCode::Left => {
+                self.move_left();
+                EditResult::Moved
+            }
+            KeyCode::Right => {
+                self.move_right();
+                EditResult::Moved
+            }
+            KeyCode::Home => {
+                self.move_home();
+                EditResult::Moved
+            }
+            KeyCode::End => {
+                self.move_end();
+                EditResult::Moved
+            }
+            _ => EditResult::Ignored,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::TextBuffer;
+    use super::{EditResult, TextBuffer};
 
     #[test]
     fn insert_at_middle() {
@@ -427,5 +523,77 @@ mod tests {
         assert_eq!(buf.x(), 2);
         buf.move_down();
         assert_eq!(buf.x(), 4);
+    }
+
+    #[test]
+    fn delete_word_after_cursor() {
+        let mut buf = TextBuffer::new("hello world".into());
+        buf.delete_word_after_cursor();
+        assert_eq!(buf.value(), " world");
+
+        let mut buf = TextBuffer::new("hello world".into());
+        buf.raw_x = 6;
+        buf.delete_word_after_cursor();
+        assert_eq!(buf.value(), "hello ");
+
+        let mut buf = TextBuffer::new("ab\ncd".into());
+        buf.raw_x = 2;
+        buf.delete_word_after_cursor();
+        assert_eq!(buf.value(), "abcd");
+
+        let mut buf = TextBuffer::new("end".into());
+        buf.raw_x = 3;
+        buf.delete_word_after_cursor();
+        assert_eq!(buf.value(), "end");
+    }
+
+    #[test]
+    fn kill_to_end_of_line() {
+        let mut buf = TextBuffer::new("hello world".into());
+        buf.raw_x = 5;
+        buf.kill_to_end_of_line();
+        assert_eq!(buf.value(), "hello");
+
+        let mut buf = TextBuffer::new("ab\ncd".into());
+        buf.kill_to_end_of_line();
+        assert_eq!(buf.lines(), &["", "cd"]);
+
+        let mut buf = TextBuffer::new("●text".into());
+        buf.raw_x = 1;
+        buf.kill_to_end_of_line();
+        assert_eq!(buf.value(), "●");
+    }
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use test_case::test_case;
+
+    fn plain(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    #[test_case(plain(KeyCode::Char('a')),      EditResult::Changed ; "char_changed")]
+    #[test_case(plain(KeyCode::Backspace),       EditResult::Changed ; "backspace_changed")]
+    #[test_case(plain(KeyCode::Delete),          EditResult::Changed ; "delete_changed")]
+    #[test_case(plain(KeyCode::Left),            EditResult::Moved   ; "left_moved")]
+    #[test_case(plain(KeyCode::Right),           EditResult::Moved   ; "right_moved")]
+    #[test_case(plain(KeyCode::Home),            EditResult::Moved   ; "home_moved")]
+    #[test_case(plain(KeyCode::End),             EditResult::Moved   ; "end_moved")]
+    #[test_case(ctrl(KeyCode::Char('a')),        EditResult::Moved   ; "ctrl_a_moved")]
+    #[test_case(ctrl(KeyCode::Left),             EditResult::Moved   ; "ctrl_left_moved")]
+    #[test_case(ctrl(KeyCode::Right),            EditResult::Moved   ; "ctrl_right_moved")]
+    #[test_case(ctrl(KeyCode::Char('k')),        EditResult::Changed ; "ctrl_k_changed")]
+    #[test_case(ctrl(KeyCode::Char('w')),        EditResult::Changed ; "ctrl_w_changed")]
+    #[test_case(ctrl(KeyCode::Backspace),        EditResult::Changed ; "ctrl_backspace_changed")]
+    #[test_case(ctrl(KeyCode::Delete),           EditResult::Changed ; "ctrl_delete_changed")]
+    #[test_case(plain(KeyCode::F(1)),            EditResult::Ignored ; "f1_ignored")]
+    #[test_case(ctrl(KeyCode::Char('z')),        EditResult::Ignored ; "ctrl_z_ignored")]
+    fn handle_key_returns_correct_result(key: KeyEvent, expected: EditResult) {
+        let mut buf = TextBuffer::new("hello world".into());
+        buf.raw_x = 5;
+        assert_eq!(buf.handle_key(key), expected);
     }
 }

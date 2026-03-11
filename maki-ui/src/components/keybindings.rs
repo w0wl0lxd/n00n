@@ -125,6 +125,26 @@ const KEYBINDS: &[Keybind] = &[
         context: KeybindContext::Editing,
     },
     Keybind {
+        key: "Ctrl+←/→",
+        description: "Move word left/right",
+        context: KeybindContext::Editing,
+    },
+    Keybind {
+        key: "Ctrl+Del",
+        description: "Delete word forward",
+        context: KeybindContext::Editing,
+    },
+    Keybind {
+        key: "Ctrl+K",
+        description: "Kill to end of line",
+        context: KeybindContext::Editing,
+    },
+    Keybind {
+        key: "Ctrl+A",
+        description: "Move to start of line",
+        context: KeybindContext::Editing,
+    },
+    Keybind {
         key: "Ctrl+U/D",
         description: "Scroll half page up/down",
         context: KeybindContext::Editing,
