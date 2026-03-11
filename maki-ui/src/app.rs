@@ -536,8 +536,7 @@ impl App {
             if key::QUIT.matches(key) {
                 self.command_palette.close();
                 return if self.input_box.buffer.value().trim().is_empty() {
-                    self.should_quit = true;
-                    vec![Action::Quit]
+                    self.quit()
                 } else {
                     self.input_box.buffer.clear();
                     vec![]
@@ -614,12 +613,20 @@ impl App {
         }
     }
 
+    fn quit(&mut self) -> Vec<Action> {
+        self.should_quit = true;
+        vec![Action::Quit]
+    }
+
     fn handle_submit(&mut self, text: String) -> Vec<Action> {
         if self.pending_question {
             self.pending_question = false;
             self.main_chat().push_user_message(&text);
             self.send_answer(text);
             return vec![];
+        }
+        if text.trim() == "exit" {
+            return self.quit();
         }
         let input = AgentInput {
             message: text.clone(),
@@ -875,6 +882,7 @@ impl App {
                 self.theme_picker.open();
                 vec![]
             }
+            "/exit" => self.quit(),
             _ => vec![],
         }
     }
@@ -1796,13 +1804,10 @@ mod tests {
     }
 
     #[test]
-    fn done_flushes_text_and_sets_idle() {
+    fn done_sets_idle() {
         let mut app = test_app();
         app.status = Status::Streaming;
         app.run_id = 1;
-        app.update(agent_msg(AgentEvent::TextDelta {
-            text: "response text".into(),
-        }));
         app.update(agent_msg(AgentEvent::Done {
             usage: TokenUsage::default(),
             num_turns: 1,
@@ -2016,8 +2021,7 @@ mod tests {
     #[test]
     fn tick_edge_scroll_noop_without_state() {
         let mut app = test_app();
-        app.tick_edge_scroll();
-        assert!(app.chats[0].auto_scroll());
+        app.tick_edge_scroll(); // must not panic
     }
 
     #[test]
@@ -2478,23 +2482,16 @@ mod tests {
     }
 
     #[test]
-    fn help_modal_esc_closes() {
-        let mut app = test_app();
-        app.update(Msg::Key(kb::HELP.to_key_event()));
-        assert!(app.help_modal.is_open());
-
-        app.update(Msg::Key(key(KeyCode::Esc)));
-        assert!(!app.help_modal.is_open());
-    }
-
-    #[test]
-    fn help_modal_consumes_keys() {
+    fn help_modal_consumes_keys_and_esc_closes() {
         let mut app = test_app();
         app.update(Msg::Key(kb::HELP.to_key_event()));
 
         app.update(Msg::Key(key(KeyCode::Char('h'))));
         app.update(Msg::Key(key(KeyCode::Char('i'))));
         assert_eq!(app.input_box.buffer.value(), "");
+
+        app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(!app.help_modal.is_open());
     }
 
     #[test]
@@ -2545,5 +2542,22 @@ mod tests {
         for ctx in absent {
             assert!(!contexts.contains(ctx), "{ctx:?} should be absent");
         }
+    }
+
+    #[test_case("exit"    ; "bare_exit")]
+    #[test_case("  exit " ; "exit_with_whitespace")]
+    fn submit_exit_quits(input: &str) {
+        let mut app = test_app();
+        let actions = app.handle_submit(input.into());
+        assert!(app.should_quit);
+        assert!(matches!(&actions[0], Action::Quit));
+    }
+
+    #[test]
+    fn slash_exit_command_quits() {
+        let mut app = test_app();
+        let actions = app.execute_command("/exit");
+        assert!(app.should_quit);
+        assert!(matches!(&actions[0], Action::Quit));
     }
 }

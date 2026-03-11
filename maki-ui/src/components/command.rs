@@ -44,6 +44,10 @@ const COMMANDS: &[Command] = &[
         name: "/theme",
         description: "Switch color theme",
     },
+    Command {
+        name: "/exit",
+        description: "Exit the application",
+    },
 ];
 
 pub struct CommandPalette {
