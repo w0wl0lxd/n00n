@@ -159,7 +159,8 @@ impl StatusBar {
 
         match ctx.status {
             Status::Error(e) => {
-                left_spans.push(Span::styled(format!(" error: {e}"), theme::current().error));
+                left_spans.push(Span::styled(" ✖ ", theme::current().tool_error));
+                left_spans.push(Span::styled(e.to_string(), theme::current().error));
             }
             _ => {
                 let pct = if ctx.stats.context_window > 0 {

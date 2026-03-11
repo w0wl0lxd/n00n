@@ -83,12 +83,23 @@ enum AuthAction {
 fn main() {
     color_eyre::install().ok();
     if let Err(e) = run() {
-        eprintln!("error: {e}");
-        for cause in e.chain().skip(1) {
-            eprintln!("  caused by: {cause}");
-        }
+        print_error(&e);
         std::process::exit(1);
     }
+}
+
+fn print_error(e: &color_eyre::Report) {
+    const RED: &str = "\x1b[31m";
+    const BOLD_RED: &str = "\x1b[1;31m";
+    const DIM: &str = "\x1b[2m";
+    const RESET: &str = "\x1b[0m";
+
+    eprintln!();
+    eprintln!("  {BOLD_RED}✖ {e}{RESET}");
+    for cause in e.chain().skip(1) {
+        eprintln!("  {DIM}╰─{RESET} {RED}{cause}{RESET}");
+    }
+    eprintln!();
 }
 
 fn run() -> Result<()> {
