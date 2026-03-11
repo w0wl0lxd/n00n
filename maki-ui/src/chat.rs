@@ -86,7 +86,7 @@ impl Chat {
             AgentEvent::QueueItemConsumed => {
                 return ChatEventResult::QueueItemConsumed;
             }
-            AgentEvent::Retry { .. } => {}
+            AgentEvent::Retry { .. } => self.messages_panel.stream_reset(),
             AgentEvent::Done { .. } => {
                 self.messages_panel.flush();
                 return ChatEventResult::Done;

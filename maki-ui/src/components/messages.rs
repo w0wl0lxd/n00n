@@ -494,6 +494,14 @@ impl MessagesPanel {
         self.rebuild_tool_segment(&rebuild_id);
     }
 
+    pub fn stream_reset(&mut self) {
+        self.streaming_thinking.clear();
+        self.streaming_text.clear();
+        self.cached_streaming_thinking.invalidate();
+        self.cached_streaming_text.invalidate();
+        self.fail_in_progress();
+    }
+
     pub fn fail_in_progress(&mut self) {
         let mut batch_ids = Vec::new();
         for msg in &mut self.messages {
@@ -1898,5 +1906,20 @@ mod tests {
             );
             end += step;
         }
+    }
+
+    #[test]
+    fn stream_reset_clears_streaming_and_fails_tools() {
+        let mut panel = panel_with_tools(&[("t1", "bash")]);
+        panel.streaming_thinking.set_buffer("partial thinking");
+        panel.streaming_text.set_buffer("partial text");
+        rebuild(&mut panel);
+
+        panel.stream_reset();
+
+        assert!(panel.streaming_thinking.is_empty());
+        assert!(panel.streaming_text.is_empty());
+        assert_eq!(panel.in_progress_count, 0);
+        assert_eq!(msg_status(&panel, "t1"), ToolStatus::Error);
     }
 }

@@ -1782,7 +1782,6 @@ dependencies = [
  "libc",
  "maki-interpreter",
  "maki-providers",
- "maki-storage",
  "maki-tool-macro",
  "regex",
  "serde",

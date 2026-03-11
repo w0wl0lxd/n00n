@@ -77,6 +77,13 @@ impl Typewriter {
         self.buffer.is_empty()
     }
 
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.visible_len = 0;
+        self.anim_start_visible = 0;
+        self.anim_target = 0;
+    }
+
     pub fn take_all(&mut self) -> String {
         self.visible_len = 0;
         self.anim_start_visible = 0;
@@ -161,6 +168,17 @@ mod tests {
         tw.set_buffer("data");
         let taken = tw.take_all();
         assert_eq!(taken, "data");
+        assert!(tw.is_empty());
+        assert!(!tw.is_animating());
+        assert_eq!(tw.visible(), "");
+    }
+
+    #[test]
+    fn typewriter_clear_discards_buffer() {
+        let mut tw = Typewriter::new();
+        tw.set_buffer("data");
+        tw.push("more");
+        tw.clear();
         assert!(tw.is_empty());
         assert!(!tw.is_animating());
         assert_eq!(tw.visible(), "");
