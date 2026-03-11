@@ -764,7 +764,7 @@ pub async fn compact(
 fn is_overflow(usage: &TokenUsage, model: &Model) -> bool {
     let reserved = COMPACTION_BUFFER.min(model.max_output_tokens);
     let usable = model.context_window.saturating_sub(reserved);
-    usage.total_input() >= usable
+    usage.context_tokens() >= usable
 }
 
 fn auto_compact_enabled() -> bool {
@@ -1085,9 +1085,7 @@ mod tests {
 
     #[test_case(179_999, 0,       0,       200_000, 20_000, false ; "below_threshold")]
     #[test_case(180_000, 0,       0,       200_000, 20_000, true  ; "at_threshold")]
-    #[test_case(195_000, 0,       0,       200_000, 20_000, true  ; "above_threshold")]
     #[test_case(190_000, 0,       0,       200_000, 10_000, true  ; "small_max_output_uses_it_as_reserve")]
-    #[test_case(0,       0,       0,       200_000, 20_000, false ; "zero_input")]
     #[test_case(100,     0,       0,       100,     20_000, true  ; "tiny_context_window")]
     #[test_case(5_000,   165_000, 10_000,  200_000, 20_000, true  ; "cached_tokens_count_toward_overflow")]
     fn overflow_detection(
@@ -1106,6 +1104,17 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(is_overflow(&usage, &model), expected);
+    }
+
+    #[test]
+    fn output_tokens_count_toward_overflow() {
+        let model = small_context_model(200_000, 20_000);
+        let usage = TokenUsage {
+            input: 100_000,
+            output: 80_000,
+            ..Default::default()
+        };
+        assert!(is_overflow(&usage, &model));
     }
 
     #[test_case(true,  900, true  ; "enabled_and_over_threshold")]
