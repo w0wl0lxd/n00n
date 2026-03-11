@@ -82,21 +82,16 @@ pub fn load_by_name(name: &str) -> Result<Theme, String> {
 }
 
 pub fn persist_theme(name: &str) {
-    if let Some(home) = std::env::var_os("HOME") {
-        let dir = std::path::Path::new(&home).join(".maki");
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join("theme"), name);
+    if let Ok(dir) = maki_storage::DataDir::resolve() {
+        maki_storage::theme::persist_theme_name(&dir, name);
     }
 }
 
 const DEFAULT_THEME: &str = "dracula";
 
 fn read_theme_name() -> Option<String> {
-    let home = std::env::var_os("HOME")?;
-    let path = std::path::Path::new(&home).join(".maki/theme");
-    let name = std::fs::read_to_string(path).ok()?;
-    let name = name.trim();
-    (!name.is_empty()).then(|| name.to_owned())
+    let dir = maki_storage::DataDir::resolve().ok()?;
+    maki_storage::theme::read_theme_name(&dir)
 }
 
 pub fn current_theme_name() -> String {
@@ -642,13 +637,11 @@ impl Theme {
         {
             return theme;
         }
-        if let Some(home) = std::env::var_os("HOME") {
-            let custom_path = std::path::Path::new(&home).join(".maki/themes/theme.toml");
-            if let Ok(contents) = std::fs::read_to_string(&custom_path)
-                && let Ok(theme) = Self::from_toml(&contents)
-            {
-                return theme;
-            }
+        if let Ok(dir) = maki_storage::DataDir::resolve()
+            && let Some(contents) = maki_storage::theme::read_custom_theme(&dir)
+            && let Ok(theme) = Self::from_toml(&contents)
+        {
+            return theme;
         }
         Self::from_toml(BUNDLED_THEMES[0].toml).expect("bundled theme must parse")
     }

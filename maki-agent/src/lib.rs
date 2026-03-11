@@ -4,14 +4,12 @@ pub(crate) mod task_set;
 pub use agent::{Agent, History, RunOutcome};
 pub use cancel::{CancelToken, CancelTrigger};
 pub(crate) mod prompt;
-pub mod session;
 pub mod skill;
 pub mod template;
 pub mod tools;
 pub mod types;
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use maki_providers::AgentError;
 pub use types::{
@@ -20,19 +18,6 @@ pub use types::{
     QuestionOption, SubagentInfo, TodoItem, TodoPriority, TodoStatus, ToolDoneEvent, ToolInput,
     ToolOutput, ToolStartEvent,
 };
-
-pub const PLANS_DIR: &str = "plans";
-
-pub fn new_plan_path() -> String {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let plan_dir = maki_providers::data_dir()
-        .map(|d| d.join(PLANS_DIR))
-        .unwrap_or_else(|_| PLANS_DIR.into());
-    format!("{}/{ts}.md", plan_dir.display())
-}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum AgentMode {

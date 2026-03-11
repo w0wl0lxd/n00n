@@ -1,13 +1,13 @@
 use std::env;
-use std::fs::{self, File};
 use std::io::{self, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::{Deserialize, Serialize};
+use maki_storage::DataDir;
+use maki_storage::auth::delete_tokens;
+pub(crate) use maki_storage::auth::{OAuthTokens, load_tokens, save_tokens};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, warn};
 
@@ -26,26 +26,14 @@ const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 const REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
 const SCOPES: &str = "org:create_api_key user:profile user:inference";
-const AUTH_FILE: &str = "auth.json";
 const REFRESH_BUFFER_SECS: u64 = 60;
 const BETA_ADVANCED_TOOL_USE: &str = "advanced-tool-use-2025-11-20";
 const RESPONSE_TYPE: &str = "response_type=code";
 const CHALLENGE_METHOD: &str = "code_challenge_method=S256";
 
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct OAuthTokens {
-    access: String,
-    refresh: String,
-    expires: u64,
-}
-
 pub struct ResolvedAuth {
     pub api_url: String,
     pub headers: Vec<(String, String)>,
-}
-
-fn auth_file_path() -> Result<PathBuf, AgentError> {
-    Ok(crate::data_dir()?.join(AUTH_FILE))
 }
 
 fn now_millis() -> u64 {
@@ -197,25 +185,6 @@ pub(crate) fn refresh_tokens(tokens: &OAuthTokens) -> Result<OAuthTokens, AgentE
     into_oauth_tokens(resp, Some(&tokens.refresh))
 }
 
-pub(crate) fn load_tokens() -> Option<OAuthTokens> {
-    let path = auth_file_path().ok()?;
-    let data = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&data).ok()
-}
-
-pub(crate) fn save_tokens(tokens: &OAuthTokens) -> Result<(), AgentError> {
-    let path = auth_file_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(tokens)?;
-    let mut file = File::create(&path)?;
-    file.write_all(json.as_bytes())?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-    debug!(path = %path.display(), "OAuth tokens saved");
-    Ok(())
-}
-
 fn is_expired(tokens: &OAuthTokens) -> bool {
     now_millis() + REFRESH_BUFFER_SECS * 1000 >= tokens.expires
 }
@@ -235,11 +204,11 @@ pub(crate) fn build_oauth_resolved(tokens: &OAuthTokens) -> ResolvedAuth {
     }
 }
 
-pub fn resolve() -> Result<ResolvedAuth, AgentError> {
-    if let Some(mut tokens) = load_tokens() {
+pub fn resolve(dir: &DataDir) -> Result<ResolvedAuth, AgentError> {
+    if let Some(mut tokens) = load_tokens(dir) {
         if is_expired(&tokens) {
             tokens = refresh_tokens(&tokens)?;
-            save_tokens(&tokens)?;
+            save_tokens(dir, &tokens)?;
         }
         debug!("using OAuth authentication");
         return Ok(build_oauth_resolved(&tokens));
@@ -263,7 +232,7 @@ pub fn resolve() -> Result<ResolvedAuth, AgentError> {
     })
 }
 
-pub fn login() -> Result<(), AgentError> {
+pub fn login(dir: &DataDir) -> Result<(), AgentError> {
     let (verifier, challenge) = generate_pkce();
     let url = build_authorize_url(&challenge);
 
@@ -283,15 +252,13 @@ pub fn login() -> Result<(), AgentError> {
     }
 
     let tokens = exchange_code(code, &verifier)?;
-    save_tokens(&tokens)?;
+    save_tokens(dir, &tokens)?;
     println!("Authenticated successfully.");
     Ok(())
 }
 
-pub fn logout() -> Result<(), AgentError> {
-    let path = auth_file_path()?;
-    if path.exists() {
-        fs::remove_file(path)?;
+pub fn logout(dir: &DataDir) -> Result<(), AgentError> {
+    if delete_tokens(dir)? {
         println!("Logged out.");
     } else {
         println!("Not currently logged in.");

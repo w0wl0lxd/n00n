@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 maki-providers = { workspace = true }
+maki-storage = { workspace = true }
 maki-interpreter = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -27,7 +28,6 @@ async-io = { workspace = true }
 futures-lite = { workspace = true }
 isahc = { workspace = true }
 libc = { workspace = true }
-uuid = { workspace = true }
 
 
 [dev-dependencies]

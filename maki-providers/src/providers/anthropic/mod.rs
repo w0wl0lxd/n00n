@@ -4,6 +4,7 @@ use flume::Sender;
 use futures_lite::StreamExt;
 use futures_lite::io::{AsyncBufReadExt, BufReader};
 use isahc::{AsyncReadResponseExt, HttpClient, Request};
+use maki_storage::DataDir;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
@@ -266,14 +267,17 @@ struct MessageDeltaEvent {
 pub struct Anthropic {
     client: HttpClient,
     auth: Mutex<auth::ResolvedAuth>,
+    storage: DataDir,
 }
 
 impl Anthropic {
     pub fn new() -> Result<Self, AgentError> {
-        let resolved = auth::resolve()?;
+        let storage = DataDir::resolve()?;
+        let resolved = auth::resolve(&storage)?;
         Ok(Self {
             client: super::http_client(),
             auth: Mutex::new(resolved),
+            storage,
         })
     }
 
@@ -291,13 +295,14 @@ impl Anthropic {
     }
 
     async fn try_refresh_auth(&self) -> Result<(), AgentError> {
-        let resolved = smol::unblock(|| {
-            let tokens = auth::load_tokens().ok_or_else(|| AgentError::Api {
+        let storage = self.storage.clone();
+        let resolved = smol::unblock(move || {
+            let tokens = auth::load_tokens(&storage).ok_or_else(|| AgentError::Api {
                 status: 401,
                 message: "not using OAuth \u{2014} cannot refresh token".into(),
             })?;
             let fresh = auth::refresh_tokens(&tokens)?;
-            auth::save_tokens(&fresh)?;
+            auth::save_tokens(&storage, &fresh)?;
             Ok::<_, AgentError>(auth::build_oauth_resolved(&fresh))
         })
         .await?;

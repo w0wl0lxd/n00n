@@ -59,6 +59,19 @@ impl<T> From<flume::SendError<T>> for AgentError {
     }
 }
 
+impl From<maki_storage::StorageError> for AgentError {
+    fn from(e: maki_storage::StorageError) -> Self {
+        match e {
+            maki_storage::StorageError::Io(io) => Self::Io(io),
+            maki_storage::StorageError::Json(j) => Self::Json(j),
+            other => Self::Api {
+                status: 0,
+                message: other.to_string(),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

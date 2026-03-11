@@ -20,13 +20,14 @@ use crate::selection::{
 use crate::theme;
 use arboard::Clipboard;
 
+use crate::AppSession;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 #[cfg(feature = "demo")]
 use maki_agent::QuestionInfo;
-use maki_agent::session::Session;
 use maki_agent::{AgentEvent, Envelope, SubagentInfo};
 use maki_agent::{AgentInput, AgentMode};
 use maki_providers::{ModelPricing, TokenUsage};
+use maki_storage::DataDir;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -133,7 +134,8 @@ pub struct App {
     selection_state: Option<SelectionState>,
     clipboard: Option<Clipboard>,
     queue_focus: Option<usize>,
-    pub(crate) session: Session,
+    pub(crate) session: AppSession,
+    pub(crate) storage: DataDir,
     pub(crate) shared_history:
         Option<std::sync::Arc<std::sync::Mutex<Vec<maki_providers::Message>>>>,
     pub(crate) shared_tool_outputs: Option<
@@ -146,7 +148,8 @@ impl App {
         model_id: String,
         pricing: ModelPricing,
         context_window: u32,
-        session: Session,
+        session: AppSession,
+        storage: DataDir,
     ) -> Self {
         Self {
             chats: vec![Chat::new("Main".into())],
@@ -180,6 +183,7 @@ impl App {
             clipboard: Clipboard::new().ok(),
             queue_focus: None,
             session,
+            storage,
             shared_history: None,
             shared_tool_outputs: None,
         }
@@ -794,7 +798,8 @@ impl App {
         self.mode = match std::mem::replace(&mut self.mode, Mode::Build) {
             Mode::BuildPlan => Mode::Build,
             Mode::Build => Mode::Plan {
-                path: maki_agent::new_plan_path(),
+                path: maki_storage::plans::new_plan_path(&self.storage)
+                    .unwrap_or_else(|_| "plans/plan.md".into()),
                 written: false,
             },
             Mode::Plan { path, written } => {
@@ -883,7 +888,7 @@ impl App {
         }
         self.session.token_usage = self.token_usage;
         self.session.update_title_if_default();
-        if let Err(e) = self.session.save() {
+        if let Err(e) = self.session.save(&self.storage) {
             tracing::warn!(error = %e, "failed to save session");
         }
     }
@@ -906,7 +911,7 @@ impl App {
         self.pending_question = false;
         self.status_bar.clear_cancel_hint();
         self.chat_picker.close();
-        self.session = Session::new(&self.session.model, &self.session.cwd);
+        self.session = AppSession::new(&self.session.model, &self.session.cwd);
         vec![Action::NewSession]
     }
 
@@ -1159,7 +1164,8 @@ mod tests {
             "test-model".into(),
             test_pricing(),
             TEST_CONTEXT_WINDOW,
-            Session::new("test-model", "/tmp/test"),
+            AppSession::new("test-model", "/tmp/test"),
+            DataDir::from_path(std::env::temp_dir()),
         )
     }
 
@@ -1292,9 +1298,7 @@ mod tests {
         // Build -> Plan (generates path under PLANS_DIR)
         tab(&mut app);
         assert!(is_plan(&app));
-        assert!(
-            matches!(&app.mode, Mode::Plan { path, .. } if path.contains(maki_agent::PLANS_DIR))
-        );
+        assert!(matches!(&app.mode, Mode::Plan { path, .. } if path.contains("plans")));
 
         // Plan(unwritten) -> Build (draft discarded, no ready_plan)
         tab(&mut app);

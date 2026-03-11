@@ -3,14 +3,13 @@ mod print;
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use color_eyre::eyre::Context;
-use maki_agent::session::Session;
 use maki_agent::skill::{self, Skill};
+use maki_storage::DataDir;
+use maki_ui::AppSession;
 use tracing_subscriber::EnvFilter;
 
 use maki_providers::model::Model;
 use print::OutputFormat;
-
-const LOG_FILE_NAME: &str = "maki.log";
 
 #[derive(Parser)]
 #[command(name = "maki", version, about = "AI coding agent for the terminal")]
@@ -86,10 +85,13 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Some(Command::Auth { action }) => match action {
-            AuthAction::Login => maki_providers::auth::login()?,
-            AuthAction::Logout => maki_providers::auth::logout()?,
-        },
+        Some(Command::Auth { action }) => {
+            let storage = DataDir::resolve().context("resolve data directory")?;
+            match action {
+                AuthAction::Login => maki_providers::auth::login(&storage)?,
+                AuthAction::Logout => maki_providers::auth::logout(&storage)?,
+            }
+        }
         Some(Command::Models) => {
             smol::block_on(maki_providers::provider::fetch_all_models(|models| {
                 for model in models {
@@ -98,8 +100,9 @@ fn main() -> Result<()> {
             }));
         }
         None => {
+            let storage = DataDir::resolve().context("resolve data directory")?;
             let model = Model::from_spec(&cli.model).context("parse model spec")?;
-            init_logging();
+            init_logging(&storage);
             let skills = discover(cli.no_skills);
             if cli.print {
                 print::run(&model, cli.prompt, cli.output_format, cli.verbose, skills)
@@ -109,12 +112,18 @@ fn main() -> Result<()> {
                     .unwrap_or_else(|_| ".".into())
                     .to_string_lossy()
                     .into_owned();
-                let session =
-                    resolve_session(cli.continue_session, cli.session, &model.spec(), &cwd)?;
+                let session = resolve_session(
+                    cli.continue_session,
+                    cli.session,
+                    &model.spec(),
+                    &cwd,
+                    &storage,
+                )?;
                 let session_id = maki_ui::run(
                     model,
                     skills,
                     session,
+                    storage,
                     #[cfg(feature = "demo")]
                     cli.demo,
                 )
@@ -131,12 +140,13 @@ fn resolve_session(
     session_id: Option<String>,
     model: &str,
     cwd: &str,
-) -> Result<Session> {
+    storage: &DataDir,
+) -> Result<AppSession> {
     if let Some(id) = session_id {
-        return Session::load(&id).map_err(|e| color_eyre::eyre::eyre!("{e}"));
+        return AppSession::load(&id, storage).map_err(|e| color_eyre::eyre::eyre!("{e}"));
     }
     if continue_session {
-        match Session::latest(cwd) {
+        match AppSession::latest(cwd, storage) {
             Ok(Some(session)) => return Ok(session),
             Ok(None) => {
                 tracing::info!("no previous session found for this directory, starting new");
@@ -146,14 +156,18 @@ fn resolve_session(
             }
         }
     }
-    Ok(Session::new(model, cwd))
+    Ok(AppSession::new(model, cwd))
 }
 
-fn init_logging() {
-    let Ok(log_dir) = maki_providers::data_dir() else {
+fn init_logging(storage: &DataDir) {
+    let log_path = maki_storage::log::log_path(storage);
+    let Some(log_dir) = log_path.parent() else {
         return;
     };
-    let file_appender = tracing_appender::rolling::never(&log_dir, LOG_FILE_NAME);
+    let Some(log_file) = log_path.file_name() else {
+        return;
+    };
+    let file_appender = tracing_appender::rolling::never(log_dir, log_file);
     let filter = EnvFilter::try_from_env("MAKI_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .json()

@@ -24,8 +24,8 @@ use crossterm::event::{
     MouseEvent as CtMouseEvent, MouseEventKind,
 };
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use maki_agent::ToolOutput;
 use maki_agent::agent;
-use maki_agent::session::Session;
 use maki_agent::skill::Skill;
 use maki_agent::template;
 use maki_agent::{
@@ -37,7 +37,10 @@ use maki_providers::Message;
 use maki_providers::Model;
 use maki_providers::TokenUsage;
 use maki_providers::provider::Provider;
+use maki_storage::DataDir;
 use tracing::error;
+
+pub type AppSession = maki_storage::sessions::Session<Message, TokenUsage, ToolOutput>;
 
 use app::{App, Msg};
 use chat::history_to_display;
@@ -51,7 +54,8 @@ const EVENT_POLL_INTERVAL_MS: u64 = 8;
 pub fn run(
     model: Model,
     skills: Vec<Skill>,
-    session: Session,
+    session: AppSession,
+    storage: DataDir,
     #[cfg(feature = "demo")] demo: bool,
 ) -> Result<String> {
     let mut terminal = ratatui::init();
@@ -65,6 +69,7 @@ pub fn run(
         model,
         skills,
         session,
+        storage,
         #[cfg(feature = "demo")]
         demo,
     );
@@ -82,16 +87,18 @@ fn run_event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     model: Model,
     skills: Vec<Skill>,
-    session: Session,
+    session: AppSession,
+    storage: DataDir,
     #[cfg(feature = "demo")] demo: bool,
 ) -> Result<String> {
+    let resumed = !session.messages.is_empty();
     let initial_history = session.messages.clone();
-    let resumed = !initial_history.is_empty();
     let mut app = App::new(
         model.spec(),
         model.pricing.clone(),
         model.context_window,
         session,
+        storage,
     );
     #[cfg(feature = "demo")]
     if demo {

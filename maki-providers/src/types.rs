@@ -1,3 +1,4 @@
+use maki_storage::sessions::TitleSource;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum::{Display, IntoStaticStr};
@@ -10,6 +11,12 @@ pub enum Role {
     #[default]
     User,
     Assistant,
+}
+
+impl Role {
+    fn is_user(&self) -> bool {
+        matches!(self, Self::User)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +63,18 @@ impl Message {
         self.content
             .iter()
             .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+    }
+}
+
+impl TitleSource for Message {
+    fn first_user_text(&self) -> Option<&str> {
+        if !self.role.is_user() {
+            return None;
+        }
+        self.content.iter().find_map(|b| match b {
+            ContentBlock::Text { text } if !text.is_empty() => Some(text.as_str()),
+            _ => None,
+        })
     }
 }
 
