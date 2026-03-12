@@ -17,42 +17,108 @@ pub struct ThemeEntry {
 
 pub static BUNDLED_THEMES: &[ThemeEntry] = &[
     ThemeEntry {
-        name: "dracula",
-        toml: include_str!("themes/dracula.toml"),
+        name: "ayu_dark",
+        toml: include_str!("themes/ayu_dark.toml"),
+    },
+    ThemeEntry {
+        name: "carbonfox",
+        toml: include_str!("themes/carbonfox.toml"),
+    },
+    ThemeEntry {
+        name: "catppuccin_frappe",
+        toml: include_str!("themes/catppuccin_frappe.toml"),
+    },
+    ThemeEntry {
+        name: "catppuccin_latte",
+        toml: include_str!("themes/catppuccin_latte.toml"),
+    },
+    ThemeEntry {
+        name: "catppuccin_macchiato",
+        toml: include_str!("themes/catppuccin_macchiato.toml"),
     },
     ThemeEntry {
         name: "catppuccin_mocha",
         toml: include_str!("themes/catppuccin_mocha.toml"),
     },
     ThemeEntry {
+        name: "dracula",
+        toml: include_str!("themes/dracula.toml"),
+    },
+    ThemeEntry {
+        name: "everforest_dark",
+        toml: include_str!("themes/everforest_dark.toml"),
+    },
+    ThemeEntry {
+        name: "fleet_dark",
+        toml: include_str!("themes/fleet_dark.toml"),
+    },
+    ThemeEntry {
+        name: "github_dark",
+        toml: include_str!("themes/github_dark.toml"),
+    },
+    ThemeEntry {
         name: "gruvbox",
         toml: include_str!("themes/gruvbox.toml"),
     },
     ThemeEntry {
-        name: "onedark",
-        toml: include_str!("themes/onedark.toml"),
-    },
-    ThemeEntry {
-        name: "tokyonight",
-        toml: include_str!("themes/tokyonight.toml"),
-    },
-    ThemeEntry {
-        name: "rose_pine",
-        toml: include_str!("themes/rose_pine.toml"),
-    },
-    ThemeEntry {
-        name: "nord",
-        toml: include_str!("themes/nord.toml"),
+        name: "gruvbox_light",
+        toml: include_str!("themes/gruvbox_light.toml"),
     },
     ThemeEntry {
         name: "kanagawa",
         toml: include_str!("themes/kanagawa.toml"),
     },
     ThemeEntry {
+        name: "material_darker",
+        toml: include_str!("themes/material_darker.toml"),
+    },
+    ThemeEntry {
+        name: "monokai_pro",
+        toml: include_str!("themes/monokai_pro.toml"),
+    },
+    ThemeEntry {
+        name: "night_owl",
+        toml: include_str!("themes/night_owl.toml"),
+    },
+    ThemeEntry {
+        name: "nightfox",
+        toml: include_str!("themes/nightfox.toml"),
+    },
+    ThemeEntry {
+        name: "nord",
+        toml: include_str!("themes/nord.toml"),
+    },
+    ThemeEntry {
+        name: "onedark",
+        toml: include_str!("themes/onedark.toml"),
+    },
+    ThemeEntry {
+        name: "rose_pine",
+        toml: include_str!("themes/rose_pine.toml"),
+    },
+    ThemeEntry {
         name: "solarized_dark",
         toml: include_str!("themes/solarized_dark.toml"),
     },
+    ThemeEntry {
+        name: "solarized_light",
+        toml: include_str!("themes/solarized_light.toml"),
+    },
+    ThemeEntry {
+        name: "tokyonight",
+        toml: include_str!("themes/tokyonight.toml"),
+    },
+    ThemeEntry {
+        name: "vscode_dark_plus",
+        toml: include_str!("themes/vscode_dark_plus.toml"),
+    },
+    ThemeEntry {
+        name: "zenburn",
+        toml: include_str!("themes/zenburn.toml"),
+    },
 ];
+
+const DEFAULT_THEME: &str = "dracula";
 
 static THEME: LazyLock<ArcSwap<Theme>> =
     LazyLock::new(|| ArcSwap::from_pointee(Theme::load_or_bundled()));
@@ -86,8 +152,6 @@ pub fn persist_theme(name: &str) {
         maki_storage::theme::persist_theme_name(&dir, name);
     }
 }
-
-const DEFAULT_THEME: &str = "dracula";
 
 fn read_theme_name() -> Option<String> {
     let dir = maki_storage::DataDir::resolve().ok()?;
