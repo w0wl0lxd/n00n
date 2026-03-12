@@ -156,7 +156,7 @@ pub fn thinking_style() -> RoleStyle {
 
 pub fn error_style() -> RoleStyle {
     RoleStyle {
-        prefix: "✖ ",
+        prefix: "",
         text_style: theme::current().error,
         prefix_style: theme::current().tool_error,
         use_markdown: false,
