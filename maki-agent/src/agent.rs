@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, warn};
 
 use crate::cancel::CancelToken;
+use crate::mcp::McpManager;
 use crate::task_set::TaskSet;
 
 use serde_json::Value;
@@ -20,6 +21,7 @@ use crate::tools::{
 use crate::types::tool_results;
 use crate::{
     AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand, ToolDoneEvent,
+    ToolOutput, ToolStartEvent,
 };
 use maki_providers::provider::Provider;
 use maki_providers::retry::RetryState;
@@ -226,9 +228,58 @@ pub fn find_subdirectory_instructions(
     results
 }
 
+#[derive(Clone)]
+pub(crate) enum ResolvedCall {
+    Native(ToolCall),
+    Mcp { tool_name: String, input: Value },
+}
+
+impl ResolvedCall {
+    pub(crate) fn start_event(&self, id: String, mcp: Option<&McpManager>) -> ToolStartEvent {
+        match self {
+            Self::Native(call) => call.start_event(id),
+            Self::Mcp { tool_name, .. } => {
+                let interned = mcp
+                    .map(|m| m.interned_name(tool_name))
+                    .unwrap_or("unknown_mcp");
+                ToolStartEvent {
+                    id,
+                    tool: interned,
+                    summary: format!("mcp: {tool_name}"),
+                    annotation: None,
+                    input: None,
+                    output: None,
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn execute(&self, ctx: &ToolContext, id: String) -> ToolDoneEvent {
+        match self {
+            Self::Native(call) => call.execute(ctx, id).await,
+            Self::Mcp { tool_name, input } => execute_mcp_tool(ctx, &id, tool_name, input).await,
+        }
+    }
+}
+
 struct ParsedToolCall {
     id: String,
-    call: ToolCall,
+    call: ResolvedCall,
+}
+
+pub(crate) fn resolve_tool(
+    name: &str,
+    input: &Value,
+    mcp: Option<&McpManager>,
+) -> Result<ResolvedCall, AgentError> {
+    match ToolCall::from_api(name, input) {
+        Ok(call) => Ok(ResolvedCall::Native(call)),
+        Err(_) if mcp.is_some_and(|m| m.has_tool(name)) => Ok(ResolvedCall::Mcp {
+            tool_name: name.to_owned(),
+            input: input.clone(),
+        }),
+        Err(e) => Err(e),
+    }
 }
 
 struct RecentCalls(VecDeque<(String, Value)>);
@@ -259,6 +310,7 @@ impl RecentCalls {
 fn parse_tool_calls<'a>(
     tool_uses: impl Iterator<Item = (&'a str, &'a str, &'a serde_json::Value)>,
     recent: &mut RecentCalls,
+    mcp: Option<&McpManager>,
 ) -> (Vec<ParsedToolCall>, Vec<ToolDoneEvent>) {
     let mut parsed = Vec::new();
     let mut errors = Vec::new();
@@ -269,7 +321,7 @@ fn parse_tool_calls<'a>(
             warn!(tool = %name, "doom loop detected, skipping execution");
             errors.push(ToolDoneEvent::error(id.to_owned(), DOOM_LOOP_MESSAGE));
         } else {
-            match ToolCall::from_api(name, input) {
+            match resolve_tool(name, input, mcp) {
                 Ok(call) => parsed.push(ParsedToolCall {
                     id: id.to_owned(),
                     call,
@@ -354,6 +406,8 @@ async fn stream_with_retry(
     }
 }
 
+const MCP_BLOCKED_IN_PLAN: &str = "MCP tools are not available in plan mode";
+
 async fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDoneEvent> {
     let mut set = TaskSet::new();
     for parsed in tool_calls {
@@ -385,6 +439,39 @@ async fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<
         .collect()
 }
 
+pub(crate) async fn execute_mcp_tool(
+    ctx: &ToolContext,
+    id: &str,
+    tool_name: &str,
+    input: &Value,
+) -> ToolDoneEvent {
+    let interned = ctx
+        .mcp
+        .as_ref()
+        .map(|m| m.interned_name(tool_name))
+        .unwrap_or("unknown_mcp");
+
+    let done = |output: String, is_error: bool| ToolDoneEvent {
+        id: id.to_owned(),
+        tool: interned,
+        output: ToolOutput::Plain(output),
+        is_error,
+    };
+
+    if matches!(ctx.mode, AgentMode::Plan(_)) {
+        return done(MCP_BLOCKED_IN_PLAN.into(), true);
+    }
+
+    let Some(mcp) = &ctx.mcp else {
+        return done(format!("MCP manager not available for {tool_name}"), true);
+    };
+
+    match mcp.call_tool(tool_name, input).await {
+        Ok(text) => done(text, false),
+        Err(e) => done(e.to_string(), true),
+    }
+}
+
 enum TurnOutcome {
     Continue,
     Done(Option<StopReason>),
@@ -414,6 +501,7 @@ pub struct Agent {
     auto_compact: bool,
     loaded_instructions: Arc<Mutex<HashSet<PathBuf>>>,
     rollback_len: usize,
+    mcp: Option<Arc<McpManager>>,
 }
 
 impl Agent {
@@ -444,7 +532,13 @@ impl Agent {
             auto_compact: auto_compact_enabled(),
             loaded_instructions: Arc::new(Mutex::new(HashSet::new())),
             rollback_len: 0,
+            mcp: None,
         }
+    }
+
+    pub fn with_mcp(mut self, mcp: Option<Arc<McpManager>>) -> Self {
+        self.mcp = mcp;
+        self
     }
 
     pub fn with_user_response_rx(
@@ -601,14 +695,18 @@ impl Agent {
     }
 
     async fn process_tool_calls(&mut self, response: StreamResponse) -> Result<(), AgentError> {
-        let (parsed, errors) =
-            parse_tool_calls(response.message.tool_uses(), &mut self.recent_calls);
+        let (parsed, errors) = parse_tool_calls(
+            response.message.tool_uses(),
+            &mut self.recent_calls,
+            self.mcp.as_deref(),
+        );
 
         self.history.push(response.message);
 
         for p in &parsed {
-            self.event_tx
-                .send(AgentEvent::ToolStart(p.call.start_event(p.id.clone())))?;
+            self.event_tx.send(AgentEvent::ToolStart(
+                p.call.start_event(p.id.clone(), self.mcp.as_deref()),
+            ))?;
         }
 
         let ctx = self.tool_context();
@@ -634,6 +732,7 @@ impl Agent {
             skills: Arc::clone(&self.skills),
             loaded_instructions: Arc::clone(&self.loaded_instructions),
             cancel: self.cancel.clone(),
+            mcp: self.mcp.clone(),
         }
     }
 
@@ -1349,5 +1448,41 @@ mod tests {
             .collect();
         assert_eq!(error_ids, ["t1", "t2"]);
         assert_ends_with_cancel_marker(&history);
+    }
+
+    #[test]
+    fn resolve_tool_returns_error_for_unknown_without_mcp() {
+        let result = resolve_tool("unknown__tool", &serde_json::json!({}), None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn mcp_tool_blocked_in_plan_mode() {
+        smol::block_on(async {
+            let result = execute_mcp_tool(
+                &crate::tools::test_support::stub_ctx(&AgentMode::Plan("/tmp/plan.md".into())),
+                "t1",
+                "myserver__mytool",
+                &serde_json::json!({}),
+            )
+            .await;
+            assert!(result.is_error);
+            assert_eq!(result.output.as_text(), MCP_BLOCKED_IN_PLAN,);
+        });
+    }
+
+    #[test]
+    fn mcp_tool_errors_without_mcp_manager() {
+        smol::block_on(async {
+            let result = execute_mcp_tool(
+                &crate::tools::test_support::stub_ctx(&AgentMode::Build),
+                "t1",
+                "myserver__mytool",
+                &serde_json::json!({}),
+            )
+            .await;
+            assert!(result.is_error);
+            assert!(result.output.as_text().contains("not available"));
+        });
     }
 }

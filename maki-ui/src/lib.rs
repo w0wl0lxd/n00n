@@ -27,6 +27,7 @@ use crossterm::event::{
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use maki_agent::ToolOutput;
 use maki_agent::agent;
+use maki_agent::mcp::McpManager;
 use maki_agent::skill::Skill;
 use maki_agent::template;
 use maki_agent::{
@@ -296,13 +297,20 @@ fn spawn_agent(
         let answer_mutex = Arc::new(async_lock::Mutex::new(answer_rx));
         let vars = template::env_vars();
         let cwd_owned = vars.apply("{cwd}").into_owned();
+        let cwd_path = std::path::PathBuf::from(&cwd_owned);
         let (instructions, loaded_instructions) =
             smol::unblock(move || agent::load_instruction_files(&cwd_owned)).await;
-        let (tool_names, tools) = maki_agent::tools::ToolCall::definitions(
+        let (mut tool_names, mut tools) = maki_agent::tools::ToolCall::definitions(
             &vars,
             &skills,
             model.family.supports_tool_examples(),
         );
+
+        let mcp_manager = McpManager::start(&cwd_path).await;
+
+        if let Some(ref mcp) = mcp_manager {
+            mcp.extend_tools(&mut tool_names, &mut tools);
+        }
 
         let cancel_trigger: Arc<Mutex<Option<CancelTrigger>>> = Arc::new(Mutex::new(None));
         let cancel_trigger_fwd = Arc::clone(&cancel_trigger);
@@ -363,7 +371,8 @@ fn spawn_agent(
                     .with_loaded_instructions(loaded_instructions.clone())
                     .with_user_response_rx(Arc::clone(&answer_mutex))
                     .with_cmd_rx(ecmd_rx)
-                    .with_cancel(cancel);
+                    .with_cancel(cancel)
+                    .with_mcp(mcp_manager.clone());
                     let outcome = agent.run(input).await;
                     *cancel_trigger.lock().unwrap() = None;
                     history = outcome.history;

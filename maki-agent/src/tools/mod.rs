@@ -26,6 +26,7 @@ use std::future::Future;
 use tracing::error;
 
 use crate::cancel::CancelToken;
+use crate::mcp::McpManager;
 use crate::skill::Skill;
 use crate::template::Vars;
 use crate::{
@@ -100,6 +101,7 @@ pub struct ToolContext {
     pub skills: Arc<[Skill]>,
     pub loaded_instructions: Arc<Mutex<HashSet<PathBuf>>>,
     pub cancel: CancelToken,
+    pub mcp: Option<Arc<McpManager>>,
 }
 
 pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
@@ -494,6 +496,7 @@ pub(crate) fn interpreter_ctx(
         skills: Arc::clone(&SKILLS),
         loaded_instructions: Arc::new(Mutex::new(HashSet::new())),
         cancel,
+        mcp: None,
     }
 }
 

@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod cancel;
+pub mod mcp;
 pub(crate) mod task_set;
 pub use agent::{Agent, History, RunOutcome};
 pub use cancel::{CancelToken, CancelTrigger};

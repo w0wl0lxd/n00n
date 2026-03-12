@@ -23,6 +23,7 @@ use std::time::Instant;
 use clap::ValueEnum;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
+use maki_agent::mcp::McpManager;
 use maki_agent::skill::Skill;
 use maki_agent::tools::QUESTION_TOOL_NAME;
 use maki_agent::{
@@ -139,12 +140,19 @@ pub fn run(
     let vars = template::env_vars();
     let mode = AgentMode::Build;
     let (instructions, loaded_instructions) = agent::load_instruction_files(&vars.apply("{cwd}"));
-    let (tool_names, tools) = maki_agent::tools::ToolCall::definitions_excluding(
+    let (mut tool_names, mut tools) = maki_agent::tools::ToolCall::definitions_excluding(
         &vars,
         &skills,
         &[QUESTION_TOOL_NAME],
         model.family.supports_tool_examples(),
     );
+
+    let mcp_manager = smol::block_on(McpManager::start(&cwd_path));
+
+    if let Some(ref mcp) = mcp_manager {
+        mcp.extend_tools(&mut tool_names, &mut tools);
+    }
+
     let system = agent::build_system_prompt(&vars, &mode, &instructions, &tool_names);
 
     let (raw_tx, event_rx) = flume::unbounded::<Envelope>();
@@ -182,7 +190,8 @@ pub fn run(
             tools,
             skills,
         )
-        .with_loaded_instructions(loaded_instructions);
+        .with_loaded_instructions(loaded_instructions)
+        .with_mcp(mcp_manager);
         let outcome = agent.run(input).await;
         if let Err(e) = outcome.result {
             error!(error = %e, "agent error");

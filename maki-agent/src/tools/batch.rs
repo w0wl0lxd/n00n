@@ -1,5 +1,6 @@
 use std::fmt::Write;
 
+use crate::agent::{ResolvedCall, resolve_tool};
 use crate::{AgentEvent, BatchToolEntry, BatchToolStatus, ToolOutput};
 use serde::Deserialize;
 use serde_json::Value;
@@ -75,13 +76,15 @@ impl Batch {
         let active = &self.tool_calls[..self.tool_calls.len().min(MAX_BATCH_SIZE)];
         let discarded = &self.tool_calls[active.len()..];
 
-        let parsed: Vec<_> = active
+        let mcp = ctx.mcp.as_deref();
+
+        let parsed: Vec<Result<ResolvedCall, String>> = active
             .iter()
             .map(|entry| {
                 if entry.tool == Self::NAME {
                     return Err("cannot nest batch inside batch".into());
                 }
-                ToolCall::from_api(&entry.tool, &entry.parameters).map_err(|e| e.to_string())
+                resolve_tool(&entry.tool, &entry.parameters, mcp).map_err(|e| e.to_string())
             })
             .collect();
 
@@ -111,7 +114,7 @@ impl Batch {
                         let result = if done.is_error { Err(text) } else { Ok(text) };
                         (result, Some(done.output))
                     }
-                    Err(e) => (Err(e), None),
+                    Err(e) => (Err(e.to_string()), None),
                 };
                 let status = if result.is_ok() {
                     BatchToolStatus::Success
