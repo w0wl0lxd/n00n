@@ -45,9 +45,11 @@ impl App {
             ),
             zone: SelectionZone::Messages,
         });
-        let picker_open = self.chat_picker.is_open();
+        let picker_open = self.task_picker.is_open();
         let render_chat = if picker_open {
-            self.chat_picker.selected_chat().unwrap_or(self.active_chat)
+            self.task_picker
+                .selected_index()
+                .unwrap_or(self.active_chat)
         } else {
             self.active_chat
         };
@@ -83,7 +85,7 @@ impl App {
 
         if picker_open {
             let full_area = frame.area();
-            self.chat_picker.view(frame, full_area);
+            self.task_picker.view(frame, full_area);
         }
 
         if self.session_picker.is_open() {
@@ -159,8 +161,8 @@ impl App {
             contexts.push(KeybindContext::SessionPicker);
         } else if self.rewind_picker.is_open() {
             contexts.push(KeybindContext::RewindPicker);
-        } else if self.chat_picker.is_open() {
-            contexts.push(KeybindContext::ChatPicker);
+        } else if self.task_picker.is_open() {
+            contexts.push(KeybindContext::TaskPicker);
         } else if self.theme_picker.is_open() {
             contexts.push(KeybindContext::ThemePicker);
         } else if self.model_picker.is_open() {

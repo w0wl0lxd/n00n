@@ -53,7 +53,8 @@ impl App {
         self.rewind_picker.close();
         self.pending_question = false;
         self.status_bar.clear_flash();
-        self.chat_picker.close();
+        self.task_picker.close();
+        self.task_picker_original = None;
         self.last_esc = None;
     }
 

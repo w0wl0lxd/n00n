@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use crate::AppSession;
 use crate::chat::Chat;
 use crate::chat::ChatEventResult;
-use crate::components::chat_picker::{ChatPicker, ChatPickerAction};
+use crate::components::list_picker::{ListPicker, PickerAction};
 use crate::components::command::{CommandAction, CommandPalette};
 use crate::components::help_modal::HelpModal;
 use crate::components::input::{InputAction, InputBox, Submission};
@@ -64,7 +64,8 @@ pub struct App {
     pub(super) chat_index: HashMap<String, usize>,
     pub(crate) input_box: InputBox,
     pub(super) command_palette: CommandPalette,
-    pub(super) chat_picker: ChatPicker,
+    pub(super) task_picker: ListPicker<String>,
+    pub(super) task_picker_original: Option<usize>,
     pub(super) theme_picker: ThemePicker,
     pub(super) model_picker: ModelPicker,
     pub(super) session_picker: SessionPicker,
@@ -117,7 +118,8 @@ impl App {
             chat_index: HashMap::new(),
             input_box: InputBox::new(InputHistory::load(&storage)),
             command_palette: CommandPalette::new(),
-            chat_picker: ChatPicker::new(),
+            task_picker: ListPicker::new(),
+            task_picker_original: None,
             theme_picker: ThemePicker::new(),
             model_picker: ModelPicker::new(available_models),
             session_picker: SessionPicker::new(),
@@ -226,7 +228,7 @@ impl App {
         }
         try_picker!(self.session_picker);
         try_picker!(self.rewind_picker);
-        try_picker!(self.chat_picker);
+        try_picker!(self.task_picker);
         try_picker!(self.model_picker);
         if let Some(zone) = self.zone_at(row, column) {
             self.scroll_zone(zone.zone, delta);
@@ -282,13 +284,18 @@ impl App {
             }
         }
 
-        if self.chat_picker.is_open() {
-            return match self.chat_picker.handle_key(key) {
-                ChatPickerAction::Consumed => vec![],
-                ChatPickerAction::Select(idx) => {
+        if self.task_picker.is_open() {
+            return match self.task_picker.handle_key(key) {
+                PickerAction::Consumed => vec![],
+                PickerAction::Select(idx, _) => {
+                    self.task_picker_original = None;
                     self.active_chat = idx;
                     #[cfg(feature = "demo")]
                     self.check_demo_questions();
+                    vec![]
+                }
+                PickerAction::Close => {
+                    self.active_chat = self.task_picker_original.take().unwrap_or(0);
                     vec![]
                 }
             };
@@ -618,16 +625,13 @@ impl App {
         idx
     }
 
-    fn chat_names(&self) -> Vec<String> {
-        self.chats.iter().map(|c| c.name.clone()).collect()
-    }
-
     fn execute_command(&mut self, name: &str) -> Vec<Action> {
         self.input_box.buffer.clear();
         match name {
-            "/chats" => {
-                let names = self.chat_names();
-                self.chat_picker.open(self.active_chat, &names);
+            "/tasks" => {
+                let names: Vec<String> = self.chats.iter().map(|c| c.name.clone()).collect();
+                self.task_picker_original = Some(self.active_chat);
+                self.task_picker.open(names, " Tasks ");
                 vec![]
             }
             "/compact" => {

@@ -633,18 +633,18 @@ fn cancel_resets_all_chats_and_indices() {
     assert!(app.chat_index.is_empty());
 }
 
-fn open_chats_picker(app: &mut App) {
-    for c in "/chats".chars() {
+fn open_tasks_picker(app: &mut App) {
+    for c in "/tasks".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
     app.update(Msg::Key(key(KeyCode::Enter)));
 }
 
 #[test]
-fn chats_command_opens_picker() {
+fn tasks_command_opens_picker() {
     let mut app = test_app();
-    open_chats_picker(&mut app);
-    assert!(app.chat_picker.is_open());
+    open_tasks_picker(&mut app);
+    assert!(app.task_picker.is_open());
 }
 
 fn app_with_subagent() -> App {
@@ -678,11 +678,11 @@ fn picker_escape_restores_chat() {
     let mut app = app_with_subagent();
     assert_eq!(app.active_chat, 0);
 
-    open_chats_picker(&mut app);
+    open_tasks_picker(&mut app);
     app.update(Msg::Key(key(KeyCode::Down)));
     app.update(Msg::Key(key(KeyCode::Esc)));
 
-    assert!(!app.chat_picker.is_open());
+    assert!(!app.task_picker.is_open());
     assert_eq!(app.active_chat, 0);
 }
 
@@ -690,11 +690,11 @@ fn picker_escape_restores_chat() {
 fn picker_enter_stays_at_navigated() {
     let mut app = app_with_subagent();
 
-    open_chats_picker(&mut app);
+    open_tasks_picker(&mut app);
     app.update(Msg::Key(key(KeyCode::Down)));
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert!(!app.chat_picker.is_open());
+    assert!(!app.task_picker.is_open());
     assert_eq!(app.active_chat, 1);
 }
 
@@ -702,13 +702,13 @@ fn picker_enter_stays_at_navigated() {
 fn picker_swallows_ctrl_keys() {
     let mut app = app_with_subagent();
 
-    open_chats_picker(&mut app);
+    open_tasks_picker(&mut app);
     app.update(Msg::Key(kb::NEXT_CHAT.to_key_event()));
     app.update(Msg::Key(kb::PREV_CHAT.to_key_event()));
     app.update(Msg::Key(kb::SCROLL_HALF_UP.to_key_event()));
     app.update(Msg::Key(kb::SCROLL_HALF_DOWN.to_key_event()));
 
-    assert!(app.chat_picker.is_open());
+    assert!(app.task_picker.is_open());
     assert_eq!(app.active_chat, 0);
 }
 
@@ -1365,10 +1365,10 @@ fn help_modal_consumes_keys_and_esc_closes() {
     ; "queue_focus"
 )]
 #[test_case(
-    |app: &mut App| { open_chats_picker(app); },
-    &[KeybindContext::ChatPicker],
+    |app: &mut App| { open_tasks_picker(app); },
+    &[KeybindContext::TaskPicker],
     &[KeybindContext::Editing]
-    ; "chat_picker"
+    ; "task_picker"
 )]
 #[test_case(
     |app: &mut App| {

@@ -14,8 +14,8 @@ struct Command {
 
 const COMMANDS: &[Command] = &[
     Command {
-        name: "/chats",
-        description: "Browse and search chats",
+        name: "/tasks",
+        description: "Browse and search tasks",
     },
     Command {
         name: "/compact",
