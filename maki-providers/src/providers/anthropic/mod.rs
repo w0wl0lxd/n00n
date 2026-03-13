@@ -28,6 +28,16 @@ const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
 /// See https://platform.claude.com/docs/en/build-with-claude/prompt-caching.
 const MESSAGE_CACHE_BREAKPOINTS: usize = 2;
 
+fn is_auth_expired_error<T>(result: &Result<T, AgentError>) -> bool {
+    matches!(
+        result,
+        Err(AgentError::Api {
+            status: 401 | 403,
+            ..
+        })
+    )
+}
+
 #[derive(Serialize)]
 struct CacheControl {
     r#type: &'static str,
@@ -276,16 +286,18 @@ struct MessageDeltaEvent {
 pub struct Anthropic {
     client: HttpClient,
     auth: Mutex<auth::ResolvedAuth>,
+    auth_kind: auth::AuthKind,
     storage: DataDir,
 }
 
 impl Anthropic {
     pub fn new() -> Result<Self, AgentError> {
         let storage = DataDir::resolve()?;
-        let resolved = auth::resolve(&storage)?;
+        let (resolved, kind) = auth::resolve(&storage)?;
         Ok(Self {
             client: super::http_client(),
             auth: Mutex::new(resolved),
+            auth_kind: kind,
             storage,
         })
     }
@@ -303,12 +315,16 @@ impl Anthropic {
         builder
     }
 
-    async fn try_refresh_auth(&self) -> Result<(), AgentError> {
+    fn is_oauth(&self) -> bool {
+        matches!(self.auth_kind, auth::AuthKind::OAuth)
+    }
+
+    async fn refresh_oauth(&self) -> Result<(), AgentError> {
         let storage = self.storage.clone();
         let resolved = smol::unblock(move || {
             let tokens = auth::load_tokens(&storage).ok_or_else(|| AgentError::Api {
                 status: 401,
-                message: "not using OAuth \u{2014} cannot refresh token".into(),
+                message: "OAuth tokens not found on disk".into(),
             })?;
             let fresh = auth::refresh_tokens(&tokens)?;
             auth::save_tokens(&storage, &fresh)?;
@@ -316,8 +332,20 @@ impl Anthropic {
         })
         .await?;
         *self.auth.lock().unwrap() = resolved;
-        warn!("refreshed OAuth token after 401");
+        debug!("refreshed OAuth token");
         Ok(())
+    }
+
+    async fn with_oauth_retry<T, F, Fut>(&self, f: F) -> Result<T, AgentError>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, AgentError>>,
+    {
+        let result = f().await;
+        if self.is_oauth() && is_auth_expired_error(&result) && self.refresh_oauth().await.is_ok() {
+            return f().await;
+        }
+        result
     }
 
     async fn do_stream_request(
@@ -400,26 +428,13 @@ impl Provider for Anthropic {
 
             debug!(model = %model.id, num_messages = messages.len(), "sending API request");
 
-            let result = self.do_stream_request(&body, event_tx).await;
-            if let Err(AgentError::Api { status: 401, .. }) = &result
-                && self.try_refresh_auth().await.is_ok()
-            {
-                return self.do_stream_request(&body, event_tx).await;
-            }
-            result
+            self.with_oauth_retry(|| self.do_stream_request(&body, event_tx))
+                .await
         })
     }
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
-        Box::pin(async move {
-            let result = self.do_list_models().await;
-            if let Err(AgentError::Api { status: 401, .. }) = &result
-                && self.try_refresh_auth().await.is_ok()
-            {
-                return self.do_list_models().await;
-            }
-            result
-        })
+        Box::pin(async move { self.with_oauth_retry(|| self.do_list_models()).await })
     }
 }
 

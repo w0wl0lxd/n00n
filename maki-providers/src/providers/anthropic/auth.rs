@@ -39,6 +39,11 @@ pub struct ResolvedAuth {
     pub headers: Vec<(String, String)>,
 }
 
+pub enum AuthKind {
+    OAuth,
+    ApiKey,
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -198,25 +203,28 @@ pub(crate) fn build_oauth_resolved(tokens: &OAuthTokens) -> ResolvedAuth {
     }
 }
 
-pub fn resolve(dir: &DataDir) -> Result<ResolvedAuth, AgentError> {
+pub fn resolve(dir: &DataDir) -> Result<(ResolvedAuth, AuthKind), AgentError> {
     if let Some(mut tokens) = load_tokens(dir) {
         if is_expired(&tokens) {
             tokens = refresh_tokens(&tokens)?;
             save_tokens(dir, &tokens)?;
         }
         debug!("using OAuth authentication");
-        return Ok(build_oauth_resolved(&tokens));
+        return Ok((build_oauth_resolved(&tokens), AuthKind::OAuth));
     }
 
     if let Ok(key) = env::var("ANTHROPIC_API_KEY") {
         debug!("using API key authentication");
-        return Ok(ResolvedAuth {
-            api_url: "https://api.anthropic.com/v1/messages".into(),
-            headers: vec![
-                ("x-api-key".into(), key),
-                ("anthropic-beta".into(), BETA_ADVANCED_TOOL_USE.into()),
-            ],
-        });
+        return Ok((
+            ResolvedAuth {
+                api_url: "https://api.anthropic.com/v1/messages".into(),
+                headers: vec![
+                    ("x-api-key".into(), key),
+                    ("anthropic-beta".into(), BETA_ADVANCED_TOOL_USE.into()),
+                ],
+            },
+            AuthKind::ApiKey,
+        ));
     }
 
     warn!("no OAuth tokens or API key found");
