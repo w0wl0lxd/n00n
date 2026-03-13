@@ -37,6 +37,8 @@ use maki_agent::{AgentEvent, Envelope, ImageSource, SubagentInfo};
 use maki_agent::{AgentInput, AgentMode};
 use maki_providers::{ModelPricing, TokenUsage};
 use maki_storage::DataDir;
+
+use crate::storage_writer::StorageWriter;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -158,6 +160,7 @@ pub struct App {
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, maki_agent::ToolOutput>>>,
     >,
     pub(crate) image_paste_rx: Option<flume::Receiver<Result<ImageSource, String>>>,
+    storage_writer: Arc<StorageWriter>,
 }
 
 impl App {
@@ -168,6 +171,7 @@ impl App {
         session: AppSession,
         storage: DataDir,
         available_models: Arc<ArcSwapOption<Vec<String>>>,
+        storage_writer: Arc<StorageWriter>,
     ) -> Self {
         Self {
             chats: vec![Chat::new("Main".into())],
@@ -209,6 +213,7 @@ impl App {
             shared_history: None,
             shared_tool_outputs: None,
             image_paste_rx: None,
+            storage_writer,
         }
     }
 
@@ -1014,9 +1019,11 @@ impl App {
         }
         self.session.token_usage = self.token_usage;
         self.session.update_title_if_default();
-        if let Err(e) = self.session.save(&self.storage) {
-            tracing::warn!(error = %e, "failed to save session");
-        }
+        self.enqueue_save();
+    }
+
+    fn enqueue_save(&self) {
+        self.storage_writer.send(Box::new(self.session.clone()));
     }
 
     fn reset_session_state(&mut self) {
@@ -1082,9 +1089,7 @@ impl App {
         self.input_box.set_input(entry.prompt_text);
 
         self.session.update_title_if_default();
-        if let Err(e) = self.session.save(&self.storage) {
-            tracing::warn!(error = %e, "failed to save session");
-        }
+        self.enqueue_save();
 
         vec![Action::LoadSession(LoadedSession {
             messages: self.session.messages.clone(),
@@ -1440,6 +1445,7 @@ mod tests {
     }
 
     fn test_app() -> App {
+        let writer = Arc::new(StorageWriter::new(DataDir::from_path(std::env::temp_dir())));
         App::new(
             "test-model".into(),
             test_pricing(),
@@ -1447,6 +1453,7 @@ mod tests {
             AppSession::new("test-model", "/tmp/test"),
             DataDir::from_path(std::env::temp_dir()),
             Arc::new(ArcSwapOption::empty()),
+            writer,
         )
     }
 

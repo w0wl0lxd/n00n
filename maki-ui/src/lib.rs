@@ -9,6 +9,7 @@ mod markdown;
 mod mock;
 mod render_worker;
 mod selection;
+mod storage_writer;
 mod text_buffer;
 mod theme;
 
@@ -118,6 +119,8 @@ fn run_event_loop(
     })
     .detach();
 
+    let storage_writer = Arc::new(storage_writer::StorageWriter::new(storage.clone()));
+
     let resumed = !session.messages.is_empty();
     let initial_history = session.messages.clone();
     let mut app = App::new(
@@ -127,6 +130,7 @@ fn run_event_loop(
         session,
         storage,
         available_models,
+        Arc::clone(&storage_writer),
     );
     #[cfg(feature = "demo")]
     if demo {
@@ -189,7 +193,12 @@ fn run_event_loop(
         }
 
         if app.should_quit {
-            return Ok(app.session.id.clone());
+            let session_id = app.session.id.clone();
+            drop(app);
+            if let Ok(writer) = Arc::try_unwrap(storage_writer) {
+                writer.shutdown(Duration::from_secs(3));
+            }
+            return Ok(session_id);
         }
 
         let poll_duration = if had_agent_msg {
