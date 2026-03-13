@@ -10,6 +10,7 @@ use ratatui::layout::{Position, Rect};
 pub enum SessionPickerAction {
     Consumed,
     Select(String),
+    ConfirmDelete,
     Delete(String),
     Close,
 }
@@ -18,19 +19,11 @@ struct SessionEntry {
     id: String,
     title: String,
     relative_time: String,
-    confirming: bool,
 }
 
 impl PickerItem for SessionEntry {
     fn label(&self) -> &str {
         &self.title
-    }
-    fn label_suffix(&self) -> &str {
-        if self.confirming {
-            DELETE_CONFIRM_SUFFIX
-        } else {
-            ""
-        }
     }
     fn detail(&self) -> Option<&str> {
         Some(&self.relative_time)
@@ -39,16 +32,17 @@ impl PickerItem for SessionEntry {
 
 const TITLE: &str = " Sessions ";
 const NO_SESSIONS_MSG: &str = "No previous sessions";
-const DELETE_CONFIRM_SUFFIX: &str = " [Ctrl+D to confirm]";
 
 pub struct SessionPicker {
     picker: ListPicker<SessionEntry>,
+    confirming: Option<(String, u64)>,
 }
 
 impl SessionPicker {
     pub fn new() -> Self {
         Self {
             picker: ListPicker::new(),
+            confirming: None,
         }
     }
 
@@ -67,7 +61,6 @@ impl SessionPicker {
                 id: s.id,
                 title: s.title,
                 relative_time: format_relative_time(s.updated_at),
-                confirming: false,
             })
             .collect();
         if entries.is_empty() {
@@ -105,8 +98,6 @@ impl SessionPicker {
             return self.handle_delete_key();
         }
 
-        self.clear_confirming();
-
         match self.picker.handle_key(key) {
             PickerAction::Consumed => SessionPickerAction::Consumed,
             PickerAction::Select(_, entry) => SessionPickerAction::Select(entry.id),
@@ -119,21 +110,17 @@ impl SessionPicker {
             return SessionPickerAction::Consumed;
         };
 
-        if selected.confirming {
+        let generation = self.picker.generation();
+        if self
+            .confirming
+            .as_ref()
+            .is_some_and(|(id, g)| id == &selected.id && *g == generation)
+        {
             return SessionPickerAction::Delete(selected.id.clone());
         }
 
-        self.clear_confirming();
-        if let Some(entry) = self.picker.selected_item_mut() {
-            entry.confirming = true;
-        }
-        SessionPickerAction::Consumed
-    }
-
-    fn clear_confirming(&mut self) {
-        for entry in self.picker.items_mut() {
-            entry.confirming = false;
-        }
+        self.confirming = Some((selected.id.clone(), generation));
+        SessionPickerAction::ConfirmDelete
     }
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) {

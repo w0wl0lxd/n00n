@@ -13,9 +13,6 @@ use ratatui::widgets::Paragraph;
 
 pub trait PickerItem {
     fn label(&self) -> &str;
-    fn label_suffix(&self) -> &str {
-        ""
-    }
     fn detail(&self) -> Option<&str> {
         None
     }
@@ -45,6 +42,7 @@ const SEARCH_ROW: u16 = 1;
 pub struct ListPicker<T> {
     state: Option<State<T>>,
     max_visible: Option<u16>,
+    generation: u64,
 }
 
 struct State<T> {
@@ -166,6 +164,7 @@ impl<T: PickerItem> ListPicker<T> {
         Self {
             state: None,
             max_visible: None,
+            generation: 0,
         }
     }
 
@@ -175,11 +174,13 @@ impl<T: PickerItem> ListPicker<T> {
     }
 
     pub fn open(&mut self, items: Vec<T>, title: &'static str) {
+        self.generation += 1;
         self.state = Some(State::new(items, title));
     }
 
     pub fn select(&mut self, index: usize) {
         if let Some(s) = self.state.as_mut() {
+            self.generation += 1;
             s.selected = index.min(s.filtered.len().saturating_sub(1));
             s.ensure_visible();
         }
@@ -187,12 +188,14 @@ impl<T: PickerItem> ListPicker<T> {
 
     pub fn replace_items(&mut self, items: Vec<T>) {
         if let Some(s) = self.state.as_mut() {
+            self.generation += 1;
             s.replace_items(items);
         }
     }
 
     pub fn retain(&mut self, f: impl Fn(&T) -> bool) {
         let Some(s) = self.state.as_mut() else { return };
+        self.generation += 1;
         s.items.retain(|item| f(item));
         if s.items.is_empty() {
             self.state = None;
@@ -202,18 +205,16 @@ impl<T: PickerItem> ListPicker<T> {
         s.clamp_selection();
     }
 
-    pub fn items_mut(&mut self) -> &mut [T] {
-        match self.state.as_mut() {
-            Some(s) => &mut s.items,
-            None => &mut [],
-        }
-    }
-
     pub fn is_open(&self) -> bool {
         self.state.is_some()
     }
 
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn close(&mut self) {
+        self.generation += 1;
         self.state = None;
     }
 
@@ -228,6 +229,7 @@ impl<T: PickerItem> ListPicker<T> {
             Some(s) => s,
             None => return PickerAction::Close,
         };
+        self.generation += 1;
 
         if key::QUIT.matches(key) {
             self.state = None;
@@ -296,11 +298,6 @@ impl<T: PickerItem> ListPicker<T> {
         s.selected_item_index().map(|i| &s.items[i])
     }
 
-    pub fn selected_item_mut(&mut self) -> Option<&mut T> {
-        let s = self.state.as_mut()?;
-        s.selected_item_index().map(|i| &mut s.items[i])
-    }
-
     pub fn selected_index(&self) -> Option<usize> {
         self.state.as_ref()?.selected_item_index()
     }
@@ -310,6 +307,7 @@ impl<T: PickerItem> ListPicker<T> {
             Some(s) => s,
             None => return,
         };
+        self.generation += 1;
         if delta > 0 {
             s.scroll_offset = s.scroll_offset.saturating_sub(delta as usize);
         } else {
@@ -478,7 +476,7 @@ fn render_list<T: PickerItem>(
         } else {
             theme::current().cmd_name
         };
-        let label = format!("  {}{}", item.label(), item.label_suffix());
+        let label = format!("  {}", item.label());
         let line = match item.detail() {
             Some(detail) => {
                 let pad = area
@@ -691,6 +689,6 @@ mod tests {
 
         s.selected = 2;
         s.ensure_visible();
-        assert!(s.scroll_offset > 0);
+        assert_eq!(s.scroll_offset, 2);
     }
 }

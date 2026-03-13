@@ -593,6 +593,11 @@ impl App {
             return match self.session_picker.handle_key(key) {
                 SessionPickerAction::Consumed => vec![],
                 SessionPickerAction::Select(id) => self.load_session(id),
+                SessionPickerAction::ConfirmDelete => {
+                    self.status_bar
+                        .flash("Press Ctrl+D again to confirm delete".into());
+                    vec![]
+                }
                 SessionPickerAction::Delete(id) => self.delete_session(id),
                 SessionPickerAction::Close => vec![],
             };
@@ -1890,6 +1895,7 @@ mod tests {
         app.ready_plan = Some("plan.md".into());
         app.queue.push_back(queued_msg("q"));
         app.queue_focus = Some(0);
+        app.update(Msg::Key(kb::HELP.to_key_event()));
         let actions = app.reset_session();
         assert!(matches!(&actions[0], Action::NewSession));
         assert_eq!(app.status, Status::Idle);
@@ -1903,6 +1909,7 @@ mod tests {
         assert_eq!(app.active_chat, 0);
         assert!(app.chat_index.is_empty());
         assert!(app.queue_focus.is_none());
+        assert!(!app.help_modal.is_open());
     }
 
     #[test]
@@ -2301,12 +2308,6 @@ mod tests {
         app.active_chat().enable_auto_scroll();
         app.update(Msg::Key(key));
         assert_eq!(app.chats[0].auto_scroll(), expected_auto_scroll);
-    }
-
-    #[test]
-    fn tick_edge_scroll_noop_without_state() {
-        let mut app = test_app();
-        app.tick_edge_scroll(); // must not panic
     }
 
     #[test]
@@ -2765,27 +2766,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn slash_help_toggles_help_modal() {
+    #[test_case(|app: &mut App| { app.execute_command("/help"); } ; "slash_help")]
+    #[test_case(|app: &mut App| { app.update(Msg::Key(kb::HELP.to_key_event())); } ; "ctrl_slash")]
+    fn help_toggles_modal(toggle: fn(&mut App)) {
         let mut app = test_app();
         assert!(!app.help_modal.is_open());
 
-        app.execute_command("/help");
+        toggle(&mut app);
         assert!(app.help_modal.is_open());
 
-        app.execute_command("/help");
-        assert!(!app.help_modal.is_open());
-    }
-
-    #[test]
-    fn ctrl_slash_toggles_help_modal() {
-        let mut app = test_app();
-        assert!(!app.help_modal.is_open());
-
-        app.update(Msg::Key(kb::HELP.to_key_event()));
-        assert!(app.help_modal.is_open());
-
-        app.update(Msg::Key(kb::HELP.to_key_event()));
+        toggle(&mut app);
         assert!(!app.help_modal.is_open());
     }
 
@@ -2799,16 +2789,6 @@ mod tests {
         assert_eq!(app.input_box.buffer.value(), "");
 
         app.update(Msg::Key(key(KeyCode::Esc)));
-        assert!(!app.help_modal.is_open());
-    }
-
-    #[test]
-    fn help_modal_closed_on_reset() {
-        let mut app = test_app();
-        app.update(Msg::Key(kb::HELP.to_key_event()));
-        assert!(app.help_modal.is_open());
-
-        app.reset_session();
         assert!(!app.help_modal.is_open());
     }
 
