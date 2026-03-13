@@ -1,5 +1,6 @@
 use crate::highlight::{
-    highlight_code_plain, highlight_line, highlighter_for_path, highlighter_for_token,
+    fallback_span, highlight_code_plain, highlight_line, highlighter_for_path,
+    highlighter_for_token,
 };
 use crate::markdown::truncation_notice;
 use crate::theme;
@@ -48,10 +49,7 @@ fn code_spans(
                 .map(|(style, chunk)| Span::styled(chunk, style))
                 .collect()
         }
-        None => vec![Span::styled(
-            text.to_owned(),
-            theme::current().code_fallback,
-        )],
+        None => vec![fallback_span(text)],
     }
 }
 
@@ -238,10 +236,7 @@ pub fn render_tool_content(
                 }
             } else {
                 for text in code.trim_end_matches('\n').lines() {
-                    lines.push(Line::from(Span::styled(
-                        text.to_owned(),
-                        theme::current().code_fallback,
-                    )));
+                    lines.push(Line::from(fallback_span(text)));
                 }
             }
         }
