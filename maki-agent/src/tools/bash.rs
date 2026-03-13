@@ -1,3 +1,4 @@
+use std::sync::LazyLock;
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -14,6 +15,42 @@ use super::{relative_path, truncate_output};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+
+static RTK_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
+    if std::env::var("MAKI_NO_RTK").as_deref() == Ok("1") {
+        return false;
+    }
+    std::process::Command::new("rtk")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+});
+
+fn rtk_rewrite(command: &str) -> Option<String> {
+    let cmd = command.trim_start();
+    if !*RTK_AVAILABLE ||
+        // https://github.com/rtk-ai/rtk/issues/496
+        (cmd.starts_with("cargo ") && cmd.contains(" -- "))
+    {
+        return None;
+    }
+    let output = std::process::Command::new("rtk")
+        .arg("rewrite")
+        .arg(command)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let rewritten = String::from_utf8(output.stdout).ok()?;
+    let trimmed = rewritten.trim();
+    if trimmed.is_empty() || trimmed == command.trim() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
 
 fn timed_out_msg(secs: u64) -> String {
     format!("command timed out after {secs}s")
@@ -62,6 +99,8 @@ impl Bash {
             .deadline
             .cap_timeout(self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS))?;
         let (command, workdir) = self.resolved();
+        let rewritten = rtk_rewrite(command);
+        let command = rewritten.as_deref().unwrap_or(command);
 
         let mut std_cmd = std::process::Command::new("bash");
         std_cmd
@@ -297,14 +336,12 @@ mod tests {
     fn execute_workdir() {
         smol::block_on(async {
             let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("marker"), b"ok").unwrap();
             let ctx = stub_ctx(&AgentMode::Build);
-            let mut b = bash("pwd");
+            let mut b = bash("cat marker");
             b.workdir = Some(dir.path().to_string_lossy().into());
             let out = b.execute(&ctx).await.unwrap().as_text();
-            assert!(
-                out.trim()
-                    .ends_with(dir.path().file_name().unwrap().to_str().unwrap())
-            );
+            assert_eq!(out.trim(), "ok");
         });
     }
 
@@ -341,9 +378,7 @@ mod tests {
     fn tty_reading_command_fails_instead_of_hanging() {
         smol::block_on(async {
             let ctx = stub_ctx(&AgentMode::Build);
-            let mut b = bash("python3 -c \"open('/dev/tty')\"");
-            b.timeout = Some(5);
-            let err = b.execute(&ctx).await.unwrap_err();
+            let err = bash("head -1 /dev/tty").execute(&ctx).await.unwrap_err();
             assert!(
                 !err.contains("timed out"),
                 "command hung waiting for tty: {err}"
