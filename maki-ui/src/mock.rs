@@ -10,16 +10,16 @@ use maki_agent::{
 };
 use maki_providers::{Message, TokenUsage};
 
+const TASK_TOOL_ID: &str = "t_task";
+const TASK_TOOL_ID_2: &str = "t_task2";
+const QUESTION_TOOL_ID: &str = "t_qform";
+
 pub enum MockEvent {
     User(String),
     Error(String),
     Flush,
     Agent(Envelope),
 }
-
-const TASK_TOOL_ID: &str = "t_task";
-const TASK_TOOL_ID_2: &str = "t_task2";
-const QUESTION_TOOL_ID: &str = "t_qform";
 
 fn user(text: &str) -> MockEvent {
     MockEvent::User(text.into())

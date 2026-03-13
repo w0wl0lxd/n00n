@@ -12,6 +12,11 @@ use unicode_width::UnicodeWidthStr;
 
 pub(crate) const CODE_BAR: &str = "│ ";
 pub(crate) const CODE_BAR_WRAP: &str = "│";
+pub const TRUNCATION_PREFIX: &str = "...";
+const BULLET: &str = "• ";
+const HR_CHAR: char = '─';
+const LIST_INDENT: &str = "  ";
+const MIN_COL_WIDTH: usize = 5;
 
 fn fit_width(text: &str, max_width: usize) -> usize {
     let mut width = 0;
@@ -100,8 +105,6 @@ fn highlight_code(lang: &str, code: &str, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-pub const TRUNCATION_PREFIX: &str = "...";
-
 #[derive(Clone, Copy)]
 pub enum Keep {
     Head,
@@ -112,10 +115,6 @@ pub fn truncation_notice(count: usize) -> String {
     let label = if count == 1 { "line" } else { "lines" };
     format!("{TRUNCATION_PREFIX} ({count} {label})")
 }
-
-const BULLET: &str = "• ";
-const HR_CHAR: char = '─';
-const LIST_INDENT: &str = "  ";
 
 fn code_style(base: Style) -> Style {
     theme::current().inline_code.add_modifier(base.add_modifier)
@@ -683,8 +682,6 @@ fn split_normal_blocks<'a>(text: &'a str) -> Vec<TextBlock<'a>> {
 
     blocks
 }
-
-const MIN_COL_WIDTH: usize = 5;
 
 fn cell_display_width(cell: &str) -> usize {
     parse_inline_markdown(cell, Style::default())

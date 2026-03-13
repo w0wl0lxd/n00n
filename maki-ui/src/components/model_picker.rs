@@ -9,6 +9,8 @@ use maki_providers::provider::ProviderKind;
 
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 
+const TITLE: &str = " Models ";
+
 pub enum ModelPickerAction {
     Consumed,
     Select(String),
@@ -35,8 +37,6 @@ impl PickerItem for ModelEntry {
         Some(self.provider_display)
     }
 }
-
-const TITLE: &str = " Models ";
 
 pub struct ModelPicker {
     picker: ListPicker<ModelEntry>,

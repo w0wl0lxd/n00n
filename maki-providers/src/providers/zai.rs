@@ -15,6 +15,11 @@ use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
 };
 
+const API_KEY_ENV: &str = "ZHIPU_API_KEY";
+const BASE_STANDARD: &str = "https://api.z.ai/api/paas/v4";
+const BASE_CODING: &str = "https://api.z.ai/api/coding/paas/v4";
+const STREAM_DONE: &str = "[DONE]";
+
 pub(crate) fn models() -> &'static [ModelEntry] {
     &[
         ModelEntry {
@@ -117,11 +122,6 @@ pub(crate) fn models() -> &'static [ModelEntry] {
         },
     ]
 }
-
-const API_KEY_ENV: &str = "ZHIPU_API_KEY";
-const BASE_STANDARD: &str = "https://api.z.ai/api/paas/v4";
-const BASE_CODING: &str = "https://api.z.ai/api/coding/paas/v4";
-const STREAM_DONE: &str = "[DONE]";
 
 #[derive(Debug, Clone, Copy)]
 pub enum ZaiPlan {

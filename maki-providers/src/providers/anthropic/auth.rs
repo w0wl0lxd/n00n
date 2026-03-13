@@ -17,13 +17,6 @@ use isahc::config::Configurable;
 use crate::AgentError;
 use crate::providers::CONNECT_TIMEOUT;
 
-#[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_in: u64,
-}
-
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
@@ -33,6 +26,13 @@ const REFRESH_BUFFER_SECS: u64 = 60;
 const BETA_ADVANCED_TOOL_USE: &str = "advanced-tool-use-2025-11-20";
 const RESPONSE_TYPE: &str = "response_type=code";
 const CHALLENGE_METHOD: &str = "code_challenge_method=S256";
+
+#[derive(Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_in: u64,
+}
 
 pub struct ResolvedAuth {
     pub api_url: String,

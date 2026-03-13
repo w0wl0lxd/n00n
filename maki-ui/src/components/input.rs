@@ -17,19 +17,6 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use super::scrollbar::render_vertical_scrollbar;
 use super::{apply_scroll_delta, visual_line_count};
 
-pub enum InputAction {
-    Submit(Submission),
-    ContinueLine,
-    PaletteSync(String),
-    Passthrough(KeyEvent),
-    None,
-}
-
-pub struct Submission {
-    pub text: String,
-    pub images: Vec<ImageSource>,
-}
-
 const MAX_INPUT_LINES: u16 = 10;
 const CHEVRON: &str = super::CHEVRON;
 const NEWLINE_PAD: &str = "  ";
@@ -49,6 +36,19 @@ const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
     "refactor a module",
     "remove dead code",
 ];
+
+pub enum InputAction {
+    Submit(Submission),
+    ContinueLine,
+    PaletteSync(String),
+    Passthrough(KeyEvent),
+    None,
+}
+
+pub struct Submission {
+    pub text: String,
+    pub images: Vec<ImageSource>,
+}
 
 pub struct InputBox {
     pub(crate) buffer: TextBuffer,

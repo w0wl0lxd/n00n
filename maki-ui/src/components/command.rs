@@ -7,13 +7,6 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 
-pub enum CommandAction {
-    Consumed,
-    Execute(&'static str),
-    Close,
-    Passthrough,
-}
-
 struct Command {
     name: &'static str,
     description: &'static str,
@@ -57,6 +50,13 @@ const COMMANDS: &[Command] = &[
         description: "Exit the application",
     },
 ];
+
+pub enum CommandAction {
+    Consumed,
+    Execute(&'static str),
+    Close,
+    Passthrough,
+}
 
 pub struct CommandPalette {
     selected: usize,

@@ -18,6 +18,25 @@ use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
 };
 
+const API_VERSION: &str = "2023-06-01";
+const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
+
+/// Anthropic caches conversation by blocks (tools -> system -> messages).
+/// We use 1 cache breakpoint for the last tool block, and 1 for the system prompt.
+/// We're allowed to set up to 4 breakpoints. So we're left with 2 to use for messages.
+///
+/// See https://platform.claude.com/docs/en/build-with-claude/prompt-caching.
+const MESSAGE_CACHE_BREAKPOINTS: usize = 2;
+
+#[derive(Serialize)]
+struct CacheControl {
+    r#type: &'static str,
+}
+
+const EPHEMERAL: CacheControl = CacheControl {
+    r#type: "ephemeral",
+};
+
 pub(crate) fn models() -> &'static [ModelEntry] {
     &[
         ModelEntry {
@@ -176,16 +195,6 @@ pub(crate) fn models() -> &'static [ModelEntry] {
         },
     ]
 }
-
-const API_VERSION: &str = "2023-06-01";
-const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
-
-/// Anthropic caches conversation by blocks (tools -> system -> messages).
-/// We use 1 cache breakpoint for the last tool block, and 1 for the system prompt.
-/// We're allowed to set up to 4 breakpoints. So we're left with 2 to use for messages.
-///
-/// See https://platform.claude.com/docs/en/build-with-claude/prompt-caching.
-const MESSAGE_CACHE_BREAKPOINTS: usize = 2;
 
 #[derive(Deserialize)]
 struct Usage {
@@ -425,15 +434,6 @@ struct ModelsPage {
     has_more: bool,
     last_id: Option<String>,
 }
-
-#[derive(Serialize)]
-struct CacheControl {
-    r#type: &'static str,
-}
-
-const EPHEMERAL: CacheControl = CacheControl {
-    r#type: "ephemeral",
-};
 
 #[derive(Serialize)]
 struct SystemBlock<'a> {

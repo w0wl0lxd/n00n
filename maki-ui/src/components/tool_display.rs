@@ -34,6 +34,8 @@ const BASH_OUTPUT_SEPARATOR: &str = "──────";
 const ALWAYS_ANNOTATE_TOOLS: &[&str] = &[WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME];
 const TIMESTAMP_LEN: usize = 8;
 const PLAIN_ANNOTATION_THRESHOLD: usize = 10;
+const BATCH_INDENT: &str = "  ";
+const BATCH_CONTENT_INDENT: &str = "    ";
 
 pub(crate) fn output_limits(tool: &str) -> (usize, Keep) {
     match tool {
@@ -524,9 +526,6 @@ pub fn truncate_to_header(text: &mut String) {
     let end = text.find('\n').unwrap_or(text.len());
     text.truncate(end);
 }
-
-const BATCH_INDENT: &str = "  ";
-const BATCH_CONTENT_INDENT: &str = "    ";
 
 pub fn build_batch_entry_lines(
     entry: &BatchToolEntry,

@@ -5,6 +5,9 @@ use crossterm::event::KeyEvent;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
+const TITLE: &str = " Themes ";
+const MAX_VISIBLE: u16 = 15;
+
 pub enum ThemePickerAction {
     Consumed,
     Closed,
@@ -19,9 +22,6 @@ impl PickerItem for ThemeEntry {
         self.name
     }
 }
-
-const TITLE: &str = " Themes ";
-const MAX_VISIBLE: u16 = 15;
 
 pub struct ThemePicker {
     picker: ListPicker<ThemeEntry>,

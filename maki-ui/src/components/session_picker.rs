@@ -7,6 +7,9 @@ use maki_storage::DataDir;
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 
+const TITLE: &str = " Sessions ";
+const NO_SESSIONS_MSG: &str = "No previous sessions";
+
 pub enum SessionPickerAction {
     Consumed,
     Select(String),
@@ -29,9 +32,6 @@ impl PickerItem for SessionEntry {
         Some(&self.relative_time)
     }
 }
-
-const TITLE: &str = " Sessions ";
-const NO_SESSIONS_MSG: &str = "No previous sessions";
 
 pub struct SessionPicker {
     picker: ListPicker<SessionEntry>,

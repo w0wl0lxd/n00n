@@ -9,6 +9,9 @@ use syntect::highlighting::{FontStyle, HighlightState, Highlighter};
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
+const TOKEN_ALIASES: &[(&str, &str)] = &[("jsx", "js")];
+const TAB_SPACES: &str = "  ";
+
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
 
 static LEAKED_SYNTAX_THEME: LazyLock<Mutex<&'static syntect::highlighting::Theme>> =
@@ -26,9 +29,6 @@ pub(crate) fn refresh_syntax_theme() {
 fn syntax_theme() -> &'static syntect::highlighting::Theme {
     *LEAKED_SYNTAX_THEME.lock().unwrap()
 }
-
-const TOKEN_ALIASES: &[(&str, &str)] = &[("jsx", "js")];
-const TAB_SPACES: &str = "  ";
 
 fn normalize_text(text: &str) -> String {
     text.trim_end_matches('\n').replace('\t', TAB_SPACES)

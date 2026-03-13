@@ -4,12 +4,12 @@ use crossterm::event::KeyEvent;
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 
+const TITLE: &str = " Chats ";
+
 pub enum ChatPickerAction {
     Consumed,
     Select(usize),
 }
-
-const TITLE: &str = " Chats ";
 
 pub struct ChatPicker {
     picker: ListPicker<String>,

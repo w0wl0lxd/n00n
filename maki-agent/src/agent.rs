@@ -48,6 +48,28 @@ const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 
 const COMPACTION_BUFFER: u32 = 30_000;
 const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.";
 const CANCEL_MARKER: &str = "[Cancelled by user]";
+const MCP_BLOCKED_IN_PLAN: &str = "MCP tools are not available in plan mode";
+const IMAGE_PLACEHOLDER: &str = "[image]";
+const EFFICIENCY_TIERS: &[(&str, &[&str], &str)] = &[
+    (
+        "Best",
+        &[CODE_EXECUTION_TOOL_NAME, BATCH_TOOL_NAME, TASK_TOOL_NAME],
+        "Batch/chained calls, delegatable work",
+    ),
+    (
+        "Good",
+        &[
+            EDIT_TOOL_NAME,
+            MULTIEDIT_TOOL_NAME,
+            READ_TOOL_NAME,
+            GREP_TOOL_NAME,
+            GLOB_TOOL_NAME,
+        ],
+        "Targeted reads and edits",
+    ),
+    ("Costly", &[WRITE_TOOL_NAME], "Full file replacement"),
+    ("Last", &[BASH_TOOL_NAME], "Only when no other tool works"),
+];
 
 pub struct History {
     messages: Vec<Message>,
@@ -105,27 +127,6 @@ pub fn build_system_prompt(
 
     out
 }
-
-const EFFICIENCY_TIERS: &[(&str, &[&str], &str)] = &[
-    (
-        "Best",
-        &[CODE_EXECUTION_TOOL_NAME, BATCH_TOOL_NAME, TASK_TOOL_NAME],
-        "Batch/chained calls, delegatable work",
-    ),
-    (
-        "Good",
-        &[
-            EDIT_TOOL_NAME,
-            MULTIEDIT_TOOL_NAME,
-            READ_TOOL_NAME,
-            GREP_TOOL_NAME,
-            GLOB_TOOL_NAME,
-        ],
-        "Targeted reads and edits",
-    ),
-    ("Costly", &[WRITE_TOOL_NAME], "Full file replacement"),
-    ("Last", &[BASH_TOOL_NAME], "Only when no other tool works"),
-];
 
 pub fn tool_efficiency_table(tool_names: &[&str]) -> String {
     let mut rows = Vec::new();
@@ -406,8 +407,6 @@ async fn stream_with_retry(
         }
     }
 }
-
-const MCP_BLOCKED_IN_PLAN: &str = "MCP tools are not available in plan mode";
 
 async fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<ToolDoneEvent> {
     let mut set = TaskSet::new();
@@ -874,8 +873,6 @@ fn is_overflow(usage: &TokenUsage, model: &Model) -> bool {
     let usable = model.context_window.saturating_sub(reserved);
     usage.context_tokens() >= usable
 }
-
-const IMAGE_PLACEHOLDER: &str = "[image]";
 
 fn strip_images(messages: &mut [Message]) {
     for msg in messages {
