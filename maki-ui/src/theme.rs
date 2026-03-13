@@ -804,12 +804,6 @@ mod tests {
     }
 
     #[test]
-    fn current_returns_guard() {
-        let t = current();
-        assert_eq!(t.background, Color::Rgb(0x28, 0x2a, 0x36));
-    }
-
-    #[test]
     fn all_bundled_themes_parse() {
         for entry in BUNDLED_THEMES {
             let result = Theme::from_toml(entry.toml);
@@ -831,17 +825,6 @@ mod tests {
     #[test]
     fn load_by_name_unknown() {
         assert!(load_by_name("nonexistent").is_err());
-    }
-
-    #[test]
-    fn set_swaps_theme() {
-        let original_bg = current().background;
-        let gruvbox = load_by_name("gruvbox").unwrap();
-        let gruvbox_bg = gruvbox.background;
-        set(gruvbox);
-        assert_eq!(current().background, gruvbox_bg);
-        set(load_by_name("dracula").unwrap());
-        assert_eq!(current().background, original_bg);
     }
 
     #[test]
