@@ -7,7 +7,7 @@ use crate::components::{DisplayMessage, DisplayRole, ToolStatus};
 use crate::markdown::truncate_lines;
 
 use maki_agent::tools::{ToolCall, WEBFETCH_TOOL_NAME};
-use maki_agent::{AgentEvent, QuestionInfo, ToolOutput};
+use maki_agent::{AgentEvent, BatchToolStatus, NO_FILES_FOUND, QuestionInfo, ToolOutput};
 use maki_providers::{ContentBlock, Message, Role, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -265,7 +265,7 @@ fn build_loaded_tool(
         Some(ref output @ ToolOutput::GlobResult { ref files }) => {
             let annotation = tool_output_annotation(output, tool);
             let text = if files.is_empty() {
-                format!("{summary}\n{}", maki_agent::NO_FILES_FOUND)
+                format!("{summary}\n{NO_FILES_FOUND}")
             } else {
                 let joined = files.join("\n");
                 let (max, keep) = output_limits(tool);
@@ -277,7 +277,7 @@ fn build_loaded_tool(
         Some(ToolOutput::Batch { ref entries, .. }) => {
             let failed = entries
                 .iter()
-                .filter(|e| e.status == maki_agent::BatchToolStatus::Error)
+                .filter(|e| e.status == BatchToolStatus::Error)
                 .count();
             let text = if failed > 0 {
                 let total = entries.len();

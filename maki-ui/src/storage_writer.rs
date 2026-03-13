@@ -56,11 +56,13 @@ impl StorageWriter {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+
     use super::*;
 
     #[test]
     fn shutdown_drains_pending_session() {
-        let dir = DataDir::from_path(std::env::temp_dir().join("maki-test-sw"));
+        let dir = DataDir::from_path(env::temp_dir().join("maki-test-sw"));
         let writer = StorageWriter::new(dir);
         writer.send(Box::new(AppSession::new("test-model", "/tmp")));
         writer.shutdown(Duration::from_secs(2));

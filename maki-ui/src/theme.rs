@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 
 use arc_swap::{ArcSwap, Guard};
+use maki_storage::DataDir;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use serde::Deserialize;
@@ -148,13 +149,13 @@ pub fn load_by_name(name: &str) -> Result<Theme, String> {
 }
 
 pub fn persist_theme(name: &str) {
-    if let Ok(dir) = maki_storage::DataDir::resolve() {
+    if let Ok(dir) = DataDir::resolve() {
         maki_storage::theme::persist_theme_name(&dir, name);
     }
 }
 
 fn read_theme_name() -> Option<String> {
-    let dir = maki_storage::DataDir::resolve().ok()?;
+    let dir = DataDir::resolve().ok()?;
     maki_storage::theme::read_theme_name(&dir)
 }
 

@@ -8,7 +8,7 @@ use maki_agent::{
     GrepFileEntry, GrepMatch, QuestionInfo, QuestionOption, SubagentInfo, TodoItem, TodoPriority,
     TodoStatus, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
 };
-use maki_providers::TokenUsage;
+use maki_providers::{Message, TokenUsage};
 
 pub enum MockEvent {
     User(String),

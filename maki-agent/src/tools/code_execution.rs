@@ -9,6 +9,8 @@ use serde_json::Value;
 use crate::cancel::CancelToken;
 use crate::{AgentEvent, AgentMode, EventSender, ToolInput, ToolOutput};
 
+use smol::future::block_on;
+
 use super::truncate_output;
 use super::{Deadline, INTERPRETER_TOOLS};
 
@@ -150,7 +152,7 @@ fn build_tool_fns(
 
                     let mut inner_ctx = super::interpreter_ctx(&mode, &tx, cancel.clone());
                     inner_ctx.deadline = deadline;
-                    let done = smol::future::block_on(call.execute(&inner_ctx, String::new()));
+                    let done = block_on(call.execute(&inner_ctx, String::new()));
                     if done.is_error {
                         Err(done.output.as_text())
                     } else {
@@ -188,6 +190,8 @@ fn build_tool_input(args: &[Value], kwargs: &[(String, Value)]) -> Result<Value,
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use serde_json::json;
     use test_case::test_case;
 
@@ -201,7 +205,7 @@ mod tests {
         smol::block_on(async {
             let dir = tempfile::TempDir::new().unwrap();
             let path = dir.path().join("test.txt");
-            std::fs::write(&path, "line1\nline2\n").unwrap();
+            fs::write(&path, "line1\nline2\n").unwrap();
             let path_str = path.to_string_lossy();
 
             let ctx = stub_ctx(&AgentMode::Build);

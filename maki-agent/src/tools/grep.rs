@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::Stdio;
 
 use async_process::Command;
 
@@ -55,9 +56,9 @@ impl Grep {
             cmd.args(["--glob", glob]);
         }
         cmd.arg(&search_path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         let output = cmd
             .output()

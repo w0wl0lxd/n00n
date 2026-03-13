@@ -4,6 +4,8 @@ use crate::text_buffer::{EditResult, TextBuffer};
 use crate::theme;
 
 use crossterm::event::{KeyCode, KeyEvent};
+use std::mem;
+
 use maki_providers::ImageSource;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -165,7 +167,7 @@ impl InputBox {
 
     pub fn submit(&mut self) -> Option<Submission> {
         let text = self.buffer.value().trim().to_string();
-        let images = std::mem::take(&mut self.pending_images);
+        let images = mem::take(&mut self.pending_images);
         if text.is_empty() && images.is_empty() {
             return None;
         }
@@ -735,11 +737,10 @@ mod tests {
         assert!(row.starts_with(CHEVRON), "placeholder row: {row:?}");
     }
 
-    fn test_image() -> maki_providers::ImageSource {
-        maki_providers::ImageSource::new(
-            maki_providers::ImageMediaType::Png,
-            std::sync::Arc::from("dGVzdA=="),
-        )
+    fn test_image() -> ImageSource {
+        use maki_providers::ImageMediaType;
+        use std::sync::Arc;
+        ImageSource::new(ImageMediaType::Png, Arc::from("dGVzdA=="))
     }
 
     #[test]

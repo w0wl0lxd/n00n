@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
@@ -233,7 +234,7 @@ where
         let path = dir.join(format!("{id}.json"));
         match fs::remove_file(&path) {
             Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 return Err(StorageError::NotFound(id.into()).into());
             }
             Err(e) => return Err(StorageError::from(e).into()),

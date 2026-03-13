@@ -1,8 +1,11 @@
+use std::env;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use base64::Engine;
+use image::{ImageBuffer, RgbaImage};
 use maki_agent::{ImageMediaType, ImageSource};
 
 const MAX_IMAGE_PIXELS: usize = 8_000_000;
@@ -29,7 +32,7 @@ pub(crate) fn try_parse_image_path(text: &str) -> Option<(PathBuf, ImageMediaTyp
         return None;
     }
     let path = if let Some(rest) = path_str.strip_prefix("~/") {
-        let home = std::env::var("HOME").ok()?;
+        let home = env::var("HOME").ok()?;
         PathBuf::from(home).join(rest)
     } else {
         PathBuf::from(&path_str)
@@ -73,11 +76,10 @@ pub(crate) fn load_clipboard_image() -> Result<ImageSource, String> {
 }
 
 fn encode_rgba_to_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
-    use image::{ImageBuffer, RgbaImage};
     let img: RgbaImage =
         ImageBuffer::from_raw(width, height, rgba.to_vec()).ok_or("Invalid image dimensions")?;
     let mut buf = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+    img.write_to(&mut io::Cursor::new(&mut buf), image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;
     Ok(buf)
 }
@@ -109,7 +111,7 @@ mod tests {
     #[test]
     fn try_parse_image_path_tilde() {
         let (path, media) = try_parse_image_path("~/Pictures/photo.jpg").expect("should parse");
-        let home = std::env::var("HOME").unwrap();
+        let home = env::var("HOME").unwrap();
         assert_eq!(path, PathBuf::from(home).join("Pictures/photo.jpg"));
         assert_eq!(media, ImageMediaType::Jpeg);
     }
@@ -134,7 +136,7 @@ mod tests {
     fn load_file_image_valid() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("test.png");
-        std::fs::write(&path, b"fake png data").unwrap();
+        fs::write(&path, b"fake png data").unwrap();
         let result = load_file_image(&path, ImageMediaType::Png);
         assert!(result.is_ok());
         let source = result.unwrap();

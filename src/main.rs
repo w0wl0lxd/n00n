@@ -1,5 +1,7 @@
 mod print;
 
+use std::env;
+
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use color_eyre::eyre::Context;
@@ -8,7 +10,10 @@ use maki_storage::DataDir;
 use maki_ui::AppSession;
 use tracing_subscriber::EnvFilter;
 
+use maki_providers::auth;
 use maki_providers::model::Model;
+use maki_providers::provider::fetch_all_models;
+use maki_storage::log as storage_log;
 use print::OutputFormat;
 
 #[derive(Parser)]
@@ -57,7 +62,7 @@ fn discover(disable: bool) -> Vec<Skill> {
     if disable {
         return Vec::new();
     }
-    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
     skill::discover_skills(&cwd)
 }
 
@@ -108,12 +113,12 @@ fn run() -> Result<()> {
         Some(Command::Auth { action }) => {
             let storage = DataDir::resolve().context("resolve data directory")?;
             match action {
-                AuthAction::Login => maki_providers::auth::login(&storage)?,
-                AuthAction::Logout => maki_providers::auth::logout(&storage)?,
+                AuthAction::Login => auth::login(&storage)?,
+                AuthAction::Logout => auth::logout(&storage)?,
             }
         }
         Some(Command::Models) => {
-            smol::block_on(maki_providers::provider::fetch_all_models(|batch| {
+            smol::block_on(fetch_all_models(|batch| {
                 for model in batch.models {
                     println!("{model}");
                 }
@@ -131,7 +136,7 @@ fn run() -> Result<()> {
                 print::run(&model, cli.prompt, cli.output_format, cli.verbose, skills)
                     .context("run print mode")?;
             } else {
-                let cwd = std::env::current_dir()
+                let cwd = env::current_dir()
                     .unwrap_or_else(|_| ".".into())
                     .to_string_lossy()
                     .into_owned();
@@ -183,7 +188,7 @@ fn resolve_session(
 }
 
 fn init_logging(storage: &DataDir) {
-    let log_path = maki_storage::log::log_path(storage);
+    let log_path = storage_log::log_path(storage);
     let Some(log_dir) = log_path.parent() else {
         return;
     };

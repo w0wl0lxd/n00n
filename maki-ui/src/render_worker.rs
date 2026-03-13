@@ -6,6 +6,8 @@ use std::time::Duration;
 use maki_agent::{ToolInput, ToolOutput};
 use ratatui::text::Line;
 
+use crate::components::code_view;
+
 const IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 const FALLBACK_MAX_THREADS: usize = 4;
 
@@ -93,7 +95,6 @@ impl RenderWorker {
 }
 
 fn worker_loop(inner: &PoolInner) {
-    use crate::components::code_view;
     while let Ok(job) = inner.job_rx.recv_timeout(IDLE_TIMEOUT) {
         let lines =
             code_view::render_tool_content(job.tool_input.as_ref(), job.tool_output.as_ref(), true);

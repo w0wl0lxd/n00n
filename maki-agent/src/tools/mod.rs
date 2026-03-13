@@ -16,6 +16,8 @@ mod websearch;
 mod write;
 
 use std::collections::HashSet;
+use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -157,7 +159,7 @@ pub struct ToolContext {
 pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
     match path {
         Some(p) => Ok(p.to_string()),
-        None => std::env::current_dir()
+        None => env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .map_err(|e| format!("cwd error: {e}")),
     }
@@ -168,7 +170,7 @@ pub(crate) fn line_at_offset(content: &str, offset: usize) -> usize {
 }
 
 pub(crate) fn relative_path(path: &str) -> String {
-    let Ok(cwd) = std::env::current_dir() else {
+    let Ok(cwd) = env::current_dir() else {
         return path.to_string();
     };
     let cwd = cwd.to_string_lossy();
@@ -179,7 +181,7 @@ pub(crate) fn relative_path(path: &str) -> String {
 }
 
 pub(crate) fn mtime(path: &Path) -> SystemTime {
-    std::fs::metadata(path)
+    fs::metadata(path)
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
@@ -245,7 +247,7 @@ fn format_tool_signature(name: &str, schema: &Value) -> String {
         .get("properties")
         .and_then(|p| p.as_object())
         .unwrap_or(&empty_props);
-    let required: std::collections::HashSet<&str> = schema
+    let required: HashSet<&str> = schema
         .get("required")
         .and_then(|r| r.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
@@ -530,6 +532,7 @@ register_tools! {
 }
 
 use maki_providers::provider::BoxFuture;
+use maki_providers::{Message, ProviderEvent, StreamResponse};
 
 struct NullProvider;
 
@@ -537,11 +540,11 @@ impl Provider for NullProvider {
     fn stream_message<'a>(
         &'a self,
         _: &'a Model,
-        _: &'a [maki_providers::Message],
+        _: &'a [Message],
         _: &'a str,
         _: &'a Value,
-        _: &'a flume::Sender<maki_providers::ProviderEvent>,
-    ) -> BoxFuture<'a, Result<maki_providers::StreamResponse, AgentError>> {
+        _: &'a flume::Sender<ProviderEvent>,
+    ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async { unimplemented!() })
     }
 

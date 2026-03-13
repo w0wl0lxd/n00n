@@ -1,4 +1,5 @@
 use std::collections::{HashSet, VecDeque};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -889,19 +890,21 @@ fn strip_images(messages: &mut [Message]) {
 }
 
 fn auto_compact_enabled() -> bool {
-    std::env::var("MAKI_DISABLE_AUTOCOMPACT")
+    env::var("MAKI_DISABLE_AUTOCOMPACT")
         .map(|v| v != "1" && v != "true")
         .unwrap_or(true)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use test_case::test_case;
 
     use maki_providers::provider::{BoxFuture, Provider};
-    use maki_providers::{ContentBlock, Message, Role, StopReason, StreamResponse, TokenUsage};
+    use maki_providers::{
+        ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
+    };
 
     use crate::Envelope;
 
@@ -954,13 +957,13 @@ mod tests {
     }
 
     struct MockProvider {
-        responses: std::sync::Mutex<Vec<StreamResponse>>,
+        responses: Mutex<Vec<StreamResponse>>,
     }
 
     impl MockProvider {
         fn new(responses: Vec<StreamResponse>) -> Self {
             Self {
-                responses: std::sync::Mutex::new(responses),
+                responses: Mutex::new(responses),
             }
         }
     }
@@ -1364,7 +1367,7 @@ mod tests {
                     _: &'a [Message],
                     _: &'a str,
                     _: &'a Value,
-                    _: &'a flume::Sender<maki_providers::ProviderEvent>,
+                    _: &'a flume::Sender<ProviderEvent>,
                 ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
                     Box::pin(async {
                         futures_lite::future::pending::<()>().await;

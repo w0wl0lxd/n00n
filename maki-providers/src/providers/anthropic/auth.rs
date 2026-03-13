@@ -11,6 +11,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, warn};
 
+use isahc::ReadResponseExt;
+use isahc::config::Configurable;
+
 use crate::AgentError;
 use crate::providers::CONNECT_TIMEOUT;
 
@@ -83,9 +86,6 @@ fn urlenc(s: &str) -> String {
 }
 
 fn post_token_request(body: serde_json::Value, context: &str) -> Result<TokenResponse, AgentError> {
-    use isahc::ReadResponseExt;
-    use isahc::config::Configurable;
-
     let client = isahc::HttpClient::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(30))

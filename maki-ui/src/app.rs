@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
-use std::path::Path;
-use std::sync::Arc;
+use std::mem;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::chat::history_to_display;
@@ -33,10 +35,11 @@ use crate::AppSession;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 #[cfg(feature = "demo")]
 use maki_agent::QuestionInfo;
-use maki_agent::{AgentEvent, Envelope, ImageSource, SubagentInfo};
-use maki_agent::{AgentInput, AgentMode};
-use maki_providers::{ModelPricing, TokenUsage};
+use maki_agent::{AgentEvent, Envelope, ImageMediaType, ImageSource, SubagentInfo};
+use maki_agent::{AgentInput, AgentMode, ToolOutput};
+use maki_providers::{Message, Model, ModelPricing, TokenUsage};
 use maki_storage::DataDir;
+use maki_storage::plans;
 
 use crate::storage_writer::StorageWriter;
 use ratatui::Frame;
@@ -154,11 +157,8 @@ pub struct App {
     last_esc: Option<Instant>,
     pub(crate) session: AppSession,
     pub(crate) storage: DataDir,
-    pub(crate) shared_history:
-        Option<std::sync::Arc<std::sync::Mutex<Vec<maki_providers::Message>>>>,
-    pub(crate) shared_tool_outputs: Option<
-        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, maki_agent::ToolOutput>>>,
-    >,
+    pub(crate) shared_history: Option<Arc<Mutex<Vec<Message>>>>,
+    pub(crate) shared_tool_outputs: Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
     pub(crate) image_paste_rx: Option<flume::Receiver<Result<ImageSource, String>>>,
     storage_writer: Arc<StorageWriter>,
 }
@@ -221,7 +221,7 @@ impl App {
         &mut self.chats[0]
     }
 
-    pub(crate) fn update_model(&mut self, model: &maki_providers::Model) {
+    pub(crate) fn update_model(&mut self, model: &Model) {
         self.session.model = model.spec();
         self.model_id = model.spec();
         self.pricing = model.pricing.clone();
@@ -922,10 +922,10 @@ impl App {
     }
 
     fn toggle_mode(&mut self) -> Vec<Action> {
-        self.mode = match std::mem::replace(&mut self.mode, Mode::Build) {
+        self.mode = match mem::replace(&mut self.mode, Mode::Build) {
             Mode::BuildPlan => Mode::Build,
             Mode::Build => Mode::Plan {
-                path: maki_storage::plans::new_plan_path(&self.storage)
+                path: plans::new_plan_path(&self.storage)
                     .unwrap_or_else(|_| "plans/plan.md".into()),
                 written: false,
             },
@@ -1353,11 +1353,7 @@ impl App {
             || self.chats.iter().any(|c| c.is_animating())
     }
 
-    fn start_file_image_paste(
-        &mut self,
-        path: std::path::PathBuf,
-        media_type: maki_agent::ImageMediaType,
-    ) {
+    fn start_file_image_paste(&mut self, path: PathBuf, media_type: ImageMediaType) {
         let msg = format!("Reading {}...", path.display());
         self.spawn_image_load(msg, move || image::load_file_image(&path, media_type));
     }
@@ -1372,7 +1368,7 @@ impl App {
         f: impl FnOnce() -> Result<ImageSource, String> + Send + 'static,
     ) {
         let (tx, rx) = flume::bounded(1);
-        std::thread::spawn(move || {
+        thread::spawn(move || {
             let _ = tx.send(f());
         });
         self.image_paste_rx = Some(rx);
@@ -1439,6 +1435,7 @@ mod tests {
     use crate::components::{TEST_CONTEXT_WINDOW, key, test_pricing};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
     use maki_agent::{QuestionInfo, QuestionOption, ToolDoneEvent, ToolOutput, ToolStartEvent};
+    use std::env;
     use test_case::test_case;
 
     fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
@@ -1450,13 +1447,13 @@ mod tests {
     }
 
     fn test_app() -> App {
-        let writer = Arc::new(StorageWriter::new(DataDir::from_path(std::env::temp_dir())));
+        let writer = Arc::new(StorageWriter::new(DataDir::from_path(env::temp_dir())));
         App::new(
             "test-model".into(),
             test_pricing(),
             TEST_CONTEXT_WINDOW,
             AppSession::new("test-model", "/tmp/test"),
-            DataDir::from_path(std::env::temp_dir()),
+            DataDir::from_path(env::temp_dir()),
             Arc::new(ArcSwapOption::empty()),
             writer,
         )
@@ -2443,9 +2440,7 @@ mod tests {
         type_and_submit(&mut app, "hello");
         app.status = Status::Idle;
         app.run_id = 1;
-        app.session
-            .messages
-            .push(maki_providers::Message::user("hello".into()));
+        app.session.messages.push(Message::user("hello".into()));
 
         app.update(Msg::Key(key(KeyCode::Esc)));
         app.update(Msg::Key(key(KeyCode::Esc)));
@@ -2818,7 +2813,7 @@ mod tests {
     )]
     #[test_case(
         |app: &mut App| {
-            app.session.messages.push(maki_providers::Message::user("test".into()));
+            app.session.messages.push(Message::user("test".into()));
             app.open_rewind_picker();
         },
         &[KeybindContext::RewindPicker],
@@ -2898,10 +2893,9 @@ mod tests {
             },
             Message::user("third prompt".into()),
         ];
-        app.session.tool_outputs.insert(
-            "tool-1".into(),
-            maki_agent::ToolOutput::Plain("output".into()),
-        );
+        app.session
+            .tool_outputs
+            .insert("tool-1".into(), ToolOutput::Plain("output".into()));
         app
     }
 

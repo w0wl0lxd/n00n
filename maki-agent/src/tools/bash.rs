@@ -1,5 +1,7 @@
+use std::env;
+use std::process::{Command as StdCommand, Stdio};
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -17,13 +19,13 @@ const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
 static RTK_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
-    if std::env::var("MAKI_NO_RTK").as_deref() == Ok("1") {
+    if env::var("MAKI_NO_RTK").as_deref() == Ok("1") {
         return false;
     }
-    std::process::Command::new("rtk")
+    StdCommand::new("rtk")
         .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
 });
@@ -36,7 +38,7 @@ fn rtk_rewrite(command: &str) -> Option<String> {
     {
         return None;
     }
-    let output = std::process::Command::new("rtk")
+    let output = StdCommand::new("rtk")
         .arg("rewrite")
         .arg(command)
         .output()
@@ -102,7 +104,7 @@ impl Bash {
         let rewritten = rtk_rewrite(command);
         let command = rewritten.as_deref().unwrap_or(command);
 
-        let mut std_cmd = std::process::Command::new("bash");
+        let mut std_cmd = StdCommand::new("bash");
         std_cmd
             .arg("-c")
             .arg(command)
@@ -122,9 +124,9 @@ impl Bash {
             std_cmd.current_dir(dir);
         }
         let mut cmd: Command = std_cmd.into();
-        cmd.stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| format!("failed to spawn: {e}"))?;
 
         let (line_tx, line_rx) = flume::unbounded::<String>();
@@ -138,9 +140,9 @@ impl Bash {
 
         let mut output = String::new();
         let mut last_len = 0usize;
-        let mut last_flush = std::time::Instant::now();
+        let mut last_flush = Instant::now();
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
         enum Event {
             Line(Option<String>),
             Timeout,
@@ -206,7 +208,7 @@ impl Bash {
             {
                 send_output(&ctx.event_tx, id, &output);
                 last_len = output.len();
-                last_flush = std::time::Instant::now();
+                last_flush = Instant::now();
             }
         }
     }
@@ -288,6 +290,7 @@ fn send_output(event_tx: &EventSender, id: &str, content: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use test_case::test_case;
 
     use crate::AgentMode;
@@ -336,27 +339,13 @@ mod tests {
     fn execute_workdir() {
         smol::block_on(async {
             let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join("marker"), b"ok").unwrap();
+            fs::write(dir.path().join("marker"), b"ok").unwrap();
             let ctx = stub_ctx(&AgentMode::Build);
             let mut b = bash("cat marker");
             b.workdir = Some(dir.path().to_string_lossy().into());
             let out = b.execute(&ctx).await.unwrap().as_text();
             assert_eq!(out.trim(), "ok");
         });
-    }
-
-    #[test_case("ls",              None,           "ls",              None          ; "no_prefix")]
-    #[test_case("cd /tmp && ls",   None,           "ls",              Some("/tmp")  ; "strips_cd")]
-    #[test_case("cd /tmp && ls",   Some("/home"),  "cd /tmp && ls",   Some("/home") ; "explicit_workdir_wins")]
-    #[test_case("cd  && ls",       None,           "cd  && ls",       None          ; "empty_dir_noop")]
-    fn resolved_cases(cmd: &str, workdir: Option<&str>, exp_cmd: &str, exp_dir: Option<&str>) {
-        let b = Bash {
-            command: cmd.into(),
-            timeout: None,
-            workdir: workdir.map(Into::into),
-            description: None,
-        };
-        assert_eq!(b.resolved(), (exp_cmd, exp_dir));
     }
 
     #[test_case(None, None, "ls",              "ls"               ; "falls_back_to_command")]

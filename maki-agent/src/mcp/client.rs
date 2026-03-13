@@ -19,7 +19,9 @@ use super::protocol::{
     ToolsListResult, initialize_params,
 };
 
-type PendingMap = HashMap<u64, smol::channel::Sender<Result<Value, McpError>>>;
+use smol::channel;
+
+type PendingMap = HashMap<u64, channel::Sender<Result<Value, McpError>>>;
 
 pub struct McpClient {
     name: Arc<str>,

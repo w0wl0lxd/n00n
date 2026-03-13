@@ -25,13 +25,14 @@ use color_eyre::Result;
 use color_eyre::eyre::Context;
 use maki_agent::mcp::McpManager;
 use maki_agent::skill::Skill;
-use maki_agent::tools::QUESTION_TOOL_NAME;
+use maki_agent::tools::{QUESTION_TOOL_NAME, ToolCall};
 use maki_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, Envelope, EventSender, History, agent, template,
 };
 use maki_providers::StopReason;
 use maki_providers::TokenUsage;
 use maki_providers::model::Model;
+use maki_providers::provider::{self, Provider};
 use serde::Serialize;
 use serde_json::Value;
 use tracing::error;
@@ -140,7 +141,7 @@ pub fn run(
     let vars = template::env_vars();
     let mode = AgentMode::Build;
     let (instructions, loaded_instructions) = agent::load_instruction_files(&vars.apply("{cwd}"));
-    let (mut tool_names, mut tools) = maki_agent::tools::ToolCall::definitions_excluding(
+    let (mut tool_names, mut tools) = ToolCall::definitions_excluding(
         &vars,
         &skills,
         &[QUESTION_TOOL_NAME],
@@ -169,17 +170,16 @@ pub fn run(
     let model_clone = model.clone();
     smol::spawn(async move {
         let event_tx = EventSender::new(raw_tx, 0);
-        let provider: Arc<dyn maki_providers::provider::Provider> =
-            match maki_providers::provider::from_model_async(&model_clone).await {
-                Ok(p) => Arc::from(p),
-                Err(e) => {
-                    error!(error = %e, "provider error");
-                    let _ = event_tx.send(AgentEvent::Error {
-                        message: e.user_message(),
-                    });
-                    return;
-                }
-            };
+        let provider: Arc<dyn Provider> = match provider::from_model_async(&model_clone).await {
+            Ok(p) => Arc::from(p),
+            Err(e) => {
+                error!(error = %e, "provider error");
+                let _ = event_tx.send(AgentEvent::Error {
+                    message: e.user_message(),
+                });
+                return;
+            }
+        };
         let skills: Arc<[Skill]> = Arc::from(skills);
         let error_tx = event_tx.clone();
         let agent = Agent::new(

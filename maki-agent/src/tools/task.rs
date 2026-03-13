@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::{AgentEvent, EventSender, SubagentInfo, ToolOutput};
-use maki_providers::ContentBlock;
 use maki_providers::model::ModelTier;
 use maki_providers::provider;
+use maki_providers::{ContentBlock, Model, ModelError, Role};
 use maki_tool_macro::Tool;
 
 use super::{GENERAL_SUBAGENT_TOOLS, RESEARCH_SUBAGENT_TOOLS, ToolContext};
@@ -48,16 +48,13 @@ impl Task {
             other => return Err(format!("unknown subagent type: {other}")),
         };
 
-        let (model, provider): (
-            maki_providers::Model,
-            Arc<dyn maki_providers::provider::Provider>,
-        ) = if let Some(ref tier_str) = self.model_tier {
-            let requested: ModelTier = tier_str
-                .parse()
-                .map_err(|e: maki_providers::ModelError| e.to_string())?;
+        let (model, provider): (Model, Arc<dyn provider::Provider>) = if let Some(ref tier_str) =
+            self.model_tier
+        {
+            let requested: ModelTier = tier_str.parse().map_err(|e: ModelError| e.to_string())?;
             let effective = requested.min(ctx.model.tier);
-            let resolved_model = maki_providers::Model::from_tier(ctx.model.provider, effective)
-                .map_err(|e| e.to_string())?;
+            let resolved_model =
+                Model::from_tier(ctx.model.provider, effective).map_err(|e| e.to_string())?;
             let resolved_provider = provider::from_model_async(&resolved_model)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -133,7 +130,7 @@ impl Task {
             .as_slice()
             .iter()
             .rev()
-            .filter(|m| matches!(m.role, maki_providers::Role::Assistant))
+            .filter(|m| matches!(m.role, Role::Assistant))
             .flat_map(|m| m.content.iter())
             .find_map(|b| match b {
                 ContentBlock::Text { text } => Some(text.as_str()),

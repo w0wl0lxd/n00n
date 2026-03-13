@@ -7,6 +7,7 @@ pub mod theme;
 use std::env;
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -64,7 +65,6 @@ pub(crate) fn atomic_write_permissions(
     data: &[u8],
     mode: u32,
 ) -> Result<(), StorageError> {
-    use std::os::unix::fs::PermissionsExt;
     let tmp = path.with_extension("tmp");
     let mut f = fs::File::create(&tmp)?;
     f.write_all(data)?;

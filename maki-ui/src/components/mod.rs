@@ -190,11 +190,14 @@ impl DisplayRole {
 }
 
 #[cfg(test)]
+use maki_providers::ModelPricing;
+
+#[cfg(test)]
 pub(crate) const TEST_CONTEXT_WINDOW: u32 = 200_000;
 
 #[cfg(test)]
-pub(crate) fn test_pricing() -> maki_providers::ModelPricing {
-    maki_providers::ModelPricing {
+pub(crate) fn test_pricing() -> ModelPricing {
+    ModelPricing {
         input: 3.0,
         output: 15.0,
         cache_write: 3.75,

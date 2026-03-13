@@ -1,3 +1,5 @@
+use isahc::AsyncReadResponseExt;
+
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error("API error ({status}): {message}")]
@@ -56,7 +58,6 @@ impl AgentError {
     }
 
     pub async fn from_response(mut response: isahc::Response<isahc::AsyncBody>) -> Self {
-        use isahc::AsyncReadResponseExt;
         let status = response.status().as_u16();
         let message = response
             .text()

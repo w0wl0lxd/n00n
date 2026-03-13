@@ -1,4 +1,6 @@
 use std::borrow::Cow;
+use std::iter;
+use std::mem;
 
 use crate::highlight;
 use crate::highlight::CodeHighlighter;
@@ -120,7 +122,7 @@ fn code_style(base: Style) -> Style {
 }
 
 pub(crate) fn hr_line(width: u16, style: Style) -> Line<'static> {
-    let hr: String = std::iter::repeat_n(HR_CHAR, width as usize).collect();
+    let hr: String = iter::repeat_n(HR_CHAR, width as usize).collect();
     Line::from(Span::styled(hr, style))
 }
 
@@ -737,7 +739,7 @@ fn wrap_cell_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Vec<Span<
                     current.push(Span::styled(text[..ch_len].to_owned(), style));
                     text = &text[ch_len..];
                 }
-                result.push(std::mem::take(&mut current));
+                result.push(mem::take(&mut current));
                 remaining = max_width;
                 text = text.strip_prefix(' ').unwrap_or(text);
                 continue;
@@ -754,7 +756,7 @@ fn wrap_cell_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Vec<Span<
             remaining -= text[..take].width();
             text = &text[skip..];
             if take < fits && !text.is_empty() {
-                result.push(std::mem::take(&mut current));
+                result.push(mem::take(&mut current));
                 remaining = max_width;
             }
         }
@@ -1756,7 +1758,7 @@ mod tests {
     }
 
     fn hr_line() -> String {
-        std::iter::repeat_n(HR_CHAR, TEST_WIDTH as usize).collect()
+        iter::repeat_n(HR_CHAR, TEST_WIDTH as usize).collect()
     }
 
     #[test_case("---", true ; "three_dashes")]

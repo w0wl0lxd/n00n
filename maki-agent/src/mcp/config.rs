@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -110,7 +112,7 @@ pub fn load_config(cwd: &Path) -> McpConfig {
 }
 
 fn read_config(path: &Path) -> Option<McpConfig> {
-    let content = std::fs::read_to_string(path).ok()?;
+    let content = fs::read_to_string(path).ok()?;
     match toml::from_str(&content) {
         Ok(cfg) => Some(cfg),
         Err(e) => {
@@ -120,8 +122,8 @@ fn read_config(path: &Path) -> Option<McpConfig> {
     }
 }
 
-fn home_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(std::path::PathBuf::from)
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME").map(PathBuf::from)
 }
 
 #[cfg(test)]
@@ -200,8 +202,8 @@ enabled = false
     fn project_config_overrides_global() {
         let dir = tempfile::tempdir().unwrap();
         let global_dir = dir.path().join("global");
-        std::fs::create_dir_all(&global_dir).unwrap();
-        std::fs::write(
+        fs::create_dir_all(&global_dir).unwrap();
+        fs::write(
             global_dir.join("config.toml"),
             r#"[mcp.srv]
 command = ["global"]
@@ -211,8 +213,8 @@ timeout = 5000
         .unwrap();
 
         let project_dir = dir.path().join("project");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        std::fs::write(
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
             project_dir.join("maki.toml"),
             r#"[mcp.srv]
 command = ["project"]

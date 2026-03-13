@@ -15,6 +15,8 @@ mod theme;
 
 use std::collections::HashMap;
 use std::io::stdout;
+use std::mem;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -32,6 +34,7 @@ use maki_agent::agent;
 use maki_agent::mcp::McpManager;
 use maki_agent::skill::Skill;
 use maki_agent::template;
+use maki_agent::tools::ToolCall;
 use maki_agent::{
     Agent, AgentEvent, AgentInput, CancelToken, CancelTrigger, Envelope, EventSender,
     ExtractedCommand, History,
@@ -40,7 +43,7 @@ use maki_providers::AgentError;
 use maki_providers::Message;
 use maki_providers::Model;
 use maki_providers::TokenUsage;
-use maki_providers::provider::Provider;
+use maki_providers::provider::{Provider, fetch_all_models, from_model};
 use maki_storage::DataDir;
 use tracing::error;
 
@@ -100,7 +103,7 @@ fn run_event_loop(
     let (warn_tx, warn_rx) = flume::unbounded::<String>();
     smol::spawn(async move {
         let warn_tx = warn_tx;
-        maki_providers::provider::fetch_all_models(|batch| {
+        fetch_all_models(|batch| {
             for w in batch.warnings {
                 let _ = warn_tx.try_send(w);
             }
@@ -157,8 +160,7 @@ fn run_event_loop(
         }
         app.status = components::Status::Idle;
     }
-    let mut provider: Arc<dyn Provider> =
-        Arc::from(maki_providers::provider::from_model(&model).context("create provider")?);
+    let mut provider: Arc<dyn Provider> = Arc::from(from_model(&model).context("create provider")?);
     let skills: Arc<[Skill]> = Arc::from(skills);
     let mut model = model;
     let mut handles = spawn_agent(&provider, &model, initial_history, &skills);
@@ -274,7 +276,7 @@ struct AgentHandles {
     agent_rx: flume::Receiver<Envelope>,
     answer_tx: flume::Sender<String>,
     history: Arc<Mutex<Vec<Message>>>,
-    tool_outputs: Arc<Mutex<HashMap<String, maki_agent::ToolOutput>>>,
+    tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>>,
 }
 
 impl AgentHandles {
@@ -298,7 +300,7 @@ fn spawn_agent(
     let (ecmd_tx, ecmd_rx) = flume::unbounded::<ExtractedCommand>();
     let shared_history: Arc<Mutex<Vec<Message>>> = Arc::new(Mutex::new(initial_history.clone()));
     let shared_history_inner = Arc::clone(&shared_history);
-    let shared_tool_outputs: Arc<Mutex<HashMap<String, maki_agent::ToolOutput>>> =
+    let shared_tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let model = model.clone();
     let provider = Arc::clone(provider);
@@ -308,14 +310,11 @@ fn spawn_agent(
         let answer_mutex = Arc::new(async_lock::Mutex::new(answer_rx));
         let vars = template::env_vars();
         let cwd_owned = vars.apply("{cwd}").into_owned();
-        let cwd_path = std::path::PathBuf::from(&cwd_owned);
+        let cwd_path = PathBuf::from(&cwd_owned);
         let (instructions, loaded_instructions) =
             smol::unblock(move || agent::load_instruction_files(&cwd_owned)).await;
-        let (mut tool_names, mut tools) = maki_agent::tools::ToolCall::definitions(
-            &vars,
-            &skills,
-            model.family.supports_tool_examples(),
-        );
+        let (mut tool_names, mut tools) =
+            ToolCall::definitions(&vars, &skills, model.family.supports_tool_examples());
 
         let mcp_manager = McpManager::start(&cwd_path).await;
 
@@ -373,7 +372,7 @@ fn spawn_agent(
                     let agent = Agent::new(
                         Arc::clone(&provider),
                         model.clone(),
-                        std::mem::replace(&mut history, History::new(Vec::new())),
+                        mem::replace(&mut history, History::new(Vec::new())),
                         system,
                         event_tx,
                         tools.clone(),
@@ -456,7 +455,7 @@ fn dispatch(
                 *handles.tool_outputs.lock().unwrap() = loaded.tool_outputs;
             }
             Action::ChangeModel(spec) => match Model::from_spec(&spec) {
-                Ok(new_model) => match maki_providers::provider::from_model(&new_model) {
+                Ok(new_model) => match from_model(&new_model) {
                     Ok(new_provider) => {
                         app.update_model(&new_model);
                         let history = handles.history.lock().unwrap().clone();

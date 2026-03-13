@@ -1,7 +1,7 @@
 use std::fmt::Write;
 
 use flume::Sender;
-use maki_providers::{AgentError, ContentBlock, Message, Role, TokenUsage};
+use maki_providers::{AgentError, ContentBlock, Message, Role, StopReason, TokenUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -399,7 +399,7 @@ pub enum AgentEvent {
     Done {
         usage: TokenUsage,
         num_turns: u32,
-        stop_reason: Option<maki_providers::StopReason>,
+        stop_reason: Option<StopReason>,
     },
     AutoCompacting,
     Retry {
