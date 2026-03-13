@@ -13,6 +13,9 @@ use ratatui::widgets::Paragraph;
 
 pub trait PickerItem {
     fn label(&self) -> &str;
+    fn label_suffix(&self) -> &str {
+        ""
+    }
     fn detail(&self) -> Option<&str> {
         None
     }
@@ -188,6 +191,24 @@ impl<T: PickerItem> ListPicker<T> {
         }
     }
 
+    pub fn retain(&mut self, f: impl Fn(&T) -> bool) {
+        let Some(s) = self.state.as_mut() else { return };
+        s.items.retain(|item| f(item));
+        if s.items.is_empty() {
+            self.state = None;
+            return;
+        }
+        s.rebuild_filter();
+        s.clamp_selection();
+    }
+
+    pub fn items_mut(&mut self) -> &mut [T] {
+        match self.state.as_mut() {
+            Some(s) => &mut s.items,
+            None => &mut [],
+        }
+    }
+
     pub fn is_open(&self) -> bool {
         self.state.is_some()
     }
@@ -273,6 +294,11 @@ impl<T: PickerItem> ListPicker<T> {
     pub fn selected_item(&self) -> Option<&T> {
         let s = self.state.as_ref()?;
         s.selected_item_index().map(|i| &s.items[i])
+    }
+
+    pub fn selected_item_mut(&mut self) -> Option<&mut T> {
+        let s = self.state.as_mut()?;
+        s.selected_item_index().map(|i| &mut s.items[i])
     }
 
     pub fn selected_index(&self) -> Option<usize> {
@@ -452,7 +478,7 @@ fn render_list<T: PickerItem>(
         } else {
             theme::current().cmd_name
         };
-        let label = format!("  {}", item.label());
+        let label = format!("  {}{}", item.label(), item.label_suffix());
         let line = match item.detail() {
             Some(detail) => {
                 let pad = area

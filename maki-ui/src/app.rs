@@ -588,6 +588,7 @@ impl App {
             return match self.session_picker.handle_key(key) {
                 SessionPickerAction::Consumed => vec![],
                 SessionPickerAction::Select(id) => self.load_session(id),
+                SessionPickerAction::Delete(id) => self.delete_session(id),
                 SessionPickerAction::Close => vec![],
             };
         }
@@ -1008,6 +1009,9 @@ impl App {
         if let Some(ref outputs) = self.shared_tool_outputs {
             self.session.tool_outputs = outputs.lock().unwrap().clone();
         }
+        if self.session.messages.is_empty() {
+            return;
+        }
         self.session.token_usage = self.token_usage;
         self.session.update_title_if_default();
         if let Err(e) = self.session.save(&self.storage) {
@@ -1120,6 +1124,17 @@ impl App {
             messages: self.session.messages.clone(),
             tool_outputs: self.session.tool_outputs.clone(),
         })]
+    }
+
+    fn delete_session(&mut self, session_id: String) -> Vec<Action> {
+        if let Err(e) = AppSession::delete(&session_id, &self.storage) {
+            self.status_bar
+                .flash(format!("Failed to delete session: {e}"));
+            return vec![];
+        }
+        self.session_picker.remove_entry(&session_id);
+        self.status_bar.flash("Session deleted".into());
+        vec![]
     }
 
     pub fn view(&mut self, frame: &mut Frame) {

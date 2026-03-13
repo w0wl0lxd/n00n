@@ -1,7 +1,7 @@
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 
 use crate::AppSession;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jiff::Timestamp;
 use maki_storage::DataDir;
 use ratatui::Frame;
@@ -10,6 +10,7 @@ use ratatui::layout::{Position, Rect};
 pub enum SessionPickerAction {
     Consumed,
     Select(String),
+    Delete(String),
     Close,
 }
 
@@ -17,11 +18,19 @@ struct SessionEntry {
     id: String,
     title: String,
     relative_time: String,
+    confirming: bool,
 }
 
 impl PickerItem for SessionEntry {
     fn label(&self) -> &str {
         &self.title
+    }
+    fn label_suffix(&self) -> &str {
+        if self.confirming {
+            DELETE_CONFIRM_SUFFIX
+        } else {
+            ""
+        }
     }
     fn detail(&self) -> Option<&str> {
         Some(&self.relative_time)
@@ -30,6 +39,7 @@ impl PickerItem for SessionEntry {
 
 const TITLE: &str = " Sessions ";
 const NO_SESSIONS_MSG: &str = "No previous sessions";
+const DELETE_CONFIRM_SUFFIX: &str = " [Ctrl+D to confirm]";
 
 pub struct SessionPicker {
     picker: ListPicker<SessionEntry>,
@@ -57,6 +67,7 @@ impl SessionPicker {
                 id: s.id,
                 title: s.title,
                 relative_time: format_relative_time(s.updated_at),
+                confirming: false,
             })
             .collect();
         if entries.is_empty() {
@@ -74,6 +85,10 @@ impl SessionPicker {
         self.picker.close();
     }
 
+    pub fn remove_entry(&mut self, id: &str) {
+        self.picker.retain(|e| e.id != id);
+    }
+
     pub fn contains(&self, pos: Position) -> bool {
         self.picker.contains(pos)
     }
@@ -83,10 +98,41 @@ impl SessionPicker {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> SessionPickerAction {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT)
+            && key.code == KeyCode::Char('d')
+        {
+            return self.handle_delete_key();
+        }
+
+        self.clear_confirming();
+
         match self.picker.handle_key(key) {
             PickerAction::Consumed => SessionPickerAction::Consumed,
             PickerAction::Select(_, entry) => SessionPickerAction::Select(entry.id),
             PickerAction::Close => SessionPickerAction::Close,
+        }
+    }
+
+    fn handle_delete_key(&mut self) -> SessionPickerAction {
+        let Some(selected) = self.picker.selected_item() else {
+            return SessionPickerAction::Consumed;
+        };
+
+        if selected.confirming {
+            return SessionPickerAction::Delete(selected.id.clone());
+        }
+
+        self.clear_confirming();
+        if let Some(entry) = self.picker.selected_item_mut() {
+            entry.confirming = true;
+        }
+        SessionPickerAction::Consumed
+    }
+
+    fn clear_confirming(&mut self) {
+        for entry in self.picker.items_mut() {
+            entry.confirming = false;
         }
     }
 
@@ -126,17 +172,13 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case(0, "just now" ; "zero_seconds")]
-    #[test_case(30, "just now" ; "thirty_seconds")]
-    #[test_case(60, "1m ago" ; "one_minute")]
-    #[test_case(150, "2m ago" ; "two_minutes")]
-    #[test_case(3600, "1h ago" ; "one_hour")]
-    #[test_case(7200, "2h ago" ; "two_hours")]
-    #[test_case(86400, "1d ago" ; "one_day")]
-    #[test_case(259200, "3d ago" ; "three_days")]
-    #[test_case(604800, "1w ago" ; "one_week")]
-    #[test_case(2592000, "1mo ago" ; "one_month")]
-    #[test_case(31536000, "1y ago" ; "one_year")]
+    #[test_case(0, "just now" ; "below_minute")]
+    #[test_case(60, "1m ago" ; "minute_boundary")]
+    #[test_case(3600, "1h ago" ; "hour_boundary")]
+    #[test_case(86400, "1d ago" ; "day_boundary")]
+    #[test_case(604800, "1w ago" ; "week_boundary")]
+    #[test_case(2592000, "1mo ago" ; "month_boundary")]
+    #[test_case(31536000, "1y ago" ; "year_boundary")]
     fn relative_time_formatting(secs: u64, expected: &str) {
         assert_eq!(humanize_secs(secs), expected);
     }

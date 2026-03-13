@@ -87,6 +87,16 @@ fn update_cwd_index(dir: &Path, cwd: &str, session_id: &str) -> Result<(), Stora
     atomic_write(&dir.join(CWD_INDEX_FILE), &serde_json::to_vec(&index)?)
 }
 
+fn remove_from_cwd_index(dir: &Path, session_id: &str) -> Result<(), StorageError> {
+    let mut index = load_cwd_index(dir);
+    let before = index.len();
+    index.retain(|_, v| v != session_id);
+    if index.len() != before {
+        atomic_write(&dir.join(CWD_INDEX_FILE), &serde_json::to_vec(&index)?)?;
+    }
+    Ok(())
+}
+
 fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageError> {
     let mut out = Vec::new();
     for path in json_entries(dir)? {
@@ -212,6 +222,24 @@ where
         if self.title == DEFAULT_TITLE {
             self.title = generate_title(&self.messages);
         }
+    }
+
+    pub fn delete(id: &str, dir: &DataDir) -> Result<(), SessionError> {
+        let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
+        Self::delete_from(id, &sessions_dir)
+    }
+
+    pub fn delete_from(id: &str, dir: &Path) -> Result<(), SessionError> {
+        let path = dir.join(format!("{id}.json"));
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(StorageError::NotFound(id.into()).into());
+            }
+            Err(e) => return Err(StorageError::from(e).into()),
+        }
+        remove_from_cwd_index(dir, id)?;
+        Ok(())
     }
 }
 
@@ -358,6 +386,32 @@ mod tests {
             vec![user_message(input)]
         };
         assert_eq!(generate_title(&messages), expected);
+    }
+
+    #[test]
+    fn delete_removes_file_and_cwd_index() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut s1: TestSession = Session::new("m", "/project");
+        s1.save_to(dir).unwrap();
+        let mut s2: TestSession = Session::new("m", "/other");
+        s2.save_to(dir).unwrap();
+
+        TestSession::delete_from(&s1.id, dir).unwrap();
+        assert!(!dir.join(format!("{}.json", s1.id)).exists());
+        let index = load_cwd_index(dir);
+        assert!(!index.values().any(|v| v == &s1.id));
+        assert_eq!(index.get("/other"), Some(&s2.id));
+    }
+
+    #[test]
+    fn delete_nonexistent_returns_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let err = TestSession::delete_from("nonexistent", tmp.path()).unwrap_err();
+        assert!(matches!(
+            err,
+            SessionError::Storage(StorageError::NotFound(_))
+        ));
     }
 
     #[test]

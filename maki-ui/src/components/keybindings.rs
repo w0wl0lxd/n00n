@@ -242,6 +242,11 @@ const KEYBINDS: &[Keybind] = &[
         context: KeybindContext::SessionPicker,
     },
     Keybind {
+        key: "Ctrl+D",
+        description: "Delete session",
+        context: KeybindContext::SessionPicker,
+    },
+    Keybind {
         key: "\u{2191}/\u{2193}",
         description: "Navigate turns",
         context: KeybindContext::RewindPicker,
