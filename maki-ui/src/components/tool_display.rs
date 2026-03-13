@@ -47,7 +47,7 @@ pub(crate) fn tool_output_annotation(output: &ToolOutput, tool: &str) -> Option<
     match output {
         ToolOutput::ReadCode { lines, .. } => Some(format!("{} lines", lines.len())),
         ToolOutput::WriteCode { byte_count, .. } => Some(format!("{byte_count} bytes")),
-        ToolOutput::GrepResult { entries, .. } => Some(format!("{} files", entries.len())),
+        ToolOutput::GrepResult { entries } => Some(format!("{} files", entries.len())),
         ToolOutput::GlobResult { files } if !files.is_empty() => {
             Some(format!("{} files", files.len()))
         }

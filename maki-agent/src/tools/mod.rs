@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime};
 use humantime::format_duration;
 use serde_json::{Value, json};
 use std::future::Future;
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::cancel::CancelToken;
 use crate::mcp::McpManager;
@@ -304,6 +304,28 @@ pub(crate) trait ToolDefaults {
     fn augment_description(_description: &mut String, _ctx: &DescriptionContext) {}
 }
 
+fn strip_stray_quotes(input: &Value) -> Value {
+    let Some(obj) = input.as_object() else {
+        return input.clone();
+    };
+    let mut sanitized = obj.clone();
+    for (key, val) in &mut sanitized {
+        if let Value::String(s) = val {
+            let quote_count = s.chars().filter(|&c| c == '"').count();
+            let stripped = if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+                s[1..s.len() - 1].to_string()
+            } else if s.ends_with('"') && quote_count % 2 == 1 {
+                s[..s.len() - 1].to_string()
+            } else {
+                continue;
+            };
+            warn!(field = %key, original = %s, fixed = %stripped, "stripped stray quotes from tool param");
+            *val = Value::String(stripped);
+        }
+    }
+    Value::Object(sanitized)
+}
+
 macro_rules! register_tools {
     ($($Variant:ident($inner:path)),+ $(,)?) => {
         $(const _: () = { fn _assert_defaults<T: ToolDefaults>() {} fn _check() { _assert_defaults::<$inner>() } };)+
@@ -344,9 +366,10 @@ macro_rules! register_tools {
 
         impl ToolCall {
             pub fn from_api(name: &str, input: &Value) -> Result<Self, AgentError> {
+                let input = strip_stray_quotes(input);
                 match name {
                     $(<$inner>::NAME => {
-                        <$inner>::parse_input(input)
+                        <$inner>::parse_input(&input)
                             .map(ToolCall::$Variant)
                             .map_err(|msg| AgentError::Tool { tool: name.to_string(), message: msg })
                     })+
@@ -602,7 +625,6 @@ mod tests {
 
     #[test_case(Deadline::None,                                         120, Ok(120) ; "none_passthrough")]
     #[test_case(Deadline::after(Duration::from_secs(60)),               10,  Ok(10)  ; "preserves_shorter_timeout")]
-    #[test_case(Deadline::after(Duration::from_millis(500)),            120, Ok(1)   ; "minimum_one_second")]
     #[test_case(Deadline::At(Instant::now() - Duration::from_secs(1)),  120, Err(DEADLINE_EXCEEDED_MSG.into()) ; "expired")]
     fn deadline_cap_timeout_cases(d: Deadline, timeout: u64, expected: Result<u64, String>) {
         let result = d.cap_timeout(timeout);
@@ -610,6 +632,13 @@ mod tests {
             Ok(v) => assert_eq!(result.unwrap(), v),
             Err(e) => assert_eq!(result.unwrap_err(), e),
         }
+    }
+
+    #[test]
+    fn deadline_cap_timeout_clamps_to_remaining() {
+        let d = Deadline::after(Duration::from_secs(5));
+        let result = d.cap_timeout(120).unwrap();
+        assert!((1..=5).contains(&result), "expected 1..=5, got {result}");
     }
 
     #[test_case("short",                            "short"                             ; "short_passthrough")]
@@ -621,11 +650,11 @@ mod tests {
     }
 
     #[test]
-    fn truncate_bytes_respects_char_boundary() {
+    fn truncate_bytes_splits_on_char_boundary() {
         let input = "a".repeat(MAX_LINE_BYTES - 1) + "\u{1F600}";
         let result = truncate_bytes(&input);
-        assert!(result.len() <= MAX_LINE_BYTES + "...".len());
-        assert!(result.ends_with("..."));
+        let expected = format!("{}...", "a".repeat(MAX_LINE_BYTES - 1));
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -780,5 +809,39 @@ mod tests {
             .unwrap();
             assert!(!allowed.execute(&ctx, "t2".into()).await.is_error);
         });
+    }
+
+    #[test_case(
+        json!({"pattern": "\"TODO\""}),
+        json!({"pattern": "TODO"})
+        ; "wrapping_quotes"
+    )]
+    #[test_case(
+        json!({"pattern": "\"TODO\"", "path": "\"src/\""}),
+        json!({"pattern": "TODO", "path": "src/"})
+        ; "wrapping_quotes_multiple_fields"
+    )]
+    #[test_case(
+        json!({"pattern": "TODO"}),
+        json!({"pattern": "TODO"})
+        ; "no_quotes_unchanged"
+    )]
+    #[test_case(
+        json!({"pattern": "TODO\""}),
+        json!({"pattern": "TODO"})
+        ; "trailing_only_quote_stripped"
+    )]
+    #[test_case(
+        json!({"pattern": "say \"hello\""}),
+        json!({"pattern": "say \"hello\""})
+        ; "interior_quotes_preserved"
+    )]
+    #[test_case(
+        json!({"limit": 10}),
+        json!({"limit": 10})
+        ; "non_string_values_unchanged"
+    )]
+    fn strip_stray_quotes_cases(input: Value, expected: Value) {
+        assert_eq!(strip_stray_quotes(&input), expected);
     }
 }

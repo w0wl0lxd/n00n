@@ -33,7 +33,6 @@ impl Grep {
 
     pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let search_path = resolve_search_path(self.path.as_deref())?;
-
         debug!(
             pattern = %self.pattern,
             pattern_debug = ?self.pattern,
@@ -99,12 +98,7 @@ impl Grep {
         }
 
         if entries.is_empty() {
-            let msg = if self.pattern.ends_with('"') {
-                format!("{NO_FILES_FOUND}. Pattern ends with a quote - did you mean to omit it?")
-            } else {
-                NO_FILES_FOUND.to_string()
-            };
-            return Ok(ToolOutput::Plain(msg));
+            return Ok(ToolOutput::Plain(NO_FILES_FOUND.to_string()));
         }
 
         let prefix_owned = prefix.to_string();

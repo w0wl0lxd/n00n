@@ -248,6 +248,7 @@ impl ToolOutput {
                                 } else {
                                     "+ "
                                 };
+
                                 let _ = write!(out, "\n{prefix}");
                                 for s in spans {
                                     out.push_str(&s.text);
@@ -279,8 +280,8 @@ impl ToolOutput {
             }
             Self::GrepResult { entries } => {
                 let mut out = String::new();
-                for entry in entries {
-                    if !out.is_empty() {
+                for (i, entry) in entries.iter().enumerate() {
+                    if i > 0 {
                         out.push('\n');
                     }
                     out.push_str(&entry.path);
