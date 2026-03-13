@@ -30,8 +30,8 @@ Maki is an AI coding agent (like Claude Code and opencode), that is built bottom
 
 ## Testing
 
-- just lint
-- just test
+- cargo clippy --all --tests -- -D warnings
+- cargo nextest run --workspace
 
 ## Architecture
 
