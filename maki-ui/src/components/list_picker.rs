@@ -41,6 +41,7 @@ const SEARCH_ROW: u16 = 1;
 
 pub struct ListPicker<T> {
     state: Option<State<T>>,
+    max_visible: Option<u16>,
 }
 
 struct State<T> {
@@ -159,7 +160,15 @@ impl<T: PickerItem> State<T> {
 
 impl<T: PickerItem> ListPicker<T> {
     pub fn new() -> Self {
-        Self { state: None }
+        Self {
+            state: None,
+            max_visible: None,
+        }
+    }
+
+    pub fn with_max_visible(mut self, max: u16) -> Self {
+        self.max_visible = Some(max);
+        self
     }
 
     pub fn open(&mut self, items: Vec<T>, title: &'static str) {
@@ -290,7 +299,11 @@ impl<T: PickerItem> ListPicker<T> {
         let content_rows = if s.filtered.is_empty() {
             1
         } else {
-            visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len()) as u16
+            let rows = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len()) as u16;
+            match self.max_visible {
+                Some(max) => rows.min(max),
+                None => rows,
+            }
         };
         let modal = Modal {
             title: s.title,

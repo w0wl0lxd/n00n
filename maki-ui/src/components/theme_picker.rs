@@ -21,6 +21,7 @@ impl PickerItem for ThemeEntry {
 }
 
 const TITLE: &str = " Themes ";
+const MAX_VISIBLE: u16 = 15;
 
 pub struct ThemePicker {
     picker: ListPicker<ThemeEntry>,
@@ -30,7 +31,7 @@ pub struct ThemePicker {
 impl ThemePicker {
     pub fn new() -> Self {
         Self {
-            picker: ListPicker::new(),
+            picker: ListPicker::new().with_max_visible(MAX_VISIBLE),
             original_theme_name: None,
         }
     }
