@@ -528,7 +528,12 @@ impl MessagesPanel {
                     .iter_mut()
                     .rfind(|s| s.tool_id.as_deref() == Some(id.as_str()))
                 {
-                    let mut tl = build_tool_lines(msg, ToolStatus::Error, self.started_at);
+                    let mut tl = build_tool_lines(
+                        msg,
+                        ToolStatus::Error,
+                        self.started_at,
+                        self.viewport_width,
+                    );
                     if let Some(ts) = &msg.timestamp {
                         append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
                     }
@@ -546,7 +551,8 @@ impl MessagesPanel {
                 let child_prefix = format!("{batch_id}__");
                 for (j, entry) in entries.iter().enumerate() {
                     let child_id = format!("{batch_id}__{j}");
-                    let tl = build_batch_entry_lines(entry, j, self.started_at);
+                    let tl =
+                        build_batch_entry_lines(entry, j, self.started_at, self.viewport_width);
                     if let Some(idx) = self
                         .cached_segments
                         .iter()
@@ -873,7 +879,7 @@ impl MessagesPanel {
             return;
         };
 
-        let mut tl = build_tool_lines(msg, *status, self.started_at);
+        let mut tl = build_tool_lines(msg, *status, self.started_at, self.viewport_width);
         if let Some(ts) = &msg.timestamp {
             append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
         }
@@ -882,22 +888,26 @@ impl MessagesPanel {
         seg.copy_text = msg.copy_text();
         seg.update_with_reuse(tl, &self.hl_worker);
 
-        let batch_children: Option<Vec<(String, ToolLines)>> =
-            if let Some(ToolOutput::Batch { entries, .. }) = &msg.tool_output {
-                Some(
-                    entries
-                        .iter()
-                        .enumerate()
-                        .map(|(j, entry)| {
-                            let child_id = format!("{tool_id}__{j}");
-                            let tl = build_batch_entry_lines(entry, j, self.started_at);
-                            (child_id, tl)
-                        })
-                        .collect(),
-                )
-            } else {
-                None
-            };
+        let batch_children: Option<Vec<(String, ToolLines)>> = if let Some(ToolOutput::Batch {
+            entries,
+            ..
+        }) = &msg.tool_output
+        {
+            Some(
+                entries
+                    .iter()
+                    .enumerate()
+                    .map(|(j, entry)| {
+                        let child_id = format!("{tool_id}__{j}");
+                        let tl =
+                            build_batch_entry_lines(entry, j, self.started_at, self.viewport_width);
+                        (child_id, tl)
+                    })
+                    .collect(),
+            )
+        } else {
+            None
+        };
 
         if let Some(children) = batch_children {
             let child_prefix = format!("{tool_id}__");
@@ -939,7 +949,7 @@ impl MessagesPanel {
             let msg = &self.messages[i];
 
             if let DisplayRole::Tool { ref id, status, .. } = msg.role {
-                let mut tl = build_tool_lines(msg, status, self.started_at);
+                let mut tl = build_tool_lines(msg, status, self.started_at, self.viewport_width);
                 if let Some(ts) = &msg.timestamp {
                     append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
                 }
@@ -958,7 +968,8 @@ impl MessagesPanel {
                 if let Some(ToolOutput::Batch { entries, .. }) = &msg.tool_output {
                     for (j, entry) in entries.iter().enumerate() {
                         let child_id = format!("{id}__{j}");
-                        let tl = build_batch_entry_lines(entry, j, self.started_at);
+                        let tl =
+                            build_batch_entry_lines(entry, j, self.started_at, self.viewport_width);
                         let mut seg = Segment {
                             tool_id: Some(child_id),
                             msg_index: Some(i),

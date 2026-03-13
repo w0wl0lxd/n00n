@@ -105,7 +105,7 @@ fn highlight_code(lang: &str, code: &str, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Keep {
     Head,
     Tail,

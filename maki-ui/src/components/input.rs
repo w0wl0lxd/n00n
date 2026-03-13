@@ -216,7 +216,7 @@ impl InputBox {
             self.set_input(entry);
         } else {
             self.history_index = None;
-            let draft = self.draft.clone();
+            let draft = mem::take(&mut self.draft);
             self.set_input(draft);
         }
     }

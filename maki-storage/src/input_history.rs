@@ -16,7 +16,7 @@ impl InputHistory {
             Ok(d) => d,
             Err(_) => return Self(VecDeque::new()),
         };
-        let entries: VecDeque<String> = serde_json::from_slice(&data).unwrap_or_default();
+        let entries: Vec<String> = serde_json::from_slice(&data).unwrap_or_default();
         let mut history = Self(VecDeque::with_capacity(MAX_ENTRIES));
         for entry in entries {
             history.push_inner(entry);
