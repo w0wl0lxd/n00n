@@ -10,6 +10,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 
 pub trait PickerItem {
     fn label(&self) -> &str;
@@ -425,6 +426,10 @@ fn find_scroll_offset_for_bottom<T: PickerItem>(
     find_scroll_offset_for(filtered, items, len - 1, viewport_height)
 }
 
+fn detail_padding(label: &str, detail: &str, area_width: u16) -> usize {
+    area_width.saturating_sub(label.width() as u16 + detail.width() as u16 + 1) as usize
+}
+
 fn render_list<T: PickerItem>(
     frame: &mut Frame,
     area: Rect,
@@ -479,10 +484,7 @@ fn render_list<T: PickerItem>(
         let label = format!("  {}", item.label());
         let line = match item.detail() {
             Some(detail) => {
-                let pad = area
-                    .width
-                    .saturating_sub(label.len() as u16 + detail.len() as u16 + 1)
-                    as usize;
+                let pad = detail_padding(&label, detail, area.width);
                 let detail_style = if i == selected {
                     style
                 } else {
@@ -690,5 +692,14 @@ mod tests {
         s.selected = 2;
         s.ensure_visible();
         assert_eq!(s.scroll_offset, 2);
+    }
+
+    #[test]
+    fn detail_padding_consistent_with_multibyte_chars() {
+        let detail = "2h ago";
+        let width = 60;
+        let pad_ascii = detail_padding("  abcdefghijk", detail, width);
+        let pad_ellipsis = detail_padding("  abcdefgh\u{2026}", detail, width);
+        assert_eq!(pad_ellipsis - pad_ascii, 2);
     }
 }
