@@ -1617,9 +1617,10 @@ mod tests {
         assert_eq!(input.pending_plan.as_deref(), expected);
     }
 
-    #[test_case("plans/test.md", true  ; "matching_path_sets_written")]
-    #[test_case("other.rs",      false ; "non_matching_path_stays_unwritten")]
-    fn write_event_sets_written_flag(written_path: &str, expect_written: bool) {
+    #[test_case(ToolOutput::WriteCode { path: "plans/test.md".into(), byte_count: 100, lines: vec![] }, true  ; "write_matching")]
+    #[test_case(ToolOutput::Diff { path: "plans/test.md".into(), hunks: vec![], summary: String::new() }, true  ; "edit_matching")]
+    #[test_case(ToolOutput::WriteCode { path: "other.rs".into(), byte_count: 100, lines: vec![] }, false ; "write_non_matching")]
+    fn tool_done_sets_plan_written_flag(output: ToolOutput, expect_written: bool) {
         let mut app = test_app();
         app.mode = Mode::Plan {
             path: "plans/test.md".into(),
@@ -1631,11 +1632,7 @@ mod tests {
         app.update(agent_msg(AgentEvent::ToolDone(ToolDoneEvent {
             id: "t1".into(),
             tool: "write",
-            output: ToolOutput::WriteCode {
-                path: written_path.into(),
-                byte_count: 100,
-                lines: vec![],
-            },
+            output,
             is_error: false,
         })));
 

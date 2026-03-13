@@ -5,8 +5,6 @@ use maki_providers::{AgentError, ContentBlock, Message, Role, TokenUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::tools::WRITE_TOOL_NAME;
-
 pub const NO_FILES_FOUND: &str = "No files found";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -213,6 +211,13 @@ pub enum ToolOutput {
 }
 
 impl ToolOutput {
+    pub fn written_path(&self) -> Option<&str> {
+        match self {
+            Self::WriteCode { path, .. } | Self::Diff { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
     pub fn as_text(&self) -> String {
         match self {
             Self::Plain(s) => s.clone(),
@@ -328,13 +333,10 @@ impl ToolDoneEvent {
     }
 
     pub fn written_path(&self) -> Option<&str> {
-        if self.is_error || self.tool != WRITE_TOOL_NAME {
+        if self.is_error {
             return None;
         }
-        match &self.output {
-            ToolOutput::WriteCode { path, .. } => Some(path),
-            _ => None,
-        }
+        self.output.written_path()
     }
 }
 
@@ -582,26 +584,26 @@ mod tests {
         assert!(text.contains("1: use crate"));
     }
 
-    #[test_case("write", false, Some("src/lib.rs") ; "success")]
-    #[test_case("write", true,  None                 ; "error")]
-    #[test_case("bash",  false, None                 ; "non_write_tool")]
-    fn written_path_cases(tool: &'static str, is_error: bool, expected: Option<&str>) {
-        let output = if tool == "write" {
-            ToolOutput::WriteCode {
+    #[test_case(ToolOutput::WriteCode { path: "src/lib.rs".into(), byte_count: 10, lines: vec![] }, Some("src/lib.rs") ; "write_code")]
+    #[test_case(ToolOutput::Diff { path: "src/lib.rs".into(), hunks: vec![], summary: String::new() }, Some("src/lib.rs") ; "diff")]
+    #[test_case(ToolOutput::Plain("ok".into()), None ; "non_write_variant")]
+    fn output_written_path(output: ToolOutput, expected: Option<&str>) {
+        assert_eq!(output.written_path(), expected);
+    }
+
+    #[test]
+    fn event_written_path_none_on_error() {
+        let event = ToolDoneEvent {
+            id: "id".into(),
+            tool: "write",
+            output: ToolOutput::WriteCode {
                 path: "src/lib.rs".into(),
                 byte_count: 10,
                 lines: vec![],
-            }
-        } else {
-            ToolOutput::Plain("ok".into())
+            },
+            is_error: true,
         };
-        let event = ToolDoneEvent {
-            id: "id".into(),
-            tool,
-            output,
-            is_error,
-        };
-        assert_eq!(event.written_path(), expected);
+        assert_eq!(event.written_path(), None);
     }
 
     #[test]
