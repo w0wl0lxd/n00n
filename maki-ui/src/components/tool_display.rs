@@ -28,6 +28,12 @@ pub const TOOL_OUTPUT_MAX_LINES: usize = 7;
 pub const BASH_OUTPUT_MAX_LINES: usize = 10;
 pub const TOOL_BODY_INDENT: &str = "  ";
 pub const CODE_EXECUTION_OUTPUT_MAX_LINES: usize = 30;
+const BASH_WAITING_LABEL: &str = "Waiting for output...";
+const BASH_NO_OUTPUT_LABEL: &str = "No output.";
+const BASH_OUTPUT_SEPARATOR: &str = "──────";
+const ALWAYS_ANNOTATE_TOOLS: &[&str] = &[WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME];
+const TIMESTAMP_LEN: usize = 8;
+const PLAIN_ANNOTATION_THRESHOLD: usize = 10;
 
 pub(crate) fn output_limits(tool: &str) -> (usize, Keep) {
     match tool {
@@ -36,12 +42,6 @@ pub(crate) fn output_limits(tool: &str) -> (usize, Keep) {
         _ => (TOOL_OUTPUT_MAX_LINES, Keep::Head),
     }
 }
-const TIMESTAMP_LEN: usize = 8;
-const PLAIN_ANNOTATION_THRESHOLD: usize = 10;
-const BASH_OUTPUT_LABEL: &str = "· Output:";
-const BASH_WAITING_LABEL: &str = "· Waiting for output...";
-const BASH_NO_OUTPUT_LABEL: &str = "· No output.";
-const ALWAYS_ANNOTATE_TOOLS: &[&str] = &[WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME];
 
 pub(crate) fn tool_output_annotation(output: &ToolOutput, tool: &str) -> Option<String> {
     match output {
@@ -361,8 +361,12 @@ impl ToolLineBuilder {
     }
 
     fn push_bash_output_label(&mut self, indent: &str, is_done: bool, has_output: bool) {
+        self.lines.push(Line::from(Span::styled(
+            format!("{indent}{BASH_OUTPUT_SEPARATOR}"),
+            theme::current().tool_dim,
+        )));
         let label = match (has_output, is_done) {
-            (true, _) => BASH_OUTPUT_LABEL,
+            (true, _) => return,
             (false, false) => BASH_WAITING_LABEL,
             (false, true) => BASH_NO_OUTPUT_LABEL,
         };
@@ -719,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn bash_output_label_when_has_output() {
+    fn bash_separator_when_has_output() {
         let msg = DisplayMessage {
             role: DisplayRole::Tool {
                 id: "t1".into(),
@@ -736,13 +740,13 @@ mod tests {
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
         assert!(line_has_styled(
             &tl,
-            BASH_OUTPUT_LABEL,
+            BASH_OUTPUT_SEPARATOR,
             theme::current().tool_dim
         ));
     }
 
     #[test]
-    fn bash_no_label_without_code_input() {
+    fn bash_no_separator_without_code_input() {
         let msg = DisplayMessage {
             role: DisplayRole::Tool {
                 id: "t1".into(),
@@ -759,7 +763,7 @@ mod tests {
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now());
         assert!(!line_has_styled(
             &tl,
-            BASH_OUTPUT_LABEL,
+            BASH_OUTPUT_SEPARATOR,
             theme::current().tool_dim
         ));
     }
@@ -811,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_bash_output_label_between_code_and_output() {
+    fn batch_bash_separator_between_code_and_output() {
         let entry = BatchToolEntry {
             tool: "bash".into(),
             summary: "echo hi".into(),
@@ -823,7 +827,7 @@ mod tests {
         let tl = build_batch_entry_lines(&entry, 0, Instant::now());
         assert!(line_has_styled(
             &tl,
-            BASH_OUTPUT_LABEL,
+            BASH_OUTPUT_SEPARATOR,
             theme::current().tool_dim
         ));
     }
