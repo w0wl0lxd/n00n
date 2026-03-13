@@ -88,7 +88,7 @@ fn tool_done(id: &str, tool: &'static str, output: ToolOutput, is_error: bool) -
 
 fn turn_complete() -> AgentEvent {
     AgentEvent::TurnComplete {
-        message: maki_providers::Message::user(String::new()),
+        message: Message::user(String::new()),
         usage: TokenUsage::default(),
         model: "mock".into(),
         context_size: None,
