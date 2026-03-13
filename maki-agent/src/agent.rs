@@ -21,8 +21,8 @@ use crate::tools::{
 };
 use crate::types::tool_results;
 use crate::{
-    AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand, ToolDoneEvent,
-    ToolOutput, ToolStartEvent,
+    AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
+    ToolDoneEvent, ToolOutput, ToolStartEvent,
 };
 use maki_providers::provider::Provider;
 use maki_providers::retry::RetryState;
@@ -483,6 +483,20 @@ pub struct RunOutcome {
     pub result: Result<(), AgentError>,
 }
 
+pub struct AgentParams {
+    pub provider: Arc<dyn Provider>,
+    pub model: Model,
+    pub skills: Arc<[Skill]>,
+    pub config: AgentConfig,
+}
+
+pub struct AgentRunParams {
+    pub history: History,
+    pub system: String,
+    pub event_tx: EventSender,
+    pub tools: Value,
+}
+
 pub struct Agent {
     provider: Arc<dyn Provider>,
     model: Model,
@@ -502,26 +516,20 @@ pub struct Agent {
     loaded_instructions: Arc<Mutex<HashSet<PathBuf>>>,
     rollback_len: usize,
     mcp: Option<Arc<McpManager>>,
+    config: AgentConfig,
 }
 
 impl Agent {
-    pub fn new(
-        provider: Arc<dyn Provider>,
-        model: Model,
-        history: History,
-        system: String,
-        event_tx: EventSender,
-        tools: Value,
-        skills: Arc<[Skill]>,
-    ) -> Self {
+    pub fn new(params: AgentParams, run: AgentRunParams) -> Self {
         Self {
-            provider,
-            model,
-            history,
-            system,
-            event_tx,
-            tools,
-            skills,
+            provider: params.provider,
+            model: params.model,
+            skills: params.skills,
+            config: params.config,
+            history: run.history,
+            system: run.system,
+            event_tx: run.event_tx,
+            tools: run.tools,
             mode: AgentMode::default(),
             user_response_rx: None,
             cmd_rx: None,
@@ -733,6 +741,7 @@ impl Agent {
             cancel: self.cancel.clone(),
             mcp: self.mcp.clone(),
             deadline: Deadline::None,
+            config: self.config,
         }
     }
 
@@ -1003,13 +1012,18 @@ mod tests {
     fn make_agent(provider: MockProvider, history: History) -> (Agent, flume::Receiver<Envelope>) {
         let (raw_tx, event_rx) = flume::unbounded();
         let agent = Agent::new(
-            Arc::new(provider),
-            default_model(),
-            history,
-            "system".into(),
-            EventSender::new(raw_tx, 0),
-            serde_json::json!([]),
-            Arc::from([]) as Arc<[Skill]>,
+            AgentParams {
+                provider: Arc::new(provider),
+                model: default_model(),
+                skills: Arc::from([]) as Arc<[Skill]>,
+                config: AgentConfig::default(),
+            },
+            AgentRunParams {
+                history,
+                system: "system".into(),
+                event_tx: EventSender::new(raw_tx, 0),
+                tools: serde_json::json!([]),
+            },
         );
         (agent, event_rx)
     }
@@ -1381,13 +1395,18 @@ mod tests {
 
             let (raw_tx, _rx) = flume::unbounded();
             let agent = Agent::new(
-                Arc::new(HangingProvider),
-                default_model(),
-                History::new(Vec::new()),
-                "system".into(),
-                EventSender::new(raw_tx, 0),
-                serde_json::json!([]),
-                Arc::from([]) as Arc<[Skill]>,
+                AgentParams {
+                    provider: Arc::new(HangingProvider),
+                    model: default_model(),
+                    skills: Arc::from([]) as Arc<[Skill]>,
+                    config: AgentConfig::default(),
+                },
+                AgentRunParams {
+                    history: History::new(Vec::new()),
+                    system: "system".into(),
+                    event_tx: EventSender::new(raw_tx, 0),
+                    tools: serde_json::json!([]),
+                },
             )
             .with_cancel(cancel);
 

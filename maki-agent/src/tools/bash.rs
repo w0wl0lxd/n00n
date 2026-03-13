@@ -1,4 +1,3 @@
-use std::env;
 use std::process::{Command as StdCommand, Stdio};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -19,9 +18,6 @@ const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
 static RTK_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
-    if env::var("MAKI_NO_RTK").as_deref() == Ok("1") {
-        return false;
-    }
     StdCommand::new("rtk")
         .arg("--version")
         .stdout(Stdio::null())
@@ -30,9 +26,9 @@ static RTK_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
         .is_ok_and(|s| s.success())
 });
 
-fn rtk_rewrite(command: &str) -> Option<String> {
+fn rtk_rewrite(command: &str, no_rtk: bool) -> Option<String> {
     let cmd = command.trim_start();
-    if !*RTK_AVAILABLE ||
+    if no_rtk || !*RTK_AVAILABLE ||
         // https://github.com/rtk-ai/rtk/issues/496
         (cmd.starts_with("cargo ") && cmd.contains(" -- "))
     {
@@ -101,7 +97,7 @@ impl Bash {
             .deadline
             .cap_timeout(self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS))?;
         let (command, workdir) = self.resolved();
-        let rewritten = rtk_rewrite(command);
+        let rewritten = rtk_rewrite(command, ctx.config.no_rtk);
         let command = rewritten.as_deref().unwrap_or(command);
 
         let mut std_cmd = StdCommand::new("bash");

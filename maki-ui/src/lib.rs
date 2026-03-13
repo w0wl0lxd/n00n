@@ -36,8 +36,8 @@ use maki_agent::skill::Skill;
 use maki_agent::template;
 use maki_agent::tools::ToolCall;
 use maki_agent::{
-    Agent, AgentEvent, AgentInput, CancelToken, CancelTrigger, Envelope, EventSender,
-    ExtractedCommand, History,
+    Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelToken,
+    CancelTrigger, Envelope, EventSender, ExtractedCommand, History,
 };
 use maki_providers::AgentError;
 use maki_providers::Message;
@@ -63,6 +63,7 @@ pub fn run(
     skills: Vec<Skill>,
     session: AppSession,
     storage: DataDir,
+    config: AgentConfig,
     #[cfg(feature = "demo")] demo: bool,
 ) -> Result<String> {
     let mut terminal = ratatui::init();
@@ -77,6 +78,7 @@ pub fn run(
         skills,
         session,
         storage,
+        config,
         #[cfg(feature = "demo")]
         demo,
     );
@@ -96,6 +98,7 @@ fn run_event_loop(
     skills: Vec<Skill>,
     session: AppSession,
     storage: DataDir,
+    config: AgentConfig,
     #[cfg(feature = "demo")] demo: bool,
 ) -> Result<String> {
     let available_models: Arc<ArcSwapOption<Vec<String>>> = Arc::new(ArcSwapOption::empty());
@@ -163,7 +166,7 @@ fn run_event_loop(
     let mut provider: Arc<dyn Provider> = Arc::from(from_model(&model).context("create provider")?);
     let skills: Arc<[Skill]> = Arc::from(skills);
     let mut model = model;
-    let mut handles = spawn_agent(&provider, &model, initial_history, &skills);
+    let mut handles = spawn_agent(&provider, &model, initial_history, &skills, config);
     handles.apply_to_app(&mut app);
     if resumed {
         app.token_usage = app.session.token_usage;
@@ -187,6 +190,7 @@ fn run_event_loop(
                 &mut model,
                 &skills,
                 &mut app,
+                config,
             );
         }
 
@@ -227,6 +231,7 @@ fn run_event_loop(
                                 &mut model,
                                 &skills,
                                 &mut app,
+                                config,
                             );
                             extra
                         } else {
@@ -242,6 +247,7 @@ fn run_event_loop(
                             &mut model,
                             &skills,
                             &mut app,
+                            config,
                         );
                         if let Some(extra) = extra {
                             extra
@@ -260,6 +266,7 @@ fn run_event_loop(
                 &mut model,
                 &skills,
                 &mut app,
+                config,
             );
         }
     }
@@ -293,6 +300,7 @@ fn spawn_agent(
     model: &Model,
     initial_history: Vec<Message>,
     skills: &Arc<[Skill]>,
+    config: AgentConfig,
 ) -> AgentHandles {
     let (agent_tx, agent_rx) = flume::unbounded::<Envelope>();
     let (cmd_tx, cmd_rx) = flume::unbounded::<AgentCommand>();
@@ -370,13 +378,18 @@ fn spawn_agent(
                     let (trigger, cancel) = CancelToken::new();
                     *cancel_trigger.lock().unwrap() = Some(trigger);
                     let agent = Agent::new(
-                        Arc::clone(&provider),
-                        model.clone(),
-                        mem::replace(&mut history, History::new(Vec::new())),
-                        system,
-                        event_tx,
-                        tools.clone(),
-                        Arc::clone(&skills),
+                        AgentParams {
+                            provider: Arc::clone(&provider),
+                            model: model.clone(),
+                            skills: Arc::clone(&skills),
+                            config,
+                        },
+                        AgentRunParams {
+                            history: mem::replace(&mut history, History::new(Vec::new())),
+                            system,
+                            event_tx,
+                            tools: tools.clone(),
+                        },
                     )
                     .with_loaded_instructions(loaded_instructions.clone())
                     .with_user_response_rx(Arc::clone(&answer_mutex))
@@ -432,13 +445,14 @@ fn dispatch(
     model: &mut Model,
     skills: &Arc<[Skill]>,
     app: &mut App,
+    config: AgentConfig,
 ) {
     for action in actions {
         match action {
             Action::SendMessage(input) => {
                 let cmd = AgentCommand::Run(input, app.run_id);
                 if handles.cmd_tx.try_send(cmd).is_err() {
-                    *handles = spawn_agent(provider, model, Vec::new(), skills);
+                    *handles = spawn_agent(provider, model, Vec::new(), skills, config);
                     handles.apply_to_app(app);
                 }
             }
@@ -446,11 +460,11 @@ fn dispatch(
                 let _ = handles.cmd_tx.try_send(AgentCommand::Cancel);
             }
             Action::NewSession => {
-                *handles = spawn_agent(provider, model, Vec::new(), skills);
+                *handles = spawn_agent(provider, model, Vec::new(), skills, config);
                 handles.apply_to_app(app);
             }
             Action::LoadSession(loaded) => {
-                *handles = spawn_agent(provider, model, loaded.messages, skills);
+                *handles = spawn_agent(provider, model, loaded.messages, skills, config);
                 handles.apply_to_app(app);
                 *handles.tool_outputs.lock().unwrap() = loaded.tool_outputs;
             }
@@ -461,7 +475,7 @@ fn dispatch(
                         let history = handles.history.lock().unwrap().clone();
                         *provider = Arc::from(new_provider);
                         *model = new_model;
-                        *handles = spawn_agent(provider, model, history, skills);
+                        *handles = spawn_agent(provider, model, history, skills, config);
                         handles.apply_to_app(app);
                     }
                     Err(e) => {

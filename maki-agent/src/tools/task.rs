@@ -10,7 +10,7 @@ use super::{GENERAL_SUBAGENT_TOOLS, RESEARCH_SUBAGENT_TOOLS, ToolContext};
 use crate::agent;
 use crate::template;
 use crate::tools::ToolCall;
-use crate::{Agent, AgentInput, AgentMode};
+use crate::{Agent, AgentInput, AgentMode, AgentParams, AgentRunParams};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Task {
@@ -110,13 +110,18 @@ impl Task {
         };
 
         let agent = Agent::new(
-            provider,
-            model,
-            crate::History::new(Vec::new()),
-            system,
-            sub_event_tx,
-            tools,
-            Arc::clone(&ctx.skills),
+            AgentParams {
+                provider,
+                model,
+                skills: Arc::clone(&ctx.skills),
+                config: ctx.config,
+            },
+            AgentRunParams {
+                history: crate::History::new(Vec::new()),
+                system,
+                event_tx: sub_event_tx,
+                tools,
+            },
         )
         .with_cancel(child_cancel);
         let outcome = agent.run(input).await;

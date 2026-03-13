@@ -33,8 +33,8 @@ use crate::mcp::McpManager;
 use crate::skill::Skill;
 use crate::template::Vars;
 use crate::{
-    AgentError, AgentMode, EventSender, NO_FILES_FOUND, ToolDoneEvent, ToolInput, ToolOutput,
-    ToolStartEvent,
+    AgentConfig, AgentError, AgentMode, EventSender, NO_FILES_FOUND, ToolDoneEvent, ToolInput,
+    ToolOutput, ToolStartEvent,
 };
 use maki_providers::Model;
 use maki_providers::provider::Provider;
@@ -154,6 +154,7 @@ pub struct ToolContext {
     pub cancel: CancelToken,
     pub mcp: Option<Arc<McpManager>>,
     pub deadline: Deadline,
+    pub config: AgentConfig,
 }
 
 pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
@@ -574,6 +575,7 @@ pub(crate) fn interpreter_ctx(
         cancel,
         mcp: None,
         deadline: Deadline::None,
+        config: AgentConfig::default(),
     }
 }
 

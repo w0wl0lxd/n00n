@@ -27,7 +27,8 @@ use maki_agent::mcp::McpManager;
 use maki_agent::skill::Skill;
 use maki_agent::tools::{QUESTION_TOOL_NAME, ToolCall};
 use maki_agent::{
-    Agent, AgentEvent, AgentInput, AgentMode, Envelope, EventSender, History, agent, template,
+    Agent, AgentConfig, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope,
+    EventSender, History, agent, template,
 };
 use maki_providers::StopReason;
 use maki_providers::TokenUsage;
@@ -126,6 +127,7 @@ pub fn run(
     format: OutputFormat,
     verbose: bool,
     skills: Vec<Skill>,
+    config: AgentConfig,
 ) -> Result<()> {
     let prompt = match prompt_arg {
         Some(p) => p,
@@ -183,13 +185,18 @@ pub fn run(
         let skills: Arc<[Skill]> = Arc::from(skills);
         let error_tx = event_tx.clone();
         let agent = Agent::new(
-            provider,
-            model_clone,
-            History::new(Vec::new()),
-            system,
-            event_tx,
-            tools,
-            skills,
+            AgentParams {
+                provider,
+                model: model_clone,
+                skills,
+                config,
+            },
+            AgentRunParams {
+                history: History::new(Vec::new()),
+                system,
+                event_tx,
+                tools,
+            },
         )
         .with_loaded_instructions(loaded_instructions)
         .with_mcp(mcp_manager);

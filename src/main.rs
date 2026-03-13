@@ -5,6 +5,7 @@ use std::env;
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use color_eyre::eyre::Context;
+use maki_agent::AgentConfig;
 use maki_agent::skill::{self, Skill};
 use maki_storage::DataDir;
 use maki_ui::AppSession;
@@ -53,6 +54,10 @@ struct Cli {
     /// Skip loading skill files from .maki/skills, .claude/skills, etc.
     #[arg(long)]
     no_skills: bool,
+
+    /// Disable rtk command rewriting
+    #[arg(long)]
+    no_rtk: bool,
 
     /// Initial prompt (reads stdin if omitted in --print mode)
     prompt: Option<String>,
@@ -132,9 +137,17 @@ fn run() -> Result<()> {
             let model = Model::from_spec(&cli.model).context("parse model spec")?;
             init_logging(&storage);
             let skills = discover(cli.no_skills);
+            let config = AgentConfig { no_rtk: cli.no_rtk };
             if cli.print {
-                print::run(&model, cli.prompt, cli.output_format, cli.verbose, skills)
-                    .context("run print mode")?;
+                print::run(
+                    &model,
+                    cli.prompt,
+                    cli.output_format,
+                    cli.verbose,
+                    skills,
+                    config,
+                )
+                .context("run print mode")?;
             } else {
                 let cwd = env::current_dir()
                     .unwrap_or_else(|_| ".".into())
@@ -152,6 +165,7 @@ fn run() -> Result<()> {
                     skills,
                     session,
                     storage,
+                    config,
                     #[cfg(feature = "demo")]
                     cli.demo,
                 )
