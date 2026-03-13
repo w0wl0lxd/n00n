@@ -42,8 +42,13 @@ impl ThemePicker {
             .iter()
             .map(|t| ThemeEntry { name: t.name })
             .collect();
+        let current_idx = entries
+            .iter()
+            .position(|e| e.name == current_name)
+            .unwrap_or(0);
         self.original_theme_name = Some(current_name);
         self.picker.open(entries, TITLE);
+        self.picker.select(current_idx);
     }
 
     pub fn is_open(&self) -> bool {

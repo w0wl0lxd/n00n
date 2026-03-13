@@ -175,6 +175,13 @@ impl<T: PickerItem> ListPicker<T> {
         self.state = Some(State::new(items, title));
     }
 
+    pub fn select(&mut self, index: usize) {
+        if let Some(s) = self.state.as_mut() {
+            s.selected = index.min(s.filtered.len().saturating_sub(1));
+            s.ensure_visible();
+        }
+    }
+
     pub fn replace_items(&mut self, items: Vec<T>) {
         if let Some(s) = self.state.as_mut() {
             s.replace_items(items);
@@ -313,6 +320,7 @@ impl<T: PickerItem> ListPicker<T> {
         let inner = modal.render(frame, area, content_rows + SEARCH_ROW);
         let viewport_h = inner.height.saturating_sub(SEARCH_ROW);
         s.viewport_height = viewport_h as usize;
+        s.ensure_visible();
 
         let [list_area, search_area] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
