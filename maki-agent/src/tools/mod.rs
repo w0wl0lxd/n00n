@@ -19,7 +19,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{Value, json};
 use std::future::Future;
@@ -89,6 +89,44 @@ pub(crate) const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 pub(crate) const SEARCH_RESULT_LIMIT: usize = 100;
 pub(crate) const MAX_LINE_BYTES: usize = 500;
 const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
+const DEADLINE_EXCEEDED: &str = "timeout exceeded";
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Deadline {
+    #[default]
+    None,
+    At(Instant),
+}
+
+impl Deadline {
+    pub fn after(duration: Duration) -> Self {
+        Self::At(Instant::now() + duration)
+    }
+
+    pub fn check(self) -> Result<(), String> {
+        match self {
+            Self::None => Ok(()),
+            Self::At(instant) if instant.saturating_duration_since(Instant::now()).is_zero() => {
+                Err(DEADLINE_EXCEEDED.into())
+            }
+            Self::At(_) => Ok(()),
+        }
+    }
+
+    pub fn cap_timeout(self, timeout_secs: u64) -> Result<u64, String> {
+        match self {
+            Self::None => Ok(timeout_secs),
+            Self::At(instant) => {
+                let remaining = instant.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    Err(DEADLINE_EXCEEDED.into())
+                } else {
+                    Ok(timeout_secs.min(remaining.as_secs().max(1)))
+                }
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ToolContext {
@@ -102,6 +140,7 @@ pub struct ToolContext {
     pub loaded_instructions: Arc<Mutex<HashSet<PathBuf>>>,
     pub cancel: CancelToken,
     pub mcp: Option<Arc<McpManager>>,
+    pub deadline: Deadline,
 }
 
 pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
@@ -497,6 +536,7 @@ pub(crate) fn interpreter_ctx(
         loaded_instructions: Arc::new(Mutex::new(HashSet::new())),
         cancel,
         mcp: None,
+        deadline: Deadline::None,
     }
 }
 
@@ -539,6 +579,20 @@ mod tests {
 
     use super::test_support::stub_ctx;
     use super::*;
+
+    const DEADLINE_EXCEEDED_MSG: &str = super::DEADLINE_EXCEEDED;
+
+    #[test_case(Deadline::None,                                         120, Ok(120) ; "none_passthrough")]
+    #[test_case(Deadline::after(Duration::from_secs(60)),               10,  Ok(10)  ; "preserves_shorter_timeout")]
+    #[test_case(Deadline::after(Duration::from_millis(500)),            120, Ok(1)   ; "minimum_one_second")]
+    #[test_case(Deadline::At(Instant::now() - Duration::from_secs(1)),  120, Err(DEADLINE_EXCEEDED_MSG.into()) ; "expired")]
+    fn deadline_cap_timeout_cases(d: Deadline, timeout: u64, expected: Result<u64, String>) {
+        let result = d.cap_timeout(timeout);
+        match expected {
+            Ok(v) => assert_eq!(result.unwrap(), v),
+            Err(e) => assert_eq!(result.unwrap_err(), e),
+        }
+    }
 
     #[test_case("short",                            "short"                             ; "short_passthrough")]
     #[test_case(&"x".repeat(MAX_LINE_BYTES),       &"x".repeat(MAX_LINE_BYTES)        ; "exact_boundary")]

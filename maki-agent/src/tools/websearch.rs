@@ -33,10 +33,10 @@ impl WebSearch {
     );
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        ctx.cancel.race(self.do_search()).await?
+        ctx.cancel.race(self.do_search(ctx.deadline)).await?
     }
 
-    async fn do_search(&self) -> Result<ToolOutput, String> {
+    async fn do_search(&self, deadline: super::Deadline) -> Result<ToolOutput, String> {
         let num_results = self.num_results.unwrap_or(DEFAULT_NUM_RESULTS);
 
         let payload = json!({
@@ -54,8 +54,9 @@ impl WebSearch {
             }
         });
 
+        let timeout_secs = deadline.cap_timeout(REQUEST_TIMEOUT_SECS)?;
         let client = HttpClient::builder()
-            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(timeout_secs))
             .build()
             .map_err(|e| format!("client error: {e}"))?;
 

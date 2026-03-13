@@ -37,17 +37,17 @@ impl WebFetch {
     );
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        ctx.cancel.race(self.do_fetch()).await?
+        ctx.cancel.race(self.do_fetch(ctx.deadline)).await?
     }
 
-    async fn do_fetch(&self) -> Result<ToolOutput, String> {
+    async fn do_fetch(&self, deadline: super::Deadline) -> Result<ToolOutput, String> {
         let url = validate_and_upgrade_url(&self.url)?;
         let format = self.validated_format()?;
-        let timeout = Duration::from_secs(
-            self.timeout
-                .unwrap_or(DEFAULT_TIMEOUT_SECS)
-                .min(MAX_TIMEOUT_SECS),
-        );
+        let base_timeout = self
+            .timeout
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .min(MAX_TIMEOUT_SECS);
+        let timeout = Duration::from_secs(deadline.cap_timeout(base_timeout)?);
 
         let client = HttpClient::builder()
             .timeout(timeout)

@@ -14,9 +14,9 @@ use serde_json::Value;
 use crate::skill::Skill;
 use crate::template::Vars;
 use crate::tools::{
-    BASH_TOOL_NAME, BATCH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME,
-    GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, ToolCall, ToolContext,
-    WRITE_TOOL_NAME,
+    BASH_TOOL_NAME, BATCH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, Deadline, EDIT_TOOL_NAME,
+    GLOB_TOOL_NAME, GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, ToolCall,
+    ToolContext, WRITE_TOOL_NAME,
 };
 use crate::types::tool_results;
 use crate::{
@@ -732,6 +732,7 @@ impl Agent {
             loaded_instructions: Arc::clone(&self.loaded_instructions),
             cancel: self.cancel.clone(),
             mcp: self.mcp.clone(),
+            deadline: Deadline::None,
         }
     }
 

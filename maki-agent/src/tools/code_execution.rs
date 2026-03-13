@@ -9,10 +9,11 @@ use serde_json::Value;
 use crate::cancel::CancelToken;
 use crate::{AgentEvent, AgentMode, EventSender, ToolInput, ToolOutput};
 
-use super::INTERPRETER_TOOLS;
 use super::truncate_output;
+use super::{Deadline, INTERPRETER_TOOLS};
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+const INTERPRETER_TIMEOUT: Duration = Duration::from_secs(30);
 const PREAMBLE: &str = "import re\n";
 
 #[derive(Tool, Debug, Clone)]
@@ -42,13 +43,14 @@ impl CodeInterpreter {
         let event_tx = ctx.event_tx.clone();
         let mode = ctx.mode.clone();
         let cancel = ctx.cancel.clone();
+        let deadline = Deadline::after(INTERPRETER_TIMEOUT);
 
         // NOTE: cancel races the smol::unblock future. When cancel wins, the
         // blocking thread pool task keeps running until the Python code finishes.
         // There is no safe way to kill a blocking thread.
         ctx.cancel
             .race(smol::unblock(move || {
-                let tools = build_tool_fns(&event_tx, &mode, &cancel);
+                let tools = build_tool_fns(&event_tx, &mode, &cancel, deadline);
                 let code = format!("{PREAMBLE}{code}");
 
                 let result = if let Some(ref id) = tool_use_id {
@@ -113,6 +115,7 @@ fn build_tool_fns(
     event_tx: &EventSender,
     mode: &AgentMode,
     cancel: &CancelToken,
+    deadline: Deadline,
 ) -> HashMap<String, ToolFn> {
     let mut tools: HashMap<String, ToolFn> = HashMap::new();
 
@@ -126,11 +129,14 @@ fn build_tool_fns(
             name.clone(),
             Box::new(
                 move |fn_name: &str, args: Vec<Value>, kwargs: Vec<(String, Value)>| {
+                    deadline.check()?;
+
                     let input = build_tool_input(&args, &kwargs)?;
                     let call = super::ToolCall::from_api(fn_name, &input)
                         .map_err(|e| format!("tool parse error: {e}"))?;
 
-                    let inner_ctx = super::interpreter_ctx(&mode, &tx, cancel.clone());
+                    let mut inner_ctx = super::interpreter_ctx(&mode, &tx, cancel.clone());
+                    inner_ctx.deadline = deadline;
                     let done = smol::future::block_on(call.execute(&inner_ctx, String::new()));
                     if done.is_error {
                         Err(done.output.as_text())

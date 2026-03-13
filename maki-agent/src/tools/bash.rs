@@ -59,7 +59,9 @@ impl Bash {
     }
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let timeout_secs = self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let timeout_secs = ctx
+            .deadline
+            .cap_timeout(self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS))?;
         let (command, workdir) = self.resolved();
 
         let mut std_cmd = std::process::Command::new("bash");
