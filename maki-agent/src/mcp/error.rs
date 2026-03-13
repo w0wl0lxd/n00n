@@ -29,4 +29,11 @@ pub enum McpError {
 
     #[error("write to server {server} failed: {reason}")]
     WriteFailed { server: String, reason: String },
+
+    #[error("HTTP error from server {server}: {status} {reason}")]
+    HttpError {
+        server: String,
+        status: u16,
+        reason: String,
+    },
 }

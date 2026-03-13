@@ -1,7 +1,9 @@
-pub mod client;
 pub mod config;
 pub mod error;
+pub mod http;
 pub mod protocol;
+pub mod stdio;
+pub mod transport;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -10,9 +12,11 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
-use self::client::McpClient;
-use self::config::{McpConfig, McpServerConfig, load_config, validate_servers};
+use self::config::{McpConfig, ServerConfig, Transport, load_config, parse_servers};
 use self::error::McpError;
+use self::http::HttpTransport;
+use self::stdio::StdioTransport;
+use self::transport::McpTransport;
 
 const SEPARATOR: &str = "__";
 
@@ -25,7 +29,7 @@ struct McpToolDef {
 }
 
 pub struct McpManager {
-    clients: HashMap<Arc<str>, McpClient>,
+    transports: HashMap<Arc<str>, Box<dyn McpTransport>>,
     tools: Vec<McpToolDef>,
     tool_index: HashMap<&'static str, usize>,
 }
@@ -37,28 +41,25 @@ impl McpManager {
     }
 
     pub async fn start_with_config(config: McpConfig) -> Option<Arc<Self>> {
-        let enabled: HashMap<String, McpServerConfig> =
-            config.mcp.into_iter().filter(|(_, v)| v.enabled).collect();
+        let servers = match parse_servers(config.mcp) {
+            Ok(s) if s.is_empty() => return None,
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "invalid MCP config");
+                return None;
+            }
+        };
 
-        if enabled.is_empty() {
-            return None;
-        }
-
-        if let Err(e) = validate_servers(&enabled) {
-            warn!(error = %e, "invalid MCP config");
-            return None;
-        }
-
-        let mut clients = HashMap::new();
+        let mut transports: HashMap<Arc<str>, Box<dyn McpTransport>> = HashMap::new();
         let mut tools = Vec::new();
         let mut tool_index = HashMap::new();
 
-        for (name, server_config) in &enabled {
-            match Self::start_server(name, server_config).await {
-                Ok((client, server_tools)) => {
-                    let server_name: Arc<str> = Arc::from(name.as_str());
+        for server in &servers {
+            match Self::start_server(server).await {
+                Ok((t, server_tools)) => {
+                    let server_name: Arc<str> = Arc::from(server.name.as_str());
                     for tool_info in server_tools {
-                        let qualified = format!("{name}{SEPARATOR}{}", tool_info.name);
+                        let qualified = format!("{}{SEPARATOR}{}", server.name, tool_info.name);
                         let interned = intern(qualified);
                         let idx = tools.len();
                         tools.push(McpToolDef {
@@ -70,44 +71,61 @@ impl McpManager {
                         });
                         tool_index.insert(interned, idx);
                     }
-                    clients.insert(server_name, client);
+                    transports.insert(server_name, t);
                 }
                 Err(e) => {
-                    warn!(server = name, error = %e, "failed to start MCP server, skipping");
+                    warn!(server = server.name, error = %e, "failed to start MCP server, skipping");
                 }
             }
         }
 
-        if clients.is_empty() {
+        if transports.is_empty() {
             return None;
         }
 
         info!(
-            servers = clients.len(),
+            servers = transports.len(),
             tools = tools.len(),
             "MCP servers started"
         );
 
         Some(Arc::new(Self {
-            clients,
+            transports,
             tools,
             tool_index,
         }))
     }
 
     async fn start_server(
-        name: &str,
-        config: &McpServerConfig,
-    ) -> Result<(McpClient, Vec<protocol::ToolInfo>), McpError> {
-        let client = McpClient::spawn(name, config)?;
-        client.initialize().await?;
-        let tools = client.list_tools().await?;
+        config: &ServerConfig,
+    ) -> Result<(Box<dyn McpTransport>, Vec<protocol::ToolInfo>), McpError> {
+        let t: Box<dyn McpTransport> = match &config.transport {
+            Transport::Stdio {
+                program,
+                args,
+                environment,
+            } => Box::new(StdioTransport::spawn(
+                &config.name,
+                program,
+                args,
+                environment,
+                config.timeout,
+            )?),
+            Transport::Http { url, headers } => Box::new(HttpTransport::new(
+                &config.name,
+                url,
+                headers,
+                config.timeout,
+            )?),
+        };
+        transport::initialize(t.as_ref()).await?;
+        let tools = transport::list_tools(t.as_ref()).await?;
         info!(
-            server = name,
+            server = config.name,
             tool_count = tools.len(),
             "MCP server initialized"
         );
-        Ok((client, tools))
+        Ok((t, tools))
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
@@ -129,13 +147,13 @@ impl McpManager {
                 name: qualified_name.into(),
             })?;
         let def = &self.tools[*idx];
-        let client = self
-            .clients
+        let t = self
+            .transports
             .get(&def.server_name)
             .ok_or_else(|| McpError::ServerDied {
                 server: (*def.server_name).into(),
             })?;
-        client.call_tool(&def.raw_name, args).await
+        transport::call_tool(t.as_ref(), &def.raw_name, args).await
     }
 
     pub fn extend_tools(&self, tool_names: &mut Vec<&'static str>, tools: &mut Value) {
@@ -157,9 +175,9 @@ impl McpManager {
     }
 
     pub async fn shutdown(self) {
-        for (name, client) in self.clients {
+        for (name, t) in self.transports {
             info!(server = &*name, "shutting down MCP server");
-            client.shutdown().await;
+            t.shutdown().await;
         }
     }
 }
@@ -176,24 +194,6 @@ mod tests {
     fn empty_config_returns_none() {
         smol::block_on(async {
             let config = McpConfig::default();
-            let result = McpManager::start_with_config(config).await;
-            assert!(result.is_none());
-        });
-    }
-
-    #[test]
-    fn disabled_servers_ignored() {
-        smol::block_on(async {
-            let mut config = McpConfig::default();
-            config.mcp.insert(
-                "srv".into(),
-                McpServerConfig {
-                    command: vec!["echo".into()],
-                    environment: HashMap::new(),
-                    enabled: false,
-                    timeout: 30_000,
-                },
-            );
             let result = McpManager::start_with_config(config).await;
             assert!(result.is_none());
         });
