@@ -7,7 +7,9 @@ Use this to reduce token usage and latency by:
 - Performing computation on tool outputs (counting, sorting, formatting, deduplication)
 - Filtering large webfetch / websearch results
 
-Do NOT use for simple single-tool calls or when you need to reason about intermediate results.
+Do NOT use for:
+- Simple single-tool calls
+- When you need to reason about intermediate results
 
 IMPORTANT:
 - All tools are async. You MUST `await` every tool call: `result = await read(path='file.txt')`
