@@ -4,6 +4,7 @@ use crate::text_buffer::{EditResult, TextBuffer};
 use crate::theme;
 
 use crossterm::event::{KeyCode, KeyEvent};
+use maki_storage::input_history::InputHistory;
 use std::mem;
 
 use maki_providers::ImageSource;
@@ -51,7 +52,7 @@ const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
 
 pub struct InputBox {
     pub(crate) buffer: TextBuffer,
-    history: Vec<String>,
+    history: InputHistory,
     history_index: Option<usize>,
     draft: String,
     scroll_y: u16,
@@ -107,10 +108,10 @@ impl InputBox {
         InputAction::PaletteSync(self.buffer.value())
     }
 
-    pub fn new() -> Self {
+    pub fn new(history: InputHistory) -> Self {
         Self {
             buffer: TextBuffer::new(String::new()),
-            history: Vec::new(),
+            history,
             history_index: None,
             draft: String::new(),
             scroll_y: 0,
@@ -171,9 +172,7 @@ impl InputBox {
         if text.is_empty() && images.is_empty() {
             return None;
         }
-        if !text.is_empty() {
-            self.history.push(text.clone());
-        }
+        self.history.push(text.clone());
         self.history_index = None;
         self.draft.clear();
         self.buffer.clear();
@@ -203,7 +202,7 @@ impl InputBox {
             Some(i) => i - 1,
         };
         self.history_index = Some(new_index);
-        let entry = self.history[new_index].clone();
+        let entry = self.history.get(new_index).unwrap().to_string();
         self.set_input(entry);
     }
 
@@ -213,7 +212,7 @@ impl InputBox {
         };
         if i + 1 < self.history.len() {
             self.history_index = Some(i + 1);
-            let entry = self.history[i + 1].clone();
+            let entry = self.history.get(i + 1).unwrap().to_string();
             self.set_input(entry);
         } else {
             self.history_index = None;
@@ -335,6 +334,10 @@ impl InputBox {
         self.scroll_y
     }
 
+    pub fn history(&self) -> &InputHistory {
+        &self.history
+    }
+
     pub fn scroll(&mut self, delta: i32) {
         self.scroll_y = apply_scroll_delta(self.scroll_y, delta);
         self.follow_cursor = false;
@@ -452,7 +455,7 @@ mod tests {
 
     #[test]
     fn submit() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         assert!(input.submit().is_none());
 
         type_text(&mut input, " ");
@@ -472,13 +475,13 @@ mod tests {
 
     #[test]
     fn backslash_continuation() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         type_text(&mut input, "hello\\");
         assert!(input.char_before_cursor_is_backslash());
         input.continue_line();
         assert_eq!(input.buffer.lines(), &["hello", ""]);
 
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         type_text(&mut input, "asd\\asd");
         for _ in 0..3 {
             input.buffer.move_left();
@@ -492,7 +495,7 @@ mod tests {
 
     #[test]
     fn height_capped_at_max() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         let base = input.height(TEST_WIDTH);
         for _ in 0..20 {
             input.buffer.add_line();
@@ -503,7 +506,7 @@ mod tests {
 
     #[test]
     fn first_last_line() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         assert!(input.is_at_first_line());
         assert!(input.is_at_last_line());
 
@@ -518,7 +521,7 @@ mod tests {
 
     #[test]
     fn history() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
 
         input.history_up();
         input.history_down();
@@ -555,10 +558,10 @@ mod tests {
         let width: u16 = 12;
         let ew = effective_width(width as usize);
 
-        let mut at_boundary = InputBox::new();
+        let mut at_boundary = InputBox::new(InputHistory::default());
         type_text(&mut at_boundary, &"x".repeat(ew));
 
-        let mut before_boundary = InputBox::new();
+        let mut before_boundary = InputBox::new(InputHistory::default());
         type_text(&mut before_boundary, &"x".repeat(ew - 1));
 
         assert_eq!(
@@ -605,7 +608,7 @@ mod tests {
     #[test_case(20, true  ; "visible_when_content_overflows")]
     #[test_case(0,  false ; "hidden_when_content_fits")]
     fn scrollbar_visibility(extra_lines: usize, expect_visible: bool) {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         for _ in 0..extra_lines {
             input.buffer.add_line();
         }
@@ -615,7 +618,7 @@ mod tests {
 
     #[test]
     fn scroll_clamped_on_content_shrink() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         for _ in 0..20 {
             input.buffer.add_line();
         }
@@ -637,14 +640,14 @@ mod tests {
     #[test_case(false, theme::current().mode_plan,   theme::current().mode_plan         ; "idle_uses_mode_color")]
     #[test_case(true,  theme::current().mode_plan,   theme::current().input_border.fg.unwrap()  ; "streaming_uses_default_border")]
     fn border_color_matches_mode(streaming: bool, mode_color: Color, expected: Color) {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         let terminal = render_input_with(&mut input, 40, 5, streaming, mode_color);
         assert_eq!(border_fg(&terminal), expected);
     }
 
     #[test]
     fn multibyte_input_renders_without_panic() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         type_text(&mut input, "● grep> hello");
         input.buffer.move_home();
         input.buffer.move_right();
@@ -655,7 +658,7 @@ mod tests {
     #[test_case("●\\", true  ; "after_multibyte")]
     #[test_case("●", false   ; "inside_multibyte_would_be_false")]
     fn char_before_cursor_backslash(input: &str, expected: bool) {
-        let mut input_box = InputBox::new();
+        let mut input_box = InputBox::new(InputHistory::default());
         type_text(&mut input_box, input);
         assert_eq!(input_box.char_before_cursor_is_backslash(), expected);
     }
@@ -674,7 +677,7 @@ mod tests {
 
     #[test]
     fn prefix_on_single_line() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         type_text(&mut input, "hello");
         let terminal = render_input(&mut input, 20, 4);
         let row = rendered_row(&terminal, 1);
@@ -684,7 +687,7 @@ mod tests {
 
     #[test]
     fn prefix_on_multiline() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         type_text(&mut input, "aaa");
         input.buffer.add_line();
         type_text(&mut input, "bbb");
@@ -697,7 +700,7 @@ mod tests {
 
     #[test]
     fn wrapped_line_gets_no_padding() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         let ew = effective_width(14);
         type_text(&mut input, &"x".repeat(ew + 3));
         let terminal = render_input(&mut input, 14, 5);
@@ -716,7 +719,7 @@ mod tests {
 
     #[test]
     fn copy_text_includes_prefix() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         type_text(&mut input, "line1");
         input.buffer.add_line();
         type_text(&mut input, "line2");
@@ -725,13 +728,13 @@ mod tests {
 
     #[test]
     fn copy_text_empty() {
-        let input = InputBox::new();
+        let input = InputBox::new(InputHistory::default());
         assert_eq!(input.copy_text(), super::CHEVRON);
     }
 
     #[test]
     fn placeholder_has_prefix() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         let terminal = render_input(&mut input, 40, 4);
         let row = rendered_row(&terminal, 1);
         assert!(row.starts_with(CHEVRON), "placeholder row: {row:?}");
@@ -745,7 +748,7 @@ mod tests {
 
     #[test]
     fn submit_with_images() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         input.attach_image(test_image());
         let sub = input.submit().unwrap();
         assert!(sub.text.is_empty());
@@ -768,7 +771,7 @@ mod tests {
 
     #[test]
     fn image_label_rendered() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         input.attach_image(test_image());
         let h = input.height(40);
         let terminal = render_input(&mut input, 40, h);
@@ -778,7 +781,7 @@ mod tests {
 
     #[test]
     fn height_accounts_for_pending_images() {
-        let mut input = InputBox::new();
+        let mut input = InputBox::new(InputHistory::default());
         let base_height = input.height(TEST_WIDTH);
         input.attach_image(test_image());
         assert_eq!(input.height(TEST_WIDTH), base_height + 1);

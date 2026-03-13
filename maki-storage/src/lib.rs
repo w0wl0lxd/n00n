@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod input_history;
 pub mod log;
 pub mod plans;
 pub mod sessions;

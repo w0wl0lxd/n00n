@@ -39,6 +39,7 @@ use maki_agent::{AgentEvent, Envelope, ImageMediaType, ImageSource, SubagentInfo
 use maki_agent::{AgentInput, AgentMode, ToolOutput};
 use maki_providers::{Message, Model, ModelPricing, TokenUsage};
 use maki_storage::DataDir;
+use maki_storage::input_history::InputHistory;
 use maki_storage::plans;
 
 use crate::storage_writer::StorageWriter;
@@ -177,7 +178,7 @@ impl App {
             chats: vec![Chat::new("Main".into())],
             active_chat: 0,
             chat_index: HashMap::new(),
-            input_box: InputBox::new(),
+            input_box: InputBox::new(InputHistory::load(&storage)),
             command_palette: CommandPalette::new(),
             chat_picker: ChatPicker::new(),
             theme_picker: ThemePicker::new(),
@@ -734,6 +735,7 @@ impl App {
     }
 
     fn quit(&mut self) -> Vec<Action> {
+        self.save_input_history();
         self.should_quit = true;
         vec![Action::Quit]
     }
@@ -1025,6 +1027,12 @@ impl App {
         self.session.token_usage = self.token_usage;
         self.session.update_title_if_default();
         self.enqueue_save();
+    }
+
+    fn save_input_history(&self) {
+        if let Err(e) = self.input_box.history().save(&self.storage) {
+            tracing::warn!(error = %e, "input history save failed");
+        }
     }
 
     fn enqueue_save(&self) {
