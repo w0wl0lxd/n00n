@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 pub(crate) const CODE_BAR: &str = "│ ";
-const CODE_BAR_WRAP: &str = "│";
+pub(crate) const CODE_BAR_WRAP: &str = "│";
 
 fn fit_width(text: &str, max_width: usize) -> usize {
     let mut width = 0;

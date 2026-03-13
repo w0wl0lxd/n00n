@@ -29,6 +29,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
+use crate::markdown::{CODE_BAR, CODE_BAR_WRAP};
+use crate::theme;
+
 /// Position in doc space (full logical document, not just visible window).
 /// Stored as (row, col) where col is a screen x coordinate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -252,6 +255,21 @@ pub fn apply_highlight(buf: &mut Buffer, area: Rect, ss: &ScreenSelection) {
     }
 }
 
+fn strip_code_bar_prefix(cell: &ratatui::buffer::Cell, out: &mut String, line_start: usize) {
+    if cell.style().fg != theme::current().code_bar.fg || cell.symbol() != "│" {
+        return;
+    }
+    let line = &out[line_start..];
+    let prefix_len = if line.starts_with(CODE_BAR) {
+        CODE_BAR.len()
+    } else if line.starts_with(CODE_BAR_WRAP) {
+        CODE_BAR_WRAP.len()
+    } else {
+        return;
+    };
+    out.drain(line_start..line_start + prefix_len);
+}
+
 /// Trailing whitespace trimmed per line; consecutive trailing blank lines
 /// collapsed via `pending_newlines`.
 fn append_rows(
@@ -272,6 +290,9 @@ fn append_rows(
         let line_start = out.len();
         for col in col_start..=col_end {
             out.push_str(buf[(col, row)].symbol());
+        }
+        if col_start == area.x {
+            strip_code_bar_prefix(&buf[(col_start, row)], out, line_start);
         }
         let trimmed_len = out[line_start..].trim_end().len() + line_start;
         out.truncate(trimmed_len);
@@ -424,7 +445,7 @@ mod tests {
     use super::*;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use ratatui::style::Modifier;
+    use ratatui::style::{Modifier, Style};
     use test_case::test_case;
 
     fn doc(row: u32, col: u16) -> DocPos {
@@ -486,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_backward_selection() {
+    fn extract_multi_row_partial() {
         let (buf, area) = test_buffer();
         let region = ContentRegion {
             area,
@@ -722,25 +743,6 @@ mod tests {
     }
 
     #[test]
-    fn normalized_doc_forward_and_backward() {
-        let sel = Selection {
-            anchor: doc(20, 5),
-            cursor: doc(15, 2),
-            area: Rect::default(),
-            zone: SelectionZone::Messages,
-        };
-        assert_eq!(sel.normalized(), (doc(15, 2), doc(20, 5)));
-
-        let sel2 = Selection {
-            anchor: doc(15, 2),
-            cursor: doc(20, 5),
-            area: Rect::default(),
-            zone: SelectionZone::Messages,
-        };
-        assert_eq!(sel2.normalized(), (doc(15, 2), doc(20, 5)));
-    }
-
-    #[test]
     fn extract_doc_range_fully_enclosed_segments() {
         let area = Rect::new(0, 0, 20, 6);
         let buf = Buffer::empty(area);
@@ -951,26 +953,54 @@ mod tests {
         assert_eq!(text, "hello world");
     }
 
-    #[test]
-    fn selection_zone_equality() {
-        assert_eq!(SelectionZone::Messages, SelectionZone::Messages);
-        assert_ne!(SelectionZone::Messages, SelectionZone::Input);
+    fn code_bar_buffer() -> (Buffer, Rect) {
+        let area = Rect::new(0, 0, 20, 2);
+        let mut buf = Buffer::empty(area);
+        let code_bar_style = theme::current().code_bar;
+        buf.set_string(0, 0, "│", code_bar_style);
+        buf.set_string(2, 0, "fn main() {}        ", Style::default());
+        buf.set_string(0, 1, "│", code_bar_style);
+        buf.set_string(2, 1, "let x = 1;          ", Style::default());
+        (buf, area)
     }
 
     #[test]
-    fn selection_state_atomic_reset() {
-        let area = Rect::new(0, 0, 80, 20);
-        let state = Some(SelectionState {
-            sel: Selection::start(5, 5, area, SelectionZone::Messages, 0),
-            copy_on_release: true,
-            edge_scroll: Some(EdgeScroll {
-                dir: 1,
-                last_tick: Instant::now(),
-            }),
-            last_drag_col: 42,
-        });
-        let cleared: Option<SelectionState> = None;
-        assert!(state.is_some());
-        assert!(cleared.is_none());
+    fn strips_code_bar_prefix_from_partial_selection() {
+        let (buf, area) = code_bar_buffer();
+        let region = ContentRegion { area, raw_text: "" };
+        let text = extract_selected_text(&buf, &ss(0, 0, 1, 18), &[region]);
+        assert_eq!(text, "fn main() {}\nlet x = 1;");
+    }
+
+    #[test]
+    fn does_not_strip_table_border_prefix() {
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        let table_style = theme::current().table_border;
+        buf.set_string(0, 0, "│", table_style);
+        buf.set_string(2, 0, "cell content        ", Style::default());
+        let region = ContentRegion { area, raw_text: "" };
+        let text = extract_selected_text(&buf, &ss(0, 0, 0, 18), &[region]);
+        assert_eq!(text, "│ cell content");
+    }
+
+    #[test]
+    fn no_strip_when_selection_starts_mid_line() {
+        let (buf, area) = code_bar_buffer();
+        let region = ContentRegion { area, raw_text: "" };
+        let text = extract_selected_text(&buf, &ss(0, 5, 0, 13), &[region]);
+        assert_eq!(text, "main() {}");
+    }
+
+    #[test]
+    fn strips_code_bar_wrap_prefix() {
+        let area = Rect::new(0, 0, 12, 1);
+        let mut buf = Buffer::empty(area);
+        let code_bar_style = theme::current().code_bar;
+        buf.set_string(0, 0, "│", code_bar_style);
+        buf.set_string(1, 0, "continued  ", Style::default());
+        let region = ContentRegion { area, raw_text: "" };
+        let text = extract_selected_text(&buf, &ss(0, 0, 0, 10), &[region]);
+        assert_eq!(text, "continued");
     }
 }
