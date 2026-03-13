@@ -733,23 +733,31 @@ mod tests {
     use super::*;
     use ratatui::text::Span;
 
+    fn dracula_toml() -> &'static str {
+        BUNDLED_THEMES
+            .iter()
+            .find(|e| e.name == "dracula")
+            .expect("dracula theme must exist")
+            .toml
+    }
+
     #[test]
     fn bundled_theme_loads() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert_eq!(theme.background, Color::Rgb(0x28, 0x2a, 0x36));
         assert_eq!(theme.foreground, Color::Rgb(0xf8, 0xf8, 0xf2));
     }
 
     #[test]
     fn palette_colors_resolve_to_styles() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert_eq!(theme.user.fg, Some(Color::Rgb(0x8b, 0xe9, 0xfd)));
         assert_eq!(theme.error.fg, Some(Color::Rgb(0xff, 0x55, 0x55)));
     }
 
     #[test]
     fn modifiers_applied() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert!(theme.bold.add_modifier.contains(Modifier::BOLD));
         assert!(theme.thinking.add_modifier.contains(Modifier::ITALIC));
         assert!(
@@ -762,14 +770,14 @@ mod tests {
 
     #[test]
     fn inline_hex_colors_resolve() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert_eq!(theme.diff_old.bg, Some(Color::Rgb(0x4D, 0x1F, 0x1F)));
         assert_eq!(theme.diff_new.bg, Some(Color::Rgb(0x1F, 0x3D, 0x1F)));
     }
 
     #[test]
     fn input_border_resolves_to_style() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert_eq!(theme.input_border.fg, Some(Color::Rgb(0x62, 0x72, 0xa4)));
     }
 
@@ -829,7 +837,7 @@ mod tests {
 
     #[test]
     fn syntax_theme_built_from_toml_scopes() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert!(
             !theme.syntax.scopes.is_empty(),
             "syntax scopes should be populated from toml"
@@ -840,7 +848,7 @@ mod tests {
 
     #[test]
     fn syntax_theme_keyword_has_correct_color() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         let keyword_scope: ScopeSelectors = "keyword".parse().unwrap();
         let keyword_item = theme
             .syntax
@@ -920,7 +928,7 @@ comment = "#6272a4"
 
     #[test]
     fn comment_delimiter_gets_comment_color() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         let color = resolve_color_for_scope(
             &theme.syntax,
             "source.rust comment.line.double-slash.rust punctuation.definition.comment.rust",
@@ -930,7 +938,7 @@ comment = "#6272a4"
 
     #[test]
     fn comment_body_gets_comment_color() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         let color =
             resolve_color_for_scope(&theme.syntax, "source.rust comment.line.double-slash.rust");
         assert_eq!(color, Some(COMMENT_COLOR));
@@ -938,7 +946,7 @@ comment = "#6272a4"
 
     #[test]
     fn string_quote_gets_string_color() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         let color = resolve_color_for_scope(
             &theme.syntax,
             "source.rust string.quoted.double.rust punctuation.definition.string.begin.rust",
@@ -955,14 +963,14 @@ comment = "#6272a4"
 
     #[test]
     fn non_builtin_type_in_generic_position_gets_type_color() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         let color = resolve_color_for_scope(&theme.syntax, "source.rust meta.generic.rust");
         assert_eq!(color, Some(CYAN_COLOR));
     }
 
     #[test]
     fn double_colon_accessor_gets_pink() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         let color = resolve_color_for_scope(
             &theme.syntax,
             "source.rust meta.path.rust punctuation.accessor.rust",
@@ -972,50 +980,50 @@ comment = "#6272a4"
 
     #[test]
     fn derives_mode_build_from_keyword_storage_type() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert_eq!(theme.mode_build, Color::Rgb(0x8b, 0xe9, 0xfd));
     }
 
     #[test]
     fn derives_mode_plan_from_keyword() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert_eq!(theme.mode_plan, Color::Rgb(0xff, 0x79, 0xc6));
     }
 
     #[test]
     fn derives_mode_build_plan_from_constant() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert_eq!(theme.mode_build_plan, Color::Rgb(0xbd, 0x93, 0xf9));
     }
 
     #[test]
     fn derives_heading_from_keyword_storage_type() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert_eq!(theme.heading.fg, Some(Color::Rgb(0x8b, 0xe9, 0xfd)));
         assert!(theme.heading.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
     fn derives_inline_code_from_function_call() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert_eq!(theme.inline_code.fg, Some(Color::Rgb(0x50, 0xfa, 0x7b)));
     }
 
     #[test]
     fn derives_code_bar_from_variable_parameter() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert_eq!(theme.code_bar.fg, Some(Color::Rgb(0xff, 0xb8, 0x6c)));
     }
 
     #[test]
     fn derives_list_marker_from_keyword_storage_type() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert_eq!(theme.list_marker.fg, Some(Color::Rgb(0x8b, 0xe9, 0xfd)));
     }
 
     #[test]
     fn derives_bold_from_markup_bold() {
-        let theme = Theme::from_toml(BUNDLED_THEMES[0].toml).unwrap();
+        let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert_eq!(theme.bold.fg, Some(Color::Rgb(0xff, 0xb8, 0x6c)));
         assert!(theme.bold.add_modifier.contains(Modifier::BOLD));
     }
