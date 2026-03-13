@@ -9,8 +9,10 @@ Use this to reduce token usage and latency by:
 
 Do NOT use for simple single-tool calls or when you need to reason about intermediate results.
 
-IMPORTANT: All tools return strings (their formatted output), NOT structured Python objects.
-Parse the string output yourself (split on newlines, etc).
+IMPORTANT:
+- All tools are async. You MUST `await` every tool call: `result = await read(path='file.txt')`
+- All tools return strings (their formatted output), NOT structured Python objects. Parse the string output yourself (split on newlines, etc).
+- Use `asyncio.gather()` for concurrent tool calls: `a, b = await asyncio.gather(read(path='a'), read(path='b'))`
 
 Limitations:
 - No imports, no classes, no filesystem/network access (fully sandboxed)

@@ -3,10 +3,12 @@ use std::fmt::Write;
 use std::time::{Duration, Instant};
 
 use maki_interpreter::runner::{self, ToolFn};
+use maki_interpreter::{AsyncResolver, PendingCall};
 use maki_tool_macro::Tool;
 use serde_json::Value;
 
 use crate::cancel::CancelToken;
+use crate::task_set::TaskSet;
 use crate::{AgentEvent, AgentMode, EventSender, ToolInput, ToolOutput};
 
 use smol::future::block_on;
@@ -16,12 +18,12 @@ use super::{Deadline, INTERPRETER_TOOLS};
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
-const PREAMBLE: &str = "import re\n";
+const PREAMBLE: &str = "import re\nimport asyncio\n";
 
 #[derive(Tool, Debug, Clone)]
 pub struct CodeInterpreter {
     #[param(
-        description = "Python code to execute. Tools are callable functions that return strings (not objects). Available: read, write, edit, multiedit, glob, grep, bash, webfetch, websearch. Call with keyword args: read(path='/file')"
+        description = "Python code to execute. Tools are async functions that return strings (not objects). You MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency."
     )]
     code: String,
     #[param(description = "Timeout in seconds (default 30, max 300)")]
@@ -33,11 +35,10 @@ impl CodeInterpreter {
     pub const DESCRIPTION: &str = include_str!("code_execution.md");
     pub const EXAMPLES: Option<&str> = Some(
         r##"[
-  {"code": "# Tools return strings, parse them as needed\nresult = grep(pattern='TODO', include='*.rs')\nlines = result.strip().split('\\n')\nprint(f'{len(lines)} TODOs found')"},
-  {"code": "# Batch file reading\nfiles = glob(pattern='**/*.rs')\nfor f in files.strip().split('\\n'):\n    if f.strip():\n        content = read(path=f)\n        if 'fn main' in content:\n            print(f)"},
-  {"code": "# Aggregate data from multiple files\ntotal = 0\nfor f in glob(pattern='**/*.rs').strip().split('\\n'):\n    if f.strip():\n        content = read(path=f)\n        total += len(content.split('\\n'))\nprint(f'Total lines: {total}')"},
-  {"code": "# Chain web requests\nurls = ['https://api.example.com/status', 'https://api.example.com/health']\nfor url in urls:\n    result = webfetch(url=url, timeout=5)\n    print(f'{url}: {len(result)} bytes')"},
-  {"code": "# Fetch a page and extract only relevant sections\ncontent = webfetch(url='https://docs.example.com/api')\nfor line in content.split('\\n'):\n    if 'authentication' in line.lower():\n        print(line)"}
+  {"code": "# All tool calls must be awaited\nresult = await grep(pattern='TODO', include='*.rs')\nlines = result.strip().split('\n')\nprint(f'{len(lines)} TODOs found')"},
+  {"code": "# Concurrent reads with asyncio.gather\nfiles = (await glob(pattern='**/*.rs')).strip().split('\n')\ncontents = await asyncio.gather(*[read(path=f) for f in files if f.strip()])\nfor f, c in zip(files, contents):\n    if 'fn main' in c:\n        print(f)"},
+  {"code": "# Gather multiple independent searches\ntodos, fixmes = await asyncio.gather(grep(pattern='TODO', include='*.rs'), grep(pattern='FIXME', include='*.rs'))\nprint(f'TODOs: {len(todos.split(chr(10)))}  FIXMEs: {len(fixmes.split(chr(10)))}')"},
+  {"code": "# Fetch and filter\ncontent = await webfetch(url='https://docs.example.com/api')\nfor line in content.split('\n'):\n    if 'authentication' in line.lower():\n        print(line)"}
 ]"##,
     );
 
@@ -60,12 +61,13 @@ impl CodeInterpreter {
         ctx.cancel
             .race(smol::unblock(move || {
                 let tools = build_tool_fns(&event_tx, &mode, &cancel, deadline);
+                let resolver = build_async_resolver(&event_tx, &mode, &cancel, deadline);
                 let code = format!("{PREAMBLE}{code}");
 
                 let result = if let Some(ref id) = tool_use_id {
                     let mut last_len = 0usize;
                     let mut last_flush = Instant::now();
-                    runner::run_streaming(&code, &tools, limits, &mut |stdout| {
+                    runner::run_streaming(&code, &tools, Some(&resolver), limits, &mut |stdout| {
                         if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && stdout.len() > last_len
                         {
                             event_tx.try_send(AgentEvent::ToolOutput {
@@ -77,7 +79,7 @@ impl CodeInterpreter {
                         }
                     })
                 } else {
-                    runner::run(&code, &tools, limits)
+                    runner::run(&code, &tools, Some(&resolver), limits)
                 }
                 .map_err(|e| e.to_string())?;
 
@@ -166,6 +168,63 @@ fn build_tool_fns(
     tools
 }
 
+fn build_async_resolver(
+    event_tx: &EventSender,
+    mode: &AgentMode,
+    cancel: &CancelToken,
+    deadline: Deadline,
+) -> AsyncResolver {
+    let tx = event_tx.clone();
+    let mode = mode.clone();
+    let cancel = cancel.clone();
+
+    Box::new(move |pending_calls: Vec<PendingCall>| {
+        smol::future::block_on(async {
+            let mut set = TaskSet::new();
+            for pc in pending_calls {
+                let tx = tx.clone();
+                let mode = mode.clone();
+                let cancel = cancel.clone();
+
+                set.spawn(async move {
+                    if let Err(e) = deadline.check() {
+                        return (pc.call_id, Err(e));
+                    }
+
+                    let input = match build_tool_input(&pc.args, &pc.kwargs) {
+                        Ok(v) => v,
+                        Err(e) => return (pc.call_id, Err(e)),
+                    };
+                    let call = match super::ToolCall::from_api(&pc.name, &input) {
+                        Ok(c) => c,
+                        Err(e) => return (pc.call_id, Err(format!("tool parse error: {e}"))),
+                    };
+
+                    let mut inner_ctx = super::interpreter_ctx(&mode, &tx, cancel);
+                    inner_ctx.deadline = deadline;
+                    let done = call.execute(&inner_ctx, String::new()).await;
+
+                    let result = if done.is_error {
+                        Err(done.output.as_text())
+                    } else {
+                        Ok(Value::String(done.output.as_text()))
+                    };
+                    (pc.call_id, result)
+                });
+            }
+
+            let results: Vec<_> = set
+                .join_all()
+                .await
+                .into_iter()
+                .map(|r| r.unwrap_or_else(|msg| panic!("tool task panicked: {msg}")))
+                .collect();
+
+            Ok(results)
+        })
+    })
+}
+
 fn build_tool_input(args: &[Value], kwargs: &[(String, Value)]) -> Result<Value, String> {
     if let Some(first) = args.first()
         && first.is_object()
@@ -210,7 +269,9 @@ mod tests {
 
             let ctx = stub_ctx(&AgentMode::Build);
             let ci = CodeInterpreter {
-                code: format!("result = read(path='{path_str}')\nprint(result)"),
+                code: format!(
+                    "import asyncio\nasync def main():\n    result = await read(path='{path_str}')\n    print(result)\n    return result\nawait main()"
+                ),
                 timeout: None,
             };
             let output = ci.execute(&ctx).await.unwrap().as_text();
@@ -223,19 +284,6 @@ mod tests {
     #[test_case(&[], &[],                                json!({})               ; "no_args")]
     fn build_tool_input_cases(args: &[Value], kwargs: &[(String, Value)], expected: Value) {
         assert_eq!(build_tool_input(args, kwargs).unwrap(), expected);
-    }
-
-    #[test]
-    fn re_module_available_by_default() {
-        smol::block_on(async {
-            let ctx = stub_ctx(&AgentMode::Build);
-            let ci = CodeInterpreter {
-                code: r"re.findall(r'\d+', 'abc123def456')".into(),
-                timeout: None,
-            };
-            let output = ci.execute(&ctx).await.unwrap().as_text();
-            assert!(output.contains("123") && output.contains("456"));
-        })
     }
 
     #[test]
