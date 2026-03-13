@@ -2,7 +2,6 @@
 """Analyze tool token usage from ~/.maki/sessions to identify optimization targets."""
 
 import json
-import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -22,7 +21,6 @@ def estimate_tokens(text):
 def extract_tool_calls(session):
     """Extract tool calls with their input/output sizes from a session."""
     messages = session.get("messages", [])
-    tool_outputs = session.get("tool_outputs", {})
     calls = []
 
     pending_tools = {}
@@ -124,7 +122,6 @@ def print_table(title, headers, rows, aligns=None):
     cols = [[h] + [str(r[i]) for r in rows] for i, h in enumerate(headers)]
     widths = [max(len(str(c)) for c in col) for col in cols]
 
-    sep = "─"
     print(f"\n┌{'─' * (sum(widths) + 2 * len(widths) + len(widths) - 1)}┐")
     print(f"│ {title:^{sum(widths) + 3 * (len(widths) - 1)}} │")
     print(f"├{'─' * (sum(widths) + 2 * len(widths) + len(widths) - 1)}┤")
@@ -172,8 +169,6 @@ def analyze_tool_distribution(all_calls):
 
 def print_distribution_table(stats):
     total_all_tokens = sum(s["total_tokens"] for s in stats.values())
-    total_output_tokens = sum(s["output_tokens"] for s in stats.values())
-
     sorted_tools = sorted(stats.items(), key=lambda x: -x[1]["total_tokens"])
 
     rows = []
@@ -385,8 +380,8 @@ def print_session_summary(sessions, all_calls):
     print(f"  Total tool calls:      {fmt_num(total_calls)}")
     print(f"  Tool input tokens:     {fmt_num(total_input_tok)} (model generates these)")
     print(f"  Tool output tokens:    {fmt_num(total_output_tok)} (go into context)")
-    print(f"  ─────────────────────────────────")
-    print(f"  Aggregate session token usage:")
+    print("  ─────────────────────────────────")
+    print("  Aggregate session token usage:")
     print(f"    input_tokens:                {fmt_num(agg_usage.get('input_tokens', 0))}")
     print(f"    output_tokens:               {fmt_num(agg_usage.get('output_tokens', 0))}")
     print(f"    cache_creation_input_tokens: {fmt_num(agg_usage.get('cache_creation_input_tokens', 0))}")
