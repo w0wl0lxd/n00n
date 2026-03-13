@@ -697,12 +697,6 @@ impl Theme {
         {
             return theme;
         }
-        if let Ok(dir) = maki_storage::DataDir::resolve()
-            && let Some(contents) = maki_storage::theme::read_custom_theme(&dir)
-            && let Ok(theme) = Self::from_toml(&contents)
-        {
-            return theme;
-        }
         Self::from_toml(BUNDLED_THEMES[0].toml).expect("bundled theme must parse")
     }
 }
