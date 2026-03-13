@@ -12,6 +12,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+const NO_MATCHES: &str = "No matches";
+const SEARCH_PREFIX: &str = super::CHEVRON;
+const MIN_WIDTH_PERCENT: u16 = 60;
+const MAX_HEIGHT_PERCENT: u16 = 80;
+const SEARCH_ROW: u16 = 1;
+const DETAIL_RIGHT_PAD: u16 = 1;
+
 pub trait PickerItem {
     fn label(&self) -> &str;
     fn detail(&self) -> Option<&str> {
@@ -33,12 +40,6 @@ pub enum PickerAction<T> {
     Select(usize, T),
     Close,
 }
-
-const NO_MATCHES: &str = "No matches";
-const SEARCH_PREFIX: &str = super::CHEVRON;
-const MIN_WIDTH_PERCENT: u16 = 60;
-const MAX_HEIGHT_PERCENT: u16 = 80;
-const SEARCH_ROW: u16 = 1;
 
 pub struct ListPicker<T> {
     state: Option<State<T>>,
@@ -427,7 +428,8 @@ fn find_scroll_offset_for_bottom<T: PickerItem>(
 }
 
 fn detail_padding(label: &str, detail: &str, area_width: u16) -> usize {
-    area_width.saturating_sub(label.width() as u16 + detail.width() as u16 + 1) as usize
+    area_width.saturating_sub(label.width() as u16 + detail.width() as u16 + 1 + DETAIL_RIGHT_PAD)
+        as usize
 }
 
 fn render_list<T: PickerItem>(
@@ -494,6 +496,7 @@ fn render_list<T: PickerItem>(
                     Span::styled(label, style),
                     Span::styled(" ".repeat(pad), style),
                     Span::styled(detail.to_string(), detail_style),
+                    Span::styled(" ".repeat(DETAIL_RIGHT_PAD as usize), style),
                 ])
             }
             None => Line::from(Span::styled(label, style)),
