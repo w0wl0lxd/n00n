@@ -14,7 +14,6 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-const ERROR_DISPLAY: Duration = Duration::from_secs(5);
 pub const FLASH_DURATION: Duration = Duration::from_millis(1500);
 
 fn format_tokens(n: u32) -> String {
@@ -47,7 +46,6 @@ pub struct StatusBarContext<'a> {
 
 pub struct StatusBar {
     flash: Option<(String, Instant)>,
-    error_since: Option<Instant>,
     started_at: Instant,
     cwd_branch: String,
 }
@@ -56,7 +54,6 @@ impl StatusBar {
     pub fn new() -> Self {
         Self {
             flash: None,
-            error_since: None,
             started_at: Instant::now(),
             cwd_branch: cwd_branch_label(),
         }
@@ -78,15 +75,6 @@ impl StatusBar {
         {
             self.flash = None;
         }
-    }
-
-    pub fn mark_error(&mut self) {
-        self.error_since = Some(Instant::now());
-    }
-
-    pub fn is_error_expired(&self) -> bool {
-        self.error_since
-            .is_some_and(|t| t.elapsed() >= ERROR_DISPLAY)
     }
 
     pub fn view(&self, frame: &mut Frame, area: Rect, ctx: &StatusBarContext) {
@@ -131,7 +119,7 @@ impl StatusBar {
         let mut right_spans = Vec::new();
 
         match ctx.status {
-            Status::Error(e) => {
+            Status::Error { message: e, .. } => {
                 left_spans.push(Span::styled(format!(" {e}"), theme::current().error));
             }
             _ => {
@@ -246,15 +234,6 @@ mod tests {
         assert_eq!(format_tokens(input), expected);
     }
 
-    #[test]
-    fn clear_flash_clears() {
-        let mut bar = StatusBar::new();
-        bar.flash("test".into());
-        assert!(bar.flash.is_some());
-        bar.clear_flash();
-        assert!(bar.flash.is_none());
-    }
-
     #[test_case("/home/user/projects/app", "/home/user", "~/projects/app" ; "inside_home")]
     #[test_case("/tmp/other", "/home/user", "/tmp/other"                  ; "outside_home")]
     #[test_case("/home/user", "/home/user", "~"                           ; "exact_home")]
@@ -279,21 +258,6 @@ mod tests {
     fn detect_branch_cases(head: Option<&str>, expected: Option<&str>) {
         let (_dir, path) = tmp_with_head(head);
         assert_eq!(detect_branch(&path), expected.map(String::from));
-    }
-
-    #[test]
-    fn error_expiry_lifecycle() {
-        let mut bar = StatusBar::new();
-        assert!(!bar.is_error_expired(), "no error marked yet");
-
-        bar.mark_error();
-        assert!(!bar.is_error_expired(), "fresh error not expired");
-
-        bar.error_since = Some(Instant::now() - ERROR_DISPLAY - Duration::from_millis(1));
-        assert!(bar.is_error_expired(), "stale error is expired");
-
-        bar.mark_error();
-        assert!(!bar.is_error_expired(), "re-marking resets the timer");
     }
 
     #[test]

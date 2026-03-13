@@ -146,7 +146,7 @@ fn error_event_sets_status() {
     app.update(agent_msg(AgentEvent::Error {
         message: "boom".into(),
     }));
-    assert!(matches!(app.status, Status::Error(ref e) if e == "boom"));
+    assert!(matches!(app.status, Status::Error { ref message, .. } if message == "boom"));
 }
 
 #[test]
@@ -1494,4 +1494,15 @@ fn rewind_to_first_turn_clears_everything() {
     assert_eq!(app.token_usage.input, 500);
     assert_eq!(app.token_usage.output, 200);
     assert!(matches!(&actions[0], Action::LoadSession(_)));
+}
+
+#[test_case(Status::Streaming,                                                    Status::Streaming       ; "noop_on_streaming")]
+#[test_case(Status::Idle,                                                           Status::Idle            ; "noop_on_idle")]
+#[test_case(Status::error("fail".into()),                                            Status::Error { message: "fail".into(), since: Instant::now() } ; "keeps_fresh_error")]
+#[test_case(Status::Error { message: "fail".into(), since: Instant::now() - Duration::from_secs(60) }, Status::Idle ; "clears_stale_error")]
+fn tick_error_expiry(initial: Status, expected: Status) {
+    let mut app = test_app();
+    app.status = initial;
+    app.tick_error_expiry();
+    assert_eq!(app.status, expected);
 }

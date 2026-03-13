@@ -20,7 +20,7 @@ pub(crate) const TOOL_SEPARATOR: &str = "────────────";
 pub(crate) const CHEVRON: &str = "❯ ";
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyEvent, KeyModifiers};
 use maki_agent::AgentInput;
@@ -61,11 +61,37 @@ pub enum Action {
     Quit,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+const ERROR_DISPLAY: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone)]
 pub enum Status {
     Idle,
     Streaming,
-    Error(String),
+    Error { message: String, since: Instant },
+}
+
+impl Status {
+    pub fn error(message: String) -> Self {
+        Self::Error {
+            message,
+            since: Instant::now(),
+        }
+    }
+
+    pub fn is_error_expired(&self) -> bool {
+        matches!(self, Self::Error { since, .. } if since.elapsed() >= ERROR_DISPLAY)
+    }
+}
+
+impl PartialEq for Status {
+    fn eq(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Idle, Self::Idle)
+                | (Self::Streaming, Self::Streaming)
+                | (Self::Error { .. }, Self::Error { .. })
+        )
+    }
 }
 
 pub struct RetryInfo {

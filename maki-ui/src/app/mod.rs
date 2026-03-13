@@ -172,6 +172,12 @@ impl App {
         self.status_bar.flash(msg);
     }
 
+    pub fn tick_error_expiry(&mut self) {
+        if self.status.is_error_expired() {
+            self.status = Status::Idle;
+        }
+    }
+
     fn active_chat(&mut self) -> &mut Chat {
         &mut self.chats[self.active_chat]
     }
@@ -581,9 +587,8 @@ impl App {
                     self.status = Status::Idle;
                 }
                 ChatEventResult::Error(message) => {
-                    self.status = Status::Error(message);
+                    self.status = Status::error(message);
                     self.status_bar.clear_flash();
-                    self.status_bar.mark_error();
                     self.clear_queue();
                     for chat in &mut self.chats {
                         chat.fail_in_progress();

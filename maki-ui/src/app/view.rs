@@ -12,9 +12,6 @@ use super::{App, Status};
 impl App {
     pub fn view(&mut self, frame: &mut Frame) {
         self.status_bar.clear_expired_hint();
-        if self.status_bar.is_error_expired() {
-            self.status = Status::Idle;
-        }
 
         let bg =
             Block::default().style(ratatui::style::Style::new().bg(theme::current().background));

@@ -177,6 +177,7 @@ fn run_event_loop(
 
     loop {
         app.tick_edge_scroll();
+        app.tick_error_expiry();
         app.poll_image_paste();
         terminal.draw(|f| app.view(f))?;
 
