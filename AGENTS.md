@@ -11,6 +11,7 @@ Maki is an AI coding agent (like Claude Code and opencode), that is built bottom
 - Descriptive variable and function names
 - No wildcard imports
 - Import types at top of file and use short names everywhere (e.g. `use std::sync::Arc;` then `Arc<T>`, never `std::sync::Arc<T>` inline)
+- Keep consts at top of file, right after imports
 - Explicit error handling with `Result<T, E>` over panics
 - Use `color_eyre` when the specific error is not as important
 - Use custom error types using `thiserror` for domain-specific errors
