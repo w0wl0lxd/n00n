@@ -14,4 +14,4 @@ Parse the string output yourself (split on newlines, etc).
 
 Limitations:
 - No imports, no classes, no filesystem/network access (fully sandboxed)
-- 30 second timeout
+- 30 second timeout (configurable via `timeout` parameter)

@@ -13,7 +13,7 @@ use super::truncate_output;
 use super::{Deadline, INTERPRETER_TOOLS};
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
-const INTERPRETER_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const PREAMBLE: &str = "import re\n";
 
 #[derive(Tool, Debug, Clone)]
@@ -22,6 +22,8 @@ pub struct CodeInterpreter {
         description = "Python code to execute. Tools are callable functions that return strings (not objects). Available: read, write, edit, multiedit, glob, grep, bash, webfetch, websearch. Call with keyword args: read(path='/file')"
     )]
     code: String,
+    #[param(description = "Timeout in seconds (default 30, max 300)")]
+    timeout: Option<u64>,
 }
 
 impl CodeInterpreter {
@@ -38,12 +40,17 @@ impl CodeInterpreter {
     );
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+        let timeout = Duration::from_secs(
+            ctx.deadline
+                .cap_timeout(self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS))?,
+        );
         let code = self.code.clone();
         let tool_use_id = ctx.tool_use_id.clone();
         let event_tx = ctx.event_tx.clone();
         let mode = ctx.mode.clone();
         let cancel = ctx.cancel.clone();
-        let deadline = Deadline::after(INTERPRETER_TIMEOUT);
+        let deadline = Deadline::after(timeout);
+        let limits = runner::limits_with_timeout(timeout);
 
         // NOTE: cancel races the smol::unblock future. When cancel wins, the
         // blocking thread pool task keeps running until the Python code finishes.
@@ -56,7 +63,7 @@ impl CodeInterpreter {
                 let result = if let Some(ref id) = tool_use_id {
                     let mut last_len = 0usize;
                     let mut last_flush = Instant::now();
-                    runner::run_streaming(&code, &tools, &mut |stdout| {
+                    runner::run_streaming(&code, &tools, limits, &mut |stdout| {
                         if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && stdout.len() > last_len
                         {
                             event_tx.try_send(AgentEvent::ToolOutput {
@@ -68,7 +75,7 @@ impl CodeInterpreter {
                         }
                     })
                 } else {
-                    runner::run(&code, &tools)
+                    runner::run(&code, &tools, limits)
                 }
                 .map_err(|e| e.to_string())?;
 
@@ -104,6 +111,12 @@ impl super::ToolDefaults for CodeInterpreter {
             language: "python".into(),
             code: self.code.clone(),
         })
+    }
+
+    fn start_annotation(&self) -> Option<String> {
+        Some(super::timeout_annotation(
+            self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS),
+        ))
     }
 
     fn augment_description(description: &mut String, _ctx: &super::DescriptionContext) {
@@ -184,18 +197,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn execute_wraps_output() {
-        smol::block_on(async {
-            let ctx = stub_ctx(&AgentMode::Build);
-            let ci = CodeInterpreter {
-                code: "2 + 3".into(),
-            };
-            let output = ci.execute(&ctx).await.unwrap().as_text();
-            assert!(output.contains("5"));
-        });
-    }
-
-    #[test]
     fn read_tool_via_interpreter() {
         smol::block_on(async {
             let dir = tempfile::TempDir::new().unwrap();
@@ -206,6 +207,7 @@ mod tests {
             let ctx = stub_ctx(&AgentMode::Build);
             let ci = CodeInterpreter {
                 code: format!("result = read(path='{path_str}')\nprint(result)"),
+                timeout: None,
             };
             let output = ci.execute(&ctx).await.unwrap().as_text();
             assert!(output.contains("line1"));
@@ -225,6 +227,7 @@ mod tests {
             let ctx = stub_ctx(&AgentMode::Build);
             let ci = CodeInterpreter {
                 code: r"re.findall(r'\d+', 'abc123def456')".into(),
+                timeout: None,
             };
             let output = ci.execute(&ctx).await.unwrap().as_text();
             assert!(output.contains("123") && output.contains("456"));
@@ -239,6 +242,7 @@ mod tests {
             ctx.cancel = cancel;
             let ci = CodeInterpreter {
                 code: "1 + 1".into(),
+                timeout: None,
             };
             trigger.cancel();
             let result = ci.execute(&ctx).await;

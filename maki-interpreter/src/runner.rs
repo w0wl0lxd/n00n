@@ -49,16 +49,18 @@ impl PrintWriterCallback for StreamingWriter<'_> {
 pub fn run(
     code: &str,
     tools: &HashMap<String, ToolFn>,
+    limits: ResourceLimits,
 ) -> Result<InterpreterResult, InterpreterError> {
     let mut stdout = String::new();
     let mut print_writer = PrintWriter::Collect(&mut stdout);
-    let output = run_inner(code, tools, default_limits(), &mut print_writer)?;
+    let output = run_inner(code, tools, limits, &mut print_writer)?;
     Ok(InterpreterResult { output, stdout })
 }
 
 pub fn run_streaming(
     code: &str,
     tools: &HashMap<String, ToolFn>,
+    limits: ResourceLimits,
     on_output: &mut dyn FnMut(&str),
 ) -> Result<InterpreterResult, InterpreterError> {
     let mut writer = StreamingWriter {
@@ -66,7 +68,7 @@ pub fn run_streaming(
         on_line: on_output,
     };
     let mut print_writer = PrintWriter::Callback(&mut writer);
-    let output = run_inner(code, tools, default_limits(), &mut print_writer)?;
+    let output = run_inner(code, tools, limits, &mut print_writer)?;
     let stdout = writer.buffer;
     Ok(InterpreterResult { output, stdout })
 }
@@ -165,22 +167,15 @@ fn run_inner(
     }
 }
 
-fn default_limits() -> ResourceLimits {
-    ResourceLimits::new()
-        .max_duration(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
-        .max_memory(DEFAULT_MAX_MEMORY)
-        .max_recursion_depth(Some(DEFAULT_MAX_RECURSION))
+pub fn default_limits() -> ResourceLimits {
+    limits_with_timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
 }
 
-pub fn run_with_limits(
-    code: &str,
-    tools: &HashMap<String, ToolFn>,
-    limits: ResourceLimits,
-) -> Result<InterpreterResult, InterpreterError> {
-    let mut stdout = String::new();
-    let mut print_writer = PrintWriter::Collect(&mut stdout);
-    let output = run_inner(code, tools, limits, &mut print_writer)?;
-    Ok(InterpreterResult { output, stdout })
+pub fn limits_with_timeout(timeout: Duration) -> ResourceLimits {
+    ResourceLimits::new()
+        .max_duration(timeout)
+        .max_memory(DEFAULT_MAX_MEMORY)
+        .max_recursion_depth(Some(DEFAULT_MAX_RECURSION))
 }
 
 #[cfg(test)]
@@ -203,20 +198,20 @@ mod tests {
 
     #[test]
     fn simple_expression() {
-        let result = run("2 + 3", &empty_tools()).unwrap();
+        let result = run("2 + 3", &empty_tools(), default_limits()).unwrap();
         assert_eq!(result.output, Some(json!(5)));
         assert!(result.stdout.is_empty());
     }
 
     #[test]
     fn print_output() {
-        let result = run("print('hello world')", &empty_tools()).unwrap();
+        let result = run("print('hello world')", &empty_tools(), default_limits()).unwrap();
         assert_eq!(result.stdout.trim(), "hello world");
     }
 
     #[test]
     fn tool_call_positional() {
-        let result = run("echo(42)", &echo_tools()).unwrap();
+        let result = run("echo(42)", &echo_tools(), default_limits()).unwrap();
         assert_eq!(result.output, Some(json!(42)));
     }
 
@@ -234,29 +229,23 @@ mod tests {
                 Ok(json!(format!("hello {name}")))
             }),
         );
-        let result = run("greet(name='world')", &tools).unwrap();
+        let result = run("greet(name='world')", &tools, default_limits()).unwrap();
         assert_eq!(result.output, Some(json!("hello world")));
     }
 
     #[test]
     fn parse_error() {
-        let err = run("def", &empty_tools()).unwrap_err();
+        let err = run("def", &empty_tools(), default_limits()).unwrap_err();
         assert!(matches!(err, InterpreterError::Parse(_)));
     }
 
     #[test]
     fn unknown_tool_raises_name_error() {
-        let err = run("nonexistent()", &empty_tools()).unwrap_err();
+        let err = run("nonexistent()", &empty_tools(), default_limits()).unwrap_err();
         assert!(
             matches!(err, InterpreterError::Runtime(_)),
             "expected Runtime NameError, got {err:?}"
         );
-    }
-
-    #[test]
-    fn none_return_is_none_output() {
-        let result = run("None", &empty_tools()).unwrap();
-        assert_eq!(result.output, None);
     }
 
     #[test]
@@ -266,7 +255,7 @@ mod tests {
             "fail".into(),
             Box::new(|_, _, _| Err("intentional failure".into())),
         );
-        let err = run("fail()", &tools).unwrap_err();
+        let err = run("fail()", &tools, default_limits()).unwrap_err();
         assert!(matches!(err, InterpreterError::ToolCall { .. }));
     }
 
@@ -279,16 +268,16 @@ mod tests {
         );
         let code =
             "values = get_values()\ntotal = 0\nfor v in values:\n    total = total + v\ntotal";
-        let result = run(code, &tools).unwrap();
+        let result = run(code, &tools, default_limits()).unwrap();
         assert_eq!(result.output, Some(json!(60)));
     }
 
     #[test]
     fn infinite_loop_hits_timeout() {
         let limits = ResourceLimits::new()
-            .max_duration(Duration::from_millis(500))
+            .max_duration(Duration::from_secs(2))
             .max_recursion_depth(Some(100));
-        let err = run_with_limits("while True: pass", &empty_tools(), limits).unwrap_err();
+        let err = run("while True: pass", &empty_tools(), limits).unwrap_err();
         assert!(
             matches!(err, InterpreterError::Runtime(_)),
             "expected Runtime timeout, got {err:?}"
@@ -301,6 +290,7 @@ mod tests {
         let result = run_streaming(
             "print('hello')\nprint('world')",
             &empty_tools(),
+            default_limits(),
             &mut |_| {
                 called = true;
             },

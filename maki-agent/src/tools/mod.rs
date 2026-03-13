@@ -21,6 +21,7 @@ use std::pin::Pin;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use humantime::format_duration;
 use serde_json::{Value, json};
 use std::future::Future;
 use tracing::error;
@@ -126,6 +127,16 @@ impl Deadline {
             }
         }
     }
+}
+
+pub(crate) fn timeout_annotation(secs: u64) -> String {
+    let d = Duration::from_secs(secs);
+    let formatted: String = format_duration(d)
+        .to_string()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    format!("{formatted} timeout")
 }
 
 #[derive(Clone)]
@@ -581,6 +592,13 @@ mod tests {
     use super::*;
 
     const DEADLINE_EXCEEDED_MSG: &str = super::DEADLINE_EXCEEDED;
+
+    #[test_case(30,  "30s timeout"   ; "seconds_only")]
+    #[test_case(120, "2m timeout"    ; "minutes_only")]
+    #[test_case(90,  "1m30s timeout" ; "mixed")]
+    fn timeout_annotation_cases(secs: u64, expected: &str) {
+        assert_eq!(timeout_annotation(secs), expected);
+    }
 
     #[test_case(Deadline::None,                                         120, Ok(120) ; "none_passthrough")]
     #[test_case(Deadline::after(Duration::from_secs(60)),               10,  Ok(10)  ; "preserves_shorter_timeout")]
