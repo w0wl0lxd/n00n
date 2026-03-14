@@ -34,15 +34,22 @@ fn normalize_text(text: &str) -> String {
     text.trim_end_matches('\n').replace('\t', TAB_SPACES)
 }
 
-pub fn highlighter_for_path(path: &str) -> HighlightLines<'static> {
-    let syntax = SYNTAX_SET
+pub fn syntax_for_path(path: &str) -> &'static SyntaxReference {
+    SYNTAX_SET
         .find_syntax_for_file(path)
         .ok()
         .flatten()
         .unwrap_or_else(|| {
             let ext = path.rsplit('.').next().unwrap_or(path);
             syntax_for_token(ext)
-        });
+        })
+}
+
+pub fn highlighter_for_path(path: &str) -> HighlightLines<'static> {
+    highlighter_for_syntax(syntax_for_path(path))
+}
+
+pub fn highlighter_for_syntax(syntax: &'static SyntaxReference) -> HighlightLines<'static> {
     HighlightLines::new(syntax, syntax_theme())
 }
 

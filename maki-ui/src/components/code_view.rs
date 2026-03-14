@@ -1,6 +1,6 @@
 use crate::highlight::{
     fallback_span, highlight_code_plain, highlight_line, highlighter_for_path,
-    highlighter_for_token,
+    highlighter_for_syntax, highlighter_for_token, syntax_for_path,
 };
 use crate::markdown::truncation_notice;
 use crate::theme;
@@ -42,15 +42,22 @@ fn code_spans(
     text: &str,
 ) -> Vec<Span<'static>> {
     match hl {
-        Some(h) => {
-            let with_nl = format!("{text}\n");
-            highlight_line(h, &with_nl)
-                .into_iter()
-                .map(|(style, chunk)| Span::styled(chunk, style))
-                .collect()
-        }
+        Some(h) => highlight_spans(h, text),
         None => vec![fallback_span(text)],
     }
+}
+
+fn highlight_spans(hl: &mut HighlightLines<'_>, text: &str) -> Vec<Span<'static>> {
+    let with_nl = format!("{text}\n");
+    highlight_line(hl, &with_nl)
+        .into_iter()
+        .map(|(style, chunk)| Span::styled(chunk, style))
+        .collect()
+}
+
+#[cfg(test)]
+fn highlight_standalone(path: &str, text: &str) -> Vec<Span<'static>> {
+    highlight_spans(&mut highlighter_for_syntax(syntax_for_path(path)), text)
 }
 
 fn render_code(
@@ -187,15 +194,15 @@ fn render_grep_results(
             )));
         }
 
-        let mut hl = if highlight {
-            Some(highlighter_for_path(&entry.path))
-        } else {
-            None
-        };
+        let syntax = highlight.then(|| syntax_for_path(&entry.path));
 
         for m in entry.matches.iter().take(take) {
             let mut spans = vec![gutter(&format!("{:>w$}", m.line_nr))];
-            spans.extend(code_spans(&mut hl, &m.text));
+            if let Some(syn) = syntax {
+                spans.extend(highlight_spans(&mut highlighter_for_syntax(syn), &m.text));
+            } else {
+                spans.push(fallback_span(&m.text));
+            }
             out.push(Line::from(spans));
             budget -= 1;
         }
@@ -473,5 +480,33 @@ mod tests {
         assert_eq!(result[1].style.bg, Some(Color::Green));
         assert_eq!(result[2].content.as_ref(), "cd");
         assert_eq!(result[2].style.bg, Some(Color::Green));
+    }
+
+    fn span_styles(line: &Line) -> Vec<Style> {
+        line.spans.iter().map(|s| s.style).collect()
+    }
+
+    #[test]
+    fn grep_each_line_highlighted_independently() {
+        let entries = vec![GrepFileEntry {
+            path: "test.rs".into(),
+            matches: vec![
+                GrepMatch {
+                    line_nr: 1,
+                    text: "let x = \"open string".into(),
+                },
+                GrepMatch {
+                    line_nr: 50,
+                    text: "let y = 42;".into(),
+                },
+            ],
+        }];
+        let lines = render_grep_results(&entries, 100, true);
+        let standalone = highlight_standalone("test.rs", "let y = 42;");
+        let second_line_spans: Vec<_> = lines[1].spans[1..].to_vec();
+        assert_eq!(
+            span_styles(&Line::from(second_line_spans)),
+            span_styles(&Line::from(standalone))
+        );
     }
 }
