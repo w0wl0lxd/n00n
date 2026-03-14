@@ -35,6 +35,10 @@ impl Read {
         let limit = self.limit;
         let loaded = ctx.loaded_instructions.clone();
         smol::unblock(move || {
+            if Path::new(&path).is_dir() {
+                return Self::list_dir(&path);
+            }
+
             let raw = fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
 
             let start = offset.unwrap_or(1).saturating_sub(1);
@@ -64,6 +68,28 @@ impl Read {
             })
         })
         .await
+    }
+
+    fn list_dir(path: &str) -> Result<ToolOutput, String> {
+        let entries = fs::read_dir(path).map_err(|e| format!("read error: {e}"))?;
+
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                dirs.push(format!("{name}/"));
+            } else {
+                files.push(name);
+            }
+        }
+
+        dirs.sort_unstable();
+        files.sort_unstable();
+        dirs.append(&mut files);
+
+        Ok(ToolOutput::Plain(dirs.join("\n")))
     }
 
     pub fn start_summary(&self) -> String {
@@ -101,5 +127,21 @@ mod tests {
             limit,
         };
         assert_eq!(r.start_summary(), expected);
+    }
+
+    #[test]
+    fn list_dir_returns_sorted_entries_dirs_first() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let dir_path = dir.path().to_string_lossy().to_string();
+
+        std::fs::write(dir.path().join("b.txt"), "").unwrap();
+        std::fs::write(dir.path().join("a.rs"), "").unwrap();
+        std::fs::create_dir(dir.path().join("zdir")).unwrap();
+        std::fs::create_dir(dir.path().join("adir")).unwrap();
+
+        let result = Read::list_dir(&dir_path).unwrap();
+        let text = result.as_text();
+        let entries: Vec<&str> = text.lines().collect();
+        assert_eq!(entries, vec!["adir/", "zdir/", "a.rs", "b.txt"]);
     }
 }
