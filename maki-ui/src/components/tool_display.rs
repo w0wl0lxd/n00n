@@ -1,6 +1,6 @@
 use super::{DisplayMessage, ToolStatus};
 
-use super::code_view;
+use super::{code_view, index_highlight};
 use crate::animation::spinner_frame;
 use crate::markdown::TRUNCATION_PREFIX;
 use crate::theme;
@@ -14,8 +14,8 @@ use jiff::tz::TimeZone;
 use crate::markdown::{Keep, text_to_lines, truncate_lines};
 use maki_agent::tools::{
     BASH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME,
-    MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME,
-    WRITE_TOOL_NAME,
+    INDEX_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, WEBFETCH_TOOL_NAME,
+    WEBSEARCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
 use maki_agent::{BatchToolEntry, BatchToolStatus, TodoStatus, ToolInput, ToolOutput};
 use ratatui::style::Style;
@@ -30,10 +30,11 @@ pub const BASH_OUTPUT_MAX_LINES: usize = 10;
 pub const TOOL_BODY_INDENT: &str = "  ";
 pub const CODE_EXECUTION_OUTPUT_MAX_LINES: usize = 30;
 pub const TASK_OUTPUT_MAX_LINES: usize = 30;
+pub const INDEX_OUTPUT_MAX_LINES: usize = 15;
 const BASH_WAITING_LABEL: &str = "Waiting for output...";
 const BASH_NO_OUTPUT_LABEL: &str = "No output.";
 const BASH_OUTPUT_SEPARATOR: &str = "──────";
-const ALWAYS_ANNOTATE_TOOLS: &[&str] = &[WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME];
+const ALWAYS_ANNOTATE_TOOLS: &[&str] = &[WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME, INDEX_TOOL_NAME];
 const TIMESTAMP_LEN: usize = 8;
 const PLAIN_ANNOTATION_THRESHOLD: usize = 10;
 const BATCH_INDENT: &str = "  ";
@@ -44,6 +45,7 @@ pub(crate) fn output_limits(tool: &str) -> (usize, Keep) {
         BASH_TOOL_NAME => (BASH_OUTPUT_MAX_LINES, Keep::Tail),
         CODE_EXECUTION_TOOL_NAME => (CODE_EXECUTION_OUTPUT_MAX_LINES, Keep::Tail),
         TASK_TOOL_NAME => (TASK_OUTPUT_MAX_LINES, Keep::Head),
+        INDEX_TOOL_NAME => (INDEX_OUTPUT_MAX_LINES, Keep::Head),
         _ => (TOOL_OUTPUT_MAX_LINES, Keep::Head),
     }
 }
@@ -119,7 +121,8 @@ fn style_grep_header(header: &str) -> Vec<Span<'static>> {
 
 fn style_tool_header(tool: &str, header: &str) -> Vec<Span<'static>> {
     match tool {
-        READ_TOOL_NAME | EDIT_TOOL_NAME | WRITE_TOOL_NAME | MULTIEDIT_TOOL_NAME => {
+        READ_TOOL_NAME | EDIT_TOOL_NAME | WRITE_TOOL_NAME | MULTIEDIT_TOOL_NAME
+        | INDEX_TOOL_NAME => {
             vec![Span::styled(header.to_owned(), theme::current().tool_path)]
         }
         BASH_TOOL_NAME | GLOB_TOOL_NAME => style_command_with_path(header),
@@ -367,6 +370,15 @@ impl ToolLineBuilder {
                     }
                     return;
                 }
+                if tool == INDEX_TOOL_NAME {
+                    if let Some(ToolOutput::Plain(text)) = output {
+                        let (max, keep) = output_limits(tool);
+                        self.push_index_body(&truncate_lines(text, max, keep));
+                    } else if let Some(text) = body {
+                        self.push_index_body(text);
+                    }
+                    return;
+                }
                 let has_code = self.content_range.1 > self.content_range.0;
                 if has_code && tool == BASH_TOOL_NAME {
                     self.push_bash_output_label(TOOL_BODY_INDENT, is_done, body.is_some());
@@ -421,6 +433,10 @@ impl ToolLineBuilder {
         )));
     }
 
+    fn push_index_body(&mut self, text: &str) {
+        index_highlight::push_index_lines(&mut self.lines, text, TOOL_BODY_INDENT);
+    }
+
     fn push_code_output_separator(&mut self, tool: &str, indent: &str) {
         if tool == CODE_EXECUTION_TOOL_NAME {
             self.lines.push(Line::from(Span::styled(
@@ -445,6 +461,8 @@ impl ToolLineBuilder {
                 let truncated = truncate_lines(text, max, keep);
                 if renders_markdown(tool) {
                     self.push_markdown_body(&truncated);
+                } else if tool == INDEX_TOOL_NAME {
+                    self.push_index_body(&truncated);
                 } else {
                     push_text_lines(&mut self.lines, &truncated, TOOL_BODY_INDENT);
                 }
@@ -1140,5 +1158,54 @@ mod tests {
             total_width <= width as usize,
             "HR ({total_width} chars) should fit in {width} cols"
         );
+    }
+
+    fn index_msg(body: &str) -> DisplayMessage {
+        DisplayMessage {
+            role: DisplayRole::Tool {
+                id: "t1".into(),
+                status: ToolStatus::Success,
+                name: INDEX_TOOL_NAME,
+            },
+            text: format!("src/lib.rs\n{body}"),
+            tool_input: None,
+            tool_output: Some(ToolOutput::Plain(body.to_owned())),
+            annotation: None,
+            plan_path: None,
+            timestamp: None,
+        }
+    }
+
+    #[test]
+    fn index_output_truncated_at_max_lines() {
+        let body: String = (0..150).map(|i| format!("  line_{i}\n")).collect();
+        let msg = index_msg(&body);
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
+        let text = lines_text(&tl);
+        assert!(text.contains("line_0"));
+        assert!(!text.contains("line_149"));
+        assert!(text.contains(TRUNCATION_PREFIX));
+    }
+
+    #[test]
+    fn index_output_styles_all_elements() {
+        let body = "imports: [1-5]\n  std::io\n\nfns:\n  pub fn main() [10-20]";
+        let msg = index_msg(body);
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
+        let t = theme::current();
+        assert!(line_has_styled(&tl, "imports:", t.index_section));
+        assert!(line_has_styled(&tl, "fns:", t.index_section));
+        assert!(line_has_styled(&tl, "[10-20]", t.index_line_nr));
+        assert!(line_has_styled(&tl, "pub", t.index_keyword));
+    }
+
+    #[test]
+    fn index_header_uses_path_style() {
+        let spans = style_tool_header(INDEX_TOOL_NAME, "src/lib.rs");
+        assert!(has_styled_span(
+            &spans,
+            "src/lib.rs",
+            theme::current().tool_path
+        ));
     }
 }

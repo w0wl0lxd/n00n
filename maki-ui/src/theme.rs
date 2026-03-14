@@ -344,6 +344,9 @@ pub struct Theme {
     pub form_check: Style,
     pub form_arrow: Style,
     pub form_answer: Style,
+    pub index_section: Style,
+    pub index_line_nr: Style,
+    pub index_keyword: Style,
 
     pub syntax: syntect::highlighting::Theme,
 }
@@ -685,6 +688,13 @@ impl Theme {
             form_check: style("form_check"),
             form_arrow: style("form_arrow"),
             form_answer: style("form_answer"),
+            index_section: derived_style(
+                "index_section",
+                &["keyword.storage.type", "keyword"],
+                Modifier::BOLD,
+            ),
+            index_line_nr: derived_style("index_line_nr", &["comment"], Modifier::empty()),
+            index_keyword: derived_style("index_keyword", &["keyword"], Modifier::empty()),
             syntax,
         })
     }

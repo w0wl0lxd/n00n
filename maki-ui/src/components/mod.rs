@@ -1,6 +1,7 @@
 pub(crate) mod code_view;
 pub mod command;
 pub(crate) mod help_modal;
+pub(crate) mod index_highlight;
 pub mod input;
 pub(crate) mod keybindings;
 pub(crate) mod list_picker;
