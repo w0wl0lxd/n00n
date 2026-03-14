@@ -2,6 +2,7 @@
 //!
 //! Tool panics must not crash the agent; every spawned task is wrapped in `catch_unwind` and returns `Err(String)` instead.
 
+use std::backtrace::Backtrace;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 
@@ -38,13 +39,15 @@ impl<T: Send + 'static> TaskSet<T> {
 }
 
 fn panic_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
+    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_owned()
     } else if let Some(s) = payload.downcast_ref::<String>() {
         s.clone()
     } else {
         "unknown panic".into()
-    }
+    };
+    let bt = Backtrace::force_capture();
+    format!("{msg}\n\nBacktrace:\n{bt}")
 }
 
 #[cfg(test)]
@@ -61,7 +64,9 @@ mod tests {
             let results = set.join_all().await;
             assert_eq!(results.len(), 3);
             assert_eq!(results[0].as_ref().unwrap(), &42);
-            assert!(results[1].is_err());
+            let err = results[1].as_ref().unwrap_err();
+            assert!(err.starts_with("oops"), "unexpected error: {err}");
+            assert!(err.contains("Backtrace:"), "missing backtrace in: {err}");
             assert_eq!(results[2].as_ref().unwrap(), &7);
         });
     }

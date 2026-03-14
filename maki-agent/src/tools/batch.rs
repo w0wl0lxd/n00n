@@ -11,8 +11,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::task_set::TaskSet;
-
 use maki_tool_macro::Tool;
+use tracing::error;
 
 use super::{ToolCall, ToolContext};
 
@@ -140,8 +140,14 @@ impl Batch {
         let mut results: Vec<(Result<String, String>, Option<ToolOutput>)> =
             vec![(Err("tool task panicked".into()), None); parsed.len()];
         let all = ctx.cancel.race(set.join_all()).await?;
-        for (i, result, output) in all.into_iter().flatten() {
-            results[i] = (result, output);
+        for (r, i) in all.into_iter().zip(0..) {
+            match r {
+                Ok((idx, result, output)) => results[idx] = (result, output),
+                Err(e) => {
+                    error!(error = %e, "batch tool task panicked");
+                    results[i] = (Err(format!("tool task panicked: {e}")), None);
+                }
+            }
         }
 
         let total = results.len() + discarded.len();

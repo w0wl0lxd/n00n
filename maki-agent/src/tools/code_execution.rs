@@ -188,6 +188,7 @@ fn build_async_resolver(
 
     Box::new(move |pending_calls: Vec<PendingCall>| {
         smol::future::block_on(async {
+            let call_ids: Vec<u32> = pending_calls.iter().map(|pc| pc.call_id).collect();
             let mut set = TaskSet::new();
             for pc in pending_calls {
                 let tx = tx.clone();
@@ -226,7 +227,13 @@ fn build_async_resolver(
                 .join_all()
                 .await
                 .into_iter()
-                .map(|r| r.unwrap_or_else(|msg| panic!("tool task panicked: {msg}")))
+                .zip(&call_ids)
+                .map(|(r, &call_id)| {
+                    r.unwrap_or_else(|msg| {
+                        tracing::error!(error = %msg, "code_execution inner tool panicked");
+                        (call_id, Err(format!("tool panicked: {msg}")))
+                    })
+                })
                 .collect();
 
             Ok(results)
@@ -278,9 +285,7 @@ mod tests {
 
             let ctx = stub_ctx(&AgentMode::Build);
             let ci = CodeInterpreter {
-                code: format!(
-                    "import asyncio\nasync def main():\n    result = await read(path='{path_str}')\n    print(result)\n    return result\nawait main()"
-                ),
+                code: format!("result = await read(path='{path_str}')\nprint(result)"),
                 timeout: None,
             };
             let output = ci.execute(&ctx).await.unwrap().as_text();

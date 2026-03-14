@@ -439,7 +439,7 @@ async fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<
         .map(|(i, r)| match r {
             Ok(output) => output,
             Err(e) => {
-                warn!(error = %e, "tool task panicked");
+                error!(error = %e, "tool task panicked");
                 ToolDoneEvent::error(tool_calls[i].id.clone(), "tool task panicked")
             }
         })
