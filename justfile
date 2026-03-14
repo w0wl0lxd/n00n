@@ -2,19 +2,19 @@ default:
     @just --list
 
 build *ARGS:
-    cargo build {{ARGS}}
+    cargo build --all-features {{ARGS}}
 
 run *ARGS:
-    cargo run {{ARGS}}
+    cargo run --all-features {{ARGS}}
 
 test *ARGS:
-    cargo nextest run --workspace {{ARGS}}
+    cargo nextest run --all-features --workspace {{ARGS}}
 
 lint:
-    cargo clippy --all --tests -- -D warnings
+    cargo clippy --all-features --all --tests -- -D warnings
 
 lint-fix:
-    cargo clippy --all --tests --fix
+    cargo clippy --all-features --all --tests --fix
 
 fmt-check:
     cargo fmt --all -- --check
