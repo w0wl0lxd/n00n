@@ -215,6 +215,7 @@ pub struct MessagesPanel {
     visible_regions: Vec<(Rect, usize)>,
     segment_heights: Vec<u16>,
     theme_generation: u64,
+    highlight_segment: Option<usize>,
 }
 
 impl MessagesPanel {
@@ -240,6 +241,7 @@ impl MessagesPanel {
             visible_regions: Vec::new(),
             segment_heights: Vec::new(),
             theme_generation: theme::generation(),
+            highlight_segment: None,
         }
     }
 
@@ -646,6 +648,16 @@ impl MessagesPanel {
         self.auto_scroll = true;
     }
 
+    pub fn scroll_to_segment(&mut self, segment_index: usize) {
+        let offset: u16 = self.segment_heights.iter().take(segment_index).sum();
+        self.scroll_top = offset.min(self.max_scroll());
+        self.auto_scroll = false;
+    }
+
+    pub fn set_highlight_segment(&mut self, idx: Option<usize>) {
+        self.highlight_segment = idx;
+    }
+
     pub fn half_page(&self) -> i32 {
         self.viewport_height as i32 / 2
     }
@@ -770,6 +782,17 @@ impl MessagesPanel {
                 skip = 0;
             }
             frame.render_widget(p, seg_area);
+            if self.highlight_segment == Some(i) {
+                let hl_style = theme::current().cmd_selected;
+                let hl_area = Rect::new(area.x, y, width, visible_h);
+                for row in hl_area.y..hl_area.y + hl_area.height {
+                    for col in hl_area.x..hl_area.x + hl_area.width {
+                        if let Some(cell) = frame.buffer_mut().cell_mut((col, row)) {
+                            cell.set_bg(hl_style.bg.unwrap_or_default());
+                        }
+                    }
+                }
+            }
             if msg_idx.is_some() {
                 self.visible_regions
                     .push((Rect::new(area.x, y, width, visible_h), i));

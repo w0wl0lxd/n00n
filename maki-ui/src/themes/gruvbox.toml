@@ -137,6 +137,7 @@ todo_pending         = { fg = "comment" }
 todo_cancelled       = { fg = "red", modifiers = ["crossed_out"] }
 cmd_name             = { fg = "blue" }
 cmd_desc             = { fg = "comment" }
+highlight_text       = { fg = "orange" }
 picker_search_prefix = { fg = "comment" }
 keybind_section      = { fg = "blue", modifiers = ["bold"] }
 input_border         = { fg = "comment" }

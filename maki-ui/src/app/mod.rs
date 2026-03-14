@@ -26,6 +26,7 @@ use crate::components::list_picker::{ListPicker, PickerAction};
 use crate::components::model_picker::{ModelPicker, ModelPickerAction};
 use crate::components::question_form::{QuestionForm, QuestionFormAction};
 use crate::components::rewind_picker::{RewindPicker, RewindPickerAction};
+use crate::components::search_modal::{SearchAction, SearchModal};
 use crate::components::session_picker::{SessionPicker, SessionPickerAction};
 use crate::components::status_bar::{FLASH_DURATION, StatusBar};
 use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
@@ -76,6 +77,7 @@ pub struct App {
     pub(super) session_picker: SessionPicker,
     pub(super) rewind_picker: RewindPicker,
     pub(super) help_modal: HelpModal,
+    pub(super) search_modal: SearchModal,
     pub(super) question_form: QuestionForm,
     pub(super) status_bar: StatusBar,
     pub status: Status,
@@ -130,6 +132,7 @@ impl App {
             session_picker: SessionPicker::new(),
             rewind_picker: RewindPicker::new(),
             help_modal: HelpModal::new(),
+            search_modal: SearchModal::new(),
             question_form: QuestionForm::new(),
             status_bar: StatusBar::new(),
             status: Status::Idle,
@@ -269,6 +272,31 @@ impl App {
             return vec![];
         }
 
+        if self.search_modal.is_open() {
+            match self.search_modal.handle_key(key) {
+                SearchAction::Consumed => {
+                    let chat = &mut self.chats[self.active_chat];
+                    let texts = chat.segment_copy_texts();
+                    self.search_modal.update_matches(&texts);
+                    sync_search_highlight(&self.search_modal, chat);
+                }
+                SearchAction::Navigate => {
+                    sync_search_highlight(&self.search_modal, &mut self.chats[self.active_chat]);
+                }
+                SearchAction::Select(idx) => {
+                    let chat = &mut self.chats[self.active_chat];
+                    chat.scroll_to_segment(idx);
+                    chat.set_highlight_segment(None);
+                    self.search_modal.close();
+                }
+                SearchAction::Close => {
+                    self.chats[self.active_chat].set_highlight_segment(None);
+                    self.search_modal.close();
+                }
+            }
+            return vec![];
+        }
+
         if let Some(selected) = self.queue_focus {
             match key.code {
                 KeyCode::Up => {
@@ -391,6 +419,8 @@ impl App {
                 }
             } else if key::HELP.matches(key) {
                 self.help_modal.toggle();
+            } else if key::SEARCH.matches(key) {
+                self.search_modal.open();
             } else if key.code == KeyCode::Char('v') && self.image_paste_rx.is_none() {
                 self.start_image_paste();
             } else if let InputAction::PaletteSync(val) = self.input_box.handle_key(key) {
@@ -714,6 +744,14 @@ impl App {
             self.question_form.open(questions);
         }
     }
+}
+
+fn sync_search_highlight(modal: &SearchModal, chat: &mut Chat) {
+    let seg_idx = modal.current_segment_index();
+    if let Some(idx) = seg_idx {
+        chat.scroll_to_segment(idx);
+    }
+    chat.set_highlight_segment(seg_idx);
 }
 
 fn format_with_images(text: &str, image_count: usize) -> String {

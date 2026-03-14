@@ -129,6 +129,7 @@ todo_cancelled    = { fg = "red", modifiers = ["crossed_out"] }
 cmd_selected      = { fg = "background", bg = "green" }
 cmd_name          = { fg = "cyan" }
 cmd_desc          = { fg = "comment" }
+highlight_text    = { fg = "orange" }
 panel_border      = { fg = "green" }
 panel_title       = { fg = "green", modifiers = ["bold"] }
 picker_search_prefix = { fg = "comment" }

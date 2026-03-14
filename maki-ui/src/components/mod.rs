@@ -12,6 +12,7 @@ pub mod question_form;
 pub mod queue_panel;
 pub(crate) mod rewind_picker;
 pub(crate) mod scrollbar;
+pub(crate) mod search_modal;
 pub(crate) mod session_picker;
 pub mod status_bar;
 pub(crate) mod theme_picker;

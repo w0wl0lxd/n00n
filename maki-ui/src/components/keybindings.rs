@@ -44,6 +44,7 @@ pub mod key {
     pub const SCROLL_BOTTOM: Bind = Bind::ctrl('b');
     pub const POP_QUEUE: Bind = Bind::ctrl('q');
     pub const DELETE_WORD: Bind = Bind::ctrl('w');
+    pub const SEARCH: Bind = Bind::ctrl('f');
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +60,7 @@ pub enum KeybindContext {
     ModelPicker,
     QueueFocus,
     CommandPalette,
+    Search,
 }
 
 impl KeybindContext {
@@ -75,6 +77,7 @@ impl KeybindContext {
             Self::ModelPicker => "Model Picker",
             Self::QueueFocus => "Queue Focus",
             Self::CommandPalette => "Command Palette",
+            Self::Search => "Search",
         }
     }
 }
@@ -341,6 +344,26 @@ const KEYBINDS: &[Keybind] = &[
         description: "Close and toggle mode",
         context: KeybindContext::CommandPalette,
     },
+    Keybind {
+        key: "Ctrl+F",
+        description: "Search messages",
+        context: KeybindContext::General,
+    },
+    Keybind {
+        key: "Esc",
+        description: "Close search",
+        context: KeybindContext::Search,
+    },
+    Keybind {
+        key: "↑/↓",
+        description: "Navigate",
+        context: KeybindContext::Search,
+    },
+    Keybind {
+        key: "Enter",
+        description: "Go to match",
+        context: KeybindContext::Search,
+    },
 ];
 
 pub fn active_keybinds(contexts: &[KeybindContext]) -> Vec<&'static Keybind> {
@@ -379,6 +402,7 @@ mod tests {
             KeybindContext::ModelPicker,
             KeybindContext::QueueFocus,
             KeybindContext::CommandPalette,
+            KeybindContext::Search,
         ];
         for ctx in all_contexts {
             let binds = active_keybinds(&[ctx]);

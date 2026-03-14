@@ -136,6 +136,7 @@ plan_rule            = { fg = "yellow", modifiers = ["bold"] }
 cmd_selected         = { fg = "background", bg = "yellow" }
 cmd_name             = { fg = "blue" }
 cmd_desc             = { fg = "comment" }
+highlight_text       = { fg = "orange" }
 panel_border         = { fg = "yellow" }
 panel_title          = { fg = "yellow", modifiers = ["bold"] }
 cursor               = { fg = "background", bg = "foreground" }

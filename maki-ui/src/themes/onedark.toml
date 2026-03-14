@@ -135,6 +135,7 @@ input_border       = { fg = "selection" }
 cmd_selected       = { fg = "background", bg = "blue" }
 cmd_name           = { fg = "blue" }
 cmd_desc           = { fg = "comment" }
+highlight_text     = { fg = "orange" }
 picker_search_prefix = { fg = "blue" }
 keybind_key        = { fg = "cyan", modifiers = ["bold"] }
 keybind_section    = { fg = "blue", modifiers = ["bold"] }

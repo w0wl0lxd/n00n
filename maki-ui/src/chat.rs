@@ -133,6 +133,14 @@ impl Chat {
         self.messages_panel.enable_auto_scroll();
     }
 
+    pub fn scroll_to_segment(&mut self, segment_index: usize) {
+        self.messages_panel.scroll_to_segment(segment_index);
+    }
+
+    pub fn set_highlight_segment(&mut self, idx: Option<usize>) {
+        self.messages_panel.set_highlight_segment(idx);
+    }
+
     pub fn is_animating(&self) -> bool {
         self.messages_panel.is_animating()
     }

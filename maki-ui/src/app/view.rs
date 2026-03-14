@@ -52,6 +52,10 @@ impl App {
         };
         self.chats[render_chat].view(frame, msg_area, self.selection_state.is_some());
 
+        if self.search_modal.is_open() {
+            self.search_modal.view(frame, msg_area);
+        }
+
         let queue_height = queue_panel::height(self.queue.len());
         let input_height = bottom_area.height.saturating_sub(queue_height);
         let [queue_area, input_area] = Layout::vertical([
@@ -170,6 +174,8 @@ impl App {
             contexts.push(KeybindContext::ModelPicker);
         } else if self.command_palette.is_active() {
             contexts.push(KeybindContext::CommandPalette);
+        } else if self.search_modal.is_open() {
+            contexts.push(KeybindContext::Search);
         } else {
             if self.status == Status::Streaming {
                 contexts.push(KeybindContext::Streaming);

@@ -138,6 +138,7 @@ diff_line_nr         = { fg = "comment" }
 cmd_selected         = { fg = "background", bg = "iris" }
 cmd_name             = { fg = "rose" }
 cmd_desc             = { fg = "comment" }
+highlight_text       = { fg = "gold" }
 
 panel_border         = { fg = "iris" }
 panel_title          = { fg = "iris", modifiers = ["bold"] }
