@@ -90,7 +90,7 @@ impl Chat {
             AgentEvent::QueueItemConsumed => {
                 return ChatEventResult::QueueItemConsumed;
             }
-            AgentEvent::Retry { .. } => self.messages_panel.stream_reset(),
+            AgentEvent::Retry { .. } => unreachable!("handled before handle_event"),
             AgentEvent::Done { .. } => {
                 self.messages_panel.flush();
                 return ChatEventResult::Done;
@@ -141,6 +141,10 @@ impl Chat {
 
     pub fn segment_copy_texts(&self) -> Vec<&str> {
         self.messages_panel.segment_copy_texts()
+    }
+
+    pub fn stream_reset(&mut self) {
+        self.messages_panel.stream_reset();
     }
 
     pub fn flush(&mut self) {

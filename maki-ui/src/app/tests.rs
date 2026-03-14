@@ -1506,3 +1506,52 @@ fn tick_error_expiry(initial: Status, expected: Status) {
     app.tick_error_expiry();
     assert_eq!(app.status, expected);
 }
+
+#[test]
+fn retry_clears_in_progress_tools() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(agent_msg(AgentEvent::ToolPending {
+        id: "t1".into(),
+        name: "bash".into(),
+    }));
+    assert_eq!(app.chats[0].in_progress_count(), 1);
+
+    app.update(agent_msg(AgentEvent::Retry {
+        attempt: 1,
+        message: "overloaded".into(),
+        delay_ms: 1000,
+    }));
+    assert_eq!(app.chats[0].in_progress_count(), 0);
+    assert!(app.retry_info.is_some());
+}
+
+#[test]
+fn retry_clears_subagent_in_progress_tools() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(subagent_msg(
+        AgentEvent::ToolPending {
+            id: "st1".into(),
+            name: "bash".into(),
+        },
+        "task1",
+        Some("research"),
+    ));
+    assert_eq!(app.chats.len(), 2);
+    assert_eq!(app.chats[1].in_progress_count(), 1);
+
+    app.update(subagent_msg(
+        AgentEvent::Retry {
+            attempt: 1,
+            message: "overloaded".into(),
+            delay_ms: 1000,
+        },
+        "task1",
+        Some("research"),
+    ));
+    assert_eq!(app.chats[1].in_progress_count(), 0);
+    assert!(app.retry_info.is_none());
+}

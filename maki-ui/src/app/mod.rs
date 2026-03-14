@@ -536,6 +536,7 @@ impl App {
             delay_ms,
         } = envelope.event
         {
+            self.chats[chat_idx].stream_reset();
             if chat_idx == 0 {
                 self.retry_info = Some(RetryInfo {
                     attempt,
