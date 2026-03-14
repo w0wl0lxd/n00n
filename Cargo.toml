@@ -27,7 +27,7 @@ smol = { workspace = true }
 flume = { workspace = true }
 
 [workspace]
-members = ["maki-agent", "maki-interpreter", "maki-providers", "maki-storage", "maki-tool-macro", "maki-ui"]
+members = ["maki-agent", "maki-code-index", "maki-interpreter", "maki-providers", "maki-storage", "maki-tool-macro", "maki-ui"]
 resolver = "3"
 
 [workspace.package]
@@ -36,6 +36,7 @@ edition = "2024"
 
 [workspace.dependencies]
 maki-agent = { path = "maki-agent" }
+maki-code-index = { path = "maki-code-index" }
 maki-interpreter = { path = "maki-interpreter" }
 maki-providers = { path = "maki-providers" }
 maki-storage = { path = "maki-storage" }

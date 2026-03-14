@@ -44,4 +44,5 @@ Rust workspace, key crates:
 - **maki-providers**: Integration with LLM providers via APIs (e.g. Anthropic, Z.AI)
 - **maki-agent**: An async agent loop that runs on smol + tools descriptions and implementations
 - **maki-interpreter**: code_execution tool implementation using pydantic/monty (a minimal python sandbox)
+- **maki-code-index**: index tool implementation using tree-sitter (returns a compact skeleton of a source file)
 - **maki-storage**: Persistent state across runs (e.g. sessions, auth)

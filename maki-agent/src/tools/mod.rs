@@ -13,6 +13,7 @@ mod edit;
 mod fuzzy_replace;
 mod glob;
 mod grep;
+mod index;
 mod multiedit;
 mod question;
 mod read;
@@ -56,6 +57,7 @@ pub const BATCH_TOOL_NAME: &str = batch::Batch::NAME;
 pub const EDIT_TOOL_NAME: &str = edit::Edit::NAME;
 pub const GLOB_TOOL_NAME: &str = glob::Glob::NAME;
 pub const GREP_TOOL_NAME: &str = grep::Grep::NAME;
+pub const INDEX_TOOL_NAME: &str = index::Index::NAME;
 pub const MULTIEDIT_TOOL_NAME: &str = multiedit::MultiEdit::NAME;
 pub const QUESTION_TOOL_NAME: &str = question::Question::NAME;
 pub const READ_TOOL_NAME: &str = read::Read::NAME;
@@ -79,11 +81,13 @@ pub(crate) const INTERPRETER_TOOLS: &[&str] = &[
     "websearch",
 ];
 
-pub(crate) const RESEARCH_SUBAGENT_TOOLS: &[&str] = &["bash", "read", "glob", "grep", "webfetch"];
+pub(crate) const RESEARCH_SUBAGENT_TOOLS: &[&str] =
+    &["bash", "read", "index", "glob", "grep", "webfetch"];
 
 pub(crate) const GENERAL_SUBAGENT_TOOLS: &[&str] = &[
     "bash",
     "read",
+    "index",
     "write",
     "edit",
     "multiedit",
@@ -530,6 +534,7 @@ register_tools! {
     MultiEdit(multiedit::MultiEdit),
     Glob(glob::Glob),
     Grep(grep::Grep),
+    Index(index::Index),
     Question(question::Question),
     TodoWrite(todowrite::TodoWrite),
     WebFetch(webfetch::WebFetch),

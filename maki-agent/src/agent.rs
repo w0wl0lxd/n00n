@@ -23,8 +23,8 @@ use crate::skill::Skill;
 use crate::template::Vars;
 use crate::tools::{
     BASH_TOOL_NAME, BATCH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, Deadline, EDIT_TOOL_NAME,
-    GLOB_TOOL_NAME, GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, ToolCall,
-    ToolContext, WRITE_TOOL_NAME,
+    GLOB_TOOL_NAME, GREP_TOOL_NAME, INDEX_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME,
+    TASK_TOOL_NAME, ToolCall, ToolContext, WRITE_TOOL_NAME,
 };
 use crate::types::tool_results;
 use crate::{
@@ -66,15 +66,19 @@ const EFFICIENCY_TIERS: &[(&str, &[&str], &str)] = &[
     (
         "Good",
         &[
+            INDEX_TOOL_NAME,
             EDIT_TOOL_NAME,
             MULTIEDIT_TOOL_NAME,
-            READ_TOOL_NAME,
             GREP_TOOL_NAME,
             GLOB_TOOL_NAME,
         ],
         "Targeted reads and edits",
     ),
-    ("Costly", &[WRITE_TOOL_NAME], "Full file replacement"),
+    (
+        "Costly",
+        &[READ_TOOL_NAME, WRITE_TOOL_NAME],
+        "Full file reads/replacement (prefer index & edit/multiedit)",
+    ),
     ("Last", &[BASH_TOOL_NAME], "Only when no other tool works"),
 ];
 

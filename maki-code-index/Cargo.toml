@@ -1,0 +1,21 @@
+[package]
+name = "maki-code-index"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["lang-rust", "lang-python", "lang-typescript"]
+lang-rust = ["dep:tree-sitter-rust"]
+lang-python = ["dep:tree-sitter-python"]
+lang-typescript = ["dep:tree-sitter-typescript", "dep:tree-sitter-javascript"]
+
+[dependencies]
+thiserror = { workspace = true }
+tree-sitter = "0.26"
+tree-sitter-rust = { version = "0.23", optional = true }
+tree-sitter-python = { version = "0.23", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-javascript = { version = "0.23", optional = true }
+
+[dev-dependencies]
+test-case = { workspace = true }
