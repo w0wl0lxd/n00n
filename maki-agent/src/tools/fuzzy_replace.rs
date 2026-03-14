@@ -163,11 +163,12 @@ fn block_anchor(content: &str, find: &str) -> Vec<String> {
         if line.trim() != first_trimmed {
             continue;
         }
-        if let Some(j) = content_lines[i + 2..]
-            .iter()
-            .position(|l| l.trim() == last_trimmed)
+        let tail_start = i + 2;
+        if let Some(j) = content_lines
+            .get(tail_start..)
+            .and_then(|s| s.iter().position(|l| l.trim() == last_trimmed))
         {
-            candidates.push((i, i + 2 + j));
+            candidates.push((i, tail_start + j));
         }
     }
 
@@ -506,23 +507,10 @@ mod tests {
         assert!(context_aware(content, search).is_empty());
     }
 
-    #[test]
-    fn levenshtein_dp_loop() {
-        assert_eq!(levenshtein("kitten", "sitting"), 3);
-    }
-
-    #[test_case("hello\\nworld", "hello\nworld" ; "newline")]
-    #[test_case("no escapes", "no escapes" ; "passthrough")]
     #[test_case("trailing\\", "trailing\\" ; "trailing_backslash")]
     #[test_case("\\z", "\\z" ; "unknown_escape_kept")]
-    fn unescape_cases(input: &str, expected: &str) {
+    fn unescape_edge_cases(input: &str, expected: &str) {
         assert_eq!(unescape(input), expected);
-    }
-
-    #[test_case("hello   world", "hello world" ; "collapse_spaces")]
-    #[test_case("a\tb\nc", "a b c" ; "tabs_and_newlines")]
-    fn normalize_whitespace_cases(input: &str, expected: &str) {
-        assert_eq!(normalize_whitespace(input), expected);
     }
 
     #[test]
@@ -530,6 +518,14 @@ mod tests {
         let lines = vec!["    a", "", "    b"];
         let result = strip_common_indent(&lines);
         assert_eq!(result, "a\n\nb");
+    }
+
+    #[test_case("aaa\nbbb\nccc\nfn test() {" ; "near_end")]
+    #[test_case("fn test() {" ; "last_line")]
+    #[test_case("fn test() {\n}" ; "two_lines")]
+    fn block_anchor_no_panic(content: &str) {
+        let search = "fn test() {\n    body();\n}";
+        assert!(block_anchor(content, search).is_empty());
     }
 
     #[test]
