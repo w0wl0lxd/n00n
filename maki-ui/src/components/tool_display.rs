@@ -471,16 +471,18 @@ impl ToolLineBuilder {
         if index == 0 {
             return;
         }
-        self.lines.insert(
-            0,
+        let sep = [
+            Line::default(),
             Line::from(Span::styled(
                 format!("{BATCH_INDENT}{}", super::TOOL_SEPARATOR),
                 theme::current().tool_dim,
             )),
-        );
-        self.spinner_lines.iter_mut().for_each(|l| *l += 1);
-        self.content_range.0 += 1;
-        self.content_range.1 += 1;
+            Line::default(),
+        ];
+        self.lines.splice(0..0, sep);
+        self.spinner_lines.iter_mut().for_each(|l| *l += 3);
+        self.content_range.0 += 3;
+        self.content_range.1 += 3;
     }
 
     fn finish(
@@ -983,7 +985,7 @@ mod tests {
         let first = build_batch_entry_lines(&entry, 0, Instant::now(), 80);
         let second = build_batch_entry_lines(&entry, 1, Instant::now(), 80);
         assert!(second.lines.len() > first.lines.len());
-        assert!(spans_text(&second.lines[0].spans).contains(TOOL_SEPARATOR));
+        assert!(spans_text(&second.lines[1].spans).contains(TOOL_SEPARATOR));
     }
 
     #[test]
@@ -997,7 +999,7 @@ mod tests {
             annotation: None,
         };
         let tl = build_batch_entry_lines(&entry, 1, Instant::now(), 80);
-        assert_eq!(tl.spinner_lines, &[1]);
+        assert_eq!(tl.spinner_lines, &[3]);
     }
 
     #[test]
