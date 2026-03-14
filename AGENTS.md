@@ -26,7 +26,7 @@ Maki is an AI coding agent (like Claude Code and opencode), that is built bottom
 - No need for bullshit tests (e.g. tautology)
 - No inline magic numbers or strings
 - In tests const error/status messages and assert against the shared constant
-- Add #[derive(Copy)] on structs with 1 primitive field
+- Add #[derive(Copy)] only on structs with 1 primitive field
 - NO TRIVIAL COMMENTS
 
 ## Testing
@@ -34,9 +34,11 @@ Maki is an AI coding agent (like Claude Code and opencode), that is built bottom
 - cargo clippy --all --tests -- -D warnings
 - cargo nextest run --workspace
 
+Read `justfile` for more.
+
 ## Architecture
 
-The codebase is a Rust workspace with the following key crates:
+Rust workspace, key crates:
 
 - **maki-ui**: Uses ratatui for an interactive UI (elm like architecture)
 - **maki-providers**: Integration with LLM providers via APIs (e.g. Anthropic, Z.AI)
