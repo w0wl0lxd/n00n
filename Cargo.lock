@@ -1821,6 +1821,7 @@ dependencies = [
  "color-eyre",
  "flume",
  "maki-agent",
+ "maki-code-index",
  "maki-providers",
  "maki-storage",
  "maki-ui",

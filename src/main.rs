@@ -1,6 +1,7 @@
 mod print;
 
 use std::env;
+use std::path::Path;
 
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
@@ -80,6 +81,9 @@ enum Command {
     },
     /// List all available models
     Models,
+    Index {
+        path: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -124,6 +128,10 @@ fn run() -> Result<()> {
                 AuthAction::Login => auth::login(&storage)?,
                 AuthAction::Logout => auth::logout(&storage)?,
             }
+        }
+        Some(Command::Index { path }) => {
+            let output = maki_code_index::index_file(Path::new(&path)).context("index file")?;
+            print!("{output}");
         }
         Some(Command::Models) => {
             smol::block_on(fetch_all_models(|batch| {

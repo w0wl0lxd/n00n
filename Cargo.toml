@@ -13,6 +13,7 @@ demo = ["maki-ui/demo"]
 [dependencies]
 maki-ui = { path = "maki-ui" }
 maki-agent = { workspace = true }
+maki-code-index = { workspace = true }
 maki-providers = { workspace = true }
 maki-storage = { workspace = true }
 clap = { workspace = true }
