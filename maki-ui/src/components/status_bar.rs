@@ -209,11 +209,17 @@ fn cwd_branch_label() -> String {
 }
 
 fn detect_branch(cwd: &str) -> Option<String> {
-    let head = std::fs::read_to_string(Path::new(cwd).join(".git/HEAD")).ok()?;
-    let head = head.trim();
-    head.strip_prefix("ref: refs/heads/")
-        .map(str::to_string)
-        .or_else(|| Some(head.get(..7)?.to_string()))
+    let mut dir = Path::new(cwd);
+    loop {
+        if let Ok(head) = std::fs::read_to_string(dir.join(".git/HEAD")) {
+            let head = head.trim();
+            return head
+                .strip_prefix("ref: refs/heads/")
+                .map(str::to_string)
+                .or_else(|| Some(head.get(..7)?.to_string()));
+        }
+        dir = dir.parent()?;
+    }
 }
 
 #[cfg(test)]
@@ -258,6 +264,17 @@ mod tests {
     fn detect_branch_cases(head: Option<&str>, expected: Option<&str>) {
         let (_dir, path) = tmp_with_head(head);
         assert_eq!(detect_branch(&path), expected.map(String::from));
+    }
+
+    #[test]
+    fn detect_branch_from_subdirectory() {
+        let (_dir, path) = tmp_with_head(Some("ref: refs/heads/main\n"));
+        let sub = Path::new(&path).join("sub");
+        fs::create_dir(&sub).unwrap();
+        assert_eq!(
+            detect_branch(&sub.to_string_lossy()),
+            Some("main".to_string())
+        );
     }
 
     #[test]
