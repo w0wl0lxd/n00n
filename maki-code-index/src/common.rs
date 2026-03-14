@@ -2,7 +2,6 @@
 //! `LanguageExtractor` trait defines the per-language hooks; `format_skeleton` groups entries
 //! by `Section` (sorted by enum discriminant order, not source order) and renders them.
 //! Imports get special treatment: same-root paths are consolidated (e.g. two `std::` uses merge).
-//! `compress_line_ranges` turns `[1,2,3,10,11,20]` into `"1-3,10-11,20"` for compact output.
 
 use std::fmt::Write;
 
@@ -268,9 +267,10 @@ pub(crate) fn format_skeleton(
     }
 
     if !test_lines.is_empty() {
-        let ranges = compress_line_ranges(test_lines);
+        let min = *test_lines.iter().min().unwrap();
+        let max = *test_lines.iter().max().unwrap();
         let sep = if out.is_empty() { "" } else { "\n" };
-        let _ = writeln!(out, "{sep}tests: [{ranges}]");
+        let _ = writeln!(out, "{sep}tests: {}", line_range(min, max));
     }
 
     out
@@ -281,14 +281,11 @@ fn format_imports(out: &mut String, entries: &[&SkeletonEntry]) {
         return;
     }
 
-    let all_lines: Vec<usize> = entries
-        .iter()
-        .flat_map(|e| e.line_start..=e.line_end)
-        .collect();
+    let min_line = entries.iter().map(|e| e.line_start).min().unwrap();
+    let max_line = entries.iter().map(|e| e.line_end).max().unwrap();
 
-    let ranges = compress_line_ranges(&all_lines);
     let sep = if out.is_empty() { "" } else { "\n" };
-    let _ = writeln!(out, "{sep}imports: [{ranges}]");
+    let _ = writeln!(out, "{sep}imports: {}", line_range(min_line, max_line));
 
     let mut consolidated: Vec<(String, Vec<String>)> = Vec::new();
     for entry in entries {
@@ -330,38 +327,4 @@ fn format_imports(out: &mut String, entries: &[&SkeletonEntry]) {
             let _ = writeln!(out, "  {root}::{{{}}}", parts.join(", "));
         }
     }
-}
-
-pub(crate) fn compress_line_ranges(lines: &[usize]) -> String {
-    if lines.is_empty() {
-        return String::new();
-    }
-    let mut sorted = lines.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-
-    let mut ranges = Vec::new();
-    let mut start = sorted[0];
-    let mut end = sorted[0];
-
-    let push_range = |ranges: &mut Vec<String>, s: usize, e: usize| {
-        ranges.push(if s == e {
-            format!("{s}")
-        } else {
-            format!("{s}-{e}")
-        });
-    };
-
-    for &line in &sorted[1..] {
-        if line == end + 1 {
-            end = line;
-        } else {
-            push_range(&mut ranges, start, end);
-            start = line;
-            end = line;
-        }
-    }
-    push_range(&mut ranges, start, end);
-
-    ranges.join(",")
 }

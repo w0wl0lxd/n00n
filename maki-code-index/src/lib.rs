@@ -141,7 +141,7 @@ pub fn index_source(source: &[u8], lang: Language) -> Result<String, IndexError>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common::{compress_line_ranges, truncate};
+    use common::truncate;
     use test_case::test_case;
 
     fn idx(source: &str, lang: Language) -> String {
@@ -181,13 +181,6 @@ mod tests {
             index_file(Path::new("file.yaml")),
             Err(IndexError::UnsupportedLanguage(_))
         ));
-    }
-
-    #[test_case(&[1, 2, 3, 4, 5],          "1-5"            ; "contiguous")]
-    #[test_case(&[1, 2, 3, 10, 11, 20],    "1-3,10-11,20"   ; "disjoint")]
-    #[test_case(&[42],                      "42"             ; "single")]
-    fn compress_ranges(input: &[usize], expected: &str) {
-        assert_eq!(compress_line_ranges(input), expected);
     }
 
     #[test]
