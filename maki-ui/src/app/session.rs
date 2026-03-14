@@ -95,6 +95,7 @@ impl App {
         self.token_usage = self.session.token_usage;
 
         self.input_box.set_input(entry.prompt_text);
+        self.input_box.buffer.move_to_end();
 
         self.session.update_title_if_default();
         self.enqueue_save();

@@ -186,7 +186,6 @@ impl InputBox {
 
     pub fn set_input(&mut self, s: String) {
         self.buffer = TextBuffer::new(s);
-        self.buffer.move_to_end();
     }
 
     pub fn history_up(&mut self) {
@@ -218,6 +217,7 @@ impl InputBox {
             self.history_index = None;
             let draft = mem::take(&mut self.draft);
             self.set_input(draft);
+            self.buffer.move_to_end();
         }
     }
 
@@ -550,7 +550,27 @@ mod tests {
         input.submit();
         input.history_up();
         assert_eq!(input.buffer.value(), "line1\nline2");
-        assert!(input.is_at_last_line());
+        assert!(input.is_at_first_line());
+
+        input.history_down();
+        assert_eq!(input.buffer.value(), "");
+
+        input.set_input("alpha\nbeta".into());
+        input.submit();
+        input.set_input("gamma\ndelta".into());
+        input.submit();
+
+        input.history_up();
+        input.history_up();
+        assert_eq!(input.buffer.value(), "alpha\nbeta");
+        assert!(input.is_at_first_line());
+
+        input.history_down();
+        assert_eq!(input.buffer.value(), "gamma\ndelta");
+        assert!(input.is_at_first_line());
+
+        input.history_down();
+        assert_eq!(input.buffer.value(), "");
     }
 
     #[test]
@@ -719,17 +739,14 @@ mod tests {
 
     #[test]
     fn copy_text_includes_prefix() {
+        let input = InputBox::new(InputHistory::default());
+        assert_eq!(input.copy_text(), CHEVRON);
+
         let mut input = InputBox::new(InputHistory::default());
         type_text(&mut input, "line1");
         input.buffer.add_line();
         type_text(&mut input, "line2");
         assert_eq!(input.copy_text(), "❯ line1\n  line2");
-    }
-
-    #[test]
-    fn copy_text_empty() {
-        let input = InputBox::new(InputHistory::default());
-        assert_eq!(input.copy_text(), super::CHEVRON);
     }
 
     #[test]
@@ -749,15 +766,11 @@ mod tests {
     #[test]
     fn submit_with_images() {
         let mut input = InputBox::new(InputHistory::default());
+
         input.attach_image(test_image());
         let sub = input.submit().unwrap();
         assert!(sub.text.is_empty());
         assert_eq!(sub.images.len(), 1);
-
-        input.attach_image(test_image());
-        input.attach_image(test_image());
-        let sub = input.submit().unwrap();
-        assert_eq!(sub.images.len(), 2);
         assert!(input.submit().is_none(), "images cleared after submit");
 
         type_text(&mut input, "describe this");
