@@ -25,12 +25,13 @@ use crate::highlight::highlight_regex_inline;
 use crate::render_worker::RenderWorker;
 
 pub const TOOL_INDICATOR: &str = "● ";
-pub const TOOL_OUTPUT_MAX_LINES: usize = 7;
-pub const BASH_OUTPUT_MAX_LINES: usize = 10;
 pub const TOOL_BODY_INDENT: &str = "  ";
-pub const CODE_EXECUTION_OUTPUT_MAX_LINES: usize = 30;
-pub const TASK_OUTPUT_MAX_LINES: usize = 30;
-pub const INDEX_OUTPUT_MAX_LINES: usize = 15;
+const TOOL_OUTPUT_MAX_LINES: usize = 7;
+const BASH_OUTPUT_MAX_LINES: usize = 10;
+const CODE_EXECUTION_OUTPUT_MAX_LINES: usize = 30;
+const TASK_OUTPUT_MAX_LINES: usize = 30;
+const INDEX_OUTPUT_MAX_LINES: usize = 15;
+const GREP_OUTPUT_MAX_LINES: usize = 15;
 const BASH_WAITING_LABEL: &str = "Waiting for output...";
 const BASH_NO_OUTPUT_LABEL: &str = "No output.";
 const BASH_OUTPUT_SEPARATOR: &str = "──────";
@@ -46,6 +47,7 @@ pub(crate) fn output_limits(tool: &str) -> (usize, Keep) {
         CODE_EXECUTION_TOOL_NAME => (CODE_EXECUTION_OUTPUT_MAX_LINES, Keep::Tail),
         TASK_TOOL_NAME => (TASK_OUTPUT_MAX_LINES, Keep::Head),
         INDEX_TOOL_NAME => (INDEX_OUTPUT_MAX_LINES, Keep::Head),
+        GREP_TOOL_NAME => (GREP_OUTPUT_MAX_LINES, Keep::Head),
         _ => (TOOL_OUTPUT_MAX_LINES, Keep::Head),
     }
 }
