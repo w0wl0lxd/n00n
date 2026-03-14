@@ -29,6 +29,9 @@ impl Index {
                 Err(IndexError::FileTooLarge { size, max }) => Err(format!(
                     "File too large ({size} bytes, max {max}). Use read with offset/limit instead."
                 )),
+                Err(IndexError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Err(format!("read error: {e}"))
+                }
                 Err(e) => Err(format!("{e}. Use the read tool instead.")),
             }
         })
