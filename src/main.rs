@@ -105,9 +105,12 @@ fn print_error(e: &color_eyre::Report) {
     const RESET: &str = "\x1b[0m";
 
     eprintln!();
-    eprintln!("  {BOLD_RED}✖ {e}{RESET}");
-    for cause in e.chain().skip(1) {
-        eprintln!("  {DIM}╰─{RESET} {RED}{cause}{RESET}");
+    eprintln!("{BOLD_RED}✖ {e}{RESET}");
+    let causes: Vec<_> = e.chain().skip(1).collect();
+    let last = causes.len().saturating_sub(1);
+    for (i, cause) in causes.iter().enumerate() {
+        let branch = if i == last { "└─" } else { "├─" };
+        eprintln!("{DIM}{branch}{RESET} {RED}{cause}{RESET}");
     }
     eprintln!();
 }
