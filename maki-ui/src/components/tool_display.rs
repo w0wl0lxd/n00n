@@ -29,7 +29,7 @@ pub const TOOL_OUTPUT_MAX_LINES: usize = 7;
 pub const BASH_OUTPUT_MAX_LINES: usize = 10;
 pub const TOOL_BODY_INDENT: &str = "  ";
 pub const CODE_EXECUTION_OUTPUT_MAX_LINES: usize = 30;
-pub const TASK_OUTPUT_MAX_LINES: usize = 100;
+pub const TASK_OUTPUT_MAX_LINES: usize = 30;
 const BASH_WAITING_LABEL: &str = "Waiting for output...";
 const BASH_NO_OUTPUT_LABEL: &str = "No output.";
 const BASH_OUTPUT_SEPARATOR: &str = "──────";
@@ -384,7 +384,21 @@ impl ToolLineBuilder {
 
     fn push_markdown_body(&mut self, text: &str) {
         let style = theme::current().assistant;
-        let md_lines = text_to_lines(text, "", style, style, None, self.width);
+        let indent = TOOL_BODY_INDENT.len() as u16;
+        let mut md_lines = text_to_lines(
+            text,
+            "",
+            style,
+            style,
+            None,
+            self.width.saturating_sub(indent),
+        );
+        if let Some(last) = md_lines.last_mut() {
+            let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
+            if text.starts_with(TRUNCATION_PREFIX) {
+                *last = Line::from(Span::styled(text, theme::current().tool_dim));
+            }
+        }
         for mut line in md_lines {
             line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
             self.lines.push(line);
@@ -1041,32 +1055,15 @@ mod tests {
 
     #[test]
     fn task_output_body_visible() {
-        let msg = DisplayMessage {
-            role: DisplayRole::Tool {
-                id: "t1".into(),
-                status: ToolStatus::Success,
-                name: TASK_TOOL_NAME,
-            },
-            text: "Find auth\n**bold** and `code`".into(),
-            tool_input: None,
-            tool_output: Some(ToolOutput::Plain("**bold** and `code`".into())),
-            annotation: None,
-            plan_path: None,
-            timestamp: None,
-        };
+        let msg = task_msg("**bold** and `code`".into());
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
         let text = lines_text(&tl);
-        assert!(text.contains("bold"), "body content should be rendered");
-        assert!(text.contains("code"), "body content should be rendered");
+        assert!(text.contains("bold"));
+        assert!(text.contains("code"));
     }
 
-    #[test]
-    fn task_fallback_output_is_truncated() {
-        let long_output: String = (0..200)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let msg = DisplayMessage {
+    fn task_msg(output: String) -> DisplayMessage {
+        DisplayMessage {
             role: DisplayRole::Tool {
                 id: "t1".into(),
                 status: ToolStatus::Success,
@@ -1074,16 +1071,72 @@ mod tests {
             },
             text: "Find auth".into(),
             tool_input: None,
-            tool_output: Some(ToolOutput::Plain(long_output)),
+            tool_output: Some(ToolOutput::Plain(output)),
             annotation: None,
             plan_path: None,
             timestamp: None,
-        };
+        }
+    }
+
+    fn n_lines(n: usize) -> String {
+        (0..n)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn task_output_truncated_at_max_lines() {
+        let msg = task_msg(n_lines(200));
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
-        let text = lines_text(&tl);
+        let body_lines = tl.lines.len() - 1;
         assert!(
-            text.contains(TRUNCATION_PREFIX),
-            "task output in fallback path should be truncated"
+            body_lines <= TASK_OUTPUT_MAX_LINES + 1,
+            "expected at most {} body lines, got {body_lines}",
+            TASK_OUTPUT_MAX_LINES + 1,
+        );
+        let last = tl.lines.last().unwrap();
+        let truncation_span = last
+            .spans
+            .iter()
+            .find(|s| s.content.contains(TRUNCATION_PREFIX));
+        assert!(truncation_span.is_some());
+        assert_eq!(truncation_span.unwrap().style, theme::current().tool_dim);
+    }
+
+    #[test]
+    fn task_truncation_dim_after_code_block() {
+        let output = format!("```rust\nfn main() {{}}\n```\n{}", n_lines(40));
+        let msg = task_msg(output);
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
+        let last = tl.lines.last().unwrap();
+        let truncation_span = last
+            .spans
+            .iter()
+            .find(|s| s.content.contains(TRUNCATION_PREFIX));
+        assert!(truncation_span.is_some());
+        assert_eq!(truncation_span.unwrap().style, theme::current().tool_dim);
+    }
+
+    #[test]
+    fn task_hr_fits_within_indented_width() {
+        let width: u16 = 60;
+        let msg = task_msg("before\n\n---\n\nafter".into());
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), width);
+        let hr_line = tl
+            .lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.contains('─')));
+        assert!(hr_line.is_some());
+        let total_width: usize = hr_line
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .sum();
+        assert!(
+            total_width <= width as usize,
+            "HR ({total_width} chars) should fit in {width} cols"
         );
     }
 }
