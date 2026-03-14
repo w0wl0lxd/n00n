@@ -158,7 +158,7 @@ fn run_event_loop(
                 }
                 mock::MockEvent::Flush => app.flush_all_chats(),
                 mock::MockEvent::Agent(envelope) => {
-                    app.update(Msg::Agent(Box::new(envelope)));
+                    app.update(Msg::Agent(envelope));
                 }
             }
         }

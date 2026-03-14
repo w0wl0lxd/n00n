@@ -18,7 +18,7 @@ pub enum MockEvent {
     User(String),
     Error(String),
     Flush,
-    Agent(Envelope),
+    Agent(Box<Envelope>),
 }
 
 fn user(text: &str) -> MockEvent {
@@ -26,11 +26,11 @@ fn user(text: &str) -> MockEvent {
 }
 
 fn evt(event: AgentEvent) -> MockEvent {
-    MockEvent::Agent(Envelope {
+    MockEvent::Agent(Box::new(Envelope {
         event,
         subagent: None,
         run_id: 1,
-    })
+    }))
 }
 
 fn sub_evt(event: AgentEvent, parent_id: &str, name: &str, prompt: Option<&str>) -> MockEvent {
@@ -44,7 +44,7 @@ fn sub_evt_with(
     prompt: Option<&str>,
     model: Option<&str>,
 ) -> MockEvent {
-    MockEvent::Agent(Envelope {
+    MockEvent::Agent(Box::new(Envelope {
         event,
         subagent: Some(SubagentInfo {
             parent_tool_use_id: parent_id.into(),
@@ -53,7 +53,7 @@ fn sub_evt_with(
             model: model.map(String::from),
         }),
         run_id: 1,
-    })
+    }))
 }
 
 fn tool_start(id: &str, tool: &'static str, summary: &str, input: Option<ToolInput>) -> AgentEvent {
@@ -157,6 +157,7 @@ pub fn question_tool_id() -> &'static str {
     QUESTION_TOOL_ID
 }
 
+#[allow(clippy::vec_init_then_push)]
 pub fn mock_events() -> Vec<MockEvent> {
     let mut events = Vec::new();
 
