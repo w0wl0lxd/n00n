@@ -1,3 +1,8 @@
+//! Executes Python in the monty sandbox and bridges tool calls back into the agent.
+//!
+//! Sync tool calls use `block_on`; async tool calls go through `AsyncResolver` to batch concurrent awaits.
+//! Stdout is flushed to the UI on STREAM_FLUSH_INTERVAL so output appears incrementally.
+
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::time::{Duration, Instant};

@@ -1,3 +1,8 @@
+//! Z.AI provider: OpenAI-compatible wire format wrapping Anthropic-style messages and tools.
+//! Anthropic content/tool shapes are converted on the fly; `reasoning_content` and `content`
+//! are concatenated into a single text block. Error 1113 (insufficient funds) is mapped to
+//! 402 and treated as non-retryable to avoid pointless retries.
+
 use std::env;
 
 use flume::Sender;

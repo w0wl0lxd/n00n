@@ -1,3 +1,6 @@
+//! Persistent storage under `~/.maki`. `atomic_write` writes to `.tmp` then renames for crash
+//! safety. `atomic_write_permissions` sets file mode before rename (for auth keys at 0600).
+
 pub mod auth;
 pub mod input_history;
 pub mod log;

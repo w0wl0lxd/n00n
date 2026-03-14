@@ -1,3 +1,7 @@
+//! Bidirectional JSON <-> `MontyObject` conversion.
+//! Lossy corners: NaN floats become `null` (JSON can't represent NaN),
+//! BigInts that overflow `i64` become strings, and tuples become arrays.
+
 use monty::MontyObject;
 use serde_json::Value;
 

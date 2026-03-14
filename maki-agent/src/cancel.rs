@@ -1,3 +1,8 @@
+//! Cooperative cancellation with parent-to-child propagation.
+//!
+//! `CancelTrigger` fires on Drop, so cleanup happens even if the trigger is forgotten.
+//! `cancelled()` uses a double-check around the listener to close the TOCTOU window between flag read and listener registration.
+
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -1,3 +1,8 @@
+//! Skill discovery: YAML-fronted Markdown files that expose named prompts to the agent.
+//!
+//! Project skills (found by walking ancestors up to `.git`) override global (`$HOME`) skills by name.
+//! Frontmatter is minimal: only `name:` and `description:` lines are parsed; full YAML is not required.
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};

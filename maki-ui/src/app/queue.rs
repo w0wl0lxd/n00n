@@ -1,3 +1,7 @@
+//! Message queue for input typed while the agent is busy. The front item is sent to
+//! the agent immediately via `cmd_tx`; the next is sent only after `QueueItemConsumed`
+//! is received, so messages are delivered one at a time in order.
+
 use crate::components::queue_panel::QueueEntry;
 use crate::theme;
 use maki_agent::AgentInput;

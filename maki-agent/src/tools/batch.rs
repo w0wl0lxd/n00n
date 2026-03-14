@@ -1,3 +1,8 @@
+//! Runs up to 25 tool calls concurrently in a single agent turn.
+//!
+//! Nesting (batch inside batch) is explicitly rejected.
+//! `BatchProgress` events are emitted as each child tool completes so the UI can update in real time.
+
 use std::fmt::Write;
 
 use crate::agent::{ResolvedCall, resolve_tool};

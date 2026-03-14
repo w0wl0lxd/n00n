@@ -1,3 +1,8 @@
+//! Drives the monty interpreter through its execution states.
+//! Sync tool calls resolve immediately; async (`await`) calls are batched via `ResolveFutures`
+//! and dispatched concurrently through [`AsyncResolver`], with results fed back one by one.
+//! `OsCall` is always rejected; the sandbox never touches the OS directly.
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::Duration;

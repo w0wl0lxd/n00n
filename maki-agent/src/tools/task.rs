@@ -1,3 +1,9 @@
+//! Spawns a child agent (subagent) with a restricted tool set.
+//!
+//! The child's model tier is capped at the parent's tier, so a weak parent cannot spawn a strong child.
+//! Events are forwarded to the parent with `SubagentInfo` attached; Done/Error/ToolOutput/ToolPending are filtered.
+//! Child cancellation is linked to the parent via `cancel.child()`, so parent cancellation propagates.
+
 use std::sync::Arc;
 
 use crate::{AgentEvent, EventSender, SubagentInfo, ToolOutput};

@@ -1,3 +1,7 @@
+//! Provider error types with retry semantics.
+//! Retryable: 429, 5xx, IO, HTTP transport. Non-retryable: other 4xx, JSON parse, config,
+//! channel closed, user cancel. `user_message()` returns human-readable text for each variant.
+
 use isahc::AsyncReadResponseExt;
 
 #[derive(Debug, thiserror::Error)]

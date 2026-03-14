@@ -1,3 +1,8 @@
+//! Session persistence with CWD-indexed lookup.
+//! `cwd_latest.json` maps working directories to their most recent session ID.
+//! Version check prevents loading incompatible formats. Titles are auto-generated
+//! from the first user message, truncated at a word boundary.
+
 use std::collections::HashMap;
 use std::fs;
 use std::io;

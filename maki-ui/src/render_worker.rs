@@ -1,3 +1,7 @@
+//! Thread pool for syntax highlighting. Threads scale up to CPU count and exit after
+//! `IDLE_TIMEOUT` (5 s) of inactivity. Jobs carry monotonic u64 IDs so callers can
+//! discard stale results.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::thread;

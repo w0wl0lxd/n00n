@@ -1,3 +1,7 @@
+//! Panic-catching concurrent task set for tool execution.
+//!
+//! Tool panics must not crash the agent; every spawned task is wrapped in `catch_unwind` and returns `Err(String)` instead.
+
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 

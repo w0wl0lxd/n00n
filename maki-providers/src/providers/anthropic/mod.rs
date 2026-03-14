@@ -1,3 +1,8 @@
+//! Anthropic API provider with prompt caching and OAuth auto-refresh.
+//! Cache breakpoints: 1 on tools (last element), 1 on system prompt, 2 on the last two messages
+//! (last content block each). This consumes all 4 of Anthropic's allowed breakpoints.
+//! 401/403 responses trigger an OAuth token refresh before retrying (see `is_auth_expired_error`).
+
 use std::sync::Mutex;
 
 use flume::Sender;

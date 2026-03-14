@@ -1,3 +1,10 @@
+//! Turn-based agent loop: stream response, parallel tool calls, repeat.
+//!
+//! Doom-loop guard aborts after 3 identical consecutive tool calls.
+//! Context overflow triggers auto-compaction (COMPACTION_BUFFER tokens before the limit).
+//! `sanitize_cancelled_history` patches any ToolUse without a ToolResult so the API never sees an invalid conversation.
+//! Subdirectory instruction files (AGENTS.md, CLAUDE.md, …) are discovered by walking up to the `.git` root.
+
 use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::fs;

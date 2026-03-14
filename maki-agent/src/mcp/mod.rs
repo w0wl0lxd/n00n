@@ -1,3 +1,8 @@
+//! MCP client: manages transports and routes tool calls to servers.
+//!
+//! Tool names are namespaced as `server__tool` (double underscore) to avoid collisions across servers.
+//! Names are leaked into `&'static str` so they can be used in tool descriptors without lifetime friction.
+
 pub mod config;
 pub mod error;
 pub mod http;

@@ -1,3 +1,7 @@
+//! Elm-style `update(Msg) -> Vec<Action>`; side effects are dispatched by the caller.
+//! Double-esc: first esc flashes a hint, second within `FLASH_DURATION` cancels/rewinds.
+//! `run_id` increments each run so stale events from previous agent runs are ignored.
+
 mod image_paste;
 mod mode;
 mod mouse;

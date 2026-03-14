@@ -1,3 +1,9 @@
+//! Async agent loop with tools.
+//!
+//! `AgentMode::Build` executes tools freely; `Plan(path)` restricts writes to the plan file only.
+//! `ExtractedCommand` injects control signals (interrupt, cancel, compact) into a running agent.
+//! `AgentInput::effective_message` prepends plan context to the prompt when a pending plan exists in Build mode.
+
 pub mod agent;
 pub mod cancel;
 pub mod mcp;

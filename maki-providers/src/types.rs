@@ -1,3 +1,8 @@
+//! Message and content types for provider communication.
+//! `Message.display_text`: `Some("")` marks a message as synthetic (sent to the API but hidden
+//! from the UI). `user_text()` returns `None` for these, so system-injected messages
+//! (cancel markers, compaction prompts) stay invisible without a separate type.
+
 use std::sync::Arc;
 
 use maki_storage::sessions::TitleSource;
@@ -208,6 +213,7 @@ pub struct StreamResponse {
 
 #[cfg(test)]
 mod tests {
+
     use std::sync::Arc;
 
     use super::*;

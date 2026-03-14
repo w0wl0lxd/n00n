@@ -1,3 +1,7 @@
+//! Derives `schema()` (JSON Schema for the API) and `parse_input()` (deserialize from API JSON)
+//! from struct fields. `#[param(description = "...")]` maps to JSON Schema description.
+//! Optional fields (`Option<T>`) are excluded from `required`. `Vec` fields emit `"type": "array"`.
+
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;

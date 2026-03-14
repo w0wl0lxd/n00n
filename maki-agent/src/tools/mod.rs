@@ -1,3 +1,11 @@
+//! Tool registry and dispatch.
+//!
+//! `register_tools!` enforces unique names at compile time and generates `ToolCall` + dispatch glue.
+//! Plan mode only permits writes to the designated plan file; all other write-like tools are rejected.
+//! `Deadline` lets batch/code_execution cap child tool timeouts without exceeding their own budget.
+//! `RESEARCH_SUBAGENT_TOOLS` is read-only; `GENERAL_SUBAGENT_TOOLS` is the full set.
+//! `strip_stray_quotes` removes extra quotes that LLMs sometimes wrap around string parameters.
+
 mod bash;
 mod batch;
 mod code_execution;

@@ -1,3 +1,7 @@
+//! `history_to_display` rebuilds UI messages from raw API history + stored tool outputs.
+//! Stored `ToolOutput` gets syntax highlighting; absent outputs fall back to plain text
+//! from `ToolResult`. Webfetch bodies are hidden to save screen space.
+
 use std::collections::HashMap;
 use std::path::Path;
 

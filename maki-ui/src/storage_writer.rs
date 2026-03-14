@@ -1,3 +1,7 @@
+//! Coalescing write-behind cache: the UI posts session snapshots and the writer thread
+//! always picks up only the latest. A `bounded(1)` notify channel ensures rapid saves
+//! collapse rather than queue. Shutdown drains with a timeout.
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
