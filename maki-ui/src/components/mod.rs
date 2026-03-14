@@ -154,13 +154,13 @@ impl DisplayMessage {
                         | ToolOutput::TodoList(_)),
                     ) => {
                         out.push('\n');
-                        out.push_str(&structured.as_text());
+                        out.push_str(&structured.as_display_text());
                     }
                     Some(ToolOutput::Batch { entries, .. }) => {
                         for entry in entries {
                             out.push_str(&format!("\n  {} {}", entry.tool, entry.summary));
                             if let Some(output) = &entry.output {
-                                let text = output.as_text();
+                                let text = output.as_display_text();
                                 if !text.is_empty() {
                                     out.push('\n');
                                     out.push_str(&text);
@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_text_tool_structured_output_uses_as_text() {
+    fn copy_text_tool_structured_output_uses_as_display_text() {
         let mut msg = tool_msg("read /src/main.rs\nignored body");
         msg.tool_output = Some(ToolOutput::ReadCode {
             path: "main.rs".into(),

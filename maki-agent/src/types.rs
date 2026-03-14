@@ -220,6 +220,14 @@ impl ToolOutput {
 
     pub fn as_text(&self) -> String {
         match self {
+            Self::Diff { summary, .. } => summary.clone(),
+            Self::TodoList(_) => "ok".into(),
+            _ => self.as_display_text(),
+        }
+    }
+
+    pub fn as_display_text(&self) -> String {
+        match self {
             Self::Plain(s) => s.clone(),
             Self::ReadCode {
                 start_line, lines, ..
@@ -480,7 +488,7 @@ mod tests {
     use test_case::test_case;
 
     #[test]
-    fn as_text_diff_covers_all_line_types_and_multiple_hunks() {
+    fn as_display_text_diff_covers_all_line_types_and_multiple_hunks() {
         let output = ToolOutput::Diff {
             path: "src/main.rs".into(),
             hunks: vec![
@@ -502,19 +510,20 @@ mod tests {
             ],
             summary: "Updated value".into(),
         };
-        let text = output.as_text();
-        assert!(text.starts_with("Updated value"));
-        assert!(text.contains("--- src/main.rs"));
-        assert!(text.contains("+++ src/main.rs"));
-        assert!(text.contains("  keep"));
-        assert!(text.contains("- old"));
-        assert!(text.contains("+ new"));
-        assert!(text.contains("- c"));
-        assert!(text.contains("+ d"));
+        let display = output.as_display_text();
+        assert!(display.starts_with("Updated value"));
+        assert!(display.contains("--- src/main.rs"));
+        assert!(display.contains("+++ src/main.rs"));
+        assert!(display.contains("  keep"));
+        assert!(display.contains("- old"));
+        assert!(display.contains("+ new"));
+        assert!(display.contains("- c"));
+        assert!(display.contains("+ d"));
+        assert_eq!(output.as_text(), "Updated value");
     }
 
     #[test]
-    fn as_text_todolist_formats_all_statuses() {
+    fn as_display_text_todolist_formats_all_statuses() {
         let output = ToolOutput::TodoList(vec![
             TodoItem {
                 content: "done".into(),
@@ -537,11 +546,12 @@ mod tests {
                 priority: TodoPriority::Low,
             },
         ]);
-        let text = output.as_text();
-        assert!(text.contains("[✓] (high) done"));
-        assert!(text.contains("[•] (medium) wip"));
-        assert!(text.contains("[ ] (low) todo"));
-        assert!(text.contains("[x] (low) nope"));
+        let display = output.as_display_text();
+        assert!(display.contains("[✓] (high) done"));
+        assert!(display.contains("[•] (medium) wip"));
+        assert!(display.contains("[ ] (low) todo"));
+        assert!(display.contains("[x] (low) nope"));
+        assert_eq!(output.as_text(), "ok");
     }
 
     #[test_case(vec!["src/a.rs".into(), "src/b.rs".into()], "src/a.rs\nsrc/b.rs" ; "with_files")]
@@ -625,27 +635,11 @@ mod tests {
         ]);
         assert!(matches!(msg.role, Role::User));
         assert_eq!(msg.content.len(), 2);
-
-        let ContentBlock::ToolResult {
-            tool_use_id,
-            is_error,
-            ..
-        } = &msg.content[0]
-        else {
-            panic!("expected ToolResult");
-        };
-        assert_eq!(tool_use_id, "t1");
-        assert!(!is_error);
-
-        let ContentBlock::ToolResult {
-            tool_use_id,
-            is_error,
-            ..
-        } = &msg.content[1]
-        else {
-            panic!("expected ToolResult");
-        };
-        assert_eq!(tool_use_id, "t2");
-        assert!(is_error);
+        assert!(
+            matches!(&msg.content[0], ContentBlock::ToolResult { tool_use_id, is_error, .. } if tool_use_id == "t1" && !is_error)
+        );
+        assert!(
+            matches!(&msg.content[1], ContentBlock::ToolResult { tool_use_id, is_error, .. } if tool_use_id == "t2" && *is_error)
+        );
     }
 }
