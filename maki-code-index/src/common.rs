@@ -7,6 +7,8 @@ use std::fmt::Write;
 
 use tree_sitter::Node;
 
+pub(crate) const FIELD_TRUNCATE_THRESHOLD: usize = 8;
+
 pub(crate) fn node_text<'a>(node: Node<'a>, source: &'a [u8]) -> &'a str {
     node.utf8_text(source).unwrap_or("")
 }
@@ -111,7 +113,6 @@ pub(crate) fn vis_prefix<'a>(node: Node<'a>, source: &'a [u8]) -> &'a str {
     ""
 }
 
-#[cfg(feature = "lang-rust")]
 pub(crate) fn prefixed(vis: &str, rest: std::fmt::Arguments<'_>) -> String {
     if vis.is_empty() {
         format!("{rest}")
@@ -202,7 +203,7 @@ impl SkeletonEntry {
 }
 
 pub(crate) trait LanguageExtractor {
-    fn extract_node(&self, node: Node, source: &[u8], attrs: &[Node]) -> Option<SkeletonEntry>;
+    fn extract_nodes(&self, node: Node, source: &[u8], attrs: &[Node]) -> Vec<SkeletonEntry>;
     fn is_test_node(&self, node: Node, source: &[u8], attrs: &[Node]) -> bool;
     fn is_doc_comment(&self, node: Node, source: &[u8]) -> bool;
     fn is_module_doc(&self, node: Node, source: &[u8]) -> bool;

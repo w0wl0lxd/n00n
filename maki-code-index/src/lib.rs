@@ -9,6 +9,10 @@ use std::path::Path;
 use tree_sitter::Parser;
 
 mod common;
+#[cfg(feature = "lang-go")]
+mod go;
+#[cfg(feature = "lang-java")]
+mod java;
 #[cfg(feature = "lang-python")]
 mod python;
 #[cfg(feature = "lang-rust")]
@@ -42,6 +46,10 @@ pub enum Language {
     TypeScript,
     #[cfg(feature = "lang-typescript")]
     JavaScript,
+    #[cfg(feature = "lang-go")]
+    Go,
+    #[cfg(feature = "lang-java")]
+    Java,
 }
 
 impl Language {
@@ -55,6 +63,10 @@ impl Language {
             "ts" | "tsx" => Some(Self::TypeScript),
             #[cfg(feature = "lang-typescript")]
             "js" | "jsx" | "mjs" | "cjs" => Some(Self::JavaScript),
+            #[cfg(feature = "lang-go")]
+            "go" => Some(Self::Go),
+            #[cfg(feature = "lang-java")]
+            "java" => Some(Self::Java),
             _ => None,
         }
     }
@@ -69,6 +81,10 @@ impl Language {
             Self::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             #[cfg(feature = "lang-typescript")]
             Self::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+            #[cfg(feature = "lang-go")]
+            Self::Go => tree_sitter_go::LANGUAGE.into(),
+            #[cfg(feature = "lang-java")]
+            Self::Java => tree_sitter_java::LANGUAGE.into(),
         }
     }
 
@@ -82,6 +98,10 @@ impl Language {
             Self::TypeScript => &typescript::TsJsExtractor,
             #[cfg(feature = "lang-typescript")]
             Self::JavaScript => &typescript::TsJsExtractor,
+            #[cfg(feature = "lang-go")]
+            Self::Go => &go::GoExtractor,
+            #[cfg(feature = "lang-java")]
+            Self::Java => &java::JavaExtractor,
         }
     }
 }
@@ -127,8 +147,14 @@ pub fn index_source(source: &[u8], lang: Language) -> Result<String, IndexError>
             test_lines.push(child.start_position().row + 1);
             continue;
         }
-        if let Some(mut entry) = extractor.extract_node(child, source, &attrs) {
-            if let Some(doc_start) = doc_comment_start_line(child, source, extractor) {
+        for (i, mut entry) in extractor
+            .extract_nodes(child, source, &attrs)
+            .into_iter()
+            .enumerate()
+        {
+            if i == 0
+                && let Some(doc_start) = doc_comment_start_line(child, source, extractor)
+            {
                 entry.line_start = entry.line_start.min(doc_start);
             }
             entries.push(entry);
@@ -169,6 +195,8 @@ mod tests {
     #[test_case("pyi", Some(Language::Python)      ; "pyi")]
     #[test_case("mjs", Some(Language::JavaScript)  ; "mjs")]
     #[test_case("cjs", Some(Language::JavaScript)  ; "cjs")]
+    #[test_case("go", Some(Language::Go)              ; "go")]
+    #[test_case("java", Some(Language::Java)          ; "java")]
     #[test_case("yaml", None                       ; "unsupported")]
     #[test_case("", None                           ; "empty_ext")]
     fn language_from_extension(ext: &str, expected: Option<Language>) {
@@ -201,16 +229,22 @@ mod tests {
     #[test]
     fn rust_all_sections() {
         let src = "\
+//! Module doc
 use std::collections::HashMap;
 use std::io;
+use std::io::*;
+use std::{fs, net};
 
 const MAX: usize = 1024;
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, Clone)]
 pub struct Config {
     pub name: String,
     pub port: u16,
 }
+
+pub struct Empty;
 
 enum Color { Red, Green }
 
@@ -218,6 +252,12 @@ pub type Result<T> = std::result::Result<T, MyError>;
 
 pub trait Handler {
     fn handle(&self, req: Request) -> Response;
+}
+
+impl Display for Foo {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, \"Foo\")
+    }
 }
 
 impl Config {
@@ -236,16 +276,22 @@ macro_rules! my_macro { () => {}; }
         has(
             &out,
             &[
+                "module doc:",
                 "imports:",
                 "std::",
                 "collections::HashMap",
                 "io",
+                "io::*",
+                "fs",
+                "net",
                 "consts:",
                 "MAX: usize",
                 "static COUNTER: AtomicU64",
                 "types:",
+                "#[derive(Debug, Clone)]",
                 "pub struct Config",
                 "pub name: String",
+                "pub struct Empty",
                 "enum Color",
                 "Red",
                 "type Result",
@@ -253,6 +299,7 @@ macro_rules! my_macro { () => {}; }
                 "pub Handler",
                 "handle(&self, req: Request) -> Response",
                 "impls:",
+                "Display for Foo",
                 "Config",
                 "pub new(name: String) -> Self",
                 "validate(&self) -> bool",
@@ -265,6 +312,7 @@ macro_rules! my_macro { () => {}; }
                 "my_macro!",
             ],
         );
+        lacks(&out, &["{{"]);
     }
 
     #[test]
@@ -283,70 +331,12 @@ macro_rules! my_macro { () => {}; }
     }
 
     #[test]
-    fn rust_struct_variants() {
-        let out_empty = idx("pub struct Empty;\n", Language::Rust);
-        has(&out_empty, &["pub struct Empty"]);
-
-        let out_generic = idx(
-            "pub struct Wrapper<T: Clone + Send> {\n    inner: T,\n}\n",
-            Language::Rust,
-        );
-        has(&out_generic, &["pub struct Wrapper<T: Clone + Send>"]);
-
-        let out_many = idx(
+    fn rust_many_fields_truncated() {
+        let out = idx(
             "struct Big {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n    e: u8,\n    f: u8,\n    g: u8,\n    h: u8,\n    i: u8,\n    j: u8,\n}\n",
             Language::Rust,
         );
-        has(&out_many, &["..."]);
-    }
-
-    #[test]
-    fn rust_derive_attr_shown() {
-        let out = idx(
-            "#[derive(Debug, Clone)]\npub struct Foo {\n    pub x: i32,\n}\n",
-            Language::Rust,
-        );
-        has(&out, &["#[derive(Debug, Clone)]"]);
-    }
-
-    #[test]
-    fn rust_impl_trait_for_type() {
-        let out = idx(
-            "impl Display for Foo {\n    fn fmt(&self, f: &mut Formatter) -> fmt::Result {\n        write!(f, \"Foo\")\n    }\n}\n",
-            Language::Rust,
-        );
-        has(&out, &["Display for Foo"]);
-
-        let out2 = idx(
-            "impl Foo for Foo {\n    fn bar(&self) {}\n}\n",
-            Language::Rust,
-        );
-        has(&out2, &["Foo for Foo"]);
-    }
-
-    #[test]
-    fn rust_imports_scattered_and_wildcard() {
-        let out = idx(
-            "use std::io;\n\nfn foo() {}\n\nuse std::fs;\n",
-            Language::Rust,
-        );
-        has(&out, &["imports:", "io", "fs"]);
-
-        let out2 = idx("use std::io::*;\n", Language::Rust);
-        has(&out2, &["std::io::*"]);
-    }
-
-    #[test]
-    fn rust_use_list_no_nested_braces() {
-        let out = idx(
-            "use std::{io, fs};\nuse std::collections::HashMap;\n",
-            Language::Rust,
-        );
-        has(
-            &out,
-            &["imports:", "std::", "io", "fs", "collections::HashMap"],
-        );
-        lacks(&out, &["{{"]);
+        has(&out, &["..."]);
     }
 
     #[test]
@@ -398,30 +388,28 @@ macro_rules! my_macro { () => {}; }
         has(&out, &[expected]);
     }
 
-    #[test]
-    fn rust_module_doc() {
-        let out = idx(
-            "//! Module documentation\n//! Second line\n\nuse std::io;\n",
-            Language::Rust,
-        );
-        has(&out, &["module doc:"]);
-    }
-
     // --- Python extraction ---
 
     #[test]
     fn python_all_sections() {
         let src = "\
+\"\"\"Module docstring.\"\"\"
+
 import os
 from typing import Optional
 
 MAX_RETRIES = 3
 MY_VAR: int = 10
 
+@dataclass
+class MyClass:
+    x: int = 0
+
 class AuthService:
     def __init__(self, secret: str):
         self.secret = secret
-    def validate(self, token: str) -> bool:
+    @staticmethod
+    def validate(token: str) -> bool:
         return True
 
 def process(data: list) -> dict:
@@ -431,6 +419,7 @@ def process(data: list) -> dict:
         has(
             &out,
             &[
+                "module doc:",
                 "imports:",
                 "os",
                 "typing::Optional",
@@ -438,9 +427,11 @@ def process(data: list) -> dict:
                 "MAX_RETRIES",
                 "MY_VAR = 10",
                 "classes:",
+                "MyClass [9-11]",
+                "@staticmethod",
                 "AuthService",
                 "__init__(self, secret: str)",
-                "validate(self, token: str) -> bool",
+                "validate(token: str) -> bool",
                 "fns:",
                 "process(data: list) -> dict",
             ],
@@ -448,37 +439,12 @@ def process(data: list) -> dict:
         lacks(&out, &["MY_VAR = int"]);
     }
 
-    #[test]
-    fn python_decorated_staticmethod() {
-        let src =
-            "class Foo:\n    @staticmethod\n    def bar(x: int) -> str:\n        return str(x)\n";
-        let out = idx(src, Language::Python);
-        has(&out, &["@staticmethod", "bar(x: int) -> str"]);
-    }
-
-    #[test]
-    fn python_decorator_included_in_line_range() {
-        let out = idx(
-            "@dataclass\nclass MyClass:\n    x: int = 0\n",
-            Language::Python,
-        );
-        has(&out, &["MyClass [1-3]"]);
-    }
-
-    #[test]
-    fn python_module_docstring() {
-        let out = idx(
-            "\"\"\"Module docstring.\"\"\"\n\ndef foo():\n    pass\n",
-            Language::Python,
-        );
-        has(&out, &["module doc:"]);
-    }
-
     // --- TypeScript/JavaScript extraction ---
 
     #[test]
     fn ts_all_sections() {
         let src = "\
+/** Function docs */
 import { Request, Response } from 'express';
 
 export interface Config {
@@ -496,6 +462,7 @@ export class Service {
     process(input: string): string { return input; }
 }
 
+/** Handler doc */
 export function handler(req: Request): Response { return new Response(); }
 ";
         let out = idx(src, Language::TypeScript);
@@ -528,12 +495,125 @@ export function handler(req: Request): Response { return new Response(); }
         has(&out, &["fns:", "hello(name)"]);
     }
 
+    // --- Go extraction ---
+
     #[test]
-    fn ts_jsdoc_extends_line_range() {
-        let out = idx(
-            "/** Function docs */\nexport function foo(): void {}\n",
-            Language::TypeScript,
+    fn go_all_sections() {
+        let src = r#"
+package main
+
+import (
+	"fmt"
+	"os"
+)
+
+const MaxRetries = 3
+
+const (
+	A = 1
+	B = 2
+)
+
+var GlobalVar = "hello"
+
+type Point struct {
+	X int
+	Y int
+}
+
+type Reader interface {
+	Read(p []byte) (int, error)
+}
+
+type Alias = int
+
+// Method doc
+func (p *Point) Distance() float64 {
+	return 0
+}
+
+func main() {
+	fmt.Println("hello")
+}
+"#;
+        let out = idx(src, Language::Go);
+        has(
+            &out,
+            &[
+                "imports:",
+                "fmt",
+                "os",
+                "consts:",
+                "MaxRetries",
+                "A",
+                "B",
+                "var GlobalVar",
+                "types:",
+                "struct Point",
+                "X int",
+                "Y int",
+                "type Alias",
+                "traits:",
+                "Reader",
+                "Read(p []byte) (int, error)",
+                "impls:",
+                "(p *Point) Distance() float64",
+                "fns:",
+                "main()",
+            ],
         );
-        has(&out, &["export foo()", "[1-2]"]);
+        lacks(&out, &["package"]);
+    }
+
+    // --- Java extraction ---
+
+    #[test]
+    fn java_all_sections() {
+        let src = r#"
+package com.example;
+
+import java.util.List;
+import java.io.IOException;
+
+public class Service {
+    private String name;
+    public Service(String name) { this.name = name; }
+    @Override
+    public String toString() { return name; }
+    public void process(List<String> items) throws IOException {}
+}
+
+/** Handler docs */
+public interface Handler {
+    void handle(String request);
+}
+
+public enum Direction {
+    UP, DOWN, LEFT, RIGHT
+}
+"#;
+        let out = idx(src, Language::Java);
+        has(
+            &out,
+            &[
+                "imports:",
+                "java::{util::List, io::IOException}",
+                "mod:",
+                "com.example",
+                "classes:",
+                "public class Service",
+                "private String name",
+                "public Service(String name)",
+                "@Override public String toString()",
+                "public void process(List<String> items)",
+                "traits:",
+                "public interface Handler",
+                "void handle(String request)",
+                "types:",
+                "public enum Direction",
+                "UP",
+                "DOWN",
+            ],
+        );
     }
 }

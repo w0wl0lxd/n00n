@@ -133,32 +133,32 @@ impl PythonExtractor {
 }
 
 impl LanguageExtractor for PythonExtractor {
-    fn extract_node(&self, node: Node, source: &[u8], _attrs: &[Node]) -> Option<SkeletonEntry> {
-        match node.kind() {
+    fn extract_nodes(&self, node: Node, source: &[u8], _attrs: &[Node]) -> Vec<SkeletonEntry> {
+        let entry = match node.kind() {
             "import_statement" | "import_from_statement" => self.extract_import(node, source),
             "class_definition" => self.extract_class(node, source),
             "function_definition" => self.extract_function(node, source),
             "decorated_definition" => {
                 let inner = find_child(node, "class_definition")
-                    .or_else(|| find_child(node, "function_definition"))?;
-                if inner.kind() == "class_definition" {
-                    let mut entry = self.extract_class(inner, source)?;
-                    entry.line_start = node.start_position().row + 1;
-                    Some(entry)
-                } else {
-                    self.extract_function(node, source)
+                    .or_else(|| find_child(node, "function_definition"));
+                match inner {
+                    Some(i) if i.kind() == "class_definition" => {
+                        self.extract_class(i, source).map(|mut entry| {
+                            entry.line_start = node.start_position().row + 1;
+                            entry
+                        })
+                    }
+                    Some(_) => self.extract_function(node, source),
+                    None => None,
                 }
             }
-            "expression_statement" => {
-                let child = node.child(0)?;
-                if child.kind() == "assignment" {
-                    self.extract_assignment(child, source)
-                } else {
-                    None
-                }
-            }
+            "expression_statement" => node
+                .child(0)
+                .filter(|c| c.kind() == "assignment")
+                .and_then(|c| self.extract_assignment(c, source)),
             _ => None,
-        }
+        };
+        entry.into_iter().collect()
     }
 
     fn is_test_node(&self, _node: Node, _source: &[u8], _attrs: &[Node]) -> bool {

@@ -10,7 +10,7 @@ use crate::common::{
     node_text, prefixed, relevant_attr_texts, vis_prefix,
 };
 
-const FIELD_TRUNCATE_THRESHOLD: usize = 8;
+use crate::common::FIELD_TRUNCATE_THRESHOLD;
 
 pub(crate) struct RustExtractor;
 
@@ -224,8 +224,8 @@ impl RustExtractor {
 }
 
 impl LanguageExtractor for RustExtractor {
-    fn extract_node(&self, node: Node, source: &[u8], attrs: &[Node]) -> Option<SkeletonEntry> {
-        match node.kind() {
+    fn extract_nodes(&self, node: Node, source: &[u8], attrs: &[Node]) -> Vec<SkeletonEntry> {
+        let entry = match node.kind() {
             "use_declaration" => self.extract_use(node, source),
             "struct_item" | "enum_item" | "union_item" => {
                 self.extract_struct_or_enum(node, source, attrs)
@@ -238,7 +238,8 @@ impl LanguageExtractor for RustExtractor {
             "macro_definition" => self.extract_macro(node, source),
             "type_item" => self.extract_type_alias(node, source),
             _ => None,
-        }
+        };
+        entry.into_iter().collect()
     }
 
     fn is_attr(&self, node: Node) -> bool {

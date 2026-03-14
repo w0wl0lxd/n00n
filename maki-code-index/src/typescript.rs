@@ -202,8 +202,8 @@ impl TsJsExtractor {
 }
 
 impl LanguageExtractor for TsJsExtractor {
-    fn extract_node(&self, node: Node, source: &[u8], _attrs: &[Node]) -> Option<SkeletonEntry> {
-        match node.kind() {
+    fn extract_nodes(&self, node: Node, source: &[u8], _attrs: &[Node]) -> Vec<SkeletonEntry> {
+        let entry = match node.kind() {
             "import_statement" => self.extract_import(node, source),
             "class_declaration" => self.extract_class(node, source),
             "function_declaration" => self.extract_function(node, source),
@@ -213,7 +213,8 @@ impl LanguageExtractor for TsJsExtractor {
             "lexical_declaration" => self.extract_lexical_declaration(node, source),
             "export_statement" => self.extract_export_statement(node, source),
             _ => None,
-        }
+        };
+        entry.into_iter().collect()
     }
 
     fn is_test_node(&self, _node: Node, _source: &[u8], _attrs: &[Node]) -> bool {
