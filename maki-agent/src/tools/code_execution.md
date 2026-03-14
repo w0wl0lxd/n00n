@@ -1,15 +1,15 @@
 Execute Python code in a sandboxed interpreter. Tools are available as callable functions.
 
-ALWAYS USE THE CODE_EXECUTION TOOL WHEN YOU HAVE MULTIPLE DEPENDENT TOOL CALLS. This dramatically improves performance.
+Use for dependent/chained tool calls and filtering/processing results. This dramatically improves performance over sequential tool calls. Do NOT use for independent parallel calls (use batch instead).
 
-Use this to reduce token usage and latency by:
-- Processing large tool outputs in code (filter/aggregate/transform) instead of returning them to the conversation
-- Chaining dependent tool calls where intermediate results don't need reasoning
-- Running loops over many items (batch file checks, multi-file search, bulk operations)
-- Performing computation on tool outputs (counting, sorting, formatting, deduplication)
+Good use cases:
+- Chaining dependent calls where output of one feeds into another
+- Processing/filtering large tool outputs (aggregate/transform/count)
+- Running loops over many items
 - Filtering large webfetch / websearch results
 
 Do NOT use for:
+- Multiple independent tool calls with no processing (use batch)
 - Simple single-tool calls
 - When you need to reason about intermediate results
 

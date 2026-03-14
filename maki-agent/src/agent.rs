@@ -54,7 +54,7 @@ const EFFICIENCY_TIERS: &[(&str, &[&str], &str)] = &[
     (
         "Best",
         &[CODE_EXECUTION_TOOL_NAME, BATCH_TOOL_NAME, TASK_TOOL_NAME],
-        "Batch/chained calls, delegatable work",
+        "batch: parallel, code_execution: chained/filtering, task: delegation",
     ),
     (
         "Good",

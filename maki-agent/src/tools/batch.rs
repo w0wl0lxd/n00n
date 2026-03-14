@@ -60,8 +60,9 @@ impl Batch {
     pub const EXAMPLES: Option<&str> = Some(
         r#"[
   {"tool_calls": [
-    {"tool": "read", "parameters": {"path": "/home/user/project/src/main.rs"}},
-    {"tool": "grep", "parameters": {"pattern": "TODO", "include": "*.rs"}}
+    {"tool": "glob", "parameters": {"pattern": "src/**/*.ts"}},
+    {"tool": "grep", "parameters": {"pattern": "import", "include": "*.ts"}},
+    {"tool": "read", "parameters": {"path": "package.json"}}
   ]}
 ]"#,
     );

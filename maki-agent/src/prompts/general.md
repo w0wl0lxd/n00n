@@ -7,8 +7,7 @@ Environment:
 - Platform: {platform}
 
 # Tool usage
-- **Prefer code_execution** when you need 2+ tool calls, dependent calls, or any filtering/processing of results.
-- Use batch only when all calls are independent and you need full unprocessed output.
+- **Use batch** for 2+ independent parallel calls. Use code_execution only for dependent/chained calls or filtering/processing results.
 - Reserve bash for system commands (git, builds, tests). Do NOT use bash for file operations.
 - Read files before editing them. Look at surrounding context and imports to match conventions.
 - NEVER create files unless absolutely necessary. Prefer editing existing files.

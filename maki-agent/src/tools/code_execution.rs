@@ -35,9 +35,8 @@ impl CodeInterpreter {
     pub const DESCRIPTION: &str = include_str!("code_execution.md");
     pub const EXAMPLES: Option<&str> = Some(
         r##"[
-  {"code": "# All tool calls must be awaited\nresult = await grep(pattern='TODO', include='*.rs')\nlines = result.strip().split('\n')\nprint(f'{len(lines)} TODOs found')"},
-  {"code": "# Concurrent reads with asyncio.gather\nfiles = (await glob(pattern='**/*.rs')).strip().split('\n')\ncontents = await asyncio.gather(*[read(path=f) for f in files if f.strip()])\nfor f, c in zip(files, contents):\n    if 'fn main' in c:\n        print(f)"},
-  {"code": "# Gather multiple independent searches\ntodos, fixmes = await asyncio.gather(grep(pattern='TODO', include='*.rs'), grep(pattern='FIXME', include='*.rs'))\nprint(f'TODOs: {len(todos.split(chr(10)))}  FIXMEs: {len(fixmes.split(chr(10)))}')"},
+  {"code": "# Dependent: glob then read matching files\nfiles = (await glob(pattern='**/*.rs')).strip().split('\n')\ncontents = await asyncio.gather(*[read(path=f) for f in files if f.strip()])\nfor f, c in zip(files, contents):\n    if 'fn main' in c:\n        print(f)"},
+  {"code": "# Process tool output\nresult = await grep(pattern='TODO', include='*.rs')\nlines = result.strip().split('\n')\nprint(f'{len(lines)} TODOs found')"},
   {"code": "# Fetch and filter\ncontent = await webfetch(url='https://docs.example.com/api')\nfor line in content.split('\n'):\n    if 'authentication' in line.lower():\n        print(line)"}
 ]"##,
     );
