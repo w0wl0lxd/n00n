@@ -204,13 +204,22 @@ pub(crate) fn build_oauth_resolved(tokens: &OAuthTokens) -> ResolvedAuth {
 }
 
 pub fn resolve(dir: &DataDir) -> Result<(ResolvedAuth, AuthKind), AgentError> {
-    if let Some(mut tokens) = load_tokens(dir) {
-        if is_expired(&tokens) {
-            tokens = refresh_tokens(&tokens)?;
-            save_tokens(dir, &tokens)?;
+    if let Some(tokens) = load_tokens(dir) {
+        if !is_expired(&tokens) {
+            debug!("using OAuth authentication");
+            return Ok((build_oauth_resolved(&tokens), AuthKind::OAuth));
         }
-        debug!("using OAuth authentication");
-        return Ok((build_oauth_resolved(&tokens), AuthKind::OAuth));
+        match refresh_tokens(&tokens) {
+            Ok(fresh) => {
+                save_tokens(dir, &fresh)?;
+                debug!("using OAuth authentication");
+                return Ok((build_oauth_resolved(&fresh), AuthKind::OAuth));
+            }
+            Err(e) => {
+                warn!(error = %e, "OAuth refresh failed, clearing stale tokens");
+                delete_tokens(dir).ok();
+            }
+        }
     }
 
     if let Ok(key) = env::var("ANTHROPIC_API_KEY") {
