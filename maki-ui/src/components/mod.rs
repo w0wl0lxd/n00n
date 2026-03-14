@@ -140,9 +140,9 @@ impl DisplayMessage {
     /// text (preserving markdown).
     pub fn copy_text(&self) -> String {
         match &self.role {
-            DisplayRole::Tool { .. } => {
+            DisplayRole::Tool { name, .. } => {
                 let (header, body) = self.text.split_once('\n').unwrap_or((&self.text, ""));
-                let mut out = header.to_owned();
+                let mut out = format!("{name}> {header}");
                 if let Some(ToolInput::Code { code, .. }) = &self.tool_input {
                     out.push('\n');
                     out.push_str(code.trim_end());
@@ -290,7 +290,7 @@ mod tests {
             start_line: 1,
             lines: vec!["fn main() {}".into()],
         });
-        assert_eq!(msg.copy_text(), "read /src/main.rs\n1: fn main() {}");
+        assert_eq!(msg.copy_text(), "read> read /src/main.rs\n1: fn main() {}");
     }
 
     #[test]
@@ -301,20 +301,15 @@ mod tests {
             code: "echo hi\n".into(),
         });
         msg.tool_output = Some(ToolOutput::Plain("done".into()));
-        assert_eq!(msg.copy_text(), "bash\necho hi\nold body");
+        assert_eq!(msg.copy_text(), "read> bash\necho hi\nold body");
     }
 
-    #[test]
-    fn copy_text_tool_plain_falls_through_to_body() {
-        let mut msg = tool_msg("header\nbody text");
-        msg.tool_output = Some(ToolOutput::Plain("done".into()));
-        assert_eq!(msg.copy_text(), "header\nbody text");
-    }
-
-    #[test]
-    fn copy_text_tool_no_output_no_body() {
-        let msg = tool_msg("header only");
-        assert_eq!(msg.copy_text(), "header only");
+    #[test_case("header\nbody text", Some(ToolOutput::Plain("done".into())), "read> header\nbody text" ; "plain_falls_through_to_body")]
+    #[test_case("header only",       None,                                      "read> header only"       ; "no_output_no_body")]
+    fn copy_text_tool_fallback(text: &str, output: Option<ToolOutput>, expected: &str) {
+        let mut msg = tool_msg(text);
+        msg.tool_output = output;
+        assert_eq!(msg.copy_text(), expected);
     }
 
     #[test]
@@ -324,6 +319,6 @@ mod tests {
             entries: vec![],
             text: "ignored".into(),
         });
-        assert_eq!(msg.copy_text(), "batch");
+        assert_eq!(msg.copy_text(), "read> batch");
     }
 }

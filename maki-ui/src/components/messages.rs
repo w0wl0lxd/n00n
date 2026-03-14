@@ -783,12 +783,14 @@ impl MessagesPanel {
             }
             frame.render_widget(p, seg_area);
             if self.highlight_segment == Some(i) {
-                let hl_style = theme::current().cmd_selected;
                 let hl_area = Rect::new(area.x, y, width, visible_h);
                 for row in hl_area.y..hl_area.y + hl_area.height {
                     for col in hl_area.x..hl_area.x + hl_area.width {
                         if let Some(cell) = frame.buffer_mut().cell_mut((col, row)) {
-                            cell.set_bg(hl_style.bg.unwrap_or_default());
+                            let fg = cell.fg;
+                            let bg = cell.bg;
+                            cell.set_fg(bg);
+                            cell.set_bg(fg);
                         }
                     }
                 }
@@ -931,39 +933,31 @@ impl MessagesPanel {
         seg.copy_text = msg.copy_text();
         seg.update_with_reuse(tl, &self.hl_worker);
 
-        let batch_children: Option<Vec<(String, ToolLines)>> = if let Some(ToolOutput::Batch {
-            entries,
-            ..
-        }) = &msg.tool_output
-        {
-            Some(
-                entries
-                    .iter()
-                    .enumerate()
-                    .map(|(j, entry)| {
-                        let child_id = format!("{tool_id}__{j}");
-                        let tl =
-                            build_batch_entry_lines(entry, j, self.started_at, self.viewport_width);
-                        (child_id, tl)
-                    })
-                    .collect(),
-            )
-        } else {
-            None
-        };
-
-        if let Some(children) = batch_children {
+        if let Some(ToolOutput::Batch { entries, .. }) = &msg.tool_output {
+            let children: Vec<_> = entries
+                .iter()
+                .enumerate()
+                .map(|(j, entry)| {
+                    let child_id = format!("{tool_id}__{j}");
+                    let copy = batch_entry_copy_text(entry);
+                    let tl =
+                        build_batch_entry_lines(entry, j, self.started_at, self.viewport_width);
+                    (child_id, copy, tl)
+                })
+                .collect();
             let child_prefix = format!("{tool_id}__");
             let msg_index = self.cached_segments[seg_idx].msg_index;
-            for (child_id, tl) in children {
+            for (child_id, copy, tl) in children {
                 if let Some(cseg_idx) = self
                     .cached_segments
                     .iter()
                     .rposition(|s| s.tool_id.as_deref() == Some(&child_id))
                 {
+                    self.cached_segments[cseg_idx].copy_text = copy;
                     self.cached_segments[cseg_idx].update_with_reuse(tl, &self.hl_worker);
                 } else {
                     let mut seg = Segment {
+                        copy_text: copy,
                         tool_id: Some(child_id),
                         msg_index,
                         ..Segment::default()
@@ -1019,6 +1013,7 @@ impl MessagesPanel {
                         let tl =
                             build_batch_entry_lines(entry, j, self.started_at, self.viewport_width);
                         let mut seg = Segment {
+                            copy_text: batch_entry_copy_text(entry),
                             tool_id: Some(child_id),
                             msg_index: Some(i),
                             ..Segment::default()
@@ -1078,6 +1073,18 @@ impl MessagesPanel {
         }
         self.cached_msg_count = self.messages.len();
     }
+}
+
+fn batch_entry_copy_text(entry: &BatchToolEntry) -> String {
+    let mut out = format!("{}> {}", entry.tool, entry.summary);
+    if let Some(output) = &entry.output {
+        let text = output.as_display_text();
+        if !text.is_empty() {
+            out.push('\n');
+            out.push_str(&text);
+        }
+    }
+    out
 }
 
 fn parse_batch_inner_id(tool_id: &str) -> Option<(&str, usize)> {
