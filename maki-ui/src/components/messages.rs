@@ -1,7 +1,7 @@
 use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
 
 use super::tool_display::{
-    ToolLines, append_annotation, append_timestamp, assistant_style, build_batch_entry_lines,
+    ToolLines, append_annotation, append_right_info, assistant_style, build_batch_entry_lines,
     build_tool_lines, error_style, format_timestamp_now, output_limits, thinking_style,
     tool_output_annotation, truncate_to_header, user_style,
 };
@@ -319,6 +319,7 @@ impl MessagesPanel {
             annotation: event.annotation,
             plan_path: None,
             timestamp: Some(format_timestamp_now()),
+            turn_usage: None,
         });
         self.in_progress_count += 1;
     }
@@ -452,6 +453,22 @@ impl MessagesPanel {
         );
     }
 
+    pub fn set_turn_usage_on_last_tool(&mut self, usage: String) {
+        let Some(idx) = self
+            .messages
+            .iter()
+            .rposition(|m| matches!(m.role, DisplayRole::Tool { .. }))
+        else {
+            return;
+        };
+        self.messages[idx].turn_usage = Some(usage);
+        let DisplayRole::Tool { ref id, .. } = self.messages[idx].role else {
+            unreachable!()
+        };
+        let id = id.clone();
+        self.rebuild_tool_segment(&id);
+    }
+
     fn update_tool(
         &mut self,
         tool_id: &str,
@@ -528,7 +545,12 @@ impl MessagesPanel {
                         self.viewport_width,
                     );
                     if let Some(ts) = &msg.timestamp {
-                        append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
+                        append_right_info(
+                            &mut tl.lines[0],
+                            msg.turn_usage.as_deref(),
+                            Some(ts),
+                            self.viewport_width,
+                        );
                     }
                     seg.apply_highlight(tl, &self.hl_worker);
                 }
@@ -874,7 +896,12 @@ impl MessagesPanel {
 
         let mut tl = build_tool_lines(msg, *status, self.started_at, self.viewport_width);
         if let Some(ts) = &msg.timestamp {
-            append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
+            append_right_info(
+                &mut tl.lines[0],
+                msg.turn_usage.as_deref(),
+                Some(ts),
+                self.viewport_width,
+            );
         }
 
         let seg = &mut self.cached_segments[seg_idx];
@@ -944,7 +971,12 @@ impl MessagesPanel {
             if let DisplayRole::Tool { ref id, status, .. } = msg.role {
                 let mut tl = build_tool_lines(msg, status, self.started_at, self.viewport_width);
                 if let Some(ts) = &msg.timestamp {
-                    append_timestamp(&mut tl.lines[0], ts, self.viewport_width);
+                    append_right_info(
+                        &mut tl.lines[0],
+                        msg.turn_usage.as_deref(),
+                        Some(ts),
+                        self.viewport_width,
+                    );
                 }
                 let id = id.clone();
                 let copy_text = msg.copy_text();

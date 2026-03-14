@@ -29,6 +29,7 @@ use crate::components::rewind_picker::{RewindPicker, RewindPickerAction};
 use crate::components::session_picker::{SessionPicker, SessionPickerAction};
 use crate::components::status_bar::{FLASH_DURATION, StatusBar};
 use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
+use crate::components::tool_display::format_turn_usage;
 use crate::components::{Action, DisplayMessage, DisplayRole, RetryInfo, Status, is_ctrl};
 use crate::image;
 use crate::selection::{SelectionState, ZoneRegistry};
@@ -561,6 +562,8 @@ impl App {
             self.chats[chat_idx].token_usage += usage;
             self.chats[chat_idx].context_size =
                 context_size.unwrap_or_else(|| usage.context_tokens());
+            let formatted = format_turn_usage(&usage, &self.pricing);
+            self.chats[chat_idx].set_pending_turn_usage(formatted);
         }
 
         let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);

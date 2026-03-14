@@ -16,7 +16,7 @@ use ratatui::widgets::Paragraph;
 
 pub const FLASH_DURATION: Duration = Duration::from_millis(1500);
 
-fn format_tokens(n: u32) -> String {
+pub(crate) fn format_tokens(n: u32) -> String {
     match n {
         0..1_000 => n.to_string(),
         1_000..1_000_000 => format!("{:.1}k", n as f64 / 1_000.0),

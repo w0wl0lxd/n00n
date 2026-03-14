@@ -29,6 +29,7 @@ pub struct Chat {
     pub token_usage: TokenUsage,
     pub context_size: u32,
     pub model_id: Option<String>,
+    pending_turn_usage: Option<String>,
     messages_panel: MessagesPanel,
 }
 
@@ -39,8 +40,13 @@ impl Chat {
             token_usage: TokenUsage::default(),
             context_size: 0,
             model_id: None,
+            pending_turn_usage: None,
             messages_panel: MessagesPanel::new(),
         }
+    }
+
+    pub fn set_pending_turn_usage(&mut self, usage: String) {
+        self.pending_turn_usage = Some(usage);
     }
 
     pub fn handle_event(&mut self, event: AgentEvent, plan_path: Option<&str>) -> ChatEventResult {
@@ -79,7 +85,11 @@ impl Chat {
                 return ChatEventResult::QuestionPrompt { questions };
             }
             AgentEvent::TurnComplete { .. } => {}
-            AgentEvent::ToolResultsSubmitted { .. } => {}
+            AgentEvent::ToolResultsSubmitted { .. } => {
+                if let Some(usage) = self.pending_turn_usage.take() {
+                    self.messages_panel.set_turn_usage_on_last_tool(usage);
+                }
+            }
             AgentEvent::AutoCompacting => {
                 self.messages_panel.flush();
                 self.messages_panel.push(DisplayMessage::new(
@@ -250,6 +260,7 @@ pub fn history_to_display(
                                 annotation,
                                 plan_path: None,
                                 timestamp: None,
+                                turn_usage: None,
                             });
                         }
                         _ => {}

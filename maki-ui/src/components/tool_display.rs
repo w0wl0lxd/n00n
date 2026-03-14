@@ -1,3 +1,4 @@
+use super::status_bar::format_tokens;
 use super::{DisplayMessage, ToolStatus};
 
 use super::{code_view, index_highlight};
@@ -7,6 +8,10 @@ use crate::theme;
 
 use std::fmt::Write;
 use std::time::Instant;
+
+use unicode_width::UnicodeWidthStr;
+
+use maki_providers::{ModelPricing, TokenUsage};
 
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
@@ -36,7 +41,6 @@ const BASH_WAITING_LABEL: &str = "Waiting for output...";
 const BASH_NO_OUTPUT_LABEL: &str = "No output.";
 const BASH_OUTPUT_SEPARATOR: &str = "──────";
 const ALWAYS_ANNOTATE_TOOLS: &[&str] = &[WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME, INDEX_TOOL_NAME];
-const TIMESTAMP_LEN: usize = 8;
 const PLAIN_ANNOTATION_THRESHOLD: usize = 10;
 const BATCH_INDENT: &str = "  ";
 const BATCH_CONTENT_INDENT: &str = "    ";
@@ -230,16 +234,48 @@ pub fn format_timestamp_now() -> String {
     zoned.strftime("%H:%M:%S").to_string()
 }
 
-pub fn append_timestamp(line: &mut Line<'static>, timestamp: &str, width: u16) {
+pub fn format_turn_usage(usage: &TokenUsage, pricing: &ModelPricing) -> String {
+    let cost = usage.cost(pricing);
+    format!(
+        "{}↑ {}↓ ${cost:.3}",
+        format_tokens(usage.total_input()),
+        format_tokens(usage.output),
+    )
+}
+
+pub fn append_right_info(
+    line: &mut Line<'static>,
+    usage: Option<&str>,
+    timestamp: Option<&str>,
+    width: u16,
+) {
+    if usage.is_none() && timestamp.is_none() {
+        return;
+    }
+    let separator = if usage.is_some() && timestamp.is_some() {
+        2
+    } else {
+        0
+    };
+    let suffix_len =
+        usage.map_or(0, UnicodeWidthStr::width) + timestamp.map_or(0, str::len) + separator;
     let header_width: usize = line.spans.iter().map(|s| s.content.len()).sum();
     let w = width as usize + 1;
-    if header_width + 1 + TIMESTAMP_LEN <= w {
-        let pad = w - header_width - TIMESTAMP_LEN;
-        line.spans.push(Span::raw(" ".repeat(pad)));
-        line.spans.push(Span::styled(
-            timestamp.to_owned(),
-            theme::current().timestamp,
-        ));
+    if header_width + 1 + suffix_len > w {
+        return;
+    }
+    let pad = w - header_width - suffix_len;
+    line.spans.push(Span::raw(" ".repeat(pad)));
+    if let Some(u) = usage {
+        line.spans
+            .push(Span::styled(u.to_owned(), theme::current().tool_dim));
+        if timestamp.is_some() {
+            line.spans.push(Span::raw("  "));
+        }
+    }
+    if let Some(ts) = timestamp {
+        line.spans
+            .push(Span::styled(ts.to_owned(), theme::current().timestamp));
     }
 }
 
@@ -667,6 +703,28 @@ mod tests {
         Some(ToolOutput::Plain("ok".into()))
     }
 
+    fn bash_msg(
+        text: &str,
+        status: ToolStatus,
+        input: Option<ToolInput>,
+        output: Option<ToolOutput>,
+    ) -> DisplayMessage {
+        DisplayMessage {
+            role: DisplayRole::Tool {
+                id: "t1".into(),
+                status,
+                name: BASH_TOOL_NAME,
+            },
+            text: text.into(),
+            tool_input: input,
+            tool_output: output,
+            annotation: None,
+            plan_path: None,
+            timestamp: None,
+            turn_usage: None,
+        }
+    }
+
     #[test_case(code_input(),  plain_output(),  true,  false ; "code_input_strips_plain_output")]
     #[test_case(code_input(),  code_output(),   true,  true  ; "code_input_keeps_code_output")]
     #[test_case(None,          code_output(),   true,  true  ; "code_output_only")]
@@ -677,19 +735,7 @@ mod tests {
         expect_highlight: bool,
         expect_output: bool,
     ) {
-        let msg = DisplayMessage {
-            role: DisplayRole::Tool {
-                id: "t1".into(),
-                status: ToolStatus::Success,
-                name: BASH_TOOL_NAME,
-            },
-            text: "header\nbody".into(),
-            tool_input: input,
-            tool_output: output,
-            annotation: None,
-            plan_path: None,
-            timestamp: None,
-        };
+        let msg = bash_msg("header\nbody", ToolStatus::Success, input, output);
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
         assert_eq!(tl.highlight.is_some(), expect_highlight);
         if let Some(hl) = &tl.highlight {
@@ -764,19 +810,7 @@ mod tests {
     #[test_case(ToolStatus::InProgress, None           ; "live_streaming_shows_body")]
     #[test_case(ToolStatus::Success,    plain_output() ; "done_with_plain_output_shows_body")]
     fn bash_body_visible(status: ToolStatus, output: Option<ToolOutput>) {
-        let msg = DisplayMessage {
-            role: DisplayRole::Tool {
-                id: "t1".into(),
-                status,
-                name: BASH_TOOL_NAME,
-            },
-            text: "echo hi\nline1\nline2".into(),
-            tool_input: code_input(),
-            tool_output: output,
-            annotation: None,
-            plan_path: None,
-            timestamp: None,
-        };
+        let msg = bash_msg("echo hi\nline1\nline2", status, code_input(), output);
         let tl = build_tool_lines(&msg, status, Instant::now(), 80);
         let text = lines_text(&tl);
         assert!(text.contains("line1"));
@@ -789,96 +823,23 @@ mod tests {
             .any(|l| has_styled_span(&l.spans, text, style))
     }
 
-    #[test]
-    fn bash_separator_when_has_output() {
-        let msg = DisplayMessage {
-            role: DisplayRole::Tool {
-                id: "t1".into(),
-                status: ToolStatus::Success,
-                name: BASH_TOOL_NAME,
-            },
-            text: "echo hi\nhello".into(),
-            tool_input: code_input(),
-            tool_output: plain_output(),
-            annotation: None,
-            plan_path: None,
-            timestamp: None,
-        };
+    #[test_case(code_input(), true  ; "shown_with_code_input")]
+    #[test_case(None,         false ; "hidden_without_code_input")]
+    fn bash_separator(input: Option<ToolInput>, expected: bool) {
+        let msg = bash_msg("echo hi\nhello", ToolStatus::Success, input, plain_output());
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
-        assert!(line_has_styled(
-            &tl,
-            BASH_OUTPUT_SEPARATOR,
-            theme::current().tool_dim
-        ));
+        assert_eq!(
+            line_has_styled(&tl, BASH_OUTPUT_SEPARATOR, theme::current().tool_dim),
+            expected,
+        );
     }
 
-    #[test]
-    fn bash_no_separator_without_code_input() {
-        let msg = DisplayMessage {
-            role: DisplayRole::Tool {
-                id: "t1".into(),
-                status: ToolStatus::Success,
-                name: BASH_TOOL_NAME,
-            },
-            text: "echo hi\nhello".into(),
-            tool_input: None,
-            tool_output: plain_output(),
-            annotation: None,
-            plan_path: None,
-            timestamp: None,
-        };
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
-        assert!(!line_has_styled(
-            &tl,
-            BASH_OUTPUT_SEPARATOR,
-            theme::current().tool_dim
-        ));
-    }
-
-    #[test]
-    fn bash_waiting_label_when_in_progress_no_output() {
-        let msg = DisplayMessage {
-            role: DisplayRole::Tool {
-                id: "t1".into(),
-                status: ToolStatus::InProgress,
-                name: BASH_TOOL_NAME,
-            },
-            text: "echo hi".into(),
-            tool_input: code_input(),
-            tool_output: None,
-            annotation: None,
-            plan_path: None,
-            timestamp: None,
-        };
-        let tl = build_tool_lines(&msg, ToolStatus::InProgress, Instant::now(), 80);
-        assert!(line_has_styled(
-            &tl,
-            BASH_WAITING_LABEL,
-            theme::current().tool_dim
-        ));
-    }
-
-    #[test]
-    fn bash_no_output_label_when_done_empty() {
-        let msg = DisplayMessage {
-            role: DisplayRole::Tool {
-                id: "t1".into(),
-                status: ToolStatus::Success,
-                name: BASH_TOOL_NAME,
-            },
-            text: "echo hi".into(),
-            tool_input: code_input(),
-            tool_output: Some(ToolOutput::Plain(String::new())),
-            annotation: None,
-            plan_path: None,
-            timestamp: None,
-        };
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
-        assert!(line_has_styled(
-            &tl,
-            BASH_NO_OUTPUT_LABEL,
-            theme::current().tool_dim
-        ));
+    #[test_case(ToolStatus::InProgress, None,                                     BASH_WAITING_LABEL   ; "waiting_when_in_progress")]
+    #[test_case(ToolStatus::Success,    Some(ToolOutput::Plain(String::new())),    BASH_NO_OUTPUT_LABEL ; "no_output_when_done_empty")]
+    fn bash_status_label(status: ToolStatus, output: Option<ToolOutput>, label: &str) {
+        let msg = bash_msg("echo hi", status, code_input(), output);
+        let tl = build_tool_lines(&msg, status, Instant::now(), 80);
+        assert!(line_has_styled(&tl, label, theme::current().tool_dim));
     }
 
     #[test]
@@ -908,28 +869,16 @@ mod tests {
     }
 
     fn tool_msg() -> DisplayMessage {
-        DisplayMessage {
-            role: DisplayRole::Tool {
-                id: "t1".into(),
-                status: ToolStatus::Success,
-                name: BASH_TOOL_NAME,
-            },
-            text: "cmd".into(),
-            tool_input: None,
-            tool_output: None,
-            annotation: None,
-            plan_path: None,
-            timestamp: None,
-        }
+        bash_msg("cmd", ToolStatus::Success, None, None)
     }
 
     #[test_case(80, true  ; "shown_when_width_sufficient")]
     #[test_case(10, false ; "hidden_when_too_narrow")]
-    fn append_timestamp_visibility(width: u16, expect_timestamp: bool) {
+    fn append_right_info_timestamp_visibility(width: u16, expect_timestamp: bool) {
         let msg = tool_msg();
         let mut tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
         let span_count_before = tl.lines[0].spans.len();
-        append_timestamp(&mut tl.lines[0], "12:34:56", width);
+        append_right_info(&mut tl.lines[0], None, Some("12:34:56"), width);
         let last = tl.lines[0].spans.last().unwrap();
         if expect_timestamp {
             assert_eq!(last.style, theme::current().timestamp);
@@ -1018,8 +967,15 @@ mod tests {
             output: None,
             annotation: None,
         };
-        let tl = build_batch_entry_lines(&entry, 1, Instant::now(), 80);
-        assert_eq!(tl.spinner_lines, &[3]);
+        let without_sep = build_batch_entry_lines(&entry, 0, Instant::now(), 80);
+        let with_sep = build_batch_entry_lines(&entry, 1, Instant::now(), 80);
+        let offset = with_sep.lines.len() - without_sep.lines.len();
+        let expected: Vec<usize> = without_sep
+            .spinner_lines
+            .iter()
+            .map(|l| l + offset)
+            .collect();
+        assert_eq!(with_sep.spinner_lines, expected);
     }
 
     #[test]
@@ -1097,6 +1053,7 @@ mod tests {
             annotation: None,
             plan_path: None,
             timestamp: None,
+            turn_usage: None,
         }
     }
 
@@ -1105,6 +1062,16 @@ mod tests {
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn assert_truncation_styled(tl: &ToolLines) {
+        let last = tl.lines.last().unwrap();
+        let span = last
+            .spans
+            .iter()
+            .find(|s| s.content.contains(TRUNCATION_PREFIX));
+        assert!(span.is_some(), "expected truncation prefix");
+        assert_eq!(span.unwrap().style, theme::current().tool_dim);
     }
 
     #[test]
@@ -1117,13 +1084,7 @@ mod tests {
             "expected at most {} body lines, got {body_lines}",
             TASK_OUTPUT_MAX_LINES + 1,
         );
-        let last = tl.lines.last().unwrap();
-        let truncation_span = last
-            .spans
-            .iter()
-            .find(|s| s.content.contains(TRUNCATION_PREFIX));
-        assert!(truncation_span.is_some());
-        assert_eq!(truncation_span.unwrap().style, theme::current().tool_dim);
+        assert_truncation_styled(&tl);
     }
 
     #[test]
@@ -1131,13 +1092,7 @@ mod tests {
         let output = format!("```rust\nfn main() {{}}\n```\n{}", n_lines(40));
         let msg = task_msg(output);
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
-        let last = tl.lines.last().unwrap();
-        let truncation_span = last
-            .spans
-            .iter()
-            .find(|s| s.content.contains(TRUNCATION_PREFIX));
-        assert!(truncation_span.is_some());
-        assert_eq!(truncation_span.unwrap().style, theme::current().tool_dim);
+        assert_truncation_styled(&tl);
     }
 
     #[test]
@@ -1175,6 +1130,7 @@ mod tests {
             annotation: None,
             plan_path: None,
             timestamp: None,
+            turn_usage: None,
         }
     }
 

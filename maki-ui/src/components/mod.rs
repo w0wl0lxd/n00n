@@ -117,6 +117,7 @@ pub struct DisplayMessage {
     pub annotation: Option<String>,
     pub plan_path: Option<String>,
     pub timestamp: Option<String>,
+    pub turn_usage: Option<String>,
 }
 
 impl DisplayMessage {
@@ -129,6 +130,7 @@ impl DisplayMessage {
             annotation: None,
             plan_path: None,
             timestamp: None,
+            turn_usage: None,
         }
     }
 
@@ -189,6 +191,7 @@ impl DisplayMessage {
             annotation: None,
             plan_path: Some(plan_path),
             timestamp: None,
+            turn_usage: None,
         }
     }
 }
