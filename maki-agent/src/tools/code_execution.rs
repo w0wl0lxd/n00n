@@ -18,7 +18,7 @@ use super::{Deadline, INTERPRETER_TOOLS};
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
-const PREAMBLE: &str = "import re\nimport asyncio\n";
+const PREAMBLE: &str = "import re\nimport asyncio\nimport sys\nimport os\n";
 
 #[derive(Tool, Debug, Clone)]
 pub struct CodeInterpreter {
