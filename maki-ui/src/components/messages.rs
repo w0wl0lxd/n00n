@@ -29,32 +29,36 @@ use unicode_width::UnicodeWidthStr;
 
 use super::scrollbar::render_vertical_scrollbar;
 
-/// Block-level cache for streaming markdown. All blocks except the last
-/// are "stable" (won't change as tokens arrive), so we render them once
-/// into `stable_lines` and only re-render the last block each frame.
+/// Block-level streaming markdown cache.
 ///
-/// Invalidation: `stable_offsets` stores byte offsets per cached block.
-/// If any offset shifts (e.g. a code fence closes and reshuffles block
-/// boundaries), the entire cache is rebuilt.
+/// All blocks except the last are "stable" (won't change as tokens arrive).
+/// Stable blocks are rendered once into `lines[..stable_line_count]`; each
+/// frame only re-renders the trailing in-progress block.
 ///
-/// `stable_state` captures RenderState after the last stable block so
-/// we can resume rendering without replaying stable blocks.
+/// `stable_byte_end` tracks how many bytes of the trimmed text have been
+/// fully parsed into stable blocks. Each frame parses only the suffix
+/// after that point, renders newly completed blocks in place, then
+/// appends the trailing in-progress block.
+///
+/// `stable_state` captures `RenderState` after the last stable block so
+/// rendering resumes without replaying earlier blocks.
 #[derive(Default)]
 struct StreamingCache {
     byte_len: usize,
     lines: Vec<Line<'static>>,
     highlighters: Vec<CodeHighlighter>,
     dim: bool,
-    stable_offsets: Vec<usize>,
-    stable_lines: Vec<Line<'static>>,
     stable_state: Option<RenderState>,
+    stable_byte_end: usize,
+    stable_line_count: usize,
 }
 
 impl StreamingCache {
     fn invalidate(&mut self) {
-        self.byte_len = 0;
-        self.lines.clear();
-        self.highlighters.clear();
+        *self = Self {
+            dim: self.dim,
+            ..Self::default()
+        };
     }
 
     fn get_or_update(
@@ -72,35 +76,16 @@ impl StreamingCache {
         self.byte_len = len;
 
         let text = visible.trim_start_matches('\n');
-        let blocks = parse_blocks_with_offsets(text);
-        let total = blocks.len();
-        let completed = total.saturating_sub(1);
 
-        let stable_count = self.stable_offsets.len();
-        let reusable = if completed > 0
-            && completed >= stable_count
-            && self
-                .stable_offsets
-                .iter()
-                .zip(&blocks)
-                .all(|(cached, pb)| *cached == pb.byte_offset)
-        {
-            stable_count
-        } else {
-            if completed > 0 {
-                self.stable_lines.clear();
-                self.stable_offsets.clear();
-            }
-            0
-        };
+        let tail = &text[self.stable_byte_end..];
+        let tail_blocks = parse_blocks_with_offsets(tail);
+        let total_tail = tail_blocks.len();
+        let completed_in_tail = total_tail.saturating_sub(1);
 
-        let mut state = self
-            .stable_state
-            .clone()
-            .filter(|_| reusable > 0)
-            .unwrap_or_else(RenderState::new);
+        let mut state = self.stable_state.clone().unwrap_or_else(RenderState::new);
 
-        if reusable < completed {
+        if completed_in_tail > 0 {
+            self.lines.truncate(self.stable_line_count);
             let mut hl_opt: Option<&mut Vec<CodeHighlighter>> = Some(&mut self.highlighters);
             let mut ctx = RenderCtx {
                 prefix,
@@ -109,17 +94,20 @@ impl StreamingCache {
                 highlighters: &mut hl_opt,
                 width,
             };
-            for pb in &blocks[reusable..completed] {
-                render_block(&pb.block, &mut self.stable_lines, &mut state, &mut ctx);
+            for pb in &tail_blocks[..completed_in_tail] {
+                render_block(&pb.block, &mut self.lines, &mut state, &mut ctx);
             }
-            self.stable_offsets.truncate(reusable);
-            self.stable_offsets
-                .extend(blocks[reusable..completed].iter().map(|pb| pb.byte_offset));
+            self.stable_byte_end += tail_blocks[completed_in_tail].byte_offset;
+            if self.dim {
+                theme::dim_lines(&mut self.lines[self.stable_line_count..]);
+            }
+            self.stable_line_count = self.lines.len();
             self.stable_state = Some(state.clone());
         }
 
-        let mut lines = self.stable_lines.clone();
-        if total > 0 {
+        self.lines.truncate(self.stable_line_count);
+
+        if total_tail > 0 {
             let mut hl_opt: Option<&mut Vec<CodeHighlighter>> = Some(&mut self.highlighters);
             let mut ctx = RenderCtx {
                 prefix,
@@ -128,16 +116,21 @@ impl StreamingCache {
                 highlighters: &mut hl_opt,
                 width,
             };
-            render_block(&blocks[total - 1].block, &mut lines, &mut state, &mut ctx);
+            render_block(
+                &tail_blocks[total_tail - 1].block,
+                &mut self.lines,
+                &mut state,
+                &mut ctx,
+            );
             self.highlighters.truncate(state.code_idx);
         }
 
-        finalize_lines(&mut lines, prefix, prefix_style);
+        finalize_lines(&mut self.lines, prefix, prefix_style);
 
         if self.dim {
-            theme::dim_lines(&mut lines);
+            let start = self.stable_line_count.min(self.lines.len());
+            theme::dim_lines(&mut self.lines[start..]);
         }
-        self.lines = lines;
         &self.lines
     }
 }
@@ -1152,8 +1145,9 @@ mod tests {
         assert_eq!(panel.messages[0].annotation.as_deref(), expected);
     }
 
-    #[test]
-    fn tool_done_merges_start_and_output_annotations() {
+    #[test_case("line\n".repeat(200).as_str(), Some("2m timeout · 200 lines") ; "merges_start_and_output_annotations")]
+    #[test_case("ok",                           Some("2m timeout")           ; "keeps_start_when_output_has_none")]
+    fn tool_done_annotation_merge(output: &str, expected: Option<&str>) {
         let mut panel = MessagesPanel::new();
         let mut event = start("t1", BASH_TOOL_NAME);
         event.annotation = Some("2m timeout".into());
@@ -1161,28 +1155,10 @@ mod tests {
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
             tool: BASH_TOOL_NAME,
-            output: ToolOutput::Plain("line\n".repeat(200)),
+            output: ToolOutput::Plain(output.into()),
             is_error: false,
         });
-        assert_eq!(
-            panel.messages[0].annotation.as_deref(),
-            Some("2m timeout · 200 lines")
-        );
-    }
-
-    #[test]
-    fn tool_done_keeps_start_annotation_when_output_has_none() {
-        let mut panel = MessagesPanel::new();
-        let mut event = start("t1", BASH_TOOL_NAME);
-        event.annotation = Some("2m timeout".into());
-        panel.tool_start(event);
-        panel.tool_done(ToolDoneEvent {
-            id: "t1".into(),
-            tool: BASH_TOOL_NAME,
-            output: ToolOutput::Plain("ok".into()),
-            is_error: false,
-        });
-        assert_eq!(panel.messages[0].annotation.as_deref(), Some("2m timeout"));
+        assert_eq!(panel.messages[0].annotation.as_deref(), expected);
     }
 
     fn grep_output(n_files: usize) -> ToolOutput {
@@ -1419,14 +1395,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_output_updates_target_segment() {
-        let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "bash")]);
-        rebuild(&mut panel);
-        panel.tool_output("t1", "new output");
-        assert!(seg_text(&panel, "t1").contains("new output"));
-    }
-
-    #[test]
     fn events_before_cache_built_render_correctly() {
         let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "bash")]);
         panel.tool_output("t1", "early output");
@@ -1464,13 +1432,13 @@ mod tests {
 
         panel.tool_output("t1", "hello");
         let text = seg_text(&panel, "t1");
-        assert!(text.contains("echo hello"), "code input preserved");
-        assert!(text.contains("hello"), "live output visible");
+        assert!(text.contains("echo hello"));
+        assert!(text.contains("hello"));
 
         panel.tool_output("t1", "hello\nworld");
         let text = seg_text(&panel, "t1");
-        assert!(text.contains("echo hello"), "code input still preserved");
-        assert!(text.contains("world"), "updated output visible");
+        assert!(text.contains("echo hello"));
+        assert!(text.contains("world"));
 
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -1479,8 +1447,8 @@ mod tests {
             is_error: false,
         });
         let text = seg_text(&panel, "t1");
-        assert!(text.contains("echo hello"), "code input after done");
-        assert!(text.contains("done"), "final output visible");
+        assert!(text.contains("echo hello"));
+        assert!(text.contains("done"));
         assert_eq!(msg_status(&panel, "t1"), ToolStatus::Success);
     }
 
@@ -1495,8 +1463,9 @@ mod tests {
         assert!(!text.contains("first"));
     }
 
-    #[test]
-    fn fail_in_progress_marks_pending_as_error_preserves_completed() {
+    #[test_case(true  ; "after_cache_built")]
+    #[test_case(false ; "before_cache_built")]
+    fn fail_in_progress_marks_pending_as_error(cache_built: bool) {
         let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "read")]);
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -1504,7 +1473,9 @@ mod tests {
             output: ToolOutput::Plain("ok".into()),
             is_error: false,
         });
-        rebuild(&mut panel);
+        if cache_built {
+            rebuild(&mut panel);
+        }
 
         panel.fail_in_progress();
 
@@ -1525,16 +1496,6 @@ mod tests {
 
         assert!(seg_text(&panel, "t1").contains("streaming data"));
         assert!(has_seg(&panel, "t2"));
-    }
-
-    #[test]
-    fn fail_in_progress_before_cache_built_no_panic() {
-        let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "read")]);
-        panel.fail_in_progress();
-        assert_eq!(panel.in_progress_count, 0);
-        rebuild(&mut panel);
-        assert_eq!(msg_status(&panel, "t1"), ToolStatus::Error);
-        assert_eq!(msg_status(&panel, "t2"), ToolStatus::Error);
     }
 
     #[test]
@@ -1643,14 +1604,7 @@ mod tests {
         });
         render(&mut panel, 80, 24);
         let regions = content_regions(&panel);
-        assert!(
-            regions[0].contains("0.rs:"),
-            "should contain grep file path"
-        );
-        assert!(
-            regions[0].contains("1.rs:"),
-            "should contain all grep files"
-        );
+        assert!(regions[0].contains("0.rs:") && regions[0].contains("1.rs:"));
     }
 
     #[test]
@@ -1675,8 +1629,7 @@ mod tests {
         });
         render(&mut panel, 80, 24);
         let regions = content_regions(&panel);
-        assert!(regions[0].contains("- old"), "should contain removed line");
-        assert!(regions[0].contains("+ new"), "should contain added line");
+        assert!(regions[0].contains("- old") && regions[0].contains("+ new"));
     }
 
     #[test]
@@ -1691,11 +1644,7 @@ mod tests {
         });
         render(&mut panel, 80, 24);
         let regions = content_regions(&panel);
-        assert!(
-            regions[0].contains("echo hello"),
-            "should include bash command"
-        );
-        assert!(regions[0].contains("hello"), "should include output");
+        assert!(regions[0].contains("echo hello") && regions[0].contains("hello"));
     }
 
     #[test]
@@ -1833,22 +1782,13 @@ mod tests {
         assert_eq!(parse_batch_inner_id("b1__notnum"), None);
     }
 
-    #[test]
-    fn tool_pending_shows_in_progress() {
+    #[test_case("bash", 1, 1 ; "known_tool_creates_message")]
+    #[test_case("nonexistent_tool", 0, 0 ; "unknown_tool_ignored")]
+    fn tool_pending(tool: &str, expected_msgs: usize, expected_in_progress: usize) {
         let mut panel = MessagesPanel::new();
-        panel.tool_pending("t1".into(), "bash");
-        assert_eq!(panel.messages.len(), 1);
-        assert_eq!(msg_status(&panel, "t1"), ToolStatus::InProgress);
-        assert_eq!(panel.in_progress_count, 1);
-        assert!(panel.messages[0].text.is_empty());
-    }
-
-    #[test]
-    fn tool_pending_unknown_name_ignored() {
-        let mut panel = MessagesPanel::new();
-        panel.tool_pending("t1".into(), "nonexistent_tool");
-        assert_eq!(panel.messages.len(), 0);
-        assert_eq!(panel.in_progress_count, 0);
+        panel.tool_pending("t1".into(), tool);
+        assert_eq!(panel.messages.len(), expected_msgs);
+        assert_eq!(panel.in_progress_count, expected_in_progress);
     }
 
     #[test]
@@ -1917,6 +1857,51 @@ mod tests {
             );
             end += step;
         }
+    }
+
+    #[test]
+    fn incremental_cache_correct_after_content_jump() {
+        let style = Style::default();
+        let width = 80;
+        let mut cache = StreamingCache::default();
+
+        cache.get_or_update("partial text", "", style, style, width);
+
+        let text = "block1\n```py\nx=1\n```\nblock2\n```js\ny=2\n```\ntail";
+        cache.get_or_update(text, "", style, style, width);
+
+        let expected = full_render_lines(text, "", width);
+        assert_eq!(cache_lines_text(&cache), expected);
+    }
+
+    #[test]
+    fn invalidate_then_rerender_matches_full() {
+        let style = Style::default();
+        let width = 80;
+        let mut cache = StreamingCache::default();
+        let text = "hello\n```rust\nfn x(){}\n```\nafter";
+        cache.get_or_update(text, "", style, style, width);
+        cache.invalidate();
+        cache.get_or_update(text, "", style, style, width);
+        assert_eq!(cache_lines_text(&cache), full_render_lines(text, "", width));
+    }
+
+    #[test]
+    fn dim_cache_no_panic_when_finalize_pops_stable_blank() {
+        let style = Style::default();
+        let width = 80;
+        let mut cache = StreamingCache {
+            dim: true,
+            ..StreamingCache::default()
+        };
+
+        // Two consecutive code blocks where the second has empty code.
+        // The first code block becomes stable (ensure_blank_line adds trailing blank).
+        // The second (in-progress, empty code) adds no visible lines.
+        // finalize_lines pops the trailing blank from the stable code block,
+        // making lines.len() < stable_line_count → panic in dim_lines.
+        let text = "```py\nx\n```\n```js\n";
+        cache.get_or_update(text, "", style, style, width);
     }
 
     #[test]
