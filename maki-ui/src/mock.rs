@@ -1,7 +1,7 @@
 use maki_agent::tools::{
     BASH_TOOL_NAME, BATCH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME,
-    GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME, QUESTION_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME,
-    TODOWRITE_TOOL_NAME, WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME,
+    GREP_TOOL_NAME, INDEX_TOOL_NAME, MULTIEDIT_TOOL_NAME, QUESTION_TOOL_NAME, READ_TOOL_NAME,
+    TASK_TOOL_NAME, TODOWRITE_TOOL_NAME, WEBFETCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
 use maki_agent::{
     AgentEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, Envelope,
@@ -374,6 +374,39 @@ pub fn mock_events() -> Vec<MockEvent> {
                 priority: TodoPriority::Low,
             },
         ]),
+        false,
+    )));
+
+    // Index - Success
+    events.push(evt(tool_start(
+        "t_index",
+        INDEX_TOOL_NAME,
+        "src/config/mod.rs",
+        None,
+    )));
+    events.push(evt(tool_done(
+        "t_index",
+        INDEX_TOOL_NAME,
+        ToolOutput::Plain(
+            concat!(
+                "imports: [1-3]\n",
+                "  std::collections::HashMap\n",
+                "  serde::Deserialize\n",
+                "\n",
+                "types:\n",
+                "  #[derive(Debug, Deserialize)]\n",
+                "  pub struct Config [5-9]\n",
+                "    pub port: u16\n",
+                "    pub host: String\n",
+                "    pub workers: Option<usize>\n",
+                "\n",
+                "impls:\n",
+                "  Config [11-20]\n",
+                "    pub fn from_env() -> Result<Self, ConfigError>\n",
+                "    pub fn validate(&self) -> Result<(), ConfigError>",
+            )
+            .into(),
+        ),
         false,
     )));
 
