@@ -6,8 +6,8 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    LanguageExtractor, Section, SkeletonEntry, find_child, fn_signature, has_test_attr, node_text,
-    prefixed, relevant_attr_texts, vis_prefix,
+    LanguageExtractor, Section, SkeletonEntry, find_child, fn_signature, has_test_attr, line_range,
+    node_text, prefixed, relevant_attr_texts, vis_prefix,
 };
 
 const FIELD_TRUNCATE_THRESHOLD: usize = 8;
@@ -146,11 +146,12 @@ impl RustExtractor {
             let Some(sig) = fn_signature(child, source) else {
                 continue;
             };
+            let lr = line_range(child.start_position().row + 1, child.end_position().row + 1);
             if include_vis {
                 let vis = vis_prefix(child, source);
-                methods.push(prefixed(vis, format_args!("{sig}")));
+                methods.push(format!("{} {lr}", prefixed(vis, format_args!("{sig}"))));
             } else {
-                methods.push(sig);
+                methods.push(format!("{sig} {lr}"));
             }
         }
         methods
