@@ -106,16 +106,9 @@ impl App {
     }
 
     pub(super) fn open_session_picker(&mut self) -> Vec<Action> {
-        match self
-            .session_picker
-            .open(&self.session.cwd, &self.session.id, &self.storage)
-        {
-            Ok(()) => vec![],
-            Err(msg) => {
-                self.status_bar.flash(msg);
-                vec![]
-            }
-        }
+        self.session_picker
+            .open(&self.session.cwd, &self.session.id, &self.storage);
+        vec![]
     }
 
     pub(super) fn load_session(&mut self, session_id: String) -> Vec<Action> {

@@ -1,3 +1,9 @@
+//! Modal list picker with search. Supports immediate (`open`) or lazy loading
+//! (`open_loading` → `resolve`) where a spinner is shown until items arrive.
+
+use std::time::Instant;
+
+use crate::animation::spinner_frame;
 use crate::components::is_ctrl;
 use crate::components::keybindings::key;
 use crate::components::modal::Modal;
@@ -13,6 +19,7 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 const NO_MATCHES: &str = "No matches";
+const LOADING_LABEL: &str = "Loading...";
 const SEARCH_PREFIX: &str = super::CHEVRON;
 const MIN_WIDTH_PERCENT: u16 = 60;
 const MAX_HEIGHT_PERCENT: u16 = 80;
@@ -41,8 +48,30 @@ pub enum PickerAction<T> {
     Close,
 }
 
+enum PickerState<T> {
+    Loading(Instant),
+    Ready(State<T>),
+}
+
+impl<T> PickerState<T> {
+    fn ready(&self) -> Option<&State<T>> {
+        match self {
+            Self::Ready(s) => Some(s),
+            Self::Loading(_) => None,
+        }
+    }
+
+    fn ready_mut(&mut self) -> Option<&mut State<T>> {
+        match self {
+            Self::Ready(s) => Some(s),
+            Self::Loading(_) => None,
+        }
+    }
+}
+
 pub struct ListPicker<T> {
-    state: Option<State<T>>,
+    state: Option<PickerState<T>>,
+    title: &'static str,
     max_visible: Option<u16>,
     generation: u64,
 }
@@ -55,11 +84,10 @@ struct State<T> {
     scroll_offset: usize,
     viewport_height: usize,
     inner_area: Rect,
-    title: &'static str,
 }
 
 impl<T: PickerItem> State<T> {
-    fn new(items: Vec<T>, title: &'static str) -> Self {
+    fn new(items: Vec<T>) -> Self {
         let filtered = (0..items.len()).collect();
         Self {
             items,
@@ -69,7 +97,6 @@ impl<T: PickerItem> State<T> {
             scroll_offset: 0,
             viewport_height: 20,
             inner_area: Rect::default(),
-            title,
         }
     }
 
@@ -165,6 +192,7 @@ impl<T: PickerItem> ListPicker<T> {
     pub fn new() -> Self {
         Self {
             state: None,
+            title: "",
             max_visible: None,
             generation: 0,
         }
@@ -177,11 +205,26 @@ impl<T: PickerItem> ListPicker<T> {
 
     pub fn open(&mut self, items: Vec<T>, title: &'static str) {
         self.generation += 1;
-        self.state = Some(State::new(items, title));
+        self.title = title;
+        self.state = Some(PickerState::Ready(State::new(items)));
+    }
+
+    pub fn open_loading(&mut self, title: &'static str) {
+        self.generation += 1;
+        self.title = title;
+        self.state = Some(PickerState::Loading(Instant::now()));
+    }
+
+    pub fn resolve(&mut self, items: Vec<T>) {
+        if !self.is_loading() {
+            return;
+        }
+        self.generation += 1;
+        self.state = Some(PickerState::Ready(State::new(items)));
     }
 
     pub fn select(&mut self, index: usize) {
-        if let Some(s) = self.state.as_mut() {
+        if let Some(s) = self.state.as_mut().and_then(PickerState::ready_mut) {
             self.generation += 1;
             s.selected = index.min(s.filtered.len().saturating_sub(1));
             s.ensure_visible();
@@ -189,14 +232,16 @@ impl<T: PickerItem> ListPicker<T> {
     }
 
     pub fn replace_items(&mut self, items: Vec<T>) {
-        if let Some(s) = self.state.as_mut() {
+        if let Some(s) = self.state.as_mut().and_then(PickerState::ready_mut) {
             self.generation += 1;
             s.replace_items(items);
         }
     }
 
     pub fn retain(&mut self, f: impl Fn(&T) -> bool) {
-        let Some(s) = self.state.as_mut() else { return };
+        let Some(s) = self.state.as_mut().and_then(PickerState::ready_mut) else {
+            return;
+        };
         self.generation += 1;
         s.items.retain(|item| f(item));
         if s.items.is_empty() {
@@ -220,18 +265,40 @@ impl<T: PickerItem> ListPicker<T> {
         self.state = None;
     }
 
+    pub fn is_loading(&self) -> bool {
+        matches!(self.state, Some(PickerState::Loading(_)))
+    }
+
     pub fn contains(&self, pos: Position) -> bool {
         self.state
             .as_ref()
+            .and_then(PickerState::ready)
             .is_some_and(|s| s.inner_area.contains(pos))
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> PickerAction<T> {
-        let s = match self.state.as_mut() {
-            Some(s) => s,
+        match &self.state {
             None => return PickerAction::Close,
-        };
+            Some(PickerState::Loading(_)) => {
+                if key::QUIT.matches(key) || key.code == KeyCode::Esc {
+                    self.generation += 1;
+                    self.state = None;
+                    return PickerAction::Close;
+                }
+                return PickerAction::Consumed;
+            }
+            Some(PickerState::Ready(_)) => {}
+        }
         self.generation += 1;
+        self.handle_ready_key(key)
+    }
+
+    fn handle_ready_key(&mut self, key: KeyEvent) -> PickerAction<T> {
+        let s = self
+            .state
+            .as_mut()
+            .and_then(PickerState::ready_mut)
+            .expect("handle_ready_key called without Ready state");
 
         if key::QUIT.matches(key) {
             self.state = None;
@@ -256,7 +323,9 @@ impl<T: PickerItem> ListPicker<T> {
             }
             KeyCode::Enter => match s.selected_item_index() {
                 Some(idx) => {
-                    let mut state = self.state.take().unwrap();
+                    let PickerState::Ready(mut state) = self.state.take().unwrap() else {
+                        unreachable!("handle_ready_key guarantees Ready state")
+                    };
                     PickerAction::Select(idx, state.items.swap_remove(idx))
                 }
                 None => PickerAction::Consumed,
@@ -296,18 +365,20 @@ impl<T: PickerItem> ListPicker<T> {
     }
 
     pub fn selected_item(&self) -> Option<&T> {
-        let s = self.state.as_ref()?;
+        let s = self.state.as_ref().and_then(PickerState::ready)?;
         s.selected_item_index().map(|i| &s.items[i])
     }
 
     pub fn selected_index(&self) -> Option<usize> {
-        self.state.as_ref()?.selected_item_index()
+        self.state
+            .as_ref()
+            .and_then(PickerState::ready)
+            .and_then(|s| s.selected_item_index())
     }
 
     pub fn scroll(&mut self, delta: i32) {
-        let s = match self.state.as_mut() {
-            Some(s) => s,
-            None => return,
+        let Some(s) = self.state.as_mut().and_then(PickerState::ready_mut) else {
+            return;
         };
         self.generation += 1;
         if delta > 0 {
@@ -324,52 +395,79 @@ impl<T: PickerItem> ListPicker<T> {
     }
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) {
-        let s = match self.state.as_mut() {
-            Some(s) => s,
-            None => return,
-        };
-
-        let content_rows = if s.filtered.is_empty() {
-            1
-        } else {
-            let rows = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len()) as u16;
-            match self.max_visible {
-                Some(max) => rows.min(max),
-                None => rows,
+        match self.state.as_mut() {
+            None => {}
+            Some(PickerState::Loading(started_at)) => {
+                let modal = Modal {
+                    title: self.title,
+                    width_percent: MIN_WIDTH_PERCENT,
+                    max_height_percent: MAX_HEIGHT_PERCENT,
+                };
+                let inner = modal.render(frame, area, 1 + SEARCH_ROW);
+                let [list_area, search_area] =
+                    Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+                let ch = spinner_frame(started_at.elapsed().as_millis());
+                let line = Line::from(Span::styled(
+                    format!("  {ch} {LOADING_LABEL}"),
+                    theme::current().cmd_desc,
+                ));
+                frame.render_widget(Paragraph::new(vec![line]), list_area);
+                render_search(frame, search_area, &TextBuffer::new(String::new()));
             }
-        };
-        let modal = Modal {
-            title: s.title,
-            width_percent: MIN_WIDTH_PERCENT,
-            max_height_percent: MAX_HEIGHT_PERCENT,
-        };
-        let inner = modal.render(frame, area, content_rows + SEARCH_ROW);
-        let viewport_h = inner.height.saturating_sub(SEARCH_ROW);
-        s.viewport_height = viewport_h as usize;
-        s.ensure_visible();
-
-        let [list_area, search_area] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
-
-        render_list(
-            frame,
-            list_area,
-            &s.filtered,
-            &s.items,
-            s.selected,
-            s.scroll_offset,
-            s.viewport_height,
-        );
-        render_search(frame, search_area, &s.search);
-
-        let total_visual = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len());
-        if total_visual as u16 > viewport_h {
-            let visual_offset = visual_rows_in_range(&s.filtered, &s.items, 0, s.scroll_offset);
-            render_vertical_scrollbar(frame, list_area, total_visual as u16, visual_offset as u16);
+            Some(PickerState::Ready(s)) => {
+                render_ready(frame, area, s, self.title, self.max_visible);
+            }
         }
-
-        s.inner_area = inner;
     }
+}
+
+fn render_ready<T: PickerItem>(
+    frame: &mut Frame,
+    area: Rect,
+    s: &mut State<T>,
+    title: &'static str,
+    max_visible: Option<u16>,
+) {
+    let content_rows = if s.filtered.is_empty() {
+        1
+    } else {
+        let rows = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len()) as u16;
+        match max_visible {
+            Some(max) => rows.min(max),
+            None => rows,
+        }
+    };
+    let modal = Modal {
+        title,
+        width_percent: MIN_WIDTH_PERCENT,
+        max_height_percent: MAX_HEIGHT_PERCENT,
+    };
+    let inner = modal.render(frame, area, content_rows + SEARCH_ROW);
+    let viewport_h = inner.height.saturating_sub(SEARCH_ROW);
+    s.viewport_height = viewport_h as usize;
+    s.ensure_visible();
+
+    let [list_area, search_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+
+    render_list(
+        frame,
+        list_area,
+        &s.filtered,
+        &s.items,
+        s.selected,
+        s.scroll_offset,
+        s.viewport_height,
+    );
+    render_search(frame, search_area, &s.search);
+
+    let total_visual = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len());
+    if total_visual as u16 > viewport_h {
+        let visual_offset = visual_rows_in_range(&s.filtered, &s.items, 0, s.scroll_offset);
+        render_vertical_scrollbar(frame, list_area, total_visual as u16, visual_offset as u16);
+    }
+
+    s.inner_area = inner;
 }
 
 fn section_gap<T: PickerItem>(filtered: &[usize], items: &[T], idx: usize) -> usize {
@@ -534,6 +632,20 @@ mod tests {
     use crossterm::event::KeyCode;
     use test_case::test_case;
 
+    fn ready_state<T>(p: &ListPicker<T>) -> &State<T> {
+        p.state
+            .as_ref()
+            .and_then(PickerState::ready)
+            .expect("expected Ready state")
+    }
+
+    fn ready_state_mut<T>(p: &mut ListPicker<T>) -> &mut State<T> {
+        p.state
+            .as_mut()
+            .and_then(PickerState::ready_mut)
+            .expect("expected Ready state")
+    }
+
     struct Entry {
         label: String,
         detail: Option<String>,
@@ -567,23 +679,23 @@ mod tests {
         p.open(entries(&["A", "B", "C"]), " Test ");
 
         p.handle_key(key(KeyCode::Up));
-        assert_eq!(p.state.as_ref().unwrap().selected, 2);
+        assert_eq!(ready_state(&p).selected, 2);
 
         p.handle_key(key(KeyCode::Down));
-        assert_eq!(p.state.as_ref().unwrap().selected, 0);
+        assert_eq!(ready_state(&p).selected, 0);
     }
 
     #[test]
     fn search_filters_progressively() {
         let mut p = ListPicker::new();
         p.open(entries(&["Alpha", "Beta"]), " Test ");
-        assert_eq!(p.state.as_ref().unwrap().filtered, vec![0, 1]);
+        assert_eq!(ready_state(&p).filtered, vec![0, 1]);
 
         p.handle_key(key(KeyCode::Char('a')));
-        assert_eq!(p.state.as_ref().unwrap().filtered, vec![0, 1]);
+        assert_eq!(ready_state(&p).filtered, vec![0, 1]);
 
         p.handle_key(key(KeyCode::Char('l')));
-        assert_eq!(p.state.as_ref().unwrap().filtered, vec![0]);
+        assert_eq!(ready_state(&p).filtered, vec![0]);
     }
 
     #[test]
@@ -626,12 +738,12 @@ mod tests {
         let items: Vec<Entry> = (0..30).map(|i| Entry::new(&format!("Item {i}"))).collect();
         let mut p = ListPicker::new();
         p.open(items, " Test ");
-        let s = p.state.as_mut().unwrap();
+        let s = ready_state_mut(&mut p);
         s.viewport_height = 10;
         s.scroll_offset = initial;
 
         p.scroll(delta);
-        assert_eq!(p.state.as_ref().unwrap().scroll_offset, expected);
+        assert_eq!(ready_state(&p).scroll_offset, expected);
     }
 
     #[test]
@@ -640,10 +752,10 @@ mod tests {
         p.open(entries(&["A", "B"]), " Test ");
         p.handle_key(key(KeyCode::Char('h')));
         p.handle_key(key(KeyCode::Char('i')));
-        assert_eq!(p.state.as_ref().unwrap().search.value(), "hi");
+        assert_eq!(ready_state(&p).search.value(), "hi");
 
         p.handle_key(kb::DELETE_WORD.to_key_event());
-        assert_eq!(p.state.as_ref().unwrap().search.value(), "");
+        assert_eq!(ready_state(&p).search.value(), "");
     }
 
     struct SectionEntry {
@@ -689,7 +801,7 @@ mod tests {
     fn section_navigation_accounts_for_headers() {
         let mut p = ListPicker::new();
         p.open(section_entries(), " Test ");
-        let s = p.state.as_mut().unwrap();
+        let s = ready_state_mut(&mut p);
         s.viewport_height = 3;
 
         s.selected = 2;
@@ -704,5 +816,48 @@ mod tests {
         let pad_ascii = detail_padding("  abcdefghijk", detail, width);
         let pad_ellipsis = detail_padding("  abcdefgh\u{2026}", detail, width);
         assert_eq!(pad_ellipsis - pad_ascii, 2);
+    }
+
+    #[test_case(key(KeyCode::Esc) ; "esc_closes_loading")]
+    #[test_case(kb::QUIT.to_key_event() ; "ctrl_c_closes_loading")]
+    fn loading_cancel_keys(cancel_key: KeyEvent) {
+        let mut p: ListPicker<Entry> = ListPicker::new();
+        p.open_loading(" Test ");
+        let action = p.handle_key(cancel_key);
+        assert!(matches!(action, PickerAction::Close));
+        assert!(!p.is_open());
+    }
+
+    #[test]
+    fn loading_swallows_other_keys() {
+        let mut p: ListPicker<Entry> = ListPicker::new();
+        p.open_loading(" Test ");
+        let action = p.handle_key(key(KeyCode::Char('a')));
+        assert!(matches!(action, PickerAction::Consumed));
+        assert!(p.is_loading());
+    }
+
+    #[test]
+    fn resolve_transitions_to_ready() {
+        let mut p = ListPicker::new();
+        p.open_loading(" Test ");
+        p.resolve(entries(&["A", "B"]));
+        assert!(p.is_open());
+        assert!(!p.is_loading());
+        assert_eq!(ready_state(&p).items.len(), 2);
+    }
+
+    #[test]
+    fn resolve_ignored_when_not_loading() {
+        let mut p = ListPicker::new();
+        p.open(entries(&["A"]), " Test ");
+        let gen_before = p.generation();
+        p.resolve(entries(&["B", "C"]));
+        assert_eq!(p.generation(), gen_before);
+        assert_eq!(ready_state(&p).items.len(), 1);
+
+        let mut p2: ListPicker<Entry> = ListPicker::new();
+        p2.resolve(entries(&["A"]));
+        assert!(!p2.is_open());
     }
 }

@@ -1,6 +1,8 @@
-use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
+use std::thread;
 
 use crate::AppSession;
+use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jiff::Timestamp;
 use maki_storage::DataDir;
@@ -36,6 +38,8 @@ impl PickerItem for SessionEntry {
 pub struct SessionPicker {
     picker: ListPicker<SessionEntry>,
     confirming: Option<(String, u64)>,
+    pending_rx: Option<flume::Receiver<Result<Vec<SessionEntry>, String>>>,
+    flash: Option<String>,
 }
 
 impl SessionPicker {
@@ -43,39 +47,74 @@ impl SessionPicker {
         Self {
             picker: ListPicker::new(),
             confirming: None,
+            pending_rx: None,
+            flash: None,
         }
     }
 
-    pub fn open(
-        &mut self,
-        cwd: &str,
-        current_session_id: &str,
-        dir: &DataDir,
-    ) -> Result<(), String> {
-        let summaries =
-            AppSession::list(cwd, dir).map_err(|e| format!("Failed to list sessions: {e}"))?;
-        let entries: Vec<SessionEntry> = summaries
-            .into_iter()
-            .filter(|s| s.id != current_session_id)
-            .map(|s| SessionEntry {
-                id: s.id,
-                title: s.title,
-                relative_time: format_relative_time(s.updated_at),
-            })
-            .collect();
-        if entries.is_empty() {
-            return Err(NO_SESSIONS_MSG.into());
+    pub fn open(&mut self, cwd: &str, current_session_id: &str, dir: &DataDir) {
+        self.picker.open_loading(TITLE);
+        let cwd = cwd.to_owned();
+        let current_session_id = current_session_id.to_owned();
+        let dir = dir.clone();
+        let (tx, rx) = flume::bounded(1);
+        thread::spawn(move || {
+            let result = AppSession::list(&cwd, &dir)
+                .map(|summaries| {
+                    summaries
+                        .into_iter()
+                        .filter(|s| s.id != current_session_id)
+                        .map(|s| SessionEntry {
+                            id: s.id,
+                            title: s.title,
+                            relative_time: format_relative_time(s.updated_at),
+                        })
+                        .collect()
+                })
+                .map_err(|e| format!("Failed to list sessions: {e}"));
+            let _ = tx.send(result);
+        });
+        self.pending_rx = Some(rx);
+    }
+
+    fn try_resolve(&mut self) {
+        let Some(ref rx) = self.pending_rx else {
+            return;
+        };
+        let Ok(result) = rx.try_recv() else {
+            return;
+        };
+        self.pending_rx = None;
+        match result {
+            Ok(entries) if entries.is_empty() => {
+                self.picker.close();
+                self.flash = Some(NO_SESSIONS_MSG.into());
+            }
+            Ok(entries) => {
+                self.picker.resolve(entries);
+            }
+            Err(e) => {
+                self.picker.close();
+                self.flash = Some(e);
+            }
         }
-        self.picker.open(entries, TITLE);
-        Ok(())
+    }
+
+    pub fn take_flash(&mut self) -> Option<String> {
+        self.flash.take()
     }
 
     pub fn is_open(&self) -> bool {
         self.picker.is_open()
     }
 
+    pub fn is_loading(&self) -> bool {
+        self.picker.is_loading()
+    }
+
     pub fn close(&mut self) {
         self.picker.close();
+        self.pending_rx = None;
     }
 
     pub fn remove_entry(&mut self, id: &str) {
@@ -101,7 +140,10 @@ impl SessionPicker {
         match self.picker.handle_key(key) {
             PickerAction::Consumed => SessionPickerAction::Consumed,
             PickerAction::Select(_, entry) => SessionPickerAction::Select(entry.id),
-            PickerAction::Close => SessionPickerAction::Close,
+            PickerAction::Close => {
+                self.pending_rx = None;
+                SessionPickerAction::Close
+            }
         }
     }
 
@@ -121,6 +163,10 @@ impl SessionPicker {
 
         self.confirming = Some((selected.id.clone(), generation));
         SessionPickerAction::ConfirmDelete
+    }
+
+    pub fn tick(&mut self) {
+        self.try_resolve();
     }
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) {

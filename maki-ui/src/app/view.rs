@@ -86,7 +86,11 @@ impl App {
         }
 
         if self.session_picker.is_open() {
+            self.session_picker.tick();
             self.session_picker.view(frame, frame.area());
+            if let Some(flash) = self.session_picker.take_flash() {
+                self.status_bar.flash(flash);
+            }
         }
 
         if self.rewind_picker.is_open() {

@@ -677,6 +677,7 @@ impl App {
 
     pub fn is_animating(&self) -> bool {
         self.image_paste_rx.is_some()
+            || self.session_picker.is_loading()
             || self
                 .selection_state
                 .as_ref()
