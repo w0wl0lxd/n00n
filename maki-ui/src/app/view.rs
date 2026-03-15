@@ -1,3 +1,4 @@
+#[cfg(test)]
 use crate::components::keybindings::KeybindContext;
 use crate::components::queue_panel;
 use crate::components::status_bar::{StatusBarContext, UsageStats};
@@ -137,8 +138,7 @@ impl App {
             zone: SelectionZone::StatusBar,
         });
 
-        let help_contexts = self.active_keybind_contexts();
-        self.help_modal.view(frame, frame.area(), &help_contexts);
+        self.help_modal.view(frame, frame.area());
 
         if let Some(ref state) = self.selection_state {
             let zone = state.sel.zone;
@@ -156,6 +156,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn active_keybind_contexts(&self) -> Vec<KeybindContext> {
         let mut contexts = vec![KeybindContext::General];
         if self.question_form.is_visible() {

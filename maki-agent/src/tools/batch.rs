@@ -98,6 +98,7 @@ impl Batch {
 
         let inner_id = |i: usize| format!("{batch_id}__{i}");
 
+        let start = Instant::now();
         let mut set = TaskSet::new();
         for (i, parsed_call) in parsed.iter().enumerate() {
             let id = inner_id(i);
@@ -139,7 +140,6 @@ impl Batch {
             });
         }
 
-        let start = Instant::now();
         let mut results: Vec<(Result<String, String>, Option<ToolOutput>)> =
             vec![(Err("tool task panicked".into()), None); parsed.len()];
         let all = ctx.cancel.race(set.join_all()).await?;

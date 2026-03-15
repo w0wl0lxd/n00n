@@ -663,24 +663,18 @@ mod tests {
 
     #[test]
     fn deadline_cap_timeout_clamps_to_remaining() {
-        let d = Deadline::after(Duration::from_secs(3));
+        let d = Deadline::after(Duration::from_secs(30));
         let result = d.cap_timeout(120).unwrap();
-        assert!(result <= 3, "should clamp to remaining (~3s), got {result}");
+        assert!(result <= 30, "should clamp to remaining, got {result}");
+        assert!(result >= 29, "timer drift too large, got {result}");
     }
 
     #[test_case("short",                            "short"                             ; "short_passthrough")]
     #[test_case(&"x".repeat(MAX_LINE_BYTES),       &"x".repeat(MAX_LINE_BYTES)        ; "exact_boundary")]
     #[test_case(&"x".repeat(MAX_LINE_BYTES + 500), &format!("{}...", "x".repeat(MAX_LINE_BYTES)) ; "long_truncated")]
+    #[test_case(&format!("{}\u{1F600}", "a".repeat(MAX_LINE_BYTES - 1)), &format!("{}...", "a".repeat(MAX_LINE_BYTES - 1)) ; "multibyte_char_boundary")]
     fn truncate_bytes_cases(input: &str, expected: &str) {
         let result = truncate_bytes(input);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn truncate_bytes_splits_on_char_boundary() {
-        let input = "a".repeat(MAX_LINE_BYTES - 1) + "\u{1F600}";
-        let result = truncate_bytes(&input);
-        let expected = format!("{}...", "a".repeat(MAX_LINE_BYTES - 1));
         assert_eq!(result, expected);
     }
 

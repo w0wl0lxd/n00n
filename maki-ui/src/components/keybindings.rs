@@ -52,6 +52,7 @@ pub enum KeybindContext {
     General,
     Editing,
     Streaming,
+    Picker,
     QuestionForm,
     TaskPicker,
     SessionPicker,
@@ -69,15 +70,30 @@ impl KeybindContext {
             Self::General => "General",
             Self::Editing => "Editing",
             Self::Streaming => "While Streaming",
+            Self::Picker => "Pickers",
             Self::QuestionForm => "Question Form",
             Self::TaskPicker => "Task Picker",
             Self::SessionPicker => "Session Picker",
             Self::RewindPicker => "Rewind Picker",
             Self::ThemePicker => "Theme Picker",
             Self::ModelPicker => "Model Picker",
-            Self::QueueFocus => "Queue Focus",
-            Self::CommandPalette => "Command Palette",
+            Self::QueueFocus => "Queue",
+            Self::CommandPalette => "Commands",
             Self::Search => "Search",
+        }
+    }
+
+    pub const fn parent(self) -> Option<KeybindContext> {
+        match self {
+            Self::TaskPicker
+            | Self::SessionPicker
+            | Self::RewindPicker
+            | Self::ThemePicker
+            | Self::ModelPicker
+            | Self::QueueFocus
+            | Self::CommandPalette
+            | Self::Search => Some(Self::Picker),
+            _ => None,
         }
     }
 }
@@ -88,7 +104,7 @@ pub struct Keybind {
     pub context: KeybindContext,
 }
 
-const KEYBINDS: &[Keybind] = &[
+pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         key: "Ctrl+C",
         description: "Quit / clear input",
@@ -96,12 +112,12 @@ const KEYBINDS: &[Keybind] = &[
     },
     Keybind {
         key: "Ctrl+H",
-        description: "Toggle keybindings",
+        description: "Show keybindings",
         context: KeybindContext::General,
     },
     Keybind {
         key: "Ctrl+P/N",
-        description: "Previous/next chat",
+        description: "Previous / next chat",
         context: KeybindContext::General,
     },
     Keybind {
@@ -116,12 +132,12 @@ const KEYBINDS: &[Keybind] = &[
     },
     Keybind {
         key: "\\+Enter",
-        description: "Continue on next line",
+        description: "Newline",
         context: KeybindContext::Editing,
     },
     Keybind {
         key: "Tab",
-        description: "Toggle mode (Build/Plan)",
+        description: "Toggle mode",
         context: KeybindContext::Editing,
     },
     Keybind {
@@ -131,12 +147,12 @@ const KEYBINDS: &[Keybind] = &[
     },
     Keybind {
         key: "Ctrl+W",
-        description: "Delete word before cursor",
+        description: "Delete word backward",
         context: KeybindContext::Editing,
     },
     Keybind {
         key: "Ctrl+←/→",
-        description: "Move word left/right",
+        description: "Move word left / right",
         context: KeybindContext::Editing,
     },
     Keybind {
@@ -146,22 +162,22 @@ const KEYBINDS: &[Keybind] = &[
     },
     Keybind {
         key: "Ctrl+K",
-        description: "Kill to end of line",
+        description: "Delete to end of line",
         context: KeybindContext::Editing,
     },
     Keybind {
         key: "Ctrl+A",
-        description: "Move to start of line",
+        description: "Jump to start of line",
         context: KeybindContext::Editing,
     },
     Keybind {
         key: "Ctrl+U/D",
-        description: "Scroll half page up/down",
+        description: "Scroll half page up / down",
         context: KeybindContext::Editing,
     },
     Keybind {
         key: "Ctrl+Y/E",
-        description: "Scroll one line up/down",
+        description: "Scroll one line up / down",
         context: KeybindContext::Editing,
     },
     Keybind {
@@ -176,18 +192,8 @@ const KEYBINDS: &[Keybind] = &[
     },
     Keybind {
         key: "Ctrl+Q",
-        description: "Pop front of queue",
+        description: "Pop queue",
         context: KeybindContext::Editing,
-    },
-    Keybind {
-        key: "↑/↓",
-        description: "Scroll messages",
-        context: KeybindContext::Streaming,
-    },
-    Keybind {
-        key: "Esc Esc",
-        description: "Cancel agent",
-        context: KeybindContext::Streaming,
     },
     Keybind {
         key: "Esc Esc",
@@ -196,58 +202,48 @@ const KEYBINDS: &[Keybind] = &[
     },
     Keybind {
         key: "↑/↓",
+        description: "Navigate messages",
+        context: KeybindContext::Streaming,
+    },
+    Keybind {
+        key: "Esc Esc",
+        description: "Cancel agent",
+        context: KeybindContext::Streaming,
+    },
+    Keybind {
+        key: "↑/↓",
+        description: "Navigate options",
+        context: KeybindContext::QuestionForm,
+    },
+    Keybind {
+        key: "Enter",
         description: "Select option",
         context: KeybindContext::QuestionForm,
     },
     Keybind {
-        key: "Enter",
-        description: "Confirm selection",
-        context: KeybindContext::QuestionForm,
-    },
-    Keybind {
         key: "Esc",
-        description: "Dismiss",
+        description: "Close",
         context: KeybindContext::QuestionForm,
     },
     Keybind {
         key: "↑/↓",
-        description: "Navigate tasks",
-        context: KeybindContext::TaskPicker,
+        description: "Navigate",
+        context: KeybindContext::Picker,
     },
     Keybind {
         key: "Enter",
-        description: "Select task",
-        context: KeybindContext::TaskPicker,
-    },
-    Keybind {
-        key: "Esc",
-        description: "Cancel",
-        context: KeybindContext::TaskPicker,
-    },
-    Keybind {
-        key: "Type",
-        description: "Filter tasks",
-        context: KeybindContext::TaskPicker,
-    },
-    Keybind {
-        key: "\u{2191}/\u{2193}",
-        description: "Navigate sessions",
-        context: KeybindContext::SessionPicker,
-    },
-    Keybind {
-        key: "Enter",
-        description: "Load session",
-        context: KeybindContext::SessionPicker,
+        description: "Select",
+        context: KeybindContext::Picker,
     },
     Keybind {
         key: "Esc",
         description: "Close",
-        context: KeybindContext::SessionPicker,
+        context: KeybindContext::Picker,
     },
     Keybind {
         key: "Type",
-        description: "Filter sessions",
-        context: KeybindContext::SessionPicker,
+        description: "Filter",
+        context: KeybindContext::Picker,
     },
     Keybind {
         key: "Ctrl+D",
@@ -255,160 +251,49 @@ const KEYBINDS: &[Keybind] = &[
         context: KeybindContext::SessionPicker,
     },
     Keybind {
-        key: "\u{2191}/\u{2193}",
-        description: "Navigate turns",
-        context: KeybindContext::RewindPicker,
-    },
-    Keybind {
-        key: "Enter",
-        description: "Rewind to turn",
-        context: KeybindContext::RewindPicker,
-    },
-    Keybind {
-        key: "Esc",
-        description: "Close",
-        context: KeybindContext::RewindPicker,
-    },
-    Keybind {
-        key: "Type",
-        description: "Filter turns",
-        context: KeybindContext::RewindPicker,
-    },
-    Keybind {
-        key: "↑/↓",
-        description: "Navigate themes",
-        context: KeybindContext::ThemePicker,
-    },
-    Keybind {
-        key: "Enter",
-        description: "Select theme",
-        context: KeybindContext::ThemePicker,
-    },
-    Keybind {
-        key: "Esc",
-        description: "Cancel",
-        context: KeybindContext::ThemePicker,
-    },
-    Keybind {
-        key: "Type",
-        description: "Filter themes",
-        context: KeybindContext::ThemePicker,
-    },
-    Keybind {
-        key: "↑/↓",
-        description: "Navigate models",
-        context: KeybindContext::ModelPicker,
-    },
-    Keybind {
-        key: "Enter",
-        description: "Select model",
-        context: KeybindContext::ModelPicker,
-    },
-    Keybind {
-        key: "Esc",
-        description: "Cancel",
-        context: KeybindContext::ModelPicker,
-    },
-    Keybind {
-        key: "Type",
-        description: "Filter models",
-        context: KeybindContext::ModelPicker,
-    },
-    Keybind {
-        key: "↑/↓",
-        description: "Navigate queue",
-        context: KeybindContext::QueueFocus,
-    },
-    Keybind {
         key: "Enter",
         description: "Remove item",
         context: KeybindContext::QueueFocus,
     },
     Keybind {
-        key: "Esc",
-        description: "Exit queue focus",
-        context: KeybindContext::QueueFocus,
-    },
-    Keybind {
-        key: "↑/↓",
-        description: "Navigate commands",
-        context: KeybindContext::CommandPalette,
-    },
-    Keybind {
-        key: "Enter",
-        description: "Execute command",
-        context: KeybindContext::CommandPalette,
-    },
-    Keybind {
-        key: "Esc",
-        description: "Close palette",
-        context: KeybindContext::CommandPalette,
-    },
-    Keybind {
         key: "Tab",
-        description: "Close and toggle mode",
+        description: "Toggle mode",
         context: KeybindContext::CommandPalette,
-    },
-    Keybind {
-        key: "Esc",
-        description: "Close search",
-        context: KeybindContext::Search,
-    },
-    Keybind {
-        key: "↑/↓",
-        description: "Navigate",
-        context: KeybindContext::Search,
-    },
-    Keybind {
-        key: "Enter",
-        description: "Go to match",
-        context: KeybindContext::Search,
     },
 ];
 
-pub fn active_keybinds(contexts: &[KeybindContext]) -> Vec<&'static Keybind> {
-    let mut binds: Vec<&'static Keybind> = KEYBINDS
-        .iter()
-        .filter(|kb| contexts.contains(&kb.context))
-        .collect();
-    binds.sort_by_key(|kb| contexts.iter().position(|c| *c == kb.context));
-    binds
-}
+pub const ALL_CONTEXTS: &[KeybindContext] = &[
+    KeybindContext::General,
+    KeybindContext::Editing,
+    KeybindContext::Streaming,
+    KeybindContext::Picker,
+    KeybindContext::TaskPicker,
+    KeybindContext::SessionPicker,
+    KeybindContext::RewindPicker,
+    KeybindContext::ThemePicker,
+    KeybindContext::ModelPicker,
+    KeybindContext::QueueFocus,
+    KeybindContext::CommandPalette,
+    KeybindContext::Search,
+    KeybindContext::QuestionForm,
+];
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn multiple_contexts_returns_union() {
-        let binds = active_keybinds(&[KeybindContext::General, KeybindContext::Streaming]);
-        let has_general = binds.iter().any(|kb| kb.context == KeybindContext::General);
-        let has_streaming = binds
-            .iter()
-            .any(|kb| kb.context == KeybindContext::Streaming);
-        assert!(has_general);
-        assert!(has_streaming);
-    }
-
-    #[test]
     fn every_context_has_at_least_one_keybind() {
-        let all_contexts = [
-            KeybindContext::General,
-            KeybindContext::Editing,
-            KeybindContext::Streaming,
-            KeybindContext::QuestionForm,
-            KeybindContext::TaskPicker,
-            KeybindContext::SessionPicker,
-            KeybindContext::RewindPicker,
-            KeybindContext::ThemePicker,
-            KeybindContext::ModelPicker,
-            KeybindContext::QueueFocus,
-            KeybindContext::CommandPalette,
-            KeybindContext::Search,
-        ];
-        for ctx in all_contexts {
-            let binds = active_keybinds(&[ctx]);
-            assert!(!binds.is_empty(), "context {:?} has no keybinds", ctx);
+        for &ctx in ALL_CONTEXTS {
+            let has_own = KEYBINDS.iter().any(|kb| kb.context == ctx);
+            let has_parent = ctx
+                .parent()
+                .is_some_and(|p| KEYBINDS.iter().any(|kb| kb.context == p));
+            assert!(
+                has_own || has_parent,
+                "context {:?} has no keybinds and no parent with keybinds",
+                ctx,
+            );
         }
     }
 

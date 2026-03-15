@@ -478,18 +478,9 @@ pub(crate) async fn execute_mcp_tool(
         return done(format!("MCP manager not available for {tool_name}"), true);
     };
 
-    let start = std::time::Instant::now();
-    let result = mcp.call_tool(tool_name, input).await;
-    let duration_ms = start.elapsed().as_millis() as u64;
-    match result {
-        Ok(text) => {
-            info!(tool = tool_name, duration_ms, "MCP tool completed");
-            done(text, false)
-        }
-        Err(e) => {
-            error!(tool = tool_name, duration_ms, error = %e, "MCP tool failed");
-            done(e.to_string(), true)
-        }
+    match mcp.call_tool(tool_name, input).await {
+        Ok(text) => done(text, false),
+        Err(e) => done(e.to_string(), true),
     }
 }
 

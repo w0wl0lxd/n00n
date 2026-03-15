@@ -1,4 +1,4 @@
-use crate::components::keybindings::{KeybindContext, active_keybinds, key};
+use crate::components::keybindings::{ALL_CONTEXTS, KEYBINDS, key};
 use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
 use crate::theme;
@@ -70,32 +70,60 @@ impl HelpModal {
         }
     }
 
-    pub fn view(&self, frame: &mut Frame, area: Rect, contexts: &[KeybindContext]) {
+    pub fn view(&self, frame: &mut Frame, area: Rect) {
         if !self.open {
             return;
         }
 
-        let keybinds = active_keybinds(contexts);
         let mut lines: Vec<Line> = Vec::new();
+        let theme = theme::current();
 
-        let mut current_ctx: Option<KeybindContext> = None;
-        for kb in &keybinds {
-            if current_ctx != Some(kb.context) {
-                if current_ctx.is_some() {
-                    lines.push(Line::default());
-                }
-                lines.push(Line::from(Span::styled(
-                    format!("── {} ──", kb.context.label()),
-                    theme::current().keybind_section,
-                )));
-                current_ctx = Some(kb.context);
+        let mut first = true;
+        for &ctx in ALL_CONTEXTS {
+            if ctx.parent().is_some() {
+                continue;
+            }
+            if !first {
+                lines.push(Line::default());
+            }
+            first = false;
+
+            lines.push(Line::from(Span::styled(
+                format!("  {}", ctx.label()),
+                theme.keybind_section,
+            )));
+
+            for kb in KEYBINDS.iter().filter(|kb| kb.context == ctx) {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {:KEY_COL_WIDTH$}", kb.key), theme.keybind_key),
+                    Span::styled(kb.description, theme.keybind_desc),
+                ]));
             }
 
-            let key_display = format!("{:width$}", kb.key, width = KEY_COL_WIDTH);
-            lines.push(Line::from(vec![
-                Span::styled(key_display, theme::current().keybind_key),
-                Span::styled(kb.description, theme::current().keybind_desc),
-            ]));
+            for &child in ALL_CONTEXTS {
+                if child.parent() != Some(ctx) {
+                    continue;
+                }
+                let child_binds: Vec<_> =
+                    KEYBINDS.iter().filter(|kb| kb.context == child).collect();
+                if child_binds.is_empty() {
+                    continue;
+                }
+                lines.push(Line::default());
+                lines.push(Line::from(Span::styled(
+                    format!("    {}", child.label()),
+                    theme.keybind_section,
+                )));
+                for kb in child_binds {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("    {:width$}", kb.key, width = KEY_COL_WIDTH - 2),
+                            theme.keybind_key,
+                        ),
+                        Span::styled(kb.description, theme.keybind_desc),
+                    ]));
+                }
+            }
         }
 
         let total = lines.len() as u16;

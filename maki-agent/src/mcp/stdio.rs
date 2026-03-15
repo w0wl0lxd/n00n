@@ -220,9 +220,10 @@ impl McpTransport for StdioTransport {
 
             if result.is_err() {
                 self.pending.lock().await.remove(&id);
+            } else {
+                info!(server = %self.server(), method, id, duration_ms = start.elapsed().as_millis() as u64, "MCP stdio response");
             }
 
-            info!(server = %self.server(), method, id, duration_ms = start.elapsed().as_millis() as u64, "MCP stdio response received");
             result
         })
     }
