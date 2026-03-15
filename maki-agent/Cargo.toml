@@ -16,6 +16,8 @@ strum = { workspace = true }
 maki-tool-macro = { workspace = true }
 htmd = { workspace = true }
 regex = { workspace = true }
+grep-regex = { workspace = true }
+grep-searcher = { workspace = true }
 similar = { workspace = true }
 jiff = { workspace = true }
 humantime = { workspace = true }

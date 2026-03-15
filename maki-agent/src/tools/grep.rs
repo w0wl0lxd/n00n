@@ -1,7 +1,10 @@
 use std::path::Path;
-use std::process::Stdio;
 
-use async_process::Command;
+use grep_regex::RegexMatcher;
+use grep_searcher::SearcherBuilder;
+use grep_searcher::sinks::UTF8;
+use ignore::WalkBuilder;
+use ignore::overrides::OverrideBuilder;
 
 use crate::{GrepFileEntry, GrepMatch, ToolOutput};
 use maki_tool_macro::Tool;
@@ -33,95 +36,101 @@ impl Grep {
     );
 
     pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let search_path = resolve_search_path(self.path.as_deref())?;
-        debug!(
-            pattern = %self.pattern,
-            pattern_debug = ?self.pattern,
-            include = ?self.include,
-            path = %search_path,
-            "grep executing"
-        );
+        let pattern = self.pattern.clone();
+        let include = self.include.clone();
+        let path = self.path.clone();
 
-        let mut cmd = Command::new("rg");
-        cmd.args([
-            "-nH",
-            "--hidden",
-            "--no-messages",
-            "--field-match-separator",
-            "|",
-            "--regexp",
-            &self.pattern,
-        ]);
-        if let Some(glob) = &self.include {
-            cmd.args(["--glob", glob]);
-        }
-        cmd.arg(&search_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        smol::unblock(move || {
+            let search_path = resolve_search_path(path.as_deref())?;
+            debug!(
+                pattern = %pattern,
+                include = ?include,
+                path = %search_path,
+                "grep executing"
+            );
 
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| format!("failed to run rg: {e}"))?;
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.is_empty() {
-            debug!(stderr = %stderr, status = ?output.status, "rg stderr");
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
+            let matcher = RegexMatcher::new_line_matcher(&pattern)
+                .or_else(|_| RegexMatcher::new(&pattern))
+                .map_err(|e| format!("invalid regex pattern: {e}"))?;
 
-        let prefix = search_path.strip_suffix('/').unwrap_or(&search_path);
+            let mut walker = WalkBuilder::new(&search_path);
+            walker.hidden(false);
 
-        let mut entries: Vec<GrepFileEntry> = Vec::new();
-        for line in stdout.lines() {
-            let Some((file, rest)) = line.split_once('|') else {
-                continue;
-            };
-            let Some((line_num, text)) = rest.split_once('|') else {
-                continue;
-            };
-            let text = truncate_bytes(text);
-            let rel = file
-                .strip_prefix(prefix)
-                .and_then(|p| p.strip_prefix('/'))
-                .unwrap_or(file);
-            let m = GrepMatch {
-                line_nr: line_num.parse().unwrap_or(0),
-                text,
-            };
-            match entries.last_mut().filter(|e| e.path == rel) {
-                Some(entry) => entry.matches.push(m),
-                None => entries.push(GrepFileEntry {
-                    path: rel.to_string(),
-                    matches: vec![m],
-                }),
+            if let Some(glob) = &include {
+                let mut overrides = OverrideBuilder::new(&search_path);
+                overrides
+                    .add(glob)
+                    .map_err(|e| format!("invalid glob pattern: {e}"))?;
+                walker.overrides(
+                    overrides
+                        .build()
+                        .map_err(|e| format!("invalid glob pattern: {e}"))?,
+                );
             }
-        }
 
-        if entries.is_empty() {
-            return Ok(ToolOutput::Plain(NO_FILES_FOUND.to_string()));
-        }
+            let mut searcher = SearcherBuilder::new()
+                .binary_detection(grep_searcher::BinaryDetection::quit(b'\x00'))
+                .line_number(true)
+                .build();
 
-        let prefix_owned = prefix.to_string();
-        let mut entries = smol::unblock(move || {
+            let base = Path::new(&search_path);
+            let mut entries: Vec<GrepFileEntry> = Vec::new();
+
+            for entry in walker.build().flatten() {
+                if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                    continue;
+                }
+                let path = entry.into_path();
+                let mut file_matches = Vec::new();
+
+                let _ = searcher.search_path(
+                    &matcher,
+                    &path,
+                    UTF8(|line_nr, text| {
+                        let text = text.strip_suffix('\n').unwrap_or(text);
+                        let text = text.strip_suffix('\r').unwrap_or(text);
+                        file_matches.push(GrepMatch {
+                            line_nr: line_nr as usize,
+                            text: truncate_bytes(text),
+                        });
+                        Ok(true)
+                    }),
+                );
+
+                if !file_matches.is_empty() {
+                    let rel = path
+                        .strip_prefix(base)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .into_owned();
+                    entries.push(GrepFileEntry {
+                        path: rel,
+                        matches: file_matches,
+                    });
+                }
+            }
+
+            if entries.is_empty() {
+                return Ok(ToolOutput::Plain(NO_FILES_FOUND.to_string()));
+            }
+
             entries.sort_by(|a, b| {
-                let a_abs = Path::new(&prefix_owned).join(&a.path);
-                let b_abs = Path::new(&prefix_owned).join(&b.path);
+                let a_abs = base.join(&a.path);
+                let b_abs = base.join(&b.path);
                 mtime(&b_abs).cmp(&mtime(&a_abs))
             });
-            entries
+
+            let mut total = 0;
+            for entry in &mut entries {
+                let remaining = SEARCH_RESULT_LIMIT.saturating_sub(total);
+                entry.matches.truncate(remaining);
+                total += entry.matches.len();
+            }
+            entries.retain(|e| !e.matches.is_empty());
+
+            Ok(ToolOutput::GrepResult { entries })
         })
-        .await;
-
-        let mut total = 0;
-        for entry in &mut entries {
-            let remaining = SEARCH_RESULT_LIMIT.saturating_sub(total);
-            entry.matches.truncate(remaining);
-            total += entry.matches.len();
-        }
-        entries.retain(|e| !e.matches.is_empty());
-
-        Ok(ToolOutput::GrepResult { entries })
+        .await
     }
 
     pub fn start_summary(&self) -> String {

@@ -651,7 +651,7 @@ mod tests {
     }
 
     #[test_case(Deadline::None,                                         120, Ok(120) ; "none_passthrough")]
-    #[test_case(Deadline::after(Duration::from_secs(60)),               10,  Ok(10)  ; "preserves_shorter_timeout")]
+    #[test_case(Deadline::after(Duration::from_secs(60)),               10,  Ok(10)  ; "shorter_timeout_preserved")]
     #[test_case(Deadline::At(Instant::now() - Duration::from_secs(1)),  120, Err(DEADLINE_EXCEEDED_MSG.into()) ; "expired")]
     fn deadline_cap_timeout_cases(d: Deadline, timeout: u64, expected: Result<u64, String>) {
         let result = d.cap_timeout(timeout);
@@ -663,9 +663,9 @@ mod tests {
 
     #[test]
     fn deadline_cap_timeout_clamps_to_remaining() {
-        let d = Deadline::after(Duration::from_secs(60));
+        let d = Deadline::after(Duration::from_secs(3));
         let result = d.cap_timeout(120).unwrap();
-        assert!((1..=60).contains(&result), "expected 1..=60, got {result}");
+        assert!(result <= 3, "should clamp to remaining (~3s), got {result}");
     }
 
     #[test_case("short",                            "short"                             ; "short_passthrough")]
@@ -776,6 +776,37 @@ mod tests {
             let g = grep::Grep::parse_input(&json!({"pattern": "zzzznotfound", "path": dir_str}))
                 .unwrap();
             assert_eq!(g.execute(&ctx).await.unwrap().as_text(), NO_FILES_FOUND);
+        });
+    }
+
+    #[test]
+    fn grep_skips_binary_files() {
+        smol::block_on(async {
+            let dir = TempDir::new().unwrap();
+            fs::write(dir.path().join("text.txt"), "findme here").unwrap();
+            fs::write(dir.path().join("binary.bin"), b"findme \x00 binary content").unwrap();
+            let dir_str = dir.path().to_string_lossy().to_string();
+            let ctx = stub_ctx(&AgentMode::Build);
+
+            let g =
+                grep::Grep::parse_input(&json!({"pattern": "findme", "path": dir_str})).unwrap();
+            let out = g.execute(&ctx).await.unwrap().as_text().to_string();
+            assert!(out.contains("text.txt"));
+            assert!(!out.contains("binary.bin"));
+        });
+    }
+
+    #[test]
+    fn grep_invalid_regex_returns_error() {
+        smol::block_on(async {
+            let dir = TempDir::new().unwrap();
+            let dir_str = dir.path().to_string_lossy().to_string();
+            let ctx = stub_ctx(&AgentMode::Build);
+
+            let g =
+                grep::Grep::parse_input(&json!({"pattern": "[invalid", "path": dir_str})).unwrap();
+            let err = g.execute(&ctx).await.unwrap_err();
+            assert!(err.contains("invalid regex pattern"), "got: {err}");
         });
     }
 
