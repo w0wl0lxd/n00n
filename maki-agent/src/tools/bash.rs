@@ -13,6 +13,7 @@ use maki_tool_macro::Tool;
 use crate::{AgentEvent, EventSender, ToolInput, ToolOutput};
 
 use super::{relative_path, truncate_output};
+use tracing::info;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
@@ -99,6 +100,8 @@ impl Bash {
         let (command, workdir) = self.resolved();
         let rewritten = rtk_rewrite(command, ctx.config.no_rtk);
         let command = rewritten.as_deref().unwrap_or(command);
+
+        info!(command, workdir, timeout_secs, "bash executing");
 
         let mut std_cmd = StdCommand::new("bash");
         std_cmd

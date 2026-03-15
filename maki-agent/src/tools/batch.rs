@@ -12,7 +12,9 @@ use serde_json::Value;
 
 use crate::task_set::TaskSet;
 use maki_tool_macro::Tool;
-use tracing::error;
+use tracing::{error, info};
+
+use std::time::Instant;
 
 use super::{ToolCall, ToolContext};
 
@@ -137,6 +139,7 @@ impl Batch {
             });
         }
 
+        let start = Instant::now();
         let mut results: Vec<(Result<String, String>, Option<ToolOutput>)> =
             vec![(Err("tool task panicked".into()), None); parsed.len()];
         let all = ctx.cancel.race(set.join_all()).await?;
@@ -188,6 +191,13 @@ impl Batch {
         }
 
         let succeeded = total - failed;
+        info!(
+            succeeded,
+            failed,
+            total,
+            duration_ms = start.elapsed().as_millis() as u64,
+            "batch completed"
+        );
         if failed > 0 {
             let _ = write!(
                 output,

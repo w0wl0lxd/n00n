@@ -1,8 +1,10 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 
 use serde_json::Value;
+use tracing::info;
 
 use super::error::McpError;
 use super::protocol::{CallToolResult, ToolInfo, ToolsListResult, initialize_params};
@@ -51,6 +53,8 @@ pub async fn call_tool(
     tool_name: &str,
     args: &Value,
 ) -> Result<String, McpError> {
+    let server = &**transport.server_name();
+    let start = Instant::now();
     let params = serde_json::json!({
         "name": tool_name,
         "arguments": args,
@@ -69,5 +73,11 @@ pub async fn call_tool(
         });
     }
 
+    info!(
+        server,
+        tool = tool_name,
+        duration_ms = start.elapsed().as_millis() as u64,
+        "MCP tools/call response"
+    );
     Ok(text)
 }

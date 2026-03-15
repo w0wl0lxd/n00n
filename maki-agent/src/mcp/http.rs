@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_lock::Mutex;
 use isahc::HttpClient;
@@ -14,6 +14,7 @@ use serde_json::Value;
 use super::error::McpError;
 use super::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use super::transport::{BoxFuture, McpTransport};
+use tracing::info;
 
 const SESSION_HEADER: &str = "mcp-session-id";
 const CT_JSON: &str = "application/json";
@@ -160,6 +161,7 @@ impl McpTransport for HttpTransport {
         params: Option<Value>,
     ) -> BoxFuture<'a, Result<Value, McpError>> {
         Box::pin(async move {
+            let start = Instant::now();
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let req = JsonRpcRequest::new(id, method, params);
             let body = serde_json::to_vec(&req).map_err(|e| McpError::InvalidResponse {
@@ -192,7 +194,9 @@ impl McpTransport for HttpTransport {
                 .is_some_and(|ct| ct.contains(CT_SSE));
 
             let body_str = self.read_body(&mut response)?;
-            self.parse_rpc_response(&body_str, if is_sse { CT_SSE } else { CT_JSON })
+            let result = self.parse_rpc_response(&body_str, if is_sse { CT_SSE } else { CT_JSON });
+            info!(server = %self.server(), method, status = %status, duration_ms = start.elapsed().as_millis() as u64, "MCP HTTP request");
+            result
         })
     }
 

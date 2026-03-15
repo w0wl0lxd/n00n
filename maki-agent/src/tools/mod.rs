@@ -35,7 +35,7 @@ use std::time::{Duration, Instant, SystemTime};
 use humantime::format_duration;
 use serde_json::{Value, json};
 use std::future::Future;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::cancel::CancelToken;
 use crate::mcp::McpManager;
@@ -445,16 +445,21 @@ macro_rules! register_tools {
                         };
                     }
 
+                    let start = Instant::now();
                     let result = match self {
                         $(ToolCall::$Variant(inner) => inner.execute(ctx).await),+
                     };
+                    let duration_ms = start.elapsed().as_millis() as u64;
                     let (output, is_error) = match result {
                         Ok(o) => (o, false),
                         Err(e) => {
-                            error!(tool = self.name(), error = %e, "tool execution failed");
+                            error!(tool = self.name(), duration_ms, error = %e, "tool execution failed");
                             (ToolOutput::Plain(e), true)
                         }
                     };
+                    if !is_error {
+                        info!(tool = self.name(), duration_ms, "tool completed");
+                    }
                     ToolDoneEvent { id, tool: self.name(), output, is_error }
                 })
             }

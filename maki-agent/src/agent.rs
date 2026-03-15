@@ -478,9 +478,18 @@ pub(crate) async fn execute_mcp_tool(
         return done(format!("MCP manager not available for {tool_name}"), true);
     };
 
-    match mcp.call_tool(tool_name, input).await {
-        Ok(text) => done(text, false),
-        Err(e) => done(e.to_string(), true),
+    let start = std::time::Instant::now();
+    let result = mcp.call_tool(tool_name, input).await;
+    let duration_ms = start.elapsed().as_millis() as u64;
+    match result {
+        Ok(text) => {
+            info!(tool = tool_name, duration_ms, "MCP tool completed");
+            done(text, false)
+        }
+        Err(e) => {
+            error!(tool = tool_name, duration_ms, error = %e, "MCP tool failed");
+            done(e.to_string(), true)
+        }
     }
 }
 
@@ -878,6 +887,7 @@ async fn compact_history(
     event_tx: &EventSender,
     cancel: &CancelToken,
 ) -> Result<TokenUsage, AgentError> {
+    let compact_start = std::time::Instant::now();
     let mut compaction_history: Vec<Message> = history.as_slice().to_vec();
     strip_images(&mut compaction_history);
     compaction_history.push(Message::user(crate::prompt::COMPACTION_USER.to_string()));
@@ -906,6 +916,11 @@ async fn compact_history(
         response.message,
     ];
     history.replace(new_history);
+    info!(
+        model = %model.id,
+        duration_ms = compact_start.elapsed().as_millis() as u64,
+        "compaction completed"
+    );
 
     Ok(response.usage)
 }

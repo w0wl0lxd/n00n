@@ -8,6 +8,7 @@ use maki_tool_macro::Tool;
 use crate::ToolOutput;
 
 use super::{MAX_RESPONSE_BYTES, truncate_output};
+use tracing::info;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 120;
@@ -75,6 +76,7 @@ impl WebFetch {
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|v| v.contains(CF_CHALLENGE));
         let mut response = if is_cf_challenge {
+            info!(url = %url, "retrying with fallback user-agent after CF challenge");
             let retry_request = Request::builder()
                 .method("GET")
                 .uri(&url)
@@ -116,6 +118,8 @@ impl WebFetch {
             .bytes()
             .await
             .map_err(|e| format!("read error: {e}"))?;
+
+        info!(url = %url, status, body_bytes = bytes.len(), "webfetch response");
 
         if bytes.len() > MAX_RESPONSE_BYTES {
             return Err(format!("response too large: {} bytes", bytes.len()));

@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use crate::ToolOutput;
 
 use super::{MAX_RESPONSE_BYTES, truncate_output};
+use tracing::info;
 
 const EXA_MCP_ENDPOINT: &str = "https://mcp.exa.ai/mcp";
 const REQUEST_TIMEOUT_SECS: u64 = 25;
@@ -79,6 +80,8 @@ impl WebSearch {
             .text()
             .await
             .map_err(|e| format!("read error: {e}"))?;
+
+        info!(query = %self.query, num_results, status, body_bytes = body.len(), "websearch response");
 
         if body.len() > MAX_RESPONSE_BYTES {
             return Err(format!("response too large: {} bytes", body.len()));

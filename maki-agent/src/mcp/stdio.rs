@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_lock::Mutex;
 use async_process::{Child, Command, Stdio};
 use futures_lite::io::BufReader;
 use futures_lite::{AsyncBufReadExt, AsyncWriteExt};
 use serde_json::Value;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::error::McpError;
 use super::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
@@ -197,6 +197,7 @@ impl McpTransport for StdioTransport {
                 return Err(self.server_died());
             }
 
+            let start = Instant::now();
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let req = JsonRpcRequest::new(id, method, params);
 
@@ -221,6 +222,7 @@ impl McpTransport for StdioTransport {
                 self.pending.lock().await.remove(&id);
             }
 
+            info!(server = %self.server(), method, id, duration_ms = start.elapsed().as_millis() as u64, "MCP stdio response received");
             result
         })
     }

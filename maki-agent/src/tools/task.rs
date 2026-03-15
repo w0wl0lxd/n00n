@@ -5,12 +5,14 @@
 //! Child cancellation is linked to the parent via `cancel.child()`, so parent cancellation propagates.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::{AgentEvent, EventSender, SubagentInfo, ToolOutput};
 use maki_providers::model::ModelTier;
 use maki_providers::provider;
 use maki_providers::{ContentBlock, Model, ModelError, Role};
 use maki_tool_macro::Tool;
+use tracing::info;
 
 use super::{GENERAL_SUBAGENT_TOOLS, RESEARCH_SUBAGENT_TOOLS, ToolContext};
 use crate::agent;
@@ -68,6 +70,13 @@ impl Task {
         } else {
             (ctx.model.clone(), Arc::clone(&ctx.provider))
         };
+
+        info!(
+            description = %self.description,
+            subagent_type = agent_type,
+            model = %model.id,
+            "subagent spawning",
+        );
 
         let mut system = vars.apply(prompt).into_owned();
         let cwd_owned = vars.apply("{cwd}").into_owned();
@@ -130,8 +139,12 @@ impl Task {
             },
         )
         .with_cancel(child_cancel);
+        let start = Instant::now();
         let outcome = agent.run(input).await;
+        let duration_ms = start.elapsed().as_millis() as u64;
         drop(child_trigger);
+        let success = outcome.result.is_ok();
+        info!(description = %self.description, duration_ms, success, "subagent completed");
         outcome
             .result
             .map_err(|e| format!("sub-agent error: {e}"))?;
