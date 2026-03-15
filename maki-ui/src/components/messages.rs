@@ -2061,17 +2061,19 @@ mod tests {
             partial_lines.len() > base_lines.len(),
             "partial row should add lines to the table"
         );
-        let has_partial_content = partial_lines
-            .iter()
-            .any(|l| l.contains("in pro"));
-        assert!(has_partial_content, "partial cell content should be rendered in table");
+        let has_partial_content = partial_lines.iter().any(|l| l.contains("in pro"));
+        assert!(
+            has_partial_content,
+            "partial cell content should be rendered in table"
+        );
 
         let complete = format!("{base}\n| 3 | in progress |");
         cache.get_or_update(&complete, "", style, style, width);
         let complete_lines = cache_lines_text(&cache);
-        let has_complete_content = complete_lines
-            .iter()
-            .any(|l| l.contains("in progress"));
-        assert!(has_complete_content, "complete cell content should be rendered");
+        let has_complete_content = complete_lines.iter().any(|l| l.contains("in progress"));
+        assert!(
+            has_complete_content,
+            "complete cell content should be rendered"
+        );
     }
 }

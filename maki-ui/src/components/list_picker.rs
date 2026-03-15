@@ -164,6 +164,9 @@ impl<T: PickerItem> State<T> {
     }
 
     fn ensure_visible(&mut self) {
+        if self.filtered.is_empty() {
+            return;
+        }
         if self.selected < self.scroll_offset {
             self.scroll_offset = self.selected;
         }
