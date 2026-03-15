@@ -105,6 +105,11 @@ const KEYBINDS: &[Keybind] = &[
         context: KeybindContext::General,
     },
     Keybind {
+        key: "Ctrl+F",
+        description: "Search messages",
+        context: KeybindContext::General,
+    },
+    Keybind {
         key: "Enter",
         description: "Submit prompt",
         context: KeybindContext::Editing,
@@ -345,11 +350,6 @@ const KEYBINDS: &[Keybind] = &[
         context: KeybindContext::CommandPalette,
     },
     Keybind {
-        key: "Ctrl+F",
-        description: "Search messages",
-        context: KeybindContext::General,
-    },
-    Keybind {
         key: "Esc",
         description: "Close search",
         context: KeybindContext::Search,
@@ -367,10 +367,12 @@ const KEYBINDS: &[Keybind] = &[
 ];
 
 pub fn active_keybinds(contexts: &[KeybindContext]) -> Vec<&'static Keybind> {
-    KEYBINDS
+    let mut binds: Vec<&'static Keybind> = KEYBINDS
         .iter()
         .filter(|kb| contexts.contains(&kb.context))
-        .collect()
+        .collect();
+    binds.sort_by_key(|kb| contexts.iter().position(|c| *c == kb.context));
+    binds
 }
 
 #[cfg(test)]
