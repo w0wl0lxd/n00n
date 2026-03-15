@@ -254,13 +254,24 @@ pub fn render_tool_content(
             path,
             start_line,
             lines: code_lines,
-        }) => render_code(
-            highlight.then(|| highlighter_for_path(path)),
-            *start_line,
-            code_lines,
-            code_lines.len(),
-            MAX_CODE_LINES,
-        ),
+            instructions,
+            ..
+        }) => {
+            let mut result = render_code(
+                highlight.then(|| highlighter_for_path(path)),
+                *start_line,
+                code_lines,
+                code_lines.len(),
+                MAX_CODE_LINES,
+            );
+            if let Some(inst) = instructions {
+                result.push(Line::default());
+                for line in inst.lines() {
+                    result.push(Line::from(fallback_span(line)));
+                }
+            }
+            result
+        }
         Some(ToolOutput::WriteCode {
             path,
             lines: code_lines,

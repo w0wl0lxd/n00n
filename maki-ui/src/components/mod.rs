@@ -289,6 +289,8 @@ mod tests {
             path: "main.rs".into(),
             start_line: 1,
             lines: vec!["fn main() {}".into()],
+            total_lines: 1,
+            instructions: None,
         });
         assert_eq!(msg.copy_text(), "read> read /src/main.rs\n1: fn main() {}");
     }

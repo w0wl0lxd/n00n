@@ -185,6 +185,10 @@ pub enum ToolOutput {
         path: String,
         start_line: usize,
         lines: Vec<String>,
+        #[serde(default)]
+        total_lines: usize,
+        #[serde(default)]
+        instructions: Option<String>,
     },
     Diff {
         path: String,
@@ -238,13 +242,22 @@ impl ToolOutput {
         match self {
             Self::Plain(s) => s.clone(),
             Self::ReadCode {
-                start_line, lines, ..
-            } => lines
-                .iter()
-                .enumerate()
-                .map(|(i, line)| format!("{}: {line}", start_line + i))
-                .collect::<Vec<_>>()
-                .join("\n"),
+                start_line,
+                lines,
+                instructions,
+                ..
+            } => {
+                let mut out: Vec<String> = lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, line)| format!("{}: {line}", start_line + i))
+                    .collect();
+                if let Some(inst) = instructions {
+                    out.push(String::new());
+                    out.push(inst.clone());
+                }
+                out.join("\n")
+            }
             Self::Diff {
                 path,
                 hunks,
@@ -650,5 +663,52 @@ mod tests {
         assert!(
             matches!(&msg.content[1], ContentBlock::ToolResult { tool_use_id, is_error, .. } if tool_use_id == "t2" && *is_error)
         );
+    }
+
+    #[test_case(
+        10,
+        vec!["fn foo()".into(), "fn bar()".into()],
+        Some("---\nInstructions from: AGENTS.md\ndo stuff".into()),
+        "10: fn foo()\n11: fn bar()\n\n---\nInstructions from: AGENTS.md\ndo stuff"
+        ; "with_instructions"
+    )]
+    #[test_case(
+        1,
+        vec!["line1".into()],
+        None,
+        "1: line1"
+        ; "without_instructions"
+    )]
+    fn read_code_display_text(
+        start_line: usize,
+        lines: Vec<String>,
+        instructions: Option<String>,
+        expected: &str,
+    ) {
+        let output = ToolOutput::ReadCode {
+            path: "a.rs".into(),
+            start_line,
+            lines,
+            total_lines: 100,
+            instructions,
+        };
+        assert_eq!(output.as_display_text(), expected);
+    }
+
+    #[test]
+    fn read_code_backward_compat_deserialization() {
+        let json = r#"{"ReadCode":{"path":"a.rs","start_line":1,"lines":["x"]}}"#;
+        let output: ToolOutput = serde_json::from_str(json).unwrap();
+        match output {
+            ToolOutput::ReadCode {
+                total_lines,
+                instructions,
+                ..
+            } => {
+                assert_eq!(total_lines, 0);
+                assert!(instructions.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 }

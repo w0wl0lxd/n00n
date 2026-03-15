@@ -40,31 +40,41 @@ impl Read {
             }
 
             let raw = fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
+            let total_lines = raw.lines().count();
 
             let start = offset.unwrap_or(1).saturating_sub(1);
             let limit = limit.unwrap_or(MAX_OUTPUT_LINES);
 
-            let mut lines: Vec<String> = raw
+            let lines: Vec<String> = raw
                 .lines()
                 .skip(start)
                 .take(limit)
                 .map(truncate_bytes)
                 .collect();
 
-            if let Ok(cwd) = std::env::current_dir() {
-                let instructions =
-                    agent::find_subdirectory_instructions(Path::new(&path), &cwd, &loaded);
-                for (display, content) in instructions {
-                    lines.push(String::new());
-                    lines.push(format!("---\nInstructions from: {display}"));
-                    lines.extend(content.lines().map(String::from));
+            let instructions = if let Ok(cwd) = std::env::current_dir() {
+                let found = agent::find_subdirectory_instructions(Path::new(&path), &cwd, &loaded);
+                let text: Vec<String> = found
+                    .into_iter()
+                    .map(|(display, content)| {
+                        format!("---\nInstructions from: {display}\n{content}")
+                    })
+                    .collect();
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text.join("\n"))
                 }
-            }
+            } else {
+                None
+            };
 
             Ok(ToolOutput::ReadCode {
                 path,
                 start_line: start + 1,
                 lines,
+                total_lines,
+                instructions,
             })
         })
         .await

@@ -62,7 +62,16 @@ fn renders_markdown(tool: &str) -> bool {
 
 pub(crate) fn tool_output_annotation(output: &ToolOutput, tool: &str) -> Option<String> {
     match output {
-        ToolOutput::ReadCode { lines, .. } => Some(format!("{} lines", lines.len())),
+        ToolOutput::ReadCode {
+            lines, total_lines, ..
+        } => {
+            let shown = lines.len();
+            if *total_lines > shown {
+                Some(format!("{shown} of {} lines", total_lines))
+            } else {
+                Some(format!("{shown} lines"))
+            }
+        }
         ToolOutput::WriteCode { byte_count, .. } => Some(format!("{byte_count} bytes")),
         ToolOutput::GrepResult { entries } => Some(format!("{} files", entries.len())),
         ToolOutput::GlobResult { files } if !files.is_empty() => {
@@ -697,6 +706,8 @@ mod tests {
             path: "test.rs".into(),
             start_line: 1,
             lines: vec!["fn main() {}".into()],
+            total_lines: 1,
+            instructions: None,
         })
     }
 
@@ -900,6 +911,8 @@ mod tests {
                 path: "src/main.rs".into(),
                 start_line: 1,
                 lines: vec!["x".into(); 42],
+                total_lines: 42,
+                instructions: None,
             }),
             annotation: None,
         };
@@ -1022,7 +1035,8 @@ mod tests {
     #[test_case("bash",  ToolOutput::Plain((0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n")), Some("20 lines") ; "plain_long_annotates")]
     #[test_case("webfetch", ToolOutput::Plain("a\nb".into()),                 Some("2 lines")     ; "webfetch_always_annotates")]
     #[test_case("websearch", ToolOutput::Plain("r".into()),                   Some("1 lines")     ; "websearch_always_annotates")]
-    #[test_case("read",  ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec!["x".into(); 5] }, Some("5 lines") ; "read_code_lines")]
+    #[test_case("read",  ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec!["x".into(); 5], total_lines: 5, instructions: None }, Some("5 lines") ; "read_code_full_file")]
+    #[test_case("read",  ToolOutput::ReadCode { path: "a.rs".into(), start_line: 10, lines: vec!["x".into(); 5], total_lines: 100, instructions: None }, Some("5 of 100 lines") ; "read_code_partial")]
     #[test_case("write", ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
     #[test_case("grep",  ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), matches: vec![] }] }, Some("1 files") ; "grep_file_count")]
     #[test_case("glob",  ToolOutput::GlobResult { files: vec!["a".into(), "b".into()] }, Some("2 files") ; "glob_file_count")]

@@ -592,6 +592,8 @@ mod tests {
                     path: "/src/main.rs".into(),
                     start_line: 1,
                     lines: vec!["fn main() {}".into()],
+                    total_lines: 1,
+                    instructions: None,
                 },
             ),
             (
