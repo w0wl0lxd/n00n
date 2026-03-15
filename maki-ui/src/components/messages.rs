@@ -385,14 +385,19 @@ impl MessagesPanel {
                 let n = pairs.len();
                 msg.text = format!("{n} question{} answered", if n == 1 { "" } else { "s" });
             }
-            ToolOutput::GlobResult { files } => {
-                if files.is_empty() {
+            output @ ToolOutput::GlobResult { .. } => {
+                if output.is_empty_result() {
                     msg.text = format!("{}\n{NO_FILES_FOUND}", msg.text);
                 } else {
-                    let joined = files.join("\n");
+                    let display = output.as_display_text();
                     let (max, keep) = output_limits(event.tool);
-                    let display = truncate_lines(&joined, max, keep);
-                    msg.text = format!("{}\n{display}", msg.text);
+                    let truncated = truncate_lines(&display, max, keep);
+                    msg.text = format!("{}\n{truncated}", msg.text);
+                }
+            }
+            ToolOutput::GrepResult { entries } => {
+                if entries.is_empty() {
+                    msg.text = format!("{}\n{NO_FILES_FOUND}", msg.text);
                 }
             }
             ToolOutput::Batch { entries, .. } => {
@@ -1124,7 +1129,9 @@ fn push_spacer_if_needed(segments: &mut Vec<Segment>) {
 mod tests {
     use super::*;
     use crate::components::scrollbar::SCROLLBAR_THUMB;
-    use maki_agent::tools::{BASH_TOOL_NAME, GLOB_TOOL_NAME, QUESTION_TOOL_NAME, WRITE_TOOL_NAME};
+    use maki_agent::tools::{
+        BASH_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, QUESTION_TOOL_NAME, WRITE_TOOL_NAME,
+    };
     use maki_agent::{
         BatchToolEntry, DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, QuestionAnswer,
         ToolInput, ToolOutput,
@@ -1261,6 +1268,48 @@ mod tests {
         assert_eq!(
             panel.messages[0].text.contains(NO_FILES_FOUND),
             has_no_files_msg
+        );
+    }
+
+    #[test]
+    fn tool_done_grep_shows_matches() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(start("t1", GREP_TOOL_NAME));
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: GREP_TOOL_NAME,
+            output: grep_output(2),
+            is_error: false,
+        });
+        let text = &panel.messages[0].text;
+        assert!(!text.contains('\n'), "grep body should not be in msg.text");
+        assert!(panel.messages[0].tool_output.is_some());
+    }
+
+    #[test]
+    fn tool_done_grep_truncates_at_limit() {
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(start("t1", GREP_TOOL_NAME));
+        let output = ToolOutput::GrepResult {
+            entries: (0..20)
+                .map(|i| GrepFileEntry {
+                    path: format!("{i}.rs"),
+                    matches: vec![GrepMatch {
+                        line_nr: 1,
+                        text: "hit".into(),
+                    }],
+                })
+                .collect(),
+        };
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: GREP_TOOL_NAME,
+            output,
+            is_error: false,
+        });
+        assert!(
+            !panel.messages[0].text.contains('\n'),
+            "grep body should not be in msg.text; truncation is handled by code_view"
         );
     }
 

@@ -12,7 +12,7 @@ use syntect::easy::HighlightLines;
 
 const MAX_CODE_LINES: usize = 7;
 const MAX_WRITE_LINES: usize = 30;
-const MAX_GREP_LINES: usize = 100;
+const MAX_GREP_LINES: usize = 15;
 const MAX_CODE_EXECUTION_LINES: usize = 100;
 
 fn nr_width(max_nr: usize) -> usize {

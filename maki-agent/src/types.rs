@@ -218,6 +218,14 @@ impl ToolOutput {
         }
     }
 
+    pub fn is_empty_result(&self) -> bool {
+        match self {
+            Self::GlobResult { files } => files.is_empty(),
+            Self::GrepResult { entries } => entries.is_empty(),
+            _ => false,
+        }
+    }
+
     pub fn as_text(&self) -> String {
         match self {
             Self::Diff { summary, .. } => summary.clone(),

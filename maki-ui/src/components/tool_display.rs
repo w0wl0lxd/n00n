@@ -505,11 +505,12 @@ impl ToolLineBuilder {
                     push_text_lines(&mut self.lines, &truncated, TOOL_BODY_INDENT);
                 }
             }
-            Some(ToolOutput::GlobResult { files }) => {
-                let joined = files.join("\n");
+            Some(ToolOutput::GlobResult { .. }) => {
+                let text = output.unwrap().as_display_text();
+                let (max, keep) = output_limits(tool);
                 push_text_lines(
                     &mut self.lines,
-                    &truncate_lines(&joined, TOOL_OUTPUT_MAX_LINES, Keep::Head),
+                    &truncate_lines(&text, max, keep),
                     TOOL_BODY_INDENT,
                 );
             }

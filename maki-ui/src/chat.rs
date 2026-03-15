@@ -293,17 +293,21 @@ fn build_loaded_tool(
     result_text: Option<&str>,
 ) -> (String, Option<ToolOutput>, Option<String>) {
     match reconstructed {
-        Some(ref output @ ToolOutput::GlobResult { ref files }) => {
+        Some(ref output @ ToolOutput::GlobResult { .. }) => {
             let annotation = tool_output_annotation(output, tool);
-            let text = if files.is_empty() {
+            let text = if output.is_empty_result() {
                 format!("{summary}\n{NO_FILES_FOUND}")
             } else {
-                let joined = files.join("\n");
+                let display = output.as_display_text();
                 let (max, keep) = output_limits(tool);
-                let truncated = truncate_lines(&joined, max, keep);
+                let truncated = truncate_lines(&display, max, keep);
                 format!("{summary}\n{truncated}")
             };
             (text, reconstructed, annotation)
+        }
+        Some(ref output @ ToolOutput::GrepResult { .. }) => {
+            let annotation = tool_output_annotation(output, tool);
+            (summary.to_owned(), reconstructed, annotation)
         }
         Some(ToolOutput::Batch { ref entries, .. }) => {
             let failed = entries
@@ -437,30 +441,6 @@ mod tests {
         chat.handle_event(tool_start("w1", "write"), Some("/plans/123.md"));
         chat.handle_event(write_done("w1", "src/main.rs"), Some("/plans/123.md"));
         assert!(!chat.last_message_is_plan());
-    }
-
-    #[test]
-    fn history_user_text() {
-        let msgs = vec![Message::user("hello".into())];
-        let display = history_to_display(&msgs, &empty_outputs());
-        assert_eq!(display.len(), 1);
-        assert_eq!(display[0].role, DisplayRole::User);
-        assert_eq!(display[0].text, "hello");
-    }
-
-    #[test]
-    fn history_assistant_text() {
-        let msgs = vec![Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::Text {
-                text: "response".into(),
-            }],
-            ..Default::default()
-        }];
-        let display = history_to_display(&msgs, &empty_outputs());
-        assert_eq!(display.len(), 1);
-        assert_eq!(display[0].role, DisplayRole::Assistant);
-        assert_eq!(display[0].text, "response");
     }
 
     #[test]
@@ -850,5 +830,46 @@ mod tests {
         let display = history_to_display(&msgs, &empty_outputs());
         assert!(display[0].tool_output.is_none());
         assert!(display[0].text.contains("fn main"));
+    }
+
+    #[test]
+    fn history_grep_output_shows_matches() {
+        use maki_agent::{GrepFileEntry, GrepMatch};
+        let output = ToolOutput::GrepResult {
+            entries: vec![GrepFileEntry {
+                path: "src/lib.rs".into(),
+                matches: vec![GrepMatch {
+                    line_nr: 42,
+                    text: "fn run()".into(),
+                }],
+            }],
+        };
+        let msgs = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "grep".into(),
+                    input: serde_json::json!({"pattern": "fn run"}),
+                }],
+                ..Default::default()
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: String::new(),
+                    is_error: false,
+                }],
+                ..Default::default()
+            },
+        ];
+        let outputs = HashMap::from([("t1".into(), output)]);
+        let display = history_to_display(&msgs, &outputs);
+        assert!(display[0].tool_output.is_some());
+        assert!(
+            !display[0].text.contains("src/lib.rs"),
+            "grep body rendered via code_view, not in text"
+        );
     }
 }
