@@ -183,6 +183,13 @@ impl Section {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ChildKind {
+    #[default]
+    Detailed,
+    Brief,
+}
+
 pub(crate) struct SkeletonEntry {
     pub(crate) section: Section,
     pub(crate) line_start: usize,
@@ -190,6 +197,7 @@ pub(crate) struct SkeletonEntry {
     pub(crate) text: String,
     pub(crate) children: Vec<String>,
     pub(crate) attrs: Vec<String>,
+    pub(crate) child_kind: ChildKind,
 }
 
 impl SkeletonEntry {
@@ -201,6 +209,7 @@ impl SkeletonEntry {
             text,
             children: Vec::new(),
             attrs: Vec::new(),
+            child_kind: ChildKind::default(),
         }
     }
 }
@@ -250,25 +259,10 @@ pub(crate) fn format_skeleton(
     }
 
     for (section, items) in &grouped {
-        if section == &Section::Import {
-            format_imports(&mut out, items, import_sep);
-        } else {
-            let sep = if out.is_empty() { "" } else { "\n" };
-            let _ = writeln!(out, "{sep}{}", section.header());
-            for entry in items {
-                for attr in &entry.attrs {
-                    let _ = writeln!(out, "  {attr}");
-                }
-                let _ = writeln!(
-                    out,
-                    "  {} {}",
-                    entry.text,
-                    line_range(entry.line_start, entry.line_end)
-                );
-                for child in &entry.children {
-                    let _ = writeln!(out, "    {child}");
-                }
-            }
+        match section {
+            Section::Import => format_imports(&mut out, items, import_sep),
+            Section::Module => format_leaf_section(&mut out, section.header(), items),
+            _ => format_section(&mut out, section.header(), items),
         }
     }
 
@@ -280,6 +274,69 @@ pub(crate) fn format_skeleton(
     }
 
     out
+}
+
+fn format_section(out: &mut String, header: &str, items: &[&SkeletonEntry]) {
+    let sep = if out.is_empty() { "" } else { "\n" };
+    let _ = writeln!(out, "{sep}{header}");
+    for entry in items {
+        for attr in &entry.attrs {
+            let _ = writeln!(out, "  {attr}");
+        }
+        let _ = writeln!(
+            out,
+            "  {} {}",
+            entry.text,
+            line_range(entry.line_start, entry.line_end)
+        );
+        match entry.child_kind {
+            ChildKind::Brief if !entry.children.is_empty() => {
+                let names: Vec<&str> = entry.children.iter().map(String::as_str).collect();
+                for line in wrap_csv(&names, WRAP_INDENT) {
+                    let _ = writeln!(out, "{line}");
+                }
+            }
+            _ => {
+                for child in &entry.children {
+                    let _ = writeln!(out, "    {child}");
+                }
+            }
+        }
+    }
+}
+
+fn format_leaf_section(out: &mut String, header: &str, items: &[&SkeletonEntry]) {
+    let sep = if out.is_empty() { "" } else { "\n" };
+    let min = items.iter().map(|e| e.line_start).min().unwrap();
+    let max = items.iter().map(|e| e.line_end).max().unwrap();
+    let _ = writeln!(out, "{sep}{header} {}", line_range(min, max));
+    let names: Vec<&str> = items.iter().map(|e| e.text.as_str()).collect();
+    let indent = "  ";
+    for line in wrap_csv(&names, indent) {
+        let _ = writeln!(out, "{line}");
+    }
+}
+
+fn wrap_csv(items: &[&str], indent: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::from(indent);
+    for (i, item) in items.iter().enumerate() {
+        let addition = if i == 0 {
+            item.to_string()
+        } else {
+            format!(", {item}")
+        };
+        if i > 0 && current.len() + addition.len() > LINE_WRAP_THRESHOLD {
+            lines.push(current);
+            current = format!("{indent}{item}");
+        } else {
+            current.push_str(&addition);
+        }
+    }
+    if !current.trim().is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 fn format_imports(out: &mut String, entries: &[&SkeletonEntry], sep: &str) {
@@ -527,13 +584,19 @@ mod tests {
         ; "as_rename"
     )]
     #[test_case(&["os"],                "::", &["os"]                                   ; "no_separator")]
+    #[test_case(&["std::io::*", "std::io::Write"], "::", &["std::io::{*, Write}"]       ; "wildcard")]
+    #[test_case(&["std::io", "std::io", "std::fs"],"::", &["std::{fs, io}"]             ; "duplicates_deduplicated")]
+    #[test_case(&["os", "std::io"],     "::", &["os", "std::io"]                        ; "single_segment_mixed")]
     fn trie_compression(imports: &[&str], sep: &str, expected: &[&str]) {
         let result = trie_render(imports, sep);
         assert_eq!(result, expected, "imports: {imports:?}, sep: {sep:?}");
     }
 
     #[test]
-    fn wrap_long_line() {
+    fn wrap_line_behavior() {
+        let short = "std::{fs, io}";
+        assert_eq!(wrap_line(short), short);
+
         let long = format!(
             "crate::module::{{{}}}",
             (0..20)
@@ -548,13 +611,10 @@ mod tests {
     }
 
     #[test]
-    fn short_line_not_wrapped() {
-        let short = "std::{fs, io}";
-        assert_eq!(wrap_line(short), short);
-    }
+    fn expand_import_cases() {
+        assert!(expand_import("", "::").is_empty());
+        assert!(expand_import("  ", "::").is_empty());
 
-    #[test]
-    fn expand_nested_braces() {
         let mut result = expand_import("a::{b::{C, D}, e::F}", "::");
         result.sort();
         assert_eq!(result.len(), 3);
@@ -564,26 +624,17 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_import() {
-        let result = trie_render(&["std::io::*", "std::io::Write"], "::");
-        assert_eq!(result, &["std::io::{*, Write}"]);
-    }
+    fn wrap_csv_behavior() {
+        assert!(wrap_csv(&[], "  ").is_empty());
 
-    #[test]
-    fn expand_empty_input() {
-        assert!(expand_import("", "::").is_empty());
-        assert!(expand_import("  ", "::").is_empty());
-    }
+        let result = wrap_csv(&["A", "B", "C"], "  ");
+        assert_eq!(result, vec!["  A, B, C"]);
 
-    #[test]
-    fn duplicate_imports_deduplicated() {
-        let result = trie_render(&["std::io", "std::io", "std::fs"], "::");
-        assert_eq!(result, &["std::{fs, io}"]);
-    }
-
-    #[test]
-    fn single_segment_mixed_with_paths() {
-        let result = trie_render(&["os", "std::io"], "::");
-        assert_eq!(result, &["os", "std::io"]);
+        let items: Vec<&str> = (0..40).map(|_| "VeryLongVariantName").collect();
+        let result = wrap_csv(&items, "    ");
+        assert!(result.len() > 1);
+        for line in &result {
+            assert!(line.starts_with("    "));
+        }
     }
 }

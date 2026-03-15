@@ -1,8 +1,8 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, find_child, line_range,
-    node_text, prefixed,
+    ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, find_child,
+    line_range, node_text, prefixed,
 };
 
 pub(crate) struct JavaExtractor;
@@ -204,6 +204,7 @@ impl JavaExtractor {
 
         let mut entry = SkeletonEntry::new(Section::Type, node, label);
         entry.children = constants;
+        entry.child_kind = ChildKind::Brief;
         Some(entry)
     }
 

@@ -217,16 +217,13 @@ mod tests {
     }
 
     #[test]
-    fn truncate_preserves_multibyte_boundary() {
+    fn truncate_behavior() {
+        assert_eq!(truncate("hello", 60), "hello");
+
         let long = format!("{}{}", "a".repeat(55), "ü".repeat(10));
         let result = truncate(&long, 60);
         assert!(result.ends_with("..."));
         assert!(result.chars().count() <= 60);
-    }
-
-    #[test]
-    fn truncate_short_unchanged() {
-        assert_eq!(truncate("hello", 60), "hello");
     }
 
     // --- Rust extraction ---
@@ -298,7 +295,7 @@ macro_rules! my_macro { () => {}; }
                 "pub name: String",
                 "pub struct Empty",
                 "enum Color",
-                "Red",
+                "Red, Green",
                 "type Result",
                 "traits:",
                 "pub Handler",
@@ -311,8 +308,7 @@ macro_rules! my_macro { () => {}; }
                 "fns:",
                 "pub process(input: &str)",
                 "mod:",
-                "pub utils",
-                "internal",
+                "pub utils, internal",
                 "macros:",
                 "my_macro!",
             ],
@@ -616,9 +612,38 @@ public enum Direction {
                 "void handle(String request)",
                 "types:",
                 "public enum Direction",
-                "UP",
-                "DOWN",
+                "UP, DOWN",
             ],
         );
+    }
+
+    #[test]
+    fn rust_module_compression() {
+        let src = "pub mod a;\nmod b;\nmod c;\n";
+        let out = idx(src, Language::Rust);
+        has(&out, &["mod:", "pub a, b, c"]);
+        lacks(&out, &["  pub a\n", "  b\n", "  c\n"]);
+    }
+
+    #[test]
+    fn rust_enum_brief_children() {
+        let src = "enum Status { Active, Inactive, Pending }\n";
+        let out = idx(src, Language::Rust);
+        has(&out, &["enum Status", "Active, Inactive, Pending"]);
+    }
+
+    #[test]
+    fn rust_struct_fields_stay_detailed() {
+        let src = "struct Foo {\n    x: u32,\n    y: String,\n}\n";
+        let out = idx(src, Language::Rust);
+        has(&out, &["x: u32", "y: String"]);
+        lacks(&out, &["x: u32, y: String"]);
+    }
+
+    #[test]
+    fn java_enum_brief_children() {
+        let src = "public enum Color { RED, GREEN, BLUE }\n";
+        let out = idx(src, Language::Java);
+        has(&out, &["public enum Color", "RED, GREEN, BLUE"]);
     }
 }

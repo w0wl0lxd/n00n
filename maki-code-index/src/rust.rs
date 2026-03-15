@@ -6,11 +6,9 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    LanguageExtractor, Section, SkeletonEntry, find_child, fn_signature, has_test_attr, line_range,
-    node_text, prefixed, relevant_attr_texts, vis_prefix,
+    ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, find_child,
+    fn_signature, has_test_attr, line_range, node_text, prefixed, relevant_attr_texts, vis_prefix,
 };
-
-use crate::common::FIELD_TRUNCATE_THRESHOLD;
 
 pub(crate) struct RustExtractor;
 
@@ -52,12 +50,16 @@ impl RustExtractor {
 
         let kind = node.kind().replace("_item", "").replace("_definition", "");
         let text = prefixed(vis, format_args!("{kind} {name}{generics}"));
+        let is_enum = find_child(node, "enum_variant_list").is_some();
         let children = self.extract_fields(node, source);
         let attr_texts = relevant_attr_texts(attrs, source);
 
         let mut entry = SkeletonEntry::new(Section::Type, node, text);
         entry.children = children;
         entry.attrs = attr_texts;
+        if is_enum {
+            entry.child_kind = ChildKind::Brief;
+        }
         Some(entry)
     }
 
