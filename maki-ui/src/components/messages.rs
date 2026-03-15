@@ -1,15 +1,14 @@
-use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
-
 use super::tool_display::{
     ToolLines, append_annotation, append_right_info, assistant_style, build_batch_entry_lines,
     build_tool_lines, error_style, format_timestamp_now, output_limits, thinking_style,
     tool_output_annotation, truncate_to_header, user_style,
 };
+use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
 use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::CodeHighlighter;
 use crate::markdown::{
-    RenderCtx, RenderState, finalize_lines, hr_line, parse_blocks_with_offsets, plain_lines,
-    render_block, text_to_lines, truncate_lines,
+    RenderCtx, RenderState, finalize_lines, hr_line, parse_blocks, plain_lines, render_block,
+    text_to_lines, truncate_lines,
 };
 use crate::render_worker::RenderWorker;
 use crate::theme;
@@ -31,26 +30,22 @@ use super::scrollbar::render_vertical_scrollbar;
 
 /// Block-level streaming markdown cache.
 ///
-/// All blocks except the last are "stable" (won't change as tokens arrive).
-/// Stable blocks are rendered once into `lines[..stable_line_count]`; each
-/// frame only re-renders the trailing in-progress block.
+/// Incremental renderer for a streaming markdown message.
 ///
-/// `stable_byte_end` tracks how many bytes of the trimmed text have been
-/// fully parsed into stable blocks. Each frame parses only the suffix
-/// after that point, renders newly completed blocks in place, then
-/// appends the trailing in-progress block.
+/// Re-parses all blocks each frame (parsing is cheap string scanning).
+/// Code blocks use `CodeHighlighter` which caches completed lines internally,
+/// so repeated `render_block` calls only re-highlight the last (incomplete) line.
 ///
-/// `stable_state` captures `RenderState` after the last stable block so
-/// rendering resumes without replaying earlier blocks.
+/// Table column widths are monotonically grown (`table_col_widths`) so that
+/// adding a wider row never causes earlier rows to shift. This prevents
+/// flicker during table streaming.
 #[derive(Default)]
 struct StreamingCache {
     byte_len: usize,
     lines: Vec<Line<'static>>,
     highlighters: Vec<CodeHighlighter>,
     dim: bool,
-    stable_state: Option<RenderState>,
-    stable_byte_end: usize,
-    stable_line_count: usize,
+    table_col_widths: Vec<usize>,
 }
 
 impl StreamingCache {
@@ -76,60 +71,29 @@ impl StreamingCache {
         self.byte_len = len;
 
         let text = visible.trim_start_matches('\n');
+        let blocks = parse_blocks(text);
 
-        let tail = &text[self.stable_byte_end..];
-        let tail_blocks = parse_blocks_with_offsets(tail);
-        let total_tail = tail_blocks.len();
-        let completed_in_tail = total_tail.saturating_sub(1);
+        self.lines.clear();
+        let mut state = RenderState::new();
+        let mut hl_opt: Option<&mut Vec<CodeHighlighter>> = Some(&mut self.highlighters);
+        let mut ctx = RenderCtx {
+            prefix,
+            text_style,
+            prefix_style,
+            highlighters: &mut hl_opt,
+            width,
+            table_col_widths: Some(&mut self.table_col_widths),
+        };
 
-        let mut state = self.stable_state.clone().unwrap_or_else(RenderState::new);
-
-        if completed_in_tail > 0 {
-            self.lines.truncate(self.stable_line_count);
-            let mut hl_opt: Option<&mut Vec<CodeHighlighter>> = Some(&mut self.highlighters);
-            let mut ctx = RenderCtx {
-                prefix,
-                text_style,
-                prefix_style,
-                highlighters: &mut hl_opt,
-                width,
-            };
-            for pb in &tail_blocks[..completed_in_tail] {
-                render_block(&pb.block, &mut self.lines, &mut state, &mut ctx);
-            }
-            self.stable_byte_end += tail_blocks[completed_in_tail].byte_offset;
-            if self.dim {
-                theme::dim_lines(&mut self.lines[self.stable_line_count..]);
-            }
-            self.stable_line_count = self.lines.len();
-            self.stable_state = Some(state.clone());
+        for block in &blocks {
+            render_block(block, &mut self.lines, &mut state, &mut ctx);
         }
-
-        self.lines.truncate(self.stable_line_count);
-
-        if total_tail > 0 {
-            let mut hl_opt: Option<&mut Vec<CodeHighlighter>> = Some(&mut self.highlighters);
-            let mut ctx = RenderCtx {
-                prefix,
-                text_style,
-                prefix_style,
-                highlighters: &mut hl_opt,
-                width,
-            };
-            render_block(
-                &tail_blocks[total_tail - 1].block,
-                &mut self.lines,
-                &mut state,
-                &mut ctx,
-            );
-            self.highlighters.truncate(state.code_idx);
-        }
+        self.highlighters.truncate(state.code_idx);
 
         finalize_lines(&mut self.lines, prefix, prefix_style);
 
         if self.dim {
-            let start = self.stable_line_count.min(self.lines.len());
-            theme::dim_lines(&mut self.lines[start..]);
+            theme::dim_lines(&mut self.lines);
         }
         &self.lines
     }
@@ -1946,7 +1910,27 @@ mod tests {
         ""
         ; "multiple_code_blocks"
     )]
-    fn streaming_cache_incremental_matches_full_render(full_text: &str, prefix: &str) {
+    #[test_case(
+        "Before table\n\n| Name | Value |\n| --- | --- |\n| foo | 42 |\n| bar | 99 |\n\nAfter table",
+        ""
+        ; "table_between_paragraphs"
+    )]
+    #[test_case(
+        "| H |\n| --- |\n| d |",
+        ""
+        ; "table_only"
+    )]
+    #[test_case(
+        "| Tier | Tools | When |\n| --- | --- | --- |\n| Best | code_execution | Chained calls |\n| Good | index | File structure |\n| Costly | read | Full file reads |",
+        ""
+        ; "table_many_rows"
+    )]
+    #[test_case(
+        "Here is some code:\n```rust\nfn main() {}\n```\n\n| Tier | Tools |\n| --- | --- |\n| Best | code_execution |\n| Good | index |\n| Costly | read |",
+        ""
+        ; "table_after_code_block"
+    )]
+    fn streaming_cache_final_matches_full_render(full_text: &str, prefix: &str) {
         let style = Style::default();
         let width = 80;
         let mut cache = StreamingCache::default();
@@ -1958,16 +1942,17 @@ mod tests {
                 end += 1;
                 continue;
             }
-            let slice = &full_text[..end];
-            cache.get_or_update(slice, prefix, style, style, width);
-            let incremental = cache_lines_text(&cache);
-            let expected = full_render_lines(slice, prefix, width);
-            assert_eq!(
-                incremental, expected,
-                "mismatch at byte {end}:\n  slice: {slice:?}"
-            );
+            cache.get_or_update(&full_text[..end], prefix, style, style, width);
             end += step;
         }
+
+        cache.get_or_update(full_text, prefix, style, style, width);
+        let incremental = cache_lines_text(&cache);
+        let expected = full_render_lines(full_text, prefix, width);
+        assert_eq!(
+            incremental, expected,
+            "final render mismatch for:\n  {full_text:?}"
+        );
     }
 
     #[test]
@@ -2007,10 +1992,7 @@ mod tests {
         };
 
         // Two consecutive code blocks where the second has empty code.
-        // The first code block becomes stable (ensure_blank_line adds trailing blank).
-        // The second (in-progress, empty code) adds no visible lines.
-        // finalize_lines pops the trailing blank from the stable code block,
-        // making lines.len() < stable_line_count → panic in dim_lines.
+        // Verifies dim mode doesn't panic with edge-case block structure.
         let text = "```py\nx\n```\n```js\n";
         cache.get_or_update(text, "", style, style, width);
     }
@@ -2028,5 +2010,68 @@ mod tests {
         assert!(panel.streaming_text.is_empty());
         assert_eq!(panel.in_progress_count, 0);
         assert_eq!(msg_status(&panel, "t1"), ToolStatus::Error);
+    }
+
+    #[test_case(
+        "| Name | Value |\n| --- | --- |\n| foo | 42 |",
+        "\n| bar | 99 |"
+        ; "same_column_count_row"
+    )]
+    #[test_case(
+        "| Col |\n| --- |\n| data |",
+        "\n| new | val |"
+        ; "row_adds_column_at_pipe_boundary"
+    )]
+    fn streaming_table_no_line_count_oscillation(base: &str, suffix: &str) {
+        let style = Style::default();
+        let width = 80;
+        let mut cache = StreamingCache::default();
+
+        cache.get_or_update(base, "", style, style, width);
+        let mut prev_count = cache.lines.len();
+
+        let chars: Vec<char> = suffix.chars().collect();
+        for i in 1..=chars.len() {
+            let partial: String = chars[..i].iter().collect();
+            let text = format!("{base}{partial}");
+            cache.get_or_update(&text, "", style, style, width);
+            assert!(
+                cache.lines.len() >= prev_count.saturating_sub(1),
+                "line count dropped from {prev_count} to {} at partial {partial:?}",
+                cache.lines.len()
+            );
+            prev_count = cache.lines.len();
+        }
+    }
+
+    #[test]
+    fn streaming_table_partial_row_always_in_table() {
+        let style = Style::default();
+        let width = 80;
+        let mut cache = StreamingCache::default();
+
+        let base = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+        cache.get_or_update(base, "", style, style, width);
+        let base_lines = cache_lines_text(&cache);
+
+        let partial = format!("{base}\n| 3 | in pro");
+        cache.get_or_update(&partial, "", style, style, width);
+        let partial_lines = cache_lines_text(&cache);
+        assert!(
+            partial_lines.len() > base_lines.len(),
+            "partial row should add lines to the table"
+        );
+        let has_partial_content = partial_lines
+            .iter()
+            .any(|l| l.contains("in pro"));
+        assert!(has_partial_content, "partial cell content should be rendered in table");
+
+        let complete = format!("{base}\n| 3 | in progress |");
+        cache.get_or_update(&complete, "", style, style, width);
+        let complete_lines = cache_lines_text(&cache);
+        let has_complete_content = complete_lines
+            .iter()
+            .any(|l| l.contains("in progress"));
+        assert!(has_complete_content, "complete cell content should be rendered");
     }
 }

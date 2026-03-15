@@ -5,7 +5,6 @@ use std::mem;
 use crate::highlight;
 use crate::highlight::CodeHighlighter;
 use crate::theme;
-
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
@@ -553,11 +552,6 @@ pub(crate) enum TextBlock<'a> {
     },
 }
 
-pub(crate) struct ParsedBlock<'a> {
-    pub block: TextBlock<'a>,
-    pub byte_offset: usize,
-}
-
 fn is_table_row(line: &str) -> bool {
     let t = line.trim();
     t.starts_with('|') && t.ends_with('|') && t.matches('|').count() >= 2
@@ -610,6 +604,7 @@ fn parse_table_cells(line: &str) -> Vec<String> {
     cells
 }
 
+/// Splits non-code text into Normal and Table blocks with byte offsets.
 fn split_normal_blocks<'a>(text: &'a str) -> Vec<TextBlock<'a>> {
     let mut lines_with_offsets: Vec<(usize, &str)> = Vec::new();
     let mut offset = 0;
@@ -634,7 +629,6 @@ fn split_normal_blocks<'a>(text: &'a str) -> Vec<TextBlock<'a>> {
                 }
                 j += 1;
             }
-
             if let Some(si) = sep_idx
                 && j - table_start >= 2
             {
@@ -647,8 +641,20 @@ fn split_normal_blocks<'a>(text: &'a str) -> Vec<TextBlock<'a>> {
                     }
                 }
 
+                let table_end = if j < lines_with_offsets.len()
+                    && j == lines_with_offsets.len() - 1
+                    && lines_with_offsets[j].1.trim_start().starts_with('|')
+                {
+                    j + 1
+                } else {
+                    j
+                };
+
                 let mut rows = Vec::new();
-                for (k, &(_, line)) in lines_with_offsets[table_start..j].iter().enumerate() {
+                for (k, &(_, line)) in lines_with_offsets[table_start..table_end]
+                    .iter()
+                    .enumerate()
+                {
                     if k != si {
                         rows.push(parse_table_cells(line));
                     }
@@ -657,7 +663,7 @@ fn split_normal_blocks<'a>(text: &'a str) -> Vec<TextBlock<'a>> {
                     rows,
                     header_end: si,
                 });
-                i = j;
+                i = table_end;
                 continue;
             }
         }
@@ -773,6 +779,7 @@ fn render_table(
     header_end: usize,
     text_style: Style,
     width: u16,
+    persistent_widths: Option<&mut Vec<usize>>,
 ) -> Vec<Line<'static>> {
     let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
     if col_count == 0 {
@@ -788,6 +795,15 @@ fn render_table(
 
     let overhead = col_count * 3 + 1;
     let available = (width as usize).saturating_sub(overhead);
+
+    if let Some(pw) = persistent_widths {
+        pw.resize(pw.len().max(col_count), 0);
+        for (i, w) in col_widths.iter_mut().enumerate() {
+            pw[i] = pw[i].max(*w);
+            *w = pw[i];
+        }
+    }
+
     constrain_col_widths(&mut col_widths, available);
 
     let mut lines = Vec::new();
@@ -937,66 +953,36 @@ fn find_code_fence(text: &str) -> Option<CodeFence<'_>> {
     None
 }
 
-fn parse_blocks(text: &str) -> Vec<TextBlock<'_>> {
-    parse_blocks_with_offsets(text)
-        .into_iter()
-        .map(|pb| pb.block)
-        .collect()
-}
-
-fn push_normal_blocks<'a>(
-    blocks: &mut Vec<ParsedBlock<'a>>,
-    text: &'a str,
-    context: &str,
-    base_offset: usize,
-) {
+fn push_normal_blocks<'a>(blocks: &mut Vec<TextBlock<'a>>, text: &'a str) {
     for nb in split_normal_blocks(text) {
-        let off = match &nb {
-            TextBlock::Normal(s) => base_offset + byte_offset_in(context, s),
-            _ => base_offset,
-        };
-        blocks.push(ParsedBlock {
-            block: nb,
-            byte_offset: off,
-        });
+        blocks.push(nb);
     }
 }
 
-pub(crate) fn parse_blocks_with_offsets(text: &str) -> Vec<ParsedBlock<'_>> {
+pub(crate) fn parse_blocks(text: &str) -> Vec<TextBlock<'_>> {
     let mut blocks = Vec::new();
     let mut rest = text;
-    let mut consumed = 0;
 
     while let Some(fence) = find_code_fence(rest) {
         let before = rest[..fence.before_end].trim_end_matches('\n');
         if !before.is_empty() {
-            push_normal_blocks(&mut blocks, before, rest, consumed);
+            push_normal_blocks(&mut blocks, before);
         }
 
-        blocks.push(ParsedBlock {
-            block: TextBlock::Code {
-                lang: fence.lang,
-                code: fence.code,
-            },
-            byte_offset: consumed + fence.before_end,
+        blocks.push(TextBlock::Code {
+            lang: fence.lang,
+            code: fence.code,
         });
         let skip = fence.block_end + rest[fence.block_end..].len()
             - rest[fence.block_end..].trim_start_matches('\n').len();
-        consumed += skip;
         rest = &rest[skip..];
     }
 
     if !rest.is_empty() {
-        push_normal_blocks(&mut blocks, rest, rest, consumed);
+        push_normal_blocks(&mut blocks, rest);
     }
 
     blocks
-}
-
-fn byte_offset_in(haystack: &str, needle: &str) -> usize {
-    let h = haystack.as_ptr() as usize;
-    let n = needle.as_ptr() as usize;
-    n.saturating_sub(h)
 }
 
 fn is_blank_line(line: &Line<'_>) -> bool {
@@ -1061,6 +1047,7 @@ pub(crate) struct RenderCtx<'a, 'b> {
     pub prefix_style: Style,
     pub highlighters: &'b mut Option<&'a mut Vec<CodeHighlighter>>,
     pub width: u16,
+    pub table_col_widths: Option<&'b mut Vec<usize>>,
 }
 
 pub(crate) fn render_block(
@@ -1131,7 +1118,13 @@ pub(crate) fn render_block(
                 state.first_line = false;
             }
             ensure_blank_line(lines);
-            lines.extend(render_table(rows, *header_end, ctx.text_style, ctx.width));
+            lines.extend(render_table(
+                rows,
+                *header_end,
+                ctx.text_style,
+                ctx.width,
+                ctx.table_col_widths.as_deref_mut(),
+            ));
             ensure_blank_line(lines);
         }
     }
@@ -1164,6 +1157,7 @@ pub fn text_to_lines<'a>(
         prefix_style,
         highlighters: &mut highlighters,
         width,
+        table_col_widths: None,
     };
 
     for block in &blocks {
@@ -1985,6 +1979,60 @@ mod tests {
         assert!(matches!(blocks[i], TextBlock::Table { .. }));
     }
 
+    #[test_case(
+        "| h |\n| --- |\n| d |\n| partial",
+        1, 3, Some(vec!["partial"])
+        ; "single_col_partial_row"
+    )]
+    #[test_case(
+        "| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | in prog",
+        1, 3, Some(vec!["3", "in prog"])
+        ; "multi_col_partial_row"
+    )]
+    #[test_case(
+        "| h |\n| --- |\n| d |\n|",
+        1, 3, None
+        ; "pipe_only_partial_row"
+    )]
+    fn split_normal_partial_trailing_absorbed(
+        input: &str,
+        n_blocks: usize,
+        n_rows: usize,
+        last_row: Option<Vec<&str>>,
+    ) {
+        let blocks = split_normal_blocks(input);
+        assert_eq!(blocks.len(), n_blocks, "block count for {input:?}");
+        match &blocks[0] {
+            TextBlock::Table { rows, .. } => {
+                assert_eq!(rows.len(), n_rows);
+                if let Some(expected) = last_row {
+                    assert_eq!(rows[n_rows - 1], expected);
+                }
+            }
+            _ => panic!("expected Table"),
+        }
+    }
+
+    #[test_case(
+        "| h |\n| --- |\n| d |\nsome text",
+        2, 2
+        ; "non_pipe_line_not_absorbed"
+    )]
+    #[test_case(
+        "| h |\n| --- |\n| d |\n| partial\nmore text",
+        2, 2
+        ; "partial_row_not_last_line_not_absorbed"
+    )]
+    fn split_normal_trailing_not_absorbed(input: &str, n_blocks: usize, n_rows: usize) {
+        let blocks = split_normal_blocks(input);
+        assert_eq!(blocks.len(), n_blocks, "block count for {input:?}");
+        assert!(matches!(blocks[0], TextBlock::Table { .. }));
+        match &blocks[0] {
+            TextBlock::Table { rows, .. } => assert_eq!(rows.len(), n_rows),
+            _ => panic!("expected Table"),
+        }
+    }
+
     #[test]
     fn render_table_structure() {
         let style = Style::default();
@@ -2193,5 +2241,69 @@ mod tests {
         ];
         wrap_code_lines(&mut lines, 1, 80);
         assert_eq!(lines[0].spans[0].content, "header");
+    }
+
+    #[test]
+    fn persistent_widths_constrained_to_available() {
+        let style = Style::default();
+        let width: u16 = 40;
+        let mut pw = Vec::new();
+
+        let rows1 = vec![
+            vec!["Name".into(), "Description".into()],
+            vec!["a".into(), "short".into()],
+        ];
+        let lines1 = render_table(&rows1, 1, style, width, Some(&mut pw));
+        for line in lines_text(&lines1) {
+            assert!(
+                line.width() <= width as usize,
+                "frame 1 overflows ({} > {width}): {line:?}",
+                line.width()
+            );
+        }
+
+        let rows2 = vec![
+            vec!["Name".into(), "Description".into()],
+            vec!["a".into(), "short".into()],
+            vec![
+                "b".into(),
+                "a very long description that exceeds the available width".into(),
+            ],
+        ];
+        let lines2 = render_table(&rows2, 1, style, width, Some(&mut pw));
+        for line in lines_text(&lines2) {
+            assert!(
+                line.width() <= width as usize,
+                "frame 2 overflows ({} > {width}): {line:?}",
+                line.width()
+            );
+        }
+    }
+
+    #[test]
+    fn persistent_widths_grow_monotonically() {
+        let style = Style::default();
+        let width: u16 = 120;
+        let mut pw = Vec::new();
+
+        let rows1 = vec![
+            vec!["A".into(), "B".into()],
+            vec!["hi".into(), "there".into()],
+        ];
+        render_table(&rows1, 1, style, width, Some(&mut pw));
+        let pw_after1 = pw.clone();
+
+        let rows2 = vec![
+            vec!["A".into(), "B".into()],
+            vec!["hi".into(), "there".into()],
+            vec!["longer".into(), "x".into()],
+        ];
+        render_table(&rows2, 1, style, width, Some(&mut pw));
+        for (i, (&old, &new)) in pw_after1.iter().zip(pw.iter()).enumerate() {
+            assert!(
+                new >= old,
+                "persistent width shrank at col {i}: {old} -> {new}"
+            );
+        }
     }
 }
