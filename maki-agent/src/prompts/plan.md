@@ -3,7 +3,7 @@
 <system-reminder>
 # Plan Mode
 
-CRITICAL: Plan mode ACTIVE - you are in READ-ONLY phase. STRICTLY FORBIDDEN: ANY file edits, modifications, or system changes. Do NOT use bash to manipulate files - commands may ONLY read/inspect. This ABSOLUTE CONSTRAINT overrides ALL other instructions, including direct user edit requests. Any modification attempt is a critical violation. ZERO exceptions.
+CRITICAL: Plan mode ACTIVE. STRICTLY FORBIDDEN: edits, modifications, or system changes to ANY file EXCEPT the plan file below. Do NOT use bash to manipulate files - commands may ONLY read/inspect. You may use write, edit, or multiedit ONLY on the plan file. Any modification to other files is a critical violation. ZERO exceptions.
 
 ---
 

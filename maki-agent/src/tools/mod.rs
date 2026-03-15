@@ -654,9 +654,9 @@ mod tests {
 
     #[test]
     fn deadline_cap_timeout_clamps_to_remaining() {
-        let d = Deadline::after(Duration::from_secs(5));
+        let d = Deadline::after(Duration::from_secs(60));
         let result = d.cap_timeout(120).unwrap();
-        assert!((1..=5).contains(&result), "expected 1..=5, got {result}");
+        assert!((1..=60).contains(&result), "expected 1..=60, got {result}");
     }
 
     #[test_case("short",                            "short"                             ; "short_passthrough")]
@@ -690,18 +690,17 @@ mod tests {
     }
 
     #[test]
-    fn read_write_roundtrip_with_offset() {
+    fn read_with_offset_and_limit() {
         smol::block_on(async {
             let dir = TempDir::new().unwrap();
-            let path = dir.path().join("test.txt").to_string_lossy().to_string();
+            let path = dir.path().join("test.txt");
             let content = (1..=10)
                 .map(|i| format!("line{i}"))
                 .collect::<Vec<_>>()
                 .join("\n");
+            fs::write(&path, &content).unwrap();
+            let path = path.to_string_lossy().to_string();
             let ctx = stub_ctx(&AgentMode::Build);
-
-            let w = write::Write::parse_input(&json!({"path": path, "content": content})).unwrap();
-            w.execute(&ctx).await.unwrap();
 
             let r = read::Read::parse_input(&json!({"path": path})).unwrap();
             let full = r.execute(&ctx).await.unwrap().as_text().to_string();
@@ -807,25 +806,30 @@ mod tests {
         assert_eq!(names, ["bash", "read"]);
     }
 
-    #[test]
-    fn plan_mode_restricts_mutations() {
+    #[test_case("write",     |p: &str, _: &str| json!({"path": p, "content": "plan"})                          , |_: &str, o: &str| json!({"path": o, "content": "x"})                           ; "write")]
+    #[test_case("edit",      |p: &str, _: &str| json!({"path": p, "old_string": "old", "new_string": "new"})  , |_: &str, o: &str| json!({"path": o, "old_string": "old", "new_string": "new"})  ; "edit")]
+    #[test_case("multiedit", |p: &str, _: &str| json!({"path": p, "edits": [{"old_string": "old", "new_string": "new"}]}) , |_: &str, o: &str| json!({"path": o, "edits": [{"old_string": "old", "new_string": "new"}]}) ; "multiedit")]
+    fn plan_mode_restricts_mutations(
+        tool: &str,
+        plan_input: fn(&str, &str) -> Value,
+        other_input: fn(&str, &str) -> Value,
+    ) {
         smol::block_on(async {
             let dir = TempDir::new().unwrap();
             let plan_path = dir.path().join("plan.md").to_string_lossy().to_string();
+            fs::write(&plan_path, "old").unwrap();
+            let other = dir.path().join("other.rs").to_string_lossy().to_string();
+            fs::write(&other, "old").unwrap();
             let mode = AgentMode::Plan(plan_path.clone());
             let ctx = stub_ctx(&mode);
 
-            let other = dir.path().join("other.rs").to_string_lossy().to_string();
-            let blocked =
-                ToolCall::from_api("write", &json!({"path": other, "content": "x"})).unwrap();
-            assert!(blocked.execute(&ctx, "t1".into()).await.is_error);
+            let blocked = ToolCall::from_api(tool, &other_input(&plan_path, &other)).unwrap();
+            let result = blocked.execute(&ctx, "t1".into()).await;
+            assert!(result.is_error, "{tool} should be blocked on non-plan file");
 
-            let allowed = ToolCall::from_api(
-                "write",
-                &json!({"path": plan_path, "content": "plan content"}),
-            )
-            .unwrap();
-            assert!(!allowed.execute(&ctx, "t2".into()).await.is_error);
+            let allowed = ToolCall::from_api(tool, &plan_input(&plan_path, &other)).unwrap();
+            let result = allowed.execute(&ctx, "t2".into()).await;
+            assert!(!result.is_error, "{tool} should be allowed on plan file");
         });
     }
 

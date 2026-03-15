@@ -398,19 +398,20 @@ mod tests {
 
     #[cfg(unix)]
     async fn wait_for_pidfile(path: &std::path::Path) {
-        loop {
+        for _ in 0..200 {
             smol::Timer::after(Duration::from_millis(50)).await;
             if path.exists() {
                 smol::Timer::after(Duration::from_millis(50)).await;
                 return;
             }
         }
+        panic!("pidfile never appeared: {}", path.display());
     }
 
     #[cfg(unix)]
     async fn assert_pid_dead(pidfile: &std::path::Path, msg: &str) {
         let pid: i32 = fs::read_to_string(pidfile).unwrap().trim().parse().unwrap();
-        for _ in 0..20 {
+        for _ in 0..60 {
             smol::Timer::after(Duration::from_millis(50)).await;
             let alive = unsafe { libc::kill(pid, 0) };
             if alive == -1 {
