@@ -31,8 +31,10 @@ use crate::render_worker::RenderWorker;
 
 pub const TOOL_INDICATOR: &str = "● ";
 pub const TOOL_BODY_INDENT: &str = "  ";
+const TOOL_SEPARATOR: &str = "──────────────────";
 const TOOL_OUTPUT_MAX_LINES: usize = 7;
 const BASH_OUTPUT_MAX_LINES: usize = 10;
+const CODE_EXECUTION_OUTPUT_SEPARATOR: &str = "────────────";
 const CODE_EXECUTION_OUTPUT_MAX_LINES: usize = 30;
 const TASK_OUTPUT_MAX_LINES: usize = 30;
 const INDEX_OUTPUT_MAX_LINES: usize = 15;
@@ -487,7 +489,7 @@ impl ToolLineBuilder {
     fn push_code_output_separator(&mut self, tool: &str, indent: &str) {
         if tool == CODE_EXECUTION_TOOL_NAME {
             self.lines.push(Line::from(Span::styled(
-                format!("{indent}{}", super::TOOL_SEPARATOR),
+                format!("{indent}{}", CODE_EXECUTION_OUTPUT_SEPARATOR),
                 theme::current().tool_dim,
             )));
         }
@@ -540,7 +542,7 @@ impl ToolLineBuilder {
         let sep = [
             Line::default(),
             Line::from(Span::styled(
-                format!("{BATCH_INDENT}{}", super::TOOL_SEPARATOR),
+                format!("{BATCH_INDENT}{}", TOOL_SEPARATOR),
                 theme::current().tool_dim,
             )),
             Line::default(),

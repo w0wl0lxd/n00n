@@ -18,7 +18,6 @@ pub mod status_bar;
 pub(crate) mod theme_picker;
 pub(crate) mod tool_display;
 
-pub(crate) const TOOL_SEPARATOR: &str = "────────────";
 pub(crate) const CHEVRON: &str = "❯ ";
 
 use std::collections::HashMap;
