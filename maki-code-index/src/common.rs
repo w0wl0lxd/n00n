@@ -357,9 +357,11 @@ fn format_imports(out: &mut String, entries: &[&SkeletonEntry], sep: &str) {
         }
     }
 
+    const IMPORT_INDENT: &str = "  ";
     for line in trie.render(sep) {
         let wrapped = wrap_line(&line);
-        let _ = writeln!(out, "  {wrapped}");
+        let indented = wrapped.replace('\n', &format!("\n{IMPORT_INDENT}"));
+        let _ = writeln!(out, "{IMPORT_INDENT}{indented}");
     }
 }
 
