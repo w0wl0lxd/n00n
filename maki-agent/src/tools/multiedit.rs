@@ -96,11 +96,7 @@ impl MultiEdit {
     }
 
     pub fn start_summary(&self) -> String {
-        format!(
-            "{} ({})",
-            relative_path(&self.path),
-            self.edit_count_label()
-        )
+        relative_path(&self.path)
     }
 }
 
@@ -117,6 +113,10 @@ impl super::ToolDefaults for MultiEdit {
             summary: format!("applied {} to {rel}", self.edit_count_label()),
             path: rel,
         })
+    }
+
+    fn start_annotation(&self) -> Option<String> {
+        Some(self.edit_count_label())
     }
 
     fn mutable_path(&self) -> Option<&str> {
@@ -165,6 +165,7 @@ mod tests {
     use test_case::test_case;
 
     use crate::AgentMode;
+    use crate::tools::ToolDefaults;
     use crate::tools::test_support::stub_ctx;
 
     use super::*;
@@ -252,21 +253,36 @@ mod tests {
         assert_eq!(tags(&hunk), expected);
     }
 
-    #[test_case(1, "/x.rs (1 edit)"  ; "singular")]
-    #[test_case(2, "/x.rs (2 edits)" ; "plural")]
-    fn start_summary_edit_count(n: usize, expected: &str) {
-        let edits = vec![
-            EditEntry {
-                old_string: "a".into(),
-                new_string: "b".into(),
-                replace_all: None
-            };
-            n
-        ];
+    #[test]
+    fn start_summary_is_path_only() {
         let tool = MultiEdit {
             path: "/x.rs".into(),
-            edits,
+            edits: vec![
+                EditEntry {
+                    old_string: "a".into(),
+                    new_string: "b".into(),
+                    replace_all: None,
+                };
+                2
+            ],
         };
-        assert_eq!(tool.start_summary(), expected);
+        assert_eq!(tool.start_summary(), "/x.rs");
+    }
+
+    #[test_case(1, "1 edit"  ; "singular")]
+    #[test_case(2, "2 edits" ; "plural")]
+    fn start_annotation_edit_count(n: usize, expected: &str) {
+        let tool = MultiEdit {
+            path: "/x.rs".into(),
+            edits: vec![
+                EditEntry {
+                    old_string: "a".into(),
+                    new_string: "b".into(),
+                    replace_all: None,
+                };
+                n
+            ],
+        };
+        assert_eq!(tool.start_annotation().unwrap(), expected);
     }
 }

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::components::messages::MessagesPanel;
-use crate::components::tool_display::{output_limits, tool_output_annotation};
+use crate::components::tool_display::{append_annotation, output_limits, tool_output_annotation};
 use crate::components::{DisplayMessage, DisplayRole, ToolStatus};
 use crate::markdown::truncate_lines;
 
@@ -258,8 +258,13 @@ pub fn history_to_display(
                                 })
                                 .unwrap_or((ToolStatus::Success, None));
                             let stored = tool_outputs.get(id).cloned();
-                            let (text, tool_output, annotation) =
+                            let (text, tool_output, mut annotation) =
                                 build_loaded_tool(static_name, &summary, stored, result_text);
+                            if let Some(ta) =
+                                tool_call.as_ref().and_then(|tc| tc.start_annotation())
+                            {
+                                append_annotation(&mut annotation, &ta);
+                            }
                             display.push(DisplayMessage {
                                 role: DisplayRole::Tool {
                                     id: id.clone(),

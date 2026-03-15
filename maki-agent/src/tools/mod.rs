@@ -412,6 +412,10 @@ macro_rules! register_tools {
                 dispatch!(self, |t| t.start_summary())
             }
 
+            pub fn start_annotation(&self) -> Option<String> {
+                dispatch!(self, |t| t.start_annotation())
+            }
+
             pub fn start_input(&self) -> Option<ToolInput> {
                 dispatch!(self, |t| t.start_input())
             }
