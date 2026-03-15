@@ -246,7 +246,7 @@ pub fn login(dir: &DataDir) -> Result<(), AgentError> {
     let (verifier, challenge) = generate_pkce();
     let url = build_authorize_url(&challenge);
 
-    println!("Open this URL in your browser:\n\n  {url}\n");
+    println!("Open this URL in your browser:\n\n{url}\n");
     print!("Paste the authorization code: ");
     io::stdout().flush()?;
 
