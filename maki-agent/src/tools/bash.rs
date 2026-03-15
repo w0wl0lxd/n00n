@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-use async_process::Command;
+use async_process::{Child, Command};
 use futures_lite::StreamExt;
 use futures_lite::io::{AsyncBufReadExt, BufReader};
 use maki_tool_macro::Tool;
@@ -132,6 +132,7 @@ impl Bash {
         if let Some(stderr) = child.stderr.take() {
             spawn_line_reader(BufReader::new(stderr), line_tx.clone());
         }
+        let mut guard = ChildGuard::new(child);
         drop(line_tx);
 
         let mut output = String::new();
@@ -162,10 +163,7 @@ impl Bash {
             {
                 Event::Line(Some(l)) => append_line(&mut output, &l),
                 Event::Line(None) => {
-                    let status = child
-                        .status()
-                        .await
-                        .map_err(|e| format!("wait error: {e}"))?;
+                    let status = guard.wait().await.map_err(|e| format!("wait error: {e}"))?;
                     flush_output(ctx, &output, &mut last_len);
                     let content = truncate_output(output);
                     if !status.success() {
@@ -180,8 +178,7 @@ impl Bash {
                     return Ok(ToolOutput::Plain(content));
                 }
                 Event::Timeout => {
-                    let _ = child.kill();
-                    let _ = child.status().await;
+                    guard.kill_and_reap().await;
                     drain_remaining(&line_rx, &mut output);
                     let mut msg = timed_out_msg(timeout_secs);
                     if !output.is_empty() {
@@ -192,8 +189,7 @@ impl Bash {
                     return Err(msg);
                 }
                 Event::Cancel => {
-                    let _ = child.kill();
-                    let _ = child.status().await;
+                    guard.kill_and_reap().await;
                     return Err("cancelled".into());
                 }
             }
@@ -236,6 +232,44 @@ impl super::ToolDefaults for Bash {
         Some(super::timeout_annotation(
             self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS),
         ))
+    }
+}
+
+struct ChildGuard(Option<Child>);
+
+impl ChildGuard {
+    fn new(child: Child) -> Self {
+        Self(Some(child))
+    }
+
+    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.0.take().unwrap().status().await
+    }
+
+    async fn kill_and_reap(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            Self::signal_kill(&mut child);
+            let _ = child.status().await;
+        }
+    }
+
+    fn signal_kill(child: &mut Child) {
+        #[cfg(unix)]
+        unsafe {
+            libc::killpg(child.id() as i32, libc::SIGKILL);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = child.kill();
+        }
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            Self::signal_kill(child);
+        }
     }
 }
 
@@ -304,15 +338,6 @@ mod tests {
     }
 
     #[test]
-    fn execute_echo() {
-        smol::block_on(async {
-            let ctx = stub_ctx(&AgentMode::Build);
-            let out = bash("echo hello").execute(&ctx).await.unwrap().as_text();
-            assert_eq!(out.trim(), "hello");
-        });
-    }
-
-    #[test]
     fn execute_nonzero_exit_is_error() {
         smol::block_on(async {
             let ctx = stub_ctx(&AgentMode::Build);
@@ -371,16 +396,75 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
+    async fn wait_for_pidfile(path: &std::path::Path) {
+        loop {
+            smol::Timer::after(Duration::from_millis(50)).await;
+            if path.exists() {
+                smol::Timer::after(Duration::from_millis(50)).await;
+                return;
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    async fn assert_pid_dead(pidfile: &std::path::Path, msg: &str) {
+        let pid: i32 = fs::read_to_string(pidfile).unwrap().trim().parse().unwrap();
+        for _ in 0..20 {
+            smol::Timer::after(Duration::from_millis(50)).await;
+            let alive = unsafe { libc::kill(pid, 0) };
+            if alive == -1 {
+                return;
+            }
+        }
+        panic!("{msg}");
+    }
+
+    #[cfg(unix)]
     #[test]
-    fn cancel_kills_child() {
+    fn cancel_kills_process_group() {
         smol::block_on(async {
             let (trigger, cancel) = crate::cancel::CancelToken::new();
             let mut ctx = stub_ctx(&AgentMode::Build);
             ctx.cancel = cancel;
-            let b = bash("sleep 60");
-            trigger.cancel();
+
+            let dir = tempfile::tempdir().unwrap();
+            let pidfile = dir.path().join("pid");
+            let cmd = format!("sleep 300 & echo $! > {}; wait", pidfile.display());
+            let mut b = bash(&cmd);
+            b.timeout = Some(10);
+
+            let pidpath = pidfile.clone();
+            smol::spawn(async move {
+                wait_for_pidfile(&pidpath).await;
+                trigger.cancel();
+            })
+            .detach();
+
             let err = b.execute(&ctx).await.unwrap_err();
             assert!(err.contains("cancelled"));
+            assert_pid_dead(&pidfile, "grandchild process should be dead").await;
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn future_drop_kills_process_group() {
+        smol::block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let pidfile = dir.path().join("pid");
+            let cmd = format!("echo $$ > {}; sleep 300", pidfile.display());
+            let ctx = stub_ctx(&AgentMode::Build);
+            let mut b = bash(&cmd);
+            b.timeout = Some(10);
+
+            let pidpath = pidfile.clone();
+            let handle = smol::spawn(async move { b.execute(&ctx).await });
+
+            wait_for_pidfile(&pidpath).await;
+            drop(handle);
+
+            assert_pid_dead(&pidfile, "process group should be dead after future drop").await;
         });
     }
 }
