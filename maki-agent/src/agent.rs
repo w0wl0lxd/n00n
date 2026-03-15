@@ -57,6 +57,7 @@ const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps, or stop a
 const CANCEL_MARKER: &str = "[Cancelled by user]";
 const MCP_BLOCKED_IN_PLAN: &str = "MCP tools are not available in plan mode";
 const IMAGE_PLACEHOLDER: &str = "[image]";
+const MAX_REAUTH_ATTEMPTS: u32 = 2;
 const EFFICIENCY_TIERS: &[(&str, &[&str], &str)] = &[
     (
         "Best",
@@ -528,6 +529,7 @@ pub struct Agent {
     rollback_len: usize,
     mcp: Option<Arc<McpManager>>,
     config: AgentConfig,
+    reauth_attempts: u32,
 }
 
 impl Agent {
@@ -552,6 +554,7 @@ impl Agent {
             loaded_instructions: Arc::new(Mutex::new(HashSet::new())),
             rollback_len: 0,
             mcp: None,
+            reauth_attempts: 0,
         }
     }
 
@@ -629,7 +632,7 @@ impl Agent {
         if self.cancel.is_cancelled() {
             return Err(AgentError::Cancelled);
         }
-        let response = stream_with_retry(
+        let response = match stream_with_retry(
             &*self.provider,
             &self.model,
             self.history.as_slice(),
@@ -639,9 +642,19 @@ impl Agent {
             &self.cancel,
         )
         .await
-        .inspect_err(|e| {
-            error!(error = %e, model = %self.model.id, self.num_turns, "stream_message failed");
-        })?;
+        {
+            Ok(r) => {
+                self.reauth_attempts = 0;
+                r
+            }
+            Err(e) if e.is_auth_error() => {
+                return self.wait_for_reauth(e).await;
+            }
+            Err(e) => {
+                error!(error = %e, model = %self.model.id, self.num_turns, "stream_message failed");
+                return Err(e);
+            }
+        };
         self.num_turns += 1;
 
         let has_tools = response.message.has_tool_calls();
@@ -686,6 +699,33 @@ impl Agent {
             Ok(TurnOutcome::Continue)
         } else {
             Ok(TurnOutcome::Done(stop_reason))
+        }
+    }
+
+    async fn wait_for_reauth(&mut self, err: AgentError) -> Result<TurnOutcome, AgentError> {
+        if self.reauth_attempts >= MAX_REAUTH_ATTEMPTS {
+            error!(error = %err, attempts = self.reauth_attempts, "max re-auth attempts reached");
+            return Err(err);
+        }
+        let Some(rx) = &self.user_response_rx else {
+            error!(error = %err, model = %self.model.id, self.num_turns, "stream_message failed");
+            return Err(err);
+        };
+        self.reauth_attempts += 1;
+        warn!(error = %err, attempt = self.reauth_attempts, "auth error, waiting for re-authentication");
+        self.event_tx.send(AgentEvent::AuthRequired)?;
+        let rx = rx.lock().await;
+        match futures_lite::future::race(rx.recv_async(), async {
+            self.cancel.cancelled().await;
+            Err(flume::RecvError::Disconnected)
+        })
+        .await
+        {
+            Ok(_) => {
+                self.provider.refresh_auth().await?;
+                Ok(TurnOutcome::Continue)
+            }
+            Err(_) => Err(AgentError::Cancelled),
         }
     }
 

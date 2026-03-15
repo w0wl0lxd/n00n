@@ -55,6 +55,16 @@ pub(crate) use queue::QueuedItem;
 const CANCEL_MSG: &str = "Cancelled.";
 const FLASH_CANCEL: &str = "Press esc again to stop...";
 const FLASH_REWIND: &str = "Press esc again to rewind...";
+const AUTH_EXPIRED_MSG: &str =
+    "Token expired. Run `maki auth login` in another terminal, then press Enter to retry.";
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PendingInput {
+    #[default]
+    None,
+    Question,
+    AuthRetry,
+}
 
 pub enum Msg {
     Key(KeyEvent),
@@ -91,7 +101,7 @@ pub struct App {
     pub(crate) queue: VecDeque<QueuedItem>,
     pub answer_tx: Option<flume::Sender<String>>,
     pub(crate) cmd_tx: Option<flume::Sender<super::AgentCommand>>,
-    pub(super) pending_question: bool,
+    pub(super) pending_input: PendingInput,
     pub(crate) run_id: u64,
     pub(super) retry_info: Option<RetryInfo>,
     #[cfg(feature = "demo")]
@@ -146,7 +156,7 @@ impl App {
             queue: VecDeque::new(),
             answer_tx: None,
             cmd_tx: None,
-            pending_question: false,
+            pending_input: PendingInput::None,
             run_id: 0,
             retry_info: None,
             #[cfg(feature = "demo")]
@@ -493,8 +503,13 @@ impl App {
     }
 
     fn handle_submit(&mut self, sub: Submission) -> Vec<Action> {
-        if self.pending_question {
-            self.pending_question = false;
+        if self.pending_input == PendingInput::AuthRetry {
+            self.pending_input = PendingInput::None;
+            self.send_answer(String::new());
+            return vec![];
+        }
+        if self.pending_input == PendingInput::Question {
+            self.pending_input = PendingInput::None;
             self.main_chat().push_user_message(&sub.text);
             self.send_answer(sub.text);
             return vec![];
@@ -525,7 +540,7 @@ impl App {
         self.run_id += 1;
         self.retry_info = None;
         self.question_form.close();
-        self.pending_question = false;
+        self.pending_input = PendingInput::None;
         for chat in &mut self.chats {
             chat.flush();
             chat.fail_in_progress();
@@ -639,8 +654,15 @@ impl App {
                         let text = QuestionForm::format_questions_as_text(&questions);
                         self.main_chat()
                             .push(DisplayMessage::new(DisplayRole::Assistant, text));
-                        self.pending_question = true;
+                        self.pending_input = PendingInput::Question;
                     }
+                }
+                ChatEventResult::AuthRequired => {
+                    self.main_chat().push(DisplayMessage::new(
+                        DisplayRole::Error,
+                        AUTH_EXPIRED_MSG.into(),
+                    ));
+                    self.pending_input = PendingInput::AuthRetry;
                 }
                 ChatEventResult::Continue | ChatEventResult::QueueItemConsumed => {}
             }

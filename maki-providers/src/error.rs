@@ -41,6 +41,10 @@ impl AgentError {
         }
     }
 
+    pub fn is_auth_error(&self) -> bool {
+        matches!(self, Self::Api { status: 401, .. })
+    }
+
     pub fn user_message(&self) -> String {
         match self {
             Self::Config { message } => message.clone(),
@@ -125,6 +129,12 @@ mod tests {
     #[test_case(401, false ; "unauthorized")]
     fn api_retryable(status: u16, expected: bool) {
         assert_eq!(api(status).is_retryable(), expected);
+    }
+
+    #[test_case(401, true  ; "unauthorized")]
+    #[test_case(403, false ; "forbidden")]
+    fn api_auth_error(status: u16, expected: bool) {
+        assert_eq!(api(status).is_auth_error(), expected);
     }
 
     #[test]

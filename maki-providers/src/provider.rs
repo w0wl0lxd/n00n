@@ -49,6 +49,10 @@ pub trait Provider: Send + Sync {
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>>;
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>>;
+
+    fn refresh_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 pub fn from_model(model: &Model) -> Result<Box<dyn Provider>, AgentError> {

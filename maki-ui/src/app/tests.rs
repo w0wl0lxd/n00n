@@ -801,7 +801,7 @@ fn question_routing_by_suitability() {
         app.run_id = 1;
         app.update(agent_msg(event));
         assert_eq!(app.question_form.is_visible(), expect_form);
-        assert_eq!(app.pending_question, expect_pending);
+        assert_eq!(app.pending_input == PendingInput::Question, expect_pending);
     }
 }
 
@@ -814,25 +814,24 @@ fn pending_question_submit_routes_through_answer_tx() {
     app.answer_tx = Some(tx);
 
     app.update(agent_msg(long_question_no_options()));
-    assert!(app.pending_question);
+    assert_eq!(app.pending_input, PendingInput::Question);
 
     let actions = type_and_submit(&mut app, "my answer");
     assert!(actions.is_empty());
-    assert!(!app.pending_question);
+    assert_eq!(app.pending_input, PendingInput::None);
     assert_eq!(rx.try_recv().unwrap(), "my answer");
 }
 
-#[test]
-fn cancel_clears_pending_question() {
+#[test_case(PendingInput::Question  ; "question")]
+#[test_case(PendingInput::AuthRetry ; "auth_retry")]
+fn cancel_clears_pending_input(pending: PendingInput) {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
-    app.update(agent_msg(long_question_no_options()));
-    assert!(app.pending_question);
-
+    app.pending_input = pending;
     app.update(Msg::Key(key(KeyCode::Esc)));
     app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(!app.pending_question);
+    assert_eq!(app.pending_input, PendingInput::None);
 }
 
 #[test_case(3  ; "scroll_up")]
@@ -1554,4 +1553,31 @@ fn retry_clears_subagent_in_progress_tools() {
     ));
     assert_eq!(app.chats[1].in_progress_count(), 0);
     assert!(app.retry_info.is_none());
+}
+
+#[test]
+fn auth_required_sets_pending_auth_retry() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(agent_msg(AgentEvent::AuthRequired));
+    assert_eq!(app.pending_input, PendingInput::AuthRetry);
+    assert_eq!(app.chats[0].last_message_text(), AUTH_EXPIRED_MSG,);
+}
+
+#[test]
+fn auth_retry_submit_sends_empty_answer() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    let (tx, rx) = flume::unbounded();
+    app.answer_tx = Some(tx);
+
+    app.update(agent_msg(AgentEvent::AuthRequired));
+    assert_eq!(app.pending_input, PendingInput::AuthRetry);
+
+    let actions = type_and_submit(&mut app, "ignored");
+    assert!(actions.is_empty());
+    assert_eq!(app.pending_input, PendingInput::None);
+    assert_eq!(rx.try_recv().unwrap(), "");
 }

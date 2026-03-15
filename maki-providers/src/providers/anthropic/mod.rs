@@ -1,7 +1,7 @@
 //! Anthropic API provider with prompt caching and OAuth auto-refresh.
 //! Cache breakpoints: 1 on tools (last element), 1 on system prompt, 2 on the last two messages
 //! (last content block each). This consumes all 4 of Anthropic's allowed breakpoints.
-//! 401/403 responses trigger an OAuth token refresh before retrying (see `is_auth_expired_error`).
+//! 401 responses trigger an OAuth token refresh before retrying.
 
 use std::sync::Mutex;
 
@@ -32,16 +32,6 @@ const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
 ///
 /// See https://platform.claude.com/docs/en/build-with-claude/prompt-caching.
 const MESSAGE_CACHE_BREAKPOINTS: usize = 2;
-
-fn is_auth_expired_error<T>(result: &Result<T, AgentError>) -> bool {
-    matches!(
-        result,
-        Err(AgentError::Api {
-            status: 401 | 403,
-            ..
-        })
-    )
-}
 
 #[derive(Serialize)]
 struct CacheControl {
@@ -331,9 +321,17 @@ impl Anthropic {
                 status: 401,
                 message: "OAuth tokens not found on disk".into(),
             })?;
-            let fresh = auth::refresh_tokens(&tokens)?;
-            auth::save_tokens(&storage, &fresh)?;
-            Ok::<_, AgentError>(auth::build_oauth_resolved(&fresh))
+            match auth::refresh_tokens(&tokens) {
+                Ok(fresh) => {
+                    auth::save_tokens(&storage, &fresh)?;
+                    Ok(auth::build_oauth_resolved(&fresh))
+                }
+                Err(e) => {
+                    warn!(error = %e, "OAuth refresh failed, clearing stale tokens");
+                    let _ = auth::delete_tokens(&storage);
+                    Err(e)
+                }
+            }
         })
         .await?;
         *self.auth.lock().unwrap() = resolved;
@@ -347,7 +345,10 @@ impl Anthropic {
         Fut: std::future::Future<Output = Result<T, AgentError>>,
     {
         let result = f().await;
-        if self.is_oauth() && is_auth_expired_error(&result) && self.refresh_oauth().await.is_ok() {
+        if self.is_oauth()
+            && matches!(&result, Err(e) if e.is_auth_error())
+            && self.refresh_oauth().await.is_ok()
+        {
             return f().await;
         }
         result
@@ -440,6 +441,16 @@ impl Provider for Anthropic {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
         Box::pin(async move { self.with_oauth_retry(|| self.do_list_models()).await })
+    }
+
+    fn refresh_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
+        Box::pin(async {
+            if self.is_oauth() {
+                self.refresh_oauth().await
+            } else {
+                Ok(())
+            }
+        })
     }
 }
 

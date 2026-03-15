@@ -418,6 +418,7 @@ pub enum AgentEvent {
     Error {
         message: String,
     },
+    AuthRequired,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -22,6 +22,7 @@ pub enum ChatEventResult {
     Error(String),
     QueueItemConsumed,
     QuestionPrompt { questions: Vec<QuestionInfo> },
+    AuthRequired,
 }
 
 pub struct Chat {
@@ -108,6 +109,9 @@ impl Chat {
             AgentEvent::Error { message } => {
                 self.messages_panel.flush();
                 return ChatEventResult::Error(message);
+            }
+            AgentEvent::AuthRequired => {
+                return ChatEventResult::AuthRequired;
             }
         }
         ChatEventResult::Continue
