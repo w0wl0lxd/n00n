@@ -19,7 +19,7 @@ impl PythonExtractor {
             .or_else(|| text.strip_prefix("from "))
             .unwrap_or(text)
             .trim();
-        let normalized = cleaned.replace(" import ", "::");
+        let normalized = cleaned.replace(" import ", ".");
         Some(SkeletonEntry::new(Section::Import, node, normalized))
     }
 
@@ -167,6 +167,10 @@ impl LanguageExtractor for PythonExtractor {
 
     fn is_doc_comment(&self, _node: Node, _source: &[u8]) -> bool {
         false
+    }
+
+    fn import_separator(&self) -> &'static str {
+        "."
     }
 
     fn is_module_doc(&self, node: Node, source: &[u8]) -> bool {

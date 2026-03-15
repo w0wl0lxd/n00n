@@ -15,8 +15,11 @@ impl JavaExtractor {
             .unwrap_or(text)
             .trim_end_matches(';')
             .trim();
-        let normalized = cleaned.replace('.', "::");
-        Some(SkeletonEntry::new(Section::Import, node, normalized))
+        Some(SkeletonEntry::new(
+            Section::Import,
+            node,
+            cleaned.to_string(),
+        ))
     }
 
     fn extract_package(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -251,6 +254,10 @@ impl LanguageExtractor for JavaExtractor {
 
     fn is_doc_comment(&self, node: Node, source: &[u8]) -> bool {
         node.kind() == "block_comment" && node_text(node, source).starts_with("/**")
+    }
+
+    fn import_separator(&self) -> &'static str {
+        "."
     }
 
     fn is_module_doc(&self, _node: Node, _source: &[u8]) -> bool {

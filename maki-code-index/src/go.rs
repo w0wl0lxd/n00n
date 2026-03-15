@@ -235,6 +235,10 @@ impl LanguageExtractor for GoExtractor {
         node.kind() == "comment"
     }
 
+    fn import_separator(&self) -> &'static str {
+        "/"
+    }
+
     fn is_module_doc(&self, _node: Node, _source: &[u8]) -> bool {
         false
     }

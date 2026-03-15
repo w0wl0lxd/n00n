@@ -161,7 +161,12 @@ pub fn index_source(source: &[u8], lang: Language) -> Result<String, IndexError>
         }
     }
 
-    Ok(format_skeleton(&entries, &test_lines, module_doc))
+    Ok(format_skeleton(
+        &entries,
+        &test_lines,
+        module_doc,
+        extractor.import_separator(),
+    ))
 }
 
 #[cfg(test)]
@@ -422,7 +427,7 @@ def process(data: list) -> dict:
                 "module doc:",
                 "imports:",
                 "os",
-                "typing::Optional",
+                "typing.Optional",
                 "consts:",
                 "MAX_RETRIES",
                 "MY_VAR = 10",
@@ -597,7 +602,7 @@ public enum Direction {
             &out,
             &[
                 "imports:",
-                "java::{util::List, io::IOException}",
+                "java.{io.IOException, util.List}",
                 "mod:",
                 "com.example",
                 "classes:",
