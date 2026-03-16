@@ -10,6 +10,7 @@ use crate::components::tool_display::{append_annotation, output_limits, tool_out
 use crate::components::{DisplayMessage, DisplayRole, ToolStatus};
 use crate::markdown::truncate_lines;
 
+use crate::selection::Selection;
 use maki_agent::tools::{ToolCall, WEBFETCH_TOOL_NAME};
 use maki_agent::{AgentEvent, BatchToolStatus, NO_FILES_FOUND, QuestionInfo, ToolOutput};
 use maki_providers::{ContentBlock, Message, Role, TokenUsage};
@@ -167,6 +168,10 @@ impl Chat {
 
     pub fn segment_copy_texts(&self) -> Vec<&str> {
         self.messages_panel.segment_copy_texts()
+    }
+
+    pub fn extract_selection_text(&self, sel: &Selection, msg_area: Rect) -> String {
+        self.messages_panel.extract_selection_text(sel, msg_area)
     }
 
     pub fn stream_reset(&mut self) {

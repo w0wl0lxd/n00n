@@ -228,7 +228,7 @@ pub fn inset_border(area: Rect) -> Rect {
 }
 
 #[inline]
-fn col_range(ss: &ScreenSelection, left: u16, right: u16, row: u16) -> (u16, u16) {
+pub(crate) fn col_range(ss: &ScreenSelection, left: u16, right: u16, row: u16) -> (u16, u16) {
     let col_start = if row == ss.start_row {
         ss.start_col.max(left)
     } else {
@@ -256,7 +256,11 @@ pub fn apply_highlight(buf: &mut Buffer, area: Rect, ss: &ScreenSelection) {
     }
 }
 
-fn strip_code_bar_prefix(cell: &ratatui::buffer::Cell, out: &mut String, line_start: usize) {
+pub(crate) fn strip_code_bar_prefix(
+    cell: &ratatui::buffer::Cell,
+    out: &mut String,
+    line_start: usize,
+) {
     if cell.style().fg != theme::current().code_bar.fg || cell.symbol() != "│" {
         return;
     }
@@ -273,7 +277,7 @@ fn strip_code_bar_prefix(cell: &ratatui::buffer::Cell, out: &mut String, line_st
 
 /// Trailing whitespace trimmed per line; consecutive trailing blank lines
 /// collapsed via `pending_newlines`.
-fn append_rows(
+pub(crate) fn append_rows(
     buf: &Buffer,
     area: Rect,
     ss: &ScreenSelection,
@@ -345,98 +349,6 @@ pub fn extract_selected_text(
             append_rows(buf, region.area, ss, row, chunk_end, &mut out);
         }
         row = region_end;
-    }
-    out
-}
-
-/// Messages zone extraction. Fully-enclosed segments use `copy_text`;
-/// partial on-screen segments fall back to cell scraping; partial off-screen
-/// segments use `copy_text` as best-effort.
-pub fn extract_doc_range(
-    buf: &Buffer,
-    sel: &Selection,
-    msg_area: Rect,
-    scroll_top: u16,
-    segment_heights: &[u16],
-    segments_copy_text: &[&str],
-) -> String {
-    let (doc_start, doc_end) = sel.normalized();
-    let mut out = String::new();
-    let mut doc_row: u32 = 0;
-
-    for (i, &h) in segment_heights.iter().enumerate() {
-        let seg_start = doc_row;
-        let seg_end = doc_row + h as u32;
-        doc_row = seg_end;
-
-        if seg_end <= doc_start.row || seg_start > doc_end.row {
-            continue;
-        }
-
-        let fully_enclosed = seg_start >= doc_start.row
-            && seg_end <= doc_end.row + 1
-            && (seg_start != doc_start.row || doc_start.col <= msg_area.x)
-            && (seg_end != doc_end.row + 1
-                || doc_end.col >= msg_area.x + msg_area.width.saturating_sub(1));
-
-        if !out.is_empty() {
-            out.push('\n');
-        }
-
-        let copy_text = segments_copy_text.get(i).copied().unwrap_or("");
-
-        if fully_enclosed && !copy_text.is_empty() {
-            out.push_str(copy_text);
-        } else {
-            let view_top = scroll_top as u32;
-            let view_bottom = view_top + msg_area.height as u32;
-            let is_on_screen = seg_start < view_bottom && seg_end > view_top;
-
-            if is_on_screen {
-                let screen_start = msg_area.y + seg_start.saturating_sub(view_top) as u16;
-                let screen_end =
-                    msg_area.y + (seg_end.saturating_sub(view_top) as u16).min(msg_area.height);
-
-                let sel_screen_start = msg_area.y + doc_start.row.saturating_sub(view_top) as u16;
-                let sel_screen_end = msg_area.y
-                    + ((doc_end.row + 1).saturating_sub(view_top) as u16).min(msg_area.height);
-                let from = screen_start.max(sel_screen_start);
-                let to = screen_end.min(sel_screen_end);
-
-                let fake_start_row = if seg_start >= doc_start.row {
-                    screen_start
-                } else {
-                    msg_area.y + doc_start.row.saturating_sub(view_top) as u16
-                };
-                let fake_start_col = if seg_start > doc_start.row {
-                    msg_area.x
-                } else {
-                    doc_start.col
-                };
-                let fake_end_row = if seg_end <= doc_end.row + 1 {
-                    screen_end.saturating_sub(1)
-                } else {
-                    msg_area.y + doc_end.row.saturating_sub(view_top) as u16
-                };
-                let fake_end_col = if seg_end < doc_end.row + 1 {
-                    msg_area.x + msg_area.width.saturating_sub(1)
-                } else {
-                    doc_end.col
-                };
-
-                let ss = ScreenSelection {
-                    start_row: fake_start_row,
-                    start_col: fake_start_col,
-                    end_row: fake_end_row,
-                    end_col: fake_end_col,
-                };
-
-                let area = Rect::new(msg_area.x, from, msg_area.width, to.saturating_sub(from));
-                append_rows(buf, area, &ss, from, to, &mut out);
-            } else if !copy_text.is_empty() {
-                out.push_str(copy_text);
-            }
-        }
     }
     out
 }
@@ -744,38 +656,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_doc_range_fully_enclosed_segments() {
-        let area = Rect::new(0, 0, 20, 6);
-        let buf = Buffer::empty(area);
-        let sel = Selection {
-            anchor: doc(0, 0),
-            cursor: doc(5, 19),
-            area,
-            zone: SelectionZone::Messages,
-        };
-        let heights = [3, 3];
-        let copy_texts = ["segment one", "segment two"];
-        let text = extract_doc_range(&buf, &sel, area, 0, &heights, &copy_texts);
-        assert_eq!(text, "segment one\nsegment two");
-    }
-
-    #[test]
-    fn extract_doc_range_skips_out_of_range_segments() {
-        let area = Rect::new(0, 0, 20, 10);
-        let buf = Buffer::empty(area);
-        let sel = Selection {
-            anchor: doc(3, 0),
-            cursor: doc(5, 19),
-            area,
-            zone: SelectionZone::Messages,
-        };
-        let heights = [3, 3, 3];
-        let copy_texts = ["seg0", "seg1", "seg2"];
-        let text = extract_doc_range(&buf, &sel, area, 0, &heights, &copy_texts);
-        assert_eq!(text, "seg1");
-    }
-
-    #[test]
     fn clamped_doc_row_below_msg_area() {
         let msg_area = Rect::new(0, 2, 80, 10);
         let sel = Selection::start(15, 5, msg_area, SelectionZone::Messages, 0);
@@ -868,90 +748,6 @@ mod tests {
         let sel = Selection::start(23, 5, area, SelectionZone::Input, 3);
         let (start, _) = sel.normalized();
         assert_eq!(start.row, 4);
-    }
-
-    #[test]
-    fn extract_doc_range_partial_first_segment() {
-        let area = Rect::new(0, 0, 20, 6);
-        let mut buf = Buffer::empty(area);
-        let style = ratatui::style::Style::default();
-        buf.set_string(0, 0, "seg0 line0          ", style);
-        buf.set_string(0, 1, "seg0 line1          ", style);
-        buf.set_string(0, 2, "seg0 line2          ", style);
-        buf.set_string(0, 3, "seg1 line0          ", style);
-        buf.set_string(0, 4, "seg1 line1          ", style);
-        buf.set_string(0, 5, "seg1 line2          ", style);
-
-        let sel = Selection {
-            anchor: doc(2, 0),
-            cursor: doc(5, 19),
-            area,
-            zone: SelectionZone::Messages,
-        };
-        let heights = [3, 3];
-        let copy_texts = ["", "seg1 full"];
-        let text = extract_doc_range(&buf, &sel, area, 0, &heights, &copy_texts);
-        assert_eq!(text, "seg0 line2\nseg1 full");
-    }
-
-    #[test]
-    fn extract_doc_range_partial_last_segment() {
-        let area = Rect::new(0, 0, 20, 6);
-        let mut buf = Buffer::empty(area);
-        let style = ratatui::style::Style::default();
-        buf.set_string(0, 0, "seg0 line0          ", style);
-        buf.set_string(0, 1, "seg0 line1          ", style);
-        buf.set_string(0, 2, "seg0 line2          ", style);
-        buf.set_string(0, 3, "seg1 line0          ", style);
-        buf.set_string(0, 4, "seg1 line1          ", style);
-        buf.set_string(0, 5, "seg1 line2          ", style);
-
-        let sel = Selection {
-            anchor: doc(0, 0),
-            cursor: doc(3, 19),
-            area,
-            zone: SelectionZone::Messages,
-        };
-        let heights = [3, 3];
-        let copy_texts = ["seg0 full", ""];
-        let text = extract_doc_range(&buf, &sel, area, 0, &heights, &copy_texts);
-        assert_eq!(text, "seg0 full\nseg1 line0");
-    }
-
-    #[test]
-    fn extract_doc_range_partial_col_single_row() {
-        let area = Rect::new(0, 0, 20, 1);
-        let mut buf = Buffer::empty(area);
-        let style = ratatui::style::Style::default();
-        buf.set_string(0, 0, "maki> hello world   ", style);
-
-        let sel = Selection {
-            anchor: doc(0, 12),
-            cursor: doc(0, 16),
-            area,
-            zone: SelectionZone::Messages,
-        };
-        let heights = [1];
-        let copy_texts = ["hello world"];
-        let text = extract_doc_range(&buf, &sel, area, 0, &heights, &copy_texts);
-        assert_eq!(text, "world");
-    }
-
-    #[test]
-    fn extract_doc_range_full_width_single_row_uses_copy_text() {
-        let content_area = Rect::new(0, 0, 19, 1);
-        let buf = Buffer::empty(Rect::new(0, 0, 20, 1));
-
-        let sel = Selection {
-            anchor: doc(0, 0),
-            cursor: doc(0, 18),
-            area: content_area,
-            zone: SelectionZone::Messages,
-        };
-        let heights = [1];
-        let copy_texts = ["hello world"];
-        let text = extract_doc_range(&buf, &sel, content_area, 0, &heights, &copy_texts);
-        assert_eq!(text, "hello world");
     }
 
     fn code_bar_buffer() -> (Buffer, Rect) {

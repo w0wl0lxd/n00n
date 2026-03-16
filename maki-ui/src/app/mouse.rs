@@ -124,11 +124,7 @@ impl App {
         let text = match sel.zone {
             SelectionZone::Messages => {
                 let msg_area = self.msg_area();
-                let chat = &self.chats[render_chat];
-                let scroll_top = chat.scroll_top();
-                let heights = chat.segment_heights();
-                let copy_texts = chat.segment_copy_texts();
-                selection::extract_doc_range(buf, sel, msg_area, scroll_top, heights, &copy_texts)
+                self.chats[render_chat].extract_selection_text(sel, msg_area)
             }
             SelectionZone::Input => {
                 let scroll = self.scroll_offset(sel.zone);
