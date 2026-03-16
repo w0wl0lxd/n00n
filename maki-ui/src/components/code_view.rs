@@ -2,10 +2,12 @@ use crate::highlight::{
     fallback_span, highlight_code_plain, highlight_line, highlighter_for_path,
     highlighter_for_syntax, highlighter_for_token, syntax_for_path,
 };
-use crate::markdown::truncation_notice;
+use crate::markdown::{Keep, text_to_lines, truncate_lines, truncation_notice};
 use crate::theme;
 
-use maki_agent::{DiffHunk, DiffLine, DiffSpan, GrepFileEntry, ToolInput, ToolOutput};
+use maki_agent::{
+    DiffHunk, DiffLine, DiffSpan, GrepFileEntry, InstructionBlock, ToolInput, ToolOutput,
+};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
@@ -14,6 +16,7 @@ const MAX_CODE_LINES: usize = 7;
 const MAX_WRITE_LINES: usize = 30;
 const MAX_GREP_LINES: usize = 15;
 const MAX_CODE_EXECUTION_LINES: usize = 100;
+const MAX_INSTRUCTION_LINES: usize = 15;
 
 fn nr_width(max_nr: usize) -> usize {
     max_nr.max(1).ilog10() as usize + 1
@@ -213,6 +216,19 @@ fn render_grep_results(
     out
 }
 
+fn render_instructions(blocks: &[InstructionBlock], lines: &mut Vec<Line<'static>>) {
+    let style = theme::current().assistant;
+    let dim = theme::current().tool_dim;
+    for block in blocks {
+        let header = format!("Instructions from: {}", block.path);
+        lines.push(Line::from(Span::styled(header, dim)));
+        if !block.content.is_empty() {
+            let truncated = truncate_lines(&block.content, MAX_INSTRUCTION_LINES, Keep::Head);
+            lines.extend(text_to_lines(&truncated, "", style, style, None, 0));
+        }
+    }
+}
+
 pub fn render_tool_content(
     input: Option<&ToolInput>,
     output: Option<&ToolOutput>,
@@ -266,9 +282,7 @@ pub fn render_tool_content(
             );
             if let Some(inst) = instructions {
                 result.push(Line::default());
-                for line in inst.lines() {
-                    result.push(Line::from(fallback_span(line)));
-                }
+                render_instructions(inst, &mut result);
             }
             result
         }
@@ -519,5 +533,52 @@ mod tests {
             span_styles(&Line::from(second_line_spans)),
             span_styles(&Line::from(standalone))
         );
+    }
+
+    #[test]
+    fn render_instructions_single_block() {
+        let blocks = vec![InstructionBlock {
+            path: "/src/AGENTS.md".into(),
+            content: "# Title\n\nSome rules here".into(),
+        }];
+        let mut lines = Vec::new();
+        render_instructions(&blocks, &mut lines);
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(text[0].contains("Instructions from:"));
+        assert!(text.iter().any(|l| l.contains("Title")));
+        assert!(text.iter().any(|l| l.contains("Some rules here")));
+    }
+
+    #[test]
+    fn render_instructions_truncates_at_limit() {
+        let long_content: String = (0..30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let blocks = vec![InstructionBlock {
+            path: "AGENTS.md".into(),
+            content: long_content,
+        }];
+        let mut lines = Vec::new();
+        render_instructions(&blocks, &mut lines);
+        let total_content_lines = lines.len() - 1; // minus header
+        assert!(total_content_lines <= MAX_INSTRUCTION_LINES + 1); // +1 for truncation notice
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(
+            text.last()
+                .unwrap()
+                .starts_with(crate::markdown::TRUNCATION_PREFIX)
+        );
+    }
+
+    #[test]
+    fn render_instructions_empty_content() {
+        let blocks = vec![InstructionBlock {
+            path: "AGENTS.md".into(),
+            content: String::new(),
+        }];
+        let mut lines = Vec::new();
+        render_instructions(&blocks, &mut lines);
+        assert_eq!(lines.len(), 1); // header only
     }
 }

@@ -2,8 +2,8 @@ use std::fmt::Write;
 use std::fs;
 use std::path::Path;
 
-use crate::ToolOutput;
 use crate::agent;
+use crate::{InstructionBlock, ToolOutput};
 use maki_tool_macro::Tool;
 
 use super::{MAX_OUTPUT_LINES, relative_path, truncate_bytes};
@@ -54,16 +54,17 @@ impl Read {
 
             let instructions = if let Ok(cwd) = std::env::current_dir() {
                 let found = agent::find_subdirectory_instructions(Path::new(&path), &cwd, &loaded);
-                let text: Vec<String> = found
+                let blocks: Vec<InstructionBlock> = found
                     .into_iter()
-                    .map(|(display, content)| {
-                        format!("---\nInstructions from: {display}\n{content}")
+                    .map(|(display, content)| InstructionBlock {
+                        path: display,
+                        content,
                     })
                     .collect();
-                if text.is_empty() {
+                if blocks.is_empty() {
                     None
                 } else {
-                    Some(text.join("\n"))
+                    Some(blocks)
                 }
             } else {
                 None

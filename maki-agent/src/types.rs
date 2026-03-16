@@ -179,6 +179,12 @@ pub struct BatchToolEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstructionBlock {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolOutput {
     Plain(String),
     ReadCode {
@@ -188,7 +194,7 @@ pub enum ToolOutput {
         #[serde(default)]
         total_lines: usize,
         #[serde(default)]
-        instructions: Option<String>,
+        instructions: Option<Vec<InstructionBlock>>,
     },
     Diff {
         path: String,
@@ -252,9 +258,14 @@ impl ToolOutput {
                     .enumerate()
                     .map(|(i, line)| format!("{}: {line}", start_line + i))
                     .collect();
-                if let Some(inst) = instructions {
-                    out.push(String::new());
-                    out.push(inst.clone());
+                if let Some(blocks) = instructions {
+                    for block in blocks {
+                        out.push(String::new());
+                        out.push(format!(
+                            "---\nInstructions from: {}\n{}",
+                            block.path, block.content
+                        ));
+                    }
                 }
                 out.join("\n")
             }
@@ -668,7 +679,7 @@ mod tests {
     #[test_case(
         10,
         vec!["fn foo()".into(), "fn bar()".into()],
-        Some("---\nInstructions from: AGENTS.md\ndo stuff".into()),
+        Some(vec![InstructionBlock { path: "AGENTS.md".into(), content: "do stuff".into() }]),
         "10: fn foo()\n11: fn bar()\n\n---\nInstructions from: AGENTS.md\ndo stuff"
         ; "with_instructions"
     )]
@@ -682,7 +693,7 @@ mod tests {
     fn read_code_display_text(
         start_line: usize,
         lines: Vec<String>,
-        instructions: Option<String>,
+        instructions: Option<Vec<InstructionBlock>>,
         expected: &str,
     ) {
         let output = ToolOutput::ReadCode {
