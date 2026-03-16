@@ -24,7 +24,6 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
-use unicode_width::UnicodeWidthStr;
 
 use super::scrollbar::render_vertical_scrollbar;
 
@@ -1058,21 +1057,12 @@ fn parse_batch_inner_id(tool_id: &str) -> Option<(&str, usize)> {
 }
 
 fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {
-    let w = width as usize;
-    if w == 0 {
+    if width == 0 {
         return lines.len() as u16;
     }
-    lines
-        .iter()
-        .map(|line| {
-            let line_w: usize = line.spans.iter().map(|s| s.content.width()).sum();
-            if line_w == 0 {
-                1
-            } else {
-                line_w.div_ceil(w) as u16
-            }
-        })
-        .sum()
+    Paragraph::new(lines.to_vec())
+        .wrap(Wrap { trim: false })
+        .line_count(width) as u16
 }
 
 fn push_spacer_if_needed(segments: &mut Vec<Segment>) {
@@ -1713,6 +1703,8 @@ mod tests {
     #[test_case(&[&"a".repeat(80)],              80, 1 ; "exactly_width_no_wrap")]
     #[test_case(&[&"a".repeat(81)],              80, 2 ; "one_over_width_wraps")]
     #[test_case(&["hello", "world"],              0, 2 ; "zero_width_returns_line_count")]
+    #[test_case(&["aaaa bbbb cccc dddd"],         10, 2 ; "word_boundary_wrap")]
+    #[test_case(&["aaaaaa bbbbbbbbb"],            10, 2 ; "word_straddles_boundary")]
     fn wrapped_line_count_cases(input: &[&str], width: u16, expected: u16) {
         let lines: Vec<Line<'static>> = input
             .iter()

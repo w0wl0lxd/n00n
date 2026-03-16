@@ -14,6 +14,8 @@ use super::{
     NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path, truncate_bytes,
 };
 
+pub(super) const INVALID_REGEX: &str = "invalid regex pattern";
+
 #[derive(Tool, Debug, Clone)]
 pub struct Grep {
     #[param(description = "Regex pattern to search for")]
@@ -51,7 +53,7 @@ impl Grep {
 
             let matcher = RegexMatcher::new_line_matcher(&pattern)
                 .or_else(|_| RegexMatcher::new(&pattern))
-                .map_err(|e| format!("invalid regex pattern: {e}"))?;
+                .map_err(|e| format!("{INVALID_REGEX}: {e}"))?;
 
             let mut walker = WalkBuilder::new(&search_path);
             walker.hidden(false);

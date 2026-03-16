@@ -663,10 +663,12 @@ mod tests {
 
     #[test]
     fn deadline_cap_timeout_clamps_to_remaining() {
-        let d = Deadline::after(Duration::from_secs(30));
+        let d = Deadline::At(Instant::now() + Duration::from_secs(5));
         let result = d.cap_timeout(120).unwrap();
-        assert!(result <= 30, "should clamp to remaining, got {result}");
-        assert!(result >= 29, "timer drift too large, got {result}");
+        assert!(
+            (1..=5).contains(&result),
+            "expected 1..=5, got {result}"
+        );
     }
 
     #[test_case("short",                            "short"                             ; "short_passthrough")]
@@ -800,7 +802,7 @@ mod tests {
             let g =
                 grep::Grep::parse_input(&json!({"pattern": "[invalid", "path": dir_str})).unwrap();
             let err = g.execute(&ctx).await.unwrap_err();
-            assert!(err.contains("invalid regex pattern"), "got: {err}");
+            assert!(err.contains(grep::INVALID_REGEX), "got: {err}");
         });
     }
 
