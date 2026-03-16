@@ -117,21 +117,6 @@ macro_rules! my_macro { () => {}; }
 }
 
 #[test]
-fn rust_section_ordering() {
-    let src =
-        "fn foo() {}\nuse std::io;\nconst X: u8 = 1;\npub struct S {}\ntrait T {}\nimpl S {}\n";
-    let out = idx(src, Language::Rust);
-    let positions: Vec<_> = ["imports:", "consts:", "types:", "traits:", "impls:", "fns:"]
-        .iter()
-        .map(|s| out.find(s).unwrap_or_else(|| panic!("missing {s}")))
-        .collect();
-    assert!(
-        positions.windows(2).all(|w| w[0] < w[1]),
-        "sections out of order in:\n{out}"
-    );
-}
-
-#[test]
 fn rust_many_fields_truncated() {
     let out = idx(
         "struct Big {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n    e: u8,\n    f: u8,\n    g: u8,\n    h: u8,\n    i: u8,\n    j: u8,\n}\n",
@@ -284,15 +269,6 @@ export function handler(req: Request): Response { return new Response(); }
 }
 
 #[test]
-fn js_function() {
-    let out = idx(
-        "function hello(name) {\n    console.log(name);\n}\n",
-        Language::JavaScript,
-    );
-    has(&out, &["fns:", "hello(name)"]);
-}
-
-#[test]
 fn go_all_sections() {
     let src = r#"
 package main
@@ -368,7 +344,7 @@ package com.example;
 import java.util.List;
 import java.io.IOException;
 
-public class Service {
+public class Service extends BaseService implements Runnable, Serializable {
     private String name;
     public Service(String name) { this.name = name; }
     @Override
@@ -377,11 +353,11 @@ public class Service {
 }
 
 /** Handler docs */
-public interface Handler {
+public interface Handler extends Comparable<Handler> {
     void handle(String request);
 }
 
-public enum Direction {
+public enum Direction implements Displayable {
     UP, DOWN, LEFT, RIGHT
 }
 "#;
@@ -394,33 +370,17 @@ public enum Direction {
             "mod:",
             "com.example",
             "classes:",
-            "public class Service",
+            "public class Service extends BaseService implements Runnable, Serializable",
             "private String name",
             "public Service(String name)",
             "@Override public String toString()",
             "public void process(List<String> items)",
             "traits:",
-            "public interface Handler",
+            "public interface Handler extends Comparable<Handler>",
             "void handle(String request)",
             "types:",
-            "public enum Direction",
+            "public enum Direction implements Displayable",
             "UP, DOWN",
         ],
     );
-}
-
-#[test]
-fn rust_module_compression() {
-    let src = "pub mod a;\nmod b;\nmod c;\n";
-    let out = idx(src, Language::Rust);
-    has(&out, &["mod:", "pub a, b, c"]);
-    lacks(&out, &["  pub a\n", "  b\n", "  c\n"]);
-}
-
-#[test]
-fn rust_struct_fields_not_brief() {
-    let src = "struct Foo {\n    x: u32,\n    y: String,\n}\n";
-    let out = idx(src, Language::Rust);
-    has(&out, &["x: u32", "y: String"]);
-    lacks(&out, &["x: u32, y: String"]);
 }

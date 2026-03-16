@@ -8,6 +8,23 @@ use crate::common::{
 pub(crate) struct JavaExtractor;
 
 impl JavaExtractor {
+    fn type_list_text(&self, parent: Node, source: &[u8]) -> String {
+        let Some(tl) = find_child(parent, "type_list") else {
+            return node_text(parent, source)
+                .trim_start_matches("extends")
+                .trim_start_matches("implements")
+                .trim()
+                .to_string();
+        };
+        node_text(tl, source).to_string()
+    }
+
+    fn implements_clause(&self, node: Node, source: &[u8]) -> String {
+        node.child_by_field_name("interfaces")
+            .map(|n| format!(" implements {}", self.type_list_text(n, source)))
+            .unwrap_or_default()
+    }
+
     fn extract_import(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
         let text = node_text(node, source);
         let cleaned = text
@@ -77,8 +94,9 @@ impl JavaExtractor {
             .and_then(|n| find_child(n, "type_identifier").or(Some(n)))
             .map(|n| format!(" extends {}", node_text(n, source)))
             .unwrap_or_default();
+        let interfaces = self.implements_clause(node, source);
 
-        let label = prefixed(&mods, format_args!("class {name}{superclass}"));
+        let label = prefixed(&mods, format_args!("class {name}{superclass}{interfaces}"));
 
         let children = self.extract_class_body(node, source);
         let mut entry = SkeletonEntry::new(Section::Class, node, label);
@@ -156,8 +174,11 @@ impl JavaExtractor {
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
+        let extends = find_child(node, "extends_interfaces")
+            .map(|n| format!(" extends {}", self.type_list_text(n, source)))
+            .unwrap_or_default();
 
-        let label = prefixed(&mods, format_args!("interface {name}"));
+        let label = prefixed(&mods, format_args!("interface {name}{extends}"));
 
         let children = self.extract_interface_body(node, source);
         let mut entry = SkeletonEntry::new(Section::Trait, node, label);
@@ -187,7 +208,8 @@ impl JavaExtractor {
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
 
-        let label = prefixed(&mods, format_args!("enum {name}"));
+        let interfaces = self.implements_clause(node, source);
+        let label = prefixed(&mods, format_args!("enum {name}{interfaces}"));
 
         let body = node.child_by_field_name("body")?;
         let mut constants = Vec::new();
@@ -217,7 +239,8 @@ impl JavaExtractor {
             .map(|n| node_text(n, source))
             .unwrap_or("()");
 
-        let label = prefixed(&mods, format_args!("record {name}{params}"));
+        let interfaces = self.implements_clause(node, source);
+        let label = prefixed(&mods, format_args!("record {name}{params}{interfaces}"));
 
         Some(SkeletonEntry::new(Section::Type, node, label))
     }
