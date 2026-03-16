@@ -4,7 +4,7 @@
 
 use crate::components::queue_panel::QueueEntry;
 use crate::theme;
-use maki_agent::AgentInput;
+use maki_agent::{AgentInput, AgentMode};
 
 use super::{App, format_with_images};
 
@@ -32,13 +32,18 @@ impl QueuedItem {
         }
     }
 
-    pub(super) fn to_agent_command(&self, run_id: u64) -> crate::AgentCommand {
+    pub(super) fn to_agent_command(
+        &self,
+        run_id: u64,
+        mode: AgentMode,
+        pending_plan: Option<String>,
+    ) -> crate::AgentCommand {
         match self {
             Self::Message(input) => crate::AgentCommand::Run(
                 AgentInput {
                     message: input.message.clone(),
-                    mode: input.mode.clone(),
-                    pending_plan: input.pending_plan.clone(),
+                    mode,
+                    pending_plan,
                     images: input.images.clone(),
                 },
                 run_id,
@@ -67,7 +72,12 @@ impl App {
         if let Some(front) = self.queue.front()
             && let Some(tx) = &self.cmd_tx
         {
-            let _ = tx.try_send(front.to_agent_command(self.run_id));
+            let cmd = front.to_agent_command(
+                self.run_id,
+                self.agent_mode(),
+                self.pending_plan().map(String::from),
+            );
+            let _ = tx.try_send(cmd);
         }
     }
 

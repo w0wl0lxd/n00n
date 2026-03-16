@@ -742,6 +742,10 @@ fn consumed_item_sends_next_to_agent(first: QueuedItem, expect_user_msg: bool) {
     let mut app = test_app();
     let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
     app.cmd_tx = Some(tx);
+    app.mode = Mode::Plan {
+        path: "p.md".into(),
+        written: false,
+    };
     app.status = Status::Streaming;
     app.run_id = 1;
     let before = app.chats[0].message_count();
@@ -754,8 +758,12 @@ fn consumed_item_sends_next_to_agent(first: QueuedItem, expect_user_msg: bool) {
         app.chats[0].message_count(),
         if expect_user_msg { before + 1 } else { before }
     );
-    let cmd = rx.try_recv().expect("next item should be sent to agent");
-    assert!(matches!(cmd, crate::AgentCommand::Run(_, 1)));
+    let crate::AgentCommand::Run(input, 1) =
+        rx.try_recv().expect("next item should be sent to agent")
+    else {
+        panic!("expected Run command");
+    };
+    assert_eq!(input.mode, AgentMode::Plan("p.md".into()));
 }
 
 fn long_question_no_options() -> AgentEvent {
@@ -1495,15 +1503,32 @@ fn rewind_to_first_turn_clears_everything() {
     assert!(matches!(&actions[0], Action::LoadSession(_)));
 }
 
-#[test_case(Status::Streaming,                                                    Status::Streaming       ; "noop_on_streaming")]
-#[test_case(Status::Idle,                                                           Status::Idle            ; "noop_on_idle")]
-#[test_case(Status::error("fail".into()),                                            Status::Error { message: "fail".into(), since: Instant::now() } ; "keeps_fresh_error")]
-#[test_case(Status::Error { message: "fail".into(), since: Instant::now() - Duration::from_secs(60) }, Status::Idle ; "clears_stale_error")]
+#[test_case(Status::Streaming, Status::Streaming ; "noop_on_streaming")]
+#[test_case(Status::Idle,      Status::Idle      ; "noop_on_idle")]
 fn tick_error_expiry(initial: Status, expected: Status) {
     let mut app = test_app();
     app.status = initial;
     app.tick_error_expiry();
     assert_eq!(app.status, expected);
+}
+
+#[test]
+fn tick_error_expiry_keeps_fresh_error() {
+    let mut app = test_app();
+    app.status = Status::error("fail".into());
+    app.tick_error_expiry();
+    assert!(matches!(app.status, Status::Error { .. }));
+}
+
+#[test]
+fn tick_error_expiry_clears_stale_error() {
+    let mut app = test_app();
+    app.status = Status::Error {
+        message: "fail".into(),
+        since: Instant::now() - Duration::from_secs(60),
+    };
+    app.tick_error_expiry();
+    assert_eq!(app.status, Status::Idle);
 }
 
 #[test]
@@ -1594,4 +1619,27 @@ fn search_escape_restores_scroll(scroll_top: u16, auto_scroll: bool) {
     assert!(!app.search_modal.is_open());
     assert_eq!(app.active_chat().scroll_top(), scroll_top);
     assert_eq!(app.active_chat().auto_scroll(), auto_scroll);
+}
+
+#[test]
+fn done_drains_queued_message_with_current_mode() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.queue.push_back(queued_msg("queued"));
+
+    app.mode = Mode::Plan {
+        path: "p.md".into(),
+        written: false,
+    };
+    let actions = app.update(agent_msg(AgentEvent::Done {
+        usage: TokenUsage::default(),
+        num_turns: 1,
+        stop_reason: None,
+    }));
+    let Action::SendMessage(ref input) = actions[0] else {
+        panic!("expected SendMessage");
+    };
+    assert_eq!(input.mode, AgentMode::Plan("p.md".into()));
+    assert!(input.pending_plan.is_none());
 }

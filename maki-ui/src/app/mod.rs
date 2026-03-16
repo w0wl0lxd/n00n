@@ -632,7 +632,9 @@ impl App {
                     if let Some(item) = self.queue.pop_front() {
                         self.clamp_queue_focus();
                         return match item {
-                            QueuedItem::Message(input) => {
+                            QueuedItem::Message(mut input) => {
+                                input.mode = self.agent_mode();
+                                input.pending_plan = self.pending_plan().map(String::from);
                                 self.main_chat().push_user_message(&format_with_images(
                                     &input.message,
                                     input.images.len(),
