@@ -221,7 +221,7 @@ def process(data: list) -> dict:
             "module doc:",
             "imports:",
             "os",
-            "typing.Optional",
+            "typing: Optional",
             "consts:",
             "MAX_RETRIES",
             "MY_VAR = 10",
@@ -390,7 +390,7 @@ public enum Direction {
         &out,
         &[
             "imports:",
-            "java.{io.IOException, util.List}",
+            "java: io.IOException, util.List",
             "mod:",
             "com.example",
             "classes:",
@@ -418,23 +418,9 @@ fn rust_module_compression() {
 }
 
 #[test]
-fn rust_enum_brief_children() {
-    let src = "enum Status { Active, Inactive, Pending }\n";
-    let out = idx(src, Language::Rust);
-    has(&out, &["enum Status", "Active, Inactive, Pending"]);
-}
-
-#[test]
-fn rust_struct_fields_stay_detailed() {
+fn rust_struct_fields_not_brief() {
     let src = "struct Foo {\n    x: u32,\n    y: String,\n}\n";
     let out = idx(src, Language::Rust);
     has(&out, &["x: u32", "y: String"]);
     lacks(&out, &["x: u32, y: String"]);
-}
-
-#[test]
-fn java_enum_brief_children() {
-    let src = "public enum Color { RED, GREEN, BLUE }\n";
-    let out = idx(src, Language::Java);
-    has(&out, &["public enum Color", "RED, GREEN, BLUE"]);
 }

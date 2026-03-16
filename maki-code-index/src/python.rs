@@ -6,7 +6,8 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    LanguageExtractor, Section, SkeletonEntry, find_child, line_range, node_text, truncate,
+    LanguageExtractor, Section, SkeletonEntry, compact_ws, find_child, line_range, node_text,
+    truncate,
 };
 
 pub(crate) struct PythonExtractor;
@@ -65,7 +66,7 @@ impl PythonExtractor {
                     }
                 }
 
-                methods.push(format!("{fn_name}{params}{ret_str} {lr}"));
+                methods.push(compact_ws(&format!("{fn_name}{params}{ret_str} {lr}")));
             }
         }
 
@@ -96,7 +97,7 @@ impl PythonExtractor {
         Some(SkeletonEntry::new(
             Section::Function,
             node,
-            format!("{name}{params}{ret_str}"),
+            compact_ws(&format!("{name}{params}{ret_str}")),
         ))
     }
 

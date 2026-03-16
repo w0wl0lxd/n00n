@@ -1,8 +1,8 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, find_child,
-    line_range, node_text, prefixed,
+    ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, compact_ws,
+    find_child, line_range, node_text, prefixed,
 };
 
 pub(crate) struct JavaExtractor;
@@ -135,7 +135,7 @@ impl JavaExtractor {
         } else {
             format!("{ret} {name}{params}")
         };
-        prefixed(&mods, format_args!("{base}"))
+        compact_ws(&prefixed(&mods, format_args!("{base}")))
     }
 
     fn field_text(&self, node: Node, source: &[u8]) -> String {

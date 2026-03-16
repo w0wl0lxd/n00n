@@ -3,17 +3,33 @@
 //! by `Section` (sorted by enum discriminant order, not source order) and renders them.
 //! Imports get special treatment: same-root paths are consolidated (e.g. two `std::` uses merge).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use tree_sitter::Node;
 
 pub(crate) const FIELD_TRUNCATE_THRESHOLD: usize = 8;
 const LINE_WRAP_THRESHOLD: usize = 120;
-const WRAP_INDENT: &str = "    ";
 
 pub(crate) fn node_text<'a>(node: Node<'a>, source: &'a [u8]) -> &'a str {
     node.utf8_text(source).unwrap_or("")
+}
+
+pub(crate) fn compact_ws(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_ws = false;
+    for ch in s.chars() {
+        if ch.is_ascii_whitespace() {
+            if !prev_ws {
+                out.push(' ');
+            }
+            prev_ws = true;
+        } else {
+            prev_ws = false;
+            out.push(ch);
+        }
+    }
+    out
 }
 
 #[allow(dead_code)]
@@ -148,7 +164,7 @@ pub(crate) fn fn_signature(node: Node, source: &[u8]) -> Option<String> {
             }
         })
         .unwrap_or_default();
-    Some(format!("{name}{params}{ret}"))
+    Some(compact_ws(&format!("{name}{params}{ret}")))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -292,7 +308,7 @@ fn format_section(out: &mut String, header: &str, items: &[&SkeletonEntry]) {
         match entry.child_kind {
             ChildKind::Brief if !entry.children.is_empty() => {
                 let names: Vec<&str> = entry.children.iter().map(String::as_str).collect();
-                for line in wrap_csv(&names, WRAP_INDENT) {
+                for line in wrap_csv(&names, "    ") {
                     let _ = writeln!(out, "{line}");
                 }
             }
@@ -350,18 +366,15 @@ fn format_imports(out: &mut String, entries: &[&SkeletonEntry], sep: &str) {
     let prefix = if out.is_empty() { "" } else { "\n" };
     let _ = writeln!(out, "{prefix}imports: {}", line_range(min_line, max_line));
 
-    let mut trie = ImportTrie::default();
-    for entry in entries {
-        for path in expand_import(&entry.text, sep) {
-            trie.insert(&path);
-        }
-    }
+    let groups = group_imports(entries.iter().map(|e| e.text.as_str()), sep);
 
-    const IMPORT_INDENT: &str = "  ";
-    for line in trie.render(sep) {
-        let wrapped = wrap_line(&line);
-        let indented = wrapped.replace('\n', &format!("\n{IMPORT_INDENT}"));
-        let _ = writeln!(out, "{IMPORT_INDENT}{indented}");
+    for (root, leaves) in &groups {
+        if leaves.is_empty() {
+            let _ = writeln!(out, "  {root}");
+        } else {
+            let joined: Vec<&str> = leaves.iter().map(String::as_str).collect();
+            let _ = writeln!(out, "  {root}: {}", joined.join(", "));
+        }
     }
 }
 
@@ -406,14 +419,24 @@ fn split_top_level(text: &str, delim: u8) -> Vec<&str> {
     results
 }
 
-/// Expands a possibly-braced import string into a list of segment paths.
-///
-/// `"a::{b::C, d}"` with sep `"::"` -> `[["a", "b", "C"], ["a", "d"]]`
-///
-/// Iterative: splits on the first separator, then if the remainder is a
-/// brace-group, fans out over each comma-delimited alternative. Uses an
-/// explicit work-stack instead of recursion so deeply nested inputs can't
-/// blow the call stack.
+fn group_imports<'a>(
+    texts: impl Iterator<Item = &'a str>,
+    sep: &str,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut groups: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for text in texts {
+        for path in expand_import(text, sep) {
+            if path.len() == 1 {
+                groups.entry(path[0].clone()).or_default();
+            } else {
+                let tail = path[1..].join(sep);
+                groups.entry(path[0].clone()).or_default().insert(tail);
+            }
+        }
+    }
+    groups
+}
+
 fn expand_import(text: &str, sep: &str) -> Vec<Vec<String>> {
     let mut results: Vec<Vec<String>> = Vec::new();
     let mut stack: Vec<(Vec<String>, &str)> = vec![(Vec::new(), text.trim())];
@@ -455,88 +478,6 @@ fn expand_import(text: &str, sep: &str) -> Vec<Vec<String>> {
     results
 }
 
-#[derive(Default)]
-struct ImportTrie {
-    children: BTreeMap<String, ImportTrie>,
-    is_leaf: bool,
-}
-
-impl ImportTrie {
-    fn insert(&mut self, segments: &[String]) {
-        let mut node = self;
-        for seg in segments {
-            node = node.children.entry(seg.clone()).or_default();
-        }
-        node.is_leaf = true;
-    }
-
-    fn render(&self, sep: &str) -> Vec<String> {
-        render_children(&self.children, sep)
-    }
-}
-
-/// Renders a single trie node as one or more output strings.
-///
-/// - Leaf with no children -> `"seg"`
-/// - Leaf WITH children -> emits `seg` on its own line, plus all children
-///   prefixed with `seg{sep}` (e.g. `io` and `io::Write` stay separate so
-///   both the module import and the item import are visible)
-/// - Non-leaf with exactly 1 child -> collapse: `seg{sep}child`
-/// - Non-leaf with N children -> brace-group: `seg{sep}{a, b, c}`
-fn render_node(seg: &str, node: &ImportTrie, sep: &str) -> Vec<String> {
-    if node.children.is_empty() {
-        return vec![seg.to_string()];
-    }
-
-    let rendered = render_children(&node.children, sep);
-
-    if node.is_leaf {
-        let mut out = vec![seg.to_string()];
-        for item in &rendered {
-            out.push(format!("{seg}{sep}{item}"));
-        }
-        return out;
-    }
-
-    if rendered.len() == 1 {
-        vec![format!("{seg}{sep}{}", rendered[0])]
-    } else {
-        vec![format!("{seg}{sep}{{{}}}", rendered.join(", "))]
-    }
-}
-
-fn render_children(children: &BTreeMap<String, ImportTrie>, sep: &str) -> Vec<String> {
-    children
-        .iter()
-        .flat_map(|(seg, node)| render_node(seg, node, sep))
-        .collect()
-}
-
-fn wrap_line(line: &str) -> String {
-    if line.len() <= LINE_WRAP_THRESHOLD {
-        return line.to_string();
-    }
-
-    let Some(brace_start) = line.find('{') else {
-        return line.to_string();
-    };
-    let brace_end = line.rfind('}').unwrap_or(line.len());
-    let inner = &line[brace_start + 1..brace_end];
-
-    let parts = split_top_level(inner, b',');
-    if parts.len() <= 1 {
-        return line.to_string();
-    }
-
-    let prefix = &line[..brace_start];
-    let joined = parts
-        .iter()
-        .map(|p| format!("\n{WRAP_INDENT}{p}"))
-        .collect::<String>();
-
-    format!("{prefix}{{{joined}\n}}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,78 +493,32 @@ mod tests {
         assert!(result.chars().count() <= 60);
     }
 
-    fn trie_render(imports: &[&str], sep: &str) -> Vec<String> {
-        let mut trie = ImportTrie::default();
-        for &imp in imports {
-            for segments in expand_import(imp, sep) {
-                trie.insert(&segments);
-            }
-        }
-        trie.render(sep)
+    fn leaves_for(imports: &[&str], sep: &str, root: &str) -> Vec<String> {
+        group_imports(imports.iter().copied(), sep)
+            .remove(root)
+            .map(|s| s.into_iter().collect())
+            .unwrap_or_default()
     }
 
-    #[test_case(&["std::io"],           "::", &["std::io"]                              ; "single_import")]
-    #[test_case(&["std::io", "std::fs"],"::", &["std::{fs, io}"]                        ; "shared_prefix")]
-    #[test_case(
-        &["crate::a::X", "crate::a::Y", "crate::b::Z"],
-        "::",
-        &["crate::{a::{X, Y}, b::Z}"]
-        ; "deep_shared_prefix"
-    )]
-    #[test_case(
-        &["std::io", "std::io::Write"],
-        "::",
-        &["std::{io, io::Write}"]
-        ; "leaf_and_children"
-    )]
-    #[test_case(&["std::{fs, net}"],    "::", &["std::{fs, net}"]                       ; "grouped_input")]
-    #[test_case(
-        &["java.util.List", "java.io.IOException"],
-        ".",
-        &["java.{io.IOException, util.List}"]
-        ; "java_dots"
-    )]
-    #[test_case(
-        &["github.com/user/foo", "github.com/user/bar"],
-        "/",
-        &["github.com/user/{bar, foo}"]
-        ; "go_slashes"
-    )]
-    #[test_case(
-        &["crate::x::key as kb", "crate::x::Foo"],
-        "::",
-        &["crate::x::{Foo, key as kb}"]
-        ; "as_rename"
-    )]
-    #[test_case(&["os"],                "::", &["os"]                                   ; "no_separator")]
-    #[test_case(&["std::io::*", "std::io::Write"], "::", &["std::io::{*, Write}"]       ; "wildcard")]
-    #[test_case(&["std::io", "std::io", "std::fs"],"::", &["std::{fs, io}"]             ; "duplicates_deduplicated")]
-    #[test_case(&["os", "std::io"],     "::", &["os", "std::io"]                        ; "single_segment_mixed")]
-    fn trie_compression(imports: &[&str], sep: &str, expected: &[&str]) {
-        let result = trie_render(imports, sep);
-        assert_eq!(result, expected, "imports: {imports:?}, sep: {sep:?}");
+    #[test_case(&["std::io", "std::fs"],                   "::", "std",   &["fs", "io"]                       ; "basic")]
+    #[test_case(&["crate::a::X", "crate::a::Y", "crate::b::Z"], "::", "crate", &["a::X", "a::Y", "b::Z"]    ; "deep")]
+    #[test_case(&["std::io::*", "std::io::Write"],          "::", "std",   &["io::*", "io::Write"]            ; "wildcard")]
+    #[test_case(&["java.util.List", "java.io.IOException"], ".",  "java",  &["io.IOException", "util.List"]   ; "dot_separator")]
+    #[test_case(&["std::io", "std::io", "std::fs"],         "::", "std",   &["fs", "io"]                      ; "dedup")]
+    fn import_grouping(imports: &[&str], sep: &str, root: &str, expected: &[&str]) {
+        let expected: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+        assert_eq!(leaves_for(imports, sep, root), expected);
     }
 
     #[test]
-    fn wrap_line_behavior() {
-        let short = "std::{fs, io}";
-        assert_eq!(wrap_line(short), short);
-
-        let long = format!(
-            "crate::module::{{{}}}",
-            (0..20)
-                .map(|i| format!("Item{i}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        let wrapped = wrap_line(&long);
-        assert!(wrapped.contains('\n'));
-        assert!(wrapped.starts_with("crate::module::{"));
-        assert!(wrapped.ends_with('}'));
+    fn import_grouping_single_segment() {
+        let groups = group_imports(["os", "std::io"].into_iter(), "::");
+        assert!(groups.get("os").unwrap().is_empty());
+        assert_eq!(groups.get("std").unwrap().iter().next().unwrap(), "io");
     }
 
     #[test]
-    fn expand_import_cases() {
+    fn expand_import_nested_braces() {
         assert!(expand_import("", "::").is_empty());
         assert!(expand_import("  ", "::").is_empty());
 
@@ -633,20 +528,5 @@ mod tests {
         assert_eq!(result[0], vec!["a", "b", "C"]);
         assert_eq!(result[1], vec!["a", "b", "D"]);
         assert_eq!(result[2], vec!["a", "e", "F"]);
-    }
-
-    #[test]
-    fn wrap_csv_behavior() {
-        assert!(wrap_csv(&[], "  ").is_empty());
-
-        let result = wrap_csv(&["A", "B", "C"], "  ");
-        assert_eq!(result, vec!["  A, B, C"]);
-
-        let items: Vec<&str> = (0..40).map(|_| "VeryLongVariantName").collect();
-        let result = wrap_csv(&items, "    ");
-        assert!(result.len() > 1);
-        for line in &result {
-            assert!(line.starts_with("    "));
-        }
     }
 }

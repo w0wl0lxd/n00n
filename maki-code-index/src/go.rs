@@ -1,8 +1,8 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, find_child, line_range,
-    node_text, truncate,
+    FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, compact_ws, find_child,
+    line_range, node_text, truncate,
 };
 
 pub(crate) struct GoExtractor;
@@ -40,7 +40,7 @@ impl GoExtractor {
             .child_by_field_name("result")
             .map(|n| format!(" {}", node_text(n, source)))
             .unwrap_or_default();
-        format!("{params}{result}")
+        compact_ws(&format!("{params}{result}"))
     }
 
     fn extract_function(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {

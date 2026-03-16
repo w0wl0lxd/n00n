@@ -7,7 +7,8 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    LanguageExtractor, Section, SkeletonEntry, find_child, line_range, node_text, truncate,
+    LanguageExtractor, Section, SkeletonEntry, compact_ws, find_child, line_range, node_text,
+    truncate,
 };
 
 fn ts_return_type(node: Node, source: &[u8]) -> String {
@@ -94,7 +95,7 @@ impl TsJsExtractor {
         Some(SkeletonEntry::new(
             Section::Function,
             node,
-            format!("{ep}{name}{params}{ret_str}"),
+            compact_ws(&format!("{ep}{name}{params}{ret_str}")),
         ))
     }
 
