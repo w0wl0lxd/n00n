@@ -61,7 +61,7 @@ use components::Action;
 const MOUSE_SCROLL_LINES: i32 = 3;
 
 const ANIMATION_INTERVAL_MS: u64 = 8;
-const EVENT_POLL_INTERVAL_MS: u64 = 8;
+const IDLE_POLL_INTERVAL_MS: u64 = 100;
 
 pub fn run(
     model: Model,
@@ -218,7 +218,7 @@ fn run_event_loop(
         } else if app.is_animating() {
             Duration::from_millis(ANIMATION_INTERVAL_MS)
         } else {
-            Duration::from_millis(EVENT_POLL_INTERVAL_MS)
+            Duration::from_millis(IDLE_POLL_INTERVAL_MS)
         };
 
         if event::poll(poll_duration)? {
