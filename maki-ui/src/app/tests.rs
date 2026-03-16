@@ -1581,3 +1581,17 @@ fn auth_retry_submit_sends_empty_answer() {
     assert_eq!(app.pending_input, PendingInput::None);
     assert_eq!(rx.try_recv().unwrap(), "");
 }
+
+#[test_case(42, false ; "restores_scroll_position")]
+#[test_case(0,  true  ; "restores_auto_scroll")]
+fn search_escape_restores_scroll(scroll_top: u16, auto_scroll: bool) {
+    let mut app = test_app();
+    app.active_chat().restore_scroll(scroll_top, auto_scroll);
+
+    app.update(Msg::Key(kb::SEARCH.to_key_event()));
+    app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert!(!app.search_modal.is_open());
+    assert_eq!(app.active_chat().scroll_top(), scroll_top);
+    assert_eq!(app.active_chat().auto_scroll(), auto_scroll);
+}

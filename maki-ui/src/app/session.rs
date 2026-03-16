@@ -55,6 +55,7 @@ impl App {
         self.status_bar.clear_flash();
         self.task_picker.close();
         self.task_picker_original = None;
+        self.search_modal.close();
         self.last_esc = None;
     }
 

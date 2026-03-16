@@ -141,6 +141,10 @@ impl Chat {
         self.messages_panel.scroll_to_segment(segment_index);
     }
 
+    pub fn restore_scroll(&mut self, scroll_top: u16, auto_scroll: bool) {
+        self.messages_panel.restore_scroll(scroll_top, auto_scroll);
+    }
+
     pub fn set_highlight_segment(&mut self, idx: Option<usize>) {
         self.messages_panel.set_highlight_segment(idx);
     }

@@ -31,7 +31,7 @@ pub enum SearchAction {
     Consumed,
     Navigate,
     Select(usize),
-    Close,
+    Close(Option<(u16, bool)>),
 }
 
 pub struct SearchModal {
@@ -41,6 +41,7 @@ pub struct SearchModal {
     scroll_offset: usize,
     viewport_height: usize,
     open: bool,
+    saved_scroll: Option<(u16, bool)>,
     matcher: Matcher,
 }
 
@@ -53,13 +54,15 @@ impl SearchModal {
             scroll_offset: 0,
             viewport_height: 0,
             open: false,
+            saved_scroll: None,
             matcher: Matcher::new(Config::DEFAULT),
         }
     }
 
-    pub fn open(&mut self) {
+    pub fn open(&mut self, scroll_top: u16, auto_scroll: bool) {
         self.reset();
         self.open = true;
+        self.saved_scroll = Some((scroll_top, auto_scroll));
     }
 
     pub fn close(&mut self) {
@@ -72,6 +75,7 @@ impl SearchModal {
         self.matches.clear();
         self.selected = 0;
         self.scroll_offset = 0;
+        self.saved_scroll = None;
     }
 
     pub fn is_open(&self) -> bool {
@@ -80,12 +84,12 @@ impl SearchModal {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> SearchAction {
         match key.code {
-            KeyCode::Esc => SearchAction::Close,
+            KeyCode::Esc => SearchAction::Close(self.saved_scroll.take()),
             KeyCode::Enter => {
                 if let Some(m) = self.matches.get(self.selected) {
                     SearchAction::Select(m.segment_index)
                 } else {
-                    SearchAction::Close
+                    SearchAction::Close(self.saved_scroll.take())
                 }
             }
             KeyCode::Up => {
@@ -346,7 +350,7 @@ mod tests {
 
     fn modal_with_query(query: &str, texts: &[&str]) -> SearchModal {
         let mut modal = SearchModal::new();
-        modal.open();
+        modal.open(0, true);
         modal.search = TextBuffer::new(query.into());
         modal.update_matches(texts);
         modal
@@ -404,7 +408,7 @@ mod tests {
         let mut modal = modal_with_query("zzz", &["hello", "world"]);
         assert!(matches!(
             modal.handle_key(key_event(KeyCode::Enter)),
-            SearchAction::Close
+            SearchAction::Close(_)
         ));
     }
 

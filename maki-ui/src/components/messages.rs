@@ -623,6 +623,11 @@ impl MessagesPanel {
         self.auto_scroll = false;
     }
 
+    pub fn restore_scroll(&mut self, scroll_top: u16, auto_scroll: bool) {
+        self.scroll_top = scroll_top;
+        self.auto_scroll = auto_scroll;
+    }
+
     pub fn set_highlight_segment(&mut self, idx: Option<usize>) {
         self.highlight_segment = idx;
     }

@@ -299,8 +299,12 @@ impl App {
                     chat.set_highlight_segment(None);
                     self.search_modal.close();
                 }
-                SearchAction::Close => {
-                    self.chats[self.active_chat].set_highlight_segment(None);
+                SearchAction::Close(saved) => {
+                    let chat = &mut self.chats[self.active_chat];
+                    chat.set_highlight_segment(None);
+                    if let Some((top, auto)) = saved {
+                        chat.restore_scroll(top, auto);
+                    }
                     self.search_modal.close();
                 }
             }
@@ -430,7 +434,9 @@ impl App {
             } else if key::HELP.matches(key) {
                 self.help_modal.toggle();
             } else if key::SEARCH.matches(key) {
-                self.search_modal.open();
+                let top = self.chats[self.active_chat].scroll_top();
+                let auto = self.chats[self.active_chat].auto_scroll();
+                self.search_modal.open(top, auto);
             } else if key.code == KeyCode::Char('v') && self.image_paste_rx.is_none() {
                 self.start_image_paste();
             } else if let InputAction::PaletteSync(val) = self.input_box.handle_key(key) {
