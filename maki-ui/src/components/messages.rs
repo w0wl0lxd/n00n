@@ -797,16 +797,6 @@ impl MessagesPanel {
             .collect()
     }
 
-    #[cfg(test)]
-    pub fn push_content_regions<'a>(&'a self, out: &mut Vec<crate::selection::ContentRegion<'a>>) {
-        out.extend(self.visible_regions.iter().map(|&(area, seg_idx)| {
-            crate::selection::ContentRegion {
-                area,
-                raw_text: &self.cached_segments[seg_idx].copy_text,
-            }
-        }));
-    }
-
     fn flush_thinking(&mut self) {
         if !self.streaming_thinking.is_empty() {
             self.messages.push(DisplayMessage::new(
@@ -1030,7 +1020,7 @@ impl MessagesPanel {
                     )));
                 }
 
-                let copy_text = msg.text.clone();
+                let copy_text = format!("{prefix}{}", msg.text);
                 push_spacer_if_needed(&mut self.cached_segments);
                 self.cached_segments.push(Segment {
                     lines,
@@ -1248,33 +1238,6 @@ mod tests {
         let text = &panel.messages[0].text;
         assert!(!text.contains('\n'), "grep body should not be in msg.text");
         assert!(panel.messages[0].tool_output.is_some());
-    }
-
-    #[test]
-    fn tool_done_grep_truncates_at_limit() {
-        let mut panel = MessagesPanel::new();
-        panel.tool_start(start("t1", GREP_TOOL_NAME));
-        let output = ToolOutput::GrepResult {
-            entries: (0..20)
-                .map(|i| GrepFileEntry {
-                    path: format!("{i}.rs"),
-                    matches: vec![GrepMatch {
-                        line_nr: 1,
-                        text: "hit".into(),
-                    }],
-                })
-                .collect(),
-        };
-        panel.tool_done(ToolDoneEvent {
-            id: "t1".into(),
-            tool: GREP_TOOL_NAME,
-            output,
-            is_error: false,
-        });
-        assert!(
-            !panel.messages[0].text.contains('\n'),
-            "grep body should not be in msg.text; truncation is handled by code_view"
-        );
     }
 
     #[test]
@@ -1661,10 +1624,14 @@ mod tests {
         assert!(panel.auto_scroll);
     }
 
-    fn content_regions(panel: &MessagesPanel) -> Vec<String> {
-        let mut regions = Vec::new();
-        panel.push_content_regions(&mut regions);
-        regions.iter().map(|r| r.raw_text.to_owned()).collect()
+    fn seg_copy(panel: &MessagesPanel, tool_id: &str) -> String {
+        panel
+            .cached_segments
+            .iter()
+            .find(|s| s.tool_id.as_deref() == Some(tool_id))
+            .unwrap()
+            .copy_text
+            .clone()
     }
 
     #[test]
@@ -1677,9 +1644,9 @@ mod tests {
             output: grep_output(2),
             is_error: false,
         });
-        render(&mut panel, 80, 24);
-        let regions = content_regions(&panel);
-        assert!(regions[0].contains("0.rs:") && regions[0].contains("1.rs:"));
+        rebuild(&mut panel);
+        let text = seg_copy(&panel, "t1");
+        assert!(text.contains("0.rs:") && text.contains("1.rs:"));
     }
 
     #[test]
@@ -1702,9 +1669,9 @@ mod tests {
             },
             is_error: false,
         });
-        render(&mut panel, 80, 24);
-        let regions = content_regions(&panel);
-        assert!(regions[0].contains("- old") && regions[0].contains("+ new"));
+        rebuild(&mut panel);
+        let text = seg_copy(&panel, "t1");
+        assert!(text.contains("- old") && text.contains("+ new"));
     }
 
     #[test]
@@ -1717,19 +1684,23 @@ mod tests {
             output: ToolOutput::Plain("hello".into()),
             is_error: false,
         });
-        render(&mut panel, 80, 24);
-        let regions = content_regions(&panel);
-        assert!(regions[0].contains("echo hello") && regions[0].contains("hello"));
+        rebuild(&mut panel);
+        let text = seg_copy(&panel, "t1");
+        assert!(text.contains("echo hello") && text.contains("hello"));
     }
 
     #[test]
-    fn copy_text_assistant_preserves_source() {
-        let mut panel = MessagesPanel::new();
+    fn copy_text_includes_role_prefix() {
         let md = "# Heading\n\nSome **bold** text";
+        let mut panel = MessagesPanel::new();
+        panel.push(DisplayMessage::new(DisplayRole::User, "hello".into()));
         panel.push(DisplayMessage::new(DisplayRole::Assistant, md.into()));
-        render(&mut panel, 80, 24);
-        let regions = content_regions(&panel);
-        assert_eq!(regions[0], md);
+        panel.push(DisplayMessage::new(DisplayRole::Thinking, "hmm".into()));
+        rebuild(&mut panel);
+        let texts = panel.segment_copy_texts();
+        assert_eq!(texts[0], "you> hello");
+        assert_eq!(texts[2], format!("maki> {md}"));
+        assert_eq!(texts[4], "thinking> hmm");
     }
 
     #[test_case(&["short", &"x".repeat(200)], 80, 4 ; "long_line_wraps")]

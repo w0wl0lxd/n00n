@@ -431,4 +431,12 @@ mod tests {
                 .all(|&i| i < expected.len() as u32)
         );
     }
+
+    #[test_case("maki>", &["you> hello", "maki> world", "thinking> hmm"], 1 ; "maki_prefix")]
+    #[test_case("you>",  &["you> request", "maki> response", "bash> output"], 0 ; "you_prefix")]
+    fn search_role_prefix_matches(query: &str, texts: &[&str], expected_idx: usize) {
+        let modal = modal_with_query(query, texts);
+        assert_eq!(modal.matches.len(), 1);
+        assert_eq!(modal.matches[0].segment_index, expected_idx);
+    }
 }
