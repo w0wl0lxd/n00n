@@ -542,6 +542,16 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
+    #[test]
+    fn truncate_behavior() {
+        assert_eq!(truncate("hello", 60), "hello");
+
+        let long = format!("{}{}", "a".repeat(55), "ü".repeat(10));
+        let result = truncate(&long, 60);
+        assert!(result.ends_with("..."));
+        assert!(result.chars().count() <= 60);
+    }
+
     fn trie_render(imports: &[&str], sep: &str) -> Vec<String> {
         let mut trie = ImportTrie::default();
         for &imp in imports {
