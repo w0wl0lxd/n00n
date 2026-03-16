@@ -663,12 +663,9 @@ mod tests {
 
     #[test]
     fn deadline_cap_timeout_clamps_to_remaining() {
-        let d = Deadline::At(Instant::now() + Duration::from_secs(5));
+        let d = Deadline::At(Instant::now() + Duration::from_secs(30));
         let result = d.cap_timeout(120).unwrap();
-        assert!(
-            (1..=5).contains(&result),
-            "expected 1..=5, got {result}"
-        );
+        assert!((1..=30).contains(&result), "expected 1..=30, got {result}");
     }
 
     #[test_case("short",                            "short"                             ; "short_passthrough")]

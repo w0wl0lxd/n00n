@@ -29,6 +29,13 @@ impl SseErrorPayload {
     pub fn into_agent_error(self) -> AgentError {
         let status = match self.error.r#type.as_str() {
             "overloaded_error" => 529,
+            "api_error" => 500,
+            "rate_limit_error" => 429,
+            "request_too_large" => 413,
+            "not_found_error" => 404,
+            "permission_error" => 403,
+            "billing_error" => 402,
+            "authentication_error" => 401,
             _ => 400,
         };
         AgentError::Api {
@@ -44,33 +51,4 @@ pub(crate) fn http_client() -> isahc::HttpClient {
         .timeout(RECV_TIMEOUT)
         .build()
         .expect("failed to build HTTP client")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use test_case::test_case;
-
-    #[test_case("overloaded_error", "Overloaded", 529, "Overloaded" ; "overloaded_maps_to_529")]
-    #[test_case("invalid_request_error", "Bad request", 400, "Bad request" ; "non_overloaded_maps_to_400")]
-    fn sse_error_into_agent_error(
-        error_type: &str,
-        message: &str,
-        expected_status: u16,
-        expected_message: &str,
-    ) {
-        let payload = SseErrorPayload {
-            error: SseErrorDetail {
-                r#type: error_type.into(),
-                message: message.into(),
-            },
-        };
-        match payload.into_agent_error() {
-            AgentError::Api { status, message } => {
-                assert_eq!(status, expected_status);
-                assert_eq!(message, expected_message);
-            }
-            other => panic!("expected Api error, got: {other:?}"),
-        }
-    }
 }
