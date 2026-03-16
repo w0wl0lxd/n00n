@@ -691,7 +691,7 @@ pub(crate) fn append_annotation(ann: &mut Option<String>, suffix: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{DisplayRole, TOOL_SEPARATOR};
+    use crate::components::DisplayRole;
     use maki_agent::tools::{BASH_TOOL_NAME, WRITE_TOOL_NAME};
     use maki_agent::{BatchToolEntry, BatchToolStatus, GrepFileEntry, ToolInput, ToolOutput};
     use test_case::test_case;
