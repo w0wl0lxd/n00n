@@ -21,7 +21,13 @@ impl PythonExtractor {
             .unwrap_or(text)
             .trim();
         let normalized = cleaned.replace(" import ", ".");
-        Some(SkeletonEntry::new(Section::Import, node, normalized))
+        let paths = vec![
+            normalized
+                .split(self.import_separator())
+                .map(String::from)
+                .collect(),
+        ];
+        Some(SkeletonEntry::new_import(node, paths))
     }
 
     fn extract_class(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -70,9 +76,7 @@ impl PythonExtractor {
             }
         }
 
-        let mut entry = SkeletonEntry::new(Section::Class, node, name.to_string());
-        entry.children = methods;
-        Some(entry)
+        Some(SkeletonEntry::new(Section::Class, node, name.to_string()).with_children(methods))
     }
 
     fn extract_function(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {

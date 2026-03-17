@@ -14,21 +14,26 @@ impl GoExtractor {
             let mut cursor = spec_list.walk();
             for child in spec_list.children(&mut cursor) {
                 if child.kind() == "import_spec" {
-                    let path = self.import_path(child, source);
-                    entries.push(SkeletonEntry::new(Section::Import, child, path));
+                    let paths = vec![self.import_segments(child, source)];
+                    entries.push(SkeletonEntry::new_import(child, paths));
                 }
             }
         } else if let Some(spec) = find_child(node, "import_spec") {
-            let path = self.import_path(spec, source);
-            entries.push(SkeletonEntry::new(Section::Import, node, path));
+            let paths = vec![self.import_segments(spec, source)];
+            entries.push(SkeletonEntry::new_import(node, paths));
         }
         entries
     }
 
-    fn import_path(&self, spec: Node, source: &[u8]) -> String {
-        spec.child_by_field_name("path")
-            .map(|n| node_text(n, source).trim_matches('"').to_string())
-            .unwrap_or_else(|| node_text(spec, source).trim_matches('"').to_string())
+    fn import_segments(&self, spec: Node, source: &[u8]) -> Vec<String> {
+        let raw = spec
+            .child_by_field_name("path")
+            .map(|n| node_text(n, source))
+            .unwrap_or_else(|| node_text(spec, source))
+            .trim_matches('"');
+        raw.split(self.import_separator())
+            .map(String::from)
+            .collect()
     }
 
     fn params_result(&self, node: Node, source: &[u8]) -> String {
@@ -90,15 +95,17 @@ impl GoExtractor {
         match type_node.kind() {
             "struct_type" => {
                 let children = self.extract_struct_fields(type_node, source);
-                let mut entry = SkeletonEntry::new(Section::Type, node, format!("struct {name}"));
-                entry.children = children;
-                Some(entry)
+                Some(
+                    SkeletonEntry::new(Section::Type, node, format!("struct {name}"))
+                        .with_children(children),
+                )
             }
             "interface_type" => {
                 let children = self.extract_interface_methods(type_node, source);
-                let mut entry = SkeletonEntry::new(Section::Trait, node, name.to_string());
-                entry.children = children;
-                Some(entry)
+                Some(
+                    SkeletonEntry::new(Section::Trait, node, name.to_string())
+                        .with_children(children),
+                )
             }
             _ => Some(SkeletonEntry::new(
                 Section::Type,

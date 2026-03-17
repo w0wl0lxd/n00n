@@ -30,7 +30,8 @@ impl TsJsExtractor {
             .unwrap_or(text)
             .trim_end_matches(';')
             .to_string();
-        Some(SkeletonEntry::new(Section::Import, node, cleaned))
+        let paths = vec![vec![cleaned]];
+        Some(SkeletonEntry::new_import(node, paths))
     }
 
     fn export_prefix(&self, node: Node) -> &'static str {
@@ -73,9 +74,7 @@ impl TsJsExtractor {
         }
 
         let ep = self.export_prefix(node);
-        let mut entry = SkeletonEntry::new(Section::Class, node, format!("{ep}{name}"));
-        entry.children = methods;
-        Some(entry)
+        Some(SkeletonEntry::new(Section::Class, node, format!("{ep}{name}")).with_children(methods))
     }
 
     fn extract_function(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -117,9 +116,10 @@ impl TsJsExtractor {
         }
 
         let ep = self.export_prefix(node);
-        let mut entry = SkeletonEntry::new(Section::Type, node, format!("{ep}interface {name}"));
-        entry.children = fields;
-        Some(entry)
+        Some(
+            SkeletonEntry::new(Section::Type, node, format!("{ep}interface {name}"))
+                .with_children(fields),
+        )
     }
 
     fn extract_type_alias(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {

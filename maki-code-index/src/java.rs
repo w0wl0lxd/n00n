@@ -32,11 +32,13 @@ impl JavaExtractor {
             .unwrap_or(text)
             .trim_end_matches(';')
             .trim();
-        Some(SkeletonEntry::new(
-            Section::Import,
-            node,
-            cleaned.to_string(),
-        ))
+        let paths = vec![
+            cleaned
+                .split(self.import_separator())
+                .map(String::from)
+                .collect(),
+        ];
+        Some(SkeletonEntry::new_import(node, paths))
     }
 
     fn extract_package(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -99,9 +101,7 @@ impl JavaExtractor {
         let label = prefixed(&mods, format_args!("class {name}{superclass}{interfaces}"));
 
         let children = self.extract_class_body(node, source);
-        let mut entry = SkeletonEntry::new(Section::Class, node, label);
-        entry.children = children;
-        Some(entry)
+        Some(SkeletonEntry::new(Section::Class, node, label).with_children(children))
     }
 
     fn extract_class_body(&self, node: Node, source: &[u8]) -> Vec<String> {
@@ -181,9 +181,7 @@ impl JavaExtractor {
         let label = prefixed(&mods, format_args!("interface {name}{extends}"));
 
         let children = self.extract_interface_body(node, source);
-        let mut entry = SkeletonEntry::new(Section::Trait, node, label);
-        entry.children = children;
-        Some(entry)
+        Some(SkeletonEntry::new(Section::Trait, node, label).with_children(children))
     }
 
     fn extract_interface_body(&self, node: Node, source: &[u8]) -> Vec<String> {
@@ -224,10 +222,11 @@ impl JavaExtractor {
             }
         }
 
-        let mut entry = SkeletonEntry::new(Section::Type, node, label);
-        entry.children = constants;
-        entry.child_kind = ChildKind::Brief;
-        Some(entry)
+        Some(
+            SkeletonEntry::new(Section::Type, node, label)
+                .with_children(constants)
+                .with_child_kind(ChildKind::Brief),
+        )
     }
 
     fn extract_record(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {

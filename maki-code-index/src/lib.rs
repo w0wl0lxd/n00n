@@ -169,6 +169,5 @@ pub fn index_source(source: &[u8], lang: Language) -> Result<String, IndexError>
         &test_lines,
         module_doc,
         extractor.import_separator(),
-        extractor.group_import_roots(),
     ))
 }

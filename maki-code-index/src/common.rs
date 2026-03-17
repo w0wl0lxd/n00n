@@ -206,14 +206,24 @@ pub(crate) enum ChildKind {
     Brief,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum EntryData {
+    Import {
+        paths: Vec<Vec<String>>,
+    },
+    Item {
+        text: String,
+        children: Vec<String>,
+        attrs: Vec<String>,
+        child_kind: ChildKind,
+    },
+}
+
 pub(crate) struct SkeletonEntry {
     pub(crate) section: Section,
     pub(crate) line_start: usize,
     pub(crate) line_end: usize,
-    pub(crate) text: String,
-    pub(crate) children: Vec<String>,
-    pub(crate) attrs: Vec<String>,
-    pub(crate) child_kind: ChildKind,
+    pub(crate) data: EntryData,
 }
 
 impl SkeletonEntry {
@@ -222,11 +232,53 @@ impl SkeletonEntry {
             section,
             line_start: node.start_position().row + 1,
             line_end: node.end_position().row + 1,
-            text,
-            children: Vec::new(),
-            attrs: Vec::new(),
-            child_kind: ChildKind::default(),
+            data: EntryData::Item {
+                text,
+                children: Vec::new(),
+                attrs: Vec::new(),
+                child_kind: ChildKind::default(),
+            },
         }
+    }
+
+    pub(crate) fn new_import(node: Node, paths: Vec<Vec<String>>) -> Self {
+        Self {
+            section: Section::Import,
+            line_start: node.start_position().row + 1,
+            line_end: node.end_position().row + 1,
+            data: EntryData::Import { paths },
+        }
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        match &self.data {
+            EntryData::Item { text, .. } => text,
+            EntryData::Import { .. } => "",
+        }
+    }
+
+    pub(crate) fn with_children(mut self, new_children: Vec<String>) -> Self {
+        match &mut self.data {
+            EntryData::Item { children, .. } => *children = new_children,
+            EntryData::Import { .. } => unreachable!("with_children called on import entry"),
+        }
+        self
+    }
+
+    pub(crate) fn with_attrs(mut self, new_attrs: Vec<String>) -> Self {
+        match &mut self.data {
+            EntryData::Item { attrs, .. } => *attrs = new_attrs,
+            EntryData::Import { .. } => unreachable!("with_attrs called on import entry"),
+        }
+        self
+    }
+
+    pub(crate) fn with_child_kind(mut self, kind: ChildKind) -> Self {
+        match &mut self.data {
+            EntryData::Item { child_kind, .. } => *child_kind = kind,
+            EntryData::Import { .. } => unreachable!("with_child_kind called on import entry"),
+        }
+        self
     }
 }
 
@@ -238,9 +290,7 @@ pub(crate) trait LanguageExtractor {
     fn import_separator(&self) -> &'static str {
         "::"
     }
-    fn group_import_roots(&self) -> bool {
-        false
-    }
+
     fn is_attr(&self, _node: Node) -> bool {
         false
     }
@@ -265,7 +315,6 @@ pub(crate) fn format_skeleton(
     test_lines: &[usize],
     module_doc: Option<(usize, usize)>,
     import_sep: &str,
-    group_roots: bool,
 ) -> String {
     let mut out = String::new();
 
@@ -280,7 +329,7 @@ pub(crate) fn format_skeleton(
 
     for (section, items) in &grouped {
         match section {
-            Section::Import => format_imports(&mut out, items, import_sep, group_roots),
+            Section::Import => format_imports(&mut out, items, import_sep),
             Section::Module => format_leaf_section(&mut out, section.header(), items),
             _ => format_section(&mut out, section.header(), items),
         }
@@ -300,24 +349,33 @@ fn format_section(out: &mut String, header: &str, items: &[&SkeletonEntry]) {
     let sep = if out.is_empty() { "" } else { "\n" };
     let _ = writeln!(out, "{sep}{header}");
     for entry in items {
-        for attr in &entry.attrs {
+        let EntryData::Item {
+            text,
+            children,
+            attrs,
+            child_kind,
+        } = &entry.data
+        else {
+            continue;
+        };
+        for attr in attrs {
             let _ = writeln!(out, "  {attr}");
         }
         let _ = writeln!(
             out,
             "  {} {}",
-            entry.text,
+            text,
             line_range(entry.line_start, entry.line_end)
         );
-        match entry.child_kind {
-            ChildKind::Brief if !entry.children.is_empty() => {
-                let names: Vec<&str> = entry.children.iter().map(String::as_str).collect();
+        match child_kind {
+            ChildKind::Brief if !children.is_empty() => {
+                let names: Vec<&str> = children.iter().map(String::as_str).collect();
                 for line in wrap_csv(&names, "    ") {
                     let _ = writeln!(out, "{line}");
                 }
             }
             _ => {
-                for child in &entry.children {
+                for child in children {
                     let _ = writeln!(out, "    {child}");
                 }
             }
@@ -330,7 +388,7 @@ fn format_leaf_section(out: &mut String, header: &str, items: &[&SkeletonEntry])
     let min = items.iter().map(|e| e.line_start).min().unwrap();
     let max = items.iter().map(|e| e.line_end).max().unwrap();
     let _ = writeln!(out, "{sep}{header} {}", line_range(min, max));
-    let names: Vec<&str> = items.iter().map(|e| e.text.as_str()).collect();
+    let names: Vec<&str> = items.iter().map(|e| e.text()).collect();
     let indent = "  ";
     for line in wrap_csv(&names, indent) {
         let _ = writeln!(out, "{line}");
@@ -359,7 +417,7 @@ fn wrap_csv(items: &[&str], indent: &str) -> Vec<String> {
     lines
 }
 
-fn format_imports(out: &mut String, entries: &[&SkeletonEntry], sep: &str, group_roots: bool) {
+fn format_imports(out: &mut String, entries: &[&SkeletonEntry], import_sep: &str) {
     if entries.is_empty() {
         return;
     }
@@ -372,15 +430,13 @@ fn format_imports(out: &mut String, entries: &[&SkeletonEntry], sep: &str, group
 
     let mut trie = ImportTrie::default();
     for entry in entries {
-        for path in expand_import(&entry.text, sep) {
-            trie.insert(&path);
+        if let EntryData::Import { paths } = &entry.data {
+            for path in paths {
+                trie.insert(path);
+            }
         }
     }
-    let lines = if group_roots {
-        trie.render_flat(sep)
-    } else {
-        trie.render(sep)
-    };
+    let lines = trie.render(import_sep);
     for line in lines {
         let _ = writeln!(out, "  {line}");
     }
@@ -427,7 +483,7 @@ fn split_top_level(text: &str, delim: u8) -> Vec<&str> {
     results
 }
 
-fn expand_import(text: &str, sep: &str) -> Vec<Vec<String>> {
+pub(crate) fn expand_import(text: &str, sep: &str) -> Vec<Vec<String>> {
     let mut results: Vec<Vec<String>> = Vec::new();
     let mut stack: Vec<(Vec<String>, &str)> = vec![(Vec::new(), text.trim())];
 
@@ -486,38 +542,6 @@ impl ImportTrie {
     fn render(&self, sep: &str) -> Vec<String> {
         render_children(&self.children, sep)
     }
-
-    fn collect_leaves(&self, sep: &str, prefix: String, out: &mut Vec<String>) {
-        if self.is_leaf {
-            if prefix.is_empty() {
-                return;
-            }
-            out.push(prefix.clone());
-        }
-        for (seg, child) in &self.children {
-            let path = if prefix.is_empty() {
-                seg.clone()
-            } else {
-                format!("{prefix}{sep}{seg}")
-            };
-            child.collect_leaves(sep, path, out);
-        }
-    }
-
-    fn render_flat(&self, sep: &str) -> Vec<String> {
-        self.children
-            .iter()
-            .map(|(root, node)| {
-                let mut leaves = Vec::new();
-                node.collect_leaves(sep, String::new(), &mut leaves);
-                if leaves.is_empty() {
-                    root.clone()
-                } else {
-                    format!("{root}: {}", leaves.join(", "))
-                }
-            })
-            .collect()
-    }
 }
 
 fn render_node(seg: &str, node: &ImportTrie, sep: &str) -> Vec<String> {
@@ -572,48 +596,13 @@ mod tests {
         trie
     }
 
-    #[test_case(&["std::io", "std::fs"],                          "::", &["std: fs, io"]                       ; "flat_basic")]
-    #[test_case(&["crate::a::X", "crate::a::Y", "crate::b::Z"], "::", &["crate: a::X, a::Y, b::Z"]           ; "flat_deep")]
-    #[test_case(&["std::io::*", "std::io::Write"],                "::", &["std: io::*, io::Write"]             ; "flat_wildcard")]
-    #[test_case(&["java.util.List", "java.io.IOException"],       ".",  &["java: io.IOException, util.List"]   ; "flat_dot_separator")]
-    #[test_case(&["os", "std::io"],                               "::", &["os", "std: io"]                     ; "flat_single_segment")]
-    fn render_flat(imports: &[&str], sep: &str, expected: &[&str]) {
-        assert_eq!(build_trie(imports, sep).render_flat(sep), expected);
-    }
-
-    #[test]
-    fn expand_import_nested_braces() {
-        assert!(expand_import("", "::").is_empty());
-        assert!(expand_import("  ", "::").is_empty());
-
-        let mut result = expand_import("a::{b::{C, D}, e::F}", "::");
-        result.sort();
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0], vec!["a", "b", "C"]);
-        assert_eq!(result[1], vec!["a", "b", "D"]);
-        assert_eq!(result[2], vec!["a", "e", "F"]);
-    }
-
-    #[test_case(&["std::io"],           "::", &["std::io"]                              ; "trie_single")]
-    #[test_case(&["std::io", "std::fs"],"::", &["std::{fs, io}"]                        ; "trie_shared_prefix")]
-    #[test_case(
-        &["crate::a::X", "crate::a::Y", "crate::b::Z"],
-        "::",
-        &["crate::{a::{X, Y}, b::Z}"]
-        ; "trie_deep_shared_prefix"
-    )]
-    #[test_case(
-        &["std::io", "std::io::Write"],
-        "::",
-        &["std::{io, io::Write}"]
-        ; "trie_leaf_and_children"
-    )]
-    #[test_case(
-        &["java.util.List", "java.io.IOException"],
-        ".",
-        &["java.{io.IOException, util.List}"]
-        ; "trie_java_dots"
-    )]
+    #[test_case(&["std::io", "std::fs"],                          "::", &["std::{fs, io}"]                    ; "shared_prefix")]
+    #[test_case(&["crate::a::X", "crate::a::Y", "crate::b::Z"], "::", &["crate::{a::{X, Y}, b::Z}"]          ; "deep_shared_prefix")]
+    #[test_case(&["std::io::*", "std::io::Write"],                "::", &["std::io::{*, Write}"]           ; "wildcard")]
+    #[test_case(&["java.util.List", "java.io.IOException"],       ".",  &["java.{io.IOException, util.List}"]  ; "dot_separator")]
+    #[test_case(&["os", "std::io"],                               "::", &["os", "std::io"]                     ; "single_segment")]
+    #[test_case(&["std::io"],                                     "::", &["std::io"]                            ; "single_import")]
+    #[test_case(&["std::io", "std::io::Write"],                   "::", &["std::{io, io::Write}"]             ; "leaf_and_children")]
     fn trie_rendering(imports: &[&str], sep: &str, expected: &[&str]) {
         assert_eq!(build_trie(imports, sep).render(sep), expected);
     }

@@ -6,8 +6,9 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, find_child,
-    fn_signature, has_test_attr, line_range, node_text, prefixed, relevant_attr_texts, vis_prefix,
+    ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, expand_import,
+    find_child, fn_signature, has_test_attr, line_range, node_text, prefixed, relevant_attr_texts,
+    vis_prefix,
 };
 
 pub(crate) struct RustExtractor;
@@ -31,7 +32,8 @@ impl RustExtractor {
                 .to_string()
         };
 
-        Some(SkeletonEntry::new(Section::Import, node, text))
+        let paths = expand_import(&text, self.import_separator());
+        Some(SkeletonEntry::new_import(node, paths))
     }
 
     fn extract_struct_or_enum(
@@ -54,11 +56,11 @@ impl RustExtractor {
         let children = self.extract_fields(node, source);
         let attr_texts = relevant_attr_texts(attrs, source);
 
-        let mut entry = SkeletonEntry::new(Section::Type, node, text);
-        entry.children = children;
-        entry.attrs = attr_texts;
+        let mut entry = SkeletonEntry::new(Section::Type, node, text)
+            .with_children(children)
+            .with_attrs(attr_texts);
         if is_enum {
-            entry.child_kind = ChildKind::Brief;
+            entry = entry.with_child_kind(ChildKind::Brief);
         }
         Some(entry)
     }
@@ -128,9 +130,7 @@ impl RustExtractor {
 
         let text = prefixed(vis, format_args!("{name}{generics}"));
         let children = self.extract_methods(node, source, false);
-        let mut entry = SkeletonEntry::new(Section::Trait, node, text);
-        entry.children = children;
-        Some(entry)
+        Some(SkeletonEntry::new(Section::Trait, node, text).with_children(children))
     }
 
     fn extract_methods(&self, node: Node, source: &[u8], include_vis: bool) -> Vec<String> {
@@ -172,9 +172,7 @@ impl RustExtractor {
         };
 
         let children = self.extract_methods(node, source, true);
-        let mut entry = SkeletonEntry::new(Section::Impl, node, text);
-        entry.children = children;
-        Some(entry)
+        Some(SkeletonEntry::new(Section::Impl, node, text).with_children(children))
     }
 
     fn extract_const_or_static(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -258,10 +256,6 @@ impl LanguageExtractor for RustExtractor {
         }
         let text = node_text(node, source);
         text.starts_with("///") && !text.starts_with("////")
-    }
-
-    fn group_import_roots(&self) -> bool {
-        true
     }
 
     fn is_module_doc(&self, node: Node, source: &[u8]) -> bool {
