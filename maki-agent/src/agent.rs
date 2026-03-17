@@ -37,6 +37,20 @@ use maki_providers::{
     ContentBlock, Message, Model, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
 };
 
+#[derive(Clone, Default)]
+pub struct LoadedInstructions(Arc<Mutex<HashSet<PathBuf>>>);
+
+impl LoadedInstructions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn contains_or_insert(&self, path: PathBuf) -> bool {
+        let mut set = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        !set.insert(path)
+    }
+}
+
 const INSTRUCTION_FILES: &[&str] = &[
     "AGENTS.md",
     "CLAUDE.md",
@@ -173,10 +187,10 @@ pub fn tool_efficiency_table(tool_names: &[&str]) -> String {
     )
 }
 
-pub fn load_instruction_files(cwd: &str) -> (String, HashSet<PathBuf>) {
+pub fn load_instruction_files(cwd: &str) -> (String, LoadedInstructions) {
     let root = Path::new(cwd);
     let mut out = String::new();
-    let mut loaded = HashSet::new();
+    let loaded = LoadedInstructions::new();
     for filename in INSTRUCTION_FILES {
         let path = root.join(filename);
         if let Ok(content) = fs::read_to_string(&path) {
@@ -184,7 +198,7 @@ pub fn load_instruction_files(cwd: &str) -> (String, HashSet<PathBuf>) {
                 "\n\nProject instructions ({filename}):\n{content}"
             ));
             if let Ok(canonical) = path.canonicalize() {
-                loaded.insert(canonical);
+                loaded.contains_or_insert(canonical);
             }
         }
     }
@@ -194,7 +208,7 @@ pub fn load_instruction_files(cwd: &str) -> (String, HashSet<PathBuf>) {
 pub fn find_subdirectory_instructions(
     filepath: &Path,
     cwd: &Path,
-    loaded: &Mutex<HashSet<PathBuf>>,
+    loaded: &LoadedInstructions,
 ) -> Vec<(String, String)> {
     let Some(file_dir) = filepath.parent() else {
         return Vec::new();
@@ -216,21 +230,17 @@ pub fn find_subdirectory_instructions(
     }
 
     let mut results = Vec::new();
-    let Ok(mut set) = loaded.lock() else {
-        return Vec::new();
-    };
     let mut dir = file_dir.as_path();
     while dir != cwd {
         for filename in INSTRUCTION_FILES {
             let Ok(canonical) = dir.join(filename).canonicalize() else {
                 continue;
             };
-            if set.contains(&canonical) {
+            if loaded.contains_or_insert(canonical.clone()) {
                 continue;
             }
             if let Ok(content) = fs::read_to_string(&canonical) {
                 let display = canonical.display().to_string();
-                set.insert(canonical);
                 results.push((display, content));
             }
         }
@@ -525,7 +535,7 @@ pub struct Agent {
     num_turns: u32,
     recent_calls: RecentCalls,
     auto_compact: bool,
-    loaded_instructions: Arc<Mutex<HashSet<PathBuf>>>,
+    loaded_instructions: LoadedInstructions,
     rollback_len: usize,
     mcp: Option<Arc<McpManager>>,
     config: AgentConfig,
@@ -551,7 +561,7 @@ impl Agent {
             num_turns: 0,
             recent_calls: RecentCalls::new(),
             auto_compact: auto_compact_enabled(),
-            loaded_instructions: Arc::new(Mutex::new(HashSet::new())),
+            loaded_instructions: LoadedInstructions::new(),
             rollback_len: 0,
             mcp: None,
             reauth_attempts: 0,
@@ -581,8 +591,8 @@ impl Agent {
         self
     }
 
-    pub fn with_loaded_instructions(mut self, loaded: HashSet<PathBuf>) -> Self {
-        self.loaded_instructions = Arc::new(Mutex::new(loaded));
+    pub fn with_loaded_instructions(mut self, loaded: LoadedInstructions) -> Self {
+        self.loaded_instructions = loaded;
         self
     }
 
@@ -788,7 +798,7 @@ impl Agent {
             tool_use_id: None,
             user_response_rx: self.user_response_rx.clone(),
             skills: Arc::clone(&self.skills),
-            loaded_instructions: Arc::clone(&self.loaded_instructions),
+            loaded_instructions: self.loaded_instructions.clone(),
             cancel: self.cancel.clone(),
             mcp: self.mcp.clone(),
             deadline: Deadline::None,
@@ -1279,15 +1289,17 @@ mod tests {
         });
     }
 
-    #[test_case(179_999, 0,       0,       200_000, 20_000, false ; "below_threshold")]
-    #[test_case(180_000, 0,       0,       200_000, 20_000, true  ; "at_threshold")]
-    #[test_case(190_000, 0,       0,       200_000, 10_000, true  ; "small_max_output_uses_it_as_reserve")]
-    #[test_case(100,     0,       0,       100,     20_000, true  ; "tiny_context_window")]
-    #[test_case(5_000,   165_000, 10_000,  200_000, 20_000, true  ; "cached_tokens_count_toward_overflow")]
+    #[test_case(179_999, 0,       0,       0,      200_000, 20_000, false ; "below_threshold")]
+    #[test_case(180_000, 0,       0,       0,      200_000, 20_000, true  ; "at_threshold")]
+    #[test_case(190_000, 0,       0,       0,      200_000, 10_000, true  ; "small_max_output_uses_it_as_reserve")]
+    #[test_case(100,     0,       0,       0,      100,     20_000, true  ; "tiny_context_window")]
+    #[test_case(5_000,   165_000, 10_000,  0,      200_000, 20_000, true  ; "cached_tokens_count_toward_overflow")]
+    #[test_case(100_000, 0,       0,       80_000, 200_000, 20_000, true  ; "output_tokens_count_toward_overflow")]
     fn overflow_detection(
         input: u32,
         cache_read: u32,
         cache_creation: u32,
+        output: u32,
         ctx_window: u32,
         max_out: u32,
         expected: bool,
@@ -1295,22 +1307,11 @@ mod tests {
         let model = small_context_model(ctx_window, max_out);
         let usage = TokenUsage {
             input,
+            output,
             cache_read,
             cache_creation,
-            ..Default::default()
         };
         assert_eq!(is_overflow(&usage, &model), expected);
-    }
-
-    #[test]
-    fn output_tokens_count_toward_overflow() {
-        let model = small_context_model(200_000, 20_000);
-        let usage = TokenUsage {
-            input: 100_000,
-            output: 80_000,
-            ..Default::default()
-        };
-        assert!(is_overflow(&usage, &model));
     }
 
     #[test_case(true,  900, true  ; "enabled_and_over_threshold")]
@@ -1356,7 +1357,7 @@ mod tests {
         fs::write(sub.join("handler.rs"), "fn handle() {}").unwrap();
         fs::write(dir.path().join("src").join("AGENTS.md"), "api rules").unwrap();
 
-        let loaded = Mutex::new(HashSet::new());
+        let loaded = LoadedInstructions::new();
         let results = find_subdirectory_instructions(&sub.join("handler.rs"), dir.path(), &loaded);
 
         assert_eq!(results.len(), 1);
@@ -1372,7 +1373,7 @@ mod tests {
         fs::write(dir.path().join("AGENTS.md"), "root rules").unwrap();
         fs::write(sub.join("AGENTS.md"), "sub rules").unwrap();
 
-        let loaded = Mutex::new(HashSet::new());
+        let loaded = LoadedInstructions::new();
 
         let from_root =
             find_subdirectory_instructions(&dir.path().join("main.rs"), dir.path(), &loaded);
@@ -1397,11 +1398,12 @@ mod tests {
         fs::write(&agents_path, "rules").unwrap();
 
         let canonical = agents_path.canonicalize().unwrap();
-        let loaded = Mutex::new(HashSet::from([canonical]));
+        let loaded = LoadedInstructions::new();
+        loaded.contains_or_insert(canonical);
         let pre_loaded = find_subdirectory_instructions(&sub.join("a.rs"), dir.path(), &loaded);
         assert!(pre_loaded.is_empty(), "should skip already-loaded files");
 
-        let loaded = Mutex::new(HashSet::new());
+        let loaded = LoadedInstructions::new();
         let first = find_subdirectory_instructions(&sub.join("a.rs"), dir.path(), &loaded);
         let second = find_subdirectory_instructions(&sub.join("b.rs"), dir.path(), &loaded);
         assert_eq!(first.len(), 1);
@@ -1421,7 +1423,7 @@ mod tests {
         let (text, loaded) = load_instruction_files(dir.path().to_str().unwrap());
 
         assert!(text.contains("project rules"));
-        assert!(loaded.contains(&expected_canonical));
+        assert!(loaded.contains_or_insert(expected_canonical));
     }
 
     #[test]
@@ -1473,30 +1475,42 @@ mod tests {
         });
     }
 
-    #[test]
-    fn sanitize_no_new_messages_is_noop() {
-        let mut history = History::new(vec![Message::user("old".into())]);
-        sanitize_cancelled_history(&mut history, 1);
-        assert_eq!(history.len(), 1);
-    }
-
     #[test_case(
-        vec![Message::user("hello".into())]
-        ; "user_message_only"
+        vec![Message::user("old".into())],
+        1,
+        1,
+        false
+        ; "no_new_messages_is_noop"
+    )]
+    #[test_case(
+        vec![Message::user("hello".into())],
+        0,
+        2,
+        true
+        ; "user_only_appends_marker"
     )]
     #[test_case(
         vec![
             Message::user("hello".into()),
             Message { role: Role::Assistant, content: vec![ContentBlock::Text { text: "hi".into() }], ..Default::default() },
-        ]
-        ; "complete_turn"
+        ],
+        0,
+        3,
+        true
+        ; "complete_turn_appends_marker"
     )]
-    fn sanitize_appends_marker(messages: Vec<Message>) {
-        let initial_len = messages.len();
+    fn sanitize_cancelled_history_cases(
+        messages: Vec<Message>,
+        rollback_len: usize,
+        expected_len: usize,
+        expect_cancel_marker: bool,
+    ) {
         let mut history = History::new(messages);
-        sanitize_cancelled_history(&mut history, 0);
-        assert!(history.len() > initial_len);
-        assert_ends_with_cancel_marker(&history);
+        sanitize_cancelled_history(&mut history, rollback_len);
+        assert_eq!(history.len(), expected_len);
+        if expect_cancel_marker {
+            assert_ends_with_cancel_marker(&history);
+        }
     }
 
     #[test]

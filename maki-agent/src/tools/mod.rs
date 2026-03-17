@@ -27,9 +27,9 @@ mod write;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use humantime::format_duration;
@@ -162,7 +162,7 @@ pub struct ToolContext {
     pub tool_use_id: Option<String>,
     pub user_response_rx: Option<Arc<async_lock::Mutex<flume::Receiver<String>>>>,
     pub skills: Arc<[Skill]>,
-    pub loaded_instructions: Arc<Mutex<HashSet<PathBuf>>>,
+    pub loaded_instructions: crate::agent::LoadedInstructions,
     pub cancel: CancelToken,
     pub mcp: Option<Arc<McpManager>>,
     pub deadline: Deadline,
@@ -593,7 +593,7 @@ pub(crate) fn interpreter_ctx(
         tool_use_id: None,
         user_response_rx: None,
         skills: Arc::clone(&SKILLS),
-        loaded_instructions: Arc::new(Mutex::new(HashSet::new())),
+        loaded_instructions: crate::agent::LoadedInstructions::new(),
         cancel,
         mcp: None,
         deadline: Deadline::None,
