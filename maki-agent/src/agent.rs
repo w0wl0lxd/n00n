@@ -64,7 +64,9 @@ const INSTRUCTION_FILES: &[&str] = &[
     "CODING_AGENT.md",
 ];
 pub(crate) fn is_instruction_file(name: &str) -> bool {
-    INSTRUCTION_FILES.contains(&name)
+    INSTRUCTION_FILES
+        .iter()
+        .any(|f| *f == name || Path::new(f).file_name().is_some_and(|n| n == name))
 }
 
 const DOOM_LOOP_THRESHOLD: usize = 3;
@@ -211,34 +213,26 @@ pub fn load_instruction_files(cwd: &str) -> (String, LoadedInstructions) {
 }
 
 pub fn find_subdirectory_instructions(
-    filepath: &Path,
+    dir: &Path,
     cwd: &Path,
     loaded: &LoadedInstructions,
 ) -> Vec<(String, String)> {
-    let Some(file_dir) = filepath.parent() else {
-        return Vec::new();
-    };
-
-    if INSTRUCTION_FILES.iter().any(|f| filepath.ends_with(f)) {
-        return Vec::new();
-    }
-
     let Ok(cwd) = cwd.canonicalize() else {
         return Vec::new();
     };
-    let Ok(file_dir) = file_dir.canonicalize() else {
+    let Ok(dir) = dir.canonicalize() else {
         return Vec::new();
     };
 
-    if !file_dir.starts_with(&cwd) || file_dir == cwd {
+    if !dir.starts_with(&cwd) || dir == cwd {
         return Vec::new();
     }
 
     let mut results = Vec::new();
-    let mut dir = file_dir.as_path();
-    while dir != cwd {
+    let mut current = dir.as_path();
+    while current != cwd {
         for filename in INSTRUCTION_FILES {
-            let Ok(canonical) = dir.join(filename).canonicalize() else {
+            let Ok(canonical) = current.join(filename).canonicalize() else {
                 continue;
             };
             if loaded.contains_or_insert(canonical.clone()) {
@@ -250,7 +244,7 @@ pub fn find_subdirectory_instructions(
                 break;
             }
         }
-        dir = match dir.parent() {
+        current = match current.parent() {
             Some(p) => p,
             None => break,
         };
@@ -1355,16 +1349,25 @@ mod tests {
         });
     }
 
+    #[test_case("AGENTS.md",                true  ; "direct_match")]
+    #[test_case("CLAUDE.md",                true  ; "claude_md")]
+    #[test_case("copilot-instructions.md",  true  ; "nested_path_filename")]
+    #[test_case(".cursorrules",             true  ; "dotfile")]
+    #[test_case("random.md",                false ; "unrelated_file")]
+    #[test_case("not-AGENTS.md",            false ; "partial_match")]
+    fn is_instruction_file_cases(name: &str, expected: bool) {
+        assert_eq!(is_instruction_file(name), expected);
+    }
+
     #[test]
     fn find_subdirectory_instructions_discovers_agents_md() {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("src").join("api");
         fs::create_dir_all(&sub).unwrap();
-        fs::write(sub.join("handler.rs"), "fn handle() {}").unwrap();
         fs::write(dir.path().join("src").join("AGENTS.md"), "api rules").unwrap();
 
         let loaded = LoadedInstructions::new();
-        let results = find_subdirectory_instructions(&sub.join("handler.rs"), dir.path(), &loaded);
+        let results = find_subdirectory_instructions(&sub, dir.path(), &loaded);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].0.ends_with("AGENTS.md"));
@@ -1372,25 +1375,13 @@ mod tests {
     }
 
     #[test]
-    fn find_subdirectory_instructions_skips_root_and_instruction_files() {
+    fn find_subdirectory_instructions_skips_root() {
         let dir = tempfile::tempdir().unwrap();
-        let sub = dir.path().join("src");
-        fs::create_dir_all(&sub).unwrap();
         fs::write(dir.path().join("AGENTS.md"), "root rules").unwrap();
-        fs::write(sub.join("AGENTS.md"), "sub rules").unwrap();
 
         let loaded = LoadedInstructions::new();
-
-        let from_root =
-            find_subdirectory_instructions(&dir.path().join("main.rs"), dir.path(), &loaded);
-        assert!(from_root.is_empty(), "should skip root-level files");
-
-        let from_instruction_file =
-            find_subdirectory_instructions(&sub.join("AGENTS.md"), dir.path(), &loaded);
-        assert!(
-            from_instruction_file.is_empty(),
-            "should skip when filepath is an instruction file"
-        );
+        let from_root = find_subdirectory_instructions(dir.path(), dir.path(), &loaded);
+        assert!(from_root.is_empty(), "should skip root-level directory");
     }
 
     #[test]
@@ -1398,20 +1389,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("src");
         fs::create_dir_all(&sub).unwrap();
-        fs::write(sub.join("a.rs"), "").unwrap();
-        fs::write(sub.join("b.rs"), "").unwrap();
         let agents_path = sub.join("AGENTS.md");
         fs::write(&agents_path, "rules").unwrap();
 
         let canonical = agents_path.canonicalize().unwrap();
         let loaded = LoadedInstructions::new();
         loaded.contains_or_insert(canonical);
-        let pre_loaded = find_subdirectory_instructions(&sub.join("a.rs"), dir.path(), &loaded);
+        let pre_loaded = find_subdirectory_instructions(&sub, dir.path(), &loaded);
         assert!(pre_loaded.is_empty(), "should skip already-loaded files");
 
         let loaded = LoadedInstructions::new();
-        let first = find_subdirectory_instructions(&sub.join("a.rs"), dir.path(), &loaded);
-        let second = find_subdirectory_instructions(&sub.join("b.rs"), dir.path(), &loaded);
+        let first = find_subdirectory_instructions(&sub, dir.path(), &loaded);
+        let second = find_subdirectory_instructions(&sub, dir.path(), &loaded);
         assert_eq!(first.len(), 1);
         assert!(
             second.is_empty(),

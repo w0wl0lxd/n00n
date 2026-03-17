@@ -2,7 +2,7 @@ use std::fmt::Write;
 use std::fs;
 use std::path::Path;
 
-use crate::agent;
+use crate::agent::{self, LoadedInstructions};
 use crate::{InstructionBlock, ToolOutput};
 use maki_tool_macro::Tool;
 
@@ -16,6 +16,18 @@ pub struct Read {
     offset: Option<usize>,
     #[param(description = "Max number of lines to read")]
     limit: Option<usize>,
+}
+
+fn to_instruction_blocks(found: Vec<(String, String)>) -> Option<Vec<InstructionBlock>> {
+    if found.is_empty() {
+        return None;
+    }
+    Some(
+        found
+            .into_iter()
+            .map(|(path, content)| InstructionBlock { path, content })
+            .collect(),
+    )
 }
 
 impl Read {
@@ -35,8 +47,9 @@ impl Read {
         let limit = self.limit;
         let loaded = ctx.loaded_instructions.clone();
         smol::unblock(move || {
+            let cwd = std::env::current_dir().ok();
             if Path::new(&path).is_dir() {
-                return Self::list_dir(&path);
+                return Self::list_dir(&path, cwd.as_deref(), &loaded);
             }
 
             let raw = fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
@@ -52,23 +65,17 @@ impl Read {
                 .map(truncate_bytes)
                 .collect();
 
-            let instructions = if let Ok(cwd) = std::env::current_dir() {
-                let found = agent::find_subdirectory_instructions(Path::new(&path), &cwd, &loaded);
-                let blocks: Vec<InstructionBlock> = found
-                    .into_iter()
-                    .map(|(display, content)| InstructionBlock {
-                        path: display,
-                        content,
-                    })
-                    .collect();
-                if blocks.is_empty() {
-                    None
-                } else {
-                    Some(blocks)
+            let instructions = cwd.as_deref().and_then(|cwd| {
+                let p = Path::new(&path);
+                if agent::is_instruction_file(p.file_name()?.to_str()?) {
+                    return None;
                 }
-            } else {
-                None
-            };
+                to_instruction_blocks(agent::find_subdirectory_instructions(
+                    p.parent()?,
+                    cwd,
+                    &loaded,
+                ))
+            });
 
             Ok(ToolOutput::ReadCode {
                 path,
@@ -81,7 +88,11 @@ impl Read {
         .await
     }
 
-    fn list_dir(path: &str) -> Result<ToolOutput, String> {
+    fn list_dir(
+        path: &str,
+        cwd: Option<&Path>,
+        loaded: &LoadedInstructions,
+    ) -> Result<ToolOutput, String> {
         let entries = fs::read_dir(path).map_err(|e| format!("read error: {e}"))?;
 
         let mut dirs = Vec::new();
@@ -100,8 +111,17 @@ impl Read {
         files.sort_unstable();
         files.retain(|name| !agent::is_instruction_file(name));
         dirs.append(&mut files);
+        let text = dirs.join("\n");
 
-        Ok(ToolOutput::Plain(dirs.join("\n")))
+        let instructions = cwd.and_then(|cwd| {
+            to_instruction_blocks(agent::find_subdirectory_instructions(
+                Path::new(path),
+                cwd,
+                loaded,
+            ))
+        });
+
+        Ok(ToolOutput::ReadDir { text, instructions })
     }
 
     pub fn start_summary(&self) -> String {
@@ -151,12 +171,38 @@ mod tests {
         std::fs::create_dir(dir.path().join("zdir")).unwrap();
         std::fs::create_dir(dir.path().join("adir")).unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "").unwrap();
-        std::fs::write(dir.path().join("CLAUDE.md"), "").unwrap();
-        std::fs::write(dir.path().join(".cursorrules"), "").unwrap();
 
-        let result = Read::list_dir(&dir_path).unwrap();
-        let text = result.as_text();
-        let entries: Vec<&str> = text.lines().collect();
-        assert_eq!(entries, vec!["adir/", "zdir/", "a.rs", "b.txt"]);
+        let result =
+            Read::list_dir(&dir_path, None, &crate::agent::LoadedInstructions::new()).unwrap();
+        match &result {
+            ToolOutput::ReadDir { text, instructions } => {
+                let entries: Vec<&str> = text.lines().collect();
+                assert_eq!(entries, vec!["adir/", "zdir/", "a.rs", "b.txt"]);
+                assert!(instructions.is_none());
+            }
+            other => panic!("expected ReadDir, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_dir_discovers_subdirectory_instructions() {
+        let root = tempfile::TempDir::new().unwrap();
+        let sub = root.path().join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("AGENTS.md"), "sub rules").unwrap();
+        std::fs::write(sub.join("lib.rs"), "").unwrap();
+
+        let sub_path = sub.to_string_lossy().to_string();
+        let loaded = crate::agent::LoadedInstructions::new();
+        let result = Read::list_dir(&sub_path, Some(root.path()), &loaded).unwrap();
+        match &result {
+            ToolOutput::ReadDir { instructions, .. } => {
+                let blocks = instructions.as_ref().expect("should have instructions");
+                assert_eq!(blocks.len(), 1);
+                assert!(blocks[0].path.ends_with("AGENTS.md"));
+                assert_eq!(blocks[0].content, "sub rules");
+            }
+            other => panic!("expected ReadDir, got {other:?}"),
+        }
     }
 }

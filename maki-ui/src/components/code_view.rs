@@ -216,7 +216,11 @@ fn render_grep_results(
     out
 }
 
-fn render_instructions(blocks: &[InstructionBlock], lines: &mut Vec<Line<'static>>, width: u16) {
+pub(crate) fn render_instructions(
+    blocks: &[InstructionBlock],
+    lines: &mut Vec<Line<'static>>,
+    width: u16,
+) {
     let style = theme::current().assistant;
     let dim = theme::current().tool_dim;
     for block in blocks {
@@ -307,6 +311,7 @@ pub fn render_tool_content(
         Some(ToolOutput::GrepResult { entries }) => {
             render_grep_results(entries, MAX_GREP_LINES, highlight)
         }
+        Some(ToolOutput::ReadDir { .. }) => Vec::new(),
         _ => Vec::new(),
     };
     if !lines.is_empty() && !output_lines.is_empty() {

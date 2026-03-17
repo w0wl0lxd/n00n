@@ -150,6 +150,7 @@ impl DisplayMessage {
                     Some(
                         structured @ (ToolOutput::Diff { .. }
                         | ToolOutput::ReadCode { .. }
+                        | ToolOutput::ReadDir { .. }
                         | ToolOutput::WriteCode { .. }
                         | ToolOutput::GrepResult { .. }
                         | ToolOutput::GlobResult { .. }

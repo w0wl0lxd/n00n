@@ -184,6 +184,15 @@ pub struct InstructionBlock {
     pub content: String,
 }
 
+fn append_instructions(out: &mut String, blocks: &[InstructionBlock]) {
+    for block in blocks {
+        out.push_str("\n\n---\nInstructions from: ");
+        out.push_str(&block.path);
+        out.push('\n');
+        out.push_str(&block.content);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolOutput {
     Plain(String),
@@ -193,6 +202,11 @@ pub enum ToolOutput {
         lines: Vec<String>,
         #[serde(default)]
         total_lines: usize,
+        #[serde(default)]
+        instructions: Option<Vec<InstructionBlock>>,
+    },
+    ReadDir {
+        text: String,
         #[serde(default)]
         instructions: Option<Vec<InstructionBlock>>,
     },
@@ -232,6 +246,7 @@ impl ToolOutput {
         match self {
             Self::GlobResult { files } => files.is_empty(),
             Self::GrepResult { entries } => entries.is_empty(),
+            Self::ReadDir { text, .. } => text.is_empty(),
             _ => false,
         }
     }
@@ -247,27 +262,29 @@ impl ToolOutput {
     pub fn as_display_text(&self) -> String {
         match self {
             Self::Plain(s) => s.clone(),
+            Self::ReadDir { text, instructions } => {
+                let mut out = text.clone();
+                if let Some(blocks) = instructions {
+                    append_instructions(&mut out, blocks);
+                }
+                out
+            }
             Self::ReadCode {
                 start_line,
                 lines,
                 instructions,
                 ..
             } => {
-                let mut out: Vec<String> = lines
+                let mut out: String = lines
                     .iter()
                     .enumerate()
                     .map(|(i, line)| format!("{}: {line}", start_line + i))
-                    .collect();
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 if let Some(blocks) = instructions {
-                    for block in blocks {
-                        out.push(String::new());
-                        out.push(format!(
-                            "---\nInstructions from: {}\n{}",
-                            block.path, block.content
-                        ));
-                    }
+                    append_instructions(&mut out, blocks);
                 }
-                out.join("\n")
+                out
             }
             Self::Diff {
                 path,

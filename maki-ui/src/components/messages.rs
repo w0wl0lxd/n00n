@@ -335,12 +335,16 @@ impl MessagesPanel {
         }
 
         match &event.output {
-            ToolOutput::Plain(text) => {
+            ToolOutput::Plain(text) | ToolOutput::ReadDir { text, .. } => {
                 if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
                     let (max, keep) = output_limits(event.tool);
                     let display = truncate_lines(text, max, keep).into_string();
                     if !display.is_empty() {
-                        msg.text = format!("{}\n{display}", msg.text);
+                        msg.text = format!(
+                            "{}
+{display}",
+                            msg.text
+                        );
                     }
                 }
             }

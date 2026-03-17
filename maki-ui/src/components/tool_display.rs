@@ -21,7 +21,9 @@ use maki_agent::tools::{
     INDEX_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, WEBFETCH_TOOL_NAME,
     WEBSEARCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
-use maki_agent::{BatchToolEntry, BatchToolStatus, TodoStatus, ToolInput, ToolOutput};
+use maki_agent::{
+    BatchToolEntry, BatchToolStatus, InstructionBlock, TodoStatus, ToolInput, ToolOutput,
+};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -34,6 +36,7 @@ const TOOL_SEPARATOR: &str = "────────────────�
 const TOOL_OUTPUT_MAX_LINES: usize = 7;
 const BASH_OUTPUT_MAX_LINES: usize = 10;
 const CODE_EXECUTION_OUTPUT_SEPARATOR: &str = "────────────";
+const INSTRUCTION_SEPARATOR: &str = "────────────";
 const CODE_EXECUTION_OUTPUT_MAX_LINES: usize = 30;
 const TASK_OUTPUT_MAX_LINES: usize = 30;
 const INDEX_OUTPUT_MAX_LINES: usize = 15;
@@ -77,6 +80,10 @@ pub(crate) fn tool_output_annotation(output: &ToolOutput, tool: &str) -> Option<
         ToolOutput::GrepResult { entries } => Some(format!("{} files", entries.len())),
         ToolOutput::GlobResult { files } if !files.is_empty() => {
             Some(format!("{} files", files.len()))
+        }
+        ToolOutput::ReadDir { text, .. } => {
+            let n = text.lines().count();
+            Some(format!("{n} entries"))
         }
         ToolOutput::Plain(text) => {
             let n = text.lines().count();
@@ -221,6 +228,7 @@ impl HighlightRequest {
             | ToolOutput::Diff { .. }
             | ToolOutput::GrepResult { .. } => Some(o),
             ToolOutput::Plain(_)
+            | ToolOutput::ReadDir { .. }
             | ToolOutput::TodoList(_)
             | ToolOutput::Batch { .. }
             | ToolOutput::GlobResult { .. }
@@ -410,7 +418,10 @@ impl ToolLineBuilder {
         is_done: bool,
     ) {
         match output {
-            None | Some(ToolOutput::Plain(_)) | Some(ToolOutput::GlobResult { .. }) => {
+            None
+            | Some(ToolOutput::Plain(_))
+            | Some(ToolOutput::ReadDir { .. })
+            | Some(ToolOutput::GlobResult { .. }) => {
                 if renders_markdown(tool) {
                     let text = match output {
                         Some(ToolOutput::Plain(t)) => Some(t.as_str()),
@@ -443,6 +454,9 @@ impl ToolLineBuilder {
                 }
                 if let Some(text) = body {
                     push_text_lines(&mut self.lines, text, TOOL_BODY_INDENT);
+                }
+                if let Some(ToolOutput::ReadDir { instructions, .. }) = output {
+                    self.maybe_push_instructions(instructions.as_deref());
                 }
             }
             Some(ToolOutput::Batch { .. }) => {}
@@ -503,6 +517,29 @@ impl ToolLineBuilder {
         }
     }
 
+    fn maybe_push_instructions(&mut self, blocks: Option<&[InstructionBlock]>) {
+        if let Some(blocks) = blocks {
+            self.push_instruction_separator(TOOL_BODY_INDENT);
+            self.push_instructions(blocks);
+        }
+    }
+
+    fn push_instruction_separator(&mut self, indent: &str) {
+        self.lines.push(Line::from(Span::styled(
+            format!("{indent}{INSTRUCTION_SEPARATOR}"),
+            theme::current().tool_dim,
+        )));
+    }
+
+    fn push_instructions(&mut self, blocks: &[InstructionBlock]) {
+        let content_width = self.width.saturating_sub(TOOL_BODY_INDENT.len() as u16);
+        let start = self.lines.len();
+        code_view::render_instructions(blocks, &mut self.lines, content_width);
+        for line in &mut self.lines[start..] {
+            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
+        }
+    }
+
     fn push_output_truncated(&mut self, output: Option<&ToolOutput>, tool: &str, is_done: bool) {
         let has_code = self.content_range.1 > self.content_range.0;
         if has_code && tool == BASH_TOOL_NAME {
@@ -531,6 +568,13 @@ impl ToolLineBuilder {
                 let tr = truncate_lines(&text, max, keep);
                 push_text_lines(&mut self.lines, tr.kept, TOOL_BODY_INDENT);
                 self.push_truncation_notice(&tr);
+            }
+            Some(ToolOutput::ReadDir { text, instructions }) => {
+                let (max, keep) = output_limits(tool);
+                let tr = truncate_lines(text, max, keep);
+                push_text_lines(&mut self.lines, tr.kept, TOOL_BODY_INDENT);
+                self.push_truncation_notice(&tr);
+                self.maybe_push_instructions(instructions.as_deref());
             }
             other => push_structured_lines(&mut self.lines, other, TOOL_BODY_INDENT),
         }
