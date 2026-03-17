@@ -314,7 +314,7 @@ fn build_loaded_tool(
             } else {
                 let display = output.as_display_text();
                 let (max, keep) = output_limits(tool);
-                let truncated = truncate_lines(&display, max, keep);
+                let truncated = truncate_lines(&display, max, keep).into_string();
                 format!("{summary}\n{truncated}")
             };
             (text, reconstructed, annotation)
@@ -351,7 +351,7 @@ fn build_loaded_tool(
                 (summary.to_owned(), None, annotation)
             } else {
                 let (max, keep) = output_limits(tool);
-                let truncated = truncate_lines(result, max, keep);
+                let truncated = truncate_lines(result, max, keep).into_string();
                 (format!("{summary}\n{truncated}"), None, annotation)
             }
         }

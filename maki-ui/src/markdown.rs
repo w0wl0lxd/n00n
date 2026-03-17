@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::iter;
 use std::mem;
 
@@ -113,6 +112,34 @@ pub enum Keep {
 pub fn truncation_notice(count: usize) -> String {
     let label = if count == 1 { "line" } else { "lines" };
     format!("{TRUNCATION_PREFIX} ({count} {label})")
+}
+
+pub struct Truncated<'a> {
+    pub kept: &'a str,
+    pub skipped: usize,
+    keep: Keep,
+}
+
+impl<'a> Truncated<'a> {
+    pub fn notice_line(&self) -> Option<Line<'static>> {
+        if self.skipped > 0 {
+            let text = truncation_notice(self.skipped);
+            Some(Line::from(Span::styled(text, theme::current().tool_dim)))
+        } else {
+            None
+        }
+    }
+
+    pub fn into_string(self) -> String {
+        if self.skipped == 0 {
+            return self.kept.to_owned();
+        }
+        let notice = truncation_notice(self.skipped);
+        match self.keep {
+            Keep::Head => format!("{}\n{notice}", self.kept),
+            Keep::Tail => format!("{notice}\n{}", self.kept),
+        }
+    }
 }
 
 fn code_style(base: Style) -> Style {
@@ -1172,24 +1199,30 @@ pub fn text_to_lines<'a>(
     lines
 }
 
-pub fn truncate_lines(s: &str, max: usize, keep: Keep) -> Cow<'_, str> {
+pub fn truncate_lines(s: &str, max: usize, keep: Keep) -> Truncated<'_> {
     let split = match keep {
         Keep::Head => s.match_indices('\n').nth(max.saturating_sub(1)),
         Keep::Tail => s.rmatch_indices('\n').nth(max.saturating_sub(1)),
     };
     let Some((i, _)) = split else {
-        return Cow::Borrowed(s);
+        return Truncated {
+            kept: s,
+            skipped: 0,
+            keep,
+        };
     };
-    Cow::Owned(match keep {
-        Keep::Head => {
-            let skipped = s[i..].matches('\n').count();
-            format!("{}\n{}", &s[..i], truncation_notice(skipped))
-        }
-        Keep::Tail => {
-            let skipped = s[..i].matches('\n').count() + 1;
-            format!("{}\n{}", truncation_notice(skipped), &s[i + 1..])
-        }
-    })
+    match keep {
+        Keep::Head => Truncated {
+            kept: &s[..i],
+            skipped: s[i..].matches('\n').count(),
+            keep,
+        },
+        Keep::Tail => Truncated {
+            kept: &s[i + 1..],
+            skipped: s[..i].matches('\n').count() + 1,
+            keep,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -1477,14 +1510,45 @@ mod tests {
         assert_eq!(lines_text(&lines)[0], first_line);
     }
 
-    #[test_case("a\nb\nc", 5, Keep::Head, "a\nb\nc" ; "under_limit_returns_input")]
-    #[test_case("a\nb\nc\nd", 2, Keep::Head, "a\nb\n... (2 lines)" ; "head_over_limit")]
-    #[test_case("a\nb\nc", 2, Keep::Head, "a\nb\n... (1 line)" ; "head_singular_notice")]
-    #[test_case("a\nb\nc\nd", 2, Keep::Tail, "... (2 lines)\nc\nd" ; "tail_over_limit")]
-    #[test_case("a\nb\nc\nd\ne", 3, Keep::Tail, "... (2 lines)\nc\nd\ne" ; "tail_keeps_last_n")]
-    #[test_case("a\nb\nc", 2, Keep::Tail, "... (1 line)\nb\nc" ; "tail_singular_notice")]
-    fn truncate_lines_cases(input: &str, max: usize, keep: Keep, expected: &str) {
-        assert_eq!(truncate_lines(input, max, keep), expected);
+    #[test_case("a\nb\nc", 5, Keep::Head, "a\nb\nc", 0 ; "under_limit_returns_input")]
+    #[test_case("a\nb\nc\nd", 2, Keep::Head, "a\nb", 2 ; "head_over_limit")]
+    #[test_case("a\nb\nc", 2, Keep::Head, "a\nb", 1 ; "head_singular_notice")]
+    #[test_case("a\nb\nc\nd", 2, Keep::Tail, "c\nd", 2 ; "tail_over_limit")]
+    #[test_case("a\nb\nc\nd\ne", 3, Keep::Tail, "c\nd\ne", 2 ; "tail_keeps_last_n")]
+    #[test_case("a\nb\nc", 2, Keep::Tail, "b\nc", 1 ; "tail_singular_notice")]
+    fn truncate_lines_cases(
+        input: &str,
+        max: usize,
+        keep: Keep,
+        expected_kept: &str,
+        expected_skipped: usize,
+    ) {
+        let tr = truncate_lines(input, max, keep);
+        assert_eq!(tr.kept, expected_kept);
+        assert_eq!(tr.skipped, expected_skipped);
+    }
+
+    #[test_case("a\nb\nc\nd", 2, Keep::Head, "a\nb\n... (2 lines)" ; "head_with_notice")]
+    #[test_case("a\nb\nc\nd", 2, Keep::Tail, "... (2 lines)\nc\nd" ; "tail_with_notice")]
+    #[test_case("a\nb\nc",    5, Keep::Head, "a\nb\nc"             ; "no_truncation")]
+    fn truncated_into_string(input: &str, max: usize, keep: Keep, expected: &str) {
+        assert_eq!(truncate_lines(input, max, keep).into_string(), expected);
+    }
+
+    #[test]
+    fn truncated_inside_code_block_notice_not_in_code() {
+        let style = Style::default();
+        let input = "```rust\nfn a() {}\nfn b() {}\nfn c() {}\nfn d() {}";
+        let tr = truncate_lines(input, 3, Keep::Head);
+        let lines = text_to_lines(tr.kept, "", style, style, None, TEST_WIDTH);
+        for line in &lines {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                !text.contains(TRUNCATION_PREFIX),
+                "kept text should not contain truncation notice"
+            );
+        }
+        assert!(tr.notice_line().is_some());
     }
 
     fn block_summary<'a>(blocks: &'a [TextBlock<'a>]) -> Vec<(&'a str, Option<&'a str>)> {

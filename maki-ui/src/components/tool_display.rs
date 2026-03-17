@@ -3,7 +3,6 @@ use super::{DisplayMessage, ToolStatus};
 
 use super::{code_view, index_highlight};
 use crate::animation::spinner_frame;
-use crate::markdown::TRUNCATION_PREFIX;
 use crate::theme;
 
 use std::fmt::Write;
@@ -16,7 +15,7 @@ use maki_providers::{ModelPricing, TokenUsage};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
-use crate::markdown::{Keep, text_to_lines, truncate_lines};
+use crate::markdown::{Keep, Truncated, text_to_lines, truncate_lines};
 use maki_agent::tools::{
     BASH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME,
     INDEX_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, WEBFETCH_TOOL_NAME,
@@ -419,14 +418,18 @@ impl ToolLineBuilder {
                     };
                     if let Some(text) = text {
                         let (max, keep) = output_limits(tool);
-                        self.push_markdown_body(&truncate_lines(text, max, keep));
+                        let tr = truncate_lines(text, max, keep);
+                        self.push_markdown_body(tr.kept);
+                        self.push_truncation_notice(&tr);
                     }
                     return;
                 }
                 if tool == INDEX_TOOL_NAME {
                     if let Some(ToolOutput::Plain(text)) = output {
                         let (max, keep) = output_limits(tool);
-                        self.push_index_body(&truncate_lines(text, max, keep));
+                        let tr = truncate_lines(text, max, keep);
+                        self.push_index_body(tr.kept);
+                        self.push_truncation_notice(&tr);
                     } else if let Some(text) = body {
                         self.push_index_body(text);
                     }
@@ -450,7 +453,7 @@ impl ToolLineBuilder {
     fn push_markdown_body(&mut self, text: &str) {
         let style = theme::current().assistant;
         let indent = TOOL_BODY_INDENT.len() as u16;
-        let mut md_lines = text_to_lines(
+        let md_lines = text_to_lines(
             text,
             "",
             style,
@@ -458,13 +461,14 @@ impl ToolLineBuilder {
             None,
             self.width.saturating_sub(indent),
         );
-        if let Some(last) = md_lines.last_mut() {
-            let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
-            if text.starts_with(TRUNCATION_PREFIX) {
-                *last = Line::from(Span::styled(text, theme::current().tool_dim));
-            }
-        }
         for mut line in md_lines {
+            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
+            self.lines.push(line);
+        }
+    }
+
+    fn push_truncation_notice(&mut self, tr: &Truncated<'_>) {
+        if let Some(mut line) = tr.notice_line() {
             line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
             self.lines.push(line);
         }
@@ -511,23 +515,22 @@ impl ToolLineBuilder {
             None => {}
             Some(ToolOutput::Plain(text)) => {
                 let (max, keep) = output_limits(tool);
-                let truncated = truncate_lines(text, max, keep);
+                let tr = truncate_lines(text, max, keep);
                 if renders_markdown(tool) {
-                    self.push_markdown_body(&truncated);
+                    self.push_markdown_body(tr.kept);
                 } else if tool == INDEX_TOOL_NAME {
-                    self.push_index_body(&truncated);
+                    self.push_index_body(tr.kept);
                 } else {
-                    push_text_lines(&mut self.lines, &truncated, TOOL_BODY_INDENT);
+                    push_text_lines(&mut self.lines, tr.kept, TOOL_BODY_INDENT);
                 }
+                self.push_truncation_notice(&tr);
             }
             Some(ToolOutput::GlobResult { .. }) => {
                 let text = output.unwrap().as_display_text();
                 let (max, keep) = output_limits(tool);
-                push_text_lines(
-                    &mut self.lines,
-                    &truncate_lines(&text, max, keep),
-                    TOOL_BODY_INDENT,
-                );
+                let tr = truncate_lines(&text, max, keep);
+                push_text_lines(&mut self.lines, tr.kept, TOOL_BODY_INDENT);
+                self.push_truncation_notice(&tr);
             }
             other => push_structured_lines(&mut self.lines, other, TOOL_BODY_INDENT),
         }
@@ -575,12 +578,8 @@ impl ToolLineBuilder {
 }
 
 fn push_text_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &str) {
+    let style = theme::current().tool;
     for line in text.lines() {
-        let style = if line.starts_with(TRUNCATION_PREFIX) {
-            theme::current().tool_dim
-        } else {
-            theme::current().tool
-        };
         lines.push(Line::from(Span::styled(format!("{indent}{line}"), style)));
     }
 }
@@ -697,6 +696,7 @@ pub(crate) fn append_annotation(ann: &mut Option<String>, suffix: &str) {
 mod tests {
     use super::*;
     use crate::components::DisplayRole;
+    use crate::markdown::TRUNCATION_PREFIX;
     use maki_agent::tools::{BASH_TOOL_NAME, WRITE_TOOL_NAME};
     use maki_agent::{BatchToolEntry, BatchToolStatus, GrepFileEntry, ToolInput, ToolOutput};
     use test_case::test_case;
@@ -1096,25 +1096,27 @@ mod tests {
         assert_eq!(span.unwrap().style, theme::current().tool_dim);
     }
 
+    fn task_truncation_tl(output: String) -> ToolLines {
+        let msg = task_msg(output);
+        build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80)
+    }
+
+    #[test_case(n_lines(200)                                             ; "plain_lines")]
+    #[test_case(format!("```rust\nfn main() {{}}\n```\n{}", n_lines(40)) ; "after_code_block")]
+    #[test_case(format!("```rust\n{}", n_lines(40))                      ; "inside_code_block")]
+    fn task_truncation_styled_dim(output: String) {
+        assert_truncation_styled(&task_truncation_tl(output));
+    }
+
     #[test]
     fn task_output_truncated_at_max_lines() {
-        let msg = task_msg(n_lines(200));
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
+        let tl = task_truncation_tl(n_lines(200));
         let body_lines = tl.lines.len() - 1;
         assert!(
             body_lines <= TASK_OUTPUT_MAX_LINES + 1,
             "expected at most {} body lines, got {body_lines}",
             TASK_OUTPUT_MAX_LINES + 1,
         );
-        assert_truncation_styled(&tl);
-    }
-
-    #[test]
-    fn task_truncation_dim_after_code_block() {
-        let output = format!("```rust\nfn main() {{}}\n```\n{}", n_lines(40));
-        let msg = task_msg(output);
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
-        assert_truncation_styled(&tl);
     }
 
     #[test]

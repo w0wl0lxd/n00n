@@ -302,7 +302,7 @@ impl MessagesPanel {
         truncate_to_header(&mut msg.text);
         let truncated = truncate_lines(content, max_lines, keep);
         msg.text.push('\n');
-        msg.text.push_str(&truncated);
+        msg.text.push_str(&truncated.into_string());
         self.rebuild_tool_segment(tool_id);
     }
 
@@ -338,7 +338,7 @@ impl MessagesPanel {
             ToolOutput::Plain(text) => {
                 if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
                     let (max, keep) = output_limits(event.tool);
-                    let display = truncate_lines(text, max, keep);
+                    let display = truncate_lines(text, max, keep).into_string();
                     if !display.is_empty() {
                         msg.text = format!("{}\n{display}", msg.text);
                     }
@@ -354,7 +354,7 @@ impl MessagesPanel {
                 } else {
                     let display = output.as_display_text();
                     let (max, keep) = output_limits(event.tool);
-                    let truncated = truncate_lines(&display, max, keep);
+                    let truncated = truncate_lines(&display, max, keep).into_string();
                     msg.text = format!("{}\n{truncated}", msg.text);
                 }
             }

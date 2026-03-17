@@ -1,4 +1,3 @@
-use crate::markdown::TRUNCATION_PREFIX;
 use crate::theme;
 use ratatui::text::{Line, Span};
 
@@ -45,14 +44,6 @@ fn split_trailing_range(line: &str) -> Option<(&str, &str)> {
 pub(crate) fn push_index_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &str) {
     let t = theme::current();
     for line in text.lines() {
-        if line.starts_with(TRUNCATION_PREFIX) {
-            lines.push(Line::from(Span::styled(
-                format!("{indent}{line}"),
-                t.tool_dim,
-            )));
-            continue;
-        }
-
         if is_section_header(line) {
             let mut spans = vec![Span::raw(indent.to_owned())];
             if let Some((before, range)) = split_trailing_range(line) {

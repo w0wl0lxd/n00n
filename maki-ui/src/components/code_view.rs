@@ -223,8 +223,11 @@ fn render_instructions(blocks: &[InstructionBlock], lines: &mut Vec<Line<'static
         let header = format!("Instructions from: {}", block.path);
         lines.push(Line::from(Span::styled(header, dim)));
         if !block.content.is_empty() {
-            let truncated = truncate_lines(&block.content, MAX_INSTRUCTION_LINES, Keep::Head);
-            lines.extend(text_to_lines(&truncated, "", style, style, None, width));
+            let tr = truncate_lines(&block.content, MAX_INSTRUCTION_LINES, Keep::Head);
+            lines.extend(text_to_lines(tr.kept, "", style, style, None, width));
+            if let Some(notice) = tr.notice_line() {
+                lines.push(notice);
+            }
         }
     }
 }
@@ -372,6 +375,7 @@ fn merge_syntax_with_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::markdown::TRUNCATION_PREFIX;
     use maki_agent::{DiffSpan, GrepMatch};
     use test_case::test_case;
 
@@ -551,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn render_instructions_truncates_at_limit() {
+    fn render_instructions_truncates_with_dim_notice() {
         let long_content: String = (0..30)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
@@ -562,14 +566,11 @@ mod tests {
         }];
         let mut lines = Vec::new();
         render_instructions(&blocks, &mut lines, 80);
-        let total_content_lines = lines.len() - 1; // minus header
-        assert!(total_content_lines <= MAX_INSTRUCTION_LINES + 1); // +1 for truncation notice
-        let text: Vec<String> = lines.iter().map(line_text).collect();
-        assert!(
-            text.last()
-                .unwrap()
-                .starts_with(crate::markdown::TRUNCATION_PREFIX)
-        );
+        let content_lines = lines.len() - 1;
+        assert!(content_lines <= MAX_INSTRUCTION_LINES + 1);
+        let last = lines.last().unwrap();
+        assert!(line_text(last).starts_with(TRUNCATION_PREFIX));
+        assert_eq!(last.spans[0].style, theme::current().tool_dim);
     }
 
     #[test]
@@ -580,6 +581,6 @@ mod tests {
         }];
         let mut lines = Vec::new();
         render_instructions(&blocks, &mut lines, 80);
-        assert_eq!(lines.len(), 1); // header only
+        assert_eq!(lines.len(), 1);
     }
 }
