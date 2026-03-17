@@ -216,7 +216,7 @@ fn render_grep_results(
     out
 }
 
-fn render_instructions(blocks: &[InstructionBlock], lines: &mut Vec<Line<'static>>) {
+fn render_instructions(blocks: &[InstructionBlock], lines: &mut Vec<Line<'static>>, width: u16) {
     let style = theme::current().assistant;
     let dim = theme::current().tool_dim;
     for block in blocks {
@@ -224,7 +224,7 @@ fn render_instructions(blocks: &[InstructionBlock], lines: &mut Vec<Line<'static
         lines.push(Line::from(Span::styled(header, dim)));
         if !block.content.is_empty() {
             let truncated = truncate_lines(&block.content, MAX_INSTRUCTION_LINES, Keep::Head);
-            lines.extend(text_to_lines(&truncated, "", style, style, None, 0));
+            lines.extend(text_to_lines(&truncated, "", style, style, None, width));
         }
     }
 }
@@ -233,6 +233,7 @@ pub fn render_tool_content(
     input: Option<&ToolInput>,
     output: Option<&ToolOutput>,
     highlight: bool,
+    width: u16,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     match input {
@@ -282,7 +283,7 @@ pub fn render_tool_content(
             );
             if let Some(inst) = instructions {
                 result.push(Line::default());
-                render_instructions(inst, &mut result);
+                render_instructions(inst, &mut result, width);
             }
             result
         }
@@ -542,7 +543,7 @@ mod tests {
             content: "# Title\n\nSome rules here".into(),
         }];
         let mut lines = Vec::new();
-        render_instructions(&blocks, &mut lines);
+        render_instructions(&blocks, &mut lines, 80);
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert!(text[0].contains("Instructions from:"));
         assert!(text.iter().any(|l| l.contains("Title")));
@@ -560,7 +561,7 @@ mod tests {
             content: long_content,
         }];
         let mut lines = Vec::new();
-        render_instructions(&blocks, &mut lines);
+        render_instructions(&blocks, &mut lines, 80);
         let total_content_lines = lines.len() - 1; // minus header
         assert!(total_content_lines <= MAX_INSTRUCTION_LINES + 1); // +1 for truncation notice
         let text: Vec<String> = lines.iter().map(line_text).collect();
@@ -578,7 +579,7 @@ mod tests {
             content: String::new(),
         }];
         let mut lines = Vec::new();
-        render_instructions(&blocks, &mut lines);
+        render_instructions(&blocks, &mut lines, 80);
         assert_eq!(lines.len(), 1); // header only
     }
 }

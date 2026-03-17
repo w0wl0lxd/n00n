@@ -203,6 +203,7 @@ pub struct HighlightRequest {
     pub range: (usize, usize),
     pub input: Option<ToolInput>,
     pub output: Option<ToolOutput>,
+    pub width: u16,
 }
 
 impl HighlightRequest {
@@ -210,6 +211,7 @@ impl HighlightRequest {
         range: (usize, usize),
         input: Option<ToolInput>,
         output: Option<ToolOutput>,
+        width: u16,
     ) -> Option<Self> {
         if range.0 == range.1 {
             return None;
@@ -229,6 +231,7 @@ impl HighlightRequest {
             range,
             input,
             output,
+            width,
         })
     }
 }
@@ -236,7 +239,7 @@ impl HighlightRequest {
 impl ToolLines {
     pub fn send_highlight(&self, worker: &RenderWorker) -> Option<u64> {
         let hl = self.highlight.as_ref()?;
-        Some(worker.send(hl.input.clone(), hl.output.clone()))
+        Some(worker.send(hl.input.clone(), hl.output.clone(), hl.width))
     }
 }
 
@@ -377,7 +380,8 @@ impl ToolLineBuilder {
     }
 
     fn push_code_content(&mut self, input: Option<&ToolInput>, output: Option<&ToolOutput>) {
-        let content = code_view::render_tool_content(input, output, false);
+        let content_width = self.width.saturating_sub(TOOL_BODY_INDENT.len() as u16);
+        let content = code_view::render_tool_content(input, output, false, content_width);
         let start = self.lines.len();
         for mut line in content {
             line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
@@ -559,7 +563,8 @@ impl ToolLineBuilder {
         output: Option<ToolOutput>,
         content_indent: &'static str,
     ) -> ToolLines {
-        let highlight = HighlightRequest::new(self.content_range, input, output);
+        let content_width = self.width.saturating_sub(content_indent.len() as u16);
+        let highlight = HighlightRequest::new(self.content_range, input, output, content_width);
         ToolLines {
             lines: self.lines,
             highlight,

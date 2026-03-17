@@ -19,6 +19,7 @@ struct RenderJob {
     id: u64,
     tool_input: Option<ToolInput>,
     tool_output: Option<ToolOutput>,
+    width: u16,
 }
 
 pub struct RenderResult {
@@ -61,12 +62,18 @@ impl RenderWorker {
         }
     }
 
-    pub fn send(&self, tool_input: Option<ToolInput>, tool_output: Option<ToolOutput>) -> u64 {
+    pub fn send(
+        &self,
+        tool_input: Option<ToolInput>,
+        tool_output: Option<ToolOutput>,
+        width: u16,
+    ) -> u64 {
         let id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
         let _ = self.job_tx.send(RenderJob {
             id,
             tool_input,
             tool_output,
+            width,
         });
         self.maybe_spawn_thread();
         id
@@ -100,8 +107,12 @@ impl RenderWorker {
 
 fn worker_loop(inner: &PoolInner) {
     while let Ok(job) = inner.job_rx.recv_timeout(IDLE_TIMEOUT) {
-        let lines =
-            code_view::render_tool_content(job.tool_input.as_ref(), job.tool_output.as_ref(), true);
+        let lines = code_view::render_tool_content(
+            job.tool_input.as_ref(),
+            job.tool_output.as_ref(),
+            true,
+            job.width,
+        );
         if inner
             .result_tx
             .send(RenderResult { id: job.id, lines })
