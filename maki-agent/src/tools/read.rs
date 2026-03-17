@@ -98,6 +98,7 @@ impl Read {
 
         dirs.sort_unstable();
         files.sort_unstable();
+        files.retain(|name| !agent::is_instruction_file(name));
         dirs.append(&mut files);
 
         Ok(ToolOutput::Plain(dirs.join("\n")))
@@ -141,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn list_dir_returns_sorted_entries_dirs_first() {
+    fn list_dir_sorts_dirs_first_and_hides_instruction_files() {
         let dir = tempfile::TempDir::new().unwrap();
         let dir_path = dir.path().to_string_lossy().to_string();
 
@@ -149,6 +150,9 @@ mod tests {
         std::fs::write(dir.path().join("a.rs"), "").unwrap();
         std::fs::create_dir(dir.path().join("zdir")).unwrap();
         std::fs::create_dir(dir.path().join("adir")).unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "").unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "").unwrap();
+        std::fs::write(dir.path().join(".cursorrules"), "").unwrap();
 
         let result = Read::list_dir(&dir_path).unwrap();
         let text = result.as_text();

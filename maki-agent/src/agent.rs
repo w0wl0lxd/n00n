@@ -63,6 +63,10 @@ const INSTRUCTION_FILES: &[&str] = &[
     "GEMINI.md",
     "CODING_AGENT.md",
 ];
+pub(crate) fn is_instruction_file(name: &str) -> bool {
+    INSTRUCTION_FILES.contains(&name)
+}
+
 const DOOM_LOOP_THRESHOLD: usize = 3;
 const MAX_CONTINUATION_TURNS: u32 = 3;
 const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
