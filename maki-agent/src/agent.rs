@@ -204,6 +204,7 @@ pub fn load_instruction_files(cwd: &str) -> (String, LoadedInstructions) {
             if let Ok(canonical) = path.canonicalize() {
                 loaded.contains_or_insert(canonical);
             }
+            break;
         }
     }
     (out, loaded)
@@ -246,6 +247,7 @@ pub fn find_subdirectory_instructions(
             if let Ok(content) = fs::read_to_string(&canonical) {
                 let display = canonical.display().to_string();
                 results.push((display, content));
+                break;
             }
         }
         dir = match dir.parent() {
