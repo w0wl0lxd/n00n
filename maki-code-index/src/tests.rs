@@ -206,7 +206,7 @@ def process(data: list) -> dict:
             "module doc:",
             "imports:",
             "os",
-            "typing: Optional",
+            "typing.Optional",
             "consts:",
             "MAX_RETRIES",
             "MY_VAR = 10",
@@ -366,7 +366,7 @@ public enum Direction implements Displayable {
         &out,
         &[
             "imports:",
-            "java: io.IOException, util.List",
+            "java.{io.IOException, util.List}",
             "mod:",
             "com.example",
             "classes:",

@@ -260,6 +260,10 @@ impl LanguageExtractor for RustExtractor {
         text.starts_with("///") && !text.starts_with("////")
     }
 
+    fn group_import_roots(&self) -> bool {
+        true
+    }
+
     fn is_module_doc(&self, node: Node, source: &[u8]) -> bool {
         if node.kind() != "line_comment" {
             return false;
