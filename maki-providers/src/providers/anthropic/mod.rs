@@ -25,6 +25,7 @@ use crate::{
 
 const API_VERSION: &str = "2023-06-01";
 const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
+const OAUTH_SYSTEM_PREFIX: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 /// Anthropic caches conversation by blocks (tools -> system -> messages).
 /// We use 1 cache breakpoint for the last tool block, and 1 for the system prompt.
@@ -420,13 +421,24 @@ impl Provider for Anthropic {
             let system_block = SystemBlock {
                 r#type: "text",
                 text: system,
-                cache_control: EPHEMERAL,
+                cache_control: Some(EPHEMERAL),
+            };
+
+            let system_blocks = if self.is_oauth() {
+                let prefix = SystemBlock {
+                    r#type: "text",
+                    text: OAUTH_SYSTEM_PREFIX,
+                    cache_control: None,
+                };
+                json!([prefix, system_block])
+            } else {
+                json!([system_block])
             };
 
             let body = json!({
                 "model": model.id,
                 "max_tokens": model.max_output_tokens,
-                "system": [system_block],
+                "system": system_blocks,
                 "messages": wire_messages,
                 "tools": wire_tools,
                 "stream": true,
@@ -470,7 +482,8 @@ struct ModelsPage {
 struct SystemBlock<'a> {
     r#type: &'static str,
     text: &'a str,
-    cache_control: CacheControl,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
 }
 
 #[derive(Serialize)]
