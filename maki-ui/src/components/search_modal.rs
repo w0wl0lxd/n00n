@@ -82,6 +82,10 @@ impl SearchModal {
         self.open
     }
 
+    pub fn handle_paste(&mut self, text: &str) {
+        self.search.insert_text(text);
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> SearchAction {
         match key.code {
             KeyCode::Esc => SearchAction::Close(self.saved_scroll.take()),

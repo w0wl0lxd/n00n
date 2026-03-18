@@ -98,6 +98,10 @@ impl ModelPicker {
         self.picker.scroll(delta);
     }
 
+    pub fn handle_paste(&mut self, text: &str) -> bool {
+        self.picker.handle_paste(text)
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> ModelPickerAction {
         match self.picker.handle_key(key) {
             PickerAction::Consumed => ModelPickerAction::Consumed,

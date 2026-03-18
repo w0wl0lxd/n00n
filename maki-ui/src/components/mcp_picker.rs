@@ -64,6 +64,10 @@ impl McpPicker {
         self.picker.is_open()
     }
 
+    pub fn handle_paste(&mut self, text: &str) -> bool {
+        self.picker.handle_paste(text)
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> McpPickerAction {
         match self.picker.handle_key(key) {
             PickerAction::Consumed => McpPickerAction::Consumed,

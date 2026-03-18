@@ -218,10 +218,8 @@ impl App {
                     if self.image_paste_rx.is_none() {
                         self.start_file_image_paste(path, media_type);
                     }
-                } else if !self.question_form.handle_paste(&text)
-                    && let InputAction::PaletteSync(val) = self.input_box.handle_paste(&text)
-                {
-                    self.command_palette.sync(&val);
+                } else {
+                    self.route_text_paste(&text);
                 }
                 vec![]
             }
@@ -773,6 +771,36 @@ impl App {
         {
             let (_, questions) = self.demo_questions.take().unwrap();
             self.question_form.open(questions);
+        }
+    }
+
+    fn route_text_paste(&mut self, text: &str) {
+        if self.question_form.handle_paste(text) {
+            return;
+        }
+        if self.search_modal.is_open() {
+            self.search_modal.handle_paste(text);
+            let chat = &mut self.chats[self.active_chat];
+            let texts = chat.segment_copy_texts();
+            self.search_modal.update_matches(&texts);
+            sync_search_highlight(&self.search_modal, chat);
+            return;
+        }
+        macro_rules! try_picker {
+            ($picker:expr) => {
+                if $picker.handle_paste(text) {
+                    return;
+                }
+            };
+        }
+        try_picker!(self.task_picker);
+        try_picker!(self.session_picker);
+        try_picker!(self.rewind_picker);
+        try_picker!(self.theme_picker);
+        try_picker!(self.model_picker);
+        try_picker!(self.mcp_picker);
+        if let InputAction::PaletteSync(val) = self.input_box.handle_paste(text) {
+            self.command_palette.sync(&val);
         }
     }
 }

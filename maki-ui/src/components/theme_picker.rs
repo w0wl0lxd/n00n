@@ -84,6 +84,14 @@ impl ThemePicker {
         self.picker.view(frame, area);
     }
 
+    pub fn handle_paste(&mut self, text: &str) -> bool {
+        let consumed = self.picker.handle_paste(text);
+        if consumed {
+            self.apply_preview();
+        }
+        consumed
+    }
+
     fn apply_preview(&self) {
         if let Some(entry) = self.picker.selected_item()
             && let Ok(t) = theme::load_by_name(entry.name)

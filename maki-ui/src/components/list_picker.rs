@@ -412,6 +412,16 @@ impl<T: PickerItem> ListPicker<T> {
             .and_then(|s| s.items.get(idx))
     }
 
+    pub fn handle_paste(&mut self, text: &str) -> bool {
+        let Some(Some(s)) = self.state.as_mut().map(PickerState::ready_mut) else {
+            return self.is_open();
+        };
+        self.generation += 1;
+        s.search.insert_text(text);
+        s.update_search_and_clamp();
+        true
+    }
+
     pub fn scroll(&mut self, delta: i32) {
         let Some(s) = self.state.as_mut().and_then(PickerState::ready_mut) else {
             return;

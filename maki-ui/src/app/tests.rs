@@ -1660,3 +1660,25 @@ fn mcp_toggle_dispatches_action() {
         Action::ToggleMcp(name, false) if name == "test-srv"
     ));
 }
+
+#[test_case(
+    |app: &mut App| { open_tasks_picker(app); },
+    ""
+    ; "routed_to_open_picker"
+)]
+#[test_case(
+    |app: &mut App| { app.update(Msg::Key(kb::SEARCH.to_key_event())); },
+    ""
+    ; "routed_to_search_modal"
+)]
+#[test_case(
+    |_: &mut App| {},
+    "pasted"
+    ; "falls_through_to_input"
+)]
+fn paste_routing(setup: fn(&mut App), expected_input: &str) {
+    let mut app = test_app();
+    setup(&mut app);
+    app.update(Msg::Paste("pasted".into()));
+    assert_eq!(app.input_box.buffer.value(), expected_input);
+}
