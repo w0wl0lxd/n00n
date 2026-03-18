@@ -116,8 +116,8 @@ pub const KEYBINDS: &[Keybind] = &[
         context: KeybindContext::General,
     },
     Keybind {
-        key: "Ctrl+P/N",
-        description: "Previous / next chat",
+        key: "Ctrl+N/P",
+        description: "Next / previous task chat",
         context: KeybindContext::General,
     },
     Keybind {
