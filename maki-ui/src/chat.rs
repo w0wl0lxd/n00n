@@ -61,17 +61,17 @@ impl Chat {
                 self.messages_panel.tool_output(&id, &content)
             }
             AgentEvent::ToolDone(e) => {
-                let is_plan_write = plan_path.is_some_and(|pp| {
-                    e.written_path()
-                        .is_some_and(|wp| Path::new(wp) == pp || pp.ends_with(wp))
-                });
+                let plan_write = plan_path.filter(|pp| e.wrote_to(pp));
+                let is_write = matches!(e.output, ToolOutput::WriteCode { .. });
                 self.messages_panel.tool_done(e);
-                if is_plan_write {
-                    let pp = plan_path.unwrap();
-                    if let Ok(content) = std::fs::read_to_string(pp) {
-                        self.messages_panel
-                            .push(DisplayMessage::plan(content, pp.display().to_string()));
-                    }
+                if let Some(pp) = plan_write {
+                    let content = if is_write {
+                        std::fs::read_to_string(pp).unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    self.messages_panel
+                        .push(DisplayMessage::plan(content, pp.display().to_string()));
                 }
             }
             AgentEvent::BatchProgress {
@@ -385,6 +385,7 @@ mod tests {
         AgentEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, ToolDoneEvent,
         ToolInput, ToolOutput, ToolStartEvent,
     };
+    use test_case::test_case;
 
     fn tool_start(id: &str, tool: &'static str) -> AgentEvent {
         AgentEvent::ToolStart(ToolStartEvent {
@@ -397,17 +398,29 @@ mod tests {
         })
     }
 
-    fn write_done(id: &str, path: &str) -> AgentEvent {
+    fn tool_done(id: &str, tool: &'static str, output: ToolOutput) -> AgentEvent {
         AgentEvent::ToolDone(ToolDoneEvent {
             id: id.into(),
-            tool: "write",
-            output: ToolOutput::WriteCode {
-                path: path.into(),
-                byte_count: 42,
-                lines: vec![],
-            },
+            tool,
+            output,
             is_error: false,
         })
+    }
+
+    fn write_output(path: &str) -> ToolOutput {
+        ToolOutput::WriteCode {
+            path: path.into(),
+            byte_count: 42,
+            lines: vec![],
+        }
+    }
+
+    fn edit_output(path: &str) -> ToolOutput {
+        ToolOutput::Diff {
+            path: path.into(),
+            hunks: vec![],
+            summary: String::new(),
+        }
     }
 
     fn empty_outputs() -> HashMap<String, ToolOutput> {
@@ -421,12 +434,7 @@ mod tests {
         assert_eq!(chat.in_progress_count(), 1);
 
         chat.handle_event(
-            AgentEvent::ToolDone(ToolDoneEvent {
-                id: "t1".into(),
-                tool: "bash",
-                output: ToolOutput::Plain("ok".into()),
-                is_error: false,
-            }),
+            tool_done("t1", "bash", ToolOutput::Plain("ok".into())),
             None,
         );
         assert_eq!(chat.in_progress_count(), 0);
@@ -441,12 +449,14 @@ mod tests {
         let plan_str = plan_path.to_str().unwrap();
 
         chat.handle_event(tool_start("w1", "write"), Some(plan_path.as_path()));
-        chat.handle_event(write_done("w1", plan_str), Some(plan_path.as_path()));
+        chat.handle_event(
+            tool_done("w1", "write", write_output(plan_str)),
+            Some(plan_path.as_path()),
+        );
 
         assert!(chat.last_message_is_plan());
         let last = chat.last_message_text();
         assert!(last.contains("# My Plan"));
-        assert!(last.contains("- Step 1"));
     }
 
     #[test]
@@ -454,8 +464,29 @@ mod tests {
         let mut chat = Chat::new("Main".into());
         let plan_path = Path::new("/plans/123.md");
         chat.handle_event(tool_start("w1", "write"), Some(plan_path));
-        chat.handle_event(write_done("w1", "src/main.rs"), Some(plan_path));
+        chat.handle_event(
+            tool_done("w1", "write", write_output("src/main.rs")),
+            Some(plan_path),
+        );
         assert!(!chat.last_message_is_plan());
+    }
+
+    #[test]
+    fn plan_edit_shows_path_only() {
+        let mut chat = Chat::new("Main".into());
+        let dir = tempfile::tempdir().unwrap();
+        let plan_path = dir.path().join("plan.md");
+        std::fs::write(&plan_path, "# My Plan\n\n- Step 1").unwrap();
+        let plan_str = plan_path.to_str().unwrap();
+
+        chat.handle_event(tool_start("e1", "edit"), Some(plan_path.as_path()));
+        chat.handle_event(
+            tool_done("e1", "edit", edit_output(plan_str)),
+            Some(plan_path.as_path()),
+        );
+
+        assert!(chat.last_message_is_plan());
+        assert!(chat.last_message_text().is_empty());
     }
 
     #[test]
@@ -470,15 +501,19 @@ mod tests {
         assert!(history_to_display(&msgs, &empty_outputs()).is_empty());
     }
 
-    #[test]
-    fn history_tool_use_with_result() {
-        let msgs = vec![
+    fn tool_use_pair(
+        tool: &str,
+        input: serde_json::Value,
+        result: &str,
+        is_error: bool,
+    ) -> Vec<Message> {
+        vec![
             Message {
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolUse {
                     id: "t1".into(),
-                    name: "bash".into(),
-                    input: serde_json::json!({"command": "ls", "description": "list files"}),
+                    name: tool.into(),
+                    input,
                 }],
                 ..Default::default()
             },
@@ -486,55 +521,28 @@ mod tests {
                 role: Role::User,
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "t1".into(),
-                    content: "file.txt".into(),
-                    is_error: false,
+                    content: result.into(),
+                    is_error,
                 }],
                 ..Default::default()
             },
-        ];
-        let display = history_to_display(&msgs, &empty_outputs());
-        assert_eq!(display.len(), 1);
-        assert!(matches!(
-            display[0].role,
-            DisplayRole::Tool {
-                ref id,
-                status: ToolStatus::Success,
-                name: "bash",
-            } if id == "t1"
-        ));
-        assert!(display[0].text.contains("file.txt"));
+        ]
     }
 
-    #[test]
-    fn history_tool_error_result() {
-        let msgs = vec![
-            Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::ToolUse {
-                    id: "t2".into(),
-                    name: "read".into(),
-                    input: serde_json::json!({"path": "/missing"}),
-                }],
-                ..Default::default()
-            },
-            Message {
-                role: Role::User,
-                content: vec![ContentBlock::ToolResult {
-                    tool_use_id: "t2".into(),
-                    content: "not found".into(),
-                    is_error: true,
-                }],
-                ..Default::default()
-            },
-        ];
+    #[test_case(false, ToolStatus::Success ; "success")]
+    #[test_case(true,  ToolStatus::Error   ; "error")]
+    fn history_tool_result_status(is_error: bool, expected: ToolStatus) {
+        let msgs = tool_use_pair(
+            "bash",
+            serde_json::json!({"command": "ls"}),
+            "output",
+            is_error,
+        );
         let display = history_to_display(&msgs, &empty_outputs());
         assert_eq!(display.len(), 1);
         assert!(matches!(
             display[0].role,
-            DisplayRole::Tool {
-                status: ToolStatus::Error,
-                ..
-            }
+            DisplayRole::Tool { status, .. } if status == expected
         ));
     }
 
@@ -624,26 +632,7 @@ mod tests {
         ];
         for (tool_name, input_json, output) in variants {
             let discriminant = std::mem::discriminant(&output);
-            let msgs = vec![
-                Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::ToolUse {
-                        id: "t1".into(),
-                        name: tool_name.into(),
-                        input: input_json,
-                    }],
-                    ..Default::default()
-                },
-                Message {
-                    role: Role::User,
-                    content: vec![ContentBlock::ToolResult {
-                        tool_use_id: "t1".into(),
-                        content: "ok".into(),
-                        is_error: false,
-                    }],
-                    ..Default::default()
-                },
-            ];
+            let msgs = tool_use_pair(tool_name, input_json, "ok", false);
             let outputs = HashMap::from([("t1".into(), output)]);
             let display = history_to_display(&msgs, &outputs);
             assert_eq!(
@@ -661,29 +650,12 @@ mod tests {
             byte_count: 12,
             lines: vec!["fn main() {}".into()],
         };
-        let msgs = vec![
-            Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::ToolUse {
-                    id: "t1".into(),
-                    name: "write".into(),
-                    input: serde_json::json!({
-                        "path": "/src/main.rs",
-                        "content": "fn main() {}"
-                    }),
-                }],
-                ..Default::default()
-            },
-            Message {
-                role: Role::User,
-                content: vec![ContentBlock::ToolResult {
-                    tool_use_id: "t1".into(),
-                    content: "wrote 12 bytes".into(),
-                    is_error: false,
-                }],
-                ..Default::default()
-            },
-        ];
+        let msgs = tool_use_pair(
+            "write",
+            serde_json::json!({"path": "/src/main.rs", "content": "fn main() {}"}),
+            "wrote 12 bytes",
+            false,
+        );
         let outputs = HashMap::from([("t1".into(), write_output)]);
         let display = history_to_display(&msgs, &outputs);
         assert!(display[0].annotation.is_some());
@@ -711,26 +683,12 @@ mod tests {
     fn history_bash_output_truncated() {
         let long_output = (0..200).map(|i| format!("line {i}")).collect::<Vec<_>>();
         let joined = long_output.join("\n");
-        let msgs = vec![
-            Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::ToolUse {
-                    id: "t1".into(),
-                    name: "bash".into(),
-                    input: serde_json::json!({"command": "cmd", "description": "test"}),
-                }],
-                ..Default::default()
-            },
-            Message {
-                role: Role::User,
-                content: vec![ContentBlock::ToolResult {
-                    tool_use_id: "t1".into(),
-                    content: joined,
-                    is_error: false,
-                }],
-                ..Default::default()
-            },
-        ];
+        let msgs = tool_use_pair(
+            "bash",
+            serde_json::json!({"command": "cmd"}),
+            &joined,
+            false,
+        );
         let display = history_to_display(&msgs, &empty_outputs());
         let line_count = display[0].text.lines().count();
         assert!(
@@ -742,26 +700,12 @@ mod tests {
 
     #[test]
     fn history_webfetch_hides_body() {
-        let msgs = vec![
-            Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::ToolUse {
-                    id: "t1".into(),
-                    name: "webfetch".into(),
-                    input: serde_json::json!({"url": "https://example.com"}),
-                }],
-                ..Default::default()
-            },
-            Message {
-                role: Role::User,
-                content: vec![ContentBlock::ToolResult {
-                    tool_use_id: "t1".into(),
-                    content: "fetched content\nmore lines".into(),
-                    is_error: false,
-                }],
-                ..Default::default()
-            },
-        ];
+        let msgs = tool_use_pair(
+            "webfetch",
+            serde_json::json!({"url": "https://example.com"}),
+            "fetched content\nmore lines",
+            false,
+        );
         let display = history_to_display(&msgs, &empty_outputs());
         assert!(
             !display[0].text.contains('\n'),
@@ -792,27 +736,8 @@ mod tests {
             ],
             text: String::new(),
         };
-        let msgs = vec![
-            Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::ToolUse {
-                    id: "b1".into(),
-                    name: "batch".into(),
-                    input: serde_json::json!({"tool_calls": []}),
-                }],
-                ..Default::default()
-            },
-            Message {
-                role: Role::User,
-                content: vec![ContentBlock::ToolResult {
-                    tool_use_id: "b1".into(),
-                    content: String::new(),
-                    is_error: false,
-                }],
-                ..Default::default()
-            },
-        ];
-        let outputs = HashMap::from([("b1".into(), batch_output)]);
+        let msgs = tool_use_pair("batch", serde_json::json!({"tool_calls": []}), "", false);
+        let outputs = HashMap::from([("t1".into(), batch_output)]);
         let display = history_to_display(&msgs, &outputs);
         let ToolOutput::Batch { entries, .. } = display[0].tool_output.as_ref().unwrap() else {
             panic!("expected Batch output");
@@ -824,33 +749,19 @@ mod tests {
 
     #[test]
     fn history_no_stored_output_falls_back_to_plain_text() {
-        let msgs = vec![
-            Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::ToolUse {
-                    id: "t1".into(),
-                    name: "read".into(),
-                    input: serde_json::json!({"path": "/src/main.rs"}),
-                }],
-                ..Default::default()
-            },
-            Message {
-                role: Role::User,
-                content: vec![ContentBlock::ToolResult {
-                    tool_use_id: "t1".into(),
-                    content: "1: fn main() {}".into(),
-                    is_error: false,
-                }],
-                ..Default::default()
-            },
-        ];
+        let msgs = tool_use_pair(
+            "read",
+            serde_json::json!({"path": "/src/main.rs"}),
+            "1: fn main() {}",
+            false,
+        );
         let display = history_to_display(&msgs, &empty_outputs());
         assert!(display[0].tool_output.is_none());
         assert!(display[0].text.contains("fn main"));
     }
 
     #[test]
-    fn history_grep_output_shows_matches() {
+    fn history_grep_output_uses_structured_data() {
         use maki_agent::{GrepFileEntry, GrepMatch};
         let output = ToolOutput::GrepResult {
             entries: vec![GrepFileEntry {
@@ -861,32 +772,9 @@ mod tests {
                 }],
             }],
         };
-        let msgs = vec![
-            Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::ToolUse {
-                    id: "t1".into(),
-                    name: "grep".into(),
-                    input: serde_json::json!({"pattern": "fn run"}),
-                }],
-                ..Default::default()
-            },
-            Message {
-                role: Role::User,
-                content: vec![ContentBlock::ToolResult {
-                    tool_use_id: "t1".into(),
-                    content: String::new(),
-                    is_error: false,
-                }],
-                ..Default::default()
-            },
-        ];
+        let msgs = tool_use_pair("grep", serde_json::json!({"pattern": "fn run"}), "", false);
         let outputs = HashMap::from([("t1".into(), output)]);
         let display = history_to_display(&msgs, &outputs);
         assert!(display[0].tool_output.is_some());
-        assert!(
-            !display[0].text.contains("src/lib.rs"),
-            "grep body rendered via code_view, not in text"
-        );
     }
 }

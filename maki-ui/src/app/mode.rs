@@ -32,10 +32,8 @@ impl Mode {
         }
     }
 
-    pub(super) fn mark_plan_written(&mut self, written_path: &str) {
-        if let Self::Plan { path, written } = self
-            && (Path::new(written_path) == path.as_path() || path.ends_with(written_path))
-        {
+    pub(super) fn mark_plan_written(&mut self) {
+        if let Self::Plan { written, .. } = self {
             *written = true;
         }
     }

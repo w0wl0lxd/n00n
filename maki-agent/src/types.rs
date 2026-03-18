@@ -1,4 +1,5 @@
 use std::fmt::Write;
+use std::path::Path;
 
 use flume::Sender;
 use maki_providers::{AgentError, ContentBlock, Message, Role, StopReason, TokenUsage};
@@ -395,6 +396,11 @@ impl ToolDoneEvent {
             return None;
         }
         self.output.written_path()
+    }
+
+    pub fn wrote_to(&self, plan_path: &Path) -> bool {
+        self.written_path()
+            .is_some_and(|wp| Path::new(wp) == plan_path || plan_path.ends_with(wp))
     }
 }
 

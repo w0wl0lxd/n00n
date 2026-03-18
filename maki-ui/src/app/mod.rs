@@ -581,8 +581,8 @@ impl App {
         };
 
         if let AgentEvent::ToolDone(ref e) = envelope.event {
-            if let Some(wp) = e.written_path() {
-                self.mode.mark_plan_written(wp);
+            if self.mode.plan_path().is_some_and(|pp| e.wrote_to(pp)) {
+                self.mode.mark_plan_written();
             }
             if let Some(ref outputs) = self.shared_tool_outputs {
                 outputs

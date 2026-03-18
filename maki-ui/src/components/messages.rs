@@ -1082,9 +1082,11 @@ impl MessagesPanel {
                     theme::dim_lines(&mut lines);
                 }
                 if let Some(pp) = &msg.plan_path {
-                    let rule = hr_line(self.viewport_width, theme::current().plan_rule);
-                    lines.insert(0, rule.clone());
-                    lines.push(rule);
+                    if !msg.text.is_empty() {
+                        let rule = hr_line(self.viewport_width, theme::current().plan_rule);
+                        lines.insert(0, rule.clone());
+                        lines.push(rule);
+                    }
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         pp.to_owned(),
