@@ -777,6 +777,10 @@ impl Agent {
             ))?;
         }
 
+        for err in &errors {
+            self.event_tx.try_send(AgentEvent::ToolDone(err.clone()));
+        }
+
         let ctx = self.tool_context();
         let mut results = execute_tools(&parsed, &ctx).await;
 
@@ -1192,7 +1196,7 @@ mod tests {
         }
     }
 
-    fn has_event(events: &[Envelope], predicate: fn(&AgentEvent) -> bool) -> bool {
+    fn has_event(events: &[Envelope], predicate: impl Fn(&AgentEvent) -> bool) -> bool {
         events.iter().any(|e| predicate(&e.event))
     }
 
@@ -1601,5 +1605,29 @@ mod tests {
             matches!(&messages[0].content[0], ContentBlock::Text { text } if text == IMAGE_PLACEHOLDER)
         );
         assert!(matches!(&messages[0].content[1], ContentBlock::Text { text } if text == "hello"));
+    }
+
+    #[test_case(
+        vec![tool_call_response("nonexistent_tool_xyz", "t1"), text_response(StopReason::EndTurn)],
+        "t1"
+        ; "parse_error"
+    )]
+    #[test_case(
+        vec![tool_call_response("glob", "t1"), tool_call_response("glob", "t2"), tool_call_response("glob", "t3"), text_response(StopReason::EndTurn)],
+        "t3"
+        ; "doom_loop"
+    )]
+    fn error_emits_tool_done_event(responses: Vec<StreamResponse>, expected_error_id: &str) {
+        smol::block_on(async {
+            let (agent, event_rx) =
+                make_agent(MockProvider::new(responses), History::new(Vec::new()));
+            let _ = agent.run(default_input()).await;
+            let events = drain_events(&event_rx);
+
+            assert!(has_event(&events, |e| matches!(
+                e,
+                AgentEvent::ToolDone(done) if done.is_error && done.id == expected_error_id
+            )));
+        });
     }
 }
