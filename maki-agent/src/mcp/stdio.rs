@@ -6,17 +6,18 @@ use std::time::{Duration, Instant};
 use async_lock::Mutex;
 use async_process::{Child, Command, Stdio};
 use futures_lite::io::BufReader;
-use futures_lite::{AsyncBufReadExt, AsyncWriteExt};
+use futures_lite::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use serde_json::Value;
+use smol::channel;
 use tracing::{debug, info, warn};
 
 use super::error::McpError;
 use super::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use super::transport::{BoxFuture, McpTransport};
 
-use smol::channel;
-
 type PendingMap = HashMap<u64, channel::Sender<Result<Value, McpError>>>;
+
+const MAX_BODY_SIZE: usize = 64 * 1024 * 1024;
 
 pub struct StdioTransport {
     name: Arc<str>,
@@ -72,43 +73,12 @@ impl StdioTransport {
             let alive = Arc::clone(&alive);
             let pending = Arc::clone(&pending);
             smol::spawn(async move {
-                let mut reader = BufReader::new(stdout);
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    match reader.read_line(&mut line).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {}
-                    }
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    match serde_json::from_str::<JsonRpcResponse>(trimmed) {
-                        Ok(resp) => {
-                            if let Some(id) = resp.id
-                                && let Some(sender) = pending.lock().await.remove(&id)
-                            {
-                                let result = if let Some(err) = resp.error {
-                                    Err(McpError::RpcError {
-                                        server: (*name).into(),
-                                        code: err.code,
-                                        message: err.message,
-                                    })
-                                } else {
-                                    Ok(resp.result.unwrap_or(Value::Null))
-                                };
-                                let _ = sender.send(result).await;
-                            }
-                        }
-                        Err(e) => {
-                            debug!(server = &*name, error = %e, line = trimmed, "non-JSON-RPC line from server");
-                        }
-                    }
+                let result = Self::reader_loop(&name, &mut BufReader::new(stdout), &pending).await;
+                if let Err(e) = &result {
+                    warn!(server = &*name, error = %e, "MCP reader loop ended");
                 }
                 alive.store(false, Ordering::Release);
-                let mut pending = pending.lock().await;
-                for (_, sender) in pending.drain() {
+                for (_, sender) in pending.lock().await.drain() {
                     let _ = sender
                         .send(Err(McpError::ServerDied {
                             server: (*name).into(),
@@ -151,6 +121,93 @@ impl StdioTransport {
         })
     }
 
+    async fn reader_loop(
+        name: &Arc<str>,
+        reader: &mut (impl AsyncBufReadExt + AsyncReadExt + Unpin),
+        pending: &Mutex<PendingMap>,
+    ) -> Result<(), McpError> {
+        let mut line_buf = String::new();
+        loop {
+            let content_length = Self::read_headers(reader, &mut line_buf).await?;
+            if content_length > MAX_BODY_SIZE {
+                return Err(McpError::InvalidResponse {
+                    server: (**name).into(),
+                    reason: format!("Content-Length {content_length} exceeds {MAX_BODY_SIZE}"),
+                });
+            }
+
+            let mut body = vec![0u8; content_length];
+            reader
+                .read_exact(&mut body)
+                .await
+                .map_err(|e| McpError::InvalidResponse {
+                    server: (**name).into(),
+                    reason: format!("body read failed: {e}"),
+                })?;
+
+            let text = match std::str::from_utf8(&body) {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(server = &**name, error = %e, len = body.len(), "non-UTF8 body from server");
+                    continue;
+                }
+            };
+
+            match serde_json::from_str::<JsonRpcResponse>(text) {
+                Ok(resp) => {
+                    if let Some(id) = resp.id
+                        && let Some(sender) = pending.lock().await.remove(&id)
+                    {
+                        let result = if let Some(err) = resp.error {
+                            Err(McpError::RpcError {
+                                server: (**name).into(),
+                                code: err.code,
+                                message: err.message,
+                            })
+                        } else {
+                            Ok(resp.result.unwrap_or(Value::Null))
+                        };
+                        let _ = sender.send(result).await;
+                    }
+                }
+                Err(e) => {
+                    debug!(server = &**name, error = %e, body = text, "non-JSON-RPC message from server");
+                }
+            }
+        }
+    }
+
+    async fn read_headers(
+        reader: &mut (impl AsyncBufReadExt + Unpin),
+        buf: &mut String,
+    ) -> Result<usize, McpError> {
+        let mut content_length: Option<usize> = None;
+        loop {
+            buf.clear();
+            let n = reader
+                .read_line(buf)
+                .await
+                .map_err(|e| McpError::ServerDied {
+                    server: format!("header read: {e}"),
+                })?;
+            if n == 0 {
+                return Err(McpError::ServerDied {
+                    server: "EOF during headers".into(),
+                });
+            }
+            let trimmed = buf.trim();
+            if trimmed.is_empty() {
+                match content_length {
+                    Some(len) => return Ok(len),
+                    None => continue,
+                }
+            }
+            if let Some(val) = trimmed.strip_prefix("Content-Length:") {
+                content_length = val.trim().parse::<usize>().ok();
+            }
+        }
+    }
+
     fn server(&self) -> String {
         (*self.name).into()
     }
@@ -177,12 +234,13 @@ impl StdioTransport {
     }
 
     fn serialize(&self, value: &impl serde::Serialize) -> Result<Vec<u8>, McpError> {
-        let mut line = serde_json::to_string(value).map_err(|e| McpError::InvalidResponse {
+        let json = serde_json::to_string(value).map_err(|e| McpError::InvalidResponse {
             server: self.server(),
             reason: e.to_string(),
         })?;
-        line.push('\n');
-        Ok(line.into_bytes())
+        let mut buf = format!("Content-Length: {}\r\n\r\n", json.len()).into_bytes();
+        buf.extend_from_slice(json.as_bytes());
+        Ok(buf)
     }
 }
 
