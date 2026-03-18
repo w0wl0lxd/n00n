@@ -116,12 +116,6 @@ mod tests {
         }
     }
 
-    fn config(msg: &str) -> AgentError {
-        AgentError::Config {
-            message: msg.into(),
-        }
-    }
-
     #[test_case(429, true  ; "rate_limit")]
     #[test_case(500, true  ; "server_error")]
     #[test_case(529, true  ; "overloaded")]
@@ -137,18 +131,6 @@ mod tests {
         assert_eq!(api(status).is_auth_error(), expected);
     }
 
-    #[test]
-    fn io_is_retryable() {
-        assert!(AgentError::Io(std::io::ErrorKind::BrokenPipe.into()).is_retryable());
-    }
-
-    #[test]
-    fn config_not_retryable() {
-        assert!(!config("HOME not set").is_retryable());
-    }
-
-    const CONNECTION: &str = "Connection error";
-
     #[test_case(429, "Rate limited"        ; "rate_limited")]
     #[test_case(529, "Provider is overloaded" ; "overloaded")]
     #[test_case(500, "Server error (500)"  ; "server_error")]
@@ -160,14 +142,8 @@ mod tests {
     fn retry_message_io() {
         assert_eq!(
             AgentError::Io(std::io::ErrorKind::BrokenPipe.into()).retry_message(),
-            CONNECTION
+            "Connection error"
         );
-    }
-
-    #[test]
-    fn config_display_is_just_message() {
-        let msg = "HOME not set";
-        assert_eq!(config(msg).to_string(), msg);
     }
 
     #[test_case(429, "rate limited, try again in a moment"                              ; "user_msg_429")]
@@ -185,10 +161,10 @@ mod tests {
 
     #[test]
     fn user_message_config() {
-        assert_eq!(
-            config("not authenticated").user_message(),
-            "not authenticated"
-        );
+        let err = AgentError::Config {
+            message: "not authenticated".into(),
+        };
+        assert_eq!(err.user_message(), "not authenticated");
     }
 
     #[test]

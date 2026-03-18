@@ -24,6 +24,7 @@ use crate::{
 };
 
 const API_VERSION: &str = "2023-06-01";
+const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
 const OAUTH_SYSTEM_PREFIX: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
@@ -281,8 +282,8 @@ struct MessageDeltaEvent {
 
 pub struct Anthropic {
     client: HttpClient,
-    auth: Mutex<auth::ResolvedAuth>,
-    auth_kind: auth::AuthKind,
+    auth: Mutex<super::ResolvedAuth>,
+    auth_kind: super::AuthKind,
     storage: DataDir,
 }
 
@@ -300,7 +301,7 @@ impl Anthropic {
 
     fn build_request(&self, method: &str, url: Option<&str>) -> isahc::http::request::Builder {
         let auth = self.auth.lock().unwrap();
-        let url = url.unwrap_or(&auth.api_url);
+        let url = url.unwrap_or_else(|| auth.base_url.as_deref().unwrap_or(MESSAGES_URL));
         let mut builder = Request::builder()
             .method(method)
             .uri(url)
@@ -312,24 +313,27 @@ impl Anthropic {
     }
 
     fn is_oauth(&self) -> bool {
-        matches!(self.auth_kind, auth::AuthKind::OAuth)
+        matches!(self.auth_kind, super::AuthKind::OAuth)
     }
 
     async fn refresh_oauth(&self) -> Result<(), AgentError> {
         let storage = self.storage.clone();
         let resolved = smol::unblock(move || {
-            let tokens = auth::load_tokens(&storage).ok_or_else(|| AgentError::Api {
-                status: 401,
-                message: "OAuth tokens not found on disk".into(),
-            })?;
+            let tokens =
+                maki_storage::auth::load_tokens(&storage, auth::PROVIDER).ok_or_else(|| {
+                    AgentError::Api {
+                        status: 401,
+                        message: "OAuth tokens not found on disk".into(),
+                    }
+                })?;
             match auth::refresh_tokens(&tokens) {
                 Ok(fresh) => {
-                    auth::save_tokens(&storage, &fresh)?;
+                    maki_storage::auth::save_tokens(&storage, auth::PROVIDER, &fresh)?;
                     Ok(auth::build_oauth_resolved(&fresh))
                 }
                 Err(e) => {
                     warn!(error = %e, "OAuth refresh failed, clearing stale tokens");
-                    let _ = auth::delete_tokens(&storage);
+                    let _ = maki_storage::auth::delete_tokens(&storage, auth::PROVIDER);
                     Err(e)
                 }
             }

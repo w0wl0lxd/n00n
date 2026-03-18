@@ -1,11 +1,17 @@
+use std::sync::Mutex;
+
 use flume::Sender;
+use maki_storage::DataDir;
 use serde_json::Value;
+use tracing::{debug, warn};
 
 use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
 use crate::{AgentError, Message, ProviderEvent, StreamResponse};
 
+use super::openai_auth;
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
+use super::{AuthKind, ResolvedAuth};
 
 static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     api_key_env: "OPENAI_API_KEY",
@@ -132,11 +138,82 @@ pub(crate) fn models() -> &'static [ModelEntry] {
     ]
 }
 
-pub struct OpenAi(OpenAiCompatProvider);
+fn auth_header(resolved: &ResolvedAuth) -> &str {
+    resolved
+        .headers
+        .iter()
+        .find(|(k, _)| k == "authorization")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or_default()
+}
+
+pub struct OpenAi {
+    compat: OpenAiCompatProvider,
+    auth: Mutex<ResolvedAuth>,
+    auth_kind: AuthKind,
+    storage: DataDir,
+}
 
 impl OpenAi {
     pub fn new() -> Result<Self, AgentError> {
-        Ok(Self(OpenAiCompatProvider::new(&CONFIG)?))
+        let storage = DataDir::resolve()?;
+        let (resolved, kind) = openai_auth::resolve(&storage)?;
+        let compat = OpenAiCompatProvider::without_auth(&CONFIG);
+        Ok(Self {
+            compat,
+            auth: Mutex::new(resolved),
+            auth_kind: kind,
+            storage,
+        })
+    }
+
+    fn is_oauth(&self) -> bool {
+        matches!(self.auth_kind, AuthKind::OAuth)
+    }
+
+    fn current_auth_header(&self) -> String {
+        auth_header(&self.auth.lock().unwrap()).to_owned()
+    }
+
+    async fn refresh_oauth(&self) -> Result<(), AgentError> {
+        let storage = self.storage.clone();
+        let resolved = smol::unblock(move || {
+            let tokens = maki_storage::auth::load_tokens(&storage, openai_auth::PROVIDER)
+                .ok_or_else(|| AgentError::Api {
+                    status: 401,
+                    message: "OpenAI OAuth tokens not found on disk".into(),
+                })?;
+            match openai_auth::refresh_tokens(&tokens) {
+                Ok(fresh) => {
+                    maki_storage::auth::save_tokens(&storage, openai_auth::PROVIDER, &fresh)?;
+                    Ok(openai_auth::build_oauth_resolved(&fresh))
+                }
+                Err(e) => {
+                    warn!(error = %e, "OpenAI OAuth refresh failed, clearing stale tokens");
+                    let _ = maki_storage::auth::delete_tokens(&storage, openai_auth::PROVIDER);
+                    Err(e)
+                }
+            }
+        })
+        .await?;
+        *self.auth.lock().unwrap() = resolved;
+        debug!("refreshed OpenAI OAuth token");
+        Ok(())
+    }
+
+    async fn with_oauth_retry<T, F, Fut>(&self, f: F) -> Result<T, AgentError>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, AgentError>>,
+    {
+        let result = f().await;
+        if self.is_oauth()
+            && matches!(&result, Err(e) if e.is_auth_error())
+            && self.refresh_oauth().await.is_ok()
+        {
+            return f().await;
+        }
+        result
     }
 }
 
@@ -150,12 +227,34 @@ impl Provider for OpenAi {
         event_tx: &'a Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let body = self.0.build_body(model, messages, system, tools);
-            self.0.do_stream(model, &body, event_tx).await
+            let body = self.compat.build_body(model, messages, system, tools);
+            self.with_oauth_retry(|| async {
+                let header = self.current_auth_header();
+                self.compat
+                    .do_stream_with_header(model, &body, event_tx, &header)
+                    .await
+            })
+            .await
         })
     }
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
-        Box::pin(self.0.do_list_models())
+        Box::pin(async {
+            self.with_oauth_retry(|| async {
+                let header = self.current_auth_header();
+                self.compat.do_list_models_with_header(&header).await
+            })
+            .await
+        })
+    }
+
+    fn refresh_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
+        Box::pin(async {
+            if self.is_oauth() {
+                self.refresh_oauth().await
+            } else {
+                Ok(())
+            }
+        })
     }
 }

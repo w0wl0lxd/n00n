@@ -268,15 +268,12 @@ mod tests {
         }
     }
 
-    #[test_case("strong", ModelTier::Strong ; "parse_strong")]
-    #[test_case("medium", ModelTier::Medium ; "parse_medium")]
-    #[test_case("weak",   ModelTier::Weak   ; "parse_weak")]
-    fn tier_parse_valid(input: &str, expected: ModelTier) {
-        assert_eq!(input.parse::<ModelTier>().unwrap(), expected);
-    }
-
     #[test]
-    fn tier_parse_invalid() {
+    fn tier_display_roundtrip() {
+        for &tier in &TIERS {
+            let s = tier.to_string();
+            assert_eq!(s.parse::<ModelTier>().unwrap(), tier);
+        }
         assert!(matches!(
             "turbo".parse::<ModelTier>(),
             Err(ModelError::InvalidTier(_))

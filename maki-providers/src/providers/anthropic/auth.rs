@@ -1,11 +1,11 @@
 use std::env;
 use std::io::{self, Write};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use maki_storage::DataDir;
-pub(crate) use maki_storage::auth::{OAuthTokens, delete_tokens, load_tokens, save_tokens};
+use maki_storage::auth::{OAuthTokens, delete_tokens, load_tokens, now_millis, save_tokens};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, warn};
@@ -14,40 +14,21 @@ use isahc::ReadResponseExt;
 use isahc::config::Configurable;
 
 use crate::AgentError;
-use crate::providers::CONNECT_TIMEOUT;
+use crate::providers::{AuthKind, CONNECT_TIMEOUT, ResolvedAuth, urlenc};
 
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 const REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
 const SCOPES: &str = "org:create_api_key user:profile user:inference";
-const REFRESH_BUFFER_SECS: u64 = 60;
 const BETA_ADVANCED_TOOL_USE: &str = "advanced-tool-use-2025-11-20";
-const RESPONSE_TYPE: &str = "response_type=code";
-const CHALLENGE_METHOD: &str = "code_challenge_method=S256";
+pub(crate) const PROVIDER: &str = "anthropic";
 
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: u64,
-}
-
-pub struct ResolvedAuth {
-    pub api_url: String,
-    pub headers: Vec<(String, String)>,
-}
-
-pub enum AuthKind {
-    OAuth,
-    ApiKey,
-}
-
-fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 fn generate_pkce() -> (String, String) {
@@ -62,31 +43,15 @@ fn build_authorize_url(challenge: &str) -> String {
     format!(
         "{AUTHORIZE_URL}?code=true\
         &client_id={CLIENT_ID}\
-        &{RESPONSE_TYPE}\
+        &response_type=code\
         &redirect_uri={}\
         &scope={}\
         &code_challenge={challenge}\
-        &{CHALLENGE_METHOD}\
+        &code_challenge_method=S256\
         &state={challenge}",
         urlenc(REDIRECT_URI),
         urlenc(SCOPES),
     )
-}
-
-fn urlenc(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() * 2);
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => {
-                out.push('%');
-                out.push_str(&format!("{b:02X}"));
-            }
-        }
-    }
-    out
 }
 
 fn post_token_request(body: serde_json::Value, context: &str) -> Result<TokenResponse, AgentError> {
@@ -142,6 +107,7 @@ fn into_oauth_tokens(
         access: resp.access_token,
         refresh,
         expires: now_millis() + resp.expires_in * 1000,
+        account_id: None,
     })
 }
 
@@ -167,7 +133,7 @@ fn exchange_code(code: &str, verifier: &str) -> Result<OAuthTokens, AgentError> 
 }
 
 pub(crate) fn refresh_tokens(tokens: &OAuthTokens) -> Result<OAuthTokens, AgentError> {
-    let expired = is_expired(tokens);
+    let expired = tokens.is_expired();
     debug!(expired, "refreshing OAuth tokens");
 
     let body = serde_json::json!({
@@ -183,13 +149,9 @@ pub(crate) fn refresh_tokens(tokens: &OAuthTokens) -> Result<OAuthTokens, AgentE
     into_oauth_tokens(resp, Some(&tokens.refresh))
 }
 
-fn is_expired(tokens: &OAuthTokens) -> bool {
-    now_millis() + REFRESH_BUFFER_SECS * 1000 >= tokens.expires
-}
-
 pub(crate) fn build_oauth_resolved(tokens: &OAuthTokens) -> ResolvedAuth {
     ResolvedAuth {
-        api_url: "https://api.anthropic.com/v1/messages?beta=true".into(),
+        base_url: Some("https://api.anthropic.com/v1/messages?beta=true".into()),
         headers: vec![
             ("authorization".into(), format!("Bearer {}", tokens.access)),
             (
@@ -203,20 +165,20 @@ pub(crate) fn build_oauth_resolved(tokens: &OAuthTokens) -> ResolvedAuth {
 }
 
 pub fn resolve(dir: &DataDir) -> Result<(ResolvedAuth, AuthKind), AgentError> {
-    if let Some(tokens) = load_tokens(dir) {
-        if !is_expired(&tokens) {
+    if let Some(tokens) = load_tokens(dir, PROVIDER) {
+        if !tokens.is_expired() {
             debug!("using OAuth authentication");
             return Ok((build_oauth_resolved(&tokens), AuthKind::OAuth));
         }
         match refresh_tokens(&tokens) {
             Ok(fresh) => {
-                save_tokens(dir, &fresh)?;
+                save_tokens(dir, PROVIDER, &fresh)?;
                 debug!("using OAuth authentication");
                 return Ok((build_oauth_resolved(&fresh), AuthKind::OAuth));
             }
             Err(e) => {
                 warn!(error = %e, "OAuth refresh failed, clearing stale tokens");
-                delete_tokens(dir).ok();
+                delete_tokens(dir, PROVIDER).ok();
             }
         }
     }
@@ -225,7 +187,7 @@ pub fn resolve(dir: &DataDir) -> Result<(ResolvedAuth, AuthKind), AgentError> {
         debug!("using API key authentication");
         return Ok((
             ResolvedAuth {
-                api_url: "https://api.anthropic.com/v1/messages".into(),
+                base_url: Some("https://api.anthropic.com/v1/messages".into()),
                 headers: vec![
                     ("x-api-key".into(), key),
                     ("anthropic-beta".into(), BETA_ADVANCED_TOOL_USE.into()),
@@ -260,40 +222,16 @@ pub fn login(dir: &DataDir) -> Result<(), AgentError> {
     }
 
     let tokens = exchange_code(code, &verifier)?;
-    save_tokens(dir, &tokens)?;
+    save_tokens(dir, PROVIDER, &tokens)?;
     println!("Authenticated successfully.");
     Ok(())
 }
 
 pub fn logout(dir: &DataDir) -> Result<(), AgentError> {
-    if delete_tokens(dir)? {
+    if delete_tokens(dir, PROVIDER)? {
         println!("Logged out.");
     } else {
         println!("Not currently logged in.");
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use test_case::test_case;
-
-    #[test_case("a b", "a%20b" ; "space")]
-    #[test_case("a:b", "a%3Ab" ; "colon")]
-    #[test_case("abc", "abc"   ; "passthrough")]
-    fn urlenc_encodes(input: &str, expected: &str) {
-        assert_eq!(urlenc(input), expected);
-    }
-
-    #[test_case(0,                              true  ; "epoch_is_expired")]
-    #[test_case(now_millis() + 3_600_000,       false ; "future_is_valid")]
-    fn token_expiry(expires: u64, expected: bool) {
-        let tokens = OAuthTokens {
-            access: "a".into(),
-            refresh: "r".into(),
-            expires,
-        };
-        assert_eq!(is_expired(&tokens), expected);
-    }
 }

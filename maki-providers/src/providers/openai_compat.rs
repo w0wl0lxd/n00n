@@ -23,7 +23,7 @@ pub(crate) struct OpenAiCompatConfig {
 
 pub(crate) struct OpenAiCompatProvider {
     client: HttpClient,
-    api_key: String,
+    auth_header: String,
     config: &'static OpenAiCompatConfig,
 }
 
@@ -34,9 +34,17 @@ impl OpenAiCompatProvider {
         })?;
         Ok(Self {
             client: super::http_client(),
-            api_key,
+            auth_header: format!("Bearer {api_key}"),
             config,
         })
+    }
+
+    pub fn without_auth(config: &'static OpenAiCompatConfig) -> Self {
+        Self {
+            client: super::http_client(),
+            auth_header: String::new(),
+            config,
+        }
     }
 
     pub fn build_body(
@@ -70,12 +78,23 @@ impl OpenAiCompatProvider {
         body: &Value,
         event_tx: &Sender<ProviderEvent>,
     ) -> Result<StreamResponse, AgentError> {
+        self.do_stream_with_header(model, body, event_tx, &self.auth_header)
+            .await
+    }
+
+    pub async fn do_stream_with_header(
+        &self,
+        model: &crate::model::Model,
+        body: &Value,
+        event_tx: &Sender<ProviderEvent>,
+        auth_header: &str,
+    ) -> Result<StreamResponse, AgentError> {
         let json_body = serde_json::to_vec(body)?;
         let request = Request::builder()
             .method("POST")
             .uri(format!("{}/chat/completions", self.config.base_url))
             .header("content-type", "application/json")
-            .header("authorization", &format!("Bearer {}", self.api_key))
+            .header("authorization", auth_header)
             .body(json_body)?;
 
         debug!(
@@ -95,10 +114,17 @@ impl OpenAiCompatProvider {
     }
 
     pub async fn do_list_models(&self) -> Result<Vec<String>, AgentError> {
+        self.do_list_models_with_header(&self.auth_header).await
+    }
+
+    pub async fn do_list_models_with_header(
+        &self,
+        auth_header: &str,
+    ) -> Result<Vec<String>, AgentError> {
         let request = Request::builder()
             .method("GET")
             .uri(format!("{}/models", self.config.base_url))
-            .header("authorization", &format!("Bearer {}", self.api_key))
+            .header("authorization", auth_header)
             .body(())?;
         let mut response = self.client.send_async(request).await?;
         if response.status().as_u16() != 200 {
