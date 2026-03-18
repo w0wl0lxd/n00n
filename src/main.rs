@@ -28,7 +28,7 @@ struct Cli {
     #[arg(short, long)]
     print: bool,
 
-    /// Model as provider/model-id (e.g. anthropic/claude-sonnet-4, zai/claude-sonnet-4)
+    /// Model as provider/model-id (e.g. anthropic/claude-sonnet-4, openai/gpt-5.4-nano)
     #[arg(short, long, default_value = "anthropic/claude-opus-4-6")]
     model: String,
 
