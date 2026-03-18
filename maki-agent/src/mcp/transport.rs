@@ -25,6 +25,9 @@ pub trait McpTransport: Send + Sync {
     fn shutdown(self: Box<Self>) -> BoxFuture<'static, ()>;
     fn server_name(&self) -> &Arc<str>;
     fn transport_kind(&self) -> &'static str;
+    fn child_pids(&self) -> Vec<u32> {
+        Vec::new()
+    }
 }
 
 fn invalid_response(name: &Arc<str>, e: impl std::fmt::Display) -> McpError {

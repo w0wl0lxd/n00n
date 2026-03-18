@@ -264,7 +264,24 @@ impl McpManager {
             t.shutdown().await;
         }
     }
+
+    pub fn child_pids(&self) -> Vec<u32> {
+        self.transports
+            .values()
+            .flat_map(|t| t.child_pids())
+            .collect()
+    }
 }
+
+#[cfg(unix)]
+pub fn kill_process_groups(pids: &[u32]) {
+    for &pid in pids {
+        unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
+    }
+}
+
+#[cfg(not(unix))]
+pub fn kill_process_groups(_pids: &[u32]) {}
 
 fn intern(name: String) -> &'static str {
     Box::leak(name.into_boxed_str())
@@ -333,18 +350,7 @@ mod tests {
             assert_eq!(infos.len(), 1);
             assert_eq!(infos[0].name, "srv");
             assert_eq!(infos[0].status, McpServerStatus::Disabled);
-        });
-    }
-
-    #[test]
-    fn runtime_disable_overrides_running_status() {
-        smol::block_on(async {
-            let mut raw = stdio_raw(&["echo"]);
-            raw.enabled = false;
-            let config = make_config(vec![("srv", raw)]);
-            let mgr = McpManager::start_with_config(config).await.unwrap();
-            let infos = mgr.server_infos(&["srv".into()]);
-            assert_eq!(infos[0].status, McpServerStatus::Disabled);
+            assert_eq!(infos[0].config_path, PathBuf::from("/test/config.toml"));
         });
     }
 
@@ -360,18 +366,6 @@ mod tests {
                     .iter()
                     .all(|i| matches!(i.status, McpServerStatus::Failed(_)))
             );
-        });
-    }
-
-    #[test]
-    fn config_path_propagated_to_server_infos() {
-        smol::block_on(async {
-            let mut raw = stdio_raw(&["echo"]);
-            raw.enabled = false;
-            let config = make_config(vec![("srv", raw)]);
-            let mgr = McpManager::start_with_config(config).await.unwrap();
-            let infos = mgr.server_infos(&[]);
-            assert_eq!(infos[0].config_path, PathBuf::from("/test/config.toml"));
         });
     }
 }

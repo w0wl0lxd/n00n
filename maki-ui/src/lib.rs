@@ -136,6 +136,7 @@ fn run_event_loop(
     let mcp_state = McpState {
         disabled: Vec::new(),
         infos: Arc::new(ArcSwap::from_pointee(Vec::new())),
+        pids: Arc::new(Mutex::new(Vec::new())),
     };
 
     let resumed = !session.messages.is_empty();
@@ -220,6 +221,7 @@ fn run_event_loop(
 
         if app.should_quit {
             let session_id = app.session.id.clone();
+            maki_agent::mcp::kill_process_groups(&handles.mcp.pids.lock().unwrap());
             drop(app);
             if let Ok(writer) = Arc::try_unwrap(storage_writer) {
                 writer.shutdown(Duration::from_secs(3));
@@ -303,6 +305,7 @@ pub(crate) enum AgentCommand {
 struct McpState {
     disabled: Vec<String>,
     infos: Arc<ArcSwap<Vec<McpServerInfo>>>,
+    pids: Arc<Mutex<Vec<u32>>>,
 }
 
 struct AgentHandles {
@@ -347,6 +350,7 @@ fn spawn_agent(
     let provider = Arc::clone(provider);
     let skills = Arc::clone(skills);
     let mcp_infos = Arc::clone(&mcp_state.infos);
+    let mcp_pids = Arc::clone(&mcp_state.pids);
     let initial_disabled = mcp_state.disabled.clone();
 
     smol::spawn(async move {
@@ -370,9 +374,10 @@ fn spawn_agent(
 
         let mcp_manager = McpManager::start_with_config(mcp_config).await;
 
-        if let Some(ref mcp) = mcp_manager {
-            mcp.extend_tools(&mut tool_names, &mut tools, &disabled);
-            mcp_infos.store(Arc::new(mcp.server_infos(&disabled)));
+        if let Some(ref mgr) = mcp_manager {
+            mgr.extend_tools(&mut tool_names, &mut tools, &disabled);
+            mcp_infos.store(Arc::new(mgr.server_infos(&disabled)));
+            *mcp_pids.lock().unwrap() = mgr.child_pids();
         }
 
         let cancel_trigger: Arc<Mutex<Option<CancelTrigger>>> = Arc::new(Mutex::new(None));
