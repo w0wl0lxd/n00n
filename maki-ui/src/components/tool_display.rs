@@ -15,7 +15,7 @@ use maki_providers::{ModelPricing, TokenUsage};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
-use crate::markdown::{Keep, Truncated, text_to_lines, truncate_lines};
+use crate::markdown::{Keep, text_to_lines, truncate_lines, truncation_notice};
 use maki_agent::tools::{
     BASH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME,
     INDEX_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, WEBFETCH_TOOL_NAME,
@@ -333,6 +333,7 @@ enum OutputMode<'a> {
         body: Option<&'a str>,
         tool: &'a str,
         is_done: bool,
+        pre_truncated: usize,
     },
     Truncated {
         tool: &'a str,
@@ -403,7 +404,8 @@ impl ToolLineBuilder {
                 body,
                 tool,
                 is_done,
-            } => self.push_output_fallback(output, body, tool, is_done),
+                pre_truncated,
+            } => self.push_output_fallback(output, body, tool, is_done, pre_truncated),
             OutputMode::Truncated { tool, is_done } => {
                 self.push_output_truncated(output, tool, is_done)
             }
@@ -416,6 +418,7 @@ impl ToolLineBuilder {
         body: Option<&str>,
         tool: &str,
         is_done: bool,
+        pre_truncated: usize,
     ) {
         match output {
             None
@@ -431,7 +434,12 @@ impl ToolLineBuilder {
                         let (max, keep) = output_limits(tool);
                         let tr = truncate_lines(text, max, keep);
                         self.push_markdown_body(tr.kept);
-                        self.push_truncation_notice(&tr);
+                        let skipped = if tr.skipped > 0 {
+                            tr.skipped
+                        } else {
+                            pre_truncated
+                        };
+                        self.push_truncation_count(skipped);
                     }
                     return;
                 }
@@ -440,9 +448,10 @@ impl ToolLineBuilder {
                         let (max, keep) = output_limits(tool);
                         let tr = truncate_lines(text, max, keep);
                         self.push_index_body(tr.kept);
-                        self.push_truncation_notice(&tr);
+                        self.push_truncation_count(tr.skipped);
                     } else if let Some(text) = body {
                         self.push_index_body(text);
+                        self.push_truncation_count(pre_truncated);
                     }
                     return;
                 }
@@ -453,7 +462,14 @@ impl ToolLineBuilder {
                     self.push_code_output_separator(tool, TOOL_BODY_INDENT);
                 }
                 if let Some(text) = body {
+                    let (_, keep) = output_limits(tool);
+                    if matches!(keep, Keep::Tail) {
+                        self.push_truncation_count(pre_truncated);
+                    }
                     push_text_lines(&mut self.lines, text, TOOL_BODY_INDENT);
+                    if matches!(keep, Keep::Head) {
+                        self.push_truncation_count(pre_truncated);
+                    }
                 }
                 if let Some(ToolOutput::ReadDir { instructions, .. }) = output {
                     self.maybe_push_instructions(instructions.as_deref());
@@ -481,8 +497,10 @@ impl ToolLineBuilder {
         }
     }
 
-    fn push_truncation_notice(&mut self, tr: &Truncated<'_>) {
-        if let Some(mut line) = tr.notice_line() {
+    fn push_truncation_count(&mut self, skipped: usize) {
+        if skipped > 0 {
+            let text = truncation_notice(skipped);
+            let mut line = Line::from(Span::styled(text, theme::current().tool_dim));
             line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
             self.lines.push(line);
         }
@@ -553,6 +571,9 @@ impl ToolLineBuilder {
             Some(ToolOutput::Plain(text)) => {
                 let (max, keep) = output_limits(tool);
                 let tr = truncate_lines(text, max, keep);
+                if matches!(keep, Keep::Tail) {
+                    self.push_truncation_count(tr.skipped);
+                }
                 if renders_markdown(tool) {
                     self.push_markdown_body(tr.kept);
                 } else if tool == INDEX_TOOL_NAME {
@@ -560,20 +581,22 @@ impl ToolLineBuilder {
                 } else {
                     push_text_lines(&mut self.lines, tr.kept, TOOL_BODY_INDENT);
                 }
-                self.push_truncation_notice(&tr);
+                if matches!(keep, Keep::Head) {
+                    self.push_truncation_count(tr.skipped);
+                }
             }
             Some(ToolOutput::GlobResult { .. }) => {
                 let text = output.unwrap().as_display_text();
                 let (max, keep) = output_limits(tool);
                 let tr = truncate_lines(&text, max, keep);
                 push_text_lines(&mut self.lines, tr.kept, TOOL_BODY_INDENT);
-                self.push_truncation_notice(&tr);
+                self.push_truncation_count(tr.skipped);
             }
             Some(ToolOutput::ReadDir { text, instructions }) => {
                 let (max, keep) = output_limits(tool);
                 let tr = truncate_lines(text, max, keep);
                 push_text_lines(&mut self.lines, tr.kept, TOOL_BODY_INDENT);
-                self.push_truncation_notice(&tr);
+                self.push_truncation_count(tr.skipped);
                 self.maybe_push_instructions(instructions.as_deref());
             }
             other => push_structured_lines(&mut self.lines, other, TOOL_BODY_INDENT),
@@ -676,6 +699,7 @@ pub fn build_tool_lines(
             body,
             tool: tool_name,
             is_done,
+            pre_truncated: msg.truncated_lines,
         },
     );
     b.finish(
@@ -783,6 +807,7 @@ mod tests {
             tool_output: output,
             annotation: None,
             plan_path: None,
+            truncated_lines: 0,
             timestamp: None,
             turn_usage: None,
         }
@@ -1120,6 +1145,7 @@ mod tests {
             plan_path: None,
             timestamp: None,
             turn_usage: None,
+            truncated_lines: 0,
         }
     }
 
@@ -1199,6 +1225,7 @@ mod tests {
             plan_path: None,
             timestamp: None,
             turn_usage: None,
+            truncated_lines: 0,
         }
     }
 

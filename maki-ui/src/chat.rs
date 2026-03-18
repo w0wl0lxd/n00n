@@ -267,7 +267,7 @@ pub fn history_to_display(
                                 })
                                 .unwrap_or((ToolStatus::Success, None));
                             let stored = tool_outputs.get(id).cloned();
-                            let (text, tool_output, mut annotation) =
+                            let (text, truncated_lines, tool_output, mut annotation) =
                                 build_loaded_tool(static_name, &summary, stored, result_text);
                             if let Some(ta) =
                                 tool_call.as_ref().and_then(|tc| tc.start_annotation())
@@ -287,6 +287,7 @@ pub fn history_to_display(
                                 plan_path: None,
                                 timestamp: None,
                                 turn_usage: None,
+                                truncated_lines,
                             });
                         }
                         _ => {}
@@ -305,7 +306,7 @@ fn build_loaded_tool(
     summary: &str,
     reconstructed: Option<ToolOutput>,
     result_text: Option<&str>,
-) -> (String, Option<ToolOutput>, Option<String>) {
+) -> (String, usize, Option<ToolOutput>, Option<String>) {
     match reconstructed {
         Some(ref output @ ToolOutput::GlobResult { .. }) => {
             let annotation = tool_output_annotation(output, tool);
@@ -314,14 +315,14 @@ fn build_loaded_tool(
             } else {
                 let display = output.as_display_text();
                 let (max, keep) = output_limits(tool);
-                let truncated = truncate_lines(&display, max, keep).into_string();
-                format!("{summary}\n{truncated}")
+                let tr = truncate_lines(&display, max, keep);
+                format!("{}\n{}", summary, tr.kept)
             };
-            (text, reconstructed, annotation)
+            (text, 0, reconstructed, annotation)
         }
         Some(ref output @ ToolOutput::GrepResult { .. }) => {
             let annotation = tool_output_annotation(output, tool);
-            (summary.to_owned(), reconstructed, annotation)
+            (summary.to_owned(), 0, reconstructed, annotation)
         }
         Some(ToolOutput::Batch { ref entries, .. }) => {
             let failed = entries
@@ -334,11 +335,11 @@ fn build_loaded_tool(
             } else {
                 summary.to_owned()
             };
-            (text, reconstructed, None)
+            (text, 0, reconstructed, None)
         }
         Some(ref output) => {
             let annotation = tool_output_annotation(output, tool);
-            (summary.to_owned(), reconstructed, annotation)
+            (summary.to_owned(), 0, reconstructed, annotation)
         }
         None => {
             let result = result_text.unwrap_or("");
@@ -348,11 +349,16 @@ fn build_loaded_tool(
                 None
             };
             if result.is_empty() || matches!(tool, WEBFETCH_TOOL_NAME) {
-                (summary.to_owned(), None, annotation)
+                (summary.to_owned(), 0, None, annotation)
             } else {
                 let (max, keep) = output_limits(tool);
-                let truncated = truncate_lines(result, max, keep).into_string();
-                (format!("{summary}\n{truncated}"), None, annotation)
+                let tr = truncate_lines(result, max, keep);
+                (
+                    format!("{}\n{}", summary, tr.kept),
+                    tr.skipped,
+                    None,
+                    annotation,
+                )
             }
         }
     }

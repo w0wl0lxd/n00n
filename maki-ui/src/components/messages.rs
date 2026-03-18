@@ -285,6 +285,7 @@ impl MessagesPanel {
             plan_path: None,
             timestamp: Some(format_timestamp_now()),
             turn_usage: None,
+            truncated_lines: 0,
         });
         self.in_progress_count += 1;
     }
@@ -301,8 +302,9 @@ impl MessagesPanel {
         let (max_lines, keep) = output_limits(tool_name);
         truncate_to_header(&mut msg.text);
         let truncated = truncate_lines(content, max_lines, keep);
+        msg.truncated_lines = truncated.skipped;
         msg.text.push('\n');
-        msg.text.push_str(&truncated.into_string());
+        msg.text.push_str(truncated.kept);
         self.rebuild_tool_segment(tool_id);
     }
 
@@ -338,12 +340,13 @@ impl MessagesPanel {
             ToolOutput::Plain(text) | ToolOutput::ReadDir { text, .. } => {
                 if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
                     let (max, keep) = output_limits(event.tool);
-                    let display = truncate_lines(text, max, keep).into_string();
-                    if !display.is_empty() {
+                    let tr = truncate_lines(text, max, keep);
+                    msg.truncated_lines = tr.skipped;
+                    if !tr.kept.is_empty() {
                         msg.text = format!(
                             "{}
-{display}",
-                            msg.text
+{}",
+                            msg.text, tr.kept
                         );
                     }
                 }
@@ -358,8 +361,9 @@ impl MessagesPanel {
                 } else {
                     let display = output.as_display_text();
                     let (max, keep) = output_limits(event.tool);
-                    let truncated = truncate_lines(&display, max, keep).into_string();
-                    msg.text = format!("{}\n{truncated}", msg.text);
+                    let tr = truncate_lines(&display, max, keep);
+                    msg.truncated_lines = tr.skipped;
+                    msg.text = format!("{}\n{}", msg.text, tr.kept);
                 }
             }
             ToolOutput::GrepResult { entries } => {

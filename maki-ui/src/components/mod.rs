@@ -120,6 +120,7 @@ pub struct DisplayMessage {
     pub plan_path: Option<String>,
     pub timestamp: Option<String>,
     pub turn_usage: Option<String>,
+    pub truncated_lines: usize,
 }
 
 impl DisplayMessage {
@@ -133,6 +134,7 @@ impl DisplayMessage {
             plan_path: None,
             timestamp: None,
             turn_usage: None,
+            truncated_lines: 0,
         }
     }
 
@@ -195,6 +197,7 @@ impl DisplayMessage {
             plan_path: Some(plan_path),
             timestamp: None,
             turn_usage: None,
+            truncated_lines: 0,
         }
     }
 }

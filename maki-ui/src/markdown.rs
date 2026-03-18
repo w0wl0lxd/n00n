@@ -130,6 +130,7 @@ impl<'a> Truncated<'a> {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn into_string(self) -> String {
         if self.skipped == 0 {
             return self.kept.to_owned();
