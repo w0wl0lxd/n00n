@@ -6,7 +6,7 @@ use serde_json::Value;
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 use tracing::{debug, warn};
 
-use crate::model::Model;
+use crate::model::{Model, models_for_provider};
 use crate::providers::openai::OpenAi;
 use crate::providers::zai::{Zai, ZaiPlan};
 use crate::{AgentError, Message, ProviderEvent, StreamResponse};
@@ -95,10 +95,18 @@ pub async fn fetch_all_models(mut on_ready: impl FnMut(ModelBatch)) {
                     warnings: Vec::new(),
                 },
                 Err(e) => {
-                    warn!(provider = %kind, error = %e, "failed to list models");
+                    warn!(provider = %kind, error = %e, "failed to list models, using static fallback");
+                    let fallback: Vec<String> = models_for_provider(kind)
+                        .iter()
+                        .flat_map(|entry| entry.prefixes.iter())
+                        .map(|p| format!("{kind}/{p}"))
+                        .collect();
                     ModelBatch {
-                        models: Vec::new(),
-                        warnings: vec![format!("{}: {e}", kind.display_name())],
+                        models: fallback,
+                        warnings: vec![format!(
+                            "{}: {e} (using static fallback)",
+                            kind.display_name()
+                        )],
                     }
                 }
             };
