@@ -1,11 +1,12 @@
 use std::mem;
 
 use crate::theme;
-use maki_agent::AgentMode;
+use maki_agent::{AgentInput, AgentMode};
 use maki_storage::plans;
 use ratatui::style::{Color, Modifier, Style};
 
 use super::App;
+use super::queue::QueuedMessage;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Mode {
@@ -73,6 +74,15 @@ impl App {
         match &self.mode {
             Mode::BuildPlan => self.ready_plan.as_deref(),
             _ => None,
+        }
+    }
+
+    pub(crate) fn build_agent_input(&self, msg: &QueuedMessage) -> AgentInput {
+        AgentInput {
+            message: msg.text.clone(),
+            mode: self.agent_mode(),
+            pending_plan: self.pending_plan().map(String::from),
+            images: msg.images.clone(),
         }
     }
 

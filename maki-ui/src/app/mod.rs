@@ -39,7 +39,7 @@ use arc_swap::ArcSwapOption;
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 #[cfg(feature = "demo")]
 use maki_agent::QuestionInfo;
-use maki_agent::{AgentEvent, AgentInput, Envelope, ImageSource, SubagentInfo, ToolOutput};
+use maki_agent::{AgentEvent, Envelope, ImageSource, SubagentInfo, ToolOutput};
 use maki_providers::{Message, Model, ModelPricing, TokenUsage};
 use maki_storage::DataDir;
 use maki_storage::input_history::InputHistory;
@@ -50,7 +50,7 @@ use ratatui::layout::Position;
 pub(crate) use mode::Mode;
 #[cfg(test)]
 use mouse::{EDGE_SCROLL_INTERVAL, EDGE_SCROLL_LINES};
-pub(crate) use queue::QueuedItem;
+pub(crate) use queue::{QueuedItem, QueuedMessage};
 
 const CANCEL_MSG: &str = "Cancelled.";
 const FLASH_CANCEL: &str = "Press esc again to stop...";
@@ -523,22 +523,13 @@ impl App {
         if sub.text.trim() == "exit" {
             return self.quit();
         }
-        let input = AgentInput {
-            message: sub.text.clone(),
-            mode: self.agent_mode(),
-            pending_plan: self.pending_plan().map(String::from),
-            images: sub.images,
-        };
+        let msg: QueuedMessage = sub.into();
         if self.status == Status::Streaming {
-            self.queue_and_notify(QueuedItem::Message(input));
+            self.queue_and_notify(QueuedItem::Message(msg));
             vec![]
         } else {
             self.run_id += 1;
-            self.main_chat()
-                .push_user_message(&format_with_images(&input.message, input.images.len()));
-            self.status = Status::Streaming;
-            self.main_chat().enable_auto_scroll();
-            vec![Action::SendMessage(input)]
+            self.start_from_queue(&msg)
         }
     }
 
@@ -629,21 +620,8 @@ impl App {
                 ChatEventResult::Done => {
                     self.status_bar.clear_flash();
                     self.save_session();
-                    if let Some(item) = self.queue.pop_front() {
-                        self.clamp_queue_focus();
-                        return match item {
-                            QueuedItem::Message(mut input) => {
-                                input.mode = self.agent_mode();
-                                input.pending_plan = self.pending_plan().map(String::from);
-                                self.main_chat().push_user_message(&format_with_images(
-                                    &input.message,
-                                    input.images.len(),
-                                ));
-                                self.main_chat().enable_auto_scroll();
-                                vec![Action::SendMessage(input)]
-                            }
-                            QueuedItem::Compact => vec![Action::Compact],
-                        };
+                    if let Some(actions) = self.drain_next_queued() {
+                        return actions;
                     }
                     self.status = Status::Idle;
                 }

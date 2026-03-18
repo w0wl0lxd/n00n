@@ -841,6 +841,7 @@ impl Agent {
         self.event_tx.send(AgentEvent::QueueItemConsumed)?;
         match cmd {
             ExtractedCommand::Interrupt(input, _) => {
+                self.mode = input.mode.clone();
                 let display = input.message.clone();
                 let msg = input.effective_message();
                 let wrapped = format!(

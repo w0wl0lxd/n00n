@@ -2,24 +2,39 @@
 //! the agent immediately via `cmd_tx`; the next is sent only after `QueueItemConsumed`
 //! is received, so messages are delivered one at a time in order.
 
+use crate::components::input::Submission;
 use crate::components::queue_panel::QueueEntry;
 use crate::theme;
-use maki_agent::{AgentInput, AgentMode};
+use maki_agent::ImageSource;
 
 use super::{App, format_with_images};
 
 const COMPACT_LABEL: &str = "/compact";
 
+pub(crate) struct QueuedMessage {
+    pub(crate) text: String,
+    pub(crate) images: Vec<ImageSource>,
+}
+
+impl From<Submission> for QueuedMessage {
+    fn from(sub: Submission) -> Self {
+        Self {
+            text: sub.text,
+            images: sub.images,
+        }
+    }
+}
+
 pub(crate) enum QueuedItem {
-    Message(AgentInput),
+    Message(QueuedMessage),
     Compact,
 }
 
 impl QueuedItem {
     pub(super) fn as_queue_entry(&self) -> QueueEntry<'_> {
         match self {
-            Self::Message(input) => QueueEntry {
-                text: &input.message,
+            Self::Message(msg) => QueueEntry {
+                text: &msg.text,
                 color: theme::current().foreground,
             },
             Self::Compact => QueueEntry {
@@ -32,28 +47,37 @@ impl QueuedItem {
         }
     }
 
-    pub(super) fn to_agent_command(
-        &self,
-        run_id: u64,
-        mode: AgentMode,
-        pending_plan: Option<String>,
-    ) -> crate::AgentCommand {
+    pub(super) fn to_agent_command(&self, app: &App) -> crate::AgentCommand {
         match self {
-            Self::Message(input) => crate::AgentCommand::Run(
-                AgentInput {
-                    message: input.message.clone(),
-                    mode,
-                    pending_plan,
-                    images: input.images.clone(),
-                },
-                run_id,
-            ),
-            Self::Compact => crate::AgentCommand::Compact(run_id),
+            Self::Message(msg) => crate::AgentCommand::Run(app.build_agent_input(msg), app.run_id),
+            Self::Compact => crate::AgentCommand::Compact(app.run_id),
         }
     }
 }
 
 impl App {
+    fn show_queued_input(&mut self, msg: &QueuedMessage) {
+        self.main_chat().flush();
+        self.main_chat()
+            .push_user_message(&format_with_images(&msg.text, msg.images.len()));
+        self.main_chat().enable_auto_scroll();
+    }
+
+    pub(super) fn start_from_queue(&mut self, msg: &QueuedMessage) -> Vec<super::Action> {
+        self.show_queued_input(msg);
+        self.status = super::Status::Streaming;
+        vec![super::Action::SendMessage(self.build_agent_input(msg))]
+    }
+
+    pub(super) fn drain_next_queued(&mut self) -> Option<Vec<super::Action>> {
+        let item = self.queue.pop_front()?;
+        self.clamp_queue_focus();
+        Some(match item {
+            QueuedItem::Message(msg) => self.start_from_queue(&msg),
+            QueuedItem::Compact => vec![super::Action::Compact],
+        })
+    }
+
     pub(super) fn queue_entries(&self) -> Vec<QueueEntry<'_>> {
         self.queue
             .iter()
@@ -72,12 +96,7 @@ impl App {
         if let Some(front) = self.queue.front()
             && let Some(tx) = &self.cmd_tx
         {
-            let cmd = front.to_agent_command(
-                self.run_id,
-                self.agent_mode(),
-                self.pending_plan().map(String::from),
-            );
-            let _ = tx.try_send(cmd);
+            let _ = tx.try_send(front.to_agent_command(self));
         }
     }
 
@@ -85,11 +104,8 @@ impl App {
         let Some(item) = self.queue.pop_front() else {
             return;
         };
-        if let QueuedItem::Message(ref input) = item {
-            self.main_chat().flush();
-            self.main_chat()
-                .push_user_message(&format_with_images(&input.message, input.images.len()));
-            self.main_chat().enable_auto_scroll();
+        if let QueuedItem::Message(ref msg) = item {
+            self.show_queued_input(msg);
         }
         self.clamp_queue_focus();
         self.send_front_to_agent();

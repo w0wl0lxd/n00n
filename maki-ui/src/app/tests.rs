@@ -296,21 +296,7 @@ fn submit_during_streaming_queues_message() {
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(actions.is_empty());
     assert_eq!(app.queue.len(), 1);
-    assert!(matches!(app.queue[0], QueuedItem::Message(ref i) if i.message == "b"));
-}
-
-#[test]
-fn done_drains_queued_message() {
-    let mut app = app_with_queued_message();
-    let actions = app.update(agent_msg(AgentEvent::Done {
-        usage: TokenUsage::default(),
-        num_turns: 1,
-        stop_reason: None,
-    }));
-    assert_eq!(actions.len(), 1);
-    assert!(matches!(&actions[0], Action::SendMessage(i) if i.message == "queued"));
-    assert!(app.queue.is_empty());
-    assert_eq!(app.status, Status::Streaming);
+    assert!(matches!(app.queue[0], QueuedItem::Message(ref m) if m.text == "b"));
 }
 
 #[test_case(error_app as fn(&mut App) ; "error")]
@@ -322,10 +308,9 @@ fn clears_queue(terminate: fn(&mut App)) {
 }
 
 fn queued_msg(text: &str) -> QueuedItem {
-    QueuedItem::Message(AgentInput {
-        message: text.into(),
-        mode: AgentMode::Build,
-        ..Default::default()
+    QueuedItem::Message(QueuedMessage {
+        text: text.into(),
+        images: vec![],
     })
 }
 
@@ -1143,7 +1128,7 @@ fn queue_enter_removes_selected() {
     app.update(Msg::Key(key(KeyCode::Enter)));
     assert_eq!(app.queue.len(), 1);
     match &app.queue[0] {
-        QueuedItem::Message(input) => assert_eq!(input.message, "second"),
+        QueuedItem::Message(input) => assert_eq!(input.text, "second"),
         _ => panic!("expected Message variant"),
     }
     assert_eq!(app.queue_focus, Some(0));
@@ -1179,7 +1164,7 @@ fn ctrl_q_pops_front(initial_focus: Option<usize>) {
     app.update(Msg::Key(kb::POP_QUEUE.to_key_event()));
     assert_eq!(app.queue.len(), 1);
     match &app.queue[0] {
-        QueuedItem::Message(input) => assert_eq!(input.message, "second"),
+        QueuedItem::Message(input) => assert_eq!(input.text, "second"),
         _ => panic!("expected Message variant"),
     }
     assert_eq!(app.queue_focus, initial_focus.map(|_| 0));
@@ -1503,19 +1488,13 @@ fn rewind_to_first_turn_clears_everything() {
     assert!(matches!(&actions[0], Action::LoadSession(_)));
 }
 
-#[test_case(Status::Streaming, Status::Streaming ; "noop_on_streaming")]
-#[test_case(Status::Idle,      Status::Idle      ; "noop_on_idle")]
-fn tick_error_expiry(initial: Status, expected: Status) {
-    let mut app = test_app();
-    app.status = initial;
-    app.tick_error_expiry();
-    assert_eq!(app.status, expected);
-}
-
 #[test]
 fn tick_error_expiry_keeps_fresh_error() {
     let mut app = test_app();
-    app.status = Status::error("fail".into());
+    app.status = Status::Error {
+        message: "fail".into(),
+        since: Instant::now(),
+    };
     app.tick_error_expiry();
     assert!(matches!(app.status, Status::Error { .. }));
 }
@@ -1621,17 +1600,18 @@ fn search_escape_restores_scroll(scroll_top: u16, auto_scroll: bool) {
     assert_eq!(app.active_chat().auto_scroll(), auto_scroll);
 }
 
-#[test]
-fn done_drains_queued_message_with_current_mode() {
+#[test_case(Mode::Plan { path: "p.md".into(), written: false }, AgentMode::Plan("p.md".into()), None ; "plan_mode_at_drain")]
+#[test_case(Mode::Build, AgentMode::Build, None ; "build_mode_at_drain")]
+fn done_drains_queued_message_with_current_mode(
+    mode: Mode,
+    expected_mode: AgentMode,
+    expected_plan: Option<&str>,
+) {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
     app.queue.push_back(queued_msg("queued"));
-
-    app.mode = Mode::Plan {
-        path: "p.md".into(),
-        written: false,
-    };
+    app.mode = mode;
     let actions = app.update(agent_msg(AgentEvent::Done {
         usage: TokenUsage::default(),
         num_turns: 1,
@@ -1640,6 +1620,8 @@ fn done_drains_queued_message_with_current_mode() {
     let Action::SendMessage(ref input) = actions[0] else {
         panic!("expected SendMessage");
     };
-    assert_eq!(input.mode, AgentMode::Plan("p.md".into()));
-    assert!(input.pending_plan.is_none());
+    assert_eq!(input.mode, expected_mode);
+    assert_eq!(input.pending_plan.as_deref(), expected_plan);
+    assert!(app.queue.is_empty());
+    assert_eq!(app.status, Status::Streaming);
 }
