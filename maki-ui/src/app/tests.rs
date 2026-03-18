@@ -8,6 +8,7 @@ use maki_agent::{
 };
 use ratatui::layout::Rect;
 use std::env;
+use std::path::{Path, PathBuf};
 use test_case::test_case;
 
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
@@ -159,7 +160,9 @@ fn toggle_mode_state_machine() {
 
     tab(&mut app);
     assert!(is_plan(&app));
-    assert!(matches!(&app.mode, Mode::Plan { path, .. } if path.contains("plans")));
+    assert!(
+        matches!(&app.mode, Mode::Plan { path, .. } if path.to_str().unwrap().contains("plans"))
+    );
 
     tab(&mut app);
     assert_eq!(app.mode, Mode::Build);
@@ -179,14 +182,14 @@ fn toggle_mode_state_machine() {
 
     tab(&mut app);
     assert_eq!(app.mode, Mode::Build);
-    assert_eq!(app.ready_plan.as_deref(), Some(plan.as_str()));
+    assert_eq!(app.ready_plan.as_deref(), Some(plan.as_path()));
 
     tab(&mut app);
     assert!(is_plan(&app));
 
     tab(&mut app);
     assert_eq!(app.mode, Mode::BuildPlan);
-    assert_eq!(app.ready_plan.as_deref(), Some(plan.as_str()));
+    assert_eq!(app.ready_plan.as_deref(), Some(plan.as_path()));
 
     app.mode = Mode::Build;
     app.status = Status::Streaming;
@@ -200,12 +203,12 @@ fn toggle_mode_state_machine() {
 fn submit_pending_plan(mode: Mode, ready_plan: Option<&str>, expected: Option<&str>) {
     let mut app = test_app();
     app.mode = mode;
-    app.ready_plan = ready_plan.map(String::from);
+    app.ready_plan = ready_plan.map(PathBuf::from);
     let actions = type_and_submit(&mut app, "x");
     let Action::SendMessage(ref input) = actions[0] else {
         panic!("expected SendMessage");
     };
-    assert_eq!(input.pending_plan.as_deref(), expected);
+    assert_eq!(input.pending_plan.as_deref(), expected.map(Path::new));
 }
 
 #[test_case(ToolOutput::WriteCode { path: "plans/test.md".into(), byte_count: 100, lines: vec![] }, true  ; "write_matching")]
@@ -214,7 +217,7 @@ fn submit_pending_plan(mode: Mode, ready_plan: Option<&str>, expected: Option<&s
 fn tool_done_sets_plan_written_flag(output: ToolOutput, expect_written: bool) {
     let mut app = test_app();
     app.mode = Mode::Plan {
-        path: "plans/test.md".into(),
+        path: PathBuf::from("plans/test.md"),
         written: false,
     };
     app.status = Status::Streaming;
@@ -441,7 +444,7 @@ fn reset_session_preserves_plan() {
     app.token_usage.input = 500;
     app.chats[0].context_size = 1000;
     app.mode = Mode::BuildPlan;
-    app.ready_plan = Some("plan.md".into());
+    app.ready_plan = Some(PathBuf::from("plan.md"));
     app.queue.push_back(queued_msg("q"));
     app.queue_focus = Some(0);
     app.update(Msg::Key(kb::HELP.to_key_event()));
@@ -451,7 +454,7 @@ fn reset_session_preserves_plan() {
     assert_eq!(app.token_usage.input, 0);
     assert_eq!(app.chats[0].context_size, 0);
     assert_eq!(app.mode, Mode::BuildPlan);
-    assert_eq!(app.ready_plan.as_deref(), Some("plan.md"));
+    assert_eq!(app.ready_plan.as_deref(), Some(Path::new("plan.md")));
     assert!(app.queue.is_empty());
     assert_eq!(app.chats.len(), 1);
     assert_eq!(app.chats[0].name, "Main");
@@ -728,7 +731,7 @@ fn consumed_item_sends_next_to_agent(first: QueuedItem, expect_user_msg: bool) {
     let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
     app.cmd_tx = Some(tx);
     app.mode = Mode::Plan {
-        path: "p.md".into(),
+        path: PathBuf::from("p.md"),
         written: false,
     };
     app.status = Status::Streaming;
@@ -748,7 +751,7 @@ fn consumed_item_sends_next_to_agent(first: QueuedItem, expect_user_msg: bool) {
     else {
         panic!("expected Run command");
     };
-    assert_eq!(input.mode, AgentMode::Plan("p.md".into()));
+    assert_eq!(input.mode, AgentMode::Plan(PathBuf::from("p.md")));
 }
 
 fn long_question_no_options() -> AgentEvent {
@@ -1605,7 +1608,7 @@ fn search_escape_restores_scroll(scroll_top: u16, auto_scroll: bool) {
 fn done_drains_queued_message_with_current_mode(
     mode: Mode,
     expected_mode: AgentMode,
-    expected_plan: Option<&str>,
+    expected_plan: Option<&Path>,
 ) {
     let mut app = test_app();
     app.status = Status::Streaming;

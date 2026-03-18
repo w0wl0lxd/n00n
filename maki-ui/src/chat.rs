@@ -51,7 +51,7 @@ impl Chat {
         self.pending_turn_usage = Some(usage);
     }
 
-    pub fn handle_event(&mut self, event: AgentEvent, plan_path: Option<&str>) -> ChatEventResult {
+    pub fn handle_event(&mut self, event: AgentEvent, plan_path: Option<&Path>) -> ChatEventResult {
         match event {
             AgentEvent::ThinkingDelta { text } => self.messages_panel.thinking_delta(&text),
             AgentEvent::TextDelta { text } => self.messages_panel.text_delta(&text),
@@ -63,14 +63,14 @@ impl Chat {
             AgentEvent::ToolDone(e) => {
                 let is_plan_write = plan_path.is_some_and(|pp| {
                     e.written_path()
-                        .is_some_and(|wp| wp == pp || Path::new(pp).ends_with(wp))
+                        .is_some_and(|wp| Path::new(wp) == pp || pp.ends_with(wp))
                 });
                 self.messages_panel.tool_done(e);
                 if is_plan_write {
                     let pp = plan_path.unwrap();
                     if let Ok(content) = std::fs::read_to_string(pp) {
                         self.messages_panel
-                            .push(DisplayMessage::plan(content, pp.to_string()));
+                            .push(DisplayMessage::plan(content, pp.display().to_string()));
                     }
                 }
             }
@@ -440,8 +440,8 @@ mod tests {
         std::fs::write(&plan_path, "# My Plan\n\n- Step 1").unwrap();
         let plan_str = plan_path.to_str().unwrap();
 
-        chat.handle_event(tool_start("w1", "write"), Some(plan_str));
-        chat.handle_event(write_done("w1", plan_str), Some(plan_str));
+        chat.handle_event(tool_start("w1", "write"), Some(plan_path.as_path()));
+        chat.handle_event(write_done("w1", plan_str), Some(plan_path.as_path()));
 
         assert!(chat.last_message_is_plan());
         let last = chat.last_message_text();
@@ -452,8 +452,9 @@ mod tests {
     #[test]
     fn plan_write_ignores_different_path() {
         let mut chat = Chat::new("Main".into());
-        chat.handle_event(tool_start("w1", "write"), Some("/plans/123.md"));
-        chat.handle_event(write_done("w1", "src/main.rs"), Some("/plans/123.md"));
+        let plan_path = Path::new("/plans/123.md");
+        chat.handle_event(tool_start("w1", "write"), Some(plan_path));
+        chat.handle_event(write_done("w1", "src/main.rs"), Some(plan_path));
         assert!(!chat.last_message_is_plan());
     }
 

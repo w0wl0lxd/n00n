@@ -16,7 +16,7 @@ pub mod template;
 pub mod tools;
 pub mod types;
 
-use std::path::Path;
+use std::path::PathBuf;
 
 pub use maki_providers::AgentError;
 pub use maki_providers::{ImageMediaType, ImageSource};
@@ -31,7 +31,7 @@ pub use types::{
 pub enum AgentMode {
     #[default]
     Build,
-    Plan(String),
+    Plan(PathBuf),
 }
 
 pub enum ExtractedCommand {
@@ -50,16 +50,17 @@ pub struct AgentConfig {
 pub struct AgentInput {
     pub message: String,
     pub mode: AgentMode,
-    pub pending_plan: Option<String>,
+    pub pending_plan: Option<PathBuf>,
     pub images: Vec<ImageSource>,
 }
 
 impl AgentInput {
     pub fn effective_message(&self) -> String {
         match &self.pending_plan {
-            Some(path) if self.mode == AgentMode::Build && Path::new(path).exists() => {
+            Some(path) if self.mode == AgentMode::Build && path.exists() => {
                 format!(
-                    "A plan was written to {path}. Follow the plan.\n\n{}",
+                    "A plan was written to {}. Follow the plan.\n\n{}",
+                    path.display(),
                     self.message
                 )
             }
@@ -91,16 +92,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let plan_path = dir.path().join("plan.md");
         fs::write(&plan_path, "the plan").unwrap();
-        let path_str = plan_path.to_str().unwrap().to_string();
-
         let input = AgentInput {
             message: "go".into(),
             mode: AgentMode::Build,
-            pending_plan: Some(path_str.clone()),
+            pending_plan: Some(plan_path.clone()),
             ..Default::default()
         };
         let msg = input.effective_message();
-        assert!(msg.contains(&path_str));
+        assert!(msg.contains(plan_path.to_str().unwrap()));
         assert!(msg.contains("go"));
     }
 
@@ -109,7 +108,7 @@ mod tests {
         let input = AgentInput {
             message: "go".into(),
             mode: AgentMode::Build,
-            pending_plan: Some("/nonexistent/plan.md".into()),
+            pending_plan: Some(PathBuf::from("/nonexistent/plan.md")),
             ..Default::default()
         };
         assert_eq!(input.effective_message(), "go");
@@ -119,8 +118,8 @@ mod tests {
     fn effective_message_plan_mode_ignores_pending() {
         let input = AgentInput {
             message: "plan this".into(),
-            mode: AgentMode::Plan("/tmp/p.md".into()),
-            pending_plan: Some("/tmp/p.md".into()),
+            mode: AgentMode::Plan(PathBuf::from("/tmp/p.md")),
+            pending_plan: Some(PathBuf::from("/tmp/p.md")),
             ..Default::default()
         };
         assert_eq!(input.effective_message(), "plan this");

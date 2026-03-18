@@ -12,6 +12,7 @@ mod tests;
 mod view;
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -93,7 +94,7 @@ pub struct App {
     pub status: Status,
     pub token_usage: TokenUsage,
     pub(crate) mode: Mode,
-    pub(crate) ready_plan: Option<String>,
+    pub(crate) ready_plan: Option<PathBuf>,
     pub(super) model_id: String,
     pub(super) pricing: ModelPricing,
     pub(super) context_window: u32,

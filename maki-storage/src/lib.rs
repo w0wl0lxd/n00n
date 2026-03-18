@@ -53,6 +53,8 @@ pub enum StorageError {
     Json(#[from] serde_json::Error),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("slug collision after max attempts")]
+    SlugCollision,
 }
 
 pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), StorageError> {
@@ -83,11 +85,4 @@ pub(crate) fn now_epoch() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
-}
-
-pub(crate) fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }

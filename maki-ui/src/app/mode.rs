@@ -1,4 +1,5 @@
 use std::mem;
+use std::path::{Path, PathBuf};
 
 use crate::theme;
 use maki_agent::{AgentInput, AgentMode};
@@ -11,7 +12,7 @@ use super::queue::QueuedMessage;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Mode {
     Build,
-    Plan { path: String, written: bool },
+    Plan { path: PathBuf, written: bool },
     BuildPlan,
 }
 
@@ -24,7 +25,7 @@ impl Mode {
         }
     }
 
-    pub(super) fn plan_path(&self) -> Option<&str> {
+    pub(super) fn plan_path(&self) -> Option<&Path> {
         match self {
             Self::Plan { path, .. } => Some(path),
             _ => None,
@@ -33,7 +34,7 @@ impl Mode {
 
     pub(super) fn mark_plan_written(&mut self, written_path: &str) {
         if let Self::Plan { path, written } = self
-            && (written_path == path.as_str() || std::path::Path::new(path).ends_with(written_path))
+            && (Path::new(written_path) == path.as_path() || path.ends_with(written_path))
         {
             *written = true;
         }
@@ -46,7 +47,7 @@ impl App {
             Mode::BuildPlan => Mode::Build,
             Mode::Build => Mode::Plan {
                 path: plans::new_plan_path(&self.storage)
-                    .unwrap_or_else(|_| "plans/plan.md".into()),
+                    .unwrap_or_else(|_| PathBuf::from("plans/plan.md")),
                 written: false,
             },
             Mode::Plan { path, written } => {
@@ -70,7 +71,7 @@ impl App {
         }
     }
 
-    pub(super) fn pending_plan(&self) -> Option<&str> {
+    pub(super) fn pending_plan(&self) -> Option<&Path> {
         match &self.mode {
             Mode::BuildPlan => self.ready_plan.as_deref(),
             _ => None,
@@ -81,7 +82,7 @@ impl App {
         AgentInput {
             message: msg.text.clone(),
             mode: self.agent_mode(),
-            pending_plan: self.pending_plan().map(String::from),
+            pending_plan: self.pending_plan().map(Path::to_path_buf),
             images: msg.images.clone(),
         }
     }

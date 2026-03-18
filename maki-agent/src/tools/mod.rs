@@ -435,7 +435,7 @@ macro_rules! register_tools {
                 Box::pin(async move {
                     if let Some(path) = self.mutable_path()
                         && let AgentMode::Plan(plan_path) = &ctx.mode
-                        && path != plan_path
+                        && Path::new(path) != plan_path.as_path()
                     {
                         return ToolDoneEvent {
                             id,
@@ -849,18 +849,21 @@ mod tests {
     ) {
         smol::block_on(async {
             let dir = TempDir::new().unwrap();
-            let plan_path = dir.path().join("plan.md").to_string_lossy().to_string();
+            let plan_path = dir.path().join("plan.md");
             fs::write(&plan_path, "old").unwrap();
-            let other = dir.path().join("other.rs").to_string_lossy().to_string();
+            let other = dir.path().join("other.rs");
             fs::write(&other, "old").unwrap();
             let mode = AgentMode::Plan(plan_path.clone());
             let ctx = stub_ctx(&mode);
 
-            let blocked = ToolCall::from_api(tool, &other_input(&plan_path, &other)).unwrap();
+            let plan_str = plan_path.to_str().unwrap();
+            let other_str = other.to_str().unwrap();
+
+            let blocked = ToolCall::from_api(tool, &other_input(plan_str, other_str)).unwrap();
             let result = blocked.execute(&ctx, "t1".into()).await;
             assert!(result.is_error, "{tool} should be blocked on non-plan file");
 
-            let allowed = ToolCall::from_api(tool, &plan_input(&plan_path, &other)).unwrap();
+            let allowed = ToolCall::from_api(tool, &plan_input(plan_str, other_str)).unwrap();
             let result = allowed.execute(&ctx, "t2".into()).await;
             assert!(!result.is_error, "{tool} should be allowed on plan file");
         });

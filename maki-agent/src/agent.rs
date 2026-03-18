@@ -153,7 +153,7 @@ pub fn build_system_prompt(
     out.push_str(&tool_efficiency_table(tool_names));
 
     if let AgentMode::Plan(plan_path) = mode {
-        let plan_vars = Vars::new().set("{plan_path}", plan_path);
+        let plan_vars = Vars::new().set("{plan_path}", plan_path.display().to_string());
         out.push_str(&plan_vars.apply(crate::prompt::PLAN_PROMPT));
     }
 
@@ -998,7 +998,7 @@ mod tests {
     }
 
     #[test_case(&AgentMode::Build, false ; "build_excludes_plan")]
-    #[test_case(&AgentMode::Plan(PLAN_PATH.into()), true ; "plan_includes_plan")]
+    #[test_case(&AgentMode::Plan(PathBuf::from(PLAN_PATH)), true ; "plan_includes_plan")]
     fn plan_section_presence(mode: &AgentMode, expect_plan: bool) {
         let vars = Vars::new().set("{cwd}", "/tmp").set("{platform}", "linux");
         let prompt = build_system_prompt(&vars, mode, "", &[]);
@@ -1562,7 +1562,9 @@ mod tests {
     fn mcp_tool_blocked_in_plan_mode() {
         smol::block_on(async {
             let result = execute_mcp_tool(
-                &crate::tools::test_support::stub_ctx(&AgentMode::Plan("/tmp/plan.md".into())),
+                &crate::tools::test_support::stub_ctx(&AgentMode::Plan(PathBuf::from(
+                    "/tmp/plan.md",
+                ))),
                 "t1",
                 "myserver__mytool",
                 &serde_json::json!({}),
