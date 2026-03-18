@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::mem;
 use std::path::{Path, PathBuf};
 
@@ -85,11 +86,19 @@ impl App {
         }
     }
 
-    pub(super) fn mode_label(&self) -> (&'static str, Style) {
-        let label = match &self.mode {
-            Mode::Build => "[BUILD]",
-            Mode::Plan { .. } => "[PLAN]",
-            Mode::BuildPlan => "[BUILD PLAN]",
+    pub(super) fn mode_label(&self) -> (Cow<'static, str>, Style) {
+        let label: Cow<'static, str> = match &self.mode {
+            Mode::Build => "[BUILD]".into(),
+            Mode::Plan { .. } => "[PLAN]".into(),
+            Mode::BuildPlan => {
+                let name = self
+                    .ready_plan
+                    .as_deref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("PLAN");
+                format!("[BUILD {name}]").into()
+            }
         };
         let style = Style::new()
             .fg(self.mode.color())

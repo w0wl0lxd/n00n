@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::env;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -35,7 +36,7 @@ pub struct UsageStats<'a> {
 
 pub struct StatusBarContext<'a> {
     pub status: &'a Status,
-    pub mode_label: &'static str,
+    pub mode_label: Cow<'static, str>,
     pub mode_style: Style,
     pub model_id: &'a str,
     pub stats: UsageStats<'a>,
