@@ -156,57 +156,55 @@ fn error_event_sets_status() {
 #[test]
 fn toggle_mode_state_machine() {
     let tab = |app: &mut App| app.update(Msg::Key(key(KeyCode::Tab)));
-    let is_plan = |app: &App| matches!(&app.mode, Mode::Plan { .. });
 
     let mut app = test_app();
     assert_eq!(app.mode, Mode::Build);
 
     tab(&mut app);
-    assert!(is_plan(&app));
-    assert!(
-        matches!(&app.mode, Mode::Plan { path, .. } if path.to_str().unwrap().contains("plans"))
-    );
+    assert_eq!(app.mode, Mode::Plan);
+    let first_path = app.plan.path().unwrap().to_path_buf();
+    assert!(first_path.to_str().unwrap().contains("plans"));
 
     tab(&mut app);
     assert_eq!(app.mode, Mode::Build);
-    assert!(app.ready_plan.is_none());
+    assert!(!app.plan.is_written());
 
     tab(&mut app);
-    if let Mode::Plan {
-        ref mut written, ..
-    } = app.mode
-    {
-        *written = true;
-    }
+    assert_eq!(app.mode, Mode::Plan);
+    assert_eq!(app.plan.path().unwrap(), first_path);
+
+    app.plan.mark_written();
     tab(&mut app);
     assert_eq!(app.mode, Mode::BuildPlan);
-    assert!(app.ready_plan.is_some());
-    let plan = app.ready_plan.clone().unwrap();
+    assert!(app.plan.is_written());
 
     tab(&mut app);
     assert_eq!(app.mode, Mode::Build);
-    assert_eq!(app.ready_plan.as_deref(), Some(plan.as_path()));
+    assert!(app.plan.is_written());
 
     tab(&mut app);
-    assert!(is_plan(&app));
+    assert_eq!(app.mode, Mode::Plan);
+    assert_eq!(app.plan.path().unwrap(), first_path);
 
     tab(&mut app);
     assert_eq!(app.mode, Mode::BuildPlan);
-    assert_eq!(app.ready_plan.as_deref(), Some(plan.as_path()));
+    assert_eq!(app.plan.path().unwrap(), first_path);
 
     app.mode = Mode::Build;
     app.status = Status::Streaming;
     app.run_id = 1;
     tab(&mut app);
-    assert!(is_plan(&app));
+    assert_eq!(app.mode, Mode::Plan);
+    assert_eq!(app.plan.path().unwrap(), first_path);
 }
 
-#[test_case(Mode::BuildPlan, Some("plan.md"), Some("plan.md") ; "build_plan_sends_pending")]
-#[test_case(Mode::Build,     Some("plan.md"), None            ; "build_ignores_ready_plan")]
-fn submit_pending_plan(mode: Mode, ready_plan: Option<&str>, expected: Option<&str>) {
+#[test_case(Mode::BuildPlan, true,  Some("plan.md") ; "build_plan_sends_pending")]
+#[test_case(Mode::Build,     true,  None             ; "build_ignores_ready_plan")]
+#[test_case(Mode::BuildPlan, false, None             ; "build_plan_unwritten")]
+fn submit_pending_plan(mode: Mode, written: bool, expected: Option<&str>) {
     let mut app = test_app();
     app.mode = mode;
-    app.ready_plan = ready_plan.map(PathBuf::from);
+    app.plan = PlanState::with_path(PathBuf::from("plan.md"), written);
     let actions = type_and_submit(&mut app, "x");
     let Action::SendMessage(ref input) = actions[0] else {
         panic!("expected SendMessage");
@@ -219,10 +217,8 @@ fn submit_pending_plan(mode: Mode, ready_plan: Option<&str>, expected: Option<&s
 #[test_case(ToolOutput::WriteCode { path: "other.rs".into(), byte_count: 100, lines: vec![] }, false ; "write_non_matching")]
 fn tool_done_sets_plan_written_flag(output: ToolOutput, expect_written: bool) {
     let mut app = test_app();
-    app.mode = Mode::Plan {
-        path: PathBuf::from("plans/test.md"),
-        written: false,
-    };
+    app.mode = Mode::Plan;
+    app.plan = PlanState::with_path(PathBuf::from("plans/test.md"), false);
     app.status = Status::Streaming;
     app.run_id = 1;
 
@@ -233,7 +229,7 @@ fn tool_done_sets_plan_written_flag(output: ToolOutput, expect_written: bool) {
         is_error: false,
     })));
 
-    assert!(matches!(&app.mode, Mode::Plan { written, .. } if *written == expect_written));
+    assert_eq!(app.plan.is_written(), expect_written);
 }
 
 #[test]
@@ -447,7 +443,7 @@ fn reset_session_preserves_plan() {
     app.token_usage.input = 500;
     app.chats[0].context_size = 1000;
     app.mode = Mode::BuildPlan;
-    app.ready_plan = Some(PathBuf::from("plan.md"));
+    app.plan = PlanState::with_path(PathBuf::from("plan.md"), true);
     app.queue.push_back(queued_msg("q"));
     app.queue_focus = Some(0);
     app.update(Msg::Key(kb::HELP.to_key_event()));
@@ -457,7 +453,8 @@ fn reset_session_preserves_plan() {
     assert_eq!(app.token_usage.input, 0);
     assert_eq!(app.chats[0].context_size, 0);
     assert_eq!(app.mode, Mode::BuildPlan);
-    assert_eq!(app.ready_plan.as_deref(), Some(Path::new("plan.md")));
+    assert_eq!(app.plan.path(), Some(Path::new("plan.md")));
+    assert!(app.plan.is_written());
     assert!(app.queue.is_empty());
     assert_eq!(app.chats.len(), 1);
     assert_eq!(app.chats[0].name, "Main");
@@ -468,6 +465,51 @@ fn reset_session_preserves_plan() {
 }
 
 #[test]
+fn reset_session_clears_plan_in_plan_mode() {
+    let mut app = test_app();
+    app.mode = Mode::Plan;
+    app.plan = PlanState::with_path(PathBuf::from("old-plan.md"), false);
+    app.reset_session();
+    assert_eq!(app.mode, Mode::Build);
+    assert_eq!(app.plan.path(), None);
+}
+
+#[test]
+fn reset_session_preserves_written_plan_in_build_mode() {
+    let mut app = test_app();
+    app.mode = Mode::Build;
+    app.plan = PlanState::with_path(PathBuf::from("leftover.md"), true);
+    app.reset_session();
+    assert_eq!(app.mode, Mode::BuildPlan);
+    assert_eq!(app.plan.path(), Some(Path::new("leftover.md")));
+    assert!(app.plan.is_written());
+}
+
+#[test]
+fn reset_session_clears_unwritten_plan_in_build_mode() {
+    let mut app = test_app();
+    app.mode = Mode::Build;
+    app.plan = PlanState::with_path(PathBuf::from("leftover.md"), false);
+    app.reset_session();
+    assert_eq!(app.mode, Mode::Build);
+    assert_eq!(app.plan.path(), None);
+    assert!(!app.plan.is_written());
+}
+
+#[test]
+fn load_session_clears_plan() {
+    let mut app = test_app();
+    app.session.messages.push(Message::user("test".into()));
+    app.session.save(&app.storage).unwrap();
+    let id = app.session.id.clone();
+    app.mode = Mode::BuildPlan;
+    app.plan = PlanState::with_path(PathBuf::from("old-plan.md"), true);
+    app.load_session(id);
+    assert_eq!(app.mode, Mode::Build);
+    assert_eq!(app.plan.path(), None);
+}
+
+#[test]
 fn tab_in_palette_closes_and_toggles_mode() {
     let mut app = test_app();
     type_slash(&mut app);
@@ -475,7 +517,7 @@ fn tab_in_palette_closes_and_toggles_mode() {
 
     app.update(Msg::Key(key(KeyCode::Tab)));
     assert!(!app.command_palette.is_active());
-    assert!(matches!(&app.mode, Mode::Plan { .. }));
+    assert_eq!(app.mode, Mode::Plan);
 }
 
 #[test]
@@ -733,10 +775,8 @@ fn consumed_item_sends_next_to_agent(first: QueuedItem, expect_user_msg: bool) {
     let mut app = test_app();
     let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
     app.cmd_tx = Some(tx);
-    app.mode = Mode::Plan {
-        path: PathBuf::from("p.md"),
-        written: false,
-    };
+    app.mode = Mode::Plan;
+    app.plan = PlanState::with_path(PathBuf::from("p.md"), false);
     app.status = Status::Streaming;
     app.run_id = 1;
     let before = app.chats[0].message_count();
@@ -1606,10 +1646,11 @@ fn search_escape_restores_scroll(scroll_top: u16, auto_scroll: bool) {
     assert_eq!(app.active_chat().auto_scroll(), auto_scroll);
 }
 
-#[test_case(Mode::Plan { path: "p.md".into(), written: false }, AgentMode::Plan("p.md".into()), None ; "plan_mode_at_drain")]
-#[test_case(Mode::Build, AgentMode::Build, None ; "build_mode_at_drain")]
+#[test_case(Mode::Plan, true,  AgentMode::Plan("p.md".into()), None ; "plan_mode_at_drain")]
+#[test_case(Mode::Build, false, AgentMode::Build,               None ; "build_mode_at_drain")]
 fn done_drains_queued_message_with_current_mode(
     mode: Mode,
+    set_plan: bool,
     expected_mode: AgentMode,
     expected_plan: Option<&Path>,
 ) {
@@ -1618,6 +1659,9 @@ fn done_drains_queued_message_with_current_mode(
     app.run_id = 1;
     app.queue.push_back(queued_msg("queued"));
     app.mode = mode;
+    if set_plan {
+        app.plan = PlanState::with_path(PathBuf::from("p.md"), false);
+    }
     let actions = app.update(agent_msg(AgentEvent::Done {
         usage: TokenUsage::default(),
         num_turns: 1,

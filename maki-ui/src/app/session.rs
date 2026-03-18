@@ -5,7 +5,7 @@ use maki_providers::TokenUsage;
 
 use crate::AppSession;
 
-use super::{App, PendingInput};
+use super::{App, Mode, PendingInput};
 
 impl App {
     pub(super) fn save_session(&mut self) {
@@ -60,7 +60,13 @@ impl App {
     }
 
     pub(super) fn reset_session(&mut self) -> Vec<Action> {
+        let written_plan = self.plan.pending_plan().map(|_| self.plan.clone());
         self.reset_session_state();
+        self.reset_plan();
+        if let Some(plan) = written_plan {
+            self.mode = Mode::BuildPlan;
+            self.plan = plan;
+        }
         self.session = AppSession::new(&self.session.model, &self.session.cwd);
         vec![Action::NewSession]
     }
@@ -124,6 +130,7 @@ impl App {
         };
         self.save_session();
         self.reset_session_state();
+        self.reset_plan();
         self.session = session;
         let display_msgs = history_to_display(&self.session.messages, &self.session.tool_outputs);
         self.main_chat().load_messages(display_msgs);

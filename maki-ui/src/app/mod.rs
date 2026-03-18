@@ -12,7 +12,6 @@ mod tests;
 mod view;
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -49,7 +48,7 @@ use maki_storage::input_history::InputHistory;
 use crate::storage_writer::StorageWriter;
 use ratatui::layout::Position;
 
-pub(crate) use mode::Mode;
+pub(crate) use mode::{Mode, PlanState};
 #[cfg(test)]
 use mouse::{EDGE_SCROLL_INTERVAL, EDGE_SCROLL_LINES};
 pub(crate) use queue::{QueuedItem, QueuedMessage};
@@ -96,7 +95,7 @@ pub struct App {
     pub status: Status,
     pub token_usage: TokenUsage,
     pub(crate) mode: Mode,
-    pub(crate) ready_plan: Option<PathBuf>,
+    pub(crate) plan: PlanState,
     pub(super) model_id: String,
     pub(super) pricing: ModelPricing,
     pub(super) context_window: u32,
@@ -154,7 +153,7 @@ impl App {
             status: Status::Idle,
             token_usage: TokenUsage::default(),
             mode: Mode::Build,
-            ready_plan: None,
+            plan: PlanState::new(),
             model_id,
             pricing,
             context_window,
@@ -579,8 +578,8 @@ impl App {
         };
 
         if let AgentEvent::ToolDone(ref e) = envelope.event {
-            if self.mode.plan_path().is_some_and(|pp| e.wrote_to(pp)) {
-                self.mode.mark_plan_written();
+            if self.mode == Mode::Plan && self.plan.path().is_some_and(|pp| e.wrote_to(pp)) {
+                self.plan.mark_written();
             }
             if let Some(ref outputs) = self.shared_tool_outputs {
                 outputs
@@ -609,7 +608,11 @@ impl App {
 
         self.retry_info = None;
 
-        let plan_path = self.mode.plan_path();
+        let plan_path = if self.mode == Mode::Plan {
+            self.plan.path()
+        } else {
+            None
+        };
 
         if let AgentEvent::TurnComplete {
             usage,
