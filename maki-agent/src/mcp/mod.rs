@@ -17,7 +17,10 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
-use self::config::{McpConfig, McpServerInfo, ServerConfig, Transport, load_config, parse_servers};
+use self::config::{
+    McpConfig, McpServerInfo, McpServerStatus, ServerConfig, Transport, load_config, parse_server,
+    transport_kind,
+};
 use self::error::McpError;
 use self::http::HttpTransport;
 use self::stdio::StdioTransport;
@@ -33,12 +36,18 @@ struct McpToolDef {
     input_schema: Value,
 }
 
+struct ServerEntry {
+    name: String,
+    transport_kind: &'static str,
+    origin: PathBuf,
+    status: McpServerStatus,
+}
+
 pub struct McpManager {
     transports: HashMap<Arc<str>, Box<dyn McpTransport>>,
     tools: Vec<McpToolDef>,
     tool_index: HashMap<&'static str, usize>,
-    origins: HashMap<String, PathBuf>,
-    disabled_entries: Vec<(String, &'static str)>,
+    entries: Vec<ServerEntry>,
 }
 
 impl McpManager {
@@ -48,27 +57,50 @@ impl McpManager {
     }
 
     pub async fn start_with_config(config: McpConfig) -> Option<Arc<Self>> {
-        let disabled_entries = config.disabled_entries();
-        let origins = config.origins;
-        let servers = match parse_servers(config.mcp) {
-            Ok(s) if s.is_empty() && disabled_entries.is_empty() => return None,
-            Ok(s) => s,
-            Err(e) => {
-                warn!(error = %e, "invalid MCP config");
-                return None;
-            }
-        };
+        if config.is_empty() {
+            return None;
+        }
 
+        let origins = config.origins;
         let mut transports: HashMap<Arc<str>, Box<dyn McpTransport>> = HashMap::new();
         let mut tools = Vec::new();
         let mut tool_index = HashMap::new();
+        let mut entries = Vec::new();
 
-        for server in &servers {
-            match Self::start_server(server).await {
+        for (name, raw) in config.mcp {
+            let kind = transport_kind(&raw.transport);
+            let origin = origins.get(&name).cloned().unwrap_or_default();
+
+            if !raw.enabled {
+                entries.push(ServerEntry {
+                    name,
+                    transport_kind: kind,
+                    origin,
+                    status: McpServerStatus::Disabled,
+                });
+                continue;
+            }
+
+            let server_config = match parse_server(name.clone(), raw) {
+                Ok(sc) => sc,
+                Err(e) => {
+                    warn!(server = %name, error = %e, "invalid MCP server config");
+                    entries.push(ServerEntry {
+                        name,
+                        transport_kind: kind,
+                        origin,
+                        status: McpServerStatus::Failed(e.to_string()),
+                    });
+                    continue;
+                }
+            };
+
+            match Self::start_server(&server_config).await {
                 Ok((t, server_tools)) => {
-                    let server_name: Arc<str> = Arc::from(server.name.as_str());
+                    let server_name: Arc<str> = Arc::from(server_config.name.as_str());
                     for tool_info in server_tools {
-                        let qualified = format!("{}{SEPARATOR}{}", server.name, tool_info.name);
+                        let qualified =
+                            format!("{}{SEPARATOR}{}", server_config.name, tool_info.name);
                         let interned = intern(qualified);
                         let idx = tools.len();
                         tools.push(McpToolDef {
@@ -80,31 +112,38 @@ impl McpManager {
                         });
                         tool_index.insert(interned, idx);
                     }
-                    transports.insert(server_name, t);
+                    transports.insert(Arc::clone(&server_name), t);
+                    entries.push(ServerEntry {
+                        name: server_config.name,
+                        transport_kind: kind,
+                        origin,
+                        status: McpServerStatus::Running,
+                    });
                 }
                 Err(e) => {
-                    warn!(server = server.name, error = %e, "failed to start MCP server, skipping");
+                    warn!(server = %server_config.name, error = %e, "failed to start MCP server");
+                    entries.push(ServerEntry {
+                        name: server_config.name,
+                        transport_kind: kind,
+                        origin,
+                        status: McpServerStatus::Failed(e.to_string()),
+                    });
                 }
             }
         }
 
-        if transports.is_empty() && disabled_entries.is_empty() {
-            return None;
-        }
-
         info!(
-            servers = transports.len(),
+            running = transports.len(),
             tools = tools.len(),
-            disabled = disabled_entries.len(),
-            "MCP servers started"
+            total = entries.len(),
+            "MCP servers initialized"
         );
 
         Some(Arc::new(Self {
             transports,
             tools,
             tool_index,
-            origins,
-            disabled_entries,
+            entries,
         }))
     }
 
@@ -195,27 +234,28 @@ impl McpManager {
         for tool in &self.tools {
             *counts.entry(&tool.server_name).or_default() += 1;
         }
-        let active = self
-            .transports
+        self.entries
             .iter()
-            .map(|(name, transport)| McpServerInfo {
-                name: name.to_string(),
-                transport_kind: transport.transport_kind(),
-                tool_count: counts.get(name.as_ref()).copied().unwrap_or(0),
-                enabled: !disabled.contains(&name.to_string()),
-                config_path: self.origins.get(name.as_ref()).cloned().unwrap_or_default(),
-            });
-        let inactive = self
-            .disabled_entries
-            .iter()
-            .map(|(name, kind)| McpServerInfo {
-                name: name.clone(),
-                transport_kind: kind,
-                tool_count: 0,
-                enabled: false,
-                config_path: self.origins.get(name).cloned().unwrap_or_default(),
-            });
-        active.chain(inactive).collect()
+            .map(|entry| {
+                let status = if disabled.contains(&entry.name) {
+                    McpServerStatus::Disabled
+                } else {
+                    entry.status.clone()
+                };
+                McpServerInfo {
+                    name: entry.name.clone(),
+                    transport_kind: entry.transport_kind,
+                    tool_count: match &status {
+                        McpServerStatus::Running => {
+                            counts.get(entry.name.as_str()).copied().unwrap_or(0)
+                        }
+                        _ => 0,
+                    },
+                    status,
+                    config_path: entry.origin.clone(),
+                }
+            })
+            .collect()
     }
 
     pub async fn shutdown(self) {
@@ -233,6 +273,32 @@ fn intern(name: String) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::{McpServerStatus, RawServerConfig, RawStdioFields, RawTransport};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
+    fn stdio_raw(cmd: &[&str]) -> RawServerConfig {
+        RawServerConfig {
+            enabled: true,
+            timeout: DEFAULT_TIMEOUT_MS,
+            transport: RawTransport::Stdio(RawStdioFields {
+                command: cmd.iter().map(|s| s.to_string()).collect(),
+                environment: HashMap::new(),
+            }),
+        }
+    }
+
+    fn make_config(entries: Vec<(&str, RawServerConfig)>) -> McpConfig {
+        let mut mcp = HashMap::new();
+        let mut origins = HashMap::new();
+        for (name, cfg) in entries {
+            origins.insert(name.to_string(), PathBuf::from("/test/config.toml"));
+            mcp.insert(name.to_string(), cfg);
+        }
+        McpConfig { mcp, origins }
+    }
 
     #[test]
     fn empty_config_returns_none() {
@@ -240,6 +306,72 @@ mod tests {
             let config = McpConfig::default();
             let result = McpManager::start_with_config(config).await;
             assert!(result.is_none());
+        });
+    }
+
+    #[test]
+    fn invalid_config_creates_failed_entry() {
+        smol::block_on(async {
+            let config = make_config(vec![("srv", stdio_raw(&[]))]);
+            let mgr = McpManager::start_with_config(config).await.unwrap();
+            let infos = mgr.server_infos(&[]);
+            assert_eq!(infos.len(), 1);
+            assert_eq!(infos[0].name, "srv");
+            assert!(matches!(infos[0].status, McpServerStatus::Failed(_)));
+            assert_eq!(infos[0].tool_count, 0);
+        });
+    }
+
+    #[test]
+    fn disabled_config_creates_disabled_entry() {
+        smol::block_on(async {
+            let mut raw = stdio_raw(&["echo"]);
+            raw.enabled = false;
+            let config = make_config(vec![("srv", raw)]);
+            let mgr = McpManager::start_with_config(config).await.unwrap();
+            let infos = mgr.server_infos(&[]);
+            assert_eq!(infos.len(), 1);
+            assert_eq!(infos[0].name, "srv");
+            assert_eq!(infos[0].status, McpServerStatus::Disabled);
+        });
+    }
+
+    #[test]
+    fn runtime_disable_overrides_running_status() {
+        smol::block_on(async {
+            let mut raw = stdio_raw(&["echo"]);
+            raw.enabled = false;
+            let config = make_config(vec![("srv", raw)]);
+            let mgr = McpManager::start_with_config(config).await.unwrap();
+            let infos = mgr.server_infos(&["srv".into()]);
+            assert_eq!(infos[0].status, McpServerStatus::Disabled);
+        });
+    }
+
+    #[test]
+    fn failed_server_does_not_block_others() {
+        smol::block_on(async {
+            let config = make_config(vec![("bad", stdio_raw(&[])), ("also-bad", stdio_raw(&[]))]);
+            let mgr = McpManager::start_with_config(config).await.unwrap();
+            let infos = mgr.server_infos(&[]);
+            assert_eq!(infos.len(), 2);
+            assert!(
+                infos
+                    .iter()
+                    .all(|i| matches!(i.status, McpServerStatus::Failed(_)))
+            );
+        });
+    }
+
+    #[test]
+    fn config_path_propagated_to_server_infos() {
+        smol::block_on(async {
+            let mut raw = stdio_raw(&["echo"]);
+            raw.enabled = false;
+            let config = make_config(vec![("srv", raw)]);
+            let mgr = McpManager::start_with_config(config).await.unwrap();
+            let infos = mgr.server_infos(&[]);
+            assert_eq!(infos[0].config_path, PathBuf::from("/test/config.toml"));
         });
     }
 }

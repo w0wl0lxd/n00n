@@ -361,9 +361,13 @@ fn spawn_agent(
 
         let mcp_config = maki_agent::mcp::config::load_config(&cwd_path);
         let mut disabled: Vec<String> = initial_disabled;
-        disabled.extend(mcp_config.disabled_entries().into_iter().map(|(name, _)| name));
         disabled.sort_unstable();
         disabled.dedup();
+
+        if !mcp_config.is_empty() {
+            mcp_infos.store(Arc::new(mcp_config.preliminary_infos(&disabled)));
+        }
+
         let mcp_manager = McpManager::start_with_config(mcp_config).await;
 
         if let Some(ref mcp) = mcp_manager {

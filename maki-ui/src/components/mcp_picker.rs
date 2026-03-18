@@ -5,7 +5,7 @@ use crossterm::event::KeyEvent;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
-use maki_agent::McpServerInfo;
+use maki_agent::{McpServerInfo, McpServerStatus};
 
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 
@@ -53,10 +53,23 @@ impl McpPicker {
             .iter()
             .map(|info| McpEntry {
                 name: info.name.clone(),
-                detail_text: format!("{} · {} tools", info.transport_kind, info.tool_count),
+                detail_text: match &info.status {
+                    McpServerStatus::Connecting => {
+                        format!("{} \u{00b7} connecting\u{2026}", info.transport_kind)
+                    }
+                    McpServerStatus::Running => {
+                        format!("{} \u{00b7} {} tools", info.transport_kind, info.tool_count)
+                    }
+                    McpServerStatus::Disabled => {
+                        format!("{} \u{00b7} disabled", info.transport_kind)
+                    }
+                    McpServerStatus::Failed(e) => {
+                        format!("{} \u{00b7} error: {}", info.transport_kind, e)
+                    }
+                },
             })
             .collect();
-        let enabled: Vec<bool> = infos.iter().map(|info| info.enabled).collect();
+        let enabled: Vec<bool> = infos.iter().map(|info| info.status.is_active()).collect();
         self.picker.open_toggleable(entries, enabled, TITLE);
     }
 
@@ -107,14 +120,14 @@ mod tests {
                 name: "fs".into(),
                 transport_kind: "stdio",
                 tool_count: 5,
-                enabled: true,
+                status: McpServerStatus::Running,
                 config_path: PathBuf::from("/home/.config/maki/config.toml"),
             },
             McpServerInfo {
                 name: "github".into(),
                 transport_kind: "stdio",
                 tool_count: 3,
-                enabled: false,
+                status: McpServerStatus::Disabled,
                 config_path: PathBuf::from("/project/maki.toml"),
             },
         ]))

@@ -46,12 +46,26 @@ fn default_timeout() -> u64 {
     DEFAULT_TIMEOUT_MS
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum McpServerStatus {
+    Connecting,
+    Running,
+    Disabled,
+    Failed(String),
+}
+
+impl McpServerStatus {
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Running | Self::Connecting)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct McpServerInfo {
     pub name: String,
     pub transport_kind: &'static str,
     pub tool_count: usize,
-    pub enabled: bool,
+    pub status: McpServerStatus,
     pub config_path: PathBuf,
 }
 
@@ -121,71 +135,83 @@ fn is_valid_server_name(name: &str) -> bool {
 }
 
 impl McpConfig {
-    pub fn disabled_entries(&self) -> Vec<(String, &'static str)> {
+    pub fn is_empty(&self) -> bool {
+        self.mcp.is_empty()
+    }
+
+    pub fn preliminary_infos(&self, disabled: &[String]) -> Vec<McpServerInfo> {
         self.mcp
             .iter()
-            .filter(|(_, v)| !v.enabled)
-            .map(|(name, v)| {
-                let kind = match &v.transport {
-                    RawTransport::Stdio(_) => "stdio",
-                    RawTransport::Http(_) => "http",
+            .map(|(name, raw)| {
+                let status = if !raw.enabled || disabled.contains(name) {
+                    McpServerStatus::Disabled
+                } else {
+                    McpServerStatus::Connecting
                 };
-                (name.clone(), kind)
+                McpServerInfo {
+                    name: name.clone(),
+                    transport_kind: transport_kind(&raw.transport),
+                    tool_count: 0,
+                    status,
+                    config_path: self.origins.get(name).cloned().unwrap_or_default(),
+                }
             })
             .collect()
     }
 }
 
-pub fn parse_servers(raw: HashMap<String, RawServerConfig>) -> Result<Vec<ServerConfig>, McpError> {
-    raw.into_iter()
-        .filter(|(_, v)| v.enabled)
-        .map(|(name, server)| {
-            if !is_valid_server_name(&name) {
+pub fn parse_server(name: String, server: RawServerConfig) -> Result<ServerConfig, McpError> {
+    if !is_valid_server_name(&name) {
+        return Err(McpError::Config(format!(
+            "server name '{name}' must be ASCII alphanumeric + hyphens"
+        )));
+    }
+    if BUILTIN_TOOL_NAMES.contains(&name.as_str()) {
+        return Err(McpError::Config(format!(
+            "server name '{name}' conflicts with built-in tool"
+        )));
+    }
+    if server.timeout == 0 || server.timeout > MAX_TIMEOUT_MS {
+        return Err(McpError::Config(format!(
+            "server '{name}' timeout must be 1..={MAX_TIMEOUT_MS}"
+        )));
+    }
+    let transport = match server.transport {
+        RawTransport::Stdio(cfg) => {
+            let mut cmd = cfg.command.into_iter();
+            let program = cmd
+                .next()
+                .ok_or_else(|| McpError::Config(format!("server '{name}' has empty command")))?;
+            Transport::Stdio {
+                program,
+                args: cmd.collect(),
+                environment: cfg.environment,
+            }
+        }
+        RawTransport::Http(cfg) => {
+            if !cfg.url.starts_with("http://") && !cfg.url.starts_with("https://") {
                 return Err(McpError::Config(format!(
-                    "server name '{name}' must be ASCII alphanumeric + hyphens"
+                    "server '{name}' url must start with http:// or https://"
                 )));
             }
-            if BUILTIN_TOOL_NAMES.contains(&name.as_str()) {
-                return Err(McpError::Config(format!(
-                    "server name '{name}' conflicts with built-in tool"
-                )));
+            Transport::Http {
+                url: cfg.url,
+                headers: cfg.headers,
             }
-            if server.timeout == 0 || server.timeout > MAX_TIMEOUT_MS {
-                return Err(McpError::Config(format!(
-                    "server '{name}' timeout must be 1..={MAX_TIMEOUT_MS}"
-                )));
-            }
-            let transport = match server.transport {
-                RawTransport::Stdio(cfg) => {
-                    let mut cmd = cfg.command.into_iter();
-                    let program = cmd.next().ok_or_else(|| {
-                        McpError::Config(format!("server '{name}' has empty command"))
-                    })?;
-                    Transport::Stdio {
-                        program,
-                        args: cmd.collect(),
-                        environment: cfg.environment,
-                    }
-                }
-                RawTransport::Http(cfg) => {
-                    if !cfg.url.starts_with("http://") && !cfg.url.starts_with("https://") {
-                        return Err(McpError::Config(format!(
-                            "server '{name}' url must start with http:// or https://"
-                        )));
-                    }
-                    Transport::Http {
-                        url: cfg.url,
-                        headers: cfg.headers,
-                    }
-                }
-            };
-            Ok(ServerConfig {
-                name,
-                timeout: Duration::from_millis(server.timeout),
-                transport,
-            })
-        })
-        .collect()
+        }
+    };
+    Ok(ServerConfig {
+        name,
+        timeout: Duration::from_millis(server.timeout),
+        transport,
+    })
+}
+
+pub fn transport_kind(raw: &RawTransport) -> &'static str {
+    match raw {
+        RawTransport::Stdio(_) => "stdio",
+        RawTransport::Http(_) => "http",
+    }
 }
 
 pub fn load_config(cwd: &Path) -> McpConfig {
@@ -286,25 +312,21 @@ mod tests {
         }
     }
 
-    fn servers(entries: Vec<(&str, RawServerConfig)>) -> HashMap<String, RawServerConfig> {
-        entries.into_iter().map(|(k, v)| (k.into(), v)).collect()
-    }
-
     #[test]
     fn empty_command_rejected() {
-        let err = parse_servers(servers(vec![("srv", stdio_raw(&[]))])).unwrap_err();
+        let err = parse_server("srv".into(), stdio_raw(&[])).unwrap_err();
         assert!(err.to_string().contains("empty command"));
     }
 
     #[test]
     fn builtin_name_collision_rejected() {
-        let err = parse_servers(servers(vec![("bash", stdio_raw(&["echo"]))])).unwrap_err();
+        let err = parse_server("bash".into(), stdio_raw(&["echo"])).unwrap_err();
         assert!(err.to_string().contains("conflicts with built-in"));
     }
 
     #[test]
     fn invalid_server_name_rejected() {
-        let err = parse_servers(servers(vec![("bad name!", stdio_raw(&["echo"]))])).unwrap_err();
+        let err = parse_server("bad name!".into(), stdio_raw(&["echo"])).unwrap_err();
         assert!(err.to_string().contains("ASCII alphanumeric"));
     }
 
@@ -313,22 +335,20 @@ mod tests {
     fn invalid_timeout_rejected(timeout: u64) {
         let mut cfg = stdio_raw(&["echo"]);
         cfg.timeout = timeout;
-        let err = parse_servers(servers(vec![("srv", cfg)])).unwrap_err();
+        let err = parse_server("srv".into(), cfg).unwrap_err();
         assert!(err.to_string().contains("timeout"));
     }
 
     #[test]
     fn invalid_http_url_rejected() {
-        let err = parse_servers(servers(vec![("srv", http_raw("ftp://bad.com"))])).unwrap_err();
+        let err = parse_server("srv".into(), http_raw("ftp://bad.com")).unwrap_err();
         assert!(err.to_string().contains("http://"));
     }
 
     #[test]
     fn parse_splits_command_into_program_and_args() {
-        let result =
-            parse_servers(servers(vec![("srv", stdio_raw(&["npx", "-y", "server"]))])).unwrap();
-        assert_eq!(result.len(), 1);
-        match &result[0].transport {
+        let result = parse_server("srv".into(), stdio_raw(&["npx", "-y", "server"])).unwrap();
+        match &result.transport {
             Transport::Stdio { program, args, .. } => {
                 assert_eq!(program, "npx");
                 assert_eq!(args, &["-y", "server"]);
@@ -338,11 +358,10 @@ mod tests {
     }
 
     #[test]
-    fn disabled_servers_filtered() {
+    fn disabled_servers_not_parsed() {
         let mut cfg = stdio_raw(&["echo"]);
         cfg.enabled = false;
-        let result = parse_servers(servers(vec![("srv", cfg)])).unwrap();
-        assert!(result.is_empty());
+        assert!(!cfg.enabled);
     }
 
     #[test]
@@ -417,8 +436,15 @@ command = ["project"]
         merged.mcp.extend(global_cfg.mcp);
         merged.mcp.extend(project_cfg.mcp);
 
-        let parsed = parse_servers(merged.mcp).unwrap();
-        match &parsed[0].transport {
+        let all: Vec<_> = merged
+            .mcp
+            .into_iter()
+            .filter(|(_, v)| v.enabled)
+            .map(|(name, cfg)| parse_server(name, cfg))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        match &all[0].transport {
             Transport::Stdio { program, .. } => assert_eq!(program, "project"),
             _ => panic!("expected Stdio"),
         }
@@ -470,5 +496,61 @@ enabled = true
         let content = fs::read_to_string(&path).unwrap();
         let doc: toml_edit::DocumentMut = content.parse().unwrap();
         assert_eq!(doc["mcp"]["srv"]["enabled"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn transport_kind_returns_correct_value() {
+        assert_eq!(
+            transport_kind(&RawTransport::Stdio(RawStdioFields {
+                command: vec!["echo".into()],
+                environment: HashMap::new(),
+            })),
+            "stdio"
+        );
+        assert_eq!(
+            transport_kind(&RawTransport::Http(RawHttpFields {
+                url: "http://x.com".into(),
+                headers: HashMap::new(),
+            })),
+            "http"
+        );
+    }
+
+    #[test]
+    fn mcp_config_is_empty() {
+        assert!(McpConfig::default().is_empty());
+        let config = McpConfig {
+            mcp: [("srv".into(), stdio_raw(&["echo"]))].into(),
+            origins: HashMap::new(),
+        };
+        assert!(!config.is_empty());
+    }
+
+    #[test]
+    fn preliminary_infos_shows_connecting_and_disabled() {
+        let mut enabled = stdio_raw(&["echo"]);
+        enabled.enabled = true;
+        let mut off = stdio_raw(&["echo"]);
+        off.enabled = false;
+        let config = McpConfig {
+            mcp: [("a".into(), enabled), ("b".into(), off)].into(),
+            origins: [("a".into(), PathBuf::from("/test.toml"))].into(),
+        };
+        let mut infos = config.preliminary_infos(&[]);
+        infos.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(infos.len(), 2);
+        assert_eq!(infos[0].status, McpServerStatus::Connecting);
+        assert_eq!(infos[0].config_path, PathBuf::from("/test.toml"));
+        assert_eq!(infos[1].status, McpServerStatus::Disabled);
+    }
+
+    #[test]
+    fn preliminary_infos_runtime_disable() {
+        let config = McpConfig {
+            mcp: [("srv".into(), stdio_raw(&["echo"]))].into(),
+            origins: HashMap::new(),
+        };
+        let infos = config.preliminary_infos(&["srv".into()]);
+        assert_eq!(infos[0].status, McpServerStatus::Disabled);
     }
 }

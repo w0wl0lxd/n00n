@@ -1641,7 +1641,7 @@ fn mcp_command_opens_picker() {
 
 #[test]
 fn mcp_toggle_dispatches_action() {
-    use maki_agent::McpServerInfo;
+    use maki_agent::{McpServerInfo, McpServerStatus};
     use std::path::PathBuf;
 
     let mut app = test_app();
@@ -1649,7 +1649,7 @@ fn mcp_toggle_dispatches_action() {
         name: "test-srv".into(),
         transport_kind: "stdio",
         tool_count: 2,
-        enabled: true,
+        status: McpServerStatus::Running,
         config_path: PathBuf::from("/tmp/config.toml"),
     }])));
     app.execute_command("/mcp");
