@@ -7,6 +7,7 @@ use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 use tracing::{debug, warn};
 
 use crate::model::Model;
+use crate::providers::openai::OpenAi;
 use crate::providers::zai::{Zai, ZaiPlan};
 use crate::{AgentError, Message, ProviderEvent, StreamResponse};
 
@@ -14,6 +15,8 @@ use crate::{AgentError, Message, ProviderEvent, StreamResponse};
 #[strum(serialize_all = "kebab-case")]
 pub enum ProviderKind {
     Anthropic,
+    #[strum(serialize = "openai")]
+    OpenAi,
     Zai,
     ZaiCodingPlan,
 }
@@ -22,6 +25,7 @@ impl ProviderKind {
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::Anthropic => "Anthropic",
+            Self::OpenAi => "OpenAI",
             Self::Zai => "Z.AI",
             Self::ZaiCodingPlan => "Z.AI Coding",
         }
@@ -30,6 +34,7 @@ impl ProviderKind {
     pub fn create(self) -> Result<Box<dyn Provider>, AgentError> {
         match self {
             Self::Anthropic => Ok(Box::new(crate::providers::anthropic::Anthropic::new()?)),
+            Self::OpenAi => Ok(Box::new(OpenAi::new()?)),
             Self::Zai => Ok(Box::new(Zai::new(ZaiPlan::Standard)?)),
             Self::ZaiCodingPlan => Ok(Box::new(Zai::new(ZaiPlan::Coding)?)),
         }

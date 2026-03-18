@@ -6,6 +6,8 @@ use serde::Deserialize;
 use crate::AgentError;
 
 pub(crate) mod anthropic;
+pub(crate) mod openai;
+pub(crate) mod openai_compat;
 pub(crate) mod zai;
 
 pub use anthropic::auth;
@@ -29,13 +31,13 @@ impl SseErrorPayload {
     pub fn into_agent_error(self) -> AgentError {
         let status = match self.error.r#type.as_str() {
             "overloaded_error" => 529,
-            "api_error" => 500,
-            "rate_limit_error" => 429,
+            "api_error" | "server_error" => 500,
+            "rate_limit_error" | "rate_limit_exceeded" | "tokens" => 429,
             "request_too_large" => 413,
             "not_found_error" => 404,
             "permission_error" => 403,
-            "billing_error" => 402,
-            "authentication_error" => 401,
+            "billing_error" | "insufficient_quota" => 402,
+            "authentication_error" | "invalid_api_key" => 401,
             _ => 400,
         };
         AgentError::Api {

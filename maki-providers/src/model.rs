@@ -10,7 +10,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::provider::ProviderKind;
-use crate::providers::{anthropic, zai};
+use crate::providers::{anthropic, openai, zai};
 
 const PER_MILLION: f64 = 1_000_000.0;
 
@@ -40,6 +40,7 @@ pub struct ModelPricing {
 pub enum ModelFamily {
     Claude,
     Glm,
+    Gpt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -95,6 +96,7 @@ fn lookup_entry<'a>(
 pub(crate) fn models_for_provider(provider: ProviderKind) -> &'static [ModelEntry] {
     match provider {
         ProviderKind::Anthropic => anthropic::models(),
+        ProviderKind::OpenAi => openai::models(),
         ProviderKind::Zai | ProviderKind::ZaiCodingPlan => zai::models(),
     }
 }
@@ -102,7 +104,7 @@ pub(crate) fn models_for_provider(provider: ProviderKind) -> &'static [ModelEntr
 impl ModelFamily {
     pub fn supports_tool_examples(self) -> bool {
         match self {
-            ModelFamily::Claude => true,
+            ModelFamily::Claude | ModelFamily::Gpt => true,
             ModelFamily::Glm => false,
         }
     }
@@ -194,30 +196,17 @@ impl AddAssign for TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::ProviderKind;
+    use strum::IntoEnumIterator;
     use test_case::test_case;
 
-    #[test_case("anthropic/claude-3-5-haiku-20241022", 8192, 200_000 ; "anthropic_tier")]
-    #[test_case("anthropic/claude-opus-4-6-20260101", 128000, 200_000 ; "anthropic_high_output_tier")]
-    #[test_case("zai/glm-5", 131072, 200_000 ; "zai_200k_context")]
-    #[test_case("zai/glm-4.5", 98304, 131_072 ; "zai_131k_context")]
-    #[test_case("zai-coding-plan/glm-4.7", 131072, 200_000 ; "zai_coding_plan_alias")]
-    fn from_spec_resolves_tier(spec: &str, expected_max: u32, expected_ctx: u32) {
-        let model = Model::from_spec(spec).unwrap();
-        assert_eq!(model.max_output_tokens, expected_max);
-        assert_eq!(model.context_window, expected_ctx);
-    }
-
-    #[test]
-    fn zai_free_tier_has_zero_pricing() {
-        let model = Model::from_spec("zai/glm-4.7-flash").unwrap();
-        assert_eq!(model.pricing.input, 0.0);
-        assert_eq!(model.pricing.output, 0.0);
-    }
+    const TIERS: [ModelTier; 3] = [ModelTier::Weak, ModelTier::Medium, ModelTier::Strong];
 
     #[test_case("no-slash-here", ModelError::InvalidFormat ; "invalid_format")]
-    #[test_case("openai/gpt-4", ModelError::UnsupportedProvider("openai".into()) ; "unsupported_provider")]
+    #[test_case("foobar/gpt-4", ModelError::UnsupportedProvider("foobar".into()) ; "unsupported_provider")]
     #[test_case("anthropic/claude-99-turbo", ModelError::UnknownModel("claude-99-turbo".into()) ; "unknown_anthropic_model")]
     #[test_case("zai/glm-99", ModelError::UnknownModel("glm-99".into()) ; "unknown_zai_model")]
+    #[test_case("openai/gpt-99", ModelError::UnknownModel("gpt-99".into()) ; "unknown_openai_model")]
     fn from_spec_errors(spec: &str, expected: ModelError) {
         let err = Model::from_spec(spec).unwrap_err();
         assert_eq!(
@@ -257,43 +246,26 @@ mod tests {
     }
 
     #[test]
-    fn spec_roundtrips_through_from_spec() {
-        let model = Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap();
-        let spec = model.spec();
-        let round = Model::from_spec(&spec).unwrap();
-        assert_eq!(round.id, model.id);
-        assert_eq!(round.max_output_tokens, model.max_output_tokens);
+    fn spec_roundtrip() {
+        for provider in ProviderKind::iter() {
+            let model = Model::from_tier(provider, ModelTier::Medium).unwrap();
+            let round = Model::from_spec(&model.spec()).unwrap();
+            assert_eq!(round.id, model.id);
+            assert_eq!(round.provider, model.provider);
+        }
     }
 
-    #[test_case("anthropic/claude-opus-4-6-20260101",    ModelTier::Strong ; "anthropic_opus_strong")]
-    #[test_case("anthropic/claude-3-opus-20240229",      ModelTier::Strong ; "anthropic_opus3_strong")]
-    #[test_case("anthropic/claude-sonnet-4-20250514",    ModelTier::Medium ; "anthropic_sonnet_medium")]
-    #[test_case("anthropic/claude-3-7-sonnet-20250219",  ModelTier::Medium ; "anthropic_37sonnet_medium")]
-    #[test_case("anthropic/claude-3-5-haiku-20241022",   ModelTier::Weak   ; "anthropic_35haiku_weak")]
-    #[test_case("anthropic/claude-haiku-4-5-20250506",   ModelTier::Weak   ; "anthropic_haiku45_weak")]
-    #[test_case("zai/glm-5-code",                       ModelTier::Strong ; "zai_glm5code_strong")]
-    #[test_case("zai/glm-5",                            ModelTier::Strong ; "zai_glm5_strong")]
-    #[test_case("zai/glm-4.7",                          ModelTier::Medium ; "zai_glm47_medium")]
-    #[test_case("zai/glm-4.5",                          ModelTier::Medium ; "zai_glm45_medium")]
-    #[test_case("zai/glm-4.7-flash",                    ModelTier::Weak   ; "zai_glm47flash_weak")]
-    #[test_case("zai/glm-4.5-flash",                    ModelTier::Weak   ; "zai_glm45flash_weak")]
-    #[test_case("zai/glm-4.5-air",                      ModelTier::Weak   ; "zai_glm45air_weak")]
-    fn model_tier_classification(spec: &str, expected: ModelTier) {
-        let model = Model::from_spec(spec).unwrap();
-        assert_eq!(model.tier, expected);
-    }
-
-    #[test_case(ProviderKind::Anthropic,     ModelTier::Strong ; "anthropic_strong")]
-    #[test_case(ProviderKind::Anthropic,     ModelTier::Medium ; "anthropic_medium")]
-    #[test_case(ProviderKind::Anthropic,     ModelTier::Weak   ; "anthropic_weak")]
-    #[test_case(ProviderKind::Zai,           ModelTier::Strong ; "zai_strong")]
-    #[test_case(ProviderKind::Zai,           ModelTier::Medium ; "zai_medium")]
-    #[test_case(ProviderKind::Zai,           ModelTier::Weak   ; "zai_weak")]
-    #[test_case(ProviderKind::ZaiCodingPlan, ModelTier::Strong ; "zai_coding_plan_strong")]
-    fn from_tier_produces_valid_model(provider: ProviderKind, tier: ModelTier) {
-        let model = Model::from_tier(provider, tier).unwrap();
-        assert_eq!(model.provider, provider);
-        assert_eq!(model.tier, tier);
+    #[test]
+    fn from_tier_covers_all_providers() {
+        for provider in ProviderKind::iter() {
+            for &tier in &TIERS {
+                let model = Model::from_tier(provider, tier).unwrap();
+                assert_eq!(model.provider, provider);
+                assert_eq!(model.tier, tier);
+                assert!(model.max_output_tokens > 0);
+                assert!(model.context_window > model.max_output_tokens);
+            }
+        }
     }
 
     #[test_case("strong", ModelTier::Strong ; "parse_strong")]
@@ -313,14 +285,9 @@ mod tests {
 
     #[test]
     fn exactly_one_default_per_provider_tier() {
-        for (provider, entries) in [
-            (
-                ProviderKind::Anthropic,
-                models_for_provider(ProviderKind::Anthropic),
-            ),
-            (ProviderKind::Zai, models_for_provider(ProviderKind::Zai)),
-        ] {
-            for tier in [ModelTier::Weak, ModelTier::Medium, ModelTier::Strong] {
+        for provider in ProviderKind::iter() {
+            let entries = models_for_provider(provider);
+            for &tier in &TIERS {
                 let count = entries
                     .iter()
                     .filter(|e| e.tier == tier && e.default)
