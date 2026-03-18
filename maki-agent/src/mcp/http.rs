@@ -252,6 +252,10 @@ impl McpTransport for HttpTransport {
     fn server_name(&self) -> &Arc<str> {
         &self.name
     }
+
+    fn transport_kind(&self) -> &'static str {
+        "http"
+    }
 }
 
 fn parse_sse_events(body: &str) -> Vec<Value> {

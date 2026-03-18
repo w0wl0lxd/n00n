@@ -7,6 +7,7 @@
 pub mod agent;
 pub mod cancel;
 pub mod mcp;
+pub use mcp::config::McpServerInfo;
 pub(crate) mod task_set;
 pub use agent::{Agent, AgentParams, AgentRunParams, History, LoadedInstructions, RunOutcome};
 pub use cancel::{CancelToken, CancelTrigger};

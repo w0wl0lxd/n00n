@@ -24,6 +24,7 @@ pub trait McpTransport: Send + Sync {
     ) -> BoxFuture<'a, Result<(), McpError>>;
     fn shutdown(self: Box<Self>) -> BoxFuture<'static, ()>;
     fn server_name(&self) -> &Arc<str>;
+    fn transport_kind(&self) -> &'static str;
 }
 
 fn invalid_response(name: &Arc<str>, e: impl std::fmt::Display) -> McpError {

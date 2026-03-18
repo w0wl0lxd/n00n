@@ -24,6 +24,7 @@ use crate::components::help_modal::HelpModal;
 use crate::components::input::{InputAction, InputBox, Submission};
 use crate::components::keybindings::key;
 use crate::components::list_picker::{ListPicker, PickerAction};
+use crate::components::mcp_picker::{McpPicker, McpPickerAction};
 use crate::components::model_picker::{ModelPicker, ModelPickerAction};
 use crate::components::question_form::{QuestionForm, QuestionFormAction};
 use crate::components::rewind_picker::{RewindPicker, RewindPickerAction};
@@ -36,11 +37,11 @@ use crate::components::{Action, DisplayMessage, DisplayRole, RetryInfo, Status, 
 use crate::image;
 use crate::selection::{SelectionState, ZoneRegistry};
 use arboard::Clipboard;
-use arc_swap::ArcSwapOption;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 #[cfg(feature = "demo")]
 use maki_agent::QuestionInfo;
-use maki_agent::{AgentEvent, Envelope, ImageSource, SubagentInfo, ToolOutput};
+use maki_agent::{AgentEvent, Envelope, ImageSource, McpServerInfo, SubagentInfo, ToolOutput};
 use maki_providers::{Message, Model, ModelPricing, TokenUsage};
 use maki_storage::DataDir;
 use maki_storage::input_history::InputHistory;
@@ -85,6 +86,7 @@ pub struct App {
     pub(super) task_picker_original: Option<usize>,
     pub(super) theme_picker: ThemePicker,
     pub(super) model_picker: ModelPicker,
+    pub(super) mcp_picker: McpPicker,
     pub(super) session_picker: SessionPicker,
     pub(super) rewind_picker: RewindPicker,
     pub(super) help_modal: HelpModal,
@@ -121,6 +123,7 @@ pub struct App {
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model_id: String,
         pricing: ModelPricing,
@@ -128,6 +131,7 @@ impl App {
         session: AppSession,
         storage: DataDir,
         available_models: Arc<ArcSwapOption<Vec<String>>>,
+        mcp_infos: Arc<ArcSwap<Vec<McpServerInfo>>>,
         storage_writer: Arc<StorageWriter>,
     ) -> Self {
         Self {
@@ -140,6 +144,7 @@ impl App {
             task_picker_original: None,
             theme_picker: ThemePicker::new(),
             model_picker: ModelPicker::new(available_models),
+            mcp_picker: McpPicker::new(mcp_infos),
             session_picker: SessionPicker::new(),
             rewind_picker: RewindPicker::new(),
             help_modal: HelpModal::new(),
@@ -340,7 +345,7 @@ impl App {
 
         if self.task_picker.is_open() {
             return match self.task_picker.handle_key(key) {
-                PickerAction::Consumed => vec![],
+                PickerAction::Consumed | PickerAction::Toggle(..) => vec![],
                 PickerAction::Select(idx, _) => {
                     self.task_picker_original = None;
                     self.active_chat = idx;
@@ -391,6 +396,19 @@ impl App {
                     vec![Action::ChangeModel(spec)]
                 }
                 ModelPickerAction::Close => vec![],
+            };
+        }
+
+        if self.mcp_picker.is_open() {
+            return match self.mcp_picker.handle_key(key) {
+                McpPickerAction::Consumed => vec![],
+                McpPickerAction::Toggle {
+                    server_name,
+                    enabled,
+                } => {
+                    vec![Action::ToggleMcp(server_name, enabled)]
+                }
+                McpPickerAction::Close => vec![],
             };
         }
 
@@ -710,6 +728,10 @@ impl App {
             }
             "/theme" => {
                 self.theme_picker.open();
+                vec![]
+            }
+            "/mcp" => {
+                self.mcp_picker.open();
                 vec![]
             }
             "/exit" => self.quit(),

@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use arc_swap::ArcSwapOption;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 use crossterm::ExecutableCommand;
@@ -34,9 +34,11 @@ use crossterm::event::{
     MouseEvent as CtMouseEvent, MouseEventKind,
 };
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use futures_lite::future;
 use maki_agent::ToolOutput;
 use maki_agent::agent;
 use maki_agent::mcp::McpManager;
+use maki_agent::mcp::config::{McpServerInfo, persist_enabled};
 use maki_agent::skill::Skill;
 use maki_agent::template;
 use maki_agent::tools::ToolCall;
@@ -131,6 +133,10 @@ fn run_event_loop(
     .detach();
 
     let storage_writer = Arc::new(storage_writer::StorageWriter::new(storage.clone()));
+    let mcp_state = McpState {
+        disabled: Vec::new(),
+        infos: Arc::new(ArcSwap::from_pointee(Vec::new())),
+    };
 
     let resumed = !session.messages.is_empty();
     let initial_history = session.messages.clone();
@@ -141,6 +147,7 @@ fn run_event_loop(
         session,
         storage,
         available_models,
+        Arc::clone(&mcp_state.infos),
         Arc::clone(&storage_writer),
     );
     #[cfg(feature = "demo")]
@@ -171,7 +178,14 @@ fn run_event_loop(
     let mut provider: Arc<dyn Provider> = Arc::from(from_model(&model).context("create provider")?);
     let skills: Arc<[Skill]> = Arc::from(skills);
     let mut model = model;
-    let mut handles = spawn_agent(&provider, &model, initial_history, &skills, config);
+    let mut handles = spawn_agent(
+        &provider,
+        &model,
+        initial_history,
+        &skills,
+        config,
+        mcp_state,
+    );
     handles.apply_to_app(&mut app);
     if resumed {
         app.token_usage = app.session.token_usage;
@@ -282,6 +296,13 @@ pub(crate) enum AgentCommand {
     Run(AgentInput, u64),
     Compact(u64),
     Cancel,
+    ToggleMcp(String, bool),
+}
+
+#[derive(Clone, Default)]
+struct McpState {
+    disabled: Vec<String>,
+    infos: Arc<ArcSwap<Vec<McpServerInfo>>>,
 }
 
 struct AgentHandles {
@@ -290,6 +311,7 @@ struct AgentHandles {
     answer_tx: flume::Sender<String>,
     history: Arc<Mutex<Vec<Message>>>,
     tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>>,
+    mcp: McpState,
 }
 
 impl AgentHandles {
@@ -299,6 +321,10 @@ impl AgentHandles {
         app.shared_history = Some(Arc::clone(&self.history));
         app.shared_tool_outputs = Some(Arc::clone(&self.tool_outputs));
     }
+
+    fn mcp(&self) -> McpState {
+        self.mcp.clone()
+    }
 }
 
 fn spawn_agent(
@@ -307,6 +333,7 @@ fn spawn_agent(
     initial_history: Vec<Message>,
     skills: &Arc<[Skill]>,
     config: AgentConfig,
+    mcp_state: McpState,
 ) -> AgentHandles {
     let (agent_tx, agent_rx) = flume::unbounded::<Envelope>();
     let (cmd_tx, cmd_rx) = flume::unbounded::<AgentCommand>();
@@ -319,6 +346,8 @@ fn spawn_agent(
     let model = model.clone();
     let provider = Arc::clone(provider);
     let skills = Arc::clone(skills);
+    let mcp_infos = Arc::clone(&mcp_state.infos);
+    let initial_disabled = mcp_state.disabled.clone();
 
     smol::spawn(async move {
         let answer_mutex = Arc::new(async_lock::Mutex::new(answer_rx));
@@ -330,14 +359,22 @@ fn spawn_agent(
         let (mut tool_names, mut tools) =
             ToolCall::definitions(&vars, &skills, model.family.supports_tool_examples());
 
-        let mcp_manager = McpManager::start(&cwd_path).await;
+        let mcp_config = maki_agent::mcp::config::load_config(&cwd_path);
+        let mut disabled: Vec<String> = initial_disabled;
+        disabled.extend(mcp_config.disabled_entries().into_iter().map(|(name, _)| name));
+        disabled.sort_unstable();
+        disabled.dedup();
+        let mcp_manager = McpManager::start_with_config(mcp_config).await;
 
         if let Some(ref mcp) = mcp_manager {
-            mcp.extend_tools(&mut tool_names, &mut tools);
+            mcp.extend_tools(&mut tool_names, &mut tools, &disabled);
+            mcp_infos.store(Arc::new(mcp.server_infos(&disabled)));
         }
 
         let cancel_trigger: Arc<Mutex<Option<CancelTrigger>>> = Arc::new(Mutex::new(None));
         let cancel_trigger_fwd = Arc::clone(&cancel_trigger);
+
+        let (toggle_tx, toggle_rx) = flume::unbounded::<(String, bool)>();
 
         smol::spawn(async move {
             while let Ok(cmd) = cmd_rx.recv_async().await {
@@ -350,6 +387,10 @@ fn spawn_agent(
                         ExtractedCommand::Cancel
                     }
                     AgentCommand::Compact(run_id) => ExtractedCommand::Compact(run_id),
+                    AgentCommand::ToggleMcp(server_name, enabled) => {
+                        let _ = toggle_tx.try_send((server_name, enabled));
+                        continue;
+                    }
                 };
                 if ecmd_tx.try_send(extracted).is_err() {
                     break;
@@ -362,7 +403,53 @@ fn spawn_agent(
         let mut history = History::new(initial_history);
         let mut min_run_id = 0u64;
 
-        while let Ok(cmd) = ecmd_rx.recv_async().await {
+        enum LoopEvent {
+            Cmd(ExtractedCommand),
+            Toggle(String, bool),
+        }
+
+        loop {
+            let event = future::race(
+                async { ecmd_rx.recv_async().await.ok().map(LoopEvent::Cmd) },
+                async {
+                    toggle_rx
+                        .recv_async()
+                        .await
+                        .ok()
+                        .map(|(s, e)| LoopEvent::Toggle(s, e))
+                },
+            )
+            .await;
+
+            let Some(event) = event else { break };
+
+            let cmd = match event {
+                LoopEvent::Toggle(server_name, enabled) => {
+                    toggle_disabled(&mut disabled, &server_name, enabled);
+                    let (mut new_names, mut new_tools) =
+                        ToolCall::definitions(&vars, &skills, model.family.supports_tool_examples());
+                    if let Some(ref mcp) = mcp_manager {
+                        mcp.extend_tools(&mut new_names, &mut new_tools, &disabled);
+                        let infos = mcp.server_infos(&disabled);
+                        if let Some(info) = infos.iter().find(|i| i.name == server_name) {
+                            let path = info.config_path.clone();
+                            let name = server_name.clone();
+                            smol::spawn(async move {
+                                if let Err(e) = smol::unblock(move || persist_enabled(&path, &name, enabled)).await {
+                                    tracing::warn!(error = %e, server = %server_name, "failed to persist MCP toggle");
+                                }
+                            })
+                            .detach();
+                        }
+                        mcp_infos.store(Arc::new(infos));
+                    }
+                    tool_names = new_names;
+                    tools = new_tools;
+                    continue;
+                }
+                LoopEvent::Cmd(cmd) => cmd,
+            };
+
             let (event_tx, current_run_id) = match &cmd {
                 ExtractedCommand::Interrupt(_, run_id) | ExtractedCommand::Compact(run_id)
                     if *run_id >= min_run_id =>
@@ -441,6 +528,7 @@ fn spawn_agent(
         answer_tx,
         history: shared_history,
         tool_outputs: shared_tool_outputs,
+        mcp: mcp_state,
     }
 }
 
@@ -458,7 +546,8 @@ fn dispatch(
             Action::SendMessage(input) => {
                 let cmd = AgentCommand::Run(input, app.run_id);
                 if handles.cmd_tx.try_send(cmd).is_err() {
-                    *handles = spawn_agent(provider, model, Vec::new(), skills, config);
+                    let mcp = handles.mcp();
+                    *handles = spawn_agent(provider, model, Vec::new(), skills, config, mcp);
                     handles.apply_to_app(app);
                 }
             }
@@ -466,11 +555,13 @@ fn dispatch(
                 let _ = handles.cmd_tx.try_send(AgentCommand::Cancel);
             }
             Action::NewSession => {
-                *handles = spawn_agent(provider, model, Vec::new(), skills, config);
+                let mcp = handles.mcp();
+                *handles = spawn_agent(provider, model, Vec::new(), skills, config, mcp);
                 handles.apply_to_app(app);
             }
             Action::LoadSession(loaded) => {
-                *handles = spawn_agent(provider, model, loaded.messages, skills, config);
+                let mcp = handles.mcp();
+                *handles = spawn_agent(provider, model, loaded.messages, skills, config, mcp);
                 handles.apply_to_app(app);
                 *handles.tool_outputs.lock().unwrap() = loaded.tool_outputs;
             }
@@ -481,7 +572,8 @@ fn dispatch(
                         let history = handles.history.lock().unwrap().clone();
                         *provider = Arc::from(new_provider);
                         *model = new_model;
-                        *handles = spawn_agent(provider, model, history, skills, config);
+                        let mcp = handles.mcp();
+                        *handles = spawn_agent(provider, model, history, skills, config, mcp);
                         handles.apply_to_app(app);
                     }
                     Err(e) => {
@@ -495,8 +587,22 @@ fn dispatch(
             Action::Compact => {
                 let _ = handles.cmd_tx.try_send(AgentCommand::Compact(app.run_id));
             }
+            Action::ToggleMcp(server_name, enabled) => {
+                toggle_disabled(&mut handles.mcp.disabled, &server_name, enabled);
+                let _ = handles
+                    .cmd_tx
+                    .try_send(AgentCommand::ToggleMcp(server_name, enabled));
+            }
             Action::Quit => {}
         }
+    }
+}
+
+fn toggle_disabled(disabled: &mut Vec<String>, name: &str, enabled: bool) {
+    if enabled {
+        disabled.retain(|s| s != name);
+    } else if !disabled.contains(&name.to_owned()) {
+        disabled.push(name.to_owned());
     }
 }
 

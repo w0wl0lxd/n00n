@@ -74,6 +74,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 flume = { version = "0.11", default-features = false, features = ["async"] }
 humantime = "2"
 toml = "0.8"
+toml_edit = "0.22"
 smol = "2"
 async-process = "2"
 async-lock = "3"

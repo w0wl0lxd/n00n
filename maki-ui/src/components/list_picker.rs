@@ -45,6 +45,7 @@ impl PickerItem for String {
 pub enum PickerAction<T> {
     Consumed,
     Select(usize, T),
+    Toggle(usize, bool),
     Close,
 }
 
@@ -84,6 +85,7 @@ struct State<T> {
     scroll_offset: usize,
     viewport_height: usize,
     inner_area: Rect,
+    enabled: Option<Vec<bool>>,
 }
 
 impl<T: PickerItem> State<T> {
@@ -97,6 +99,7 @@ impl<T: PickerItem> State<T> {
             scroll_offset: 0,
             viewport_height: 20,
             inner_area: Rect::default(),
+            enabled: None,
         }
     }
 
@@ -204,6 +207,19 @@ impl<T: PickerItem> ListPicker<T> {
     pub fn with_max_visible(mut self, max: u16) -> Self {
         self.max_visible = Some(max);
         self
+    }
+
+    pub fn open_toggleable(&mut self, items: Vec<T>, enabled: Vec<bool>, title: &'static str) {
+        assert_eq!(
+            items.len(),
+            enabled.len(),
+            "items and enabled must have same length"
+        );
+        self.generation += 1;
+        self.title = title;
+        let mut state = State::new(items);
+        state.enabled = Some(enabled);
+        self.state = Some(PickerState::Ready(state));
     }
 
     pub fn open(&mut self, items: Vec<T>, title: &'static str) {
@@ -324,15 +340,25 @@ impl<T: PickerItem> ListPicker<T> {
                 s.move_down();
                 PickerAction::Consumed
             }
-            KeyCode::Enter => match s.selected_item_index() {
-                Some(idx) => {
-                    let PickerState::Ready(mut state) = self.state.take().unwrap() else {
-                        unreachable!("handle_ready_key guarantees Ready state")
-                    };
-                    PickerAction::Select(idx, state.items.swap_remove(idx))
+            KeyCode::Enter => {
+                let idx = s.selected_item_index();
+                if let (Some(enabled), Some(idx)) = (&mut s.enabled, idx) {
+                    enabled[idx] = !enabled[idx];
+                    return PickerAction::Toggle(idx, enabled[idx]);
                 }
-                None => PickerAction::Consumed,
-            },
+                if s.enabled.is_some() {
+                    return PickerAction::Consumed;
+                }
+                match idx {
+                    Some(idx) => {
+                        let PickerState::Ready(mut state) = self.state.take().unwrap() else {
+                            unreachable!("handle_ready_key guarantees Ready state")
+                        };
+                        PickerAction::Select(idx, state.items.swap_remove(idx))
+                    }
+                    None => PickerAction::Consumed,
+                }
+            }
             KeyCode::Esc => {
                 self.state = None;
                 PickerAction::Close
@@ -377,6 +403,13 @@ impl<T: PickerItem> ListPicker<T> {
             .as_ref()
             .and_then(PickerState::ready)
             .and_then(|s| s.selected_item_index())
+    }
+
+    pub fn item(&self, idx: usize) -> Option<&T> {
+        self.state
+            .as_ref()
+            .and_then(PickerState::ready)
+            .and_then(|s| s.items.get(idx))
     }
 
     pub fn scroll(&mut self, delta: i32) {
@@ -461,6 +494,7 @@ fn render_ready<T: PickerItem>(
         s.selected,
         s.scroll_offset,
         s.viewport_height,
+        s.enabled.as_deref(),
     );
     render_search(frame, search_area, &s.search);
 
@@ -533,6 +567,7 @@ fn detail_padding(label: &str, detail: &str, area_width: u16) -> usize {
         as usize
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_list<T: PickerItem>(
     frame: &mut Frame,
     area: Rect,
@@ -541,6 +576,7 @@ fn render_list<T: PickerItem>(
     selected: usize,
     scroll_offset: usize,
     viewport_height: usize,
+    enabled: Option<&[bool]>,
 ) {
     if filtered.is_empty() {
         let line = Line::from(Span::styled(NO_MATCHES, theme::current().cmd_desc));
@@ -584,6 +620,17 @@ fn render_list<T: PickerItem>(
         } else {
             theme::current().cmd_name
         };
+        let checkbox = enabled.map(|en| {
+            let sym = if en[item_idx] { "✓ " } else { "✗ " };
+            let sty = if i == selected {
+                style
+            } else if en[item_idx] {
+                theme::current().cmd_name
+            } else {
+                theme::current().cmd_desc
+            };
+            Span::styled(sym, sty)
+        });
         let label = format!("  {}", item.label());
         let line = match item.detail() {
             Some(detail) => {
@@ -593,14 +640,23 @@ fn render_list<T: PickerItem>(
                 } else {
                     theme::current().cmd_desc
                 };
-                Line::from(vec![
-                    Span::styled(label, style),
-                    Span::styled(" ".repeat(pad), style),
-                    Span::styled(detail.to_string(), detail_style),
-                    Span::styled(" ".repeat(DETAIL_RIGHT_PAD as usize), style),
-                ])
+                let mut spans = Vec::with_capacity(5);
+                if let Some(cb) = checkbox {
+                    spans.push(cb);
+                }
+                spans.push(Span::styled(label, style));
+                spans.push(Span::styled(" ".repeat(pad), style));
+                spans.push(Span::styled(detail.to_string(), detail_style));
+                spans.push(Span::styled(" ".repeat(DETAIL_RIGHT_PAD as usize), style));
+                Line::from(spans)
             }
-            None => Line::from(Span::styled(label, style)),
+            None => {
+                if let Some(cb) = checkbox {
+                    Line::from(vec![cb, Span::styled(label, style)])
+                } else {
+                    Line::from(Span::styled(label, style))
+                }
+            }
         };
         lines.push(line);
         i += 1;
@@ -862,5 +918,23 @@ mod tests {
         let mut p2: ListPicker<Entry> = ListPicker::new();
         p2.resolve(entries(&["A"]));
         assert!(!p2.is_open());
+    }
+
+    #[test]
+    fn toggle_mode_enter_flips_enabled() {
+        let mut p = ListPicker::new();
+        p.open_toggleable(entries(&["A", "B"]), vec![true, true], " Test ");
+        let action = p.handle_key(key(KeyCode::Enter));
+        assert!(matches!(action, PickerAction::Toggle(0, false)));
+        assert!(p.is_open());
+    }
+
+    #[test]
+    fn toggle_mode_search_targets_correct_item() {
+        let mut p = ListPicker::new();
+        p.open_toggleable(entries(&["Alpha", "Beta"]), vec![true, true], " Test ");
+        p.handle_key(key(KeyCode::Char('b')));
+        let action = p.handle_key(key(KeyCode::Enter));
+        assert!(matches!(action, PickerAction::Toggle(1, false)));
     }
 }

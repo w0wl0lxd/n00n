@@ -46,6 +46,10 @@ const COMMANDS: &[Command] = &[
         description: "Switch color theme",
     },
     Command {
+        name: "/mcp",
+        description: "Configure MCP servers",
+    },
+    Command {
         name: "/exit",
         description: "Exit the application",
     },

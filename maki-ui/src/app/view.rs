@@ -110,6 +110,10 @@ impl App {
             self.model_picker.view(frame, frame.area());
         }
 
+        if self.mcp_picker.is_open() {
+            self.mcp_picker.view(frame, frame.area());
+        }
+
         let chat = &self.chats[render_chat];
         let chat_name = (self.chats.len() > 1).then_some(chat.name.as_str());
         let (mode_label, mode_style) = self.mode_label();

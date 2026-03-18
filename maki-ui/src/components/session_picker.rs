@@ -144,6 +144,7 @@ impl SessionPicker {
                 self.pending_rx = None;
                 SessionPickerAction::Close
             }
+            PickerAction::Toggle(..) => SessionPickerAction::Consumed,
         }
     }
 

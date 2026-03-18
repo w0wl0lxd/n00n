@@ -103,6 +103,7 @@ impl ModelPicker {
             PickerAction::Consumed => ModelPickerAction::Consumed,
             PickerAction::Select(_, entry) => ModelPickerAction::Select(entry.spec),
             PickerAction::Close => ModelPickerAction::Close,
+            PickerAction::Toggle(..) => ModelPickerAction::Consumed,
         }
     }
 

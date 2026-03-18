@@ -2,6 +2,7 @@ use super::*;
 use crate::components::keybindings::{KeybindContext, key as kb};
 use crate::components::{TEST_CONTEXT_WINDOW, key, test_pricing};
 use crate::selection::{EdgeScroll, SelectableZone, SelectionZone};
+use arc_swap::ArcSwap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use maki_agent::{
     AgentMode, QuestionInfo, QuestionOption, ToolDoneEvent, ToolOutput, ToolStartEvent,
@@ -21,6 +22,7 @@ fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
 
 fn test_app() -> App {
     let writer = Arc::new(StorageWriter::new(DataDir::from_path(env::temp_dir())));
+    let mcp_infos = Arc::new(ArcSwap::from_pointee(Vec::new()));
     App::new(
         "test-model".into(),
         test_pricing(),
@@ -28,6 +30,7 @@ fn test_app() -> App {
         AppSession::new("test-model", "/tmp/test"),
         DataDir::from_path(env::temp_dir()),
         Arc::new(ArcSwapOption::empty()),
+        mcp_infos,
         writer,
     )
 }
@@ -1627,4 +1630,33 @@ fn done_drains_queued_message_with_current_mode(
     assert_eq!(input.pending_plan.as_deref(), expected_plan);
     assert!(app.queue.is_empty());
     assert_eq!(app.status, Status::Streaming);
+}
+
+#[test]
+fn mcp_command_opens_picker() {
+    let mut app = test_app();
+    app.execute_command("/mcp");
+    assert!(app.mcp_picker.is_open());
+}
+
+#[test]
+fn mcp_toggle_dispatches_action() {
+    use maki_agent::McpServerInfo;
+    use std::path::PathBuf;
+
+    let mut app = test_app();
+    app.mcp_picker = McpPicker::new(Arc::new(ArcSwap::from_pointee(vec![McpServerInfo {
+        name: "test-srv".into(),
+        transport_kind: "stdio",
+        tool_count: 2,
+        enabled: true,
+        config_path: PathBuf::from("/tmp/config.toml"),
+    }])));
+    app.execute_command("/mcp");
+
+    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(matches!(
+        &actions[0],
+        Action::ToggleMcp(name, false) if name == "test-srv"
+    ));
 }

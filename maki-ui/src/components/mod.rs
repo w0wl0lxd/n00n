@@ -5,6 +5,7 @@ pub(crate) mod index_highlight;
 pub mod input;
 pub(crate) mod keybindings;
 pub(crate) mod list_picker;
+pub(crate) mod mcp_picker;
 pub mod messages;
 pub(crate) mod modal;
 pub(crate) mod model_picker;
@@ -59,6 +60,7 @@ pub enum Action {
     LoadSession(LoadedSession),
     ChangeModel(String),
     Compact,
+    ToggleMcp(String, bool),
     Quit,
 }
 

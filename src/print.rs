@@ -153,7 +153,7 @@ pub fn run(
     let mcp_manager = smol::block_on(McpManager::start(&cwd_path));
 
     if let Some(ref mcp) = mcp_manager {
-        mcp.extend_tools(&mut tool_names, &mut tools);
+        mcp.extend_tools(&mut tool_names, &mut tools, &[]);
     }
 
     let system = agent::build_system_prompt(&vars, &mode, &instructions, &tool_names);

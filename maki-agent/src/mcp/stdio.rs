@@ -249,4 +249,8 @@ impl McpTransport for StdioTransport {
     fn server_name(&self) -> &Arc<str> {
         &self.name
     }
+
+    fn transport_kind(&self) -> &'static str {
+        "stdio"
+    }
 }

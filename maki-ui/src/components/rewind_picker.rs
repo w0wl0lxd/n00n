@@ -90,6 +90,7 @@ impl RewindPicker {
             PickerAction::Consumed => RewindPickerAction::Consumed,
             PickerAction::Select(_, entry) => RewindPickerAction::Select(entry),
             PickerAction::Close => RewindPickerAction::Close,
+            PickerAction::Toggle(..) => RewindPickerAction::Consumed,
         }
     }
 

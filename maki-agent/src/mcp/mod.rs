@@ -11,13 +11,13 @@ pub mod stdio;
 pub mod transport;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
-use self::config::{McpConfig, ServerConfig, Transport, load_config, parse_servers};
+use self::config::{McpConfig, McpServerInfo, ServerConfig, Transport, load_config, parse_servers};
 use self::error::McpError;
 use self::http::HttpTransport;
 use self::stdio::StdioTransport;
@@ -37,6 +37,8 @@ pub struct McpManager {
     transports: HashMap<Arc<str>, Box<dyn McpTransport>>,
     tools: Vec<McpToolDef>,
     tool_index: HashMap<&'static str, usize>,
+    origins: HashMap<String, PathBuf>,
+    disabled_entries: Vec<(String, &'static str)>,
 }
 
 impl McpManager {
@@ -46,8 +48,10 @@ impl McpManager {
     }
 
     pub async fn start_with_config(config: McpConfig) -> Option<Arc<Self>> {
+        let disabled_entries = config.disabled_entries();
+        let origins = config.origins;
         let servers = match parse_servers(config.mcp) {
-            Ok(s) if s.is_empty() => return None,
+            Ok(s) if s.is_empty() && disabled_entries.is_empty() => return None,
             Ok(s) => s,
             Err(e) => {
                 warn!(error = %e, "invalid MCP config");
@@ -84,13 +88,14 @@ impl McpManager {
             }
         }
 
-        if transports.is_empty() {
+        if transports.is_empty() && disabled_entries.is_empty() {
             return None;
         }
 
         info!(
             servers = transports.len(),
             tools = tools.len(),
+            disabled = disabled_entries.len(),
             "MCP servers started"
         );
 
@@ -98,6 +103,8 @@ impl McpManager {
             transports,
             tools,
             tool_index,
+            origins,
+            disabled_entries,
         }))
     }
 
@@ -161,22 +168,54 @@ impl McpManager {
         transport::call_tool(t.as_ref(), &def.raw_name, args).await
     }
 
-    pub fn extend_tools(&self, tool_names: &mut Vec<&'static str>, tools: &mut Value) {
-        let defs: Vec<Value> = self
+    pub fn extend_tools(
+        &self,
+        tool_names: &mut Vec<&'static str>,
+        tools: &mut Value,
+        disabled: &[String],
+    ) {
+        for t in self
             .tools
             .iter()
-            .map(|t| {
-                json!({
+            .filter(|t| !disabled.contains(&t.server_name.to_string()))
+        {
+            if let Some(arr) = tools.as_array_mut() {
+                arr.push(json!({
                     "name": t.qualified_name,
                     "description": t.description,
                     "input_schema": t.input_schema,
-                })
-            })
-            .collect();
-        if let Some(arr) = tools.as_array_mut() {
-            arr.extend(defs);
+                }));
+            }
+            tool_names.push(t.qualified_name);
         }
-        tool_names.extend(self.tools.iter().map(|t| t.qualified_name));
+    }
+
+    pub fn server_infos(&self, disabled: &[String]) -> Vec<McpServerInfo> {
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for tool in &self.tools {
+            *counts.entry(&tool.server_name).or_default() += 1;
+        }
+        let active = self
+            .transports
+            .iter()
+            .map(|(name, transport)| McpServerInfo {
+                name: name.to_string(),
+                transport_kind: transport.transport_kind(),
+                tool_count: counts.get(name.as_ref()).copied().unwrap_or(0),
+                enabled: !disabled.contains(&name.to_string()),
+                config_path: self.origins.get(name.as_ref()).cloned().unwrap_or_default(),
+            });
+        let inactive = self
+            .disabled_entries
+            .iter()
+            .map(|(name, kind)| McpServerInfo {
+                name: name.clone(),
+                transport_kind: kind,
+                tool_count: 0,
+                enabled: false,
+                config_path: self.origins.get(name).cloned().unwrap_or_default(),
+            });
+        active.chain(inactive).collect()
     }
 
     pub async fn shutdown(self) {

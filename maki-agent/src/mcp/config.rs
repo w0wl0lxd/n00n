@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
+use toml_edit::DocumentMut;
 
 use super::SEPARATOR;
 use super::error::McpError;
@@ -45,10 +46,21 @@ fn default_timeout() -> u64 {
     DEFAULT_TIMEOUT_MS
 }
 
+#[derive(Clone, Debug)]
+pub struct McpServerInfo {
+    pub name: String,
+    pub transport_kind: &'static str,
+    pub tool_count: usize,
+    pub enabled: bool,
+    pub config_path: PathBuf,
+}
+
 #[derive(Deserialize, Default)]
 pub struct McpConfig {
     #[serde(default)]
     pub mcp: HashMap<String, RawServerConfig>,
+    #[serde(skip)]
+    pub origins: HashMap<String, PathBuf>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -106,6 +118,22 @@ fn is_valid_server_name(name: &str) -> bool {
     !name.is_empty()
         && !name.contains(SEPARATOR)
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+impl McpConfig {
+    pub fn disabled_entries(&self) -> Vec<(String, &'static str)> {
+        self.mcp
+            .iter()
+            .filter(|(_, v)| !v.enabled)
+            .map(|(name, v)| {
+                let kind = match &v.transport {
+                    RawTransport::Stdio(_) => "stdio",
+                    RawTransport::Http(_) => "http",
+                };
+                (name.clone(), kind)
+            })
+            .collect()
+    }
 }
 
 pub fn parse_servers(raw: HashMap<String, RawServerConfig>) -> Result<Vec<ServerConfig>, McpError> {
@@ -166,16 +194,54 @@ pub fn load_config(cwd: &Path) -> McpConfig {
     if let Some(home) = home_dir() {
         let global_path = home.join(GLOBAL_CONFIG_PATH);
         if let Some(cfg) = read_config(&global_path) {
+            for name in cfg.mcp.keys() {
+                merged.origins.insert(name.clone(), global_path.clone());
+            }
             merged.mcp.extend(cfg.mcp);
         }
     }
 
     let project_path = cwd.join(PROJECT_CONFIG_FILE);
     if let Some(cfg) = read_config(&project_path) {
+        for name in cfg.mcp.keys() {
+            merged.origins.insert(name.clone(), project_path.clone());
+        }
         merged.mcp.extend(cfg.mcp);
     }
 
     merged
+}
+
+pub fn persist_enabled(
+    config_path: &Path,
+    server_name: &str,
+    enabled: bool,
+) -> Result<(), McpError> {
+    let content = fs::read_to_string(config_path).unwrap_or_default();
+    let mut doc: DocumentMut = content
+        .parse()
+        .map_err(|e| McpError::Config(format!("failed to parse {}: {e}", config_path.display())))?;
+
+    let mcp = doc
+        .entry("mcp")
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+    let server = mcp
+        .as_table_like_mut()
+        .ok_or_else(|| McpError::Config("[mcp] is not a table".into()))?
+        .entry(server_name)
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+    server
+        .as_table_like_mut()
+        .ok_or_else(|| McpError::Config(format!("[mcp.{server_name}] is not a table")))?;
+    server["enabled"] = toml_edit::value(enabled);
+
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| McpError::Config(format!("cannot create dir: {e}")))?;
+    }
+    fs::write(config_path, doc.to_string())
+        .map_err(|e| McpError::Config(format!("cannot write {}: {e}", config_path.display())))?;
+    Ok(())
 }
 
 fn read_config(path: &Path) -> Option<McpConfig> {
@@ -356,5 +422,53 @@ command = ["project"]
             Transport::Stdio { program, .. } => assert_eq!(program, "project"),
             _ => panic!("expected Stdio"),
         }
+    }
+
+    #[test]
+    fn persist_enabled_creates_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        persist_enabled(&path, "myserver", false).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+        assert_eq!(doc["mcp"]["myserver"]["enabled"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn persist_enabled_preserves_existing_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"[mcp.myserver]
+command = ["echo"]
+timeout = 5000
+"#,
+        )
+        .unwrap();
+        persist_enabled(&path, "myserver", false).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+        assert_eq!(doc["mcp"]["myserver"]["enabled"].as_bool(), Some(false));
+        assert!(doc["mcp"]["myserver"]["command"].is_array());
+        assert_eq!(doc["mcp"]["myserver"]["timeout"].as_integer(), Some(5000));
+    }
+
+    #[test]
+    fn persist_enabled_updates_existing_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"[mcp.srv]
+command = ["x"]
+enabled = true
+"#,
+        )
+        .unwrap();
+        persist_enabled(&path, "srv", false).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+        assert_eq!(doc["mcp"]["srv"]["enabled"].as_bool(), Some(false));
     }
 }
