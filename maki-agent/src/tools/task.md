@@ -29,3 +29,4 @@ Usage notes:
 4. Clearly state what information the agent should return.
 5. Inline any known context (type definitions, signatures, patterns, code snippets) directly into the prompt - don't make the subagent rediscover what you already know. Especially important for parallel tasks sharing context: embed it in each prompt.
 6. **Output economy**: The subagent's entire final response is injected into your context. Tell it to return concise summaries with file:line references - not full file contents or large code blocks. Verbose subagent output wastes YOUR token budget.
+7. **Context hygiene**: The subagent's exploration stays out of your context. Use task to offload large searches, multi-file reads, or implementation that would otherwise bloat your conversation.
