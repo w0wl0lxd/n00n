@@ -14,6 +14,7 @@ mod markdown;
 mod mock;
 mod render_worker;
 mod selection;
+mod splash;
 mod storage_writer;
 mod text_buffer;
 mod theme;
@@ -144,6 +145,7 @@ fn run_event_loop(
     std::thread::spawn(highlight::warmup);
 
     let resumed = !session.messages.is_empty();
+
     let initial_history = session.messages.clone();
     let mut app = App::new(
         model.spec(),

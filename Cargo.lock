@@ -1998,6 +1998,7 @@ dependencies = [
  "crossterm",
  "flume",
  "futures-lite 2.6.1",
+ "getrandom 0.3.4",
  "image",
  "jiff",
  "libc",

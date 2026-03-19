@@ -12,6 +12,7 @@ use crate::markdown::{
 };
 use crate::render_worker::RenderWorker;
 use crate::selection::{self, LineBreaks, ScreenSelection, Selection};
+use crate::splash::Splash;
 use crate::theme;
 
 use std::time::Instant;
@@ -180,6 +181,7 @@ pub struct MessagesPanel {
     segment_heights: Vec<u16>,
     theme_generation: u64,
     highlight_segment: Option<usize>,
+    idle_splash: Splash,
 }
 
 impl MessagesPanel {
@@ -205,6 +207,7 @@ impl MessagesPanel {
             segment_heights: Vec::new(),
             theme_generation: theme::generation(),
             highlight_segment: None,
+            idle_splash: Splash::new(),
         }
     }
 
@@ -652,12 +655,25 @@ impl MessagesPanel {
         self.in_progress_count > 0
             || self.streaming_thinking.is_animating()
             || self.streaming_text.is_animating()
+            || self.show_idle_splash()
+    }
+
+    fn show_idle_splash(&self) -> bool {
+        self.messages.is_empty()
+            && self.streaming_thinking.is_empty()
+            && self.streaming_text.is_empty()
     }
 
     /// `has_selection` freezes auto-scroll so the viewport doesn't jump
     /// while the user is dragging a selection during streaming.
     pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool) {
         self.viewport_height = area.height;
+
+        if self.show_idle_splash() {
+            self.idle_splash.render(area, frame.buffer_mut());
+            return;
+        }
+
         let width = area.width.saturating_sub(1);
         let theme_gen = theme::generation();
         if self.viewport_width != width || self.theme_generation != theme_gen {
