@@ -75,7 +75,12 @@ impl Grep {
                 .line_number(true)
                 .build();
 
-            let base = Path::new(&search_path);
+            let search = Path::new(&search_path);
+            let base = if search.is_file() {
+                search.parent().unwrap_or(search)
+            } else {
+                search
+            };
             let mut entries: Vec<GrepFileEntry> = Vec::new();
 
             for entry in walker.build().flatten() {

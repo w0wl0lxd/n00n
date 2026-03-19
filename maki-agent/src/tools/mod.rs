@@ -781,6 +781,25 @@ mod tests {
     }
 
     #[test]
+    fn grep_single_file_preserves_filename() {
+        smol::block_on(async {
+            let dir = TempDir::new().unwrap();
+            let file = dir.path().join("demo.rs");
+            fs::write(&file, "fn main() {}\n").unwrap();
+            let ctx = stub_ctx(&AgentMode::Build);
+
+            let path = file.to_string_lossy().to_string();
+            let g = grep::Grep::parse_input(&json!({"pattern": "fn main", "path": path})).unwrap();
+            let out = g.execute(&ctx).await.unwrap();
+            let ToolOutput::GrepResult { entries } = &out else {
+                panic!("expected GrepResult, got: {out:?}");
+            };
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].path, "demo.rs");
+        });
+    }
+
+    #[test]
     fn grep_skips_binary_files() {
         smol::block_on(async {
             let dir = TempDir::new().unwrap();
