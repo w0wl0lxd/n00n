@@ -1,4 +1,4 @@
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use crate::theme;
 
@@ -12,13 +12,28 @@ use syntect::util::LinesWithEndings;
 const TOKEN_ALIASES: &[(&str, &str)] = &[("jsx", "js")];
 const TAB_SPACES: &str = "  ";
 
-static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
+static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 
 static LEAKED_SYNTAX_THEME: LazyLock<Mutex<&'static syntect::highlighting::Theme>> =
     LazyLock::new(|| {
         let theme = theme::current();
         Mutex::new(Box::leak(Box::new(theme.syntax.clone())))
     });
+
+pub(crate) fn warmup() {
+    SYNTAX_SET.get_or_init(two_face::syntax::extra_newlines);
+    LazyLock::force(&LEAKED_SYNTAX_THEME);
+    let mut hl = highlighter_for_token("bash");
+    let _ = hl.highlight_line("x", syntax_set());
+}
+
+fn syntax_set() -> &'static SyntaxSet {
+    SYNTAX_SET.get_or_init(two_face::syntax::extra_newlines)
+}
+
+pub(crate) fn is_ready() -> bool {
+    SYNTAX_SET.get().is_some()
+}
 
 pub(crate) fn refresh_syntax_theme() {
     let theme = theme::current();
@@ -35,7 +50,7 @@ fn normalize_text(text: &str) -> String {
 }
 
 pub fn syntax_for_path(path: &str) -> &'static SyntaxReference {
-    SYNTAX_SET
+    syntax_set()
         .find_syntax_for_file(path)
         .ok()
         .flatten()
@@ -54,8 +69,7 @@ pub fn highlighter_for_syntax(syntax: &'static SyntaxReference) -> HighlightLine
 }
 
 pub fn highlight_line(hl: &mut HighlightLines<'_>, text: &str) -> Vec<(Style, String)> {
-    let ss = &*SYNTAX_SET;
-    match hl.highlight_line(text, ss) {
+    match hl.highlight_line(text, syntax_set()) {
         Ok(ranges) => ranges
             .into_iter()
             .map(|(style, text)| (convert_style(style), normalize_text(text)))
@@ -69,7 +83,7 @@ pub fn highlighter_for_token(lang: &str) -> HighlightLines<'static> {
 }
 
 fn syntax_for_token(lang: &str) -> &'static SyntaxReference {
-    let ss = &*SYNTAX_SET;
+    let ss = syntax_set();
     ss.find_syntax_by_token(lang)
         .or_else(|| {
             TOKEN_ALIASES
@@ -176,7 +190,7 @@ fn highlight_single_line(hl: &mut HighlightLines<'_>, raw: &str) -> Line<'static
 }
 
 pub fn highlight_regex_inline(pattern: &str) -> Vec<Span<'static>> {
-    let Some(syntax) = SYNTAX_SET.find_syntax_by_token("re") else {
+    let Some(syntax) = syntax_set().find_syntax_by_token("re") else {
         return vec![fallback_span(pattern)];
     };
     let mut hl = HighlightLines::new(syntax, syntax_theme());
@@ -240,14 +254,17 @@ mod tests {
     #[test]
     fn tsx_and_typescript_syntaxes_resolve() {
         for token in ["tsx", "typescript"] {
-            assert!(SYNTAX_SET.find_syntax_by_token(token).is_some(), "{token}");
+            assert!(
+                syntax_set().find_syntax_by_token(token).is_some(),
+                "{token}"
+            );
         }
     }
 
     #[test]
     fn jsx_falls_back_to_javascript() {
         let token_syntax = syntax_for_token("jsx");
-        let js = SYNTAX_SET.find_syntax_by_token("js").unwrap();
+        let js = syntax_set().find_syntax_by_token("js").unwrap();
         assert_eq!(token_syntax.name, js.name);
     }
 

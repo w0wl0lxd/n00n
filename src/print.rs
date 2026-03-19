@@ -162,8 +162,7 @@ pub fn run(
     let input = AgentInput {
         message: prompt,
         mode,
-        pending_plan: None,
-        images: Vec::new(),
+        ..Default::default()
     };
 
     let session_id = Uuid::new_v4().to_string();

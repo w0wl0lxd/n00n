@@ -7,6 +7,7 @@ mod mode;
 mod mouse;
 mod queue;
 mod session;
+pub(crate) mod shell;
 #[cfg(test)]
 mod tests;
 mod view;
@@ -120,6 +121,7 @@ pub struct App {
     pub(crate) shared_tool_outputs: Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
     pub(crate) image_paste_rx: Option<flume::Receiver<Result<ImageSource, String>>>,
     storage_writer: Arc<StorageWriter>,
+    pub(crate) shell: shell::ShellState,
 }
 
 impl App {
@@ -178,6 +180,7 @@ impl App {
             shared_tool_outputs: None,
             image_paste_rx: None,
             storage_writer,
+            shell: shell::ShellState::default(),
         }
     }
 
@@ -555,6 +558,19 @@ impl App {
                 }
             };
         }
+        if let Some(prefix) = shell::parse_shell_prefix(&sub.text) {
+            let id = self.shell.next_id();
+            let sigil = if prefix.visible { "$" } else { "$$" };
+            let display = format!("{sigil} {}", prefix.command);
+            self.main_chat().flush();
+            self.main_chat().push_user_message(&display);
+            self.main_chat().enable_auto_scroll();
+            return vec![Action::ShellCommand {
+                id,
+                command: prefix.command,
+                visible: prefix.visible,
+            }];
+        }
         let msg: QueuedMessage = sub.into();
         if self.status == Status::Streaming {
             self.queue_and_notify(QueuedItem::Message(msg));
@@ -571,6 +587,7 @@ impl App {
         self.question_form.close();
         self.pending_input = PendingInput::None;
         self.finish_subagents(DisplayRole::Error, CANCELLED_TEXT);
+        self.shell.cancel_all();
         for chat in &mut self.chats {
             chat.flush();
             chat.fail_in_progress();

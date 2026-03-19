@@ -12,7 +12,10 @@ use crate::markdown::truncate_lines;
 
 use crate::selection::Selection;
 use maki_agent::tools::{ToolCall, WEBFETCH_TOOL_NAME};
-use maki_agent::{AgentEvent, BatchToolStatus, NO_FILES_FOUND, QuestionInfo, ToolOutput};
+use maki_agent::{
+    AgentEvent, BatchToolStatus, NO_FILES_FOUND, QuestionInfo, ToolDoneEvent, ToolOutput,
+    ToolStartEvent,
+};
 use maki_providers::{ContentBlock, Message, Role, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -221,6 +224,18 @@ impl Chat {
     pub fn push_user_message(&mut self, text: &str) {
         self.messages_panel
             .push(DisplayMessage::new(DisplayRole::User, text.to_string()));
+    }
+
+    pub fn shell_tool_start(&mut self, event: ToolStartEvent) {
+        self.messages_panel.tool_start(event);
+    }
+
+    pub fn shell_tool_output(&mut self, id: &str, content: &str) {
+        self.messages_panel.tool_output(id, content);
+    }
+
+    pub fn shell_tool_done(&mut self, event: ToolDoneEvent) {
+        self.messages_panel.tool_done(event);
     }
 
     #[cfg(test)]

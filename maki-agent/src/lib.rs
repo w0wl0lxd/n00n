@@ -21,6 +21,7 @@ pub mod types;
 use std::path::PathBuf;
 
 pub use maki_providers::AgentError;
+use maki_providers::Message;
 pub use maki_providers::{ImageMediaType, ImageSource};
 pub use types::{
     AgentEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, Envelope,
@@ -54,6 +55,7 @@ pub struct AgentInput {
     pub mode: AgentMode,
     pub pending_plan: Option<PathBuf>,
     pub images: Vec<ImageSource>,
+    pub preamble: Vec<Message>,
 }
 
 impl AgentInput {

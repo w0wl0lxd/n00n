@@ -1,5 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::app::shell::parse_shell_prefix;
+use crate::highlight;
 use crate::text_buffer::{EditResult, TextBuffer};
 use crate::theme;
 
@@ -301,7 +303,20 @@ impl InputBox {
                 .enumerate()
                 .flat_map(|(i, line)| {
                     let is_cursor_line = i == cursor_y;
-                    wrap_line(line, ew, is_cursor_line, cursor_x, i == 0, prefix_style)
+                    let shell_spans = if i == 0 {
+                        shell_highlight_spans(line)
+                    } else {
+                        None
+                    };
+                    wrap_line(
+                        line,
+                        ew,
+                        is_cursor_line,
+                        cursor_x,
+                        i == 0,
+                        prefix_style,
+                        shell_spans.as_deref(),
+                    )
                 })
                 .collect()
         };
@@ -374,6 +389,7 @@ fn wrap_line(
     cursor_x: usize,
     is_first_line: bool,
     prefix_style: Style,
+    shell_spans: Option<&[Span<'static>]>,
 ) -> Vec<Line<'static>> {
     let chars: Vec<char> = line.chars().collect();
     let chunk_size = ew.max(1);
@@ -397,38 +413,96 @@ fn wrap_line(
             };
             let mut spans = vec![Span::styled(prefix.to_owned(), prefix_style)];
 
-            if is_cursor_line {
-                let chunk_text: String = chars[start..end].iter().collect();
-                let local_cursor = cursor_x.saturating_sub(start);
-                if cursor_x >= start && cursor_x < start + chunk_size {
-                    let byte_cx = TextBuffer::char_to_byte(&chunk_text, local_cursor);
-                    let (before, after) = chunk_text.split_at(byte_cx);
-                    spans.push(Span::raw(before.to_string()));
-                    if after.is_empty() {
-                        spans.push(Span::styled(" ", Style::new().reversed()));
-                    } else {
-                        let mut cs = after.chars();
-                        let cursor_char = cs.next().unwrap();
-                        spans.push(Span::styled(
-                            cursor_char.to_string(),
-                            Style::new().reversed(),
-                        ));
-                        let rest: String = cs.collect();
-                        if !rest.is_empty() {
-                            spans.push(Span::raw(rest));
-                        }
-                    }
-                } else {
-                    spans.push(Span::raw(chunk_text));
-                }
+            let chunk_spans = if let Some(styled) = &shell_spans {
+                slice_styled_spans(styled, start, end.min(chars.len()))
             } else {
                 let chunk_text: String = chars[start..end].iter().collect();
-                spans.push(Span::raw(chunk_text));
+                vec![Span::raw(chunk_text)]
+            };
+
+            if is_cursor_line && cursor_x >= start && cursor_x < start + chunk_size {
+                let local_cursor = cursor_x.saturating_sub(start);
+                spans.extend(overlay_cursor(chunk_spans, local_cursor));
+            } else {
+                spans.extend(chunk_spans);
             }
 
             Line::from(spans)
         })
         .collect()
+}
+
+fn shell_highlight_spans(line: &str) -> Option<Vec<Span<'static>>> {
+    if !highlight::is_ready() {
+        return None;
+    }
+    let parsed = parse_shell_prefix(line)?;
+    let prefix = &line[..parsed.prefix_len];
+    let command = &line[parsed.prefix_len..];
+    let shell_style = theme::current().shell_prefix;
+    let mut spans = vec![Span::styled(prefix.to_owned(), shell_style)];
+    let mut hl = highlight::highlighter_for_token("bash");
+    for (style, text) in highlight::highlight_line(&mut hl, command) {
+        spans.push(Span::styled(text, style));
+    }
+    Some(spans)
+}
+
+fn slice_styled_spans(
+    spans: &[Span<'static>],
+    char_start: usize,
+    char_end: usize,
+) -> Vec<Span<'static>> {
+    let mut result = Vec::new();
+    let mut pos = 0;
+    for span in spans {
+        let span_len = span.content.chars().count();
+        let span_end = pos + span_len;
+        if span_end <= char_start || pos >= char_end {
+            pos = span_end;
+            continue;
+        }
+        let lo = char_start.saturating_sub(pos);
+        let hi = (char_end - pos).min(span_len);
+        let slice: String = span.content.chars().skip(lo).take(hi - lo).collect();
+        if !slice.is_empty() {
+            result.push(Span::styled(slice, span.style));
+        }
+        pos = span_end;
+    }
+    result
+}
+
+fn overlay_cursor(spans: Vec<Span<'static>>, cursor_char_pos: usize) -> Vec<Span<'static>> {
+    let mut result = Vec::new();
+    let mut pos = 0;
+    let mut cursor_placed = false;
+    for span in spans {
+        let span_len = span.content.chars().count();
+        if !cursor_placed && cursor_char_pos >= pos && cursor_char_pos < pos + span_len {
+            let local = cursor_char_pos - pos;
+            let byte_pos = TextBuffer::char_to_byte(&span.content, local);
+            let (before, after) = span.content.split_at(byte_pos);
+            if !before.is_empty() {
+                result.push(Span::styled(before.to_string(), span.style));
+            }
+            let mut cs = after.chars();
+            let cursor_char = cs.next().unwrap();
+            result.push(Span::styled(cursor_char.to_string(), span.style.reversed()));
+            let rest: String = cs.collect();
+            if !rest.is_empty() {
+                result.push(Span::styled(rest.to_string(), span.style));
+            }
+            cursor_placed = true;
+        } else {
+            result.push(span);
+        }
+        pos += span_len;
+    }
+    if !cursor_placed {
+        result.push(Span::styled(" ", Style::new().reversed()));
+    }
+    result
 }
 
 fn total_visual_lines(buffer: &TextBuffer, ew: usize, cursor_visible: bool) -> usize {

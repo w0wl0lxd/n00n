@@ -348,6 +348,7 @@ pub struct Theme {
     pub index_section: Style,
     pub index_line_nr: Style,
     pub index_keyword: Style,
+    pub shell_prefix: Style,
 
     pub syntax: syntect::highlighting::Theme,
 }
@@ -697,6 +698,7 @@ impl Theme {
             ),
             index_line_nr: derived_style("index_line_nr", &["comment"], Modifier::empty()),
             index_keyword: derived_style("index_keyword", &["keyword"], Modifier::empty()),
+            shell_prefix: derived_style("shell_prefix", &["string"], Modifier::BOLD),
             syntax,
         })
     }

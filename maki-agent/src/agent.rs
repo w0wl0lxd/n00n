@@ -857,7 +857,10 @@ impl Agent {
         };
         self.event_tx.send(AgentEvent::QueueItemConsumed)?;
         match cmd {
-            ExtractedCommand::Interrupt(input, _) => {
+            ExtractedCommand::Interrupt(mut input, _) => {
+                for msg in std::mem::take(&mut input.preamble) {
+                    self.history.push(msg);
+                }
                 self.mode = input.mode.clone();
                 let display = input.message.clone();
                 let msg = input.effective_message();
@@ -1117,8 +1120,7 @@ mod tests {
         AgentInput {
             message: "hello".into(),
             mode: AgentMode::Build,
-            pending_plan: None,
-            images: Vec::new(),
+            ..Default::default()
         }
     }
 

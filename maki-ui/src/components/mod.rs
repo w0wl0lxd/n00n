@@ -55,6 +55,11 @@ pub struct LoadedSession {
 
 pub enum Action {
     SendMessage(AgentInput),
+    ShellCommand {
+        id: String,
+        command: String,
+        visible: bool,
+    },
     CancelAgent,
     NewSession,
     LoadSession(LoadedSession),

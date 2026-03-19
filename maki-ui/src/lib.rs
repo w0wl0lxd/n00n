@@ -56,6 +56,7 @@ use tracing::error;
 
 pub type AppSession = maki_storage::sessions::Session<Message, TokenUsage, ToolOutput>;
 
+use app::shell::{ShellEvent, spawn_shell};
 use app::{App, Msg};
 use chat::history_to_display;
 use components::Action;
@@ -138,6 +139,10 @@ fn run_event_loop(
         pids: Arc::new(Mutex::new(Vec::new())),
     };
 
+    let (shell_tx, shell_rx) = flume::unbounded::<ShellEvent>();
+
+    std::thread::spawn(highlight::warmup);
+
     let resumed = !session.messages.is_empty();
     let initial_history = session.messages.clone();
     let mut app = App::new(
@@ -200,6 +205,10 @@ fn run_event_loop(
         app.poll_image_paste();
         terminal.draw(|f| app.view(f))?;
 
+        while let Ok(event) = shell_rx.try_recv() {
+            app.handle_shell_event(event);
+        }
+
         let mut had_agent_msg = false;
         while let Ok(envelope) = handles.agent_rx.try_recv() {
             had_agent_msg = true;
@@ -211,6 +220,7 @@ fn run_event_loop(
                 &skills,
                 &mut app,
                 config,
+                &shell_tx,
             );
         }
 
@@ -254,6 +264,7 @@ fn run_event_loop(
                                 &skills,
                                 &mut app,
                                 config,
+                                &shell_tx,
                             );
                             extra
                         } else {
@@ -270,6 +281,7 @@ fn run_event_loop(
                             &skills,
                             &mut app,
                             config,
+                            &shell_tx,
                         );
                         if let Some(extra) = extra {
                             extra
@@ -289,6 +301,7 @@ fn run_event_loop(
                 &skills,
                 &mut app,
                 config,
+                &shell_tx,
             );
         }
     }
@@ -508,7 +521,10 @@ fn spawn_agent(
                     r
                 }
                 ExtractedCommand::Cancel | ExtractedCommand::Ignore => unreachable!(),
-                ExtractedCommand::Interrupt(input, _) => {
+                ExtractedCommand::Interrupt(mut input, _) => {
+                    for msg in mem::take(&mut input.preamble) {
+                        history.push(msg);
+                    }
                     let system =
                         agent::build_system_prompt(&vars, &input.mode, &instructions, &tool_names);
                     let (trigger, cancel) = CancelToken::new();
@@ -575,6 +591,7 @@ fn spawn_agent(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch(
     actions: Vec<Action>,
     handles: &mut AgentHandles,
@@ -583,10 +600,12 @@ fn dispatch(
     skills: &Arc<[Skill]>,
     app: &mut App,
     config: AgentConfig,
+    shell_tx: &flume::Sender<ShellEvent>,
 ) {
     for action in actions {
         match action {
-            Action::SendMessage(input) => {
+            Action::SendMessage(mut input) => {
+                input.preamble = app.shell.drain_results();
                 let cmd = AgentCommand::Run(input, app.run_id);
                 if handles.cmd_tx.try_send(cmd).is_err() {
                     handles.respawn(Vec::new(), provider, model, skills, config, app);
@@ -627,6 +646,15 @@ fn dispatch(
                 let _ = handles
                     .cmd_tx
                     .try_send(AgentCommand::ToggleMcp(server_name, enabled));
+            }
+            Action::ShellCommand {
+                id,
+                command,
+                visible,
+            } => {
+                let (trigger, cancel) = CancelToken::new();
+                app.shell.add_trigger(trigger);
+                spawn_shell(command, id, visible, shell_tx.clone(), cancel);
             }
             Action::Quit => {}
         }

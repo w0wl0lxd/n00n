@@ -120,8 +120,7 @@ impl Task {
         let input = AgentInput {
             message: self.prompt.clone(),
             mode: AgentMode::Build,
-            pending_plan: None,
-            images: Vec::new(),
+            ..Default::default()
         };
 
         let agent = Agent::new(

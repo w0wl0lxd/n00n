@@ -120,6 +120,7 @@ impl App {
             mode: self.agent_mode(),
             pending_plan: self.pending_plan().map(Path::to_path_buf),
             images: msg.images.clone(),
+            ..Default::default()
         }
     }
 
