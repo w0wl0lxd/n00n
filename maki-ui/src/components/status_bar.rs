@@ -64,6 +64,15 @@ impl StatusBar {
         self.flash = Some((msg, Instant::now()));
     }
 
+    #[cfg(test)]
+    pub fn flash_text(&self) -> Option<&str> {
+        self.flash.as_ref().map(|(s, _)| s.as_str())
+    }
+
+    pub fn refresh_cwd(&mut self) {
+        self.cwd_branch = cwd_branch_label();
+    }
+
     pub fn clear_flash(&mut self) {
         self.flash = None;
     }

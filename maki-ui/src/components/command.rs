@@ -10,54 +10,90 @@ use ratatui::widgets::{Clear, Paragraph};
 struct Command {
     name: &'static str,
     description: &'static str,
+    max_args: usize,
 }
 
 const COMMANDS: &[Command] = &[
     Command {
         name: "/tasks",
         description: "Browse and search tasks",
+        max_args: 0,
     },
     Command {
         name: "/compact",
         description: "Summarize and compact conversation history",
+        max_args: 0,
     },
     Command {
         name: "/new",
         description: "Start a new session",
+        max_args: 0,
     },
     Command {
         name: "/help",
         description: "Show keybindings",
+        max_args: 0,
     },
     Command {
         name: "/queue",
         description: "Remove items from queue",
+        max_args: 0,
     },
     Command {
         name: "/sessions",
         description: "Browse and switch sessions",
+        max_args: 0,
     },
     Command {
         name: "/model",
         description: "Switch model",
+        max_args: 0,
     },
     Command {
         name: "/theme",
         description: "Switch color theme",
+        max_args: 0,
     },
     Command {
         name: "/mcp",
         description: "Configure MCP servers",
+        max_args: 0,
+    },
+    Command {
+        name: "/cd",
+        description: "Change working directory",
+        max_args: 1,
     },
     Command {
         name: "/exit",
         description: "Exit the application",
+        max_args: 0,
     },
 ];
 
+pub struct ParsedCommand {
+    pub name: &'static str,
+    pub args: String,
+}
+
+pub fn parse_command(input: &str) -> Option<ParsedCommand> {
+    let stripped = input.strip_prefix('/')?;
+    let (cmd_word, args) = match stripped.split_once(char::is_whitespace) {
+        Some((c, a)) => (c, a.trim()),
+        None => (stripped, ""),
+    };
+    let cmd = COMMANDS
+        .iter()
+        .find(|c| c.name[1..].eq_ignore_ascii_case(cmd_word))?;
+    Some(ParsedCommand {
+        name: cmd.name,
+        args: args.to_string(),
+    })
+}
+
 pub enum CommandAction {
     Consumed,
-    Execute(&'static str),
+    Execute(ParsedCommand),
     Close,
     Passthrough,
 }
@@ -75,7 +111,7 @@ impl CommandPalette {
         }
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) -> CommandAction {
+    pub fn handle_key(&mut self, key: KeyEvent, input: &str) -> CommandAction {
         if !self.is_active() {
             return CommandAction::Passthrough;
         }
@@ -92,10 +128,10 @@ impl CommandPalette {
                 self.close();
                 CommandAction::Consumed
             }
-            KeyCode::Enter => match self.confirm() {
-                Some(name) => {
+            KeyCode::Enter => match self.confirm(input) {
+                Some(cmd) => {
                     self.close();
-                    CommandAction::Execute(name)
+                    CommandAction::Execute(cmd)
                 }
                 None => CommandAction::Consumed,
             },
@@ -112,18 +148,25 @@ impl CommandPalette {
     }
 
     pub fn sync(&mut self, input: &str) {
-        let Some(prefix) = input.strip_prefix('/') else {
+        let Some(stripped) = input.strip_prefix('/') else {
             self.filtered.clear();
             return;
         };
-        let prefix_lower = prefix.to_ascii_lowercase();
+        let parts: Vec<&str> = stripped.split_whitespace().collect();
+        let cmd_word = parts.first().copied().unwrap_or(stripped);
+        let cmd_lower = cmd_word.to_ascii_lowercase();
+        let trailing_space = stripped.ends_with(char::is_whitespace);
+        let arg_count = if trailing_space {
+            parts.len()
+        } else {
+            parts.len().saturating_sub(1)
+        };
         self.filtered = COMMANDS
             .iter()
             .enumerate()
             .filter(|(_, cmd)| {
-                cmd.name[1..]
-                    .to_ascii_lowercase()
-                    .starts_with(&prefix_lower)
+                cmd.name[1..].to_ascii_lowercase().starts_with(&cmd_lower)
+                    && arg_count <= cmd.max_args
             })
             .map(|(i, _)| i)
             .collect();
@@ -156,8 +199,18 @@ impl CommandPalette {
         };
     }
 
-    pub fn confirm(&self) -> Option<&'static str> {
-        self.filtered.get(self.selected).map(|&i| COMMANDS[i].name)
+    pub fn confirm(&self, input: &str) -> Option<ParsedCommand> {
+        let &idx = self.filtered.get(self.selected)?;
+        let name = COMMANDS[idx].name;
+        let args = input
+            .strip_prefix('/')
+            .and_then(|s| s.split_once(char::is_whitespace))
+            .map(|(_, a)| a.trim())
+            .unwrap_or("");
+        Some(ParsedCommand {
+            name,
+            args: args.to_string(),
+        })
     }
 
     pub fn view(&self, frame: &mut Frame, input_area: Rect) -> Option<Rect> {
@@ -276,7 +329,7 @@ mod tests {
     #[test]
     fn confirm_when_inactive_returns_none() {
         let p = CommandPalette::new();
-        assert_eq!(p.confirm(), None);
+        assert!(p.confirm("").is_none());
     }
 
     #[test]
@@ -285,5 +338,42 @@ mod tests {
         p.selected = 100;
         p.sync("/");
         assert_eq!(p.selected, p.filtered.len() - 1);
+    }
+
+    #[test]
+    fn sync_filters_on_first_word_only() {
+        let p = synced("/cd ~/foo");
+        assert!(p.is_active());
+        assert_eq!(p.filtered.len(), 1);
+        assert_eq!(COMMANDS[p.filtered[0]].name, "/cd");
+    }
+
+    #[test_case("/compact ", false ; "zero_arg_cmd_with_space")]
+    #[test_case("/tasks ", false   ; "zero_arg_tasks_with_space")]
+    #[test_case("/cd ", true        ; "one_arg_cmd_with_space")]
+    #[test_case("/cd ~/foo", true   ; "one_arg_cmd_mid_arg")]
+    #[test_case("/cd  ~/foo", true  ; "one_arg_cmd_double_space")]
+    #[test_case("/cd ~/foo ", false ; "one_arg_cmd_second_space")]
+    fn sync_respects_max_args(input: &str, expect_active: bool) {
+        let p = synced(input);
+        assert_eq!(p.is_active(), expect_active);
+    }
+
+    #[test_case("/cd", Some("/cd"), ""              ; "no_args")]
+    #[test_case("/cd ~/foo", Some("/cd"), "~/foo"   ; "with_args")]
+    #[test_case("/CD ~/foo", Some("/cd"), "~/foo"   ; "case_insensitive")]
+    #[test_case("/compact", Some("/compact"), ""    ; "other_command")]
+    #[test_case("/nonexistent", None, ""            ; "unknown")]
+    #[test_case("hello", None, ""                   ; "no_slash")]
+    fn parse_command_cases(input: &str, expected_name: Option<&str>, expected_args: &str) {
+        let result = parse_command(input);
+        match expected_name {
+            Some(name) => {
+                let cmd = result.unwrap();
+                assert_eq!(cmd.name, name);
+                assert_eq!(cmd.args, expected_args);
+            }
+            None => assert!(result.is_none()),
+        }
     }
 }

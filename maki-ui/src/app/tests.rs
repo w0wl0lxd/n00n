@@ -1,5 +1,6 @@
 use super::*;
 use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
+use crate::components::command::ParsedCommand;
 use crate::components::keybindings::{KeybindContext, key as kb};
 use crate::components::{TEST_CONTEXT_WINDOW, key, test_pricing};
 use crate::selection::{EdgeScroll, SelectableZone, SelectionZone};
@@ -403,6 +404,13 @@ fn consumed_event_flushes_and_displays_queued_message() {
     assert_eq!(app.chats[0].last_message_text(), "queued");
 }
 
+fn cmd(name: &'static str) -> ParsedCommand {
+    ParsedCommand {
+        name,
+        args: String::new(),
+    }
+}
+
 fn type_slash(app: &mut App) {
     app.update(Msg::Key(key(KeyCode::Char('/'))));
 }
@@ -802,7 +810,7 @@ fn picker_swallows_ctrl_keys() {
 #[test]
 fn compact_command_sets_streaming() {
     let mut app = test_app();
-    let actions = app.execute_command("/compact");
+    let actions = app.execute_command(cmd("/compact"));
     assert!(matches!(&actions[0], Action::Compact));
     assert_eq!(app.status, Status::Streaming);
 }
@@ -815,7 +823,7 @@ fn compact_during_streaming_queues_and_sends_cmd() {
     app.status = Status::Streaming;
     app.run_id = 1;
 
-    let actions = app.execute_command("/compact");
+    let actions = app.execute_command(cmd("/compact"));
     assert!(actions.is_empty());
     assert_eq!(app.queue.len(), 1);
     assert!(matches!(app.queue[0], QueuedItem::Compact));
@@ -1201,7 +1209,7 @@ fn queue_command_sets_focus(has_queue: bool) {
     } else {
         test_app()
     };
-    app.execute_command("/queue");
+    app.execute_command(cmd("/queue"));
     assert_eq!(app.queue_focus.is_some(), has_queue);
 }
 
@@ -1412,7 +1420,7 @@ fn resolve_or_create_chat_sets_model_id_and_annotation() {
     );
 }
 
-#[test_case(|app: &mut App| { app.execute_command("/help"); } ; "slash_help")]
+#[test_case(|app: &mut App| { app.execute_command(cmd("/help")); } ; "slash_help")]
 #[test_case(|app: &mut App| { app.update(Msg::Key(kb::HELP.to_key_event())); } ; "ctrl_slash")]
 fn help_toggles_modal(toggle: fn(&mut App)) {
     let mut app = test_app();
@@ -1505,9 +1513,41 @@ fn format_with_images_label(count: usize, expected: &str) {
 #[test]
 fn slash_exit_command_quits() {
     let mut app = test_app();
-    let actions = app.execute_command("/exit");
+    let actions = app.execute_command(cmd("/exit"));
     assert!(app.should_quit);
     assert!(matches!(&actions[0], Action::Quit));
+}
+
+#[test_case("/tmp",                     "cd /tmp" ; "absolute_path")]
+#[test_case("/nonexistent_path_12345",  "cd: "    ; "nonexistent_flashes_error")]
+fn cd_flash_message(args: &str, expected_prefix: &str) {
+    let mut app = test_app();
+    app.execute_command(ParsedCommand {
+        name: "/cd",
+        args: args.into(),
+    });
+    let flash = app.status_bar.flash_text().unwrap();
+    assert!(flash.starts_with(expected_prefix), "flash={flash:?}");
+}
+
+#[test]
+fn typed_slash_command_executes() {
+    let mut app = test_app();
+    let actions = type_and_submit(&mut app, "/help");
+    assert!(actions.is_empty());
+    assert!(app.help_modal.is_open());
+}
+
+#[test]
+fn typed_unknown_command_flashes_error() {
+    let mut app = test_app();
+    type_and_submit(&mut app, "/nonexistent");
+    assert!(
+        app.status_bar
+            .flash_text()
+            .unwrap()
+            .contains("/nonexistent")
+    );
 }
 
 fn build_rewind_app() -> App {
@@ -1733,7 +1773,7 @@ fn done_drains_queued_message_with_current_mode(
 #[test]
 fn mcp_command_opens_picker() {
     let mut app = test_app();
-    app.execute_command("/mcp");
+    app.execute_command(cmd("/mcp"));
     assert!(app.mcp_picker.is_open());
 }
 
@@ -1750,7 +1790,7 @@ fn mcp_toggle_dispatches_action() {
         status: McpServerStatus::Running,
         config_path: PathBuf::from("/tmp/config.toml"),
     }])));
-    app.execute_command("/mcp");
+    app.execute_command(cmd("/mcp"));
 
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(matches!(

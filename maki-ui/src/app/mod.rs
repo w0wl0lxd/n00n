@@ -12,13 +12,14 @@ mod tests;
 mod view;
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::AppSession;
 use crate::chat::Chat;
 use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT};
-use crate::components::command::{CommandAction, CommandPalette};
+use crate::components::command::{CommandAction, CommandPalette, ParsedCommand, parse_command};
 use crate::components::help_modal::HelpModal;
 use crate::components::input::{InputAction, InputBox, Submission};
 use crate::components::keybindings::key;
@@ -461,9 +462,12 @@ impl App {
             return vec![];
         }
 
-        match self.command_palette.handle_key(key) {
+        match self
+            .command_palette
+            .handle_key(key, &self.input_box.buffer.value())
+        {
             CommandAction::Consumed => return vec![],
-            CommandAction::Execute(name) => return self.execute_command(name),
+            CommandAction::Execute(cmd) => return self.execute_command(cmd),
             CommandAction::Close => {}
             CommandAction::Passthrough => {}
         }
@@ -538,6 +542,18 @@ impl App {
         }
         if sub.text.trim() == "exit" {
             return self.quit();
+        }
+        if sub.text.starts_with('/') {
+            return match parse_command(&sub.text) {
+                Some(cmd) => self.execute_command(cmd),
+                None => {
+                    self.flash(format!(
+                        "Unknown command: {}",
+                        sub.text.split_whitespace().next().unwrap_or(&sub.text)
+                    ));
+                    vec![]
+                }
+            };
         }
         let msg: QueuedMessage = sub.into();
         if self.status == Status::Streaming {
@@ -706,9 +722,9 @@ impl App {
         idx
     }
 
-    fn execute_command(&mut self, name: &str) -> Vec<Action> {
+    fn execute_command(&mut self, cmd: ParsedCommand) -> Vec<Action> {
         self.input_box.buffer.clear();
-        match name {
+        match cmd.name {
             "/tasks" => {
                 let names: Vec<String> = self.chats.iter().map(|c| c.name.clone()).collect();
                 self.task_picker_original = Some(self.active_chat);
@@ -745,9 +761,36 @@ impl App {
                 self.mcp_picker.open();
                 vec![]
             }
+            "/cd" => self.cmd_cd(&cmd.args),
             "/exit" => self.quit(),
             _ => vec![],
         }
+    }
+
+    fn cmd_cd(&mut self, args: &str) -> Vec<Action> {
+        let path = if args.is_empty() {
+            std::env::var("HOME").map(PathBuf::from).unwrap_or_default()
+        } else {
+            match args.strip_prefix('~') {
+                Some(rest) => {
+                    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
+                    if rest.is_empty() {
+                        home
+                    } else {
+                        home.join(rest.trim_start_matches('/'))
+                    }
+                }
+                None => PathBuf::from(args),
+            }
+        };
+        match std::env::set_current_dir(&path) {
+            Ok(()) => {
+                self.status_bar.refresh_cwd();
+                self.flash(format!("cd {}", path.display()))
+            }
+            Err(e) => self.flash(format!("cd: {e}")),
+        }
+        vec![]
     }
 
     pub fn is_animating(&self) -> bool {
