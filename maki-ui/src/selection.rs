@@ -29,6 +29,8 @@ use std::time::Instant;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
+use ratatui::text::Line;
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::markdown::{CODE_BAR, CODE_BAR_WRAP};
 use crate::theme;
@@ -211,11 +213,74 @@ pub struct SelectionState {
     pub last_drag_col: u16,
 }
 
+#[derive(Clone, Debug, Default)]
+pub enum LineBreaks {
+    #[default]
+    EveryRow,
+    Bitmap(Vec<u64>),
+}
+
+impl LineBreaks {
+    pub fn from_heights(heights: impl Iterator<Item = u16>) -> Self {
+        let mut bits = Vec::new();
+        let mut row: u16 = 0;
+        for h in heights {
+            if h == 0 {
+                continue;
+            }
+            let idx = (row / 64) as usize;
+            if idx >= bits.len() {
+                bits.resize(idx + 1, 0u64);
+            }
+            bits[idx] |= 1 << (row % 64);
+            row = row.saturating_add(h);
+        }
+        Self::Bitmap(bits)
+    }
+
+    pub fn from_lines(lines: &[Line<'_>], width: u16) -> Self {
+        if width == 0 {
+            return Self::EveryRow;
+        }
+        let mut heights = Vec::with_capacity(lines.len());
+        for line in lines {
+            if is_code_wrap_continuation(line)
+                && let Some(last) = heights.last_mut()
+            {
+                *last += 1;
+                continue;
+            }
+            let h = Paragraph::new(vec![line.clone()])
+                .wrap(Wrap { trim: false })
+                .line_count(width) as u16;
+            heights.push(h);
+        }
+        Self::from_heights(heights.into_iter())
+    }
+
+    pub fn is_line_start(&self, row: u16) -> bool {
+        match self {
+            Self::EveryRow => true,
+            Self::Bitmap(bits) => bits
+                .get((row / 64) as usize)
+                .is_some_and(|word| word & (1 << (row % 64)) != 0),
+        }
+    }
+}
+
+fn is_code_wrap_continuation(line: &Line<'_>) -> bool {
+    line.spans
+        .first()
+        .is_some_and(|s| s.content.as_ref() == CODE_BAR_WRAP)
+}
+
 /// Screen region + optional raw source text for copy. If `raw_text` is
 /// non-empty and the region is fully selected, raw text is used as-is.
+#[derive(Default)]
 pub struct ContentRegion<'a> {
     pub area: Rect,
     pub raw_text: &'a str,
+    pub line_breaks: LineBreaks,
 }
 
 pub fn inset_border(area: Rect) -> Rect {
@@ -284,6 +349,7 @@ pub(crate) fn append_rows(
     from: u16,
     to: u16,
     out: &mut String,
+    breaks: &LineBreaks,
 ) {
     let right = area.x + area.width.saturating_sub(1);
     let row_start = from.max(area.y);
@@ -301,15 +367,18 @@ pub(crate) fn append_rows(
         }
         let trimmed_len = out[line_start..].trim_end().len() + line_start;
         out.truncate(trimmed_len);
+        let is_new_line = breaks.is_line_start(row - area.y);
         if out.len() == line_start && out.len() > anchor {
-            pending_newlines += 1;
-        } else if out.len() > anchor {
+            if is_new_line {
+                pending_newlines += 1;
+            }
+        } else if out.len() > anchor && is_new_line {
             for _ in 0..pending_newlines {
                 out.insert(line_start, '\n');
             }
             pending_newlines = 0;
             if line_start > anchor {
-                out.insert(line_start + pending_newlines as usize, '\n');
+                out.insert(line_start, '\n');
             }
         }
     }
@@ -346,7 +415,15 @@ pub fn extract_selected_text(
             out.push_str(region.raw_text);
         } else {
             let chunk_end = region_end.min(ss.end_row + 1);
-            append_rows(buf, region.area, ss, row, chunk_end, &mut out);
+            append_rows(
+                buf,
+                region.area,
+                ss,
+                row,
+                chunk_end,
+                &mut out,
+                &region.line_breaks,
+            );
         }
         row = region_end;
     }
@@ -402,6 +479,7 @@ mod tests {
         let region = ContentRegion {
             area,
             raw_text: "# Hello\n\nWorld\nTest",
+            ..Default::default()
         };
         let text = extract_selected_text(&buf, &ss(0, 0, 0, 4), &[region]);
         assert_eq!(text, "Hello");
@@ -414,6 +492,7 @@ mod tests {
         let region = ContentRegion {
             area,
             raw_text: raw,
+            ..Default::default()
         };
         let text = extract_selected_text(&buf, &ss(0, 0, 2, 9), &[region]);
         assert_eq!(text, raw);
@@ -425,6 +504,7 @@ mod tests {
         let region = ContentRegion {
             area,
             raw_text: "raw",
+            ..Default::default()
         };
         let text = extract_selected_text(&buf, &ss(0, 0, 1, 4), &[region]);
         assert_eq!(text, "Hello\nWorld");
@@ -444,14 +524,17 @@ mod tests {
             ContentRegion {
                 area: Rect::new(0, 0, 10, 1),
                 raw_text: "Line 0",
+                ..Default::default()
             },
             ContentRegion {
                 area: Rect::new(0, 2, 10, 1),
                 raw_text: "Line 2",
+                ..Default::default()
             },
             ContentRegion {
                 area: Rect::new(0, 4, 10, 1),
                 raw_text: "Line 4",
+                ..Default::default()
             },
         ];
         let text = extract_selected_text(&buf, &ss(0, 0, 4, 7), &regions);
@@ -469,10 +552,12 @@ mod tests {
         let base = ContentRegion {
             area: Rect::new(0, 0, 10, 3),
             raw_text: "base raw text",
+            ..Default::default()
         };
         let overlay = ContentRegion {
             area: Rect::new(0, 0, 10, 3),
             raw_text: "overlay raw text",
+            ..Default::default()
         };
         let text = extract_selected_text(&buf, &ss(0, 0, 2, 9), &[base, overlay]);
         assert_eq!(text, "overlay raw text");
@@ -511,10 +596,12 @@ mod tests {
             ContentRegion {
                 area: Rect::new(0, 0, 20, 2),
                 raw_text: "# msg0 raw",
+                ..Default::default()
             },
             ContentRegion {
                 area: Rect::new(0, 2, 20, 2),
                 raw_text: "# msg1 raw",
+                ..Default::default()
             },
         ];
         let text = extract_selected_text(&buf, &ss(1, 0, 2, 18), &regions);
@@ -544,6 +631,7 @@ mod tests {
         let region = ContentRegion {
             area: Rect::new(0, 5, 10, 1),
             raw_text: "far away",
+            ..Default::default()
         };
         assert_eq!(
             extract_selected_text(&buf, &ss(0, 0, 2, 7), &[region]),
@@ -557,7 +645,10 @@ mod tests {
         let area = Rect::new(0, 0, 10, 1);
         let mut buf = Buffer::empty(area);
         buf.set_string(0, 0, "Status    ", ratatui::style::Style::default());
-        let region = ContentRegion { area, raw_text: "" };
+        let region = ContentRegion {
+            area,
+            ..Default::default()
+        };
         let text = extract_selected_text(&buf, &ss(0, 0, 0, 9), &[region]);
         assert_eq!(text, "Status");
     }
@@ -570,6 +661,7 @@ mod tests {
         let region = ContentRegion {
             area,
             raw_text: "ABCDEFGHI",
+            ..Default::default()
         };
         let text = extract_selected_text(&buf, &ss(0, 0, 0, 9), &[region]);
         assert_eq!(text, "ABCDEFGHI");
@@ -764,7 +856,10 @@ mod tests {
     #[test]
     fn strips_code_bar_prefix_from_partial_selection() {
         let (buf, area) = code_bar_buffer();
-        let region = ContentRegion { area, raw_text: "" };
+        let region = ContentRegion {
+            area,
+            ..Default::default()
+        };
         let text = extract_selected_text(&buf, &ss(0, 0, 1, 18), &[region]);
         assert_eq!(text, "fn main() {}\nlet x = 1;");
     }
@@ -776,7 +871,10 @@ mod tests {
         let table_style = theme::current().table_border;
         buf.set_string(0, 0, "│", table_style);
         buf.set_string(2, 0, "cell content        ", Style::default());
-        let region = ContentRegion { area, raw_text: "" };
+        let region = ContentRegion {
+            area,
+            ..Default::default()
+        };
         let text = extract_selected_text(&buf, &ss(0, 0, 0, 18), &[region]);
         assert_eq!(text, "│ cell content");
     }
@@ -784,7 +882,10 @@ mod tests {
     #[test]
     fn no_strip_when_selection_starts_mid_line() {
         let (buf, area) = code_bar_buffer();
-        let region = ContentRegion { area, raw_text: "" };
+        let region = ContentRegion {
+            area,
+            ..Default::default()
+        };
         let text = extract_selected_text(&buf, &ss(0, 5, 0, 13), &[region]);
         assert_eq!(text, "main() {}");
     }
@@ -796,8 +897,34 @@ mod tests {
         let code_bar_style = theme::current().code_bar;
         buf.set_string(0, 0, "│", code_bar_style);
         buf.set_string(1, 0, "continued  ", Style::default());
-        let region = ContentRegion { area, raw_text: "" };
+        let region = ContentRegion {
+            area,
+            ..Default::default()
+        };
         let text = extract_selected_text(&buf, &ss(0, 0, 0, 10), &[region]);
         assert_eq!(text, "continued");
+    }
+
+    #[test_case(&[1, 1, 1], &[0, 1, 2]    ; "no_wrapping")]
+    #[test_case(&[1, 3, 1], &[0, 1, 4]    ; "middle_line_wraps")]
+    #[test_case(&[3, 3],    &[0, 3]        ; "all_lines_wrap")]
+    fn line_breaks_from_heights(heights: &[u16], expected_starts: &[u16]) {
+        let lb = LineBreaks::from_heights(heights.iter().copied());
+        for row in 0..heights.iter().sum::<u16>().max(1) {
+            let should_be_start = expected_starts.contains(&row);
+            assert_eq!(
+                lb.is_line_start(row),
+                should_be_start,
+                "row {row}: expected is_line_start={should_be_start}"
+            );
+        }
+    }
+
+    #[test]
+    fn line_breaks_beyond_64_rows() {
+        let lb = LineBreaks::from_heights([65, 1].iter().copied());
+        assert!(lb.is_line_start(0));
+        assert!(!lb.is_line_start(64));
+        assert!(lb.is_line_start(65));
     }
 }

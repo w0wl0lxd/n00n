@@ -11,7 +11,7 @@ use crate::markdown::{
     text_to_lines, truncate_lines,
 };
 use crate::render_worker::RenderWorker;
-use crate::selection::{self, ScreenSelection, Selection};
+use crate::selection::{self, LineBreaks, ScreenSelection, Selection};
 use crate::theme;
 
 use std::time::Instant;
@@ -868,7 +868,8 @@ impl MessagesPanel {
                 end_col,
             };
 
-            selection::append_rows(&tmp, tmp_area, &ss, rel_start, rel_end, &mut out);
+            let breaks = LineBreaks::from_lines(&seg.lines, width);
+            selection::append_rows(&tmp, tmp_area, &ss, rel_start, rel_end, &mut out, &breaks);
         }
         out
     }
@@ -2217,42 +2218,41 @@ mod tests {
         assert!(text.contains("partial"));
     }
 
-    fn long_msg_panel(line_count: usize, width: u16) -> (MessagesPanel, u16, Rect) {
-        let lines: Vec<String> = (0..line_count).map(|i| format!("line-{i}")).collect();
-        let long_text = lines.join("\n");
+    #[test_case(&["line-0\nline-1\nline-2\nline-3"], "line-0", "line-3" ; "single_segment")]
+    #[test_case(&["seg-A-text", "seg-B-text"],      "seg-A-text", "seg-B-text" ; "across_segments")]
+    fn extract_partial_col_symmetric(msgs: &[&str], expect_start: &str, expect_end: &str) {
         let mut panel = MessagesPanel::new();
-        panel.push(DisplayMessage::new(DisplayRole::Assistant, long_text));
-        let height = 100;
-        render(&mut panel, width, height);
-        let total: u16 = panel.segment_heights().iter().sum();
-        let area = Rect::new(0, 0, width, total);
-        (panel, total, area)
-    }
-
-    #[test]
-    fn extract_partial_col_symmetric_single_segment() {
-        let (panel, total, area) = long_msg_panel(10, 80);
-        let down = make_sel(area, (0, MAKI_PREFIX_LEN), ((total - 1) as u32, 79));
-        let up = make_sel(area, ((total - 1) as u32, 79), (0, MAKI_PREFIX_LEN));
-        let text_down = panel.extract_selection_text(&down, area);
-        let text_up = panel.extract_selection_text(&up, area);
-        assert!(text_down.starts_with("line-0"));
-        assert!(text_down.contains("line-9"));
-        assert_eq!(text_down, text_up, "direction should not affect result");
-    }
-
-    #[test]
-    fn extract_partial_col_symmetric_across_segments() {
-        let panel = panel_with_msgs(&["seg-A-text", "seg-B-text"], 80, 24);
+        for &text in msgs {
+            panel.push(DisplayMessage::new(DisplayRole::Assistant, text.into()));
+        }
+        render(&mut panel, 80, 24);
         let total: u16 = panel.segment_heights().iter().sum();
         let area = Rect::new(0, 0, 80, 24);
         let down = make_sel(area, (0, MAKI_PREFIX_LEN), ((total - 1) as u32, 79));
         let up = make_sel(area, ((total - 1) as u32, 79), (0, MAKI_PREFIX_LEN));
         let text_down = panel.extract_selection_text(&down, area);
         let text_up = panel.extract_selection_text(&up, area);
-        assert!(text_down.starts_with("seg-A-text"));
-        assert!(text_down.contains("seg-B-text"));
+        assert!(text_down.contains(expect_start));
+        assert!(text_down.contains(expect_end));
         assert_eq!(text_down, text_up, "direction should not affect result");
+    }
+
+    #[test_case("```\n{L}\n```", (0, 1)  ; "wrapped_code_block")]
+    #[test_case("short\n{L}",   (0, 0)  ; "wrapped_long_line")]
+    fn extract_wrapped_no_soft_breaks(template: &str, anchor: (u32, u16)) {
+        let long = "x".repeat(200);
+        let msg = template.replace("{L}", &long);
+        let mut panel = MessagesPanel::new();
+        panel.push(DisplayMessage::new(DisplayRole::Assistant, msg));
+        render(&mut panel, 40, 30);
+        let total: u16 = panel.segment_heights().iter().sum();
+        let area = Rect::new(0, 0, 40, 30);
+        let sel = make_sel(area, anchor, ((total - 1) as u32, 39));
+        let text = panel.extract_selection_text(&sel, area);
+        assert!(
+            text.contains(&long),
+            "wrapped line must be copied without newlines: {text:?}"
+        );
     }
 
     #[test]

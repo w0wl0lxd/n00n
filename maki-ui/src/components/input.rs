@@ -16,6 +16,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use super::scrollbar::render_vertical_scrollbar;
 use super::{apply_scroll_delta, visual_line_count};
+use crate::selection::LineBreaks;
 
 const MAX_INPUT_LINES: u16 = 10;
 const CHEVRON: &str = super::CHEVRON;
@@ -132,6 +133,16 @@ impl InputBox {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    pub fn line_breaks(&self, content_width: u16) -> LineBreaks {
+        let ew = effective_width(content_width as usize);
+        LineBreaks::from_heights(
+            self.buffer
+                .lines()
+                .iter()
+                .map(|line| visual_line_count(line.chars().count(), ew) as u16),
+        )
     }
 
     pub fn height(&self, width: u16) -> u16 {

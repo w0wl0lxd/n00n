@@ -134,9 +134,11 @@ impl App {
                 };
                 let copy_text = self.input_box.copy_text();
                 let input_area = sel.area;
+                let line_breaks = self.input_box.line_breaks(input_area.width);
                 let regions = [ContentRegion {
                     area: input_area,
                     raw_text: &copy_text,
+                    line_breaks,
                 }];
                 selection::extract_selected_text(buf, &screen_sel, &regions)
             }
@@ -148,7 +150,7 @@ impl App {
                 };
                 let regions = [ContentRegion {
                     area: sel.area,
-                    raw_text: "",
+                    ..Default::default()
                 }];
                 selection::extract_selected_text(buf, &screen_sel, &regions)
             }
