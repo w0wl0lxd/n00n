@@ -78,30 +78,6 @@ const CANCEL_MARKER: &str = "[Cancelled by user]";
 const MCP_BLOCKED_IN_PLAN: &str = "MCP tools are not available in plan mode";
 const IMAGE_PLACEHOLDER: &str = "[image]";
 const MAX_REAUTH_ATTEMPTS: u32 = 2;
-const EFFICIENCY_TIERS: &[(&str, &[&str], &str)] = &[
-    (
-        "Best",
-        &[CODE_EXECUTION_TOOL_NAME, BATCH_TOOL_NAME, TASK_TOOL_NAME],
-        "batch: parallel, code_execution: chained/filtering, task: delegation",
-    ),
-    (
-        "Good",
-        &[
-            INDEX_TOOL_NAME,
-            EDIT_TOOL_NAME,
-            MULTIEDIT_TOOL_NAME,
-            GREP_TOOL_NAME,
-            GLOB_TOOL_NAME,
-        ],
-        "Targeted reads and edits",
-    ),
-    (
-        "Costly",
-        &[READ_TOOL_NAME, WRITE_TOOL_NAME],
-        "Full file reads/replacement (prefer index & edit/multiedit)",
-    ),
-    ("Last", &[BASH_TOOL_NAME], "Only when no other tool works"),
-];
 
 pub struct History {
     messages: Vec<Message>,
@@ -161,29 +137,66 @@ pub fn build_system_prompt(
 }
 
 pub fn tool_efficiency_table(tool_names: &[&str]) -> String {
+    let has = |name: &str| tool_names.contains(&name);
+    let has_edit = has(EDIT_TOOL_NAME) || has(MULTIEDIT_TOOL_NAME);
+
+    const BEST_TIER: &[(&str, &str)] = &[
+        (BATCH_TOOL_NAME, "batch: parallel"),
+        (
+            CODE_EXECUTION_TOOL_NAME,
+            "code_execution: chained/filtering",
+        ),
+        (TASK_TOOL_NAME, "task: delegation"),
+    ];
+    const GOOD_TIER: &[&str] = &[
+        INDEX_TOOL_NAME,
+        EDIT_TOOL_NAME,
+        MULTIEDIT_TOOL_NAME,
+        GREP_TOOL_NAME,
+        GLOB_TOOL_NAME,
+    ];
+    const COSTLY_TIER: &[&str] = &[READ_TOOL_NAME, WRITE_TOOL_NAME];
+
     let mut rows = Vec::new();
-    let has_edit =
-        tool_names.contains(&EDIT_TOOL_NAME) || tool_names.contains(&MULTIEDIT_TOOL_NAME);
-    for &(tier, tools, when) in EFFICIENCY_TIERS {
-        let available: Vec<&str> = tools
-            .iter()
-            .copied()
-            .filter(|t| tool_names.contains(t))
-            .collect();
-        if available.is_empty() {
-            continue;
-        }
-        let desc = if tier == "Costly" && has_edit {
-            let edits: Vec<&str> = [EDIT_TOOL_NAME, MULTIEDIT_TOOL_NAME]
-                .into_iter()
-                .filter(|t| tool_names.contains(t))
-                .collect();
-            format!("{when} (prefer {})", edits.join(" & "))
-        } else {
-            when.to_string()
-        };
-        rows.push(format!("| {tier} | {} | {desc} |", available.join(", ")));
+
+    let best: Vec<_> = BEST_TIER.iter().filter(|(t, _)| has(t)).collect();
+    if !best.is_empty() {
+        let tools: Vec<_> = best.iter().map(|(t, _)| *t).collect();
+        let hints: Vec<_> = best.iter().map(|(_, h)| *h).collect();
+        rows.push(format!(
+            "| Best | {} | {} |",
+            tools.join(", "),
+            hints.join(", ")
+        ));
     }
+
+    let good: Vec<&str> = GOOD_TIER.iter().copied().filter(|t| has(t)).collect();
+    if !good.is_empty() {
+        let desc = if has_edit {
+            "Targeted reads and edits"
+        } else {
+            "Targeted reads and searches"
+        };
+        rows.push(format!("| Good | {} | {desc} |", good.join(", ")));
+    }
+
+    let costly: Vec<&str> = COSTLY_TIER.iter().copied().filter(|t| has(t)).collect();
+    if !costly.is_empty() {
+        let desc = match (has(INDEX_TOOL_NAME), has_edit) {
+            (true, true) => "Full file reads/replacement (prefer index & edit/multiedit)",
+            (true, false) => "Full file reads (prefer index with offset/limit)",
+            (false, true) => "Full file reads/replacement (prefer edit/multiedit)",
+            (false, false) => "Full file reads",
+        };
+        rows.push(format!("| Costly | {} | {desc} |", costly.join(", ")));
+    }
+
+    if has(BASH_TOOL_NAME) {
+        rows.push(format!(
+            "| Last | {BASH_TOOL_NAME} | Only when no other tool works |"
+        ));
+    }
+
     if rows.is_empty() {
         return String::new();
     }

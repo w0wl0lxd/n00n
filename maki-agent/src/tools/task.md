@@ -1,8 +1,8 @@
 Launch an autonomous subagent to perform tasks independently.
 
 Subagent types (set via `subagent_type`):
-- `research` (default): Read-only tools (bash, read, glob, grep, webfetch). For codebase exploration, searching across files, or gathering context.
-- `general`: Full tool access (bash, read, write, edit, multiedit, glob, grep, webfetch). For delegating implementation work — writing code, making edits, or executing multi-step changes.
+- `research` (default): Read-only tools (bash, read, index, glob, grep, webfetch, batch, code_execution). For codebase exploration, searching across files, or gathering context.
+- `general`: Full tool access (bash, read, index, write, edit, multiedit, glob, grep, webfetch, batch, code_execution). For delegating implementation work - writing code, making edits, or executing multi-step changes.
 
 When to use `research`:
 - Exploring unfamiliar parts of the codebase
@@ -28,3 +28,4 @@ Usage notes:
 3. Each invocation starts a fresh conversation with no access to your history. Your prompt is its ONLY context.
 4. Clearly state what information the agent should return.
 5. Inline any known context (type definitions, signatures, patterns, code snippets) directly into the prompt - don't make the subagent rediscover what you already know. Especially important for parallel tasks sharing context: embed it in each prompt.
+6. **Output economy**: The subagent's entire final response is injected into your context. Tell it to return concise summaries with file:line references - not full file contents or large code blocks. Verbose subagent output wastes YOUR token budget.

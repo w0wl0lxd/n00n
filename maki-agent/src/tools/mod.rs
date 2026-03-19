@@ -81,8 +81,16 @@ pub(crate) const INTERPRETER_TOOLS: &[&str] = &[
     "websearch",
 ];
 
-pub(crate) const RESEARCH_SUBAGENT_TOOLS: &[&str] =
-    &["bash", "read", "index", "glob", "grep", "webfetch"];
+pub(crate) const RESEARCH_SUBAGENT_TOOLS: &[&str] = &[
+    "bash",
+    "read",
+    "index",
+    "glob",
+    "grep",
+    "webfetch",
+    "batch",
+    "code_execution",
+];
 
 pub(crate) const GENERAL_SUBAGENT_TOOLS: &[&str] = &[
     "bash",
