@@ -151,7 +151,8 @@ fn render_diff(path: Option<&str>, hunks: &[DiffHunk]) -> Vec<Line<'static>> {
                     ));
                     let full: String = ds.iter().map(|s| s.text.as_str()).collect();
                     if let Some(ref mut h) = hl {
-                        let syn = highlight_line(h, &full);
+                        let with_nl = format!("{full}\n");
+                        let syn = highlight_line(h, &with_nl);
                         spans.extend(merge_syntax_with_diff(&syn, ds, base, emph));
                     } else {
                         spans.push(Span::styled(
