@@ -357,15 +357,17 @@ struct ToolLineBuilder {
     spinner_lines: Vec<usize>,
     content_range: (usize, usize),
     width: u16,
+    outer_indent: &'static str,
 }
 
 impl ToolLineBuilder {
-    fn new(width: u16) -> Self {
+    fn new(width: u16, outer_indent: &'static str) -> Self {
         Self {
             lines: Vec::new(),
             spinner_lines: Vec::new(),
             content_range: (0, 0),
-            width,
+            width: width.saturating_sub(outer_indent.len() as u16),
+            outer_indent,
         }
     }
 
@@ -614,12 +616,6 @@ impl ToolLineBuilder {
         }
     }
 
-    fn indent_all(&mut self, prefix: &str) {
-        for line in &mut self.lines {
-            line.spans.insert(0, Span::raw(prefix.to_owned()));
-        }
-    }
-
     fn prepend_separator(&mut self, index: usize) {
         if index == 0 {
             return;
@@ -627,7 +623,7 @@ impl ToolLineBuilder {
         let sep = [
             Line::default(),
             Line::from(Span::styled(
-                format!("{BATCH_INDENT}{}", TOOL_SEPARATOR),
+                TOOL_SEPARATOR.to_owned(),
                 theme::current().tool_dim,
             )),
             Line::default(),
@@ -639,12 +635,19 @@ impl ToolLineBuilder {
     }
 
     fn finish(
-        self,
+        mut self,
         input: Option<ToolInput>,
         output: Option<ToolOutput>,
         content_indent: &'static str,
     ) -> ToolLines {
-        let content_width = self.width.saturating_sub(content_indent.len() as u16);
+        if !self.outer_indent.is_empty() {
+            for line in &mut self.lines {
+                line.spans
+                    .insert(0, Span::raw(self.outer_indent.to_owned()));
+            }
+        }
+        let full_width = self.width + self.outer_indent.len() as u16;
+        let content_width = full_width.saturating_sub(content_indent.len() as u16);
         let highlight = HighlightRequest::new(self.content_range, input, output, content_width);
         ToolLines {
             lines: self.lines,
@@ -699,7 +702,7 @@ pub fn build_tool_lines(
         None => (msg.text.as_str(), None),
     };
 
-    let mut b = ToolLineBuilder::new(width);
+    let mut b = ToolLineBuilder::new(width, "");
     b.push_header(tool_name, header, msg.annotation.as_deref());
     b.prepend_indicator(status.into(), started_at);
     b.push_code_content(msg.tool_input.as_ref(), msg.tool_output.as_ref());
@@ -740,7 +743,7 @@ pub fn build_batch_entry_lines(
         append_annotation(&mut annotation, &suffix);
     }
 
-    let mut b = ToolLineBuilder::new(width);
+    let mut b = ToolLineBuilder::new(width, BATCH_INDENT);
     b.push_header(&entry.tool, &entry.summary, annotation.as_deref());
     b.prepend_indicator(entry.status.into(), started_at);
     b.push_code_content(entry.input.as_ref(), entry.output.as_ref());
@@ -755,7 +758,6 @@ pub fn build_batch_entry_lines(
             is_done,
         },
     );
-    b.indent_all(BATCH_INDENT);
     b.prepend_separator(index);
     b.finish(
         entry.input.clone(),
@@ -1220,6 +1222,27 @@ mod tests {
             total_width <= width as usize,
             "HR ({total_width} chars) should fit in {width} cols"
         );
+    }
+
+    #[test]
+    fn batch_task_hr_fits_within_width() {
+        let width: u16 = 60;
+        let entry = BatchToolEntry {
+            tool: TASK_TOOL_NAME.to_string(),
+            summary: "research".into(),
+            status: BatchToolStatus::Success,
+            input: None,
+            output: Some(ToolOutput::Plain("before\n\n---\n\nafter".into())),
+            annotation: None,
+        };
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), width);
+        for line in &tl.lines {
+            let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+            assert!(
+                total <= width as usize,
+                "line ({total} chars) should fit in {width} cols: {line:?}"
+            );
+        }
     }
 
     fn index_msg(body: &str) -> DisplayMessage {
