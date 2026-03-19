@@ -111,7 +111,7 @@ fn run_event_loop(
     let available_models: Arc<ArcSwapOption<Vec<String>>> = Arc::new(ArcSwapOption::empty());
     let available_models_bg = Arc::clone(&available_models);
     let (warn_tx, warn_rx) = flume::unbounded::<String>();
-    smol::spawn(async move {
+    let _model_fetch_task = smol::spawn(async move {
         let warn_tx = warn_tx;
         fetch_all_models(|batch| {
             for w in batch.warnings {
@@ -129,8 +129,7 @@ fn run_event_loop(
             available_models_bg.store(Some(Arc::new(merged)));
         })
         .await;
-    })
-    .detach();
+    });
 
     let storage_writer = Arc::new(storage_writer::StorageWriter::new(storage.clone()));
     let mcp_state = McpState {
@@ -223,6 +222,7 @@ fn run_event_loop(
             let session_id = app.session.id.clone();
             maki_agent::mcp::kill_process_groups(&handles.mcp.pids.lock().unwrap());
             drop(app);
+            handles.shutdown(Duration::from_secs(3));
             if let Ok(writer) = Arc::try_unwrap(storage_writer) {
                 writer.shutdown(Duration::from_secs(3));
             }
@@ -315,6 +315,7 @@ struct AgentHandles {
     history: Arc<Mutex<Vec<Message>>>,
     tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>>,
     mcp: McpState,
+    task: smol::Task<()>,
 }
 
 impl AgentHandles {
@@ -325,8 +326,38 @@ impl AgentHandles {
         app.shared_tool_outputs = Some(Arc::clone(&self.tool_outputs));
     }
 
-    fn mcp(&self) -> McpState {
-        self.mcp.clone()
+    fn cancel(self) {
+        let _ = self.cmd_tx.try_send(AgentCommand::Cancel);
+    }
+
+    fn respawn(
+        &mut self,
+        history: Vec<Message>,
+        provider: &Arc<dyn Provider>,
+        model: &Model,
+        skills: &Arc<[Skill]>,
+        config: AgentConfig,
+        app: &mut App,
+    ) {
+        let mcp = self.mcp.clone();
+        let old = mem::replace(
+            self,
+            spawn_agent(provider, model, history, skills, config, mcp),
+        );
+        old.cancel();
+        self.apply_to_app(app);
+    }
+
+    fn shutdown(self, timeout: Duration) {
+        let _ = self.cmd_tx.try_send(AgentCommand::Cancel);
+        let task = self.task;
+        drop((self.cmd_tx, self.agent_rx, self.answer_tx));
+        smol::block_on(async {
+            futures_lite::future::or(task, async {
+                smol::Timer::after(timeout).await;
+            })
+            .await;
+        });
     }
 }
 
@@ -353,7 +384,7 @@ fn spawn_agent(
     let mcp_pids = Arc::clone(&mcp_state.pids);
     let initial_disabled = mcp_state.disabled.clone();
 
-    smol::spawn(async move {
+    let task = smol::spawn(async move {
         let answer_mutex = Arc::new(async_lock::Mutex::new(answer_rx));
         let vars = template::env_vars();
         let cwd_owned = vars.apply("{cwd}").into_owned();
@@ -435,8 +466,11 @@ fn spawn_agent(
             let cmd = match event {
                 LoopEvent::Toggle(server_name, enabled) => {
                     toggle_disabled(&mut disabled, &server_name, enabled);
-                    let (mut new_names, mut new_tools) =
-                        ToolCall::definitions(&vars, &skills, model.family.supports_tool_examples());
+                    let (mut new_names, mut new_tools) = ToolCall::definitions(
+                        &vars,
+                        &skills,
+                        model.family.supports_tool_examples(),
+                    );
                     if let Some(ref mcp) = mcp_manager {
                         mcp.extend_tools(&mut new_names, &mut new_tools, &disabled);
                         let infos = mcp.server_infos(&disabled);
@@ -528,8 +562,7 @@ fn spawn_agent(
                 }
             }
         }
-    })
-    .detach();
+    });
 
     AgentHandles {
         cmd_tx,
@@ -538,6 +571,7 @@ fn spawn_agent(
         history: shared_history,
         tool_outputs: shared_tool_outputs,
         mcp: mcp_state,
+        task,
     }
 }
 
@@ -555,23 +589,17 @@ fn dispatch(
             Action::SendMessage(input) => {
                 let cmd = AgentCommand::Run(input, app.run_id);
                 if handles.cmd_tx.try_send(cmd).is_err() {
-                    let mcp = handles.mcp();
-                    *handles = spawn_agent(provider, model, Vec::new(), skills, config, mcp);
-                    handles.apply_to_app(app);
+                    handles.respawn(Vec::new(), provider, model, skills, config, app);
                 }
             }
             Action::CancelAgent => {
                 let _ = handles.cmd_tx.try_send(AgentCommand::Cancel);
             }
             Action::NewSession => {
-                let mcp = handles.mcp();
-                *handles = spawn_agent(provider, model, Vec::new(), skills, config, mcp);
-                handles.apply_to_app(app);
+                handles.respawn(Vec::new(), provider, model, skills, config, app);
             }
             Action::LoadSession(loaded) => {
-                let mcp = handles.mcp();
-                *handles = spawn_agent(provider, model, loaded.messages, skills, config, mcp);
-                handles.apply_to_app(app);
+                handles.respawn(loaded.messages, provider, model, skills, config, app);
                 *handles.tool_outputs.lock().unwrap() = loaded.tool_outputs;
             }
             Action::ChangeModel(spec) => match Model::from_spec(&spec) {
@@ -581,9 +609,7 @@ fn dispatch(
                         let history = handles.history.lock().unwrap().clone();
                         *provider = Arc::from(new_provider);
                         *model = new_model;
-                        let mcp = handles.mcp();
-                        *handles = spawn_agent(provider, model, history, skills, config, mcp);
-                        handles.apply_to_app(app);
+                        handles.respawn(history, provider, model, skills, config, app);
                     }
                     Err(e) => {
                         app.flash(format!("Failed to create provider: {e}"));
