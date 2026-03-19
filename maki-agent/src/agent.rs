@@ -828,12 +828,12 @@ impl Agent {
             return Ok(false);
         }
         info!(total_input = usage.total_input(), "auto-compacting");
+        self.event_tx.send(AgentEvent::AutoCompacting)?;
         self.do_compact().await?;
         Ok(true)
     }
 
     async fn do_compact(&mut self) -> Result<(), AgentError> {
-        self.event_tx.send(AgentEvent::AutoCompacting)?;
         self.total_usage += compact_history(
             &*self.provider,
             &self.model,
