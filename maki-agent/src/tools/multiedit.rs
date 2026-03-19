@@ -47,6 +47,9 @@ impl MultiEdit {
   {"path": "/home/user/project/src/lib.rs", "edits": [
     {"old_string": "use old_crate::Foo;", "new_string": "use new_crate::Foo;"},
     {"old_string": "old_crate::init()", "new_string": "new_crate::init()", "replace_all": true}
+  ]},
+  {"path": "/home/user/project/src/main.rs", "edits": [
+    {"old_string": "fn main() {\n    println!(\"hello\");\n}", "new_string": "fn main() {\n    println!(\"hello world\");\n    println!(\"goodbye\");\n}"}
   ]}
 ]"#,
     );
