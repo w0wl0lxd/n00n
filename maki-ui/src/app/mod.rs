@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use crate::AppSession;
 use crate::chat::Chat;
-use crate::chat::ChatEventResult;
+use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT};
 use crate::components::command::{CommandAction, CommandPalette};
 use crate::components::help_modal::HelpModal;
 use crate::components::input::{InputAction, InputBox, Submission};
@@ -554,6 +554,7 @@ impl App {
         self.retry_info = None;
         self.question_form.close();
         self.pending_input = PendingInput::None;
+        self.finish_subagents(DisplayRole::Error, CANCELLED_TEXT);
         for chat in &mut self.chats {
             chat.flush();
             chat.fail_in_progress();
@@ -561,7 +562,6 @@ impl App {
         self.main_chat()
             .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
         self.clear_queue();
-        self.chat_index.clear();
         self.status = Status::Idle;
         self.save_session();
         vec![Action::CancelAgent]
@@ -586,6 +586,14 @@ impl App {
                     .lock()
                     .unwrap()
                     .insert(e.id.clone(), e.output.clone());
+            }
+            if let Some(&sub_idx) = self.chat_index.get(&e.id) {
+                let (role, text) = if e.is_error {
+                    (DisplayRole::Error, ERROR_TEXT)
+                } else {
+                    (DisplayRole::Done, DONE_TEXT)
+                };
+                self.chats[sub_idx].mark_finished(role, text);
             }
         }
 
@@ -640,6 +648,7 @@ impl App {
                 ChatEventResult::Done => {
                     self.status_bar.clear_flash();
                     self.save_session();
+                    self.chat_index.clear();
                     if let Some(actions) = self.drain_next_queued() {
                         return actions;
                     }
@@ -649,6 +658,7 @@ impl App {
                     self.status = Status::error(message);
                     self.status_bar.clear_flash();
                     self.clear_queue();
+                    self.finish_subagents(DisplayRole::Error, ERROR_TEXT);
                     for chat in &mut self.chats {
                         chat.fail_in_progress();
                     }
@@ -750,7 +760,13 @@ impl App {
             || self.chats.iter().any(|c| c.is_animating())
     }
 
-    #[cfg(feature = "demo")]
+    fn finish_subagents(&mut self, role: DisplayRole, text: &str) {
+        for &sub_idx in self.chat_index.values() {
+            self.chats[sub_idx].mark_finished(role.clone(), text);
+        }
+        self.chat_index.clear();
+    }
+
     pub fn flush_all_chats(&mut self) {
         for chat in &mut self.chats {
             chat.flush();

@@ -213,6 +213,7 @@ pub enum DisplayRole {
         name: &'static str,
     },
     Error,
+    Done,
 }
 
 impl DisplayRole {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
 use crate::components::keybindings::{KeybindContext, key as kb};
 use crate::components::{TEST_CONTEXT_WINDOW, key, test_pricing};
 use crate::selection::{EdgeScroll, SelectableZone, SelectionZone};
@@ -664,6 +665,59 @@ fn cancel_resets_all_chats_and_indices() {
     assert_eq!(app.chats[0].in_progress_count(), 0);
     assert_eq!(app.chats[1].in_progress_count(), 0);
     assert!(app.chat_index.is_empty());
+}
+
+fn finish_subagent_task(app: &mut App, is_error: bool) {
+    app.update(agent_msg(AgentEvent::ToolDone(ToolDoneEvent {
+        id: "task1".into(),
+        tool: "task",
+        output: ToolOutput::Plain("result".into()),
+        is_error,
+    })));
+}
+
+#[test]
+fn subagent_done_marker_on_task_success() {
+    let mut app = app_with_subagent();
+    finish_subagent_task(&mut app, false);
+    assert_eq!(app.chats[1].last_message_text(), DONE_TEXT);
+    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::Done));
+    assert_ne!(app.chats[0].last_message_role(), Some(&DisplayRole::Done));
+}
+
+#[test]
+fn subagent_error_marker_on_task_failure() {
+    let mut app = app_with_subagent();
+    finish_subagent_task(&mut app, true);
+    assert_eq!(app.chats[1].last_message_text(), ERROR_TEXT);
+    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::Error));
+}
+
+#[test]
+fn subagent_cancelled_marker_on_cancel() {
+    let mut app = app_with_subagent();
+    cancel_app(&mut app);
+    assert_eq!(app.chats[1].last_message_text(), CANCELLED_TEXT);
+    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::Error));
+}
+
+#[test]
+fn subagent_error_marker_on_main_agent_error() {
+    let mut app = app_with_subagent();
+    error_app(&mut app);
+    assert_eq!(app.chats[1].last_message_text(), ERROR_TEXT);
+    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::Error));
+}
+
+#[test_case(error_app  as fn(&mut App) ; "error")]
+#[test_case(cancel_app as fn(&mut App) ; "cancel")]
+fn subagent_already_done_not_double_marked(terminate: fn(&mut App)) {
+    let mut app = app_with_subagent();
+    finish_subagent_task(&mut app, false);
+    let count_before = app.chats[1].message_count();
+    terminate(&mut app);
+    assert_eq!(app.chats[1].message_count(), count_before);
+    assert_eq!(app.chats[1].last_message_text(), DONE_TEXT);
 }
 
 fn open_tasks_picker(app: &mut App) {

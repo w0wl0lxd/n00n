@@ -1,6 +1,6 @@
 use super::tool_display::{
     ToolLines, append_annotation, append_right_info, assistant_style, build_batch_entry_lines,
-    build_tool_lines, error_style, format_timestamp_now, output_limits, thinking_style,
+    build_tool_lines, done_style, error_style, format_timestamp_now, output_limits, thinking_style,
     tool_output_annotation, truncate_to_header, user_style,
 };
 use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
@@ -595,6 +595,11 @@ impl MessagesPanel {
         self.messages.last().is_some_and(|m| m.plan_path.is_some())
     }
 
+    #[cfg(test)]
+    pub fn last_message_role(&self) -> Option<&DisplayRole> {
+        self.messages.last().map(|m| &m.role)
+    }
+
     pub fn flush(&mut self) {
         self.flush_thinking();
         if !self.streaming_text.is_empty() {
@@ -1064,6 +1069,7 @@ impl MessagesPanel {
                     DisplayRole::Assistant => assistant_style(),
                     DisplayRole::Thinking => thinking_style(),
                     DisplayRole::Error => error_style(),
+                    DisplayRole::Done => done_style(),
                     DisplayRole::Tool { .. } => unreachable!(),
                 };
                 let prefix = if msg.plan_path.is_some() {

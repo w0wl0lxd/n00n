@@ -17,6 +17,10 @@ use maki_providers::{ContentBlock, Message, Role, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
+pub(crate) const DONE_TEXT: &str = "Done!";
+pub(crate) const ERROR_TEXT: &str = "Error";
+pub(crate) const CANCELLED_TEXT: &str = "Cancelled";
+
 pub enum ChatEventResult {
     Continue,
     Done,
@@ -33,6 +37,7 @@ pub struct Chat {
     pub model_id: Option<String>,
     pending_turn_usage: Option<String>,
     messages_panel: MessagesPanel,
+    finished: bool,
 }
 
 impl Chat {
@@ -44,6 +49,7 @@ impl Chat {
             model_id: None,
             pending_turn_usage: None,
             messages_panel: MessagesPanel::new(),
+            finished: false,
         }
     }
 
@@ -190,6 +196,16 @@ impl Chat {
         self.messages_panel.push(msg);
     }
 
+    pub fn mark_finished(&mut self, role: DisplayRole, text: &str) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        self.messages_panel.flush();
+        self.messages_panel
+            .push(DisplayMessage::new(role, text.into()));
+    }
+
     pub fn update_tool_summary(&mut self, tool_id: &str, summary: &str) {
         self.messages_panel.update_tool_summary(tool_id, summary);
     }
@@ -225,6 +241,11 @@ impl Chat {
     #[cfg(test)]
     pub fn last_message_is_plan(&self) -> bool {
         self.messages_panel.last_message_is_plan()
+    }
+
+    #[cfg(test)]
+    pub fn last_message_role(&self) -> Option<&DisplayRole> {
+        self.messages_panel.last_message_role()
     }
 }
 

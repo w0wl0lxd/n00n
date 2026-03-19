@@ -198,6 +198,17 @@ pub fn error_style() -> RoleStyle {
     }
 }
 
+pub fn done_style() -> RoleStyle {
+    RoleStyle {
+        prefix: "",
+        text_style: theme::current()
+            .tool_success
+            .add_modifier(ratatui::style::Modifier::BOLD),
+        prefix_style: theme::current().tool_success,
+        use_markdown: false,
+    }
+}
+
 pub struct ToolLines {
     pub lines: Vec<Line<'static>>,
     pub highlight: Option<HighlightRequest>,
