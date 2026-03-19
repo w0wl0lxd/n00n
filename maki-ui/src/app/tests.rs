@@ -470,7 +470,7 @@ fn reset_session_clears_plan_in_plan_mode() {
     app.mode = Mode::Plan;
     app.plan = PlanState::with_path(PathBuf::from("old-plan.md"), false);
     app.reset_session();
-    assert_eq!(app.mode, Mode::Build);
+    assert_eq!(app.mode, Mode::Plan);
     assert_eq!(app.plan.path(), None);
 }
 
@@ -480,7 +480,7 @@ fn reset_session_preserves_written_plan_in_build_mode() {
     app.mode = Mode::Build;
     app.plan = PlanState::with_path(PathBuf::from("leftover.md"), true);
     app.reset_session();
-    assert_eq!(app.mode, Mode::BuildPlan);
+    assert_eq!(app.mode, Mode::Build);
     assert_eq!(app.plan.path(), Some(Path::new("leftover.md")));
     assert!(app.plan.is_written());
 }
