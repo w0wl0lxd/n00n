@@ -565,7 +565,7 @@ impl App {
         }
         let msg: QueuedMessage = sub.into();
         if self.status == Status::Streaming {
-            self.queue.push(QueuedItem::Message(msg));
+            self.queue_and_notify(QueuedItem::Message(msg));
             vec![]
         } else {
             self.run_id += 1;
@@ -663,6 +663,11 @@ impl App {
 
         let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);
 
+        if matches!(result, ChatEventResult::QueueItemConsumed) && chat_idx == 0 {
+            self.drain_consumed_item();
+            return vec![];
+        }
+
         if chat_idx == 0 {
             match result {
                 ChatEventResult::Done => {
@@ -700,7 +705,7 @@ impl App {
                     ));
                     self.pending_input = PendingInput::AuthRetry;
                 }
-                ChatEventResult::Continue => {}
+                ChatEventResult::Continue | ChatEventResult::QueueItemConsumed => {}
             }
         }
         vec![]
@@ -737,7 +742,7 @@ impl App {
             }
             "/compact" => {
                 if self.status == Status::Streaming {
-                    self.queue.push(QueuedItem::Compact);
+                    self.queue_and_notify(QueuedItem::Compact);
                     return vec![];
                 }
                 self.status = Status::Streaming;

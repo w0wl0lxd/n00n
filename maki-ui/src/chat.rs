@@ -27,6 +27,7 @@ pub(crate) const CANCELLED_TEXT: &str = "Cancelled";
 pub enum ChatEventResult {
     Continue,
     Done,
+    QueueItemConsumed,
     Error(String),
     QuestionPrompt { questions: Vec<QuestionInfo> },
     AuthRequired,
@@ -107,7 +108,7 @@ impl Chat {
                     "Auto-compacting conversation...".into(),
                 ));
             }
-            AgentEvent::QueueItemConsumed => return ChatEventResult::Continue,
+            AgentEvent::QueueItemConsumed => return ChatEventResult::QueueItemConsumed,
             AgentEvent::Retry { .. } => unreachable!("handled before handle_event"),
             AgentEvent::Done { .. } => {
                 self.messages_panel.flush();

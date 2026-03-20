@@ -345,7 +345,7 @@ fn error_app(app: &mut App) {
 }
 
 #[test]
-fn submits_during_streaming_queue_without_sending() {
+fn first_submit_during_streaming_sends_to_agent() {
     let mut app = test_app();
     let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
     app.cmd_tx = Some(tx);
@@ -354,9 +354,10 @@ fn submits_during_streaming_queue_without_sending() {
 
     type_and_submit(&mut app, "first");
     assert_eq!(app.queue.len(), 1);
+    assert!(app.queue.in_flight());
     assert!(
-        rx.try_recv().is_err(),
-        "queued item should not be sent eagerly"
+        rx.try_recv().is_ok(),
+        "first queued item should be sent eagerly"
     );
 
     type_and_submit(&mut app, "second");
@@ -368,14 +369,52 @@ fn submits_during_streaming_queue_without_sending() {
 }
 
 #[test]
-fn consumed_event_is_noop() {
-    let mut app = app_with_queued_message();
+fn consumed_event_pops_and_sends_next() {
+    let mut app = test_app();
+    let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
+    app.cmd_tx = Some(tx);
+    app.status = Status::Streaming;
+    app.run_id = 1;
+
+    app.queue_and_notify(queued_msg("first"));
+    app.queue_and_notify(queued_msg("second"));
+    let _ = rx.try_recv();
+
+    app.update(agent_msg(AgentEvent::QueueItemConsumed));
+    assert_eq!(app.queue.len(), 1);
+    assert!(app.queue.in_flight());
+    assert!(rx.try_recv().is_ok(), "next item sent after consumed");
+    assert_eq!(
+        app.chats[0].message_count(),
+        1,
+        "consumed message shown in chat"
+    );
+}
+
+#[test]
+fn stale_consumed_after_delete_is_noop() {
+    let mut app = test_app();
+    let (tx, _rx) = flume::unbounded::<crate::AgentCommand>();
+    app.cmd_tx = Some(tx);
+    app.status = Status::Streaming;
+    app.run_id = 1;
+
+    app.queue_and_notify(queued_msg("first"));
+    app.queue_and_notify(queued_msg("second"));
+    assert!(app.queue.in_flight());
+
+    app.queue.remove(0);
+    assert!(!app.queue.in_flight());
+    assert_eq!(app.queue.len(), 1);
+
+    let before = app.chats[0].message_count();
     app.update(agent_msg(AgentEvent::QueueItemConsumed));
     assert_eq!(
-        app.queue.len(),
-        1,
-        "queue should not be drained by QueueItemConsumed"
+        app.chats[0].message_count(),
+        before,
+        "stale consumed is noop"
     );
+    assert_eq!(app.queue.len(), 1);
 }
 
 fn cmd(name: &'static str) -> ParsedCommand {
@@ -801,7 +840,7 @@ fn compact_command_sets_streaming() {
 }
 
 #[test]
-fn compact_during_streaming_queues_without_sending() {
+fn compact_during_streaming_sends_to_agent() {
     let mut app = test_app();
     let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
     app.cmd_tx = Some(tx);
@@ -812,11 +851,12 @@ fn compact_during_streaming_queues_without_sending() {
     assert!(actions.is_empty());
     assert_eq!(app.queue.len(), 1);
     assert!(matches!(app.queue[0], QueuedItem::Compact));
-    assert!(rx.try_recv().is_err(), "compact should not be sent eagerly");
+    assert!(app.queue.in_flight());
+    assert!(rx.try_recv().is_ok(), "compact should be sent eagerly");
 }
 
 #[test]
-fn delete_front_queue_item_prevents_agent_delivery() {
+fn delete_front_queue_item_drains_on_done() {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
@@ -824,6 +864,7 @@ fn delete_front_queue_item_prevents_agent_delivery() {
     app.queue.push(queued_msg("second"));
 
     app.queue.remove(0);
+    assert!(!app.queue.in_flight());
 
     let actions = app.update(agent_msg(AgentEvent::Done {
         usage: TokenUsage::default(),

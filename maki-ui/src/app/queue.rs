@@ -1,5 +1,6 @@
-//! Message queue for input typed while the agent is busy. Items are drained
-//! one at a time via `drain_next_queued` when the agent signals `Done`.
+//! Message queue for input typed while the agent is busy. The front item is
+//! sent eagerly to the agent via `queue_and_notify`; subsequent items are sent
+//! one at a time as the agent signals `QueueItemConsumed` or `Done`.
 //!
 //! All queue + focus state is encapsulated in [`MessageQueue`] so the two
 //! cannot drift out of sync.
@@ -57,6 +58,7 @@ impl QueuedItem {
 pub(crate) struct MessageQueue {
     items: VecDeque<QueuedItem>,
     focus: Option<usize>,
+    in_flight: bool,
 }
 
 impl MessageQueue {
@@ -66,23 +68,36 @@ impl MessageQueue {
 
     pub(crate) fn pop_front(&mut self) -> Option<QueuedItem> {
         let item = self.items.pop_front()?;
+        self.in_flight = false;
         self.clamp_focus();
         Some(item)
     }
 
     pub(crate) fn remove(&mut self, index: usize) {
-        if index < self.items.len() {
-            self.items.remove(index);
-            self.clamp_focus();
+        if index >= self.items.len() {
+            return;
         }
+        if index == 0 && self.in_flight {
+            self.in_flight = false;
+        }
+        self.items.remove(index);
+        self.clamp_focus();
     }
 
     pub(crate) fn clear(&mut self) {
         self.items.clear();
         self.focus = None;
+        self.in_flight = false;
     }
 
-    #[cfg(test)]
+    pub(crate) fn in_flight(&self) -> bool {
+        self.in_flight
+    }
+
+    pub(crate) fn mark_in_flight(&mut self) {
+        self.in_flight = true;
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -156,16 +171,55 @@ impl Index<usize> for MessageQueue {
 }
 
 impl App {
-    pub(super) fn start_from_queue(&mut self, msg: &QueuedMessage) -> Vec<super::Action> {
+    pub(super) fn queue_and_notify(&mut self, item: QueuedItem) {
+        self.queue.push(item);
+        self.send_front_to_agent();
+    }
+
+    fn send_front_to_agent(&mut self) {
+        if self.queue.in_flight() || self.queue.is_empty() {
+            return;
+        }
+        if let Some(tx) = &self.cmd_tx {
+            let cmd = match &self.queue[0] {
+                QueuedItem::Message(msg) => {
+                    crate::AgentCommand::Run(self.build_agent_input(msg), self.run_id)
+                }
+                QueuedItem::Compact => crate::AgentCommand::Compact(self.run_id),
+            };
+            let _ = tx.try_send(cmd);
+            self.queue.mark_in_flight();
+        }
+    }
+
+    pub(super) fn drain_consumed_item(&mut self) {
+        if !self.queue.in_flight() {
+            return;
+        }
+        let Some(item) = self.queue.pop_front() else {
+            return;
+        };
+        if let QueuedItem::Message(ref msg) = item {
+            self.display_queued_msg(msg);
+        }
+        self.send_front_to_agent();
+    }
+
+    fn display_queued_msg(&mut self, msg: &QueuedMessage) {
         self.main_chat().flush();
         self.main_chat()
             .push_user_message(&format_with_images(&msg.text, msg.images.len()));
         self.main_chat().enable_auto_scroll();
+    }
+
+    pub(super) fn start_from_queue(&mut self, msg: &QueuedMessage) -> Vec<super::Action> {
+        self.display_queued_msg(msg);
         self.status = super::Status::Streaming;
         vec![super::Action::SendMessage(self.build_agent_input(msg))]
     }
 
     pub(super) fn drain_next_queued(&mut self) -> Option<Vec<super::Action>> {
+        debug_assert!(!self.queue.in_flight(), "in_flight should be false on Done");
         let item = self.queue.pop_front()?;
         Some(match item {
             QueuedItem::Message(msg) => self.start_from_queue(&msg),
