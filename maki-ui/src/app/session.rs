@@ -46,16 +46,10 @@ impl App {
             self.demo_questions = None;
         }
         self.question_form.close();
-        self.help_modal.close();
-        self.theme_picker.close();
-        self.model_picker.close();
-        self.session_picker.close();
-        self.rewind_picker.close();
+        self.close_all_overlays();
         self.pending_input = PendingInput::None;
         self.status_bar.clear_flash();
-        self.task_picker.close();
         self.task_picker_original = None;
-        self.search_modal.close();
         self.last_esc = None;
     }
 

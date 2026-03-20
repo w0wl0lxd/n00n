@@ -76,11 +76,13 @@ impl App {
         } else {
             let queue_entries = self.queue.entries();
             queue_panel::view(frame, queue_area, &queue_entries, self.queue.focus());
+            let input_focused = !self.any_overlay_open();
             self.input_box.view(
                 frame,
                 input_area,
                 self.status == Status::Streaming,
                 self.mode.color(),
+                input_focused,
             );
             self.command_palette.view(frame, input_area);
         }
@@ -142,6 +144,7 @@ impl App {
             zone: SelectionZone::StatusBar,
         });
 
+        self.btw_modal.view(frame, frame.area());
         self.help_modal.view(frame, frame.area());
 
         if let Some(ref state) = self.selection_state {

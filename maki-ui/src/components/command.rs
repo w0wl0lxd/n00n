@@ -65,6 +65,11 @@ const COMMANDS: &[Command] = &[
         max_args: 1,
     },
     Command {
+        name: "/btw",
+        description: "Ask a quick question (no tools, no history pollution)",
+        max_args: usize::MAX,
+    },
+    Command {
         name: "/exit",
         description: "Exit the application",
         max_args: 0,
@@ -355,6 +360,7 @@ mod tests {
     #[test_case("/cd ~/foo", true   ; "one_arg_cmd_mid_arg")]
     #[test_case("/cd  ~/foo", true  ; "one_arg_cmd_double_space")]
     #[test_case("/cd ~/foo ", false ; "one_arg_cmd_second_space")]
+    #[test_case("/btw hello world", true ; "btw_stays_active_with_many_args")]
     fn sync_respects_max_args(input: &str, expect_active: bool) {
         let p = synced(input);
         assert_eq!(p.is_active(), expect_active);
@@ -364,6 +370,7 @@ mod tests {
     #[test_case("/cd ~/foo", Some("/cd"), "~/foo"   ; "with_args")]
     #[test_case("/CD ~/foo", Some("/cd"), "~/foo"   ; "case_insensitive")]
     #[test_case("/compact", Some("/compact"), ""    ; "other_command")]
+    #[test_case("/btw hello world", Some("/btw"), "hello world" ; "btw_multi_word")]
     #[test_case("/nonexistent", None, ""            ; "unknown")]
     #[test_case("hello", None, ""                   ; "no_slash")]
     fn parse_command_cases(input: &str, expected_name: Option<&str>, expected_args: &str) {

@@ -469,6 +469,8 @@ fn reset_session_preserves_plan() {
     app.queue.push(queued_msg("q"));
     app.queue.set_focus_at(0);
     app.update(Msg::Key(kb::HELP.to_key_event()));
+    let (_tx, rx) = flume::bounded::<crate::components::btw_modal::BtwEvent>(1);
+    app.btw_modal.open("q", rx);
     let actions = app.reset_session();
     assert!(matches!(&actions[0], Action::NewSession));
     assert_eq!(app.status, Status::Idle);
@@ -484,6 +486,7 @@ fn reset_session_preserves_plan() {
     assert!(app.chat_index.is_empty());
     assert!(app.queue.focus().is_none());
     assert!(!app.help_modal.is_open());
+    assert!(!app.btw_modal.is_open());
 }
 
 #[test]
@@ -1876,4 +1879,47 @@ fn open_editor(setup: Option<(&str, bool)>, expect_flash: bool) {
         let expected = plan_path.unwrap();
         assert!(matches!(&actions[..], [Action::OpenEditor(p)] if p == &expected));
     }
+}
+
+#[test]
+fn btw_empty_flashes_error() {
+    let mut app = test_app();
+    let actions = app.execute_command(ParsedCommand {
+        name: "/btw",
+        args: String::new(),
+    });
+    assert!(actions.is_empty());
+    assert_eq!(
+        app.status_bar.flash_text().unwrap(),
+        "Usage: /btw <question>"
+    );
+}
+
+#[test]
+fn btw_with_question_returns_action() {
+    let mut app = test_app();
+    let actions = app.execute_command(ParsedCommand {
+        name: "/btw",
+        args: "what is rust?".into(),
+    });
+    assert!(matches!(&actions[..], [Action::Btw(q)] if q == "what is rust?"));
+}
+
+#[test]
+fn btw_modal_key_routing_and_animation() {
+    let mut app = test_app();
+    let (_tx, rx) = flume::bounded(1);
+    app.btw_modal.open("test", rx);
+
+    assert!(app.btw_modal.is_animating());
+
+    let actions = app.update(Msg::Key(key(KeyCode::Char('x'))));
+    assert!(actions.is_empty());
+    assert!(app.btw_modal.is_open());
+    assert_eq!(app.input_box.buffer.value(), "");
+
+    let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(actions.is_empty());
+    assert!(!app.btw_modal.is_open());
+    assert!(!app.btw_modal.is_animating());
 }

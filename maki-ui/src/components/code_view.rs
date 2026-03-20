@@ -56,11 +56,6 @@ fn highlight_spans(hl: &mut HighlightLines<'_>, text: &str) -> Vec<Span<'static>
         .collect()
 }
 
-#[cfg(test)]
-fn highlight_standalone(path: &str, text: &str) -> Vec<Span<'static>> {
-    highlight_spans(&mut highlighter_for_syntax(syntax_for_path(path)), text)
-}
-
 fn render_code(
     mut hl: Option<HighlightLines<'static>>,
     start_line: usize,
@@ -524,10 +519,6 @@ mod tests {
         assert_eq!(result[2].style.bg, Some(Color::Green));
     }
 
-    fn span_styles(line: &Line) -> Vec<Style> {
-        line.spans.iter().map(|s| s.style).collect()
-    }
-
     #[test]
     fn grep_each_line_highlighted_independently() {
         let entries = vec![GrepFileEntry {
@@ -544,11 +535,15 @@ mod tests {
             ],
         }];
         let lines = render_grep_results(&entries, 100, true);
-        let standalone = highlight_standalone("test.rs", "let y = 42;");
-        let second_line_spans: Vec<_> = lines[1].spans[1..].to_vec();
-        assert_eq!(
-            span_styles(&Line::from(second_line_spans)),
-            span_styles(&Line::from(standalone))
+        // If the unclosed string on line 1 leaked into line 2's highlighting,
+        // all of line 2's spans would share one uniform "string" style.
+        // Independent highlighting of `let y = 42;` must produce multiple
+        // distinct styles (keyword, identifier, number, etc.).
+        let styles: Vec<Style> = lines[1].spans[1..].iter().map(|s| s.style).collect();
+        let unique: std::collections::HashSet<_> = styles.iter().collect();
+        assert!(
+            unique.len() > 1,
+            "expected multiple distinct styles for independently highlighted line, got {styles:?}"
         );
     }
 

@@ -2,6 +2,7 @@
 //! Double-esc: first esc flashes a hint, second within `FLASH_DURATION` cancels/rewinds.
 //! `run_id` increments each run so stale events from previous agent runs are ignored.
 
+mod btw;
 mod image_paste;
 mod mode;
 mod mouse;
@@ -20,6 +21,7 @@ use std::time::{Duration, Instant};
 use crate::AppSession;
 use crate::chat::Chat;
 use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT};
+use crate::components::btw_modal::BtwModal;
 use crate::components::command::{CommandAction, CommandPalette, ParsedCommand};
 use crate::components::help_modal::HelpModal;
 use crate::components::input::{InputAction, InputBox, Submission};
@@ -34,7 +36,7 @@ use crate::components::session_picker::{SessionPicker, SessionPickerAction};
 use crate::components::status_bar::{FLASH_DURATION, StatusBar};
 use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
 use crate::components::tool_display::format_turn_usage;
-use crate::components::{Action, DisplayMessage, DisplayRole, RetryInfo, Status, is_ctrl};
+use crate::components::{Action, DisplayMessage, DisplayRole, Overlay, RetryInfo, Status, is_ctrl};
 use crate::image;
 use crate::selection::{SelectionState, ZoneRegistry};
 use arboard::Clipboard;
@@ -93,6 +95,7 @@ pub struct App {
     pub(super) session_picker: SessionPicker,
     pub(super) rewind_picker: RewindPicker,
     pub(super) help_modal: HelpModal,
+    pub(super) btw_modal: BtwModal,
     pub(super) search_modal: SearchModal,
     pub(super) question_form: QuestionForm,
     pub(super) status_bar: StatusBar,
@@ -151,6 +154,7 @@ impl App {
             session_picker: SessionPicker::new(),
             rewind_picker: RewindPicker::new(),
             help_modal: HelpModal::new(),
+            btw_modal: BtwModal::new(),
             search_modal: SearchModal::new(),
             question_form: QuestionForm::new(),
             status_bar: StatusBar::new(),
@@ -247,6 +251,14 @@ impl App {
     }
 
     fn handle_scroll(&mut self, column: u16, row: u16, delta: i32) {
+        if self.btw_modal.is_open() {
+            self.btw_modal.scroll(delta);
+            return;
+        }
+        if self.help_modal.is_open() {
+            self.help_modal.scroll(delta);
+            return;
+        }
         let pos = Position::new(column, row);
         macro_rules! try_picker {
             ($picker:expr) => {
@@ -287,6 +299,11 @@ impl App {
 
         if self.help_modal.is_open() {
             self.help_modal.handle_key(key);
+            return vec![];
+        }
+
+        if self.btw_modal.is_open() {
+            self.btw_modal.handle_key(key);
             return vec![];
         }
 
@@ -752,6 +769,15 @@ impl App {
                 self.help_modal.toggle();
                 vec![]
             }
+            "/btw" => {
+                let question = cmd.args.trim().to_string();
+                if question.is_empty() {
+                    self.flash("Usage: /btw <question>".into());
+                    vec![]
+                } else {
+                    vec![Action::Btw(question)]
+                }
+            }
             "/new" => self.reset_session(),
             "/queue" => {
                 self.queue.set_focus();
@@ -802,8 +828,45 @@ impl App {
         vec![]
     }
 
+    fn overlays(&self) -> [&dyn Overlay; 9] {
+        [
+            &self.help_modal,
+            &self.btw_modal,
+            &self.search_modal,
+            &self.task_picker,
+            &self.session_picker,
+            &self.rewind_picker,
+            &self.theme_picker,
+            &self.model_picker,
+            &self.mcp_picker,
+        ]
+    }
+
+    fn overlays_mut(&mut self) -> [&mut dyn Overlay; 9] {
+        [
+            &mut self.help_modal,
+            &mut self.btw_modal,
+            &mut self.search_modal,
+            &mut self.task_picker,
+            &mut self.session_picker,
+            &mut self.rewind_picker,
+            &mut self.theme_picker,
+            &mut self.model_picker,
+            &mut self.mcp_picker,
+        ]
+    }
+
+    pub fn any_overlay_open(&self) -> bool {
+        self.overlays().iter().any(|o| o.is_open())
+    }
+
+    pub fn close_all_overlays(&mut self) {
+        self.overlays_mut().iter_mut().for_each(|o| o.close());
+    }
+
     pub fn is_animating(&self) -> bool {
         self.image_paste_rx.is_some()
+            || self.btw_modal.is_animating()
             || self.session_picker.is_loading()
             || self
                 .selection_state

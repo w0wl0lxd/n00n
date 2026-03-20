@@ -1,3 +1,4 @@
+use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 
 use crossterm::event::KeyEvent;
@@ -100,6 +101,16 @@ impl RewindPicker {
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) {
         self.picker.view(frame, area);
+    }
+}
+
+impl Overlay for RewindPicker {
+    fn is_open(&self) -> bool {
+        self.is_open()
+    }
+
+    fn close(&mut self) {
+        self.close()
     }
 }
 

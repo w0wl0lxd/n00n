@@ -1,3 +1,4 @@
+use crate::components::Overlay;
 use crate::components::keybindings::key;
 use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
@@ -267,6 +268,16 @@ impl SearchModal {
             Span::styled(after.to_owned(), t.picker_search_text),
         ]);
         frame.render_widget(Paragraph::new(vec![line]), area);
+    }
+}
+
+impl Overlay for SearchModal {
+    fn is_open(&self) -> bool {
+        self.is_open()
+    }
+
+    fn close(&mut self) {
+        self.close()
     }
 }
 

@@ -1,3 +1,4 @@
+use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 use crate::theme;
 
@@ -106,6 +107,16 @@ impl ThemePicker {
         {
             theme::set(t);
         }
+    }
+}
+
+impl Overlay for ThemePicker {
+    fn is_open(&self) -> bool {
+        self.is_open()
+    }
+
+    fn close(&mut self) {
+        self.close()
     }
 }
 

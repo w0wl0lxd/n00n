@@ -1,6 +1,7 @@
 use std::thread;
 
 use crate::AppSession;
+use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -176,6 +177,16 @@ impl SessionPicker {
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) {
         self.picker.view(frame, area);
+    }
+}
+
+impl Overlay for SessionPicker {
+    fn is_open(&self) -> bool {
+        self.is_open()
+    }
+
+    fn close(&mut self) {
+        self.close()
     }
 }
 

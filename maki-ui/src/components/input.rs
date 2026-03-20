@@ -257,7 +257,14 @@ impl InputBox {
         lines_above + wrap_row
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect, streaming: bool, mode_color: Color) {
+    pub fn view(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        streaming: bool,
+        mode_color: Color,
+        focused: bool,
+    ) {
         let content_height = area.height.saturating_sub(2);
         let ew = effective_width(area.width as usize);
 
@@ -270,7 +277,7 @@ impl InputBox {
             }
         }
 
-        let mut total_vl = total_visual_lines(&self.buffer, ew, true) as u16;
+        let mut total_vl = total_visual_lines(&self.buffer, ew, focused) as u16;
         if !self.pending_images.is_empty() {
             total_vl += 1;
         }
@@ -284,13 +291,21 @@ impl InputBox {
             if streaming {
                 vec![Line::from(vec![
                     Span::styled(CHEVRON, prefix_style),
-                    Span::styled("Q", placeholder_base.reversed()),
+                    if focused {
+                        Span::styled("Q", placeholder_base.reversed())
+                    } else {
+                        Span::styled("Q", placeholder_base)
+                    },
                     Span::styled("ueue another prompt...", placeholder_base),
                 ])]
             } else {
                 vec![Line::from(vec![
                     Span::styled(CHEVRON, prefix_style),
-                    Span::styled("A", placeholder_base.reversed()),
+                    if focused {
+                        Span::styled("A", placeholder_base.reversed())
+                    } else {
+                        Span::styled("A", placeholder_base)
+                    },
                     Span::styled("sk maki to ", placeholder_base),
                     Span::styled(
                         self.placeholder_hint,
@@ -307,7 +322,7 @@ impl InputBox {
                 .iter()
                 .enumerate()
                 .flat_map(|(i, line)| {
-                    let is_cursor_line = i == cursor_y;
+                    let is_cursor_line = i == cursor_y && focused;
                     let shell_spans = if i == 0 {
                         shell_highlight_spans(line)
                     } else {
@@ -693,7 +708,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = Rect::new(0, 0, width, height);
-                input.view(frame, area, streaming, mode_color);
+                input.view(frame, area, streaming, mode_color, true);
             })
             .unwrap();
         terminal

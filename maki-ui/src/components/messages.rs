@@ -1,15 +1,12 @@
+use super::streaming_content::StreamingContent;
 use super::tool_display::{
     ToolKind, ToolLines, append_annotation, append_right_info, assistant_style,
     build_batch_entry_lines, build_tool_lines, done_style, error_style, format_timestamp_now,
     thinking_style, tool_output_annotation, truncate_to_header, user_style,
 };
 use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
-use crate::animation::{Typewriter, spinner_frame};
-use crate::highlight::CodeHighlighter;
-use crate::markdown::{
-    RenderCtx, RenderState, finalize_lines, hr_line, parse_blocks, plain_lines, render_block,
-    text_to_lines, truncate_output,
-};
+use crate::animation::spinner_frame;
+use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
 use crate::render_worker::RenderWorker;
 use crate::selection::{self, LineBreaks, ScreenSelection, Selection};
 use crate::splash::Splash;
@@ -24,82 +21,10 @@ use maki_agent::{
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 
 use super::scrollbar::render_vertical_scrollbar;
-
-/// Block-level streaming markdown cache.
-///
-/// Incremental renderer for a streaming markdown message.
-///
-/// Re-parses all blocks each frame (parsing is cheap string scanning).
-/// Code blocks use `CodeHighlighter` which caches completed lines internally,
-/// so repeated `render_block` calls only re-highlight the last (incomplete) line.
-///
-/// Table column widths are monotonically grown (`table_col_widths`) so that
-/// adding a wider row never causes earlier rows to shift. This prevents
-/// flicker during table streaming.
-#[derive(Default)]
-struct StreamingCache {
-    byte_len: usize,
-    lines: Vec<Line<'static>>,
-    highlighters: Vec<CodeHighlighter>,
-    dim: bool,
-    table_col_widths: Vec<usize>,
-}
-
-impl StreamingCache {
-    fn invalidate(&mut self) {
-        *self = Self {
-            dim: self.dim,
-            ..Self::default()
-        };
-    }
-
-    fn get_or_update(
-        &mut self,
-        visible: &str,
-        prefix: &str,
-        text_style: Style,
-        prefix_style: Style,
-        width: u16,
-    ) -> &[Line<'static>] {
-        let len = visible.len();
-        if len == self.byte_len && !self.lines.is_empty() {
-            return &self.lines;
-        }
-        self.byte_len = len;
-
-        let text = visible.trim_start_matches('\n');
-        let blocks = parse_blocks(text);
-
-        self.lines.clear();
-        let mut state = RenderState::new();
-        let mut hl_opt: Option<&mut Vec<CodeHighlighter>> = Some(&mut self.highlighters);
-        let mut ctx = RenderCtx {
-            prefix,
-            text_style,
-            prefix_style,
-            highlighters: &mut hl_opt,
-            width,
-            table_col_widths: Some(&mut self.table_col_widths),
-        };
-
-        for block in &blocks {
-            render_block(block, &mut self.lines, &mut state, &mut ctx);
-        }
-        self.highlighters.truncate(state.code_idx);
-
-        finalize_lines(&mut self.lines, prefix, prefix_style);
-
-        if self.dim {
-            theme::dim_lines(&mut self.lines);
-        }
-        &self.lines
-    }
-}
 
 /// `copy_text` holds raw source text for clipboard copy (from
 /// `DisplayMessage::copy_text()`). Fully-selected segments use this instead
@@ -165,8 +90,8 @@ impl Segment {
 
 pub struct MessagesPanel {
     messages: Vec<DisplayMessage>,
-    streaming_thinking: Typewriter,
-    streaming_text: Typewriter,
+    streaming_thinking: StreamingContent,
+    streaming_text: StreamingContent,
     started_at: Instant,
     in_progress_count: usize,
     scroll_top: u16,
@@ -175,8 +100,6 @@ pub struct MessagesPanel {
     viewport_width: u16,
     cached_segments: Vec<Segment>,
     cached_msg_count: usize,
-    cached_streaming_thinking: StreamingCache,
-    cached_streaming_text: StreamingCache,
     hl_worker: RenderWorker,
     segment_heights: Vec<u16>,
     theme_generation: u64,
@@ -186,10 +109,20 @@ pub struct MessagesPanel {
 
 impl MessagesPanel {
     pub fn new() -> Self {
+        let thinking = thinking_style();
+        let assistant = assistant_style();
         Self {
             messages: Vec::new(),
-            streaming_thinking: Typewriter::new(),
-            streaming_text: Typewriter::new(),
+            streaming_thinking: StreamingContent::new_dim(
+                thinking.prefix,
+                thinking.text_style,
+                thinking.prefix_style,
+            ),
+            streaming_text: StreamingContent::new(
+                assistant.prefix,
+                assistant.text_style,
+                assistant.prefix_style,
+            ),
             started_at: Instant::now(),
             in_progress_count: 0,
             scroll_top: u16::MAX,
@@ -198,11 +131,6 @@ impl MessagesPanel {
             viewport_width: 80,
             cached_segments: Vec::new(),
             cached_msg_count: 0,
-            cached_streaming_thinking: StreamingCache {
-                dim: true,
-                ..StreamingCache::default()
-            },
-            cached_streaming_text: StreamingCache::default(),
             hl_worker: RenderWorker::new(),
             segment_heights: Vec::new(),
             theme_generation: theme::generation(),
@@ -485,8 +413,6 @@ impl MessagesPanel {
     pub fn stream_reset(&mut self) {
         self.streaming_thinking.clear();
         self.streaming_text.clear();
-        self.cached_streaming_thinking.invalidate();
-        self.cached_streaming_text.invalidate();
         self.fail_in_progress();
     }
 
@@ -607,7 +533,6 @@ impl MessagesPanel {
                 DisplayRole::Assistant,
                 self.streaming_text.take_all(),
             ));
-            self.cached_streaming_text = StreamingCache::default();
         }
     }
 
@@ -678,17 +603,24 @@ impl MessagesPanel {
             self.theme_generation = theme_gen;
             self.cached_msg_count = 0;
             self.cached_segments.clear();
-            self.cached_streaming_thinking.invalidate();
-            self.cached_streaming_text.invalidate();
+            let thinking = thinking_style();
+            let assistant = assistant_style();
+            self.streaming_thinking.set_style(
+                thinking.prefix,
+                thinking.text_style,
+                thinking.prefix_style,
+            );
+            self.streaming_text.set_style(
+                assistant.prefix,
+                assistant.text_style,
+                assistant.prefix_style,
+            );
         }
         self.drain_highlights();
         self.rebuild_line_cache();
         if self.in_progress_count > 0 {
             self.update_spinners();
         }
-
-        self.streaming_thinking.tick();
-        self.streaming_text.tick();
 
         let mut heights: Vec<u16> = self
             .cached_segments
@@ -712,29 +644,11 @@ impl MessagesPanel {
             .collect();
 
         let spacer_line = vec![Line::default()];
-        let thinking = thinking_style();
-        let assistant = assistant_style();
-        let streaming_sources: [(&Typewriter, &mut StreamingCache, &str, Style, Style); 2] = [
-            (
-                &self.streaming_thinking,
-                &mut self.cached_streaming_thinking,
-                thinking.prefix,
-                thinking.text_style,
-                thinking.prefix_style,
-            ),
-            (
-                &self.streaming_text,
-                &mut self.cached_streaming_text,
-                assistant.prefix,
-                assistant.text_style,
-                assistant.prefix_style,
-            ),
-        ];
-        for (tw, cache, prefix, text_style, prefix_style) in streaming_sources {
-            if tw.is_empty() {
+        for sc in [&mut self.streaming_thinking, &mut self.streaming_text] {
+            if sc.is_empty() {
                 continue;
             }
-            let lines = cache.get_or_update(tw.visible(), prefix, text_style, prefix_style, width);
+            let lines = sc.render_lines(width);
             if !segments.is_empty() {
                 segments.push((&spacer_line, false));
                 heights.push(1);
@@ -898,10 +812,6 @@ impl MessagesPanel {
                 DisplayRole::Thinking,
                 self.streaming_thinking.take_all(),
             ));
-            self.cached_streaming_thinking = StreamingCache {
-                dim: true,
-                ..StreamingCache::default()
-            };
         }
     }
 
@@ -1949,120 +1859,6 @@ mod tests {
         assert_eq!(panel.messages[0].annotation.as_deref(), Some("note"));
     }
 
-    fn cache_lines_text(cache: &StreamingCache) -> Vec<String> {
-        cache
-            .lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect()
-    }
-
-    fn full_render_lines(text: &str, prefix: &str, width: u16) -> Vec<String> {
-        let style = Style::default();
-        let mut hl = Vec::new();
-        text_to_lines(text, prefix, style, style, Some(&mut hl), width)
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect()
-    }
-
-    #[test_case(
-        "Hello **bold**\n```rust\nfn main() {}\n```\nAfter code\n- list item",
-        "p> "
-        ; "single_code_block_with_prefix"
-    )]
-    #[test_case(
-        "text\n```py\nx=1\n```\nmiddle\n```js\ny=2\n```\ntail",
-        ""
-        ; "multiple_code_blocks"
-    )]
-    #[test_case(
-        "Before table\n\n| Name | Value |\n| --- | --- |\n| foo | 42 |\n| bar | 99 |\n\nAfter table",
-        ""
-        ; "table_between_paragraphs"
-    )]
-    #[test_case(
-        "| H |\n| --- |\n| d |",
-        ""
-        ; "table_only"
-    )]
-    #[test_case(
-        "| Tier | Tools | When |\n| --- | --- | --- |\n| Best | code_execution | Chained calls |\n| Good | index | File structure |\n| Costly | read | Full file reads |",
-        ""
-        ; "table_many_rows"
-    )]
-    #[test_case(
-        "Here is some code:\n```rust\nfn main() {}\n```\n\n| Tier | Tools |\n| --- | --- |\n| Best | code_execution |\n| Good | index |\n| Costly | read |",
-        ""
-        ; "table_after_code_block"
-    )]
-    fn streaming_cache_final_matches_full_render(full_text: &str, prefix: &str) {
-        let style = Style::default();
-        let width = 80;
-        let mut cache = StreamingCache::default();
-
-        let step = 7;
-        let mut end = step;
-        while end <= full_text.len() {
-            if !full_text.is_char_boundary(end) {
-                end += 1;
-                continue;
-            }
-            cache.get_or_update(&full_text[..end], prefix, style, style, width);
-            end += step;
-        }
-
-        cache.get_or_update(full_text, prefix, style, style, width);
-        let incremental = cache_lines_text(&cache);
-        let expected = full_render_lines(full_text, prefix, width);
-        assert_eq!(
-            incremental, expected,
-            "final render mismatch for:\n  {full_text:?}"
-        );
-    }
-
-    #[test]
-    fn incremental_cache_correct_after_content_jump() {
-        let style = Style::default();
-        let width = 80;
-        let mut cache = StreamingCache::default();
-
-        cache.get_or_update("partial text", "", style, style, width);
-
-        let text = "block1\n```py\nx=1\n```\nblock2\n```js\ny=2\n```\ntail";
-        cache.get_or_update(text, "", style, style, width);
-
-        let expected = full_render_lines(text, "", width);
-        assert_eq!(cache_lines_text(&cache), expected);
-    }
-
-    #[test]
-    fn invalidate_then_rerender_matches_full() {
-        let style = Style::default();
-        let width = 80;
-        let mut cache = StreamingCache::default();
-        let text = "hello\n```rust\nfn x(){}\n```\nafter";
-        cache.get_or_update(text, "", style, style, width);
-        cache.invalidate();
-        cache.get_or_update(text, "", style, style, width);
-        assert_eq!(cache_lines_text(&cache), full_render_lines(text, "", width));
-    }
-
-    #[test]
-    fn dim_cache_no_panic_when_finalize_pops_stable_blank() {
-        let style = Style::default();
-        let width = 80;
-        let mut cache = StreamingCache {
-            dim: true,
-            ..StreamingCache::default()
-        };
-
-        // Two consecutive code blocks where the second has empty code.
-        // Verifies dim mode doesn't panic with edge-case block structure.
-        let text = "```py\nx\n```\n```js\n";
-        cache.get_or_update(text, "", style, style, width);
-    }
-
     #[test]
     fn stream_reset_clears_streaming_and_fails_tools() {
         let mut panel = panel_with_tools(&[("t1", "bash")]);
@@ -2076,71 +1872,6 @@ mod tests {
         assert!(panel.streaming_text.is_empty());
         assert_eq!(panel.in_progress_count, 0);
         assert_eq!(msg_status(&panel, "t1"), ToolStatus::Error);
-    }
-
-    #[test_case(
-        "| Name | Value |\n| --- | --- |\n| foo | 42 |",
-        "\n| bar | 99 |"
-        ; "same_column_count_row"
-    )]
-    #[test_case(
-        "| Col |\n| --- |\n| data |",
-        "\n| new | val |"
-        ; "row_adds_column_at_pipe_boundary"
-    )]
-    fn streaming_table_no_line_count_oscillation(base: &str, suffix: &str) {
-        let style = Style::default();
-        let width = 80;
-        let mut cache = StreamingCache::default();
-
-        cache.get_or_update(base, "", style, style, width);
-        let mut prev_count = cache.lines.len();
-
-        let chars: Vec<char> = suffix.chars().collect();
-        for i in 1..=chars.len() {
-            let partial: String = chars[..i].iter().collect();
-            let text = format!("{base}{partial}");
-            cache.get_or_update(&text, "", style, style, width);
-            assert!(
-                cache.lines.len() >= prev_count.saturating_sub(1),
-                "line count dropped from {prev_count} to {} at partial {partial:?}",
-                cache.lines.len()
-            );
-            prev_count = cache.lines.len();
-        }
-    }
-
-    #[test]
-    fn streaming_table_partial_row_always_in_table() {
-        let style = Style::default();
-        let width = 80;
-        let mut cache = StreamingCache::default();
-
-        let base = "| A | B |\n| --- | --- |\n| 1 | 2 |";
-        cache.get_or_update(base, "", style, style, width);
-        let base_lines = cache_lines_text(&cache);
-
-        let partial = format!("{base}\n| 3 | in pro");
-        cache.get_or_update(&partial, "", style, style, width);
-        let partial_lines = cache_lines_text(&cache);
-        assert!(
-            partial_lines.len() > base_lines.len(),
-            "partial row should add lines to the table"
-        );
-        let has_partial_content = partial_lines.iter().any(|l| l.contains("in pro"));
-        assert!(
-            has_partial_content,
-            "partial cell content should be rendered in table"
-        );
-
-        let complete = format!("{base}\n| 3 | in progress |");
-        cache.get_or_update(&complete, "", style, style, width);
-        let complete_lines = cache_lines_text(&cache);
-        let has_complete_content = complete_lines.iter().any(|l| l.contains("in progress"));
-        assert!(
-            has_complete_content,
-            "complete cell content should be rendered"
-        );
     }
 
     use crate::selection::{Selection, SelectionZone};

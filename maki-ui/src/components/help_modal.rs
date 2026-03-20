@@ -1,3 +1,5 @@
+use crate::components::ModalScroll;
+use crate::components::Overlay;
 use crate::components::keybindings::{ALL_CONTEXTS, KEYBINDS, key};
 use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
@@ -11,18 +13,17 @@ use ratatui::widgets::Paragraph;
 
 const TITLE: &str = " Keybindings ";
 const KEY_COL_WIDTH: usize = 16;
-const HALF_PAGE: u16 = 12;
 
 pub struct HelpModal {
     open: bool,
-    scroll_offset: u16,
+    scroll: ModalScroll,
 }
 
 impl HelpModal {
     pub fn new() -> Self {
         Self {
             open: false,
-            scroll_offset: 0,
+            scroll: ModalScroll::new(),
         }
     }
 
@@ -32,15 +33,18 @@ impl HelpModal {
 
     pub fn toggle(&mut self) {
         self.open = !self.open;
-        self.scroll_offset = 0;
+        self.scroll.reset();
     }
 
     pub fn close(&mut self) {
         self.open = false;
-        self.scroll_offset = 0;
+        self.scroll.reset();
     }
 
-    /// Returns `true` if the key was consumed by the modal.
+    pub fn scroll(&mut self, delta: i32) {
+        self.scroll.scroll(delta);
+    }
+
     pub fn handle_key(&mut self, key_event: KeyEvent) -> bool {
         let close = key_event.code == KeyCode::Esc
             || key::HELP.matches(key_event)
@@ -49,28 +53,11 @@ impl HelpModal {
             self.close();
             return true;
         }
-        match key_event.code {
-            KeyCode::Up => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                true
-            }
-            KeyCode::Down => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
-                true
-            }
-            _ if key::SCROLL_HALF_UP.matches(key_event) => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(HALF_PAGE);
-                true
-            }
-            _ if key::SCROLL_HALF_DOWN.matches(key_event) => {
-                self.scroll_offset = self.scroll_offset.saturating_add(HALF_PAGE);
-                true
-            }
-            _ => true,
-        }
+        self.scroll.handle_key(key_event);
+        true
     }
 
-    pub fn view(&self, frame: &mut Frame, area: Rect) {
+    pub fn view(&mut self, frame: &mut Frame, area: Rect) {
         if !self.open {
             return;
         }
@@ -134,8 +121,8 @@ impl HelpModal {
         };
         let inner = modal.render(frame, area, total);
         let viewport_h = inner.height;
-        let max_scroll = total.saturating_sub(viewport_h);
-        let scroll = self.scroll_offset.min(max_scroll);
+        self.scroll.update_dimensions(total, viewport_h);
+        let scroll = self.scroll.offset();
 
         let paragraph = Paragraph::new(lines).scroll((scroll, 0));
         frame.render_widget(paragraph, inner);
@@ -143,6 +130,16 @@ impl HelpModal {
         if total > viewport_h {
             render_vertical_scrollbar(frame, inner, total, scroll);
         }
+    }
+}
+
+impl Overlay for HelpModal {
+    fn is_open(&self) -> bool {
+        self.is_open()
+    }
+
+    fn close(&mut self) {
+        self.close()
     }
 }
 

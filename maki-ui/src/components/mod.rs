@@ -1,3 +1,4 @@
+pub(crate) mod btw_modal;
 pub(crate) mod code_view;
 pub mod command;
 pub(crate) mod help_modal;
@@ -16,15 +17,21 @@ pub(crate) mod scrollbar;
 pub(crate) mod search_modal;
 pub(crate) mod session_picker;
 pub mod status_bar;
+pub(crate) mod streaming_content;
 pub(crate) mod theme_picker;
 pub(crate) mod tool_display;
 
 pub(crate) const CHEVRON: &str = "❯ ";
 
+pub(crate) trait Overlay {
+    fn is_open(&self) -> bool;
+    fn close(&mut self);
+}
+
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use maki_agent::AgentInput;
 use maki_agent::{ToolInput, ToolOutput};
 use maki_providers::Message;
@@ -48,6 +55,81 @@ pub fn is_ctrl(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT)
 }
 
+pub(crate) struct ModalScroll {
+    offset: u16,
+    max_offset: u16,
+    viewport_h: u16,
+    auto_scroll: bool,
+}
+
+impl ModalScroll {
+    pub fn new() -> Self {
+        Self {
+            offset: 0,
+            max_offset: 0,
+            viewport_h: 0,
+            auto_scroll: true,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    pub fn offset(&self) -> u16 {
+        self.offset
+    }
+
+    pub fn update_dimensions(&mut self, total: u16, viewport_h: u16) {
+        self.viewport_h = viewport_h;
+        self.max_offset = total.saturating_sub(viewport_h);
+        if self.auto_scroll {
+            self.offset = self.max_offset;
+        } else {
+            self.clamp();
+            if self.offset >= self.max_offset {
+                self.auto_scroll = true;
+            }
+        }
+    }
+
+    pub fn scroll(&mut self, delta: i32) {
+        self.offset = apply_scroll_delta(self.offset, delta);
+        self.clamp();
+        self.auto_scroll = self.offset >= self.max_offset;
+    }
+
+    pub fn handle_key(&mut self, key_event: KeyEvent) -> bool {
+        use keybindings::key;
+        match key_event.code {
+            KeyCode::Up => self.scroll(1),
+            KeyCode::Down => self.scroll(-1),
+            _ if key::SCROLL_HALF_UP.matches(key_event) => self.scroll(self.half_page()),
+            _ if key::SCROLL_HALF_DOWN.matches(key_event) => self.scroll(-self.half_page()),
+            _ if key::SCROLL_LINE_UP.matches(key_event) => self.scroll(1),
+            _ if key::SCROLL_LINE_DOWN.matches(key_event) => self.scroll(-1),
+            _ if key::SCROLL_TOP.matches(key_event) => {
+                self.offset = 0;
+                self.auto_scroll = false;
+            }
+            _ if key::SCROLL_BOTTOM.matches(key_event) => {
+                self.auto_scroll = true;
+                self.offset = self.max_offset;
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn half_page(&self) -> i32 {
+        (self.viewport_h / 2).max(1) as i32
+    }
+
+    fn clamp(&mut self) {
+        self.offset = self.offset.min(self.max_offset);
+    }
+}
+
 pub struct LoadedSession {
     pub messages: Vec<Message>,
     pub tool_outputs: HashMap<String, ToolOutput>,
@@ -69,6 +151,7 @@ pub enum Action {
     Compact,
     ToggleMcp(String, bool),
     OpenEditor(PathBuf),
+    Btw(String),
     Quit,
 }
 

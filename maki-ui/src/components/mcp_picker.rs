@@ -7,6 +7,7 @@ use ratatui::layout::Rect;
 
 use maki_agent::{McpServerInfo, McpServerStatus};
 
+use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 
 const TITLE: &str = " MCP Servers ";
@@ -102,6 +103,16 @@ impl McpPicker {
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) {
         self.picker.view(frame, area);
+    }
+}
+
+impl Overlay for McpPicker {
+    fn is_open(&self) -> bool {
+        self.is_open()
+    }
+
+    fn close(&mut self) {
+        self.picker.close()
     }
 }
 

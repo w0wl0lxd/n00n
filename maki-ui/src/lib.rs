@@ -212,6 +212,7 @@ fn run_event_loop(
         app.tick_edge_scroll();
         app.tick_error_expiry();
         app.poll_image_paste();
+        app.btw_modal.poll();
         terminal.draw(|f| app.view(f))?;
 
         while let Ok(event) = shell_rx.try_recv() {
@@ -685,6 +686,9 @@ fn dispatch(
                 if let Err(e) = open_in_editor(&path, terminal) {
                     app.flash(e);
                 }
+            }
+            Action::Btw(question) => {
+                app.start_btw(question, Arc::clone(provider), model.clone());
             }
             Action::Quit => {}
         }

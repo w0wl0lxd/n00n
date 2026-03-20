@@ -7,6 +7,7 @@ use ratatui::layout::{Position, Rect};
 
 use maki_providers::provider::ProviderKind;
 
+use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 
 const TITLE: &str = " Models ";
@@ -114,6 +115,16 @@ impl ModelPicker {
     pub fn view(&mut self, frame: &mut Frame, area: Rect) {
         self.try_refresh();
         self.picker.view(frame, area);
+    }
+}
+
+impl Overlay for ModelPicker {
+    fn is_open(&self) -> bool {
+        self.is_open()
+    }
+
+    fn close(&mut self) {
+        self.close()
     }
 }
 

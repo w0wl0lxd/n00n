@@ -4,6 +4,7 @@
 use std::time::Instant;
 
 use crate::animation::spinner_frame;
+use crate::components::Overlay;
 use crate::components::is_ctrl;
 use crate::components::keybindings::key;
 use crate::components::modal::Modal;
@@ -464,6 +465,16 @@ impl<T: PickerItem> ListPicker<T> {
                 render_ready(frame, area, s, self.title, self.max_visible);
             }
         }
+    }
+}
+
+impl<T: PickerItem> Overlay for ListPicker<T> {
+    fn is_open(&self) -> bool {
+        self.is_open()
+    }
+
+    fn close(&mut self) {
+        self.close()
     }
 }
 
