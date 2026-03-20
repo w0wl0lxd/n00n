@@ -18,9 +18,11 @@ use crate::providers::{AuthKind, CONNECT_TIMEOUT, ResolvedAuth, urlenc};
 
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
-const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
-const REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
-const SCOPES: &str = "org:create_api_key user:profile user:inference";
+const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
+const REDIRECT_URI: &str = "https://platform.claude.com/oauth/code/callback";
+const SCOPES: &str =
+    "org:create_api_key user:profile user:inference user:file_upload user:mcp_servers";
+const USER_AGENT: &str = "claude-code/2.1.80";
 const BETA_ADVANCED_TOOL_USE: &str = "advanced-tool-use-2025-11-20";
 pub(crate) const PROVIDER: &str = "anthropic";
 
@@ -54,7 +56,7 @@ fn build_authorize_url(challenge: &str) -> String {
     )
 }
 
-fn post_token_request(body: serde_json::Value, context: &str) -> Result<TokenResponse, AgentError> {
+fn post_token_request(params: &[(&str, &str)], context: &str) -> Result<TokenResponse, AgentError> {
     let client = isahc::HttpClient::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(30))
@@ -63,15 +65,14 @@ fn post_token_request(body: serde_json::Value, context: &str) -> Result<TokenRes
             message: format!("{context}: {e}"),
         })?;
 
-    let json_body = serde_json::to_vec(&body).map_err(|e| AgentError::Config {
-        message: format!("{context}: {e}"),
-    })?;
+    let form_body = urlenc_params(params);
 
     let request = isahc::Request::builder()
         .method("POST")
         .uri(TOKEN_URL)
-        .header("content-type", "application/json")
-        .body(json_body)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("user-agent", USER_AGENT)
+        .body(form_body.into_bytes())
         .map_err(|e| AgentError::Config {
             message: format!("{context}: {e}"),
         })?;
@@ -89,6 +90,14 @@ fn post_token_request(body: serde_json::Value, context: &str) -> Result<TokenRes
 
     let body_text = resp.text()?;
     serde_json::from_str(&body_text).map_err(Into::into)
+}
+
+fn urlenc_params(params: &[(&str, &str)]) -> String {
+    params
+        .iter()
+        .map(|(k, v)| format!("{}={}", urlenc(k), urlenc(v)))
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 fn into_oauth_tokens(
@@ -116,16 +125,16 @@ fn exchange_code(code: &str, verifier: &str) -> Result<OAuthTokens, AgentError> 
     let auth_code = parts[0];
     let state = parts.get(1).unwrap_or(&"");
 
-    let body = serde_json::json!({
-        "code": auth_code,
-        "state": state,
-        "grant_type": "authorization_code",
-        "client_id": CLIENT_ID,
-        "redirect_uri": REDIRECT_URI,
-        "code_verifier": verifier,
-    });
+    let params: Vec<(&str, &str)> = vec![
+        ("code", auth_code),
+        ("state", state),
+        ("grant_type", "authorization_code"),
+        ("client_id", CLIENT_ID),
+        ("redirect_uri", REDIRECT_URI),
+        ("code_verifier", verifier),
+    ];
 
-    let resp = post_token_request(body, "token exchange failed").map_err(|e| {
+    let resp = post_token_request(&params, "token exchange failed").map_err(|e| {
         error!(error = %e, "OAuth token exchange failed");
         e
     })?;
@@ -136,13 +145,13 @@ pub(crate) fn refresh_tokens(tokens: &OAuthTokens) -> Result<OAuthTokens, AgentE
     let expired = tokens.is_expired();
     debug!(expired, "refreshing OAuth tokens");
 
-    let body = serde_json::json!({
-        "grant_type": "refresh_token",
-        "refresh_token": tokens.refresh,
-        "client_id": CLIENT_ID,
-    });
+    let params: Vec<(&str, &str)> = vec![
+        ("grant_type", "refresh_token"),
+        ("refresh_token", &tokens.refresh),
+        ("client_id", CLIENT_ID),
+    ];
 
-    let resp = post_token_request(body, "token refresh failed").map_err(|e| {
+    let resp = post_token_request(&params, "token refresh failed").map_err(|e| {
         error!(error = %e, "OAuth token refresh failed");
         e
     })?;
@@ -160,6 +169,7 @@ pub(crate) fn build_oauth_resolved(tokens: &OAuthTokens) -> ResolvedAuth {
                     "oauth-2025-04-20,interleaved-thinking-2025-05-14,{BETA_ADVANCED_TOOL_USE}"
                 ),
             ),
+            ("user-agent".into(), USER_AGENT.into()),
         ],
     }
 }
