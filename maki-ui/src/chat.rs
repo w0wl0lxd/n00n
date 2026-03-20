@@ -19,6 +19,7 @@ use maki_agent::{
 use maki_providers::{ContentBlock, Message, Role, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 
 pub(crate) const DONE_TEXT: &str = "Done!";
 pub(crate) const ERROR_TEXT: &str = "Error";
@@ -155,6 +156,10 @@ impl Chat {
 
     pub fn set_highlight_segment(&mut self, idx: Option<usize>) {
         self.messages_panel.set_highlight_segment(idx);
+    }
+
+    pub fn set_accent(&mut self, color: Color) {
+        self.messages_panel.set_accent(color);
     }
 
     pub fn is_animating(&self) -> bool {

@@ -51,6 +51,7 @@ impl App {
         } else {
             self.active_chat
         };
+        self.chats[render_chat].set_accent(self.mode.color());
         self.chats[render_chat].view(frame, msg_area, self.selection_state.is_some());
 
         let mut overlay_rect = Rect::default();

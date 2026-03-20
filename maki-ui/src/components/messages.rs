@@ -9,7 +9,7 @@ use crate::animation::spinner_frame;
 use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
 use crate::render_worker::RenderWorker;
 use crate::selection::{self, LineBreaks, ScreenSelection, Selection};
-use crate::splash::Splash;
+use crate::splash::{ColorTransition, Splash};
 use crate::theme;
 
 use std::time::Instant;
@@ -105,6 +105,7 @@ pub struct MessagesPanel {
     theme_generation: u64,
     highlight_segment: Option<usize>,
     idle_splash: Splash,
+    accent: ColorTransition,
 }
 
 impl MessagesPanel {
@@ -136,6 +137,7 @@ impl MessagesPanel {
             theme_generation: theme::generation(),
             highlight_segment: None,
             idle_splash: Splash::new(),
+            accent: ColorTransition::new(theme::current().mode_build),
         }
     }
 
@@ -573,11 +575,16 @@ impl MessagesPanel {
         self.viewport_height as i32 / 2
     }
 
+    pub fn set_accent(&mut self, color: ratatui::style::Color) {
+        self.accent.set(color);
+    }
+
     pub fn is_animating(&self) -> bool {
         self.in_progress_count > 0
             || self.streaming_thinking.is_animating()
             || self.streaming_text.is_animating()
             || self.show_idle_splash()
+            || self.accent.is_animating()
     }
 
     fn show_idle_splash(&self) -> bool {
@@ -592,7 +599,8 @@ impl MessagesPanel {
         self.viewport_height = area.height;
 
         if self.show_idle_splash() {
-            self.idle_splash.render(area, frame.buffer_mut());
+            let accent = self.accent.resolve();
+            self.idle_splash.render(area, frame.buffer_mut(), accent);
             return;
         }
 

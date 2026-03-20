@@ -14,6 +14,8 @@ const HELP_SEGMENTS: &[(&str, bool)] = &[
     (" in chat", false),
 ];
 
+const COLOR_TRANSITION_SECS: f32 = 0.4;
+
 /// Seconds for the initial fade-in animation (ease-out cubic).
 const FADE_DURATION: f32 = 1.6;
 /// Seconds to wait before the logo starts appearing.
@@ -51,6 +53,53 @@ fn fast_sincos(x: f32) -> (f32, f32) {
     (fast_sin(x), fast_sin(x + FRAC_PI_2))
 }
 
+pub struct ColorTransition {
+    from: (u8, u8, u8),
+    to: (u8, u8, u8),
+    start: Instant,
+}
+
+impl ColorTransition {
+    pub fn new(color: Color) -> Self {
+        let rgb = extract_rgb(color, (100, 140, 255));
+        Self {
+            from: rgb,
+            to: rgb,
+            start: Instant::now() - std::time::Duration::from_secs_f32(COLOR_TRANSITION_SECS),
+        }
+    }
+
+    pub fn set(&mut self, color: Color) {
+        let rgb = extract_rgb(color, (100, 140, 255));
+        if rgb == self.to {
+            return;
+        }
+        let now = Instant::now();
+        self.from = self.resolve_rgb(now);
+        self.to = rgb;
+        self.start = now;
+    }
+
+    pub fn is_animating(&self) -> bool {
+        Instant::now().duration_since(self.start).as_secs_f32() < COLOR_TRANSITION_SECS
+    }
+
+    pub fn resolve(&self) -> Color {
+        let (r, g, b) = self.resolve_rgb(Instant::now());
+        Color::Rgb(r, g, b)
+    }
+
+    fn resolve_rgb(&self, now: Instant) -> (u8, u8, u8) {
+        let t = (now.duration_since(self.start).as_secs_f32() / COLOR_TRANSITION_SECS).min(1.0);
+        let p = ease_out_cubic(t);
+        (
+            lerp_u8(self.from.0, self.to.0, p),
+            lerp_u8(self.from.1, self.to.1, p),
+            lerp_u8(self.from.2, self.to.2, p),
+        )
+    }
+}
+
 pub struct Splash {
     start: Instant,
     field_offset: f32,
@@ -72,7 +121,7 @@ impl Splash {
         }
     }
 
-    pub fn render(&self, area: Rect, buf: &mut Buffer) {
+    pub fn render(&self, area: Rect, buf: &mut Buffer, accent: Color) {
         if area.width < 20 || area.height < 5 {
             return;
         }
@@ -88,18 +137,15 @@ impl Splash {
         let tag_y = top_y + 1;
         let help_y = tag_y + 2;
 
-        self.render_field(area, buf, t + self.field_offset, fade);
-        self.render_logo(area, buf, t, fade, top_y);
+        self.render_field(area, buf, t + self.field_offset, fade, accent);
+        self.render_logo(area, buf, t, fade, top_y, accent);
         self.render_tagline(area, buf, fade, tag_y);
-        self.render_help(area, buf, fade, help_y);
+        self.render_help(area, buf, fade, help_y, accent);
     }
 
-    fn render_field(&self, area: Rect, buf: &mut Buffer, t: f32, fade: f32) {
+    fn render_field(&self, area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color) {
         let theme = theme::current();
-        let (ac_r, ac_g, ac_b) = extract_rgb(
-            theme.heading.fg.unwrap_or(theme.foreground),
-            (100, 140, 255),
-        );
+        let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
         let (bg_r, bg_g, bg_b) = extract_rgb(theme.background, (15, 15, 25));
 
         let w = area.width as usize;
@@ -232,13 +278,18 @@ impl Splash {
         }
     }
 
-    fn render_logo(&self, area: Rect, buf: &mut Buffer, t: f32, fade: f32, top_y: u16) {
+    fn render_logo(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        t: f32,
+        fade: f32,
+        top_y: u16,
+        accent: Color,
+    ) {
         let theme = theme::current();
         let bg = theme.background;
-        let (ac_r, ac_g, ac_b) = extract_rgb(
-            theme.heading.fg.unwrap_or(theme.foreground),
-            (100, 140, 255),
-        );
+        let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
         let (bg_r, bg_g, bg_b) = extract_rgb(bg, (15, 15, 25));
 
         let logo_x = area.x + (area.width.saturating_sub(LOGO.len() as u16)) / 2;
@@ -295,17 +346,14 @@ impl Splash {
         }
     }
 
-    fn render_help(&self, area: Rect, buf: &mut Buffer, fade: f32, help_y: u16) {
+    fn render_help(&self, area: Rect, buf: &mut Buffer, fade: f32, help_y: u16, accent: Color) {
         if help_y >= area.y + area.height {
             return;
         }
 
         let theme = theme::current();
         let bg = theme.background;
-        let (ac_r, ac_g, ac_b) = extract_rgb(
-            theme.cmd_name.fg.unwrap_or(theme.foreground),
-            (100, 140, 255),
-        );
+        let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
         let (fg_r, fg_g, fg_b) = extract_rgb(theme.foreground, (200, 200, 200));
         let (bg_r, bg_g, bg_b) = extract_rgb(bg, (15, 15, 25));
 
@@ -362,4 +410,61 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
 fn ease_out_cubic(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn transition_at(from: (u8, u8, u8), to: (u8, u8, u8), offset: Duration) -> (u8, u8, u8) {
+        let mut ct = ColorTransition::new(Color::Rgb(from.0, from.1, from.2));
+        ct.set(Color::Rgb(to.0, to.1, to.2));
+        ct.resolve_rgb(ct.start + offset)
+    }
+
+    #[test]
+    fn interpolation_over_time() {
+        let start = transition_at((0, 0, 0), (200, 200, 200), Duration::ZERO);
+        assert_eq!(start, (0, 0, 0));
+
+        let mid = transition_at((0, 0, 0), (200, 200, 200), Duration::from_millis(200));
+        assert!(
+            mid.0 > 0 && mid.0 < 200,
+            "expected interpolated, got {}",
+            mid.0
+        );
+
+        let done = transition_at((0, 0, 0), (255, 255, 255), Duration::from_millis(500));
+        assert_eq!(done, (255, 255, 255));
+    }
+
+    #[test]
+    fn chained_set_restarts_toward_new_target() {
+        let mut ct = ColorTransition::new(Color::Rgb(0, 0, 0));
+        ct.set(Color::Rgb(200, 100, 50));
+        ct.set(Color::Rgb(10, 20, 30));
+
+        let done = ct.resolve_rgb(ct.start + Duration::from_secs(1));
+        assert_eq!(done, (10, 20, 30));
+    }
+
+    #[test]
+    fn is_animating_lifecycle() {
+        let ct = ColorTransition::new(Color::Rgb(0, 0, 0));
+        assert!(!ct.is_animating(), "settled on construction");
+
+        let mut ct = ColorTransition::new(Color::Rgb(0, 0, 0));
+        ct.set(Color::Rgb(255, 0, 0));
+        assert!(ct.is_animating(), "animating after set");
+    }
+
+    #[test]
+    fn non_rgb_color_uses_fallback() {
+        let ct = ColorTransition::new(Color::Blue);
+        assert_eq!(
+            ct.resolve_rgb(ct.start + Duration::from_secs(1)),
+            (100, 140, 255)
+        );
+    }
 }
