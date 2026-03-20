@@ -46,6 +46,7 @@ use maki_agent::{AgentEvent, Envelope, ImageSource, McpServerInfo, SubagentInfo,
 use maki_providers::{Message, Model, ModelPricing, TokenUsage};
 use maki_storage::DataDir;
 use maki_storage::input_history::InputHistory;
+use maki_storage::model::persist_model;
 
 use crate::storage_writer::StorageWriter;
 use ratatui::layout::Position;
@@ -192,6 +193,7 @@ impl App {
         self.model_id = model.spec();
         self.pricing = model.pricing.clone();
         self.context_window = model.context_window;
+        persist_model(&self.storage, &self.model_id);
     }
 
     pub(crate) fn flash(&mut self, msg: String) {

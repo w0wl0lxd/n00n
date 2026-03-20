@@ -12,10 +12,11 @@ use maki_storage::DataDir;
 use maki_ui::AppSession;
 use tracing_subscriber::EnvFilter;
 
-use maki_providers::model::Model;
+use maki_providers::model::{DEFAULT_SPEC, Model};
 use maki_providers::provider::fetch_all_models;
 use maki_providers::{anthropic_auth, openai_auth};
 use maki_storage::log as storage_log;
+use maki_storage::model::read_model;
 use print::OutputFormat;
 
 #[derive(Parser)]
@@ -28,9 +29,9 @@ struct Cli {
     #[arg(short, long)]
     print: bool,
 
-    /// Model as provider/model-id (e.g. anthropic/claude-sonnet-4, openai/gpt-5.4-nano)
-    #[arg(short, long, default_value = "anthropic/claude-opus-4-6")]
-    model: String,
+    /// Model spec (provider/model-id). Defaults to last used model, or claude-opus-4-6
+    #[arg(short, long)]
+    model: Option<String>,
 
     /// Include full turn-by-turn messages in --print output
     #[arg(long)]
@@ -165,7 +166,7 @@ fn run() -> Result<()> {
         }
         None => {
             let storage = DataDir::resolve().context("resolve data directory")?;
-            let model = Model::from_spec(&cli.model).context("parse model spec")?;
+            let model = resolve_model(cli.model.as_deref(), &storage)?;
             init_logging(&storage);
             let skills = discover(cli.no_skills);
             let config = AgentConfig { no_rtk: cli.no_rtk };
@@ -230,6 +231,19 @@ fn resolve_session(
         }
     }
     Ok(AppSession::new(model, cwd))
+}
+
+fn resolve_model(explicit: Option<&str>, storage: &DataDir) -> Result<Model> {
+    if let Some(spec) = explicit {
+        return Model::from_spec(spec).context("invalid --model spec");
+    }
+    if let Some(spec) = read_model(storage) {
+        if let Ok(m) = Model::from_spec(&spec) {
+            return Ok(m);
+        }
+        tracing::warn!(spec, "saved model no longer valid, falling back to default");
+    }
+    Ok(Model::from_spec(DEFAULT_SPEC).expect("default model spec is always valid"))
 }
 
 fn init_logging(storage: &DataDir) {

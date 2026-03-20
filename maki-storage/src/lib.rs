@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod input_history;
 pub mod log;
+pub mod model;
 pub mod plans;
 pub mod sessions;
 pub mod theme;
