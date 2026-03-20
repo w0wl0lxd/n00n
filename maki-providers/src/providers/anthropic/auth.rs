@@ -20,8 +20,7 @@ const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const REDIRECT_URI: &str = "https://platform.claude.com/oauth/code/callback";
-const SCOPES: &str =
-    "org:create_api_key user:profile user:inference user:file_upload user:mcp_servers";
+const SCOPES: &str = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 const USER_AGENT: &str = "claude-code/2.1.80";
 const BETA_ADVANCED_TOOL_USE: &str = "advanced-tool-use-2025-11-20";
 pub(crate) const PROVIDER: &str = "anthropic";
@@ -65,14 +64,23 @@ fn post_token_request(params: &[(&str, &str)], context: &str) -> Result<TokenRes
             message: format!("{context}: {e}"),
         })?;
 
-    let form_body = urlenc_params(params);
+    let json_body = {
+        let mut map = serde_json::Map::new();
+        for (k, v) in params {
+            map.insert(
+                (*k).to_string(),
+                serde_json::Value::String((*v).to_string()),
+            );
+        }
+        serde_json::to_vec(&map).expect("failed to serialize token request")
+    };
 
     let request = isahc::Request::builder()
         .method("POST")
         .uri(TOKEN_URL)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .header("user-agent", USER_AGENT)
-        .body(form_body.into_bytes())
+        .header("content-type", "application/json")
+        .header("user-agent", "axios/6.7.1")
+        .body(json_body)
         .map_err(|e| AgentError::Config {
             message: format!("{context}: {e}"),
         })?;
@@ -81,8 +89,10 @@ fn post_token_request(params: &[(&str, &str)], context: &str) -> Result<TokenRes
         message: format!("{context}: {e}"),
     })?;
 
-    if resp.status().as_u16() != 200 {
+    let status = resp.status().as_u16();
+    if status != 200 {
         let body_text = resp.text().unwrap_or_else(|_| "unknown error".into());
+        debug!(status, body = %body_text, "{context}");
         return Err(AgentError::Config {
             message: format!("{context}: {body_text}"),
         });
@@ -90,14 +100,6 @@ fn post_token_request(params: &[(&str, &str)], context: &str) -> Result<TokenRes
 
     let body_text = resp.text()?;
     serde_json::from_str(&body_text).map_err(Into::into)
-}
-
-fn urlenc_params(params: &[(&str, &str)]) -> String {
-    params
-        .iter()
-        .map(|(k, v)| format!("{}={}", urlenc(k), urlenc(v)))
-        .collect::<Vec<_>>()
-        .join("&")
 }
 
 fn into_oauth_tokens(
@@ -149,6 +151,7 @@ pub(crate) fn refresh_tokens(tokens: &OAuthTokens) -> Result<OAuthTokens, AgentE
         ("grant_type", "refresh_token"),
         ("refresh_token", &tokens.refresh),
         ("client_id", CLIENT_ID),
+        ("scope", SCOPES),
     ];
 
     let resp = post_token_request(&params, "token refresh failed").map_err(|e| {
