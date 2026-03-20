@@ -53,8 +53,10 @@ impl App {
         };
         self.chats[render_chat].view(frame, msg_area, self.selection_state.is_some());
 
+        let mut overlay_rect = Rect::default();
+
         if self.search_modal.is_open() {
-            self.search_modal.view(frame, msg_area);
+            overlay_rect = self.search_modal.view(frame, msg_area);
         }
 
         let queue_height = queue_panel::height(self.queue.len());
@@ -89,31 +91,31 @@ impl App {
 
         if picker_open {
             let full_area = frame.area();
-            self.task_picker.view(frame, full_area);
+            overlay_rect = self.task_picker.view(frame, full_area);
         }
 
         if self.session_picker.is_open() {
             self.session_picker.tick();
-            self.session_picker.view(frame, frame.area());
+            overlay_rect = self.session_picker.view(frame, frame.area());
             if let Some(flash) = self.session_picker.take_flash() {
                 self.status_bar.flash(flash);
             }
         }
 
         if self.rewind_picker.is_open() {
-            self.rewind_picker.view(frame, frame.area());
+            overlay_rect = self.rewind_picker.view(frame, frame.area());
         }
 
         if self.theme_picker.is_open() {
-            self.theme_picker.view(frame, frame.area());
+            overlay_rect = self.theme_picker.view(frame, frame.area());
         }
 
         if self.model_picker.is_open() {
-            self.model_picker.view(frame, frame.area());
+            overlay_rect = self.model_picker.view(frame, frame.area());
         }
 
         if self.mcp_picker.is_open() {
-            self.mcp_picker.view(frame, frame.area());
+            overlay_rect = self.mcp_picker.view(frame, frame.area());
         }
 
         let chat = &self.chats[render_chat];
@@ -144,8 +146,32 @@ impl App {
             zone: SelectionZone::StatusBar,
         });
 
-        self.btw_modal.view(frame, frame.area());
-        self.help_modal.view(frame, frame.area());
+        let r = self.btw_modal.view(frame, frame.area());
+        if r.width > 0 {
+            overlay_rect = r;
+        }
+        let r = self.help_modal.view(frame, frame.area());
+        if r.width > 0 {
+            overlay_rect = r;
+        }
+
+        if overlay_rect.width > 0 {
+            let inner = selection::inset_border(overlay_rect);
+            self.zones[SelectionZone::Overlay.idx()] = Some(SelectableZone {
+                area: inner,
+                highlight_area: inner,
+                zone: SelectionZone::Overlay,
+            });
+        } else {
+            self.zones[SelectionZone::Overlay.idx()] = None;
+            if self
+                .selection_state
+                .as_ref()
+                .is_some_and(|s| s.sel.zone == SelectionZone::Overlay)
+            {
+                self.selection_state = None;
+            }
+        }
 
         if let Some(ref state) = self.selection_state {
             let zone = state.sel.zone;

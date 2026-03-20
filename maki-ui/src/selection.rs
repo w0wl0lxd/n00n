@@ -62,14 +62,19 @@ impl Ord for DocPos {
 }
 
 /// Selection is locked to one zone for its entire lifetime.
+///
+/// Variant order matters: higher index = higher z-order priority in `zone_at`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionZone {
     Messages,
     Input,
     StatusBar,
+    Overlay,
 }
 
 impl SelectionZone {
+    pub const COUNT: usize = 4;
+
     pub const fn idx(self) -> usize {
         self as usize
     }
@@ -82,8 +87,9 @@ pub struct SelectableZone {
     pub zone: SelectionZone,
 }
 
-pub type ZoneRegistry = [Option<SelectableZone>; 3];
+pub type ZoneRegistry = [Option<SelectableZone>; SelectionZone::COUNT];
 
+/// Returns the zone at `(row, col)`, preferring higher-index (higher z-order) zones.
 pub fn zone_at(zones: &ZoneRegistry, row: u16, col: u16) -> Option<SelectableZone> {
     let pos = ratatui::layout::Position::new(col, row);
     zones
@@ -926,5 +932,29 @@ mod tests {
         assert!(lb.is_line_start(0));
         assert!(!lb.is_line_start(64));
         assert!(lb.is_line_start(65));
+    }
+
+    #[test]
+    fn zone_at_overlay_wins_over_messages() {
+        let msg_area = Rect::new(0, 0, 80, 20);
+        let overlay_area = Rect::new(10, 5, 60, 10);
+        let mut zones: ZoneRegistry = [None; SelectionZone::COUNT];
+        zones[SelectionZone::Messages.idx()] = Some(SelectableZone {
+            area: msg_area,
+            highlight_area: msg_area,
+            zone: SelectionZone::Messages,
+        });
+        zones[SelectionZone::Overlay.idx()] = Some(SelectableZone {
+            area: overlay_area,
+            highlight_area: overlay_area,
+            zone: SelectionZone::Overlay,
+        });
+
+        assert_eq!(zone_at(&zones, 7, 20).unwrap().zone, SelectionZone::Overlay);
+        assert_eq!(
+            zone_at(&zones, 2, 20).unwrap().zone,
+            SelectionZone::Messages
+        );
+        assert_eq!(zone_at(&zones, 7, 5).unwrap().zone, SelectionZone::Messages);
     }
 }

@@ -189,9 +189,9 @@ impl SearchModal {
         self.matches.get(self.selected).map(|m| m.segment_index)
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect) {
+    pub fn view(&mut self, frame: &mut Frame, area: Rect) -> Rect {
         if !self.open {
-            return;
+            return Rect::default();
         }
 
         let content_rows = if self.matches.is_empty() && !self.search.value().is_empty() {
@@ -205,7 +205,7 @@ impl SearchModal {
             width_percent: MODAL_WIDTH_PERCENT,
             max_height_percent: MODAL_MAX_HEIGHT_PERCENT,
         };
-        let inner = modal.render(frame, area, content_rows + SEARCH_ROW);
+        let (popup, inner) = modal.render(frame, area, content_rows + SEARCH_ROW);
         let viewport_h = inner.height.saturating_sub(SEARCH_ROW) as usize;
         self.viewport_height = viewport_h;
 
@@ -219,6 +219,8 @@ impl SearchModal {
         if total > viewport_h as u16 {
             render_vertical_scrollbar(frame, list_area, total, self.scroll_offset as u16);
         }
+
+        popup
     }
 
     fn render_list(&self, frame: &mut Frame, area: Rect, viewport_height: usize) {

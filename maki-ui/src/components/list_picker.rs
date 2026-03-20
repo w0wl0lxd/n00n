@@ -441,16 +441,16 @@ impl<T: PickerItem> ListPicker<T> {
         }
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect) {
+    pub fn view(&mut self, frame: &mut Frame, area: Rect) -> Rect {
         match self.state.as_mut() {
-            None => {}
+            None => Rect::default(),
             Some(PickerState::Loading(started_at)) => {
                 let modal = Modal {
                     title: self.title,
                     width_percent: MIN_WIDTH_PERCENT,
                     max_height_percent: MAX_HEIGHT_PERCENT,
                 };
-                let inner = modal.render(frame, area, 1 + SEARCH_ROW);
+                let (popup, inner) = modal.render(frame, area, 1 + SEARCH_ROW);
                 let [list_area, search_area] =
                     Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
                 let ch = spinner_frame(started_at.elapsed().as_millis());
@@ -460,9 +460,10 @@ impl<T: PickerItem> ListPicker<T> {
                 ));
                 frame.render_widget(Paragraph::new(vec![line]), list_area);
                 render_search(frame, search_area, &TextBuffer::new(String::new()));
+                popup
             }
             Some(PickerState::Ready(s)) => {
-                render_ready(frame, area, s, self.title, self.max_visible);
+                render_ready(frame, area, s, self.title, self.max_visible)
             }
         }
     }
@@ -484,7 +485,7 @@ fn render_ready<T: PickerItem>(
     s: &mut State<T>,
     title: &'static str,
     max_visible: Option<u16>,
-) {
+) -> Rect {
     let content_rows = if s.filtered.is_empty() {
         1
     } else {
@@ -499,7 +500,7 @@ fn render_ready<T: PickerItem>(
         width_percent: MIN_WIDTH_PERCENT,
         max_height_percent: MAX_HEIGHT_PERCENT,
     };
-    let inner = modal.render(frame, area, content_rows + SEARCH_ROW);
+    let (popup, inner) = modal.render(frame, area, content_rows + SEARCH_ROW);
     let viewport_h = inner.height.saturating_sub(SEARCH_ROW);
     s.viewport_height = viewport_h as usize;
     s.ensure_visible();
@@ -526,6 +527,7 @@ fn render_ready<T: PickerItem>(
     }
 
     s.inner_area = inner;
+    popup
 }
 
 fn section_gap<T: PickerItem>(filtered: &[usize], items: &[T], idx: usize) -> usize {

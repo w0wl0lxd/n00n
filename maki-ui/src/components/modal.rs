@@ -14,7 +14,7 @@ pub struct Modal {
 }
 
 impl Modal {
-    pub fn render(&self, frame: &mut Frame, area: Rect, content_height: u16) -> Rect {
+    pub fn render(&self, frame: &mut Frame, area: Rect, content_height: u16) -> (Rect, Rect) {
         let max_h = (area.height as u32 * self.max_height_percent as u32 / 100) as u16;
         let total_h = (content_height + CHROME_LINES)
             .min(max_h)
@@ -38,6 +38,6 @@ impl Modal {
 
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
-        inner
+        (popup, inner)
     }
 }

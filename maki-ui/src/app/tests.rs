@@ -1923,3 +1923,20 @@ fn btw_modal_key_routing_and_animation() {
     assert!(!app.btw_modal.is_open());
     assert!(!app.btw_modal.is_animating());
 }
+
+#[test]
+fn overlay_zone_click_gating() {
+    let mut app = test_app();
+    let msg = Rect::new(0, 0, 80, 15);
+    let overlay = Rect::new(10, 3, 60, 10);
+    set_zone(&mut app, SelectionZone::Messages, msg);
+    set_zone(&mut app, SelectionZone::Overlay, overlay);
+    app.help_modal.toggle();
+
+    app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 1));
+    assert!(app.selection_state.is_none());
+
+    app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 20, 5));
+    let state = app.selection_state.as_ref().unwrap();
+    assert_eq!(state.sel.zone, SelectionZone::Overlay);
+}

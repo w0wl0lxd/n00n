@@ -57,9 +57,9 @@ impl HelpModal {
         true
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect) {
+    pub fn view(&mut self, frame: &mut Frame, area: Rect) -> Rect {
         if !self.open {
-            return;
+            return Rect::default();
         }
 
         let mut lines: Vec<Line> = Vec::new();
@@ -119,7 +119,7 @@ impl HelpModal {
             width_percent: 50,
             max_height_percent: 80,
         };
-        let inner = modal.render(frame, area, total);
+        let (popup, inner) = modal.render(frame, area, total);
         let viewport_h = inner.height;
         self.scroll.update_dimensions(total, viewport_h);
         let scroll = self.scroll.offset();
@@ -130,6 +130,8 @@ impl HelpModal {
         if total > viewport_h {
             render_vertical_scrollbar(frame, inner, total, scroll);
         }
+
+        popup
     }
 }
 

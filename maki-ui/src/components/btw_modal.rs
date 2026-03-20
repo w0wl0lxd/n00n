@@ -106,9 +106,9 @@ impl BtwModal {
         }
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect) {
+    pub fn view(&mut self, frame: &mut Frame, area: Rect) -> Rect {
         if !self.open {
-            return;
+            return Rect::default();
         }
 
         let theme = theme::current();
@@ -134,7 +134,7 @@ impl BtwModal {
             width_percent: WIDTH_PERCENT,
             max_height_percent: MAX_HEIGHT_PERCENT,
         };
-        let inner = modal.render(frame, area, total);
+        let (popup, inner) = modal.render(frame, area, total);
         let padded = Rect {
             x: inner.x + H_PAD,
             width: inner.width.saturating_sub(H_PAD * 2),
@@ -152,6 +152,8 @@ impl BtwModal {
         if total > viewport_h {
             render_vertical_scrollbar(frame, inner, total, scroll);
         }
+
+        popup
     }
 
     #[cfg(test)]

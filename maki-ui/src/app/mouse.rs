@@ -14,6 +14,9 @@ impl App {
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(zone) = self.zone_at(event.row, event.column) {
+                    if self.any_overlay_open() && zone.zone != SelectionZone::Overlay {
+                        return;
+                    }
                     let scroll = self.scroll_offset(zone.zone);
                     self.selection_state = Some(crate::selection::SelectionState {
                         sel: Selection::start(
@@ -142,7 +145,7 @@ impl App {
                 }];
                 selection::extract_selected_text(buf, &screen_sel, &regions)
             }
-            SelectionZone::StatusBar => {
+            SelectionZone::StatusBar | SelectionZone::Overlay => {
                 let scroll = self.scroll_offset(sel.zone);
                 let Some(screen_sel) = sel.to_screen(scroll) else {
                     self.selection_state = None;
@@ -176,7 +179,7 @@ impl App {
         match zone {
             SelectionZone::Messages => self.chats[self.active_chat].scroll_top() as u32,
             SelectionZone::Input => self.input_box.scroll_y() as u32,
-            SelectionZone::StatusBar => 0,
+            SelectionZone::StatusBar | SelectionZone::Overlay => 0,
         }
     }
 
@@ -184,7 +187,7 @@ impl App {
         match zone {
             SelectionZone::Messages => self.chats[self.active_chat].scroll(delta),
             SelectionZone::Input => self.input_box.scroll(delta),
-            SelectionZone::StatusBar => {}
+            SelectionZone::StatusBar | SelectionZone::Overlay => {}
         }
     }
 

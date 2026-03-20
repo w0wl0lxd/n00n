@@ -112,9 +112,9 @@ impl ModelPicker {
         }
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect) {
+    pub fn view(&mut self, frame: &mut Frame, area: Rect) -> Rect {
         self.try_refresh();
-        self.picker.view(frame, area);
+        self.picker.view(frame, area)
     }
 }
 

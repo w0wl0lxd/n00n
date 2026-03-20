@@ -38,7 +38,7 @@ use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
 use crate::components::tool_display::format_turn_usage;
 use crate::components::{Action, DisplayMessage, DisplayRole, Overlay, RetryInfo, Status, is_ctrl};
 use crate::image;
-use crate::selection::{SelectionState, ZoneRegistry};
+use crate::selection::{SelectionState, SelectionZone, ZoneRegistry};
 use arboard::Clipboard;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
@@ -174,7 +174,7 @@ impl App {
             retry_info: None,
             #[cfg(feature = "demo")]
             demo_questions: None,
-            zones: [None; 3],
+            zones: [None; SelectionZone::COUNT],
             selection_state: None,
             clipboard: Clipboard::new().ok(),
             last_esc: None,

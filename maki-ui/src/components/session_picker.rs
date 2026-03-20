@@ -175,8 +175,8 @@ impl SessionPicker {
         self.try_resolve();
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect) {
-        self.picker.view(frame, area);
+    pub fn view(&mut self, frame: &mut Frame, area: Rect) -> Rect {
+        self.picker.view(frame, area)
     }
 }
 
