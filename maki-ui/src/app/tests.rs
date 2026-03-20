@@ -12,6 +12,7 @@ use maki_agent::{
 use ratatui::layout::Rect;
 use std::env;
 use std::path::{Path, PathBuf};
+use tempfile::TempDir;
 use test_case::test_case;
 
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
@@ -496,7 +497,22 @@ fn reset_session_plan_in_build_mode(written: bool, expected_path: Option<&str>) 
 
 #[test]
 fn load_session_clears_plan() {
-    let mut app = test_app();
+    let tmp = TempDir::new().unwrap();
+    let dir = DataDir::from_path(tmp.path().to_path_buf());
+    let writer = Arc::new(StorageWriter::new(DataDir::from_path(
+        tmp.path().to_path_buf(),
+    )));
+    let mcp_infos = Arc::new(ArcSwap::from_pointee(Vec::new()));
+    let mut app = App::new(
+        "test-model".into(),
+        test_pricing(),
+        TEST_CONTEXT_WINDOW,
+        AppSession::new("test-model", "/tmp/test"),
+        dir,
+        Arc::new(ArcSwapOption::empty()),
+        mcp_infos,
+        writer,
+    );
     app.session.messages.push(Message::user("test".into()));
     app.session.save(&app.storage).unwrap();
     let id = app.session.id.clone();
