@@ -12,7 +12,7 @@ pub(crate) mod shell;
 mod tests;
 mod view;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -53,7 +53,7 @@ use ratatui::layout::Position;
 pub(crate) use mode::{Mode, PlanState};
 #[cfg(test)]
 use mouse::{EDGE_SCROLL_INTERVAL, EDGE_SCROLL_LINES};
-pub(crate) use queue::{QueuedItem, QueuedMessage};
+pub(crate) use queue::{MessageQueue, QueuedItem, QueuedMessage};
 
 const CANCEL_MSG: &str = "Cancelled.";
 const FLASH_CANCEL: &str = "Press esc again to stop...";
@@ -103,7 +103,7 @@ pub struct App {
     pub(super) pricing: ModelPricing,
     pub(super) context_window: u32,
     pub should_quit: bool,
-    pub(crate) queue: VecDeque<QueuedItem>,
+    pub(crate) queue: MessageQueue,
     pub answer_tx: Option<flume::Sender<String>>,
     pub(crate) cmd_tx: Option<flume::Sender<super::AgentCommand>>,
     pub(super) pending_input: PendingInput,
@@ -114,7 +114,6 @@ pub struct App {
     pub(super) zones: ZoneRegistry,
     pub(super) selection_state: Option<SelectionState>,
     pub(super) clipboard: Option<Clipboard>,
-    pub(super) queue_focus: Option<usize>,
     pub(super) last_esc: Option<Instant>,
     pub(crate) session: AppSession,
     pub(crate) storage: DataDir,
@@ -162,7 +161,7 @@ impl App {
             pricing,
             context_window,
             should_quit: false,
-            queue: VecDeque::new(),
+            queue: MessageQueue::default(),
             answer_tx: None,
             cmd_tx: None,
             pending_input: PendingInput::None,
@@ -173,7 +172,6 @@ impl App {
             zones: [None; 3],
             selection_state: None,
             clipboard: Clipboard::new().ok(),
-            queue_focus: None,
             last_esc: None,
             session,
             storage,
@@ -319,26 +317,22 @@ impl App {
             return vec![];
         }
 
-        if let Some(selected) = self.queue_focus {
+        if self.queue.focus().is_some() {
             match key.code {
                 KeyCode::Up => {
-                    if selected > 0 {
-                        self.queue_focus = Some(selected - 1);
-                    }
+                    self.queue.move_focus_up();
                     return vec![];
                 }
                 KeyCode::Down => {
-                    if selected < self.queue.len() - 1 {
-                        self.queue_focus = Some(selected + 1);
-                    }
+                    self.queue.move_focus_down();
                     return vec![];
                 }
                 KeyCode::Enter => {
-                    self.remove_queue_item(selected);
+                    self.queue.remove_focused();
                     return vec![];
                 }
                 KeyCode::Esc => {
-                    self.queue_focus = None;
+                    self.queue.unfocus();
                     return vec![];
                 }
                 _ => {}
@@ -448,10 +442,7 @@ impl App {
             } else if key::SCROLL_BOTTOM.matches(key) {
                 self.active_chat().enable_auto_scroll();
             } else if key::POP_QUEUE.matches(key) {
-                if !self.queue.is_empty() {
-                    self.queue.pop_front();
-                    self.clamp_queue_focus();
-                }
+                self.queue.remove(0);
             } else if key::HELP.matches(key) {
                 self.help_modal.toggle();
             } else if key::OPEN_EDITOR.matches(key) {
@@ -582,7 +573,7 @@ impl App {
         }
         let msg: QueuedMessage = sub.into();
         if self.status == Status::Streaming {
-            self.queue_and_notify(QueuedItem::Message(msg));
+            self.queue.push(QueuedItem::Message(msg));
             vec![]
         } else {
             self.run_id += 1;
@@ -603,7 +594,7 @@ impl App {
         }
         self.main_chat()
             .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
-        self.clear_queue();
+        self.queue.clear();
         self.status = Status::Idle;
         self.save_session();
         vec![Action::CancelAgent]
@@ -680,11 +671,6 @@ impl App {
 
         let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);
 
-        if matches!(result, ChatEventResult::QueueItemConsumed) && chat_idx == 0 {
-            self.drain_consumed_item();
-            return vec![];
-        }
-
         if chat_idx == 0 {
             match result {
                 ChatEventResult::Done => {
@@ -699,7 +685,7 @@ impl App {
                 ChatEventResult::Error(message) => {
                     self.status = Status::error(message);
                     self.status_bar.clear_flash();
-                    self.clear_queue();
+                    self.queue.clear();
                     self.finish_subagents(DisplayRole::Error, ERROR_TEXT);
                     for chat in &mut self.chats {
                         chat.fail_in_progress();
@@ -722,7 +708,7 @@ impl App {
                     ));
                     self.pending_input = PendingInput::AuthRetry;
                 }
-                ChatEventResult::Continue | ChatEventResult::QueueItemConsumed => {}
+                ChatEventResult::Continue => {}
             }
         }
         vec![]
@@ -759,7 +745,7 @@ impl App {
             }
             "/compact" => {
                 if self.status == Status::Streaming {
-                    self.queue_and_notify(QueuedItem::Compact);
+                    self.queue.push(QueuedItem::Compact);
                     return vec![];
                 }
                 self.status = Status::Streaming;
@@ -771,7 +757,7 @@ impl App {
             }
             "/new" => self.reset_session(),
             "/queue" => {
-                self.focus_queue();
+                self.queue.set_focus();
                 vec![]
             }
             "/sessions" => self.open_session_picker(),

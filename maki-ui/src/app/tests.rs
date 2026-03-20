@@ -322,7 +322,7 @@ fn app_with_queued_message() -> App {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
-    app.queue.push_back(queued_msg("queued"));
+    app.queue.push(queued_msg("queued"));
     app
 }
 
@@ -345,33 +345,7 @@ fn error_app(app: &mut App) {
 }
 
 #[test]
-fn multiple_queue_items_drained_in_order() {
-    let mut app = app_with_queued_message();
-    app.queue.push_back(queued_msg("second"));
-
-    app.update(agent_msg(AgentEvent::QueueItemConsumed));
-    assert_eq!(app.queue.len(), 1);
-
-    app.update(agent_msg(AgentEvent::QueueItemConsumed));
-    assert!(app.queue.is_empty());
-}
-
-#[test]
-fn submit_during_streaming_queues_and_sends_on_cmd_tx() {
-    let mut app = test_app();
-    let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
-    app.cmd_tx = Some(tx);
-    app.status = Status::Streaming;
-    app.run_id = 1;
-
-    let actions = type_and_submit(&mut app, "urgent");
-    assert!(actions.is_empty());
-    assert_eq!(app.queue.len(), 1);
-    assert!(rx.try_recv().is_ok());
-}
-
-#[test]
-fn second_submit_during_streaming_does_not_send_on_cmd_tx() {
+fn submits_during_streaming_queue_without_sending() {
     let mut app = test_app();
     let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
     app.cmd_tx = Some(tx);
@@ -379,29 +353,29 @@ fn second_submit_during_streaming_does_not_send_on_cmd_tx() {
     app.run_id = 1;
 
     type_and_submit(&mut app, "first");
-    assert!(rx.try_recv().is_ok());
+    assert_eq!(app.queue.len(), 1);
+    assert!(
+        rx.try_recv().is_err(),
+        "queued item should not be sent eagerly"
+    );
 
     type_and_submit(&mut app, "second");
     assert_eq!(app.queue.len(), 2);
     assert!(
         rx.try_recv().is_err(),
-        "second message should not be sent on cmd_tx"
+        "second item should not be sent eagerly"
     );
 }
 
 #[test]
-fn consumed_event_flushes_and_displays_queued_message() {
+fn consumed_event_is_noop() {
     let mut app = app_with_queued_message();
-    app.main_chat().handle_event(
-        AgentEvent::TextDelta {
-            text: "partial".into(),
-        },
-        None,
-    );
-
     app.update(agent_msg(AgentEvent::QueueItemConsumed));
-    assert!(app.queue.is_empty());
-    assert_eq!(app.chats[0].last_message_text(), "queued");
+    assert_eq!(
+        app.queue.len(),
+        1,
+        "queue should not be drained by QueueItemConsumed"
+    );
 }
 
 fn cmd(name: &'static str) -> ParsedCommand {
@@ -453,8 +427,8 @@ fn reset_session_preserves_plan() {
     app.chats[0].context_size = 1000;
     app.mode = Mode::BuildPlan;
     app.plan = PlanState::with_path(PathBuf::from("plan.md"), true);
-    app.queue.push_back(queued_msg("q"));
-    app.queue_focus = Some(0);
+    app.queue.push(queued_msg("q"));
+    app.queue.set_focus_at(0);
     app.update(Msg::Key(kb::HELP.to_key_event()));
     let actions = app.reset_session();
     assert!(matches!(&actions[0], Action::NewSession));
@@ -469,7 +443,7 @@ fn reset_session_preserves_plan() {
     assert_eq!(app.chats[0].name, "Main");
     assert_eq!(app.active_chat, 0);
     assert!(app.chat_index.is_empty());
-    assert!(app.queue_focus.is_none());
+    assert!(app.queue.focus().is_none());
     assert!(!app.help_modal.is_open());
 }
 
@@ -811,7 +785,7 @@ fn compact_command_sets_streaming() {
 }
 
 #[test]
-fn compact_during_streaming_queues_and_sends_cmd() {
+fn compact_during_streaming_queues_without_sending() {
     let mut app = test_app();
     let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
     app.cmd_tx = Some(tx);
@@ -822,36 +796,46 @@ fn compact_during_streaming_queues_and_sends_cmd() {
     assert!(actions.is_empty());
     assert_eq!(app.queue.len(), 1);
     assert!(matches!(app.queue[0], QueuedItem::Compact));
-    let cmd = rx.try_recv().expect("compact should be sent on cmd_tx");
-    assert!(matches!(cmd, crate::AgentCommand::Compact(1)));
+    assert!(rx.try_recv().is_err(), "compact should not be sent eagerly");
 }
 
-#[test_case(queued_msg("first"),  true  ; "message_then_sends_next")]
-#[test_case(QueuedItem::Compact, false ; "compact_then_sends_next")]
-fn consumed_item_sends_next_to_agent(first: QueuedItem, expect_user_msg: bool) {
+#[test]
+fn delete_front_queue_item_prevents_agent_delivery() {
     let mut app = test_app();
-    let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
-    app.cmd_tx = Some(tx);
-    app.mode = Mode::Plan;
-    app.plan = PlanState::with_path(PathBuf::from("p.md"), false);
     app.status = Status::Streaming;
     app.run_id = 1;
-    let before = app.chats[0].message_count();
-    app.queue.push_back(first);
-    app.queue.push_back(queued_msg("second"));
+    app.queue.push(queued_msg("first"));
+    app.queue.push(queued_msg("second"));
 
-    app.update(agent_msg(AgentEvent::QueueItemConsumed));
-    assert_eq!(app.queue.len(), 1);
-    assert_eq!(
-        app.chats[0].message_count(),
-        if expect_user_msg { before + 1 } else { before }
-    );
-    let crate::AgentCommand::Run(input, 1) =
-        rx.try_recv().expect("next item should be sent to agent")
-    else {
-        panic!("expected Run command");
-    };
-    assert_eq!(input.mode, AgentMode::Plan(PathBuf::from("p.md")));
+    app.queue.remove(0);
+
+    let actions = app.update(agent_msg(AgentEvent::Done {
+        usage: TokenUsage::default(),
+        num_turns: 1,
+        stop_reason: None,
+    }));
+    let has_send = actions.iter().any(|a| matches!(a, Action::SendMessage(_)));
+    assert!(has_send, "agent should receive second item via Done drain");
+    assert!(app.queue.is_empty());
+}
+
+#[test]
+fn delete_only_queue_item_leaves_idle_on_done() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.queue.push(queued_msg("only"));
+
+    app.queue.remove(0);
+
+    let actions = app.update(agent_msg(AgentEvent::Done {
+        usage: TokenUsage::default(),
+        num_turns: 1,
+        stop_reason: None,
+    }));
+    let has_send = actions.iter().any(|a| matches!(a, Action::SendMessage(_)));
+    assert!(!has_send, "no SendMessage when queue is empty");
+    assert_eq!(app.status, Status::Idle);
 }
 
 fn long_question_no_options() -> AgentEvent {
@@ -1060,7 +1044,7 @@ fn tick_edge_scroll_scrolls_continuously() {
     app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 1));
 
     let state = app.selection_state.as_mut().unwrap();
-    state.edge_scroll.as_mut().unwrap().last_tick = Instant::now() - EDGE_SCROLL_INTERVAL;
+    state.edge_scroll.as_mut().unwrap().last_tick = Instant::now() - EDGE_SCROLL_INTERVAL * 2;
     app.tick_edge_scroll();
     assert!(!app.chats[0].auto_scroll());
 }
@@ -1212,28 +1196,34 @@ fn queue_command_sets_focus(has_queue: bool) {
         test_app()
     };
     app.execute_command(cmd("/queue"));
-    assert_eq!(app.queue_focus.is_some(), has_queue);
+    assert_eq!(app.queue.focus().is_some(), has_queue);
 }
 
 #[test]
-fn queue_navigation_clamps() {
+fn queue_up_at_top_clamps() {
     let mut app = app_with_queued_message();
-    app.queue.push_back(queued_msg("second"));
-    app.queue_focus = Some(0);
+    app.queue.push(queued_msg("second"));
+    app.queue.set_focus_at(0);
 
     app.update(Msg::Key(key(KeyCode::Up)));
-    assert_eq!(app.queue_focus, Some(0));
+    assert_eq!(app.queue.focus(), Some(0));
+}
 
-    app.queue_focus = Some(1);
+#[test]
+fn queue_down_at_bottom_clamps() {
+    let mut app = app_with_queued_message();
+    app.queue.push(queued_msg("second"));
+    app.queue.set_focus_at(1);
+
     app.update(Msg::Key(key(KeyCode::Down)));
-    assert_eq!(app.queue_focus, Some(1));
+    assert_eq!(app.queue.focus(), Some(1));
 }
 
 #[test]
 fn queue_enter_removes_selected() {
     let mut app = app_with_queued_message();
-    app.queue.push_back(queued_msg("second"));
-    app.queue_focus = Some(0);
+    app.queue.push(queued_msg("second"));
+    app.queue.set_focus_at(0);
 
     app.update(Msg::Key(key(KeyCode::Enter)));
     assert_eq!(app.queue.len(), 1);
@@ -1241,35 +1231,37 @@ fn queue_enter_removes_selected() {
         QueuedItem::Message(input) => assert_eq!(input.text, "second"),
         _ => panic!("expected Message variant"),
     }
-    assert_eq!(app.queue_focus, Some(0));
+    assert_eq!(app.queue.focus(), Some(0));
 }
 
 #[test]
 fn queue_enter_deletes_last_unfocuses() {
     let mut app = app_with_queued_message();
-    app.queue_focus = Some(0);
+    app.queue.set_focus_at(0);
 
     app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(app.queue.is_empty());
-    assert!(app.queue_focus.is_none());
+    assert!(app.queue.focus().is_none());
 }
 
 #[test]
 fn queue_esc_unfocuses_without_removing() {
     let mut app = app_with_queued_message();
-    app.queue_focus = Some(0);
+    app.queue.set_focus_at(0);
 
     app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(app.queue_focus.is_none());
+    assert!(app.queue.focus().is_none());
     assert_eq!(app.queue.len(), 1);
 }
 
-#[test_case(None    ; "unfocused")]
-#[test_case(Some(1) ; "focused_on_second")]
-fn ctrl_q_pops_front(initial_focus: Option<usize>) {
+#[test_case(false ; "unfocused")]
+#[test_case(true  ; "focused_on_second")]
+fn ctrl_q_pops_front(focused: bool) {
     let mut app = app_with_queued_message();
-    app.queue.push_back(queued_msg("second"));
-    app.queue_focus = initial_focus;
+    app.queue.push(queued_msg("second"));
+    if focused {
+        app.queue.set_focus_at(1);
+    }
 
     app.update(Msg::Key(kb::POP_QUEUE.to_key_event()));
     assert_eq!(app.queue.len(), 1);
@@ -1277,16 +1269,16 @@ fn ctrl_q_pops_front(initial_focus: Option<usize>) {
         QueuedItem::Message(input) => assert_eq!(input.text, "second"),
         _ => panic!("expected Message variant"),
     }
-    assert_eq!(app.queue_focus, initial_focus.map(|_| 0));
+    assert_eq!(app.queue.focus(), if focused { Some(0) } else { None });
 }
 
 #[test_case(cancel_app as fn(&mut App) ; "cancel")]
 #[test_case(error_app as fn(&mut App)  ; "error")]
 fn clears_queue_focus_on_terminate(terminate: fn(&mut App)) {
     let mut app = app_with_queued_message();
-    app.queue_focus = Some(0);
+    app.queue.set_focus_at(0);
     terminate(&mut app);
-    assert!(app.queue_focus.is_none());
+    assert!(app.queue.focus().is_none());
 }
 
 #[test]
@@ -1294,8 +1286,8 @@ fn compact_fifo_with_messages() {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
-    app.queue.push_back(queued_msg("first"));
-    app.queue.push_back(QueuedItem::Compact);
+    app.queue.push(queued_msg("first"));
+    app.queue.push(QueuedItem::Compact);
 
     let actions = app.update(agent_msg(AgentEvent::Done {
         usage: TokenUsage::default(),
@@ -1351,7 +1343,7 @@ fn stale_done_does_not_drain_queue() {
     app.run_id = 1;
 
     cancel_app(&mut app);
-    app.queue.push_back(queued_msg("next"));
+    app.queue.push(queued_msg("next"));
 
     app.update(agent_msg_with_run_id(
         AgentEvent::Done {
@@ -1461,7 +1453,7 @@ fn help_modal_consumes_keys_and_esc_closes() {
     ; "streaming"
 )]
 #[test_case(
-    |app: &mut App| { app.status = Status::Streaming; app.run_id = 1; app.queue.push_back(queued_msg("q")); app.queue_focus = Some(0); },
+    |app: &mut App| { app.status = Status::Streaming; app.run_id = 1; app.queue.push(queued_msg("q")); app.queue.set_focus_at(0); },
     &[KeybindContext::QueueFocus],
     &[KeybindContext::Editing]
     ; "queue_focus"
@@ -1630,8 +1622,8 @@ fn rewind_to_first_turn_clears_everything() {
     assert!(matches!(&actions[0], Action::LoadSession(_)));
 }
 
-#[test_case(Duration::ZERO,          true  ; "keeps_fresh")]
-#[test_case(Duration::from_secs(60), false ; "clears_stale")]
+#[test_case(Duration::ZERO,          true  ; "keeps_fresh_error")]
+#[test_case(Duration::from_secs(60), false ; "clears_stale_error")]
 fn tick_error_expiry(age: Duration, expect_error: bool) {
     let mut app = test_app();
     app.status = Status::Error {
@@ -1743,7 +1735,7 @@ fn done_drains_queued_message_with_current_mode(
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
-    app.queue.push_back(queued_msg("queued"));
+    app.queue.push(queued_msg("queued"));
     app.mode = mode;
     if set_plan {
         app.plan = PlanState::with_path(PathBuf::from("p.md"), false);

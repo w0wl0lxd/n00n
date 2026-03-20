@@ -74,8 +74,8 @@ impl App {
         if form_visible {
             self.question_form.view(frame, bottom_area);
         } else {
-            let queue_entries = self.queue_entries();
-            queue_panel::view(frame, queue_area, &queue_entries, self.queue_focus);
+            let queue_entries = self.queue.entries();
+            queue_panel::view(frame, queue_area, &queue_entries, self.queue.focus());
             self.input_box.view(
                 frame,
                 input_area,
@@ -165,7 +165,7 @@ impl App {
         let mut contexts = vec![KeybindContext::General];
         if self.question_form.is_visible() {
             contexts.push(KeybindContext::QuestionForm);
-        } else if self.queue_focus.is_some() {
+        } else if self.queue.focus().is_some() {
             contexts.push(KeybindContext::QueueFocus);
         } else if self.session_picker.is_open() {
             contexts.push(KeybindContext::SessionPicker);

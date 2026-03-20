@@ -28,7 +28,6 @@ pub enum ChatEventResult {
     Continue,
     Done,
     Error(String),
-    QueueItemConsumed,
     QuestionPrompt { questions: Vec<QuestionInfo> },
     AuthRequired,
 }
@@ -108,9 +107,7 @@ impl Chat {
                     "Auto-compacting conversation...".into(),
                 ));
             }
-            AgentEvent::QueueItemConsumed => {
-                return ChatEventResult::QueueItemConsumed;
-            }
+            AgentEvent::QueueItemConsumed => return ChatEventResult::Continue,
             AgentEvent::Retry { .. } => unreachable!("handled before handle_event"),
             AgentEvent::Done { .. } => {
                 self.messages_panel.flush();

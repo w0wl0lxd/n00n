@@ -40,7 +40,7 @@ impl App {
         self.chat_index.clear();
         self.status = super::Status::Idle;
         self.token_usage = TokenUsage::default();
-        self.clear_queue();
+        self.queue.clear();
         #[cfg(feature = "demo")]
         {
             self.demo_questions = None;
