@@ -75,8 +75,12 @@ impl ToolKind {
                 max_lines: 15,
                 keep: Keep::Head,
             },
-            Self::Index | Self::Grep | Self::Read => OutputLimits {
+            Self::Index => OutputLimits {
                 max_lines: 7,
+                keep: Keep::Head,
+            },
+            Self::Grep | Self::Read => OutputLimits {
+                max_lines: 5,
                 keep: Keep::Head,
             },
             Self::Write => OutputLimits {
