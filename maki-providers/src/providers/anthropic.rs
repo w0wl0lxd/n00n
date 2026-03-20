@@ -1,20 +1,17 @@
-//! Anthropic API provider with prompt caching and OAuth auto-refresh.
+//! Anthropic API provider with prompt caching.
 //! Cache breakpoints: 1 on tools (last element), 1 on system prompt, 2 on the last two messages
 //! (last content block each). This consumes all 4 of Anthropic's allowed breakpoints.
-//! 401 responses trigger an OAuth token refresh before retrying.
 
-use std::sync::Mutex;
+use std::env;
+use std::sync::{Arc, Mutex};
 
 use flume::Sender;
 use futures_lite::StreamExt;
 use futures_lite::io::{AsyncBufReadExt, BufReader};
 use isahc::{AsyncReadResponseExt, HttpClient, Request};
-use maki_storage::DataDir;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
-
-pub mod auth;
 
 use crate::model::Model;
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
@@ -26,7 +23,7 @@ use crate::{
 const API_VERSION: &str = "2023-06-01";
 const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
-const OAUTH_SYSTEM_PREFIX: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+const BETA_ADVANCED_TOOL_USE: &str = "advanced-tool-use-2025-11-20";
 
 /// Anthropic caches conversation by blocks (tools -> system -> messages).
 /// We use 1 cache breakpoint for the last tool block, and 1 for the system prompt.
@@ -203,6 +200,23 @@ pub(crate) fn models() -> &'static [ModelEntry] {
     ]
 }
 
+fn resolve_auth() -> Result<super::ResolvedAuth, AgentError> {
+    if let Ok(key) = env::var("ANTHROPIC_API_KEY") {
+        debug!("using API key authentication");
+        return Ok(super::ResolvedAuth {
+            base_url: Some("https://api.anthropic.com/v1/messages".into()),
+            headers: vec![
+                ("x-api-key".into(), key),
+                ("anthropic-beta".into(), BETA_ADVANCED_TOOL_USE.into()),
+            ],
+        });
+    }
+
+    Err(AgentError::Config {
+        message: "set ANTHROPIC_API_KEY environment variable".into(),
+    })
+}
+
 #[derive(Deserialize)]
 struct Usage {
     #[serde(default)]
@@ -282,21 +296,31 @@ struct MessageDeltaEvent {
 
 pub struct Anthropic {
     client: HttpClient,
-    auth: Mutex<super::ResolvedAuth>,
-    auth_kind: super::AuthKind,
-    storage: DataDir,
+    auth: Arc<Mutex<super::ResolvedAuth>>,
+    system_prefix: Option<String>,
 }
 
 impl Anthropic {
     pub fn new() -> Result<Self, AgentError> {
-        let storage = DataDir::resolve()?;
-        let (resolved, kind) = auth::resolve(&storage)?;
+        let resolved = resolve_auth()?;
         Ok(Self {
             client: super::http_client(),
-            auth: Mutex::new(resolved),
-            auth_kind: kind,
-            storage,
+            auth: Arc::new(Mutex::new(resolved)),
+            system_prefix: None,
         })
+    }
+
+    pub(crate) fn with_auth(auth: Arc<Mutex<super::ResolvedAuth>>) -> Self {
+        Self {
+            client: super::http_client(),
+            auth,
+            system_prefix: None,
+        }
+    }
+
+    pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
+        self.system_prefix = prefix;
+        self
     }
 
     fn build_request(&self, method: &str, url: Option<&str>) -> isahc::http::request::Builder {
@@ -310,52 +334,6 @@ impl Anthropic {
             builder = builder.header(key.as_str(), value.as_str());
         }
         builder
-    }
-
-    fn is_oauth(&self) -> bool {
-        matches!(self.auth_kind, super::AuthKind::OAuth)
-    }
-
-    async fn refresh_oauth(&self) -> Result<(), AgentError> {
-        let storage = self.storage.clone();
-        let resolved = smol::unblock(move || {
-            let tokens =
-                maki_storage::auth::load_tokens(&storage, auth::PROVIDER).ok_or_else(|| {
-                    AgentError::Api {
-                        status: 401,
-                        message: "OAuth tokens not found on disk".into(),
-                    }
-                })?;
-            match auth::refresh_tokens(&tokens) {
-                Ok(fresh) => {
-                    maki_storage::auth::save_tokens(&storage, auth::PROVIDER, &fresh)?;
-                    Ok(auth::build_oauth_resolved(&fresh))
-                }
-                Err(e) => {
-                    warn!(error = %e, "OAuth token refresh failed, keeping tokens on disk");
-                    Err(e)
-                }
-            }
-        })
-        .await?;
-        *self.auth.lock().unwrap() = resolved;
-        debug!("refreshed OAuth token");
-        Ok(())
-    }
-
-    async fn with_oauth_retry<T, F, Fut>(&self, f: F) -> Result<T, AgentError>
-    where
-        F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<T, AgentError>>,
-    {
-        let result = f().await;
-        if self.is_oauth()
-            && matches!(&result, Err(e) if e.is_auth_error())
-            && self.refresh_oauth().await.is_ok()
-        {
-            return f().await;
-        }
-        result
     }
 
     async fn do_stream_request(
@@ -427,13 +405,13 @@ impl Provider for Anthropic {
                 cache_control: Some(EPHEMERAL),
             };
 
-            let system_blocks = if self.is_oauth() {
-                let prefix = SystemBlock {
+            let system_blocks = if let Some(prefix) = &self.system_prefix {
+                let prefix_block = SystemBlock {
                     r#type: "text",
-                    text: OAUTH_SYSTEM_PREFIX,
+                    text: prefix,
                     cache_control: None,
                 };
-                json!([prefix, system_block])
+                json!([prefix_block, system_block])
             } else {
                 json!([system_block])
             };
@@ -448,24 +426,12 @@ impl Provider for Anthropic {
             });
 
             debug!(model = %model.id, num_messages = messages.len(), "sending API request");
-
-            self.with_oauth_retry(|| self.do_stream_request(&body, event_tx))
-                .await
+            self.do_stream_request(&body, event_tx).await
         })
     }
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
-        Box::pin(async move { self.with_oauth_retry(|| self.do_list_models()).await })
-    }
-
-    fn refresh_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
-        Box::pin(async {
-            if self.is_oauth() {
-                self.refresh_oauth().await
-            } else {
-                Ok(())
-            }
-        })
+        Box::pin(self.do_list_models())
     }
 }
 

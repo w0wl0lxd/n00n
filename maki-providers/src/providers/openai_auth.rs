@@ -9,7 +9,7 @@ use serde::Deserialize;
 use tracing::{debug, error, warn};
 
 use crate::AgentError;
-use crate::providers::{AuthKind, CONNECT_TIMEOUT, ResolvedAuth, urlenc};
+use crate::providers::{CONNECT_TIMEOUT, ResolvedAuth, urlenc};
 
 pub(crate) const PROVIDER: &str = "openai";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -251,17 +251,21 @@ pub(crate) fn build_oauth_resolved(tokens: &OAuthTokens) -> ResolvedAuth {
     }
 }
 
-pub fn resolve(dir: &DataDir) -> Result<(ResolvedAuth, AuthKind), AgentError> {
+pub(crate) fn is_oauth(dir: &DataDir) -> bool {
+    load_tokens(dir, PROVIDER).is_some()
+}
+
+pub fn resolve(dir: &DataDir) -> Result<ResolvedAuth, AgentError> {
     if let Some(tokens) = load_tokens(dir, PROVIDER) {
         if !tokens.is_expired() {
             debug!("using OpenAI OAuth authentication");
-            return Ok((build_oauth_resolved(&tokens), AuthKind::OAuth));
+            return Ok(build_oauth_resolved(&tokens));
         }
         match refresh_tokens(&tokens) {
             Ok(fresh) => {
                 save_tokens(dir, PROVIDER, &fresh)?;
                 debug!("using OpenAI OAuth authentication (refreshed)");
-                return Ok((build_oauth_resolved(&fresh), AuthKind::OAuth));
+                return Ok(build_oauth_resolved(&fresh));
             }
             Err(e) => {
                 warn!(error = %e, "OpenAI OAuth refresh failed, clearing stale tokens");
@@ -272,17 +276,14 @@ pub fn resolve(dir: &DataDir) -> Result<(ResolvedAuth, AuthKind), AgentError> {
 
     if let Ok(key) = env::var("OPENAI_API_KEY") {
         debug!("using OpenAI API key authentication");
-        return Ok((
-            ResolvedAuth {
-                base_url: None,
-                headers: vec![("authorization".into(), format!("Bearer {key}"))],
-            },
-            AuthKind::ApiKey,
-        ));
+        return Ok(ResolvedAuth {
+            base_url: None,
+            headers: vec![("authorization".into(), format!("Bearer {key}"))],
+        });
     }
 
     Err(AgentError::Config {
-        message: "not authenticated, run `maki auth login` or set OPENAI_API_KEY".into(),
+        message: "not authenticated, run `maki auth login openai` or set OPENAI_API_KEY".into(),
     })
 }
 

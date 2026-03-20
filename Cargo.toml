@@ -85,5 +85,7 @@ libc = "0.2"
 nucleo-matcher = "0.3"
 criterion = { version = "0.5", features = ["html_reports"] }
 
+wait-timeout = "0.2"
+
 [profile.bench]
 debug = true

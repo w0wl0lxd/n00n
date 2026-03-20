@@ -15,7 +15,7 @@ use tracing_subscriber::EnvFilter;
 
 use maki_providers::model::{DEFAULT_SPEC, Model};
 use maki_providers::provider::fetch_all_models;
-use maki_providers::{anthropic_auth, openai_auth};
+use maki_providers::{dynamic, openai_auth};
 use maki_storage::log::RotatingFileWriter;
 use maki_storage::model::read_model;
 use print::OutputFormat;
@@ -90,24 +90,16 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AuthAction {
-    /// Authenticate with a provider (anthropic or openai)
+    /// Authenticate with a provider
     Login {
-        /// Provider to log in to
-        #[arg(value_enum)]
-        provider: AuthProvider,
+        /// Provider slug (e.g. anthropic-oauth)
+        provider: String,
     },
     /// Remove stored credentials for a provider
     Logout {
-        /// Provider to log out of
-        #[arg(value_enum)]
-        provider: AuthProvider,
+        /// Provider slug (e.g. anthropic-oauth)
+        provider: String,
     },
-}
-
-#[derive(Clone, clap::ValueEnum)]
-enum AuthProvider {
-    Anthropic,
-    Openai,
 }
 
 fn main() {
@@ -141,13 +133,13 @@ fn run() -> Result<()> {
         Some(Command::Auth { action }) => {
             let storage = DataDir::resolve().context("resolve data directory")?;
             match action {
-                AuthAction::Login { provider } => match provider {
-                    AuthProvider::Anthropic => anthropic_auth::login(&storage)?,
-                    AuthProvider::Openai => openai_auth::login(&storage)?,
+                AuthAction::Login { provider } => match provider.as_str() {
+                    "openai" => openai_auth::login(&storage)?,
+                    slug => dynamic::login(slug)?,
                 },
-                AuthAction::Logout { provider } => match provider {
-                    AuthProvider::Anthropic => anthropic_auth::logout(&storage)?,
-                    AuthProvider::Openai => openai_auth::logout(&storage)?,
+                AuthAction::Logout { provider } => match provider.as_str() {
+                    "openai" => openai_auth::logout(&storage)?,
+                    slug => dynamic::logout(slug)?,
                 },
             }
         }

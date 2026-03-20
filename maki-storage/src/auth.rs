@@ -8,7 +8,6 @@ use crate::{DataDir, StorageError, atomic_write_permissions};
 
 const AUTH_DIR: &str = "auth";
 const AUTH_FILE_MODE: u32 = 0o600;
-const LEGACY_AUTH_FILE: &str = "auth.json";
 const REFRESH_BUFFER_SECS: u64 = 60;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,28 +42,9 @@ fn provider_path(dir: &DataDir, provider: &str) -> std::path::PathBuf {
 
 pub fn load_tokens(dir: &DataDir, provider: &str) -> Option<OAuthTokens> {
     let path = provider_path(dir, provider);
-    if let Some(tokens) = fs::read_to_string(&path)
+    fs::read_to_string(&path)
         .ok()
         .and_then(|d| serde_json::from_str(&d).ok())
-    {
-        return Some(tokens);
-    }
-
-    if provider == "anthropic" {
-        let legacy = dir.path().join(LEGACY_AUTH_FILE);
-        if let Some(tokens) = fs::read_to_string(&legacy)
-            .ok()
-            .and_then(|d| serde_json::from_str::<OAuthTokens>(&d).ok())
-        {
-            if save_tokens(dir, provider, &tokens).is_ok() {
-                let _ = fs::remove_file(&legacy);
-                debug!("migrated legacy auth.json to auth/anthropic.json");
-            }
-            return Some(tokens);
-        }
-    }
-
-    None
 }
 
 pub fn save_tokens(
@@ -86,13 +66,6 @@ pub fn delete_tokens(dir: &DataDir, provider: &str) -> Result<bool, StorageError
     if path.exists() {
         fs::remove_file(&path)?;
         return Ok(true);
-    }
-    if provider == "anthropic" {
-        let legacy = dir.path().join(LEGACY_AUTH_FILE);
-        if legacy.exists() {
-            fs::remove_file(&legacy)?;
-            return Ok(true);
-        }
     }
     Ok(false)
 }
@@ -139,25 +112,6 @@ mod tests {
         assert!(delete_tokens(&dir, "anthropic").unwrap());
         assert!(load_tokens(&dir, "anthropic").is_none());
         assert!(!delete_tokens(&dir, "anthropic").unwrap());
-    }
-
-    #[test]
-    fn migrate_legacy_auth_file() {
-        let tmp = TempDir::new().unwrap();
-        let dir = DataDir::from_path(tmp.path().to_path_buf());
-        let tokens = OAuthTokens {
-            access: "legacy_access".into(),
-            refresh: "legacy_refresh".into(),
-            expires: 1234567890,
-            account_id: None,
-        };
-        let legacy_path = dir.path().join(LEGACY_AUTH_FILE);
-        fs::write(&legacy_path, serde_json::to_string(&tokens).unwrap()).unwrap();
-
-        let loaded = load_tokens(&dir, "anthropic").unwrap();
-        assert_eq!(loaded.access, "legacy_access");
-        assert!(!legacy_path.exists());
-        assert!(provider_path(&dir, "anthropic").exists());
     }
 
     #[test]

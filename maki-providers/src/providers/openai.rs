@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use flume::Sender;
 use maki_storage::DataDir;
@@ -9,9 +9,9 @@ use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
 use crate::{AgentError, Message, ProviderEvent, StreamResponse};
 
+use super::ResolvedAuth;
 use super::openai_auth;
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
-use super::{AuthKind, ResolvedAuth};
 
 static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     api_key_env: "OPENAI_API_KEY",
@@ -149,34 +149,50 @@ fn auth_header(resolved: &ResolvedAuth) -> &str {
 
 pub struct OpenAi {
     compat: OpenAiCompatProvider,
-    auth: Mutex<ResolvedAuth>,
-    auth_kind: AuthKind,
-    storage: DataDir,
+    auth: Arc<Mutex<ResolvedAuth>>,
+    storage: Option<DataDir>,
+    system_prefix: Option<String>,
 }
 
 impl OpenAi {
     pub fn new() -> Result<Self, AgentError> {
         let storage = DataDir::resolve()?;
-        let (resolved, kind) = openai_auth::resolve(&storage)?;
+        let resolved = openai_auth::resolve(&storage)?;
         let compat = OpenAiCompatProvider::without_auth(&CONFIG);
         Ok(Self {
             compat,
-            auth: Mutex::new(resolved),
-            auth_kind: kind,
-            storage,
+            auth: Arc::new(Mutex::new(resolved)),
+            storage: Some(storage),
+            system_prefix: None,
         })
     }
 
-    fn is_oauth(&self) -> bool {
-        matches!(self.auth_kind, AuthKind::OAuth)
+    pub(crate) fn with_auth(auth: Arc<Mutex<ResolvedAuth>>) -> Self {
+        Self {
+            compat: OpenAiCompatProvider::without_auth(&CONFIG),
+            auth,
+            storage: None,
+            system_prefix: None,
+        }
+    }
+
+    pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
+        self.system_prefix = prefix;
+        self
     }
 
     fn current_auth_header(&self) -> String {
         auth_header(&self.auth.lock().unwrap()).to_owned()
     }
 
+    fn is_oauth(&self) -> bool {
+        self.storage.as_ref().is_some_and(openai_auth::is_oauth)
+    }
+
     async fn refresh_oauth(&self) -> Result<(), AgentError> {
-        let storage = self.storage.clone();
+        let storage = self.storage.clone().ok_or_else(|| AgentError::Config {
+            message: "OAuth refresh not available for externally-managed auth".into(),
+        })?;
         let resolved = smol::unblock(move || {
             let tokens = maki_storage::auth::load_tokens(&storage, openai_auth::PROVIDER)
                 .ok_or_else(|| AgentError::Api {
@@ -227,6 +243,13 @@ impl Provider for OpenAi {
         event_tx: &'a Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
+            let effective_system;
+            let system = if let Some(prefix) = &self.system_prefix {
+                effective_system = format!("{prefix}\n\n{system}");
+                &effective_system
+            } else {
+                system
+            };
             let body = self.compat.build_body(model, messages, system, tools);
             self.with_oauth_retry(|| async {
                 let header = self.current_auth_header();

@@ -10,7 +10,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::provider::ProviderKind;
-use crate::providers::{anthropic, openai, zai};
+use crate::providers::{anthropic, dynamic, openai, zai};
 
 pub const DEFAULT_SPEC: &str = "anthropic/claude-opus-4-6";
 
@@ -116,6 +116,7 @@ impl ModelFamily {
 pub struct Model {
     pub id: String,
     pub provider: ProviderKind,
+    pub dynamic_slug: Option<String>,
     pub tier: ModelTier,
     pub family: ModelFamily,
     pub pricing: ModelPricing,
@@ -125,7 +126,11 @@ pub struct Model {
 
 impl Model {
     pub fn spec(&self) -> String {
-        format!("{}/{}", self.provider, self.id)
+        if let Some(slug) = &self.dynamic_slug {
+            format!("{slug}/{}", self.id)
+        } else {
+            format!("{}/{}", self.provider, self.id)
+        }
     }
 
     pub fn from_tier(provider: ProviderKind, tier: ModelTier) -> Result<Self, ModelError> {
@@ -140,19 +145,38 @@ impl Model {
 
     pub fn from_spec(spec: &str) -> Result<Self, ModelError> {
         let (provider_str, model_id) = spec.split_once('/').ok_or(ModelError::InvalidFormat)?;
-        let provider = ProviderKind::from_str(provider_str)
-            .map_err(|_| ModelError::UnsupportedProvider(provider_str.to_string()))?;
-        let entries = models_for_provider(provider);
-        let entry = lookup_entry(entries, model_id)?;
-        Ok(Self {
-            id: model_id.to_string(),
-            provider,
-            tier: entry.tier,
-            family: entry.family,
-            pricing: entry.pricing.clone(),
-            max_output_tokens: entry.max_output_tokens,
-            context_window: entry.context_window,
-        })
+
+        if let Ok(provider) = ProviderKind::from_str(provider_str) {
+            let entries = models_for_provider(provider);
+            let entry = lookup_entry(entries, model_id)?;
+            return Ok(Self {
+                id: model_id.to_string(),
+                provider,
+                dynamic_slug: None,
+                tier: entry.tier,
+                family: entry.family,
+                pricing: entry.pricing.clone(),
+                max_output_tokens: entry.max_output_tokens,
+                context_window: entry.context_window,
+            });
+        }
+
+        if let Some(base) = dynamic::base_for_slug(provider_str) {
+            let entries = models_for_provider(base);
+            let entry = lookup_entry(entries, model_id)?;
+            return Ok(Self {
+                id: model_id.to_string(),
+                provider: base,
+                dynamic_slug: Some(provider_str.to_string()),
+                tier: entry.tier,
+                family: entry.family,
+                pricing: entry.pricing.clone(),
+                max_output_tokens: entry.max_output_tokens,
+                context_window: entry.context_window,
+            });
+        }
+
+        Err(ModelError::UnsupportedProvider(provider_str.to_string()))
     }
 }
 

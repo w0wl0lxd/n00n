@@ -6,12 +6,11 @@ use serde::Deserialize;
 use crate::AgentError;
 
 pub(crate) mod anthropic;
+pub mod dynamic;
 pub(crate) mod openai;
 pub mod openai_auth;
 pub(crate) mod openai_compat;
 pub(crate) mod zai;
-
-pub use anthropic::auth as anthropic_auth;
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RECV_TIMEOUT: Duration = Duration::from_secs(300);
@@ -19,11 +18,6 @@ const RECV_TIMEOUT: Duration = Duration::from_secs(300);
 pub struct ResolvedAuth {
     pub base_url: Option<String>,
     pub headers: Vec<(String, String)>,
-}
-
-pub enum AuthKind {
-    OAuth,
-    ApiKey,
 }
 
 pub(crate) fn urlenc(s: &str) -> String {

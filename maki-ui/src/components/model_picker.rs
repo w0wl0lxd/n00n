@@ -5,6 +5,7 @@ use crossterm::event::KeyEvent;
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 
+use maki_providers::dynamic;
 use maki_providers::provider::ProviderKind;
 
 use crate::components::Overlay;
@@ -130,7 +131,13 @@ impl Overlay for ModelPicker {
 
 fn parse_model_entry(spec: &str) -> Option<ModelEntry> {
     let (provider_str, model_id) = spec.split_once('/')?;
-    let provider_kind: ProviderKind = provider_str.parse().ok()?;
+
+    let provider_display = if let Ok(kind) = provider_str.parse::<ProviderKind>() {
+        kind.display_name()
+    } else {
+        dynamic::display_name(provider_str)?
+    };
+
     let tier = match maki_providers::Model::from_spec(spec) {
         Ok(m) => m.tier.to_string(),
         Err(_) => String::new(),
@@ -138,7 +145,7 @@ fn parse_model_entry(spec: &str) -> Option<ModelEntry> {
     Some(ModelEntry {
         spec: spec.to_string(),
         id: model_id.to_string(),
-        provider_display: provider_kind.display_name(),
+        provider_display,
         tier,
     })
 }

@@ -7,6 +7,7 @@ use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 use tracing::{debug, warn};
 
 use crate::model::{Model, models_for_provider};
+use crate::providers::dynamic;
 use crate::providers::openai::OpenAi;
 use crate::providers::zai::{Zai, ZaiPlan};
 use crate::{AgentError, Message, ProviderEvent, StreamResponse};
@@ -61,15 +62,28 @@ pub trait Provider: Send + Sync {
 }
 
 pub fn from_model(model: &Model) -> Result<Box<dyn Provider>, AgentError> {
+    if let Some(slug) = &model.dynamic_slug {
+        let provider = dynamic::create(slug)?;
+        debug!(slug, model = %model.id, "dynamic provider created");
+        return Ok(provider);
+    }
     let provider = model.provider.create()?;
     debug!(provider = %model.provider, model = %model.id, "provider created");
     Ok(provider)
 }
 
 pub async fn from_model_async(model: &Model) -> Result<Box<dyn Provider>, AgentError> {
+    let slug = model.dynamic_slug.clone();
     let kind = model.provider;
     let id = model.id.clone();
-    let provider = smol::unblock(move || kind.create()).await?;
+    let provider = smol::unblock(move || {
+        if let Some(slug) = &slug {
+            dynamic::create(slug)
+        } else {
+            kind.create()
+        }
+    })
+    .await?;
     debug!(provider = %kind, model = %id, "provider created");
     Ok(provider)
 }
@@ -114,6 +128,15 @@ pub async fn fetch_all_models(mut on_ready: impl FnMut(ModelBatch)) {
         })
         .detach();
     }
+
+    let dynamic_specs = dynamic::dynamic_model_specs();
+    if !dynamic_specs.is_empty() {
+        let _ = tx.send(ModelBatch {
+            models: dynamic_specs,
+            warnings: Vec::new(),
+        });
+    }
+
     drop(tx);
 
     while let Ok(batch) = rx.recv_async().await {
