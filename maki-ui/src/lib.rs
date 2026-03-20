@@ -53,7 +53,7 @@ use maki_providers::Model;
 use maki_providers::TokenUsage;
 use maki_providers::provider::{Provider, fetch_all_models, from_model};
 use maki_storage::DataDir;
-use tracing::error;
+use tracing::{error, info, warn};
 
 pub type AppSession = maki_storage::sessions::Session<Message, TokenUsage, ToolOutput>;
 
@@ -378,11 +378,22 @@ impl AgentHandles {
         let _ = self.cmd_tx.try_send(AgentCommand::Cancel);
         let task = self.task;
         drop((self.cmd_tx, self.agent_rx, self.answer_tx));
+        info!("waiting for agent to finish (timeout {timeout:?})");
         smol::block_on(async {
-            futures_lite::future::or(task, async {
-                smol::Timer::after(timeout).await;
-            })
+            let finished = futures_lite::future::or(
+                async {
+                    task.await;
+                    true
+                },
+                async {
+                    smol::Timer::after(timeout).await;
+                    false
+                },
+            )
             .await;
+            if !finished {
+                warn!("agent did not finish within {timeout:?}, forcing shutdown");
+            }
         });
     }
 }

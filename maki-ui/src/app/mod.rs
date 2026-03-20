@@ -528,6 +528,7 @@ impl App {
     }
 
     fn quit(&mut self) -> Vec<Action> {
+        self.save_session();
         self.save_input_history();
         self.should_quit = true;
         vec![Action::Quit]
