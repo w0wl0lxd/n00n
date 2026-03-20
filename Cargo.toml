@@ -83,3 +83,7 @@ futures-lite = "2"
 isahc = { version = "1.7", default-features = false, features = ["text-decoding"] }
 libc = "0.2"
 nucleo-matcher = "0.3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[profile.bench]
+debug = true

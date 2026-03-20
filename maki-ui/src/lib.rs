@@ -14,7 +14,7 @@ mod markdown;
 mod mock;
 mod render_worker;
 mod selection;
-mod splash;
+pub mod splash;
 mod storage_writer;
 mod text_buffer;
 mod theme;

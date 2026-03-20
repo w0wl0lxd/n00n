@@ -15,38 +15,60 @@ const HELP_SEGMENTS: &[(&str, bool)] = &[
 ];
 
 /// Seconds for the initial fade-in animation (ease-out cubic).
-const FADE_DURATION: f64 = 1.6;
+const FADE_DURATION: f32 = 1.6;
 /// Seconds to wait before the logo starts appearing.
-const LOGO_DELAY: f64 = 0.2;
+const LOGO_DELAY: f32 = 0.2;
 /// Seconds over which the logo fades from dim to full brightness.
-const LOGO_RAMP: f64 = 0.8;
+const LOGO_RAMP: f32 = 0.8;
 /// Ascii chars mapped to increasing wave intensity (first must be space).
-const FIELD_CHARS: &[char] = &[' ', '.', ':', '+', '*'];
-const FIELD_CHAR_MAX: f64 = (FIELD_CHARS.len() - 1) as f64;
+const FIELD_SYMS: &[&str] = &[" ", ".", ":", "+", "*"];
+const FIELD_CHAR_MAX: f32 = (FIELD_SYMS.len() - 1) as f32;
 /// Number of overlapping sine wave layers in the background field.
 const WAVE_LAYERS: usize = 3;
 /// Peak brightness multiplier for the field. Lower = subtler background.
-const INTENSITY_SCALE: f64 = 0.3;
-/// Minimum intensity to render a cell. Raise this to cull more dim pixels.
-const INTENSITY_THRESHOLD: f64 = 0.15;
+const INTENSITY_SCALE: f32 = 0.3;
 /// How quickly the field darkens toward the edges. Higher = tighter spotlight.
-const VIGNETTE_SCALE: f64 = 0.25;
+const VIGNETTE_SCALE: f32 = 0.25;
 /// Base opacity for the dimmest field character (0.0–1.0). Higher = less contrast between chars.
-const FIELD_BASE_OPACITY: f64 = 0.5;
+const FIELD_BASE_OPACITY: f32 = 0.5;
+
+const INV_TAU: f32 = 1.0 / std::f32::consts::TAU;
+const TAU: f32 = std::f32::consts::TAU;
+const PI: f32 = std::f32::consts::PI;
+const FRAC_PI_2: f32 = std::f32::consts::FRAC_PI_2;
+const BHASKARA_B: f32 = 4.0 / (PI * PI);
+
+#[inline(always)]
+fn fast_sin(x: f32) -> f32 {
+    let x = x - (x * INV_TAU).floor() * TAU;
+    let (x, sign) = if x > PI { (x - PI, -1.0_f32) } else { (x, 1.0) };
+    let raw = BHASKARA_B * x * (PI - x);
+    sign * (4.0 * raw) / (5.0 - raw)
+}
+
+#[inline(always)]
+fn fast_sincos(x: f32) -> (f32, f32) {
+    (fast_sin(x), fast_sin(x + FRAC_PI_2))
+}
 
 pub struct Splash {
     start: Instant,
-    field_offset: f64,
+    field_offset: f32,
+}
+
+impl Default for Splash {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Splash {
     pub fn new() -> Self {
-        let mut buf = [0u8; 8];
-        getrandom::fill(&mut buf).ok();
-        let field_offset = (u64::from_le_bytes(buf) % 10_000) as f64;
+        let mut rng = [0u8; 8];
+        getrandom::fill(&mut rng).ok();
         Self {
             start: Instant::now(),
-            field_offset,
+            field_offset: (u64::from_le_bytes(rng) % 10_000) as f32,
         }
     }
 
@@ -55,15 +77,14 @@ impl Splash {
             return;
         }
 
-        let t = self.start.elapsed().as_secs_f64();
+        let t = self.start.elapsed().as_secs_f32();
         let fade = if t >= FADE_DURATION {
             1.0
         } else {
             ease_out_cubic(t / FADE_DURATION)
         };
 
-        let total_h = 5;
-        let top_y = area.y + area.height.saturating_sub(total_h) / 2;
+        let top_y = area.y + area.height.saturating_sub(5) / 2;
         let tag_y = top_y + 1;
         let help_y = tag_y + 2;
 
@@ -73,10 +94,12 @@ impl Splash {
         self.render_help(area, buf, fade, help_y);
     }
 
-    fn render_field(&self, area: Rect, buf: &mut Buffer, t: f64, fade: f64) {
+    fn render_field(&self, area: Rect, buf: &mut Buffer, t: f32, fade: f32) {
         let theme = theme::current();
-        let accent = theme.heading.fg.unwrap_or(theme.foreground);
-        let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
+        let (ac_r, ac_g, ac_b) = extract_rgb(
+            theme.heading.fg.unwrap_or(theme.foreground),
+            (100, 140, 255),
+        );
         let (bg_r, bg_g, bg_b) = extract_rgb(theme.background, (15, 15, 25));
 
         let w = area.width as usize;
@@ -84,12 +107,11 @@ impl Splash {
         if w == 0 || h == 0 {
             return;
         }
-        let inv_w = 1.0 / w as f64;
-        let inv_h = 1.0 / h as f64;
-        let fade_intensity = fade * INTENSITY_SCALE;
+        let inv_w = 1.0 / w as f32;
+        let inv_h = 1.0 / h as f32;
 
-        let layers: [(f64, f64, f64, f64); WAVE_LAYERS] = std::array::from_fn(|i| {
-            let lf = i as f64;
+        let layers: [(f32, f32, f32, f32); WAVE_LAYERS] = std::array::from_fn(|i| {
+            let lf = i as f32;
             (
                 2.0 + lf * 1.8,
                 1.5 + lf * 1.2,
@@ -98,16 +120,16 @@ impl Splash {
             )
         });
 
-        let weight_sum: f64 = layers.iter().map(|l| l.3).sum();
+        let weight_sum: f32 = layers.iter().map(|l| l.3).sum();
         let half_weight_sum = weight_sum * 0.5;
-        let val_scale = fade_intensity / half_weight_sum;
+        let val_scale = (fade * INTENSITY_SCALE) / half_weight_sum;
 
-        let color_lut: [(char, Style); 4] = std::array::from_fn(|i| {
+        let style_lut: [(&str, Style); 4] = std::array::from_fn(|i| {
             let idx = i + 1;
-            let frac = idx as f64 / FIELD_CHAR_MAX;
+            let frac = idx as f32 / FIELD_CHAR_MAX;
             let t = FIELD_BASE_OPACITY + frac * (1.0 - FIELD_BASE_OPACITY);
             (
-                FIELD_CHARS[idx],
+                FIELD_SYMS[idx],
                 Style::new().fg(Color::Rgb(
                     lerp_u8(bg_r, ac_r, t * 0.25),
                     lerp_u8(bg_g, ac_g, t * 0.175),
@@ -118,20 +140,24 @@ impl Splash {
 
         let vignette_inv = 1.0 / VIGNETTE_SCALE;
 
-        // Precompute vignette-x and sin/cos per column per layer.
-        // sin(col_angle + row_angle) = sin(col)*cos(row) + cos(col)*sin(row)
-        // This reduces sin calls from w*h*WAVE_LAYERS to w*WAVE_LAYERS + h*WAVE_LAYERS.
-        let mut vx: Vec<f64> = Vec::with_capacity(w);
-        let mut col_sincos: Vec<[(f64, f64); WAVE_LAYERS]> = Vec::with_capacity(w);
+        // Single allocation for all per-column data: vx | sin0 | cos0 | sin1 | cos1 | sin2 | cos2
+        // Contiguous SoA layout enables LLVM auto-vectorization of the inner wave loops.
+        let mut col_data = vec![0.0_f32; w * (1 + WAVE_LAYERS * 2)];
         for col in 0..w {
-            let nx = col as f64 * inv_w;
+            let nx = col as f32 * inv_w;
             let d = (nx - 0.5) * 2.0;
-            vx.push(d * d);
-            col_sincos.push(std::array::from_fn(|i| {
-                let (s, c) = (nx * layers[i].0).sin_cos();
-                (s * layers[i].3, c * layers[i].3)
-            }));
+            col_data[col] = d * d;
+            for i in 0..WAVE_LAYERS {
+                let (s, c) = fast_sincos(nx * layers[i].0);
+                col_data[w + i * 2 * w + col] = s * layers[i].3;
+                col_data[w + (i * 2 + 1) * w + col] = c * layers[i].3;
+            }
         }
+        let vx = &col_data[..w];
+        let col_sin: [&[f32]; WAVE_LAYERS] =
+            std::array::from_fn(|i| &col_data[w + i * 2 * w..w + i * 2 * w + w]);
+        let col_cos: [&[f32]; WAVE_LAYERS] =
+            std::array::from_fn(|i| &col_data[w + (i * 2 + 1) * w..w + (i * 2 + 2) * w]);
 
         let col_start = vx.partition_point(|&v| v > vignette_inv);
         let col_end = w - vx
@@ -143,8 +169,13 @@ impl Splash {
             return;
         }
 
+        let buf_width = buf.area().width as usize;
+        let content = &mut buf.content;
+
+        let mut vals = vec![0.0_f32; col_end - col_start];
+
         for row in 0..h {
-            let ny = row as f64 * inv_h;
+            let ny = row as f32 * inv_h;
             let d = (ny - 0.5) * 2.0;
             let vy = d * d;
 
@@ -153,10 +184,8 @@ impl Splash {
                 continue;
             }
 
-            let row_sincos: [(f64, f64); WAVE_LAYERS] =
-                std::array::from_fn(|i| (ny * layers[i].1 + layers[i].2).sin_cos());
-
-            let y = area.y + row as u16;
+            let row_sincos: [(f32, f32); WAVE_LAYERS] =
+                std::array::from_fn(|i| fast_sincos(ny * layers[i].1 + layers[i].2));
 
             let rc_start = col_start + vx[col_start..col_end].partition_point(|&v| v > max_vx);
             let rc_end = col_end
@@ -166,52 +195,60 @@ impl Splash {
                     .position(|&v| v <= max_vx)
                     .unwrap_or(0);
 
-            for col in rc_start..rc_end {
-                let vignette = 1.0 - (vx[col] + vy) * VIGNETTE_SCALE;
+            let out = &mut vals[rc_start - col_start..rc_end - col_start];
+            let vx_slice = &vx[rc_start..rc_end];
 
-                let mut wave = 0.0_f64;
-                for i in 0..WAVE_LAYERS {
-                    let (sc, cc) = col_sincos[col][i];
-                    let (sr, cr) = row_sincos[i];
-                    wave += sc * cr + cc * sr;
+            // AUTOVECTORIZED - LLVM emits AVX (ymm, 8×f32) for these loops.
+            // Do NOT add branches, function calls, or non-contiguous indexing here.
+            // Verified via `perf annotate`.
+            for i in 0..WAVE_LAYERS {
+                let (sr, cr) = row_sincos[i];
+                let cs = &col_sin[i][rc_start..rc_end];
+                let cc = &col_cos[i][rc_start..rc_end];
+                for j in 0..out.len() {
+                    out[j] += cs[j] * cr + cc[j] * sr;
                 }
+            }
+            for j in 0..out.len() {
+                let vignette = 1.0 - (vx_slice[j] + vy) * VIGNETTE_SCALE;
+                out[j] = (out[j] + half_weight_sum) * vignette * val_scale;
+            }
 
-                let val = (wave + half_weight_sum) * vignette * val_scale;
-                if val < INTENSITY_THRESHOLD {
-                    continue;
-                }
+            let y = area.y + row as u16;
+            let row_offset = y as usize * buf_width + area.x as usize;
 
-                let idx = (val * FIELD_CHAR_MAX + 0.5) as usize;
+            for (j, val) in out.iter_mut().enumerate() {
+                let idx = (*val * FIELD_CHAR_MAX + 0.5) as usize;
+                *val = 0.0;
                 if idx == 0 {
                     continue;
                 }
-                let (ch, style) = &color_lut[idx.min(FIELD_CHARS.len() - 1) - 1];
+                let (sym, style) = &style_lut[idx.min(FIELD_SYMS.len() - 1) - 1];
 
-                let x = area.x + col as u16;
-                if let Some(cell) = buf.cell_mut((x, y)) {
-                    cell.set_char(*ch).set_style(*style);
+                if let Some(cell) = content.get_mut(row_offset + rc_start + j) {
+                    cell.set_symbol(sym).set_style(*style);
                 }
             }
         }
     }
 
-    fn render_logo(&self, area: Rect, buf: &mut Buffer, t: f64, fade: f64, top_y: u16) {
+    fn render_logo(&self, area: Rect, buf: &mut Buffer, t: f32, fade: f32, top_y: u16) {
         let theme = theme::current();
         let bg = theme.background;
-        let accent = theme.heading.fg.unwrap_or(theme.foreground);
-        let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
+        let (ac_r, ac_g, ac_b) = extract_rgb(
+            theme.heading.fg.unwrap_or(theme.foreground),
+            (100, 140, 255),
+        );
         let (bg_r, bg_g, bg_b) = extract_rgb(bg, (15, 15, 25));
 
-        let logo_w = LOGO.len() as u16;
-        let logo_x = area.x + (area.width.saturating_sub(logo_w)) / 2;
-        let logo_fade = ease_out_cubic(((t - LOGO_DELAY) / LOGO_RAMP).clamp(0.0, 1.0));
-
-        let alpha = 0.85 * logo_fade * fade;
-        let r = lerp_u8(bg_r, ac_r, alpha);
-        let g = lerp_u8(bg_g, ac_g, alpha);
-        let b = lerp_u8(bg_b, ac_b.saturating_add(15), alpha);
+        let logo_x = area.x + (area.width.saturating_sub(LOGO.len() as u16)) / 2;
+        let alpha = 0.85 * ease_out_cubic(((t - LOGO_DELAY) / LOGO_RAMP).clamp(0.0, 1.0)) * fade;
         let style = Style::new()
-            .fg(Color::Rgb(r, g, b))
+            .fg(Color::Rgb(
+                lerp_u8(bg_r, ac_r, alpha),
+                lerp_u8(bg_g, ac_g, alpha),
+                lerp_u8(bg_b, ac_b.saturating_add(15), alpha),
+            ))
             .bg(bg)
             .add_modifier(Modifier::BOLD);
 
@@ -226,7 +263,7 @@ impl Splash {
         }
     }
 
-    fn render_tagline(&self, area: Rect, buf: &mut Buffer, fade: f64, tag_y: u16) {
+    fn render_tagline(&self, area: Rect, buf: &mut Buffer, fade: f32, tag_y: u16) {
         if tag_y >= area.y + area.height {
             return;
         }
@@ -236,14 +273,15 @@ impl Splash {
         let (fg_r, fg_g, fg_b) = extract_rgb(theme.foreground, (200, 200, 200));
         let (bg_r, bg_g, bg_b) = extract_rgb(bg, (15, 15, 25));
 
-        let tag_w = TAGLINE.len() as u16;
-        let tag_x = area.x + (area.width.saturating_sub(tag_w)) / 2;
-
+        let tag_x = area.x + (area.width.saturating_sub(TAGLINE.len() as u16)) / 2;
         let alpha = 0.75 * fade;
-        let r = lerp_u8(bg_r, fg_r, alpha);
-        let g = lerp_u8(bg_g, fg_g, alpha);
-        let b = lerp_u8(bg_b, fg_b, alpha);
-        let style = Style::new().fg(Color::Rgb(r, g, b)).bg(bg);
+        let style = Style::new()
+            .fg(Color::Rgb(
+                lerp_u8(bg_r, fg_r, alpha),
+                lerp_u8(bg_g, fg_g, alpha),
+                lerp_u8(bg_b, fg_b, alpha),
+            ))
+            .bg(bg);
 
         for (col, ch) in TAGLINE.chars().enumerate() {
             let x = tag_x + col as u16;
@@ -257,34 +295,41 @@ impl Splash {
         }
     }
 
-    fn render_help(&self, area: Rect, buf: &mut Buffer, fade: f64, help_y: u16) {
+    fn render_help(&self, area: Rect, buf: &mut Buffer, fade: f32, help_y: u16) {
         if help_y >= area.y + area.height {
             return;
         }
 
         let theme = theme::current();
         let bg = theme.background;
-        let accent = theme.cmd_name.fg.unwrap_or(theme.foreground);
-        let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));
+        let (ac_r, ac_g, ac_b) = extract_rgb(
+            theme.cmd_name.fg.unwrap_or(theme.foreground),
+            (100, 140, 255),
+        );
         let (fg_r, fg_g, fg_b) = extract_rgb(theme.foreground, (200, 200, 200));
         let (bg_r, bg_g, bg_b) = extract_rgb(bg, (15, 15, 25));
 
-        let total_len: u16 = HELP_SEGMENTS.iter().map(|(s, _)| s.len() as u16).sum();
-        let help_x = area.x + (area.width.saturating_sub(total_len)) / 2;
+        let help_x = area.x
+            + (area
+                .width
+                .saturating_sub(HELP_SEGMENTS.iter().map(|(s, _)| s.len() as u16).sum()))
+                / 2;
 
         let mut col = 0usize;
         for &(segment, highlighted) in HELP_SEGMENTS {
-            let (tr, tg, tb) = if highlighted {
-                (ac_r, ac_g, ac_b)
+            let ((tr, tg, tb), base_alpha) = if highlighted {
+                ((ac_r, ac_g, ac_b), 0.75)
             } else {
-                (fg_r, fg_g, fg_b)
+                ((fg_r, fg_g, fg_b), 0.5)
             };
-            let base_alpha = if highlighted { 0.75 } else { 0.5 };
             let alpha = base_alpha * fade;
-            let r = lerp_u8(bg_r, tr, alpha);
-            let g = lerp_u8(bg_g, tg, alpha);
-            let b = lerp_u8(bg_b, tb, alpha);
-            let style = Style::new().fg(Color::Rgb(r, g, b)).bg(bg);
+            let style = Style::new()
+                .fg(Color::Rgb(
+                    lerp_u8(bg_r, tr, alpha),
+                    lerp_u8(bg_g, tg, alpha),
+                    lerp_u8(bg_b, tb, alpha),
+                ))
+                .bg(bg);
 
             for ch in segment.chars() {
                 let x = help_x + col as u16;
@@ -310,11 +355,11 @@ fn extract_rgb(color: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
 }
 
 #[inline(always)]
-fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
-    (a as f64 + (b as f64 - a as f64) * t.clamp(0.0, 1.0)) as u8
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t.clamp(0.0, 1.0)) as u8
 }
 
-fn ease_out_cubic(t: f64) -> f64 {
+fn ease_out_cubic(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
 }
