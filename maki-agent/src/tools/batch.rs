@@ -124,6 +124,7 @@ impl Batch {
                             ..ctx.clone()
                         };
                         let done = call.execute(&inner_ctx, id).await;
+                        ctx.event_tx.try_send(AgentEvent::ToolDone(done.clone()));
                         let text = done.output.as_text();
                         let result = if done.is_error { Err(text) } else { Ok(text) };
                         (result, Some(done.output))
@@ -331,6 +332,35 @@ mod tests {
             assert_eq!(entries.len(), MAX_BATCH_SIZE + 2);
             let discarded: Vec<_> = entries[MAX_BATCH_SIZE..].iter().collect();
             assert!(discarded.iter().all(|e| e.status == BatchToolStatus::Error));
+        });
+    }
+
+    #[test]
+    fn inner_tool_emits_tool_done_event() {
+        use crate::tools::test_support::stub_ctx_with;
+        use crate::{Envelope, EventSender};
+
+        smol::block_on(async {
+            let dir = tempfile::TempDir::new().unwrap();
+            let f = dir.path().join("hello.txt");
+            std::fs::write(&f, "hello").unwrap();
+
+            let (tx, rx) = flume::unbounded::<Envelope>();
+            let event_tx = EventSender::new(tx, 0);
+            let ctx = stub_ctx_with(&AgentMode::Build, Some(&event_tx), None);
+            execute_batch(
+                &ctx,
+                json!({
+                    "tool_calls": [{"tool": "read", "parameters": {"path": f.to_str().unwrap()}}]
+                }),
+            )
+            .await;
+
+            assert!(
+                rx.drain()
+                    .any(|env| matches!(&env.event, AgentEvent::ToolDone(done) if !done.is_error)),
+                "batch inner tool must emit ToolDone"
+            );
         });
     }
 }

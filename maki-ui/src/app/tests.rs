@@ -654,28 +654,31 @@ fn cancel_resets_all_chats_and_indices() {
     assert!(app.chat_index.is_empty());
 }
 
-fn finish_subagent_task(app: &mut App, is_error: bool) {
+fn finish_subagent(app: &mut App, id: &str, is_error: bool) {
     app.update(agent_msg(AgentEvent::ToolDone(ToolDoneEvent {
-        id: "task1".into(),
+        id: id.into(),
         tool: "task",
         output: ToolOutput::Plain("result".into()),
         is_error,
     })));
 }
 
+fn finish_subagent_task(app: &mut App, is_error: bool) {
+    finish_subagent(app, "task1", is_error);
+}
+
 #[test]
-fn subagent_done_marker_on_task_success() {
+fn subagent_done_only_in_subagent_chat() {
     let mut app = app_with_subagent();
     finish_subagent_task(&mut app, false);
-    assert_eq!(app.chats[1].last_message_text(), DONE_TEXT);
-    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::Done));
     assert_ne!(app.chats[0].last_message_role(), Some(&DisplayRole::Done));
 }
 
-#[test_case(|app: &mut App| finish_subagent_task(app, true), ERROR_TEXT,     &DisplayRole::Error ; "task_failure")]
-#[test_case(cancel_app as fn(&mut App),                      CANCELLED_TEXT, &DisplayRole::Error ; "cancel")]
-#[test_case(error_app  as fn(&mut App),                      ERROR_TEXT,     &DisplayRole::Error ; "main_error")]
-fn subagent_error_marker(
+#[test_case(|app: &mut App| finish_subagent_task(app, false), DONE_TEXT,      &DisplayRole::Done  ; "task_success")]
+#[test_case(|app: &mut App| finish_subagent_task(app, true),  ERROR_TEXT,     &DisplayRole::Error ; "task_failure")]
+#[test_case(cancel_app as fn(&mut App),                       CANCELLED_TEXT, &DisplayRole::Error ; "cancel")]
+#[test_case(error_app  as fn(&mut App),                       ERROR_TEXT,     &DisplayRole::Error ; "main_error")]
+fn subagent_terminal_marker(
     terminate: fn(&mut App),
     expected_text: &str,
     expected_role: &DisplayRole,
@@ -697,6 +700,15 @@ fn subagent_already_done_not_double_marked(terminate: fn(&mut App)) {
     assert_eq!(app.chats[1].last_message_text(), DONE_TEXT);
 }
 
+#[test_case(false, DONE_TEXT,  &DisplayRole::Done  ; "batch_subagent_success")]
+#[test_case(true,  ERROR_TEXT, &DisplayRole::Error ; "batch_subagent_failure")]
+fn batch_subagent_done_marker(is_error: bool, expected_text: &str, expected_role: &DisplayRole) {
+    let mut app = app_with_subagent_id("batch1__0");
+    finish_subagent(&mut app, "batch1__0", is_error);
+    assert_eq!(app.chats[1].last_message_text(), expected_text);
+    assert_eq!(app.chats[1].last_message_role(), Some(expected_role));
+}
+
 fn open_tasks_picker(app: &mut App) {
     for c in "/tasks".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
@@ -711,16 +723,20 @@ fn tasks_command_opens_picker() {
     assert!(app.task_picker.is_open());
 }
 
-fn app_with_subagent() -> App {
+fn app_with_subagent_id(id: &str) -> App {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
     app.update(subagent_msg(
         AgentEvent::TextDelta { text: "x".into() },
-        "task1",
+        id,
         Some("research"),
     ));
     app
+}
+
+fn app_with_subagent() -> App {
+    app_with_subagent_id("task1")
 }
 
 #[test]
