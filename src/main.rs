@@ -255,7 +255,7 @@ fn init_logging(storage: &DataDir) {
         return;
     };
     let file_appender = tracing_appender::rolling::never(log_dir, log_file);
-    let filter = EnvFilter::try_from_env("MAKI_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(filter)
