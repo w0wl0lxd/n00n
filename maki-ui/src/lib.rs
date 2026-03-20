@@ -67,6 +67,25 @@ const MOUSE_SCROLL_LINES: i32 = 3;
 const ANIMATION_INTERVAL_MS: u64 = 8;
 const IDLE_POLL_INTERVAL_MS: u64 = 100;
 
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn init() -> Result<(Self, ratatui::DefaultTerminal)> {
+        let terminal = ratatui::init();
+        stdout().execute(EnableBracketedPaste)?;
+        stdout().execute(EnableMouseCapture)?;
+        Ok((Self, terminal))
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        stdout().execute(DisableMouseCapture).ok();
+        stdout().execute(event::DisableBracketedPaste).ok();
+        ratatui::restore();
+    }
+}
+
 pub fn run(
     model: Model,
     skills: Vec<Skill>,
@@ -75,13 +94,9 @@ pub fn run(
     config: AgentConfig,
     #[cfg(feature = "demo")] demo: bool,
 ) -> Result<String> {
-    let mut terminal = ratatui::init();
-    stdout().execute(EnterAlternateScreen)?;
-    stdout().execute(EnableBracketedPaste)?;
-    stdout().execute(EnableMouseCapture)?;
-    terminal::enable_raw_mode()?;
+    let (_guard, mut terminal) = TerminalGuard::init()?;
 
-    let session_id = run_event_loop(
+    run_event_loop(
         &mut terminal,
         model,
         skills,
@@ -90,15 +105,7 @@ pub fn run(
         config,
         #[cfg(feature = "demo")]
         demo,
-    );
-
-    terminal::disable_raw_mode()?;
-    stdout().execute(DisableMouseCapture)?;
-    stdout().execute(event::DisableBracketedPaste)?;
-    stdout().execute(LeaveAlternateScreen)?;
-    ratatui::restore();
-
-    session_id
+    )
 }
 
 fn run_event_loop(
