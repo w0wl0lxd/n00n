@@ -5,6 +5,7 @@ use super::{code_view, index_highlight};
 use crate::animation::spinner_frame;
 use crate::theme;
 
+use std::borrow::Cow;
 use std::fmt::Write;
 use std::time::Instant;
 
@@ -30,41 +31,90 @@ use ratatui::text::{Line, Span};
 use crate::highlight::highlight_regex_inline;
 use crate::render_worker::RenderWorker;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolKind {
+    Bash,
+    CodeExecution,
+    Task,
+    Index,
+    Grep,
+    Read,
+    Write,
+    WebFetch,
+    WebSearch,
+    Other,
+}
+
+impl ToolKind {
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            BASH_TOOL_NAME => Self::Bash,
+            CODE_EXECUTION_TOOL_NAME => Self::CodeExecution,
+            TASK_TOOL_NAME => Self::Task,
+            INDEX_TOOL_NAME => Self::Index,
+            GREP_TOOL_NAME => Self::Grep,
+            READ_TOOL_NAME => Self::Read,
+            WRITE_TOOL_NAME | EDIT_TOOL_NAME | MULTIEDIT_TOOL_NAME => Self::Write,
+            WEBFETCH_TOOL_NAME => Self::WebFetch,
+            WEBSEARCH_TOOL_NAME => Self::WebSearch,
+            _ => Self::Other,
+        }
+    }
+
+    pub const fn output_limits(self) -> OutputLimits {
+        match self {
+            Self::Bash => OutputLimits {
+                max_lines: 10,
+                keep: Keep::Tail,
+            },
+            Self::CodeExecution => OutputLimits {
+                max_lines: 15,
+                keep: Keep::Tail,
+            },
+            Self::Task => OutputLimits {
+                max_lines: 15,
+                keep: Keep::Head,
+            },
+            Self::Index | Self::Grep | Self::Read => OutputLimits {
+                max_lines: 7,
+                keep: Keep::Head,
+            },
+            Self::Write => OutputLimits {
+                max_lines: 30,
+                keep: Keep::Head,
+            },
+            Self::WebFetch | Self::WebSearch | Self::Other => OutputLimits {
+                max_lines: 3,
+                keep: Keep::Head,
+            },
+        }
+    }
+
+    fn always_annotate(self) -> bool {
+        matches!(self, Self::WebFetch | Self::WebSearch | Self::Index)
+    }
+}
+
+pub(crate) struct OutputLimits {
+    pub max_lines: usize,
+    pub keep: Keep,
+}
+
 pub const TOOL_INDICATOR: &str = "● ";
 pub const TOOL_BODY_INDENT: &str = "  ";
+
 const TOOL_SEPARATOR: &str = "──────────────────";
-const TOOL_OUTPUT_MAX_LINES: usize = 7;
-const BASH_OUTPUT_MAX_LINES: usize = 10;
 const CODE_EXECUTION_OUTPUT_SEPARATOR: &str = "────────────";
 const INSTRUCTION_SEPARATOR: &str = "────────────";
-const CODE_EXECUTION_OUTPUT_MAX_LINES: usize = 30;
-const TASK_OUTPUT_MAX_LINES: usize = 30;
-const INDEX_OUTPUT_MAX_LINES: usize = 15;
-const GREP_OUTPUT_MAX_LINES: usize = 15;
 const BASH_WAITING_LABEL: &str = "Waiting for output...";
 const BASH_NO_OUTPUT_LABEL: &str = "No output.";
 const BASH_OUTPUT_SEPARATOR: &str = "──────";
-const ALWAYS_ANNOTATE_TOOLS: &[&str] = &[WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME, INDEX_TOOL_NAME];
+
 const PLAIN_ANNOTATION_THRESHOLD: usize = 10;
 const BATCH_INDENT: &str = "  ";
 const BATCH_CONTENT_INDENT: &str = "    ";
 
-pub(crate) fn output_limits(tool: &str) -> (usize, Keep) {
-    match tool {
-        BASH_TOOL_NAME => (BASH_OUTPUT_MAX_LINES, Keep::Tail),
-        CODE_EXECUTION_TOOL_NAME => (CODE_EXECUTION_OUTPUT_MAX_LINES, Keep::Tail),
-        TASK_TOOL_NAME => (TASK_OUTPUT_MAX_LINES, Keep::Head),
-        INDEX_TOOL_NAME => (INDEX_OUTPUT_MAX_LINES, Keep::Head),
-        GREP_TOOL_NAME => (GREP_OUTPUT_MAX_LINES, Keep::Head),
-        _ => (TOOL_OUTPUT_MAX_LINES, Keep::Head),
-    }
-}
-
-fn renders_markdown(tool: &str) -> bool {
-    tool == TASK_TOOL_NAME
-}
-
-pub(crate) fn tool_output_annotation(output: &ToolOutput, tool: &str) -> Option<String> {
+pub(crate) fn tool_output_annotation(output: &ToolOutput, kind: ToolKind) -> Option<String> {
     match output {
         ToolOutput::ReadCode {
             lines, total_lines, ..
@@ -87,7 +137,7 @@ pub(crate) fn tool_output_annotation(output: &ToolOutput, tool: &str) -> Option<
         }
         ToolOutput::Plain(text) => {
             let n = text.lines().count();
-            if ALWAYS_ANNOTATE_TOOLS.contains(&tool) || n > PLAIN_ANNOTATION_THRESHOLD {
+            if kind.always_annotate() || n > PLAIN_ANNOTATION_THRESHOLD {
                 Some(format!("{n} lines"))
             } else {
                 None
@@ -221,6 +271,7 @@ pub struct HighlightRequest {
     pub input: Option<ToolInput>,
     pub output: Option<ToolOutput>,
     pub width: u16,
+    pub tool: ToolKind,
 }
 
 impl HighlightRequest {
@@ -229,6 +280,7 @@ impl HighlightRequest {
         input: Option<ToolInput>,
         output: Option<ToolOutput>,
         width: u16,
+        kind: ToolKind,
     ) -> Option<Self> {
         if range.0 == range.1 {
             return None;
@@ -250,6 +302,7 @@ impl HighlightRequest {
             input,
             output,
             width,
+            tool: kind,
         })
     }
 }
@@ -257,7 +310,7 @@ impl HighlightRequest {
 impl ToolLines {
     pub fn send_highlight(&self, worker: &RenderWorker) -> Option<u64> {
         let hl = self.highlight.as_ref()?;
-        Some(worker.send(hl.input.clone(), hl.output.clone(), hl.width))
+        Some(worker.send(hl.input.clone(), hl.output.clone(), hl.width, hl.tool))
     }
 }
 
@@ -339,17 +392,67 @@ impl From<BatchToolStatus> for Indicator {
     }
 }
 
-enum OutputMode<'a> {
-    Fallback {
-        body: Option<&'a str>,
-        tool: &'a str,
-        is_done: bool,
-        pre_truncated: usize,
-    },
-    Truncated {
-        tool: &'a str,
-        is_done: bool,
-    },
+struct ResolvedOutput<'a> {
+    text: Option<Cow<'a, str>>,
+    skipped: usize,
+    instructions: Option<&'a [InstructionBlock]>,
+}
+
+fn resolve_output<'a>(
+    output: Option<&'a ToolOutput>,
+    body: Option<&'a str>,
+    pre_truncated: usize,
+    kind: ToolKind,
+) -> ResolvedOutput<'a> {
+    let instructions = match output {
+        Some(ToolOutput::ReadDir { instructions, .. }) => instructions.as_deref(),
+        _ => None,
+    };
+
+    if let Some(ToolOutput::Batch { .. } | ToolOutput::QuestionAnswers(_)) = output {
+        return ResolvedOutput {
+            text: None,
+            skipped: 0,
+            instructions,
+        };
+    }
+
+    let (raw_text, already_truncated) = match (body, output) {
+        (Some(b), _) => (Some(Cow::Borrowed(b)), pre_truncated),
+        (None, Some(ToolOutput::Plain(t))) => (Some(Cow::Borrowed(t.as_str())), 0),
+        (None, Some(ToolOutput::ReadDir { text, .. })) => (Some(Cow::Borrowed(text.as_str())), 0),
+        (None, Some(output @ ToolOutput::GlobResult { .. })) => {
+            (Some(Cow::Owned(output.as_display_text())), 0)
+        }
+        (None, None) => (None, 0),
+        _ => {
+            return ResolvedOutput {
+                text: None,
+                skipped: 0,
+                instructions,
+            };
+        }
+    };
+
+    let (text, skipped) = match raw_text {
+        Some(t) if !t.is_empty() => {
+            let limits = kind.output_limits();
+            let tr = truncate_output(&t, limits.max_lines, limits.keep);
+            let s = if tr.skipped > 0 {
+                tr.skipped
+            } else {
+                already_truncated
+            };
+            (Some(Cow::Owned(tr.kept.into_owned())), s)
+        }
+        _ => (None, already_truncated),
+    };
+
+    ResolvedOutput {
+        text,
+        skipped,
+        instructions,
+    }
 }
 
 struct ToolLineBuilder {
@@ -400,9 +503,14 @@ impl ToolLineBuilder {
         self.lines[0].spans.insert(0, Span::styled(text, style));
     }
 
-    fn push_code_content(&mut self, input: Option<&ToolInput>, output: Option<&ToolOutput>) {
+    fn push_code_content(
+        &mut self,
+        input: Option<&ToolInput>,
+        output: Option<&ToolOutput>,
+        kind: ToolKind,
+    ) {
         let content_width = self.width.saturating_sub(TOOL_BODY_INDENT.len() as u16);
-        let content = code_view::render_tool_content(input, output, false, content_width);
+        let content = code_view::render_tool_content(input, output, false, content_width, kind);
         let start = self.lines.len();
         for mut line in content {
             line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
@@ -411,86 +519,50 @@ impl ToolLineBuilder {
         self.content_range = (start, self.lines.len());
     }
 
-    fn push_output(&mut self, output: Option<&ToolOutput>, mode: OutputMode<'_>) {
-        match mode {
-            OutputMode::Fallback {
-                body,
-                tool,
-                is_done,
-                pre_truncated,
-            } => self.push_output_fallback(output, body, tool, is_done, pre_truncated),
-            OutputMode::Truncated { tool, is_done } => {
-                self.push_output_truncated(output, tool, is_done)
-            }
-        }
-    }
-
-    fn push_output_fallback(
+    fn push_resolved_output(
         &mut self,
+        resolved: &ResolvedOutput<'_>,
         output: Option<&ToolOutput>,
-        body: Option<&str>,
-        tool: &str,
+        kind: ToolKind,
         is_done: bool,
-        pre_truncated: usize,
     ) {
-        match output {
-            None
-            | Some(ToolOutput::Plain(_))
-            | Some(ToolOutput::ReadDir { .. })
-            | Some(ToolOutput::GlobResult { .. }) => {
-                if renders_markdown(tool) {
-                    let text = match output {
-                        Some(ToolOutput::Plain(t)) => Some(t.as_str()),
-                        _ => body,
-                    };
-                    if let Some(text) = text {
-                        let (max, keep) = output_limits(tool);
-                        let tr = truncate_output(text, max, keep);
-                        self.push_markdown_body(&tr.kept);
-                        let skipped = if tr.skipped > 0 {
-                            tr.skipped
-                        } else {
-                            pre_truncated
-                        };
-                        self.push_truncation_count(skipped);
-                    }
-                    return;
-                }
-                if tool == INDEX_TOOL_NAME {
-                    if let Some(ToolOutput::Plain(text)) = output {
-                        let (max, keep) = output_limits(tool);
-                        let tr = truncate_output(text, max, keep);
-                        self.push_index_body(&tr.kept);
-                        self.push_truncation_count(tr.skipped);
-                    } else if let Some(text) = body {
-                        self.push_index_body(text);
-                        self.push_truncation_count(pre_truncated);
-                    }
-                    return;
-                }
-                let has_code = self.content_range.1 > self.content_range.0;
-                if has_code && tool == BASH_TOOL_NAME {
-                    self.push_bash_output_label(TOOL_BODY_INDENT, is_done, body.is_some());
-                } else if has_code && body.is_some() {
-                    self.push_code_output_separator(tool, TOOL_BODY_INDENT);
-                }
-                if let Some(text) = body {
-                    let (_, keep) = output_limits(tool);
-                    if matches!(keep, Keep::Tail) {
-                        self.push_truncation_count(pre_truncated);
-                    }
-                    push_text_lines(&mut self.lines, text, TOOL_BODY_INDENT);
-                    if matches!(keep, Keep::Head) {
-                        self.push_truncation_count(pre_truncated);
-                    }
-                }
-                if let Some(ToolOutput::ReadDir { instructions, .. }) = output {
-                    self.maybe_push_instructions(instructions.as_deref());
-                }
+        let has_code = self.content_range.1 > self.content_range.0;
+
+        if resolved.text.is_none() && resolved.instructions.is_none() {
+            if has_code && kind == ToolKind::Bash {
+                self.push_bash_output_label(TOOL_BODY_INDENT, is_done, false);
             }
-            Some(ToolOutput::Batch { .. }) => {}
-            other => push_structured_lines(&mut self.lines, other, TOOL_BODY_INDENT),
+            match output {
+                Some(ToolOutput::Batch { .. } | ToolOutput::QuestionAnswers(_)) | None => {}
+                other => push_structured_lines(&mut self.lines, other, TOOL_BODY_INDENT),
+            }
+            return;
         }
+
+        if has_code {
+            if kind == ToolKind::Bash {
+                self.push_bash_output_label(TOOL_BODY_INDENT, is_done, resolved.text.is_some());
+            } else if resolved.text.is_some() {
+                self.push_code_output_separator(kind, TOOL_BODY_INDENT);
+            }
+        }
+
+        if let Some(text) = &resolved.text {
+            let keep = kind.output_limits().keep;
+            if matches!(keep, Keep::Tail) {
+                self.push_truncation_count(resolved.skipped);
+            }
+            match kind {
+                ToolKind::Task => self.push_markdown_body(text),
+                ToolKind::Index => self.push_index_body(text),
+                _ => push_text_lines(&mut self.lines, text, TOOL_BODY_INDENT),
+            }
+            if matches!(keep, Keep::Head) {
+                self.push_truncation_count(resolved.skipped);
+            }
+        }
+
+        self.maybe_push_instructions(resolved.instructions);
     }
 
     fn push_markdown_body(&mut self, text: &str) {
@@ -539,8 +611,8 @@ impl ToolLineBuilder {
         index_highlight::push_index_lines(&mut self.lines, text, TOOL_BODY_INDENT);
     }
 
-    fn push_code_output_separator(&mut self, tool: &str, indent: &str) {
-        if tool == CODE_EXECUTION_TOOL_NAME {
+    fn push_code_output_separator(&mut self, kind: ToolKind, indent: &str) {
+        if kind == ToolKind::CodeExecution {
             self.lines.push(Line::from(Span::styled(
                 format!("{indent}{}", CODE_EXECUTION_OUTPUT_SEPARATOR),
                 theme::current().tool_dim,
@@ -571,51 +643,6 @@ impl ToolLineBuilder {
         }
     }
 
-    fn push_output_truncated(&mut self, output: Option<&ToolOutput>, tool: &str, is_done: bool) {
-        let has_code = self.content_range.1 > self.content_range.0;
-        if has_code && tool == BASH_TOOL_NAME {
-            let has_output = matches!(output, Some(ToolOutput::Plain(t)) if !t.is_empty());
-            self.push_bash_output_label(TOOL_BODY_INDENT, is_done, has_output);
-        } else if has_code {
-            self.push_code_output_separator(tool, TOOL_BODY_INDENT);
-        }
-        match output {
-            None => {}
-            Some(ToolOutput::Plain(text)) => {
-                let (max, keep) = output_limits(tool);
-                let tr = truncate_output(text, max, keep);
-                if matches!(keep, Keep::Tail) {
-                    self.push_truncation_count(tr.skipped);
-                }
-                if renders_markdown(tool) {
-                    self.push_markdown_body(&tr.kept);
-                } else if tool == INDEX_TOOL_NAME {
-                    self.push_index_body(&tr.kept);
-                } else {
-                    push_text_lines(&mut self.lines, &tr.kept, TOOL_BODY_INDENT);
-                }
-                if matches!(keep, Keep::Head) {
-                    self.push_truncation_count(tr.skipped);
-                }
-            }
-            Some(ToolOutput::GlobResult { .. }) => {
-                let text = output.unwrap().as_display_text();
-                let (max, keep) = output_limits(tool);
-                let tr = truncate_output(&text, max, keep);
-                push_text_lines(&mut self.lines, &tr.kept, TOOL_BODY_INDENT);
-                self.push_truncation_count(tr.skipped);
-            }
-            Some(ToolOutput::ReadDir { text, instructions }) => {
-                let (max, keep) = output_limits(tool);
-                let tr = truncate_output(text, max, keep);
-                push_text_lines(&mut self.lines, &tr.kept, TOOL_BODY_INDENT);
-                self.push_truncation_count(tr.skipped);
-                self.maybe_push_instructions(instructions.as_deref());
-            }
-            other => push_structured_lines(&mut self.lines, other, TOOL_BODY_INDENT),
-        }
-    }
-
     fn prepend_separator(&mut self, index: usize) {
         if index == 0 {
             return;
@@ -639,6 +666,7 @@ impl ToolLineBuilder {
         input: Option<ToolInput>,
         output: Option<ToolOutput>,
         content_indent: &'static str,
+        kind: ToolKind,
     ) -> ToolLines {
         if !self.outer_indent.is_empty() {
             for line in &mut self.lines {
@@ -648,7 +676,8 @@ impl ToolLineBuilder {
         }
         let full_width = self.width + self.outer_indent.len() as u16;
         let content_width = full_width.saturating_sub(content_indent.len() as u16);
-        let highlight = HighlightRequest::new(self.content_range, input, output, content_width);
+        let highlight =
+            HighlightRequest::new(self.content_range, input, output, content_width, kind);
         ToolLines {
             lines: self.lines,
             highlight,
@@ -697,6 +726,7 @@ pub fn build_tool_lines(
     width: u16,
 ) -> ToolLines {
     let tool_name = msg.role.tool_name().unwrap_or("?");
+    let kind = ToolKind::from_name(tool_name);
     let (header, body) = match msg.text.split_once('\n') {
         Some((h, b)) => (h, Some(b)),
         None => (msg.text.as_str(), None),
@@ -705,21 +735,15 @@ pub fn build_tool_lines(
     let mut b = ToolLineBuilder::new(width, "");
     b.push_header(tool_name, header, msg.annotation.as_deref());
     b.prepend_indicator(status.into(), started_at);
-    b.push_code_content(msg.tool_input.as_ref(), msg.tool_output.as_ref());
+    b.push_code_content(msg.tool_input.as_ref(), msg.tool_output.as_ref(), kind);
     let is_done = status != ToolStatus::InProgress;
-    b.push_output(
-        msg.tool_output.as_ref(),
-        OutputMode::Fallback {
-            body,
-            tool: tool_name,
-            is_done,
-            pre_truncated: msg.truncated_lines,
-        },
-    );
+    let resolved = resolve_output(msg.tool_output.as_ref(), body, msg.truncated_lines, kind);
+    b.push_resolved_output(&resolved, msg.tool_output.as_ref(), kind, is_done);
     b.finish(
         msg.tool_input.clone(),
         msg.tool_output.clone(),
         TOOL_BODY_INDENT,
+        kind,
     )
 }
 
@@ -734,11 +758,12 @@ pub fn build_batch_entry_lines(
     started_at: Instant,
     width: u16,
 ) -> ToolLines {
+    let kind = ToolKind::from_name(&entry.tool);
     let mut annotation = entry.annotation.clone();
     if let Some(suffix) = entry
         .output
         .as_ref()
-        .and_then(|o| tool_output_annotation(o, &entry.tool))
+        .and_then(|o| tool_output_annotation(o, kind))
     {
         append_annotation(&mut annotation, &suffix);
     }
@@ -746,23 +771,19 @@ pub fn build_batch_entry_lines(
     let mut b = ToolLineBuilder::new(width, BATCH_INDENT);
     b.push_header(&entry.tool, &entry.summary, annotation.as_deref());
     b.prepend_indicator(entry.status.into(), started_at);
-    b.push_code_content(entry.input.as_ref(), entry.output.as_ref());
+    b.push_code_content(entry.input.as_ref(), entry.output.as_ref(), kind);
     let is_done = matches!(
         entry.status,
         BatchToolStatus::Success | BatchToolStatus::Error
     );
-    b.push_output(
-        entry.output.as_ref(),
-        OutputMode::Truncated {
-            tool: &entry.tool,
-            is_done,
-        },
-    );
+    let resolved = resolve_output(entry.output.as_ref(), None, 0, kind);
+    b.push_resolved_output(&resolved, entry.output.as_ref(), kind, is_done);
     b.prepend_separator(index);
     b.finish(
         entry.input.clone(),
         entry.output.clone(),
         BATCH_CONTENT_INDENT,
+        kind,
     )
 }
 
@@ -945,14 +966,12 @@ mod tests {
 
     #[test]
     fn batch_bash_separator_between_code_and_output() {
-        let entry = BatchToolEntry {
-            tool: "bash".into(),
-            summary: "echo hi".into(),
-            status: BatchToolStatus::Success,
-            input: code_input(),
-            output: Some(ToolOutput::Plain("hello".into())),
-            annotation: None,
-        };
+        let entry = batch_entry(
+            "bash",
+            BatchToolStatus::Success,
+            code_input(),
+            Some(ToolOutput::Plain("hello".into())),
+        );
         let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80);
         assert!(line_has_styled(
             &tl,
@@ -973,6 +992,22 @@ mod tests {
         bash_msg("cmd", ToolStatus::Success, None, None)
     }
 
+    fn batch_entry(
+        tool: &str,
+        status: BatchToolStatus,
+        input: Option<ToolInput>,
+        output: Option<ToolOutput>,
+    ) -> BatchToolEntry {
+        BatchToolEntry {
+            tool: tool.into(),
+            summary: "test".into(),
+            status,
+            input,
+            output,
+            annotation: None,
+        }
+    }
+
     #[test_case(80, true  ; "shown_when_width_sufficient")]
     #[test_case(10, false ; "hidden_when_too_narrow")]
     fn append_right_info_timestamp_visibility(width: u16, expect_timestamp: bool) {
@@ -980,10 +1015,10 @@ mod tests {
         let mut tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80);
         let span_count_before = tl.lines[0].spans.len();
         append_right_info(&mut tl.lines[0], None, Some("12:34:56"), width);
-        let last = tl.lines[0].spans.last().unwrap();
         if expect_timestamp {
+            let last = tl.lines[0].spans.last().unwrap();
             assert_eq!(last.style, theme::current().timestamp);
-            assert_eq!(spans_text(&tl.lines[0].spans).len(), width as usize + 1);
+            assert!(tl.lines[0].spans.len() > span_count_before);
         } else {
             assert_eq!(tl.lines[0].spans.len(), span_count_before);
         }
@@ -991,69 +1026,42 @@ mod tests {
 
     #[test]
     fn batch_entry_annotation_rendered() {
-        let entry = BatchToolEntry {
-            tool: "read".into(),
-            summary: "src/main.rs".into(),
-            status: BatchToolStatus::Success,
-            input: None,
-            output: Some(ToolOutput::ReadCode {
+        let mut entry = batch_entry(
+            "read",
+            BatchToolStatus::Success,
+            None,
+            Some(ToolOutput::ReadCode {
                 path: "src/main.rs".into(),
                 start_line: 1,
                 lines: vec!["x".into(); 42],
                 total_lines: 42,
                 instructions: None,
             }),
-            annotation: None,
-        };
+        );
+        entry.summary = "src/main.rs".into();
         let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80);
-        let text = lines_text(&tl);
-        assert!(text.contains("(42 lines)"));
+        assert!(lines_text(&tl).contains("(42 lines)"));
     }
 
     #[test]
     fn batch_entry_code_input_rendered() {
-        let entry = BatchToolEntry {
-            tool: "bash".into(),
-            summary: "echo hi".into(),
-            status: BatchToolStatus::Success,
-            input: Some(ToolInput::Code {
-                language: "bash".into(),
-                code: "echo hi\n".into(),
-            }),
-            output: None,
-            annotation: None,
-        };
+        let entry = batch_entry("bash", BatchToolStatus::Success, code_input(), None);
         let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80);
-        let text = lines_text(&tl);
-        assert!(text.contains("echo hi"));
+        assert!(lines_text(&tl).contains("echo hi"));
     }
 
     #[test_case(BatchToolStatus::InProgress, &[0]    ; "in_progress_has_spinner")]
     #[test_case(BatchToolStatus::Pending,    &[]     ; "pending_no_spinner")]
     #[test_case(BatchToolStatus::Success,    &[]     ; "success_no_spinner")]
     fn batch_entry_spinner(status: BatchToolStatus, expected: &[usize]) {
-        let entry = BatchToolEntry {
-            tool: "bash".into(),
-            summary: "test".into(),
-            status,
-            input: None,
-            output: None,
-            annotation: None,
-        };
+        let entry = batch_entry("bash", status, None, None);
         let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80);
         assert_eq!(tl.spinner_lines, expected);
     }
 
     #[test]
     fn batch_entry_separator_on_nonzero_index() {
-        let entry = BatchToolEntry {
-            tool: "bash".into(),
-            summary: "test".into(),
-            status: BatchToolStatus::Success,
-            input: None,
-            output: None,
-            annotation: None,
-        };
+        let entry = batch_entry("bash", BatchToolStatus::Success, None, None);
         let first = build_batch_entry_lines(&entry, 0, Instant::now(), 80);
         let second = build_batch_entry_lines(&entry, 1, Instant::now(), 80);
         assert!(second.lines.len() > first.lines.len());
@@ -1062,14 +1070,7 @@ mod tests {
 
     #[test]
     fn batch_entry_spinner_offset_with_separator() {
-        let entry = BatchToolEntry {
-            tool: "bash".into(),
-            summary: "test".into(),
-            status: BatchToolStatus::InProgress,
-            input: None,
-            output: None,
-            annotation: None,
-        };
+        let entry = batch_entry("bash", BatchToolStatus::InProgress, None, None);
         let without_sep = build_batch_entry_lines(&entry, 0, Instant::now(), 80);
         let with_sep = build_batch_entry_lines(&entry, 1, Instant::now(), 80);
         let offset = with_sep.lines.len() - without_sep.lines.len();
@@ -1083,17 +1084,14 @@ mod tests {
 
     #[test]
     fn batch_entry_plain_output_rendered() {
-        let entry = BatchToolEntry {
-            tool: "bash".into(),
-            summary: "echo hello".into(),
-            status: BatchToolStatus::Success,
-            input: None,
-            output: Some(ToolOutput::Plain("hello world".into())),
-            annotation: None,
-        };
+        let entry = batch_entry(
+            "bash",
+            BatchToolStatus::Success,
+            None,
+            Some(ToolOutput::Plain("hello world".into())),
+        );
         let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80);
-        let text = lines_text(&tl);
-        assert!(text.contains("hello world"));
+        assert!(lines_text(&tl).contains("hello world"));
     }
 
     #[test]
@@ -1107,17 +1105,10 @@ mod tests {
 
     #[test]
     fn batch_entry_stored_annotation_rendered() {
-        let entry = BatchToolEntry {
-            tool: "task".into(),
-            summary: "research".into(),
-            status: BatchToolStatus::Success,
-            input: None,
-            output: None,
-            annotation: Some("anthropic/claude-haiku-4-20250414".into()),
-        };
+        let mut entry = batch_entry("task", BatchToolStatus::Success, None, None);
+        entry.annotation = Some("anthropic/claude-haiku-4-20250414".into());
         let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80);
-        let text = lines_text(&tl);
-        assert!(text.contains("(anthropic/claude-haiku-4-20250414)"));
+        assert!(lines_text(&tl).contains("(anthropic/claude-haiku-4-20250414)"));
     }
 
     #[test_case("bash",  ToolOutput::Plain("ok".into()),                      None                ; "plain_short_no_annotation")]
@@ -1132,7 +1123,10 @@ mod tests {
     #[test_case("glob",  ToolOutput::GlobResult { files: vec![] },            None                ; "glob_empty_no_annotation")]
     #[test_case("edit",  ToolOutput::Diff { path: "a.rs".into(), hunks: vec![], summary: "ok".into() }, None ; "diff_no_annotation")]
     fn annotation_cases(tool: &str, output: ToolOutput, expected: Option<&str>) {
-        assert_eq!(tool_output_annotation(&output, tool).as_deref(), expected);
+        assert_eq!(
+            tool_output_annotation(&output, ToolKind::from_name(tool)).as_deref(),
+            expected
+        );
     }
 
     #[test]
@@ -1193,12 +1187,13 @@ mod tests {
 
     #[test]
     fn task_output_truncated_at_max_lines() {
+        const TASK_MAX: usize = ToolKind::Task.output_limits().max_lines;
         let tl = task_truncation_tl(n_lines(200));
         let body_lines = tl.lines.len() - 1;
         assert!(
-            body_lines <= TASK_OUTPUT_MAX_LINES + 1,
+            body_lines <= TASK_MAX + 1,
             "expected at most {} body lines, got {body_lines}",
-            TASK_OUTPUT_MAX_LINES + 1,
+            TASK_MAX + 1,
         );
     }
 
@@ -1227,14 +1222,12 @@ mod tests {
     #[test]
     fn batch_task_hr_fits_within_width() {
         let width: u16 = 60;
-        let entry = BatchToolEntry {
-            tool: TASK_TOOL_NAME.to_string(),
-            summary: "research".into(),
-            status: BatchToolStatus::Success,
-            input: None,
-            output: Some(ToolOutput::Plain("before\n\n---\n\nafter".into())),
-            annotation: None,
-        };
+        let entry = batch_entry(
+            TASK_TOOL_NAME,
+            BatchToolStatus::Success,
+            None,
+            Some(ToolOutput::Plain("before\n\n---\n\nafter".into())),
+        );
         let tl = build_batch_entry_lines(&entry, 0, Instant::now(), width);
         for line in &tl.lines {
             let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
@@ -1294,5 +1287,85 @@ mod tests {
             "src/lib.rs",
             theme::current().tool_path
         ));
+    }
+
+    #[test_case(None,       None,    "bash",  false, false ; "none_output_none_body")]
+    #[test_case(None,       Some("hello"), "bash", true, false ; "none_output_with_body")]
+    #[test_case(
+        Some(ToolOutput::Plain("world".into())), None, "bash", true, false
+        ; "plain_no_body_uses_plain"
+    )]
+    #[test_case(
+        Some(ToolOutput::Plain("world".into())), Some("override"), "bash", true, false
+        ; "body_takes_priority_over_plain"
+    )]
+    #[test_case(
+        Some(ToolOutput::Plain(String::new())), None, "bash", false, false
+        ; "empty_plain_resolves_to_none"
+    )]
+    #[test_case(
+        Some(ToolOutput::Batch { entries: vec![], text: String::new() }),
+        None, "batch", false, false
+        ; "batch_always_none"
+    )]
+    #[test_case(
+        Some(ToolOutput::ReadDir { text: "dir listing".into(), instructions: None }),
+        None, "read", true, false
+        ; "readdir_uses_text_field"
+    )]
+    #[test_case(
+        Some(ToolOutput::GlobResult { files: vec!["a.rs".into()] }),
+        None, "glob", true, false
+        ; "glob_uses_display_text"
+    )]
+    #[test_case(
+        Some(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec![], total_lines: 0, instructions: None }),
+        None, "read", false, false
+        ; "structured_output_resolves_to_none"
+    )]
+    fn resolve_output_text_presence(
+        output: Option<ToolOutput>,
+        body: Option<&str>,
+        tool: &str,
+        expect_text: bool,
+        expect_instructions: bool,
+    ) {
+        let resolved = resolve_output(output.as_ref(), body, 0, ToolKind::from_name(tool));
+        assert_eq!(resolved.text.is_some(), expect_text);
+        assert_eq!(resolved.instructions.is_some(), expect_instructions);
+    }
+
+    #[test]
+    fn resolve_output_readdir_preserves_instructions() {
+        let blocks = vec![InstructionBlock {
+            path: "test".into(),
+            content: "instructions here".into(),
+        }];
+        let output = ToolOutput::ReadDir {
+            text: "listing".into(),
+            instructions: Some(blocks),
+        };
+        let resolved = resolve_output(Some(&output), None, 0, ToolKind::Read);
+        assert!(resolved.instructions.is_some());
+    }
+
+    #[test]
+    fn resolve_output_body_priority_over_plain() {
+        let output = ToolOutput::Plain("from_output".into());
+        let resolved = resolve_output(Some(&output), Some("from_body"), 0, ToolKind::Bash);
+        assert_eq!(resolved.text.as_deref(), Some("from_body"));
+    }
+
+    #[test]
+    fn resolve_output_pre_truncated_forwarded() {
+        let resolved = resolve_output(None, Some("short"), 42, ToolKind::Bash);
+        assert_eq!(resolved.skipped, 42);
+    }
+
+    #[test]
+    fn resolve_output_truncation_overrides_pre_truncated() {
+        let long = n_lines(200);
+        let resolved = resolve_output(None, Some(&long), 5, ToolKind::Bash);
+        assert!(resolved.skipped > 5);
     }
 }

@@ -7,10 +7,10 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use crate::components::code_view;
+use crate::components::tool_display::ToolKind;
 use maki_agent::{ToolInput, ToolOutput};
 use ratatui::text::Line;
-
-use crate::components::code_view;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 const FALLBACK_MAX_THREADS: usize = 4;
@@ -20,6 +20,7 @@ struct RenderJob {
     tool_input: Option<ToolInput>,
     tool_output: Option<ToolOutput>,
     width: u16,
+    kind: ToolKind,
 }
 
 pub struct RenderResult {
@@ -67,6 +68,7 @@ impl RenderWorker {
         tool_input: Option<ToolInput>,
         tool_output: Option<ToolOutput>,
         width: u16,
+        kind: ToolKind,
     ) -> u64 {
         let id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
         let _ = self.job_tx.send(RenderJob {
@@ -74,6 +76,7 @@ impl RenderWorker {
             tool_input,
             tool_output,
             width,
+            kind,
         });
         self.maybe_spawn_thread();
         id
@@ -112,6 +115,7 @@ fn worker_loop(inner: &PoolInner) {
             job.tool_output.as_ref(),
             true,
             job.width,
+            job.kind,
         );
         if inner
             .result_tx

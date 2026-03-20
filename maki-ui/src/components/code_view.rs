@@ -1,3 +1,4 @@
+use crate::components::tool_display::ToolKind;
 use crate::highlight::{
     fallback_span, highlight_code_plain, highlight_line, highlighter_for_path,
     highlighter_for_syntax, highlighter_for_token, syntax_for_path,
@@ -12,9 +13,6 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
 
-const MAX_CODE_LINES: usize = 7;
-const MAX_WRITE_LINES: usize = 30;
-const MAX_GREP_LINES: usize = 15;
 const MAX_CODE_EXECUTION_LINES: usize = 100;
 const MAX_INSTRUCTION_LINES: usize = 15;
 
@@ -242,6 +240,7 @@ pub fn render_tool_content(
     output: Option<&ToolOutput>,
     highlight: bool,
     width: u16,
+    kind: ToolKind,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     match input {
@@ -282,12 +281,13 @@ pub fn render_tool_content(
             instructions,
             ..
         }) => {
+            let max = kind.output_limits().max_lines;
             let mut result = render_code(
                 highlight.then(|| highlighter_for_path(path)),
                 *start_line,
                 code_lines,
                 code_lines.len(),
-                MAX_CODE_LINES,
+                max,
             );
             if let Some(inst) = instructions {
                 result.push(Line::default());
@@ -299,18 +299,22 @@ pub fn render_tool_content(
             path,
             lines: code_lines,
             ..
-        }) => render_code(
-            highlight.then(|| highlighter_for_path(path)),
-            1,
-            code_lines,
-            code_lines.len(),
-            MAX_WRITE_LINES,
-        ),
+        }) => {
+            let max = kind.output_limits().max_lines;
+            render_code(
+                highlight.then(|| highlighter_for_path(path)),
+                1,
+                code_lines,
+                code_lines.len(),
+                max,
+            )
+        }
         Some(ToolOutput::Diff { path, hunks, .. }) => {
             render_diff(highlight.then_some(path.as_str()), hunks)
         }
         Some(ToolOutput::GrepResult { entries }) => {
-            render_grep_results(entries, MAX_GREP_LINES, highlight)
+            let max = kind.output_limits().max_lines;
+            render_grep_results(entries, max, highlight)
         }
         Some(ToolOutput::ReadDir { .. }) => Vec::new(),
         _ => Vec::new(),
@@ -395,7 +399,9 @@ mod tests {
         assert_eq!(nr_width(input), expected);
     }
 
-    #[test_case(20, 20, MAX_CODE_LINES + 1 ; "truncates_with_ellipsis")]
+    const READ_MAX_LINES: usize = ToolKind::Read.output_limits().max_lines;
+
+    #[test_case(20, 20, READ_MAX_LINES + 1 ; "truncates_with_ellipsis")]
     #[test_case(3,  3,  3                    ; "no_truncation_when_short")]
     #[test_case(5,  50, 5 + 1                ; "total_exceeds_available_lines")]
     fn render_code_line_count(input_lines: usize, total: usize, expected: usize) {
@@ -405,7 +411,7 @@ mod tests {
             1,
             &code_lines,
             total,
-            MAX_CODE_LINES,
+            READ_MAX_LINES,
         );
         assert_eq!(result.len(), expected);
     }

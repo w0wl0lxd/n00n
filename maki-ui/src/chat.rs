@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::components::messages::MessagesPanel;
-use crate::components::tool_display::{append_annotation, output_limits, tool_output_annotation};
+use crate::components::tool_display::{ToolKind, append_annotation, tool_output_annotation};
 use crate::components::{DisplayMessage, DisplayRole, ToolStatus};
 use crate::markdown::truncate_output;
 
@@ -341,21 +341,22 @@ fn build_loaded_tool(
     reconstructed: Option<ToolOutput>,
     result_text: Option<&str>,
 ) -> (String, usize, Option<ToolOutput>, Option<String>) {
+    let kind = ToolKind::from_name(tool);
     match reconstructed {
         Some(ref output @ ToolOutput::GlobResult { .. }) => {
-            let annotation = tool_output_annotation(output, tool);
+            let annotation = tool_output_annotation(output, kind);
             let text = if output.is_empty_result() {
                 format!("{summary}\n{NO_FILES_FOUND}")
             } else {
                 let display = output.as_display_text();
-                let (max, keep) = output_limits(tool);
-                let tr = truncate_output(&display, max, keep);
+                let limits = kind.output_limits();
+                let tr = truncate_output(&display, limits.max_lines, limits.keep);
                 format!("{}\n{}", summary, tr.kept)
             };
             (text, 0, reconstructed, annotation)
         }
         Some(ref output @ ToolOutput::GrepResult { .. }) => {
-            let annotation = tool_output_annotation(output, tool);
+            let annotation = tool_output_annotation(output, kind);
             (summary.to_owned(), 0, reconstructed, annotation)
         }
         Some(ToolOutput::Batch { ref entries, .. }) => {
@@ -372,21 +373,21 @@ fn build_loaded_tool(
             (text, 0, reconstructed, None)
         }
         Some(ref output) => {
-            let annotation = tool_output_annotation(output, tool);
+            let annotation = tool_output_annotation(output, kind);
             (summary.to_owned(), 0, reconstructed, annotation)
         }
         None => {
             let result = result_text.unwrap_or("");
             let annotation = if !result.is_empty() {
-                tool_output_annotation(&ToolOutput::Plain(result.into()), tool)
+                tool_output_annotation(&ToolOutput::Plain(result.into()), kind)
             } else {
                 None
             };
             if result.is_empty() || matches!(tool, WEBFETCH_TOOL_NAME) {
                 (summary.to_owned(), 0, None, annotation)
             } else {
-                let (max, keep) = output_limits(tool);
-                let tr = truncate_output(result, max, keep);
+                let limits = kind.output_limits();
+                let tr = truncate_output(result, limits.max_lines, limits.keep);
                 (
                     format!("{}\n{}", summary, tr.kept),
                     tr.skipped,

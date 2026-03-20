@@ -1,7 +1,7 @@
 use super::tool_display::{
-    ToolLines, append_annotation, append_right_info, assistant_style, build_batch_entry_lines,
-    build_tool_lines, done_style, error_style, format_timestamp_now, output_limits, thinking_style,
-    tool_output_annotation, truncate_to_header, user_style,
+    ToolKind, ToolLines, append_annotation, append_right_info, assistant_style,
+    build_batch_entry_lines, build_tool_lines, done_style, error_style, format_timestamp_now,
+    thinking_style, tool_output_annotation, truncate_to_header, user_style,
 };
 use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
 use crate::animation::{Typewriter, spinner_frame};
@@ -302,9 +302,9 @@ impl MessagesPanel {
             return;
         };
         let tool_name = msg.role.tool_name().unwrap_or("");
-        let (max_lines, keep) = output_limits(tool_name);
+        let limits = ToolKind::from_name(tool_name).output_limits();
         truncate_to_header(&mut msg.text);
-        let truncated = truncate_output(content, max_lines, keep);
+        let truncated = truncate_output(content, limits.max_lines, limits.keep);
         msg.truncated_lines = truncated.skipped;
         msg.text.push('\n');
         msg.text.push_str(&truncated.kept);
@@ -334,7 +334,8 @@ impl MessagesPanel {
             };
         }
         truncate_to_header(&mut msg.text);
-        let done_annotation = tool_output_annotation(&event.output, event.tool);
+        let done_annotation =
+            tool_output_annotation(&event.output, ToolKind::from_name(event.tool));
         if let Some(suffix) = &done_annotation {
             append_annotation(&mut msg.annotation, suffix);
         }
@@ -342,8 +343,8 @@ impl MessagesPanel {
         match &event.output {
             ToolOutput::Plain(text) | ToolOutput::ReadDir { text, .. } => {
                 if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
-                    let (max, keep) = output_limits(event.tool);
-                    let tr = truncate_output(text, max, keep);
+                    let limits = ToolKind::from_name(event.tool).output_limits();
+                    let tr = truncate_output(text, limits.max_lines, limits.keep);
                     msg.truncated_lines = tr.skipped;
                     if !tr.kept.is_empty() {
                         msg.text = format!("{}\n{}", msg.text, tr.kept);
@@ -359,8 +360,8 @@ impl MessagesPanel {
                     msg.text = format!("{}\n{NO_FILES_FOUND}", msg.text);
                 } else {
                     let display = output.as_display_text();
-                    let (max, keep) = output_limits(event.tool);
-                    let tr = truncate_output(&display, max, keep);
+                    let limits = ToolKind::from_name(event.tool).output_limits();
+                    let tr = truncate_output(&display, limits.max_lines, limits.keep);
                     msg.truncated_lines = tr.skipped;
                     msg.text = format!("{}\n{}", msg.text, tr.kept);
                 }
