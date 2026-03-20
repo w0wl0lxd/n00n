@@ -701,7 +701,11 @@ fn subagent_done_marker_on_task_success() {
 #[test_case(|app: &mut App| finish_subagent_task(app, true), ERROR_TEXT,     &DisplayRole::Error ; "task_failure")]
 #[test_case(cancel_app as fn(&mut App),                      CANCELLED_TEXT, &DisplayRole::Error ; "cancel")]
 #[test_case(error_app  as fn(&mut App),                      ERROR_TEXT,     &DisplayRole::Error ; "main_error")]
-fn subagent_error_marker(terminate: fn(&mut App), expected_text: &str, expected_role: &DisplayRole) {
+fn subagent_error_marker(
+    terminate: fn(&mut App),
+    expected_text: &str,
+    expected_role: &DisplayRole,
+) {
     let mut app = app_with_subagent();
     terminate(&mut app);
     assert_eq!(app.chats[1].last_message_text(), expected_text);
@@ -1111,6 +1115,13 @@ fn double_esc_idle_no_user_turns_flashes_error() {
 #[test]
 fn edge_scroll_makes_app_animating() {
     let mut app = test_app();
+    app.run_id = 1;
+    app.update(agent_msg(AgentEvent::TextDelta { text: "x".into() }));
+    app.update(agent_msg(AgentEvent::Done {
+        usage: TokenUsage::default(),
+        num_turns: 1,
+        stop_reason: None,
+    }));
     assert!(!app.is_animating());
     set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
     app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
