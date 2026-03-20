@@ -27,9 +27,9 @@ pub(crate) struct ShellPrefix {
 }
 
 pub(crate) fn parse_shell_prefix(text: &str) -> Option<ShellPrefix> {
-    let (sigil_len, visible) = if text.starts_with("$$") {
+    let (sigil_len, visible) = if text.starts_with("!!") {
         (2, false)
-    } else if text.starts_with('$') {
+    } else if text.starts_with('!') {
         (1, true)
     } else {
         return None;
@@ -362,19 +362,19 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case("$ ls",                     Some(ShellPrefix { prefix_len: 2, command: "ls".into(), visible: true })           ; "simple_visible")]
-    #[test_case("$$ ls",                    Some(ShellPrefix { prefix_len: 3, command: "ls".into(), visible: false })          ; "simple_anonymous")]
-    #[test_case("$ cargo test --release",   Some(ShellPrefix { prefix_len: 2, command: "cargo test --release".into(), visible: true })  ; "multi_word_command")]
-    #[test_case("$$ cargo build",           Some(ShellPrefix { prefix_len: 3, command: "cargo build".into(), visible: false }) ; "multi_word_anonymous")]
-    #[test_case("$ ",                       None                        ; "dollar_space_only")]
-    #[test_case("$",                        None                        ; "dollar_alone")]
-    #[test_case("$$",                       None                        ; "double_dollar_alone")]
-    #[test_case("$$ ",                      None                        ; "double_dollar_space_only")]
-    #[test_case("hello $ world",            None                        ; "dollar_mid_string")]
-    #[test_case(" $ ls",                    None                        ; "leading_space")]
-    #[test_case("$echo hi",                 Some(ShellPrefix { prefix_len: 1, command: "echo hi".into(), visible: true })      ; "no_space_after_dollar")]
-    #[test_case("$$echo hi",                Some(ShellPrefix { prefix_len: 2, command: "echo hi".into(), visible: false })     ; "no_space_after_double_dollar")]
-    #[test_case("$  ls",                    Some(ShellPrefix { prefix_len: 2, command: "ls".into(), visible: true })           ; "extra_spaces_trimmed")]
+    #[test_case("! ls",                     Some(ShellPrefix { prefix_len: 2, command: "ls".into(), visible: true })           ; "simple_visible")]
+    #[test_case("!! ls",                    Some(ShellPrefix { prefix_len: 3, command: "ls".into(), visible: false })          ; "simple_anonymous")]
+    #[test_case("! cargo test --release",   Some(ShellPrefix { prefix_len: 2, command: "cargo test --release".into(), visible: true })  ; "multi_word_command")]
+    #[test_case("!! cargo build",           Some(ShellPrefix { prefix_len: 3, command: "cargo build".into(), visible: false }) ; "multi_word_anonymous")]
+    #[test_case("! ",                       None                        ; "bang_space_only")]
+    #[test_case("!",                        None                        ; "bang_alone")]
+    #[test_case("!!",                       None                        ; "double_bang_alone")]
+    #[test_case("!! ",                      None                        ; "double_bang_space_only")]
+    #[test_case("hello ! world",            None                        ; "bang_mid_string")]
+    #[test_case(" ! ls",                    None                        ; "leading_space")]
+    #[test_case("!echo hi",                 Some(ShellPrefix { prefix_len: 1, command: "echo hi".into(), visible: true })      ; "no_space_after_bang")]
+    #[test_case("!!echo hi",                Some(ShellPrefix { prefix_len: 2, command: "echo hi".into(), visible: false })     ; "no_space_after_double_bang")]
+    #[test_case("!  ls",                    Some(ShellPrefix { prefix_len: 2, command: "ls".into(), visible: true })           ; "extra_spaces_trimmed")]
     fn parse_shell_prefix_cases(input: &str, expected: Option<ShellPrefix>) {
         assert_eq!(parse_shell_prefix(input), expected);
     }

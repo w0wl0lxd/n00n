@@ -569,7 +569,7 @@ impl App {
 
         if let Some(prefix) = shell::parse_shell_prefix(&sub.text) {
             let id = self.shell.next_id();
-            let sigil = if prefix.visible { "$" } else { "$$" };
+            let sigil = if prefix.visible { "!" } else { "!!" };
             let display = format!("{sigil} {}", prefix.command);
             self.main_chat().flush();
             self.main_chat().push_user_message(&display);
