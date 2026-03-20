@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::iter;
 use std::mem;
 
@@ -15,6 +16,7 @@ const BULLET: &str = "• ";
 const HR_CHAR: char = '─';
 const LIST_INDENT: &str = "  ";
 const MIN_COL_WIDTH: usize = 5;
+const MAX_LINE_CHARS: usize = 500;
 
 fn fit_width(text: &str, max_width: usize) -> usize {
     let mut width = 0;
@@ -1200,6 +1202,42 @@ pub fn text_to_lines<'a>(
     lines
 }
 
+fn truncate_long_lines(text: &str) -> Cow<'_, str> {
+    if !text.lines().any(|l| l.len() > MAX_LINE_CHARS) {
+        return Cow::Borrowed(text);
+    }
+    let mut result = String::with_capacity(text.len());
+    for (i, line) in text.lines().enumerate() {
+        if i > 0 {
+            result.push('\n');
+        }
+        if line.len() > MAX_LINE_CHARS {
+            let boundary = line.floor_char_boundary(MAX_LINE_CHARS);
+            result.push_str(&line[..boundary]);
+            result.push_str("...");
+        } else {
+            result.push_str(line);
+        }
+    }
+    if text.ends_with('\n') {
+        result.push('\n');
+    }
+    Cow::Owned(result)
+}
+
+pub struct TruncatedOutput<'a> {
+    pub kept: Cow<'a, str>,
+    pub skipped: usize,
+}
+
+pub fn truncate_output(text: &str, max: usize, keep: Keep) -> TruncatedOutput<'_> {
+    let tr = truncate_lines(text, max, keep);
+    TruncatedOutput {
+        kept: truncate_long_lines(tr.kept),
+        skipped: tr.skipped,
+    }
+}
+
 pub fn truncate_lines(s: &str, max: usize, keep: Keep) -> Truncated<'_> {
     let split = match keep {
         Keep::Head => s.match_indices('\n').nth(max.saturating_sub(1)),
@@ -2370,5 +2408,52 @@ mod tests {
                 "persistent width shrank at col {i}: {old} -> {new}"
             );
         }
+    }
+
+    #[test_case("short\nlines\n", "short\nlines\n" ; "short_text_unchanged")]
+    #[test_case(&"a".repeat(MAX_LINE_CHARS), &"a".repeat(MAX_LINE_CHARS) ; "exactly_at_limit_unchanged")]
+    #[test_case(&"a".repeat(MAX_LINE_CHARS + 1), &format!("{}...", "a".repeat(MAX_LINE_CHARS)) ; "one_over_limit_truncated")]
+    fn truncate_long_lines_cases(input: &str, expected: &str) {
+        assert_eq!(&*truncate_long_lines(input), expected);
+    }
+
+    #[test]
+    fn truncate_long_lines_multibyte_boundary() {
+        let mut line = "a".repeat(MAX_LINE_CHARS - 1);
+        line.push('\u{00e9}');
+        let result = truncate_long_lines(&line);
+        assert!(result.ends_with("..."));
+        assert!(!result.contains('\u{00e9}'));
+    }
+
+    #[test]
+    fn truncate_long_lines_mixed_only_long_truncated() {
+        let long = "x".repeat(MAX_LINE_CHARS + 50);
+        let input = format!("short\n{long}\nshort");
+        let result = truncate_long_lines(&input);
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "short");
+        assert!(lines[1].len() <= MAX_LINE_CHARS + 3);
+        assert!(lines[1].ends_with("..."));
+        assert_eq!(lines[2], "short");
+    }
+
+    #[test_case(&format!("{}\n", "z".repeat(MAX_LINE_CHARS + 10)), true ; "preserves_trailing_newline")]
+    #[test_case(&"z".repeat(MAX_LINE_CHARS + 10), false ; "no_trailing_newline_when_absent")]
+    fn truncate_long_lines_trailing_newline(input: &str, expect_trailing: bool) {
+        assert_eq!(truncate_long_lines(input).ends_with('\n'), expect_trailing);
+    }
+
+    #[test]
+    fn truncate_output_line_count_and_long_lines() {
+        let long = "y".repeat(MAX_LINE_CHARS + 50);
+        let input = format!("a\n{long}\nc\nd\ne");
+        let result = truncate_output(&input, 3, Keep::Head);
+        assert_eq!(result.skipped, 2);
+        let kept_lines: Vec<&str> = result.kept.lines().collect();
+        assert_eq!(kept_lines.len(), 3);
+        assert!(kept_lines[1].ends_with("..."));
+        assert!(kept_lines[1].len() <= MAX_LINE_CHARS + 3);
     }
 }

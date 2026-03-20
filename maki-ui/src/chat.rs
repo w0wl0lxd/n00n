@@ -8,7 +8,7 @@ use std::path::Path;
 use crate::components::messages::MessagesPanel;
 use crate::components::tool_display::{append_annotation, output_limits, tool_output_annotation};
 use crate::components::{DisplayMessage, DisplayRole, ToolStatus};
-use crate::markdown::truncate_lines;
+use crate::markdown::truncate_output;
 
 use crate::selection::Selection;
 use maki_agent::tools::{ToolCall, WEBFETCH_TOOL_NAME};
@@ -348,7 +348,7 @@ fn build_loaded_tool(
             } else {
                 let display = output.as_display_text();
                 let (max, keep) = output_limits(tool);
-                let tr = truncate_lines(&display, max, keep);
+                let tr = truncate_output(&display, max, keep);
                 format!("{}\n{}", summary, tr.kept)
             };
             (text, 0, reconstructed, annotation)
@@ -385,7 +385,7 @@ fn build_loaded_tool(
                 (summary.to_owned(), 0, None, annotation)
             } else {
                 let (max, keep) = output_limits(tool);
-                let tr = truncate_lines(result, max, keep);
+                let tr = truncate_output(result, max, keep);
                 (
                     format!("{}\n{}", summary, tr.kept),
                     tr.skipped,

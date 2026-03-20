@@ -8,7 +8,7 @@ use crate::animation::{Typewriter, spinner_frame};
 use crate::highlight::CodeHighlighter;
 use crate::markdown::{
     RenderCtx, RenderState, finalize_lines, hr_line, parse_blocks, plain_lines, render_block,
-    text_to_lines, truncate_lines,
+    text_to_lines, truncate_output,
 };
 use crate::render_worker::RenderWorker;
 use crate::selection::{self, LineBreaks, ScreenSelection, Selection};
@@ -304,10 +304,10 @@ impl MessagesPanel {
         let tool_name = msg.role.tool_name().unwrap_or("");
         let (max_lines, keep) = output_limits(tool_name);
         truncate_to_header(&mut msg.text);
-        let truncated = truncate_lines(content, max_lines, keep);
+        let truncated = truncate_output(content, max_lines, keep);
         msg.truncated_lines = truncated.skipped;
         msg.text.push('\n');
-        msg.text.push_str(truncated.kept);
+        msg.text.push_str(&truncated.kept);
         self.rebuild_tool_segment(tool_id);
     }
 
@@ -343,14 +343,10 @@ impl MessagesPanel {
             ToolOutput::Plain(text) | ToolOutput::ReadDir { text, .. } => {
                 if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
                     let (max, keep) = output_limits(event.tool);
-                    let tr = truncate_lines(text, max, keep);
+                    let tr = truncate_output(text, max, keep);
                     msg.truncated_lines = tr.skipped;
                     if !tr.kept.is_empty() {
-                        msg.text = format!(
-                            "{}
-{}",
-                            msg.text, tr.kept
-                        );
+                        msg.text = format!("{}\n{}", msg.text, tr.kept);
                     }
                 }
             }
@@ -364,7 +360,7 @@ impl MessagesPanel {
                 } else {
                     let display = output.as_display_text();
                     let (max, keep) = output_limits(event.tool);
-                    let tr = truncate_lines(&display, max, keep);
+                    let tr = truncate_output(&display, max, keep);
                     msg.truncated_lines = tr.skipped;
                     msg.text = format!("{}\n{}", msg.text, tr.kept);
                 }

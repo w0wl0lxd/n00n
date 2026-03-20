@@ -15,7 +15,7 @@ use maki_providers::{ModelPricing, TokenUsage};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
-use crate::markdown::{Keep, text_to_lines, truncate_lines, truncation_notice};
+use crate::markdown::{Keep, text_to_lines, truncate_output, truncation_notice};
 use maki_agent::tools::{
     BASH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME,
     INDEX_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, WEBFETCH_TOOL_NAME,
@@ -445,8 +445,8 @@ impl ToolLineBuilder {
                     };
                     if let Some(text) = text {
                         let (max, keep) = output_limits(tool);
-                        let tr = truncate_lines(text, max, keep);
-                        self.push_markdown_body(tr.kept);
+                        let tr = truncate_output(text, max, keep);
+                        self.push_markdown_body(&tr.kept);
                         let skipped = if tr.skipped > 0 {
                             tr.skipped
                         } else {
@@ -459,8 +459,8 @@ impl ToolLineBuilder {
                 if tool == INDEX_TOOL_NAME {
                     if let Some(ToolOutput::Plain(text)) = output {
                         let (max, keep) = output_limits(tool);
-                        let tr = truncate_lines(text, max, keep);
-                        self.push_index_body(tr.kept);
+                        let tr = truncate_output(text, max, keep);
+                        self.push_index_body(&tr.kept);
                         self.push_truncation_count(tr.skipped);
                     } else if let Some(text) = body {
                         self.push_index_body(text);
@@ -583,16 +583,16 @@ impl ToolLineBuilder {
             None => {}
             Some(ToolOutput::Plain(text)) => {
                 let (max, keep) = output_limits(tool);
-                let tr = truncate_lines(text, max, keep);
+                let tr = truncate_output(text, max, keep);
                 if matches!(keep, Keep::Tail) {
                     self.push_truncation_count(tr.skipped);
                 }
                 if renders_markdown(tool) {
-                    self.push_markdown_body(tr.kept);
+                    self.push_markdown_body(&tr.kept);
                 } else if tool == INDEX_TOOL_NAME {
-                    self.push_index_body(tr.kept);
+                    self.push_index_body(&tr.kept);
                 } else {
-                    push_text_lines(&mut self.lines, tr.kept, TOOL_BODY_INDENT);
+                    push_text_lines(&mut self.lines, &tr.kept, TOOL_BODY_INDENT);
                 }
                 if matches!(keep, Keep::Head) {
                     self.push_truncation_count(tr.skipped);
@@ -601,14 +601,14 @@ impl ToolLineBuilder {
             Some(ToolOutput::GlobResult { .. }) => {
                 let text = output.unwrap().as_display_text();
                 let (max, keep) = output_limits(tool);
-                let tr = truncate_lines(&text, max, keep);
-                push_text_lines(&mut self.lines, tr.kept, TOOL_BODY_INDENT);
+                let tr = truncate_output(&text, max, keep);
+                push_text_lines(&mut self.lines, &tr.kept, TOOL_BODY_INDENT);
                 self.push_truncation_count(tr.skipped);
             }
             Some(ToolOutput::ReadDir { text, instructions }) => {
                 let (max, keep) = output_limits(tool);
-                let tr = truncate_lines(text, max, keep);
-                push_text_lines(&mut self.lines, tr.kept, TOOL_BODY_INDENT);
+                let tr = truncate_output(text, max, keep);
+                push_text_lines(&mut self.lines, &tr.kept, TOOL_BODY_INDENT);
                 self.push_truncation_count(tr.skipped);
                 self.maybe_push_instructions(instructions.as_deref());
             }
