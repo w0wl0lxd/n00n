@@ -71,6 +71,8 @@ impl PlanState {
     pub(crate) fn pending_plan(&self) -> Option<&Path> {
         if self.written { self.path() } else { None }
     }
+
+
 }
 
 impl App {

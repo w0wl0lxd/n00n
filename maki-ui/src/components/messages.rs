@@ -1119,6 +1119,10 @@ impl MessagesPanel {
                         pp.to_owned(),
                         theme::current().plan_path,
                     )));
+                    lines.push(Line::from(Span::styled(
+                        "Ctrl+O to open in editor ($VISUAL / $EDITOR)",
+                        theme::current().tool_dim,
+                    )));
                 }
 
                 let copy_text = format!("{prefix}{}", msg.text);

@@ -60,6 +60,7 @@ const FLASH_CANCEL: &str = "Press esc again to stop...";
 const FLASH_REWIND: &str = "Press esc again to rewind...";
 const AUTH_EXPIRED_MSG: &str =
     "Token expired. Run `maki auth login` in another terminal, then press Enter to retry.";
+const FLASH_NO_PLAN: &str = "No plan file";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PendingInput {
@@ -453,6 +454,14 @@ impl App {
                 }
             } else if key::HELP.matches(key) {
                 self.help_modal.toggle();
+            } else if key::OPEN_EDITOR.matches(key) {
+                return match self.plan.pending_plan() {
+                    Some(p) => vec![Action::OpenEditor(p.to_path_buf())],
+                    None => {
+                        self.flash(FLASH_NO_PLAN.into());
+                        vec![]
+                    }
+                };
             } else if key::SEARCH.matches(key) {
                 let top = self.chats[self.active_chat].scroll_top();
                 let auto = self.chats[self.active_chat].auto_scroll();

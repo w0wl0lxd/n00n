@@ -45,6 +45,7 @@ pub mod key {
     pub const POP_QUEUE: Bind = Bind::ctrl('q');
     pub const DELETE_WORD: Bind = Bind::ctrl('w');
     pub const SEARCH: Bind = Bind::ctrl('f');
+    pub const OPEN_EDITOR: Bind = Bind::ctrl('o');
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +124,11 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         key: "Ctrl+F",
         description: "Search messages",
+        context: KeybindContext::General,
+    },
+    Keybind {
+        key: "Ctrl+O",
+        description: "Open plan in editor",
         context: KeybindContext::General,
     },
     Keybind {

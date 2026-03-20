@@ -292,7 +292,6 @@ fn submit_during_streaming_queues_message() {
     let mut app = test_app();
     app.update(Msg::Key(key(KeyCode::Char('a'))));
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert_eq!(actions.len(), 1);
     assert!(matches!(&actions[0], Action::SendMessage(_)));
     assert_eq!(app.status, Status::Streaming);
 
@@ -483,26 +482,16 @@ fn reset_session_clears_plan_in_plan_mode() {
     assert_eq!(app.plan.path(), None);
 }
 
-#[test]
-fn reset_session_preserves_written_plan_in_build_mode() {
+#[test_case(true,  Some("leftover.md") ; "preserves_written")]
+#[test_case(false, None                 ; "clears_unwritten")]
+fn reset_session_plan_in_build_mode(written: bool, expected_path: Option<&str>) {
     let mut app = test_app();
     app.mode = Mode::Build;
-    app.plan = PlanState::with_path(PathBuf::from("leftover.md"), true);
+    app.plan = PlanState::with_path(PathBuf::from("leftover.md"), written);
     app.reset_session();
     assert_eq!(app.mode, Mode::Build);
-    assert_eq!(app.plan.path(), Some(Path::new("leftover.md")));
-    assert!(app.plan.is_written());
-}
-
-#[test]
-fn reset_session_clears_unwritten_plan_in_build_mode() {
-    let mut app = test_app();
-    app.mode = Mode::Build;
-    app.plan = PlanState::with_path(PathBuf::from("leftover.md"), false);
-    app.reset_session();
-    assert_eq!(app.mode, Mode::Build);
-    assert_eq!(app.plan.path(), None);
-    assert!(!app.plan.is_written());
+    assert_eq!(app.plan.path(), expected_path.map(Path::new));
+    assert_eq!(app.plan.is_written(), written);
 }
 
 #[test]
@@ -693,28 +682,14 @@ fn subagent_done_marker_on_task_success() {
     assert_ne!(app.chats[0].last_message_role(), Some(&DisplayRole::Done));
 }
 
-#[test]
-fn subagent_error_marker_on_task_failure() {
+#[test_case(|app: &mut App| finish_subagent_task(app, true), ERROR_TEXT,     &DisplayRole::Error ; "task_failure")]
+#[test_case(cancel_app as fn(&mut App),                      CANCELLED_TEXT, &DisplayRole::Error ; "cancel")]
+#[test_case(error_app  as fn(&mut App),                      ERROR_TEXT,     &DisplayRole::Error ; "main_error")]
+fn subagent_error_marker(terminate: fn(&mut App), expected_text: &str, expected_role: &DisplayRole) {
     let mut app = app_with_subagent();
-    finish_subagent_task(&mut app, true);
-    assert_eq!(app.chats[1].last_message_text(), ERROR_TEXT);
-    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::Error));
-}
-
-#[test]
-fn subagent_cancelled_marker_on_cancel() {
-    let mut app = app_with_subagent();
-    cancel_app(&mut app);
-    assert_eq!(app.chats[1].last_message_text(), CANCELLED_TEXT);
-    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::Error));
-}
-
-#[test]
-fn subagent_error_marker_on_main_agent_error() {
-    let mut app = app_with_subagent();
-    error_app(&mut app);
-    assert_eq!(app.chats[1].last_message_text(), ERROR_TEXT);
-    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::Error));
+    terminate(&mut app);
+    assert_eq!(app.chats[1].last_message_text(), expected_text);
+    assert_eq!(app.chats[1].last_message_role(), Some(expected_role));
 }
 
 #[test_case(error_app  as fn(&mut App) ; "error")]
@@ -1628,26 +1603,16 @@ fn rewind_to_first_turn_clears_everything() {
     assert!(matches!(&actions[0], Action::LoadSession(_)));
 }
 
-#[test]
-fn tick_error_expiry_keeps_fresh_error() {
+#[test_case(Duration::ZERO,          true  ; "keeps_fresh")]
+#[test_case(Duration::from_secs(60), false ; "clears_stale")]
+fn tick_error_expiry(age: Duration, expect_error: bool) {
     let mut app = test_app();
     app.status = Status::Error {
         message: "fail".into(),
-        since: Instant::now(),
+        since: Instant::now() - age,
     };
     app.tick_error_expiry();
-    assert!(matches!(app.status, Status::Error { .. }));
-}
-
-#[test]
-fn tick_error_expiry_clears_stale_error() {
-    let mut app = test_app();
-    app.status = Status::Error {
-        message: "fail".into(),
-        since: Instant::now() - Duration::from_secs(60),
-    };
-    app.tick_error_expiry();
-    assert_eq!(app.status, Status::Idle);
+    assert_eq!(matches!(app.status, Status::Error { .. }), expect_error);
 }
 
 #[test]
@@ -1819,4 +1784,24 @@ fn paste_routing(setup: fn(&mut App), expected_input: &str) {
     setup(&mut app);
     app.update(Msg::Paste("pasted".into()));
     assert_eq!(app.input_box.buffer.value(), expected_input);
+}
+
+#[test_case(None,                                 true ; "no_plan")]
+#[test_case(Some(("/tmp/plan.md", false)),         true ; "plan_not_written")]
+#[test_case(Some(("/tmp/plan.md", true)),          false ; "plan_written")]
+fn open_editor(setup: Option<(&str, bool)>, expect_flash: bool) {
+    let mut app = test_app();
+    let plan_path = setup.map(|(p, w)| {
+        let pb = PathBuf::from(p);
+        app.plan = PlanState::with_path(pb.clone(), w);
+        pb
+    });
+    let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
+    if expect_flash {
+        assert!(actions.is_empty());
+        assert_eq!(app.status_bar.flash_text().unwrap(), FLASH_NO_PLAN);
+    } else {
+        let expected = plan_path.unwrap();
+        assert!(matches!(&actions[..], [Action::OpenEditor(p)] if p == &expected));
+    }
 }

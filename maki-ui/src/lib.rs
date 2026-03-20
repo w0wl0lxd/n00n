@@ -22,7 +22,7 @@ mod theme;
 use std::collections::HashMap;
 use std::io::stdout;
 use std::mem;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -223,6 +223,7 @@ fn run_event_loop(
                 &mut app,
                 config,
                 &shell_tx,
+                terminal,
             );
         }
 
@@ -267,6 +268,7 @@ fn run_event_loop(
                                 &mut app,
                                 config,
                                 &shell_tx,
+                                terminal,
                             );
                             extra
                         } else {
@@ -284,6 +286,7 @@ fn run_event_loop(
                             &mut app,
                             config,
                             &shell_tx,
+                            terminal,
                         );
                         if let Some(extra) = extra {
                             extra
@@ -304,6 +307,7 @@ fn run_event_loop(
                 &mut app,
                 config,
                 &shell_tx,
+                terminal,
             );
         }
     }
@@ -603,6 +607,7 @@ fn dispatch(
     app: &mut App,
     config: AgentConfig,
     shell_tx: &flume::Sender<ShellEvent>,
+    terminal: &mut ratatui::DefaultTerminal,
 ) {
     for action in actions {
         match action {
@@ -658,8 +663,55 @@ fn dispatch(
                 app.shell.add_trigger(trigger);
                 spawn_shell(command, id, visible, shell_tx.clone(), cancel);
             }
+            Action::OpenEditor(path) => {
+                if let Err(e) = open_in_editor(&path, terminal) {
+                    app.flash(e);
+                }
+            }
             Action::Quit => {}
         }
+    }
+}
+
+fn suspend_terminal() {
+    terminal::disable_raw_mode().ok();
+    stdout().execute(DisableMouseCapture).ok();
+    stdout().execute(event::DisableBracketedPaste).ok();
+    stdout().execute(LeaveAlternateScreen).ok();
+}
+
+fn resume_terminal(terminal: &mut ratatui::DefaultTerminal) {
+    stdout().execute(EnterAlternateScreen).ok();
+    stdout().execute(EnableBracketedPaste).ok();
+    stdout().execute(EnableMouseCapture).ok();
+    terminal::enable_raw_mode().ok();
+    let _ = terminal.clear();
+}
+
+fn open_in_editor(path: &Path, terminal: &mut ratatui::DefaultTerminal) -> Result<(), String> {
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .map_err(|_| "Set $VISUAL or $EDITOR to open files".to_string())?;
+
+    suspend_terminal();
+
+    let result = std::process::Command::new(&editor)
+        .arg(path)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status();
+
+    resume_terminal(terminal);
+
+    match result {
+        Ok(status) if !status.success() => Err(format!(
+            "{editor} exited with {status} - set $VISUAL or $EDITOR"
+        )),
+        Err(e) => Err(format!(
+            "Failed to open {editor}: {e} - set $VISUAL or $EDITOR"
+        )),
+        Ok(_) => Ok(()),
     }
 }
 

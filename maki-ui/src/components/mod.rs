@@ -53,6 +53,8 @@ pub struct LoadedSession {
     pub tool_outputs: HashMap<String, ToolOutput>,
 }
 
+use std::path::PathBuf;
+
 pub enum Action {
     SendMessage(AgentInput),
     ShellCommand {
@@ -66,6 +68,7 @@ pub enum Action {
     ChangeModel(String),
     Compact,
     ToggleMcp(String, bool),
+    OpenEditor(PathBuf),
     Quit,
 }
 
