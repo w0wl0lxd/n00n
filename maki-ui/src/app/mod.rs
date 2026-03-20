@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use crate::AppSession;
 use crate::chat::Chat;
 use crate::chat::{CANCELLED_TEXT, ChatEventResult, DONE_TEXT, ERROR_TEXT};
-use crate::components::command::{CommandAction, CommandPalette, ParsedCommand, parse_command};
+use crate::components::command::{CommandAction, CommandPalette, ParsedCommand};
 use crate::components::help_modal::HelpModal;
 use crate::components::input::{InputAction, InputBox, Submission};
 use crate::components::keybindings::key;
@@ -416,7 +416,7 @@ impl App {
                 return if self.input_box.buffer.value().trim().is_empty() {
                     self.quit()
                 } else {
-                    self.input_box.buffer.clear();
+                    self.input_box.discard();
                     vec![]
                 };
             }
@@ -549,18 +549,7 @@ impl App {
         if sub.text.trim() == "exit" {
             return self.quit();
         }
-        if sub.text.starts_with('/') {
-            return match parse_command(&sub.text) {
-                Some(cmd) => self.execute_command(cmd),
-                None => {
-                    self.flash(format!(
-                        "Unknown command: {}",
-                        sub.text.split_whitespace().next().unwrap_or(&sub.text)
-                    ));
-                    vec![]
-                }
-            };
-        }
+
         if let Some(prefix) = shell::parse_shell_prefix(&sub.text) {
             let id = self.shell.next_id();
             let sigil = if prefix.visible { "$" } else { "$$" };
@@ -738,7 +727,7 @@ impl App {
     }
 
     fn execute_command(&mut self, cmd: ParsedCommand) -> Vec<Action> {
-        self.input_box.buffer.clear();
+        self.input_box.discard();
         match cmd.name {
             "/tasks" => {
                 let names: Vec<String> = self.chats.iter().map(|c| c.name.clone()).collect();

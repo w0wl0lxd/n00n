@@ -1549,15 +1549,11 @@ fn typed_slash_command_executes() {
 }
 
 #[test]
-fn typed_unknown_command_flashes_error() {
+fn slash_noncommand_sends_as_prompt() {
     let mut app = test_app();
-    type_and_submit(&mut app, "/nonexistent");
-    assert!(
-        app.status_bar
-            .flash_text()
-            .unwrap()
-            .contains("/nonexistent")
-    );
+    let actions = type_and_submit(&mut app, "/nonexistent");
+    assert!(app.status_bar.flash_text().is_none());
+    assert!(actions.iter().any(|a| matches!(a, Action::SendMessage(..))));
 }
 
 fn build_rewind_app() -> App {

@@ -186,11 +186,16 @@ impl InputBox {
             return None;
         }
         self.history.push(text.clone());
+        self.discard();
+        Some(Submission { text, images })
+    }
+
+    pub fn discard(&mut self) {
+        self.pending_images.clear();
         self.history_index = None;
         self.draft.clear();
         self.buffer.clear();
         self.scroll_y = 0;
-        Some(Submission { text, images })
     }
 
     pub fn attach_image(&mut self, source: ImageSource) {

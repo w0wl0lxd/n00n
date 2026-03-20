@@ -76,7 +76,8 @@ pub struct ParsedCommand {
     pub args: String,
 }
 
-pub fn parse_command(input: &str) -> Option<ParsedCommand> {
+#[cfg(test)]
+fn parse_command(input: &str) -> Option<ParsedCommand> {
     let stripped = input.strip_prefix('/')?;
     let (cmd_word, args) = match stripped.split_once(char::is_whitespace) {
         Some((c, a)) => (c, a.trim()),
