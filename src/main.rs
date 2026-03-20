@@ -2,6 +2,7 @@ mod print;
 
 use std::env;
 use std::path::Path;
+use std::sync::Mutex;
 
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
@@ -15,7 +16,7 @@ use tracing_subscriber::EnvFilter;
 use maki_providers::model::{DEFAULT_SPEC, Model};
 use maki_providers::provider::fetch_all_models;
 use maki_providers::{anthropic_auth, openai_auth};
-use maki_storage::log as storage_log;
+use maki_storage::log::RotatingFileWriter;
 use maki_storage::model::read_model;
 use print::OutputFormat;
 
@@ -247,18 +248,14 @@ fn resolve_model(explicit: Option<&str>, storage: &DataDir) -> Result<Model> {
 }
 
 fn init_logging(storage: &DataDir) {
-    let log_path = storage_log::log_path(storage);
-    let Some(log_dir) = log_path.parent() else {
+    let Ok(writer) = RotatingFileWriter::new(storage) else {
         return;
     };
-    let Some(log_file) = log_path.file_name() else {
-        return;
-    };
-    let file_appender = tracing_appender::rolling::never(log_dir, log_file);
+    let writer = Mutex::new(writer);
     let filter = EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(filter)
-        .with_writer(file_appender)
+        .with_writer(writer)
         .init();
 }

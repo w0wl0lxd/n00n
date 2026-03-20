@@ -23,7 +23,6 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-tracing-appender = { workspace = true }
 smol = { workspace = true }
 flume = { workspace = true }
 
@@ -51,7 +50,6 @@ color-eyre = { version = "0.6", default-features = false, features = ["track-cal
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "json"] }
-tracing-appender = "0.2"
 clap = { version = "4", features = ["derive"] }
 sha2 = { version = "0.10", default-features = false }
 base64 = "0.22"
