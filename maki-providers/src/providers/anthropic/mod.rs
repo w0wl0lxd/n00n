@@ -332,8 +332,7 @@ impl Anthropic {
                     Ok(auth::build_oauth_resolved(&fresh))
                 }
                 Err(e) => {
-                    warn!(error = %e, "OAuth refresh failed, clearing stale tokens");
-                    let _ = maki_storage::auth::delete_tokens(&storage, auth::PROVIDER);
+                    warn!(error = %e, "OAuth token refresh failed, keeping tokens on disk");
                     Err(e)
                 }
             }

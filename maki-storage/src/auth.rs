@@ -24,6 +24,10 @@ impl OAuthTokens {
     pub fn is_expired(&self) -> bool {
         now_millis() + REFRESH_BUFFER_SECS * 1000 >= self.expires
     }
+
+    pub fn is_hard_expired(&self) -> bool {
+        now_millis() >= self.expires
+    }
 }
 
 pub fn now_millis() -> u64 {

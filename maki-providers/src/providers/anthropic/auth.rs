@@ -187,8 +187,11 @@ pub fn resolve(dir: &DataDir) -> Result<(ResolvedAuth, AuthKind), AgentError> {
                 return Ok((build_oauth_resolved(&fresh), AuthKind::OAuth));
             }
             Err(e) => {
-                warn!(error = %e, "OAuth refresh failed, clearing stale tokens");
-                delete_tokens(dir, PROVIDER).ok();
+                warn!(error = %e, "OAuth token refresh failed, keeping tokens on disk");
+                if !tokens.is_hard_expired() {
+                    debug!("access token not yet expired, using existing token");
+                    return Ok((build_oauth_resolved(&tokens), AuthKind::OAuth));
+                }
             }
         }
     }
