@@ -783,6 +783,7 @@ impl App {
                 let names: Vec<String> = self.chats.iter().map(|c| c.name.clone()).collect();
                 self.task_picker_original = Some(self.active_chat);
                 self.task_picker.open(names, " Tasks ");
+                self.task_picker.select(self.active_chat);
                 vec![]
             }
             "/compact" => {
