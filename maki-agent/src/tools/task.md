@@ -1,4 +1,4 @@
-Launch an autonomous subagent to perform tasks independently.
+Launch an autonomous subagent to perform tasks independently. Best combined with batch.
 
 Subagent types (set via `subagent_type`):
 - `research` (default): Read-only tools. For codebase exploration or gathering context.

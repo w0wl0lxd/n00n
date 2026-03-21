@@ -1,4 +1,4 @@
-Fetch a URL and return its contents.
+Fetch a URL and return its contents. Best inside code_execution.
 
 - Supports markdown (default), text, or html output formats.
 - HTTP URLs are auto-upgraded to HTTPS.

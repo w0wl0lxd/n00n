@@ -1,4 +1,4 @@
-Search the web for real-time information using Exa AI.
+Search the web for real-time information using Exa AI. Best inside code_execution.
 
 Today's date is {date}.
 

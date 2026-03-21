@@ -1,8 +1,6 @@
 Executes multiple independent tool calls concurrently to reduce round-trips.
 
-ALWAYS USE BATCH FOR MULTIPLE INDEPENDENT TOOL CALLS.
-
-Payload: [{"tool": "read", "parameters": {"path": "src/main.rs"}}, ...]
+ALWAYS USE THE BATCH TOOL WHEN YOU HAVE MULTIPLE INDEPENDENT TOOL CALLS. This dramatically improves performance.
 
 Rules:
 - 1-25 tool calls per batch
