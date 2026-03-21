@@ -28,6 +28,10 @@ pub(crate) const CHEVRON: &str = "❯ ";
 pub(crate) trait Overlay {
     fn is_open(&self) -> bool;
     fn close(&mut self);
+    /// Modal overlays block mouse interaction behind them.
+    fn is_modal(&self) -> bool {
+        true
+    }
 }
 
 use std::collections::HashMap;

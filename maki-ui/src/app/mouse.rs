@@ -14,7 +14,7 @@ impl App {
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(zone) = self.zone_at(event.row, event.column) {
-                    if self.any_overlay_open() && zone.zone != SelectionZone::Overlay {
+                    if self.has_modal_overlay() && zone.zone != SelectionZone::Overlay {
                         return;
                     }
                     let scroll = self.scroll_offset(zone.zone);

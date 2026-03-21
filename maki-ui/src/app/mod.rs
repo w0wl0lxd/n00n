@@ -286,7 +286,70 @@ impl App {
         }
     }
 
+    /// Ctrl shortcuts that work regardless of form/overlay state.
+    fn handle_global_ctrl(&mut self, key: KeyEvent) -> Option<Vec<Action>> {
+        if !is_ctrl(&key) {
+            return None;
+        }
+        if key::QUIT.matches(key) {
+            self.command_palette.close();
+            return Some(if self.input_box.buffer.value().trim().is_empty() {
+                self.quit()
+            } else {
+                self.input_box.discard();
+                vec![]
+            });
+        }
+        if key::PREV_CHAT.matches(key) {
+            self.active_chat = self.active_chat.saturating_sub(1);
+            #[cfg(feature = "demo")]
+            self.check_demo_questions();
+            return Some(vec![]);
+        }
+        if key::NEXT_CHAT.matches(key) {
+            self.active_chat = (self.active_chat + 1).min(self.chats.len() - 1);
+            #[cfg(feature = "demo")]
+            self.check_demo_questions();
+            return Some(vec![]);
+        }
+        if key::SCROLL_HALF_UP.matches(key) {
+            let half = self.chats[self.active_chat].half_page();
+            self.active_chat().scroll(half);
+            return Some(vec![]);
+        }
+        if key::SCROLL_HALF_DOWN.matches(key) {
+            let half = self.chats[self.active_chat].half_page();
+            self.active_chat().scroll(-half);
+            return Some(vec![]);
+        }
+        if key::SCROLL_LINE_UP.matches(key) {
+            self.active_chat().scroll(1);
+            return Some(vec![]);
+        }
+        if key::SCROLL_LINE_DOWN.matches(key) {
+            self.active_chat().scroll(-1);
+            return Some(vec![]);
+        }
+        if key::SCROLL_TOP.matches(key) {
+            self.active_chat().scroll_to_top();
+            return Some(vec![]);
+        }
+        if key::SCROLL_BOTTOM.matches(key) {
+            self.active_chat().enable_auto_scroll();
+            return Some(vec![]);
+        }
+        if key::HELP.matches(key) {
+            self.help_modal.toggle();
+            return Some(vec![]);
+        }
+        None
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        if let Some(actions) = self.handle_global_ctrl(key) {
+            return actions;
+        }
+
         if self.question_form.is_visible() {
             let action = self.question_form.handle_key(key);
             let answer = match action {
@@ -441,42 +504,8 @@ impl App {
         }
 
         if is_ctrl(&key) {
-            if key::QUIT.matches(key) {
-                self.command_palette.close();
-                return if self.input_box.buffer.value().trim().is_empty() {
-                    self.quit()
-                } else {
-                    self.input_box.discard();
-                    vec![]
-                };
-            }
-
-            if key::PREV_CHAT.matches(key) {
-                self.active_chat = self.active_chat.saturating_sub(1);
-                #[cfg(feature = "demo")]
-                self.check_demo_questions();
-            } else if key::NEXT_CHAT.matches(key) {
-                self.active_chat = (self.active_chat + 1).min(self.chats.len() - 1);
-                #[cfg(feature = "demo")]
-                self.check_demo_questions();
-            } else if key::SCROLL_HALF_UP.matches(key) {
-                let half = self.chats[self.active_chat].half_page();
-                self.active_chat().scroll(half);
-            } else if key::SCROLL_HALF_DOWN.matches(key) {
-                let half = self.chats[self.active_chat].half_page();
-                self.active_chat().scroll(-half);
-            } else if key::SCROLL_LINE_UP.matches(key) {
-                self.active_chat().scroll(1);
-            } else if key::SCROLL_LINE_DOWN.matches(key) {
-                self.active_chat().scroll(-1);
-            } else if key::SCROLL_TOP.matches(key) {
-                self.active_chat().scroll_to_top();
-            } else if key::SCROLL_BOTTOM.matches(key) {
-                self.active_chat().enable_auto_scroll();
-            } else if key::POP_QUEUE.matches(key) {
+            if key::POP_QUEUE.matches(key) {
                 self.queue.remove(0);
-            } else if key::HELP.matches(key) {
-                self.help_modal.toggle();
             } else if key::OPEN_EDITOR.matches(key) {
                 return match self.plan.pending_plan() {
                     Some(p) => vec![Action::OpenEditor(p.to_path_buf())],
@@ -891,6 +920,10 @@ impl App {
 
     pub fn any_overlay_open(&self) -> bool {
         self.overlays().iter().any(|o| o.is_open())
+    }
+
+    pub fn has_modal_overlay(&self) -> bool {
+        self.overlays().iter().any(|o| o.is_open() && o.is_modal())
     }
 
     pub fn close_all_overlays(&mut self) {

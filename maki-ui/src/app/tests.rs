@@ -801,17 +801,18 @@ fn picker_enter_stays_at_navigated() {
 }
 
 #[test]
-fn picker_swallows_ctrl_keys() {
+fn global_ctrl_shortcuts_work_with_picker_open() {
     let mut app = app_with_subagent();
+    assert_eq!(app.active_chat, 0);
 
     open_tasks_picker(&mut app);
     app.update(Msg::Key(kb::NEXT_CHAT.to_key_event()));
+    assert_eq!(app.active_chat, 1);
+
     app.update(Msg::Key(kb::PREV_CHAT.to_key_event()));
-    app.update(Msg::Key(kb::SCROLL_HALF_UP.to_key_event()));
-    app.update(Msg::Key(kb::SCROLL_HALF_DOWN.to_key_event()));
+    assert_eq!(app.active_chat, 0);
 
     assert!(app.task_picker.is_open());
-    assert_eq!(app.active_chat, 0);
 }
 
 #[test]
@@ -2005,33 +2006,19 @@ fn plan_app() -> App {
     app
 }
 
-#[test]
-fn done_in_plan_mode_with_written_plan_opens_form() {
-    let mut app = plan_app();
-    app.update(done_event());
-    assert!(app.plan_form.is_visible());
-    assert_eq!(app.status, Status::Idle);
-}
-
-#[test]
-fn done_in_plan_mode_without_written_plan_no_form() {
+#[test_case(Mode::Plan,  true,  true  ; "plan_mode_written_opens_form")]
+#[test_case(Mode::Plan,  false, false ; "plan_mode_unwritten_no_form")]
+#[test_case(Mode::Build, false, false ; "build_mode_no_form")]
+fn done_plan_form_visibility(mode: Mode, written: bool, expect_form: bool) {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
-    app.mode = Mode::Plan;
-    app.plan = PlanState::with_path(PathBuf::from("test-plan.md"), false);
+    app.mode = mode;
+    if mode == Mode::Plan {
+        app.plan = PlanState::with_path(PathBuf::from("test-plan.md"), written);
+    }
     app.update(done_event());
-    assert!(!app.plan_form.is_visible());
-}
-
-#[test]
-fn done_in_build_mode_no_form() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.mode = Mode::Build;
-    app.update(done_event());
-    assert!(!app.plan_form.is_visible());
+    assert_eq!(app.plan_form.is_visible(), expect_form);
 }
 
 #[test]

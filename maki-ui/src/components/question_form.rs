@@ -526,6 +526,10 @@ impl Overlay for QuestionForm {
         self.visible
     }
 
+    fn is_modal(&self) -> bool {
+        false
+    }
+
     fn close(&mut self) {
         self.visible = false;
         self.questions.clear();

@@ -151,6 +151,10 @@ impl Overlay for PlanForm {
         self.visible
     }
 
+    fn is_modal(&self) -> bool {
+        false
+    }
+
     fn close(&mut self) {
         self.visible = false;
     }
@@ -210,24 +214,12 @@ mod tests {
         assert_eq!(name, expected);
     }
 
-    #[test]
-    fn esc_dismisses() {
+    #[test_case(k(KeyCode::Esc)           ; "esc")]
+    #[test_case(key::QUIT.to_key_event() ; "ctrl_c")]
+    fn dismiss(key: KeyEvent) {
         let mut form = PlanForm::new();
         form.open();
-        assert!(matches!(
-            form.handle_key(k(KeyCode::Esc)),
-            PlanFormAction::Dismiss
-        ));
-    }
-
-    #[test]
-    fn ctrl_c_dismisses() {
-        let mut form = PlanForm::new();
-        form.open();
-        assert!(matches!(
-            form.handle_key(key::QUIT.to_key_event()),
-            PlanFormAction::Dismiss
-        ));
+        assert!(matches!(form.handle_key(key), PlanFormAction::Dismiss));
     }
 
     #[test]
@@ -248,10 +240,5 @@ mod tests {
             form.handle_key(k(KeyCode::Char('x'))),
             PlanFormAction::Consumed
         ));
-    }
-
-    #[test]
-    fn height_constant() {
-        assert_eq!(PlanForm::height(), FORM_HEIGHT);
     }
 }
