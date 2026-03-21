@@ -46,6 +46,7 @@ pub mod key {
     pub const DELETE_WORD: Bind = Bind::ctrl('w');
     pub const SEARCH: Bind = Bind::ctrl('f');
     pub const OPEN_EDITOR: Bind = Bind::ctrl('o');
+    pub const TODO_PANEL: Bind = Bind::ctrl('t');
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +130,11 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         key: "Ctrl+O",
         description: "Open plan in editor",
+        context: KeybindContext::General,
+    },
+    Keybind {
+        key: "Ctrl+T",
+        description: "Toggle todo panel",
         context: KeybindContext::General,
     },
     Keybind {

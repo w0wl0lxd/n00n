@@ -206,6 +206,7 @@ fn run_event_loop(
         *handles.tool_outputs.lock().unwrap() = app.session.tool_outputs.clone();
         let display_msgs = history_to_display(&app.session.messages, &app.session.tool_outputs);
         app.main_chat().load_messages(display_msgs);
+        app.todo_panel.restore(&app.session.tool_outputs);
     }
 
     loop {

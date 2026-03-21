@@ -22,9 +22,7 @@ use maki_agent::tools::{
     INDEX_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, WEBFETCH_TOOL_NAME,
     WEBSEARCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
-use maki_agent::{
-    BatchToolEntry, BatchToolStatus, InstructionBlock, TodoStatus, ToolInput, ToolOutput,
-};
+use maki_agent::{BatchToolEntry, BatchToolStatus, InstructionBlock, ToolInput, ToolOutput};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -526,7 +524,6 @@ impl ToolLineBuilder {
     fn push_resolved_output(
         &mut self,
         resolved: &ResolvedOutput<'_>,
-        output: Option<&ToolOutput>,
         kind: ToolKind,
         is_done: bool,
     ) {
@@ -535,10 +532,6 @@ impl ToolLineBuilder {
         if resolved.text.is_none() && resolved.instructions.is_none() {
             if has_code && kind == ToolKind::Bash {
                 self.push_bash_output_label(TOOL_BODY_INDENT, is_done, false);
-            }
-            match output {
-                Some(ToolOutput::Batch { .. } | ToolOutput::QuestionAnswers(_)) | None => {}
-                other => push_structured_lines(&mut self.lines, other, TOOL_BODY_INDENT),
             }
             return;
         }
@@ -698,31 +691,6 @@ fn push_text_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &str) {
     }
 }
 
-fn push_structured_lines(
-    lines: &mut Vec<Line<'static>>,
-    output: Option<&ToolOutput>,
-    indent: &str,
-) {
-    match output {
-        Some(ToolOutput::TodoList(items)) => {
-            for item in items {
-                let style = match item.status {
-                    TodoStatus::Completed => theme::current().todo_completed,
-                    TodoStatus::InProgress => theme::current().todo_in_progress,
-                    TodoStatus::Pending => theme::current().todo_pending,
-                    TodoStatus::Cancelled => theme::current().todo_cancelled,
-                };
-                lines.push(Line::from(Span::styled(
-                    format!("{indent}{} {}", item.status.marker(), item.content),
-                    style,
-                )));
-            }
-        }
-        Some(ToolOutput::QuestionAnswers(_)) => {}
-        _ => {}
-    }
-}
-
 pub fn build_tool_lines(
     msg: &DisplayMessage,
     status: ToolStatus,
@@ -742,7 +710,7 @@ pub fn build_tool_lines(
     b.push_code_content(msg.tool_input.as_ref(), msg.tool_output.as_ref(), kind);
     let is_done = status != ToolStatus::InProgress;
     let resolved = resolve_output(msg.tool_output.as_ref(), body, msg.truncated_lines, kind);
-    b.push_resolved_output(&resolved, msg.tool_output.as_ref(), kind, is_done);
+    b.push_resolved_output(&resolved, kind, is_done);
     b.finish(
         msg.tool_input.clone(),
         msg.tool_output.clone(),
@@ -781,7 +749,7 @@ pub fn build_batch_entry_lines(
         BatchToolStatus::Success | BatchToolStatus::Error
     );
     let resolved = resolve_output(entry.output.as_ref(), None, 0, kind);
-    b.push_resolved_output(&resolved, entry.output.as_ref(), kind, is_done);
+    b.push_resolved_output(&resolved, kind, is_done);
     b.prepend_separator(index);
     b.finish(
         entry.input.clone(),

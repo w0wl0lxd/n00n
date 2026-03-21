@@ -25,7 +25,9 @@ impl App {
                 .height(frame.area().width)
                 .min(max_form_height)
         } else {
-            queue_panel::height(self.queue.len()) + self.input_box.height(frame.area().width)
+            queue_panel::height(self.queue.len())
+                + self.todo_panel.height()
+                + self.input_box.height(frame.area().width)
         };
         let [msg_area, bottom_area, status_area] = Layout::vertical([
             Constraint::Min(1),
@@ -61,9 +63,15 @@ impl App {
         }
 
         let queue_height = queue_panel::height(self.queue.len());
-        let input_height = bottom_area.height.saturating_sub(queue_height);
-        let [queue_area, input_area] = Layout::vertical([
+        let todo_h = if form_visible {
+            0
+        } else {
+            self.todo_panel.height()
+        };
+        let input_height = bottom_area.height.saturating_sub(queue_height + todo_h);
+        let [queue_area, todo_area, input_area] = Layout::vertical([
             Constraint::Length(queue_height),
+            Constraint::Length(todo_h),
             Constraint::Length(input_height),
         ])
         .areas(bottom_area);
@@ -79,6 +87,9 @@ impl App {
         } else {
             let queue_entries = self.queue.entries();
             queue_panel::view(frame, queue_area, &queue_entries, self.queue.focus());
+            if todo_h > 0 {
+                self.todo_panel.view(frame, todo_area);
+            }
             let input_focused = !self.any_overlay_open();
             self.input_box.view(
                 frame,

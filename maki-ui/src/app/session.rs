@@ -51,6 +51,7 @@ impl App {
         self.status_bar.clear_flash();
         self.task_picker_original = None;
         self.last_esc = None;
+        self.todo_panel.reset();
     }
 
     pub(super) fn reset_session(&mut self) -> Vec<Action> {
@@ -92,6 +93,7 @@ impl App {
         let display_msgs = history_to_display(&self.session.messages, &self.session.tool_outputs);
         self.main_chat().load_messages(display_msgs);
         self.token_usage = self.session.token_usage;
+        self.todo_panel.restore(&self.session.tool_outputs);
 
         self.input_box.set_input(entry.prompt_text);
         self.input_box.buffer.move_to_end();
@@ -127,6 +129,7 @@ impl App {
         let display_msgs = history_to_display(&self.session.messages, &self.session.tool_outputs);
         self.main_chat().load_messages(display_msgs);
         self.token_usage = self.session.token_usage;
+        self.todo_panel.restore(&self.session.tool_outputs);
         vec![Action::LoadSession(LoadedSession {
             messages: self.session.messages.clone(),
             tool_outputs: self.session.tool_outputs.clone(),

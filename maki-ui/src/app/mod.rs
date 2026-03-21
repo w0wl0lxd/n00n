@@ -35,6 +35,7 @@ use crate::components::search_modal::{SearchAction, SearchModal};
 use crate::components::session_picker::{SessionPicker, SessionPickerAction};
 use crate::components::status_bar::{FLASH_DURATION, StatusBar};
 use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
+use crate::components::todo_panel::TodoPanel;
 use crate::components::tool_display::format_turn_usage;
 use crate::components::{Action, DisplayMessage, DisplayRole, Overlay, RetryInfo, Status, is_ctrl};
 use crate::image;
@@ -97,6 +98,7 @@ pub struct App {
     pub(super) help_modal: HelpModal,
     pub(super) btw_modal: BtwModal,
     pub(super) search_modal: SearchModal,
+    pub(super) todo_panel: TodoPanel,
     pub(super) question_form: QuestionForm,
     pub(super) status_bar: StatusBar,
     pub status: Status,
@@ -156,6 +158,7 @@ impl App {
             help_modal: HelpModal::new(),
             btw_modal: BtwModal::new(),
             search_modal: SearchModal::new(),
+            todo_panel: TodoPanel::new(),
             question_form: QuestionForm::new(),
             status_bar: StatusBar::new(),
             status: Status::Idle,
@@ -472,6 +475,8 @@ impl App {
                         vec![]
                     }
                 };
+            } else if key::TODO_PANEL.matches(key) {
+                self.todo_panel.toggle();
             } else if key::SEARCH.matches(key) {
                 let top = self.chats[self.active_chat].scroll_top();
                 let auto = self.chats[self.active_chat].auto_scroll();
@@ -628,6 +633,9 @@ impl App {
                     .lock()
                     .unwrap()
                     .insert(e.id.clone(), e.output.clone());
+            }
+            if let ToolOutput::TodoList(ref items) = e.output {
+                self.todo_panel.on_todowrite(items);
             }
             if let Some(&sub_idx) = self.chat_index.get(&e.id) {
                 let (role, text) = if e.is_error {

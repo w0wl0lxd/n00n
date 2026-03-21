@@ -19,6 +19,7 @@ pub(crate) mod session_picker;
 pub mod status_bar;
 pub(crate) mod streaming_content;
 pub(crate) mod theme_picker;
+pub(crate) mod todo_panel;
 pub(crate) mod tool_display;
 
 pub(crate) const CHEVRON: &str = "❯ ";
