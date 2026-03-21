@@ -95,8 +95,7 @@ pub fn run(
     #[cfg(feature = "demo")] demo: bool,
 ) -> Result<String> {
     let (_guard, mut terminal) = TerminalGuard::init()?;
-
-    run_event_loop(
+    let event_loop = EventLoop::new(
         &mut terminal,
         model,
         skills,
@@ -105,221 +104,353 @@ pub fn run(
         config,
         #[cfg(feature = "demo")]
         demo,
-    )
+    )?;
+    event_loop.run()
 }
 
-fn run_event_loop(
-    terminal: &mut ratatui::DefaultTerminal,
+struct EventLoop<'t> {
+    terminal: &'t mut ratatui::DefaultTerminal,
+    app: App,
+    handles: AgentHandles,
+    provider: Arc<dyn Provider>,
     model: Model,
-    skills: Vec<Skill>,
-    session: AppSession,
-    storage: DataDir,
+    skills: Arc<[Skill]>,
     config: AgentConfig,
-    #[cfg(feature = "demo")] demo: bool,
-) -> Result<String> {
-    let available_models: Arc<ArcSwapOption<Vec<String>>> = Arc::new(ArcSwapOption::empty());
-    let available_models_bg = Arc::clone(&available_models);
-    let (warn_tx, warn_rx) = flume::unbounded::<String>();
-    let _model_fetch_task = smol::spawn(async move {
-        let warn_tx = warn_tx;
-        fetch_all_models(|batch| {
-            for w in batch.warnings {
-                let _ = warn_tx.try_send(w);
+    shell_tx: flume::Sender<ShellEvent>,
+    shell_rx: flume::Receiver<ShellEvent>,
+    warn_rx: flume::Receiver<String>,
+    storage_writer: Arc<storage_writer::StorageWriter>,
+    _model_fetch_task: smol::Task<()>,
+}
+
+impl<'t> EventLoop<'t> {
+    fn new(
+        terminal: &'t mut ratatui::DefaultTerminal,
+        model: Model,
+        skills: Vec<Skill>,
+        session: AppSession,
+        storage: DataDir,
+        config: AgentConfig,
+        #[cfg(feature = "demo")] demo: bool,
+    ) -> Result<Self> {
+        let available_models: Arc<ArcSwapOption<Vec<String>>> = Arc::new(ArcSwapOption::empty());
+        let available_models_bg = Arc::clone(&available_models);
+        let (warn_tx, warn_rx) = flume::unbounded::<String>();
+        let _model_fetch_task = smol::spawn(async move {
+            let warn_tx = warn_tx;
+            fetch_all_models(|batch| {
+                for w in batch.warnings {
+                    let _ = warn_tx.try_send(w);
+                }
+                if batch.models.is_empty() {
+                    return;
+                }
+                let mut merged = available_models_bg
+                    .load()
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or_default();
+                merged.extend(batch.models);
+                available_models_bg.store(Some(Arc::new(merged)));
+            })
+            .await;
+        });
+
+        let storage_writer = Arc::new(storage_writer::StorageWriter::new(storage.clone()));
+        let mcp_state = McpState {
+            disabled: Vec::new(),
+            infos: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            pids: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        let (shell_tx, shell_rx) = flume::unbounded::<ShellEvent>();
+
+        std::thread::spawn(highlight::warmup);
+
+        let resumed = !session.messages.is_empty();
+        let initial_history = session.messages.clone();
+        let mut app = App::new(
+            model.spec(),
+            model.pricing.clone(),
+            model.context_window,
+            session,
+            storage,
+            available_models,
+            Arc::clone(&mcp_state.infos),
+            Arc::clone(&storage_writer),
+        );
+        #[cfg(feature = "demo")]
+        if demo {
+            app.status = components::Status::Streaming;
+            app.run_id = 1;
+            for event in mock::mock_events() {
+                match event {
+                    mock::MockEvent::User(text) => app.main_chat().push_user_message(&text),
+                    mock::MockEvent::Error(text) => {
+                        app.main_chat().push(components::DisplayMessage::new(
+                            components::DisplayRole::Error,
+                            text,
+                        ));
+                    }
+                    mock::MockEvent::Flush => app.flush_all_chats(),
+                    mock::MockEvent::Agent(envelope) => {
+                        app.update(Msg::Agent(envelope));
+                    }
+                }
             }
-            if batch.models.is_empty() {
-                return;
+            app.flush_all_chats();
+            if let Some(idx) = app.chat_index_for(mock::question_tool_id()) {
+                app.set_demo_questions(idx, mock::mock_questions());
             }
-            let mut merged = available_models_bg
-                .load()
-                .as_deref()
-                .cloned()
-                .unwrap_or_default();
-            merged.extend(batch.models);
-            available_models_bg.store(Some(Arc::new(merged)));
+            app.status = components::Status::Idle;
+        }
+        let provider: Arc<dyn Provider> = Arc::from(from_model(&model).context("create provider")?);
+        let skills: Arc<[Skill]> = Arc::from(skills);
+        let handles = spawn_agent(
+            &provider,
+            &model,
+            initial_history,
+            &skills,
+            config,
+            mcp_state,
+        );
+        handles.apply_to_app(&mut app);
+        if resumed {
+            app.token_usage = app.session.token_usage;
+            *handles.tool_outputs.lock().unwrap() = app.session.tool_outputs.clone();
+            let display_msgs = history_to_display(&app.session.messages, &app.session.tool_outputs);
+            app.main_chat().load_messages(display_msgs);
+            app.todo_panel.restore(&app.session.tool_outputs);
+        }
+
+        Ok(Self {
+            terminal,
+            app,
+            handles,
+            provider,
+            model,
+            skills,
+            config,
+            shell_tx,
+            shell_rx,
+            warn_rx,
+            storage_writer,
+            _model_fetch_task,
         })
-        .await;
-    });
+    }
 
-    let storage_writer = Arc::new(storage_writer::StorageWriter::new(storage.clone()));
-    let mcp_state = McpState {
-        disabled: Vec::new(),
-        infos: Arc::new(ArcSwap::from_pointee(Vec::new())),
-        pids: Arc::new(Mutex::new(Vec::new())),
-    };
+    fn run(mut self) -> Result<String> {
+        loop {
+            self.tick();
+            self.terminal.draw(|f| self.app.view(f))?;
+            let had_agent_msg = self.drain_channels();
 
-    let (shell_tx, shell_rx) = flume::unbounded::<ShellEvent>();
-
-    std::thread::spawn(highlight::warmup);
-
-    let resumed = !session.messages.is_empty();
-
-    let initial_history = session.messages.clone();
-    let mut app = App::new(
-        model.spec(),
-        model.pricing.clone(),
-        model.context_window,
-        session,
-        storage,
-        available_models,
-        Arc::clone(&mcp_state.infos),
-        Arc::clone(&storage_writer),
-    );
-    #[cfg(feature = "demo")]
-    if demo {
-        app.status = components::Status::Streaming;
-        app.run_id = 1;
-        for event in mock::mock_events() {
-            match event {
-                mock::MockEvent::User(text) => app.main_chat().push_user_message(&text),
-                mock::MockEvent::Error(text) => {
-                    app.main_chat().push(components::DisplayMessage::new(
-                        components::DisplayRole::Error,
-                        text,
-                    ));
-                }
-                mock::MockEvent::Flush => app.flush_all_chats(),
-                mock::MockEvent::Agent(envelope) => {
-                    app.update(Msg::Agent(envelope));
-                }
+            if self.app.should_quit {
+                return Ok(self.shutdown());
             }
+
+            self.poll_and_handle_input(had_agent_msg)?;
         }
-        app.flush_all_chats();
-        if let Some(idx) = app.chat_index_for(mock::question_tool_id()) {
-            app.set_demo_questions(idx, mock::mock_questions());
-        }
-        app.status = components::Status::Idle;
-    }
-    let mut provider: Arc<dyn Provider> = Arc::from(from_model(&model).context("create provider")?);
-    let skills: Arc<[Skill]> = Arc::from(skills);
-    let mut model = model;
-    let mut handles = spawn_agent(
-        &provider,
-        &model,
-        initial_history,
-        &skills,
-        config,
-        mcp_state,
-    );
-    handles.apply_to_app(&mut app);
-    if resumed {
-        app.token_usage = app.session.token_usage;
-        *handles.tool_outputs.lock().unwrap() = app.session.tool_outputs.clone();
-        let display_msgs = history_to_display(&app.session.messages, &app.session.tool_outputs);
-        app.main_chat().load_messages(display_msgs);
-        app.todo_panel.restore(&app.session.tool_outputs);
     }
 
-    loop {
-        app.tick_edge_scroll();
-        app.tick_error_expiry();
-        app.poll_image_paste();
-        app.btw_modal.poll();
-        terminal.draw(|f| app.view(f))?;
+    fn tick(&mut self) {
+        self.app.tick_edge_scroll();
+        self.app.tick_error_expiry();
+        self.app.poll_image_paste();
+        self.app.btw_modal.poll();
+    }
 
-        while let Ok(event) = shell_rx.try_recv() {
-            app.handle_shell_event(event);
+    fn drain_channels(&mut self) -> bool {
+        while let Ok(event) = self.shell_rx.try_recv() {
+            self.app.handle_shell_event(event);
         }
 
         let mut had_agent_msg = false;
-        while let Ok(envelope) = handles.agent_rx.try_recv() {
+        while let Ok(envelope) = self.handles.agent_rx.try_recv() {
             had_agent_msg = true;
-            dispatch(
-                app.update(Msg::Agent(Box::new(envelope))),
-                &mut handles,
-                &mut provider,
-                &mut model,
-                &skills,
-                &mut app,
-                config,
-                &shell_tx,
-                terminal,
-            );
+            let actions = self.app.update(Msg::Agent(Box::new(envelope)));
+            self.dispatch(actions);
         }
 
-        while let Ok(warning) = warn_rx.try_recv() {
-            app.flash(warning);
+        while let Ok(warning) = self.warn_rx.try_recv() {
+            self.app.flash(warning);
         }
 
-        if app.should_quit {
-            let session_id = app.session.id.clone();
-            maki_agent::mcp::kill_process_groups(&handles.mcp.pids.lock().unwrap());
-            handles.shutdown(Duration::from_secs(3));
-            app.save_session();
-            drop(app);
-            if let Ok(writer) = Arc::try_unwrap(storage_writer) {
-                writer.shutdown(Duration::from_secs(3));
-            }
-            return Ok(session_id);
-        }
+        had_agent_msg
+    }
 
+    fn poll_and_handle_input(&mut self, had_agent_msg: bool) -> Result<()> {
         let poll_duration = if had_agent_msg {
             Duration::ZERO
-        } else if app.is_animating() {
+        } else if self.app.is_animating() {
             Duration::from_millis(ANIMATION_INTERVAL_MS)
         } else {
             Duration::from_millis(IDLE_POLL_INTERVAL_MS)
         };
 
-        if event::poll(poll_duration)? {
-            let msg = match event::read()? {
-                Event::Key(key) => Msg::Key(key),
-                Event::Paste(text) => Msg::Paste(text),
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                        let (scroll, extra) =
-                            aggregate_scroll(mouse.column, mouse.row, scroll_delta(mouse.kind));
-                        if let Some(extra) = extra {
-                            dispatch(
-                                app.update(scroll),
-                                &mut handles,
-                                &mut provider,
-                                &mut model,
-                                &skills,
-                                &mut app,
-                                config,
-                                &shell_tx,
-                                terminal,
-                            );
-                            extra
-                        } else {
-                            scroll
-                        }
-                    }
-                    MouseEventKind::Drag(MouseButton::Left) => {
-                        let (drag, extra) = coalesce_drag(mouse);
-                        dispatch(
-                            app.update(Msg::Mouse(drag)),
-                            &mut handles,
-                            &mut provider,
-                            &mut model,
-                            &skills,
-                            &mut app,
-                            config,
-                            &shell_tx,
-                            terminal,
-                        );
-                        if let Some(extra) = extra {
-                            extra
-                        } else {
-                            continue;
-                        }
-                    }
-                    _ => Msg::Mouse(mouse),
-                },
-                _ => continue,
-            };
-            dispatch(
-                app.update(msg),
-                &mut handles,
-                &mut provider,
-                &mut model,
-                &skills,
-                &mut app,
-                config,
-                &shell_tx,
-                terminal,
-            );
+        if !event::poll(poll_duration)? {
+            return Ok(());
         }
+
+        if let Some(msg) = self.translate_input()? {
+            let actions = self.app.update(msg);
+            self.dispatch(actions);
+        }
+        Ok(())
+    }
+
+    fn translate_input(&mut self) -> Result<Option<Msg>> {
+        let raw = event::read()?;
+        match raw {
+            Event::Key(key) => Ok(Some(Msg::Key(key))),
+            Event::Paste(text) => Ok(Some(Msg::Paste(text))),
+            Event::Mouse(mouse) => Ok(self.translate_mouse(mouse)),
+            _ => Ok(None),
+        }
+    }
+
+    fn translate_mouse(&mut self, mouse: CtMouseEvent) -> Option<Msg> {
+        match mouse.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let (scroll, extra) =
+                    aggregate_scroll(mouse.column, mouse.row, scroll_delta(mouse.kind));
+                if let Some(extra) = extra {
+                    let actions = self.app.update(scroll);
+                    self.dispatch(actions);
+                    Some(extra)
+                } else {
+                    Some(scroll)
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let (drag, extra) = coalesce_drag(mouse);
+                let actions = self.app.update(Msg::Mouse(drag));
+                self.dispatch(actions);
+                extra
+            }
+            _ => Some(Msg::Mouse(mouse)),
+        }
+    }
+
+    fn dispatch(&mut self, actions: Vec<Action>) {
+        for action in actions {
+            self.handle_action(action);
+        }
+    }
+
+    fn handle_action(&mut self, action: Action) {
+        match action {
+            Action::SendMessage(mut input) => {
+                input.preamble = self.app.shell.drain_results();
+                let cmd = AgentCommand::Run(input, self.app.run_id);
+                if self.handles.cmd_tx.try_send(cmd).is_err() {
+                    self.handles.respawn(
+                        Vec::new(),
+                        &self.provider,
+                        &self.model,
+                        &self.skills,
+                        self.config,
+                        &mut self.app,
+                    );
+                }
+            }
+            Action::CancelAgent => {
+                let _ = self.handles.cmd_tx.try_send(AgentCommand::Cancel);
+            }
+            Action::NewSession => {
+                self.handles.respawn(
+                    Vec::new(),
+                    &self.provider,
+                    &self.model,
+                    &self.skills,
+                    self.config,
+                    &mut self.app,
+                );
+            }
+            Action::LoadSession(loaded) => {
+                self.handles.respawn(
+                    loaded.messages,
+                    &self.provider,
+                    &self.model,
+                    &self.skills,
+                    self.config,
+                    &mut self.app,
+                );
+                *self.handles.tool_outputs.lock().unwrap() = loaded.tool_outputs;
+            }
+            Action::ChangeModel(spec) => self.change_model(spec),
+            Action::Compact => {
+                let _ = self
+                    .handles
+                    .cmd_tx
+                    .try_send(AgentCommand::Compact(self.app.run_id));
+            }
+            Action::ToggleMcp(server_name, enabled) => {
+                toggle_disabled(&mut self.handles.mcp.disabled, &server_name, enabled);
+                let _ = self
+                    .handles
+                    .cmd_tx
+                    .try_send(AgentCommand::ToggleMcp(server_name, enabled));
+            }
+            Action::ShellCommand {
+                id,
+                command,
+                visible,
+            } => {
+                let (trigger, cancel) = CancelToken::new();
+                self.app.shell.add_trigger(trigger);
+                spawn_shell(command, id, visible, self.shell_tx.clone(), cancel);
+            }
+            Action::OpenEditor(path) => {
+                if let Err(e) = open_in_editor(&path, self.terminal) {
+                    self.app.flash(e);
+                }
+            }
+            Action::Btw(question) => {
+                self.app
+                    .start_btw(question, Arc::clone(&self.provider), self.model.clone());
+            }
+            Action::Quit => {}
+        }
+    }
+
+    fn change_model(&mut self, spec: String) {
+        match Model::from_spec(&spec) {
+            Ok(new_model) => match from_model(&new_model) {
+                Ok(new_provider) => {
+                    self.app.update_model(&new_model);
+                    let history = self.handles.history.lock().unwrap().clone();
+                    self.provider = Arc::from(new_provider);
+                    self.model = new_model;
+                    self.handles.respawn(
+                        history,
+                        &self.provider,
+                        &self.model,
+                        &self.skills,
+                        self.config,
+                        &mut self.app,
+                    );
+                }
+                Err(e) => self.app.flash(format!("Failed to create provider: {e}")),
+            },
+            Err(e) => self.app.flash(format!("Invalid model: {e}")),
+        }
+    }
+
+    fn shutdown(mut self) -> String {
+        let session_id = self.app.session.id.clone();
+        maki_agent::mcp::kill_process_groups(&self.handles.mcp.pids.lock().unwrap());
+        self.app.cmd_tx = None;
+        self.app.answer_tx = None;
+        drop(self.app);
+        self.handles.shutdown(Duration::from_secs(3));
+        match Arc::try_unwrap(self.storage_writer) {
+            Ok(writer) => writer.shutdown(Duration::from_secs(3)),
+            Err(_) => {
+                warn!("storage writer has outstanding references, skipping graceful shutdown")
+            }
+        }
+        session_id
     }
 }
 
@@ -615,85 +746,6 @@ fn spawn_agent(
         tool_outputs: shared_tool_outputs,
         mcp: mcp_state,
         task,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn dispatch(
-    actions: Vec<Action>,
-    handles: &mut AgentHandles,
-    provider: &mut Arc<dyn Provider>,
-    model: &mut Model,
-    skills: &Arc<[Skill]>,
-    app: &mut App,
-    config: AgentConfig,
-    shell_tx: &flume::Sender<ShellEvent>,
-    terminal: &mut ratatui::DefaultTerminal,
-) {
-    for action in actions {
-        match action {
-            Action::SendMessage(mut input) => {
-                input.preamble = app.shell.drain_results();
-                let cmd = AgentCommand::Run(input, app.run_id);
-                if handles.cmd_tx.try_send(cmd).is_err() {
-                    handles.respawn(Vec::new(), provider, model, skills, config, app);
-                }
-            }
-            Action::CancelAgent => {
-                let _ = handles.cmd_tx.try_send(AgentCommand::Cancel);
-            }
-            Action::NewSession => {
-                handles.respawn(Vec::new(), provider, model, skills, config, app);
-            }
-            Action::LoadSession(loaded) => {
-                handles.respawn(loaded.messages, provider, model, skills, config, app);
-                *handles.tool_outputs.lock().unwrap() = loaded.tool_outputs;
-            }
-            Action::ChangeModel(spec) => match Model::from_spec(&spec) {
-                Ok(new_model) => match from_model(&new_model) {
-                    Ok(new_provider) => {
-                        app.update_model(&new_model);
-                        let history = handles.history.lock().unwrap().clone();
-                        *provider = Arc::from(new_provider);
-                        *model = new_model;
-                        handles.respawn(history, provider, model, skills, config, app);
-                    }
-                    Err(e) => {
-                        app.flash(format!("Failed to create provider: {e}"));
-                    }
-                },
-                Err(e) => {
-                    app.flash(format!("Invalid model: {e}"));
-                }
-            },
-            Action::Compact => {
-                let _ = handles.cmd_tx.try_send(AgentCommand::Compact(app.run_id));
-            }
-            Action::ToggleMcp(server_name, enabled) => {
-                toggle_disabled(&mut handles.mcp.disabled, &server_name, enabled);
-                let _ = handles
-                    .cmd_tx
-                    .try_send(AgentCommand::ToggleMcp(server_name, enabled));
-            }
-            Action::ShellCommand {
-                id,
-                command,
-                visible,
-            } => {
-                let (trigger, cancel) = CancelToken::new();
-                app.shell.add_trigger(trigger);
-                spawn_shell(command, id, visible, shell_tx.clone(), cancel);
-            }
-            Action::OpenEditor(path) => {
-                if let Err(e) = open_in_editor(&path, terminal) {
-                    app.flash(e);
-                }
-            }
-            Action::Btw(question) => {
-                app.start_btw(question, Arc::clone(provider), model.clone());
-            }
-            Action::Quit => {}
-        }
     }
 }
 
