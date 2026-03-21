@@ -13,7 +13,7 @@ pub fn spinner_str(elapsed_ms: u128) -> &'static str {
     SPINNER_STRS[(elapsed_ms / SPINNER_FRAME_MS) as usize % SPINNER_STRS.len()]
 }
 
-const MS_PER_CHAR: u64 = 4;
+const DEFAULT_MS_PER_CHAR: u64 = 4;
 const MIN_DURATION_MS: u64 = 30;
 const MAX_DURATION_MS: u64 = 1000;
 
@@ -24,16 +24,21 @@ pub struct Typewriter {
     anim_target: usize,
     anim_start_at: Instant,
     anim_duration: Duration,
+    ms_per_char: u64,
 }
 
 impl Default for Typewriter {
     fn default() -> Self {
-        Self::new()
+        Self::with_speed(DEFAULT_MS_PER_CHAR)
     }
 }
 
 impl Typewriter {
     pub fn new() -> Self {
+        Self::with_speed(DEFAULT_MS_PER_CHAR)
+    }
+
+    pub fn with_speed(ms_per_char: u64) -> Self {
         Self {
             buffer: String::new(),
             visible_len: 0,
@@ -41,6 +46,7 @@ impl Typewriter {
             anim_target: 0,
             anim_start_at: Instant::now(),
             anim_duration: Duration::ZERO,
+            ms_per_char,
         }
     }
 
@@ -49,8 +55,12 @@ impl Typewriter {
         self.tick();
         self.anim_start_visible = self.visible_len;
         self.anim_target = self.buffer.chars().count();
+        if self.ms_per_char == 0 {
+            self.visible_len = self.anim_target;
+            return;
+        }
         let unrevealed = self.anim_target - self.anim_start_visible;
-        let ms = (unrevealed as u64 * MS_PER_CHAR).clamp(MIN_DURATION_MS, MAX_DURATION_MS);
+        let ms = (unrevealed as u64 * self.ms_per_char).clamp(MIN_DURATION_MS, MAX_DURATION_MS);
         self.anim_duration = Duration::from_millis(ms);
         self.anim_start_at = Instant::now();
     }

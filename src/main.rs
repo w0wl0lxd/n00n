@@ -7,8 +7,8 @@ use std::sync::Mutex;
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use color_eyre::eyre::Context;
-use maki_agent::AgentConfig;
 use maki_agent::skill::{self, Skill};
+use maki_config::load_config;
 use maki_storage::DataDir;
 use maki_ui::AppSession;
 use tracing_subscriber::EnvFilter;
@@ -144,7 +144,11 @@ fn run() -> Result<()> {
             }
         }
         Some(Command::Index { path }) => {
-            let output = maki_code_index::index_file(Path::new(&path)).context("index file")?;
+            let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
+            let config = load_config(&cwd, false);
+            let output =
+                maki_code_index::index_file(Path::new(&path), config.agent.index_max_file_size)
+                    .context("index file")?;
             print!("{output}");
         }
         Some(Command::Models) => {
@@ -159,10 +163,12 @@ fn run() -> Result<()> {
         }
         None => {
             let storage = DataDir::resolve().context("resolve data directory")?;
-            let model = resolve_model(cli.model.as_deref(), &storage)?;
-            init_logging(&storage);
+            let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
+            let config = load_config(&cwd, cli.no_rtk);
+            config.validate()?;
+            let model = resolve_model(cli.model.as_deref(), &config.provider, &storage)?;
+            init_logging(&storage, &config.storage);
             let skills = discover(cli.no_skills);
-            let config = AgentConfig { no_rtk: cli.no_rtk };
             if cli.print {
                 print::run(
                     &model,
@@ -170,19 +176,16 @@ fn run() -> Result<()> {
                     cli.output_format,
                     cli.verbose,
                     skills,
-                    config,
+                    config.agent,
                 )
                 .context("run print mode")?;
             } else {
-                let cwd = env::current_dir()
-                    .unwrap_or_else(|_| ".".into())
-                    .to_string_lossy()
-                    .into_owned();
+                let cwd_str = cwd.to_string_lossy().into_owned();
                 let session = resolve_session(
                     cli.continue_session,
                     cli.session,
                     &model.spec(),
-                    &cwd,
+                    &cwd_str,
                     &storage,
                 )?;
                 let session_id = maki_ui::run(
@@ -190,7 +193,9 @@ fn run() -> Result<()> {
                     skills,
                     session,
                     storage,
-                    config,
+                    config.agent,
+                    config.ui,
+                    config.storage.input_history_size,
                     #[cfg(feature = "demo")]
                     cli.demo,
                 )
@@ -226,7 +231,11 @@ fn resolve_session(
     Ok(AppSession::new(model, cwd))
 }
 
-fn resolve_model(explicit: Option<&str>, storage: &DataDir) -> Result<Model> {
+fn resolve_model(
+    explicit: Option<&str>,
+    provider_config: &maki_config::ProviderConfig,
+    storage: &DataDir,
+) -> Result<Model> {
     if let Some(spec) = explicit {
         let model = Model::from_spec(spec).context("invalid --model spec")?;
         persist_model(storage, &model.spec());
@@ -238,11 +247,19 @@ fn resolve_model(explicit: Option<&str>, storage: &DataDir) -> Result<Model> {
         }
         tracing::warn!(spec, "saved model no longer valid, falling back to default");
     }
-    Ok(Model::from_spec(DEFAULT_SPEC).expect("default model spec is always valid"))
+    let default = provider_config
+        .default_model
+        .as_deref()
+        .unwrap_or(DEFAULT_SPEC);
+    Ok(Model::from_spec(default).expect("default model spec is always valid"))
 }
 
-fn init_logging(storage: &DataDir) {
-    let Ok(writer) = RotatingFileWriter::new(storage) else {
+fn init_logging(storage: &DataDir, storage_config: &maki_config::StorageConfig) {
+    let Ok(writer) = RotatingFileWriter::new(
+        storage,
+        storage_config.max_log_bytes,
+        storage_config.max_log_files,
+    ) else {
         return;
     };
     let writer = Mutex::new(writer);

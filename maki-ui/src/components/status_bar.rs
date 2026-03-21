@@ -15,8 +15,6 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-pub const FLASH_DURATION: Duration = Duration::from_millis(1500);
-
 pub(crate) fn format_tokens(n: u32) -> String {
     match n {
         0..1_000 => n.to_string(),
@@ -49,14 +47,16 @@ pub struct StatusBar {
     flash: Option<(String, Instant)>,
     started_at: Instant,
     cwd_branch: String,
+    pub flash_duration: Duration,
 }
 
 impl StatusBar {
-    pub fn new() -> Self {
+    pub fn new(flash_duration: Duration) -> Self {
         Self {
             flash: None,
             started_at: Instant::now(),
             cwd_branch: cwd_branch_label(),
+            flash_duration,
         }
     }
 
@@ -81,7 +81,7 @@ impl StatusBar {
         if self
             .flash
             .as_ref()
-            .is_some_and(|(_, t)| t.elapsed() >= FLASH_DURATION)
+            .is_some_and(|(_, t)| t.elapsed() >= self.flash_duration)
         {
             self.flash = None;
         }
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn flash_lifecycle() {
-        let mut bar = StatusBar::new();
+        let mut bar = StatusBar::new(Duration::from_millis(1500));
 
         bar.flash("Copied".into());
         bar.clear_expired_hint();
@@ -297,7 +297,7 @@ mod tests {
 
         bar.flash = Some((
             "Copied".into(),
-            Instant::now() - FLASH_DURATION - Duration::from_millis(1),
+            Instant::now() - bar.flash_duration - Duration::from_millis(1),
         ));
         bar.clear_expired_hint();
         assert!(bar.flash.is_none(), "stale flash cleared");

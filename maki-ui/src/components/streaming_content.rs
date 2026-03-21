@@ -79,9 +79,14 @@ pub(crate) struct StreamingContent {
 }
 
 impl StreamingContent {
-    pub fn new(prefix: &'static str, text_style: Style, prefix_style: Style) -> Self {
+    pub fn new(
+        prefix: &'static str,
+        text_style: Style,
+        prefix_style: Style,
+        ms_per_char: u64,
+    ) -> Self {
         Self {
-            typewriter: Typewriter::new(),
+            typewriter: Typewriter::with_speed(ms_per_char),
             cache: StreamingCache::default(),
             dim: false,
             prefix,
@@ -90,10 +95,15 @@ impl StreamingContent {
         }
     }
 
-    pub fn new_dim(prefix: &'static str, text_style: Style, prefix_style: Style) -> Self {
+    pub fn new_dim(
+        prefix: &'static str,
+        text_style: Style,
+        prefix_style: Style,
+        ms_per_char: u64,
+    ) -> Self {
         Self {
             dim: true,
-            ..Self::new(prefix, text_style, prefix_style)
+            ..Self::new(prefix, text_style, prefix_style, ms_per_char)
         }
     }
 
@@ -276,7 +286,7 @@ mod tests {
     fn dim_cache_no_panic_when_finalize_pops_stable_blank() {
         let style = Style::default();
         let width = 80;
-        let mut sc = StreamingContent::new_dim("", style, style);
+        let mut sc = StreamingContent::new_dim("", style, style, 4);
         sc.set_buffer("```py\nx\n```\n```js\n");
         sc.render_lines(width);
     }
@@ -350,7 +360,7 @@ mod tests {
     fn mutations_invalidate_cache() {
         let style = Style::default();
 
-        let mut sc = StreamingContent::new("", style, style);
+        let mut sc = StreamingContent::new("", style, style, 4);
         sc.set_buffer("hello world");
         sc.render_lines(80);
         sc.clear();
@@ -365,7 +375,7 @@ mod tests {
         assert!(sc.is_empty());
         assert_eq!(sc.cache.byte_len, 0);
 
-        let mut sc = StreamingContent::new("old> ", style, style);
+        let mut sc = StreamingContent::new("old> ", style, style, 4);
         sc.set_buffer("text");
         sc.render_lines(80);
         let new_style = Style::default().fg(ratatui::style::Color::Red);

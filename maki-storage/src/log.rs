@@ -7,8 +7,8 @@ use crate::DataDir;
 
 const LOG_FILE_NAME: &str = "maki.log";
 const LOCK_FILE_NAME: &str = "maki.log.lock";
-const DEFAULT_MAX_BYTES: u64 = 200 * 1024 * 1024;
-const DEFAULT_MAX_FILES: u32 = 10;
+pub const DEFAULT_MAX_BYTES: u64 = 200 * 1024 * 1024;
+pub const DEFAULT_MAX_FILES: u32 = 10;
 
 fn file_path(dir: &Path, index: u32) -> PathBuf {
     if index == 0 {
@@ -36,8 +36,8 @@ pub struct RotatingFileWriter {
 }
 
 impl RotatingFileWriter {
-    pub fn new(data_dir: &DataDir) -> io::Result<Self> {
-        Self::with_limits(data_dir.path(), DEFAULT_MAX_BYTES, DEFAULT_MAX_FILES)
+    pub fn new(data_dir: &DataDir, max_bytes: u64, max_files: u32) -> io::Result<Self> {
+        Self::with_limits(data_dir.path(), max_bytes, max_files)
     }
 
     fn with_limits(dir: &Path, max_bytes: u64, max_files: u32) -> io::Result<Self> {

@@ -1,5 +1,5 @@
 //! Elm-style `update(Msg) -> Vec<Action>`; side effects are dispatched by the caller.
-//! Double-esc: first esc flashes a hint, second within `FLASH_DURATION` cancels/rewinds.
+//! Double-esc: first esc flashes a hint, second within `flash_duration` cancels/rewinds.
 //! `run_id` increments each run so stale events from previous agent runs are ignored.
 
 mod btw;
@@ -34,7 +34,7 @@ use crate::components::question_form::{QuestionForm, QuestionFormAction};
 use crate::components::rewind_picker::{RewindPicker, RewindPickerAction};
 use crate::components::search_modal::{SearchAction, SearchModal};
 use crate::components::session_picker::{SessionPicker, SessionPickerAction};
-use crate::components::status_bar::{FLASH_DURATION, StatusBar};
+use crate::components::status_bar::StatusBar;
 use crate::components::theme_picker::{ThemePicker, ThemePickerAction};
 use crate::components::todo_panel::TodoPanel;
 use crate::components::tool_display::format_turn_usage;
@@ -47,6 +47,7 @@ use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 #[cfg(feature = "demo")]
 use maki_agent::QuestionInfo;
 use maki_agent::{AgentEvent, Envelope, ImageSource, McpServerInfo, SubagentInfo, ToolOutput};
+use maki_config::UiConfig;
 use maki_providers::{Message, Model, ModelPricing, TokenUsage};
 use maki_storage::DataDir;
 use maki_storage::input_history::InputHistory;
@@ -131,6 +132,7 @@ pub struct App {
     pub(crate) image_paste_rx: Option<flume::Receiver<Result<ImageSource, String>>>,
     storage_writer: Arc<StorageWriter>,
     pub(crate) shell: shell::ShellState,
+    pub(crate) ui_config: UiConfig,
 }
 
 impl App {
@@ -144,12 +146,14 @@ impl App {
         available_models: Arc<ArcSwapOption<Vec<String>>>,
         mcp_infos: Arc<ArcSwap<Vec<McpServerInfo>>>,
         storage_writer: Arc<StorageWriter>,
+        ui_config: UiConfig,
+        input_history_size: usize,
     ) -> Self {
         Self {
-            chats: vec![Chat::new("Main".into())],
+            chats: vec![Chat::new("Main".into(), ui_config)],
             active_chat: 0,
             chat_index: HashMap::new(),
-            input_box: InputBox::new(InputHistory::load(&storage)),
+            input_box: InputBox::new(InputHistory::load(&storage, input_history_size)),
             command_palette: CommandPalette::new(),
             task_picker: ListPicker::new(),
             task_picker_original: None,
@@ -164,7 +168,7 @@ impl App {
             todo_panel: TodoPanel::new(),
             question_form: QuestionForm::new(),
             plan_form: PlanForm::new(),
-            status_bar: StatusBar::new(),
+            status_bar: StatusBar::new(ui_config.flash_duration()),
             status: Status::Idle,
             token_usage: TokenUsage::default(),
             mode: Mode::Build,
@@ -192,6 +196,7 @@ impl App {
             image_paste_rx: None,
             storage_writer,
             shell: shell::ShellState::default(),
+            ui_config,
         }
     }
 
@@ -561,7 +566,7 @@ impl App {
                     KeyCode::Tab => self.toggle_mode(),
                     KeyCode::Esc => {
                         if let Some(t) = self.last_esc.take()
-                            && t.elapsed() < FLASH_DURATION
+                            && t.elapsed() < self.status_bar.flash_duration
                         {
                             if streaming {
                                 self.handle_cancel()
@@ -796,7 +801,7 @@ impl App {
         if let Some(ref model) = subagent.model {
             self.chats[0].update_tool_model(id, model);
         }
-        let mut chat = Chat::new(subagent.name.clone());
+        let mut chat = Chat::new(subagent.name.clone(), self.ui_config);
         chat.model_id = subagent.model.clone();
         if let Some(ref prompt) = subagent.prompt {
             chat.push_user_message(prompt);

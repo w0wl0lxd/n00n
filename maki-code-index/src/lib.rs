@@ -25,6 +25,7 @@ mod tests;
 
 use common::{LanguageExtractor, detect_module_doc, doc_comment_start_line, format_skeleton};
 
+#[cfg(test)]
 const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -109,16 +110,16 @@ impl Language {
     }
 }
 
-pub fn index_file(path: &Path) -> Result<String, IndexError> {
+pub fn index_file(path: &Path, max_file_size: u64) -> Result<String, IndexError> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let lang = Language::from_extension(ext)
         .ok_or_else(|| IndexError::UnsupportedLanguage(format!(".{ext}")))?;
 
     let meta = std::fs::metadata(path)?;
-    if meta.len() > MAX_FILE_SIZE {
+    if meta.len() > max_file_size {
         return Err(IndexError::FileTooLarge {
             size: meta.len(),
-            max: MAX_FILE_SIZE,
+            max: max_file_size,
         });
     }
 

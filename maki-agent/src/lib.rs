@@ -12,6 +12,7 @@ pub use mcp::config::McpServerStatus;
 pub(crate) mod task_set;
 pub use agent::{Agent, AgentParams, AgentRunParams, History, LoadedInstructions, RunOutcome};
 pub use cancel::{CancelToken, CancelTrigger};
+pub use maki_config::{AgentConfig, UiConfig};
 pub(crate) mod prompt;
 pub mod skill;
 pub mod template;
@@ -42,11 +43,6 @@ pub enum ExtractedCommand {
     Cancel,
     Compact(u64),
     Ignore,
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct AgentConfig {
-    pub no_rtk: bool,
 }
 
 #[derive(Default)]

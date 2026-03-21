@@ -36,7 +36,7 @@ impl BtwModal {
         Self {
             open: false,
             question: String::new(),
-            answer: StreamingContent::new("", theme.assistant, theme.assistant),
+            answer: StreamingContent::new("", theme.assistant, theme.assistant, 0),
             scroll: ModalScroll::new(),
             rx: None,
         }

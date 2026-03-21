@@ -1,0 +1,686 @@
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde::Deserialize;
+use thiserror::Error;
+use tracing::warn;
+
+pub const GLOBAL_CONFIG_PATH: &str = ".config/maki/config.toml";
+pub const PROJECT_CONFIG_FILE: &str = "maki.toml";
+
+const DEFAULT_MAX_OUTPUT_BYTES: usize = 50 * 1024;
+pub const DEFAULT_MAX_OUTPUT_LINES: usize = 2000;
+const DEFAULT_MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
+const DEFAULT_MAX_LINE_BYTES: usize = 500;
+const DEFAULT_FLASH_DURATION_MS: u64 = 1500;
+const DEFAULT_TYPEWRITER_MS_PER_CHAR: u64 = 4;
+const DEFAULT_MOUSE_SCROLL_LINES: u32 = 3;
+pub const DEFAULT_TOOL_OUTPUT_LINES: usize = 10;
+
+const DEFAULT_BASH_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_CODE_EXECUTION_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_MAX_CONTINUATION_TURNS: u32 = 3;
+const DEFAULT_COMPACTION_BUFFER: u32 = 30_000;
+const DEFAULT_SEARCH_RESULT_LIMIT: usize = 100;
+const DEFAULT_INTERPRETER_MAX_MEMORY_MB: usize = 50;
+
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_STREAM_TIMEOUT_SECS: u64 = 300;
+
+const DEFAULT_MAX_LOG_BYTES_MB: u64 = 200;
+const DEFAULT_MAX_LOG_FILES: u32 = 10;
+const DEFAULT_INPUT_HISTORY_SIZE: usize = 100;
+
+const DEFAULT_MAX_FILE_SIZE_MB: u64 = 2;
+
+const MIN_OUTPUT_BYTES: usize = 1024;
+const MIN_OUTPUT_LINES: usize = 10;
+const MIN_RESPONSE_BYTES: usize = 1024;
+const MIN_LINE_BYTES: usize = 80;
+const MIN_BASH_TIMEOUT_SECS: u64 = 5;
+const MIN_CODE_EXECUTION_TIMEOUT_SECS: u64 = 5;
+const MIN_MAX_CONTINUATION_TURNS: u32 = 1;
+const MIN_COMPACTION_BUFFER: u32 = 1_000;
+const MIN_SEARCH_RESULT_LIMIT: usize = 10;
+const MIN_INTERPRETER_MAX_MEMORY_MB: usize = 10;
+const MIN_MOUSE_SCROLL_LINES: u32 = 1;
+const MIN_TOOL_OUTPUT_LINES: usize = 1;
+const MIN_MAX_LOG_BYTES_MB: u64 = 1;
+const MIN_MAX_LOG_FILES: u32 = 1;
+const MIN_INPUT_HISTORY_SIZE: usize = 10;
+const MIN_MAX_FILE_SIZE_MB: u64 = 1;
+const MIN_CONNECT_TIMEOUT_SECS: u64 = 1;
+const MIN_STREAM_TIMEOUT_SECS: u64 = 10;
+
+#[derive(Debug, Error)]
+#[error("invalid config: {section}.{field} = {value} is below minimum ({min})")]
+pub struct ConfigError {
+    section: &'static str,
+    field: &'static str,
+    value: u64,
+    min: u64,
+}
+
+fn check(
+    section: &'static str,
+    field: &'static str,
+    value: u64,
+    min: u64,
+) -> Result<(), ConfigError> {
+    if value < min {
+        return Err(ConfigError {
+            section,
+            field,
+            value,
+            min,
+        });
+    }
+    Ok(())
+}
+
+// --- Raw (serde) structs ---
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawConfig {
+    ui: UiFileConfig,
+    agent: AgentFileConfig,
+    provider: ProviderFileConfig,
+    storage: StorageFileConfig,
+    index: IndexFileConfig,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct UiFileConfig {
+    splash_animation: Option<bool>,
+    flash_duration_ms: Option<u64>,
+    typewriter_ms_per_char: Option<u64>,
+    mouse_scroll_lines: Option<u32>,
+    tool_output_lines: Option<usize>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AgentFileConfig {
+    max_output_bytes: Option<usize>,
+    max_output_lines: Option<usize>,
+    max_response_bytes: Option<usize>,
+    max_line_bytes: Option<usize>,
+    bash_timeout_secs: Option<u64>,
+    code_execution_timeout_secs: Option<u64>,
+    max_continuation_turns: Option<u32>,
+    compaction_buffer: Option<u32>,
+    search_result_limit: Option<usize>,
+    interpreter_max_memory_mb: Option<usize>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ProviderFileConfig {
+    default_model: Option<String>,
+    connect_timeout_secs: Option<u64>,
+    stream_timeout_secs: Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct StorageFileConfig {
+    max_log_bytes_mb: Option<u64>,
+    max_log_files: Option<u32>,
+    input_history_size: Option<usize>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct IndexFileConfig {
+    max_file_size_mb: Option<u64>,
+}
+
+// --- Runtime structs ---
+
+pub struct Config {
+    pub ui: UiConfig,
+    pub agent: AgentConfig,
+    pub provider: ProviderConfig,
+    pub storage: StorageConfig,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct UiConfig {
+    pub splash_animation: bool,
+    pub flash_duration_ms: u64,
+    pub typewriter_ms_per_char: u64,
+    pub mouse_scroll_lines: u32,
+    pub tool_output_lines: usize,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            splash_animation: true,
+            flash_duration_ms: DEFAULT_FLASH_DURATION_MS,
+            typewriter_ms_per_char: DEFAULT_TYPEWRITER_MS_PER_CHAR,
+            mouse_scroll_lines: DEFAULT_MOUSE_SCROLL_LINES,
+            tool_output_lines: DEFAULT_TOOL_OUTPUT_LINES,
+        }
+    }
+}
+
+impl UiConfig {
+    pub fn flash_duration(&self) -> Duration {
+        Duration::from_millis(self.flash_duration_ms)
+    }
+
+    fn from_file(f: UiFileConfig) -> Self {
+        Self {
+            splash_animation: f.splash_animation.unwrap_or(true),
+            flash_duration_ms: f.flash_duration_ms.unwrap_or(DEFAULT_FLASH_DURATION_MS),
+            typewriter_ms_per_char: f
+                .typewriter_ms_per_char
+                .unwrap_or(DEFAULT_TYPEWRITER_MS_PER_CHAR),
+            mouse_scroll_lines: f.mouse_scroll_lines.unwrap_or(DEFAULT_MOUSE_SCROLL_LINES),
+            tool_output_lines: f.tool_output_lines.unwrap_or(DEFAULT_TOOL_OUTPUT_LINES),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        check(
+            "ui",
+            "mouse_scroll_lines",
+            self.mouse_scroll_lines as u64,
+            MIN_MOUSE_SCROLL_LINES as u64,
+        )?;
+        check(
+            "ui",
+            "tool_output_lines",
+            self.tool_output_lines as u64,
+            MIN_TOOL_OUTPUT_LINES as u64,
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AgentConfig {
+    pub no_rtk: bool,
+    pub max_output_bytes: usize,
+    pub max_output_lines: usize,
+    pub max_response_bytes: usize,
+    pub max_line_bytes: usize,
+    pub bash_timeout_secs: u64,
+    pub code_execution_timeout_secs: u64,
+    pub max_continuation_turns: u32,
+    pub compaction_buffer: u32,
+    pub search_result_limit: usize,
+    pub interpreter_max_memory_mb: usize,
+    pub index_max_file_size: u64,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            no_rtk: false,
+            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
+            max_output_lines: DEFAULT_MAX_OUTPUT_LINES,
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+            max_line_bytes: DEFAULT_MAX_LINE_BYTES,
+            bash_timeout_secs: DEFAULT_BASH_TIMEOUT_SECS,
+            code_execution_timeout_secs: DEFAULT_CODE_EXECUTION_TIMEOUT_SECS,
+            max_continuation_turns: DEFAULT_MAX_CONTINUATION_TURNS,
+            compaction_buffer: DEFAULT_COMPACTION_BUFFER,
+            search_result_limit: DEFAULT_SEARCH_RESULT_LIMIT,
+            interpreter_max_memory_mb: DEFAULT_INTERPRETER_MAX_MEMORY_MB,
+            index_max_file_size: DEFAULT_MAX_FILE_SIZE_MB * 1024 * 1024,
+        }
+    }
+}
+
+impl AgentConfig {
+    fn from_file(file: AgentFileConfig, no_rtk: bool, index_file_config: &IndexFileConfig) -> Self {
+        Self {
+            no_rtk,
+            max_output_bytes: file.max_output_bytes.unwrap_or(DEFAULT_MAX_OUTPUT_BYTES),
+            max_output_lines: file.max_output_lines.unwrap_or(DEFAULT_MAX_OUTPUT_LINES),
+            max_response_bytes: file
+                .max_response_bytes
+                .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES),
+            max_line_bytes: file.max_line_bytes.unwrap_or(DEFAULT_MAX_LINE_BYTES),
+            bash_timeout_secs: file.bash_timeout_secs.unwrap_or(DEFAULT_BASH_TIMEOUT_SECS),
+            code_execution_timeout_secs: file
+                .code_execution_timeout_secs
+                .unwrap_or(DEFAULT_CODE_EXECUTION_TIMEOUT_SECS),
+            max_continuation_turns: file
+                .max_continuation_turns
+                .unwrap_or(DEFAULT_MAX_CONTINUATION_TURNS),
+            compaction_buffer: file.compaction_buffer.unwrap_or(DEFAULT_COMPACTION_BUFFER),
+            search_result_limit: file
+                .search_result_limit
+                .unwrap_or(DEFAULT_SEARCH_RESULT_LIMIT),
+            interpreter_max_memory_mb: file
+                .interpreter_max_memory_mb
+                .unwrap_or(DEFAULT_INTERPRETER_MAX_MEMORY_MB),
+            index_max_file_size: index_file_config
+                .max_file_size_mb
+                .unwrap_or(DEFAULT_MAX_FILE_SIZE_MB)
+                * 1024
+                * 1024,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        check(
+            "agent",
+            "max_output_bytes",
+            self.max_output_bytes as u64,
+            MIN_OUTPUT_BYTES as u64,
+        )?;
+        check(
+            "agent",
+            "max_output_lines",
+            self.max_output_lines as u64,
+            MIN_OUTPUT_LINES as u64,
+        )?;
+        check(
+            "agent",
+            "max_response_bytes",
+            self.max_response_bytes as u64,
+            MIN_RESPONSE_BYTES as u64,
+        )?;
+        check(
+            "agent",
+            "max_line_bytes",
+            self.max_line_bytes as u64,
+            MIN_LINE_BYTES as u64,
+        )?;
+        check(
+            "agent",
+            "bash_timeout_secs",
+            self.bash_timeout_secs,
+            MIN_BASH_TIMEOUT_SECS,
+        )?;
+        check(
+            "agent",
+            "code_execution_timeout_secs",
+            self.code_execution_timeout_secs,
+            MIN_CODE_EXECUTION_TIMEOUT_SECS,
+        )?;
+        check(
+            "agent",
+            "max_continuation_turns",
+            self.max_continuation_turns as u64,
+            MIN_MAX_CONTINUATION_TURNS as u64,
+        )?;
+        check(
+            "agent",
+            "compaction_buffer",
+            self.compaction_buffer as u64,
+            MIN_COMPACTION_BUFFER as u64,
+        )?;
+        check(
+            "agent",
+            "search_result_limit",
+            self.search_result_limit as u64,
+            MIN_SEARCH_RESULT_LIMIT as u64,
+        )?;
+        check(
+            "agent",
+            "interpreter_max_memory_mb",
+            self.interpreter_max_memory_mb as u64,
+            MIN_INTERPRETER_MAX_MEMORY_MB as u64,
+        )?;
+        check(
+            "agent",
+            "max_file_size_mb",
+            self.index_max_file_size / (1024 * 1024),
+            MIN_MAX_FILE_SIZE_MB,
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderConfig {
+    pub default_model: Option<String>,
+    pub connect_timeout: Duration,
+    pub stream_timeout: Duration,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            default_model: None,
+            connect_timeout: Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS),
+            stream_timeout: Duration::from_secs(DEFAULT_STREAM_TIMEOUT_SECS),
+        }
+    }
+}
+
+impl ProviderConfig {
+    fn from_file(f: ProviderFileConfig) -> Self {
+        Self {
+            default_model: f.default_model,
+            connect_timeout: Duration::from_secs(
+                f.connect_timeout_secs
+                    .unwrap_or(DEFAULT_CONNECT_TIMEOUT_SECS),
+            ),
+            stream_timeout: Duration::from_secs(
+                f.stream_timeout_secs.unwrap_or(DEFAULT_STREAM_TIMEOUT_SECS),
+            ),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        check(
+            "provider",
+            "connect_timeout_secs",
+            self.connect_timeout.as_secs(),
+            MIN_CONNECT_TIMEOUT_SECS,
+        )?;
+        check(
+            "provider",
+            "stream_timeout_secs",
+            self.stream_timeout.as_secs(),
+            MIN_STREAM_TIMEOUT_SECS,
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StorageConfig {
+    pub max_log_bytes: u64,
+    pub max_log_files: u32,
+    pub input_history_size: usize,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            max_log_bytes: DEFAULT_MAX_LOG_BYTES_MB * 1024 * 1024,
+            max_log_files: DEFAULT_MAX_LOG_FILES,
+            input_history_size: DEFAULT_INPUT_HISTORY_SIZE,
+        }
+    }
+}
+
+impl StorageConfig {
+    fn from_file(f: StorageFileConfig) -> Self {
+        Self {
+            max_log_bytes: f.max_log_bytes_mb.unwrap_or(DEFAULT_MAX_LOG_BYTES_MB) * 1024 * 1024,
+            max_log_files: f.max_log_files.unwrap_or(DEFAULT_MAX_LOG_FILES),
+            input_history_size: f.input_history_size.unwrap_or(DEFAULT_INPUT_HISTORY_SIZE),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        check(
+            "storage",
+            "max_log_bytes_mb",
+            self.max_log_bytes / (1024 * 1024),
+            MIN_MAX_LOG_BYTES_MB,
+        )?;
+        check(
+            "storage",
+            "max_log_files",
+            self.max_log_files as u64,
+            MIN_MAX_LOG_FILES as u64,
+        )?;
+        check(
+            "storage",
+            "input_history_size",
+            self.input_history_size as u64,
+            MIN_INPUT_HISTORY_SIZE as u64,
+        )?;
+        Ok(())
+    }
+}
+
+impl Config {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        self.ui.validate()?;
+        self.agent.validate()?;
+        self.provider.validate()?;
+        self.storage.validate()?;
+        Ok(())
+    }
+}
+
+pub fn load_config(cwd: &Path, no_rtk: bool) -> Config {
+    let mut base = toml::Table::new();
+    if let Some(t) = home_dir().and_then(|h| read_table(&h.join(GLOBAL_CONFIG_PATH))) {
+        merge_tables(&mut base, t);
+    }
+    if let Some(t) = read_table(&cwd.join(PROJECT_CONFIG_FILE)) {
+        merge_tables(&mut base, t);
+    }
+    let raw: RawConfig = match toml::Value::Table(base).try_into() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "failed to deserialize config, using defaults");
+            RawConfig::default()
+        }
+    };
+    Config {
+        ui: UiConfig::from_file(raw.ui),
+        agent: AgentConfig::from_file(raw.agent, no_rtk, &raw.index),
+        provider: ProviderConfig::from_file(raw.provider),
+        storage: StorageConfig::from_file(raw.storage),
+    }
+}
+
+fn merge_tables(base: &mut toml::Table, overlay: toml::Table) {
+    for (k, v) in overlay {
+        match (base.get_mut(&k), v) {
+            (Some(toml::Value::Table(b)), toml::Value::Table(o)) => merge_tables(b, o),
+            (_, v) => {
+                base.insert(k, v);
+            }
+        }
+    }
+}
+
+fn read_table(path: &Path) -> Option<toml::Table> {
+    let content = fs::read_to_string(path).ok()?;
+    match content.parse::<toml::Table>() {
+        Ok(t) => Some(t),
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "failed to parse config");
+            None
+        }
+    }
+}
+
+pub fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME").map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+    use test_case::test_case;
+
+    #[test]
+    fn empty_config_returns_defaults() {
+        let dir = TempDir::new().unwrap();
+        let config = load_config(dir.path(), false);
+        assert!(config.ui.splash_animation);
+        assert_eq!(config.ui.flash_duration_ms, DEFAULT_FLASH_DURATION_MS);
+        assert_eq!(config.agent.max_output_bytes, DEFAULT_MAX_OUTPUT_BYTES);
+        assert_eq!(config.agent.max_output_lines, DEFAULT_MAX_OUTPUT_LINES);
+        assert_eq!(config.agent.bash_timeout_secs, DEFAULT_BASH_TIMEOUT_SECS);
+        assert_eq!(config.agent.compaction_buffer, DEFAULT_COMPACTION_BUFFER);
+        assert_eq!(
+            config.provider.connect_timeout,
+            Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            config.storage.max_log_bytes,
+            DEFAULT_MAX_LOG_BYTES_MB * 1024 * 1024
+        );
+        assert_eq!(
+            config.agent.index_max_file_size,
+            DEFAULT_MAX_FILE_SIZE_MB * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn partial_agent_config_preserves_unset_fields() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("maki.toml"),
+            "[agent]\nmax_output_lines = 5000\nbash_timeout_secs = 60\n",
+        )
+        .unwrap();
+        let config = load_config(dir.path(), false);
+        assert_eq!(config.agent.max_output_lines, 5000);
+        assert_eq!(config.agent.bash_timeout_secs, 60);
+        assert_eq!(config.agent.max_output_bytes, DEFAULT_MAX_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn project_overrides_global_field_by_field() {
+        let dir = TempDir::new().unwrap();
+        let global_dir = dir.path().join(".config/maki");
+        fs::create_dir_all(&global_dir).unwrap();
+        fs::write(
+            global_dir.join("config.toml"),
+            "[ui]\nsplash_animation = false\nflash_duration_ms = 2000\n\
+             [agent]\nmax_output_lines = 3000\nmax_line_bytes = 800\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("maki.toml"),
+            "[agent]\nmax_output_lines = 5000\n",
+        )
+        .unwrap();
+
+        let saved_home = env::var_os("HOME");
+        unsafe { env::set_var("HOME", dir.path()) };
+        let config = load_config(dir.path(), false);
+        match saved_home {
+            Some(v) => unsafe { env::set_var("HOME", v) },
+            None => unsafe { env::remove_var("HOME") },
+        }
+
+        assert!(!config.ui.splash_animation);
+        assert_eq!(config.ui.flash_duration_ms, 2000);
+        assert_eq!(config.agent.max_output_lines, 5000);
+        assert_eq!(config.agent.max_line_bytes, 800);
+    }
+
+    #[test]
+    fn invalid_toml_returns_defaults() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("maki.toml"), "not valid {{{{ toml").unwrap();
+        let config = load_config(dir.path(), false);
+        assert!(config.ui.splash_animation);
+        assert_eq!(config.agent.max_output_bytes, DEFAULT_MAX_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn merge_tables_recursive() {
+        let mut base: toml::Table = toml::from_str("[a]\nx = 1\ny = 2").unwrap();
+        let overlay: toml::Table = toml::from_str("[a]\ny = 99\nz = 3").unwrap();
+        merge_tables(&mut base, overlay);
+        let a = base["a"].as_table().unwrap();
+        assert_eq!(a["x"].as_integer(), Some(1));
+        assert_eq!(a["y"].as_integer(), Some(99));
+        assert_eq!(a["z"].as_integer(), Some(3));
+    }
+
+    #[test]
+    fn agent_config_from_file_uses_provided_values() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("maki.toml"),
+            "[agent]\nmax_output_bytes = 100\nmax_output_lines = 200\nmax_response_bytes = 300\nmax_line_bytes = 400\n",
+        )
+        .unwrap();
+        let config = load_config(dir.path(), true);
+        assert_eq!(config.agent.max_output_bytes, 100);
+        assert_eq!(config.agent.max_output_lines, 200);
+        assert_eq!(config.agent.max_response_bytes, 300);
+        assert_eq!(config.agent.max_line_bytes, 400);
+        assert!(config.agent.no_rtk);
+    }
+
+    #[test_case("max_output_bytes",  0 ; "zero_output_bytes")]
+    #[test_case("max_output_lines",  0 ; "zero_output_lines")]
+    #[test_case("max_response_bytes", 0 ; "zero_response_bytes")]
+    #[test_case("max_line_bytes",    0 ; "zero_line_bytes")]
+    #[test_case("max_output_bytes",  500 ; "below_min_output_bytes")]
+    #[test_case("max_line_bytes",    10 ; "below_min_line_bytes")]
+    fn validate_rejects_invalid_agent(field: &str, value: usize) {
+        let mut config = AgentConfig::default();
+        match field {
+            "max_output_bytes" => config.max_output_bytes = value,
+            "max_output_lines" => config.max_output_lines = value,
+            "max_response_bytes" => config.max_response_bytes = value,
+            "max_line_bytes" => config.max_line_bytes = value,
+            _ => unreachable!(),
+        }
+        let err = config.validate().unwrap_err();
+        assert_eq!(err.field, field);
+    }
+
+    #[test]
+    fn new_sections_load_from_toml() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("maki.toml"),
+            "[provider]\ndefault_model = \"anthropic/claude-opus-4-6\"\nconnect_timeout_secs = 15\n\
+             [storage]\nmax_log_files = 5\ninput_history_size = 50\n\
+             [index]\nmax_file_size_mb = 4\n\
+             [ui]\ntypewriter_ms_per_char = 0\nmouse_scroll_lines = 5\ntool_output_lines = 20\n\
+             [agent]\nbash_timeout_secs = 60\ncompaction_buffer = 10000\nsearch_result_limit = 50\n",
+        )
+        .unwrap();
+        let config = load_config(dir.path(), false);
+        assert_eq!(
+            config.provider.default_model.as_deref(),
+            Some("anthropic/claude-opus-4-6")
+        );
+        assert_eq!(config.provider.connect_timeout, Duration::from_secs(15));
+        assert_eq!(config.storage.max_log_files, 5);
+        assert_eq!(config.storage.input_history_size, 50);
+        assert_eq!(config.agent.index_max_file_size, 4 * 1024 * 1024);
+        assert_eq!(config.ui.typewriter_ms_per_char, 0);
+        assert_eq!(config.ui.mouse_scroll_lines, 5);
+        assert_eq!(config.ui.tool_output_lines, 20);
+        assert_eq!(config.agent.bash_timeout_secs, 60);
+        assert_eq!(config.agent.compaction_buffer, 10000);
+        assert_eq!(config.agent.search_result_limit, 50);
+    }
+
+    #[test_case("provider", "connect_timeout_secs", 0 ; "provider_zero_connect_timeout")]
+    #[test_case("storage",  "max_log_files",        0 ; "storage_zero_log_files")]
+    #[test_case("agent",    "max_file_size_mb",     0 ; "agent_zero_file_size")]
+    #[test_case("ui",       "mouse_scroll_lines",   0 ; "ui_zero_scroll_lines")]
+    #[test_case("agent",    "bash_timeout_secs",    1 ; "agent_bash_timeout_too_low")]
+    fn validate_rejects_invalid_sections(section: &str, field: &str, value: u64) {
+        let mut config = Config {
+            ui: UiConfig::default(),
+            agent: AgentConfig::default(),
+            provider: ProviderConfig::default(),
+            storage: StorageConfig::default(),
+        };
+        match (section, field) {
+            ("provider", "connect_timeout_secs") => {
+                config.provider.connect_timeout = Duration::from_secs(value)
+            }
+            ("storage", "max_log_files") => config.storage.max_log_files = value as u32,
+            ("agent", "max_file_size_mb") => config.agent.index_max_file_size = value * 1024 * 1024,
+            ("ui", "mouse_scroll_lines") => config.ui.mouse_scroll_lines = value as u32,
+            ("agent", "bash_timeout_secs") => config.agent.bash_timeout_secs = value,
+            _ => unreachable!(),
+        }
+        let err = config.validate().unwrap_err();
+        assert_eq!(err.section, section);
+        assert_eq!(err.field, field);
+    }
+}

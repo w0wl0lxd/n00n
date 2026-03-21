@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::ToolOutput;
 use maki_tool_macro::Tool;
 
-use super::{MAX_OUTPUT_LINES, relative_path};
+use super::relative_path;
 
 #[derive(Tool, Debug, Clone)]
 pub struct Write {
@@ -19,23 +19,23 @@ impl Write {
     pub const DESCRIPTION: &str = include_str!("write.md");
     pub const EXAMPLES: Option<&str> = None;
 
-    fn write_output(&self) -> ToolOutput {
+    fn write_output(&self, max_lines: usize) -> ToolOutput {
         ToolOutput::WriteCode {
             path: relative_path(&self.path),
             byte_count: self.content.len(),
             lines: self
                 .content
                 .lines()
-                .take(MAX_OUTPUT_LINES)
+                .take(max_lines)
                 .map(ToOwned::to_owned)
                 .collect(),
         }
     }
 
-    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let path = self.path.clone();
         let content = self.content.clone();
-        let output = self.write_output();
+        let output = self.write_output(ctx.config.max_output_lines);
         smol::unblock(move || {
             if let Some(parent) = Path::new(&path).parent() {
                 fs::create_dir_all(parent).map_err(|e| format!("mkdir error: {e}"))?;
@@ -53,7 +53,7 @@ impl Write {
 
 impl super::ToolDefaults for Write {
     fn start_output(&self) -> Option<ToolOutput> {
-        Some(self.write_output())
+        Some(self.write_output(maki_config::DEFAULT_MAX_OUTPUT_LINES))
     }
 
     fn mutable_path(&self) -> Option<&str> {

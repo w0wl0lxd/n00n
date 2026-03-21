@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::ToolOutput;
 
-use super::{MAX_RESPONSE_BYTES, truncate_output};
+use super::truncate_output;
 use tracing::info;
 
 const EXA_MCP_ENDPOINT: &str = "https://mcp.exa.ai/mcp";
@@ -34,10 +34,16 @@ impl WebSearch {
     );
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        ctx.cancel.race(self.do_search(ctx.deadline)).await?
+        ctx.cancel
+            .race(self.do_search(ctx.deadline, ctx.config))
+            .await?
     }
 
-    async fn do_search(&self, deadline: super::Deadline) -> Result<ToolOutput, String> {
+    async fn do_search(
+        &self,
+        deadline: super::Deadline,
+        config: maki_config::AgentConfig,
+    ) -> Result<ToolOutput, String> {
         let num_results = self.num_results.unwrap_or(DEFAULT_NUM_RESULTS);
 
         let payload = json!({
@@ -83,7 +89,7 @@ impl WebSearch {
 
         info!(query = %self.query, num_results, status, body_bytes = body.len(), "websearch response");
 
-        if body.len() > MAX_RESPONSE_BYTES {
+        if body.len() > config.max_response_bytes {
             return Err(format!("response too large: {} bytes", body.len()));
         }
 
@@ -92,7 +98,11 @@ impl WebSearch {
         }
 
         let text = parse_sse_response(&body)?;
-        Ok(ToolOutput::Plain(truncate_output(text)))
+        Ok(ToolOutput::Plain(truncate_output(
+            text,
+            config.max_output_lines,
+            config.max_output_bytes,
+        )))
     }
 
     pub fn start_summary(&self) -> String {

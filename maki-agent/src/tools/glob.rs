@@ -4,7 +4,7 @@ use ignore::overrides::OverrideBuilder;
 use maki_tool_macro::Tool;
 use tracing::debug;
 
-use super::{SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path};
+use super::{mtime, relative_path, resolve_search_path};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Glob {
@@ -24,7 +24,8 @@ impl Glob {
 ]"#,
     );
 
-    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+        let search_limit = ctx.config.search_result_limit;
         let pattern = self.pattern.clone();
         let path = self.path.clone();
         smol::unblock(move || {
@@ -58,7 +59,7 @@ impl Glob {
                 .collect();
 
             entries.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-            entries.truncate(SEARCH_RESULT_LIMIT);
+            entries.truncate(search_limit);
 
             Ok(ToolOutput::GlobResult {
                 files: entries.into_iter().map(|(_, p)| p).collect(),

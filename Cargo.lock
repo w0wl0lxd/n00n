@@ -1954,6 +1954,7 @@ dependencies = [
  "flume",
  "maki-agent",
  "maki-code-index",
+ "maki-config",
  "maki-providers",
  "maki-storage",
  "maki-ui",
@@ -1984,6 +1985,7 @@ dependencies = [
  "jiff",
  "libc",
  "maki-code-index",
+ "maki-config",
  "maki-interpreter",
  "maki-providers",
  "maki-tool-macro",
@@ -2014,6 +2016,18 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+]
+
+[[package]]
+name = "maki-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "test-case",
+ "thiserror 2.0.18",
+ "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -2090,6 +2104,7 @@ dependencies = [
  "jiff",
  "libc",
  "maki-agent",
+ "maki-config",
  "maki-providers",
  "maki-storage",
  "nucleo-matcher",

@@ -9,6 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventK
 use maki_agent::{
     AgentMode, QuestionInfo, QuestionOption, ToolDoneEvent, ToolOutput, ToolStartEvent,
 };
+use maki_config::UiConfig;
 use ratatui::layout::Rect;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -35,6 +36,8 @@ fn test_app() -> App {
         Arc::new(ArcSwapOption::empty()),
         mcp_infos,
         writer,
+        UiConfig::default(),
+        100,
     )
 }
 
@@ -524,6 +527,8 @@ fn load_session_clears_plan() {
         Arc::new(ArcSwapOption::empty()),
         mcp_infos,
         writer,
+        UiConfig::default(),
+        100,
     );
     app.session.messages.push(Message::user("test".into()));
     app.session.save(&app.storage).unwrap();

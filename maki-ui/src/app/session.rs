@@ -35,7 +35,7 @@ impl App {
 
     pub(super) fn reset_session_state(&mut self) {
         self.chats.clear();
-        self.chats.push(Chat::new("Main".into()));
+        self.chats.push(Chat::new("Main".into(), self.ui_config));
         self.active_chat = 0;
         self.chat_index.clear();
         self.status = super::Status::Idle;
@@ -89,7 +89,11 @@ impl App {
         self.session.token_usage = self.token_usage;
 
         self.reset_session_state();
-        let display_msgs = history_to_display(&self.session.messages, &self.session.tool_outputs);
+        let display_msgs = history_to_display(
+            &self.session.messages,
+            &self.session.tool_outputs,
+            self.ui_config.tool_output_lines,
+        );
         self.main_chat().load_messages(display_msgs);
         self.token_usage = self.session.token_usage;
         self.todo_panel.restore(&self.session.tool_outputs);
@@ -125,7 +129,11 @@ impl App {
         self.reset_session_state();
         self.reset_plan();
         self.session = session;
-        let display_msgs = history_to_display(&self.session.messages, &self.session.tool_outputs);
+        let display_msgs = history_to_display(
+            &self.session.messages,
+            &self.session.tool_outputs,
+            self.ui_config.tool_output_lines,
+        );
         self.main_chat().load_messages(display_msgs);
         self.token_usage = self.session.token_usage;
         self.todo_panel.restore(&self.session.tool_outputs);

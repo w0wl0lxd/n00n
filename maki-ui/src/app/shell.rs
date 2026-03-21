@@ -8,15 +8,13 @@ use async_process::{Child, Command, Stdio};
 use futures_lite::StreamExt;
 use futures_lite::io::{AsyncBufReadExt, BufReader};
 use maki_agent::{
-    CancelToken, CancelTrigger, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
+    AgentConfig, CancelToken, CancelTrigger, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
 };
 use maki_providers::Message;
 
 use super::App;
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
-const MAX_OUTPUT_LINES: usize = 2000;
-const MAX_OUTPUT_BYTES: usize = 50_000;
 const SHELL_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +153,7 @@ pub(crate) fn spawn_shell(
     visible: bool,
     tx: flume::Sender<ShellEvent>,
     cancel: CancelToken,
+    config: AgentConfig,
 ) {
     smol::spawn(async move {
         let _ = tx.send(ShellEvent::Start {
@@ -162,7 +161,15 @@ pub(crate) fn spawn_shell(
             command: command.clone(),
         });
 
-        let result = run_command(&command, &id, &tx, &cancel).await;
+        let result = run_command(
+            &command,
+            &id,
+            &tx,
+            &cancel,
+            config.max_output_lines,
+            config.max_output_bytes,
+        )
+        .await;
 
         let (output, is_error) = match result {
             Ok(out) => (out, false),
@@ -185,6 +192,8 @@ async fn run_command(
     id: &str,
     tx: &flume::Sender<ShellEvent>,
     cancel: &CancelToken,
+    max_output_lines: usize,
+    max_output_bytes: usize,
 ) -> Result<String, String> {
     let mut std_cmd = StdCommand::new("bash");
     std_cmd
@@ -254,7 +263,7 @@ async fn run_command(
                     }
                     output.push_str(&line);
                     line_count += 1;
-                    if output.len() > MAX_OUTPUT_BYTES || line_count >= MAX_OUTPUT_LINES {
+                    if output.len() > max_output_bytes || line_count >= max_output_lines {
                         truncated = true;
                     }
                 }

@@ -4,28 +4,48 @@ use std::fs;
 use crate::{DataDir, StorageError, atomic_write};
 
 const HISTORY_FILE: &str = "input_history.json";
-const MAX_ENTRIES: usize = 100;
+pub const MAX_ENTRIES: usize = 100;
 
-#[derive(Debug, Default)]
-pub struct InputHistory(VecDeque<String>);
+#[derive(Debug)]
+pub struct InputHistory {
+    entries: VecDeque<String>,
+    max_entries: usize,
+}
+
+impl Default for InputHistory {
+    fn default() -> Self {
+        Self {
+            entries: VecDeque::new(),
+            max_entries: MAX_ENTRIES,
+        }
+    }
+}
 
 impl InputHistory {
-    pub fn load(dir: &DataDir) -> Self {
+    pub fn load(dir: &DataDir, max_entries: usize) -> Self {
         let path = dir.path().join(HISTORY_FILE);
         let data = match fs::read(&path) {
             Ok(d) => d,
-            Err(_) => return Self(VecDeque::new()),
+            Err(_) => {
+                return Self {
+                    entries: VecDeque::new(),
+                    max_entries,
+                };
+            }
         };
-        let entries: Vec<String> = serde_json::from_slice(&data).unwrap_or_default();
-        let mut history = Self(VecDeque::with_capacity(MAX_ENTRIES));
-        for entry in entries {
+        let items: Vec<String> = serde_json::from_slice(&data).unwrap_or_default();
+        let mut history = Self {
+            entries: VecDeque::with_capacity(max_entries),
+            max_entries,
+        };
+        for entry in items {
             history.push_inner(entry);
         }
         history
     }
 
     pub fn save(&self, dir: &DataDir) -> Result<(), StorageError> {
-        let data = serde_json::to_vec(&self.0)?;
+        let data = serde_json::to_vec(&self.entries)?;
         atomic_write(&dir.path().join(HISTORY_FILE), &data)
     }
 
@@ -38,25 +58,25 @@ impl InputHistory {
     }
 
     fn push_inner(&mut self, entry: String) {
-        if self.0.back().is_some_and(|last| *last == entry) {
+        if self.entries.back().is_some_and(|last| *last == entry) {
             return;
         }
-        if self.0.len() == MAX_ENTRIES {
-            self.0.pop_front();
+        if self.entries.len() == self.max_entries {
+            self.entries.pop_front();
         }
-        self.0.push_back(entry);
+        self.entries.push_back(entry);
     }
 
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.entries.is_empty()
     }
 
     pub fn get(&self, index: usize) -> Option<&str> {
-        self.0.get(index).map(String::as_str)
+        self.entries.get(index).map(String::as_str)
     }
 }
 
@@ -74,12 +94,12 @@ mod tests {
     #[test]
     fn roundtrip() {
         let (_tmp, dir) = tmp_dir();
-        let mut history = InputHistory::load(&dir);
+        let mut history = InputHistory::load(&dir, MAX_ENTRIES);
         history.push("a".into());
         history.push("b".into());
         history.push("c".into());
         history.save(&dir).unwrap();
-        let loaded = InputHistory::load(&dir);
+        let loaded = InputHistory::load(&dir, MAX_ENTRIES);
         assert_eq!(loaded.len(), 3);
         assert_eq!(loaded.get(0), Some("a"));
         assert_eq!(loaded.get(2), Some("c"));
@@ -129,7 +149,7 @@ mod tests {
         if let Some(data) = content {
             fs::write(dir.path().join(HISTORY_FILE), data).unwrap();
         }
-        let history = InputHistory::load(&dir);
+        let history = InputHistory::load(&dir, MAX_ENTRIES);
         assert!(history.is_empty());
     }
 }

@@ -4,7 +4,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 fn bench_splash_render(c: &mut Criterion) {
-    let splash = Splash::new();
+    let splash = Splash::new(true);
     let area = Rect::new(0, 0, 120, 40);
     let mut buf = Buffer::empty(area);
 

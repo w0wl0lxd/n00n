@@ -6,7 +6,7 @@ use crate::agent::{self, LoadedInstructions};
 use crate::{InstructionBlock, ToolOutput};
 use maki_tool_macro::Tool;
 
-use super::{MAX_OUTPUT_LINES, relative_path, truncate_bytes};
+use super::{relative_path, truncate_bytes};
 
 #[derive(Tool, Debug, Clone)]
 pub struct Read {
@@ -46,6 +46,8 @@ impl Read {
         let offset = self.offset;
         let limit = self.limit;
         let loaded = ctx.loaded_instructions.clone();
+        let max_output_lines = ctx.config.max_output_lines;
+        let max_line_bytes = ctx.config.max_line_bytes;
         smol::unblock(move || {
             let cwd = std::env::current_dir().ok();
             if Path::new(&path).is_dir() {
@@ -56,13 +58,13 @@ impl Read {
             let total_lines = raw.lines().count();
 
             let start = offset.unwrap_or(1).saturating_sub(1);
-            let limit = limit.unwrap_or(MAX_OUTPUT_LINES);
+            let limit = limit.unwrap_or(max_output_lines);
 
             let lines: Vec<String> = raw
                 .lines()
                 .skip(start)
                 .take(limit)
-                .map(truncate_bytes)
+                .map(|l| truncate_bytes(l, max_line_bytes))
                 .collect();
 
             let instructions = cwd.as_deref().and_then(|cwd| {

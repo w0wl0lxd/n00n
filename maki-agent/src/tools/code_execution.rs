@@ -22,7 +22,6 @@ use super::truncate_output;
 use super::{Deadline, INTERPRETER_TOOLS};
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const PREAMBLE: &str = "import re\nimport asyncio\nimport sys\nimport os\n";
 
 #[derive(Tool, Debug, Clone)]
@@ -48,8 +47,10 @@ impl CodeInterpreter {
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let timeout = Duration::from_secs(
-            ctx.deadline
-                .cap_timeout(self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS))?,
+            ctx.deadline.cap_timeout(
+                self.timeout
+                    .unwrap_or(ctx.config.code_execution_timeout_secs),
+            )?,
         );
         let code = self.code.clone();
         let tool_use_id = ctx.tool_use_id.clone();
@@ -58,7 +59,7 @@ impl CodeInterpreter {
         let cancel = ctx.cancel.clone();
         let config = ctx.config;
         let deadline = Deadline::after(timeout);
-        let limits = runner::limits_with_timeout(timeout);
+        let limits = runner::limits(timeout, config.interpreter_max_memory_mb * 1024 * 1024);
 
         // NOTE: cancel races the smol::unblock future. When cancel wins, the
         // blocking thread pool task keeps running until the Python code finishes.
@@ -103,7 +104,11 @@ impl CodeInterpreter {
                     output.push_str("(no output)");
                 }
 
-                Ok(ToolOutput::Plain(truncate_output(output)))
+                Ok(ToolOutput::Plain(truncate_output(
+                    output,
+                    config.max_output_lines,
+                    config.max_output_bytes,
+                )))
             }))
             .await?
     }
@@ -123,9 +128,7 @@ impl super::ToolDefaults for CodeInterpreter {
     }
 
     fn start_annotation(&self) -> Option<String> {
-        Some(super::timeout_annotation(
-            self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS),
-        ))
+        Some(super::timeout_annotation(self.timeout.unwrap_or(30)))
     }
 
     fn augment_description(description: &mut String, _ctx: &super::DescriptionContext) {

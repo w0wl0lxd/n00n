@@ -70,9 +70,7 @@ pub(crate) fn is_instruction_file(name: &str) -> bool {
 }
 
 const DOOM_LOOP_THRESHOLD: usize = 3;
-const MAX_CONTINUATION_TURNS: u32 = 3;
 const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
-const COMPACTION_BUFFER: u32 = 30_000;
 const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.";
 const CANCEL_MARKER: &str = "[Cancelled by user]";
 const MCP_BLOCKED_IN_PLAN: &str = "MCP tools are not available in plan mode";
@@ -704,7 +702,7 @@ impl Agent {
             self.history.push(response.message);
 
             if stop_reason == Some(StopReason::MaxTokens)
-                && self.num_turns <= MAX_CONTINUATION_TURNS
+                && self.num_turns <= self.config.max_continuation_turns
             {
                 warn!(
                     self.num_turns,
@@ -824,7 +822,7 @@ impl Agent {
     }
 
     async fn try_auto_compact(&mut self, usage: &TokenUsage) -> Result<bool, AgentError> {
-        if !self.auto_compact || !is_overflow(usage, &self.model) {
+        if !self.auto_compact || !is_overflow(usage, &self.model, self.config.compaction_buffer) {
             return Ok(false);
         }
         info!(total_input = usage.total_input(), "auto-compacting");
@@ -965,8 +963,8 @@ pub async fn compact(
     Ok(())
 }
 
-fn is_overflow(usage: &TokenUsage, model: &Model) -> bool {
-    let reserved = COMPACTION_BUFFER.min(model.max_output_tokens);
+fn is_overflow(usage: &TokenUsage, model: &Model, compaction_buffer: u32) -> bool {
+    let reserved = compaction_buffer.min(model.max_output_tokens);
     let usable = model.context_window.saturating_sub(reserved);
     usage.context_tokens() >= usable
 }
@@ -1331,7 +1329,10 @@ mod tests {
             cache_read,
             cache_creation,
         };
-        assert_eq!(is_overflow(&usage, &model), expected);
+        assert_eq!(
+            is_overflow(&usage, &model, AgentConfig::default().compaction_buffer),
+            expected
+        );
     }
 
     #[test_case(true,  900, true  ; "enabled_and_over_threshold")]

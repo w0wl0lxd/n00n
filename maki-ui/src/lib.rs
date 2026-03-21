@@ -47,6 +47,7 @@ use maki_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelToken,
     CancelTrigger, Envelope, EventSender, ExtractedCommand, History,
 };
+use maki_config::UiConfig;
 use maki_providers::AgentError;
 use maki_providers::Message;
 use maki_providers::Model;
@@ -61,8 +62,6 @@ use app::shell::{ShellEvent, spawn_shell};
 use app::{App, Msg};
 use chat::history_to_display;
 use components::Action;
-
-const MOUSE_SCROLL_LINES: i32 = 3;
 
 const ANIMATION_INTERVAL_MS: u64 = 16;
 const IDLE_POLL_INTERVAL_MS: u64 = 100;
@@ -86,12 +85,15 @@ impl Drop for TerminalGuard {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     model: Model,
     skills: Vec<Skill>,
     session: AppSession,
     storage: DataDir,
     config: AgentConfig,
+    ui_config: UiConfig,
+    input_history_size: usize,
     #[cfg(feature = "demo")] demo: bool,
 ) -> Result<String> {
     let (_guard, mut terminal) = TerminalGuard::init()?;
@@ -102,6 +104,8 @@ pub fn run(
         session,
         storage,
         config,
+        ui_config,
+        input_history_size,
         #[cfg(feature = "demo")]
         demo,
     )?;
@@ -124,6 +128,7 @@ struct EventLoop<'t> {
 }
 
 impl<'t> EventLoop<'t> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         terminal: &'t mut ratatui::DefaultTerminal,
         model: Model,
@@ -131,6 +136,8 @@ impl<'t> EventLoop<'t> {
         session: AppSession,
         storage: DataDir,
         config: AgentConfig,
+        ui_config: UiConfig,
+        input_history_size: usize,
         #[cfg(feature = "demo")] demo: bool,
     ) -> Result<Self> {
         let available_models: Arc<ArcSwapOption<Vec<String>>> = Arc::new(ArcSwapOption::empty());
@@ -178,6 +185,8 @@ impl<'t> EventLoop<'t> {
             available_models,
             Arc::clone(&mcp_state.infos),
             Arc::clone(&storage_writer),
+            ui_config,
+            input_history_size,
         );
         #[cfg(feature = "demo")]
         if demo {
@@ -218,7 +227,11 @@ impl<'t> EventLoop<'t> {
         if resumed {
             app.token_usage = app.session.token_usage;
             *handles.tool_outputs.lock().unwrap() = app.session.tool_outputs.clone();
-            let display_msgs = history_to_display(&app.session.messages, &app.session.tool_outputs);
+            let display_msgs = history_to_display(
+                &app.session.messages,
+                &app.session.tool_outputs,
+                app.ui_config.tool_output_lines,
+            );
             app.main_chat().load_messages(display_msgs);
             app.todo_panel.restore(&app.session.tool_outputs);
         }
@@ -312,8 +325,12 @@ impl<'t> EventLoop<'t> {
     fn translate_mouse(&mut self, mouse: CtMouseEvent) -> Option<Msg> {
         match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                let (scroll, extra) =
-                    aggregate_scroll(mouse.column, mouse.row, scroll_delta(mouse.kind));
+                let (scroll, extra) = aggregate_scroll(
+                    mouse.column,
+                    mouse.row,
+                    scroll_delta(mouse.kind, self.app.ui_config.mouse_scroll_lines),
+                    self.app.ui_config.mouse_scroll_lines,
+                );
                 if let Some(extra) = extra {
                     let actions = self.app.update(scroll);
                     self.dispatch(actions);
@@ -399,7 +416,14 @@ impl<'t> EventLoop<'t> {
             } => {
                 let (trigger, cancel) = CancelToken::new();
                 self.app.shell.add_trigger(trigger);
-                spawn_shell(command, id, visible, self.shell_tx.clone(), cancel);
+                spawn_shell(
+                    command,
+                    id,
+                    visible,
+                    self.shell_tx.clone(),
+                    cancel,
+                    self.config,
+                );
             }
             Action::OpenEditor(path) => {
                 if let Err(e) = open_in_editor(&path, self.terminal) {
@@ -799,20 +823,25 @@ fn toggle_disabled(disabled: &mut Vec<String>, name: &str, enabled: bool) {
     }
 }
 
-fn scroll_delta(kind: MouseEventKind) -> i32 {
+fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
     if kind == MouseEventKind::ScrollUp {
-        MOUSE_SCROLL_LINES
+        lines as i32
     } else {
-        -MOUSE_SCROLL_LINES
+        -(lines as i32)
     }
 }
 
-fn aggregate_scroll(column: u16, row: u16, mut delta: i32) -> (Msg, Option<Msg>) {
+fn aggregate_scroll(
+    column: u16,
+    row: u16,
+    mut delta: i32,
+    scroll_lines: u32,
+) -> (Msg, Option<Msg>) {
     while event::poll(Duration::ZERO).unwrap_or(false) {
         if let Ok(Event::Mouse(next)) = event::read() {
             match next.kind {
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                    delta += scroll_delta(next.kind);
+                    delta += scroll_delta(next.kind, scroll_lines);
                 }
                 _ => return (Msg::Scroll { column, row, delta }, Some(Msg::Mouse(next))),
             }

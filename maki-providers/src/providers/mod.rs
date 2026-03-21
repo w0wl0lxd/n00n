@@ -69,9 +69,13 @@ impl SseErrorPayload {
 }
 
 pub(crate) fn http_client() -> isahc::HttpClient {
+    http_client_with(CONNECT_TIMEOUT, RECV_TIMEOUT)
+}
+
+pub(crate) fn http_client_with(connect: Duration, stream: Duration) -> isahc::HttpClient {
     isahc::HttpClient::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(RECV_TIMEOUT)
+        .connect_timeout(connect)
+        .timeout(stream)
         .build()
         .expect("failed to build HTTP client")
 }

@@ -106,11 +106,6 @@ pub(crate) const GENERAL_SUBAGENT_TOOLS: &[&str] = &[
     "code_execution",
 ];
 
-const MAX_OUTPUT_BYTES: usize = 50 * 1024;
-pub(crate) const MAX_OUTPUT_LINES: usize = 2000;
-pub(crate) const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
-pub(crate) const SEARCH_RESULT_LIMIT: usize = 100;
-pub(crate) const MAX_LINE_BYTES: usize = 500;
 const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
 const DEADLINE_EXCEEDED: &str = "timeout exceeded";
 
@@ -207,29 +202,29 @@ pub(crate) fn mtime(path: &Path) -> SystemTime {
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
-pub(crate) fn truncate_bytes(line: &str) -> String {
-    if line.len() > MAX_LINE_BYTES {
-        let boundary = line.floor_char_boundary(MAX_LINE_BYTES);
+pub(crate) fn truncate_bytes(line: &str, max_bytes: usize) -> String {
+    if line.len() > max_bytes {
+        let boundary = line.floor_char_boundary(max_bytes);
         format!("{}...", &line[..boundary])
     } else {
         line.to_owned()
     }
 }
 
-pub(crate) fn truncate_output(text: String) -> String {
+pub(crate) fn truncate_output(text: String, max_lines: usize, max_bytes: usize) -> String {
     const TRUNCATED_MARKER: &str = "[truncated]";
     let mut lines = text.lines();
     let mut result = String::new();
     let mut truncated = false;
 
-    for _ in 0..MAX_OUTPUT_LINES {
+    for _ in 0..max_lines {
         let Some(line) = lines.next() else { break };
         if !result.is_empty() {
             result.push('\n');
         }
         result.push_str(line);
-        if result.len() > MAX_OUTPUT_BYTES {
-            let boundary = result.floor_char_boundary(MAX_OUTPUT_BYTES);
+        if result.len() > max_bytes {
+            let boundary = result.floor_char_boundary(max_bytes);
             result.truncate(boundary);
             truncated = true;
             break;
@@ -650,6 +645,7 @@ mod tests {
     use super::*;
 
     const DEADLINE_EXCEEDED_MSG: &str = super::DEADLINE_EXCEEDED;
+    const LINE_LIMIT: usize = 500;
 
     #[test_case(30,  "30s timeout"   ; "seconds_only")]
     #[test_case(120, "2m timeout"    ; "minutes_only")]
@@ -677,25 +673,28 @@ mod tests {
     }
 
     #[test_case("short",                            "short"                             ; "short_passthrough")]
-    #[test_case(&"x".repeat(MAX_LINE_BYTES),       &"x".repeat(MAX_LINE_BYTES)        ; "exact_boundary")]
-    #[test_case(&"x".repeat(MAX_LINE_BYTES + 500), &format!("{}...", "x".repeat(MAX_LINE_BYTES)) ; "long_truncated")]
-    #[test_case(&format!("{}\u{1F600}", "a".repeat(MAX_LINE_BYTES - 1)), &format!("{}...", "a".repeat(MAX_LINE_BYTES - 1)) ; "multibyte_char_boundary")]
+    #[test_case(&"x".repeat(LINE_LIMIT),       &"x".repeat(LINE_LIMIT)        ; "exact_boundary")]
+    #[test_case(&"x".repeat(LINE_LIMIT + 500), &format!("{}...", "x".repeat(LINE_LIMIT)) ; "long_truncated")]
+    #[test_case(&format!("{}\u{1F600}", "a".repeat(LINE_LIMIT - 1)), &format!("{}...", "a".repeat(LINE_LIMIT - 1)) ; "multibyte_char_boundary")]
     fn truncate_bytes_cases(input: &str, expected: &str) {
-        let result = truncate_bytes(input);
+        let result = truncate_bytes(input, LINE_LIMIT);
         assert_eq!(result, expected);
     }
 
     #[test]
     fn truncate_output_respects_line_and_byte_limits() {
-        let many_lines: String = (0..MAX_OUTPUT_LINES + 500)
+        const MAX_LINES: usize = 2000;
+        const MAX_BYTES: usize = 50 * 1024;
+
+        let many_lines: String = (0..MAX_LINES + 500)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let result = truncate_output(many_lines);
+        let result = truncate_output(many_lines, MAX_LINES, MAX_BYTES);
         assert!(result.ends_with("[truncated]"));
 
-        let many_bytes = "x".repeat(MAX_OUTPUT_BYTES + 1000);
-        let result = truncate_output(many_bytes);
+        let many_bytes = "x".repeat(MAX_BYTES + 1000);
+        let result = truncate_output(many_bytes, MAX_LINES, MAX_BYTES);
         assert!(result.ends_with("[truncated]"));
     }
 

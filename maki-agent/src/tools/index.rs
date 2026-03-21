@@ -17,11 +17,12 @@ impl Index {
     pub const DESCRIPTION: &str = include_str!("index.md");
     pub const EXAMPLES: Option<&str> = Some(r#"[{"path": "/home/user/project/src/main.rs"}]"#);
 
-    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let path = self.path.clone();
+        let max_file_size = ctx.config.index_max_file_size;
         smol::unblock(move || {
             let p = Path::new(&path);
-            match index_file(p) {
+            match index_file(p, max_file_size) {
                 Ok(skeleton) => Ok(ToolOutput::Plain(skeleton)),
                 Err(IndexError::UnsupportedLanguage(ext)) => Err(format!(
                     "Unsupported file type: {ext}. Use the read tool instead."

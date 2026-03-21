@@ -230,6 +230,13 @@ pub fn limits_with_timeout(timeout: Duration) -> ResourceLimits {
         .max_recursion_depth(Some(DEFAULT_MAX_RECURSION))
 }
 
+pub fn limits(timeout: Duration, max_memory: usize) -> ResourceLimits {
+    ResourceLimits::new()
+        .max_duration(timeout)
+        .max_memory(max_memory)
+        .max_recursion_depth(Some(DEFAULT_MAX_RECURSION))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

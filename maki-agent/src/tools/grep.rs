@@ -10,9 +10,7 @@ use crate::{GrepFileEntry, GrepMatch, ToolOutput};
 use maki_tool_macro::Tool;
 use tracing::debug;
 
-use super::{
-    NO_FILES_FOUND, SEARCH_RESULT_LIMIT, mtime, relative_path, resolve_search_path, truncate_bytes,
-};
+use super::{NO_FILES_FOUND, mtime, relative_path, resolve_search_path, truncate_bytes};
 
 pub(super) const INVALID_REGEX: &str = "invalid regex pattern";
 
@@ -37,10 +35,12 @@ impl Grep {
 ]"#,
     );
 
-    pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
+    pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let pattern = self.pattern.clone();
         let include = self.include.clone();
         let path = self.path.clone();
+        let search_limit = ctx.config.search_result_limit;
+        let max_line_bytes = ctx.config.max_line_bytes;
 
         smol::unblock(move || {
             let search_path = resolve_search_path(path.as_deref())?;
@@ -98,7 +98,7 @@ impl Grep {
                         let text = text.strip_suffix('\r').unwrap_or(text);
                         file_matches.push(GrepMatch {
                             line_nr: line_nr as usize,
-                            text: truncate_bytes(text),
+                            text: truncate_bytes(text, max_line_bytes),
                         });
                         Ok(true)
                     }),
@@ -129,7 +129,7 @@ impl Grep {
 
             let mut total = 0;
             for entry in &mut entries {
-                let remaining = SEARCH_RESULT_LIMIT.saturating_sub(total);
+                let remaining = search_limit.saturating_sub(total);
                 entry.matches.truncate(remaining);
                 total += entry.matches.len();
             }

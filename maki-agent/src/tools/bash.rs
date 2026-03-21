@@ -15,7 +15,6 @@ use crate::{AgentEvent, EventSender, ToolInput, ToolOutput};
 use super::{relative_path, truncate_output};
 use tracing::info;
 
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
 static RTK_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
@@ -96,7 +95,7 @@ impl Bash {
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let timeout_secs = ctx
             .deadline
-            .cap_timeout(self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS))?;
+            .cap_timeout(self.timeout.unwrap_or(ctx.config.bash_timeout_secs))?;
         let (command, workdir) = self.resolved();
         let rewritten = rtk_rewrite(command, ctx.config.no_rtk);
         let command = rewritten.as_deref().unwrap_or(command);
@@ -168,7 +167,11 @@ impl Bash {
                 Event::Line(None) => {
                     let status = guard.wait().await.map_err(|e| format!("wait error: {e}"))?;
                     flush_output(ctx, &output, &mut last_len);
-                    let content = truncate_output(output);
+                    let content = truncate_output(
+                        output,
+                        ctx.config.max_output_lines,
+                        ctx.config.max_output_bytes,
+                    );
                     if !status.success() {
                         if content.is_empty() {
                             return Err(format!(
@@ -185,7 +188,11 @@ impl Bash {
                     drain_remaining(&line_rx, &mut output);
                     let mut msg = timed_out_msg(timeout_secs);
                     if !output.is_empty() {
-                        let content = truncate_output(output);
+                        let content = truncate_output(
+                            output,
+                            ctx.config.max_output_lines,
+                            ctx.config.max_output_bytes,
+                        );
                         msg.push('\n');
                         msg.push_str(&content);
                     }
@@ -232,9 +239,7 @@ impl super::ToolDefaults for Bash {
     }
 
     fn start_annotation(&self) -> Option<String> {
-        Some(super::timeout_annotation(
-            self.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS),
-        ))
+        Some(super::timeout_annotation(self.timeout.unwrap_or(120)))
     }
 }
 

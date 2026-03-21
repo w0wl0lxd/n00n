@@ -11,6 +11,7 @@ use crate::render_worker::RenderWorker;
 use crate::selection::{self, LineBreaks, ScreenSelection, Selection};
 use crate::splash::{ColorTransition, Splash};
 use crate::theme;
+use maki_config::UiConfig;
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -118,23 +119,27 @@ pub struct MessagesPanel {
     idle_splash: Splash,
     accent: ColorTransition,
     expanded_tools: HashSet<String>,
+    tool_output_lines: usize,
 }
 
 impl MessagesPanel {
-    pub fn new() -> Self {
+    pub fn new(ui_config: UiConfig) -> Self {
         let thinking = thinking_style();
         let assistant = assistant_style();
+        let ms = ui_config.typewriter_ms_per_char;
         Self {
             messages: Vec::new(),
             streaming_thinking: StreamingContent::new_dim(
                 thinking.prefix,
                 thinking.text_style,
                 thinking.prefix_style,
+                ms,
             ),
             streaming_text: StreamingContent::new(
                 assistant.prefix,
                 assistant.text_style,
                 assistant.prefix_style,
+                ms,
             ),
             started_at: Instant::now(),
             in_progress_count: 0,
@@ -148,9 +153,10 @@ impl MessagesPanel {
             segment_heights: Vec::new(),
             theme_generation: theme::generation(),
             highlight_segment: None,
-            idle_splash: Splash::new(),
+            idle_splash: Splash::new(ui_config.splash_animation),
             accent: ColorTransition::new(theme::current().mode_build),
             expanded_tools: HashSet::new(),
+            tool_output_lines: ui_config.tool_output_lines,
         }
     }
 
@@ -245,7 +251,7 @@ impl MessagesPanel {
             return;
         };
         let tool_name = msg.role.tool_name().unwrap_or("");
-        let limits = ToolKind::from_name(tool_name).output_limits();
+        let limits = ToolKind::from_name(tool_name).output_limits_with(self.tool_output_lines);
         truncate_to_header(&mut msg.text);
         let truncated = truncate_output(content, limits.max_lines, limits.keep);
         msg.truncated_lines = truncated.skipped;
@@ -286,7 +292,8 @@ impl MessagesPanel {
         match &event.output {
             ToolOutput::Plain(text) | ToolOutput::ReadDir { text, .. } => {
                 if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
-                    let limits = ToolKind::from_name(event.tool).output_limits();
+                    let limits =
+                        ToolKind::from_name(event.tool).output_limits_with(self.tool_output_lines);
                     let tr = truncate_output(text, limits.max_lines, limits.keep);
                     msg.truncated_lines = tr.skipped;
                     if !tr.kept.is_empty() {
@@ -303,7 +310,8 @@ impl MessagesPanel {
                     msg.text = format!("{}\n{NO_FILES_FOUND}", msg.text);
                 } else {
                     let display = output.as_display_text();
-                    let limits = ToolKind::from_name(event.tool).output_limits();
+                    let limits =
+                        ToolKind::from_name(event.tool).output_limits_with(self.tool_output_lines);
                     let tr = truncate_output(&display, limits.max_lines, limits.keep);
                     msg.truncated_lines = tr.skipped;
                     msg.text = format!("{}\n{}", msg.text, tr.kept);
@@ -463,6 +471,7 @@ impl MessagesPanel {
                         self.started_at,
                         self.viewport_width,
                         false,
+                        self.tool_output_lines,
                     );
                     if let Some(ts) = &msg.timestamp {
                         append_right_info(
@@ -492,6 +501,7 @@ impl MessagesPanel {
                         self.started_at,
                         self.viewport_width,
                         false,
+                        self.tool_output_lines,
                     );
                     if let Some(idx) = self
                         .cached_segments
@@ -946,7 +956,14 @@ impl MessagesPanel {
         };
 
         let expanded = self.expanded_tools.contains(tool_id);
-        let mut tl = build_tool_lines(msg, *status, self.started_at, self.viewport_width, expanded);
+        let mut tl = build_tool_lines(
+            msg,
+            *status,
+            self.started_at,
+            self.viewport_width,
+            expanded,
+            self.tool_output_lines,
+        );
         if let Some(ts) = &msg.timestamp {
             append_right_info(
                 &mut tl.lines[0],
@@ -974,6 +991,7 @@ impl MessagesPanel {
                         self.started_at,
                         self.viewport_width,
                         child_expanded,
+                        self.tool_output_lines,
                     );
                     (child_id, copy, tl)
                 })
@@ -1020,8 +1038,14 @@ impl MessagesPanel {
 
             if let DisplayRole::Tool { ref id, status, .. } = msg.role {
                 let expanded = self.expanded_tools.contains(id);
-                let mut tl =
-                    build_tool_lines(msg, status, self.started_at, self.viewport_width, expanded);
+                let mut tl = build_tool_lines(
+                    msg,
+                    status,
+                    self.started_at,
+                    self.viewport_width,
+                    expanded,
+                    self.tool_output_lines,
+                );
                 if let Some(ts) = &msg.timestamp {
                     append_right_info(
                         &mut tl.lines[0],
@@ -1052,6 +1076,7 @@ impl MessagesPanel {
                             self.started_at,
                             self.viewport_width,
                             child_expanded,
+                            self.tool_output_lines,
                         );
                         let mut seg = Segment {
                             copy_text: batch_entry_copy_text(entry),
@@ -1223,7 +1248,7 @@ mod tests {
     }
 
     fn panel_with_tools(ids: &[(&str, &'static str)]) -> MessagesPanel {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         for &(id, tool) in ids {
             panel.tool_start(start(id, tool));
         }
@@ -1233,7 +1258,7 @@ mod tests {
     #[test_case(false, ToolStatus::Success ; "success_updates_start_to_success")]
     #[test_case(true,  ToolStatus::Error   ; "error_updates_start_to_error")]
     fn tool_done_updates_start_status(is_error: bool, expected: ToolStatus) {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_start(start("t1", "bash"));
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -1251,7 +1276,7 @@ mod tests {
 
     #[test]
     fn webfetch_hides_body() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_start(start("t1", WEBFETCH_TOOL_NAME));
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -1275,7 +1300,7 @@ mod tests {
         ; "grep_files"
     )]
     fn tool_done_sets_annotation(tool: &'static str, output: ToolOutput, expected: Option<&str>) {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_start(start("t1", tool));
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -1289,7 +1314,7 @@ mod tests {
     #[test_case("line\n".repeat(200).as_str(), Some("2m timeout · 200 lines") ; "merges_start_and_output_annotations")]
     #[test_case("ok",                           Some("2m timeout")           ; "keeps_start_when_output_has_none")]
     fn tool_done_annotation_merge(output: &str, expected: Option<&str>) {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         let mut event = start("t1", BASH_TOOL_NAME);
         event.annotation = Some("2m timeout".into());
         panel.tool_start(event);
@@ -1327,7 +1352,7 @@ mod tests {
         ; "glob_empty_shows_no_files_found"
     )]
     fn tool_done_glob_result(output: ToolOutput, has_file_count: bool, has_no_files_msg: bool) {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_start(start("t1", GLOB_TOOL_NAME));
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -1345,7 +1370,7 @@ mod tests {
 
     #[test]
     fn tool_done_grep_shows_matches() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_start(start("t1", GREP_TOOL_NAME));
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -1360,7 +1385,7 @@ mod tests {
 
     #[test]
     fn tool_start_flushes_streaming_text() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.streaming_text.set_buffer("partial response");
 
         panel.tool_start(start("t1", "read"));
@@ -1372,7 +1397,7 @@ mod tests {
 
     #[test]
     fn thinking_delta_separate_from_text() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.thinking_delta("reasoning");
         assert_eq!(panel.streaming_thinking, "reasoning");
         assert!(panel.streaming_text.is_empty());
@@ -1386,7 +1411,7 @@ mod tests {
 
     #[test]
     fn scroll_top_clamped_to_content() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.push(DisplayMessage::new(DisplayRole::User, "short".into()));
         panel.scroll_top = 1000;
         panel.auto_scroll = false;
@@ -1396,7 +1421,7 @@ mod tests {
 
     #[test]
     fn scroll_up_pins_viewport_during_streaming() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.streaming_text.set_buffer(&"a\n".repeat(30));
         render(&mut panel, 80, 10);
 
@@ -1442,7 +1467,7 @@ mod tests {
 
     #[test]
     fn ctrl_d_to_bottom_re_enables_auto_scroll() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.streaming_text.set_buffer(&"a\n".repeat(30));
         render(&mut panel, 80, 10);
         assert!(panel.auto_scroll);
@@ -1459,7 +1484,7 @@ mod tests {
 
     #[test]
     fn unknown_tool_id_is_noop() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_output("ghost", "data");
         panel.tool_done(ToolDoneEvent {
             id: "orphan".into(),
@@ -1511,7 +1536,7 @@ mod tests {
     #[test_case(40, true  ; "rendered_when_content_overflows")]
     #[test_case(1,  false ; "hidden_when_content_fits")]
     fn scrollbar_visibility(line_count: usize, expected: bool) {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel
             .streaming_text
             .set_buffer(&"line\n".repeat(line_count));
@@ -1582,7 +1607,7 @@ mod tests {
 
     #[test]
     fn bash_live_output_with_code_input() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         bash_code_start(&mut panel, "t1", "echo hello");
         rebuild(&mut panel);
 
@@ -1700,7 +1725,7 @@ mod tests {
 
     #[test]
     fn question_tool_renders_with_tool_chrome() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_start(start("q1", QUESTION_TOOL_NAME));
         panel.tool_done(ToolDoneEvent {
             id: "q1".into(),
@@ -1725,7 +1750,7 @@ mod tests {
 
     #[test]
     fn selection_freezes_viewport_during_auto_scroll() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.streaming_text.set_buffer(&"a\n".repeat(30));
         render(&mut panel, 80, 10);
         assert!(panel.auto_scroll);
@@ -1754,7 +1779,7 @@ mod tests {
 
     #[test]
     fn copy_text_grep_result_includes_structured_output() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_start(start("t1", "grep"));
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -1769,7 +1794,7 @@ mod tests {
 
     #[test]
     fn copy_text_diff_output_includes_hunks() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_start(start("t1", "edit"));
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -1794,7 +1819,7 @@ mod tests {
 
     #[test]
     fn copy_text_bash_with_code_input() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         bash_code_start(&mut panel, "t1", "echo hello");
         panel.tool_done(ToolDoneEvent {
             id: "t1".into(),
@@ -1810,7 +1835,7 @@ mod tests {
     #[test]
     fn copy_text_includes_role_prefix() {
         let md = "# Heading\n\nSome **bold** text";
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.push(DisplayMessage::new(DisplayRole::User, "hello".into()));
         panel.push(DisplayMessage::new(DisplayRole::Assistant, md.into()));
         panel.push(DisplayMessage::new(DisplayRole::Thinking, "hmm".into()));
@@ -1852,7 +1877,7 @@ mod tests {
 
     #[test]
     fn update_tool_model_batch_inner_id() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_start(ToolStartEvent {
             id: "b1".into(),
             tool: "batch",
@@ -1898,7 +1923,7 @@ mod tests {
 
     #[test]
     fn update_tool_summary_batch_inner_id() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_start(ToolStartEvent {
             id: "b1".into(),
             tool: "batch",
@@ -1930,7 +1955,7 @@ mod tests {
 
     #[test]
     fn scroll_clamps_to_max_scroll() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.streaming_text.set_buffer(&"a\n".repeat(15));
         render(&mut panel, 80, 10);
         let max = panel.max_scroll();
@@ -1951,7 +1976,7 @@ mod tests {
     #[test_case("bash", 1, 1 ; "known_tool_creates_message")]
     #[test_case("nonexistent_tool", 0, 0 ; "unknown_tool_ignored")]
     fn tool_pending(tool: &str, expected_msgs: usize, expected_in_progress: usize) {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_pending("t1".into(), tool);
         assert_eq!(panel.messages.len(), expected_msgs);
         assert_eq!(panel.in_progress_count, expected_in_progress);
@@ -1959,7 +1984,7 @@ mod tests {
 
     #[test]
     fn tool_start_upgrades_pending_in_place() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_pending("t1".into(), "bash");
         assert_eq!(panel.messages.len(), 1);
         assert_eq!(panel.in_progress_count, 1);
@@ -2006,7 +2031,7 @@ mod tests {
     }
 
     fn panel_with_msgs(texts: &[&str], width: u16, height: u16) -> MessagesPanel {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         for &text in texts {
             panel.push(DisplayMessage::new(DisplayRole::Assistant, text.into()));
         }
@@ -2051,7 +2076,7 @@ mod tests {
 
     #[test]
     fn extract_off_screen_rows_via_temp_buffer() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         let lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
         let long_text = lines.join("\n");
         panel.push(DisplayMessage::new(
@@ -2090,7 +2115,7 @@ mod tests {
     #[test_case(&["line-0\nline-1\nline-2\nline-3"], "line-0", "line-3" ; "single_segment")]
     #[test_case(&["seg-A-text", "seg-B-text"],      "seg-A-text", "seg-B-text" ; "across_segments")]
     fn extract_partial_col_symmetric(msgs: &[&str], expect_start: &str, expect_end: &str) {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         for &text in msgs {
             panel.push(DisplayMessage::new(DisplayRole::Assistant, text.into()));
         }
@@ -2111,7 +2136,7 @@ mod tests {
     fn extract_wrapped_no_soft_breaks(template: &str, anchor: (u32, u16)) {
         let long = "x".repeat(200);
         let msg = template.replace("{L}", &long);
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.push(DisplayMessage::new(DisplayRole::Assistant, msg));
         render(&mut panel, 40, 30);
         let total: u16 = panel.segment_heights().iter().sum();
@@ -2126,7 +2151,7 @@ mod tests {
 
     #[test]
     fn extract_partial_last_line_truncated() {
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.push(DisplayMessage::new(
             DisplayRole::Assistant,
             "first\nABCDEFGHIJKLMNOP".into(),
@@ -2145,7 +2170,7 @@ mod tests {
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_start(ToolStartEvent {
             id: "t1".into(),
             tool: BASH_TOOL_NAME,
@@ -2191,7 +2216,7 @@ mod tests {
         let mut panel = if is_tool {
             panel_with_long_tool(3)
         } else {
-            let mut p = MessagesPanel::new();
+            let mut p = MessagesPanel::new(UiConfig::default());
             p.push(DisplayMessage::new(DisplayRole::Assistant, "hello".into()));
             render(&mut p, 80, 24);
             p
@@ -2202,7 +2227,7 @@ mod tests {
 
     fn panel_with_read_tool(line_count: usize) -> MessagesPanel {
         let lines: Vec<String> = (0..line_count).map(|i| format!("line {i}")).collect();
-        let mut panel = MessagesPanel::new();
+        let mut panel = MessagesPanel::new(UiConfig::default());
         panel.tool_start(ToolStartEvent {
             id: "t1".into(),
             tool: READ_TOOL_NAME,

@@ -103,21 +103,23 @@ impl ColorTransition {
 pub struct Splash {
     start: Instant,
     field_offset: f32,
+    animate: bool,
 }
 
 impl Default for Splash {
     fn default() -> Self {
-        Self::new()
+        Self::new(true)
     }
 }
 
 impl Splash {
-    pub fn new() -> Self {
+    pub fn new(animate: bool) -> Self {
         let mut rng = [0u8; 8];
         getrandom::fill(&mut rng).ok();
         Self {
             start: Instant::now(),
             field_offset: (u64::from_le_bytes(rng) % 10_000) as f32,
+            animate,
         }
     }
 
@@ -137,7 +139,9 @@ impl Splash {
         let tag_y = top_y + 1;
         let help_y = tag_y + 2;
 
-        self.render_field(area, buf, t + self.field_offset, fade, accent);
+        if self.animate {
+            self.render_field(area, buf, t + self.field_offset, fade, accent);
+        }
         self.render_logo(area, buf, t, fade, top_y, accent);
         self.render_tagline(area, buf, fade, tag_y);
         self.render_help(area, buf, fade, help_y, accent);

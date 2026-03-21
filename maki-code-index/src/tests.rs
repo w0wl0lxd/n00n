@@ -2,7 +2,7 @@ use std::path::Path;
 
 use test_case::test_case;
 
-use crate::{IndexError, Language, index_file, index_source};
+use crate::{IndexError, Language, MAX_FILE_SIZE, index_file, index_source};
 
 fn idx(source: &str, lang: Language) -> String {
     index_source(source.as_bytes(), lang).unwrap()
@@ -23,7 +23,7 @@ fn lacks(output: &str, needles: &[&str]) {
 #[test]
 fn unsupported_extension() {
     assert!(matches!(
-        index_file(Path::new("file.yaml")),
+        index_file(Path::new("file.yaml"), MAX_FILE_SIZE),
         Err(IndexError::UnsupportedLanguage(_))
     ));
 }

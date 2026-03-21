@@ -7,7 +7,7 @@ use maki_tool_macro::Tool;
 
 use crate::ToolOutput;
 
-use super::{MAX_RESPONSE_BYTES, truncate_output};
+use super::truncate_output;
 use tracing::info;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -38,10 +38,16 @@ impl WebFetch {
     );
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        ctx.cancel.race(self.do_fetch(ctx.deadline)).await?
+        ctx.cancel
+            .race(self.do_fetch(ctx.deadline, ctx.config))
+            .await?
     }
 
-    async fn do_fetch(&self, deadline: super::Deadline) -> Result<ToolOutput, String> {
+    async fn do_fetch(
+        &self,
+        deadline: super::Deadline,
+        config: maki_config::AgentConfig,
+    ) -> Result<ToolOutput, String> {
         let url = validate_and_upgrade_url(&self.url)?;
         let format = self.validated_format()?;
         let base_timeout = self
@@ -102,7 +108,7 @@ impl WebFetch {
             .get("content-length")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<usize>().ok())
-            && len > MAX_RESPONSE_BYTES
+            && len > config.max_response_bytes
         {
             return Err(format!("response too large: {len} bytes"));
         }
@@ -121,7 +127,7 @@ impl WebFetch {
 
         info!(url = %url, status, body_bytes = bytes.len(), "webfetch response");
 
-        if bytes.len() > MAX_RESPONSE_BYTES {
+        if bytes.len() > config.max_response_bytes {
             return Err(format!("response too large: {} bytes", bytes.len()));
         }
 
@@ -140,7 +146,11 @@ impl WebFetch {
             _ => text,
         };
 
-        Ok(ToolOutput::Plain(truncate_output(output)))
+        Ok(ToolOutput::Plain(truncate_output(
+            output,
+            config.max_output_lines,
+            config.max_output_bytes,
+        )))
     }
 
     pub fn start_summary(&self) -> String {
