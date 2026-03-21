@@ -1,0 +1,156 @@
+mod agent_loop;
+mod command_router;
+
+use std::collections::HashMap;
+use std::mem;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use arc_swap::ArcSwap;
+use maki_agent::mcp::config::McpServerInfo;
+use maki_agent::skill::Skill;
+use maki_agent::{AgentConfig, AgentInput, CancelTrigger, Envelope, ExtractedCommand, ToolOutput};
+use maki_providers::provider::Provider;
+use maki_providers::{Message, Model};
+use tracing::{info, warn};
+
+use crate::app::App;
+
+use self::agent_loop::AgentLoop;
+use self::command_router::spawn_command_router;
+
+pub(crate) enum AgentCommand {
+    Run(AgentInput, u64),
+    Compact(u64),
+    Cancel,
+    ToggleMcp(String, bool),
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct McpState {
+    pub(crate) disabled: Vec<String>,
+    pub(crate) infos: Arc<ArcSwap<Vec<McpServerInfo>>>,
+    pub(crate) pids: Arc<Mutex<Vec<u32>>>,
+}
+
+pub(crate) struct AgentHandles {
+    pub(crate) cmd_tx: flume::Sender<AgentCommand>,
+    pub(crate) agent_rx: flume::Receiver<Envelope>,
+    pub(crate) answer_tx: flume::Sender<String>,
+    pub(crate) history: Arc<Mutex<Vec<Message>>>,
+    pub(crate) tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>>,
+    pub(crate) mcp: McpState,
+    task: smol::Task<()>,
+}
+
+impl AgentHandles {
+    pub(crate) fn apply_to_app(&self, app: &mut App) {
+        app.answer_tx = Some(self.answer_tx.clone());
+        app.cmd_tx = Some(self.cmd_tx.clone());
+        app.shared_history = Some(Arc::clone(&self.history));
+        app.shared_tool_outputs = Some(Arc::clone(&self.tool_outputs));
+    }
+
+    pub(crate) fn cancel(self) {
+        let _ = self.cmd_tx.try_send(AgentCommand::Cancel);
+    }
+
+    pub(crate) fn respawn(
+        &mut self,
+        history: Vec<Message>,
+        provider: &Arc<dyn Provider>,
+        model: &Model,
+        skills: &Arc<[Skill]>,
+        config: AgentConfig,
+        app: &mut App,
+    ) {
+        let mcp = self.mcp.clone();
+        let old = mem::replace(
+            self,
+            spawn_agent(provider, model, history, skills, config, mcp),
+        );
+        old.cancel();
+        self.apply_to_app(app);
+    }
+
+    pub(crate) fn shutdown(self, timeout: Duration) {
+        let _ = self.cmd_tx.try_send(AgentCommand::Cancel);
+        let task = self.task;
+        drop((self.cmd_tx, self.agent_rx, self.answer_tx));
+        info!("waiting for agent to finish (timeout {timeout:?})");
+        smol::block_on(async {
+            let finished = futures_lite::future::or(
+                async {
+                    task.await;
+                    true
+                },
+                async {
+                    smol::Timer::after(timeout).await;
+                    false
+                },
+            )
+            .await;
+            if !finished {
+                warn!("agent did not finish within {timeout:?}, forcing shutdown");
+            }
+        });
+    }
+}
+
+pub(crate) fn toggle_disabled(disabled: &mut Vec<String>, name: &str, enabled: bool) {
+    if enabled {
+        disabled.retain(|s| s != name);
+    } else if !disabled.contains(&name.to_owned()) {
+        disabled.push(name.to_owned());
+    }
+}
+
+pub(crate) fn spawn_agent(
+    provider: &Arc<dyn Provider>,
+    model: &Model,
+    initial_history: Vec<Message>,
+    skills: &Arc<[Skill]>,
+    config: AgentConfig,
+    mcp_state: McpState,
+) -> AgentHandles {
+    let (agent_tx, agent_rx) = flume::unbounded::<Envelope>();
+    let (cmd_tx, cmd_rx) = flume::unbounded::<AgentCommand>();
+    let (answer_tx, answer_rx) = flume::unbounded::<String>();
+    let (ecmd_tx, ecmd_rx) = flume::unbounded::<ExtractedCommand>();
+    let (toggle_tx, toggle_rx) = flume::unbounded::<(String, bool)>();
+    let shared_history: Arc<Mutex<Vec<Message>>> = Arc::new(Mutex::new(initial_history.clone()));
+    let shared_tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let cancel_trigger: Arc<Mutex<Option<CancelTrigger>>> = Arc::new(Mutex::new(None));
+
+    spawn_command_router(cmd_rx, ecmd_tx, toggle_tx, Arc::clone(&cancel_trigger));
+
+    let agent_loop = AgentLoop::new(
+        Arc::clone(provider),
+        model.clone(),
+        Arc::clone(skills),
+        config,
+        initial_history,
+        Arc::clone(&shared_history),
+        Arc::clone(&mcp_state.infos),
+        Arc::clone(&mcp_state.pids),
+        mcp_state.disabled.clone(),
+        agent_tx,
+        answer_rx,
+        ecmd_rx,
+        toggle_rx,
+        cancel_trigger,
+    );
+
+    let task = smol::spawn(agent_loop.run());
+
+    AgentHandles {
+        cmd_tx,
+        agent_rx,
+        answer_tx,
+        history: shared_history,
+        tool_outputs: shared_tool_outputs,
+        mcp: mcp_state,
+        task,
+    }
+}
