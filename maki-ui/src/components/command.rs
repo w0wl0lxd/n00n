@@ -70,6 +70,11 @@ const COMMANDS: &[Command] = &[
         max_args: usize::MAX,
     },
     Command {
+        name: "/memory",
+        description: "List memory files for this project",
+        max_args: 0,
+    },
+    Command {
         name: "/exit",
         description: "Exit the application",
         max_args: 0,

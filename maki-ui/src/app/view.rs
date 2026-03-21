@@ -174,6 +174,10 @@ impl App {
         if r.width > 0 {
             overlay_rect = r;
         }
+        let r = self.memory_modal.view(frame, full);
+        if r.width > 0 {
+            overlay_rect = r;
+        }
         overlay_rect
     }
 

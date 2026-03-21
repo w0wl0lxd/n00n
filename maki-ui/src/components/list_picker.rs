@@ -76,6 +76,7 @@ pub struct ListPicker<T> {
     title: &'static str,
     max_visible: Option<u16>,
     generation: u64,
+    footer_hints: Option<&'static [(&'static str, &'static str)]>,
 }
 
 struct State<T> {
@@ -202,11 +203,17 @@ impl<T: PickerItem> ListPicker<T> {
             title: "",
             max_visible: None,
             generation: 0,
+            footer_hints: None,
         }
     }
 
     pub fn with_max_visible(mut self, max: u16) -> Self {
         self.max_visible = Some(max);
+        self
+    }
+
+    pub fn with_footer(mut self, hints: &'static [(&'static str, &'static str)]) -> Self {
+        self.footer_hints = Some(hints);
         self
     }
 
@@ -456,6 +463,8 @@ impl<T: PickerItem> ListPicker<T> {
     }
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) -> Rect {
+        let footer = self.footer_hints;
+        let footer_rows = if footer.is_some() { 1u16 } else { 0 };
         match self.state.as_mut() {
             None => Rect::default(),
             Some(PickerState::Loading(started_at)) => {
@@ -464,9 +473,19 @@ impl<T: PickerItem> ListPicker<T> {
                     width_percent: MIN_WIDTH_PERCENT,
                     max_height_percent: MAX_HEIGHT_PERCENT,
                 };
-                let (popup, inner) = modal.render(frame, area, 1 + SEARCH_ROW);
-                let [list_area, search_area] =
-                    Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+                let (popup, inner) = modal.render(frame, area, 1 + SEARCH_ROW + footer_rows);
+                let constraints: Vec<Constraint> = if footer.is_some() {
+                    vec![
+                        Constraint::Min(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                    ]
+                } else {
+                    vec![Constraint::Min(1), Constraint::Length(1)]
+                };
+                let areas = Layout::vertical(constraints).split(inner);
+                let list_area = areas[0];
+                let search_area = areas[1];
                 let ch = spinner_frame(started_at.elapsed().as_millis());
                 let line = Line::from(Span::styled(
                     format!("  {ch} {LOADING_LABEL}"),
@@ -474,10 +493,13 @@ impl<T: PickerItem> ListPicker<T> {
                 ));
                 frame.render_widget(Paragraph::new(vec![line]), list_area);
                 render_search(frame, search_area, &TextBuffer::new(String::new()));
+                if let Some(hints) = footer {
+                    render_footer(frame, areas[2], hints);
+                }
                 popup
             }
             Some(PickerState::Ready(s)) => {
-                render_ready(frame, area, s, self.title, self.max_visible)
+                render_ready(frame, area, s, self.title, self.max_visible, footer)
             }
         }
     }
@@ -499,7 +521,9 @@ fn render_ready<T: PickerItem>(
     s: &mut State<T>,
     title: &'static str,
     max_visible: Option<u16>,
+    footer_hints: Option<&[(&str, &str)]>,
 ) -> Rect {
+    let footer_rows = if footer_hints.is_some() { 1u16 } else { 0 };
     let content_rows = if s.filtered.is_empty() {
         1
     } else {
@@ -514,13 +538,23 @@ fn render_ready<T: PickerItem>(
         width_percent: MIN_WIDTH_PERCENT,
         max_height_percent: MAX_HEIGHT_PERCENT,
     };
-    let (popup, inner) = modal.render(frame, area, content_rows + SEARCH_ROW);
-    let viewport_h = inner.height.saturating_sub(SEARCH_ROW);
+    let (popup, inner) = modal.render(frame, area, content_rows + SEARCH_ROW + footer_rows);
+    let viewport_h = inner.height.saturating_sub(SEARCH_ROW + footer_rows);
     s.viewport_height = viewport_h as usize;
     s.ensure_visible();
 
-    let [list_area, search_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    let constraints: Vec<Constraint> = if footer_hints.is_some() {
+        vec![
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ]
+    } else {
+        vec![Constraint::Min(1), Constraint::Length(1)]
+    };
+    let areas = Layout::vertical(constraints).split(inner);
+    let list_area = areas[0];
+    let search_area = areas[1];
 
     render_list(
         frame,
@@ -533,6 +567,10 @@ fn render_ready<T: PickerItem>(
         s.enabled.as_deref(),
     );
     render_search(frame, search_area, &s.search);
+
+    if let Some(hints) = footer_hints {
+        render_footer(frame, areas[2], hints);
+    }
 
     let total_visual = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len());
     if total_visual as u16 > viewport_h {
@@ -616,7 +654,7 @@ fn render_list<T: PickerItem>(
     enabled: Option<&[bool]>,
 ) {
     if filtered.is_empty() {
-        let line = Line::from(Span::styled(NO_MATCHES, theme::current().cmd_desc));
+        let line = Line::from(Span::styled(format!("  {NO_MATCHES}"), theme::current().cmd_desc));
         frame.render_widget(Paragraph::new(vec![line]), area);
         return;
     }
@@ -719,6 +757,16 @@ fn render_search(frame: &mut Frame, area: Rect, search: &TextBuffer) {
         Span::styled(after, theme::current().picker_search_text),
     ]);
     frame.render_widget(Paragraph::new(vec![line]), area);
+}
+
+fn render_footer(frame: &mut Frame, area: Rect, hints: &[(&str, &str)]) {
+    let t = crate::theme::current();
+    let mut spans = Vec::with_capacity(hints.len() * 2);
+    for (key, desc) in hints {
+        spans.push(Span::styled(format!("  {key}"), t.keybind_key));
+        spans.push(Span::styled(format!(" {desc}"), t.form_hint));
+    }
+    frame.render_widget(Paragraph::new(vec![Line::from(spans)]), area);
 }
 
 #[cfg(test)]

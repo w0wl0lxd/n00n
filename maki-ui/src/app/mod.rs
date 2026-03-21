@@ -28,6 +28,7 @@ use crate::components::input::{InputAction, InputBox, Submission};
 use crate::components::keybindings::key;
 use crate::components::list_picker::{ListPicker, PickerAction};
 use crate::components::mcp_picker::{McpPicker, McpPickerAction};
+use crate::components::memory_modal::{MemoryEntry, MemoryModal, MemoryModalAction};
 use crate::components::model_picker::{ModelPicker, ModelPickerAction};
 use crate::components::plan_form::{PlanForm, PlanFormAction};
 use crate::components::question_form::{QuestionForm, QuestionFormAction};
@@ -100,6 +101,7 @@ pub struct App {
     pub(super) rewind_picker: RewindPicker,
     pub(super) help_modal: HelpModal,
     pub(super) btw_modal: BtwModal,
+    pub(super) memory_modal: MemoryModal,
     pub(super) search_modal: SearchModal,
     pub(super) todo_panel: TodoPanel,
     pub(super) question_form: QuestionForm,
@@ -164,6 +166,7 @@ impl App {
             rewind_picker: RewindPicker::new(),
             help_modal: HelpModal::new(),
             btw_modal: BtwModal::new(),
+            memory_modal: MemoryModal::new(),
             search_modal: SearchModal::new(),
             todo_panel: TodoPanel::new(),
             question_form: QuestionForm::new(),
@@ -271,6 +274,13 @@ impl App {
             self.help_modal.scroll(delta);
             return;
         }
+        if self.memory_modal.is_open() {
+            let pos = Position::new(column, row);
+            if self.memory_modal.contains(pos) {
+                self.memory_modal.scroll(delta);
+            }
+            return;
+        }
         let pos = Position::new(column, row);
         macro_rules! try_picker {
             ($picker:expr) => {
@@ -317,31 +327,33 @@ impl App {
             self.check_demo_questions();
             return Some(vec![]);
         }
-        if key::SCROLL_HALF_UP.matches(key) {
-            let half = self.chats[self.active_chat].half_page();
-            self.active_chat().scroll(half);
-            return Some(vec![]);
-        }
-        if key::SCROLL_HALF_DOWN.matches(key) {
-            let half = self.chats[self.active_chat].half_page();
-            self.active_chat().scroll(-half);
-            return Some(vec![]);
-        }
-        if key::SCROLL_LINE_UP.matches(key) {
-            self.active_chat().scroll(1);
-            return Some(vec![]);
-        }
-        if key::SCROLL_LINE_DOWN.matches(key) {
-            self.active_chat().scroll(-1);
-            return Some(vec![]);
-        }
-        if key::SCROLL_TOP.matches(key) {
-            self.active_chat().scroll_to_top();
-            return Some(vec![]);
-        }
-        if key::SCROLL_BOTTOM.matches(key) {
-            self.active_chat().enable_auto_scroll();
-            return Some(vec![]);
+        if !self.any_overlay_open() {
+            if key::SCROLL_HALF_UP.matches(key) {
+                let half = self.chats[self.active_chat].half_page();
+                self.active_chat().scroll(half);
+                return Some(vec![]);
+            }
+            if key::SCROLL_HALF_DOWN.matches(key) {
+                let half = self.chats[self.active_chat].half_page();
+                self.active_chat().scroll(-half);
+                return Some(vec![]);
+            }
+            if key::SCROLL_LINE_UP.matches(key) {
+                self.active_chat().scroll(1);
+                return Some(vec![]);
+            }
+            if key::SCROLL_LINE_DOWN.matches(key) {
+                self.active_chat().scroll(-1);
+                return Some(vec![]);
+            }
+            if key::SCROLL_TOP.matches(key) {
+                self.active_chat().scroll_to_top();
+                return Some(vec![]);
+            }
+            if key::SCROLL_BOTTOM.matches(key) {
+                self.active_chat().enable_auto_scroll();
+                return Some(vec![]);
+            }
         }
         if key::HELP.matches(key) {
             self.help_modal.toggle();
@@ -385,6 +397,19 @@ impl App {
 
         if self.btw_modal.is_open() {
             self.btw_modal.handle_key(key);
+            return vec![];
+        }
+
+        if self.memory_modal.is_open() {
+            match self.memory_modal.handle_key(key) {
+                MemoryModalAction::OpenFile(filename) => {
+                    return self.open_memory_file(&filename);
+                }
+                MemoryModalAction::DeleteFile(filename) => {
+                    return self.delete_memory_file(&filename);
+                }
+                MemoryModalAction::Close | MemoryModalAction::Consumed => {}
+            }
             return vec![];
         }
 
@@ -860,6 +885,7 @@ impl App {
                 vec![]
             }
             "/cd" => self.cmd_cd(&cmd.args),
+            "/memory" => self.cmd_memory(),
             "/exit" => self.quit(),
             _ => vec![],
         }
@@ -891,10 +917,21 @@ impl App {
         vec![]
     }
 
-    fn overlays(&self) -> [&dyn Overlay; 11] {
+    fn cmd_memory(&mut self) -> Vec<Action> {
+        let entries: Vec<MemoryEntry> = maki_agent::tools::memory::list_memory_entries()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, size)| MemoryEntry::new(name, size))
+            .collect();
+        self.memory_modal.open(entries);
+        vec![]
+    }
+
+    fn overlays(&self) -> [&dyn Overlay; 12] {
         [
             &self.help_modal,
             &self.btw_modal,
+            &self.memory_modal,
             &self.search_modal,
             &self.task_picker,
             &self.session_picker,
@@ -907,10 +944,11 @@ impl App {
         ]
     }
 
-    fn overlays_mut(&mut self) -> [&mut dyn Overlay; 11] {
+    fn overlays_mut(&mut self) -> [&mut dyn Overlay; 12] {
         [
             &mut self.help_modal,
             &mut self.btw_modal,
+            &mut self.memory_modal,
             &mut self.search_modal,
             &mut self.task_picker,
             &mut self.session_picker,
@@ -1001,6 +1039,7 @@ impl App {
                 }
             };
         }
+        try_picker!(self.memory_modal);
         try_picker!(self.task_picker);
         try_picker!(self.session_picker);
         try_picker!(self.rewind_picker);
@@ -1033,6 +1072,31 @@ impl App {
             PlanFormAction::Implement => self.implement_plan(false),
             PlanFormAction::ClearAndImplement => self.implement_plan(true),
         }
+    }
+
+    fn open_memory_file(&mut self, filename: &str) -> Vec<Action> {
+        match maki_agent::tools::memory::resolve_memories_dir() {
+            Ok(dir) => vec![Action::OpenEditor(dir.join(filename))],
+            Err(e) => {
+                self.flash(e);
+                vec![]
+            }
+        }
+    }
+
+    fn delete_memory_file(&mut self, filename: &str) -> Vec<Action> {
+        match maki_agent::tools::memory::resolve_memories_dir() {
+            Ok(dir) => match std::fs::remove_file(dir.join(filename)) {
+                Ok(()) => {
+                    let owned = filename.to_owned();
+                    self.memory_modal.retain(|e| e.name != owned);
+                    self.flash(format!("Deleted memory file: {filename}"));
+                }
+                Err(e) => self.flash(format!("Failed to delete {filename}: {e}")),
+            },
+            Err(e) => self.flash(e),
+        }
+        vec![]
     }
 
     fn implement_plan(&mut self, clear_context: bool) -> Vec<Action> {

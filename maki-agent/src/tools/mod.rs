@@ -14,6 +14,7 @@ mod fuzzy_replace;
 mod glob;
 mod grep;
 mod index;
+pub mod memory;
 mod multiedit;
 mod question;
 mod read;
@@ -67,6 +68,7 @@ pub const TODOWRITE_TOOL_NAME: &str = todowrite::TodoWrite::NAME;
 pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
 pub const WEBSEARCH_TOOL_NAME: &str = websearch::WebSearch::NAME;
 pub const WRITE_TOOL_NAME: &str = write::Write::NAME;
+pub const MEMORY_TOOL_NAME: &str = memory::Memory::NAME;
 pub const CODE_EXECUTION_TOOL_NAME: &str = code_execution::CodeInterpreter::NAME;
 
 pub(crate) const INTERPRETER_TOOLS: &[&str] = &[
@@ -104,6 +106,7 @@ pub(crate) const GENERAL_SUBAGENT_TOOLS: &[&str] = &[
     "webfetch",
     "batch",
     "code_execution",
+    "memory",
 ];
 
 const PLAN_WRITE_RESTRICTED: &str = "write restricted to plan file in plan mode";
@@ -552,6 +555,7 @@ register_tools! {
     Task(task::Task),
     Batch(batch::Batch),
     CodeInterpreter(code_execution::CodeInterpreter),
+    Memory(memory::Memory),
 }
 
 use maki_providers::provider::BoxFuture;

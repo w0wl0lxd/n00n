@@ -48,6 +48,10 @@ pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, instructions: &str) ->
 
     out.push_str(instructions);
 
+    if let Some(listing) = crate::tools::memory::list_memory_files() {
+        out.push_str(&listing);
+    }
+
     if let AgentMode::Plan(plan_path) = mode {
         let plan_vars = Vars::new().set("{plan_path}", plan_path.display().to_string());
         out.push_str(&plan_vars.apply(crate::prompt::PLAN_PROMPT));

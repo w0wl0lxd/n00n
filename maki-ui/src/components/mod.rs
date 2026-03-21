@@ -8,6 +8,7 @@ pub mod input;
 pub(crate) mod keybindings;
 pub(crate) mod list_picker;
 pub(crate) mod mcp_picker;
+pub(crate) mod memory_modal;
 pub mod messages;
 pub(crate) mod modal;
 pub(crate) mod model_picker;
