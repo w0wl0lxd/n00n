@@ -550,7 +550,6 @@ impl App {
     }
 
     fn quit(&mut self) -> Vec<Action> {
-        self.save_session();
         self.save_input_history();
         self.should_quit = true;
         vec![Action::Quit]
@@ -610,12 +609,19 @@ impl App {
             .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
         self.queue.clear();
         self.status = Status::Idle;
-        self.save_session();
         vec![Action::CancelAgent]
     }
 
     fn handle_agent_event(&mut self, envelope: Envelope) -> Vec<Action> {
         if envelope.run_id != self.run_id {
+            // Stale run_id after cancel: agent updates shared_history before sending
+            // Done/Error, so this is the first moment the full conversation is available.
+            if matches!(
+                envelope.event,
+                AgentEvent::Done { .. } | AgentEvent::Error { .. }
+            ) {
+                self.save_session();
+            }
             return vec![];
         }
 
@@ -707,6 +713,7 @@ impl App {
                 ChatEventResult::Error(message) => {
                     self.status = Status::error(message);
                     self.status_bar.clear_flash();
+                    self.save_session();
                     self.queue.clear();
                     self.finish_subagents(DisplayRole::Error, ERROR_TEXT);
                     for chat in &mut self.chats {

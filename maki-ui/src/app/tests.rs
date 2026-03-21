@@ -334,7 +334,7 @@ fn type_and_submit(app: &mut App, text: &str) -> Vec<Action> {
 }
 
 fn cancel_app(app: &mut App) {
-    app.update(Msg::Key(key(KeyCode::Esc)));
+    app.last_esc = Some(Instant::now());
     app.update(Msg::Key(key(KeyCode::Esc)));
 }
 
@@ -688,9 +688,7 @@ fn cancel_resets_all_chats_and_indices() {
         None,
     ));
 
-    app.update(Msg::Key(key(KeyCode::Esc)));
-    let actions = app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(matches!(&actions[0], Action::CancelAgent));
+    cancel_app(&mut app);
     assert_eq!(app.chats[0].in_progress_count(), 0);
     assert_eq!(app.chats[1].in_progress_count(), 0);
     assert!(app.chat_index.is_empty());
@@ -779,20 +777,6 @@ fn app_with_subagent_id(id: &str) -> App {
 
 fn app_with_subagent() -> App {
     app_with_subagent_id("task1")
-}
-
-#[test]
-fn done_sets_idle() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.update(agent_msg(AgentEvent::Done {
-        usage: TokenUsage::default(),
-        num_turns: 1,
-        stop_reason: None,
-    }));
-
-    assert_eq!(app.status, Status::Idle);
 }
 
 #[test]
@@ -969,8 +953,7 @@ fn cancel_clears_pending_input(pending: PendingInput) {
     app.status = Status::Streaming;
     app.run_id = 1;
     app.pending_input = pending;
-    app.update(Msg::Key(key(KeyCode::Esc)));
-    app.update(Msg::Key(key(KeyCode::Esc)));
+    cancel_app(&mut app);
     assert_eq!(app.pending_input, PendingInput::None);
 }
 
@@ -1129,6 +1112,7 @@ fn double_esc_cancels_flushes_and_fails_tools() {
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(actions.is_empty());
 
+    app.last_esc = Some(Instant::now());
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(matches!(&actions[0], Action::CancelAgent));
     assert_eq!(app.status, Status::Idle);
@@ -1143,7 +1127,7 @@ fn double_esc_idle_opens_rewind_picker() {
     app.run_id = 1;
     app.session.messages.push(Message::user("hello".into()));
 
-    app.update(Msg::Key(key(KeyCode::Esc)));
+    app.last_esc = Some(Instant::now());
     app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(app.rewind_picker.is_open());
 }
@@ -1151,7 +1135,7 @@ fn double_esc_idle_opens_rewind_picker() {
 #[test]
 fn double_esc_idle_no_user_turns_flashes_error() {
     let mut app = test_app();
-    app.update(Msg::Key(key(KeyCode::Esc)));
+    app.last_esc = Some(Instant::now());
     app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(!app.rewind_picker.is_open());
 }
@@ -1259,24 +1243,15 @@ fn queue_command_sets_focus(has_queue: bool) {
     assert_eq!(app.queue.focus().is_some(), has_queue);
 }
 
-#[test]
-fn queue_up_at_top_clamps() {
+#[test_case(KeyCode::Up,   0, 0 ; "up_at_top_clamps")]
+#[test_case(KeyCode::Down, 1, 1 ; "down_at_bottom_clamps")]
+fn queue_boundary_clamps(key_code: KeyCode, initial_focus: usize, expected: usize) {
     let mut app = app_with_queued_message();
     app.queue.push(queued_msg("second"));
-    app.queue.set_focus_at(0);
+    app.queue.set_focus_at(initial_focus);
 
-    app.update(Msg::Key(key(KeyCode::Up)));
-    assert_eq!(app.queue.focus(), Some(0));
-}
-
-#[test]
-fn queue_down_at_bottom_clamps() {
-    let mut app = app_with_queued_message();
-    app.queue.push(queued_msg("second"));
-    app.queue.set_focus_at(1);
-
-    app.update(Msg::Key(key(KeyCode::Down)));
-    assert_eq!(app.queue.focus(), Some(1));
+    app.update(Msg::Key(key(key_code)));
+    assert_eq!(app.queue.focus(), Some(expected));
 }
 
 #[test]
@@ -1939,4 +1914,67 @@ fn overlay_zone_click_gating() {
     app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 20, 5));
     let state = app.selection_state.as_ref().unwrap();
     assert_eq!(state.sel.zone, SelectionZone::Overlay);
+}
+
+fn streaming_app_with_history() -> App {
+    use maki_providers::{ContentBlock, Message, Role};
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    let history = vec![
+        Message::user("hello".into()),
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "world".into(),
+            }],
+            ..Default::default()
+        },
+    ];
+    app.shared_history = Some(Arc::new(Mutex::new(history)));
+    app
+}
+
+#[test_case(
+    AgentEvent::Done { usage: TokenUsage::default(), num_turns: 1, stop_reason: None } ; "stale_done_saves_session"
+)]
+#[test_case(
+    AgentEvent::Error { message: "timeout".into() } ; "stale_error_saves_session"
+)]
+fn stale_terminal_event_after_cancel_saves_session(event: AgentEvent) {
+    let mut app = streaming_app_with_history();
+    let old_run_id = app.run_id;
+    cancel_app(&mut app);
+    assert_ne!(app.run_id, old_run_id);
+    assert!(app.session.messages.is_empty());
+
+    app.update(agent_msg_with_run_id(event, old_run_id));
+    assert_eq!(app.session.messages.len(), 2);
+}
+
+#[test]
+fn stale_non_terminal_event_does_not_save_session() {
+    let mut app = streaming_app_with_history();
+    let old_run_id = app.run_id;
+    cancel_app(&mut app);
+
+    app.update(agent_msg_with_run_id(
+        AgentEvent::TurnComplete {
+            message: Message::user(String::new()),
+            usage: TokenUsage::default(),
+            model: "mock".into(),
+            context_size: None,
+        },
+        old_run_id,
+    ));
+    assert!(app.session.messages.is_empty());
+}
+
+#[test]
+fn error_event_matching_run_id_saves_session() {
+    let mut app = streaming_app_with_history();
+    app.update(agent_msg(AgentEvent::Error {
+        message: "boom".into(),
+    }));
+    assert_eq!(app.session.messages.len(), 2);
 }

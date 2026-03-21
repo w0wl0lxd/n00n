@@ -243,8 +243,9 @@ fn run_event_loop(
         if app.should_quit {
             let session_id = app.session.id.clone();
             maki_agent::mcp::kill_process_groups(&handles.mcp.pids.lock().unwrap());
-            drop(app);
             handles.shutdown(Duration::from_secs(3));
+            app.save_session();
+            drop(app);
             if let Ok(writer) = Arc::try_unwrap(storage_writer) {
                 writer.shutdown(Duration::from_secs(3));
             }

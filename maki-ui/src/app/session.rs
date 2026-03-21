@@ -8,7 +8,7 @@ use crate::AppSession;
 use super::{App, PendingInput, PlanState};
 
 impl App {
-    pub(super) fn save_session(&mut self) {
+    pub(crate) fn save_session(&mut self) {
         if let Some(ref history) = self.shared_history {
             self.session.messages = history.lock().unwrap().clone();
         }
