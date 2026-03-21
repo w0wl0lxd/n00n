@@ -605,7 +605,7 @@ fn spawn_agent(
         let cwd_path = PathBuf::from(&cwd_owned);
         let (instructions, loaded_instructions) =
             smol::unblock(move || agent::load_instruction_files(&cwd_owned)).await;
-        let (_tool_names, mut tools) =
+        let mut tools =
             ToolCall::definitions(&vars, &skills, model.family.supports_tool_examples());
 
         let mcp_config = maki_agent::mcp::config::load_config(&cwd_path);
@@ -620,7 +620,7 @@ fn spawn_agent(
         let mcp_manager = McpManager::start_with_config(mcp_config).await;
 
         if let Some(ref mgr) = mcp_manager {
-            mgr.extend_tools(&mut Vec::new(), &mut tools, &disabled);
+            mgr.extend_tools(&mut tools, &disabled);
             mcp_infos.store(Arc::new(mgr.server_infos(&disabled)));
             *mcp_pids.lock().unwrap_or_else(|e| e.into_inner()) = mgr.child_pids();
         }
@@ -684,13 +684,13 @@ fn spawn_agent(
             let cmd = match event {
                 LoopEvent::Toggle(server_name, enabled) => {
                     toggle_disabled(&mut disabled, &server_name, enabled);
-                    let (_, mut new_tools) = ToolCall::definitions(
+                    let mut new_tools = ToolCall::definitions(
                         &vars,
                         &skills,
                         model.family.supports_tool_examples(),
                     );
                     if let Some(ref mcp) = mcp_manager {
-                        mcp.extend_tools(&mut Vec::new(), &mut new_tools, &disabled);
+                        mcp.extend_tools(&mut new_tools, &disabled);
                         let infos = mcp.server_infos(&disabled);
                         if let Some(info) = infos.iter().find(|i| i.name == server_name) {
                             let path = info.config_path.clone();

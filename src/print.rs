@@ -68,7 +68,7 @@ struct InitEvent<'a> {
     subtype: &'static str,
     cwd: &'a str,
     session_id: &'a str,
-    tools: &'a [&'a str],
+    tools: &'a [String],
     model: &'a str,
 }
 
@@ -143,7 +143,7 @@ pub fn run(
     let vars = template::env_vars();
     let mode = AgentMode::Build;
     let (instructions, loaded_instructions) = agent::load_instruction_files(&vars.apply("{cwd}"));
-    let (mut tool_names, mut tools) = ToolCall::definitions_excluding(
+    let mut tools = ToolCall::definitions_excluding(
         &vars,
         &skills,
         &[QUESTION_TOOL_NAME],
@@ -153,7 +153,7 @@ pub fn run(
     let mcp_manager = smol::block_on(McpManager::start(&cwd_path));
 
     if let Some(ref mcp) = mcp_manager {
-        mcp.extend_tools(&mut tool_names, &mut tools, &[]);
+        mcp.extend_tools(&mut tools, &[]);
     }
 
     let system = agent::build_system_prompt(&vars, &mode, &instructions);
@@ -167,6 +167,15 @@ pub fn run(
 
     let session_id = Uuid::new_v4().to_string();
     let start = Instant::now();
+
+    let tool_names: Vec<String> = tools
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| t["name"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
 
     let model_clone = model.clone();
     smol::spawn(async move {
@@ -405,7 +414,7 @@ mod tests {
             subtype: "init",
             cwd: "/tmp",
             session_id: "abc",
-            tools: &["bash", "read"],
+            tools: &["bash".into(), "read".into()],
             model: "test-model",
         };
         let json: Value = serde_json::to_value(&init).unwrap();

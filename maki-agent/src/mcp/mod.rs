@@ -207,12 +207,7 @@ impl McpManager {
         transport::call_tool(t.as_ref(), &def.raw_name, args).await
     }
 
-    pub fn extend_tools(
-        &self,
-        tool_names: &mut Vec<&'static str>,
-        tools: &mut Value,
-        disabled: &[String],
-    ) {
+    pub fn extend_tools(&self, tools: &mut Value, disabled: &[String]) {
         for t in self
             .tools
             .iter()
@@ -225,7 +220,6 @@ impl McpManager {
                     "input_schema": t.input_schema,
                 }));
             }
-            tool_names.push(t.qualified_name);
         }
     }
 
