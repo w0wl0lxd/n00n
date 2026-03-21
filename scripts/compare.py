@@ -70,11 +70,19 @@ def parse_args():
     return p.parse_args()
 
 
+def strip_provider(model):
+    """Remove any provider/ prefix, returning the bare model id."""
+    return model.split("/", 1)[1] if "/" in model else model
+
+
 def resolve_model(agent, model):
-    if agent == "opencode" and model.startswith("zai/"):
-        return model.replace("zai/", "zai-coding-plan/", 1)
-    if agent == "claude-code" and model.startswith("anthropic/"):
-        return model.removeprefix("anthropic/")
+    bare = strip_provider(model)
+    if agent == "claude-code":
+        return bare
+    if agent == "opencode":
+        if model.startswith("zai/"):
+            return model.replace("zai/", "zai-coding-plan/", 1)
+        return f"anthropic/{bare}"
     return model
 
 

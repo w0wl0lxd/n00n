@@ -33,7 +33,7 @@ PRICING = {
 
 
 def lookup_pricing(model_id):
-    bare = model_id.removeprefix("anthropic/")
+    bare = model_id.split("/", 1)[1] if "/" in model_id else model_id
     for prefix, p in PRICING.items():
         if bare.startswith(prefix):
             return p
