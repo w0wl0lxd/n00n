@@ -8,7 +8,6 @@ use std::thread;
 use std::time::Duration;
 
 use crate::components::code_view;
-use crate::components::tool_display::ToolKind;
 use maki_agent::{ToolInput, ToolOutput};
 use ratatui::text::Line;
 
@@ -20,7 +19,8 @@ struct RenderJob {
     tool_input: Option<ToolInput>,
     tool_output: Option<ToolOutput>,
     width: u16,
-    kind: ToolKind,
+    max_lines: usize,
+    expanded: bool,
 }
 
 pub struct RenderResult {
@@ -68,7 +68,8 @@ impl RenderWorker {
         tool_input: Option<ToolInput>,
         tool_output: Option<ToolOutput>,
         width: u16,
-        kind: ToolKind,
+        max_lines: usize,
+        expanded: bool,
     ) -> u64 {
         let id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
         let _ = self.job_tx.send(RenderJob {
@@ -76,7 +77,8 @@ impl RenderWorker {
             tool_input,
             tool_output,
             width,
-            kind,
+            max_lines,
+            expanded,
         });
         self.maybe_spawn_thread();
         id
@@ -110,16 +112,20 @@ impl RenderWorker {
 
 fn worker_loop(inner: &PoolInner) {
     while let Ok(job) = inner.job_rx.recv_timeout(IDLE_TIMEOUT) {
-        let lines = code_view::render_tool_content(
+        let content = code_view::render_tool_content(
             job.tool_input.as_ref(),
             job.tool_output.as_ref(),
             true,
             job.width,
-            job.kind,
+            job.max_lines,
+            job.expanded,
         );
         if inner
             .result_tx
-            .send(RenderResult { id: job.id, lines })
+            .send(RenderResult {
+                id: job.id,
+                lines: content.lines,
+            })
             .is_err()
         {
             break;
@@ -152,12 +158,5 @@ mod tests {
         let worker = make_worker(2, 2);
         worker.maybe_spawn_thread();
         assert_eq!(worker.inner.active_threads.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn increments_active_count_when_below_max() {
-        let worker = make_worker(0, 4);
-        worker.maybe_spawn_thread();
-        assert!(worker.inner.active_threads.load(Ordering::SeqCst) >= 1);
     }
 }

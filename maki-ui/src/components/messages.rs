@@ -12,6 +12,7 @@ use crate::selection::{self, LineBreaks, ScreenSelection, Selection};
 use crate::splash::{ColorTransition, Splash};
 use crate::theme;
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use maki_agent::tools::{ToolCall, WEBFETCH_TOOL_NAME};
@@ -41,15 +42,23 @@ struct Segment {
     highlighted_has_output: bool,
     spinner_lines: Vec<usize>,
     content_indent: &'static str,
+    has_truncation: bool,
 }
 
 impl Segment {
-    fn reuse_highlight(&self, has_output: bool) -> Option<Vec<Line<'static>>> {
+    fn reuse_highlight(
+        &self,
+        has_output: bool,
+        new_range: (usize, usize),
+    ) -> Option<Vec<Line<'static>>> {
         if self.pending_highlight.is_some() || self.highlighted_has_output != has_output {
             return None;
         }
         let (s, e) = self.highlight_range?;
         if s > e || e > self.lines.len() {
+            return None;
+        }
+        if (e - s) != (new_range.1 - new_range.0) {
             return None;
         }
         Some(self.lines[s..e].to_vec())
@@ -62,6 +71,7 @@ impl Segment {
         self.highlighted_has_output = hl.is_some_and(|h| h.output.is_some());
         self.spinner_lines = tl.spinner_lines;
         self.content_indent = tl.content_indent;
+        self.has_truncation = tl.has_truncation;
         self.lines = tl.lines;
         self.cached_height = None;
     }
@@ -69,13 +79,14 @@ impl Segment {
     fn update_with_reuse(&mut self, mut tl: ToolLines, worker: &RenderWorker) {
         let has_output = tl.highlight.as_ref().is_some_and(|h| h.output.is_some());
         let reused = tl.highlight.as_ref().and_then(|req| {
-            let hl_lines = self.reuse_highlight(has_output)?;
+            let hl_lines = self.reuse_highlight(has_output, req.range)?;
             let (s, _) = req.range;
             let new_end = s + hl_lines.len();
             tl.lines.splice(s..req.range.1, hl_lines);
             Some((s, new_end))
         });
         self.cached_height = None;
+        self.has_truncation = tl.has_truncation;
         if let Some((s, e)) = reused {
             self.lines = tl.lines;
             self.highlight_range = Some((s, e));
@@ -106,6 +117,7 @@ pub struct MessagesPanel {
     highlight_segment: Option<usize>,
     idle_splash: Splash,
     accent: ColorTransition,
+    expanded_tools: HashSet<String>,
 }
 
 impl MessagesPanel {
@@ -138,6 +150,7 @@ impl MessagesPanel {
             highlight_segment: None,
             idle_splash: Splash::new(),
             accent: ColorTransition::new(theme::current().mode_build),
+            expanded_tools: HashSet::new(),
         }
     }
 
@@ -449,6 +462,7 @@ impl MessagesPanel {
                         ToolStatus::Error,
                         self.started_at,
                         self.viewport_width,
+                        false,
                     );
                     if let Some(ts) = &msg.timestamp {
                         append_right_info(
@@ -472,8 +486,13 @@ impl MessagesPanel {
                 let child_prefix = format!("{batch_id}__");
                 for (j, entry) in entries.iter().enumerate() {
                     let child_id = format!("{batch_id}__{j}");
-                    let tl =
-                        build_batch_entry_lines(entry, j, self.started_at, self.viewport_width);
+                    let tl = build_batch_entry_lines(
+                        entry,
+                        j,
+                        self.started_at,
+                        self.viewport_width,
+                        false,
+                    );
                     if let Some(idx) = self
                         .cached_segments
                         .iter()
@@ -577,6 +596,34 @@ impl MessagesPanel {
 
     pub fn set_accent(&mut self, color: ratatui::style::Color) {
         self.accent.set(color);
+    }
+
+    pub fn toggle_expansion_at(&mut self, row: u16, area: Rect) -> bool {
+        if area.height == 0 {
+            return false;
+        }
+        let doc_row = (row.saturating_sub(area.y)) as u32 + self.scroll_top as u32;
+        let mut cumulative: u32 = 0;
+        let idx = self.segment_heights.iter().position(|&h| {
+            cumulative += h as u32;
+            doc_row < cumulative
+        });
+        let Some(idx) = idx else { return false };
+        let seg = &self.cached_segments[idx];
+        let Some(tool_id) = seg.tool_id.as_deref() else {
+            return false;
+        };
+        let is_expanded = self.expanded_tools.contains(tool_id);
+        if !seg.has_truncation && !is_expanded {
+            return false;
+        }
+        let tool_id = tool_id.to_owned();
+        if !self.expanded_tools.remove(&tool_id) {
+            self.expanded_tools.insert(tool_id.clone());
+        }
+        let rebuild_id = parse_batch_inner_id(&tool_id).map_or(&*tool_id, |(batch_id, _)| batch_id);
+        self.rebuild_tool_segment(rebuild_id);
+        true
     }
 
     pub fn is_animating(&self) -> bool {
@@ -898,7 +945,8 @@ impl MessagesPanel {
             return;
         };
 
-        let mut tl = build_tool_lines(msg, *status, self.started_at, self.viewport_width);
+        let expanded = self.expanded_tools.contains(tool_id);
+        let mut tl = build_tool_lines(msg, *status, self.started_at, self.viewport_width, expanded);
         if let Some(ts) = &msg.timestamp {
             append_right_info(
                 &mut tl.lines[0],
@@ -918,9 +966,15 @@ impl MessagesPanel {
                 .enumerate()
                 .map(|(j, entry)| {
                     let child_id = format!("{tool_id}__{j}");
+                    let child_expanded = self.expanded_tools.contains(&child_id);
                     let copy = batch_entry_copy_text(entry);
-                    let tl =
-                        build_batch_entry_lines(entry, j, self.started_at, self.viewport_width);
+                    let tl = build_batch_entry_lines(
+                        entry,
+                        j,
+                        self.started_at,
+                        self.viewport_width,
+                        child_expanded,
+                    );
                     (child_id, copy, tl)
                 })
                 .collect();
@@ -965,7 +1019,9 @@ impl MessagesPanel {
             let msg = &self.messages[i];
 
             if let DisplayRole::Tool { ref id, status, .. } = msg.role {
-                let mut tl = build_tool_lines(msg, status, self.started_at, self.viewport_width);
+                let expanded = self.expanded_tools.contains(id);
+                let mut tl =
+                    build_tool_lines(msg, status, self.started_at, self.viewport_width, expanded);
                 if let Some(ts) = &msg.timestamp {
                     append_right_info(
                         &mut tl.lines[0],
@@ -989,8 +1045,14 @@ impl MessagesPanel {
                 if let Some(ToolOutput::Batch { entries, .. }) = &msg.tool_output {
                     for (j, entry) in entries.iter().enumerate() {
                         let child_id = format!("{id}__{j}");
-                        let tl =
-                            build_batch_entry_lines(entry, j, self.started_at, self.viewport_width);
+                        let child_expanded = self.expanded_tools.contains(&child_id);
+                        let tl = build_batch_entry_lines(
+                            entry,
+                            j,
+                            self.started_at,
+                            self.viewport_width,
+                            child_expanded,
+                        );
                         let mut seg = Segment {
                             copy_text: batch_entry_copy_text(entry),
                             tool_id: Some(child_id),
@@ -1139,7 +1201,8 @@ mod tests {
     use super::*;
     use crate::components::scrollbar::SCROLLBAR_THUMB;
     use maki_agent::tools::{
-        BASH_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, QUESTION_TOOL_NAME, WRITE_TOOL_NAME,
+        BASH_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, QUESTION_TOOL_NAME, READ_TOOL_NAME,
+        WRITE_TOOL_NAME,
     };
     use maki_agent::{
         BatchToolEntry, DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, QuestionAnswer,
@@ -2075,5 +2138,107 @@ mod tests {
         let sel = make_sel(area, (0, 0), (last_row, 3));
         let text = panel.extract_selection_text(&sel, area);
         assert_eq!(text.lines().last().unwrap(), "ABCD");
+    }
+
+    fn panel_with_long_tool(line_count: usize) -> MessagesPanel {
+        let body = (0..line_count)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(ToolStartEvent {
+            id: "t1".into(),
+            tool: BASH_TOOL_NAME,
+            summary: "cmd".into(),
+            annotation: None,
+            input: None,
+            output: None,
+        });
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: BASH_TOOL_NAME,
+            output: ToolOutput::Plain(body),
+            is_error: false,
+        });
+        render(&mut panel, 80, 24);
+        panel
+    }
+
+    #[test]
+    fn toggle_expands_and_collapses_truncated_tool() {
+        let mut panel = panel_with_long_tool(200);
+        let area = Rect::new(0, 0, 80, 24);
+        let text_before = seg_text(&panel, "t1");
+        assert!(text_before.contains("click to expand"));
+        assert!(!text_before.contains("line 50"));
+
+        assert!(panel.toggle_expansion_at(area.y, area));
+        render(&mut panel, 80, 24);
+        let text_after = seg_text(&panel, "t1");
+        assert!(text_after.contains("line 50"));
+        assert!(!text_after.contains("click to expand"));
+
+        assert!(panel.toggle_expansion_at(area.y, area));
+        render(&mut panel, 80, 24);
+        let text_restored = seg_text(&panel, "t1");
+        assert!(text_restored.contains("click to expand"));
+        assert!(!text_restored.contains("line 50"));
+    }
+
+    #[test_case(false ; "non_tool_segment")]
+    #[test_case(true  ; "short_tool_segment")]
+    fn toggle_returns_false_for_non_expandable(is_tool: bool) {
+        let mut panel = if is_tool {
+            panel_with_long_tool(3)
+        } else {
+            let mut p = MessagesPanel::new();
+            p.push(DisplayMessage::new(DisplayRole::Assistant, "hello".into()));
+            render(&mut p, 80, 24);
+            p
+        };
+        let area = Rect::new(0, 0, 80, 24);
+        assert!(!panel.toggle_expansion_at(area.y, area));
+    }
+
+    fn panel_with_read_tool(line_count: usize) -> MessagesPanel {
+        let lines: Vec<String> = (0..line_count).map(|i| format!("line {i}")).collect();
+        let mut panel = MessagesPanel::new();
+        panel.tool_start(ToolStartEvent {
+            id: "t1".into(),
+            tool: READ_TOOL_NAME,
+            summary: "read /src/main.rs".into(),
+            annotation: None,
+            input: None,
+            output: None,
+        });
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: READ_TOOL_NAME,
+            output: ToolOutput::ReadCode {
+                path: "main.rs".into(),
+                start_line: 1,
+                lines,
+                total_lines: line_count,
+                instructions: None,
+            },
+            is_error: false,
+        });
+        render(&mut panel, 80, 24);
+        panel
+    }
+
+    #[test]
+    fn toggle_read_tool_expands_and_collapses() {
+        let mut panel = panel_with_read_tool(20);
+        let area = Rect::new(0, 0, 80, 24);
+        assert!(seg_text(&panel, "t1").contains("click to expand"));
+
+        assert!(panel.toggle_expansion_at(area.y, area));
+        render(&mut panel, 80, 24);
+        assert!(seg_text(&panel, "t1").contains("line 19"));
+
+        assert!(panel.toggle_expansion_at(area.y, area));
+        render(&mut panel, 80, 24);
+        assert!(seg_text(&panel, "t1").contains("click to expand"));
     }
 }

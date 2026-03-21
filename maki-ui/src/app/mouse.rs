@@ -41,7 +41,12 @@ impl App {
                     if !state.sel.is_empty() {
                         state.copy_on_release = true;
                     } else {
+                        let zone = state.sel.zone;
                         self.selection_state = None;
+                        if zone == SelectionZone::Messages {
+                            let area = self.msg_area();
+                            self.chats[self.active_chat].toggle_expansion_at(event.row, area);
+                        }
                     }
                 }
             }

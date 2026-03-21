@@ -186,6 +186,10 @@ impl Chat {
         self.messages_panel.extract_selection_text(sel, msg_area)
     }
 
+    pub fn toggle_expansion_at(&mut self, row: u16, area: Rect) -> bool {
+        self.messages_panel.toggle_expansion_at(row, area)
+    }
+
     pub fn stream_reset(&mut self) {
         self.messages_panel.stream_reset();
     }

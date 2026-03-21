@@ -113,7 +113,7 @@ pub enum Keep {
 
 pub fn truncation_notice(count: usize) -> String {
     let label = if count == 1 { "line" } else { "lines" };
-    format!("{TRUNCATION_PREFIX} ({count} {label})")
+    format!("{TRUNCATION_PREFIX} ({count} {label}) click to expand")
 }
 
 pub struct Truncated<'a> {
@@ -1301,208 +1301,170 @@ mod tests {
         }
     }
 
-    #[test]
-    fn inline_bold() {
-        assert_inline(
-            "a **bold** b",
-            &[("a ", None), ("bold", Some(bs())), (" b", None)],
-        );
+    macro_rules! inline_test {
+        ($name:ident, $input:expr, $expected:expr) => {
+            #[test]
+            fn $name() {
+                assert_inline($input, $expected);
+            }
+        };
     }
-    #[test]
-    fn inline_code() {
-        assert_inline(
-            "use `foo` here",
-            &[("use ", None), ("foo", Some(cs())), (" here", None)],
-        );
-    }
-    #[test]
-    fn code_before_bold() {
-        assert_inline(
-            "a `code` then **bold**",
-            &[
-                ("a ", None),
-                ("code", Some(cs())),
-                (" then ", None),
-                ("bold", Some(bs())),
-            ],
-        );
-    }
-    #[test]
-    fn unclosed_bold() {
-        assert_inline("a **unclosed", &[("a **unclosed", None)]);
-    }
-    #[test]
-    fn unclosed_backtick() {
-        assert_inline("a `unclosed", &[("a `unclosed", None)]);
-    }
-    #[test]
-    fn code_inside_bold() {
-        assert_inline(
-            "**bold `code` bold**",
-            &[
-                ("bold ", Some(bs())),
-                ("code", Some(bcs())),
-                (" bold", Some(bs())),
-            ],
-        );
-    }
-    #[test]
-    fn bold_inside_code() {
-        assert_inline(
-            "`code **bold** code`",
-            &[("code **bold** code", Some(cs()))],
-        );
-    }
-    #[test]
-    fn entire_bold_is_code() {
-        assert_inline("**`all`**", &[("all", Some(bcs()))]);
-    }
-    #[test]
-    fn entire_code_is_bold() {
-        assert_inline("`**all**`", &[("**all**", Some(cs()))]);
-    }
-    #[test]
-    fn unclosed_nested_code_in_bold() {
-        assert_inline("**bold `unclosed**", &[("bold `unclosed", Some(bs()))]);
-    }
-    #[test]
-    fn unclosed_nested_bold_in_code() {
-        assert_inline("`code **unclosed`", &[("code **unclosed", Some(cs()))]);
-    }
-    #[test]
-    fn no_delimiters() {
-        assert_inline("plain text", &[("plain text", None)]);
-    }
-    #[test]
-    fn empty_code_span() {
-        assert_inline("``", &[("``", None)]);
-    }
-    #[test]
-    fn empty_bold_span() {
-        assert_inline("****", &[("****", None)]);
-    }
-    #[test]
-    fn star_with_spaces_not_italic() {
-        assert_inline("a * b", &[("a * b", None)]);
-    }
-    #[test]
-    fn intraword_stars_not_italic() {
-        assert_inline("a*b*c", &[("a*b*c", None)]);
-    }
-    #[test]
-    fn two_code_spans_with_text() {
-        assert_inline(
-            "`a` middle `b`",
-            &[("a", Some(cs())), (" middle ", None), ("b", Some(cs()))],
-        );
-    }
-    #[test]
-    fn code_then_bold() {
-        assert_inline(
-            "`a` **b**",
-            &[("a", Some(cs())), (" ", None), ("b", Some(bs()))],
-        );
-    }
-    #[test]
-    fn bold_then_code() {
-        assert_inline(
-            "**a** `b`",
-            &[("a", Some(bs())), (" ", None), ("b", Some(cs()))],
-        );
-    }
-    #[test]
-    fn code_then_unclosed_backtick() {
-        assert_inline(
-            "a `b` c `unclosed",
-            &[("a ", None), ("b", Some(cs())), (" c `unclosed", None)],
-        );
-    }
-    #[test]
-    fn bold_then_unclosed_bold() {
-        assert_inline(
-            "a **b** c **unclosed",
-            &[("a ", None), ("b", Some(bs())), (" c **unclosed", None)],
-        );
-    }
-    #[test]
-    fn interleaved_bold_code() {
-        assert_inline("**a `b** c`", &[("**a ", None), ("b** c", Some(cs()))]);
-    }
-    #[test]
-    fn interleaved_code_bold() {
-        assert_inline("`a **b` c**", &[("a **b", Some(cs())), (" c**", None)]);
-    }
-    #[test]
-    fn triple_star_bold_italic() {
-        assert_inline("***bold italic***", &[("bold italic", Some(bis()))]);
-    }
-    #[test]
-    fn code_span_captures_bold_delim() {
-        assert_inline("**`**`", &[("**", None), ("**", Some(cs()))]);
-    }
-    #[test]
-    fn italic_star() {
-        assert_inline(
-            "some *emphasized* word",
-            &[("some ", None), ("emphasized", Some(IS)), (" word", None)],
-        );
-    }
-    #[test]
-    fn italic_underscore() {
-        assert_inline("_italic_", &[("italic", Some(IS))]);
-    }
-    #[test]
-    fn intraword_underscores_not_italic() {
-        assert_inline("file_name_here", &[("file_name_here", None)]);
-    }
-    #[test]
-    fn double_underscore_not_italic() {
-        assert_inline("__dunder__", &[("__dunder__", None)]);
-    }
-    #[test]
-    fn strikethrough_test() {
-        assert_inline(
-            "a ~~struck~~ b",
-            &[("a ", None), ("struck", Some(ss())), (" b", None)],
-        );
-    }
-    #[test]
-    fn empty_strikethrough() {
-        assert_inline("~~~~", &[("~~~~", None)]);
-    }
-    #[test]
-    fn double_backtick_code_span() {
-        assert_inline(
-            "``code with ` inside``",
-            &[("code with ` inside", Some(cs()))],
-        );
-    }
-    #[test]
-    fn triple_backtick_inline_code() {
-        assert_inline("```code```", &[("code", Some(cs()))]);
-    }
-    #[test]
-    fn italic_inside_bold() {
-        assert_inline(
-            "**bold *italic* bold**",
-            &[
-                ("bold ", Some(bs())),
-                ("italic", Some(bis())),
-                (" bold", Some(bs())),
-            ],
-        );
-    }
-    #[test]
-    fn bold_closer_inside_code_ignored() {
-        assert_inline(
-            "**bold `code**` bold**",
-            &[
-                ("bold ", Some(bs())),
-                ("code**", Some(bcs())),
-                (" bold", Some(bs())),
-            ],
-        );
-    }
+
+    // Basic formatting
+    inline_test!(
+        inline_bold,
+        "a **bold** b",
+        &[("a ", None), ("bold", Some(bs())), (" b", None)]
+    );
+    inline_test!(
+        inline_code,
+        "use `foo` here",
+        &[("use ", None), ("foo", Some(cs())), (" here", None)]
+    );
+    inline_test!(
+        italic_star,
+        "some *emphasized* word",
+        &[("some ", None), ("emphasized", Some(IS)), (" word", None)]
+    );
+    inline_test!(italic_underscore, "_italic_", &[("italic", Some(IS))]);
+    inline_test!(
+        strikethrough,
+        "a ~~struck~~ b",
+        &[("a ", None), ("struck", Some(ss())), (" b", None)]
+    );
+    inline_test!(
+        triple_star,
+        "***bold italic***",
+        &[("bold italic", Some(bis()))]
+    );
+
+    // Nesting
+    inline_test!(
+        code_inside_bold,
+        "**bold `code` bold**",
+        &[
+            ("bold ", Some(bs())),
+            ("code", Some(bcs())),
+            (" bold", Some(bs()))
+        ]
+    );
+    inline_test!(
+        bold_inside_code,
+        "`code **bold** code`",
+        &[("code **bold** code", Some(cs()))]
+    );
+    inline_test!(
+        italic_inside_bold,
+        "**bold *italic* bold**",
+        &[
+            ("bold ", Some(bs())),
+            ("italic", Some(bis())),
+            (" bold", Some(bs()))
+        ]
+    );
+    inline_test!(
+        bold_closer_in_code,
+        "**bold `code**` bold**",
+        &[
+            ("bold ", Some(bs())),
+            ("code**", Some(bcs())),
+            (" bold", Some(bs()))
+        ]
+    );
+    inline_test!(entire_bold_is_code, "**`all`**", &[("all", Some(bcs()))]);
+    inline_test!(entire_code_is_bold, "`**all**`", &[("**all**", Some(cs()))]);
+
+    // Sequencing
+    inline_test!(
+        code_before_bold,
+        "a `code` then **bold**",
+        &[
+            ("a ", None),
+            ("code", Some(cs())),
+            (" then ", None),
+            ("bold", Some(bs()))
+        ]
+    );
+    inline_test!(
+        two_code_spans,
+        "`a` middle `b`",
+        &[("a", Some(cs())), (" middle ", None), ("b", Some(cs()))]
+    );
+    inline_test!(
+        code_then_bold,
+        "`a` **b**",
+        &[("a", Some(cs())), (" ", None), ("b", Some(bs()))]
+    );
+    inline_test!(
+        bold_then_code,
+        "**a** `b`",
+        &[("a", Some(bs())), (" ", None), ("b", Some(cs()))]
+    );
+
+    // Interleaving (code wins over bold)
+    inline_test!(
+        interleaved_bold_code,
+        "**a `b** c`",
+        &[("**a ", None), ("b** c", Some(cs()))]
+    );
+    inline_test!(
+        interleaved_code_bold,
+        "`a **b` c**",
+        &[("a **b", Some(cs())), (" c**", None)]
+    );
+    inline_test!(
+        code_captures_bold,
+        "**`**`",
+        &[("**", None), ("**", Some(cs()))]
+    );
+
+    // Unclosed delimiters
+    inline_test!(unclosed_bold, "a **unclosed", &[("a **unclosed", None)]);
+    inline_test!(unclosed_backtick, "a `unclosed", &[("a `unclosed", None)]);
+    inline_test!(
+        unclosed_code_in_bold,
+        "**bold `unclosed**",
+        &[("bold `unclosed", Some(bs()))]
+    );
+    inline_test!(
+        unclosed_bold_in_code,
+        "`code **unclosed`",
+        &[("code **unclosed", Some(cs()))]
+    );
+    inline_test!(
+        code_then_unclosed,
+        "a `b` c `unclosed",
+        &[("a ", None), ("b", Some(cs())), (" c `unclosed", None)]
+    );
+    inline_test!(
+        bold_then_unclosed,
+        "a **b** c **unclosed",
+        &[("a ", None), ("b", Some(bs())), (" c **unclosed", None)]
+    );
+
+    // Empty/no-op delimiters
+    inline_test!(no_delimiters, "plain text", &[("plain text", None)]);
+    inline_test!(empty_code, "``", &[("``", None)]);
+    inline_test!(empty_bold, "****", &[("****", None)]);
+    inline_test!(empty_strike, "~~~~", &[("~~~~", None)]);
+
+    // Non-emphasis contexts
+    inline_test!(star_with_spaces, "a * b", &[("a * b", None)]);
+    inline_test!(intraword_stars, "a*b*c", &[("a*b*c", None)]);
+    inline_test!(
+        intraword_underscores,
+        "file_name_here",
+        &[("file_name_here", None)]
+    );
+    inline_test!(double_underscore, "__dunder__", &[("__dunder__", None)]);
+
+    // Multi-backtick code spans
+    inline_test!(
+        double_backtick,
+        "``code with ` inside``",
+        &[("code with ` inside", Some(cs()))]
+    );
+    inline_test!(triple_backtick_code, "```code```", &[("code", Some(cs()))]);
 
     #[test_case("here is `/home/tony/file.rs` path" ; "path_in_backticks")]
     #[test_case("use `fn main()` and **important**" ; "code_and_bold_real_content")]
@@ -1567,11 +1529,21 @@ mod tests {
         assert_eq!(tr.skipped, expected_skipped);
     }
 
-    #[test_case("a\nb\nc\nd", 2, Keep::Head, "a\nb\n... (2 lines)" ; "head_with_notice")]
-    #[test_case("a\nb\nc\nd", 2, Keep::Tail, "... (2 lines)\nc\nd" ; "tail_with_notice")]
+    #[test_case("a\nb\nc\nd", 2, Keep::Head, "a\nb\n... (2 lines) click to expand" ; "head_with_notice")]
+    #[test_case("a\nb\nc\nd", 2, Keep::Tail, "... (2 lines) click to expand\nc\nd" ; "tail_with_notice")]
     #[test_case("a\nb\nc",    5, Keep::Head, "a\nb\nc"             ; "no_truncation")]
     fn truncated_into_string(input: &str, max: usize, keep: Keep, expected: &str) {
         assert_eq!(truncate_lines(input, max, keep).into_string(), expected);
+    }
+
+    #[test_case(5,  "click to expand"   ; "collapsed_shows_expand")]
+    #[test_case(1,  "(1 line)"           ; "collapsed_singular")]
+    fn truncation_notice_text(count: usize, expected_substr: &str) {
+        let notice = truncation_notice(count);
+        assert!(
+            notice.contains(expected_substr),
+            "expected {expected_substr:?} in {notice:?}"
+        );
     }
 
     #[test]

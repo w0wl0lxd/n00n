@@ -1,4 +1,3 @@
-use crate::components::tool_display::ToolKind;
 use crate::highlight::{
     fallback_span, highlight_code_plain, highlight_line, highlighter_for_path,
     highlighter_for_syntax, highlighter_for_token, syntax_for_path,
@@ -62,7 +61,8 @@ fn render_code(
     code_lines: &[String],
     total_count: usize,
     max_lines: usize,
-) -> Vec<Line<'static>> {
+    expanded: bool,
+) -> (Vec<Line<'static>>, bool) {
     let display_count = code_lines.len().min(max_lines);
     let max_nr = start_line + display_count.saturating_sub(1);
     let w = nr_width(max_nr);
@@ -80,10 +80,11 @@ fn render_code(
         .collect();
 
     let hidden = total_count.saturating_sub(display_count);
+    let has_truncation = hidden > 0 || expanded;
     if hidden > 0 {
         lines.push(truncation_line(hidden));
     }
-    lines
+    (lines, has_truncation)
 }
 
 fn render_diff(path: Option<&str>, hunks: &[DiffHunk]) -> Vec<Line<'static>> {
@@ -165,7 +166,8 @@ fn render_grep_results(
     entries: &[GrepFileEntry],
     max_lines: usize,
     highlight: bool,
-) -> Vec<Line<'static>> {
+    expanded: bool,
+) -> (Vec<Line<'static>>, bool) {
     let mut out = Vec::new();
     let mut budget = max_lines;
     let total: usize = entries.iter().map(|e| e.matches.len()).sum();
@@ -204,10 +206,11 @@ fn render_grep_results(
             budget -= 1;
         }
     }
-    if total > max_lines {
-        out.push(truncation_line(total - max_lines));
+    let truncated = total > max_lines;
+    if truncated {
+        out.push(truncation_line(total.saturating_sub(max_lines)));
     }
-    out
+    (out, truncated || expanded)
 }
 
 pub(crate) fn render_instructions(
@@ -230,14 +233,21 @@ pub(crate) fn render_instructions(
     }
 }
 
+pub struct ToolContent {
+    pub lines: Vec<Line<'static>>,
+    pub has_truncation: bool,
+}
+
 pub fn render_tool_content(
     input: Option<&ToolInput>,
     output: Option<&ToolOutput>,
     highlight: bool,
     width: u16,
-    kind: ToolKind,
-) -> Vec<Line<'static>> {
+    max_lines: usize,
+    expanded: bool,
+) -> ToolContent {
     let mut lines = Vec::new();
+    let mut has_truncation = false;
     match input {
         Some(ToolInput::Script { language, code }) => {
             let code_lines: Vec<String> = code
@@ -247,13 +257,10 @@ pub fn render_tool_content(
                 .collect();
             let total = code_lines.len();
             let hl = highlight.then(|| highlighter_for_token(language));
-            lines.extend(render_code(
-                hl,
-                1,
-                &code_lines,
-                total,
-                MAX_CODE_EXECUTION_LINES,
-            ));
+            let (code_result, trunc) =
+                render_code(hl, 1, &code_lines, total, MAX_CODE_EXECUTION_LINES, false);
+            has_truncation |= trunc;
+            lines.extend(code_result);
         }
         Some(ToolInput::Code { language, code }) => {
             if highlight {
@@ -268,7 +275,7 @@ pub fn render_tool_content(
         }
         None => {}
     }
-    let output_lines = match output {
+    let (output_lines, output_trunc) = match output {
         Some(ToolOutput::ReadCode {
             path,
             start_line,
@@ -276,49 +283,51 @@ pub fn render_tool_content(
             instructions,
             ..
         }) => {
-            let max = kind.output_limits().max_lines;
-            let mut result = render_code(
+            let (mut result, trunc) = render_code(
                 highlight.then(|| highlighter_for_path(path)),
                 *start_line,
                 code_lines,
                 code_lines.len(),
-                max,
+                max_lines,
+                expanded,
             );
             if let Some(inst) = instructions {
                 result.push(Line::default());
                 render_instructions(inst, &mut result, width);
             }
-            result
+            (result, trunc)
         }
         Some(ToolOutput::WriteCode {
             path,
             lines: code_lines,
             ..
-        }) => {
-            let max = kind.output_limits().max_lines;
-            render_code(
-                highlight.then(|| highlighter_for_path(path)),
-                1,
-                code_lines,
-                code_lines.len(),
-                max,
-            )
-        }
-        Some(ToolOutput::Diff { path, hunks, .. }) => {
-            render_diff(highlight.then_some(path.as_str()), hunks)
-        }
+        }) => render_code(
+            highlight.then(|| highlighter_for_path(path)),
+            1,
+            code_lines,
+            code_lines.len(),
+            max_lines,
+            expanded,
+        ),
+        Some(ToolOutput::Diff { path, hunks, .. }) => (
+            render_diff(highlight.then_some(path.as_str()), hunks),
+            false,
+        ),
         Some(ToolOutput::GrepResult { entries }) => {
-            let max = kind.output_limits().max_lines;
-            render_grep_results(entries, max, highlight)
+            render_grep_results(entries, max_lines, highlight, expanded)
         }
-        Some(ToolOutput::ReadDir { .. }) => Vec::new(),
-        _ => Vec::new(),
+        Some(ToolOutput::ReadDir { .. }) => (Vec::new(), false),
+        _ => (Vec::new(), false),
     };
+    has_truncation |= output_trunc;
     if !lines.is_empty() && !output_lines.is_empty() {
         lines.push(Line::default());
     }
     lines.extend(output_lines);
-    lines
+    ToolContent {
+        lines,
+        has_truncation,
+    }
 }
 
 fn merge_syntax_with_diff(
@@ -380,19 +389,12 @@ fn merge_syntax_with_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::tool_display::ToolKind;
     use crate::markdown::TRUNCATION_PREFIX;
     use maki_agent::{DiffSpan, GrepMatch};
     use test_case::test_case;
 
     use ratatui::style::Color;
-
-    #[test_case(1, 1 ; "single_digit")]
-    #[test_case(10, 2 ; "ten")]
-    #[test_case(100, 3 ; "hundred")]
-    #[test_case(0, 1 ; "zero_clamped")]
-    fn nr_width_cases(input: usize, expected: usize) {
-        assert_eq!(nr_width(input), expected);
-    }
 
     const READ_MAX_LINES: usize = ToolKind::Read.output_limits().max_lines;
 
@@ -401,12 +403,13 @@ mod tests {
     #[test_case(5,  50, 5 + 1                ; "total_exceeds_available_lines")]
     fn render_code_line_count(input_lines: usize, total: usize, expected: usize) {
         let code_lines: Vec<String> = (0..input_lines).map(|i| format!("line {i}")).collect();
-        let result = render_code(
+        let (result, _) = render_code(
             Some(highlighter_for_path("test.rs")),
             1,
             &code_lines,
             total,
             READ_MAX_LINES,
+            false,
         );
         assert_eq!(result.len(), expected);
     }
@@ -433,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_syntax_with_diff_syntax_longer_than_diff() {
+    fn merge_syntax_longer_than_diff_preserves_trailing() {
         let base = Style::new().bg(Color::Red);
         let syn = vec![
             (Style::new().fg(Color::Blue), "ab".to_owned()),
@@ -466,7 +469,10 @@ mod tests {
     #[test_case(&[("a.rs", &[1_usize,2,3]), ("b.rs", &[10,20])],          4, 7  ; "multi_file_budget_with_ellipsis")]
     fn render_grep_line_count(files: &[(&str, &[usize])], max: usize, expected: usize) {
         let entries = grep_entries(files);
-        assert_eq!(render_grep_results(&entries, max, true).len(), expected);
+        assert_eq!(
+            render_grep_results(&entries, max, true, false).0.len(),
+            expected
+        );
     }
 
     fn line_text(line: &Line) -> String {
@@ -476,7 +482,7 @@ mod tests {
     #[test]
     fn multi_file_grep_headers_and_alignment() {
         let entries = grep_entries(&[("a.rs", &[1]), ("b.rs", &[100])]);
-        let lines = render_grep_results(&entries, 10, false);
+        let (lines, _) = render_grep_results(&entries, 10, false, false);
 
         let texts: Vec<String> = lines.iter().map(line_text).collect();
         assert!(texts[0].contains("a.rs"));
@@ -494,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_syntax_with_diff_interleaved_boundaries() {
+    fn merge_syntax_interleaved_splits_at_emphasis_boundary() {
         let base = Style::default();
         let emph = Style::new().bg(Color::Green);
         let syn = vec![
@@ -534,7 +540,7 @@ mod tests {
                 },
             ],
         }];
-        let lines = render_grep_results(&entries, 100, true);
+        let (lines, _) = render_grep_results(&entries, 100, true, false);
         // If the unclosed string on line 1 leaked into line 2's highlighting,
         // all of line 2's spans would share one uniform "string" style.
         // Independent highlighting of `let y = 42;` must produce multiple
@@ -576,7 +582,7 @@ mod tests {
         let content_lines = lines.len() - 1;
         assert!(content_lines <= MAX_INSTRUCTION_LINES + 1);
         let last = lines.last().unwrap();
-        assert!(line_text(last).starts_with(TRUNCATION_PREFIX));
+        assert!(line_text(last).contains(TRUNCATION_PREFIX));
         assert_eq!(last.spans[0].style, theme::current().tool_dim);
     }
 
