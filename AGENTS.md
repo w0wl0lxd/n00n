@@ -38,7 +38,7 @@ Read `justfile` for more.
 
 ## Architecture
 
-Rust workspace, key crates:
+Rust workspace, key crates in root dir:
 
 - **maki-ui**: Uses ratatui for an interactive UI (elm like architecture)
 - **maki-providers**: Integration with LLM providers via APIs (e.g. Anthropic, Z.AI)
