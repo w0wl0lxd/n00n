@@ -287,7 +287,10 @@ impl McpTransport for StdioTransport {
             let (tx, rx) = smol::channel::bounded(1);
             self.pending.lock().await.insert(id, tx);
 
-            self.write_line(&self.serialize(&req)?).await?;
+            if let Err(e) = self.write_line(&self.serialize(&req)?).await {
+                self.pending.lock().await.remove(&id);
+                return Err(e);
+            }
 
             let result = futures_lite::future::race(
                 async { rx.recv().await.unwrap_or(Err(self.server_died())) },

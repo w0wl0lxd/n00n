@@ -52,7 +52,8 @@ pub struct McpManager {
 
 impl McpManager {
     pub async fn start(cwd: &Path) -> Option<Arc<Self>> {
-        let config = load_config(cwd);
+        let cwd = cwd.to_owned();
+        let config = smol::unblock(move || load_config(&cwd)).await;
         Self::start_with_config(config).await
     }
 
@@ -66,6 +67,14 @@ impl McpManager {
         let mut tools = Vec::new();
         let mut tool_index = HashMap::new();
         let mut entries = Vec::new();
+
+        struct Pending {
+            config: ServerConfig,
+            kind: &'static str,
+            origin: PathBuf,
+        }
+
+        let mut pending = Vec::new();
 
         for (name, raw) in config.mcp {
             let kind = transport_kind(&raw.transport);
@@ -81,8 +90,12 @@ impl McpManager {
                 continue;
             }
 
-            let server_config = match parse_server(name.clone(), raw) {
-                Ok(sc) => sc,
+            match parse_server(name.clone(), raw) {
+                Ok(sc) => pending.push(Pending {
+                    config: sc,
+                    kind,
+                    origin,
+                }),
                 Err(e) => {
                     warn!(server = %name, error = %e, "invalid MCP server config");
                     entries.push(ServerEntry {
@@ -91,16 +104,27 @@ impl McpManager {
                         origin,
                         status: McpServerStatus::Failed(e.to_string()),
                     });
-                    continue;
                 }
-            };
+            }
+        }
 
-            match Self::start_server(&server_config).await {
+        let handles: Vec<_> = pending
+            .into_iter()
+            .map(|p| {
+                smol::spawn(async move {
+                    let result = Self::start_server(&p.config).await;
+                    (p, result)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            let (p, result) = handle.await;
+            match result {
                 Ok((t, server_tools)) => {
-                    let server_name: Arc<str> = Arc::from(server_config.name.as_str());
+                    let server_name: Arc<str> = Arc::from(p.config.name.as_str());
                     for tool_info in server_tools {
-                        let qualified =
-                            format!("{}{SEPARATOR}{}", server_config.name, tool_info.name);
+                        let qualified = format!("{}{SEPARATOR}{}", p.config.name, tool_info.name);
                         let interned = intern(qualified);
                         let idx = tools.len();
                         tools.push(McpToolDef {
@@ -114,18 +138,18 @@ impl McpManager {
                     }
                     transports.insert(Arc::clone(&server_name), t);
                     entries.push(ServerEntry {
-                        name: server_config.name,
-                        transport_kind: kind,
-                        origin,
+                        name: p.config.name,
+                        transport_kind: p.kind,
+                        origin: p.origin,
                         status: McpServerStatus::Running,
                     });
                 }
                 Err(e) => {
-                    warn!(server = %server_config.name, error = %e, "failed to start MCP server");
+                    warn!(server = %p.config.name, error = %e, "failed to start MCP server");
                     entries.push(ServerEntry {
-                        name: server_config.name,
-                        transport_kind: kind,
-                        origin,
+                        name: p.config.name,
+                        transport_kind: p.kind,
+                        origin: p.origin,
                         status: McpServerStatus::Failed(e.to_string()),
                     });
                 }
@@ -253,9 +277,18 @@ impl McpManager {
     }
 
     pub async fn shutdown(self) {
-        for (name, t) in self.transports {
-            info!(server = &*name, "shutting down MCP server");
-            t.shutdown().await;
+        let handles: Vec<_> = self
+            .transports
+            .into_iter()
+            .map(|(name, t)| {
+                smol::spawn(async move {
+                    info!(server = &*name, "shutting down MCP server");
+                    t.shutdown().await;
+                })
+            })
+            .collect();
+        for h in handles {
+            h.await;
         }
     }
 

@@ -8,7 +8,7 @@ use async_lock::Mutex;
 use isahc::HttpClient;
 use isahc::config::Configurable;
 use isahc::http::header::{ACCEPT, CONTENT_TYPE};
-use isahc::http::{Method, Request, StatusCode};
+use isahc::http::{Method, Request, StatusCode, header::HeaderMap};
 use serde_json::Value;
 
 use super::error::McpError;
@@ -88,28 +88,28 @@ impl HttpTransport {
     async fn send_http(
         &self,
         http_req: Request<Vec<u8>>,
-    ) -> Result<isahc::Response<isahc::Body>, McpError> {
+    ) -> Result<(StatusCode, HeaderMap, String), McpError> {
+        let server = self.server();
         smol::unblock({
             let client = self.client.clone();
-            move || client.send(http_req)
+            move || {
+                let mut response = client.send(http_req).map_err(|e| McpError::WriteFailed {
+                    server: server.clone(),
+                    reason: e.to_string(),
+                })?;
+                let status = response.status();
+                let headers = response.headers().clone();
+                let mut body = String::new();
+                response.body_mut().read_to_string(&mut body).map_err(|e| {
+                    McpError::InvalidResponse {
+                        server,
+                        reason: e.to_string(),
+                    }
+                })?;
+                Ok((status, headers, body))
+            }
         })
         .await
-        .map_err(|e| McpError::WriteFailed {
-            server: self.server(),
-            reason: e.to_string(),
-        })
-    }
-
-    fn read_body(&self, response: &mut isahc::Response<isahc::Body>) -> Result<String, McpError> {
-        let mut body = String::new();
-        response
-            .body_mut()
-            .read_to_string(&mut body)
-            .map_err(|e| McpError::InvalidResponse {
-                server: self.server(),
-                reason: e.to_string(),
-            })?;
-        Ok(body)
     }
 
     fn parse_rpc_response(&self, body_str: &str, content_type: &str) -> Result<Value, McpError> {
@@ -145,8 +145,8 @@ impl HttpTransport {
         Ok(resp.result.unwrap_or(Value::Null))
     }
 
-    async fn capture_session_id(&self, response: &isahc::Response<isahc::Body>) {
-        if let Some(sid) = response.headers().get(SESSION_HEADER)
+    async fn capture_session_id(&self, headers: &HeaderMap) {
+        if let Some(sid) = headers.get(SESSION_HEADER)
             && let Ok(sid_str) = sid.to_str()
         {
             *self.session_id.lock().await = Some(sid_str.to_string());
@@ -173,27 +173,23 @@ impl McpTransport for HttpTransport {
             let http_req = self.build_request(body, session_id.as_deref())?;
             drop(session_id);
 
-            let mut response = self.send_http(http_req).await?;
-            let status = response.status();
+            let (status, headers, body_str) = self.send_http(http_req).await?;
 
             if !status.is_success() {
-                let reason = self.read_body(&mut response).unwrap_or_default();
                 return Err(McpError::HttpError {
                     server: self.server(),
                     status: status.as_u16(),
-                    reason,
+                    reason: body_str,
                 });
             }
 
-            self.capture_session_id(&response).await;
+            self.capture_session_id(&headers).await;
 
-            let is_sse = response
-                .headers()
+            let is_sse = headers
                 .get(CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|ct| ct.contains(CT_SSE));
 
-            let body_str = self.read_body(&mut response)?;
             let result = self.parse_rpc_response(&body_str, if is_sse { CT_SSE } else { CT_JSON });
             info!(server = %self.server(), method, status = %status, duration_ms = start.elapsed().as_millis() as u64, "MCP HTTP request");
             result
@@ -216,8 +212,7 @@ impl McpTransport for HttpTransport {
             let http_req = self.build_request(body, session_id.as_deref())?;
             drop(session_id);
 
-            let response = self.send_http(http_req).await?;
-            let status = response.status();
+            let (status, _, _) = self.send_http(http_req).await?;
 
             if !status.is_success() && status != StatusCode::ACCEPTED {
                 return Err(McpError::HttpError {

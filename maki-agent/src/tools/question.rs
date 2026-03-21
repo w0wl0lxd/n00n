@@ -32,10 +32,13 @@ impl Question {
         });
 
         let rx = rx.lock().await;
-        match rx.recv_async().await {
-            Ok(answer) => Ok(Self::format_answer(&self.questions, &answer)),
-            Err(_) => Err(CHANNEL_CLOSED.into()),
-        }
+        let recv = async {
+            match rx.recv_async().await {
+                Ok(answer) => Ok(Self::format_answer(&self.questions, &answer)),
+                Err(_) => Err(CHANNEL_CLOSED.into()),
+            }
+        };
+        ctx.cancel.race(recv).await?
     }
 
     pub fn start_summary(&self) -> String {

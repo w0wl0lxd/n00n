@@ -96,7 +96,9 @@ impl Bash {
             .deadline
             .cap_timeout(self.timeout.unwrap_or(ctx.config.bash_timeout_secs))?;
         let (command, workdir) = self.resolved();
-        let rewritten = rtk_rewrite(command, ctx.config.no_rtk);
+        let no_rtk = ctx.config.no_rtk;
+        let cmd_owned = command.to_owned();
+        let rewritten = smol::unblock(move || rtk_rewrite(&cmd_owned, no_rtk)).await;
         let command = rewritten.as_deref().unwrap_or(command);
 
         info!(command, workdir, timeout_secs, "bash executing");
