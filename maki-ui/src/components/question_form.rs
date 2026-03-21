@@ -1,4 +1,4 @@
-use crate::components::Overlay;
+use crate::components::form::{overlay_impl, render_form, selected_prefix};
 use crate::components::hint_line;
 use crate::components::keybindings::key;
 use crate::markdown::text_to_lines;
@@ -11,7 +11,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 const FORM_LABEL: &str = " Questions ";
 const CUSTOM_OPTION: &str = "Type your own answer";
@@ -307,20 +307,8 @@ impl QuestionForm {
         let inner_width = area.width.saturating_sub(2);
         let lines = self.build_lines(inner_width);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(theme::current().panel_border)
-            .title_top(Line::from(FORM_LABEL).left_aligned())
-            .title_style(theme::current().panel_title);
-
-        let paragraph = Paragraph::new(lines)
-            .style(Style::new().fg(theme::current().foreground))
-            .wrap(Wrap { trim: false })
-            .block(block)
-            .scroll((self.scroll_offset, 0));
-
-        frame.render_widget(paragraph, area);
+        let t = theme::current();
+        render_form(&t, FORM_LABEL, frame, area, lines, (self.scroll_offset, 0));
     }
 
     fn render_tab_bar(&self) -> Line<'static> {
@@ -380,6 +368,7 @@ impl QuestionForm {
         let q = &self.questions[self.current_tab];
         let answers = &self.answers[self.current_tab];
         let separator = Self::separator_line(width);
+        let t = theme::current();
 
         for (i, opt) in q.options.iter().enumerate() {
             if i > 0 {
@@ -391,23 +380,23 @@ impl QuestionForm {
             let prefix = if is_selected { "▸ " } else { "  " };
 
             let style = if is_selected {
-                theme::current().form_active
+                t.form_active
             } else if is_picked {
-                theme::current().form_answered
+                t.form_answered
             } else {
-                Style::new().fg(theme::current().foreground)
+                Style::new().fg(t.foreground)
             };
 
             let mut spans = vec![
-                Span::styled(prefix.to_string(), style),
-                Span::styled(marker.to_string(), theme::current().form_check),
+                Span::styled(prefix, style),
+                Span::styled(marker, t.form_check),
                 Span::styled(opt.label.clone(), style),
             ];
 
             if !opt.description.is_empty() {
                 spans.push(Span::styled(
                     format!(" — {}", opt.description),
-                    theme::current().form_description,
+                    t.form_description,
                 ));
             }
             lines.push(Line::from(spans));
@@ -418,14 +407,9 @@ impl QuestionForm {
         }
         let custom_idx = q.options.len();
         let is_custom_selected = self.selected == custom_idx;
-        let custom_style = if is_custom_selected {
-            theme::current().form_active
-        } else {
-            Style::new().fg(theme::current().foreground)
-        };
-        let prefix = if is_custom_selected { "▸ " } else { "  " };
+        let (prefix, custom_style) = selected_prefix(&t, is_custom_selected);
         lines.push(Line::from(vec![
-            Span::styled(prefix.to_string(), custom_style),
+            Span::styled(prefix, custom_style),
             Span::styled(format!("  {CUSTOM_OPTION}"), custom_style),
         ]));
 
@@ -521,20 +505,7 @@ impl QuestionForm {
     }
 }
 
-impl Overlay for QuestionForm {
-    fn is_open(&self) -> bool {
-        self.visible
-    }
-
-    fn is_modal(&self) -> bool {
-        false
-    }
-
-    fn close(&mut self) {
-        self.visible = false;
-        self.questions.clear();
-    }
-}
+overlay_impl!(QuestionForm);
 
 #[cfg(test)]
 mod tests {
@@ -621,23 +592,16 @@ mod tests {
         }]
     }
 
-    #[test]
-    fn single_question_select_option_immediately_submits() {
+    #[test_case(0, "PostgreSQL" ; "first_option")]
+    #[test_case(1, "Redis"      ; "second_option")]
+    fn select_option_submits(downs: usize, expected: &str) {
         let mut form = QuestionForm::new();
         form.open(single_q_with_options());
-
+        for _ in 0..downs {
+            form.handle_key(key(KeyCode::Down));
+        }
         let action = form.handle_key(key(KeyCode::Enter));
-        assert_eq!(assert_submit(action), vec![vec!["PostgreSQL"]]);
-    }
-
-    #[test]
-    fn navigate_down_and_select_second_option() {
-        let mut form = QuestionForm::new();
-        form.open(single_q_with_options());
-        form.handle_key(key(KeyCode::Down));
-
-        let action = form.handle_key(key(KeyCode::Enter));
-        assert_eq!(assert_submit(action), vec![vec!["Redis"]]);
+        assert_eq!(assert_submit(action), vec![vec![expected]]);
     }
 
     #[test]
@@ -724,14 +688,15 @@ mod tests {
     fn up_down_clamped() {
         let mut form = QuestionForm::new();
         form.open(single_q_with_options());
+        let max = form.option_count() - 1;
 
         form.handle_key(key(KeyCode::Up));
         assert_eq!(form.selected, 0);
 
-        form.handle_key(key(KeyCode::Down));
-        form.handle_key(key(KeyCode::Down));
-        form.handle_key(key(KeyCode::Down));
-        assert_eq!(form.selected, 2);
+        for _ in 0..max + 2 {
+            form.handle_key(key(KeyCode::Down));
+        }
+        assert_eq!(form.selected, max);
     }
 
     #[test]

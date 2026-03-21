@@ -1,4 +1,4 @@
-use crate::components::Overlay;
+use crate::components::form::{overlay_impl, render_form, selected_prefix};
 use crate::components::hint_line;
 use crate::components::keybindings::key;
 use crate::theme;
@@ -6,9 +6,7 @@ use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 const FORM_LABEL: &str = " Plan complete ";
 const HINT_PAIRS: &[(&str, &str)] = &[
@@ -46,6 +44,7 @@ const MENU: &[MenuItem] = &[
 const CHROME_LINES: u16 = 4;
 const FORM_HEIGHT: u16 = MENU.len() as u16 + CHROME_LINES;
 
+#[derive(Debug, PartialEq)]
 pub enum PlanFormAction {
     Consumed,
     ClearAndImplement,
@@ -115,11 +114,7 @@ impl PlanForm {
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(MENU.len() + 1);
 
         for (i, item) in MENU.iter().enumerate() {
-            let (prefix, style) = if i == self.selected {
-                ("▸ ", t.form_active)
-            } else {
-                ("  ", Style::new().fg(t.foreground))
-            };
+            let (prefix, style) = selected_prefix(&t, i == self.selected);
             lines.push(Line::from(vec![
                 Span::styled(prefix, t.form_arrow),
                 Span::styled(item.label, style),
@@ -130,50 +125,19 @@ impl PlanForm {
         lines.push(Line::default());
         lines.push(hint_line(HINT_PAIRS));
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(t.panel_border)
-            .title_top(Line::from(FORM_LABEL).left_aligned())
-            .title_style(t.panel_title);
-
-        let paragraph = Paragraph::new(lines)
-            .style(Style::new().fg(t.foreground))
-            .wrap(Wrap { trim: false })
-            .block(block);
-
-        frame.render_widget(paragraph, area);
+        render_form(&t, FORM_LABEL, frame, area, lines, (0, 0));
     }
 }
 
-impl Overlay for PlanForm {
-    fn is_open(&self) -> bool {
-        self.visible
-    }
-
-    fn is_modal(&self) -> bool {
-        false
-    }
-
-    fn close(&mut self) {
-        self.visible = false;
-    }
-}
+overlay_impl!(PlanForm);
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyEventKind, KeyEventState, KeyModifiers};
+    use crate::components::key;
     use test_case::test_case;
 
-    fn k(code: KeyCode) -> KeyEvent {
-        KeyEvent {
-            code,
-            modifiers: KeyModifiers::NONE,
-            kind: KeyEventKind::Press,
-            state: KeyEventState::NONE,
-        }
-    }
+    const LAST: usize = MENU.len() - 1;
 
     #[test]
     fn open_resets_selected() {
@@ -184,61 +148,53 @@ mod tests {
         assert_eq!(form.selected, 0);
     }
 
-    #[test_case(0, KeyCode::Up,   0 ; "up_at_zero_stays")]
-    #[test_case(0, KeyCode::Down, 1 ; "down_from_zero")]
-    #[test_case(2, KeyCode::Down, 2 ; "down_at_max_stays")]
-    #[test_case(2, KeyCode::Up,   1 ; "up_from_max")]
+    #[test_case(0, KeyCode::Up,   0    ; "up_at_zero_stays")]
+    #[test_case(0, KeyCode::Down, 1    ; "down_from_zero")]
+    #[test_case(LAST, KeyCode::Down, LAST ; "down_at_max_stays")]
+    #[test_case(LAST, KeyCode::Up, LAST - 1 ; "up_from_max")]
     fn navigation(start: usize, code: KeyCode, expected: usize) {
         let mut form = PlanForm::new();
         form.open();
         form.selected = start;
-        let action = form.handle_key(k(code));
-        assert!(matches!(action, PlanFormAction::Consumed));
+        assert_eq!(form.handle_key(key(code)), PlanFormAction::Consumed);
         assert_eq!(form.selected, expected);
     }
 
-    #[test_case(0, "ClearAndImplement" ; "enter_at_0")]
-    #[test_case(1, "Implement"         ; "enter_at_1")]
-    #[test_case(2, "Continue"          ; "enter_at_2")]
-    fn enter_dispatches(selected: usize, expected: &str) {
+    #[test_case(0, PlanFormAction::ClearAndImplement ; "enter_at_0")]
+    #[test_case(1, PlanFormAction::Implement         ; "enter_at_1")]
+    #[test_case(2, PlanFormAction::Continue           ; "enter_at_2")]
+    fn enter_dispatches(selected: usize, expected: PlanFormAction) {
         let mut form = PlanForm::new();
         form.open();
         form.selected = selected;
-        let action = form.handle_key(k(KeyCode::Enter));
-        let name = match action {
-            PlanFormAction::ClearAndImplement => "ClearAndImplement",
-            PlanFormAction::Implement => "Implement",
-            PlanFormAction::Continue => "Continue",
-            _ => "other",
-        };
-        assert_eq!(name, expected);
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), expected);
     }
 
-    #[test_case(k(KeyCode::Esc)           ; "esc")]
+    #[test_case(key(KeyCode::Esc)           ; "esc")]
     #[test_case(key::QUIT.to_key_event() ; "ctrl_c")]
-    fn dismiss(key: KeyEvent) {
+    fn dismiss(k: KeyEvent) {
         let mut form = PlanForm::new();
         form.open();
-        assert!(matches!(form.handle_key(key), PlanFormAction::Dismiss));
+        assert_eq!(form.handle_key(k), PlanFormAction::Dismiss);
     }
 
     #[test]
     fn ctrl_o_opens_editor() {
         let mut form = PlanForm::new();
         form.open();
-        assert!(matches!(
+        assert_eq!(
             form.handle_key(key::OPEN_EDITOR.to_key_event()),
             PlanFormAction::OpenEditor
-        ));
+        );
     }
 
     #[test]
     fn unknown_key_consumed() {
         let mut form = PlanForm::new();
         form.open();
-        assert!(matches!(
-            form.handle_key(k(KeyCode::Char('x'))),
+        assert_eq!(
+            form.handle_key(key(KeyCode::Char('x'))),
             PlanFormAction::Consumed
-        ));
+        );
     }
 }
