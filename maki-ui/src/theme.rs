@@ -325,7 +325,6 @@ pub struct Theme {
     pub keybind_section: Style,
     pub mode_build: Color,
     pub mode_plan: Color,
-    pub mode_build_plan: Color,
     pub queue_compact: Style,
     pub plan_path: Style,
     pub status_flash: Style,
@@ -671,7 +670,6 @@ impl Theme {
             keybind_section: style("keybind_section"),
             mode_build: derived_color("mode_build", &["keyword.storage.type", "keyword"]),
             mode_plan: derived_color("mode_plan", &["keyword", "keyword.storage.type"]),
-            mode_build_plan: derived_color("mode_build_plan", &["constant", "constant.numeric"]),
             queue_compact: style("queue_compact"),
             plan_path: style("plan_path"),
             status_flash: style("status_flash"),
@@ -1000,12 +998,6 @@ comment = "#6272a4"
     fn derives_mode_plan_from_keyword() {
         let theme = Theme::from_toml(dracula_toml()).unwrap();
         assert_eq!(theme.mode_plan, Color::Rgb(0xff, 0x79, 0xc6));
-    }
-
-    #[test]
-    fn derives_mode_build_plan_from_constant() {
-        let theme = Theme::from_toml(dracula_toml()).unwrap();
-        assert_eq!(theme.mode_build_plan, Color::Rgb(0xbd, 0x93, 0xf9));
     }
 
     #[test]

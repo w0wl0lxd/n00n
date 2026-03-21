@@ -14,7 +14,6 @@ use super::queue::QueuedMessage;
 pub(crate) enum Mode {
     Build,
     Plan,
-    BuildPlan,
 }
 
 impl Mode {
@@ -22,7 +21,6 @@ impl Mode {
         match self {
             Self::Build => theme::current().mode_build,
             Self::Plan => theme::current().mode_plan,
-            Self::BuildPlan => theme::current().mode_build_plan,
         }
     }
 }
@@ -85,14 +83,7 @@ impl App {
                 self.plan.ensure_path(&self.storage);
                 Mode::Plan
             }
-            Mode::Plan => {
-                if self.plan.written {
-                    Mode::BuildPlan
-                } else {
-                    Mode::Build
-                }
-            }
-            Mode::BuildPlan => Mode::Build,
+            Mode::Plan => Mode::Build,
         };
         vec![]
     }
@@ -103,14 +94,7 @@ impl App {
                 Some(p) => AgentMode::Plan(p.to_path_buf()),
                 None => AgentMode::Build,
             },
-            Mode::Build | Mode::BuildPlan => AgentMode::Build,
-        }
-    }
-
-    pub(super) fn pending_plan(&self) -> Option<&Path> {
-        match self.mode {
-            Mode::BuildPlan => self.plan.pending_plan(),
-            _ => None,
+            Mode::Build => AgentMode::Build,
         }
     }
 
@@ -118,7 +102,7 @@ impl App {
         AgentInput {
             message: msg.text.clone(),
             mode: self.agent_mode(),
-            pending_plan: self.pending_plan().map(Path::to_path_buf),
+            pending_plan: self.plan.pending_plan().map(Path::to_path_buf),
             images: msg.images.clone(),
             ..Default::default()
         }
@@ -128,15 +112,6 @@ impl App {
         let label: Cow<'static, str> = match self.mode {
             Mode::Build => "[BUILD]".into(),
             Mode::Plan => "[PLAN]".into(),
-            Mode::BuildPlan => {
-                let name = self
-                    .plan
-                    .path()
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("PLAN");
-                format!("[BUILD {name}]").into()
-            }
         };
         let style = Style::new()
             .fg(self.mode.color())

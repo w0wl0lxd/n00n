@@ -178,10 +178,6 @@ fn toggle_mode_state_machine() {
 
     app.plan.mark_written();
     tab(&mut app);
-    assert_eq!(app.mode, Mode::BuildPlan);
-    assert!(app.plan.is_written());
-
-    tab(&mut app);
     assert_eq!(app.mode, Mode::Build);
     assert!(app.plan.is_written());
 
@@ -190,7 +186,7 @@ fn toggle_mode_state_machine() {
     assert_eq!(app.plan.path().unwrap(), first_path);
 
     tab(&mut app);
-    assert_eq!(app.mode, Mode::BuildPlan);
+    assert_eq!(app.mode, Mode::Build);
     assert_eq!(app.plan.path().unwrap(), first_path);
 
     app.mode = Mode::Build;
@@ -201,9 +197,9 @@ fn toggle_mode_state_machine() {
     assert_eq!(app.plan.path().unwrap(), first_path);
 }
 
-#[test_case(Mode::BuildPlan, true,  Some("plan.md") ; "build_plan_sends_pending")]
-#[test_case(Mode::Build,     true,  None             ; "build_ignores_ready_plan")]
-#[test_case(Mode::BuildPlan, false, None             ; "build_plan_unwritten")]
+#[test_case(Mode::Build, true,  Some("plan.md") ; "build_sends_written_plan")]
+#[test_case(Mode::Build, false, None              ; "build_ignores_unwritten_plan")]
+#[test_case(Mode::Plan,  true,  Some("plan.md") ; "plan_sends_written_plan")]
 fn submit_pending_plan(mode: Mode, written: bool, expected: Option<&str>) {
     let mut app = test_app();
     app.mode = mode;
@@ -464,7 +460,7 @@ fn reset_session_preserves_plan() {
     let mut app = test_app();
     app.token_usage.input = 500;
     app.chats[0].context_size = 1000;
-    app.mode = Mode::BuildPlan;
+    app.mode = Mode::Build;
     app.plan = PlanState::with_path(PathBuf::from("plan.md"), true);
     app.queue.push(queued_msg("q"));
     app.queue.set_focus_at(0);
@@ -476,7 +472,7 @@ fn reset_session_preserves_plan() {
     assert_eq!(app.status, Status::Idle);
     assert_eq!(app.token_usage.input, 0);
     assert_eq!(app.chats[0].context_size, 0);
-    assert_eq!(app.mode, Mode::BuildPlan);
+    assert_eq!(app.mode, Mode::Build);
     assert_eq!(app.plan.path(), Some(Path::new("plan.md")));
     assert!(app.plan.is_written());
     assert!(app.queue.is_empty());
@@ -532,7 +528,7 @@ fn load_session_clears_plan() {
     app.session.messages.push(Message::user("test".into()));
     app.session.save(&app.storage).unwrap();
     let id = app.session.id.clone();
-    app.mode = Mode::BuildPlan;
+    app.mode = Mode::Build;
     app.plan = PlanState::with_path(PathBuf::from("old-plan.md"), true);
     app.load_session(id);
     assert_eq!(app.mode, Mode::Build);
@@ -2055,9 +2051,9 @@ fn plan_form_clear_and_implement() {
 
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(!app.plan_form.is_visible());
-    assert_eq!(app.mode, Mode::BuildPlan);
+    assert_eq!(app.mode, Mode::Build);
     assert!(
-        matches!(&actions[..], [Action::NewSession, Action::SendMessage(input)] if input.message == "Implement the plan.")
+        matches!(&actions[..], [Action::NewSession, Action::SendMessage(input)] if input.message == "Implement the plan at `test-plan.md`.")
     );
 }
 
@@ -2069,10 +2065,10 @@ fn plan_form_implement_keeps_context() {
     app.update(Msg::Key(key(KeyCode::Down)));
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(!app.plan_form.is_visible());
-    assert_eq!(app.mode, Mode::BuildPlan);
+    assert_eq!(app.mode, Mode::Build);
     assert_eq!(actions.len(), 1);
     assert!(
-        matches!(&actions[0], Action::SendMessage(input) if input.message == "Implement the plan.")
+        matches!(&actions[0], Action::SendMessage(input) if input.message == "Implement the plan at `test-plan.md`.")
     );
 }
 

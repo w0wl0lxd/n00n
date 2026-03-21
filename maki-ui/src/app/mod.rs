@@ -66,7 +66,7 @@ const FLASH_REWIND: &str = "Press esc again to rewind...";
 const AUTH_EXPIRED_MSG: &str =
     "Token expired. Run `maki auth login` in another terminal, then press Enter to retry.";
 const FLASH_NO_PLAN: &str = "No plan file";
-const IMPLEMENT_MSG: &str = "Implement the plan.";
+const IMPLEMENT_MSG_PREFIX: &str = "Implement the plan";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PendingInput {
@@ -1008,13 +1008,18 @@ impl App {
             self.main_chat()
                 .push(DisplayMessage::plan(content, path_str));
         }
-        self.mode = Mode::BuildPlan;
+        let text = match self.plan.path() {
+            Some(p) => format!("{} at `{}`.", IMPLEMENT_MSG_PREFIX, p.display()),
+            None => format!("{}.", IMPLEMENT_MSG_PREFIX),
+        };
+        self.mode = Mode::Build;
         self.run_id += 1;
         let msg = QueuedMessage {
-            text: IMPLEMENT_MSG.into(),
+            text,
             images: vec![],
         };
         actions.extend(self.start_from_queue(&msg));
+        self.plan = PlanState::new();
         actions
     }
 }
