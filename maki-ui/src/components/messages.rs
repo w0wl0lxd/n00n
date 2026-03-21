@@ -591,7 +591,13 @@ impl MessagesPanel {
     }
 
     pub fn scroll_to_segment(&mut self, segment_index: usize) {
-        let offset: u16 = self.segment_heights.iter().take(segment_index).sum();
+        let offset = self
+            .segment_heights
+            .iter()
+            .take(segment_index)
+            .map(|&h| h as u32)
+            .sum::<u32>()
+            .min(u16::MAX as u32) as u16;
         self.scroll_top = offset.min(self.max_scroll());
         self.auto_scroll = false;
     }
@@ -738,59 +744,33 @@ impl MessagesPanel {
             }
         }
 
-        let mut cursor = (self.scroll_top, area.y);
-        let bottom = area.y + area.height;
         let viewport = Rect::new(area.x, area.y, width, area.height);
+        let mut cursor = RenderCursor::new(self.scroll_top, viewport);
 
         for (i, seg) in self.cached_segments.iter().enumerate() {
-            let h = self.segment_heights[i];
-            if cursor.1 >= bottom {
+            if cursor.past_bottom() {
                 break;
             }
-            if cursor.0 >= h {
-                cursor.0 -= h;
-                continue;
-            }
+            let h = self.segment_heights[i];
             let highlight = self.highlight_segment == Some(i);
             let style = seg.tool_id.as_ref().map(|_| theme::current().tool_bg);
-            render_paragraph(
-                &seg.lines,
-                h,
-                style,
-                highlight,
-                &mut cursor,
-                viewport,
-                frame,
-            );
+            cursor.render(&seg.lines, h, style, highlight, frame);
         }
 
         let mut height_idx = self.cached_segments.len();
-        if cursor.1 < bottom {
-            for sc in [&self.streaming_thinking, &self.streaming_text] {
-                if sc.is_empty() || height_idx >= self.segment_heights.len() {
-                    continue;
-                }
-                if cached_count > 0 || height_idx > cached_count {
-                    let h = self.segment_heights[height_idx];
-                    render_paragraph(&spacer_lines, h, None, false, &mut cursor, viewport, frame);
-                    height_idx += 1;
-                }
-                if height_idx < self.segment_heights.len() {
-                    let h = self.segment_heights[height_idx];
-                    render_paragraph(
-                        sc.cached_lines(),
-                        h,
-                        None,
-                        false,
-                        &mut cursor,
-                        viewport,
-                        frame,
-                    );
-                    height_idx += 1;
-                }
-                if cursor.1 >= bottom {
-                    break;
-                }
+        for sc in [&self.streaming_thinking, &self.streaming_text] {
+            if sc.is_empty() || height_idx >= self.segment_heights.len() || cursor.past_bottom() {
+                continue;
+            }
+            if cached_count > 0 || height_idx > cached_count {
+                let h = self.segment_heights[height_idx];
+                height_idx += 1;
+                cursor.render(&spacer_lines, h, None, false, frame);
+            }
+            if height_idx < self.segment_heights.len() {
+                let h = self.segment_heights[height_idx];
+                height_idx += 1;
+                cursor.render(sc.cached_lines(), h, None, false, frame);
             }
         }
 
@@ -800,7 +780,12 @@ impl MessagesPanel {
     }
 
     fn max_scroll(&self) -> u16 {
-        let total: u16 = self.segment_heights.iter().sum();
+        let total = self
+            .segment_heights
+            .iter()
+            .map(|&h| h as u32)
+            .sum::<u32>()
+            .min(u16::MAX as u32) as u16;
         total.saturating_sub(self.viewport_height)
     }
 
@@ -1183,41 +1168,69 @@ fn parse_batch_inner_id(tool_id: &str) -> Option<(&str, usize)> {
     Some((batch_id, idx))
 }
 
-fn render_paragraph(
-    lines: &[Line<'static>],
-    h: u16,
-    style: Option<ratatui::style::Style>,
-    highlight: bool,
-    cursor: &mut (u16, u16),
+struct RenderCursor {
+    skip: u16,
+    y: u16,
+    bottom: u16,
     viewport: Rect,
-    frame: &mut Frame,
-) {
-    let (skip, y) = cursor;
-    let bottom = viewport.y + viewport.height;
-    let visible_h = h.saturating_sub(*skip).min(bottom.saturating_sub(*y));
-    let seg_area = Rect::new(viewport.x, *y, viewport.width, visible_h);
-    let mut p = Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false });
-    if let Some(s) = style {
-        p = p.style(s);
+}
+
+impl RenderCursor {
+    fn new(scroll_top: u16, viewport: Rect) -> Self {
+        Self {
+            skip: scroll_top,
+            y: viewport.y,
+            bottom: viewport.y + viewport.height,
+            viewport,
+        }
     }
-    if *skip > 0 {
-        p = p.scroll((*skip, 0));
-        *skip = 0;
+
+    fn past_bottom(&self) -> bool {
+        self.y >= self.bottom
     }
-    frame.render_widget(p, seg_area);
-    if highlight {
-        for row in seg_area.y..seg_area.y + seg_area.height {
-            for col in seg_area.x..seg_area.x + seg_area.width {
-                if let Some(cell) = frame.buffer_mut().cell_mut((col, row)) {
-                    let fg = cell.fg;
-                    let bg = cell.bg;
-                    cell.set_fg(bg);
-                    cell.set_bg(fg);
+
+    fn render(
+        &mut self,
+        lines: &[Line<'static>],
+        h: u16,
+        style: Option<ratatui::style::Style>,
+        highlight: bool,
+        frame: &mut Frame,
+    ) {
+        if self.skip >= h {
+            self.skip -= h;
+            return;
+        }
+        if self.y >= self.bottom {
+            return;
+        }
+        let visible_h = h
+            .saturating_sub(self.skip)
+            .min(self.bottom.saturating_sub(self.y));
+        let seg_area = Rect::new(self.viewport.x, self.y, self.viewport.width, visible_h);
+        let mut p = Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false });
+        if let Some(s) = style {
+            p = p.style(s);
+        }
+        if self.skip > 0 {
+            p = p.scroll((self.skip, 0));
+            self.skip = 0;
+        }
+        frame.render_widget(p, seg_area);
+        if highlight {
+            for row in seg_area.y..seg_area.y + seg_area.height {
+                for col in seg_area.x..seg_area.x + seg_area.width {
+                    if let Some(cell) = frame.buffer_mut().cell_mut((col, row)) {
+                        let fg = cell.fg;
+                        let bg = cell.bg;
+                        cell.set_fg(bg);
+                        cell.set_bg(fg);
+                    }
                 }
             }
         }
+        self.y += visible_h;
     }
-    *y += visible_h;
 }
 
 fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {
@@ -2282,5 +2295,44 @@ mod tests {
         assert!(panel.toggle_expansion_at(area.y, area));
         render(&mut panel, 80, 24);
         assert!(seg_text(&panel, "t1").contains("click to expand"));
+    }
+
+    fn buffer_text(terminal: &ratatui::Terminal<TestBackend>) -> String {
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if let Some(cell) = buf.cell((x, y)) {
+                    text.push_str(cell.symbol());
+                }
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn streaming_with_cached_segments_shows_end_on_auto_scroll() {
+        let mut panel = MessagesPanel::new(UiConfig::default());
+        panel.push(DisplayMessage::new(
+            DisplayRole::User,
+            "a\n".repeat(20).trim().into(),
+        ));
+
+        let streaming_lines: Vec<String> = (0..50).map(|i| format!("stream_{i}")).collect();
+        panel.streaming_text.set_buffer(&streaming_lines.join("\n"));
+
+        let terminal = render(&mut panel, 80, 10);
+        assert!(panel.auto_scroll);
+
+        let screen = buffer_text(&terminal);
+        assert!(
+            screen.contains("stream_49"),
+            "auto-scroll should show end of streaming text, got:\n{screen}"
+        );
+        assert!(
+            !screen.contains("stream_0 "),
+            "auto-scroll should not show beginning of streaming text"
+        );
     }
 }
