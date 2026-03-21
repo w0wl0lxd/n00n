@@ -284,9 +284,16 @@ impl SkeletonEntry {
 
 pub(crate) trait LanguageExtractor {
     fn extract_nodes(&self, node: Node, source: &[u8], attrs: &[Node]) -> Vec<SkeletonEntry>;
-    fn is_test_node(&self, node: Node, source: &[u8], attrs: &[Node]) -> bool;
     fn is_doc_comment(&self, node: Node, source: &[u8]) -> bool;
-    fn is_module_doc(&self, node: Node, source: &[u8]) -> bool;
+
+    fn is_test_node(&self, _node: Node, _source: &[u8], _attrs: &[Node]) -> bool {
+        false
+    }
+
+    fn is_module_doc(&self, _node: Node, _source: &[u8]) -> bool {
+        false
+    }
+
     fn import_separator(&self) -> &'static str {
         "::"
     }

@@ -52,7 +52,7 @@ impl TsJsExtractor {
         let mut cursor = body.walk();
         for child in body.children(&mut cursor) {
             match child.kind() {
-                "method_definition" | "public_field_definition" => {
+                "method_definition" | "public_field_definition" | "property_definition" => {
                     let mn = child
                         .child_by_field_name("name")
                         .map(|n| node_text(n, source))
@@ -218,15 +218,7 @@ impl LanguageExtractor for TsJsExtractor {
         entry.into_iter().collect()
     }
 
-    fn is_test_node(&self, _node: Node, _source: &[u8], _attrs: &[Node]) -> bool {
-        false
-    }
-
     fn is_doc_comment(&self, node: Node, source: &[u8]) -> bool {
         node.kind() == "comment" && node_text(node, source).starts_with("/**")
-    }
-
-    fn is_module_doc(&self, _node: Node, _source: &[u8]) -> bool {
-        false
     }
 }

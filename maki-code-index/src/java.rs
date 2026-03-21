@@ -91,6 +91,9 @@ impl JavaExtractor {
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
+        let type_params = find_child(node, "type_parameters")
+            .map(|n| node_text(n, source))
+            .unwrap_or("");
         let superclass = node
             .child_by_field_name("superclass")
             .and_then(|n| find_child(n, "type_identifier").or(Some(n)))
@@ -98,7 +101,10 @@ impl JavaExtractor {
             .unwrap_or_default();
         let interfaces = self.implements_clause(node, source);
 
-        let label = prefixed(&mods, format_args!("class {name}{superclass}{interfaces}"));
+        let label = prefixed(
+            &mods,
+            format_args!("class {name}{type_params}{superclass}{interfaces}"),
+        );
 
         let children = self.extract_class_body(node, source);
         Some(SkeletonEntry::new(Section::Class, node, label).with_children(children))
@@ -109,6 +115,7 @@ impl JavaExtractor {
             return Vec::new();
         };
         let mut members = Vec::new();
+        let mut field_count = 0usize;
         let mut cursor = body.walk();
         for child in body.children(&mut cursor) {
             match child.kind() {
@@ -119,7 +126,8 @@ impl JavaExtractor {
                     members.push(format!("{sig} {lr}"));
                 }
                 "field_declaration" => {
-                    if members.len() < FIELD_TRUNCATE_THRESHOLD {
+                    field_count += 1;
+                    if field_count <= FIELD_TRUNCATE_THRESHOLD {
                         let text = self.field_text(child, source);
                         let lr = line_range(
                             child.start_position().row + 1,
@@ -130,6 +138,9 @@ impl JavaExtractor {
                 }
                 _ => {}
             }
+        }
+        if field_count > FIELD_TRUNCATE_THRESHOLD {
+            members.push("...".into());
         }
         members
     }
@@ -174,11 +185,17 @@ impl JavaExtractor {
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
+        let type_params = find_child(node, "type_parameters")
+            .map(|n| node_text(n, source))
+            .unwrap_or("");
         let extends = find_child(node, "extends_interfaces")
             .map(|n| format!(" extends {}", self.type_list_text(n, source)))
             .unwrap_or_default();
 
-        let label = prefixed(&mods, format_args!("interface {name}{extends}"));
+        let label = prefixed(
+            &mods,
+            format_args!("interface {name}{type_params}{extends}"),
+        );
 
         let children = self.extract_interface_body(node, source);
         Some(SkeletonEntry::new(Section::Trait, node, label).with_children(children))
@@ -191,11 +208,13 @@ impl JavaExtractor {
         let mut members = Vec::new();
         let mut cursor = body.walk();
         for child in body.children(&mut cursor) {
-            if child.kind() == "method_declaration" || child.kind() == "constant_declaration" {
-                let sig = self.method_signature(child, source);
-                let lr = line_range(child.start_position().row + 1, child.end_position().row + 1);
-                members.push(format!("{sig} {lr}"));
-            }
+            let text = match child.kind() {
+                "method_declaration" => self.method_signature(child, source),
+                "constant_declaration" => self.field_text(child, source),
+                _ => continue,
+            };
+            let lr = line_range(child.start_position().row + 1, child.end_position().row + 1);
+            members.push(format!("{text} {lr}"));
         }
         members
     }
@@ -205,9 +224,11 @@ impl JavaExtractor {
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
-
+        let type_params = find_child(node, "type_parameters")
+            .map(|n| node_text(n, source))
+            .unwrap_or("");
         let interfaces = self.implements_clause(node, source);
-        let label = prefixed(&mods, format_args!("enum {name}{interfaces}"));
+        let label = prefixed(&mods, format_args!("enum {name}{type_params}{interfaces}"));
 
         let body = node.child_by_field_name("body")?;
         let mut constants = Vec::new();
@@ -234,12 +255,18 @@ impl JavaExtractor {
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
+        let type_params = find_child(node, "type_parameters")
+            .map(|n| node_text(n, source))
+            .unwrap_or("");
         let params = find_child(node, "formal_parameters")
             .map(|n| node_text(n, source))
             .unwrap_or("()");
 
         let interfaces = self.implements_clause(node, source);
-        let label = prefixed(&mods, format_args!("record {name}{params}{interfaces}"));
+        let label = prefixed(
+            &mods,
+            format_args!("record {name}{type_params}{params}{interfaces}"),
+        );
 
         Some(SkeletonEntry::new(Section::Type, node, label))
     }
@@ -271,19 +298,11 @@ impl LanguageExtractor for JavaExtractor {
         }
     }
 
-    fn is_test_node(&self, _node: Node, _source: &[u8], _attrs: &[Node]) -> bool {
-        false
-    }
-
     fn is_doc_comment(&self, node: Node, source: &[u8]) -> bool {
         node.kind() == "block_comment" && node_text(node, source).starts_with("/**")
     }
 
     fn import_separator(&self) -> &'static str {
         "."
-    }
-
-    fn is_module_doc(&self, _node: Node, _source: &[u8]) -> bool {
-        false
     }
 }

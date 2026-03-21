@@ -20,13 +20,19 @@ impl PythonExtractor {
             .or_else(|| text.strip_prefix("from "))
             .unwrap_or(text)
             .trim();
-        let normalized = cleaned.replace(" import ", ".");
-        let paths = vec![
-            normalized
-                .split(self.import_separator())
-                .map(String::from)
-                .collect(),
-        ];
+        let paths = if let Some((base, names)) = cleaned.split_once(" import ") {
+            let base_parts: Vec<&str> = base.split('.').collect();
+            names
+                .split(',')
+                .map(|name| {
+                    let mut path: Vec<String> = base_parts.iter().map(|s| s.to_string()).collect();
+                    path.push(name.trim().to_string());
+                    path
+                })
+                .collect()
+        } else {
+            vec![cleaned.split('.').map(String::from).collect()]
+        };
         Some(SkeletonEntry::new_import(node, paths))
     }
 
@@ -164,10 +170,6 @@ impl LanguageExtractor for PythonExtractor {
             _ => None,
         };
         entry.into_iter().collect()
-    }
-
-    fn is_test_node(&self, _node: Node, _source: &[u8], _attrs: &[Node]) -> bool {
-        false
     }
 
     fn is_doc_comment(&self, _node: Node, _source: &[u8]) -> bool {
