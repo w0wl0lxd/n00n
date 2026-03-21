@@ -12,6 +12,7 @@ const HIDE_HINT: &str = " Ctrl+T to hide ";
 
 pub struct TodoPanel {
     visible: bool,
+    user_dismissed: bool,
     items: Vec<TodoItem>,
 }
 
@@ -19,18 +20,24 @@ impl TodoPanel {
     pub fn new() -> Self {
         Self {
             visible: false,
+            user_dismissed: false,
             items: Vec::new(),
         }
     }
 
     pub fn reset(&mut self) {
         self.visible = false;
+        self.user_dismissed = false;
         self.items.clear();
     }
 
     pub fn on_todowrite(&mut self, items: &[TodoItem]) {
         self.items = items.to_vec();
-        self.visible = !items.is_empty();
+        if items.is_empty() {
+            self.visible = false;
+        } else if !self.user_dismissed {
+            self.visible = true;
+        }
     }
 
     pub fn restore(&mut self, tool_outputs: &HashMap<String, ToolOutput>) {
@@ -43,6 +50,7 @@ impl TodoPanel {
             return;
         }
         self.visible = !self.visible;
+        self.user_dismissed = !self.visible;
     }
 
     pub fn height(&self) -> u16 {
@@ -148,6 +156,40 @@ mod tests {
     }
 
     #[test]
+    fn dismissed_stays_closed_until_manual_reopen() {
+        let mut panel = TodoPanel::new();
+
+        panel.on_todowrite(&make_items(1));
+        assert!(panel.visible);
+
+        panel.toggle();
+        assert!(!panel.visible);
+
+        panel.on_todowrite(&make_items(2));
+        assert!(!panel.visible);
+        assert_eq!(panel.items.len(), 2);
+
+        panel.toggle();
+        assert!(panel.visible);
+
+        panel.on_todowrite(&make_items(3));
+        assert!(panel.visible);
+    }
+
+    #[test]
+    fn reset_clears_dismissed() {
+        let mut panel = TodoPanel::new();
+        panel.on_todowrite(&make_items(1));
+        panel.toggle();
+        panel.reset();
+        assert!(!panel.visible);
+        assert!(panel.items.is_empty());
+
+        panel.on_todowrite(&make_items(1));
+        assert!(panel.visible);
+    }
+
+    #[test]
     fn restore_from_tool_outputs() {
         let mut panel = TodoPanel::new();
         let mut map = HashMap::new();
@@ -162,27 +204,15 @@ mod tests {
     }
 
     #[test]
-    fn reset_clears_everything() {
-        let mut panel = TodoPanel::new();
-        panel.on_todowrite(&make_items(2));
-        panel.reset();
-        assert!(!panel.visible);
-        assert!(panel.items.is_empty());
-    }
-
-    #[test]
     fn height_scales_with_items() {
         let mut panel = TodoPanel::new();
         assert_eq!(panel.height(), 0);
 
         panel.on_todowrite(&make_items(3));
-        let h3 = panel.height();
-        assert!(h3 > 3);
+        assert_eq!(panel.height(), 5);
 
         panel.on_todowrite(&make_items(1));
-        let h1 = panel.height();
-        assert!(h1 > 1);
-        assert!(h1 < h3);
+        assert_eq!(panel.height(), 3);
 
         panel.toggle();
         assert_eq!(panel.height(), 0);
