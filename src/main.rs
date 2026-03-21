@@ -189,17 +189,17 @@ fn run() -> Result<()> {
                     &cwd_str,
                     &storage,
                 )?;
-                let session_id = maki_ui::run(
+                let session_id = maki_ui::run(maki_ui::EventLoopParams {
                     model,
                     skills,
                     session,
                     storage,
-                    config.agent,
-                    config.ui,
-                    config.storage.input_history_size,
+                    config: config.agent,
+                    ui_config: config.ui,
+                    input_history_size: config.storage.input_history_size,
                     #[cfg(feature = "demo")]
-                    cli.demo,
-                )
+                    demo: cli.demo,
+                })
                 .context("run UI")?;
                 eprintln!("session: {session_id}");
             }
