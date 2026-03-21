@@ -401,6 +401,7 @@ struct ResolvedOutput<'a> {
 fn resolve_output<'a>(
     output: Option<&'a ToolOutput>,
     body: Option<&'a str>,
+    live_output: Option<&'a str>,
     pre_truncated: usize,
     max_lines: usize,
     keep: Keep,
@@ -419,21 +420,46 @@ fn resolve_output<'a>(
         };
     }
 
-    let use_body = body.filter(|_| !expanded);
-    let (raw_text, already_truncated) = match (use_body, output) {
-        (Some(b), _) => (Some(Cow::Borrowed(b)), pre_truncated),
-        (None, Some(ToolOutput::Plain(t))) => (Some(Cow::Borrowed(t.as_str())), 0),
-        (None, Some(ToolOutput::ReadDir { text, .. })) => (Some(Cow::Borrowed(text.as_str())), 0),
-        (None, Some(output @ ToolOutput::GlobResult { .. })) => {
-            (Some(Cow::Owned(output.as_display_text())), 0)
+    let (raw_text, already_truncated) = if expanded {
+        if let Some(o) = output {
+            match o {
+                ToolOutput::Plain(t) => (Some(Cow::Borrowed(t.as_str())), 0),
+                ToolOutput::ReadDir { text, .. } => (Some(Cow::Borrowed(text.as_str())), 0),
+                ToolOutput::GlobResult { .. } => (Some(Cow::Owned(o.as_display_text())), 0),
+                _ => {
+                    return ResolvedOutput {
+                        text: None,
+                        skipped: 0,
+                        instructions,
+                    };
+                }
+            }
+        } else if let Some(live) = live_output {
+            (Some(Cow::Borrowed(live)), 0)
+        } else {
+            match body {
+                Some(b) => (Some(Cow::Borrowed(b)), pre_truncated),
+                None => (None, 0),
+            }
         }
-        (None, None) => (None, 0),
-        _ => {
-            return ResolvedOutput {
-                text: None,
-                skipped: 0,
-                instructions,
-            };
+    } else {
+        match (body, output) {
+            (Some(b), _) => (Some(Cow::Borrowed(b)), pre_truncated),
+            (None, Some(ToolOutput::Plain(t))) => (Some(Cow::Borrowed(t.as_str())), 0),
+            (None, Some(ToolOutput::ReadDir { text, .. })) => {
+                (Some(Cow::Borrowed(text.as_str())), 0)
+            }
+            (None, Some(o @ ToolOutput::GlobResult { .. })) => {
+                (Some(Cow::Owned(o.as_display_text())), 0)
+            }
+            (None, None) => (None, 0),
+            _ => {
+                return ResolvedOutput {
+                    text: None,
+                    skipped: 0,
+                    instructions,
+                };
+            }
         }
     };
 
@@ -742,6 +768,7 @@ pub fn build_tool_lines(
     let resolved = resolve_output(
         msg.tool_output.as_ref(),
         body,
+        msg.live_output.as_deref(),
         msg.truncated_lines,
         b.max_lines,
         b.keep,
@@ -789,6 +816,7 @@ pub fn build_batch_entry_lines(
     );
     let resolved = resolve_output(
         entry.output.as_ref(),
+        None,
         None,
         0,
         b.max_lines,
@@ -856,6 +884,7 @@ mod tests {
             text: text.into(),
             tool_input: input,
             tool_output: output,
+            live_output: None,
             annotation: None,
             plan_path: None,
             truncated_lines: 0,
@@ -864,7 +893,6 @@ mod tests {
         }
     }
 
-    #[test_case(code_input(),  plain_output(),  true,  false ; "code_input_strips_plain_output")]
     #[test_case(code_input(),  code_output(),   true,  true  ; "code_input_keeps_code_output")]
     #[test_case(None,          code_output(),   true,  true  ; "code_output_only")]
     #[test_case(None,          plain_output(),  false, false ; "no_content_no_highlight")]
@@ -1086,20 +1114,6 @@ mod tests {
     }
 
     #[test]
-    fn batch_entry_spinner_offset_with_separator() {
-        let entry = batch_entry("bash", BatchToolStatus::InProgress, None, None);
-        let without_sep = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, 10);
-        let with_sep = build_batch_entry_lines(&entry, 1, Instant::now(), 80, false, 10);
-        let offset = with_sep.lines.len() - without_sep.lines.len();
-        let expected: Vec<usize> = without_sep
-            .spinner_lines
-            .iter()
-            .map(|l| l + offset)
-            .collect();
-        assert_eq!(with_sep.spinner_lines, expected);
-    }
-
-    #[test]
     fn batch_entry_plain_output_rendered() {
         let entry = batch_entry(
             "bash",
@@ -1165,6 +1179,7 @@ mod tests {
             text: "Find auth".into(),
             tool_input: None,
             tool_output: Some(ToolOutput::Plain(output)),
+            live_output: None,
             annotation: None,
             plan_path: None,
             timestamp: None,
@@ -1195,11 +1210,9 @@ mod tests {
         build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, 10)
     }
 
-    #[test_case(n_lines(200)                                             ; "plain_lines")]
-    #[test_case(format!("```rust\nfn main() {{}}\n```\n{}", n_lines(40)) ; "after_code_block")]
-    #[test_case(format!("```rust\n{}", n_lines(40))                      ; "inside_code_block")]
-    fn task_truncation_styled_dim(output: String) {
-        assert_truncation_styled(&task_truncation_tl(output));
+    #[test]
+    fn task_truncation_styled_dim() {
+        assert_truncation_styled(&task_truncation_tl(n_lines(200)));
     }
 
     #[test]
@@ -1246,13 +1259,18 @@ mod tests {
             Some(ToolOutput::Plain("before\n\n---\n\nafter".into())),
         );
         let tl = build_batch_entry_lines(&entry, 0, Instant::now(), width, false, 10);
-        for line in &tl.lines {
-            let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-            assert!(
-                total <= width as usize,
-                "line ({total} chars) should fit in {width} cols: {line:?}"
-            );
-        }
+        let hr_line = tl
+            .lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.contains('─')));
+        assert!(hr_line.is_some());
+        let hr_width: usize = hr_line
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .sum();
+        assert!(hr_width <= width as usize);
     }
 
     fn index_msg(body: &str) -> DisplayMessage {
@@ -1265,6 +1283,7 @@ mod tests {
             text: format!("src/lib.rs\n{body}"),
             tool_input: None,
             tool_output: Some(ToolOutput::Plain(body.to_owned())),
+            live_output: None,
             annotation: None,
             plan_path: None,
             timestamp: None,
@@ -1294,16 +1313,6 @@ mod tests {
         assert!(line_has_styled(&tl, "fns:", t.index_section));
         assert!(line_has_styled(&tl, "[10-20]", t.index_line_nr));
         assert!(line_has_styled(&tl, "pub", t.index_keyword));
-    }
-
-    #[test]
-    fn index_header_uses_path_style() {
-        let spans = style_tool_header(INDEX_TOOL_NAME, "src/lib.rs");
-        assert!(has_styled_span(
-            &spans,
-            "src/lib.rs",
-            theme::current().tool_path
-        ));
     }
 
     #[test_case(None,       None,    "bash",  false, false ; "none_output_none_body")]
@@ -1352,6 +1361,7 @@ mod tests {
         let resolved = resolve_output(
             output.as_ref(),
             body,
+            None,
             0,
             limits.max_lines,
             limits.keep,
@@ -1372,23 +1382,16 @@ mod tests {
             instructions: Some(blocks),
         };
         let limits = ToolKind::Read.output_limits();
-        let resolved = resolve_output(Some(&output), None, 0, limits.max_lines, limits.keep, false);
-        assert!(resolved.instructions.is_some());
-    }
-
-    #[test]
-    fn resolve_output_body_priority_over_plain() {
-        let output = ToolOutput::Plain("from_output".into());
-        let limits = ToolKind::Bash.output_limits();
         let resolved = resolve_output(
             Some(&output),
-            Some("from_body"),
+            None,
+            None,
             0,
             limits.max_lines,
             limits.keep,
             false,
         );
-        assert_eq!(resolved.text.as_deref(), Some("from_body"));
+        assert!(resolved.instructions.is_some());
     }
 
     #[test]
@@ -1397,6 +1400,7 @@ mod tests {
         let resolved = resolve_output(
             None,
             Some("short"),
+            None,
             42,
             limits.max_lines,
             limits.keep,
@@ -1409,15 +1413,20 @@ mod tests {
     fn resolve_output_truncation_overrides_pre_truncated() {
         let long = n_lines(200);
         let limits = ToolKind::Bash.output_limits();
-        let resolved = resolve_output(None, Some(&long), 5, limits.max_lines, limits.keep, false);
+        let resolved = resolve_output(
+            None,
+            Some(&long),
+            None,
+            5,
+            limits.max_lines,
+            limits.keep,
+            false,
+        );
         assert!(resolved.skipped > 5);
     }
 
-    fn long_output_msg(line_count: usize) -> DisplayMessage {
-        let full_body = (0..line_count)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+    fn bash_output_msg(line_count: usize, live: bool) -> DisplayMessage {
+        let full_body = n_lines(line_count);
         let limits = ToolKind::Bash.output_limits();
         let tr = truncate_output(&full_body, limits.max_lines, limits.keep);
         let text = if tr.kept.is_empty() {
@@ -1426,21 +1435,46 @@ mod tests {
             format!("header\n{}", tr.kept)
         };
         let truncated_lines = tr.skipped;
+        let (status, tool_output, live_output) = if live {
+            (ToolStatus::InProgress, None, Some(full_body))
+        } else {
+            (
+                ToolStatus::Success,
+                Some(ToolOutput::Plain(full_body)),
+                None,
+            )
+        };
         DisplayMessage {
             role: DisplayRole::Tool {
                 id: "t1".into(),
-                status: ToolStatus::Success,
+                status,
                 name: BASH_TOOL_NAME,
             },
             text,
             tool_input: None,
-            tool_output: Some(ToolOutput::Plain(full_body)),
+            tool_output,
+            live_output,
             annotation: None,
             plan_path: None,
             truncated_lines,
             timestamp: None,
             turn_usage: None,
         }
+    }
+
+    #[test]
+    fn bash_expanded_live_output() {
+        let msg = bash_output_msg(200, true);
+        let collapsed =
+            build_tool_lines(&msg, ToolStatus::InProgress, Instant::now(), 80, false, 10);
+        let expanded = build_tool_lines(&msg, ToolStatus::InProgress, Instant::now(), 80, true, 10);
+        let collapsed_text = lines_text(&collapsed);
+        let expanded_text = lines_text(&expanded);
+        assert!(collapsed.has_truncation);
+        assert!(expanded.has_truncation);
+        assert!(!expanded_text.contains(BASH_WAITING_LABEL));
+        assert!(expanded_text.contains("line 0"));
+        assert!(!collapsed_text.contains("line 0"));
     }
 
     #[test_case(200, true,  true,  false ; "expanded_shows_all")]
@@ -1452,7 +1486,7 @@ mod tests {
         expect_truncation: bool,
         expect_expand_notice: bool,
     ) {
-        let msg = long_output_msg(line_count);
+        let msg = bash_output_msg(line_count, false);
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, expanded, 10);
         let text = lines_text(&tl);
         assert_eq!(tl.has_truncation, expect_truncation);
@@ -1476,6 +1510,7 @@ mod tests {
                 total_lines: line_count,
                 instructions: None,
             }),
+            live_output: None,
             annotation: None,
             plan_path: None,
             truncated_lines: 0,

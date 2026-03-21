@@ -233,6 +233,7 @@ impl MessagesPanel {
             text: event.summary,
             tool_input: event.input,
             tool_output: event.output,
+            live_output: None,
             annotation: event.annotation,
             plan_path: None,
             timestamp: Some(format_timestamp_now()),
@@ -257,6 +258,7 @@ impl MessagesPanel {
         msg.truncated_lines = truncated.skipped;
         msg.text.push('\n');
         msg.text.push_str(&truncated.kept);
+        msg.live_output = Some(content.to_owned());
         self.rebuild_tool_segment(tool_id);
     }
 
@@ -335,6 +337,7 @@ impl MessagesPanel {
             _ => {}
         }
         msg.tool_output = Some(event.output);
+        msg.live_output = None;
         if was_in_progress {
             self.in_progress_count -= 1;
         }

@@ -334,6 +334,7 @@ pub fn history_to_display(
                                 text,
                                 tool_input,
                                 tool_output,
+                                live_output: None,
                                 annotation,
                                 plan_path: None,
                                 timestamp: None,
