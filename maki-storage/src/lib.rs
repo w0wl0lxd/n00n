@@ -37,7 +37,7 @@ impl DataDir {
         &self.0
     }
 
-    pub(crate) fn ensure_subdir(&self, name: &str) -> Result<PathBuf, StorageError> {
+    pub fn ensure_subdir(&self, name: &str) -> Result<PathBuf, StorageError> {
         let dir = self.0.join(name);
         fs::create_dir_all(&dir)?;
         Ok(dir)
@@ -62,7 +62,7 @@ pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), StorageError>
     let tmp = path.with_extension("tmp");
     let mut f = fs::File::create(&tmp)?;
     f.write_all(data)?;
-    f.sync_all()?;
+    f.sync_data()?;
     fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -81,7 +81,7 @@ pub(crate) fn atomic_write_permissions(
     Ok(())
 }
 
-pub(crate) fn now_epoch() -> u64 {
+pub fn now_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

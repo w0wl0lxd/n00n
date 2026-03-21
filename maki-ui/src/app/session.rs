@@ -19,6 +19,7 @@ impl App {
             return;
         }
         self.session.token_usage = self.token_usage;
+        self.session.updated_at = maki_storage::now_epoch();
         self.session.update_title_if_default();
         self.enqueue_save();
     }
@@ -137,6 +138,7 @@ impl App {
         self.main_chat().load_messages(display_msgs);
         self.token_usage = self.session.token_usage;
         self.todo_panel.restore(&self.session.tool_outputs);
+        self.enqueue_save();
         vec![Action::LoadSession(LoadedSession {
             messages: self.session.messages.clone(),
             tool_outputs: self.session.tool_outputs.clone(),
