@@ -17,7 +17,7 @@ use maki_providers::model::{DEFAULT_SPEC, Model};
 use maki_providers::provider::fetch_all_models;
 use maki_providers::{dynamic, openai_auth};
 use maki_storage::log::RotatingFileWriter;
-use maki_storage::model::read_model;
+use maki_storage::model::{persist_model, read_model};
 use print::OutputFormat;
 
 #[derive(Parser)]
@@ -228,7 +228,9 @@ fn resolve_session(
 
 fn resolve_model(explicit: Option<&str>, storage: &DataDir) -> Result<Model> {
     if let Some(spec) = explicit {
-        return Model::from_spec(spec).context("invalid --model spec");
+        let model = Model::from_spec(spec).context("invalid --model spec")?;
+        persist_model(storage, &model.spec());
+        return Ok(model);
     }
     if let Some(spec) = read_model(storage) {
         if let Ok(m) = Model::from_spec(&spec) {
