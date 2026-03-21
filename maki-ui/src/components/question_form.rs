@@ -1,4 +1,5 @@
 use crate::components::Overlay;
+use crate::components::hint_line;
 use crate::components::keybindings::key;
 use crate::markdown::text_to_lines;
 use crate::text_buffer::TextBuffer;
@@ -14,8 +15,13 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 const FORM_LABEL: &str = " Questions ";
 const CUSTOM_OPTION: &str = "Type your own answer";
-const HINT_BAR: &str = " ↑↓ select  Enter confirm  Esc dismiss";
-const HINT_BAR_TOGGLE: &str = " ↑↓ select  Enter toggle  Tab submit  Esc dismiss";
+const HINT_PAIRS: &[(&str, &str)] = &[("↑↓", "select"), ("Enter", "confirm"), ("Esc", "dismiss")];
+const HINT_PAIRS_TOGGLE: &[(&str, &str)] = &[
+    ("↑↓", "select"),
+    ("Enter", "toggle"),
+    ("Tab", "submit"),
+    ("Esc", "dismiss"),
+];
 const NO_ANSWER: &str = "(no answer)";
 const MAX_QUESTION_LINES_NO_OPTIONS: usize = 10;
 const SEPARATOR: &str = "─";
@@ -283,12 +289,12 @@ impl QuestionForm {
         }
 
         lines.push(Line::default());
-        let hint = if !self.on_confirm_tab() && self.current_question_is_multi() {
-            HINT_BAR_TOGGLE
+        let pairs = if !self.on_confirm_tab() && self.current_question_is_multi() {
+            HINT_PAIRS_TOGGLE
         } else {
-            HINT_BAR
+            HINT_PAIRS
         };
-        lines.push(Line::from(Span::styled(hint, theme::current().form_hint)));
+        lines.push(hint_line(pairs));
 
         lines
     }
@@ -472,10 +478,7 @@ impl QuestionForm {
         }
 
         lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            "Press Enter to submit, or navigate back to edit.",
-            theme::current().form_hint,
-        )));
+        lines.push(hint_line(&[("Enter", "submit, or navigate back to edit.")]));
     }
 
     pub fn is_form_suitable(questions: &[QuestionInfo]) -> bool {

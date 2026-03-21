@@ -1,4 +1,5 @@
 use crate::components::Overlay;
+use crate::components::hint_line;
 use crate::components::keybindings::key;
 use crate::theme;
 
@@ -10,7 +11,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 const FORM_LABEL: &str = " Plan complete ";
-const HINT_BAR: &str = " ↑↓ select  Enter confirm  Ctrl+O edit plan  Esc dismiss";
+const HINT_PAIRS: &[(&str, &str)] = &[
+    ("↑↓", "select"),
+    ("Enter", "confirm"),
+    ("Ctrl+O", "edit plan"),
+    ("Esc", "dismiss"),
+];
 
 struct MenuItem {
     label: &'static str,
@@ -122,7 +128,7 @@ impl PlanForm {
         }
 
         lines.push(Line::default());
-        lines.push(Line::from(Span::styled(HINT_BAR, t.form_hint)));
+        lines.push(hint_line(HINT_PAIRS));
 
         let block = Block::default()
             .borders(Borders::ALL)

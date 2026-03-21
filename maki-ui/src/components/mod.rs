@@ -37,6 +37,18 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use maki_agent::AgentInput;
 use maki_agent::{ToolInput, ToolOutput};
 use maki_providers::Message;
+use ratatui::text::{Line, Span};
+
+pub(crate) fn hint_line(pairs: &[(&str, &str)]) -> Line<'static> {
+    let t = crate::theme::current();
+    let mut spans = Vec::with_capacity(pairs.len() * 2);
+    for (i, (key, desc)) in pairs.iter().enumerate() {
+        let pad = if i == 0 { " " } else { "  " };
+        spans.push(Span::styled(format!("{pad}{key}"), t.keybind_key));
+        spans.push(Span::styled(format!(" {desc}"), t.form_hint));
+    }
+    Line::from(spans)
+}
 
 pub(crate) fn visual_line_count(text_len: usize, width: usize) -> usize {
     if width == 0 {
