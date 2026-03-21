@@ -64,7 +64,7 @@ use components::Action;
 
 const MOUSE_SCROLL_LINES: i32 = 3;
 
-const ANIMATION_INTERVAL_MS: u64 = 8;
+const ANIMATION_INTERVAL_MS: u64 = 16;
 const IDLE_POLL_INTERVAL_MS: u64 = 100;
 
 struct TerminalGuard;
