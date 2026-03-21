@@ -315,12 +315,18 @@ pub(crate) fn col_range(ss: &ScreenSelection, left: u16, right: u16, row: u16) -
 
 /// Flips `REVERSED` on selected cells. Skips last column (scrollbar).
 pub fn apply_highlight(buf: &mut Buffer, area: Rect, ss: &ScreenSelection) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
     let row_start = ss.start_row.max(area.y);
     let row_end = ss.end_row.min(area.bottom().saturating_sub(1));
     let right = area.x + area.width.saturating_sub(1);
     for row in row_start..=row_end {
         let (col_start, col_end) = col_range(ss, area.x, right, row);
         for col in col_start..=col_end {
+            if col >= buf.area().right() || row >= buf.area().bottom() {
+                continue;
+            }
             let cell = &mut buf[(col, row)];
             cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
         }
@@ -357,6 +363,9 @@ pub(crate) fn append_rows(
     out: &mut String,
     breaks: &LineBreaks,
 ) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
     let right = area.x + area.width.saturating_sub(1);
     let row_start = from.max(area.y);
     let row_end = to.min(area.bottom());
@@ -956,5 +965,18 @@ mod tests {
             SelectionZone::Messages
         );
         assert_eq!(zone_at(&zones, 7, 5).unwrap().zone, SelectionZone::Messages);
+    }
+
+    #[test]
+    fn apply_highlight_zero_area_no_panic() {
+        let area = Rect::new(0, 0, 0, 0);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
+        let ss = ScreenSelection {
+            start_row: 0,
+            end_row: 0,
+            start_col: 0,
+            end_col: 0,
+        };
+        apply_highlight(&mut buf, area, &ss);
     }
 }

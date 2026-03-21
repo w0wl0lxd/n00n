@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use tracing::error;
+
 use crate::components::code_view;
 use maki_agent::{ToolInput, ToolOutput};
 use ratatui::text::Line;
@@ -103,10 +105,13 @@ impl RenderWorker {
         }
 
         let inner = Arc::clone(&self.inner);
-        thread::Builder::new()
+        if let Err(e) = thread::Builder::new()
             .name("render".into())
             .spawn(move || worker_loop(&inner))
-            .expect("spawn render pool thread");
+        {
+            self.inner.active_threads.fetch_sub(1, Ordering::AcqRel);
+            error!("failed to spawn render thread: {e}");
+        }
     }
 }
 

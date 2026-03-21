@@ -52,11 +52,9 @@ pub(crate) fn wrap_code_lines(lines: &mut Vec<Line<'static>>, start: usize, widt
 }
 
 fn split_line_with_bar(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
-    debug_assert!(
-        line.spans
-            .first()
-            .is_some_and(|s| s.content.as_ref() == CODE_BAR)
-    );
+    if line.spans.is_empty() {
+        return vec![line];
+    }
 
     let bar_span = line.spans[0].clone();
     let content_spans = &line.spans[1..];

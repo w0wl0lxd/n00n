@@ -263,7 +263,21 @@ impl<T: PickerItem> ListPicker<T> {
             return;
         };
         self.generation += 1;
-        s.items.retain(|item| f(item));
+        if let Some(ref mut enabled) = s.enabled {
+            let mut new_enabled = Vec::with_capacity(enabled.len());
+            let mut i = 0;
+            s.items.retain(|item| {
+                let keep = f(item);
+                if keep {
+                    new_enabled.push(enabled[i]);
+                }
+                i += 1;
+                keep
+            });
+            *enabled = new_enabled;
+        } else {
+            s.items.retain(|item| f(item));
+        }
         if s.items.is_empty() {
             self.state = None;
             return;
@@ -609,7 +623,8 @@ fn render_list<T: PickerItem>(
 
     let mut lines: Vec<Line> = Vec::new();
     let mut i = scroll_offset;
-    let mut last_section: Option<&str> = if scroll_offset > 0 {
+    let mut last_section: Option<&str> = if scroll_offset > 0 && scroll_offset - 1 < filtered.len()
+    {
         items[filtered[scroll_offset - 1]].section()
     } else {
         None
@@ -959,5 +974,23 @@ mod tests {
         p.handle_key(key(KeyCode::Char('b')));
         let action = p.handle_key(key(KeyCode::Enter));
         assert!(matches!(action, PickerAction::Toggle(1, false)));
+    }
+
+    #[test]
+    fn retain_syncs_enabled_vec() {
+        let mut p = ListPicker::new();
+        p.open_toggleable(entries(&["A", "B", "C"]), vec![true, false, true], " Test ");
+        p.retain(|e| e.label() != "B");
+        let s = ready_state(&p);
+        assert_eq!(s.items.len(), 2);
+        assert_eq!(s.enabled.as_ref().unwrap(), &[true, true]);
+    }
+
+    #[test]
+    fn retain_all_removed_closes_picker() {
+        let mut p = ListPicker::new();
+        p.open_toggleable(entries(&["A"]), vec![true], " Test ");
+        p.retain(|_| false);
+        assert!(!p.is_open());
     }
 }

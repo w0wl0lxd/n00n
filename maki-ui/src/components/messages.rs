@@ -473,7 +473,9 @@ impl MessagesPanel {
                         false,
                         self.tool_output_lines,
                     );
-                    if let Some(ts) = &msg.timestamp {
+                    if let Some(ts) = &msg.timestamp
+                        && !tl.lines.is_empty()
+                    {
                         append_right_info(
                             &mut tl.lines[0],
                             msg.turn_usage.as_deref(),
@@ -619,6 +621,9 @@ impl MessagesPanel {
             doc_row < cumulative
         });
         let Some(idx) = idx else { return false };
+        if idx >= self.cached_segments.len() {
+            return false;
+        }
         let seg = &self.cached_segments[idx];
         let Some(tool_id) = seg.tool_id.as_deref() else {
             return false;
@@ -713,7 +718,12 @@ impl MessagesPanel {
             self.segment_heights.push(wrapped_line_count(lines, width));
         }
 
-        let total_lines: u16 = self.segment_heights.iter().sum();
+        let total_lines: u16 = self
+            .segment_heights
+            .iter()
+            .map(|&h| h as u32)
+            .sum::<u32>()
+            .min(u16::MAX as u32) as u16;
         let max_scroll = total_lines.saturating_sub(self.viewport_height);
         self.scroll_top = self.scroll_top.min(max_scroll);
         if !has_selection {
@@ -964,7 +974,9 @@ impl MessagesPanel {
             expanded,
             self.tool_output_lines,
         );
-        if let Some(ts) = &msg.timestamp {
+        if let Some(ts) = &msg.timestamp
+            && !tl.lines.is_empty()
+        {
             append_right_info(
                 &mut tl.lines[0],
                 msg.turn_usage.as_deref(),
@@ -1046,7 +1058,9 @@ impl MessagesPanel {
                     expanded,
                     self.tool_output_lines,
                 );
-                if let Some(ts) = &msg.timestamp {
+                if let Some(ts) = &msg.timestamp
+                    && !tl.lines.is_empty()
+                {
                     append_right_info(
                         &mut tl.lines[0],
                         msg.turn_usage.as_deref(),
@@ -1177,7 +1191,7 @@ fn render_paragraph(
 ) {
     let (skip, y) = cursor;
     let bottom = viewport.y + viewport.height;
-    let visible_h = h.saturating_sub(*skip).min(bottom - *y);
+    let visible_h = h.saturating_sub(*skip).min(bottom.saturating_sub(*y));
     let seg_area = Rect::new(viewport.x, *y, viewport.width, visible_h);
     let mut p = Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false });
     if let Some(s) = style {

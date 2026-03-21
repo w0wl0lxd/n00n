@@ -52,7 +52,10 @@ impl RewindPicker {
             turn_num += 1;
             let first_line = full_text.lines().next().unwrap_or("");
             let preview = if first_line.len() > PREVIEW_MAX_LEN {
-                format!("{turn_num}: {}...", &first_line[..PREVIEW_MAX_LEN])
+                format!(
+                    "{turn_num}: {}...",
+                    &first_line[..first_line.floor_char_boundary(PREVIEW_MAX_LEN)]
+                )
             } else {
                 format!("{turn_num}: {first_line}")
             };

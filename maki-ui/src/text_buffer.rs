@@ -122,7 +122,7 @@ impl TextBuffer {
     }
 
     fn wrap_to_next_line(&mut self) -> bool {
-        if self.cursor_y < self.lines.len() - 1 {
+        if self.cursor_y < self.lines.len().saturating_sub(1) {
             self.cursor_y += 1;
             self.raw_x = 0;
             true
@@ -230,7 +230,7 @@ impl TextBuffer {
     }
 
     pub fn move_down(&mut self) {
-        if self.cursor_y < self.lines.len() - 1 {
+        if self.cursor_y < self.lines.len().saturating_sub(1) {
             self.cursor_y += 1;
         }
     }
@@ -250,7 +250,7 @@ impl TextBuffer {
     }
 
     pub fn move_to_end(&mut self) {
-        self.cursor_y = self.lines.len() - 1;
+        self.cursor_y = self.lines.len().saturating_sub(1);
         self.raw_x = self.current_line_len();
     }
 
@@ -595,5 +595,20 @@ mod tests {
         let mut buf = TextBuffer::new("hello world".into());
         buf.raw_x = 5;
         assert_eq!(buf.handle_key(key), expected);
+    }
+
+    #[test]
+    fn move_to_end_empty_buffer() {
+        let mut buf = TextBuffer::new(String::new());
+        buf.move_to_end();
+        assert_eq!(buf.y(), 0);
+        assert_eq!(buf.x(), 0);
+    }
+
+    #[test]
+    fn move_down_single_line_stays_put() {
+        let mut buf = TextBuffer::new("hello".into());
+        buf.move_down();
+        assert_eq!(buf.y(), 0);
     }
 }

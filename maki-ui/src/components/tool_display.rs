@@ -515,6 +515,9 @@ impl ToolLineBuilder {
             Indicator::Success => (TOOL_INDICATOR.into(), theme::current().tool_success),
             Indicator::Error => (TOOL_INDICATOR.into(), theme::current().tool_error),
         };
+        if self.lines.is_empty() {
+            return;
+        }
         self.lines[0].spans.insert(0, Span::styled(text, style));
     }
 

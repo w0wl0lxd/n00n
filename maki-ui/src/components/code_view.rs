@@ -366,6 +366,7 @@ fn merge_syntax_with_diff(
         };
 
         let take = syn_rem.len().min(diff_rem);
+        let take = syn_rem.floor_char_boundary(take);
         result.push(Span::styled(
             syn_rem[..take].to_owned(),
             syn_style.patch(bg),
@@ -595,5 +596,46 @@ mod tests {
         let mut lines = Vec::new();
         render_instructions(&blocks, &mut lines, 80);
         assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn merge_syntax_with_diff_multibyte_no_panic() {
+        let base = Style::new().bg(Color::Red);
+        let emph = Style::new().bg(Color::Green);
+        let syn = vec![(Style::new().fg(Color::White), "héllo".to_owned())];
+        let diff = vec![
+            DiffSpan {
+                text: "hé".into(),
+                emphasized: false,
+            },
+            DiffSpan {
+                text: "llo".into(),
+                emphasized: true,
+            },
+        ];
+        let result = merge_syntax_with_diff(&syn, &diff, base, emph);
+        let full: String = result.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(full, "héllo");
+    }
+
+    #[test]
+    fn merge_syntax_with_diff_emoji_boundary() {
+        let base = Style::new().bg(Color::Red);
+        let emph = Style::new().bg(Color::Green);
+        let emoji = "🦀x";
+        let syn = vec![(Style::new().fg(Color::White), emoji.to_owned())];
+        let diff = vec![
+            DiffSpan {
+                text: "🦀".into(),
+                emphasized: true,
+            },
+            DiffSpan {
+                text: "x".into(),
+                emphasized: false,
+            },
+        ];
+        let result = merge_syntax_with_diff(&syn, &diff, base, emph);
+        let full: String = result.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(full, emoji);
     }
 }

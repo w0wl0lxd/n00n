@@ -161,7 +161,7 @@ impl InputBox {
     }
 
     pub fn is_at_last_line(&self) -> bool {
-        self.buffer.y() == self.buffer.line_count() - 1
+        self.buffer.y() == self.buffer.line_count().saturating_sub(1)
     }
 
     pub fn char_before_cursor_is_backslash(&self) -> bool {
@@ -507,7 +507,9 @@ fn overlay_cursor(spans: Vec<Span<'static>>, cursor_char_pos: usize) -> Vec<Span
                 result.push(Span::styled(before.to_string(), span.style));
             }
             let mut cs = after.chars();
-            let cursor_char = cs.next().unwrap();
+            let Some(cursor_char) = cs.next() else {
+                break;
+            };
             result.push(Span::styled(cursor_char.to_string(), span.style.reversed()));
             let rest: String = cs.collect();
             if !rest.is_empty() {

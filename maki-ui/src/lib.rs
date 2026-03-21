@@ -226,7 +226,10 @@ impl<'t> EventLoop<'t> {
         handles.apply_to_app(&mut app);
         if resumed {
             app.token_usage = app.session.token_usage;
-            *handles.tool_outputs.lock().unwrap() = app.session.tool_outputs.clone();
+            *handles
+                .tool_outputs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = app.session.tool_outputs.clone();
             let display_msgs = history_to_display(
                 &app.session.messages,
                 &app.session.tool_outputs,
@@ -393,7 +396,11 @@ impl<'t> EventLoop<'t> {
                     self.config,
                     &mut self.app,
                 );
-                *self.handles.tool_outputs.lock().unwrap() = loaded.tool_outputs;
+                *self
+                    .handles
+                    .tool_outputs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = loaded.tool_outputs;
             }
             Action::ChangeModel(spec) => self.change_model(spec),
             Action::Compact => {
@@ -443,7 +450,12 @@ impl<'t> EventLoop<'t> {
             Ok(new_model) => match from_model(&new_model) {
                 Ok(new_provider) => {
                     self.app.update_model(&new_model);
-                    let history = self.handles.history.lock().unwrap().clone();
+                    let history = self
+                        .handles
+                        .history
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
                     self.provider = Arc::from(new_provider);
                     self.model = new_model;
                     self.handles.respawn(
@@ -463,7 +475,14 @@ impl<'t> EventLoop<'t> {
 
     fn shutdown(mut self) -> String {
         let session_id = self.app.session.id.clone();
-        maki_agent::mcp::kill_process_groups(&self.handles.mcp.pids.lock().unwrap());
+        maki_agent::mcp::kill_process_groups(
+            &self
+                .handles
+                .mcp
+                .pids
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
         self.app.cmd_tx = None;
         self.app.answer_tx = None;
         drop(self.app);
@@ -603,7 +622,7 @@ fn spawn_agent(
         if let Some(ref mgr) = mcp_manager {
             mgr.extend_tools(&mut tool_names, &mut tools, &disabled);
             mcp_infos.store(Arc::new(mgr.server_infos(&disabled)));
-            *mcp_pids.lock().unwrap() = mgr.child_pids();
+            *mcp_pids.lock().unwrap_or_else(|e| e.into_inner()) = mgr.child_pids();
         }
 
         let cancel_trigger: Arc<Mutex<Option<CancelTrigger>>> = Arc::new(Mutex::new(None));
@@ -616,7 +635,11 @@ fn spawn_agent(
                 let extracted = match cmd {
                     AgentCommand::Run(input, run_id) => ExtractedCommand::Interrupt(input, run_id),
                     AgentCommand::Cancel => {
-                        if let Some(trigger) = cancel_trigger_fwd.lock().unwrap().take() {
+                        if let Some(trigger) = cancel_trigger_fwd
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .take()
+                        {
                             trigger.cancel();
                         }
                         ExtractedCommand::Cancel
@@ -699,7 +722,9 @@ fn spawn_agent(
             let result = match cmd {
                 ExtractedCommand::Compact(_) => {
                     let r = agent::compact(&*provider, &model, &mut history, &event_tx).await;
-                    *shared_history_inner.lock().unwrap() = history.as_slice().to_vec();
+                    *shared_history_inner
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = history.as_slice().to_vec();
                     r
                 }
                 ExtractedCommand::Cancel | ExtractedCommand::Ignore => unreachable!(),
@@ -710,7 +735,7 @@ fn spawn_agent(
                     let system =
                         agent::build_system_prompt(&vars, &input.mode, &instructions, &tool_names);
                     let (trigger, cancel) = CancelToken::new();
-                    *cancel_trigger.lock().unwrap() = Some(trigger);
+                    *cancel_trigger.lock().unwrap_or_else(|e| e.into_inner()) = Some(trigger);
                     let agent = Agent::new(
                         AgentParams {
                             provider: Arc::clone(&provider),
@@ -731,9 +756,11 @@ fn spawn_agent(
                     .with_cancel(cancel)
                     .with_mcp(mcp_manager.clone());
                     let outcome = agent.run(input).await;
-                    *cancel_trigger.lock().unwrap() = None;
+                    *cancel_trigger.lock().unwrap_or_else(|e| e.into_inner()) = None;
                     history = outcome.history;
-                    *shared_history_inner.lock().unwrap() = history.as_slice().to_vec();
+                    *shared_history_inner
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = history.as_slice().to_vec();
                     ecmd_rx = outcome.cmd_rx.expect("cmd_rx was set");
                     if matches!(outcome.result, Err(AgentError::Cancelled)) {
                         min_run_id = current_run_id + 1;

@@ -38,11 +38,15 @@ pub(crate) fn is_ready() -> bool {
 pub(crate) fn refresh_syntax_theme() {
     let theme = theme::current();
     let leaked: &'static syntect::highlighting::Theme = Box::leak(Box::new(theme.syntax.clone()));
-    *LEAKED_SYNTAX_THEME.lock().unwrap() = leaked;
+    *LEAKED_SYNTAX_THEME
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = leaked;
 }
 
 fn syntax_theme() -> &'static syntect::highlighting::Theme {
-    *LEAKED_SYNTAX_THEME.lock().unwrap()
+    *LEAKED_SYNTAX_THEME
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 fn normalize_text(text: &str) -> String {
