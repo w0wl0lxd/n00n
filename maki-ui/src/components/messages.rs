@@ -5,7 +5,7 @@ use super::tool_display::{
     thinking_style, tool_output_annotation, truncate_to_header, user_style,
 };
 use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
-use crate::animation::spinner_frame;
+use crate::animation::spinner_str;
 use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
 use crate::render_worker::RenderWorker;
 use crate::selection::{self, LineBreaks, ScreenSelection, Selection};
@@ -630,42 +630,32 @@ impl MessagesPanel {
             self.update_spinners();
         }
 
-        let mut heights: Vec<u16> = self
-            .cached_segments
-            .iter_mut()
-            .map(|seg| {
-                if let Some((w, h)) = seg.cached_height
-                    && w == width
-                {
-                    return h;
-                }
+        self.segment_heights.clear();
+        for seg in &mut self.cached_segments {
+            if let Some((w, h)) = seg.cached_height
+                && w == width
+            {
+                self.segment_heights.push(h);
+            } else {
                 let h = wrapped_line_count(&seg.lines, width);
                 seg.cached_height = Some((width, h));
-                h
-            })
-            .collect();
+                self.segment_heights.push(h);
+            }
+        }
 
-        let mut segments: Vec<(&[Line<'static>], bool)> = self
-            .cached_segments
-            .iter()
-            .map(|s| (s.lines.as_slice(), s.tool_id.is_some()))
-            .collect();
-
-        let spacer_line = vec![Line::default()];
+        let cached_count = self.segment_heights.len();
+        let spacer_lines: [Line<'static>; 1] = [Line::default()];
         for sc in [&mut self.streaming_thinking, &mut self.streaming_text] {
             if sc.is_empty() {
                 continue;
             }
             let lines = sc.render_lines(width);
-            if !segments.is_empty() {
-                segments.push((&spacer_line, false));
-                heights.push(1);
+            if cached_count > 0 || self.segment_heights.len() > cached_count {
+                self.segment_heights.push(1);
             }
-            heights.push(wrapped_line_count(lines, width));
-            segments.push((lines, false));
+            self.segment_heights.push(wrapped_line_count(lines, width));
         }
 
-        self.segment_heights = heights.clone();
         let total_lines: u16 = self.segment_heights.iter().sum();
         let max_scroll = total_lines.saturating_sub(self.viewport_height);
         self.scroll_top = self.scroll_top.min(max_scroll);
@@ -678,43 +668,60 @@ impl MessagesPanel {
             }
         }
 
-        let mut skip = self.scroll_top;
-        let mut y = area.y;
+        let mut cursor = (self.scroll_top, area.y);
         let bottom = area.y + area.height;
-        for (i, (lines, is_tool)) in segments.iter().enumerate() {
-            if y >= bottom {
+        let viewport = Rect::new(area.x, area.y, width, area.height);
+
+        for (i, seg) in self.cached_segments.iter().enumerate() {
+            let h = self.segment_heights[i];
+            if cursor.1 >= bottom {
                 break;
             }
-            let h = heights[i];
-            if skip >= h {
-                skip -= h;
+            if cursor.0 >= h {
+                cursor.0 -= h;
                 continue;
             }
-            let visible_h = h.saturating_sub(skip).min(bottom - y);
-            let seg_area = Rect::new(area.x, y, width, visible_h);
-            let mut p = Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false });
-            if *is_tool {
-                p = p.style(theme::current().tool_bg);
-            }
-            if skip > 0 {
-                p = p.scroll((skip, 0));
-                skip = 0;
-            }
-            frame.render_widget(p, seg_area);
-            if self.highlight_segment == Some(i) {
-                let hl_area = Rect::new(area.x, y, width, visible_h);
-                for row in hl_area.y..hl_area.y + hl_area.height {
-                    for col in hl_area.x..hl_area.x + hl_area.width {
-                        if let Some(cell) = frame.buffer_mut().cell_mut((col, row)) {
-                            let fg = cell.fg;
-                            let bg = cell.bg;
-                            cell.set_fg(bg);
-                            cell.set_bg(fg);
-                        }
-                    }
+            let highlight = self.highlight_segment == Some(i);
+            let style = seg.tool_id.as_ref().map(|_| theme::current().tool_bg);
+            render_paragraph(
+                &seg.lines,
+                h,
+                style,
+                highlight,
+                &mut cursor,
+                viewport,
+                frame,
+            );
+        }
+
+        let mut height_idx = self.cached_segments.len();
+        if cursor.1 < bottom {
+            for sc in [&self.streaming_thinking, &self.streaming_text] {
+                if sc.is_empty() || height_idx >= self.segment_heights.len() {
+                    continue;
+                }
+                if cached_count > 0 || height_idx > cached_count {
+                    let h = self.segment_heights[height_idx];
+                    render_paragraph(&spacer_lines, h, None, false, &mut cursor, viewport, frame);
+                    height_idx += 1;
+                }
+                if height_idx < self.segment_heights.len() {
+                    let h = self.segment_heights[height_idx];
+                    render_paragraph(
+                        sc.cached_lines(),
+                        h,
+                        None,
+                        false,
+                        &mut cursor,
+                        viewport,
+                        frame,
+                    );
+                    height_idx += 1;
+                }
+                if cursor.1 >= bottom {
+                    break;
                 }
             }
-            y += visible_h;
         }
 
         if total_lines > area.height {
@@ -825,7 +832,7 @@ impl MessagesPanel {
 
     fn update_spinners(&mut self) {
         let spinner_span = Span::styled(
-            format!("{} ", spinner_frame(self.started_at.elapsed().as_millis())),
+            spinner_str(self.started_at.elapsed().as_millis()),
             theme::current().spinner,
         );
         for seg in &mut self.cached_segments {
@@ -1070,6 +1077,43 @@ fn parse_batch_inner_id(tool_id: &str) -> Option<(&str, usize)> {
     let (batch_id, idx_str) = tool_id.rsplit_once("__")?;
     let idx = idx_str.parse().ok()?;
     Some((batch_id, idx))
+}
+
+fn render_paragraph(
+    lines: &[Line<'static>],
+    h: u16,
+    style: Option<ratatui::style::Style>,
+    highlight: bool,
+    cursor: &mut (u16, u16),
+    viewport: Rect,
+    frame: &mut Frame,
+) {
+    let (skip, y) = cursor;
+    let bottom = viewport.y + viewport.height;
+    let visible_h = h.saturating_sub(*skip).min(bottom - *y);
+    let seg_area = Rect::new(viewport.x, *y, viewport.width, visible_h);
+    let mut p = Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false });
+    if let Some(s) = style {
+        p = p.style(s);
+    }
+    if *skip > 0 {
+        p = p.scroll((*skip, 0));
+        *skip = 0;
+    }
+    frame.render_widget(p, seg_area);
+    if highlight {
+        for row in seg_area.y..seg_area.y + seg_area.height {
+            for col in seg_area.x..seg_area.x + seg_area.width {
+                if let Some(cell) = frame.buffer_mut().cell_mut((col, row)) {
+                    let fg = cell.fg;
+                    let bg = cell.bg;
+                    cell.set_fg(bg);
+                    cell.set_bg(fg);
+                }
+            }
+        }
+    }
+    *y += visible_h;
 }
 
 fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {

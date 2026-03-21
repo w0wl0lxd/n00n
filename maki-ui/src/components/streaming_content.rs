@@ -141,6 +141,10 @@ impl StreamingContent {
         &self.cache.lines
     }
 
+    pub fn cached_lines(&self) -> &[Line<'static>] {
+        &self.cache.lines
+    }
+
     #[cfg(test)]
     pub fn set_buffer(&mut self, text: &str) {
         self.typewriter.set_buffer(text);
