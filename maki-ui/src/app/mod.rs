@@ -29,6 +29,7 @@ use crate::components::keybindings::key;
 use crate::components::list_picker::{ListPicker, PickerAction};
 use crate::components::mcp_picker::{McpPicker, McpPickerAction};
 use crate::components::model_picker::{ModelPicker, ModelPickerAction};
+use crate::components::plan_form::{PlanForm, PlanFormAction};
 use crate::components::question_form::{QuestionForm, QuestionFormAction};
 use crate::components::rewind_picker::{RewindPicker, RewindPickerAction};
 use crate::components::search_modal::{SearchAction, SearchModal};
@@ -65,6 +66,7 @@ const FLASH_REWIND: &str = "Press esc again to rewind...";
 const AUTH_EXPIRED_MSG: &str =
     "Token expired. Run `maki auth login` in another terminal, then press Enter to retry.";
 const FLASH_NO_PLAN: &str = "No plan file";
+const IMPLEMENT_MSG: &str = "Implement the plan.";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PendingInput {
@@ -100,6 +102,7 @@ pub struct App {
     pub(super) search_modal: SearchModal,
     pub(super) todo_panel: TodoPanel,
     pub(super) question_form: QuestionForm,
+    pub(super) plan_form: PlanForm,
     pub(super) status_bar: StatusBar,
     pub status: Status,
     pub token_usage: TokenUsage,
@@ -160,6 +163,7 @@ impl App {
             search_modal: SearchModal::new(),
             todo_panel: TodoPanel::new(),
             question_form: QuestionForm::new(),
+            plan_form: PlanForm::new(),
             status_bar: StatusBar::new(),
             status: Status::Idle,
             token_usage: TokenUsage::default(),
@@ -298,6 +302,12 @@ impl App {
             self.send_answer(answer);
             return vec![];
         }
+
+        if self.plan_form.is_visible() {
+            let action = self.plan_form.handle_key(key);
+            return self.handle_plan_form_action(action);
+        }
+
         self.selection_state = None;
 
         if self.help_modal.is_open() {
@@ -597,7 +607,7 @@ impl App {
     fn handle_cancel(&mut self) -> Vec<Action> {
         self.run_id += 1;
         self.retry_info = None;
-        self.question_form.close();
+        self.close_all_overlays();
         self.pending_input = PendingInput::None;
         self.finish_subagents(DisplayRole::Error, CANCELLED_TEXT);
         self.shell.cancel_all();
@@ -709,6 +719,9 @@ impl App {
                         return actions;
                     }
                     self.status = Status::Idle;
+                    if self.mode == Mode::Plan && self.plan.pending_plan().is_some() {
+                        self.plan_form.open();
+                    }
                 }
                 ChatEventResult::Error(message) => {
                     self.status = Status::error(message);
@@ -843,7 +856,7 @@ impl App {
         vec![]
     }
 
-    fn overlays(&self) -> [&dyn Overlay; 9] {
+    fn overlays(&self) -> [&dyn Overlay; 11] {
         [
             &self.help_modal,
             &self.btw_modal,
@@ -854,10 +867,12 @@ impl App {
             &self.theme_picker,
             &self.model_picker,
             &self.mcp_picker,
+            &self.question_form,
+            &self.plan_form,
         ]
     }
 
-    fn overlays_mut(&mut self) -> [&mut dyn Overlay; 9] {
+    fn overlays_mut(&mut self) -> [&mut dyn Overlay; 11] {
         [
             &mut self.help_modal,
             &mut self.btw_modal,
@@ -868,6 +883,8 @@ impl App {
             &mut self.theme_picker,
             &mut self.model_picker,
             &mut self.mcp_picker,
+            &mut self.question_form,
+            &mut self.plan_form,
         ]
     }
 
@@ -924,6 +941,9 @@ impl App {
     }
 
     fn route_text_paste(&mut self, text: &str) {
+        if self.plan_form.is_visible() {
+            return;
+        }
         if self.question_form.handle_paste(text) {
             return;
         }
@@ -951,6 +971,51 @@ impl App {
         if let InputAction::PaletteSync(val) = self.input_box.handle_paste(text) {
             self.command_palette.sync(&val);
         }
+    }
+
+    fn handle_plan_form_action(&mut self, action: PlanFormAction) -> Vec<Action> {
+        if !matches!(action, PlanFormAction::Consumed) {
+            self.plan_form.close();
+        }
+        match action {
+            PlanFormAction::Consumed | PlanFormAction::Dismiss | PlanFormAction::Continue => {
+                vec![]
+            }
+            PlanFormAction::OpenEditor => match self.plan.path() {
+                Some(p) => {
+                    self.plan_form.open();
+                    vec![Action::OpenEditor(p.to_path_buf())]
+                }
+                None => {
+                    self.flash(FLASH_NO_PLAN.into());
+                    vec![]
+                }
+            },
+            PlanFormAction::Implement => self.implement_plan(false),
+            PlanFormAction::ClearAndImplement => self.implement_plan(true),
+        }
+    }
+
+    fn implement_plan(&mut self, clear_context: bool) -> Vec<Action> {
+        let mut actions = if clear_context {
+            self.reset_session()
+        } else {
+            vec![]
+        };
+        if let Some(pp) = self.plan.path() {
+            let content = std::fs::read_to_string(pp).unwrap_or_default();
+            let path_str = pp.display().to_string();
+            self.main_chat()
+                .push(DisplayMessage::plan(content, path_str));
+        }
+        self.mode = Mode::BuildPlan;
+        self.run_id += 1;
+        let msg = QueuedMessage {
+            text: IMPLEMENT_MSG.into(),
+            images: vec![],
+        };
+        actions.extend(self.start_from_queue(&msg));
+        actions
     }
 }
 

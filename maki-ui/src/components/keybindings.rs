@@ -55,7 +55,7 @@ pub enum KeybindContext {
     Editing,
     Streaming,
     Picker,
-    QuestionForm,
+    FormInput,
     TaskPicker,
     SessionPicker,
     RewindPicker,
@@ -73,7 +73,7 @@ impl KeybindContext {
             Self::Editing => "Editing",
             Self::Streaming => "While Streaming",
             Self::Picker => "Pickers",
-            Self::QuestionForm => "Question Form",
+            Self::FormInput => "Form",
             Self::TaskPicker => "Task Picker",
             Self::SessionPicker => "Session Picker",
             Self::RewindPicker => "Rewind Picker",
@@ -225,17 +225,17 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         key: "↑/↓",
         description: "Navigate options",
-        context: KeybindContext::QuestionForm,
+        context: KeybindContext::FormInput,
     },
     Keybind {
         key: "Enter",
         description: "Select option",
-        context: KeybindContext::QuestionForm,
+        context: KeybindContext::FormInput,
     },
     Keybind {
         key: "Esc",
         description: "Close",
-        context: KeybindContext::QuestionForm,
+        context: KeybindContext::FormInput,
     },
     Keybind {
         key: "↑/↓",
@@ -287,7 +287,7 @@ pub const ALL_CONTEXTS: &[KeybindContext] = &[
     KeybindContext::QueueFocus,
     KeybindContext::CommandPalette,
     KeybindContext::Search,
-    KeybindContext::QuestionForm,
+    KeybindContext::FormInput,
 ];
 
 #[cfg(test)]

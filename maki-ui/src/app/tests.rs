@@ -1488,6 +1488,12 @@ fn help_modal_consumes_keys_and_esc_closes() {
     ; "streaming"
 )]
 #[test_case(
+    |app: &mut App| { app.plan_form.open(); },
+    &[KeybindContext::FormInput],
+    &[KeybindContext::Editing]
+    ; "plan_form"
+)]
+#[test_case(
     |app: &mut App| { app.status = Status::Streaming; app.run_id = 1; app.queue.push(queued_msg("q")); app.queue.set_focus_at(0); },
     &[KeybindContext::QueueFocus],
     &[KeybindContext::Editing]
@@ -1815,6 +1821,11 @@ fn mcp_toggle_dispatches_action() {
 }
 
 #[test_case(
+    |app: &mut App| { app.plan_form.open(); },
+    ""
+    ; "consumed_by_plan_form"
+)]
+#[test_case(
     |app: &mut App| { open_tasks_picker(app); },
     ""
     ; "routed_to_open_picker"
@@ -1977,4 +1988,143 @@ fn error_event_matching_run_id_saves_session() {
         message: "boom".into(),
     }));
     assert_eq!(app.session.messages.len(), 2);
+}
+
+// --- Plan form integration tests ---
+
+fn done_event() -> Msg {
+    agent_msg(AgentEvent::Done {
+        usage: TokenUsage::default(),
+        num_turns: 1,
+        stop_reason: None,
+    })
+}
+
+fn plan_app() -> App {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.mode = Mode::Plan;
+    app.plan = PlanState::with_path(PathBuf::from("test-plan.md"), true);
+    app
+}
+
+#[test]
+fn done_in_plan_mode_with_written_plan_opens_form() {
+    let mut app = plan_app();
+    app.update(done_event());
+    assert!(app.plan_form.is_visible());
+    assert_eq!(app.status, Status::Idle);
+}
+
+#[test]
+fn done_in_plan_mode_without_written_plan_no_form() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.mode = Mode::Plan;
+    app.plan = PlanState::with_path(PathBuf::from("test-plan.md"), false);
+    app.update(done_event());
+    assert!(!app.plan_form.is_visible());
+}
+
+#[test]
+fn done_in_build_mode_no_form() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.mode = Mode::Build;
+    app.update(done_event());
+    assert!(!app.plan_form.is_visible());
+}
+
+#[test]
+fn done_with_queued_messages_no_form() {
+    let mut app = plan_app();
+    app.queue.push(queued_msg("queued"));
+    app.update(done_event());
+    assert!(!app.plan_form.is_visible());
+    assert_eq!(app.status, Status::Streaming);
+}
+
+#[test]
+fn plan_form_clear_and_implement() {
+    let mut app = plan_app();
+    app.update(done_event());
+    assert!(app.plan_form.is_visible());
+
+    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(!app.plan_form.is_visible());
+    assert_eq!(app.mode, Mode::BuildPlan);
+    assert!(
+        matches!(&actions[..], [Action::NewSession, Action::SendMessage(input)] if input.message == "Implement the plan.")
+    );
+}
+
+#[test]
+fn plan_form_implement_keeps_context() {
+    let mut app = plan_app();
+    app.update(done_event());
+
+    app.update(Msg::Key(key(KeyCode::Down)));
+    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(!app.plan_form.is_visible());
+    assert_eq!(app.mode, Mode::BuildPlan);
+    assert_eq!(actions.len(), 1);
+    assert!(
+        matches!(&actions[0], Action::SendMessage(input) if input.message == "Implement the plan.")
+    );
+}
+
+#[test]
+fn plan_form_continue_closes_form() {
+    let mut app = plan_app();
+    app.update(done_event());
+
+    app.update(Msg::Key(key(KeyCode::Down)));
+    app.update(Msg::Key(key(KeyCode::Down)));
+    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(!app.plan_form.is_visible());
+    assert_eq!(app.mode, Mode::Plan);
+    assert!(actions.is_empty());
+}
+
+#[test]
+fn plan_form_open_editor() {
+    let mut app = plan_app();
+    app.update(done_event());
+
+    let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
+    assert!(app.plan_form.is_visible());
+    assert!(matches!(&actions[..], [Action::OpenEditor(p)] if p == Path::new("test-plan.md")));
+}
+
+#[test]
+fn plan_form_dismiss_on_esc() {
+    let mut app = plan_app();
+    app.update(done_event());
+
+    let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(!app.plan_form.is_visible());
+    assert!(actions.is_empty());
+}
+
+#[test]
+fn close_all_overlays_closes_plan_form() {
+    let mut app = test_app();
+    app.plan_form.open();
+    assert!(app.plan_form.is_visible());
+
+    app.close_all_overlays();
+    assert!(!app.plan_form.is_visible());
+}
+
+#[test]
+fn reset_session_closes_plan_form() {
+    let mut app = plan_app();
+    app.update(done_event());
+    assert!(app.plan_form.is_visible());
+
+    app.reset_session();
+    assert!(!app.plan_form.is_visible());
 }

@@ -1,5 +1,6 @@
 #[cfg(test)]
 use crate::components::keybindings::KeybindContext;
+use crate::components::plan_form::PlanForm;
 use crate::components::queue_panel;
 use crate::components::status_bar::{StatusBarContext, UsageStats};
 use crate::selection::{self, SelectableZone, SelectionZone};
@@ -23,13 +24,13 @@ impl App {
     pub fn view(&mut self, frame: &mut Frame) {
         self.status_bar.clear_expired_hint();
 
-        let form_visible = self.question_form.is_visible();
+        let form_visible = self.question_form.is_visible() || self.plan_form.is_visible();
         let layout = self.compute_layout(frame, form_visible);
         let render_chat = self.resolve_render_chat();
 
         self.render_background(frame);
         self.render_messages(frame, &layout, render_chat);
-        self.render_bottom_panel(frame, &layout, form_visible);
+        self.render_bottom_panel(frame, &layout);
         let mut overlay_rect = self.render_picker_overlays(frame, &layout);
         self.render_status_bar(frame, layout.status_area, render_chat);
         overlay_rect = self.render_top_modals(frame, overlay_rect);
@@ -41,7 +42,11 @@ impl App {
         let area = frame.area();
         let bottom_height = if form_visible {
             let max = area.height.saturating_sub(3);
-            self.question_form.height(area.width).min(max)
+            if self.plan_form.is_visible() {
+                PlanForm::height().min(max)
+            } else {
+                self.question_form.height(area.width).min(max)
+            }
         } else {
             queue_panel::height(self.queue.len())
                 + self.todo_panel.height()
@@ -101,9 +106,11 @@ impl App {
         self.chats[render_chat].view(frame, layout.msg_area, self.selection_state.is_some());
     }
 
-    fn render_bottom_panel(&mut self, frame: &mut Frame, layout: &ViewLayout, form_visible: bool) {
-        if form_visible {
+    fn render_bottom_panel(&mut self, frame: &mut Frame, layout: &ViewLayout) {
+        if self.question_form.is_visible() {
             self.question_form.view(frame, layout.bottom_area);
+        } else if self.plan_form.is_visible() {
+            self.plan_form.view(frame, layout.bottom_area);
         } else {
             let queue_entries = self.queue.entries();
             queue_panel::view(frame, layout.queue_area, &queue_entries, self.queue.focus());
@@ -260,8 +267,8 @@ impl App {
     #[cfg(test)]
     pub(super) fn active_keybind_contexts(&self) -> Vec<KeybindContext> {
         let mut contexts = vec![KeybindContext::General];
-        if self.question_form.is_visible() {
-            contexts.push(KeybindContext::QuestionForm);
+        if self.question_form.is_visible() || self.plan_form.is_visible() {
+            contexts.push(KeybindContext::FormInput);
         } else if self.queue.focus().is_some() {
             contexts.push(KeybindContext::QueueFocus);
         } else if self.session_picker.is_open() {

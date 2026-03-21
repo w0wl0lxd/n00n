@@ -45,7 +45,6 @@ impl App {
         {
             self.demo_questions = None;
         }
-        self.question_form.close();
         self.close_all_overlays();
         self.pending_input = PendingInput::None;
         self.status_bar.clear_flash();

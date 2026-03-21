@@ -1,3 +1,4 @@
+use crate::components::Overlay;
 use crate::components::keybindings::key;
 use crate::markdown::text_to_lines;
 use crate::text_buffer::TextBuffer;
@@ -13,8 +14,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 const FORM_LABEL: &str = " Questions ";
 const CUSTOM_OPTION: &str = "Type your own answer";
-const HINT_BAR: &str = "↑↓ select  Enter confirm  Esc dismiss";
-const HINT_BAR_TOGGLE: &str = "↑↓ select  Enter toggle  Tab submit  Esc dismiss";
+const HINT_BAR: &str = " ↑↓ select  Enter confirm  Esc dismiss";
+const HINT_BAR_TOGGLE: &str = " ↑↓ select  Enter toggle  Tab submit  Esc dismiss";
 const NO_ANSWER: &str = "(no answer)";
 const MAX_QUESTION_LINES_NO_OPTIONS: usize = 10;
 const SEPARATOR: &str = "─";
@@ -514,6 +515,17 @@ impl QuestionForm {
         let lines = self.build_lines(inner_width);
         let para = Paragraph::new(lines).wrap(Wrap { trim: false });
         para.line_count(inner_width) as u16 + 2
+    }
+}
+
+impl Overlay for QuestionForm {
+    fn is_open(&self) -> bool {
+        self.visible
+    }
+
+    fn close(&mut self) {
+        self.visible = false;
+        self.questions.clear();
     }
 }
 

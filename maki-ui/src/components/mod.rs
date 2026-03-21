@@ -10,6 +10,7 @@ pub(crate) mod mcp_picker;
 pub mod messages;
 pub(crate) mod modal;
 pub(crate) mod model_picker;
+pub(crate) mod plan_form;
 pub mod question_form;
 pub mod queue_panel;
 pub(crate) mod rewind_picker;
