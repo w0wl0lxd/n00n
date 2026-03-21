@@ -194,6 +194,8 @@ def process_assistant(msg, turn_index, turn_usage, all_tool_calls):
             detail = format_tool_detail(b)
             if detail:
                 details.append(detail)
+        elif btype == "thinking":
+            parts.append(f"thinking ({len(b.get('thinking', ''))} chars)")
         elif btype == "text":
             parts.append(f"text ({usage.get('output_tokens', '?')} tokens)")
     _log(f"[turn {turn_index + 1}] assistant: {', '.join(parts) or 'empty'}")
@@ -365,6 +367,7 @@ def process_claude_stream(proc, meta):
     turn_index = 0
     summary = {}
     result_text = ""
+    last_msg_id = None
 
     for raw_line in proc.stdout:
         line = raw_line.decode("utf-8", errors="replace").strip()
@@ -379,8 +382,13 @@ def process_claude_stream(proc, meta):
         if msg_type == "system":
             process_init(msg, meta)
         elif msg_type == "assistant":
-            process_assistant(msg, turn_index, turn_usage, all_tool_calls)
-            turn_index += 1
+            msg_id = msg.get("message", {}).get("id")
+            if msg_id and msg_id == last_msg_id:
+                process_assistant(msg, turn_index - 1, turn_usage, all_tool_calls)
+            else:
+                process_assistant(msg, turn_index, turn_usage, all_tool_calls)
+                turn_index += 1
+            last_msg_id = msg_id
         elif msg_type == "result":
             result_text = msg.get("result", "")
             summary = process_result(msg, meta)
