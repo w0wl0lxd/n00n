@@ -12,6 +12,7 @@ use ratatui::layout::{Position, Rect};
 
 const TITLE: &str = " Sessions ";
 const NO_SESSIONS_MSG: &str = "No previous sessions";
+const FOOTER_HINTS: &[(&str, &str)] = &[("Enter", "open"), ("Ctrl-D", "delete")];
 
 pub enum SessionPickerAction {
     Consumed,
@@ -46,7 +47,7 @@ pub struct SessionPicker {
 impl SessionPicker {
     pub fn new() -> Self {
         Self {
-            picker: ListPicker::new(),
+            picker: ListPicker::new().with_footer(FOOTER_HINTS),
             confirming: None,
             pending_rx: None,
             flash: None,
