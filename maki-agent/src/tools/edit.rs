@@ -25,7 +25,7 @@ impl Edit {
     pub const EXAMPLES: Option<&str> = Some(
         r#"[
   {"path": "/home/user/project/src/main.rs", "old_string": "fn old_name(", "new_string": "fn new_name("},
-  {"path": "/home/user/project/config.toml", "old_string": "v1", "new_string": "v2", "replace_all": true}
+  {"path": "/home/user/project/src/lib.rs", "old_string": "use std::collections::HashMap;\nuse std::sync::Arc;", "new_string": "use std::collections::HashMap;\nuse std::io::Read;\nuse std::sync::Arc;"}
 ]"#,
     );
 
