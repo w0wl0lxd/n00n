@@ -21,6 +21,7 @@ Prioritize technical accuracy over validating the user's beliefs. Provide direct
 - Use todowrite to plan and track multi-step tasks (3+ steps).
 - Use **index** before **read**; use offset/limit for large files.
 - Prefer edits over full file writes.
+- Proactively save non-obvious project gotchas and architecture decisions to **memory**.
 
 # Conventions
 - Never assume a library is available. Check the project's dependency files first.
