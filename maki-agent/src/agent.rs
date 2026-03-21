@@ -21,11 +21,7 @@ use serde_json::Value;
 
 use crate::skill::Skill;
 use crate::template::Vars;
-use crate::tools::{
-    BASH_TOOL_NAME, BATCH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, Deadline, EDIT_TOOL_NAME,
-    GLOB_TOOL_NAME, GREP_TOOL_NAME, INDEX_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME,
-    TASK_TOOL_NAME, ToolCall, ToolContext, WRITE_TOOL_NAME,
-};
+use crate::tools::{Deadline, ToolCall, ToolContext};
 use crate::types::tool_results;
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
@@ -111,12 +107,7 @@ impl History {
     }
 }
 
-pub fn build_system_prompt(
-    vars: &Vars,
-    mode: &AgentMode,
-    instructions: &str,
-    tool_names: &[&str],
-) -> String {
+pub fn build_system_prompt(vars: &Vars, mode: &AgentMode, instructions: &str) -> String {
     let mut out = crate::prompt::SYSTEM_PROMPT.to_string();
 
     out.push_str(&vars.apply(
@@ -124,7 +115,6 @@ pub fn build_system_prompt(
     ));
 
     out.push_str(instructions);
-    out.push_str(&tool_efficiency_table(tool_names));
 
     if let AgentMode::Plan(plan_path) = mode {
         let plan_vars = Vars::new().set("{plan_path}", plan_path.display().to_string());
@@ -132,76 +122,6 @@ pub fn build_system_prompt(
     }
 
     out
-}
-
-pub fn tool_efficiency_table(tool_names: &[&str]) -> String {
-    let has = |name: &str| tool_names.contains(&name);
-    let has_edit = has(EDIT_TOOL_NAME) || has(MULTIEDIT_TOOL_NAME);
-
-    const BEST_TIER: &[(&str, &str)] = &[
-        (BATCH_TOOL_NAME, "batch: parallel"),
-        (
-            CODE_EXECUTION_TOOL_NAME,
-            "code_execution: chained/filtering",
-        ),
-        (TASK_TOOL_NAME, "task: delegation"),
-    ];
-    const GOOD_TIER: &[&str] = &[
-        INDEX_TOOL_NAME,
-        EDIT_TOOL_NAME,
-        MULTIEDIT_TOOL_NAME,
-        GREP_TOOL_NAME,
-        GLOB_TOOL_NAME,
-    ];
-    const COSTLY_TIER: &[&str] = &[READ_TOOL_NAME, WRITE_TOOL_NAME];
-
-    let mut rows = Vec::new();
-
-    let best: Vec<_> = BEST_TIER.iter().filter(|(t, _)| has(t)).collect();
-    if !best.is_empty() {
-        let tools: Vec<_> = best.iter().map(|(t, _)| *t).collect();
-        let hints: Vec<_> = best.iter().map(|(_, h)| *h).collect();
-        rows.push(format!(
-            "| Best | {} | {} |",
-            tools.join(", "),
-            hints.join(", ")
-        ));
-    }
-
-    let good: Vec<&str> = GOOD_TIER.iter().copied().filter(|t| has(t)).collect();
-    if !good.is_empty() {
-        let desc = if has_edit {
-            "Targeted reads and edits"
-        } else {
-            "Targeted reads and searches"
-        };
-        rows.push(format!("| Good | {} | {desc} |", good.join(", ")));
-    }
-
-    let costly: Vec<&str> = COSTLY_TIER.iter().copied().filter(|t| has(t)).collect();
-    if !costly.is_empty() {
-        let desc = match (has(INDEX_TOOL_NAME), has_edit) {
-            (true, true) => "Full file reads/replacement (prefer index & edit/multiedit)",
-            (true, false) => "Full file reads (prefer index with offset/limit)",
-            (false, true) => "Full file reads/replacement (prefer edit/multiedit)",
-            (false, false) => "Full file reads",
-        };
-        rows.push(format!("| Costly | {} | {desc} |", costly.join(", ")));
-    }
-
-    if has(BASH_TOOL_NAME) {
-        rows.push(format!(
-            "| Last | {BASH_TOOL_NAME} | Only when no other tool works |"
-        ));
-    }
-
-    if rows.is_empty() {
-        return String::new();
-    }
-    format!(
-        "\n\n# Tool efficiency (prefer higher tiers)\n| Tier | Tools | When |\n|------|-------|------|\n{}",
-        rows.join("\n")
-    )
 }
 
 pub fn load_instruction_files(cwd: &str) -> (String, LoadedInstructions) {
@@ -1019,7 +939,7 @@ mod tests {
     #[test_case(&AgentMode::Plan(PathBuf::from(PLAN_PATH)), true ; "plan_includes_plan")]
     fn plan_section_presence(mode: &AgentMode, expect_plan: bool) {
         let vars = Vars::new().set("{cwd}", "/tmp").set("{platform}", "linux");
-        let prompt = build_system_prompt(&vars, mode, "", &[]);
+        let prompt = build_system_prompt(&vars, mode, "");
         assert_eq!(prompt.contains("Plan Mode"), expect_plan);
         if expect_plan {
             assert!(prompt.contains(PLAN_PATH));

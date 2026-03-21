@@ -30,12 +30,7 @@ pub struct WebFetch {
 impl WebFetch {
     pub const NAME: &str = "webfetch";
     pub const DESCRIPTION: &str = include_str!("webfetch.md");
-    pub const EXAMPLES: Option<&str> = Some(
-        r#"[
-  {"url": "https://docs.rs/serde/latest/serde/"},
-  {"url": "https://example.com/api/spec", "format": "text", "timeout": 60}
-]"#,
-    );
+    pub const EXAMPLES: Option<&str> = None;
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         ctx.cancel

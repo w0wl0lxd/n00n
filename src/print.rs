@@ -156,7 +156,7 @@ pub fn run(
         mcp.extend_tools(&mut tool_names, &mut tools, &[]);
     }
 
-    let system = agent::build_system_prompt(&vars, &mode, &instructions, &tool_names);
+    let system = agent::build_system_prompt(&vars, &mode, &instructions);
 
     let (raw_tx, event_rx) = flume::unbounded::<Envelope>();
     let input = AgentInput {

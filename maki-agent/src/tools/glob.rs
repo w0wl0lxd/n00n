@@ -17,12 +17,7 @@ pub struct Glob {
 impl Glob {
     pub const NAME: &str = "glob";
     pub const DESCRIPTION: &str = include_str!("glob.md");
-    pub const EXAMPLES: Option<&str> = Some(
-        r#"[
-  {"pattern": "**/*.rs"},
-  {"pattern": "src/**/*.ts", "path": "/home/user/project"}
-]"#,
-    );
+    pub const EXAMPLES: Option<&str> = None;
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let search_limit = ctx.config.search_result_limit;

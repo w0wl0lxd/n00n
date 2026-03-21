@@ -65,18 +65,11 @@ impl Batch {
     pub const NAME: &str = "batch";
     pub const DESCRIPTION: &str = include_str!("batch.md");
     pub const EXAMPLES: Option<&str> = Some(
-        r#"[
-  {"tool_calls": [
-    {"tool": "glob", "parameters": {"pattern": "src/**/*.ts"}},
-    {"tool": "grep", "parameters": {"pattern": "import", "include": "*.ts"}},
-    {"tool": "index", "parameters": {"path": "index.ts"}}
-  ]},
-  {"tool_calls": [
-    {"tool": "task", "parameters": {"description": "Find auth middleware", "prompt": "Search for authentication middleware. Return file paths and a summary.", "subagent_type": "research"}},
-    {"tool": "task", "parameters": {"description": "Find DB schema", "prompt": "Find all database migration files. Return file paths and table names.", "subagent_type": "research"}},
-    {"tool": "task", "parameters": {"description": "Find error types", "prompt": "List all custom error enums. Return file:line and variant names.", "subagent_type": "research"}}
-  ]}
-]"#,
+        r#"[{"tool_calls": [
+  {"tool": "glob", "parameters": {"pattern": "src/**/*.ts"}},
+  {"tool": "grep", "parameters": {"pattern": "import", "include": "*.ts"}},
+  {"tool": "index", "parameters": {"path": "index.ts"}}
+]}]"#,
     );
 
     pub async fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {

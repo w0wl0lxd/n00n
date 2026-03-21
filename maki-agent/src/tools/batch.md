@@ -1,23 +1,12 @@
 Executes multiple independent tool calls concurrently to reduce round-trips.
 
-ALWAYS USE THE BATCH TOOL WHEN YOU HAVE MULTIPLE INDEPENDENT TOOL CALLS. This dramatically improves performance.
+ALWAYS USE BATCH FOR MULTIPLE INDEPENDENT TOOL CALLS.
 
-Payload format:
-[{"tool": "read", "parameters": {"path": "src/main.rs"}}, {"tool": "grep", "parameters": {"pattern": "TODO"}}]
+Payload: [{"tool": "read", "parameters": {"path": "src/main.rs"}}, ...]
 
 Rules:
 - 1-25 tool calls per batch
 - All calls run in parallel; order NOT guaranteed
 - Partial failures do not stop other calls
 - Do NOT nest batch inside batch
-
-Good use cases:
-- Reading multiple files
-- grep + glob + read combos
-- Multiple bash commands
-- Multi-part edits on same or different files
-
-When NOT to use:
-- Operations depending on prior tool output (e.g. write then read same file)
-- Ordered stateful mutations where sequence matters
-- When results need filtering, aggregation, or conditional logic (use code_execution instead)
+- Do NOT use for dependent operations or when filtering results (use code_execution)

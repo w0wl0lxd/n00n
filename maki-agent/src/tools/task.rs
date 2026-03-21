@@ -40,11 +40,7 @@ impl Task {
     pub const NAME: &str = "task";
     pub const DESCRIPTION: &str = include_str!("task.md");
     pub const EXAMPLES: Option<&str> = Some(
-        r#"[
-  {"description": "Find auth middleware", "prompt": "Search the codebase for authentication middleware. Return file paths and a summary of how auth is implemented.", "model_tier": "weak"},
-  {"description": "Refactor error types", "prompt": "In src/errors.rs, replace all uses of String error types with thiserror derive macros.\n\nHere is the pattern to follow (from src/api/errors.rs):\n```rust\n#[derive(Debug, thiserror::Error)]\npub enum ApiError {\n    #[error(\"not found: {0}\")]\n    NotFound(String),\n    #[error(\"unauthorized\")]\n    Unauthorized,\n}\n```\n\nApply this same pattern to all error variants in src/errors.rs.", "subagent_type": "general"},
-  {"description": "Debug race condition", "prompt": "Analyze the locking strategy in src/cache.rs. Identify potential deadlocks or race conditions.", "model_tier": "strong"}
-]"#,
+        r#"[{"description": "Find auth middleware", "prompt": "Search the codebase for authentication middleware. Return file paths and a summary of how auth is implemented.", "model_tier": "weak"}]"#,
     );
 
     pub async fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
@@ -84,7 +80,6 @@ impl Task {
         let (instructions, _) =
             smol::unblock(move || agent::load_instruction_files(&cwd_owned)).await;
         system.push_str(&instructions);
-        system.push_str(&agent::tool_efficiency_table(tool_names));
         let tools = ToolCall::definitions_filtered(
             &vars,
             tool_names,

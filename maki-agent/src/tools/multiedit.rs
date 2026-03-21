@@ -43,15 +43,10 @@ impl MultiEdit {
     pub const NAME: &str = "multiedit";
     pub const DESCRIPTION: &str = include_str!("multiedit.md");
     pub const EXAMPLES: Option<&str> = Some(
-        r#"[
-  {"path": "/home/user/project/src/lib.rs", "edits": [
-    {"old_string": "use old_crate::Foo;", "new_string": "use new_crate::Foo;"},
-    {"old_string": "old_crate::init()", "new_string": "new_crate::init()", "replace_all": true}
-  ]},
-  {"path": "/home/user/project/src/main.rs", "edits": [
-    {"old_string": "fn main() {\n    println!(\"hello\");\n}", "new_string": "fn main() {\n    println!(\"hello world\");\n    println!(\"goodbye\");\n}"}
-  ]}
-]"#,
+        r#"[{"path": "/home/user/project/src/lib.rs", "edits": [
+  {"old_string": "use old_crate::Foo;", "new_string": "use new_crate::Foo;"},
+  {"old_string": "old_crate::init()", "new_string": "new_crate::init()", "replace_all": true}
+]}]"#,
     );
 
     fn edit_count_label(&self) -> String {

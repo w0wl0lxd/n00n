@@ -33,13 +33,7 @@ fn to_instruction_blocks(found: Vec<(String, String)>) -> Option<Vec<Instruction
 impl Read {
     pub const NAME: &str = "read";
     pub const DESCRIPTION: &str = include_str!("read.md");
-    pub const EXAMPLES: Option<&str> = Some(
-        r#"[
-  {"path": "/home/user/project/src/main.rs"},
-  {"path": "/home/user/project/src/lib.rs", "offset": 50, "limit": 30},
-  {"path": "/home/user/project/src"}
-]"#,
-    );
+    pub const EXAMPLES: Option<&str> = None;
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let path = self.path.clone();

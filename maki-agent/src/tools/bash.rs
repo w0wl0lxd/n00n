@@ -72,8 +72,7 @@ impl Bash {
     pub const EXAMPLES: Option<&str> = Some(
         r#"[
   {"command": "cargo build --release", "description": "Build release binary"},
-  {"command": "git diff HEAD~1", "description": "Show last commit diff"},
-  {"command": "pytest tests/", "workdir": "/home/user/project", "timeout": 300, "description": "Run test suite"}
+  {"command": "git diff HEAD~1", "description": "Show last commit diff"}
 ]"#,
     );
 
