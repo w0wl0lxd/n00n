@@ -10,57 +10,50 @@ use ratatui::widgets::{Block, Widget};
 
 use super::{App, Status};
 
+struct ViewLayout {
+    msg_area: Rect,
+    bottom_area: Rect,
+    status_area: Rect,
+    queue_area: Rect,
+    todo_area: Rect,
+    input_area: Rect,
+}
+
 impl App {
     pub fn view(&mut self, frame: &mut Frame) {
         self.status_bar.clear_expired_hint();
 
-        let bg =
-            Block::default().style(ratatui::style::Style::new().bg(theme::current().background));
-        bg.render(frame.area(), frame.buffer_mut());
-
         let form_visible = self.question_form.is_visible();
-        let max_form_height = frame.area().height.saturating_sub(3);
+        let layout = self.compute_layout(frame, form_visible);
+        let render_chat = self.resolve_render_chat();
+
+        self.render_background(frame);
+        self.render_messages(frame, &layout, render_chat);
+        self.render_bottom_panel(frame, &layout, form_visible);
+        let mut overlay_rect = self.render_picker_overlays(frame, &layout);
+        self.render_status_bar(frame, layout.status_area, render_chat);
+        overlay_rect = self.render_top_modals(frame, overlay_rect);
+        self.register_zones(&layout, overlay_rect);
+        self.apply_selection(frame, render_chat);
+    }
+
+    fn compute_layout(&self, frame: &Frame, form_visible: bool) -> ViewLayout {
+        let area = frame.area();
         let bottom_height = if form_visible {
-            self.question_form
-                .height(frame.area().width)
-                .min(max_form_height)
+            let max = area.height.saturating_sub(3);
+            self.question_form.height(area.width).min(max)
         } else {
             queue_panel::height(self.queue.len())
                 + self.todo_panel.height()
-                + self.input_box.height(frame.area().width)
+                + self.input_box.height(area.width)
         };
+
         let [msg_area, bottom_area, status_area] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(bottom_height),
             Constraint::Length(1),
         ])
-        .areas(frame.area());
-        self.zones[SelectionZone::Messages.idx()] = Some(SelectableZone {
-            area: msg_area,
-            highlight_area: Rect::new(
-                msg_area.x,
-                msg_area.y,
-                msg_area.width.saturating_sub(1),
-                msg_area.height,
-            ),
-            zone: SelectionZone::Messages,
-        });
-        let picker_open = self.task_picker.is_open();
-        let render_chat = if picker_open {
-            self.task_picker
-                .selected_index()
-                .unwrap_or(self.active_chat)
-        } else {
-            self.active_chat
-        };
-        self.chats[render_chat].set_accent(self.mode.color());
-        self.chats[render_chat].view(frame, msg_area, self.selection_state.is_some());
-
-        let mut overlay_rect = Rect::default();
-
-        if self.search_modal.is_open() {
-            overlay_rect = self.search_modal.view(frame, msg_area);
-        }
+        .areas(area);
 
         let queue_height = queue_panel::height(self.queue.len());
         let todo_h = if form_visible {
@@ -69,67 +62,115 @@ impl App {
             self.todo_panel.height()
         };
         let input_height = bottom_area.height.saturating_sub(queue_height + todo_h);
+
         let [queue_area, todo_area, input_area] = Layout::vertical([
             Constraint::Length(queue_height),
             Constraint::Length(todo_h),
             Constraint::Length(input_height),
         ])
         .areas(bottom_area);
-        let input_inner = selection::inset_border(input_area);
-        self.zones[SelectionZone::Input.idx()] = Some(SelectableZone {
-            area: input_inner,
-            highlight_area: input_inner,
-            zone: SelectionZone::Input,
-        });
 
+        ViewLayout {
+            msg_area,
+            bottom_area,
+            status_area,
+            queue_area,
+            todo_area,
+            input_area,
+        }
+    }
+
+    fn resolve_render_chat(&self) -> usize {
+        if self.task_picker.is_open() {
+            self.task_picker
+                .selected_index()
+                .unwrap_or(self.active_chat)
+        } else {
+            self.active_chat
+        }
+    }
+
+    fn render_background(&self, frame: &mut Frame) {
+        let bg =
+            Block::default().style(ratatui::style::Style::new().bg(theme::current().background));
+        bg.render(frame.area(), frame.buffer_mut());
+    }
+
+    fn render_messages(&mut self, frame: &mut Frame, layout: &ViewLayout, render_chat: usize) {
+        self.chats[render_chat].set_accent(self.mode.color());
+        self.chats[render_chat].view(frame, layout.msg_area, self.selection_state.is_some());
+    }
+
+    fn render_bottom_panel(&mut self, frame: &mut Frame, layout: &ViewLayout, form_visible: bool) {
         if form_visible {
-            self.question_form.view(frame, bottom_area);
+            self.question_form.view(frame, layout.bottom_area);
         } else {
             let queue_entries = self.queue.entries();
-            queue_panel::view(frame, queue_area, &queue_entries, self.queue.focus());
-            if todo_h > 0 {
-                self.todo_panel.view(frame, todo_area);
+            queue_panel::view(frame, layout.queue_area, &queue_entries, self.queue.focus());
+            if layout.todo_area.height > 0 {
+                self.todo_panel.view(frame, layout.todo_area);
             }
-            let input_focused = !self.any_overlay_open();
             self.input_box.view(
                 frame,
-                input_area,
+                layout.input_area,
                 self.status == Status::Streaming,
                 self.mode.color(),
-                input_focused,
+                !self.any_overlay_open(),
             );
-            self.command_palette.view(frame, input_area);
+            self.command_palette.view(frame, layout.input_area);
+        }
+    }
+
+    fn render_picker_overlays(&mut self, frame: &mut Frame, layout: &ViewLayout) -> Rect {
+        let mut overlay_rect = Rect::default();
+        let full = frame.area();
+
+        if self.search_modal.is_open() {
+            overlay_rect = self.search_modal.view(frame, layout.msg_area);
         }
 
-        if picker_open {
-            let full_area = frame.area();
-            overlay_rect = self.task_picker.view(frame, full_area);
+        if self.task_picker.is_open() {
+            overlay_rect = self.task_picker.view(frame, full);
         }
 
         if self.session_picker.is_open() {
             self.session_picker.tick();
-            overlay_rect = self.session_picker.view(frame, frame.area());
+            overlay_rect = self.session_picker.view(frame, full);
             if let Some(flash) = self.session_picker.take_flash() {
                 self.status_bar.flash(flash);
             }
         }
 
-        if self.rewind_picker.is_open() {
-            overlay_rect = self.rewind_picker.view(frame, frame.area());
+        macro_rules! render_if_open {
+            ($overlay:expr) => {
+                if $overlay.is_open() {
+                    overlay_rect = $overlay.view(frame, full);
+                }
+            };
         }
 
-        if self.theme_picker.is_open() {
-            overlay_rect = self.theme_picker.view(frame, frame.area());
-        }
+        render_if_open!(self.rewind_picker);
+        render_if_open!(self.theme_picker);
+        render_if_open!(self.model_picker);
+        render_if_open!(self.mcp_picker);
 
-        if self.model_picker.is_open() {
-            overlay_rect = self.model_picker.view(frame, frame.area());
-        }
+        overlay_rect
+    }
 
-        if self.mcp_picker.is_open() {
-            overlay_rect = self.mcp_picker.view(frame, frame.area());
+    fn render_top_modals(&mut self, frame: &mut Frame, mut overlay_rect: Rect) -> Rect {
+        let full = frame.area();
+        let r = self.btw_modal.view(frame, full);
+        if r.width > 0 {
+            overlay_rect = r;
         }
+        let r = self.help_modal.view(frame, full);
+        if r.width > 0 {
+            overlay_rect = r;
+        }
+        overlay_rect
+    }
 
+    fn render_status_bar(&mut self, frame: &mut Frame, status_area: Rect, render_chat: usize) {
         let chat = &self.chats[render_chat];
         let chat_name = (self.chats.len() > 1).then_some(chat.name.as_str());
         let (mode_label, mode_style) = self.mode_label();
@@ -151,21 +192,32 @@ impl App {
             retry_info: self.retry_info.as_ref(),
         };
         self.status_bar.view(frame, status_area, &ctx);
+    }
 
-        self.zones[SelectionZone::StatusBar.idx()] = Some(SelectableZone {
-            area: status_area,
-            highlight_area: status_area,
-            zone: SelectionZone::StatusBar,
+    fn register_zones(&mut self, layout: &ViewLayout, overlay_rect: Rect) {
+        self.zones[SelectionZone::Messages.idx()] = Some(SelectableZone {
+            area: layout.msg_area,
+            highlight_area: Rect::new(
+                layout.msg_area.x,
+                layout.msg_area.y,
+                layout.msg_area.width.saturating_sub(1),
+                layout.msg_area.height,
+            ),
+            zone: SelectionZone::Messages,
         });
 
-        let r = self.btw_modal.view(frame, frame.area());
-        if r.width > 0 {
-            overlay_rect = r;
-        }
-        let r = self.help_modal.view(frame, frame.area());
-        if r.width > 0 {
-            overlay_rect = r;
-        }
+        let input_inner = selection::inset_border(layout.input_area);
+        self.zones[SelectionZone::Input.idx()] = Some(SelectableZone {
+            area: input_inner,
+            highlight_area: input_inner,
+            zone: SelectionZone::Input,
+        });
+
+        self.zones[SelectionZone::StatusBar.idx()] = Some(SelectableZone {
+            area: layout.status_area,
+            highlight_area: layout.status_area,
+            zone: SelectionZone::StatusBar,
+        });
 
         if overlay_rect.width > 0 {
             let inner = selection::inset_border(overlay_rect);
@@ -184,20 +236,24 @@ impl App {
                 self.selection_state = None;
             }
         }
+    }
 
-        if let Some(ref state) = self.selection_state {
-            let zone = state.sel.zone;
-            let scroll = self.scroll_offset(zone);
-            if let Some(screen_sel) = state.sel.to_screen(scroll) {
-                let highlight_area = self.zones[zone.idx()]
-                    .map(|z| z.highlight_area)
-                    .unwrap_or_default();
-                selection::apply_highlight(frame.buffer_mut(), highlight_area, &screen_sel);
-            }
-            if state.copy_on_release {
-                let sel = state.sel;
-                self.copy_selection(frame.buffer_mut(), &sel, render_chat);
-            }
+    fn apply_selection(&mut self, frame: &mut Frame, render_chat: usize) {
+        let Some(ref state) = self.selection_state else {
+            return;
+        };
+
+        let zone = state.sel.zone;
+        let scroll = self.scroll_offset(zone);
+        if let Some(screen_sel) = state.sel.to_screen(scroll) {
+            let highlight_area = self.zones[zone.idx()]
+                .map(|z| z.highlight_area)
+                .unwrap_or_default();
+            selection::apply_highlight(frame.buffer_mut(), highlight_area, &screen_sel);
+        }
+        if state.copy_on_release {
+            let sel = state.sel;
+            self.copy_selection(frame.buffer_mut(), &sel, render_chat);
         }
     }
 
