@@ -93,7 +93,7 @@ impl App {
         let display_msgs = history_to_display(
             &self.session.messages,
             &self.session.tool_outputs,
-            self.ui_config.tool_output_lines,
+            &self.ui_config.tool_output_lines,
         );
         self.main_chat().load_messages(display_msgs);
         self.token_usage = self.session.token_usage;
@@ -133,7 +133,7 @@ impl App {
         let display_msgs = history_to_display(
             &self.session.messages,
             &self.session.tool_outputs,
-            self.ui_config.tool_output_lines,
+            &self.ui_config.tool_output_lines,
         );
         self.main_chat().load_messages(display_msgs);
         self.token_usage = self.session.token_usage;

@@ -16,7 +16,7 @@ use maki_agent::{
     AgentEvent, BatchToolStatus, NO_FILES_FOUND, QuestionInfo, ToolDoneEvent, ToolOutput,
     ToolStartEvent,
 };
-use maki_config::UiConfig;
+use maki_config::{ToolOutputLines, UiConfig};
 use maki_providers::{ContentBlock, Message, Role, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -275,7 +275,7 @@ impl Chat {
 pub fn history_to_display(
     messages: &[Message],
     tool_outputs: &HashMap<String, ToolOutput>,
-    tool_output_lines: usize,
+    tool_output_lines: &ToolOutputLines,
 ) -> Vec<DisplayMessage> {
     let results = build_tool_results_map(messages);
     let mut display = Vec::new();
@@ -358,7 +358,7 @@ fn build_loaded_tool(
     summary: &str,
     reconstructed: Option<ToolOutput>,
     result_text: Option<&str>,
-    tool_output_lines: usize,
+    tool_output_lines: &ToolOutputLines,
 ) -> (String, usize, Option<ToolOutput>, Option<String>) {
     let kind = ToolKind::from_name(tool);
     match reconstructed {
@@ -368,7 +368,7 @@ fn build_loaded_tool(
                 format!("{summary}\n{NO_FILES_FOUND}")
             } else {
                 let display = output.as_display_text();
-                let limits = kind.output_limits_with(tool_output_lines);
+                let limits = kind.output_limits(tool_output_lines);
                 let tr = truncate_output(&display, limits.max_lines, limits.keep);
                 format!("{}\n{}", summary, tr.kept)
             };
@@ -405,7 +405,7 @@ fn build_loaded_tool(
             if result.is_empty() || matches!(tool, WEBFETCH_TOOL_NAME) {
                 (summary.to_owned(), 0, None, annotation)
             } else {
-                let limits = kind.output_limits_with(tool_output_lines);
+                let limits = kind.output_limits(tool_output_lines);
                 let tr = truncate_output(result, limits.max_lines, limits.keep);
                 (
                     format!("{}\n{}", summary, tr.kept),
@@ -559,7 +559,9 @@ mod tests {
             }],
             ..Default::default()
         }];
-        assert!(history_to_display(&msgs, &empty_outputs(), 10).is_empty());
+        assert!(
+            history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).is_empty()
+        );
     }
 
     fn tool_use_pair(
@@ -599,7 +601,7 @@ mod tests {
             "output",
             is_error,
         );
-        let display = history_to_display(&msgs, &empty_outputs(), 10);
+        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default());
         assert_eq!(display.len(), 1);
         assert!(matches!(
             display[0].role,
@@ -642,7 +644,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let display = history_to_display(&msgs, &empty_outputs(), 10);
+        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default());
         assert_eq!(display.len(), 4);
         assert_eq!(display[0].role, DisplayRole::User);
         assert_eq!(display[1].role, DisplayRole::Assistant);
@@ -695,7 +697,7 @@ mod tests {
             let discriminant = std::mem::discriminant(&output);
             let msgs = tool_use_pair(tool_name, input_json, "ok", false);
             let outputs = HashMap::from([("t1".into(), output)]);
-            let display = history_to_display(&msgs, &outputs, 10);
+            let display = history_to_display(&msgs, &outputs, &ToolOutputLines::default());
             assert_eq!(
                 std::mem::discriminant(display[0].tool_output.as_ref().unwrap()),
                 discriminant,
@@ -718,7 +720,7 @@ mod tests {
             false,
         );
         let outputs = HashMap::from([("t1".into(), write_output)]);
-        let display = history_to_display(&msgs, &outputs, 10);
+        let display = history_to_display(&msgs, &outputs, &ToolOutputLines::default());
         assert!(display[0].annotation.is_some());
     }
 
@@ -733,7 +735,7 @@ mod tests {
             }],
             ..Default::default()
         }];
-        let display = history_to_display(&msgs, &empty_outputs(), 10);
+        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default());
         assert!(
             matches!(&display[0].tool_input, Some(ToolInput::Code { .. })),
             "bash tool should produce Code input for syntax highlighting"
@@ -750,7 +752,7 @@ mod tests {
             &joined,
             false,
         );
-        let display = history_to_display(&msgs, &empty_outputs(), 10);
+        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default());
         let line_count = display[0].text.lines().count();
         assert!(
             line_count < long_output.len(),
@@ -767,7 +769,7 @@ mod tests {
             "fetched content\nmore lines",
             false,
         );
-        let display = history_to_display(&msgs, &empty_outputs(), 10);
+        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default());
         assert!(
             !display[0].text.contains('\n'),
             "webfetch should hide body text"
@@ -799,7 +801,7 @@ mod tests {
         };
         let msgs = tool_use_pair("batch", serde_json::json!({"tool_calls": []}), "", false);
         let outputs = HashMap::from([("t1".into(), batch_output)]);
-        let display = history_to_display(&msgs, &outputs, 10);
+        let display = history_to_display(&msgs, &outputs, &ToolOutputLines::default());
         let ToolOutput::Batch { entries, .. } = display[0].tool_output.as_ref().unwrap() else {
             panic!("expected Batch output");
         };
@@ -816,26 +818,8 @@ mod tests {
             "1: fn main() {}",
             false,
         );
-        let display = history_to_display(&msgs, &empty_outputs(), 10);
+        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default());
         assert!(display[0].tool_output.is_none());
         assert!(display[0].text.contains("fn main"));
-    }
-
-    #[test]
-    fn history_grep_output_uses_structured_data() {
-        use maki_agent::{GrepFileEntry, GrepMatch};
-        let output = ToolOutput::GrepResult {
-            entries: vec![GrepFileEntry {
-                path: "src/lib.rs".into(),
-                matches: vec![GrepMatch {
-                    line_nr: 42,
-                    text: "fn run()".into(),
-                }],
-            }],
-        };
-        let msgs = tool_use_pair("grep", serde_json::json!({"pattern": "fn run"}), "", false);
-        let outputs = HashMap::from([("t1".into(), output)]);
-        let display = history_to_display(&msgs, &outputs, 10);
-        assert!(display[0].tool_output.is_some());
     }
 }

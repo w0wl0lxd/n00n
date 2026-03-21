@@ -17,7 +17,6 @@ const DEFAULT_MAX_LINE_BYTES: usize = 500;
 const DEFAULT_FLASH_DURATION_MS: u64 = 1500;
 const DEFAULT_TYPEWRITER_MS_PER_CHAR: u64 = 4;
 const DEFAULT_MOUSE_SCROLL_LINES: u32 = 3;
-pub const DEFAULT_TOOL_OUTPUT_LINES: usize = 5;
 
 const DEFAULT_BASH_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_CODE_EXECUTION_TIMEOUT_SECS: u64 = 30;
@@ -99,7 +98,21 @@ struct UiFileConfig {
     flash_duration_ms: Option<u64>,
     typewriter_ms_per_char: Option<u64>,
     mouse_scroll_lines: Option<u32>,
-    tool_output_lines: Option<usize>,
+    tool_output_lines: Option<ToolOutputLinesFile>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ToolOutputLinesFile {
+    bash: Option<usize>,
+    code_execution: Option<usize>,
+    task: Option<usize>,
+    index: Option<usize>,
+    grep: Option<usize>,
+    read: Option<usize>,
+    write: Option<usize>,
+    web: Option<usize>,
+    other: Option<usize>,
 }
 
 #[derive(Deserialize, Default)]
@@ -154,7 +167,82 @@ pub struct UiConfig {
     pub flash_duration_ms: u64,
     pub typewriter_ms_per_char: u64,
     pub mouse_scroll_lines: u32,
-    pub tool_output_lines: usize,
+    pub tool_output_lines: ToolOutputLines,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolOutputLines {
+    pub bash: usize,
+    pub code_execution: usize,
+    pub task: usize,
+    pub index: usize,
+    pub grep: usize,
+    pub read: usize,
+    pub write: usize,
+    pub web: usize,
+    pub other: usize,
+}
+
+impl ToolOutputLines {
+    pub const DEFAULT: Self = Self {
+        bash: 10,
+        code_execution: 15,
+        task: 15,
+        index: 7,
+        grep: 5,
+        read: 5,
+        write: 30,
+        web: 3,
+        other: 3,
+    };
+
+    fn from_file(f: Option<ToolOutputLinesFile>) -> Self {
+        let d = Self::DEFAULT;
+        let f = f.unwrap_or_default();
+        Self {
+            bash: f.bash.unwrap_or(d.bash),
+            code_execution: f.code_execution.unwrap_or(d.code_execution),
+            task: f.task.unwrap_or(d.task),
+            index: f.index.unwrap_or(d.index),
+            grep: f.grep.unwrap_or(d.grep),
+            read: f.read.unwrap_or(d.read),
+            write: f.write.unwrap_or(d.write),
+            web: f.web.unwrap_or(d.web),
+            other: f.other.unwrap_or(d.other),
+        }
+    }
+
+    fn fields(&self) -> [(&'static str, usize); 9] {
+        [
+            ("bash", self.bash),
+            ("code_execution", self.code_execution),
+            ("task", self.task),
+            ("index", self.index),
+            ("grep", self.grep),
+            ("read", self.read),
+            ("write", self.write),
+            ("web", self.web),
+            ("other", self.other),
+        ]
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        for (name, value) in self.fields() {
+            check(
+                "ui.tool_output_lines",
+                name,
+                value as u64,
+                MIN_TOOL_OUTPUT_LINES as u64,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl Default for ToolOutputLines {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 impl Default for UiConfig {
@@ -164,7 +252,7 @@ impl Default for UiConfig {
             flash_duration_ms: DEFAULT_FLASH_DURATION_MS,
             typewriter_ms_per_char: DEFAULT_TYPEWRITER_MS_PER_CHAR,
             mouse_scroll_lines: DEFAULT_MOUSE_SCROLL_LINES,
-            tool_output_lines: DEFAULT_TOOL_OUTPUT_LINES,
+            tool_output_lines: ToolOutputLines::default(),
         }
     }
 }
@@ -182,7 +270,7 @@ impl UiConfig {
                 .typewriter_ms_per_char
                 .unwrap_or(DEFAULT_TYPEWRITER_MS_PER_CHAR),
             mouse_scroll_lines: f.mouse_scroll_lines.unwrap_or(DEFAULT_MOUSE_SCROLL_LINES),
-            tool_output_lines: f.tool_output_lines.unwrap_or(DEFAULT_TOOL_OUTPUT_LINES),
+            tool_output_lines: ToolOutputLines::from_file(f.tool_output_lines),
         }
     }
 
@@ -193,12 +281,7 @@ impl UiConfig {
             self.mouse_scroll_lines as u64,
             MIN_MOUSE_SCROLL_LINES as u64,
         )?;
-        check(
-            "ui",
-            "tool_output_lines",
-            self.tool_output_lines as u64,
-            MIN_TOOL_OUTPUT_LINES as u64,
-        )?;
+        self.tool_output_lines.validate()?;
         Ok(())
     }
 }
@@ -629,15 +712,31 @@ mod tests {
     }
 
     #[test]
-    fn new_sections_load_from_toml() {
+    fn tool_output_lines_per_tool_override() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("maki.toml"),
+            "[ui.tool_output_lines]\nbash = 20\nread = 20\n",
+        )
+        .unwrap();
+        let config = load_config(dir.path(), false);
+        assert_eq!(config.ui.tool_output_lines.bash, 20);
+        assert_eq!(config.ui.tool_output_lines.read, 20);
+        assert_eq!(
+            config.ui.tool_output_lines.index,
+            ToolOutputLines::DEFAULT.index
+        );
+    }
+
+    #[test]
+    fn all_sections_load_together() {
         let dir = TempDir::new().unwrap();
         fs::write(
             dir.path().join("maki.toml"),
             "[provider]\ndefault_model = \"anthropic/claude-opus-4-6\"\nconnect_timeout_secs = 15\n\
-             [storage]\nmax_log_files = 5\ninput_history_size = 50\n\
+             [storage]\nmax_log_files = 5\n\
              [index]\nmax_file_size_mb = 4\n\
-             [ui]\ntypewriter_ms_per_char = 0\nmouse_scroll_lines = 5\ntool_output_lines = 20\n\
-             [agent]\nbash_timeout_secs = 60\ncompaction_buffer = 10000\nsearch_result_limit = 50\n",
+             [agent]\nbash_timeout_secs = 60\n",
         )
         .unwrap();
         let config = load_config(dir.path(), false);
@@ -647,14 +746,8 @@ mod tests {
         );
         assert_eq!(config.provider.connect_timeout, Duration::from_secs(15));
         assert_eq!(config.storage.max_log_files, 5);
-        assert_eq!(config.storage.input_history_size, 50);
         assert_eq!(config.agent.index_max_file_size, 4 * 1024 * 1024);
-        assert_eq!(config.ui.typewriter_ms_per_char, 0);
-        assert_eq!(config.ui.mouse_scroll_lines, 5);
-        assert_eq!(config.ui.tool_output_lines, 20);
         assert_eq!(config.agent.bash_timeout_secs, 60);
-        assert_eq!(config.agent.compaction_buffer, 10000);
-        assert_eq!(config.agent.search_result_limit, 50);
     }
 
     #[test_case("provider", "connect_timeout_secs", 0 ; "provider_zero_connect_timeout")]

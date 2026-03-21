@@ -11,7 +11,7 @@ use crate::render_worker::RenderWorker;
 use crate::selection::{self, LineBreaks, ScreenSelection, Selection};
 use crate::splash::{ColorTransition, Splash};
 use crate::theme;
-use maki_config::UiConfig;
+use maki_config::{ToolOutputLines, UiConfig};
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -119,7 +119,7 @@ pub struct MessagesPanel {
     idle_splash: Splash,
     accent: ColorTransition,
     expanded_tools: HashSet<String>,
-    tool_output_lines: usize,
+    tool_output_lines: ToolOutputLines,
 }
 
 impl MessagesPanel {
@@ -252,7 +252,7 @@ impl MessagesPanel {
             return;
         };
         let tool_name = msg.role.tool_name().unwrap_or("");
-        let limits = ToolKind::from_name(tool_name).output_limits_with(self.tool_output_lines);
+        let limits = ToolKind::from_name(tool_name).output_limits(&self.tool_output_lines);
         truncate_to_header(&mut msg.text);
         let truncated = truncate_output(content, limits.max_lines, limits.keep);
         msg.truncated_lines = truncated.skipped;
@@ -295,7 +295,7 @@ impl MessagesPanel {
             ToolOutput::Plain(text) | ToolOutput::ReadDir { text, .. } => {
                 if !matches!(event.tool, WEBFETCH_TOOL_NAME) {
                     let limits =
-                        ToolKind::from_name(event.tool).output_limits_with(self.tool_output_lines);
+                        ToolKind::from_name(event.tool).output_limits(&self.tool_output_lines);
                     let tr = truncate_output(text, limits.max_lines, limits.keep);
                     msg.truncated_lines = tr.skipped;
                     if !tr.kept.is_empty() {
@@ -313,7 +313,7 @@ impl MessagesPanel {
                 } else {
                     let display = output.as_display_text();
                     let limits =
-                        ToolKind::from_name(event.tool).output_limits_with(self.tool_output_lines);
+                        ToolKind::from_name(event.tool).output_limits(&self.tool_output_lines);
                     let tr = truncate_output(&display, limits.max_lines, limits.keep);
                     msg.truncated_lines = tr.skipped;
                     msg.text = format!("{}\n{}", msg.text, tr.kept);
@@ -474,7 +474,7 @@ impl MessagesPanel {
                         self.started_at,
                         self.viewport_width,
                         false,
-                        self.tool_output_lines,
+                        &self.tool_output_lines,
                     );
                     if let Some(ts) = &msg.timestamp
                         && !tl.lines.is_empty()
@@ -506,7 +506,7 @@ impl MessagesPanel {
                         self.started_at,
                         self.viewport_width,
                         false,
-                        self.tool_output_lines,
+                        &self.tool_output_lines,
                     );
                     if let Some(idx) = self
                         .cached_segments
@@ -975,7 +975,7 @@ impl MessagesPanel {
             self.started_at,
             self.viewport_width,
             expanded,
-            self.tool_output_lines,
+            &self.tool_output_lines,
         );
         if let Some(ts) = &msg.timestamp
             && !tl.lines.is_empty()
@@ -1006,7 +1006,7 @@ impl MessagesPanel {
                         self.started_at,
                         self.viewport_width,
                         child_expanded,
-                        self.tool_output_lines,
+                        &self.tool_output_lines,
                     );
                     (child_id, copy, tl)
                 })
@@ -1059,7 +1059,7 @@ impl MessagesPanel {
                     self.started_at,
                     self.viewport_width,
                     expanded,
-                    self.tool_output_lines,
+                    &self.tool_output_lines,
                 );
                 if let Some(ts) = &msg.timestamp
                     && !tl.lines.is_empty()
@@ -1093,7 +1093,7 @@ impl MessagesPanel {
                             self.started_at,
                             self.viewport_width,
                             child_expanded,
-                            self.tool_output_lines,
+                            &self.tool_output_lines,
                         );
                         let mut seg = Segment {
                             copy_text: batch_entry_copy_text(entry),

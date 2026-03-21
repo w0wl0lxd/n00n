@@ -233,7 +233,7 @@ impl<'t> EventLoop<'t> {
             let display_msgs = history_to_display(
                 &app.session.messages,
                 &app.session.tool_outputs,
-                app.ui_config.tool_output_lines,
+                &app.ui_config.tool_output_lines,
             );
             app.main_chat().load_messages(display_msgs);
             app.todo_panel.restore(&app.session.tool_outputs);

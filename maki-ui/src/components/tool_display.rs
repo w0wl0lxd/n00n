@@ -4,6 +4,7 @@ use super::{DisplayMessage, ToolStatus};
 use super::{code_view, index_highlight};
 use crate::animation::spinner_frame;
 use crate::theme;
+use maki_config::ToolOutputLines;
 
 use std::borrow::Cow;
 use std::fmt::Write;
@@ -59,20 +60,18 @@ impl ToolKind {
         }
     }
 
-    #[cfg(test)]
-    pub const fn output_limits(self) -> OutputLimits {
+    pub fn output_limits(self, tol: &ToolOutputLines) -> OutputLimits {
         let max_lines = match self {
-            Self::Bash => 10,
-            Self::CodeExecution | Self::Task => 15,
-            Self::Index => 7,
-            Self::Grep | Self::Read => 5,
-            Self::Write => 30,
-            Self::WebFetch | Self::WebSearch | Self::Other => 3,
+            Self::Bash => tol.bash,
+            Self::CodeExecution => tol.code_execution,
+            Self::Task => tol.task,
+            Self::Index => tol.index,
+            Self::Grep => tol.grep,
+            Self::Read => tol.read,
+            Self::Write => tol.write,
+            Self::WebFetch | Self::WebSearch => tol.web,
+            Self::Other => tol.other,
         };
-        self.output_limits_with(max_lines)
-    }
-
-    pub const fn output_limits_with(self, max_lines: usize) -> OutputLimits {
         let keep = match self {
             Self::Bash | Self::CodeExecution => Keep::Tail,
             _ => Keep::Head,
@@ -750,11 +749,11 @@ pub fn build_tool_lines(
     started_at: Instant,
     width: u16,
     expanded: bool,
-    tool_output_lines: usize,
+    tool_output_lines: &ToolOutputLines,
 ) -> ToolLines {
     let tool_name = msg.role.tool_name().unwrap_or("?");
     let kind = ToolKind::from_name(tool_name);
-    let limits = kind.output_limits_with(tool_output_lines);
+    let limits = kind.output_limits(tool_output_lines);
     let (header, body) = match msg.text.split_once('\n') {
         Some((h, b)) => (h, Some(b)),
         None => (msg.text.as_str(), None),
@@ -793,10 +792,10 @@ pub fn build_batch_entry_lines(
     started_at: Instant,
     width: u16,
     expanded: bool,
-    tool_output_lines: usize,
+    tool_output_lines: &ToolOutputLines,
 ) -> ToolLines {
     let kind = ToolKind::from_name(&entry.tool);
-    let limits = kind.output_limits_with(tool_output_lines);
+    let limits = kind.output_limits(tool_output_lines);
     let mut annotation = entry.annotation.clone();
     if let Some(suffix) = entry
         .output
@@ -842,6 +841,8 @@ pub(crate) fn append_annotation(ann: &mut Option<String>, suffix: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TOL: ToolOutputLines = ToolOutputLines::DEFAULT;
     use crate::components::DisplayRole;
     use crate::markdown::TRUNCATION_PREFIX;
     use maki_agent::tools::{BASH_TOOL_NAME, READ_TOOL_NAME, WRITE_TOOL_NAME};
@@ -903,7 +904,7 @@ mod tests {
         expect_output: bool,
     ) {
         let msg = bash_msg("header\nbody", ToolStatus::Success, input, output);
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, 10);
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, &TOL);
         assert_eq!(tl.highlight.is_some(), expect_highlight);
         if let Some(hl) = &tl.highlight {
             assert_eq!(hl.output.is_some(), expect_output);
@@ -978,7 +979,7 @@ mod tests {
     #[test_case(ToolStatus::Success,    plain_output() ; "done_with_plain_output_shows_body")]
     fn bash_body_visible(status: ToolStatus, output: Option<ToolOutput>) {
         let msg = bash_msg("echo hi\nline1\nline2", status, code_input(), output);
-        let tl = build_tool_lines(&msg, status, Instant::now(), 80, false, 10);
+        let tl = build_tool_lines(&msg, status, Instant::now(), 80, false, &TOL);
         let text = lines_text(&tl);
         assert!(text.contains("line1"));
         assert!(text.contains("line2"));
@@ -994,7 +995,7 @@ mod tests {
     #[test_case(None,         false ; "hidden_without_code_input")]
     fn bash_separator(input: Option<ToolInput>, expected: bool) {
         let msg = bash_msg("echo hi\nhello", ToolStatus::Success, input, plain_output());
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, 10);
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, &TOL);
         assert_eq!(
             line_has_styled(&tl, BASH_OUTPUT_SEPARATOR, theme::current().tool_dim),
             expected,
@@ -1005,7 +1006,7 @@ mod tests {
     #[test_case(ToolStatus::Success,    Some(ToolOutput::Plain(String::new())),    BASH_NO_OUTPUT_LABEL ; "no_output_when_done_empty")]
     fn bash_status_label(status: ToolStatus, output: Option<ToolOutput>, label: &str) {
         let msg = bash_msg("echo hi", status, code_input(), output);
-        let tl = build_tool_lines(&msg, status, Instant::now(), 80, false, 10);
+        let tl = build_tool_lines(&msg, status, Instant::now(), 80, false, &TOL);
         assert!(line_has_styled(&tl, label, theme::current().tool_dim));
     }
 
@@ -1017,7 +1018,7 @@ mod tests {
             code_input(),
             Some(ToolOutput::Plain("hello".into())),
         );
-        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, 10);
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, &TOL);
         assert!(line_has_styled(
             &tl,
             BASH_OUTPUT_SEPARATOR,
@@ -1057,7 +1058,7 @@ mod tests {
     #[test_case(10, false ; "hidden_when_too_narrow")]
     fn append_right_info_timestamp_visibility(width: u16, expect_timestamp: bool) {
         let msg = tool_msg();
-        let mut tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, 10);
+        let mut tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, &TOL);
         let span_count_before = tl.lines[0].spans.len();
         append_right_info(&mut tl.lines[0], None, Some("12:34:56"), width);
         if expect_timestamp {
@@ -1084,14 +1085,14 @@ mod tests {
             }),
         );
         entry.summary = "src/main.rs".into();
-        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, 10);
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, &TOL);
         assert!(lines_text(&tl).contains("(42 lines)"));
     }
 
     #[test]
     fn batch_entry_code_input_rendered() {
         let entry = batch_entry("bash", BatchToolStatus::Success, code_input(), None);
-        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, 10);
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, &TOL);
         assert!(lines_text(&tl).contains("echo hi"));
     }
 
@@ -1100,15 +1101,15 @@ mod tests {
     #[test_case(BatchToolStatus::Success,    &[]     ; "success_no_spinner")]
     fn batch_entry_spinner(status: BatchToolStatus, expected: &[usize]) {
         let entry = batch_entry("bash", status, None, None);
-        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, 10);
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, &TOL);
         assert_eq!(tl.spinner_lines, expected);
     }
 
     #[test]
     fn batch_entry_separator_on_nonzero_index() {
         let entry = batch_entry("bash", BatchToolStatus::Success, None, None);
-        let first = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, 10);
-        let second = build_batch_entry_lines(&entry, 1, Instant::now(), 80, false, 10);
+        let first = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, &TOL);
+        let second = build_batch_entry_lines(&entry, 1, Instant::now(), 80, false, &TOL);
         assert!(second.lines.len() > first.lines.len());
         assert!(spans_text(&second.lines[1].spans).contains(TOOL_SEPARATOR));
     }
@@ -1121,7 +1122,7 @@ mod tests {
             None,
             Some(ToolOutput::Plain("hello world".into())),
         );
-        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, 10);
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, &TOL);
         assert!(lines_text(&tl).contains("hello world"));
     }
 
@@ -1129,7 +1130,7 @@ mod tests {
     fn annotation_rendered_on_header() {
         let mut msg = tool_msg();
         msg.annotation = Some("2m timeout".into());
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, 10);
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, &TOL);
         let text = lines_text(&tl);
         assert!(text.contains("(2m timeout)"));
     }
@@ -1138,7 +1139,7 @@ mod tests {
     fn batch_entry_stored_annotation_rendered() {
         let mut entry = batch_entry("task", BatchToolStatus::Success, None, None);
         entry.annotation = Some("anthropic/claude-haiku-4-20250414".into());
-        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, 10);
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), 80, false, &TOL);
         assert!(lines_text(&tl).contains("(anthropic/claude-haiku-4-20250414)"));
     }
 
@@ -1163,7 +1164,7 @@ mod tests {
     #[test]
     fn task_output_body_visible() {
         let msg = task_msg("**bold** and `code`".into());
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, 10);
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, &TOL);
         let text = lines_text(&tl);
         assert!(text.contains("bold"));
         assert!(text.contains("code"));
@@ -1207,31 +1208,23 @@ mod tests {
 
     fn task_truncation_tl(output: String) -> ToolLines {
         let msg = task_msg(output);
-        build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, 10)
+        build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, &TOL)
     }
 
     #[test]
-    fn task_truncation_styled_dim() {
-        assert_truncation_styled(&task_truncation_tl(n_lines(200)));
-    }
-
-    #[test]
-    fn task_output_truncated_at_max_lines() {
-        const TASK_MAX: usize = ToolKind::Task.output_limits().max_lines;
+    fn task_output_truncated_and_styled() {
+        let task_max = TOL.task;
         let tl = task_truncation_tl(n_lines(200));
         let body_lines = tl.lines.len() - 1;
         assert!(
-            body_lines <= TASK_MAX + 1,
+            body_lines <= task_max + 1,
             "expected at most {} body lines, got {body_lines}",
-            TASK_MAX + 1,
+            task_max + 1,
         );
+        assert_truncation_styled(&tl);
     }
 
-    #[test]
-    fn task_hr_fits_within_indented_width() {
-        let width: u16 = 60;
-        let msg = task_msg("before\n\n---\n\nafter".into());
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), width, false, 10);
+    fn assert_hr_fits(tl: &ToolLines, width: u16) {
         let hr_line = tl
             .lines
             .iter()
@@ -1250,6 +1243,21 @@ mod tests {
     }
 
     #[test]
+    fn task_hr_fits_within_indented_width() {
+        let width: u16 = 60;
+        let msg = task_msg("before\n\n---\n\nafter".into());
+        let tl = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            Instant::now(),
+            width,
+            false,
+            &TOL,
+        );
+        assert_hr_fits(&tl, width);
+    }
+
+    #[test]
     fn batch_task_hr_fits_within_width() {
         let width: u16 = 60;
         let entry = batch_entry(
@@ -1258,19 +1266,8 @@ mod tests {
             None,
             Some(ToolOutput::Plain("before\n\n---\n\nafter".into())),
         );
-        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), width, false, 10);
-        let hr_line = tl
-            .lines
-            .iter()
-            .find(|l| l.spans.iter().any(|s| s.content.contains('─')));
-        assert!(hr_line.is_some());
-        let hr_width: usize = hr_line
-            .unwrap()
-            .spans
-            .iter()
-            .map(|s| s.content.chars().count())
-            .sum();
-        assert!(hr_width <= width as usize);
+        let tl = build_batch_entry_lines(&entry, 0, Instant::now(), width, false, &TOL);
+        assert_hr_fits(&tl, width);
     }
 
     fn index_msg(body: &str) -> DisplayMessage {
@@ -1296,7 +1293,7 @@ mod tests {
     fn index_output_truncated_at_max_lines() {
         let body: String = (0..150).map(|i| format!("  line_{i}\n")).collect();
         let msg = index_msg(&body);
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, 10);
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, &TOL);
         let text = lines_text(&tl);
         assert!(text.contains("line_0"));
         assert!(!text.contains("line_149"));
@@ -1307,7 +1304,7 @@ mod tests {
     fn index_output_styles_all_elements() {
         let body = "imports: [1-5]\n  std::io\n\nfns:\n  pub fn main() [10-20]";
         let msg = index_msg(body);
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, 10);
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, &TOL);
         let t = theme::current();
         assert!(line_has_styled(&tl, "imports:", t.index_section));
         assert!(line_has_styled(&tl, "fns:", t.index_section));
@@ -1357,7 +1354,7 @@ mod tests {
         expect_instructions: bool,
     ) {
         let kind = ToolKind::from_name(tool);
-        let limits = kind.output_limits();
+        let limits = kind.output_limits(&TOL);
         let resolved = resolve_output(
             output.as_ref(),
             body,
@@ -1381,7 +1378,7 @@ mod tests {
             text: "listing".into(),
             instructions: Some(blocks),
         };
-        let limits = ToolKind::Read.output_limits();
+        let limits = ToolKind::Read.output_limits(&TOL);
         let resolved = resolve_output(
             Some(&output),
             None,
@@ -1396,7 +1393,7 @@ mod tests {
 
     #[test]
     fn resolve_output_pre_truncated_forwarded() {
-        let limits = ToolKind::Bash.output_limits();
+        let limits = ToolKind::Bash.output_limits(&TOL);
         let resolved = resolve_output(
             None,
             Some("short"),
@@ -1412,7 +1409,7 @@ mod tests {
     #[test]
     fn resolve_output_truncation_overrides_pre_truncated() {
         let long = n_lines(200);
-        let limits = ToolKind::Bash.output_limits();
+        let limits = ToolKind::Bash.output_limits(&TOL);
         let resolved = resolve_output(
             None,
             Some(&long),
@@ -1427,7 +1424,7 @@ mod tests {
 
     fn bash_output_msg(line_count: usize, live: bool) -> DisplayMessage {
         let full_body = n_lines(line_count);
-        let limits = ToolKind::Bash.output_limits();
+        let limits = ToolKind::Bash.output_limits(&TOL);
         let tr = truncate_output(&full_body, limits.max_lines, limits.keep);
         let text = if tr.kept.is_empty() {
             "header".into()
@@ -1465,9 +1462,16 @@ mod tests {
     #[test]
     fn bash_expanded_live_output() {
         let msg = bash_output_msg(200, true);
-        let collapsed =
-            build_tool_lines(&msg, ToolStatus::InProgress, Instant::now(), 80, false, 10);
-        let expanded = build_tool_lines(&msg, ToolStatus::InProgress, Instant::now(), 80, true, 10);
+        let collapsed = build_tool_lines(
+            &msg,
+            ToolStatus::InProgress,
+            Instant::now(),
+            80,
+            false,
+            &TOL,
+        );
+        let expanded =
+            build_tool_lines(&msg, ToolStatus::InProgress, Instant::now(), 80, true, &TOL);
         let collapsed_text = lines_text(&collapsed);
         let expanded_text = lines_text(&expanded);
         assert!(collapsed.has_truncation);
@@ -1487,7 +1491,14 @@ mod tests {
         expect_expand_notice: bool,
     ) {
         let msg = bash_output_msg(line_count, false);
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, expanded, 10);
+        let tl = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            Instant::now(),
+            80,
+            expanded,
+            &TOL,
+        );
         let text = lines_text(&tl);
         assert_eq!(tl.has_truncation, expect_truncation);
         assert_eq!(text.contains("click to expand"), expect_expand_notice);
@@ -1529,7 +1540,14 @@ mod tests {
         expect_expand_notice: bool,
     ) {
         let msg = read_output_msg(line_count);
-        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, expanded, 10);
+        let tl = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            Instant::now(),
+            80,
+            expanded,
+            &TOL,
+        );
         assert_eq!(tl.has_truncation, expect_truncation);
         let text = lines_text(&tl);
         assert_eq!(text.contains("click to expand"), expect_expand_notice);

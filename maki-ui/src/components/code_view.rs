@@ -390,14 +390,13 @@ fn merge_syntax_with_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::tool_display::ToolKind;
     use crate::markdown::TRUNCATION_PREFIX;
     use maki_agent::{DiffSpan, GrepMatch};
     use test_case::test_case;
 
     use ratatui::style::Color;
 
-    const READ_MAX_LINES: usize = ToolKind::Read.output_limits().max_lines;
+    const READ_MAX_LINES: usize = 5;
 
     #[test_case(20, 20, READ_MAX_LINES + 1 ; "truncates_with_ellipsis")]
     #[test_case(3,  3,  3                    ; "no_truncation_when_short")]
