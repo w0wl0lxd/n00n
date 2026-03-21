@@ -168,6 +168,7 @@ fn run() -> Result<()> {
             config.validate()?;
             let model = resolve_model(cli.model.as_deref(), &config.provider, &storage)?;
             init_logging(&storage, &config.storage);
+            install_panic_log_hook();
             let skills = discover(cli.no_skills);
             if cli.print {
                 print::run(
@@ -252,6 +253,26 @@ fn resolve_model(
         .as_deref()
         .unwrap_or(DEFAULT_SPEC);
     Ok(Model::from_spec(default).expect("default model spec is always valid"))
+}
+
+fn install_panic_log_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_owned()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic payload".into()
+        };
+        let location = info.location().map(|l| l.to_string());
+        tracing::error!(
+            panic.payload = %payload,
+            panic.location = location.as_deref().unwrap_or("<unknown>"),
+            "panic occurred"
+        );
+        prev(info);
+    }));
 }
 
 fn init_logging(storage: &DataDir, storage_config: &maki_config::StorageConfig) {
