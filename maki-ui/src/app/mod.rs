@@ -327,7 +327,7 @@ impl App {
             self.check_demo_questions();
             return Some(vec![]);
         }
-        if !self.any_overlay_open() {
+        if !self.has_modal_overlay() {
             if key::SCROLL_HALF_UP.matches(key) {
                 let half = self.chats[self.active_chat].half_page();
                 self.active_chat().scroll(half);
