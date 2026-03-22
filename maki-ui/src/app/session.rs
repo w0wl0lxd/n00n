@@ -5,7 +5,7 @@ use maki_providers::TokenUsage;
 
 use crate::AppSession;
 
-use super::{App, PendingInput, PlanState};
+use super::{App, Mode, PendingInput, PlanState};
 
 impl App {
     pub(crate) fn save_session(&mut self) {
@@ -59,6 +59,9 @@ impl App {
         self.reset_session_state();
         if !written_plan {
             self.plan = PlanState::new();
+        }
+        if self.mode == Mode::Plan {
+            self.enter_plan();
         }
         self.session = AppSession::new(&self.session.model, &self.session.cwd);
         vec![Action::NewSession]

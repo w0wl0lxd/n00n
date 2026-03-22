@@ -47,12 +47,6 @@ impl PlanState {
         }
     }
 
-    pub(crate) fn ensure_path(&mut self, storage: &DataDir) {
-        self.path.get_or_insert_with(|| {
-            plans::new_plan_path(storage).unwrap_or_else(|_| PathBuf::from("plans/plan.md"))
-        });
-    }
-
     pub(crate) fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
@@ -69,21 +63,29 @@ impl PlanState {
     pub(crate) fn pending_plan(&self) -> Option<&Path> {
         if self.written { self.path() } else { None }
     }
+
+    fn allocate_path(&mut self, storage: &DataDir) {
+        self.path.get_or_insert_with(|| {
+            plans::new_plan_path(storage).unwrap_or_else(|_| PathBuf::from("plans/plan.md"))
+        });
+    }
 }
 
 impl App {
+    pub(super) fn enter_plan(&mut self) {
+        self.plan.allocate_path(&self.storage);
+        self.mode = Mode::Plan;
+    }
+
     pub(super) fn reset_plan(&mut self) {
         self.mode = Mode::Build;
         self.plan = PlanState::new();
     }
 
     pub(super) fn toggle_mode(&mut self) -> Vec<super::Action> {
-        self.mode = match self.mode {
-            Mode::Build => {
-                self.plan.ensure_path(&self.storage);
-                Mode::Plan
-            }
-            Mode::Plan => Mode::Build,
+        match self.mode {
+            Mode::Build => self.enter_plan(),
+            Mode::Plan => self.mode = Mode::Build,
         };
         vec![]
     }
@@ -92,7 +94,10 @@ impl App {
         match self.mode {
             Mode::Plan => match self.plan.path() {
                 Some(p) => AgentMode::Plan(p.to_path_buf()),
-                None => AgentMode::Build,
+                None => {
+                    debug_assert!(false, "Plan mode without path — invariant violated");
+                    AgentMode::Build
+                }
             },
             Mode::Build => AgentMode::Build,
         }

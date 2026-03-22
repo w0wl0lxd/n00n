@@ -512,13 +512,14 @@ fn reset_session_preserves_plan() {
 }
 
 #[test]
-fn reset_session_clears_plan_in_plan_mode() {
+fn reset_session_assigns_new_plan_path_in_plan_mode() {
     let mut app = test_app();
     app.mode = Mode::Plan;
     app.plan = PlanState::with_path(PathBuf::from("old-plan.md"), false);
     app.reset_session();
     assert_eq!(app.mode, Mode::Plan);
-    assert_eq!(app.plan.path(), None);
+    assert!(app.plan.path().is_some());
+    assert_ne!(app.plan.path(), Some(Path::new("old-plan.md")));
 }
 
 #[test_case(true,  Some("leftover.md") ; "preserves_written")]
