@@ -2,7 +2,7 @@ use tree_sitter::Node;
 
 use crate::common::{
     ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, compact_ws,
-    find_child, line_range, node_text, prefixed,
+    extract_enum_variants, find_child, line_range, node_text, prefixed,
 };
 
 pub(crate) struct PhpExtractor;
@@ -284,15 +284,7 @@ impl PhpExtractor {
             .unwrap_or_default();
 
         let body = node.child_by_field_name("body")?;
-        let mut cases = Vec::new();
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            if child.kind() == "enum_case"
-                && let Some(n) = child.child_by_field_name("name")
-            {
-                cases.push(node_text(n, source).to_string());
-            }
-        }
+        let cases = extract_enum_variants(body, source, "enum_case");
         let label = format!("enum {name}{backing}{implements}");
         Some(
             SkeletonEntry::new(Section::Type, node, label)

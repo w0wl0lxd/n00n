@@ -1,8 +1,9 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, compact_ws,
-    find_child, line_range, node_text, prefixed,
+    BodyMemberHandler, BodyMemberRule, ChildKind, LanguageExtractor, Section, SkeletonEntry,
+    compact_ws, extract_body_members, extract_enum_variants, find_child, node_text, prefixed,
+    simple_import,
 };
 
 pub(crate) struct CSharpExtractor;
@@ -27,23 +28,6 @@ const MODIFIER_KEYWORDS: &[&str] = &[
 ];
 
 impl CSharpExtractor {
-    fn modifiers_text(&self, node: Node, source: &[u8]) -> String {
-        let mut parts = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            let text = node_text(child, source);
-            let include = match child.kind() {
-                "modifier" => MODIFIER_KEYWORDS.contains(&text),
-                "attribute_list" => true,
-                _ => false,
-            };
-            if include {
-                parts.push(text.to_string());
-            }
-        }
-        parts.join(" ")
-    }
-
     fn base_list_text(&self, node: Node, source: &[u8]) -> String {
         let Some(bl) = find_child(node, "base_list") else {
             return String::new();
@@ -54,14 +38,7 @@ impl CSharpExtractor {
     }
 
     fn extract_import(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
-        let text = node_text(node, source);
-        let cleaned = text
-            .strip_prefix("using ")
-            .unwrap_or(text)
-            .trim_end_matches(';')
-            .trim();
-        let paths = vec![cleaned.split('.').map(String::from).collect()];
-        Some(SkeletonEntry::new_import(node, paths))
+        simple_import(node, source, &["using "], ".")
     }
 
     fn extract_namespace(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -72,7 +49,7 @@ impl CSharpExtractor {
     }
 
     fn extract_class(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
-        let mods = self.modifiers_text(node, source);
+        let mods = modifiers_text_free(node, source);
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
@@ -83,7 +60,7 @@ impl CSharpExtractor {
     }
 
     fn extract_struct(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
-        let mods = self.modifiers_text(node, source);
+        let mods = modifiers_text_free(node, source);
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
@@ -94,7 +71,7 @@ impl CSharpExtractor {
     }
 
     fn extract_interface(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
-        let mods = self.modifiers_text(node, source);
+        let mods = modifiers_text_free(node, source);
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
@@ -105,7 +82,7 @@ impl CSharpExtractor {
     }
 
     fn extract_record(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
-        let mods = self.modifiers_text(node, source);
+        let mods = modifiers_text_free(node, source);
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
@@ -118,23 +95,13 @@ impl CSharpExtractor {
     }
 
     fn extract_enum(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
-        let mods = self.modifiers_text(node, source);
+        let mods = modifiers_text_free(node, source);
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
         let label = prefixed(&mods, format_args!("enum {name}"));
         let body = node.child_by_field_name("body")?;
-        let mut constants = Vec::new();
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            if child.kind() == "enum_member_declaration" {
-                let cname = child
-                    .child_by_field_name("name")
-                    .map(|n| node_text(n, source))
-                    .unwrap_or("_");
-                constants.push(cname.to_string());
-            }
-        }
+        let constants = extract_enum_variants(body, source, "enum_member_declaration");
         Some(
             SkeletonEntry::new(Section::Type, node, label)
                 .with_children(constants)
@@ -146,116 +113,117 @@ impl CSharpExtractor {
         let Some(body) = node.child_by_field_name("body") else {
             return Vec::new();
         };
-        let mut members = Vec::new();
-        let mut field_count = 0usize;
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            match child.kind() {
-                "method_declaration" | "constructor_declaration" => {
-                    let sig = self.method_signature(child, source);
-                    let lr =
-                        line_range(child.start_position().row + 1, child.end_position().row + 1);
-                    members.push(format!("{sig} {lr}"));
-                }
-                "field_declaration" => {
-                    field_count += 1;
-                    if field_count <= FIELD_TRUNCATE_THRESHOLD {
-                        let text = self.field_text(child, source);
-                        let lr = line_range(
-                            child.start_position().row + 1,
-                            child.end_position().row + 1,
-                        );
-                        members.push(format!("{text} {lr}"));
-                    }
-                }
-                "property_declaration" => {
-                    field_count += 1;
-                    if field_count <= FIELD_TRUNCATE_THRESHOLD {
-                        let text = self.property_text(child, source);
-                        let lr = line_range(
-                            child.start_position().row + 1,
-                            child.end_position().row + 1,
-                        );
-                        members.push(format!("{text} {lr}"));
-                    }
-                }
-                _ => {}
-            }
-        }
-        if field_count > FIELD_TRUNCATE_THRESHOLD {
-            members.push("...".into());
-        }
-        members
+        let rules = [
+            BodyMemberRule {
+                kind: "method_declaration",
+                handler: BodyMemberHandler::Method(|n, s| Some(method_signature_free(n, s))),
+            },
+            BodyMemberRule {
+                kind: "constructor_declaration",
+                handler: BodyMemberHandler::Method(|n, s| Some(method_signature_free(n, s))),
+            },
+            BodyMemberRule {
+                kind: "field_declaration",
+                handler: BodyMemberHandler::FieldTruncated {
+                    format_fn: field_text_free,
+                    counter: "fields",
+                },
+            },
+            BodyMemberRule {
+                kind: "property_declaration",
+                handler: BodyMemberHandler::FieldTruncated {
+                    format_fn: property_text_free,
+                    counter: "fields",
+                },
+            },
+        ];
+        extract_body_members(body, source, &rules)
     }
 
     fn extract_interface_body(&self, node: Node, source: &[u8]) -> Vec<String> {
         let Some(body) = node.child_by_field_name("body") else {
             return Vec::new();
         };
-        let mut members = Vec::new();
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            let text = match child.kind() {
-                "method_declaration" => self.method_signature(child, source),
-                "property_declaration" => self.property_text(child, source),
-                _ => continue,
-            };
-            let lr = line_range(child.start_position().row + 1, child.end_position().row + 1);
-            members.push(format!("{text} {lr}"));
-        }
-        members
+        let rules = [
+            BodyMemberRule {
+                kind: "method_declaration",
+                handler: BodyMemberHandler::Method(|n, s| Some(method_signature_free(n, s))),
+            },
+            BodyMemberRule {
+                kind: "property_declaration",
+                handler: BodyMemberHandler::Method(|n, s| Some(property_text_free(n, s))),
+            },
+        ];
+        extract_body_members(body, source, &rules)
     }
+}
 
-    fn method_signature(&self, node: Node, source: &[u8]) -> String {
-        let mods = self.modifiers_text(node, source);
-        let ret = node
-            .child_by_field_name("returns")
-            .or_else(|| node.child_by_field_name("type"))
-            .map(|n| node_text(n, source))
-            .unwrap_or("");
-        let name = node
-            .child_by_field_name("name")
-            .map(|n| node_text(n, source))
-            .unwrap_or("_");
-        let params = node
-            .child_by_field_name("parameters")
-            .map(|n| node_text(n, source))
-            .unwrap_or("()");
-        let base = if ret.is_empty() {
-            format!("{name}{params}")
-        } else {
-            format!("{ret} {name}{params}")
+fn modifiers_text_free(node: Node, source: &[u8]) -> String {
+    let mut parts = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let text = node_text(child, source);
+        let include = match child.kind() {
+            "modifier" => MODIFIER_KEYWORDS.contains(&text),
+            "attribute_list" => true,
+            _ => false,
         };
-        compact_ws(&prefixed(&mods, format_args!("{base}")))
+        if include {
+            parts.push(text.to_string());
+        }
     }
+    parts.join(" ")
+}
 
-    fn field_text(&self, node: Node, source: &[u8]) -> String {
-        let mods = self.modifiers_text(node, source);
-        let decl = find_child(node, "variable_declaration");
-        let ty = decl
-            .and_then(|n| n.child_by_field_name("type"))
-            .map(|n| node_text(n, source))
-            .unwrap_or("_");
-        let name = decl
-            .and_then(|d| find_child(d, "variable_declarator"))
-            .and_then(|n| n.child_by_field_name("name"))
-            .map(|n| node_text(n, source))
-            .unwrap_or("_");
-        prefixed(&mods, format_args!("{ty} {name}"))
-    }
+fn method_signature_free(node: Node, source: &[u8]) -> String {
+    let mods = modifiers_text_free(node, source);
+    let ret = node
+        .child_by_field_name("returns")
+        .or_else(|| node.child_by_field_name("type"))
+        .map(|n| node_text(n, source))
+        .unwrap_or("");
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| node_text(n, source))
+        .unwrap_or("_");
+    let params = node
+        .child_by_field_name("parameters")
+        .map(|n| node_text(n, source))
+        .unwrap_or("()");
+    let base = if ret.is_empty() {
+        format!("{name}{params}")
+    } else {
+        format!("{ret} {name}{params}")
+    };
+    compact_ws(&prefixed(&mods, format_args!("{base}")))
+}
 
-    fn property_text(&self, node: Node, source: &[u8]) -> String {
-        let mods = self.modifiers_text(node, source);
-        let ty = node
-            .child_by_field_name("type")
-            .map(|n| node_text(n, source))
-            .unwrap_or("_");
-        let name = node
-            .child_by_field_name("name")
-            .map(|n| node_text(n, source))
-            .unwrap_or("_");
-        prefixed(&mods, format_args!("{ty} {name}"))
-    }
+fn field_text_free(node: Node, source: &[u8]) -> String {
+    let mods = modifiers_text_free(node, source);
+    let decl = find_child(node, "variable_declaration");
+    let ty = decl
+        .and_then(|n| n.child_by_field_name("type"))
+        .map(|n| node_text(n, source))
+        .unwrap_or("_");
+    let name = decl
+        .and_then(|d| find_child(d, "variable_declarator"))
+        .and_then(|n| n.child_by_field_name("name"))
+        .map(|n| node_text(n, source))
+        .unwrap_or("_");
+    prefixed(&mods, format_args!("{ty} {name}"))
+}
+
+fn property_text_free(node: Node, source: &[u8]) -> String {
+    let mods = modifiers_text_free(node, source);
+    let ty = node
+        .child_by_field_name("type")
+        .map(|n| node_text(n, source))
+        .unwrap_or("_");
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| node_text(n, source))
+        .unwrap_or("_");
+    prefixed(&mods, format_args!("{ty} {name}"))
 }
 
 impl LanguageExtractor for CSharpExtractor {

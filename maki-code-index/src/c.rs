@@ -1,8 +1,8 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, compact_ws,
-    line_range, node_text, truncate,
+    ChildKind, LanguageExtractor, Section, SkeletonEntry, compact_ws, extract_enum_variants,
+    extract_fields_truncated, line_range, node_text, truncate,
 };
 
 pub(crate) struct CExtractor;
@@ -55,42 +55,6 @@ impl CExtractor {
         }
     }
 
-    fn extract_struct_fields(&self, body: Node, source: &[u8]) -> Vec<String> {
-        let mut fields = Vec::new();
-        let mut total = 0usize;
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            if child.kind() == "field_declaration" {
-                total += 1;
-                if total <= FIELD_TRUNCATE_THRESHOLD {
-                    let text = compact_ws(node_text(child, source).trim_end_matches(';').trim());
-                    let lr =
-                        line_range(child.start_position().row + 1, child.end_position().row + 1);
-                    fields.push(format!("{text} {lr}"));
-                }
-            }
-        }
-        if total > FIELD_TRUNCATE_THRESHOLD {
-            fields.push("...".into());
-        }
-        fields
-    }
-
-    fn extract_enum_values(&self, body: Node, source: &[u8]) -> Vec<String> {
-        let mut values = Vec::new();
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            if child.kind() == "enumerator" {
-                let name = child
-                    .child_by_field_name("name")
-                    .map(|n| node_text(n, source))
-                    .unwrap_or("_");
-                values.push(name.to_string());
-            }
-        }
-        values
-    }
-
     fn extract_struct(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
         let name = node
             .child_by_field_name("name")
@@ -103,7 +67,11 @@ impl CExtractor {
         } else {
             format!("{keyword} {name}")
         };
-        let children = self.extract_struct_fields(body, source);
+        let children = extract_fields_truncated(body, source, "field_declaration", |child, src| {
+            let text = compact_ws(node_text(child, src).trim_end_matches(';').trim());
+            let lr = line_range(child.start_position().row + 1, child.end_position().row + 1);
+            format!("{text} {lr}")
+        });
         Some(SkeletonEntry::new(Section::Type, node, label).with_children(children))
     }
 
@@ -118,7 +86,7 @@ impl CExtractor {
         } else {
             format!("enum {name}")
         };
-        let values = self.extract_enum_values(body, source);
+        let values = extract_enum_variants(body, source, "enumerator");
         Some(
             SkeletonEntry::new(Section::Type, node, label)
                 .with_children(values)
@@ -148,7 +116,20 @@ impl CExtractor {
                         format!("{keyword} {inner_name}")
                     };
                     let label = format!("typedef {inner} {alias}");
-                    let children = self.extract_struct_fields(body, source);
+                    let children = extract_fields_truncated(
+                        body,
+                        source,
+                        "field_declaration",
+                        |child, src| {
+                            let text =
+                                compact_ws(node_text(child, src).trim_end_matches(';').trim());
+                            let lr = line_range(
+                                child.start_position().row + 1,
+                                child.end_position().row + 1,
+                            );
+                            format!("{text} {lr}")
+                        },
+                    );
                     return Some(
                         SkeletonEntry::new(Section::Type, node, label).with_children(children),
                     );
@@ -166,7 +147,7 @@ impl CExtractor {
                         format!("enum {inner_name}")
                     };
                     let label = format!("typedef {inner} {alias}");
-                    let values = self.extract_enum_values(body, source);
+                    let values = extract_enum_variants(body, source, "enumerator");
                     return Some(
                         SkeletonEntry::new(Section::Type, node, label)
                             .with_children(values)

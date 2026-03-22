@@ -7,8 +7,8 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    LanguageExtractor, Section, SkeletonEntry, compact_ws, find_child, line_range, node_text,
-    truncate,
+    BodyMemberHandler, BodyMemberRule, LanguageExtractor, Section, SkeletonEntry, compact_ws,
+    extract_body_members, find_child, node_text, truncate,
 };
 
 fn ts_return_type(node: Node, source: &[u8]) -> String {
@@ -18,6 +18,22 @@ fn ts_return_type(node: Node, source: &[u8]) -> String {
     } else {
         format!(": {r}")
     }
+}
+
+fn class_member_sig(node: Node, source: &[u8]) -> Option<String> {
+    let mn = node
+        .child_by_field_name("name")
+        .map(|n| node_text(n, source))
+        .unwrap_or("_");
+    let params = node
+        .child_by_field_name("parameters")
+        .map(|n| node_text(n, source))
+        .unwrap_or_default();
+    let ret = node
+        .child_by_field_name("return_type")
+        .map(|n| ts_return_type(n, source))
+        .unwrap_or_default();
+    Some(format!("{mn}{params}{ret}"))
 }
 
 pub(crate) struct TsJsExtractor;
@@ -48,30 +64,21 @@ impl TsJsExtractor {
             .map(|n| node_text(n, source))?;
 
         let body = node.child_by_field_name("body")?;
-        let mut methods = Vec::new();
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            match child.kind() {
-                "method_definition" | "public_field_definition" | "property_definition" => {
-                    let mn = child
-                        .child_by_field_name("name")
-                        .map(|n| node_text(n, source))
-                        .unwrap_or("_");
-                    let params = child
-                        .child_by_field_name("parameters")
-                        .map(|n| node_text(n, source));
-                    let ret = child
-                        .child_by_field_name("return_type")
-                        .map(|n| ts_return_type(n, source));
-                    let params_str = params.unwrap_or_default();
-                    let ret_str = ret.unwrap_or_default();
-                    let lr =
-                        line_range(child.start_position().row + 1, child.end_position().row + 1);
-                    methods.push(format!("{mn}{params_str}{ret_str} {lr}"));
-                }
-                _ => {}
-            }
-        }
+        let rules = [
+            BodyMemberRule {
+                kind: "method_definition",
+                handler: BodyMemberHandler::Method(class_member_sig),
+            },
+            BodyMemberRule {
+                kind: "public_field_definition",
+                handler: BodyMemberHandler::Method(class_member_sig),
+            },
+            BodyMemberRule {
+                kind: "property_definition",
+                handler: BodyMemberHandler::Method(class_member_sig),
+            },
+        ];
+        let methods = extract_body_members(body, source, &rules);
 
         let ep = self.export_prefix(node);
         Some(SkeletonEntry::new(Section::Class, node, format!("{ep}{name}")).with_children(methods))

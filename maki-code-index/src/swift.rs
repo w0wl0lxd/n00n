@@ -1,11 +1,128 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, compact_ws, find_child,
-    line_range, node_text, prefixed, truncate,
+    BodyMemberHandler, BodyMemberRule, LanguageExtractor, Section, SkeletonEntry, compact_ws,
+    extract_body_members, find_child, line_range, node_text, prefixed, truncate,
 };
 
 pub(crate) struct SwiftExtractor;
+
+fn modifiers_text<'a>(node: Node<'a>, source: &'a [u8]) -> String {
+    let Some(mods) = find_child(node, "modifiers") else {
+        return String::new();
+    };
+    let mut cursor = mods.walk();
+    mods.children(&mut cursor)
+        .filter_map(|child| match child.kind() {
+            "visibility_modifier" => {
+                let t = node_text(child, source);
+                let vis = t.split('(').next().unwrap_or(t).trim();
+                Some(vis.to_string())
+            }
+            "function_modifier" | "member_modifier" | "mutation_modifier" => {
+                Some(node_text(child, source).to_string())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn params_text(node: Node, source: &[u8]) -> String {
+    let mut parts = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "parameter" {
+            let external = child
+                .child_by_field_name("external_name")
+                .map(|n| node_text(n, source));
+            let name = child
+                .child_by_field_name("name")
+                .map(|n| node_text(n, source))
+                .unwrap_or("_");
+            let ty = child
+                .child_by_field_name("type")
+                .map(|n| node_text(n, source))
+                .unwrap_or("_");
+            let label = match external {
+                Some(ext) if ext != name => format!("{ext} {name}: {ty}"),
+                _ => format!("{name}: {ty}"),
+            };
+            parts.push(label);
+        }
+    }
+    format!("({})", parts.join(", "))
+}
+
+fn swift_fn_signature(node: Node, source: &[u8]) -> Option<String> {
+    let mods = modifiers_text(node, source);
+    let keyword = if node.kind() == "init_declaration" {
+        "init"
+    } else {
+        "func"
+    };
+    let name = if node.kind() == "init_declaration" {
+        String::new()
+    } else {
+        node.child_by_field_name("name")
+            .map(|n| node_text(n, source).to_string())
+            .unwrap_or_else(|| "_".to_string())
+    };
+
+    let params = params_text(node, source);
+    let ret = node
+        .child_by_field_name("return_type")
+        .map(|n| format!(" -> {}", node_text(n, source)))
+        .unwrap_or_default();
+
+    let throws = {
+        let mut cursor = node.walk();
+        node.children(&mut cursor)
+            .find(|c| c.kind() == "throws")
+            .map(|n| format!(" {}", node_text(n, source)))
+            .unwrap_or_default()
+    };
+
+    let base = if name.is_empty() {
+        format!("{keyword}{params}{throws}{ret}")
+    } else {
+        format!("{keyword} {name}{params}{throws}{ret}")
+    };
+    let sig = prefixed(&mods, format_args!("{base}"));
+    Some(compact_ws(&sig))
+}
+
+fn property_text_str(node: Node, source: &[u8]) -> String {
+    let mods = modifiers_text(node, source);
+    let Some(pat) = node.child_by_field_name("name") else {
+        return String::new();
+    };
+    let name = pat
+        .child_by_field_name("bound_identifier")
+        .map(|n| node_text(n, source))
+        .unwrap_or_else(|| node_text(pat, source));
+
+    let mut cursor = node.walk();
+    let type_ann = node.children(&mut cursor).find_map(|child| {
+        if child.kind() == "type_annotation" {
+            Some(node_text(child, source).to_string())
+        } else {
+            None
+        }
+    });
+
+    let keyword = {
+        let mut c = node.walk();
+        node.children(&mut c)
+            .find(|ch| !ch.is_named())
+            .map(|ch| node_text(ch, source))
+            .unwrap_or("var")
+    };
+
+    let ty_str = type_ann.unwrap_or_default();
+    let base = format!("{keyword} {name}{ty_str}");
+    prefixed(&mods, format_args!("{base}"))
+}
 
 impl SwiftExtractor {
     fn extract_import(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -24,27 +141,6 @@ impl SwiftExtractor {
                 .collect(),
         ];
         Some(SkeletonEntry::new_import(node, paths))
-    }
-
-    fn modifiers_text(&self, node: Node, source: &[u8]) -> String {
-        let Some(mods) = find_child(node, "modifiers") else {
-            return String::new();
-        };
-        let mut cursor = mods.walk();
-        mods.children(&mut cursor)
-            .filter_map(|child| match child.kind() {
-                "visibility_modifier" => {
-                    let t = node_text(child, source);
-                    let vis = t.split('(').next().unwrap_or(t).trim();
-                    Some(vis.to_string())
-                }
-                "function_modifier" | "member_modifier" | "mutation_modifier" => {
-                    Some(node_text(child, source).to_string())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
     }
 
     fn inheritance_text(&self, node: Node, source: &[u8]) -> String {
@@ -69,18 +165,18 @@ impl SwiftExtractor {
         section: Section,
         keyword: &str,
     ) -> Option<SkeletonEntry> {
-        let mods = self.modifiers_text(node, source);
+        let mods = modifiers_text(node, source);
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
         let inheritance = self.inheritance_text(node, source);
         let label = prefixed(&mods, format_args!("{keyword} {name}{inheritance}"));
-        let children = self.extract_body_members(node, source);
+        let children = self.extract_body_members_swift(node, source);
         Some(SkeletonEntry::new(section, node, label).with_children(children))
     }
 
     fn extract_enum_body(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
-        let mods = self.modifiers_text(node, source);
+        let mods = modifiers_text(node, source);
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
@@ -106,7 +202,7 @@ impl SwiftExtractor {
                     }
                 }
                 "function_declaration" => {
-                    if let Some(sig) = self.fn_signature(child, source) {
+                    if let Some(sig) = swift_fn_signature(child, source) {
                         let lr = line_range(
                             child.start_position().row + 1,
                             child.end_position().row + 1,
@@ -123,136 +219,28 @@ impl SwiftExtractor {
         Some(SkeletonEntry::new(Section::Type, node, label).with_children(children))
     }
 
-    fn extract_body_members(&self, node: Node, source: &[u8]) -> Vec<String> {
+    fn extract_body_members_swift(&self, node: Node, source: &[u8]) -> Vec<String> {
         let Some(body) = node.child_by_field_name("body") else {
             return Vec::new();
         };
-        let mut members = Vec::new();
-        let mut field_count = 0usize;
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            match child.kind() {
-                "function_declaration" | "init_declaration" => {
-                    if let Some(sig) = self.fn_signature(child, source) {
-                        let lr = line_range(
-                            child.start_position().row + 1,
-                            child.end_position().row + 1,
-                        );
-                        members.push(format!("{sig} {lr}"));
-                    }
-                }
-                "property_declaration" => {
-                    field_count += 1;
-                    if field_count <= FIELD_TRUNCATE_THRESHOLD {
-                        if let Some(text) = self.property_text(child, source) {
-                            let lr = line_range(
-                                child.start_position().row + 1,
-                                child.end_position().row + 1,
-                            );
-                            members.push(format!("{text} {lr}"));
-                        }
-                    } else if field_count == FIELD_TRUNCATE_THRESHOLD + 1 {
-                        members.push("...".into());
-                    }
-                }
-                _ => {}
-            }
-        }
-        members
-    }
-
-    fn fn_signature(&self, node: Node, source: &[u8]) -> Option<String> {
-        let mods = self.modifiers_text(node, source);
-        let keyword = if node.kind() == "init_declaration" {
-            "init"
-        } else {
-            "func"
-        };
-        let name = if node.kind() == "init_declaration" {
-            String::new()
-        } else {
-            node.child_by_field_name("name")
-                .map(|n| node_text(n, source).to_string())
-                .unwrap_or_else(|| "_".to_string())
-        };
-
-        let params = self.params_text(node, source);
-        let ret = node
-            .child_by_field_name("return_type")
-            .map(|n| format!(" -> {}", node_text(n, source)))
-            .unwrap_or_default();
-
-        let throws = {
-            let mut cursor = node.walk();
-            node.children(&mut cursor)
-                .find(|c| c.kind() == "throws")
-                .map(|n| format!(" {}", node_text(n, source)))
-                .unwrap_or_default()
-        };
-
-        let base = if name.is_empty() {
-            format!("{keyword}{params}{throws}{ret}")
-        } else {
-            format!("{keyword} {name}{params}{throws}{ret}")
-        };
-        let sig = prefixed(&mods, format_args!("{base}"));
-        Some(compact_ws(&sig))
-    }
-
-    fn params_text(&self, node: Node, source: &[u8]) -> String {
-        let mut parts = Vec::new();
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "parameter" {
-                let external = child
-                    .child_by_field_name("external_name")
-                    .map(|n| node_text(n, source));
-                let name = child
-                    .child_by_field_name("name")
-                    .map(|n| node_text(n, source))
-                    .unwrap_or("_");
-                let ty = child
-                    .child_by_field_name("type")
-                    .map(|n| node_text(n, source))
-                    .unwrap_or("_");
-                let label = match external {
-                    Some(ext) if ext != name => format!("{ext} {name}: {ty}"),
-                    _ => format!("{name}: {ty}"),
-                };
-                parts.push(label);
-            }
-        }
-        format!("({})", parts.join(", "))
-    }
-
-    fn property_text(&self, node: Node, source: &[u8]) -> Option<String> {
-        let mods = self.modifiers_text(node, source);
-        let pat = node.child_by_field_name("name")?;
-        let name = pat
-            .child_by_field_name("bound_identifier")
-            .map(|n| node_text(n, source))
-            .unwrap_or_else(|| node_text(pat, source));
-
-        let mut cursor = node.walk();
-        let type_ann = node.children(&mut cursor).find_map(|child| {
-            if child.kind() == "type_annotation" {
-                Some(node_text(child, source).to_string())
-            } else {
-                None
-            }
-        });
-
-        let keyword = {
-            let mut c = node.walk();
-            node.children(&mut c)
-                .find(|ch| !ch.is_named())
-                .map(|ch| node_text(ch, source))
-                .unwrap_or("var")
-        };
-
-        let ty_str = type_ann.unwrap_or_default();
-        let base = format!("{keyword} {name}{ty_str}");
-        Some(prefixed(&mods, format_args!("{base}")))
+        let rules = [
+            BodyMemberRule {
+                kind: "function_declaration",
+                handler: BodyMemberHandler::Method(swift_fn_signature),
+            },
+            BodyMemberRule {
+                kind: "init_declaration",
+                handler: BodyMemberHandler::Method(swift_fn_signature),
+            },
+            BodyMemberRule {
+                kind: "property_declaration",
+                handler: BodyMemberHandler::FieldTruncated {
+                    format_fn: property_text_str,
+                    counter: "property_declaration",
+                },
+            },
+        ];
+        extract_body_members(body, source, &rules)
     }
 
     fn extract_property(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -263,17 +251,20 @@ impl SwiftExtractor {
         if !is_let {
             return None;
         }
-        let text = self.property_text(node, source)?;
+        let text = property_text_str(node, source);
+        if text.is_empty() {
+            return None;
+        }
         Some(SkeletonEntry::new(Section::Constant, node, text))
     }
 
     fn extract_function(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
-        let sig = self.fn_signature(node, source)?;
+        let sig = swift_fn_signature(node, source)?;
         Some(SkeletonEntry::new(Section::Function, node, sig))
     }
 
     fn extract_typealias(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
-        let mods = self.modifiers_text(node, source);
+        let mods = modifiers_text(node, source);
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
@@ -291,7 +282,7 @@ impl SwiftExtractor {
     }
 
     fn extract_protocol(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
-        let mods = self.modifiers_text(node, source);
+        let mods = modifiers_text(node, source);
         let name = node
             .child_by_field_name("name")
             .map(|n| node_text(n, source))?;
@@ -304,7 +295,7 @@ impl SwiftExtractor {
             for child in body.children(&mut cursor) {
                 match child.kind() {
                     "protocol_function_declaration" => {
-                        if let Some(sig) = self.fn_signature(child, source) {
+                        if let Some(sig) = swift_fn_signature(child, source) {
                             let lr = line_range(
                                 child.start_position().row + 1,
                                 child.end_position().row + 1,

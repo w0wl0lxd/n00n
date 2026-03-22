@@ -1,8 +1,9 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, compact_ws,
-    find_child, line_range, node_text, prefixed,
+    BodyMemberHandler, BodyMemberRule, ChildKind, LanguageExtractor, Section, SkeletonEntry,
+    compact_ws, extract_body_members, extract_enum_variants, find_child, node_text, prefixed,
+    simple_import,
 };
 
 pub(crate) struct JavaExtractor;
@@ -23,22 +24,6 @@ impl JavaExtractor {
         node.child_by_field_name("interfaces")
             .map(|n| format!(" implements {}", self.type_list_text(n, source)))
             .unwrap_or_default()
-    }
-
-    fn extract_import(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
-        let text = node_text(node, source);
-        let cleaned = text
-            .strip_prefix("import ")
-            .unwrap_or(text)
-            .trim_end_matches(';')
-            .trim();
-        let paths = vec![
-            cleaned
-                .split(self.import_separator())
-                .map(String::from)
-                .collect(),
-        ];
-        Some(SkeletonEntry::new_import(node, paths))
     }
 
     fn extract_package(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -114,70 +99,27 @@ impl JavaExtractor {
         let Some(body) = node.child_by_field_name("body") else {
             return Vec::new();
         };
-        let mut members = Vec::new();
-        let mut field_count = 0usize;
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            match child.kind() {
-                "method_declaration" | "constructor_declaration" => {
-                    let sig = self.method_signature(child, source);
-                    let lr =
-                        line_range(child.start_position().row + 1, child.end_position().row + 1);
-                    members.push(format!("{sig} {lr}"));
-                }
-                "field_declaration" => {
-                    field_count += 1;
-                    if field_count <= FIELD_TRUNCATE_THRESHOLD {
-                        let text = self.field_text(child, source);
-                        let lr = line_range(
-                            child.start_position().row + 1,
-                            child.end_position().row + 1,
-                        );
-                        members.push(format!("{text} {lr}"));
-                    }
-                }
-                _ => {}
-            }
-        }
-        if field_count > FIELD_TRUNCATE_THRESHOLD {
-            members.push("...".into());
-        }
-        members
-    }
-
-    fn method_signature(&self, node: Node, source: &[u8]) -> String {
-        let mods = self.modifiers_text(node, source);
-        let ret = node
-            .child_by_field_name("type")
-            .map(|n| node_text(n, source))
-            .unwrap_or("");
-        let name = node
-            .child_by_field_name("name")
-            .map(|n| node_text(n, source))
-            .unwrap_or("_");
-        let params = node
-            .child_by_field_name("parameters")
-            .map(|n| node_text(n, source))
-            .unwrap_or("()");
-        let base = if ret.is_empty() {
-            format!("{name}{params}")
-        } else {
-            format!("{ret} {name}{params}")
-        };
-        compact_ws(&prefixed(&mods, format_args!("{base}")))
-    }
-
-    fn field_text(&self, node: Node, source: &[u8]) -> String {
-        let mods = self.modifiers_text(node, source);
-        let ty = node
-            .child_by_field_name("type")
-            .map(|n| node_text(n, source))
-            .unwrap_or("_");
-        let name = find_child(node, "variable_declarator")
-            .and_then(|n| n.child_by_field_name("name"))
-            .map(|n| node_text(n, source))
-            .unwrap_or("_");
-        prefixed(&mods, format_args!("{ty} {name}"))
+        extract_body_members(
+            body,
+            source,
+            &[
+                BodyMemberRule {
+                    kind: "method_declaration",
+                    handler: BodyMemberHandler::Method(method_signature_opt),
+                },
+                BodyMemberRule {
+                    kind: "constructor_declaration",
+                    handler: BodyMemberHandler::Method(method_signature_opt),
+                },
+                BodyMemberRule {
+                    kind: "field_declaration",
+                    handler: BodyMemberHandler::FieldTruncated {
+                        format_fn: field_text,
+                        counter: "field_declaration",
+                    },
+                },
+            ],
+        )
     }
 
     fn extract_interface(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -205,18 +147,20 @@ impl JavaExtractor {
         let Some(body) = node.child_by_field_name("body") else {
             return Vec::new();
         };
-        let mut members = Vec::new();
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            let text = match child.kind() {
-                "method_declaration" => self.method_signature(child, source),
-                "constant_declaration" => self.field_text(child, source),
-                _ => continue,
-            };
-            let lr = line_range(child.start_position().row + 1, child.end_position().row + 1);
-            members.push(format!("{text} {lr}"));
-        }
-        members
+        extract_body_members(
+            body,
+            source,
+            &[
+                BodyMemberRule {
+                    kind: "method_declaration",
+                    handler: BodyMemberHandler::Method(method_signature_opt),
+                },
+                BodyMemberRule {
+                    kind: "constant_declaration",
+                    handler: BodyMemberHandler::Method(|n, s| Some(field_text(n, s))),
+                },
+            ],
+        )
     }
 
     fn extract_enum(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -231,17 +175,7 @@ impl JavaExtractor {
         let label = prefixed(&mods, format_args!("enum {name}{type_params}{interfaces}"));
 
         let body = node.child_by_field_name("body")?;
-        let mut constants = Vec::new();
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            if child.kind() == "enum_constant" {
-                let cname = child
-                    .child_by_field_name("name")
-                    .map(|n| node_text(n, source))
-                    .unwrap_or("_");
-                constants.push(cname.to_string());
-            }
-        }
+        let constants = extract_enum_variants(body, source, "enum_constant");
 
         Some(
             SkeletonEntry::new(Section::Type, node, label)
@@ -281,10 +215,47 @@ impl JavaExtractor {
     }
 }
 
+fn method_signature_opt(node: Node, source: &[u8]) -> Option<String> {
+    let mods = JavaExtractor.modifiers_text(node, source);
+    let ret = node
+        .child_by_field_name("type")
+        .map(|n| node_text(n, source))
+        .unwrap_or("");
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| node_text(n, source))
+        .unwrap_or("_");
+    let params = node
+        .child_by_field_name("parameters")
+        .map(|n| node_text(n, source))
+        .unwrap_or("()");
+    let base = if ret.is_empty() {
+        format!("{name}{params}")
+    } else {
+        format!("{ret} {name}{params}")
+    };
+    Some(compact_ws(&prefixed(&mods, format_args!("{base}"))))
+}
+
+fn field_text(node: Node, source: &[u8]) -> String {
+    let mods = JavaExtractor.modifiers_text(node, source);
+    let ty = node
+        .child_by_field_name("type")
+        .map(|n| node_text(n, source))
+        .unwrap_or("_");
+    let name = find_child(node, "variable_declarator")
+        .and_then(|n| n.child_by_field_name("name"))
+        .map(|n| node_text(n, source))
+        .unwrap_or("_");
+    prefixed(&mods, format_args!("{ty} {name}"))
+}
+
 impl LanguageExtractor for JavaExtractor {
     fn extract_nodes(&self, node: Node, source: &[u8], _attrs: &[Node]) -> Vec<SkeletonEntry> {
         match node.kind() {
-            "import_declaration" => self.extract_import(node, source).into_iter().collect(),
+            "import_declaration" => simple_import(node, source, &["import "], ".")
+                .into_iter()
+                .collect(),
             "package_declaration" => self.extract_package(node, source).into_iter().collect(),
             "class_declaration" => self.extract_class(node, source).into_iter().collect(),
             "interface_declaration" => self.extract_interface(node, source).into_iter().collect(),

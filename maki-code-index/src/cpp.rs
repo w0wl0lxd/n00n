@@ -2,7 +2,7 @@ use tree_sitter::Node;
 
 use crate::common::{
     ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, compact_ws,
-    line_range, node_text, truncate,
+    extract_enum_variants, line_range, node_text, truncate,
 };
 
 pub(crate) struct CppExtractor;
@@ -191,17 +191,7 @@ impl CppExtractor {
             .map(|n| node_text(n, source))
             .unwrap_or("(anonymous)");
         let body = node.child_by_field_name("body")?;
-        let mut enumerators = Vec::new();
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            if child.kind() == "enumerator" {
-                let ename = child
-                    .child_by_field_name("name")
-                    .map(|n| node_text(n, source))
-                    .unwrap_or("_");
-                enumerators.push(ename.to_string());
-            }
-        }
+        let enumerators = extract_enum_variants(body, source, "enumerator");
         Some(
             SkeletonEntry::new(Section::Type, node, format!("enum {name}"))
                 .with_children(enumerators)

@@ -1,8 +1,3 @@
-//! Python extractor. Classes include method signatures with decorators inline.
-//! Only ALL_CAPS assignments are treated as constants (others are ignored).
-//! Module docstrings (triple-quoted strings at file top) are detected.
-//! No test detection; Python test discovery varies too much across frameworks.
-
 use tree_sitter::Node;
 
 use crate::common::{

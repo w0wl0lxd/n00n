@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, compact_ws, find_child,
+    LanguageExtractor, Section, SkeletonEntry, compact_ws, extract_fields_truncated, find_child,
     line_range, node_text, truncate,
 };
 
@@ -134,22 +134,9 @@ impl GoExtractor {
         let Some(field_list) = find_child(node, "field_declaration_list") else {
             return Vec::new();
         };
-        let mut fields = Vec::new();
-        let mut total = 0;
-        let mut cursor = field_list.walk();
-        for child in field_list.children(&mut cursor) {
-            if child.kind() == "field_declaration" {
-                total += 1;
-                if total <= FIELD_TRUNCATE_THRESHOLD {
-                    let text = node_text(child, source).trim().to_string();
-                    fields.push(text);
-                }
-            }
-        }
-        if total > FIELD_TRUNCATE_THRESHOLD {
-            fields.push("...".into());
-        }
-        fields
+        extract_fields_truncated(field_list, source, "field_declaration", |child, src| {
+            node_text(child, src).trim().to_string()
+        })
     }
 
     fn extract_interface_methods(&self, node: Node, source: &[u8]) -> Vec<String> {

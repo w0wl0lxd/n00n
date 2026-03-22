@@ -167,6 +167,118 @@ pub(crate) fn fn_signature(node: Node, source: &[u8]) -> Option<String> {
     Some(compact_ws(&format!("{name}{params}{ret}")))
 }
 
+pub(crate) fn extract_enum_variants(body: Node, source: &[u8], variant_kind: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() == variant_kind {
+            let name = child
+                .child_by_field_name("name")
+                .map(|n| node_text(n, source))
+                .unwrap_or("_");
+            values.push(name.to_string());
+        }
+    }
+    values
+}
+
+pub(crate) fn extract_fields_truncated(
+    body: Node,
+    source: &[u8],
+    field_kind: &str,
+    format_field: impl Fn(Node, &[u8]) -> String,
+) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut total = 0usize;
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() == field_kind {
+            total += 1;
+            if total <= FIELD_TRUNCATE_THRESHOLD {
+                fields.push(format_field(child, source));
+            }
+        }
+    }
+    if total > FIELD_TRUNCATE_THRESHOLD {
+        fields.push("...".into());
+    }
+    fields
+}
+
+pub(crate) struct BodyMemberRule<'a> {
+    pub(crate) kind: &'a str,
+    pub(crate) handler: BodyMemberHandler<'a>,
+}
+
+pub(crate) enum BodyMemberHandler<'a> {
+    Method(fn(Node, &[u8]) -> Option<String>),
+    FieldTruncated {
+        format_fn: fn(Node, &[u8]) -> String,
+        counter: &'a str,
+    },
+}
+
+pub(crate) fn extract_body_members(
+    body: Node,
+    source: &[u8],
+    rules: &[BodyMemberRule],
+) -> Vec<String> {
+    let mut members = Vec::new();
+    let mut field_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        let kind = child.kind();
+        let Some(rule) = rules.iter().find(|r| r.kind == kind) else {
+            continue;
+        };
+        match &rule.handler {
+            BodyMemberHandler::Method(f) => {
+                if let Some(sig) = f(child, source) {
+                    let lr =
+                        line_range(child.start_position().row + 1, child.end_position().row + 1);
+                    members.push(format!("{sig} {lr}"));
+                }
+            }
+            BodyMemberHandler::FieldTruncated { format_fn, counter } => {
+                let count = field_counts.entry(counter).or_insert(0);
+                *count += 1;
+                if *count <= FIELD_TRUNCATE_THRESHOLD {
+                    let text = format_fn(child, source);
+                    let lr =
+                        line_range(child.start_position().row + 1, child.end_position().row + 1);
+                    members.push(format!("{text} {lr}"));
+                }
+            }
+        }
+    }
+    for (counter, count) in &field_counts {
+        if *count > FIELD_TRUNCATE_THRESHOLD {
+            let _ = counter;
+            members.push("...".into());
+        }
+    }
+    members
+}
+
+pub(crate) fn simple_import(
+    node: Node,
+    source: &[u8],
+    prefixes: &[&str],
+    sep: &str,
+) -> Option<SkeletonEntry> {
+    let text = node_text(node, source);
+    let mut cleaned = text;
+    for prefix in prefixes {
+        if let Some(rest) = cleaned.strip_prefix(prefix) {
+            cleaned = rest;
+            break;
+        }
+    }
+    let cleaned = cleaned.trim_end_matches(';').trim();
+    let paths = vec![cleaned.split(sep).map(String::from).collect()];
+    Some(SkeletonEntry::new_import(node, paths))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[allow(dead_code)]
 pub(crate) enum Section {

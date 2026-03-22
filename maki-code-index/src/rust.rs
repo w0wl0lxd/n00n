@@ -1,8 +1,3 @@
-//! Rust extractor. Handles structs, enums, traits, impls, fns, consts, mods, macros, type aliases.
-//! Struct/enum fields are truncated after 8 entries to keep skeletons short.
-//! `#[cfg(test)]` modules and `#[test]` functions are collapsed into a single `tests:` line.
-//! `derive` and `cfg` attributes are preserved; other attributes are dropped.
-
 use tree_sitter::Node;
 
 use crate::common::{
