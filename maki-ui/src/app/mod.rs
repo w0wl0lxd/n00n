@@ -771,6 +771,7 @@ impl App {
         if chat_idx == 0 {
             match result {
                 ChatEventResult::Done => {
+                    self.todo_panel.on_done();
                     self.status_bar.clear_flash();
                     self.save_session();
                     self.chat_index.clear();

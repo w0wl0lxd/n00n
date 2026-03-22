@@ -53,6 +53,10 @@ impl TodoPanel {
         self.user_dismissed = !self.visible;
     }
 
+    pub fn on_done(&mut self) {
+        self.visible = false;
+    }
+
     pub fn height(&self) -> u16 {
         if !self.visible || self.items.is_empty() {
             0
