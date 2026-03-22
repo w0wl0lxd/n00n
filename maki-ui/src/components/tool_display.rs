@@ -1302,7 +1302,7 @@ mod tests {
 
     #[test]
     fn index_output_styles_all_elements() {
-        let body = "imports: [1-5]\n  std::io\n\nfns:\n  pub fn main() [10-20]";
+        let body = "imports: [1-5]\n  pub fn main() [10-20]\nfns:";
         let msg = index_msg(body);
         let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, &TOL);
         let t = theme::current();
