@@ -28,7 +28,7 @@ mod write;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -191,15 +191,31 @@ pub(crate) fn line_at_offset(content: &str, offset: usize) -> usize {
     content[..offset].matches('\n').count() + 1
 }
 
+static CWD: LazyLock<Option<PathBuf>> = LazyLock::new(|| env::current_dir().ok());
+static HOME: LazyLock<Option<PathBuf>> = LazyLock::new(dirs::home_dir);
+
 pub(crate) fn relative_path(path: &str) -> String {
-    let Ok(cwd) = env::current_dir() else {
-        return path.to_string();
-    };
-    let cwd = cwd.to_string_lossy();
-    path.strip_prefix(cwd.as_ref())
-        .and_then(|p| p.strip_prefix('/'))
-        .unwrap_or(path)
-        .to_string()
+    let p = Path::new(path);
+    if let Some(cwd) = CWD.as_deref()
+        && let Ok(rel) = p.strip_prefix(cwd)
+    {
+        return format_rel("", ".", rel);
+    }
+    if let Some(home) = HOME.as_deref()
+        && let Ok(rel) = p.strip_prefix(home)
+    {
+        return format_rel("~/", "~", rel);
+    }
+    path.to_string()
+}
+
+fn format_rel(prefix: &str, fallback: &str, rel: &Path) -> String {
+    let s = rel.to_string_lossy();
+    if s.is_empty() {
+        fallback.into()
+    } else {
+        format!("{prefix}{s}")
+    }
 }
 
 pub(crate) fn mtime(path: &Path) -> SystemTime {
@@ -709,9 +725,10 @@ mod tests {
 
     #[test]
     fn deadline_cap_timeout_clamps_to_remaining() {
-        let d = Deadline::At(Instant::now() + Duration::from_secs(30));
-        let result = d.cap_timeout(120).unwrap();
-        assert!((1..=30).contains(&result), "expected 1..=30, got {result}");
+        let d = Deadline::At(Instant::now() + Duration::from_secs(300));
+        let result = d.cap_timeout(600).unwrap();
+        assert!(result <= 300, "should clamp to remaining, got {result}");
+        assert!(result >= 1, "should be at least 1s, got {result}");
     }
 
     #[test_case("short",                            "short"                             ; "short_passthrough")]
@@ -969,5 +986,27 @@ mod tests {
     )]
     fn strip_stray_quotes_cases(input: Value, expected: Value) {
         assert_eq!(strip_stray_quotes(&input), expected);
+    }
+
+    #[test]
+    fn relative_path_cases() {
+        let cwd = env::current_dir().unwrap();
+        let home = dirs::home_dir().unwrap();
+
+        let cases: &[(&str, &str)] = &[
+            (&format!("{}/src/main.rs", cwd.display()), "src/main.rs"),
+            (&cwd.to_string_lossy(), "."),
+            (
+                &format!("{}/.config/something.toml", home.display()),
+                "~/.config/something.toml",
+            ),
+            ("/etc/hosts", "/etc/hosts"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(relative_path(input), *expected, "input: {input}");
+        }
+
+        let no_partial = format!("{}sibling/file.txt", home.display());
+        assert_eq!(relative_path(&no_partial), no_partial);
     }
 }
