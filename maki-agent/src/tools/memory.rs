@@ -209,8 +209,8 @@ async fn dir_total_bytes(dir: &Path) -> u64 {
 
 pub fn resolve_memories_dir() -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|e| format!("cannot get cwd: {e}"))?;
-    let cwd_str = cwd.to_string_lossy();
-    let project_id = project_id(&cwd_str);
+    let root = find_git_root(&cwd);
+    let project_id = project_id(&root);
     let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
     Ok(PathBuf::from(home)
         .join(".maki")
@@ -219,12 +219,21 @@ pub fn resolve_memories_dir() -> Result<PathBuf, String> {
         .join("memories"))
 }
 
-fn project_id(cwd: &str) -> String {
-    let basename = Path::new(cwd)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("root");
-    let hash = fnv1a_64(cwd.as_bytes());
+fn find_git_root(start: &Path) -> PathBuf {
+    let mut current = start.to_path_buf();
+    loop {
+        if current.join(".git").exists() {
+            return current;
+        }
+        if !current.pop() {
+            return start.to_path_buf();
+        }
+    }
+}
+
+fn project_id(path: &Path) -> String {
+    let basename = path.file_name().and_then(|n| n.to_str()).unwrap_or("root");
+    let hash = fnv1a_64(path.to_string_lossy().as_bytes());
     format!("{basename}-{hash:016x}")
 }
 
@@ -290,8 +299,25 @@ mod tests {
 
     #[test]
     fn project_id_includes_basename() {
-        let id = project_id("/home/user/my-project");
+        let id = project_id(Path::new("/home/user/my-project"));
         assert!(id.starts_with("my-project-"));
+    }
+
+    #[test]
+    fn find_git_root_finds_ancestor_with_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("a").join("b").join("c");
+        fs::create_dir_all(&sub).unwrap();
+        fs::create_dir_all(dir.path().join(".git")).unwrap();
+        assert_eq!(find_git_root(&sub), dir.path());
+    }
+
+    #[test]
+    fn find_git_root_falls_back_to_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("no_git");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(find_git_root(&sub), sub);
     }
 
     #[test_case("../escape"        ; "dotdot_traversal")]
