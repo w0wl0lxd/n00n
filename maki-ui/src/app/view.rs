@@ -117,12 +117,19 @@ impl App {
             if layout.todo_area.height > 0 {
                 self.todo_panel.view(frame, layout.todo_area);
             }
+            let streaming = self.status == Status::Streaming;
+            let todo_hint = if streaming {
+                self.todo_panel.hint_line()
+            } else {
+                None
+            };
             self.input_box.view(
                 frame,
                 layout.input_area,
-                self.status == Status::Streaming,
+                streaming,
                 self.mode.color(),
                 !self.any_overlay_open(),
+                todo_hint,
             );
             self.command_palette.view(frame, layout.input_area);
         }

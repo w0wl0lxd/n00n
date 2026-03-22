@@ -264,6 +264,7 @@ impl InputBox {
         streaming: bool,
         mode_color: Color,
         focused: bool,
+        top_right_hint: Option<Line<'_>>,
     ) {
         let content_height = area.height.saturating_sub(2);
         let ew = effective_width(area.width as usize);
@@ -359,15 +360,17 @@ impl InputBox {
         } else {
             Style::new().fg(mode_color)
         };
+        let mut block = Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_type(BorderType::Plain)
+            .border_style(border_style);
+        if let Some(hint) = top_right_hint {
+            block = block.title_top(hint.right_aligned());
+        }
         let paragraph = Paragraph::new(text)
             .style(Style::new().fg(theme::current().foreground))
             .scroll((self.scroll_y, 0))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP | Borders::BOTTOM)
-                    .border_type(BorderType::Plain)
-                    .border_style(border_style),
-            );
+            .block(block);
         frame.render_widget(paragraph, area);
 
         if max_scroll > 0 {
@@ -710,7 +713,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = Rect::new(0, 0, width, height);
-                input.view(frame, area, streaming, mode_color, true);
+                input.view(frame, area, streaming, mode_color, true, None);
             })
             .unwrap();
         terminal

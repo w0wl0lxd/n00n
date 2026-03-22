@@ -2,63 +2,99 @@ use crate::theme;
 use maki_agent::{TodoItem, TodoStatus, ToolOutput};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use std::collections::HashMap;
 
 const PANEL_TITLE: &str = " Todos ";
 const HIDE_HINT: &str = " Ctrl+T to hide ";
+const SHOW_HINT: &str = "Ctrl+T";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Visibility {
+    Shown,
+    Hidden,
+    UserDismissed,
+}
+
+impl Visibility {
+    fn is_shown(self) -> bool {
+        matches!(self, Self::Shown)
+    }
+}
 
 pub struct TodoPanel {
-    visible: bool,
-    user_dismissed: bool,
+    visibility: Visibility,
     items: Vec<TodoItem>,
 }
 
 impl TodoPanel {
     pub fn new() -> Self {
         Self {
-            visible: false,
-            user_dismissed: false,
+            visibility: Visibility::Hidden,
             items: Vec::new(),
         }
     }
 
     pub fn reset(&mut self) {
-        self.visible = false;
-        self.user_dismissed = false;
+        self.visibility = Visibility::Hidden;
         self.items.clear();
     }
 
     pub fn on_todowrite(&mut self, items: &[TodoItem]) {
         self.items = items.to_vec();
         if items.is_empty() {
-            self.visible = false;
-        } else if !self.user_dismissed {
-            self.visible = true;
+            self.visibility = Visibility::Hidden;
+        } else if self.visibility != Visibility::UserDismissed {
+            self.visibility = Visibility::Shown;
         }
     }
 
     pub fn restore(&mut self, tool_outputs: &HashMap<String, ToolOutput>) {
         self.items = extract_last_todos(tool_outputs);
-        self.visible = !self.items.is_empty();
+        self.visibility = if self.items.is_empty() {
+            Visibility::Hidden
+        } else {
+            Visibility::Shown
+        };
     }
 
     pub fn toggle(&mut self) {
         if self.items.is_empty() {
             return;
         }
-        self.visible = !self.visible;
-        self.user_dismissed = !self.visible;
+        self.visibility = if self.visibility.is_shown() {
+            Visibility::UserDismissed
+        } else {
+            Visibility::Shown
+        };
     }
 
-    pub fn on_done(&mut self) {
-        self.visible = false;
+    pub fn on_turn_done(&mut self) {
+        self.reset();
+    }
+
+    pub fn hint_line(&self) -> Option<Line<'static>> {
+        if self.visibility.is_shown() || self.items.is_empty() {
+            return None;
+        }
+        let done = self
+            .items
+            .iter()
+            .filter(|i| i.status == TodoStatus::Completed)
+            .count();
+        let total = self.items.len();
+        let t = theme::current();
+        Some(Line::from(vec![
+            Span::styled(format!(" {done}/{total} "), Style::new().fg(t.foreground)),
+            Span::styled(SHOW_HINT, t.keybind_key.add_modifier(Modifier::DIM)),
+            Span::raw(" "),
+        ]))
     }
 
     pub fn height(&self) -> u16 {
-        if !self.visible || self.items.is_empty() {
+        if !self.visibility.is_shown() || self.items.is_empty() {
             0
         } else {
             self.items.len() as u16 + 2
@@ -129,82 +165,72 @@ mod tests {
             .collect()
     }
 
+    fn make_items_with_status(statuses: &[TodoStatus]) -> Vec<TodoItem> {
+        statuses
+            .iter()
+            .enumerate()
+            .map(|(i, &status)| TodoItem {
+                content: format!("task {i}"),
+                status,
+                priority: TodoPriority::Medium,
+            })
+            .collect()
+    }
+
     #[test]
     fn on_todowrite_lifecycle() {
         let mut panel = TodoPanel::new();
 
         panel.on_todowrite(&make_items(2));
-        assert!(panel.visible);
+        assert_eq!(panel.visibility, Visibility::Shown);
         assert_eq!(panel.items.len(), 2);
 
         panel.on_todowrite(&make_items(1));
         assert_eq!(panel.items.len(), 1);
 
         panel.on_todowrite(&[]);
-        assert!(!panel.visible);
+        assert_eq!(panel.visibility, Visibility::Hidden);
         assert!(panel.items.is_empty());
     }
 
     #[test]
-    fn toggle_requires_items() {
+    fn user_dismiss_survives_todowrite_but_not_turn_end() {
         let mut panel = TodoPanel::new();
-        panel.toggle();
-        assert!(!panel.visible);
-
-        panel.on_todowrite(&make_items(1));
-        assert!(panel.visible);
-        panel.toggle();
-        assert!(!panel.visible);
-        panel.toggle();
-        assert!(panel.visible);
-    }
-
-    #[test]
-    fn dismissed_stays_closed_until_manual_reopen() {
-        let mut panel = TodoPanel::new();
-
-        panel.on_todowrite(&make_items(1));
-        assert!(panel.visible);
-
-        panel.toggle();
-        assert!(!panel.visible);
 
         panel.on_todowrite(&make_items(2));
-        assert!(!panel.visible);
-        assert_eq!(panel.items.len(), 2);
-
         panel.toggle();
-        assert!(panel.visible);
+        assert_eq!(panel.visibility, Visibility::UserDismissed);
 
         panel.on_todowrite(&make_items(3));
-        assert!(panel.visible);
+        assert_eq!(panel.visibility, Visibility::UserDismissed);
+
+        panel.on_turn_done();
+        assert_eq!(panel.visibility, Visibility::Hidden);
+
+        panel.on_todowrite(&make_items(1));
+        assert_eq!(panel.visibility, Visibility::Shown);
     }
 
     #[test]
-    fn reset_clears_dismissed() {
+    fn hint_line_when_dismissed_with_items() {
         let mut panel = TodoPanel::new();
-        panel.on_todowrite(&make_items(1));
+
+        assert!(panel.hint_line().is_none());
+
+        let items = make_items_with_status(&[
+            TodoStatus::Completed,
+            TodoStatus::Completed,
+            TodoStatus::InProgress,
+            TodoStatus::Pending,
+        ]);
+        panel.on_todowrite(&items);
+        assert!(panel.hint_line().is_none());
+
         panel.toggle();
-        panel.reset();
-        assert!(!panel.visible);
-        assert!(panel.items.is_empty());
-
-        panel.on_todowrite(&make_items(1));
-        assert!(panel.visible);
-    }
-
-    #[test]
-    fn restore_from_tool_outputs() {
-        let mut panel = TodoPanel::new();
-        let mut map = HashMap::new();
-        map.insert("a".into(), ToolOutput::TodoList(make_items(3)));
-        map.insert("b".into(), ToolOutput::Plain("noise".into()));
-        panel.restore(&map);
-        assert!(panel.visible);
-        assert_eq!(panel.items.len(), 3);
-
-        panel.restore(&HashMap::new());
-        assert!(!panel.visible);
+        let hint = panel.hint_line().unwrap();
+        let text: String = hint.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("2/4"));
+        assert!(text.contains(SHOW_HINT));
     }
 
     #[test]
@@ -215,10 +241,38 @@ mod tests {
         panel.on_todowrite(&make_items(3));
         assert_eq!(panel.height(), 5);
 
-        panel.on_todowrite(&make_items(1));
-        assert_eq!(panel.height(), 3);
-
         panel.toggle();
         assert_eq!(panel.height(), 0);
+    }
+
+    #[test]
+    fn toggle_noop_when_empty() {
+        let mut panel = TodoPanel::new();
+        panel.toggle();
+        assert_eq!(panel.visibility, Visibility::Hidden);
+    }
+
+    #[test]
+    fn restore_shows_panel_and_resets_dismiss() {
+        let mut panel = TodoPanel::new();
+        panel.on_todowrite(&make_items(2));
+        panel.toggle();
+        assert_eq!(panel.visibility, Visibility::UserDismissed);
+
+        let mut outputs = HashMap::new();
+        outputs.insert("id".to_string(), ToolOutput::TodoList(make_items(3)));
+        panel.restore(&outputs);
+        assert_eq!(panel.visibility, Visibility::Shown);
+        assert_eq!(panel.items.len(), 3);
+    }
+
+    #[test]
+    fn restore_hides_when_no_todos() {
+        let mut panel = TodoPanel::new();
+        panel.on_todowrite(&make_items(2));
+
+        panel.restore(&HashMap::new());
+        assert_eq!(panel.visibility, Visibility::Hidden);
+        assert!(panel.items.is_empty());
     }
 }
