@@ -2,7 +2,7 @@ use crate::theme;
 use maki_agent::{TodoItem, TodoStatus, ToolOutput};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use std::collections::HashMap;
@@ -89,7 +89,7 @@ impl TodoPanel {
         let t = theme::current();
         Some(Line::from(vec![
             Span::styled(format!(" {done}/{total} "), Style::new().fg(t.foreground)),
-            Span::styled(SHOW_HINT, t.keybind_key.add_modifier(Modifier::DIM)),
+            Span::styled(SHOW_HINT, t.keybind_key),
             Span::raw(" "),
         ]))
     }
@@ -132,7 +132,7 @@ impl TodoPanel {
             .title_top(Line::from(PANEL_TITLE).left_aligned())
             .title_bottom(
                 Line::from(vec![
-                    Span::styled(HIDE_KEY, t.keybind_key.add_modifier(Modifier::DIM)),
+                    Span::styled(HIDE_KEY, t.keybind_key),
                     Span::styled(HIDE_DESC, t.form_hint),
                 ])
                 .right_aligned(),
