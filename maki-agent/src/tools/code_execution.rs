@@ -38,9 +38,9 @@ impl CodeInterpreter {
     pub const NAME: &str = "code_execution";
     pub const DESCRIPTION: &str = include_str!("code_execution.md");
     pub const EXAMPLES: Option<&str> = Some(
-        r##"[{"code": "# Dependent: glob then read matching files\nfiles = (await glob(pattern='**/*.rs')).strip().split('\n')\ncontents = await asyncio.gather(*[read(path=f) for f in files if f.strip()])\nfor f, c in zip(files, contents):\n    if 'fn main' in c:\n        print(f)"},
-            {"code": "# Process tool output\nresult = await grep(pattern='TODO', include='*.rs')\nlines = result.strip().split('\n')\nprint(f'{len(lines)} TODOs found')"},
-            {"code": "# Fetch and filter\ncontent = await webfetch(url='https://example.com/docs')\nfor line in content.split('\n'):\n    if 'auth' in line.lower():\n        print(line)"}]"##,
+        r##"[{"code": "files = (await glob(pattern='**/*.rs')).strip().split('\\n')\nresults = await asyncio.gather(*[read(path=f) for f in files if f.strip()])\nfor f, c in zip(files, results):\n    if 'fn main' in c: print(f)"},
+            {"code": "result = await grep(pattern='TODO', include='*.rs')\nprint(f\"{len(result.strip().splitlines())} TODOs found\")"},
+            {"code": "content = await webfetch(url='https://example.com/docs')\nfor line in content.splitlines():\n    if 'auth' in line.lower(): print(line)"}]"##,
     );
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
