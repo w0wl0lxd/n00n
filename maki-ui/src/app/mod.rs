@@ -311,6 +311,9 @@ impl App {
             return None;
         }
         if key::QUIT.matches(key) {
+            if self.any_overlay_open() || self.queue.focus().is_some() {
+                return None;
+            }
             self.command_palette.close();
             return Some(
                 if !self.is_main_chat() || self.input_box.buffer.value().trim().is_empty() {
@@ -463,6 +466,10 @@ impl App {
                     return vec![];
                 }
                 KeyCode::Esc => {
+                    self.queue.unfocus();
+                    return vec![];
+                }
+                _ if key::QUIT.matches(key) => {
                     self.queue.unfocus();
                     return vec![];
                 }

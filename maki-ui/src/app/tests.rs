@@ -2152,3 +2152,15 @@ fn reset_session_closes_plan_form() {
     app.reset_session();
     assert!(!app.plan_form.is_visible());
 }
+
+#[test]
+fn ctrl_c_closes_overlay_instead_of_quitting() {
+    let mut app = test_app();
+    app.help_modal.toggle();
+    assert!(app.help_modal.is_open());
+
+    let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
+    assert!(!app.should_quit);
+    assert!(!app.help_modal.is_open());
+    assert!(actions.is_empty());
+}
