@@ -1249,16 +1249,26 @@ pub fn truncate_lines(s: &str, max: usize, keep: Keep) -> Truncated<'_> {
         };
     };
     match keep {
-        Keep::Head => Truncated {
-            kept: &s[..i],
-            skipped: s[i..].matches('\n').count(),
-            keep,
-        },
-        Keep::Tail => Truncated {
-            kept: &s[i + 1..],
-            skipped: s[..i].matches('\n').count() + 1,
-            keep,
-        },
+        Keep::Head => {
+            let tail = &s[i..];
+            let newlines = tail.matches('\n').count();
+            let has_content = tail.bytes().any(|b| b != b'\n');
+            Truncated {
+                kept: &s[..i],
+                skipped: if has_content { newlines } else { 0 },
+                keep,
+            }
+        }
+        Keep::Tail => {
+            let head = &s[..i];
+            let newlines = head.matches('\n').count() + 1;
+            let has_content = head.bytes().any(|b| b != b'\n');
+            Truncated {
+                kept: &s[i + 1..],
+                skipped: if has_content { newlines } else { 0 },
+                keep,
+            }
+        }
     }
 }
 
@@ -1515,6 +1525,8 @@ mod tests {
     #[test_case("a\nb\nc\nd", 2, Keep::Tail, "c\nd", 2 ; "tail_over_limit")]
     #[test_case("a\nb\nc\nd\ne", 3, Keep::Tail, "c\nd\ne", 2 ; "tail_keeps_last_n")]
     #[test_case("a\nb\nc", 2, Keep::Tail, "b\nc", 1 ; "tail_singular_notice")]
+    #[test_case("a\nb\nc\n", 3, Keep::Head, "a\nb\nc", 0 ; "head_trailing_newline_no_phantom")]
+    #[test_case("\na\nb\nc", 3, Keep::Tail, "a\nb\nc", 0 ; "tail_leading_newline_no_phantom")]
     fn truncate_lines_cases(
         input: &str,
         max: usize,

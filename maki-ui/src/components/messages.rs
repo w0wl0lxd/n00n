@@ -1,6 +1,6 @@
 use super::streaming_content::StreamingContent;
 use super::tool_display::{
-    ToolKind, ToolLines, append_annotation, append_right_info, assistant_style,
+    HighlightRequest, ToolKind, ToolLines, append_annotation, append_right_info, assistant_style,
     build_batch_entry_lines, build_tool_lines, done_style, error_style, format_timestamp_now,
     thinking_style, tool_output_annotation, truncate_to_header, user_style,
 };
@@ -32,6 +32,21 @@ use super::scrollbar::render_vertical_scrollbar;
 /// `copy_text` holds raw source text for clipboard copy (from
 /// `DisplayMessage::copy_text()`). Fully-selected segments use this instead
 /// of lossy cell scraping.
+#[derive(Default, PartialEq, Eq)]
+struct HighlightKey {
+    has_output: bool,
+    expanded: bool,
+}
+
+impl HighlightKey {
+    fn from_request(hl: Option<&HighlightRequest>) -> Self {
+        Self {
+            has_output: hl.is_some_and(|h| h.output.is_some()),
+            expanded: hl.is_some_and(|h| h.expanded),
+        }
+    }
+}
+
 #[derive(Default)]
 struct Segment {
     lines: Vec<Line<'static>>,
@@ -41,7 +56,7 @@ struct Segment {
     cached_height: Option<(u16, u16)>,
     pending_highlight: Option<u64>,
     highlight_range: Option<(usize, usize)>,
-    highlighted_has_output: bool,
+    highlight_key: HighlightKey,
     spinner_lines: Vec<usize>,
     content_indent: &'static str,
     has_truncation: bool,
@@ -50,10 +65,10 @@ struct Segment {
 impl Segment {
     fn reuse_highlight(
         &self,
-        has_output: bool,
+        key: &HighlightKey,
         new_range: (usize, usize),
     ) -> Option<Vec<Line<'static>>> {
-        if self.pending_highlight.is_some() || self.highlighted_has_output != has_output {
+        if self.pending_highlight.is_some() || self.highlight_key != *key {
             return None;
         }
         let (s, e) = self.highlight_range?;
@@ -68,9 +83,8 @@ impl Segment {
 
     fn apply_highlight(&mut self, tl: ToolLines, worker: &RenderWorker) {
         self.pending_highlight = tl.send_highlight(worker);
-        let hl = tl.highlight.as_ref();
-        self.highlight_range = hl.map(|h| h.range);
-        self.highlighted_has_output = hl.is_some_and(|h| h.output.is_some());
+        self.highlight_range = tl.highlight.as_ref().map(|h| h.range);
+        self.highlight_key = HighlightKey::from_request(tl.highlight.as_ref());
         self.spinner_lines = tl.spinner_lines;
         self.content_indent = tl.content_indent;
         self.has_truncation = tl.has_truncation;
@@ -79,9 +93,9 @@ impl Segment {
     }
 
     fn update_with_reuse(&mut self, mut tl: ToolLines, worker: &RenderWorker) {
-        let has_output = tl.highlight.as_ref().is_some_and(|h| h.output.is_some());
+        let key = HighlightKey::from_request(tl.highlight.as_ref());
         let reused = tl.highlight.as_ref().and_then(|req| {
-            let hl_lines = self.reuse_highlight(has_output, req.range)?;
+            let hl_lines = self.reuse_highlight(&key, req.range)?;
             let (s, _) = req.range;
             let new_end = s + hl_lines.len();
             tl.lines.splice(s..req.range.1, hl_lines);
@@ -2244,6 +2258,54 @@ mod tests {
         };
         let area = Rect::new(0, 0, 80, 24);
         assert!(!panel.toggle_expansion_at(area.y, area));
+    }
+
+    fn panel_with_grep_tool(match_count: usize) -> MessagesPanel {
+        let entries = vec![GrepFileEntry {
+            path: "src/main.rs".into(),
+            matches: (1..=match_count)
+                .map(|i| GrepMatch {
+                    line_nr: i,
+                    text: format!("match_{i}"),
+                })
+                .collect(),
+        }];
+        let mut panel = MessagesPanel::new(UiConfig::default());
+        panel.tool_start(ToolStartEvent {
+            id: "t1".into(),
+            tool: GREP_TOOL_NAME,
+            summary: "grep pattern".into(),
+            annotation: None,
+            input: None,
+            output: None,
+        });
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: GREP_TOOL_NAME,
+            output: ToolOutput::GrepResult { entries },
+            is_error: false,
+        });
+        render(&mut panel, 80, 24);
+        panel
+    }
+
+    #[test_case(4  ; "max_plus_one")]
+    #[test_case(8  ; "max_plus_five")]
+    fn toggle_grep_expand_and_collapse(match_count: usize) {
+        let mut panel = panel_with_grep_tool(match_count);
+        let area = Rect::new(0, 0, 80, 24);
+        assert!(seg_text(&panel, "t1").contains("click to expand"));
+
+        assert!(panel.toggle_expansion_at(area.y, area));
+        render(&mut panel, 80, 24);
+        let text = seg_text(&panel, "t1");
+        let last = format!("match_{match_count}");
+        assert!(text.contains(&last), "last match should be visible");
+        assert!(!text.contains("click to expand"));
+
+        assert!(panel.toggle_expansion_at(area.y, area));
+        render(&mut panel, 80, 24);
+        assert!(seg_text(&panel, "t1").contains("click to expand"));
     }
 
     fn panel_with_read_tool(line_count: usize) -> MessagesPanel {
