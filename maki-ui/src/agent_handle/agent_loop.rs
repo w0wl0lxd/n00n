@@ -125,13 +125,7 @@ impl AgentLoop {
 
     async fn initialize(&mut self) {
         self.vars = template::env_vars();
-        let cwd_owned = self.vars.apply("{cwd}").into_owned();
-        let cwd_path = PathBuf::from(&cwd_owned);
-
-        let (instructions, loaded_instructions) =
-            smol::unblock(move || agent::load_instruction_files(&cwd_owned)).await;
-        self.instructions = instructions;
-        self.loaded_instructions = loaded_instructions;
+        self.reload_instructions().await;
 
         self.tools = ToolCall::definitions(
             &self.vars,
@@ -139,7 +133,8 @@ impl AgentLoop {
             self.model.family.supports_tool_examples(),
         );
 
-        self.init_mcp(&cwd_path).await;
+        let cwd = PathBuf::from(self.vars.apply("{cwd}").into_owned());
+        self.init_mcp(&cwd).await;
     }
 
     async fn init_mcp(&mut self, cwd: &Path) {
@@ -200,6 +195,13 @@ impl AgentLoop {
         event_tx: EventSender,
         run_id: u64,
     ) -> Result<(), AgentError> {
+        let old_cwd = self.vars.apply("{cwd}").into_owned();
+        self.vars = template::env_vars();
+        if *self.vars.apply("{cwd}") != old_cwd {
+            self.reload_instructions().await;
+            self.rebuild_tools();
+        }
+
         for msg in mem::take(&mut input.preamble) {
             self.history.push(msg);
         }
@@ -264,6 +266,14 @@ impl AgentLoop {
             mcp.extend_tools(&mut tools, &self.disabled);
         }
         self.tools = tools;
+    }
+
+    async fn reload_instructions(&mut self) {
+        let cwd = self.vars.apply("{cwd}").into_owned();
+        let (instructions, loaded) =
+            smol::unblock(move || agent::load_instruction_files(&cwd)).await;
+        self.instructions = instructions;
+        self.loaded_instructions = loaded;
     }
 
     fn persist_mcp_toggle(&self, infos: &[McpServerInfo], server_name: &str, enabled: bool) {

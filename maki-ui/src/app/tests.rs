@@ -1568,6 +1568,17 @@ fn cd_flash_message(args: &str, expected_prefix: &str) {
 }
 
 #[test]
+fn cd_updates_session_cwd() {
+    let mut app = test_app();
+    app.execute_command(ParsedCommand {
+        name: "/cd",
+        args: "/tmp".into(),
+    });
+    let canonical = std::fs::canonicalize("/tmp").unwrap();
+    assert_eq!(app.session.cwd, canonical.to_string_lossy());
+}
+
+#[test]
 fn typed_slash_command_executes() {
     let mut app = test_app();
     let actions = type_and_submit(&mut app, "/help");

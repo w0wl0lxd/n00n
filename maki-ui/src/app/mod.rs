@@ -910,6 +910,9 @@ impl App {
         };
         match std::env::set_current_dir(&path) {
             Ok(()) => {
+                if let Ok(canonical) = std::env::current_dir() {
+                    self.session.cwd = canonical.to_string_lossy().into_owned();
+                }
                 self.status_bar.refresh_cwd();
                 self.flash(format!("cd {}", path.display()))
             }
