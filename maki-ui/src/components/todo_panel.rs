@@ -8,7 +8,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use std::collections::HashMap;
 
 const PANEL_TITLE: &str = " Todos ";
-const HIDE_HINT: &str = " Ctrl+T to hide ";
+const HIDE_KEY: &str = " Ctrl+T";
+const HIDE_DESC: &str = " to hide ";
 const SHOW_HINT: &str = "Ctrl+T";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +130,13 @@ impl TodoPanel {
             .border_type(BorderType::Rounded)
             .border_style(t.panel_border)
             .title_top(Line::from(PANEL_TITLE).left_aligned())
-            .title_bottom(Line::from(Span::styled(HIDE_HINT, t.tool_dim)).right_aligned())
+            .title_bottom(
+                Line::from(vec![
+                    Span::styled(HIDE_KEY, t.keybind_key.add_modifier(Modifier::DIM)),
+                    Span::styled(HIDE_DESC, t.form_hint),
+                ])
+                .right_aligned(),
+            )
             .title_style(t.panel_title);
 
         let paragraph = Paragraph::new(lines)
