@@ -14,7 +14,7 @@ use maki_storage::DataDir;
 use tracing::warn;
 
 use crate::AppSession;
-use crate::agent_handle::{AgentCommand, AgentHandles, McpState, spawn_agent, toggle_disabled};
+use crate::agent::{AgentCommand, AgentHandles, McpState, spawn_agent, toggle_disabled};
 use crate::app::shell::{ShellEvent, spawn_shell};
 use crate::app::{App, Msg};
 use crate::chat::history_to_display;
