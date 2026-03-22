@@ -185,13 +185,13 @@ pub struct ToolOutputLines {
 
 impl ToolOutputLines {
     pub const DEFAULT: Self = Self {
-        bash: 10,
-        code_execution: 15,
-        task: 15,
-        index: 7,
-        grep: 5,
-        read: 5,
-        write: 30,
+        bash: 5,
+        code_execution: 5,
+        task: 5,
+        index: 3,
+        grep: 3,
+        read: 3,
+        write: 7,
         web: 3,
         other: 3,
     };
