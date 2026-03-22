@@ -354,7 +354,7 @@ fn first_submit_during_streaming_sends_to_agent() {
 
     type_and_submit(&mut app, "first");
     assert_eq!(app.queue.len(), 1);
-    assert!(app.queue.in_flight());
+    assert!(app.queue.dispatched());
     assert!(
         rx.try_recv().is_ok(),
         "first queued item should be sent eagerly"
@@ -382,7 +382,7 @@ fn consumed_event_pops_and_sends_next() {
 
     app.update(agent_msg(AgentEvent::QueueItemConsumed));
     assert_eq!(app.queue.len(), 1);
-    assert!(app.queue.in_flight());
+    assert!(app.queue.dispatched());
     assert!(rx.try_recv().is_ok(), "next item sent after consumed");
     assert_eq!(
         app.chats[0].message_count(),
@@ -391,6 +391,28 @@ fn consumed_event_pops_and_sends_next() {
     );
 }
 
+#[test]
+fn done_while_next_dispatched_stays_streaming() {
+    let mut app = test_app();
+    let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
+    app.cmd_tx = Some(tx);
+    app.status = Status::Streaming;
+    app.run_id = 1;
+
+    app.queue_and_notify(queued_msg("first"));
+    app.queue_and_notify(queued_msg("second"));
+    let _ = rx.try_recv();
+
+    app.update(agent_msg(AgentEvent::QueueItemConsumed));
+    assert!(app.queue.dispatched());
+
+    let actions = app.update(done_event());
+    assert!(actions.is_empty());
+    assert!(
+        matches!(app.status, Status::Streaming),
+        "should stay streaming while next item is in flight"
+    );
+}
 #[test]
 fn stale_consumed_after_delete_is_noop() {
     let mut app = test_app();
@@ -401,10 +423,10 @@ fn stale_consumed_after_delete_is_noop() {
 
     app.queue_and_notify(queued_msg("first"));
     app.queue_and_notify(queued_msg("second"));
-    assert!(app.queue.in_flight());
+    assert!(app.queue.dispatched());
 
     app.queue.remove(0);
-    assert!(!app.queue.in_flight());
+    assert!(!app.queue.dispatched());
     assert_eq!(app.queue.len(), 1);
 
     let before = app.chats[0].message_count();
@@ -843,7 +865,7 @@ fn compact_during_streaming_sends_to_agent() {
     assert!(actions.is_empty());
     assert_eq!(app.queue.len(), 1);
     assert!(matches!(app.queue[0], QueuedItem::Compact));
-    assert!(app.queue.in_flight());
+    assert!(app.queue.dispatched());
     assert!(rx.try_recv().is_ok(), "compact should be sent eagerly");
 }
 
@@ -856,7 +878,7 @@ fn delete_front_queue_item_drains_on_done() {
     app.queue.push(queued_msg("second"));
 
     app.queue.remove(0);
-    assert!(!app.queue.in_flight());
+    assert!(!app.queue.dispatched());
 
     let actions = app.update(agent_msg(AgentEvent::Done {
         usage: TokenUsage::default(),

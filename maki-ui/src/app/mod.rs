@@ -773,7 +773,7 @@ impl App {
         let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);
 
         if matches!(result, ChatEventResult::QueueItemConsumed) && chat_idx == 0 {
-            self.drain_consumed_item();
+            self.on_queue_item_consumed();
             return vec![];
         }
 
@@ -784,7 +784,7 @@ impl App {
                     self.status_bar.clear_flash();
                     self.save_session();
                     self.chat_index.clear();
-                    if let Some(actions) = self.drain_next_queued() {
+                    if let Some(actions) = self.on_agent_done() {
                         return actions;
                     }
                     self.status = Status::Idle;
