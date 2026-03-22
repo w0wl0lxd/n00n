@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use crate::animation::spinner_frame;
 use crate::components::Overlay;
+use crate::components::hint_line;
 use crate::components::is_ctrl;
 use crate::components::keybindings::key;
 use crate::components::modal::Modal;
@@ -763,13 +764,7 @@ fn render_search(frame: &mut Frame, area: Rect, search: &TextBuffer) {
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, hints: &[(&str, &str)]) {
-    let t = crate::theme::current();
-    let mut spans = Vec::with_capacity(hints.len() * 2);
-    for (key, desc) in hints {
-        spans.push(Span::styled(format!("  {key}"), t.keybind_key));
-        spans.push(Span::styled(format!(" {desc}"), t.form_hint));
-    }
-    frame.render_widget(Paragraph::new(vec![Line::from(spans)]), area);
+    frame.render_widget(Paragraph::new(vec![hint_line(hints)]), area);
 }
 
 #[cfg(test)]
