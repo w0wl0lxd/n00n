@@ -104,7 +104,8 @@ impl App {
     }
 
     fn render_messages(&mut self, frame: &mut Frame, layout: &ViewLayout, render_chat: usize) {
-        self.chats[render_chat].set_accent(self.mode.color());
+        let accent = self.effective_mode_color();
+        self.chats[render_chat].set_accent(accent);
         self.chats[render_chat].view(frame, layout.msg_area, self.selection_state.is_some());
     }
 
@@ -129,7 +130,7 @@ impl App {
                 frame,
                 layout.input_area,
                 streaming,
-                self.mode.color(),
+                self.effective_mode_color(),
                 !self.any_overlay_open(),
                 todo_hint,
             );

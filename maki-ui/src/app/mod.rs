@@ -609,7 +609,7 @@ impl App {
                         self.active_chat().scroll(-1);
                         vec![]
                     }
-                    KeyCode::Tab => self.toggle_mode(),
+                    KeyCode::Tab if !self.is_bash_input() => self.toggle_mode(),
                     KeyCode::Esc => {
                         if let Some(t) = self.last_esc.take()
                             && t.elapsed() < self.status_bar.flash_duration

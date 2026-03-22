@@ -109,13 +109,33 @@ impl App {
     }
 
     pub(super) fn mode_label(&self) -> (Cow<'static, str>, Style) {
-        let label: Cow<'static, str> = match self.mode {
-            Mode::Build => "[BUILD]".into(),
-            Mode::Plan => "[PLAN]".into(),
+        let label: Cow<'static, str> = if self.is_bash_input() {
+            "[BASH]".into()
+        } else {
+            match self.mode {
+                Mode::Build => "[BUILD]".into(),
+                Mode::Plan => "[PLAN]".into(),
+            }
         };
         let style = Style::new()
-            .fg(self.mode.color())
+            .fg(self.effective_mode_color())
             .add_modifier(Modifier::BOLD);
         (label, style)
+    }
+
+    pub(crate) fn is_bash_input(&self) -> bool {
+        self.input_box
+            .buffer
+            .lines()
+            .first()
+            .is_some_and(|l| l.starts_with('!'))
+    }
+
+    pub(super) fn effective_mode_color(&self) -> Color {
+        if self.is_bash_input() {
+            theme::current().mode_bash
+        } else {
+            self.mode.color()
+        }
     }
 }

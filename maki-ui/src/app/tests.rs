@@ -2164,3 +2164,21 @@ fn ctrl_c_closes_overlay_instead_of_quitting() {
     assert!(!app.help_modal.is_open());
     assert!(actions.is_empty());
 }
+
+#[test]
+fn bash_prefix_overrides_mode() {
+    let mut app = test_app();
+
+    app.input_box.set_input("! ls".into());
+    assert_eq!(&*app.mode_label().0, "[BASH]");
+
+    app.update(Msg::Key(key(KeyCode::Tab)));
+    assert_eq!(
+        app.mode,
+        Mode::Build,
+        "tab must not toggle while bash prefix present"
+    );
+
+    app.input_box.set_input("ls".into());
+    assert_eq!(&*app.mode_label().0, "[BUILD]");
+}
