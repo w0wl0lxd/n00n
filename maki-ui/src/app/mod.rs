@@ -165,7 +165,7 @@ impl App {
             session_picker: SessionPicker::new(),
             rewind_picker: RewindPicker::new(),
             help_modal: HelpModal::new(),
-            btw_modal: BtwModal::new(),
+            btw_modal: BtwModal::new(ui_config.typewriter_ms_per_char),
             memory_modal: MemoryModal::new(),
             search_modal: SearchModal::new(),
             todo_panel: TodoPanel::new(),
