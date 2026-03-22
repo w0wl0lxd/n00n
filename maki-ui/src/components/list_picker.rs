@@ -654,7 +654,10 @@ fn render_list<T: PickerItem>(
     enabled: Option<&[bool]>,
 ) {
     if filtered.is_empty() {
-        let line = Line::from(Span::styled(format!("  {NO_MATCHES}"), theme::current().cmd_desc));
+        let line = Line::from(Span::styled(
+            format!("  {NO_MATCHES}"),
+            theme::current().cmd_desc,
+        ));
         frame.render_widget(Paragraph::new(vec![line]), area);
         return;
     }
