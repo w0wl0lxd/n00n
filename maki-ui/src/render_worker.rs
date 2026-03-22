@@ -18,8 +18,8 @@ const FALLBACK_MAX_THREADS: usize = 4;
 
 struct RenderJob {
     id: u64,
-    tool_input: Option<ToolInput>,
-    tool_output: Option<ToolOutput>,
+    tool_input: Option<Arc<ToolInput>>,
+    tool_output: Option<Arc<ToolOutput>>,
     width: u16,
     max_lines: usize,
     expanded: bool,
@@ -67,8 +67,8 @@ impl RenderWorker {
 
     pub fn send(
         &self,
-        tool_input: Option<ToolInput>,
-        tool_output: Option<ToolOutput>,
+        tool_input: Option<Arc<ToolInput>>,
+        tool_output: Option<Arc<ToolOutput>>,
         width: u16,
         max_lines: usize,
         expanded: bool,
@@ -118,8 +118,8 @@ impl RenderWorker {
 fn worker_loop(inner: &PoolInner) {
     while let Ok(job) = inner.job_rx.recv_timeout(IDLE_TIMEOUT) {
         let content = code_view::render_tool_content(
-            job.tool_input.as_ref(),
-            job.tool_output.as_ref(),
+            job.tool_input.as_deref(),
+            job.tool_output.as_deref(),
             true,
             job.width,
             job.max_lines,

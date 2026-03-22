@@ -432,27 +432,16 @@ pub enum AgentEvent {
         id: String,
         name: String,
     },
-    ToolStart(ToolStartEvent),
+    ToolStart(Box<ToolStartEvent>),
     ToolOutput {
         id: String,
         content: String,
     },
-    ToolDone(ToolDoneEvent),
-    BatchProgress {
-        batch_id: String,
-        index: usize,
-        status: BatchToolStatus,
-        output: Option<ToolOutput>,
-    },
-    TurnComplete {
-        message: Message,
-        usage: TokenUsage,
-        model: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        context_size: Option<u32>,
-    },
+    ToolDone(Box<ToolDoneEvent>),
+    BatchProgress(Box<BatchProgressEvent>),
+    TurnComplete(Box<TurnCompleteEvent>),
     ToolResultsSubmitted {
-        message: Message,
+        message: Box<Message>,
     },
     QuestionPrompt {
         id: String,
@@ -474,6 +463,23 @@ pub enum AgentEvent {
         message: String,
     },
     AuthRequired,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TurnCompleteEvent {
+    pub message: Message,
+    pub usage: TokenUsage,
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_size: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchProgressEvent {
+    pub batch_id: String,
+    pub index: usize,
+    pub status: BatchToolStatus,
+    pub output: Option<ToolOutput>,
 }
 
 #[derive(Debug, Clone, Serialize)]

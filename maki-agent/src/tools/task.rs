@@ -65,7 +65,7 @@ impl Task {
                 .map_err(|e| e.to_string())?;
             (resolved_model, Arc::from(resolved_provider))
         } else {
-            (ctx.model.clone(), Arc::clone(&ctx.provider))
+            (Model::clone(&ctx.model), Arc::clone(&ctx.provider))
         };
 
         info!(

@@ -152,12 +152,12 @@ pub fn convert_messages(messages: &[Message], system: &str) -> Vec<Value> {
         match msg.role {
             Role::User => {
                 let mut tool_results = Vec::new();
-                let mut text_parts = Vec::new();
+                let mut text_parts: Vec<&str> = Vec::new();
                 let mut image_parts = Vec::new();
 
                 for block in &msg.content {
                     match block {
-                        ContentBlock::Text { text } => text_parts.push(text.clone()),
+                        ContentBlock::Text { text } => text_parts.push(text.as_str()),
                         ContentBlock::Image { source } => {
                             image_parts.push(json!({
                                 "type": "image_url",

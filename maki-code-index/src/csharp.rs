@@ -195,7 +195,7 @@ fn method_signature_free(node: Node, source: &[u8]) -> String {
     } else {
         format!("{ret} {name}{params}")
     };
-    compact_ws(&prefixed(&mods, format_args!("{base}")))
+    compact_ws(&prefixed(&mods, format_args!("{base}"))).into_owned()
 }
 
 fn field_text_free(node: Node, source: &[u8]) -> String {

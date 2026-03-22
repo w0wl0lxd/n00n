@@ -6,7 +6,7 @@ use tracing::info;
 use super::history::History;
 use super::streaming::stream_with_retry;
 use crate::cancel::CancelToken;
-use crate::{AgentError, AgentEvent, EventSender};
+use crate::{AgentError, AgentEvent, EventSender, TurnCompleteEvent};
 
 pub(super) const CONTINUE_AFTER_COMPACT: &str = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed. If you learned important project context during this session, consider saving it to memory before it's lost.";
 const IMAGE_PLACEHOLDER: &str = "[image]";
@@ -35,12 +35,12 @@ pub(super) async fn compact_history(
     )
     .await?;
 
-    event_tx.send(AgentEvent::TurnComplete {
+    event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
         message: response.message.clone(),
         usage: response.usage,
         model: model.id.clone(),
         context_size: Some(response.usage.output),
-    })?;
+    })))?;
 
     let new_history = vec![
         Message::user("What did we do so far?".into()),

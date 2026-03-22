@@ -101,7 +101,7 @@ impl TsJsExtractor {
         Some(SkeletonEntry::new(
             Section::Function,
             node,
-            compact_ws(&format!("{ep}{name}{params}{ret_str}")),
+            compact_ws(&format!("{ep}{name}{params}{ret_str}")).into_owned(),
         ))
     }
 

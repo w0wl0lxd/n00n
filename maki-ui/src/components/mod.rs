@@ -37,6 +37,7 @@ pub(crate) trait Overlay {
 }
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -161,7 +162,7 @@ pub struct LoadedSession {
 use std::path::PathBuf;
 
 pub enum Action {
-    SendMessage(AgentInput),
+    SendMessage(Box<AgentInput>),
     ShellCommand {
         id: String,
         command: String,
@@ -169,7 +170,7 @@ pub enum Action {
     },
     CancelAgent,
     NewSession,
-    LoadSession(LoadedSession),
+    LoadSession(Box<LoadedSession>),
     ChangeModel(String),
     Compact,
     ToggleMcp(String, bool),
@@ -228,8 +229,8 @@ pub enum ToolStatus {
 pub struct DisplayMessage {
     pub role: DisplayRole,
     pub text: String,
-    pub tool_input: Option<ToolInput>,
-    pub tool_output: Option<ToolOutput>,
+    pub tool_input: Option<Arc<ToolInput>>,
+    pub tool_output: Option<Arc<ToolOutput>>,
     pub live_output: Option<String>,
     pub annotation: Option<String>,
     pub plan_path: Option<String>,
@@ -259,14 +260,15 @@ impl DisplayMessage {
     /// text (preserving markdown).
     pub fn copy_text(&self) -> String {
         match &self.role {
-            DisplayRole::Tool { name, .. } => {
+            DisplayRole::Tool(t) => {
+                let name = t.name;
                 let (header, body) = self.text.split_once('\n').unwrap_or((&self.text, ""));
                 let mut out = format!("{name}> {header}");
-                if let Some(ToolInput::Code { code, .. }) = &self.tool_input {
+                if let Some(ToolInput::Code { code, .. }) = self.tool_input.as_deref() {
                     out.push('\n');
                     out.push_str(code.trim_end());
                 }
-                match &self.tool_output {
+                match self.tool_output.as_deref() {
                     Some(
                         structured @ (ToolOutput::Diff { .. }
                         | ToolOutput::ReadCode { .. }
@@ -320,15 +322,18 @@ impl DisplayMessage {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ToolRole {
+    pub id: String,
+    pub status: ToolStatus,
+    pub name: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum DisplayRole {
     User,
     Assistant,
     Thinking,
-    Tool {
-        id: String,
-        status: ToolStatus,
-        name: &'static str,
-    },
+    Tool(Box<ToolRole>),
     Error,
     Done,
 }
@@ -336,7 +341,7 @@ pub enum DisplayRole {
 impl DisplayRole {
     pub fn tool_name(&self) -> Option<&'static str> {
         match self {
-            DisplayRole::Tool { name, .. } => Some(*name),
+            DisplayRole::Tool(t) => Some(t.name),
             _ => None,
         }
     }
@@ -390,11 +395,11 @@ mod tests {
 
     fn tool_msg(text: &str) -> DisplayMessage {
         DisplayMessage::new(
-            DisplayRole::Tool {
+            DisplayRole::Tool(Box::new(ToolRole {
                 id: "t1".into(),
                 status: ToolStatus::Success,
                 name: "read",
-            },
+            })),
             text.into(),
         )
     }
@@ -408,24 +413,24 @@ mod tests {
     #[test]
     fn copy_text_tool_structured_output_uses_as_display_text() {
         let mut msg = tool_msg("read /src/main.rs\nignored body");
-        msg.tool_output = Some(ToolOutput::ReadCode {
+        msg.tool_output = Some(Arc::new(ToolOutput::ReadCode {
             path: "main.rs".into(),
             start_line: 1,
             lines: vec!["fn main() {}".into()],
             total_lines: 1,
             instructions: None,
-        });
+        }));
         assert_eq!(msg.copy_text(), "read> read /src/main.rs\n1: fn main() {}");
     }
 
     #[test]
     fn copy_text_tool_with_code_input() {
         let mut msg = tool_msg("bash\nold body");
-        msg.tool_input = Some(ToolInput::Code {
+        msg.tool_input = Some(Arc::new(ToolInput::Code {
             language: "bash".into(),
             code: "echo hi\n".into(),
-        });
-        msg.tool_output = Some(ToolOutput::Plain("done".into()));
+        }));
+        msg.tool_output = Some(Arc::new(ToolOutput::Plain("done".into())));
         assert_eq!(msg.copy_text(), "read> bash\necho hi\nold body");
     }
 
@@ -433,17 +438,17 @@ mod tests {
     #[test_case("header only",       None,                                      "read> header only"       ; "no_output_no_body")]
     fn copy_text_tool_fallback(text: &str, output: Option<ToolOutput>, expected: &str) {
         let mut msg = tool_msg(text);
-        msg.tool_output = output;
+        msg.tool_output = output.map(Arc::new);
         assert_eq!(msg.copy_text(), expected);
     }
 
     #[test]
     fn copy_text_tool_batch_empty_entries() {
         let mut msg = tool_msg("batch\n3 tools ran");
-        msg.tool_output = Some(ToolOutput::Batch {
+        msg.tool_output = Some(Arc::new(ToolOutput::Batch {
             entries: vec![],
             text: "ignored".into(),
-        });
+        }));
         assert_eq!(msg.copy_text(), "read> batch");
     }
 }

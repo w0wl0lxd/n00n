@@ -6,7 +6,7 @@ use maki_agent::tools::{
 use maki_agent::{
     AgentEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, Envelope,
     GrepFileEntry, GrepMatch, QuestionInfo, QuestionOption, SubagentInfo, TodoItem, TodoPriority,
-    TodoStatus, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
+    TodoStatus, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
 use maki_providers::{Message, TokenUsage};
 
@@ -67,32 +67,32 @@ fn tool_start_with(
     input: Option<ToolInput>,
     annotation: Option<&str>,
 ) -> AgentEvent {
-    AgentEvent::ToolStart(ToolStartEvent {
+    AgentEvent::ToolStart(Box::new(ToolStartEvent {
         id: id.into(),
         tool,
         summary: summary.into(),
         annotation: annotation.map(Into::into),
         input,
         output: None,
-    })
+    }))
 }
 
 fn tool_done(id: &str, tool: &'static str, output: ToolOutput, is_error: bool) -> AgentEvent {
-    AgentEvent::ToolDone(ToolDoneEvent {
+    AgentEvent::ToolDone(Box::new(ToolDoneEvent {
         id: id.into(),
         tool,
         output,
         is_error,
-    })
+    }))
 }
 
 fn turn_complete() -> AgentEvent {
-    AgentEvent::TurnComplete {
+    AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
         message: Message::user(String::new()),
         usage: TokenUsage::default(),
         model: "mock".into(),
         context_size: None,
-    }
+    }))
 }
 
 pub fn mock_questions() -> Vec<QuestionInfo> {

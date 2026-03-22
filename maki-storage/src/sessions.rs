@@ -292,8 +292,9 @@ where
     U: Serialize,
     T: Serialize,
 {
-    write_record(
-        file,
+    let mut buf = Vec::new();
+    append_record(
+        &mut buf,
         &LogRecord::<&M, &U, &T>::Header {
             v: LOG_FORMAT_VERSION,
             id: session.id.clone(),
@@ -302,32 +303,32 @@ where
             created_at: session.created_at,
         },
     )?;
+    file.write_all(&buf).map_err(StorageError::from)?;
     for msg in &session.messages {
-        write_record(file, &LogRecord::<&M, &U, &T>::Msg { d: msg })?;
+        buf.clear();
+        append_record(&mut buf, &LogRecord::<&M, &U, &T>::Msg { d: msg })?;
+        file.write_all(&buf).map_err(StorageError::from)?;
     }
     for (id, output) in &session.tool_outputs {
-        write_record(
-            file,
+        buf.clear();
+        append_record(
+            &mut buf,
             &LogRecord::<&M, &U, &T>::Out {
                 id: id.clone(),
                 d: output,
             },
         )?;
+        file.write_all(&buf).map_err(StorageError::from)?;
     }
-    write_record(
-        file,
+    buf.clear();
+    append_record(
+        &mut buf,
         &LogRecord::<&M, &U, &T>::Meta {
             title: session.title.clone(),
             token_usage: &session.token_usage,
             updated_at: session.updated_at,
         },
     )?;
-    Ok(())
-}
-
-fn write_record<R: Serialize>(file: &mut File, record: &R) -> Result<(), SessionError> {
-    let mut buf = Vec::new();
-    append_record(&mut buf, record)?;
     file.write_all(&buf).map_err(StorageError::from)?;
     Ok(())
 }
@@ -345,15 +346,8 @@ where
     T: DeserializeOwned,
 {
     let file = File::open(path).map_err(StorageError::from)?;
-    let lines: Vec<String> = BufReader::new(file)
-        .lines()
-        .collect::<Result<_, _>>()
-        .map_err(StorageError::from)?;
-    let lines: Vec<&str> = lines
-        .iter()
-        .map(String::as_str)
-        .filter(|l| !l.is_empty())
-        .collect();
+    let reader = BufReader::new(file);
+    let mut line_count = 0usize;
 
     let mut id = String::new();
     let mut model = String::new();
@@ -366,14 +360,19 @@ where
     let mut updated_at = 0u64;
     let mut got_header = false;
 
-    for (i, line) in lines.iter().enumerate() {
-        let record: LogRecord<M, U, T> = match serde_json::from_str(line) {
+    for line_result in reader.lines() {
+        let line = line_result.map_err(StorageError::from)?;
+        line_count += 1;
+        if line.is_empty() {
+            continue;
+        }
+        let record: LogRecord<M, U, T> = match serde_json::from_str(&line) {
             Ok(r) => r,
             Err(e) => {
                 warn!(
                     path = %path.display(),
                     error = %e,
-                    discarded_lines = lines.len() - i,
+                    line = line_count,
                     "corrupt/truncated JSONL record; discarding trailing lines",
                 );
                 break;

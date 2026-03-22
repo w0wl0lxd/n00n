@@ -75,7 +75,8 @@ impl ScalaExtractor {
         let label = compact_ws(&prefixed(
             &mods,
             format_args!("{keyword} {name}{type_params}{extends}"),
-        ));
+        ))
+        .into_owned();
         let children = self.extract_template_body(node, source);
         Some(SkeletonEntry::new(section, node, label).with_children(children))
     }
@@ -136,6 +137,7 @@ impl ScalaExtractor {
             &mods,
             format_args!("def {name}{type_params}{params}{ret}"),
         ))
+        .into_owned()
     }
 
     fn val_text(&self, node: Node, source: &[u8]) -> String {
@@ -157,6 +159,7 @@ impl ScalaExtractor {
             &compact_ws(&prefixed(&mods, format_args!("{keyword} {pattern}{ty}"))),
             80,
         )
+        .into_owned()
     }
 
     fn extract_function(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -182,7 +185,8 @@ impl ScalaExtractor {
         let label = compact_ws(&prefixed(
             &mods,
             format_args!("type {name}{type_params}{rhs}"),
-        ));
+        ))
+        .into_owned();
         Some(SkeletonEntry::new(Section::Type, node, label))
     }
 
@@ -196,7 +200,8 @@ impl ScalaExtractor {
         let label = compact_ws(&prefixed(
             &mods,
             format_args!("enum {name}{type_params}{extends}"),
-        ));
+        ))
+        .into_owned();
         let mut cases = Vec::new();
         if let Some(body) = node.child_by_field_name("body") {
             let mut cursor = body.walk();

@@ -42,6 +42,7 @@ pub struct InterpreterResult {
 
 struct StreamingWriter<'a> {
     buffer: String,
+    flushed_pos: usize,
     on_line: &'a mut dyn FnMut(&str),
 }
 
@@ -54,7 +55,8 @@ impl PrintWriterCallback for StreamingWriter<'_> {
     fn stdout_push(&mut self, ch: char) -> Result<(), MontyException> {
         self.buffer.push(ch);
         if ch == '\n' {
-            (self.on_line)(&self.buffer);
+            (self.on_line)(&self.buffer[self.flushed_pos..]);
+            self.flushed_pos = self.buffer.len();
         }
         Ok(())
     }
@@ -81,6 +83,7 @@ pub fn run_streaming(
 ) -> Result<InterpreterResult, InterpreterError> {
     let mut writer = StreamingWriter {
         buffer: String::new(),
+        flushed_pos: 0,
         on_line: on_output,
     };
     let mut print_writer = PrintWriter::Callback(&mut writer);

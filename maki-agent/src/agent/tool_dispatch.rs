@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -67,25 +69,32 @@ struct ParsedToolCall {
     call: ResolvedCall,
 }
 
-pub(super) struct RecentCalls(VecDeque<(String, Value)>);
+pub(super) struct RecentCalls(VecDeque<(String, u64)>);
 
 impl RecentCalls {
     pub(super) fn new() -> Self {
         Self(VecDeque::new())
     }
 
+    fn hash_input(input: &Value) -> u64 {
+        let mut h = DefaultHasher::new();
+        input.to_string().hash(&mut h);
+        h.finish()
+    }
+
     fn is_doom_loop(&self, name: &str, input: &Value) -> bool {
+        let hash = Self::hash_input(input);
         self.0.len() >= DOOM_LOOP_THRESHOLD - 1
             && self
                 .0
                 .iter()
                 .rev()
                 .take(DOOM_LOOP_THRESHOLD - 1)
-                .all(|(n, i)| n == name && i == input)
+                .all(|(n, h)| n == name && *h == hash)
     }
 
-    fn record(&mut self, name: String, input: Value) {
-        self.0.push_back((name, input));
+    fn record(&mut self, name: String, input: &Value) {
+        self.0.push_back((name, Self::hash_input(input)));
         if self.0.len() > DOOM_LOOP_THRESHOLD {
             self.0.pop_front();
         }
@@ -118,7 +127,7 @@ fn parse_tool_calls<'a>(
                 }
             }
         }
-        recent.record(name.to_owned(), input.clone());
+        recent.record(name.to_owned(), input);
     }
 
     (parsed, errors)
@@ -136,7 +145,7 @@ async fn execute_tools(tool_calls: &[ParsedToolCall], ctx: &ToolContext) -> Vec<
         let call = parsed.call.clone();
         set.spawn(async move {
             let output = call.execute(&tool_ctx, id).await;
-            event_tx.try_send(AgentEvent::ToolDone(output.clone()));
+            event_tx.try_send(AgentEvent::ToolDone(Box::new(output.clone())));
             output
         });
     }
@@ -205,13 +214,13 @@ pub(super) async fn process_tool_calls(
     history.push(response.message);
 
     for p in &parsed {
-        event_tx.send(AgentEvent::ToolStart(
+        event_tx.send(AgentEvent::ToolStart(Box::new(
             p.call.start_event(p.id.clone(), mcp.map(|m| m.as_ref())),
-        ))?;
+        )))?;
     }
 
     for err in &errors {
-        event_tx.try_send(AgentEvent::ToolDone(err.clone()));
+        event_tx.try_send(AgentEvent::ToolDone(Box::new(err.clone())));
     }
 
     let mut results = execute_tools(&parsed, ctx).await;
@@ -219,7 +228,7 @@ pub(super) async fn process_tool_calls(
     results.extend(errors);
     let tool_msg = crate::types::tool_results(results);
     event_tx.send(AgentEvent::ToolResultsSubmitted {
-        message: tool_msg.clone(),
+        message: Box::new(tool_msg.clone()),
     })?;
     history.push(tool_msg);
     Ok(())
@@ -236,7 +245,7 @@ mod tests {
     fn recent_calls(entries: &[(&str, Value)]) -> RecentCalls {
         let mut rc = RecentCalls::new();
         for (n, v) in entries {
-            rc.record(n.to_string(), v.clone());
+            rc.record(n.to_string(), v);
         }
         rc
     }

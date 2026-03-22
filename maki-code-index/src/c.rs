@@ -41,7 +41,7 @@ impl CExtractor {
         Some(SkeletonEntry::new(
             Section::Function,
             node,
-            compact_ws(&sig),
+            compact_ws(&sig).into_owned(),
         ))
     }
 

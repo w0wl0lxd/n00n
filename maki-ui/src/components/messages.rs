@@ -4,7 +4,7 @@ use super::tool_display::{
     build_batch_entry_lines, build_tool_lines, done_style, error_style, format_timestamp_now,
     thinking_style, tool_output_annotation, truncate_to_header, user_style,
 };
-use super::{DisplayMessage, DisplayRole, ToolStatus, apply_scroll_delta};
+use super::{DisplayMessage, DisplayRole, ToolRole, ToolStatus, apply_scroll_delta};
 use crate::animation::spinner_str;
 use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
 use crate::render_worker::RenderWorker;
@@ -14,6 +14,7 @@ use crate::theme;
 use maki_config::{ToolOutputLines, UiConfig};
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 
 use maki_agent::tools::{ToolCall, WEBFETCH_TOOL_NAME};
@@ -167,15 +168,9 @@ impl MessagesPanel {
     pub fn load_messages(&mut self, msgs: Vec<DisplayMessage>) {
         self.in_progress_count = msgs
             .iter()
-            .filter(|m| {
-                matches!(
-                    m.role,
-                    DisplayRole::Tool {
-                        status: ToolStatus::InProgress,
-                        ..
-                    }
-                )
-            })
+            .filter(
+                |m| matches!(&m.role, DisplayRole::Tool(t) if t.status == ToolStatus::InProgress),
+            )
             .count();
         self.messages = msgs;
         self.cached_segments.clear();
@@ -196,11 +191,11 @@ impl MessagesPanel {
             return;
         };
         self.flush();
-        let role = DisplayRole::Tool {
+        let role = DisplayRole::Tool(Box::new(ToolRole {
             id,
             status: ToolStatus::InProgress,
             name,
-        };
+        }));
         let mut msg = DisplayMessage::new(role, String::new());
         msg.timestamp = Some(format_timestamp_now());
         self.messages.push(msg);
@@ -211,28 +206,28 @@ impl MessagesPanel {
         if let Some(msg) = self
             .messages
             .iter_mut()
-            .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == event.id))
+            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == event.id))
         {
-            if let DisplayRole::Tool { ref mut name, .. } = msg.role {
-                *name = event.tool;
+            if let DisplayRole::Tool(t) = &mut msg.role {
+                t.name = event.tool;
             }
             msg.text = event.summary;
-            msg.tool_input = event.input;
-            msg.tool_output = event.output;
+            msg.tool_input = event.input.map(Arc::new);
+            msg.tool_output = event.output.map(Arc::new);
             msg.annotation = event.annotation;
             self.rebuild_tool_segment(&event.id);
             return;
         }
         self.flush();
         self.messages.push(DisplayMessage {
-            role: DisplayRole::Tool {
+            role: DisplayRole::Tool(Box::new(ToolRole {
                 id: event.id,
                 status: ToolStatus::InProgress,
                 name: event.tool,
-            },
+            })),
             text: event.summary,
-            tool_input: event.input,
-            tool_output: event.output,
+            tool_input: event.input.map(Arc::new),
+            tool_output: event.output.map(Arc::new),
             live_output: None,
             annotation: event.annotation,
             plan_path: None,
@@ -247,7 +242,7 @@ impl MessagesPanel {
         let Some(msg) = self
             .messages
             .iter_mut()
-            .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == tool_id))
+            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == tool_id))
         else {
             return;
         };
@@ -266,19 +261,14 @@ impl MessagesPanel {
         let Some(msg) = self
             .messages
             .iter_mut()
-            .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == event.id))
+            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == event.id))
         else {
             return;
         };
-        let was_in_progress = matches!(
-            msg.role,
-            DisplayRole::Tool {
-                status: ToolStatus::InProgress,
-                ..
-            }
-        );
-        if let DisplayRole::Tool { ref mut status, .. } = msg.role {
-            *status = if event.is_error {
+        let was_in_progress =
+            matches!(&msg.role, DisplayRole::Tool(t) if t.status == ToolStatus::InProgress);
+        if let DisplayRole::Tool(t) = &mut msg.role {
+            t.status = if event.is_error {
                 ToolStatus::Error
             } else {
                 ToolStatus::Success
@@ -336,7 +326,7 @@ impl MessagesPanel {
             }
             _ => {}
         }
-        msg.tool_output = Some(event.output);
+        msg.tool_output = Some(Arc::new(event.output));
         msg.live_output = None;
         if was_in_progress {
             self.in_progress_count -= 1;
@@ -354,11 +344,12 @@ impl MessagesPanel {
         let Some(msg) = self
             .messages
             .iter_mut()
-            .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == batch_id))
+            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == batch_id))
         else {
             return;
         };
-        if let Some(ToolOutput::Batch { entries, .. }) = &mut msg.tool_output
+        if let Some(arc) = &mut msg.tool_output
+            && let ToolOutput::Batch { entries, .. } = Arc::make_mut(arc)
             && let Some(entry) = entries.get_mut(index)
         {
             entry.status = status;
@@ -389,15 +380,15 @@ impl MessagesPanel {
         let Some(idx) = self
             .messages
             .iter()
-            .rposition(|m| matches!(m.role, DisplayRole::Tool { .. }))
+            .rposition(|m| matches!(m.role, DisplayRole::Tool(_)))
         else {
             return;
         };
         self.messages[idx].turn_usage = Some(usage);
-        let DisplayRole::Tool { ref id, .. } = self.messages[idx].role else {
+        let DisplayRole::Tool(t) = &self.messages[idx].role else {
             unreachable!()
         };
-        let id = id.clone();
+        let id = t.id.clone();
         self.rebuild_tool_segment(&id);
     }
 
@@ -412,11 +403,12 @@ impl MessagesPanel {
             let Some(msg) = self
                 .messages
                 .iter_mut()
-                .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == batch_id))
+                .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == batch_id))
             else {
                 return;
             };
-            if let Some(ToolOutput::Batch { entries, .. }) = &mut msg.tool_output
+            if let Some(arc) = &mut msg.tool_output
+                && let ToolOutput::Batch { entries, .. } = Arc::make_mut(arc)
                 && let Some(entry) = entries.get_mut(idx)
             {
                 update_entry(entry);
@@ -426,7 +418,7 @@ impl MessagesPanel {
             let Some(msg) = self
                 .messages
                 .iter_mut()
-                .rfind(|m| matches!(m.role, DisplayRole::Tool { ref id, .. } if *id == tool_id))
+                .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == tool_id))
             else {
                 return;
             };
@@ -445,15 +437,14 @@ impl MessagesPanel {
     pub fn fail_in_progress(&mut self) {
         let mut batch_ids = Vec::new();
         for msg in &mut self.messages {
-            if let DisplayRole::Tool {
-                ref id,
-                ref mut status,
-                ..
-            } = msg.role
-                && *status == ToolStatus::InProgress
+            if let DisplayRole::Tool(t) = &mut msg.role
+                && t.status == ToolStatus::InProgress
             {
-                *status = ToolStatus::Error;
-                if let Some(ToolOutput::Batch { entries, .. }) = &mut msg.tool_output {
+                t.status = ToolStatus::Error;
+                let id = t.id.clone();
+                if let Some(arc) = &mut msg.tool_output
+                    && let ToolOutput::Batch { entries, .. } = Arc::make_mut(arc)
+                {
                     for entry in entries.iter_mut() {
                         if entry.status == BatchToolStatus::InProgress
                             || entry.status == BatchToolStatus::Pending
@@ -494,8 +485,8 @@ impl MessagesPanel {
             if let Some(msg) = self
                 .messages
                 .iter()
-                .rfind(|m| matches!(&m.role, DisplayRole::Tool { id, .. } if id == batch_id))
-                && let Some(ToolOutput::Batch { entries, .. }) = &msg.tool_output
+                .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == *batch_id))
+                && let Some(ToolOutput::Batch { entries, .. }) = msg.tool_output.as_deref()
             {
                 let child_prefix = format!("{batch_id}__");
                 for (j, entry) in entries.iter().enumerate() {
@@ -938,13 +929,14 @@ impl MessagesPanel {
         let Some(msg) = self
             .messages
             .iter()
-            .rfind(|m| matches!(&m.role, DisplayRole::Tool { id, .. } if id == tool_id))
+            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == tool_id))
         else {
             return;
         };
-        let DisplayRole::Tool { status, .. } = &msg.role else {
+        let DisplayRole::Tool(t) = &msg.role else {
             unreachable!()
         };
+        let status = t.status;
         let Some(seg_idx) = self
             .cached_segments
             .iter()
@@ -956,7 +948,7 @@ impl MessagesPanel {
         let expanded = self.expanded_tools.contains(tool_id);
         let mut tl = build_tool_lines(
             msg,
-            *status,
+            status,
             self.started_at,
             self.viewport_width,
             expanded,
@@ -977,7 +969,7 @@ impl MessagesPanel {
         seg.copy_text = msg.copy_text();
         seg.update_with_reuse(tl, &self.hl_worker);
 
-        if let Some(ToolOutput::Batch { entries, .. }) = &msg.tool_output {
+        if let Some(ToolOutput::Batch { entries, .. }) = msg.tool_output.as_deref() {
             let children: Vec<_> = entries
                 .iter()
                 .enumerate()
@@ -1036,8 +1028,9 @@ impl MessagesPanel {
         for i in self.cached_msg_count..self.messages.len() {
             let msg = &self.messages[i];
 
-            if let DisplayRole::Tool { ref id, status, .. } = msg.role {
-                let expanded = self.expanded_tools.contains(id);
+            if let DisplayRole::Tool(t) = &msg.role {
+                let expanded = self.expanded_tools.contains(&t.id);
+                let status = t.status;
                 let mut tl = build_tool_lines(
                     msg,
                     status,
@@ -1056,7 +1049,7 @@ impl MessagesPanel {
                         self.viewport_width,
                     );
                 }
-                let id = id.clone();
+                let id = t.id.clone();
                 let copy_text = msg.copy_text();
                 push_spacer_if_needed(&mut self.cached_segments);
                 let mut seg = Segment {
@@ -1068,7 +1061,7 @@ impl MessagesPanel {
                 seg.apply_highlight(tl, &self.hl_worker);
                 self.cached_segments.push(seg);
 
-                if let Some(ToolOutput::Batch { entries, .. }) = &msg.tool_output {
+                if let Some(ToolOutput::Batch { entries, .. }) = msg.tool_output.as_deref() {
                     for (j, entry) in entries.iter().enumerate() {
                         let child_id = format!("{id}__{j}");
                         let child_expanded = self.expanded_tools.contains(&child_id);
@@ -1097,7 +1090,7 @@ impl MessagesPanel {
                     DisplayRole::Thinking => thinking_style(),
                     DisplayRole::Error => error_style(),
                     DisplayRole::Done => done_style(),
-                    DisplayRole::Tool { .. } => unreachable!(),
+                    DisplayRole::Tool(_) => unreachable!(),
                 };
                 let prefix = if msg.plan_path.is_some() {
                     ""
@@ -1298,9 +1291,7 @@ mod tests {
         });
 
         assert_eq!(panel.messages.len(), 1);
-        assert!(
-            matches!(panel.messages[0].role, DisplayRole::Tool { status, .. } if status == expected)
-        );
+        assert!(matches!(&panel.messages[0].role, DisplayRole::Tool(t) if t.status == expected));
         assert!(panel.messages[0].text.contains("output"));
     }
 
@@ -1422,7 +1413,7 @@ mod tests {
 
         assert!(panel.streaming_text.is_empty());
         assert_eq!(panel.messages[0].role, DisplayRole::Assistant);
-        assert!(matches!(panel.messages[1].role, DisplayRole::Tool { .. }));
+        assert!(matches!(panel.messages[1].role, DisplayRole::Tool(_)));
     }
 
     #[test]
@@ -1590,9 +1581,9 @@ mod tests {
         panel
             .messages
             .iter()
-            .rfind(|m| matches!(&m.role, DisplayRole::Tool { id, .. } if id == tool_id))
+            .rfind(|m| matches!(&m.role, DisplayRole::Tool(t) if t.id == tool_id))
             .map(|m| match &m.role {
-                DisplayRole::Tool { status, .. } => *status,
+                DisplayRole::Tool(t) => t.status,
                 _ => unreachable!(),
             })
             .unwrap()
@@ -1727,11 +1718,11 @@ mod tests {
 
     fn tool_msg(id: &str, name: &'static str, status: ToolStatus) -> DisplayMessage {
         DisplayMessage::new(
-            DisplayRole::Tool {
+            DisplayRole::Tool(Box::new(ToolRole {
                 id: id.into(),
                 status,
                 name,
-            },
+            })),
             id.into(),
         )
     }
@@ -1940,7 +1931,7 @@ mod tests {
 
         panel.update_tool_model("b1__0", "anthropic/claude-haiku-4-20250414");
 
-        let batch_output = panel.messages[0].tool_output.as_ref().unwrap();
+        let batch_output = panel.messages[0].tool_output.as_deref().unwrap();
         let ToolOutput::Batch { entries, .. } = batch_output else {
             panic!("expected Batch");
         };
@@ -1976,7 +1967,7 @@ mod tests {
 
         panel.update_tool_summary("b1__0", "new name");
 
-        let ToolOutput::Batch { entries, .. } = panel.messages[0].tool_output.as_ref().unwrap()
+        let ToolOutput::Batch { entries, .. } = panel.messages[0].tool_output.as_deref().unwrap()
         else {
             panic!("expected Batch");
         };

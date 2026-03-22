@@ -63,9 +63,8 @@ impl CppExtractor {
         let bases = node
             .child_by_field_name("base_class_clause")
             .map(|n| format!(" : {}", node_text(n, source).trim_start_matches(':')))
-            .map(|s| compact_ws(&s))
+            .map(|s| compact_ws(&s).into_owned())
             .unwrap_or_default();
-
         let keyword = if is_class { "class" } else { "struct" };
         let label = format!("{keyword} {name}{bases}");
 
@@ -137,7 +136,7 @@ impl CppExtractor {
         } else {
             format!("{ret} {sig}")
         };
-        Some(compact_ws(&text))
+        Some(compact_ws(&text).into_owned())
     }
 
     fn declarator_sig(&self, node: Node, source: &[u8]) -> Option<String> {
@@ -216,7 +215,7 @@ impl CppExtractor {
             return match child.kind() {
                 "function_definition" => {
                     if let Some(sig) = self.method_sig(child, source) {
-                        let text = compact_ws(&format!("{prefix} {sig}"));
+                        let text = compact_ws(&format!("{prefix} {sig}")).into_owned();
                         vec![SkeletonEntry::new(Section::Function, node, text)]
                     } else {
                         Vec::new()
@@ -230,7 +229,7 @@ impl CppExtractor {
                 }
                 "declaration" => {
                     if let Some(sig) = self.decl_sig(child, source) {
-                        let text = compact_ws(&format!("{prefix} {sig}"));
+                        let text = compact_ws(&format!("{prefix} {sig}")).into_owned();
                         vec![SkeletonEntry::new(Section::Function, node, text)]
                     } else {
                         Vec::new()
@@ -260,10 +259,10 @@ impl CppExtractor {
         let bases = node
             .child_by_field_name("base_class_clause")
             .map(|n| format!(" : {}", node_text(n, source).trim_start_matches(':')))
-            .map(|s| compact_ws(&s))
+            .map(|s| compact_ws(&s).into_owned())
             .unwrap_or_default();
         let keyword = if is_class { "class" } else { "struct" };
-        let label = compact_ws(&format!("{prefix} {keyword} {name}{bases}"));
+        let label = compact_ws(&format!("{prefix} {keyword} {name}{bases}")).into_owned();
         let children = self.extract_class_body(node, source);
         let section = if is_class {
             Section::Class
@@ -289,7 +288,7 @@ impl CppExtractor {
         Some(SkeletonEntry::new(
             Section::Constant,
             node,
-            compact_ws(&text),
+            compact_ws(&text).into_owned(),
         ))
     }
 
@@ -305,7 +304,7 @@ impl CppExtractor {
         Some(SkeletonEntry::new(
             Section::Type,
             node,
-            compact_ws(&format!("typedef {ty} {decl}")),
+            compact_ws(&format!("typedef {ty} {decl}")).into_owned(),
         ))
     }
 }
@@ -354,7 +353,7 @@ impl LanguageExtractor for CppExtractor {
                 vec![SkeletonEntry::new(
                     Section::Type,
                     node,
-                    compact_ws(&format!("using {name} = {ty}")),
+                    compact_ws(&format!("using {name} = {ty}")).into_owned(),
                 )]
             }
             _ => Vec::new(),

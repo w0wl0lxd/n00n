@@ -761,17 +761,12 @@ impl App {
             None
         };
 
-        if let AgentEvent::TurnComplete {
-            usage,
-            context_size,
-            ..
-        } = envelope.event
-        {
-            self.token_usage += usage;
-            self.chats[chat_idx].token_usage += usage;
+        if let AgentEvent::TurnComplete(ref tc) = envelope.event {
+            self.token_usage += tc.usage;
+            self.chats[chat_idx].token_usage += tc.usage;
             self.chats[chat_idx].context_size =
-                context_size.unwrap_or_else(|| usage.context_tokens());
-            let formatted = format_turn_usage(&usage, &self.pricing);
+                tc.context_size.unwrap_or_else(|| tc.usage.context_tokens());
+            let formatted = format_turn_usage(&tc.usage, &self.pricing);
             self.chats[chat_idx].set_pending_turn_usage(formatted);
         }
 

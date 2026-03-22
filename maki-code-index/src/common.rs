@@ -3,7 +3,9 @@
 //! by `Section` (sorted by enum discriminant order, not source order) and renders them.
 //! Imports get special treatment: same-root paths are consolidated (e.g. two `std::` uses merge).
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fmt::Write;
 
 use tree_sitter::Node;
@@ -15,7 +17,14 @@ pub(crate) fn node_text<'a>(node: Node<'a>, source: &'a [u8]) -> &'a str {
     node.utf8_text(source).unwrap_or("")
 }
 
-pub(crate) fn compact_ws(s: &str) -> String {
+pub(crate) fn compact_ws(s: &str) -> Cow<'_, str> {
+    let needs_compact = s
+        .as_bytes()
+        .windows(2)
+        .any(|w| w[0].is_ascii_whitespace() && w[1].is_ascii_whitespace());
+    if !needs_compact {
+        return Cow::Borrowed(s);
+    }
     let mut out = String::with_capacity(s.len());
     let mut prev_ws = false;
     for ch in s.chars() {
@@ -29,27 +38,38 @@ pub(crate) fn compact_ws(s: &str) -> String {
             out.push(ch);
         }
     }
-    out
+    Cow::Owned(out)
 }
 
 #[allow(dead_code)]
-pub(crate) fn truncate(s: &str, max_chars: usize) -> String {
+pub(crate) fn truncate(s: &str, max_chars: usize) -> Cow<'_, str> {
     if s.chars().count() <= max_chars {
-        return s.to_string();
+        return Cow::Borrowed(s);
     }
     let boundary = s
         .char_indices()
         .nth(max_chars.saturating_sub(3))
         .map_or(s.len(), |(i, _)| i);
-    format!("{}...", &s[..boundary])
+    Cow::Owned(format!("{}...", &s[..boundary]))
 }
 
-pub(crate) fn line_range(start: usize, end: usize) -> String {
-    if start == end {
-        format!("[{start}]")
-    } else {
-        format!("[{start}-{end}]")
+pub(crate) struct LineRange {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl fmt::Display for LineRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.start == self.end {
+            write!(f, "[{}]", self.start)
+        } else {
+            write!(f, "[{}-{}]", self.start, self.end)
+        }
     }
+}
+
+pub(crate) fn line_range(start: usize, end: usize) -> LineRange {
+    LineRange { start, end }
 }
 
 #[cfg(feature = "lang-rust")]
@@ -164,7 +184,7 @@ pub(crate) fn fn_signature(node: Node, source: &[u8]) -> Option<String> {
             }
         })
         .unwrap_or_default();
-    Some(compact_ws(&format!("{name}{params}{ret}")))
+    Some(compact_ws(&format!("{name}{params}{ret}")).into_owned())
 }
 
 pub(crate) fn extract_enum_variants(body: Node, source: &[u8], variant_kind: &str) -> Vec<String> {
@@ -435,7 +455,7 @@ pub(crate) fn format_skeleton(
     module_doc: Option<(usize, usize)>,
     import_sep: &str,
 ) -> String {
-    let mut out = String::new();
+    let mut out = String::with_capacity(entries.len() * 80);
 
     if let Some((start, end)) = module_doc {
         let _ = writeln!(out, "module doc: {}", line_range(start, end));

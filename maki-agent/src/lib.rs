@@ -25,10 +25,10 @@ pub use maki_providers::AgentError;
 use maki_providers::Message;
 pub use maki_providers::{ImageMediaType, ImageSource};
 pub use types::{
-    AgentEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, Envelope,
-    EventSender, GrepFileEntry, GrepMatch, InstructionBlock, NO_FILES_FOUND, QuestionAnswer,
-    QuestionInfo, QuestionOption, SubagentInfo, TodoItem, TodoPriority, TodoStatus, ToolDoneEvent,
-    ToolInput, ToolOutput, ToolStartEvent,
+    AgentEvent, BatchProgressEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan,
+    Envelope, EventSender, GrepFileEntry, GrepMatch, InstructionBlock, NO_FILES_FOUND,
+    QuestionAnswer, QuestionInfo, QuestionOption, SubagentInfo, TodoItem, TodoPriority, TodoStatus,
+    ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

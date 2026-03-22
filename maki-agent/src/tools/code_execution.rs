@@ -69,16 +69,16 @@ impl CodeInterpreter {
                 let code = format!("{PREAMBLE}{code}");
 
                 let result = if let Some(ref id) = tool_use_id {
-                    let mut last_len = 0usize;
+                    let mut pending = String::new();
                     let mut last_flush = Instant::now();
-                    runner::run_streaming(&code, &tools, Some(&resolver), limits, &mut |stdout| {
-                        if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && stdout.len() > last_len
-                        {
+                    runner::run_streaming(&code, &tools, Some(&resolver), limits, &mut |line| {
+                        pending.push_str(line);
+                        if last_flush.elapsed() >= STREAM_FLUSH_INTERVAL && !pending.is_empty() {
                             event_tx.try_send(AgentEvent::ToolOutput {
                                 id: id.to_string(),
-                                content: stdout.to_owned(),
+                                content: pending.clone(),
                             });
-                            last_len = stdout.len();
+                            pending.clear();
                             last_flush = Instant::now();
                         }
                     })

@@ -30,7 +30,7 @@ impl LuaExtractor {
         Some(SkeletonEntry::new(
             Section::Function,
             node,
-            compact_ws(&format!("{name}{params}")),
+            compact_ws(&format!("{name}{params}")).into_owned(),
         ))
     }
 

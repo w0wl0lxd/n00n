@@ -8,6 +8,7 @@ use arc_swap::ArcSwap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use maki_agent::{
     AgentMode, QuestionInfo, QuestionOption, ToolDoneEvent, ToolOutput, ToolStartEvent,
+    TurnCompleteEvent,
 };
 use maki_config::UiConfig;
 use ratatui::layout::Rect;
@@ -224,12 +225,12 @@ fn tool_done_sets_plan_written_flag(output: ToolOutput, expect_written: bool) {
     app.status = Status::Streaming;
     app.run_id = 1;
 
-    app.update(agent_msg(AgentEvent::ToolDone(ToolDoneEvent {
+    app.update(agent_msg(AgentEvent::ToolDone(Box::new(ToolDoneEvent {
         id: "t1".into(),
         tool: "write",
         output,
         is_error: false,
-    })));
+    }))));
 
     assert_eq!(app.plan.is_written(), expect_written);
 }
@@ -642,12 +643,14 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
         output: 50,
         ..Default::default()
     };
-    app.update(agent_msg(AgentEvent::TurnComplete {
-        message: Default::default(),
-        usage: main_usage,
-        model: "test".into(),
-        context_size: None,
-    }));
+    app.update(agent_msg(AgentEvent::TurnComplete(Box::new(
+        TurnCompleteEvent {
+            message: Default::default(),
+            usage: main_usage,
+            model: "test".into(),
+            context_size: None,
+        },
+    ))));
 
     let sub_usage = TokenUsage {
         input: 200,
@@ -655,12 +658,12 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
         ..Default::default()
     };
     app.update(subagent_msg(
-        AgentEvent::TurnComplete {
+        AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
             message: Default::default(),
             usage: sub_usage,
             model: "test".into(),
             context_size: None,
-        },
+        })),
         "task1",
         None,
     ));
@@ -677,14 +680,14 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
 fn cancel_resets_all_chats_and_indices() {
     let mut app = app_with_subagent();
     app.update(subagent_msg(
-        AgentEvent::ToolStart(ToolStartEvent {
+        AgentEvent::ToolStart(Box::new(ToolStartEvent {
             id: "sub_t1".into(),
             tool: "bash",
             summary: "running".into(),
             annotation: None,
             input: None,
             output: None,
-        }),
+        })),
         "task1",
         None,
     ));
@@ -696,12 +699,12 @@ fn cancel_resets_all_chats_and_indices() {
 }
 
 fn finish_subagent(app: &mut App, id: &str, is_error: bool) {
-    app.update(agent_msg(AgentEvent::ToolDone(ToolDoneEvent {
+    app.update(agent_msg(AgentEvent::ToolDone(Box::new(ToolDoneEvent {
         id: id.into(),
         tool: "task",
         output: ToolOutput::Plain("result".into()),
         is_error,
-    })));
+    }))));
 }
 
 fn finish_subagent_task(app: &mut App, is_error: bool) {
@@ -1102,14 +1105,14 @@ fn double_esc_cancels_flushes_and_fails_tools() {
     app.update(agent_msg(AgentEvent::TextDelta {
         text: "partial".into(),
     }));
-    app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+    app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
         id: "t1".into(),
         tool: "bash",
         summary: "running".into(),
         annotation: None,
         input: None,
         output: None,
-    })));
+    }))));
 
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(actions.is_empty());
@@ -1428,14 +1431,14 @@ fn resolve_or_create_chat_sets_model_id_and_annotation() {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
-    app.update(agent_msg(AgentEvent::ToolStart(ToolStartEvent {
+    app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
         id: "task1".into(),
         tool: "task",
         summary: "research".into(),
         annotation: None,
         input: None,
         output: None,
-    })));
+    }))));
 
     app.update(subagent_msg_with_model(
         AgentEvent::TextDelta { text: "hi".into() },
@@ -1983,12 +1986,12 @@ fn stale_non_terminal_event_does_not_save_session() {
     cancel_app(&mut app);
 
     app.update(agent_msg_with_run_id(
-        AgentEvent::TurnComplete {
+        AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
             message: Message::user(String::new()),
             usage: TokenUsage::default(),
             model: "mock".into(),
             context_size: None,
-        },
+        })),
         old_run_id,
     ));
     assert!(app.session.messages.is_empty());

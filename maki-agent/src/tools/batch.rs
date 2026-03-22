@@ -6,7 +6,7 @@
 use std::fmt::Write;
 
 use crate::agent::{ResolvedCall, resolve_tool};
-use crate::{AgentEvent, BatchToolEntry, BatchToolStatus, ToolOutput};
+use crate::{AgentEvent, BatchProgressEvent, BatchToolEntry, BatchToolStatus, ToolOutput};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -104,12 +104,13 @@ impl Batch {
             let ctx = ctx.clone();
             let parsed_call = parsed_call.clone();
             set.spawn(async move {
-                ctx.event_tx.try_send(AgentEvent::BatchProgress {
-                    batch_id: batch_id.clone(),
-                    index: i,
-                    status: BatchToolStatus::InProgress,
-                    output: None,
-                });
+                ctx.event_tx
+                    .try_send(AgentEvent::BatchProgress(Box::new(BatchProgressEvent {
+                        batch_id: batch_id.clone(),
+                        index: i,
+                        status: BatchToolStatus::InProgress,
+                        output: None,
+                    })));
                 let (result, output) = match parsed_call {
                     Ok(call) => {
                         let inner_ctx = ToolContext {
@@ -117,7 +118,8 @@ impl Batch {
                             ..ctx.clone()
                         };
                         let done = call.execute(&inner_ctx, id).await;
-                        ctx.event_tx.try_send(AgentEvent::ToolDone(done.clone()));
+                        ctx.event_tx
+                            .try_send(AgentEvent::ToolDone(Box::new(done.clone())));
                         let text = done.output.as_text();
                         let result = if done.is_error { Err(text) } else { Ok(text) };
                         (result, Some(done.output))
@@ -129,12 +131,13 @@ impl Batch {
                 } else {
                     BatchToolStatus::Error
                 };
-                ctx.event_tx.try_send(AgentEvent::BatchProgress {
-                    batch_id,
-                    index: i,
-                    status,
-                    output: output.clone(),
-                });
+                ctx.event_tx
+                    .try_send(AgentEvent::BatchProgress(Box::new(BatchProgressEvent {
+                        batch_id,
+                        index: i,
+                        status,
+                        output: output.clone(),
+                    })));
                 (i, result, output)
             });
         }

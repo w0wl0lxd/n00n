@@ -234,7 +234,7 @@ fn method_signature_opt(node: Node, source: &[u8]) -> Option<String> {
     } else {
         format!("{ret} {name}{params}")
     };
-    Some(compact_ws(&prefixed(&mods, format_args!("{base}"))))
+    Some(compact_ws(&prefixed(&mods, format_args!("{base}"))).into_owned())
 }
 
 fn field_text(node: Node, source: &[u8]) -> String {

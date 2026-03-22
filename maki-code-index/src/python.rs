@@ -73,7 +73,7 @@ impl PythonExtractor {
                     }
                 }
 
-                methods.push(compact_ws(&format!("{fn_name}{params}{ret_str} {lr}")));
+                methods.push(compact_ws(&format!("{fn_name}{params}{ret_str} {lr}")).into_owned());
             }
         }
 
@@ -102,7 +102,7 @@ impl PythonExtractor {
         Some(SkeletonEntry::new(
             Section::Function,
             node,
-            compact_ws(&format!("{name}{params}{ret_str}")),
+            compact_ws(&format!("{name}{params}{ret_str}")).into_owned(),
         ))
     }
 

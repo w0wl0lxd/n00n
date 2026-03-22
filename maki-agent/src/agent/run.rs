@@ -17,6 +17,7 @@ use crate::skill::Skill;
 use crate::tools::{Deadline, ToolContext};
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
+    TurnCompleteEvent,
 };
 
 const MAX_REAUTH_ATTEMPTS: u32 = 2;
@@ -48,7 +49,7 @@ pub struct AgentRunParams {
 
 pub struct Agent {
     provider: Arc<dyn Provider>,
-    model: Model,
+    model: Arc<Model>,
     history: History,
     system: String,
     event_tx: EventSender,
@@ -73,7 +74,7 @@ impl Agent {
     pub fn new(params: AgentParams, run: AgentRunParams) -> Self {
         Self {
             provider: params.provider,
-            model: params.model,
+            model: Arc::new(params.model),
             skills: params.skills,
             config: params.config,
             history: run.history,
@@ -267,12 +268,13 @@ impl Agent {
     }
 
     fn emit_turn_complete(&self, response: &StreamResponse) -> Result<(), AgentError> {
-        self.event_tx.send(AgentEvent::TurnComplete {
-            message: response.message.clone(),
-            usage: response.usage,
-            model: self.model.id.clone(),
-            context_size: Some(response.usage.context_tokens()),
-        })
+        self.event_tx
+            .send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
+                message: response.message.clone(),
+                usage: response.usage,
+                model: self.model.id.clone(),
+                context_size: Some(response.usage.context_tokens()),
+            })))
     }
 
     fn emit_done(&self, stop_reason: Option<StopReason>) -> Result<(), AgentError> {
@@ -305,7 +307,7 @@ impl Agent {
     fn tool_context(&self) -> ToolContext {
         ToolContext {
             provider: Arc::clone(&self.provider),
-            model: self.model.clone(),
+            model: Arc::clone(&self.model),
             event_tx: self.event_tx.clone(),
             mode: self.mode.clone(),
             tool_use_id: None,
@@ -644,7 +646,7 @@ mod tests {
                 MockProvider::new(responses),
                 History::new(vec![Message::user("go".into())]),
             );
-            agent.model = small_context_model(1000, 200);
+            agent.model = Arc::new(small_context_model(1000, 200));
             agent.auto_compact = enabled;
 
             let usage = TokenUsage {

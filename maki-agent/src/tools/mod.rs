@@ -162,7 +162,7 @@ pub(crate) fn timeout_annotation(secs: u64) -> String {
 #[derive(Clone)]
 pub struct ToolContext {
     pub provider: Arc<dyn Provider>,
-    pub model: Model,
+    pub model: Arc<Model>,
     pub event_tx: EventSender,
     pub mode: AgentMode,
     pub tool_use_id: Option<String>,
@@ -376,7 +376,7 @@ macro_rules! register_tools {
 
         #[derive(Debug, Clone)]
         pub enum ToolCall {
-            $($Variant($inner)),+
+            $($Variant(Box<$inner>)),+
         }
 
         macro_rules! dispatch {
@@ -391,7 +391,7 @@ macro_rules! register_tools {
                 match name {
                     $(<$inner>::NAME => {
                         <$inner>::parse_input(&input)
-                            .map(ToolCall::$Variant)
+                            .map(|v| ToolCall::$Variant(Box::new(v)))
                             .map_err(|msg| AgentError::Tool { tool: name.to_string(), message: msg })
                     })+
                     _ => Err(AgentError::Tool {
@@ -586,12 +586,12 @@ pub(crate) fn interpreter_ctx(
     cancel: CancelToken,
 ) -> ToolContext {
     static PROVIDER: LazyLock<Arc<dyn Provider>> = LazyLock::new(|| Arc::new(NullProvider));
-    static MODEL: LazyLock<Model> =
-        LazyLock::new(|| Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap());
+    static MODEL: LazyLock<Arc<Model>> =
+        LazyLock::new(|| Arc::new(Model::from_spec("anthropic/claude-sonnet-4-20250514").unwrap()));
     static SKILLS: LazyLock<Arc<[Skill]>> = LazyLock::new(|| Arc::from([]));
     ToolContext {
         provider: Arc::clone(&PROVIDER),
-        model: MODEL.clone(),
+        model: Arc::clone(&MODEL),
         event_tx: event_tx.clone(),
         mode: mode.clone(),
         tool_use_id: None,

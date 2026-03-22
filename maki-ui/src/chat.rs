@@ -4,10 +4,11 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::components::messages::MessagesPanel;
 use crate::components::tool_display::{ToolKind, append_annotation, tool_output_annotation};
-use crate::components::{DisplayMessage, DisplayRole, ToolStatus};
+use crate::components::{DisplayMessage, DisplayRole, ToolRole, ToolStatus};
 use crate::markdown::truncate_output;
 
 use crate::selection::Selection;
@@ -67,14 +68,14 @@ impl Chat {
             AgentEvent::ThinkingDelta { text } => self.messages_panel.thinking_delta(&text),
             AgentEvent::TextDelta { text } => self.messages_panel.text_delta(&text),
             AgentEvent::ToolPending { id, name } => self.messages_panel.tool_pending(id, &name),
-            AgentEvent::ToolStart(e) => self.messages_panel.tool_start(e),
+            AgentEvent::ToolStart(e) => self.messages_panel.tool_start(*e),
             AgentEvent::ToolOutput { id, content } => {
                 self.messages_panel.tool_output(&id, &content)
             }
             AgentEvent::ToolDone(e) => {
                 let plan_write = plan_path.filter(|pp| e.wrote_to(pp));
                 let is_write = matches!(e.output, ToolOutput::WriteCode { .. });
-                self.messages_panel.tool_done(e);
+                self.messages_panel.tool_done(*e);
                 if let Some(pp) = plan_write {
                     let content = if is_write {
                         std::fs::read_to_string(pp).unwrap_or_default()
@@ -85,19 +86,14 @@ impl Chat {
                         .push(DisplayMessage::plan(content, pp.display().to_string()));
                 }
             }
-            AgentEvent::BatchProgress {
-                batch_id,
-                index,
-                status,
-                output,
-            } => {
+            AgentEvent::BatchProgress(e) => {
                 self.messages_panel
-                    .batch_progress(&batch_id, index, status, output);
+                    .batch_progress(&e.batch_id, e.index, e.status, e.output);
             }
             AgentEvent::QuestionPrompt { questions, .. } => {
                 return ChatEventResult::QuestionPrompt { questions };
             }
-            AgentEvent::TurnComplete { .. } => {}
+            AgentEvent::TurnComplete(_) => {}
             AgentEvent::ToolResultsSubmitted { .. } => {
                 if let Some(usage) = self.pending_turn_usage.take() {
                     self.messages_panel.set_turn_usage_on_last_tool(usage);
@@ -326,13 +322,13 @@ pub fn history_to_display(
                                 append_annotation(&mut annotation, &ta);
                             }
                             display.push(DisplayMessage {
-                                role: DisplayRole::Tool {
+                                role: DisplayRole::Tool(Box::new(ToolRole {
                                     id: id.clone(),
                                     status,
                                     name: static_name,
-                                },
+                                })),
                                 text,
-                                tool_input,
+                                tool_input: tool_input.map(Arc::new),
                                 tool_output,
                                 live_output: None,
                                 annotation,
@@ -359,7 +355,7 @@ fn build_loaded_tool(
     reconstructed: Option<ToolOutput>,
     result_text: Option<&str>,
     tool_output_lines: &ToolOutputLines,
-) -> (String, usize, Option<ToolOutput>, Option<String>) {
+) -> (String, usize, Option<Arc<ToolOutput>>, Option<String>) {
     let kind = ToolKind::from_name(tool);
     match reconstructed {
         Some(ref output @ ToolOutput::GlobResult { .. }) => {
@@ -372,11 +368,16 @@ fn build_loaded_tool(
                 let tr = truncate_output(&display, limits.max_lines, limits.keep);
                 format!("{}\n{}", summary, tr.kept)
             };
-            (text, 0, reconstructed, annotation)
+            (text, 0, reconstructed.map(Arc::new), annotation)
         }
         Some(ref output @ ToolOutput::GrepResult { .. }) => {
             let annotation = tool_output_annotation(output, kind);
-            (summary.to_owned(), 0, reconstructed, annotation)
+            (
+                summary.to_owned(),
+                0,
+                reconstructed.map(Arc::new),
+                annotation,
+            )
         }
         Some(ToolOutput::Batch { ref entries, .. }) => {
             let failed = entries
@@ -389,11 +390,16 @@ fn build_loaded_tool(
             } else {
                 summary.to_owned()
             };
-            (text, 0, reconstructed, None)
+            (text, 0, reconstructed.map(Arc::new), None)
         }
         Some(ref output) => {
             let annotation = tool_output_annotation(output, kind);
-            (summary.to_owned(), 0, reconstructed, annotation)
+            (
+                summary.to_owned(),
+                0,
+                reconstructed.map(Arc::new),
+                annotation,
+            )
         }
         None => {
             let result = result_text.unwrap_or("");
@@ -449,23 +455,23 @@ mod tests {
     use test_case::test_case;
 
     fn tool_start(id: &str, tool: &'static str) -> AgentEvent {
-        AgentEvent::ToolStart(ToolStartEvent {
+        AgentEvent::ToolStart(Box::new(ToolStartEvent {
             id: id.into(),
             tool,
             summary: String::new(),
             annotation: None,
             input: None,
             output: None,
-        })
+        }))
     }
 
     fn tool_done(id: &str, tool: &'static str, output: ToolOutput) -> AgentEvent {
-        AgentEvent::ToolDone(ToolDoneEvent {
+        AgentEvent::ToolDone(Box::new(ToolDoneEvent {
             id: id.into(),
             tool,
             output,
             is_error: false,
-        })
+        }))
     }
 
     fn write_output(path: &str) -> ToolOutput {
@@ -603,10 +609,7 @@ mod tests {
         );
         let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default());
         assert_eq!(display.len(), 1);
-        assert!(matches!(
-            display[0].role,
-            DisplayRole::Tool { status, .. } if status == expected
-        ));
+        assert!(matches!(&display[0].role, DisplayRole::Tool(t) if t.status == expected));
     }
 
     #[test]
@@ -648,7 +651,7 @@ mod tests {
         assert_eq!(display.len(), 4);
         assert_eq!(display[0].role, DisplayRole::User);
         assert_eq!(display[1].role, DisplayRole::Assistant);
-        assert!(matches!(display[2].role, DisplayRole::Tool { .. }));
+        assert!(matches!(display[2].role, DisplayRole::Tool(_)));
         assert_eq!(display[3].role, DisplayRole::Assistant);
         assert_eq!(display[3].text, "Done!");
     }
@@ -699,7 +702,7 @@ mod tests {
             let outputs = HashMap::from([("t1".into(), output)]);
             let display = history_to_display(&msgs, &outputs, &ToolOutputLines::default());
             assert_eq!(
-                std::mem::discriminant(display[0].tool_output.as_ref().unwrap()),
+                std::mem::discriminant(display[0].tool_output.as_deref().unwrap()),
                 discriminant,
                 "stored {tool_name} output should pass through"
             );
@@ -737,7 +740,10 @@ mod tests {
         }];
         let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default());
         assert!(
-            matches!(&display[0].tool_input, Some(ToolInput::Code { .. })),
+            matches!(
+                display[0].tool_input.as_deref(),
+                Some(ToolInput::Code { .. })
+            ),
             "bash tool should produce Code input for syntax highlighting"
         );
     }
@@ -802,7 +808,7 @@ mod tests {
         let msgs = tool_use_pair("batch", serde_json::json!({"tool_calls": []}), "", false);
         let outputs = HashMap::from([("t1".into(), batch_output)]);
         let display = history_to_display(&msgs, &outputs, &ToolOutputLines::default());
-        let ToolOutput::Batch { entries, .. } = display[0].tool_output.as_ref().unwrap() else {
+        let ToolOutput::Batch { entries, .. } = display[0].tool_output.as_deref().unwrap() else {
             panic!("expected Batch output");
         };
         assert_eq!(entries.len(), 2);

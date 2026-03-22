@@ -502,7 +502,7 @@ fn build_wire_tools(tools: &Value) -> Value {
     let Some(arr) = tools.as_array() else {
         return tools.clone();
     };
-    let mut out: Vec<Value> = arr.clone();
+    let mut out: Vec<Value> = arr.to_vec();
     if let Some(last) = out.last_mut() {
         last["cache_control"] = json!({"type": "ephemeral"});
     }

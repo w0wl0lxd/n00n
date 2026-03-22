@@ -83,7 +83,7 @@ impl RubyExtractor {
             .unwrap_or("()");
         let prefix = if is_singleton { "self." } else { "" };
         let lr = line_range(node.start_position().row + 1, node.end_position().row + 1);
-        Some(compact_ws(&format!("{prefix}{name}{params} {lr}")))
+        Some(compact_ws(&format!("{prefix}{name}{params} {lr}")).into_owned())
     }
 
     fn extract_module(&self, node: Node, source: &[u8]) -> Vec<SkeletonEntry> {
@@ -113,7 +113,7 @@ impl RubyExtractor {
         Some(SkeletonEntry::new(
             Section::Function,
             node,
-            compact_ws(&format!("{name}{params}")),
+            compact_ws(&format!("{name}{params}")).into_owned(),
         ))
     }
 
@@ -128,7 +128,7 @@ impl RubyExtractor {
         Some(SkeletonEntry::new(
             Section::Function,
             node,
-            compact_ws(&format!("self.{name}{params}")),
+            compact_ws(&format!("self.{name}{params}")).into_owned(),
         ))
     }
 

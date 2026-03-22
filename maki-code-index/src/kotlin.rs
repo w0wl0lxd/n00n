@@ -95,7 +95,10 @@ impl KotlinExtractor {
         };
         let label = prefixed(&mods, format_args!("{kw} {name}{tparams}{ctor}{supers}"));
         let children = self.class_members(node, source);
-        Some(SkeletonEntry::new(Section::Class, node, compact_ws(&label)).with_children(children))
+        Some(
+            SkeletonEntry::new(Section::Class, node, compact_ws(&label).into_owned())
+                .with_children(children),
+        )
     }
 
     fn class_members(&self, node: Node, source: &[u8]) -> Vec<String> {
@@ -175,7 +178,10 @@ impl KotlinExtractor {
         let supers = self.delegation_text(node, source);
         let label = prefixed(&mods, format_args!("object {name}{supers}"));
         let children = self.class_members(node, source);
-        Some(SkeletonEntry::new(Section::Class, node, compact_ws(&label)).with_children(children))
+        Some(
+            SkeletonEntry::new(Section::Class, node, compact_ws(&label).into_owned())
+                .with_children(children),
+        )
     }
 
     fn fn_sig(&self, node: Node, source: &[u8]) -> Option<String> {
@@ -190,10 +196,13 @@ impl KotlinExtractor {
         let ret = find_child(node, "type")
             .map(|n| format!(": {}", node_text(n, source)))
             .unwrap_or_default();
-        Some(compact_ws(&prefixed(
-            &mods,
-            format_args!("fun {tparams}{name}{params}{ret}"),
-        )))
+        Some(
+            compact_ws(&prefixed(
+                &mods,
+                format_args!("fun {tparams}{name}{params}{ret}"),
+            ))
+            .into_owned(),
+        )
     }
 
     fn extract_function(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -216,10 +225,7 @@ impl KotlinExtractor {
         let ty = find_child(var_decl, "type")
             .map(|n| format!(": {}", node_text(n, source)))
             .unwrap_or_default();
-        Some(compact_ws(&prefixed(
-            &mods,
-            format_args!("{kw} {vname}{ty}"),
-        )))
+        Some(compact_ws(&prefixed(&mods, format_args!("{kw} {vname}{ty}"))).into_owned())
     }
 
     fn extract_property(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
@@ -256,7 +262,11 @@ impl KotlinExtractor {
                 .unwrap_or("_")
         };
         let label = prefixed(&vis, format_args!("typealias {name}{tparams} = {rhs}"));
-        Some(SkeletonEntry::new(Section::Type, node, compact_ws(&label)))
+        Some(SkeletonEntry::new(
+            Section::Type,
+            node,
+            compact_ws(&label).into_owned(),
+        ))
     }
 }
 

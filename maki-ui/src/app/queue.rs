@@ -215,7 +215,9 @@ impl App {
     pub(super) fn start_from_queue(&mut self, msg: &QueuedMessage) -> Vec<super::Action> {
         self.display_queued_msg(msg);
         self.status = super::Status::Streaming;
-        vec![super::Action::SendMessage(self.build_agent_input(msg))]
+        vec![super::Action::SendMessage(Box::new(
+            self.build_agent_input(msg),
+        ))]
     }
 
     pub(super) fn drain_next_queued(&mut self) -> Option<Vec<super::Action>> {

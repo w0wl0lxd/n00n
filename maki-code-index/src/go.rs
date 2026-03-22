@@ -45,7 +45,7 @@ impl GoExtractor {
             .child_by_field_name("result")
             .map(|n| format!(" {}", node_text(n, source)))
             .unwrap_or_default();
-        compact_ws(&format!("{params}{result}"))
+        compact_ws(&format!("{params}{result}")).into_owned()
     }
 
     fn extract_function(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {

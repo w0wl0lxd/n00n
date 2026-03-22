@@ -272,7 +272,7 @@ pub fn run(
             | AgentEvent::ToolStart(_)
             | AgentEvent::ToolOutput { .. }
             | AgentEvent::ToolDone(_)
-            | AgentEvent::BatchProgress { .. }
+            | AgentEvent::BatchProgress(_)
             | AgentEvent::QueueItemConsumed
             | AgentEvent::AutoCompacting
             | AgentEvent::AuthRequired
@@ -282,21 +282,16 @@ pub fn run(
                     println!("{}", serde_json::to_string(&envelope)?);
                 }
             }
-            AgentEvent::TurnComplete {
-                message,
-                usage: turn_usage,
-                model,
-                ..
-            } => {
+            AgentEvent::TurnComplete(tc) => {
                 if let Some(out) = &mut verbose_out {
-                    let content_value = serde_json::to_value(&message.content)?;
+                    let content_value = serde_json::to_value(&tc.message.content)?;
                     out.emit(&AssistantEvent {
                         event_type: "assistant",
                         message: AssistantMessage {
-                            model,
+                            model: &tc.model,
                             role: "assistant",
                             content: &content_value,
-                            usage: turn_usage,
+                            usage: &tc.usage,
                         },
                         session_id: &session_id,
                         parent_tool_use_id,

@@ -105,10 +105,10 @@ impl App {
         self.session.update_title_if_default();
         self.enqueue_save();
 
-        vec![Action::LoadSession(LoadedSession {
+        vec![Action::LoadSession(Box::new(LoadedSession {
             messages: self.session.messages.clone(),
             tool_outputs: self.session.tool_outputs.clone(),
-        })]
+        }))]
     }
 
     pub(super) fn open_session_picker(&mut self) -> Vec<Action> {
@@ -139,10 +139,10 @@ impl App {
         self.token_usage = self.session.token_usage;
         self.todo_panel.restore(&self.session.tool_outputs);
         self.enqueue_save();
-        vec![Action::LoadSession(LoadedSession {
+        vec![Action::LoadSession(Box::new(LoadedSession {
             messages: self.session.messages.clone(),
             tool_outputs: self.session.tool_outputs.clone(),
-        })]
+        }))]
     }
 
     pub(super) fn delete_session(&mut self, session_id: String) -> Vec<Action> {

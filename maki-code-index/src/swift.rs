@@ -89,7 +89,7 @@ fn swift_fn_signature(node: Node, source: &[u8]) -> Option<String> {
         format!("{keyword} {name}{params}{throws}{ret}")
     };
     let sig = prefixed(&mods, format_args!("{base}"));
-    Some(compact_ws(&sig))
+    Some(compact_ws(&sig).into_owned())
 }
 
 fn property_text_str(node: Node, source: &[u8]) -> String {

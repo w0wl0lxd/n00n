@@ -8,6 +8,7 @@ use maki_config::ToolOutputLines;
 
 use std::borrow::Cow;
 use std::fmt::Write;
+use std::sync::Arc;
 use std::time::Instant;
 
 use unicode_width::UnicodeWidthStr;
@@ -258,8 +259,8 @@ pub struct ToolLines {
 
 pub struct HighlightRequest {
     pub range: (usize, usize),
-    pub input: Option<ToolInput>,
-    pub output: Option<ToolOutput>,
+    pub input: Option<Arc<ToolInput>>,
+    pub output: Option<Arc<ToolOutput>>,
     pub width: u16,
     pub max_lines: usize,
     pub expanded: bool,
@@ -268,8 +269,8 @@ pub struct HighlightRequest {
 impl HighlightRequest {
     fn new(
         range: (usize, usize),
-        input: Option<ToolInput>,
-        output: Option<ToolOutput>,
+        input: Option<Arc<ToolInput>>,
+        output: Option<Arc<ToolOutput>>,
         width: u16,
         max_lines: usize,
         expanded: bool,
@@ -277,7 +278,7 @@ impl HighlightRequest {
         if range.0 == range.1 {
             return None;
         }
-        let output = output.and_then(|o| match o {
+        let output = output.and_then(|o| match *o {
             ToolOutput::ReadCode { .. }
             | ToolOutput::WriteCode { .. }
             | ToolOutput::Diff { .. }
@@ -559,7 +560,7 @@ impl ToolLineBuilder {
         self.has_truncation |= content.has_truncation;
         let start = self.lines.len();
         for mut line in content.lines {
-            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
+            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
             self.lines.push(line);
         }
         self.content_range = (start, self.lines.len());
@@ -617,7 +618,7 @@ impl ToolLineBuilder {
             self.width.saturating_sub(indent),
         );
         for mut line in md_lines {
-            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
+            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
             self.lines.push(line);
         }
     }
@@ -627,7 +628,7 @@ impl ToolLineBuilder {
             self.has_truncation = true;
             let text = truncation_notice(skipped);
             let mut line = Line::from(Span::styled(text, theme::current().tool_dim));
-            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
+            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
             self.lines.push(line);
         } else if self.expanded {
             self.has_truncation = true;
@@ -682,7 +683,7 @@ impl ToolLineBuilder {
         let start = self.lines.len();
         code_view::render_instructions(blocks, &mut self.lines, content_width);
         for line in &mut self.lines[start..] {
-            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT.to_owned()));
+            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
         }
     }
 
@@ -692,10 +693,7 @@ impl ToolLineBuilder {
         }
         let sep = [
             Line::default(),
-            Line::from(Span::styled(
-                TOOL_SEPARATOR.to_owned(),
-                theme::current().tool_dim,
-            )),
+            Line::from(Span::styled(TOOL_SEPARATOR, theme::current().tool_dim)),
             Line::default(),
         ];
         self.lines.splice(0..0, sep);
@@ -706,14 +704,13 @@ impl ToolLineBuilder {
 
     fn finish(
         mut self,
-        input: Option<ToolInput>,
-        output: Option<ToolOutput>,
+        input: Option<Arc<ToolInput>>,
+        output: Option<Arc<ToolOutput>>,
         content_indent: &'static str,
     ) -> ToolLines {
         if !self.outer_indent.is_empty() {
             for line in &mut self.lines {
-                line.spans
-                    .insert(0, Span::raw(self.outer_indent.to_owned()));
+                line.spans.insert(0, Span::raw(self.outer_indent));
             }
         }
         let full_width = self.width + self.outer_indent.len() as u16;
@@ -739,7 +736,10 @@ impl ToolLineBuilder {
 fn push_text_lines(lines: &mut Vec<Line<'static>>, text: &str, indent: &str) {
     let style = theme::current().tool;
     for line in text.lines() {
-        lines.push(Line::from(Span::styled(format!("{indent}{line}"), style)));
+        lines.push(Line::from(vec![
+            Span::styled(indent.to_owned(), style),
+            Span::styled(line.to_owned(), style),
+        ]));
     }
 }
 
@@ -762,10 +762,10 @@ pub fn build_tool_lines(
     let mut b = ToolLineBuilder::new(width, "", expanded, limits);
     b.push_header(tool_name, header, msg.annotation.as_deref());
     b.prepend_indicator(status.into(), started_at);
-    b.push_code_content(msg.tool_input.as_ref(), msg.tool_output.as_ref());
+    b.push_code_content(msg.tool_input.as_deref(), msg.tool_output.as_deref());
     let is_done = status != ToolStatus::InProgress;
     let resolved = resolve_output(
-        msg.tool_output.as_ref(),
+        msg.tool_output.as_deref(),
         body,
         msg.live_output.as_deref(),
         msg.truncated_lines,
@@ -825,8 +825,8 @@ pub fn build_batch_entry_lines(
     b.push_resolved_output(&resolved, kind, is_done);
     b.prepend_separator(index);
     b.finish(
-        entry.input.clone(),
-        entry.output.clone(),
+        entry.input.clone().map(Arc::new),
+        entry.output.clone().map(Arc::new),
         BATCH_CONTENT_INDENT,
     )
 }
@@ -843,7 +843,7 @@ mod tests {
     use super::*;
 
     const TOL: ToolOutputLines = ToolOutputLines::DEFAULT;
-    use crate::components::DisplayRole;
+    use crate::components::{DisplayRole, ToolRole};
     use crate::markdown::TRUNCATION_PREFIX;
     use maki_agent::tools::{BASH_TOOL_NAME, READ_TOOL_NAME, WRITE_TOOL_NAME};
     use maki_agent::{BatchToolEntry, BatchToolStatus, GrepFileEntry, ToolInput, ToolOutput};
@@ -877,14 +877,14 @@ mod tests {
         output: Option<ToolOutput>,
     ) -> DisplayMessage {
         DisplayMessage {
-            role: DisplayRole::Tool {
+            role: DisplayRole::Tool(Box::new(ToolRole {
                 id: "t1".into(),
                 status,
                 name: BASH_TOOL_NAME,
-            },
+            })),
             text: text.into(),
-            tool_input: input,
-            tool_output: output,
+            tool_input: input.map(Arc::new),
+            tool_output: output.map(Arc::new),
             live_output: None,
             annotation: None,
             plan_path: None,
@@ -1172,14 +1172,14 @@ mod tests {
 
     fn task_msg(output: String) -> DisplayMessage {
         DisplayMessage {
-            role: DisplayRole::Tool {
+            role: DisplayRole::Tool(Box::new(ToolRole {
                 id: "t1".into(),
                 status: ToolStatus::Success,
                 name: TASK_TOOL_NAME,
-            },
+            })),
             text: "Find auth".into(),
             tool_input: None,
-            tool_output: Some(ToolOutput::Plain(output)),
+            tool_output: Some(Arc::new(ToolOutput::Plain(output))),
             live_output: None,
             annotation: None,
             plan_path: None,
@@ -1272,14 +1272,14 @@ mod tests {
 
     fn index_msg(body: &str) -> DisplayMessage {
         DisplayMessage {
-            role: DisplayRole::Tool {
+            role: DisplayRole::Tool(Box::new(ToolRole {
                 id: "t1".into(),
                 status: ToolStatus::Success,
                 name: INDEX_TOOL_NAME,
-            },
+            })),
             text: format!("src/lib.rs\n{body}"),
             tool_input: None,
-            tool_output: Some(ToolOutput::Plain(body.to_owned())),
+            tool_output: Some(Arc::new(ToolOutput::Plain(body.to_owned()))),
             live_output: None,
             annotation: None,
             plan_path: None,
@@ -1437,16 +1437,16 @@ mod tests {
         } else {
             (
                 ToolStatus::Success,
-                Some(ToolOutput::Plain(full_body)),
+                Some(Arc::new(ToolOutput::Plain(full_body))),
                 None,
             )
         };
         DisplayMessage {
-            role: DisplayRole::Tool {
+            role: DisplayRole::Tool(Box::new(ToolRole {
                 id: "t1".into(),
                 status,
                 name: BASH_TOOL_NAME,
-            },
+            })),
             text,
             tool_input: None,
             tool_output,
@@ -1507,20 +1507,20 @@ mod tests {
     fn read_output_msg(line_count: usize) -> DisplayMessage {
         let lines: Vec<String> = (0..line_count).map(|i| format!("line {i}")).collect();
         DisplayMessage {
-            role: DisplayRole::Tool {
+            role: DisplayRole::Tool(Box::new(ToolRole {
                 id: "t1".into(),
                 status: ToolStatus::Success,
                 name: READ_TOOL_NAME,
-            },
+            })),
             text: "read /src/main.rs".into(),
             tool_input: None,
-            tool_output: Some(ToolOutput::ReadCode {
+            tool_output: Some(Arc::new(ToolOutput::ReadCode {
                 path: "main.rs".into(),
                 start_line: 1,
                 lines,
                 total_lines: line_count,
                 instructions: None,
-            }),
+            })),
             live_output: None,
             annotation: None,
             plan_path: None,

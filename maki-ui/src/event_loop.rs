@@ -312,7 +312,8 @@ impl<'t> EventLoop<'t> {
 
     fn handle_action(&mut self, action: Action) {
         match action {
-            Action::SendMessage(mut input) => {
+            Action::SendMessage(input) => {
+                let mut input = *input;
                 input.preamble = self.app.shell.drain_results();
                 let cmd = AgentCommand::Run(input, self.app.run_id);
                 if self.handles.cmd_tx.try_send(cmd).is_err() {
@@ -340,6 +341,7 @@ impl<'t> EventLoop<'t> {
                 );
             }
             Action::LoadSession(loaded) => {
+                let loaded = *loaded;
                 self.handles.respawn(
                     loaded.messages,
                     &self.provider,

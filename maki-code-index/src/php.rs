@@ -96,7 +96,7 @@ impl PhpExtractor {
             .child_by_field_name("return_type")
             .map(|n| format!(": {}", node_text(n, source)))
             .unwrap_or_default();
-        let sig = compact_ws(&format!("function {name}{params}{ret}"));
+        let sig = compact_ws(&format!("function {name}{params}{ret}")).into_owned();
         Some(SkeletonEntry::new(Section::Function, node, sig))
     }
 
@@ -187,6 +187,7 @@ impl PhpExtractor {
             &mods,
             format_args!("function {name}{params}{ret}"),
         ))
+        .into_owned()
     }
 
     fn property_text(&self, node: Node, source: &[u8]) -> String {
@@ -202,7 +203,7 @@ impl PhpExtractor {
             .and_then(|el| el.child_by_field_name("name"))
             .map(|n| node_text(n, source))
             .unwrap_or("_");
-        compact_ws(&prefixed(&mods, format_args!("{ty}{name}")))
+        compact_ws(&prefixed(&mods, format_args!("{ty}{name}"))).into_owned()
     }
 
     fn extract_interface(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
