@@ -22,8 +22,7 @@ impl App {
         let mut messages = self
             .shared_history
             .as_ref()
-            .and_then(|h| h.lock().ok())
-            .map(|h| h.clone())
+            .map(|h| Vec::clone(&h.load()))
             .unwrap_or_default();
 
         let (tx, rx) = flume::bounded(64);

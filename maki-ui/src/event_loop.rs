@@ -402,12 +402,7 @@ impl<'t> EventLoop<'t> {
             Ok(new_model) => match from_model(&new_model) {
                 Ok(new_provider) => {
                     self.app.update_model(&new_model);
-                    let history = self
-                        .handles
-                        .history
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .clone();
+                    let history = Vec::clone(&self.handles.history.load());
                     self.provider = Arc::from(new_provider);
                     self.model = new_model;
                     self.handles.respawn(

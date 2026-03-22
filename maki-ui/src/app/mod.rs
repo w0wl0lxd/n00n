@@ -129,7 +129,7 @@ pub struct App {
     pub(super) last_esc: Option<Instant>,
     pub(crate) session: AppSession,
     pub(crate) storage: DataDir,
-    pub(crate) shared_history: Option<Arc<Mutex<Vec<Message>>>>,
+    pub(crate) shared_history: Option<Arc<ArcSwap<Vec<Message>>>>,
     pub(crate) shared_tool_outputs: Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
     pub(crate) image_paste_rx: Option<flume::Receiver<Result<ImageSource, String>>>,
     storage_writer: Arc<StorageWriter>,

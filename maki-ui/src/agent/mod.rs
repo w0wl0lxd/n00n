@@ -37,7 +37,7 @@ pub(crate) struct AgentHandles {
     pub(crate) cmd_tx: flume::Sender<AgentCommand>,
     pub(crate) agent_rx: flume::Receiver<Envelope>,
     pub(crate) answer_tx: flume::Sender<String>,
-    pub(crate) history: Arc<Mutex<Vec<Message>>>,
+    pub(crate) history: Arc<ArcSwap<Vec<Message>>>,
     pub(crate) tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>>,
     pub(crate) mcp: McpState,
     task: smol::Task<()>,
@@ -118,7 +118,8 @@ pub(crate) fn spawn_agent(
     let (answer_tx, answer_rx) = flume::unbounded::<String>();
     let (ecmd_tx, ecmd_rx) = flume::unbounded::<ExtractedCommand>();
     let (toggle_tx, toggle_rx) = flume::unbounded::<(String, bool)>();
-    let shared_history: Arc<Mutex<Vec<Message>>> = Arc::new(Mutex::new(initial_history.clone()));
+    let shared_history: Arc<ArcSwap<Vec<Message>>> =
+        Arc::new(ArcSwap::from_pointee(initial_history.clone()));
     let shared_tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let cancel_trigger: Arc<Mutex<Option<CancelTrigger>>> = Arc::new(Mutex::new(None));

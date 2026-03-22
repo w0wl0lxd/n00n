@@ -10,7 +10,7 @@ use super::{App, PendingInput, PlanState};
 impl App {
     pub(crate) fn save_session(&mut self) {
         if let Some(ref history) = self.shared_history {
-            self.session.messages = history.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            self.session.messages = Vec::clone(&history.load());
         }
         if let Some(ref outputs) = self.shared_tool_outputs {
             self.session.tool_outputs = outputs.lock().unwrap_or_else(|e| e.into_inner()).clone();

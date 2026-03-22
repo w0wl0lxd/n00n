@@ -35,7 +35,7 @@ pub(super) struct AgentLoop {
     mcp_infos: Arc<ArcSwap<Vec<McpServerInfo>>>,
     mcp_pids: Arc<Mutex<Vec<u32>>>,
     history: History,
-    shared_history: Arc<Mutex<Vec<Message>>>,
+    shared_history: Arc<ArcSwap<Vec<Message>>>,
     cancel_trigger: Arc<Mutex<Option<CancelTrigger>>>,
     min_run_id: u64,
     agent_tx: flume::Sender<Envelope>,
@@ -57,7 +57,7 @@ impl AgentLoop {
         skills: Arc<[Skill]>,
         config: AgentConfig,
         initial_history: Vec<Message>,
-        shared_history: Arc<Mutex<Vec<Message>>>,
+        shared_history: Arc<ArcSwap<Vec<Message>>>,
         mcp_infos: Arc<ArcSwap<Vec<McpServerInfo>>>,
         mcp_pids: Arc<Mutex<Vec<u32>>>,
         initial_disabled: Vec<String>,
@@ -205,6 +205,7 @@ impl AgentLoop {
         for msg in mem::take(&mut input.preamble) {
             self.history.push(msg);
         }
+        self.sync_shared_history_with_pending(&input);
 
         let system = agent::build_system_prompt(&self.vars, &input.mode, &self.instructions);
         let (trigger, cancel) = CancelToken::new();
@@ -293,10 +294,14 @@ impl AgentLoop {
     }
 
     fn sync_shared_history(&self) {
-        *self
-            .shared_history
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = self.history.as_slice().to_vec();
+        self.shared_history
+            .store(Arc::new(self.history.as_slice().to_vec()));
+    }
+
+    fn sync_shared_history_with_pending(&self, input: &AgentInput) {
+        let mut snapshot = self.history.as_slice().to_vec();
+        snapshot.push(Message::user(input.effective_message()));
+        self.shared_history.store(Arc::new(snapshot));
     }
 
     fn set_cancel_trigger(&self, trigger: Option<CancelTrigger>) {

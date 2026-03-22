@@ -1955,7 +1955,7 @@ fn streaming_app_with_history() -> App {
             ..Default::default()
         },
     ];
-    app.shared_history = Some(Arc::new(Mutex::new(history)));
+    app.shared_history = Some(Arc::new(ArcSwap::from_pointee(history)));
     app
 }
 
