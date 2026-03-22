@@ -207,6 +207,10 @@ impl App {
         &mut self.chats[0]
     }
 
+    fn is_main_chat(&self) -> bool {
+        self.active_chat == 0
+    }
+
     pub(crate) fn update_model(&mut self, model: &Model) {
         self.session.model = model.spec();
         self.model_id = model.spec();
@@ -234,11 +238,11 @@ impl App {
             Msg::Key(key) => self.handle_key(key),
             Msg::Paste(text) => {
                 if text.is_empty() {
-                    if self.image_paste_rx.is_none() {
+                    if self.is_main_chat() && self.image_paste_rx.is_none() {
                         self.start_image_paste();
                     }
                 } else if let Some((path, media_type)) = image::try_parse_image_path(&text) {
-                    if self.image_paste_rx.is_none() {
+                    if self.is_main_chat() && self.image_paste_rx.is_none() {
                         self.start_file_image_paste(path, media_type);
                     }
                 } else {
@@ -308,12 +312,14 @@ impl App {
         }
         if key::QUIT.matches(key) {
             self.command_palette.close();
-            return Some(if self.input_box.buffer.value().trim().is_empty() {
-                self.quit()
-            } else {
-                self.input_box.discard();
-                vec![]
-            });
+            return Some(
+                if !self.is_main_chat() || self.input_box.buffer.value().trim().is_empty() {
+                    self.quit()
+                } else {
+                    self.input_box.discard();
+                    vec![]
+                },
+            );
         }
         if key::PREV_CHAT.matches(key) {
             self.active_chat = self.active_chat.saturating_sub(1);
@@ -533,6 +539,14 @@ impl App {
             };
         }
 
+        if !self.is_main_chat() {
+            return vec![];
+        }
+
+        self.handle_main_chat_key(key)
+    }
+
+    fn handle_main_chat_key(&mut self, key: KeyEvent) -> Vec<Action> {
         if is_ctrl(&key) {
             if key::POP_QUEUE.matches(key) {
                 self.queue.remove(0);
@@ -1050,6 +1064,9 @@ impl App {
         try_picker!(self.theme_picker);
         try_picker!(self.model_picker);
         try_picker!(self.mcp_picker);
+        if !self.is_main_chat() {
+            return;
+        }
         if let InputAction::PaletteSync(val) = self.input_box.handle_paste(text) {
             self.command_palette.sync(&val);
         }

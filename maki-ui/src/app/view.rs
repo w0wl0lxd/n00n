@@ -47,10 +47,12 @@ impl App {
             } else {
                 self.question_form.height(area.width).min(max)
             }
-        } else {
+        } else if self.is_main_chat() {
             queue_panel::height(self.queue.len())
                 + self.todo_panel.height()
                 + self.input_box.height(area.width)
+        } else {
+            0
         };
 
         let [msg_area, bottom_area, status_area] = Layout::vertical([
@@ -111,7 +113,7 @@ impl App {
             self.question_form.view(frame, layout.bottom_area);
         } else if self.plan_form.is_visible() {
             self.plan_form.view(frame, layout.bottom_area);
-        } else {
+        } else if layout.bottom_area.height > 0 {
             let queue_entries = self.queue.entries();
             queue_panel::view(frame, layout.queue_area, &queue_entries, self.queue.focus());
             if layout.todo_area.height > 0 {
@@ -224,12 +226,16 @@ impl App {
             zone: SelectionZone::Messages,
         });
 
-        let input_inner = selection::inset_border(layout.input_area);
-        self.zones[SelectionZone::Input.idx()] = Some(SelectableZone {
-            area: input_inner,
-            highlight_area: input_inner,
-            zone: SelectionZone::Input,
-        });
+        if layout.input_area.height > 0 {
+            let input_inner = selection::inset_border(layout.input_area);
+            self.zones[SelectionZone::Input.idx()] = Some(SelectableZone {
+                area: input_inner,
+                highlight_area: input_inner,
+                zone: SelectionZone::Input,
+            });
+        } else {
+            self.zones[SelectionZone::Input.idx()] = None;
+        }
 
         self.zones[SelectionZone::StatusBar.idx()] = Some(SelectableZone {
             area: layout.status_area,
