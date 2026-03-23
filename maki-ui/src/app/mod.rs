@@ -579,7 +579,10 @@ impl App {
         }
 
         if !self.is_main_chat() {
-            return vec![];
+            return match key.code {
+                KeyCode::Tab if !self.is_bash_input() => self.toggle_mode(),
+                _ => vec![],
+            };
         }
 
         self.handle_main_chat_key(key)

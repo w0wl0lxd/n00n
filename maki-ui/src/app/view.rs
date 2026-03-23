@@ -8,7 +8,8 @@ use crate::selection::{self, SelectableZone, SelectionZone};
 use crate::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::widgets::{Block, Widget};
+use ratatui::style::Style;
+use ratatui::widgets::{Block, Borders, Widget};
 
 use super::{App, Status};
 
@@ -57,7 +58,7 @@ impl App {
                 + self.todo_panel.height()
                 + self.input_box.height(area.width)
         } else {
-            0
+            1
         };
 
         let [msg_area, bottom_area, status_area] = Layout::vertical([
@@ -121,6 +122,11 @@ impl App {
             self.question_form.view(frame, layout.bottom_area);
         } else if self.plan_form.is_visible() {
             self.plan_form.view(frame, layout.bottom_area);
+        } else if !self.is_main_chat() {
+            let sep = Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::new().fg(self.effective_mode_color()));
+            frame.render_widget(sep, layout.bottom_area);
         } else if layout.bottom_area.height > 0 {
             let queue_entries = self.queue.entries();
             queue_panel::view(frame, layout.queue_area, &queue_entries, self.queue.focus());
