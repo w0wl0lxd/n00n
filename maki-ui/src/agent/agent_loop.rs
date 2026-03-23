@@ -38,6 +38,7 @@ pub(super) struct AgentLoop {
     history: History,
     shared_history: Arc<ArcSwap<Vec<Message>>>,
     cancel_trigger: Arc<Mutex<Option<CancelTrigger>>>,
+    cancel: CancelToken,
     permissions: Arc<PermissionManager>,
     min_run_id: u64,
     agent_tx: flume::Sender<Envelope>,
@@ -69,6 +70,7 @@ impl AgentLoop {
         ecmd_rx: flume::Receiver<ExtractedCommand>,
         toggle_rx: flume::Receiver<(String, bool)>,
         cancel_trigger: Arc<Mutex<Option<CancelTrigger>>>,
+        cancel: CancelToken,
     ) -> Self {
         Self {
             provider,
@@ -86,6 +88,7 @@ impl AgentLoop {
             history: History::new(initial_history),
             shared_history,
             cancel_trigger,
+            cancel,
             permissions,
             min_run_id: 0,
             agent_tx,
@@ -96,7 +99,9 @@ impl AgentLoop {
     }
 
     pub(super) async fn run(mut self) {
-        self.initialize().await;
+        if !self.initialize().await {
+            return;
+        }
 
         loop {
             let event = {
@@ -127,9 +132,12 @@ impl AgentLoop {
         }
     }
 
-    async fn initialize(&mut self) {
+    async fn initialize(&mut self) -> bool {
         self.vars = template::env_vars();
         self.reload_instructions().await;
+        if self.cancel.is_cancelled() {
+            return false;
+        }
 
         self.tools = ToolCall::definitions(
             &self.vars,
@@ -139,6 +147,7 @@ impl AgentLoop {
 
         let cwd = PathBuf::from(self.vars.apply("{cwd}").into_owned());
         self.init_mcp(&cwd).await;
+        !self.cancel.is_cancelled()
     }
 
     async fn init_mcp(&mut self, cwd: &Path) {
@@ -151,7 +160,11 @@ impl AgentLoop {
                 .store(Arc::new(mcp_config.preliminary_infos(&self.disabled)));
         }
 
-        let mcp_manager = McpManager::start_with_config(mcp_config).await;
+        let mcp_manager = self
+            .cancel
+            .race(McpManager::start_with_config(mcp_config))
+            .await
+            .unwrap_or(None);
 
         if let Some(ref mgr) = mcp_manager {
             mgr.extend_tools(&mut self.tools, &self.disabled);

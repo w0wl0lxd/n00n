@@ -10,7 +10,9 @@ use arc_swap::ArcSwap;
 use maki_agent::mcp::config::McpServerInfo;
 use maki_agent::permissions::PermissionManager;
 use maki_agent::skill::Skill;
-use maki_agent::{AgentConfig, AgentInput, CancelTrigger, Envelope, ExtractedCommand, ToolOutput};
+use maki_agent::{
+    AgentConfig, AgentInput, CancelToken, CancelTrigger, Envelope, ExtractedCommand, ToolOutput,
+};
 use maki_providers::provider::Provider;
 use maki_providers::{Message, Model};
 use tracing::{info, warn};
@@ -126,7 +128,9 @@ pub(crate) fn spawn_agent(
         Arc::new(ArcSwap::from_pointee(initial_history.clone()));
     let shared_tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let cancel_trigger: Arc<Mutex<Option<CancelTrigger>>> = Arc::new(Mutex::new(None));
+    let (init_trigger, init_cancel) = CancelToken::new();
+    let cancel_trigger: Arc<Mutex<Option<CancelTrigger>>> =
+        Arc::new(Mutex::new(Some(init_trigger)));
 
     spawn_command_router(cmd_rx, ecmd_tx, toggle_tx, Arc::clone(&cancel_trigger));
 
@@ -146,6 +150,7 @@ pub(crate) fn spawn_agent(
         ecmd_rx,
         toggle_rx,
         cancel_trigger,
+        init_cancel,
     );
 
     let task = smol::spawn(agent_loop.run());

@@ -158,4 +158,14 @@ mod tests {
             assert!(result.unwrap_err().contains("cancelled"));
         });
     }
+
+    #[test]
+    fn race_interrupted_by_concurrent_cancel() {
+        smol::block_on(async {
+            let (trigger, token) = CancelToken::new();
+            smol::spawn(async move { trigger.cancel() }).detach();
+            let result = token.race(std::future::pending::<()>()).await;
+            assert!(result.is_err());
+        });
+    }
 }
