@@ -16,6 +16,7 @@ use super::{relative_path, truncate_output};
 use tracing::info;
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 
 static RTK_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
     StdCommand::new("rtk")
@@ -52,6 +53,24 @@ fn rtk_rewrite(command: &str, no_rtk: bool) -> Option<String> {
 
 fn timed_out_msg(secs: u64) -> String {
     format!("command timed out after {secs}s")
+}
+
+fn timeout_or_cancel_msg(
+    reason: &str,
+    timeout_secs: u64,
+    output: String,
+    config: &crate::AgentConfig,
+) -> String {
+    if reason == "cancelled" {
+        return "cancelled".into();
+    }
+    let mut msg = timed_out_msg(timeout_secs);
+    if !output.is_empty() {
+        let content = truncate_output(output, config.max_output_lines, config.max_output_bytes);
+        msg.push('\n');
+        msg.push_str(&content);
+    }
+    msg
 }
 
 #[derive(Tool, Debug, Clone)]
@@ -152,65 +171,40 @@ impl Bash {
         let mut last_flush = Instant::now();
 
         let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-        enum Event {
-            Line(Option<String>),
-            Timeout,
-            Cancel,
-        }
-        loop {
-            match futures_lite::future::race(
-                async { Event::Line(line_rx.recv_async().await.ok()) },
+
+        macro_rules! race_deadline {
+            ($future:expr) => {
                 futures_lite::future::race(
-                    async {
-                        async_io::Timer::at(deadline).await;
-                        Event::Timeout
-                    },
-                    async {
-                        ctx.cancel.cancelled().await;
-                        Event::Cancel
-                    },
-                ),
-            )
-            .await
-            {
-                Event::Line(Some(l)) => append_line(&mut output, &l),
-                Event::Line(None) => {
-                    let status = guard.wait().await.map_err(|e| format!("wait error: {e}"))?;
-                    flush_output(ctx, &output, &mut last_len);
-                    let content = truncate_output(
-                        output,
-                        ctx.config.max_output_lines,
-                        ctx.config.max_output_bytes,
-                    );
-                    if !status.success() {
-                        if content.is_empty() {
-                            return Err(format!(
-                                "exited with code {}",
-                                status.code().unwrap_or(-1)
-                            ));
-                        }
-                        return Err(content);
-                    }
-                    return Ok(ToolOutput::Plain(content));
-                }
-                Event::Timeout => {
+                    $future,
+                    futures_lite::future::race(
+                        async {
+                            async_io::Timer::at(deadline).await;
+                            Err("timeout".to_string())
+                        },
+                        async {
+                            ctx.cancel.cancelled().await;
+                            Err("cancelled".to_string())
+                        },
+                    ),
+                )
+                .await
+            };
+        }
+
+        loop {
+            let line = race_deadline!(async { Ok(line_rx.recv_async().await.ok()) });
+            match line {
+                Ok(Some(l)) => append_line(&mut output, &l),
+                Ok(None) => break,
+                Err(reason) => {
                     guard.kill_and_reap().await;
                     drain_remaining(&line_rx, &mut output);
-                    let mut msg = timed_out_msg(timeout_secs);
-                    if !output.is_empty() {
-                        let content = truncate_output(
-                            output,
-                            ctx.config.max_output_lines,
-                            ctx.config.max_output_bytes,
-                        );
-                        msg.push('\n');
-                        msg.push_str(&content);
-                    }
-                    return Err(msg);
-                }
-                Event::Cancel => {
-                    guard.kill_and_reap().await;
-                    return Err("cancelled".into());
+                    return Err(timeout_or_cancel_msg(
+                        &reason,
+                        timeout_secs,
+                        output,
+                        &ctx.config,
+                    ));
                 }
             }
 
@@ -221,6 +215,36 @@ impl Bash {
                 send_output(&ctx.event_tx, id, &output);
                 last_len = output.len();
                 last_flush = Instant::now();
+            }
+        }
+
+        let status =
+            race_deadline!(async { guard.wait().await.map_err(|e| format!("wait error: {e}")) });
+        match status {
+            Ok(status) => {
+                flush_output(ctx, &output, &mut last_len);
+                let content = truncate_output(
+                    output,
+                    ctx.config.max_output_lines,
+                    ctx.config.max_output_bytes,
+                );
+                if !status.success() {
+                    if content.is_empty() {
+                        return Err(format!("exited with code {}", status.code().unwrap_or(-1)));
+                    }
+                    return Err(content);
+                }
+                Ok(ToolOutput::Plain(content))
+            }
+            Err(reason) => {
+                guard.kill_and_reap().await;
+                drain_remaining(&line_rx, &mut output);
+                Err(timeout_or_cancel_msg(
+                    &reason,
+                    timeout_secs,
+                    output,
+                    &ctx.config,
+                ))
             }
         }
     }
@@ -272,7 +296,15 @@ impl ChildGuard {
     async fn kill_and_reap(&mut self) {
         if let Some(mut child) = self.0.take() {
             Self::signal_kill(&mut child);
-            let _ = child.status().await;
+            futures_lite::future::or(
+                async {
+                    let _ = child.status().await;
+                },
+                async {
+                    async_io::Timer::after(REAP_TIMEOUT).await;
+                },
+            )
+            .await;
         }
     }
 
