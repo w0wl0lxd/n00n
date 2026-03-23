@@ -48,7 +48,31 @@ fn rtk_rewrite(command: &str, no_rtk: bool) -> Option<String> {
     if trimmed.is_empty() || trimmed == command.trim() {
         return None;
     }
+    if rtk_find_unsupported(trimmed) {
+        return None;
+    }
     Some(trimmed.to_string())
+}
+
+fn rtk_find_unsupported(cmd: &str) -> bool {
+    if !cmd.starts_with("rtk find ") {
+        return false;
+    }
+    const UNSUPPORTED: &[&str] = &[
+        " -o ",
+        " -not ",
+        " ! ",
+        " -exec ",
+        " -execdir ",
+        " -print0",
+        " -delete",
+        " -ok ",
+        " -okdir ",
+        " -fprint",
+        " -fls ",
+        " -fprintf ",
+    ];
+    UNSUPPORTED.iter().any(|flag| cmd.contains(flag))
 }
 
 fn timed_out_msg(secs: u64) -> String {
@@ -390,6 +414,16 @@ mod tests {
             workdir: None,
             description: None,
         }
+    }
+
+    #[test_case("rtk find . -name a -o -name b",         true  ; "compound_or")]
+    #[test_case("rtk find . -not -name a",                true  ; "negation")]
+    #[test_case("rtk find . -name a -exec cat {} \\;",    true  ; "exec_action")]
+    #[test_case("rtk find . -name a -print0",             true  ; "print0")]
+    #[test_case("rtk find . -name a -delete",             true  ; "delete_action")]
+    #[test_case("rtk find . -name a -type f",             false ; "simple_supported")]
+    fn rtk_find_unsupported_cases(cmd: &str, expected: bool) {
+        assert_eq!(rtk_find_unsupported(cmd), expected);
     }
 
     #[test]
