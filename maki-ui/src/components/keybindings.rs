@@ -214,7 +214,7 @@ pub const KEYBINDS: &[Keybind] = &[
     },
     Keybind {
         key: "↑/↓",
-        description: "Navigate messages",
+        description: "Navigate input history",
         context: KeybindContext::Streaming,
     },
     Keybind {
