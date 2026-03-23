@@ -221,6 +221,7 @@ impl InputBox {
         self.history_index = Some(new_index);
         let entry = self.history.get(new_index).unwrap().to_string();
         self.set_input(entry);
+        self.buffer.move_to_end();
     }
 
     pub fn history_down(&mut self) {
@@ -660,7 +661,7 @@ mod tests {
         input.submit();
         input.history_up();
         assert_eq!(input.buffer.value(), "line1\nline2");
-        assert!(input.is_at_first_line());
+        assert!(input.is_at_last_line());
 
         input.history_down();
         assert_eq!(input.buffer.value(), "");
@@ -673,7 +674,7 @@ mod tests {
         input.history_up();
         input.history_up();
         assert_eq!(input.buffer.value(), "alpha\nbeta");
-        assert!(input.is_at_first_line());
+        assert!(input.is_at_last_line());
 
         input.history_down();
         assert_eq!(input.buffer.value(), "gamma\ndelta");
