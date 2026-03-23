@@ -225,13 +225,13 @@ fn submit_pending_plan(mode: Mode, written: bool, expected: Option<&str>) {
     assert_eq!(input.pending_plan.as_deref(), expected.map(Path::new));
 }
 
-#[test_case(ToolOutput::WriteCode { path: "plans/test.md".into(), byte_count: 100, lines: vec![] }, true  ; "write_matching")]
-#[test_case(ToolOutput::Diff { path: "plans/test.md".into(), hunks: vec![], summary: String::new() }, true  ; "edit_matching")]
-#[test_case(ToolOutput::WriteCode { path: "other.rs".into(), byte_count: 100, lines: vec![] }, false ; "write_non_matching")]
+#[test_case(ToolOutput::WriteCode { path: "/tmp/plans/test.md".into(), byte_count: 100, lines: vec![] }, true  ; "write_matching")]
+#[test_case(ToolOutput::Diff { path: "/tmp/plans/test.md".into(), hunks: vec![], summary: String::new() }, true  ; "edit_matching")]
+#[test_case(ToolOutput::WriteCode { path: "/tmp/other.rs".into(), byte_count: 100, lines: vec![] }, false ; "write_non_matching")]
 fn tool_done_sets_plan_written_flag(output: ToolOutput, expect_written: bool) {
     let mut app = test_app();
     app.mode = Mode::Plan;
-    app.plan = PlanState::with_path(PathBuf::from("plans/test.md"), false);
+    app.plan = PlanState::with_path(PathBuf::from("/tmp/plans/test.md"), false);
     app.status = Status::Streaming;
     app.run_id = 1;
 

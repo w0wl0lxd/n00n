@@ -87,7 +87,7 @@ impl MultiEdit {
             Ok(ToolOutput::Diff {
                 hunks,
                 summary: format!("applied {edit_count_label} to {rel}"),
-                path: rel,
+                path,
             })
         })
         .await
@@ -105,11 +105,12 @@ impl super::ToolDefaults for MultiEdit {
             .iter()
             .map(|e| build_hunk(1, &e.old_string, &e.new_string))
             .collect();
-        let rel = relative_path(&self.path);
+        let path = super::resolve_path(&self.path).ok()?;
+        let rel = relative_path(&path);
         Some(ToolOutput::Diff {
             hunks,
             summary: format!("applied {} to {rel}", self.edit_count_label()),
-            path: rel,
+            path,
         })
     }
 

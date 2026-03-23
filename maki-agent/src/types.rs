@@ -292,7 +292,8 @@ impl ToolOutput {
                 hunks,
                 summary,
             } => {
-                let mut out = format!("{summary}\n--- {path}\n+++ {path}");
+                let display = crate::tools::relative_path(path);
+                let mut out = format!("{summary}\n--- {display}\n+++ {display}");
                 for hunk in hunks {
                     out.push('\n');
                     for dl in &hunk.lines {
@@ -329,7 +330,10 @@ impl ToolOutput {
             }
             Self::WriteCode {
                 path, byte_count, ..
-            } => format!("wrote {byte_count} bytes to {path}"),
+            } => {
+                let display = crate::tools::relative_path(path);
+                format!("wrote {byte_count} bytes to {display}")
+            }
             Self::GlobResult { files } => {
                 if files.is_empty() {
                     return NO_FILES_FOUND.into();
@@ -400,7 +404,7 @@ impl ToolDoneEvent {
 
     pub fn wrote_to(&self, plan_path: &Path) -> bool {
         self.written_path()
-            .is_some_and(|wp| Path::new(wp) == plan_path || plan_path.ends_with(wp))
+            .is_some_and(|wp| Path::new(wp) == plan_path)
     }
 }
 
@@ -740,6 +744,37 @@ mod tests {
             instructions,
         };
         assert_eq!(output.as_display_text(), expected);
+    }
+
+    #[test]
+    fn wrote_to_matches_absolute_path() {
+        let event = ToolDoneEvent {
+            id: "id".into(),
+            tool: "write",
+            output: ToolOutput::WriteCode {
+                path: "/home/user/.maki/plans/slug.md".into(),
+                byte_count: 10,
+                lines: vec![],
+            },
+            is_error: false,
+        };
+        assert!(event.wrote_to(Path::new("/home/user/.maki/plans/slug.md")));
+        assert!(!event.wrote_to(Path::new("/home/user/.maki/plans/other.md")));
+    }
+
+    #[test]
+    fn wrote_to_false_on_error() {
+        let event = ToolDoneEvent {
+            id: "id".into(),
+            tool: "write",
+            output: ToolOutput::WriteCode {
+                path: "/plans/slug.md".into(),
+                byte_count: 10,
+                lines: vec![],
+            },
+            is_error: true,
+        };
+        assert!(!event.wrote_to(Path::new("/plans/slug.md")));
     }
 
     #[test]

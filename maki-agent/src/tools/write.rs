@@ -21,9 +21,9 @@ impl Write {
         r#"[{"path": "/home/user/project/src/config.rs", "content": "pub const PORT: u16 = 8080;\n"}]"#,
     );
 
-    fn write_output(&self, max_lines: usize) -> ToolOutput {
+    fn write_output(&self, resolved_path: &str, max_lines: usize) -> ToolOutput {
         ToolOutput::WriteCode {
-            path: relative_path(&self.path),
+            path: resolved_path.to_owned(),
             byte_count: self.content.len(),
             lines: self
                 .content
@@ -37,7 +37,7 @@ impl Write {
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let path = super::resolve_path(&self.path)?;
         let content = self.content.clone();
-        let output = self.write_output(ctx.config.max_output_lines);
+        let output = self.write_output(&path, ctx.config.max_output_lines);
         smol::unblock(move || {
             if let Some(parent) = Path::new(&path).parent() {
                 fs::create_dir_all(parent).map_err(|e| format!("mkdir error: {e}"))?;
@@ -55,7 +55,8 @@ impl Write {
 
 impl super::ToolDefaults for Write {
     fn start_output(&self) -> Option<ToolOutput> {
-        Some(self.write_output(maki_config::DEFAULT_MAX_OUTPUT_LINES))
+        let path = super::resolve_path(&self.path).ok()?;
+        Some(self.write_output(&path, maki_config::DEFAULT_MAX_OUTPUT_LINES))
     }
 
     fn mutable_path(&self) -> Option<&str> {

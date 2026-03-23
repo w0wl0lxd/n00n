@@ -29,8 +29,8 @@ impl Edit {
 ]"#,
     );
 
-    fn diff_output(&self, lines: &[usize]) -> ToolOutput {
-        let rel = relative_path(&self.path);
+    fn diff_output(&self, resolved_path: &str, lines: &[usize]) -> ToolOutput {
+        let rel = relative_path(resolved_path);
         let hunks = lines
             .iter()
             .map(|&line| build_hunk(line, &self.old_string, &self.new_string))
@@ -38,7 +38,7 @@ impl Edit {
         ToolOutput::Diff {
             hunks,
             summary: format!("edited {rel}"),
-            path: rel,
+            path: resolved_path.to_owned(),
         }
     }
 
@@ -57,7 +57,7 @@ impl Edit {
                 .iter()
                 .map(|&off| line_at_offset(&content, off))
                 .collect();
-            Ok(diff_self.diff_output(&lines))
+            Ok(diff_self.diff_output(&path, &lines))
         })
         .await
     }
@@ -69,7 +69,8 @@ impl Edit {
 
 impl super::ToolDefaults for Edit {
     fn start_output(&self) -> Option<ToolOutput> {
-        Some(self.diff_output(&[1]))
+        let path = super::resolve_path(&self.path).ok()?;
+        Some(self.diff_output(&path, &[1]))
     }
 
     fn mutable_path(&self) -> Option<&str> {
