@@ -10,3 +10,4 @@ Good use case is filtering on web tool results.
 - No imports, no classes, no filesystem/network access.
 - 30 second timeout (configurable via `timeout` parameter).
 - Avoid calling another tool when no transformation of its output is performed.
+- NOT a thinking scratchpad. Reason in your response text.
