@@ -4,7 +4,7 @@
 //! Plan mode only permits writes to the designated plan file; all other write-like tools are rejected.
 //! `Deadline` lets batch/code_execution cap child tool timeouts without exceeding their own budget.
 //! `RESEARCH_SUBAGENT_TOOLS` is read-only; `GENERAL_SUBAGENT_TOOLS` is the full set.
-//! `strip_stray_quotes` removes extra quotes that LLMs sometimes wrap around string parameters.
+//! `sanitize_tool_input` fixes common LLM JSON mistakes: stray quotes, type mismatches, embedded fields.
 
 mod bash;
 mod batch;
@@ -366,7 +366,7 @@ pub(crate) trait ToolDefaults {
     fn augment_description(_description: &mut String, _ctx: &DescriptionContext) {}
 }
 
-fn strip_stray_quotes(input: &Value) -> Value {
+fn sanitize_tool_input(input: &Value) -> Value {
     let Some(obj) = input.as_object() else {
         return input.clone();
     };
@@ -386,6 +386,68 @@ fn strip_stray_quotes(input: &Value) -> Value {
         }
     }
     Value::Object(sanitized)
+}
+
+fn coerce_value(val: &Value, field: &str, json_type: &str) -> Option<Value> {
+    let coerced = match (val, json_type) {
+        (Value::String(s), "integer") => parse_leading_number::<i64>(s).map(Value::from),
+        (Value::String(s), "number") => parse_leading_number::<f64>(s).map(Value::from),
+        (Value::String(s), "boolean") => match s.trim() {
+            "true" => Some(Value::Bool(true)),
+            "false" => Some(Value::Bool(false)),
+            _ => None,
+        },
+        _ => None,
+    }?;
+    warn!(field = %field, original = %val, fixed = %coerced, "coerced tool param type");
+    Some(coerced)
+}
+
+pub(crate) fn deserialize_with_coercion<T: serde::de::DeserializeOwned>(
+    raw: &Value,
+    field: &str,
+    json_type: &str,
+) -> Result<T, String> {
+    serde_json::from_value::<T>(raw.clone()).or_else(|e| {
+        coerce_value(raw, field, json_type)
+            .and_then(|c| serde_json::from_value(c).ok())
+            .ok_or_else(|| format!("field '{}': {}", field, e))
+    })
+}
+
+fn parse_leading_number<T: std::str::FromStr>(s: &str) -> Option<T> {
+    let s = s.trim_start();
+    let numeric_end = s
+        .strip_prefix('-')
+        .unwrap_or(s)
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .map_or(s.len(), |i| i + s.starts_with('-') as usize);
+    (numeric_end > s.starts_with('-') as usize)
+        .then(|| s[..numeric_end].parse().ok())
+        .flatten()
+}
+
+pub(crate) fn rescue_field(input: &Value, field_name: &str) -> Option<Value> {
+    let obj = input.as_object()?;
+    let needle = format!("\"{}\":", field_name);
+    for (key, val) in obj {
+        if key == field_name {
+            continue;
+        }
+        let Some(s) = val.as_str() else { continue };
+        let Some(pos) = s.find(&needle) else { continue };
+        let after = s[pos + needle.len()..].trim_start();
+        for c in [after, after.split(", \"").next().unwrap_or(after)] {
+            let probe = format!("{{\"{field_name}\": {c}}}");
+            if let Ok(parsed) = serde_json::from_str::<Value>(&probe)
+                && let Some(v) = parsed.get(field_name)
+            {
+                warn!(field = %field_name, source_key = %key, rescued = %v, "rescued missing field from embedded value");
+                return Some(v.clone());
+            }
+        }
+    }
+    None
 }
 
 macro_rules! register_tools {
@@ -428,7 +490,7 @@ macro_rules! register_tools {
 
         impl ToolCall {
             pub fn from_api(name: &str, input: &Value) -> Result<Self, AgentError> {
-                let input = strip_stray_quotes(input);
+                let input = sanitize_tool_input(input);
                 match name {
                     $(<$inner>::NAME => {
                         <$inner>::parse_input(&input)
@@ -1003,8 +1065,43 @@ mod tests {
         json!({"limit": 10})
         ; "non_string_values_unchanged"
     )]
-    fn strip_stray_quotes_cases(input: Value, expected: Value) {
-        assert_eq!(strip_stray_quotes(&input), expected);
+    fn sanitize_tool_input_cases(input: Value, expected: Value) {
+        assert_eq!(sanitize_tool_input(&input), expected);
+    }
+
+    #[test_case(Value::String("30".into()),                       "integer", Some(json!(30))    ; "string_to_integer")]
+    #[test_case(Value::String("-5".into()),                       "integer", Some(json!(-5))    ; "negative_string_to_integer")]
+    #[test_case(Value::String("-3-5".into()),                     "integer", Some(json!(-3))    ; "negative_with_extra_dash")]
+    #[test_case(Value::String(" 42".into()),                      "integer", Some(json!(42))    ; "leading_whitespace")]
+    #[test_case(Value::String("30, \"offset\": 2075".into()),     "integer", Some(json!(30))    ; "embedded_trailing_fields")]
+    #[test_case(Value::String("true".into()),                     "boolean", Some(json!(true))  ; "string_true_to_bool")]
+    #[test_case(Value::String("false".into()),                    "boolean", Some(json!(false)) ; "string_false_to_bool")]
+    #[test_case(Value::String("1.25".into()),                      "number",  Some(json!(1.25))  ; "string_to_float")]
+    #[test_case(Value::String("hello".into()),                    "integer", None               ; "non_numeric_string")]
+    #[test_case(json!(30),                                        "integer", None               ; "already_correct_type")]
+    #[test_case(Value::String("".into()),                         "integer", None               ; "empty_string")]
+    fn coerce_value_cases(val: Value, json_type: &str, expected: Option<Value>) {
+        assert_eq!(coerce_value(&val, "test_field", json_type), expected);
+    }
+
+    #[test_case(
+        json!({"path": "x", "limit": "30, \"offset\": 2075"}), "offset", Some(json!(2075))
+        ; "rescue_embedded_offset"
+    )]
+    #[test_case(
+        json!({"path": "x", "limit": "30"}), "offset", None
+        ; "no_embedded_field"
+    )]
+    #[test_case(
+        json!({"command": "echo offset: 42"}), "offset", None
+        ; "no_json_quotes_no_rescue"
+    )]
+    #[test_case(
+        json!({"offset": "embedded \"offset\": 99"}), "offset", None
+        ; "skip_self_referencing_field"
+    )]
+    fn rescue_field_cases(input: Value, field_name: &str, expected: Option<Value>) {
+        assert_eq!(rescue_field(&input, field_name), expected);
     }
 
     #[test]

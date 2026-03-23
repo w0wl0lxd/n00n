@@ -141,6 +141,7 @@ impl super::ToolDefaults for Read {}
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
     use test_case::test_case;
 
     use super::*;
@@ -201,5 +202,21 @@ mod tests {
             }
             other => panic!("expected ReadDir, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_input_rescues_embedded_offset() {
+        let r = Read::parse_input(&json!({"path": "x", "limit": "30, \"offset\": 2075"})).unwrap();
+        assert_eq!(r.limit, Some(30));
+        assert_eq!(r.offset, Some(2075));
+    }
+
+    #[test]
+    fn parse_input_bad_coercion_returns_error() {
+        let err = Read::parse_input(&json!({"path": "x", "limit": "not_a_number"})).unwrap_err();
+        assert!(
+            err.contains("limit"),
+            "error should mention field name: {err}"
+        );
     }
 }

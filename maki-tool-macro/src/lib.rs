@@ -129,16 +129,25 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
 
         if optional {
             field_extractions.push(quote! {
-                let #field_name: #field_ty = serde_json::from_value(
-                    input.get(#field_str).cloned().unwrap_or(serde_json::Value::Null)
-                ).map_err(|e| format!("field '{}': {}", #field_str, e))?;
+                let #field_name: #field_ty = {
+                    let raw = input.get(#field_str).cloned().unwrap_or(serde_json::Value::Null);
+                    if raw.is_null() {
+                        crate::tools::rescue_field(input, #field_str)
+                            .map(|v| crate::tools::deserialize_with_coercion(&v, #field_str, #json_type))
+                            .transpose()?
+                    } else {
+                        Some(crate::tools::deserialize_with_coercion(&raw, #field_str, #json_type)?)
+                    }
+                };
             });
         } else {
             field_extractions.push(quote! {
-                let #field_name: #field_ty = serde_json::from_value(
-                    input.get(#field_str).cloned()
-                        .ok_or_else(|| format!("missing required field '{}'", #field_str))?
-                ).map_err(|e| format!("field '{}': {}", #field_str, e))?;
+                let #field_name: #field_ty = {
+                    let raw = input.get(#field_str).cloned().or_else(|| {
+                        crate::tools::rescue_field(input, #field_str)
+                    }).ok_or_else(|| format!("missing required field '{}'", #field_str))?;
+                    crate::tools::deserialize_with_coercion(&raw, #field_str, #json_type)?
+                };
             });
         }
     }
