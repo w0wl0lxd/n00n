@@ -27,7 +27,7 @@ pub struct Grep {
 impl Grep {
     pub const NAME: &str = "grep";
     pub const DESCRIPTION: &str = include_str!("grep.md");
-    pub const EXAMPLES: Option<&str> = None;
+    pub const EXAMPLES: Option<&str> = Some(r#"[{"pattern": "fn main", "include": "*.rs"}]"#);
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let pattern = self.pattern.clone();

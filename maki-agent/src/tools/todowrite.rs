@@ -10,7 +10,9 @@ pub struct TodoWrite {
 impl TodoWrite {
     pub const NAME: &str = "todowrite";
     pub const DESCRIPTION: &str = include_str!("todowrite.md");
-    pub const EXAMPLES: Option<&str> = None;
+    pub const EXAMPLES: Option<&str> = Some(
+        r#"[{"todos": [{"content": "Add error handling", "status": "pending", "priority": "high"}]}]"#,
+    );
 
     pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         Ok(ToolOutput::TodoList(self.todos.clone()))

@@ -13,7 +13,9 @@ pub struct Question {
 impl Question {
     pub const NAME: &str = "question";
     pub const DESCRIPTION: &str = include_str!("question.md");
-    pub const EXAMPLES: Option<&str> = None;
+    pub const EXAMPLES: Option<&str> = Some(
+        r#"[{"questions": [{"question": "Which database should we use?", "options": [{"label": "PostgreSQL"}, {"label": "SQLite"}]}]}]"#,
+    );
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         if self.questions.is_empty() {

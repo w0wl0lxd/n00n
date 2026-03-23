@@ -26,7 +26,7 @@ pub struct WebSearch {
 impl WebSearch {
     pub const NAME: &str = "websearch";
     pub const DESCRIPTION: &str = include_str!("websearch.md");
-    pub const EXAMPLES: Option<&str> = None;
+    pub const EXAMPLES: Option<&str> = Some(r#"[{"query": "rust async runtime comparison 2025"}]"#);
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         ctx.cancel

@@ -23,7 +23,9 @@ pub struct Memory {
 impl Memory {
     pub const NAME: &str = "memory";
     pub const DESCRIPTION: &str = include_str!("memory.md");
-    pub const EXAMPLES: Option<&str> = None;
+    pub const EXAMPLES: Option<&str> = Some(
+        r#"[{"command": "write", "path": "gotchas.md", "content": "- DB migrations require `just migrate` before running tests"}]"#,
+    );
 
     pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let memories_dir = resolve_memories_dir()?;

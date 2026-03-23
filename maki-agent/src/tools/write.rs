@@ -17,7 +17,9 @@ pub struct Write {
 impl Write {
     pub const NAME: &str = "write";
     pub const DESCRIPTION: &str = include_str!("write.md");
-    pub const EXAMPLES: Option<&str> = None;
+    pub const EXAMPLES: Option<&str> = Some(
+        r#"[{"path": "/home/user/project/src/config.rs", "content": "pub const PORT: u16 = 8080;\n"}]"#,
+    );
 
     fn write_output(&self, max_lines: usize) -> ToolOutput {
         ToolOutput::WriteCode {
