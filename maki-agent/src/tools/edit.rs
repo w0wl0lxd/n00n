@@ -43,7 +43,7 @@ impl Edit {
     }
 
     pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let path = self.path.clone();
+        let path = super::resolve_path(&self.path)?;
         let old_string = self.old_string.clone();
         let new_string = self.new_string.clone();
         let replace_all = self.replace_all.unwrap_or(false);

@@ -178,9 +178,28 @@ pub struct ToolContext {
     pub permissions: Arc<PermissionManager>,
 }
 
+pub(crate) fn resolve_path(path: &str) -> Result<String, String> {
+    let expanded = if let Some(rest) = path.strip_prefix("~/") {
+        let home = HOME.as_deref().ok_or("cannot expand ~: HOME not set")?;
+        format!("{}/{rest}", home.display())
+    } else if path == "~" {
+        let home = HOME.as_deref().ok_or("cannot expand ~: HOME not set")?;
+        home.to_string_lossy().into_owned()
+    } else {
+        path.to_string()
+    };
+
+    if Path::new(&expanded).is_relative() {
+        let cwd = env::current_dir().map_err(|e| format!("cwd error: {e}"))?;
+        Ok(cwd.join(&expanded).to_string_lossy().into_owned())
+    } else {
+        Ok(expanded)
+    }
+}
+
 pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> {
     match path {
-        Some(p) => Ok(p.to_string()),
+        Some(p) => resolve_path(p),
         None => env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .map_err(|e| format!("cwd error: {e}")),
@@ -1008,5 +1027,32 @@ mod tests {
 
         let no_partial = format!("{}sibling/file.txt", home.display());
         assert_eq!(relative_path(&no_partial), no_partial);
+    }
+
+    #[test]
+    fn resolve_path_tilde_expands() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(
+            resolve_path("~/foo/bar").unwrap(),
+            format!("{}/foo/bar", home.display())
+        );
+    }
+
+    #[test]
+    fn resolve_path_tilde_alone() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(resolve_path("~").unwrap(), home.to_string_lossy());
+    }
+
+    #[test]
+    fn resolve_path_absolute_unchanged() {
+        assert_eq!(resolve_path("/etc/hosts").unwrap(), "/etc/hosts");
+    }
+
+    #[test]
+    fn resolve_path_relative_joins_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        let expected = cwd.join("src/main.rs").to_string_lossy().into_owned();
+        assert_eq!(resolve_path("src/main.rs").unwrap(), expected);
     }
 }

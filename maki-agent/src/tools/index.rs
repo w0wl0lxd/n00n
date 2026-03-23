@@ -18,7 +18,7 @@ impl Index {
     pub const EXAMPLES: Option<&str> = None;
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let path = self.path.clone();
+        let path = super::resolve_path(&self.path)?;
         let max_file_size = ctx.config.index_max_file_size;
         smol::unblock(move || {
             let p = Path::new(&path);

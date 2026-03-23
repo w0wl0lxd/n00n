@@ -33,7 +33,7 @@ impl Write {
     }
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let path = self.path.clone();
+        let path = super::resolve_path(&self.path)?;
         let content = self.content.clone();
         let output = self.write_output(ctx.config.max_output_lines);
         smol::unblock(move || {

@@ -56,7 +56,7 @@ impl MultiEdit {
     }
 
     pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let path = self.path.clone();
+        let path = super::resolve_path(&self.path)?;
         let edits = self.edits.clone();
         let edit_count_label = self.edit_count_label();
         smol::unblock(move || {

@@ -468,7 +468,8 @@ fn has_error_node(node: Node) -> bool {
 }
 
 pub fn canonicalize_scope_path(path: &str) -> String {
-    let p = Path::new(path);
+    let resolved = crate::tools::resolve_path(path).unwrap_or_else(|_| path.to_string());
+    let p = Path::new(&resolved);
     match p.canonicalize() {
         Ok(abs) => abs.to_string_lossy().into_owned(),
         Err(_) => {
@@ -481,11 +482,6 @@ pub fn canonicalize_scope_path(path: &str) -> String {
                     std::path::Component::CurDir => {}
                     c => result.push(c),
                 }
-            }
-            if result.is_relative()
-                && let Ok(cwd) = std::env::current_dir()
-            {
-                return cwd.join(result).to_string_lossy().into_owned();
             }
             result.to_string_lossy().into_owned()
         }

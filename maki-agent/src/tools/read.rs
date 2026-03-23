@@ -36,7 +36,7 @@ impl Read {
     pub const EXAMPLES: Option<&str> = None;
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let path = self.path.clone();
+        let path = super::resolve_path(&self.path)?;
         let offset = self.offset;
         let limit = self.limit;
         let loaded = ctx.loaded_instructions.clone();
