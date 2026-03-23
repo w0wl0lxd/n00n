@@ -465,7 +465,7 @@ pub enum AgentEvent {
     PermissionRequest {
         id: String,
         tool: String,
-        scope: String,
+        scopes: Vec<String>,
     },
     AuthRequired,
 }

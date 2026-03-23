@@ -5,7 +5,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use maki_agent::permissions::generalize_scope;
+use maki_agent::permissions::generalized_scopes;
 
 use crate::components::Overlay;
 use crate::components::form::render_form;
@@ -98,9 +98,9 @@ pub enum PermissionPrompt {
         #[allow(dead_code)]
         id: String,
         tool: String,
-        scope: String,
+        scopes: Vec<String>,
         subagent_id: Option<String>,
-        generalized_scopes: Vec<String>,
+        allow_scopes: Vec<String>,
         state: PromptState,
     },
 }
@@ -124,17 +124,25 @@ impl PermissionPrompt {
         Self::Closed
     }
 
-    pub fn open(&mut self, id: String, tool: String, scope: String, subagent_id: Option<String>) {
-        let generalized_scopes: Vec<String> = scope
-            .split(" && ")
-            .map(|s| generalize_scope(&tool, s))
-            .collect();
+    pub fn open(
+        &mut self,
+        id: String,
+        tool: String,
+        scopes: Vec<String>,
+        subagent_id: Option<String>,
+    ) {
+        let allow_scopes = generalized_scopes(&tool, &scopes);
+        let allow_scopes = if allow_scopes == scopes {
+            vec![]
+        } else {
+            allow_scopes
+        };
         *self = Self::Open {
             id,
             tool,
-            scope,
+            scopes,
             subagent_id,
-            generalized_scopes,
+            allow_scopes,
             state: PromptState::Normal,
         };
     }
@@ -223,9 +231,9 @@ impl PermissionPrompt {
     fn build_lines(&self) -> Vec<Line<'static>> {
         let Self::Open {
             tool,
-            scope,
+            scopes,
             subagent_id,
-            generalized_scopes,
+            allow_scopes,
             state,
             ..
         } = self
@@ -242,23 +250,18 @@ impl PermissionPrompt {
         }
         tool_spans.push(Span::styled(tool.clone(), value_style));
 
-        let scopes: Vec<&str> = scope.split(" && ").collect();
         let mut lines = vec![Line::raw(""), Line::from(tool_spans)];
         for (i, s) in scopes.iter().enumerate() {
             let label = if i == 0 { "scope " } else { "    + " };
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(label, label_style),
-                Span::styled(s.to_string(), value_style),
+                Span::styled(s.clone(), value_style),
             ]));
         }
 
-        let show_allow = scopes
-            .iter()
-            .zip(generalized_scopes.iter())
-            .any(|(s, g)| *s != g.as_str());
-        if show_allow {
-            for (i, g) in generalized_scopes.iter().enumerate() {
+        if !allow_scopes.is_empty() {
+            for (i, g) in allow_scopes.iter().enumerate() {
                 let label = if i == 0 { "allow " } else { "    + " };
                 lines.push(Line::from(vec![
                     Span::raw("  "),

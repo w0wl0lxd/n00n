@@ -38,7 +38,7 @@ pub enum ChatEventResult {
     PermissionRequest {
         id: String,
         tool: String,
-        scope: String,
+        scopes: Vec<String>,
     },
     AuthRequired,
 }
@@ -123,8 +123,8 @@ impl Chat {
                 self.messages_panel.flush();
                 return ChatEventResult::Error(message);
             }
-            AgentEvent::PermissionRequest { id, tool, scope } => {
-                return ChatEventResult::PermissionRequest { id, tool, scope };
+            AgentEvent::PermissionRequest { id, tool, scopes } => {
+                return ChatEventResult::PermissionRequest { id, tool, scopes };
             }
             AgentEvent::AuthRequired => {
                 return ChatEventResult::AuthRequired;

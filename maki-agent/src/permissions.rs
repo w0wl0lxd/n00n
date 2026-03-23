@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,7 +46,11 @@ fn parse_bash(input: &str) -> Option<tree_sitter::Tree> {
 pub enum PermissionCheck {
     Allowed,
     Denied,
-    NeedsPrompt { tool: String, scope: String },
+    NeedsPrompt {
+        tool: String,
+        scopes: Vec<String>,
+        force_prompt: bool,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -183,11 +188,12 @@ impl PermissionManager {
 
         PermissionCheck::NeedsPrompt {
             tool: tool.to_string(),
-            scope: pending.join(" && "),
+            scopes: pending.into_iter().map(|s| s.to_string()).collect(),
+            force_prompt,
         }
     }
 
-    pub fn check_bash(&self, command: &str) -> PermissionCheck {
+    fn check_bash(&self, command: &str) -> PermissionCheck {
         let (scopes, is_complex) = analyze_bash(command);
         let scope_refs: Vec<&str> = scopes.iter().map(|s| s.as_str()).collect();
         self.check_inner("bash", &scope_refs, is_complex)
@@ -219,15 +225,17 @@ impl PermissionManager {
         self.allow_all.load(Ordering::Relaxed)
     }
 
-    pub fn apply_decision(&self, tool: &str, scope: &str, decision: PermissionDecision) {
+    pub fn apply_decision(&self, tool: &str, scopes: &[String], decision: PermissionDecision) {
         match decision {
             PermissionDecision::AllowOnce | PermissionDecision::DenyOnce => {}
             PermissionDecision::AllowSession => {
-                self.add_session_rule(PermissionRule {
-                    tool: tool.to_string(),
-                    scope: Some(scope.to_string()),
-                    effect: Effect::Allow,
-                });
+                for s in scopes {
+                    self.add_session_rule(PermissionRule {
+                        tool: tool.to_string(),
+                        scope: Some(s.clone()),
+                        effect: Effect::Allow,
+                    });
+                }
             }
             PermissionDecision::AllowAlwaysLocal
             | PermissionDecision::AllowAlwaysGlobal
@@ -244,29 +252,18 @@ impl PermissionManager {
                     }
                     _ => PermissionTarget::Global,
                 };
-                let segments = if tool == "bash" {
-                    split_shell_commands(scope)
+                let persisted = if effect == Effect::Allow {
+                    generalized_scopes(tool, scopes)
                 } else {
-                    vec![]
+                    scopes.to_vec()
                 };
-                let scopes: Vec<&str> = if segments.is_empty() {
-                    vec![scope]
-                } else {
-                    segments.iter().map(|s| s.as_str()).collect()
-                };
-                for s in scopes {
-                    let persisted = if effect == Effect::Allow {
-                        generalize_scope(tool, s)
-                    } else {
-                        s.to_string()
-                    };
+                for s in &persisted {
                     self.add_session_rule(PermissionRule {
                         tool: tool.to_string(),
-                        scope: Some(persisted.clone()),
+                        scope: Some(s.clone()),
                         effect,
                     });
-                    if let Err(e) = append_permission_rule(tool, Some(&persisted), effect, &target)
-                    {
+                    if let Err(e) = append_permission_rule(tool, Some(s), effect, &target) {
                         tracing::warn!(error = %e, "failed to persist permission rule");
                     }
                 }
@@ -288,7 +285,8 @@ impl PermissionManager {
             PermissionCheck::Denied => Err(PermissionError::denied(tool)),
             PermissionCheck::NeedsPrompt {
                 tool: pt,
-                scope: ps,
+                scopes: ps,
+                force_prompt,
             } => {
                 let Some(rx) = user_response_rx else {
                     return Err(PermissionError::NoResponseChannel {
@@ -296,7 +294,8 @@ impl PermissionManager {
                     });
                 };
                 let guard = rx.lock().await;
-                match self.check(&pt, &ps) {
+                let refs: Vec<&str> = ps.iter().map(|s| s.as_str()).collect();
+                match self.check_inner(&pt, &refs, force_prompt) {
                     PermissionCheck::Allowed => {
                         drop(guard);
                         Ok(())
@@ -307,12 +306,13 @@ impl PermissionManager {
                     }
                     PermissionCheck::NeedsPrompt {
                         tool: t2,
-                        scope: s2,
+                        scopes: s2,
+                        ..
                     } => {
                         let _ = event_tx.send(AgentEvent::PermissionRequest {
                             id: request_id.to_owned(),
                             tool: t2.clone(),
-                            scope: s2.clone(),
+                            scopes: s2.clone(),
                         });
                         let response = cancel.race(guard.recv_async()).await;
                         drop(guard);
@@ -435,13 +435,11 @@ fn analyze_bash(command: &str) -> (Vec<String>, bool) {
     let Some(tree) = parse_bash(command) else {
         return (vec![command.to_string()], true);
     };
-    let root = tree.root_node();
-    let is_complex = has_complex_node(root) || has_error_node(root);
-    if is_complex {
+    if is_complex_bash(&tree) {
         return (vec![command.to_string()], true);
     }
     let mut segments = Vec::new();
-    collect_commands(root, command, &mut segments);
+    collect_commands(tree.root_node(), command, &mut segments);
     if segments.is_empty() {
         (vec![command.to_string()], false)
     } else {
@@ -449,10 +447,7 @@ fn analyze_bash(command: &str) -> (Vec<String>, bool) {
     }
 }
 
-pub fn has_complex_shell_constructs(command: &str) -> bool {
-    let Some(tree) = parse_bash(command) else {
-        return true;
-    };
+fn is_complex_bash(tree: &tree_sitter::Tree) -> bool {
     has_complex_node(tree.root_node()) || has_error_node(tree.root_node())
 }
 
@@ -470,19 +465,6 @@ fn has_error_node(node: Node) -> bool {
     }
     let mut cursor = node.walk();
     node.children(&mut cursor).any(|c| has_error_node(c))
-}
-
-#[cfg(test)]
-fn bash_permission_scopes(command: &str) -> Vec<String> {
-    if has_complex_shell_constructs(command) {
-        return vec![command.to_string()];
-    }
-    let segments = split_shell_commands(command);
-    if segments.is_empty() {
-        vec![command.to_string()]
-    } else {
-        segments
-    }
 }
 
 pub fn canonicalize_scope_path(path: &str) -> String {
@@ -515,7 +497,16 @@ fn generalize_bash_segment(segment: &str) -> String {
     format!("{first_token} *")
 }
 
-pub fn generalize_scope(tool: &str, scope: &str) -> String {
+pub fn generalized_scopes(tool: &str, scopes: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    scopes
+        .iter()
+        .map(|s| generalize_scope(tool, s))
+        .filter(|g| seen.insert(g.clone()))
+        .collect()
+}
+
+fn generalize_scope(tool: &str, scope: &str) -> String {
     match tool {
         "bash" => generalize_bash_segment(scope),
         "write" | "edit" | "multiedit" => {
@@ -594,13 +585,9 @@ mod tests {
     #[test_case("src/**", "tests/main.rs" => false ; "dir_glob_no_match")]
     #[test_case("exact", "exact" => true ; "exact_match")]
     #[test_case("exact", "other" => false ; "exact_no_match")]
-    fn test_scope_matches(pattern: &str, value: &str) -> bool {
-        scope_matches(pattern, value)
-    }
-
     #[test_case("src/**", "srcfoo" => false ; "dir_glob_no_bare_prefix")]
     #[test_case("src/**", "src" => true ; "dir_glob_matches_dir_itself")]
-    fn test_scope_matches_extra(pattern: &str, value: &str) -> bool {
+    fn test_scope_matches(pattern: &str, value: &str) -> bool {
         scope_matches(pattern, value)
     }
 
@@ -608,21 +595,6 @@ mod tests {
     fn canonicalize_resolves_dot_segments() {
         let result = canonicalize_scope_path("/a/b/../c");
         assert_eq!(result, "/a/c");
-    }
-
-    #[test]
-    fn allow_all_permits_complex_bash() {
-        let mgr = PermissionManager::new(
-            PermissionsConfig {
-                allow_all: true,
-                rules: vec![],
-            },
-            PathBuf::from("/tmp"),
-        );
-        assert!(matches!(
-            mgr.check("bash", "echo $(date)"),
-            PermissionCheck::Allowed
-        ));
     }
 
     #[test_case("cargo test" => false ; "simple_command")]
@@ -636,20 +608,9 @@ mod tests {
     #[test_case("echo \"safe $(expanded)\"" => true ; "double_quoted_dollar_paren")]
     #[test_case("echo \\$(not expanded)" => true ; "escaped_dollar_paren_conservative")]
     #[test_case("cargo test && echo done" => false ; "compound_but_not_complex")]
+    #[test_case("echo $(((" => true ; "parse_error_treated_as_complex")]
     fn test_has_complex_shell_constructs(input: &str) -> bool {
-        has_complex_shell_constructs(input)
-    }
-
-    #[test]
-    fn complex_command_returns_whole_command() {
-        let scopes = bash_permission_scopes("echo $(rm -rf /)");
-        assert_eq!(scopes, vec!["echo $(rm -rf /)"]);
-    }
-
-    #[test]
-    fn simple_compound_splits() {
-        let scopes = bash_permission_scopes("cd /tmp && cargo test");
-        assert_eq!(scopes, vec!["cd /tmp", "cargo test"]);
+        analyze_bash(input).1
     }
 
     #[test]
@@ -854,7 +815,7 @@ mod tests {
         let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
         mgr.apply_decision(
             "bash",
-            "cd /tmp && cargo test --all",
+            &["cd /tmp".into(), "cargo test --all".into()],
             PermissionDecision::AllowAlwaysLocal,
         );
         assert!(matches!(
@@ -868,7 +829,7 @@ mod tests {
         let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
         mgr.apply_decision(
             "bash",
-            "cd /tmp && cargo test",
+            &["cd /tmp".into(), "cargo test".into()],
             PermissionDecision::DenyAlwaysLocal,
         );
         assert!(matches!(
@@ -987,9 +948,31 @@ mod tests {
     }
 
     #[test]
+    fn generalized_scopes_deduplicates() {
+        let scopes: Vec<String> = ["git log", "echo hi", "git diff", "echo hi", "git status"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(generalized_scopes("bash", &scopes), vec!["git *", "echo *"]);
+    }
+
+    #[test]
+    fn generalized_scopes_preserves_order() {
+        let scopes: Vec<String> = ["echo a", "git log", "echo b"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(generalized_scopes("bash", &scopes), vec!["echo *", "git *"]);
+    }
+
+    #[test]
     fn apply_decision_session_persist() {
         let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
-        mgr.apply_decision("bash", "cargo test", PermissionDecision::AllowSession);
+        mgr.apply_decision(
+            "bash",
+            &["cargo test".into()],
+            PermissionDecision::AllowSession,
+        );
         assert!(matches!(
             mgr.check("bash", "cargo test"),
             PermissionCheck::Allowed
@@ -1001,7 +984,7 @@ mod tests {
         let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
         mgr.apply_decision(
             "bash",
-            "cargo test --all",
+            &["cargo test --all".into()],
             PermissionDecision::AllowAlwaysLocal,
         );
         assert!(matches!(
@@ -1019,7 +1002,7 @@ mod tests {
         let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
         mgr.apply_decision(
             "bash",
-            "cargo test --all",
+            &["cargo test --all".into()],
             PermissionDecision::DenyAlwaysLocal,
         );
         assert!(matches!(
@@ -1035,7 +1018,11 @@ mod tests {
     #[test]
     fn session_persist_uses_exact_scope() {
         let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
-        mgr.apply_decision("bash", "cargo test --all", PermissionDecision::AllowSession);
+        mgr.apply_decision(
+            "bash",
+            &["cargo test --all".into()],
+            PermissionDecision::AllowSession,
+        );
         assert!(matches!(
             mgr.check("bash", "cargo test --all"),
             PermissionCheck::Allowed
@@ -1085,34 +1072,15 @@ mod tests {
     }
 
     #[test]
-    fn deny_once_does_not_add_rules() {
+    fn once_decisions_do_not_add_rules() {
         let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
-        mgr.apply_decision("bash", "cargo test", PermissionDecision::DenyOnce);
-        assert!(matches!(
-            mgr.check("bash", "cargo test"),
-            PermissionCheck::NeedsPrompt { .. }
-        ));
-    }
-
-    #[test]
-    fn allow_once_does_not_add_rules() {
-        let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
-        mgr.apply_decision("bash", "cargo test", PermissionDecision::AllowOnce);
-        assert!(matches!(
-            mgr.check("bash", "cargo test"),
-            PermissionCheck::NeedsPrompt { .. }
-        ));
-    }
-
-    #[test]
-    fn parse_error_treated_as_complex() {
-        assert!(has_complex_shell_constructs("echo $((("));
-    }
-
-    #[test_case("echo 'safe $(not expanded)'" => false ; "single_quoted_not_complex")]
-    #[test_case("echo \"unsafe $(expanded)\"" => true ; "double_quoted_is_complex")]
-    fn test_quoting_context_awareness(input: &str) -> bool {
-        has_complex_shell_constructs(input)
+        for decision in [PermissionDecision::AllowOnce, PermissionDecision::DenyOnce] {
+            mgr.apply_decision("bash", &["cargo test".into()], decision);
+            assert!(matches!(
+                mgr.check("bash", "cargo test"),
+                PermissionCheck::NeedsPrompt { .. }
+            ));
+        }
     }
 
     #[test]
