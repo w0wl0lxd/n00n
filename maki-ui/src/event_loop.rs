@@ -399,6 +399,8 @@ impl<'t> EventLoop<'t> {
             Action::OpenEditor(path) => {
                 if let Err(e) = terminal::open_in_editor(&path, self.terminal) {
                     self.app.flash(e);
+                } else {
+                    self.app.refresh_memory_entry(&path);
                 }
             }
             Action::Btw(question) => {

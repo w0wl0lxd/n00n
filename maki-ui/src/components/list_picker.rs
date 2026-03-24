@@ -435,6 +435,14 @@ impl<T: PickerItem> ListPicker<T> {
             .and_then(|s| s.items.get(idx))
     }
 
+    pub fn with_item_mut(&mut self, label: &str, f: impl FnOnce(&mut T)) {
+        if let Some(s) = self.state.as_mut().and_then(PickerState::ready_mut)
+            && let Some(item) = s.items.iter_mut().find(|i| i.label() == label)
+        {
+            f(item);
+        }
+    }
+
     pub fn handle_paste(&mut self, text: &str) -> bool {
         let Some(Some(s)) = self.state.as_mut().map(PickerState::ready_mut) else {
             return self.is_open();

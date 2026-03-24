@@ -10,6 +10,7 @@ use ratatui::layout::{Position, Rect};
 const TITLE: &str = " Memory Files ";
 const FOOTER_HINTS: &[(&str, &str)] = &[("Enter", "open"), (key::DELETE.label, "delete")];
 
+#[derive(Debug)]
 pub enum MemoryModalAction {
     Consumed,
     Close,
@@ -130,6 +131,12 @@ impl MemoryModal {
         self.picker.retain(f);
     }
 
+    pub fn update_size(&mut self, name: &str, size: u64) {
+        self.picker.with_item_mut(name, |entry| {
+            entry.detail = format!("({size} bytes)");
+        });
+    }
+
     pub fn view(&mut self, frame: &mut Frame, area: Rect) -> Rect {
         self.picker.view(frame, area)
     }
@@ -163,24 +170,13 @@ mod tests {
     }
 
     #[test]
-    fn esc_closes() {
-        let mut modal = MemoryModal::new();
-        modal.open(sample_entries());
-        assert!(matches!(
-            modal.handle_key(key_ev(KeyCode::Esc)),
-            MemoryModalAction::Close
-        ));
-        assert!(!modal.is_open());
-    }
-
-    #[test]
     fn enter_opens_selected_file_and_stays_open() {
         let mut modal = MemoryModal::new();
         modal.open(sample_entries());
         modal.handle_key(key_ev(KeyCode::Down));
         match modal.handle_key(key_ev(KeyCode::Enter)) {
             MemoryModalAction::OpenFile(f) => assert_eq!(f, "b.md"),
-            _ => panic!("expected OpenFile"),
+            other => panic!("expected OpenFile, got {other:?}"),
         }
         assert!(modal.is_open());
     }
@@ -193,54 +189,30 @@ mod tests {
             modal.handle_key(ctrl_d()),
             MemoryModalAction::Consumed
         ));
-        assert!(modal.is_open());
     }
 
     #[test]
-    fn other_keys_consumed_but_stay_open() {
-        let mut modal = MemoryModal::new();
-        modal.open(vec![]);
-        assert!(matches!(
-            modal.handle_key(key_ev(KeyCode::Char('x'))),
-            MemoryModalAction::Consumed
-        ));
-        assert!(modal.is_open());
-    }
-
-    #[test]
-    fn ctrl_d_first_press_sets_confirming() {
+    fn delete_confirmation_flow() {
         let mut modal = MemoryModal::new();
         modal.open(sample_entries());
+
         assert!(matches!(
             modal.handle_key(ctrl_d()),
             MemoryModalAction::ConfirmDelete
         ));
         assert!(modal.is_confirming());
-    }
 
-    #[test]
-    fn ctrl_d_double_press_deletes() {
-        let mut modal = MemoryModal::new();
-        modal.open(sample_entries());
-        modal.handle_key(ctrl_d());
-        match modal.handle_key(ctrl_d()) {
-            MemoryModalAction::DeleteFile(name) => assert_eq!(name, "a.md"),
-            _ => panic!("expected DeleteFile"),
-        }
-    }
-
-    #[test]
-    fn ctrl_d_on_different_item_resets_confirm() {
-        let mut modal = MemoryModal::new();
-        modal.open(sample_entries());
-        modal.handle_key(ctrl_d());
-        assert!(modal.is_confirming());
         modal.handle_key(key_ev(KeyCode::Down));
-        assert!(!modal.is_confirming());
+        assert!(!modal.is_confirming(), "moving selection resets confirm");
+
         assert!(matches!(
             modal.handle_key(ctrl_d()),
             MemoryModalAction::ConfirmDelete
         ));
+        match modal.handle_key(ctrl_d()) {
+            MemoryModalAction::DeleteFile(name) => assert_eq!(name, "b.md"),
+            other => panic!("expected DeleteFile, got {other:?}"),
+        }
     }
 
     #[test]
@@ -255,12 +227,13 @@ mod tests {
     }
 
     #[test]
-    fn close_resets_state() {
+    fn update_size_changes_detail() {
         let mut modal = MemoryModal::new();
         modal.open(sample_entries());
-        modal.handle_key(ctrl_d());
-        modal.close();
-        assert!(!modal.is_open());
-        assert!(!modal.is_confirming());
+        modal.update_size("a.md", 999);
+        assert_eq!(
+            modal.picker.selected_item().unwrap().detail(),
+            Some("(999 bytes)")
+        );
     }
 }

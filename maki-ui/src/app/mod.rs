@@ -232,6 +232,15 @@ impl App {
         self.status_bar.flash(msg);
     }
 
+    pub(crate) fn refresh_memory_entry(&mut self, path: &std::path::Path) {
+        if self.memory_modal.is_open()
+            && let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && let Ok(meta) = std::fs::metadata(path)
+        {
+            self.memory_modal.update_size(name, meta.len());
+        }
+    }
+
     pub fn tick_error_expiry(&mut self) {
         if self.status.is_error_expired() {
             self.status = Status::Idle;
