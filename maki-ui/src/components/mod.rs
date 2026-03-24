@@ -271,6 +271,7 @@ impl DisplayMessage {
                         | ToolOutput::ReadCode { .. }
                         | ToolOutput::ReadDir { .. }
                         | ToolOutput::WriteCode { .. }
+                        | ToolOutput::MemoryWrite { .. }
                         | ToolOutput::GrepResult { .. }
                         | ToolOutput::GlobResult { .. }
                         | ToolOutput::TodoList(_)),

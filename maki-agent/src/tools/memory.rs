@@ -29,14 +29,13 @@ impl Memory {
 
     pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         let memories_dir = resolve_memories_dir()?;
-        let result = dispatch(
+        dispatch(
             &self.command,
             self.path.as_deref(),
             self.content.as_deref(),
             &memories_dir,
         )
-        .await?;
-        Ok(ToolOutput::Plain(result))
+        .await
     }
 
     pub fn start_summary(&self) -> String {
@@ -54,9 +53,9 @@ async fn dispatch(
     path: Option<&str>,
     content: Option<&str>,
     memories_dir: &Path,
-) -> Result<String, String> {
+) -> Result<ToolOutput, String> {
     match command {
-        "view" => cmd_view(path, memories_dir).await,
+        "view" => cmd_view(path, memories_dir).await.map(ToolOutput::Plain),
         "write" => {
             cmd_write(
                 path.ok_or("'path' is required for write")?,
@@ -65,7 +64,9 @@ async fn dispatch(
             )
             .await
         }
-        "delete" => cmd_delete(path.ok_or("'path' is required for delete")?, memories_dir).await,
+        "delete" => cmd_delete(path.ok_or("'path' is required for delete")?, memories_dir)
+            .await
+            .map(ToolOutput::Plain),
         _ => Err(format!(
             "unknown command '{command}'. Valid commands: {}",
             VALID_COMMANDS.join(", ")
@@ -85,7 +86,7 @@ async fn cmd_view(path: Option<&str>, memories_dir: &Path) -> Result<String, Str
     }
 }
 
-async fn cmd_write(path: &str, content: &str, memories_dir: &Path) -> Result<String, String> {
+async fn cmd_write(path: &str, content: &str, memories_dir: &Path) -> Result<ToolOutput, String> {
     let line_count = content.lines().count().max(1);
     if line_count > MAX_LINES_PER_FILE {
         return Err(format!(
@@ -112,7 +113,10 @@ async fn cmd_write(path: &str, content: &str, memories_dir: &Path) -> Result<Str
     smol::fs::write(&file_path, content)
         .await
         .map_err(|e| format!("write error: {e}"))?;
-    Ok(format!("wrote {path} ({line_count} lines)"))
+    Ok(ToolOutput::MemoryWrite {
+        path: path.to_owned(),
+        lines: content.lines().map(ToOwned::to_owned).collect(),
+    })
 }
 
 async fn cmd_delete(path: &str, memories_dir: &Path) -> Result<String, String> {

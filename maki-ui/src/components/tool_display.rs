@@ -21,8 +21,8 @@ use jiff::tz::TimeZone;
 use crate::markdown::{Keep, text_to_lines, truncate_output, truncation_notice};
 use maki_agent::tools::{
     BASH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME,
-    INDEX_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME, WEBFETCH_TOOL_NAME,
-    WEBSEARCH_TOOL_NAME, WRITE_TOOL_NAME,
+    INDEX_TOOL_NAME, MEMORY_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME,
+    WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME, WRITE_TOOL_NAME,
 };
 use maki_agent::{BatchToolEntry, BatchToolStatus, InstructionBlock, ToolInput, ToolOutput};
 use ratatui::style::Style;
@@ -54,7 +54,9 @@ impl ToolKind {
             INDEX_TOOL_NAME => Self::Index,
             GREP_TOOL_NAME => Self::Grep,
             READ_TOOL_NAME => Self::Read,
-            WRITE_TOOL_NAME | EDIT_TOOL_NAME | MULTIEDIT_TOOL_NAME => Self::Write,
+            WRITE_TOOL_NAME | EDIT_TOOL_NAME | MULTIEDIT_TOOL_NAME | MEMORY_TOOL_NAME => {
+                Self::Write
+            }
             WEBFETCH_TOOL_NAME => Self::WebFetch,
             WEBSEARCH_TOOL_NAME => Self::WebSearch,
             _ => Self::Other,
@@ -117,6 +119,7 @@ pub(crate) fn tool_output_annotation(output: &ToolOutput, kind: ToolKind) -> Opt
             }
         }
         ToolOutput::WriteCode { byte_count, .. } => Some(format!("{byte_count} bytes")),
+        ToolOutput::MemoryWrite { lines, .. } => Some(format!("{} lines", lines.len())),
         ToolOutput::GrepResult { entries } => Some(format!("{} files", entries.len())),
         ToolOutput::GlobResult { files } if !files.is_empty() => {
             Some(format!("{} files", files.len()))
@@ -282,7 +285,8 @@ impl HighlightRequest {
             ToolOutput::ReadCode { .. }
             | ToolOutput::WriteCode { .. }
             | ToolOutput::Diff { .. }
-            | ToolOutput::GrepResult { .. } => Some(o),
+            | ToolOutput::GrepResult { .. }
+            | ToolOutput::MemoryWrite { .. } => Some(o),
             ToolOutput::Plain(_)
             | ToolOutput::ReadDir { .. }
             | ToolOutput::TodoList(_)

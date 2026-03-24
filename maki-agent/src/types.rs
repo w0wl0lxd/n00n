@@ -222,6 +222,10 @@ pub enum ToolOutput {
         byte_count: usize,
         lines: Vec<String>,
     },
+    MemoryWrite {
+        path: String,
+        lines: Vec<String>,
+    },
     GrepResult {
         entries: Vec<GrepFileEntry>,
     },
@@ -248,6 +252,8 @@ impl ToolOutput {
             Self::GlobResult { files } => files.is_empty(),
             Self::GrepResult { entries } => entries.is_empty(),
             Self::ReadDir { text, .. } => text.is_empty(),
+            Self::Plain(text) => text.is_empty(),
+            Self::MemoryWrite { lines, .. } => lines.is_empty(),
             _ => false,
         }
     }
@@ -263,6 +269,9 @@ impl ToolOutput {
     pub fn as_display_text(&self) -> String {
         match self {
             Self::Plain(s) => s.clone(),
+            Self::MemoryWrite { path, lines } => {
+                format!("wrote {path} ({} lines)", lines.len().max(1))
+            }
             Self::ReadDir { text, instructions } => {
                 let mut out = text.clone();
                 if let Some(blocks) = instructions {

@@ -297,11 +297,17 @@ pub fn render_tool_content(
             }
             (result, trunc)
         }
-        Some(ToolOutput::WriteCode {
-            path,
-            lines: code_lines,
-            ..
-        }) => render_code(
+        Some(
+            ToolOutput::WriteCode {
+                path,
+                lines: code_lines,
+                ..
+            }
+            | ToolOutput::MemoryWrite {
+                path,
+                lines: code_lines,
+            },
+        ) => render_code(
             highlight.then(|| highlighter_for_path(path)),
             1,
             code_lines,
