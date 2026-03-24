@@ -8,7 +8,6 @@ use crate::selection::{self, SelectableZone, SelectionZone};
 use crate::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Widget};
 
 use super::{App, Status};
@@ -125,7 +124,7 @@ impl App {
         } else if !self.is_main_chat() {
             let sep = Block::default()
                 .borders(Borders::TOP)
-                .border_style(Style::new().fg(self.effective_mode_color()));
+                .border_style(self.separator_style());
             frame.render_widget(sep, layout.bottom_area);
         } else if layout.bottom_area.height > 0 {
             let queue_entries = self.queue.entries();
@@ -143,7 +142,7 @@ impl App {
                 frame,
                 layout.input_area,
                 streaming,
-                self.effective_mode_color(),
+                self.separator_style(),
                 !self.any_overlay_open(),
                 todo_hint,
             );

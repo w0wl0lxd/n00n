@@ -12,7 +12,7 @@ use std::mem;
 use maki_providers::ImageSource;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
@@ -263,7 +263,7 @@ impl InputBox {
         frame: &mut Frame,
         area: Rect,
         streaming: bool,
-        mode_color: Color,
+        border_style: Style,
         focused: bool,
         top_right_hint: Option<Line<'_>>,
     ) {
@@ -356,11 +356,6 @@ impl InputBox {
         }
 
         let text = Text::from(styled_lines);
-        let border_style = if streaming {
-            theme::current().input_border
-        } else {
-            Style::new().fg(mode_color)
-        };
         let mut block = Block::default()
             .borders(Borders::TOP | Borders::BOTTOM)
             .border_type(BorderType::Plain)
@@ -551,6 +546,7 @@ fn total_visual_lines(buffer: &TextBuffer, ew: usize, cursor_visible: bool) -> u
 mod tests {
     use super::*;
     use crate::components::scrollbar::SCROLLBAR_THUMB;
+    use ratatui::style::Color;
     use test_case::test_case;
 
     fn type_text(input: &mut InputBox, text: &str) {
@@ -707,14 +703,14 @@ mod tests {
         width: u16,
         height: u16,
         streaming: bool,
-        mode_color: Color,
+        border_style: Style,
     ) -> ratatui::Terminal<ratatui::backend::TestBackend> {
         let backend = ratatui::backend::TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
                 let area = Rect::new(0, 0, width, height);
-                input.view(frame, area, streaming, mode_color, true, None);
+                input.view(frame, area, streaming, border_style, true, None);
             })
             .unwrap();
         terminal
@@ -725,7 +721,13 @@ mod tests {
         width: u16,
         height: u16,
     ) -> ratatui::Terminal<ratatui::backend::TestBackend> {
-        render_input_with(input, width, height, false, theme::current().mode_build)
+        render_input_with(
+            input,
+            width,
+            height,
+            false,
+            Style::new().fg(theme::current().mode_build),
+        )
     }
 
     fn has_scrollbar_thumb(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> bool {
@@ -768,11 +770,11 @@ mod tests {
         buf.cell((0, 0)).unwrap().fg
     }
 
-    #[test_case(false, theme::current().mode_plan,   theme::current().mode_plan         ; "idle_uses_mode_color")]
-    #[test_case(true,  theme::current().mode_plan,   theme::current().input_border.fg.unwrap()  ; "streaming_uses_default_border")]
-    fn border_color_matches_mode(streaming: bool, mode_color: Color, expected: Color) {
+    #[test_case(false, Style::new().fg(theme::current().mode_plan), theme::current().mode_plan         ; "idle_uses_mode_color")]
+    #[test_case(true,  theme::current().input_border,               theme::current().input_border.fg.unwrap()  ; "streaming_uses_default_border")]
+    fn border_color_matches_mode(streaming: bool, border_style: Style, expected: Color) {
         let mut input = InputBox::new(InputHistory::default());
-        let terminal = render_input_with(&mut input, 40, 5, streaming, mode_color);
+        let terminal = render_input_with(&mut input, 40, 5, streaming, border_style);
         assert_eq!(border_fg(&terminal), expected);
     }
 

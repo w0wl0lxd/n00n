@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
+use crate::components::Status;
 use crate::theme;
 use maki_agent::{AgentInput, AgentMode};
 use maki_storage::DataDir;
@@ -141,6 +142,14 @@ impl App {
             theme::current().mode_bash
         } else {
             self.mode.color()
+        }
+    }
+
+    pub(super) fn separator_style(&self) -> Style {
+        if self.status == Status::Streaming {
+            theme::current().input_border
+        } else {
+            Style::new().fg(self.effective_mode_color())
         }
     }
 }
