@@ -197,6 +197,11 @@ fn run() -> Result<()> {
                     &cwd_str,
                     &storage,
                 )?;
+                let model = if session.messages.is_empty() {
+                    model
+                } else {
+                    Model::from_spec(&session.model).unwrap_or(model)
+                };
                 let session_id = maki_ui::run(maki_ui::EventLoopParams {
                     model,
                     skills,

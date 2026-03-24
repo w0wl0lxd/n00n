@@ -1,27 +1,55 @@
 use crate::chat::{Chat, history_to_display};
 use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
-use maki_providers::TokenUsage;
+use maki_providers::{Model, TokenUsage};
+use maki_storage::sessions::StoredSubagent;
 
 use crate::AppSession;
 
+use super::queue::{QueuedItem, QueuedMessage};
+use super::session_state::{SessionState, stored_to_rules};
 use super::{App, Mode, PendingInput, PlanState};
 
 impl App {
     pub(crate) fn save_session(&mut self) {
-        if let Some(ref history) = self.shared_history {
-            self.session.messages = Vec::clone(&history.load());
-        }
-        if let Some(ref outputs) = self.shared_tool_outputs {
-            self.session.tool_outputs = outputs.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        }
-        if self.session.messages.is_empty() {
+        self.state.sync_session(
+            &self.shared_history,
+            &self.shared_tool_outputs,
+            &self.permissions,
+        );
+        self.sync_ephemeral_state();
+        let has_messages = !self.state.session.messages.is_empty();
+        let has_ephemeral = self.state.session.meta.input_draft.is_some()
+            || self.state.session.meta.todo_dismissed
+            || !self.state.session.meta.queued_messages.is_empty()
+            || self.state.session.meta.mode != Some(maki_storage::sessions::StoredMode::Build);
+        if !has_messages && !has_ephemeral {
             return;
         }
-        self.session.token_usage = self.token_usage;
-        self.session.updated_at = maki_storage::now_epoch();
-        self.session.update_title_if_default();
         self.enqueue_save();
+    }
+
+    fn sync_ephemeral_state(&mut self) {
+        let draft = self.input_box.buffer.value();
+        self.state.session.meta.input_draft = if draft.is_empty() { None } else { Some(draft) };
+
+        self.state.session.meta.todo_dismissed = self.todo_panel.is_user_dismissed();
+
+        self.state.session.meta.queued_messages =
+            self.queue.text_messages().map(|m| m.text.clone()).collect();
+
+        self.state.session.meta.subagents = self
+            .chats
+            .iter()
+            .skip(1)
+            .zip(self.chat_index.iter())
+            .map(|(chat, (tool_id, _))| StoredSubagent {
+                tool_use_id: tool_id.clone(),
+                name: chat.name.clone(),
+                prompt: None,
+                model: chat.model_id.clone(),
+            })
+            .collect();
     }
 
     pub(super) fn save_input_history(&self) {
@@ -31,16 +59,16 @@ impl App {
     }
 
     pub(super) fn enqueue_save(&self) {
-        self.storage_writer.send(Box::new(self.session.clone()));
+        self.storage_writer
+            .send(Box::new(self.state.session.clone()));
     }
 
-    pub(super) fn reset_session_state(&mut self) {
+    pub(super) fn reset_ui_chrome(&mut self) {
         self.chats.clear();
         self.chats.push(Chat::new("Main".into(), self.ui_config));
         self.active_chat = 0;
         self.chat_index.clear();
         self.status = super::Status::Idle;
-        self.token_usage = TokenUsage::default();
         self.queue.clear();
         #[cfg(feature = "demo")]
         {
@@ -54,22 +82,67 @@ impl App {
         self.todo_panel.reset();
     }
 
-    pub(super) fn reset_session(&mut self) -> Vec<Action> {
-        let written_plan = self.plan.pending_plan().is_some();
-        self.reset_session_state();
-        if !written_plan {
-            self.plan = PlanState::new();
+    pub(crate) fn restore_display(&mut self) {
+        let display_msgs = history_to_display(
+            &self.state.session.messages,
+            &self.state.session.tool_outputs,
+            &self.ui_config.tool_output_lines,
+        );
+        self.main_chat().load_messages(display_msgs);
+        self.main_chat().token_usage = self.state.token_usage;
+        self.main_chat().context_size = self.state.context_size;
+        self.todo_panel.restore(
+            &self.state.session.tool_outputs,
+            self.state.session.meta.todo_dismissed,
+        );
+
+        if let Some(draft) = self.state.session.meta.input_draft.take() {
+            self.input_box.set_input(draft);
+            self.input_box.buffer.move_to_end();
         }
-        if self.mode == Mode::Plan {
+
+        for text in std::mem::take(&mut self.state.session.meta.queued_messages) {
+            self.queue.push(QueuedItem::Message(QueuedMessage {
+                text,
+                images: Vec::new(),
+            }));
+        }
+
+        for sa in std::mem::take(&mut self.state.session.meta.subagents) {
+            let idx = self.chats.len();
+            self.chat_index.insert(sa.tool_use_id.clone(), idx);
+            let mut chat = Chat::new(sa.name, self.ui_config);
+            chat.model_id = sa.model;
+            self.chats.push(chat);
+        }
+    }
+
+    fn loaded_session_snapshot(&self) -> LoadedSession {
+        LoadedSession {
+            messages: self.state.session.messages.clone(),
+            tool_outputs: self.state.session.tool_outputs.clone(),
+            model_spec: self.state.session.model.clone(),
+        }
+    }
+
+    pub(super) fn reset_session(&mut self) -> Vec<Action> {
+        let written_plan = self.state.plan.pending_plan().is_some();
+        self.reset_ui_chrome();
+        self.state.token_usage = TokenUsage::default();
+        self.state.context_size = 0;
+        if !written_plan {
+            self.state.plan = PlanState::new();
+        }
+        if self.state.mode == Mode::Plan {
             self.enter_plan();
         }
-        self.session = AppSession::new(&self.session.model, &self.session.cwd);
+        self.state.session = AppSession::new(&self.state.session.model, &self.state.session.cwd);
         vec![Action::NewSession]
     }
 
     pub(super) fn open_rewind_picker(&mut self) -> Vec<Action> {
         self.save_session();
-        match self.rewind_picker.open(&self.session.messages) {
+        match self.rewind_picker.open(&self.state.session.messages) {
             Ok(()) => vec![],
             Err(msg) => {
                 self.status_bar.flash(msg);
@@ -81,43 +154,55 @@ impl App {
     pub(super) fn rewind_to(&mut self, entry: RewindEntry) -> Vec<Action> {
         self.run_id += 1;
 
-        let stale_ids: Vec<String> = self.session.messages[entry.turn_index..]
+        let stale_ids: Vec<String> = self.state.session.messages[entry.turn_index..]
             .iter()
             .flat_map(|m| m.tool_uses())
             .map(|(id, _, _)| id.to_owned())
             .collect();
-        self.session.messages.truncate(entry.turn_index);
+        self.state.session.messages.truncate(entry.turn_index);
         for id in &stale_ids {
-            self.session.tool_outputs.remove(id);
+            self.state.session.tool_outputs.remove(id);
         }
-        self.session.token_usage = self.token_usage;
 
-        self.reset_session_state();
-        let display_msgs = history_to_display(
-            &self.session.messages,
-            &self.session.tool_outputs,
-            &self.ui_config.tool_output_lines,
-        );
-        self.main_chat().load_messages(display_msgs);
-        self.token_usage = self.session.token_usage;
-        self.todo_panel.restore(&self.session.tool_outputs);
+        self.reset_ui_chrome();
+        self.restore_display();
 
         self.input_box.set_input(entry.prompt_text);
         self.input_box.buffer.move_to_end();
 
-        self.session.update_title_if_default();
+        self.state.session.update_title_if_default();
         self.enqueue_save();
 
-        vec![Action::LoadSession(Box::new(LoadedSession {
-            messages: self.session.messages.clone(),
-            tool_outputs: self.session.tool_outputs.clone(),
-        }))]
+        vec![Action::LoadSession(Box::new(
+            self.loaded_session_snapshot(),
+        ))]
     }
 
     pub(super) fn open_session_picker(&mut self) -> Vec<Action> {
-        self.session_picker
-            .open(&self.session.cwd, &self.session.id, &self.storage);
+        self.session_picker.open(
+            &self.state.session.cwd,
+            &self.state.session.id,
+            &self.storage,
+        );
         vec![]
+    }
+
+    pub(crate) fn apply_loaded_session(
+        &mut self,
+        session: AppSession,
+        fallback_model: &Model,
+    ) -> LoadedSession {
+        self.permissions
+            .load_session_rules(stored_to_rules(&session.meta.session_rules));
+        self.state = SessionState::from_session(session, fallback_model, &self.storage);
+        for w in self.state.warnings.drain(..) {
+            self.status_bar.flash(w);
+        }
+        self.reset_ui_chrome();
+        self.restore_display();
+
+        self.enqueue_save();
+        self.loaded_session_snapshot()
     }
 
     pub(super) fn load_session(&mut self, session_id: String) -> Vec<Action> {
@@ -130,22 +215,8 @@ impl App {
             }
         };
         self.save_session();
-        self.reset_session_state();
-        self.reset_plan();
-        self.session = session;
-        let display_msgs = history_to_display(
-            &self.session.messages,
-            &self.session.tool_outputs,
-            &self.ui_config.tool_output_lines,
-        );
-        self.main_chat().load_messages(display_msgs);
-        self.token_usage = self.session.token_usage;
-        self.todo_panel.restore(&self.session.tool_outputs);
-        self.enqueue_save();
-        vec![Action::LoadSession(Box::new(LoadedSession {
-            messages: self.session.messages.clone(),
-            tool_outputs: self.session.tool_outputs.clone(),
-        }))]
+        let loaded = self.apply_loaded_session(session, &self.state.model.clone());
+        vec![Action::LoadSession(Box::new(loaded))]
     }
 
     pub(super) fn delete_session(&mut self, session_id: String) -> Vec<Action> {

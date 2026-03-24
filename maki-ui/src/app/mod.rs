@@ -8,6 +8,7 @@ mod mode;
 mod mouse;
 mod queue;
 mod session;
+pub(crate) mod session_state;
 pub(crate) mod shell;
 #[cfg(test)]
 mod tests;
@@ -51,7 +52,7 @@ use maki_agent::QuestionInfo;
 use maki_agent::permissions::{PermissionDecision, PermissionManager};
 use maki_agent::{AgentEvent, Envelope, ImageSource, McpServerInfo, SubagentInfo, ToolOutput};
 use maki_config::UiConfig;
-use maki_providers::{Message, Model, ModelPricing, TokenUsage};
+use maki_providers::{Message, Model};
 use maki_storage::DataDir;
 use maki_storage::input_history::InputHistory;
 use maki_storage::model::persist_model;
@@ -63,6 +64,7 @@ pub(crate) use mode::{Mode, PlanState};
 #[cfg(test)]
 use mouse::{EDGE_SCROLL_INTERVAL, EDGE_SCROLL_LINES};
 pub(crate) use queue::{MessageQueue, QueuedItem, QueuedMessage};
+use session_state::SessionState;
 
 const CANCEL_MSG: &str = "Cancelled.";
 const FLASH_CANCEL: &str = "Press esc again to stop...";
@@ -111,12 +113,7 @@ pub struct App {
     pub(super) plan_form: PlanForm,
     pub(super) status_bar: StatusBar,
     pub status: Status,
-    pub token_usage: TokenUsage,
-    pub(crate) mode: Mode,
-    pub(crate) plan: PlanState,
-    pub(super) model_id: String,
-    pub(super) pricing: ModelPricing,
-    pub(super) context_window: u32,
+    pub(crate) state: session_state::SessionState,
     pub should_quit: bool,
     pub(crate) queue: MessageQueue,
     pub answer_tx: Option<flume::Sender<String>>,
@@ -130,7 +127,7 @@ pub struct App {
     pub(super) selection_state: Option<SelectionState>,
     pub(super) clipboard: Option<Clipboard>,
     pub(super) last_esc: Option<Instant>,
-    pub(crate) session: AppSession,
+
     pub(crate) storage: DataDir,
     pub(crate) shared_history: Option<Arc<ArcSwap<Vec<Message>>>>,
     pub(crate) shared_tool_outputs: Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
@@ -145,9 +142,7 @@ pub struct App {
 impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        model_id: String,
-        pricing: ModelPricing,
-        context_window: u32,
+        model: &Model,
         session: AppSession,
         storage: DataDir,
         available_models: Arc<ArcSwapOption<Vec<String>>>,
@@ -157,6 +152,7 @@ impl App {
         input_history_size: usize,
         permissions: Arc<PermissionManager>,
     ) -> Self {
+        let state = SessionState::from_session(session, model, &storage);
         Self {
             chats: vec![Chat::new("Main".into(), ui_config)],
             active_chat: 0,
@@ -180,12 +176,7 @@ impl App {
             plan_form: PlanForm::new(),
             status_bar: StatusBar::new(ui_config.flash_duration()),
             status: Status::Idle,
-            token_usage: TokenUsage::default(),
-            mode: Mode::Build,
-            plan: PlanState::new(),
-            model_id,
-            pricing,
-            context_window,
+            state,
             should_quit: false,
             queue: MessageQueue::default(),
             answer_tx: None,
@@ -199,7 +190,6 @@ impl App {
             selection_state: None,
             clipboard: Clipboard::new().ok(),
             last_esc: None,
-            session,
             storage,
             shared_history: None,
             shared_tool_outputs: None,
@@ -221,11 +211,8 @@ impl App {
     }
 
     pub(crate) fn update_model(&mut self, model: &Model) {
-        self.session.model = model.spec();
-        self.model_id = model.spec();
-        self.pricing = model.pricing.clone();
-        self.context_window = model.context_window;
-        persist_model(&self.storage, &self.model_id);
+        self.state.update_model(model);
+        persist_model(&self.storage, &self.state.session.model);
     }
 
     pub(crate) fn flash(&mut self, msg: String) {
@@ -610,7 +597,7 @@ impl App {
             if key::POP_QUEUE.matches(key) {
                 self.queue.remove(0);
             } else if key::OPEN_EDITOR.matches(key) {
-                return match self.plan.pending_plan() {
+                return match self.state.plan.pending_plan() {
                     Some(p) => vec![Action::OpenEditor(p.to_path_buf())],
                     None => {
                         self.flash(FLASH_NO_PLAN.into());
@@ -692,6 +679,7 @@ impl App {
     }
 
     fn quit(&mut self) -> Vec<Action> {
+        self.save_session();
         self.save_input_history();
         self.should_quit = true;
         vec![Action::Quit]
@@ -779,8 +767,10 @@ impl App {
         };
 
         if let AgentEvent::ToolDone(ref e) = envelope.event {
-            if self.mode == Mode::Plan && self.plan.path().is_some_and(|pp| e.wrote_to(pp)) {
-                self.plan.mark_written();
+            if self.state.mode == Mode::Plan
+                && self.state.plan.path().is_some_and(|pp| e.wrote_to(pp))
+            {
+                self.state.plan.mark_written();
             }
             if let Some(ref outputs) = self.shared_tool_outputs {
                 outputs
@@ -820,18 +810,21 @@ impl App {
 
         self.retry_info = None;
 
-        let plan_path = if self.mode == Mode::Plan {
-            self.plan.path()
+        let plan_path = if self.state.mode == Mode::Plan {
+            self.state.plan.path()
         } else {
             None
         };
 
         if let AgentEvent::TurnComplete(ref tc) = envelope.event {
-            self.token_usage += tc.usage;
+            self.state.token_usage += tc.usage;
             self.chats[chat_idx].token_usage += tc.usage;
-            self.chats[chat_idx].context_size =
-                tc.context_size.unwrap_or_else(|| tc.usage.context_tokens());
-            let formatted = format_turn_usage(&tc.usage, &self.pricing);
+            let ctx_size = tc.context_size.unwrap_or_else(|| tc.usage.context_tokens());
+            self.chats[chat_idx].context_size = ctx_size;
+            if chat_idx == 0 {
+                self.state.context_size = ctx_size;
+            }
+            let formatted = format_turn_usage(&tc.usage, &self.state.model.pricing);
             self.chats[chat_idx].set_pending_turn_usage(formatted);
         }
 
@@ -859,7 +852,7 @@ impl App {
                         return actions;
                     }
                     self.status = Status::Idle;
-                    if self.mode == Mode::Plan && self.plan.pending_plan().is_some() {
+                    if self.state.mode == Mode::Plan && self.state.plan.pending_plan().is_some() {
                         self.plan_form.open();
                     }
                 }
@@ -1006,7 +999,7 @@ impl App {
         match std::env::set_current_dir(&path) {
             Ok(()) => {
                 if let Ok(canonical) = std::env::current_dir() {
-                    self.session.cwd = canonical.to_string_lossy().into_owned();
+                    self.state.session.cwd = canonical.to_string_lossy().into_owned();
                 }
                 self.status_bar.refresh_cwd();
                 self.flash(format!("cd {}", path.display()))
@@ -1163,7 +1156,7 @@ impl App {
             PlanFormAction::Consumed | PlanFormAction::Dismiss | PlanFormAction::Continue => {
                 vec![]
             }
-            PlanFormAction::OpenEditor => match self.plan.path() {
+            PlanFormAction::OpenEditor => match self.state.plan.path() {
                 Some(p) => {
                     self.plan_form.open();
                     vec![Action::OpenEditor(p.to_path_buf())]
@@ -1209,24 +1202,24 @@ impl App {
         } else {
             vec![]
         };
-        if let Some(pp) = self.plan.path() {
+        if let Some(pp) = self.state.plan.path() {
             let content = std::fs::read_to_string(pp).unwrap_or_default();
             let path_str = pp.display().to_string();
             self.main_chat()
                 .push(DisplayMessage::plan(content, path_str));
         }
-        let text = match self.plan.path() {
+        let text = match self.state.plan.path() {
             Some(p) => format!("{} at `{}`.", IMPLEMENT_MSG_PREFIX, p.display()),
             None => format!("{}.", IMPLEMENT_MSG_PREFIX),
         };
-        self.mode = Mode::Build;
+        self.state.mode = Mode::Build;
         self.run_id += 1;
         let msg = QueuedMessage {
             text,
             images: vec![],
         };
         actions.extend(self.start_from_queue(&msg));
-        self.plan = PlanState::new();
+        self.state.plan = PlanState::new();
         actions
     }
 }

@@ -38,6 +38,28 @@ pub enum SessionError {
     CursorAhead { saved: usize, actual: usize },
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionMeta {
+    #[serde(default)]
+    pub mode: Option<StoredMode>,
+    #[serde(default)]
+    pub plan_path: Option<String>,
+    #[serde(default)]
+    pub plan_written: bool,
+    #[serde(default)]
+    pub session_rules: Vec<StoredRule>,
+    #[serde(default)]
+    pub context_size: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_draft: Option<String>,
+    #[serde(default)]
+    pub todo_dismissed: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued_messages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagents: Vec<StoredSubagent>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session<M, U, T> {
     pub version: u32,
@@ -49,6 +71,8 @@ pub struct Session<M, U, T> {
     pub token_usage: U,
     #[serde(default = "HashMap::new")]
     pub tool_outputs: HashMap<String, T>,
+    #[serde(flatten)]
+    pub meta: SessionMeta,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -57,6 +81,38 @@ pub struct SessionSummary {
     pub id: String,
     pub title: String,
     pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StoredEffect {
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StoredMode {
+    Build,
+    Plan,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredRule {
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    pub effect: StoredEffect,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredSubagent {
+    pub tool_use_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -113,6 +169,8 @@ enum LogRecord<M, U, T> {
         title: String,
         token_usage: U,
         updated_at: u64,
+        #[serde(flatten)]
+        meta: SessionMeta,
     },
 }
 
@@ -225,6 +283,7 @@ impl SessionLog {
                 title: session.title.clone(),
                 token_usage: &session.token_usage,
                 updated_at: session.updated_at,
+                meta: session.meta.clone(),
             },
         )?;
 
@@ -327,6 +386,7 @@ where
             title: session.title.clone(),
             token_usage: &session.token_usage,
             updated_at: session.updated_at,
+            meta: session.meta.clone(),
         },
     )?;
     file.write_all(&buf).map_err(StorageError::from)?;
@@ -358,6 +418,7 @@ where
     let mut title = DEFAULT_TITLE.to_string();
     let mut token_usage = U::default();
     let mut updated_at = 0u64;
+    let mut meta = SessionMeta::default();
     let mut got_header = false;
 
     for line_result in reader.lines() {
@@ -406,10 +467,12 @@ where
                 title: m_title,
                 token_usage: m_usage,
                 updated_at: m_updated,
+                meta: m_meta,
             } => {
                 title = m_title;
                 token_usage = m_usage;
                 updated_at = m_updated;
+                meta = m_meta;
             }
         }
     }
@@ -427,6 +490,7 @@ where
         messages,
         token_usage,
         tool_outputs,
+        meta,
         created_at,
         updated_at,
     })
@@ -593,6 +657,10 @@ where
             messages: Vec::new(),
             token_usage: U::default(),
             tool_outputs: HashMap::new(),
+            meta: SessionMeta {
+                mode: Some(StoredMode::Build),
+                ..Default::default()
+            },
             created_at: now,
             updated_at: now,
         }

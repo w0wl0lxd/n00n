@@ -20,7 +20,6 @@ use crate::AppSession;
 use crate::agent::{AgentCommand, AgentHandles, McpState, spawn_agent, toggle_disabled};
 use crate::app::shell::{ShellEvent, spawn_shell};
 use crate::app::{App, Msg};
-use crate::chat::history_to_display;
 #[cfg(feature = "demo")]
 use crate::components;
 use crate::components::Action;
@@ -95,18 +94,18 @@ fn spawn_model_fetch() -> BackgroundModels {
 }
 
 fn restore_session(app: &mut App, handles: &AgentHandles) {
-    app.token_usage = app.session.token_usage;
+    app.permissions
+        .load_session_rules(crate::app::session_state::stored_to_rules(
+            &app.state.session.meta.session_rules,
+        ));
     *handles
         .tool_outputs
         .lock()
-        .unwrap_or_else(|e| e.into_inner()) = app.session.tool_outputs.clone();
-    let display_msgs = history_to_display(
-        &app.session.messages,
-        &app.session.tool_outputs,
-        &app.ui_config.tool_output_lines,
-    );
-    app.main_chat().load_messages(display_msgs);
-    app.todo_panel.restore(&app.session.tool_outputs);
+        .unwrap_or_else(|e| e.into_inner()) = app.state.session.tool_outputs.clone();
+    app.restore_display();
+    for w in app.state.warnings.drain(..) {
+        app.status_bar.flash(w);
+    }
 }
 
 #[cfg(feature = "demo")]
@@ -164,9 +163,7 @@ impl<'t> EventLoop<'t> {
         let initial_history = session.messages.clone();
 
         let mut app = App::new(
-            model.spec(),
-            model.pricing.clone(),
-            model.context_window,
+            &model,
             session,
             storage,
             bg.available,
@@ -354,6 +351,13 @@ impl<'t> EventLoop<'t> {
             }
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
+                if loaded.model_spec != self.model.spec()
+                    && let Ok(new_model) = Model::from_spec(&loaded.model_spec)
+                    && let Ok(new_provider) = from_model(&new_model)
+                {
+                    self.model = new_model;
+                    self.provider = Arc::from(new_provider);
+                }
                 self.handles.respawn(
                     loaded.messages,
                     &self.provider,
@@ -439,7 +443,7 @@ impl<'t> EventLoop<'t> {
     }
 
     fn shutdown(mut self) -> String {
-        let session_id = self.app.session.id.clone();
+        let session_id = self.app.state.session.id.clone();
         maki_agent::mcp::kill_process_groups(
             &self
                 .handles

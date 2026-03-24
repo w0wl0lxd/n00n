@@ -225,6 +225,14 @@ impl PermissionManager {
         self.allow_all.load(Ordering::Relaxed)
     }
 
+    pub fn session_rules_snapshot(&self) -> Vec<PermissionRule> {
+        self.session_rules().clone()
+    }
+
+    pub fn load_session_rules(&self, rules: Vec<PermissionRule>) {
+        *self.session_rules() = rules;
+    }
+
     pub fn apply_decision(&self, tool: &str, scopes: &[String], decision: PermissionDecision) {
         let resolved = if decision.is_allow() {
             generalized_scopes(tool, scopes)

@@ -51,13 +51,19 @@ impl TodoPanel {
         }
     }
 
-    pub fn restore(&mut self, tool_outputs: &HashMap<String, ToolOutput>) {
+    pub fn restore(&mut self, tool_outputs: &HashMap<String, ToolOutput>, dismissed: bool) {
         self.items = extract_last_todos(tool_outputs);
         self.visibility = if self.items.is_empty() {
             Visibility::Hidden
+        } else if dismissed {
+            Visibility::UserDismissed
         } else {
             Visibility::Shown
         };
+    }
+
+    pub fn is_user_dismissed(&self) -> bool {
+        self.visibility == Visibility::UserDismissed
     }
 
     pub fn toggle(&mut self) {
@@ -267,7 +273,7 @@ mod tests {
 
         let mut outputs = HashMap::new();
         outputs.insert("id".to_string(), ToolOutput::TodoList(make_items(3)));
-        panel.restore(&outputs);
+        panel.restore(&outputs, false);
         assert_eq!(panel.visibility, Visibility::Shown);
         assert_eq!(panel.items.len(), 3);
     }
@@ -277,7 +283,7 @@ mod tests {
         let mut panel = TodoPanel::new();
         panel.on_todowrite(&make_items(2));
 
-        panel.restore(&HashMap::new());
+        panel.restore(&HashMap::new(), false);
         assert_eq!(panel.visibility, Visibility::Hidden);
         assert!(panel.items.is_empty());
     }

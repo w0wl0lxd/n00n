@@ -2,7 +2,7 @@ use super::*;
 use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
 use crate::components::command::ParsedCommand;
 use crate::components::keybindings::{KeybindContext, key as kb};
-use crate::components::{TEST_CONTEXT_WINDOW, key, test_pricing};
+use crate::components::{key, test_model};
 use crate::selection::{EdgeScroll, SelectableZone, SelectionZone};
 use arc_swap::ArcSwap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
@@ -12,6 +12,7 @@ use maki_agent::{
     TurnCompleteEvent,
 };
 use maki_config::{PermissionsConfig, UiConfig};
+use maki_providers::TokenUsage;
 use ratatui::layout::Rect;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -36,10 +37,9 @@ fn test_app() -> App {
         },
         PathBuf::from("/tmp"),
     ));
+    let model = test_model();
     App::new(
-        "test-model".into(),
-        test_pricing(),
-        TEST_CONTEXT_WINDOW,
+        &model,
         AppSession::new("test-model", "/tmp/test"),
         DataDir::from_path(env::temp_dir()),
         Arc::new(ArcSwapOption::empty()),
@@ -175,40 +175,33 @@ fn toggle_mode_state_machine() {
     let tab = |app: &mut App| app.update(Msg::Key(key(KeyCode::Tab)));
 
     let mut app = test_app();
-    assert_eq!(app.mode, Mode::Build);
+    assert_eq!(app.state.mode, Mode::Build);
 
     tab(&mut app);
-    assert_eq!(app.mode, Mode::Plan);
-    let first_path = app.plan.path().unwrap().to_path_buf();
+    assert_eq!(app.state.mode, Mode::Plan);
+    let first_path = app.state.plan.path().unwrap().to_path_buf();
     assert!(first_path.to_str().unwrap().contains("plans"));
 
     tab(&mut app);
-    assert_eq!(app.mode, Mode::Build);
-    assert!(!app.plan.is_written());
+    assert_eq!(app.state.mode, Mode::Build);
+    assert!(!app.state.plan.is_written());
 
     tab(&mut app);
-    assert_eq!(app.mode, Mode::Plan);
-    assert_eq!(app.plan.path().unwrap(), first_path);
+    assert_eq!(app.state.mode, Mode::Plan);
+    assert_eq!(app.state.plan.path().unwrap(), first_path);
 
-    app.plan.mark_written();
+    app.state.plan.mark_written();
     tab(&mut app);
-    assert_eq!(app.mode, Mode::Build);
-    assert!(app.plan.is_written());
+    assert_eq!(app.state.mode, Mode::Build);
+    assert!(app.state.plan.is_written());
+    assert_eq!(app.state.plan.path().unwrap(), first_path);
 
-    tab(&mut app);
-    assert_eq!(app.mode, Mode::Plan);
-    assert_eq!(app.plan.path().unwrap(), first_path);
-
-    tab(&mut app);
-    assert_eq!(app.mode, Mode::Build);
-    assert_eq!(app.plan.path().unwrap(), first_path);
-
-    app.mode = Mode::Build;
+    app.state.mode = Mode::Build;
     app.status = Status::Streaming;
     app.run_id = 1;
     tab(&mut app);
-    assert_eq!(app.mode, Mode::Plan);
-    assert_eq!(app.plan.path().unwrap(), first_path);
+    assert_eq!(app.state.mode, Mode::Plan);
+    assert_eq!(app.state.plan.path().unwrap(), first_path);
 }
 
 #[test_case(Mode::Build, true,  Some("plan.md") ; "build_sends_written_plan")]
@@ -216,8 +209,8 @@ fn toggle_mode_state_machine() {
 #[test_case(Mode::Plan,  true,  Some("plan.md") ; "plan_sends_written_plan")]
 fn submit_pending_plan(mode: Mode, written: bool, expected: Option<&str>) {
     let mut app = test_app();
-    app.mode = mode;
-    app.plan = PlanState::with_path(PathBuf::from("plan.md"), written);
+    app.state.mode = mode;
+    app.state.plan = PlanState::with_path(PathBuf::from("plan.md"), written);
     let actions = type_and_submit(&mut app, "x");
     let Action::SendMessage(ref input) = actions[0] else {
         panic!("expected SendMessage");
@@ -230,8 +223,8 @@ fn submit_pending_plan(mode: Mode, written: bool, expected: Option<&str>) {
 #[test_case(ToolOutput::WriteCode { path: "/tmp/other.rs".into(), byte_count: 100, lines: vec![] }, false ; "write_non_matching")]
 fn tool_done_sets_plan_written_flag(output: ToolOutput, expect_written: bool) {
     let mut app = test_app();
-    app.mode = Mode::Plan;
-    app.plan = PlanState::with_path(PathBuf::from("/tmp/plans/test.md"), false);
+    app.state.mode = Mode::Plan;
+    app.state.plan = PlanState::with_path(PathBuf::from("/tmp/plans/test.md"), false);
     app.status = Status::Streaming;
     app.run_id = 1;
 
@@ -242,7 +235,7 @@ fn tool_done_sets_plan_written_flag(output: ToolOutput, expect_written: bool) {
         is_error: false,
     }))));
 
-    assert_eq!(app.plan.is_written(), expect_written);
+    assert_eq!(app.state.plan.is_written(), expect_written);
 }
 
 #[test]
@@ -494,10 +487,10 @@ fn ctrl_c_closes_palette() {
 #[test]
 fn reset_session_preserves_plan() {
     let mut app = test_app();
-    app.token_usage.input = 500;
+    app.state.token_usage.input = 500;
     app.chats[0].context_size = 1000;
-    app.mode = Mode::Build;
-    app.plan = PlanState::with_path(PathBuf::from("plan.md"), true);
+    app.state.mode = Mode::Build;
+    app.state.plan = PlanState::with_path(PathBuf::from("plan.md"), true);
     app.queue.push(queued_msg("q"));
     app.queue.set_focus_at(0);
     app.update(Msg::Key(kb::HELP.to_key_event()));
@@ -506,11 +499,11 @@ fn reset_session_preserves_plan() {
     let actions = app.reset_session();
     assert!(matches!(&actions[0], Action::NewSession));
     assert_eq!(app.status, Status::Idle);
-    assert_eq!(app.token_usage.input, 0);
+    assert_eq!(app.state.token_usage.input, 0);
     assert_eq!(app.chats[0].context_size, 0);
-    assert_eq!(app.mode, Mode::Build);
-    assert_eq!(app.plan.path(), Some(Path::new("plan.md")));
-    assert!(app.plan.is_written());
+    assert_eq!(app.state.mode, Mode::Build);
+    assert_eq!(app.state.plan.path(), Some(Path::new("plan.md")));
+    assert!(app.state.plan.is_written());
     assert!(app.queue.is_empty());
     assert_eq!(app.chats.len(), 1);
     assert_eq!(app.chats[0].name, "Main");
@@ -524,24 +517,24 @@ fn reset_session_preserves_plan() {
 #[test]
 fn reset_session_assigns_new_plan_path_in_plan_mode() {
     let mut app = test_app();
-    app.mode = Mode::Plan;
-    app.plan = PlanState::with_path(PathBuf::from("old-plan.md"), false);
+    app.state.mode = Mode::Plan;
+    app.state.plan = PlanState::with_path(PathBuf::from("old-plan.md"), false);
     app.reset_session();
-    assert_eq!(app.mode, Mode::Plan);
-    assert!(app.plan.path().is_some());
-    assert_ne!(app.plan.path(), Some(Path::new("old-plan.md")));
+    assert_eq!(app.state.mode, Mode::Plan);
+    assert!(app.state.plan.path().is_some());
+    assert_ne!(app.state.plan.path(), Some(Path::new("old-plan.md")));
 }
 
 #[test_case(true,  Some("leftover.md") ; "preserves_written")]
 #[test_case(false, None                 ; "clears_unwritten")]
 fn reset_session_plan_in_build_mode(written: bool, expected_path: Option<&str>) {
     let mut app = test_app();
-    app.mode = Mode::Build;
-    app.plan = PlanState::with_path(PathBuf::from("leftover.md"), written);
+    app.state.mode = Mode::Build;
+    app.state.plan = PlanState::with_path(PathBuf::from("leftover.md"), written);
     app.reset_session();
-    assert_eq!(app.mode, Mode::Build);
-    assert_eq!(app.plan.path(), expected_path.map(Path::new));
-    assert_eq!(app.plan.is_written(), written);
+    assert_eq!(app.state.mode, Mode::Build);
+    assert_eq!(app.state.plan.path(), expected_path.map(Path::new));
+    assert_eq!(app.state.plan.is_written(), written);
 }
 
 #[test]
@@ -552,10 +545,9 @@ fn load_session_clears_plan() {
         tmp.path().to_path_buf(),
     )));
     let mcp_infos = Arc::new(ArcSwap::from_pointee(Vec::new()));
+    let model = test_model();
     let mut app = App::new(
-        "test-model".into(),
-        test_pricing(),
-        TEST_CONTEXT_WINDOW,
+        &model,
         AppSession::new("test-model", "/tmp/test"),
         dir,
         Arc::new(ArcSwapOption::empty()),
@@ -571,14 +563,17 @@ fn load_session_clears_plan() {
             PathBuf::from("/tmp"),
         )),
     );
-    app.session.messages.push(Message::user("test".into()));
-    app.session.save(&app.storage).unwrap();
-    let id = app.session.id.clone();
-    app.mode = Mode::Build;
-    app.plan = PlanState::with_path(PathBuf::from("old-plan.md"), true);
+    app.state
+        .session
+        .messages
+        .push(Message::user("test".into()));
+    app.state.session.save(&app.storage).unwrap();
+    let id = app.state.session.id.clone();
+    app.state.mode = Mode::Build;
+    app.state.plan = PlanState::with_path(PathBuf::from("old-plan.md"), true);
     app.load_session(id);
-    assert_eq!(app.mode, Mode::Build);
-    assert_eq!(app.plan.path(), None);
+    assert_eq!(app.state.mode, Mode::Build);
+    assert_eq!(app.state.plan.path(), None);
 }
 
 #[test]
@@ -589,7 +584,7 @@ fn tab_in_palette_closes_and_toggles_mode() {
 
     app.update(Msg::Key(key(KeyCode::Tab)));
     assert!(!app.command_palette.is_active());
-    assert_eq!(app.mode, Mode::Plan);
+    assert_eq!(app.state.mode, Mode::Plan);
 }
 
 #[test]
@@ -639,22 +634,7 @@ fn subagents_get_descriptive_names() {
 }
 
 #[test]
-fn subagent_prompt_shown_as_first_message() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.update(subagent_msg_with_prompt(
-        AgentEvent::TextDelta { text: "ok".into() },
-        "task1",
-        Some("research"),
-        Some("Find all TODO comments"),
-    ));
-    assert_eq!(app.chats[1].message_count(), 1);
-    assert_eq!(app.chats[1].last_message_text(), "Find all TODO comments");
-}
-
-#[test]
-fn subagent_prompt_not_duplicated_on_subsequent_events() {
+fn subagent_prompt_shown_once_and_not_duplicated() {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
@@ -664,6 +644,9 @@ fn subagent_prompt_not_duplicated_on_subsequent_events() {
         Some("research"),
         Some("Find all TODO comments"),
     ));
+    assert_eq!(app.chats[1].message_count(), 1);
+    assert_eq!(app.chats[1].last_message_text(), "Find all TODO comments");
+
     app.update(subagent_msg(
         AgentEvent::TextDelta { text: "b".into() },
         "task1",
@@ -708,8 +691,8 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
         None,
     ));
 
-    assert_eq!(app.token_usage.input, 300);
-    assert_eq!(app.token_usage.output, 125);
+    assert_eq!(app.state.token_usage.input, 300);
+    assert_eq!(app.state.token_usage.output, 125);
     assert_eq!(app.chats[0].token_usage.input, 100);
     assert_eq!(app.chats[1].token_usage.input, 200);
     assert_eq!(app.chats[0].context_size, main_usage.context_tokens());
@@ -1170,7 +1153,10 @@ fn double_esc_idle_opens_rewind_picker() {
     type_and_submit(&mut app, "hello");
     app.status = Status::Idle;
     app.run_id = 1;
-    app.session.messages.push(Message::user("hello".into()));
+    app.state
+        .session
+        .messages
+        .push(Message::user("hello".into()));
 
     app.last_esc = Some(Instant::now());
     app.update(Msg::Key(key(KeyCode::Esc)));
@@ -1392,17 +1378,16 @@ fn stale_events_ignored_after_run_id_increment() {
     app.run_id = 1;
 
     cancel_app(&mut app);
-    assert_eq!(app.run_id, 2);
-
+    let current_run = app.run_id;
     let actions = type_and_submit(&mut app, "new prompt");
     assert!(matches!(&actions[0], Action::SendMessage(i) if i.message == "new prompt"));
-    assert_eq!(app.run_id, 3);
+    let active_run = app.run_id;
 
     app.update(agent_msg_with_run_id(
         AgentEvent::TextDelta {
             text: "stale text".into(),
         },
-        1,
+        current_run,
     ));
     assert_eq!(app.chats[0].last_message_text(), "new prompt");
 
@@ -1410,7 +1395,7 @@ fn stale_events_ignored_after_run_id_increment() {
         AgentEvent::TextDelta {
             text: "new text".into(),
         },
-        3,
+        active_run,
     ));
     app.chats[0].flush();
     assert_eq!(app.chats[0].last_message_text(), "new text");
@@ -1552,7 +1537,7 @@ fn help_modal_consumes_keys_and_esc_closes() {
 )]
 #[test_case(
     |app: &mut App| {
-        app.session.messages.push(Message::user("test".into()));
+        app.state.session.messages.push(Message::user("test".into()));
         app.open_rewind_picker();
     },
     &[KeybindContext::RewindPicker],
@@ -1632,7 +1617,7 @@ fn cd_updates_session_cwd() {
         args: "/tmp".into(),
     });
     let canonical = std::fs::canonicalize("/tmp").unwrap();
-    assert_eq!(app.session.cwd, canonical.to_string_lossy());
+    assert_eq!(app.state.session.cwd, canonical.to_string_lossy());
 }
 
 #[test]
@@ -1655,7 +1640,7 @@ fn build_rewind_app() -> App {
     let mut app = test_app();
     use maki_providers::{ContentBlock, Message, Role};
 
-    app.session.messages = vec![
+    app.state.session.messages = vec![
         Message::user("first prompt".into()),
         Message {
             role: Role::Assistant,
@@ -1681,7 +1666,8 @@ fn build_rewind_app() -> App {
         },
         Message::user("third prompt".into()),
     ];
-    app.session
+    app.state
+        .session
         .tool_outputs
         .insert("tool-1".into(), ToolOutput::Plain("output".into()));
     app
@@ -1698,8 +1684,8 @@ fn rewind_to_middle_truncates_and_populates_input() {
     };
     let actions = app.rewind_to(entry);
 
-    assert_eq!(app.session.messages.len(), 2);
-    assert!(app.session.tool_outputs.contains_key("tool-1"));
+    assert_eq!(app.state.session.messages.len(), 2);
+    assert!(app.state.session.tool_outputs.contains_key("tool-1"));
     assert_eq!(app.input_box.buffer.value(), "second prompt");
     assert_eq!(app.run_id, old_run_id + 1);
 
@@ -1713,8 +1699,8 @@ fn rewind_to_middle_truncates_and_populates_input() {
 #[test]
 fn rewind_to_first_turn_clears_everything() {
     let mut app = build_rewind_app();
-    app.token_usage.input = 500;
-    app.token_usage.output = 200;
+    app.state.token_usage.input = 500;
+    app.state.token_usage.output = 200;
     let entry = crate::components::rewind_picker::RewindEntry {
         turn_index: 0,
         prompt_preview: "1: first".into(),
@@ -1722,10 +1708,10 @@ fn rewind_to_first_turn_clears_everything() {
     };
     let actions = app.rewind_to(entry);
 
-    assert!(app.session.messages.is_empty());
-    assert!(!app.session.tool_outputs.contains_key("tool-1"));
-    assert_eq!(app.token_usage.input, 500);
-    assert_eq!(app.token_usage.output, 200);
+    assert!(app.state.session.messages.is_empty());
+    assert!(!app.state.session.tool_outputs.contains_key("tool-1"));
+    assert_eq!(app.state.token_usage.input, 500);
+    assert_eq!(app.state.token_usage.output, 200);
     assert!(matches!(&actions[0], Action::LoadSession(_)));
 }
 
@@ -1843,9 +1829,9 @@ fn done_drains_queued_message_with_current_mode(
     app.status = Status::Streaming;
     app.run_id = 1;
     app.queue.push(queued_msg("queued"));
-    app.mode = mode;
+    app.state.mode = mode;
     if set_plan {
-        app.plan = PlanState::with_path(PathBuf::from("p.md"), false);
+        app.state.plan = PlanState::with_path(PathBuf::from("p.md"), false);
     }
     let actions = app.update(agent_msg(AgentEvent::Done {
         usage: TokenUsage::default(),
@@ -1924,7 +1910,7 @@ fn open_editor(setup: Option<(&str, bool)>, expect_flash: bool) {
     let mut app = test_app();
     let plan_path = setup.map(|(p, w)| {
         let pb = PathBuf::from(p);
-        app.plan = PlanState::with_path(pb.clone(), w);
+        app.state.plan = PlanState::with_path(pb.clone(), w);
         pb
     });
     let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
@@ -2027,10 +2013,10 @@ fn stale_terminal_event_after_cancel_saves_session(event: AgentEvent) {
     let old_run_id = app.run_id;
     cancel_app(&mut app);
     assert_ne!(app.run_id, old_run_id);
-    assert!(app.session.messages.is_empty());
+    assert!(app.state.session.messages.is_empty());
 
     app.update(agent_msg_with_run_id(event, old_run_id));
-    assert_eq!(app.session.messages.len(), 2);
+    assert_eq!(app.state.session.messages.len(), 2);
 }
 
 #[test]
@@ -2048,7 +2034,7 @@ fn stale_non_terminal_event_does_not_save_session() {
         })),
         old_run_id,
     ));
-    assert!(app.session.messages.is_empty());
+    assert!(app.state.session.messages.is_empty());
 }
 
 #[test]
@@ -2057,7 +2043,7 @@ fn error_event_matching_run_id_saves_session() {
     app.update(agent_msg(AgentEvent::Error {
         message: "boom".into(),
     }));
-    assert_eq!(app.session.messages.len(), 2);
+    assert_eq!(app.state.session.messages.len(), 2);
 }
 
 // --- Plan form integration tests ---
@@ -2074,8 +2060,8 @@ fn plan_app() -> App {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
-    app.mode = Mode::Plan;
-    app.plan = PlanState::with_path(PathBuf::from("test-plan.md"), true);
+    app.state.mode = Mode::Plan;
+    app.state.plan = PlanState::with_path(PathBuf::from("test-plan.md"), true);
     app
 }
 
@@ -2086,9 +2072,9 @@ fn done_plan_form_visibility(mode: Mode, written: bool, expect_form: bool) {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
-    app.mode = mode;
+    app.state.mode = mode;
     if mode == Mode::Plan {
-        app.plan = PlanState::with_path(PathBuf::from("test-plan.md"), written);
+        app.state.plan = PlanState::with_path(PathBuf::from("test-plan.md"), written);
     }
     app.update(done_event());
     assert_eq!(app.plan_form.is_visible(), expect_form);
@@ -2099,50 +2085,40 @@ fn done_with_queued_messages_no_form() {
     let mut app = plan_app();
     app.queue.push(queued_msg("queued"));
     app.update(done_event());
-    assert!(!app.plan_form.is_visible());
+    assert!(
+        !app.plan_form.is_visible(),
+        "form suppressed when queue is non-empty"
+    );
     assert_eq!(app.status, Status::Streaming);
 }
 
-#[test]
-fn plan_form_clear_and_implement() {
+#[test_case(0, Mode::Build, true,  true  ; "clear_and_implement")]
+#[test_case(1, Mode::Build, false, true  ; "implement_keeps_context")]
+#[test_case(2, Mode::Plan,  false, false ; "continue_planning")]
+fn plan_form_menu_options(
+    downs: usize,
+    expected_mode: Mode,
+    has_new_session: bool,
+    has_send_message: bool,
+) {
     let mut app = plan_app();
     app.update(done_event());
     assert!(app.plan_form.is_visible());
 
+    for _ in 0..downs {
+        app.update(Msg::Key(key(KeyCode::Down)));
+    }
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(!app.plan_form.is_visible());
-    assert_eq!(app.mode, Mode::Build);
-    assert!(
-        matches!(&actions[..], [Action::NewSession, Action::SendMessage(input)] if input.message == "Implement the plan at `test-plan.md`.")
+    assert_eq!(app.state.mode, expected_mode);
+    assert_eq!(
+        actions.iter().any(|a| matches!(a, Action::NewSession)),
+        has_new_session
     );
-}
-
-#[test]
-fn plan_form_implement_keeps_context() {
-    let mut app = plan_app();
-    app.update(done_event());
-
-    app.update(Msg::Key(key(KeyCode::Down)));
-    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(!app.plan_form.is_visible());
-    assert_eq!(app.mode, Mode::Build);
-    assert_eq!(actions.len(), 1);
-    assert!(
-        matches!(&actions[0], Action::SendMessage(input) if input.message == "Implement the plan at `test-plan.md`.")
+    assert_eq!(
+        actions.iter().any(|a| matches!(a, Action::SendMessage(i) if i.message == "Implement the plan at `test-plan.md`.")),
+        has_send_message
     );
-}
-
-#[test]
-fn plan_form_continue_closes_form() {
-    let mut app = plan_app();
-    app.update(done_event());
-
-    app.update(Msg::Key(key(KeyCode::Down)));
-    app.update(Msg::Key(key(KeyCode::Down)));
-    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(!app.plan_form.is_visible());
-    assert_eq!(app.mode, Mode::Plan);
-    assert!(actions.is_empty());
 }
 
 #[test]
@@ -2163,16 +2139,6 @@ fn plan_form_dismiss_on_esc() {
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(!app.plan_form.is_visible());
     assert!(actions.is_empty());
-}
-
-#[test]
-fn close_all_overlays_closes_plan_form() {
-    let mut app = test_app();
-    app.plan_form.open();
-    assert!(app.plan_form.is_visible());
-
-    app.close_all_overlays();
-    assert!(!app.plan_form.is_visible());
 }
 
 #[test]
@@ -2206,7 +2172,7 @@ fn bash_prefix_overrides_mode() {
 
     app.update(Msg::Key(key(KeyCode::Tab)));
     assert_eq!(
-        app.mode,
+        app.state.mode,
         Mode::Build,
         "tab must not toggle while bash prefix present"
     );

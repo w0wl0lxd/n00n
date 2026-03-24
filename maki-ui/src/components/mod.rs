@@ -163,6 +163,7 @@ impl ModalScroll {
 pub struct LoadedSession {
     pub messages: Vec<Message>,
     pub tool_outputs: HashMap<String, ToolOutput>,
+    pub model_spec: String,
 }
 
 use std::path::PathBuf;
@@ -367,6 +368,20 @@ pub(crate) fn test_pricing() -> ModelPricing {
         output: 15.0,
         cache_write: 3.75,
         cache_read: 0.30,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_model() -> maki_providers::Model {
+    maki_providers::Model {
+        id: "test-model".into(),
+        provider: maki_providers::provider::ProviderKind::Anthropic,
+        dynamic_slug: None,
+        tier: maki_providers::ModelTier::Medium,
+        family: maki_providers::ModelFamily::Claude,
+        pricing: test_pricing(),
+        max_output_tokens: 8192,
+        context_window: TEST_CONTEXT_WINDOW,
     }
 }
 

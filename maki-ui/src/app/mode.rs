@@ -40,7 +40,6 @@ impl PlanState {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn with_path(path: PathBuf, written: bool) -> Self {
         Self {
             path: Some(path),
@@ -65,7 +64,7 @@ impl PlanState {
         if self.written { self.path() } else { None }
     }
 
-    fn allocate_path(&mut self, storage: &DataDir) {
+    pub(crate) fn allocate_path(&mut self, storage: &DataDir) {
         self.path.get_or_insert_with(|| {
             plans::new_plan_path(storage).unwrap_or_else(|_| PathBuf::from("plans/plan.md"))
         });
@@ -74,26 +73,21 @@ impl PlanState {
 
 impl App {
     pub(super) fn enter_plan(&mut self) {
-        self.plan.allocate_path(&self.storage);
-        self.mode = Mode::Plan;
-    }
-
-    pub(super) fn reset_plan(&mut self) {
-        self.mode = Mode::Build;
-        self.plan = PlanState::new();
+        self.state.plan.allocate_path(&self.storage);
+        self.state.mode = Mode::Plan;
     }
 
     pub(super) fn toggle_mode(&mut self) -> Vec<super::Action> {
-        match self.mode {
+        match self.state.mode {
             Mode::Build => self.enter_plan(),
-            Mode::Plan => self.mode = Mode::Build,
+            Mode::Plan => self.state.mode = Mode::Build,
         };
         vec![]
     }
 
     pub(super) fn agent_mode(&self) -> AgentMode {
-        match self.mode {
-            Mode::Plan => match self.plan.path() {
+        match self.state.mode {
+            Mode::Plan => match self.state.plan.path() {
                 Some(p) => AgentMode::Plan(p.to_path_buf()),
                 None => {
                     debug_assert!(false, "Plan mode without path — invariant violated");
@@ -108,7 +102,7 @@ impl App {
         AgentInput {
             message: msg.text.clone(),
             mode: self.agent_mode(),
-            pending_plan: self.plan.pending_plan().map(Path::to_path_buf),
+            pending_plan: self.state.plan.pending_plan().map(Path::to_path_buf),
             images: msg.images.clone(),
             ..Default::default()
         }
@@ -118,7 +112,7 @@ impl App {
         let label: Cow<'static, str> = if self.is_bash_input() {
             "[BASH]".into()
         } else {
-            match self.mode {
+            match self.state.mode {
                 Mode::Build => "[BUILD]".into(),
                 Mode::Plan => "[PLAN]".into(),
             }
@@ -141,7 +135,7 @@ impl App {
         if self.is_bash_input() {
             theme::current().mode_bash
         } else {
-            self.mode.color()
+            self.state.mode.color()
         }
     }
 

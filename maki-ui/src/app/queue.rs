@@ -142,6 +142,13 @@ impl MessageQueue {
             .collect()
     }
 
+    pub(crate) fn text_messages(&self) -> impl Iterator<Item = &QueuedMessage> {
+        self.items.iter().filter_map(|item| match item {
+            QueuedItem::Message(msg) => Some(msg),
+            QueuedItem::Compact => None,
+        })
+    }
+
     fn clamp_focus(&mut self) {
         self.focus = match self.focus {
             Some(_) if self.items.is_empty() => None,
