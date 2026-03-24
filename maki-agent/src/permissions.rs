@@ -226,10 +226,16 @@ impl PermissionManager {
     }
 
     pub fn apply_decision(&self, tool: &str, scopes: &[String], decision: PermissionDecision) {
+        let resolved = if decision.is_allow() {
+            generalized_scopes(tool, scopes)
+        } else {
+            scopes.to_vec()
+        };
+
         match decision {
             PermissionDecision::AllowOnce | PermissionDecision::DenyOnce => {}
             PermissionDecision::AllowSession => {
-                for s in scopes {
+                for s in &resolved {
                     self.add_session_rule(PermissionRule {
                         tool: tool.to_string(),
                         scope: Some(s.clone()),
@@ -252,12 +258,7 @@ impl PermissionManager {
                     }
                     _ => PermissionTarget::Global,
                 };
-                let persisted = if effect == Effect::Allow {
-                    generalized_scopes(tool, scopes)
-                } else {
-                    scopes.to_vec()
-                };
-                for s in &persisted {
+                for s in &resolved {
                     self.add_session_rule(PermissionRule {
                         tool: tool.to_string(),
                         scope: Some(s.clone()),
@@ -1012,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn session_persist_uses_exact_scope() {
+    fn session_allow_uses_generalized_scope() {
         let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
         mgr.apply_decision(
             "bash",
@@ -1025,7 +1026,7 @@ mod tests {
         ));
         assert!(matches!(
             mgr.check("bash", "cargo build"),
-            PermissionCheck::NeedsPrompt { .. }
+            PermissionCheck::Allowed
         ));
     }
 
