@@ -824,11 +824,14 @@ impl MessagesPanel {
                 continue;
             }
 
-            let fully_enclosed = seg_start >= doc_start.row
-                && seg_end <= doc_end.row + 1
-                && (seg_start != doc_start.row || doc_start.col <= msg_area.x)
-                && (seg_end != doc_end.row + 1
-                    || doc_end.col >= msg_area.x + msg_area.width.saturating_sub(1));
+            let fully_enclosed = selection::range_covers(
+                doc_start,
+                doc_end,
+                seg_start,
+                seg_end.saturating_sub(1),
+                msg_area.x,
+                msg_area.x + msg_area.width.saturating_sub(1),
+            );
 
             if !out.is_empty() {
                 out.push('\n');

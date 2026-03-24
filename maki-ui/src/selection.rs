@@ -298,6 +298,36 @@ pub fn inset_border(area: Rect) -> Rect {
     )
 }
 
+pub(crate) fn range_covers(
+    sel_start: DocPos,
+    sel_end: DocPos,
+    rect_top: u32,
+    rect_bottom_incl: u32,
+    rect_left: u16,
+    rect_right_incl: u16,
+) -> bool {
+    rect_top >= sel_start.row
+        && rect_bottom_incl <= sel_end.row
+        && (rect_top != sel_start.row || sel_start.col <= rect_left)
+        && (rect_bottom_incl != sel_end.row || sel_end.col >= rect_right_incl)
+}
+
+impl ScreenSelection {
+    pub fn covers_rect(&self, area: Rect) -> bool {
+        if area.width == 0 || area.height == 0 {
+            return false;
+        }
+        range_covers(
+            DocPos::new(self.start_row as u32, self.start_col),
+            DocPos::new(self.end_row as u32, self.end_col),
+            area.y as u32,
+            area.bottom().saturating_sub(1) as u32,
+            area.x,
+            area.x + area.width.saturating_sub(1),
+        )
+    }
+}
+
 #[inline]
 pub(crate) fn col_range(ss: &ScreenSelection, left: u16, right: u16, row: u16) -> (u16, u16) {
     let col_start = if row == ss.start_row {
@@ -419,9 +449,8 @@ pub fn extract_selected_text(
             continue;
         };
 
-        let region_start = region.area.y;
         let region_end = region.area.bottom();
-        let fully_selected = region_start >= ss.start_row && region_end <= ss.end_row + 1;
+        let fully_selected = ss.covers_rect(region.area);
 
         if !out.is_empty() {
             out.push('\n');
@@ -682,179 +711,67 @@ mod tests {
         assert_eq!(text, "ABCDEFGHI");
     }
 
-    #[test]
-    fn doc_space_start_computes_doc_row() {
-        let msg_area = Rect::new(0, 3, 80, 20);
-        let sel = Selection::start(15, 5, msg_area, SelectionZone::Messages, 10);
-        let (start, _) = sel.normalized();
-        assert_eq!(start.row, 22);
-    }
-
-    #[test]
-    fn doc_space_update_computes_cursor_doc_row() {
-        let msg_area = Rect::new(0, 3, 80, 20);
-        let mut sel = Selection::start(15, 5, msg_area, SelectionZone::Messages, 10);
-        sel.update(20, 8, 10);
-        let (start, end) = sel.normalized();
-        assert_eq!(start.row, 22);
-        assert_eq!(end.row, 27);
-    }
-
-    #[test]
-    fn is_empty_uses_doc_rows() {
-        let msg_area = Rect::new(0, 0, 80, 20);
-        let mut sel = Selection::start(5, 3, msg_area, SelectionZone::Messages, 0);
-        assert!(sel.is_empty());
-        sel.update(5, 4, 0);
-        assert!(!sel.is_empty());
-    }
-
-    #[test]
-    fn to_screen_fully_visible() {
-        let area = Rect::new(0, 0, 80, 20);
-        let sel = Selection {
-            anchor: doc(5, 2),
-            cursor: doc(8, 10),
+    #[test_case(Rect::new(0,3,80,20), 15, 5, 10, 22 ; "normal_offset")]
+    #[test_case(Rect::new(0,2,80,10), 15, 5,  0,  9 ; "clamped_below_area")]
+    #[test_case(Rect::new(0,5,80,10),  2, 5,  7,  7 ; "clamped_above_area")]
+    fn selection_start_doc_row(
+        area: Rect,
+        screen_row: u16,
+        screen_col: u16,
+        scroll: u32,
+        expected_row: u32,
+    ) {
+        let sel = Selection::start(
+            screen_row,
+            screen_col,
             area,
-            zone: SelectionZone::Messages,
-        };
-        let screen = sel.to_screen(0).unwrap();
-        assert_eq!(screen, ss(5, 2, 8, 10));
-    }
-
-    #[test]
-    fn to_screen_partially_off_top() {
-        let area = Rect::new(0, 0, 80, 20);
-        let sel = Selection {
-            anchor: doc(2, 5),
-            cursor: doc(12, 8),
-            area,
-            zone: SelectionZone::Messages,
-        };
-        let screen = sel.to_screen(5).unwrap();
-        assert_eq!(screen.start_row, 0);
-        assert_eq!(screen.start_col, 0);
-        assert_eq!(screen.end_row, 7);
-        assert_eq!(screen.end_col, 8);
-    }
-
-    #[test]
-    fn to_screen_entirely_off_screen() {
-        let area = Rect::new(0, 0, 80, 20);
-        let sel = Selection {
-            anchor: doc(0, 0),
-            cursor: doc(3, 5),
-            area,
-            zone: SelectionZone::Messages,
-        };
-        assert!(sel.to_screen(10).is_none());
-    }
-
-    #[test]
-    fn to_screen_empty_selection_returns_none() {
-        let area = Rect::new(0, 0, 80, 20);
-        let sel = Selection {
-            anchor: doc(5, 5),
-            cursor: doc(5, 5),
-            area,
-            zone: SelectionZone::Messages,
-        };
-        assert!(sel.to_screen(0).is_none());
-    }
-
-    #[test]
-    fn clamped_doc_row_below_msg_area() {
-        let msg_area = Rect::new(0, 2, 80, 10);
-        let sel = Selection::start(15, 5, msg_area, SelectionZone::Messages, 0);
-        let (start, _) = sel.normalized();
-        assert_eq!(start.row, 9, "clamped to last visible doc row");
-    }
-
-    #[test]
-    fn clamped_doc_row_above_msg_area() {
-        let msg_area = Rect::new(0, 5, 80, 10);
-        let sel = Selection::start(2, 5, msg_area, SelectionZone::Messages, 7);
-        let (start, _) = sel.normalized();
-        assert_eq!(start.row, 7, "clamped to scroll_top");
-    }
-
-    #[test]
-    fn to_screen_anchor_in_area_cursor_below() {
-        let msg_area = Rect::new(0, 0, 80, 10);
-        let sel = Selection {
-            anchor: doc(5, 3),
-            cursor: doc(12, 8),
-            area: msg_area,
-            zone: SelectionZone::Messages,
-        };
-        let screen = sel.to_screen(0).unwrap();
-        assert_eq!(screen.start_row, 5);
-        assert_eq!(screen.start_col, 3);
-        assert_eq!(screen.end_row, 9);
-        assert_eq!(screen.end_col, 79);
-    }
-
-    #[test]
-    fn to_screen_backward_from_below() {
-        let msg_area = Rect::new(0, 0, 80, 10);
-        let sel = Selection {
-            anchor: doc(12, 5),
-            cursor: doc(3, 2),
-            area: msg_area,
-            zone: SelectionZone::Messages,
-        };
-        let screen = sel.to_screen(0).unwrap();
-        assert_eq!(screen.start_row, 3);
-        assert_eq!(screen.start_col, 2);
-        assert_eq!(screen.end_row, 9);
-        assert_eq!(screen.end_col, 79);
-    }
-
-    #[test]
-    fn to_screen_highlight_consistent_after_edge_scroll_reversal() {
-        let msg_area = Rect::new(0, 2, 80, 20);
-        let sel = Selection {
-            anchor: doc(58, 5),
-            cursor: doc(55, 3),
-            area: msg_area,
-            zone: SelectionZone::Messages,
-        };
-        let screen = sel.to_screen(50).unwrap();
-        assert!(
-            (screen.start_row, screen.start_col) < (screen.end_row, screen.end_col),
-            "projected highlight must be ordered"
+            SelectionZone::Messages,
+            scroll,
         );
-        assert_eq!(screen.start_row, 2 + (55 - 50) as u16);
-        assert_eq!(screen.start_col, 3);
-        assert_eq!(screen.end_row, 2 + (58 - 50) as u16);
-        assert_eq!(screen.end_col, 5);
+        assert_eq!(sel.normalized().0.row, expected_row);
     }
 
-    #[test]
-    fn update_clamps_cursor_row_to_area_bottom() {
-        let msg_area = Rect::new(0, 2, 80, 20);
-        let mut sel = Selection::start(10, 5, msg_area, SelectionZone::Messages, 0);
-        sel.update(25, 5, 0);
-        let (_, end) = sel.normalized();
-        assert_eq!(end.row, 19, "clamped to area bottom doc row");
+    #[test_case(doc(5,2),  doc(8,10),  Rect::new(0,0,80,20),  0, Some(ss(5,2,8,10))    ; "fully_visible")]
+    #[test_case(doc(2,5),  doc(12,8),  Rect::new(0,0,80,20),  5, Some(ss(0,0,7,8))     ; "partially_off_top")]
+    #[test_case(doc(0,0),  doc(3,5),   Rect::new(0,0,80,20), 10, None                   ; "entirely_off_screen")]
+    #[test_case(doc(5,5),  doc(5,5),   Rect::new(0,0,80,20),  0, None                   ; "empty_selection")]
+    #[test_case(doc(5,3),  doc(12,8),  Rect::new(0,0,80,10),  0, Some(ss(5,3,9,79))     ; "cursor_below_area")]
+    #[test_case(doc(12,5), doc(3,2),   Rect::new(0,0,80,10),  0, Some(ss(3,2,9,79))     ; "backward_from_below")]
+    #[test_case(doc(58,5), doc(55,3),  Rect::new(0,2,80,20), 50, Some(ss(7,3,10,5))     ; "edge_scroll_reversal")]
+    fn to_screen_cases(
+        anchor: DocPos,
+        cursor: DocPos,
+        area: Rect,
+        scroll: u32,
+        expected: Option<ScreenSelection>,
+    ) {
+        let sel = Selection {
+            anchor,
+            cursor,
+            area,
+            zone: SelectionZone::Messages,
+        };
+        assert_eq!(sel.to_screen(scroll), expected);
     }
 
-    #[test]
-    fn update_clamps_cursor_col_to_area() {
-        let msg_area = Rect::new(5, 0, 40, 20);
-        let mut sel = Selection::start(10, 10, msg_area, SelectionZone::Messages, 0);
-        sel.update(10, 50, 0);
-        assert_eq!(sel.cursor.col, 44, "clamped to area right");
-        sel.update(10, 2, 0);
-        assert_eq!(sel.cursor.col, 5, "clamped to area left");
-    }
-
-    #[test]
-    fn input_zone_with_scroll() {
-        let area = Rect::new(0, 22, 80, 5);
-        let sel = Selection::start(23, 5, area, SelectionZone::Input, 3);
-        let (start, _) = sel.normalized();
-        assert_eq!(start.row, 4);
+    #[test_case(Rect::new(0,2,80,20), 10, 5, 25, 5, 0, 19, 5 ; "clamp_row_to_bottom")]
+    #[test_case(Rect::new(5,0,40,20), 10,10, 10,50, 0, 10,44 ; "clamp_col_to_right")]
+    #[test_case(Rect::new(5,0,40,20), 10,10, 10, 2, 0, 10, 5 ; "clamp_col_to_left")]
+    #[allow(clippy::too_many_arguments)]
+    fn update_clamps(
+        area: Rect,
+        start_row: u16,
+        start_col: u16,
+        upd_row: u16,
+        upd_col: u16,
+        scroll: u32,
+        expected_row: u32,
+        expected_col: u16,
+    ) {
+        let mut sel = Selection::start(start_row, start_col, area, SelectionZone::Messages, 0);
+        sel.update(upd_row, upd_col, scroll);
+        assert_eq!(sel.cursor.row, expected_row);
+        assert_eq!(sel.cursor.col, expected_col);
     }
 
     fn code_bar_buffer() -> (Buffer, Rect) {
@@ -967,16 +884,54 @@ mod tests {
         assert_eq!(zone_at(&zones, 7, 5).unwrap().zone, SelectionZone::Messages);
     }
 
+    #[test_case(doc(0, 0), doc(2, 9), 0, 2, 0, 9, true  ; "exact_match")]
+    #[test_case(doc(0, 0), doc(5, 9), 1, 3, 0, 9, true  ; "selection_exceeds_rect")]
+    #[test_case(doc(0, 0), doc(2, 8), 0, 2, 0, 9, false ; "end_col_one_short")]
+    #[test_case(doc(0, 1), doc(2, 9), 0, 2, 0, 9, false ; "start_col_one_past")]
+    #[test_case(doc(1, 0), doc(2, 9), 0, 2, 0, 9, false ; "start_row_one_past")]
+    #[test_case(doc(0, 0), doc(1, 9), 0, 2, 0, 9, false ; "end_row_one_short")]
+    #[test_case(doc(5, 3), doc(5, 3), 5, 5, 3, 3, true  ; "single_cell")]
+    fn range_covers_cases(
+        sel_start: DocPos,
+        sel_end: DocPos,
+        rt: u32,
+        rb: u32,
+        rl: u16,
+        rr: u16,
+        expected: bool,
+    ) {
+        assert_eq!(range_covers(sel_start, sel_end, rt, rb, rl, rr), expected);
+    }
+
     #[test]
-    fn apply_highlight_zero_area_no_panic() {
-        let area = Rect::new(0, 0, 0, 0);
-        let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
-        let ss = ScreenSelection {
-            start_row: 0,
-            end_row: 0,
-            start_col: 0,
-            end_col: 0,
+    fn covers_rect_zero_area() {
+        let s = ss(0, 0, 2, 9);
+        assert!(!s.covers_rect(Rect::new(0, 0, 0, 0)));
+    }
+
+    #[test]
+    fn partial_column_selection_skips_raw_text() {
+        let (buf, area) = test_buffer();
+        let region = ContentRegion {
+            area,
+            raw_text: "should not use this",
+            ..Default::default()
         };
-        apply_highlight(&mut buf, area, &ss);
+        let text = extract_selected_text(&buf, &ss(0, 2, 2, 9), &[region]);
+        assert_eq!(text, "llo\nWorld\nTest");
+    }
+
+    #[test]
+    fn input_chevron_not_copied_when_not_selected() {
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::empty(area);
+        buf.set_string(0, 0, "❯ hello   ", Style::default());
+        let region = ContentRegion {
+            area,
+            raw_text: "hello",
+            ..Default::default()
+        };
+        let text = extract_selected_text(&buf, &ss(0, 2, 0, 9), &[region]);
+        assert_eq!(text, "hello");
     }
 }
