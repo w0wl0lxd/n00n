@@ -3,8 +3,10 @@ use std::path::Path;
 
 use color_eyre::Result;
 use crossterm::ExecutableCommand;
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 
 pub(crate) struct TerminalGuard;
@@ -14,23 +16,28 @@ impl TerminalGuard {
         let terminal = ratatui::init();
         stdout().execute(EnableBracketedPaste)?;
         stdout().execute(EnableMouseCapture)?;
+        push_keyboard_enhancement();
         Ok((Self, terminal))
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        stdout().execute(DisableMouseCapture).ok();
-        stdout().execute(DisableBracketedPaste).ok();
+        pop_terminal_modes();
         ratatui::restore();
     }
 }
 
 pub(crate) fn suspend() {
+    pop_terminal_modes();
     terminal::disable_raw_mode().ok();
+    stdout().execute(LeaveAlternateScreen).ok();
+}
+
+fn pop_terminal_modes() {
+    stdout().execute(PopKeyboardEnhancementFlags).ok();
     stdout().execute(DisableMouseCapture).ok();
     stdout().execute(DisableBracketedPaste).ok();
-    stdout().execute(LeaveAlternateScreen).ok();
 }
 
 pub(crate) fn resume(terminal: &mut ratatui::DefaultTerminal) {
@@ -38,7 +45,16 @@ pub(crate) fn resume(terminal: &mut ratatui::DefaultTerminal) {
     stdout().execute(EnableBracketedPaste).ok();
     stdout().execute(EnableMouseCapture).ok();
     terminal::enable_raw_mode().ok();
+    push_keyboard_enhancement();
     let _ = terminal.clear();
+}
+
+fn push_keyboard_enhancement() {
+    stdout()
+        .execute(PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+        ))
+        .ok();
 }
 
 pub(crate) fn open_in_editor(
