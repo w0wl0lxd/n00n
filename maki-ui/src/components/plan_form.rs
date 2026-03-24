@@ -12,7 +12,7 @@ const FORM_LABEL: &str = " Plan complete ";
 const HINT_PAIRS: &[(&str, &str)] = &[
     ("↑↓", "select"),
     ("Enter", "confirm"),
-    ("Ctrl+O", "edit plan"),
+    (key::OPEN_EDITOR.label, "edit plan"),
     ("Esc", "dismiss"),
 ];
 

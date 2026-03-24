@@ -1,3 +1,4 @@
+use crate::components::keybindings::key;
 use crate::theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -7,7 +8,7 @@ use std::time::Instant;
 const LOGO: &str = "maki";
 const TAGLINE: &str = "the efficient coder";
 const HELP_SEGMENTS: &[(&str, bool)] = &[
-    ("ctrl+h", true),
+    (key::HELP.label, true),
     (" help", false),
     (" · ", false),
     ("/help", true),

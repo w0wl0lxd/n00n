@@ -531,8 +531,10 @@ impl App {
                 SessionPickerAction::Consumed => vec![],
                 SessionPickerAction::Select(id) => self.load_session(id),
                 SessionPickerAction::ConfirmDelete => {
-                    self.status_bar
-                        .flash("Press Ctrl+D again to confirm delete".into());
+                    self.status_bar.flash(format!(
+                        "Press {} again to confirm delete",
+                        key::DELETE.label
+                    ));
                     vec![]
                 }
                 SessionPickerAction::Delete(id) => self.delete_session(id),

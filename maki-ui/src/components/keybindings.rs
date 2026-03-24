@@ -1,19 +1,114 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+macro_rules! mod_key {
+    ($suffix:expr) => {
+        if cfg!(target_os = "macos") {
+            concat!("⌘", $suffix)
+        } else {
+            concat!("Ctrl+", $suffix)
+        }
+    };
+}
+
+macro_rules! upper {
+    ('a') => {
+        "A"
+    };
+    ('b') => {
+        "B"
+    };
+    ('c') => {
+        "C"
+    };
+    ('d') => {
+        "D"
+    };
+    ('e') => {
+        "E"
+    };
+    ('f') => {
+        "F"
+    };
+    ('g') => {
+        "G"
+    };
+    ('h') => {
+        "H"
+    };
+    ('i') => {
+        "I"
+    };
+    ('j') => {
+        "J"
+    };
+    ('k') => {
+        "K"
+    };
+    ('l') => {
+        "L"
+    };
+    ('m') => {
+        "M"
+    };
+    ('n') => {
+        "N"
+    };
+    ('o') => {
+        "O"
+    };
+    ('p') => {
+        "P"
+    };
+    ('q') => {
+        "Q"
+    };
+    ('r') => {
+        "R"
+    };
+    ('s') => {
+        "S"
+    };
+    ('t') => {
+        "T"
+    };
+    ('u') => {
+        "U"
+    };
+    ('v') => {
+        "V"
+    };
+    ('w') => {
+        "W"
+    };
+    ('x') => {
+        "X"
+    };
+    ('y') => {
+        "Y"
+    };
+    ('z') => {
+        "Z"
+    };
+}
+
+macro_rules! ctrl_bind {
+    ($char:tt) => {
+        Bind {
+            code: KeyCode::Char($char),
+            modifiers: KeyModifiers::CONTROL,
+            label: mod_key!(upper!($char)),
+        }
+    };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bind {
     pub code: KeyCode,
     pub modifiers: KeyModifiers,
+    pub label: &'static str,
 }
 
 impl Bind {
-    pub const fn ctrl(c: char) -> Self {
-        Self {
-            code: KeyCode::Char(c),
-            modifiers: KeyModifiers::CONTROL,
-        }
-    }
-
     pub fn matches(&self, key: KeyEvent) -> bool {
         key.code == self.code && key.modifiers.contains(self.modifiers)
     }
@@ -31,22 +126,32 @@ impl Bind {
 
 pub mod key {
     use super::Bind;
+    use crossterm::event::{KeyCode, KeyModifiers};
 
-    pub const QUIT: Bind = Bind::ctrl('c');
-    pub const HELP: Bind = Bind::ctrl('h');
-    pub const PREV_CHAT: Bind = Bind::ctrl('p');
-    pub const NEXT_CHAT: Bind = Bind::ctrl('n');
-    pub const SCROLL_HALF_UP: Bind = Bind::ctrl('u');
-    pub const SCROLL_HALF_DOWN: Bind = Bind::ctrl('d');
-    pub const SCROLL_LINE_UP: Bind = Bind::ctrl('y');
-    pub const SCROLL_LINE_DOWN: Bind = Bind::ctrl('e');
-    pub const SCROLL_TOP: Bind = Bind::ctrl('g');
-    pub const SCROLL_BOTTOM: Bind = Bind::ctrl('b');
-    pub const POP_QUEUE: Bind = Bind::ctrl('q');
-    pub const DELETE_WORD: Bind = Bind::ctrl('w');
-    pub const SEARCH: Bind = Bind::ctrl('f');
-    pub const OPEN_EDITOR: Bind = Bind::ctrl('o');
-    pub const TODO_PANEL: Bind = Bind::ctrl('t');
+    pub const QUIT: Bind = ctrl_bind!('c');
+    pub const HELP: Bind = ctrl_bind!('h');
+    pub const PREV_CHAT: Bind = ctrl_bind!('p');
+    pub const NEXT_CHAT: Bind = ctrl_bind!('n');
+    pub const SCROLL_HALF_UP: Bind = ctrl_bind!('u');
+    pub const SCROLL_HALF_DOWN: Bind = ctrl_bind!('d');
+    pub const SCROLL_LINE_UP: Bind = ctrl_bind!('y');
+    pub const SCROLL_LINE_DOWN: Bind = ctrl_bind!('e');
+    pub const SCROLL_TOP: Bind = ctrl_bind!('g');
+    pub const SCROLL_BOTTOM: Bind = ctrl_bind!('b');
+    pub const POP_QUEUE: Bind = ctrl_bind!('q');
+    pub const DELETE_WORD: Bind = ctrl_bind!('w');
+    pub const SEARCH: Bind = ctrl_bind!('f');
+    pub const OPEN_EDITOR: Bind = ctrl_bind!('o');
+    pub const TODO_PANEL: Bind = ctrl_bind!('t');
+    pub const DELETE: Bind = ctrl_bind!('d');
+    pub const KILL_LINE: Bind = ctrl_bind!('k');
+    pub const LINE_START: Bind = ctrl_bind!('a');
+
+    pub const NEXT_PREV_CHAT_LABEL: &str = mod_key!("N/P");
+    pub const SCROLL_HALF_LABEL: &str = mod_key!("U/D");
+    pub const SCROLL_LINE_LABEL: &str = mod_key!("Y/E");
+    pub const WORD_ARROWS_LABEL: &str = mod_key!("←/→");
+    pub const WORD_DEL_LABEL: &str = mod_key!("Del");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,32 +213,32 @@ pub struct Keybind {
 
 pub const KEYBINDS: &[Keybind] = &[
     Keybind {
-        key: "Ctrl+C",
+        key: key::QUIT.label,
         description: "Quit / clear input",
         context: KeybindContext::General,
     },
     Keybind {
-        key: "Ctrl+H",
+        key: key::HELP.label,
         description: "Show keybindings",
         context: KeybindContext::General,
     },
     Keybind {
-        key: "Ctrl+N/P",
+        key: key::NEXT_PREV_CHAT_LABEL,
         description: "Next / previous task chat",
         context: KeybindContext::General,
     },
     Keybind {
-        key: "Ctrl+F",
+        key: key::SEARCH.label,
         description: "Search messages",
         context: KeybindContext::General,
     },
     Keybind {
-        key: "Ctrl+O",
+        key: key::OPEN_EDITOR.label,
         description: "Open plan in editor",
         context: KeybindContext::General,
     },
     Keybind {
-        key: "Ctrl+T",
+        key: key::TODO_PANEL.label,
         description: "Toggle todo panel",
         context: KeybindContext::General,
     },
@@ -158,52 +263,52 @@ pub const KEYBINDS: &[Keybind] = &[
         context: KeybindContext::Editing,
     },
     Keybind {
-        key: "Ctrl+W",
+        key: key::DELETE_WORD.label,
         description: "Delete word backward",
         context: KeybindContext::Editing,
     },
     Keybind {
-        key: "Ctrl+←/→",
+        key: key::WORD_ARROWS_LABEL,
         description: "Move word left / right",
         context: KeybindContext::Editing,
     },
     Keybind {
-        key: "Ctrl+Del",
+        key: key::WORD_DEL_LABEL,
         description: "Delete word forward",
         context: KeybindContext::Editing,
     },
     Keybind {
-        key: "Ctrl+K",
+        key: key::KILL_LINE.label,
         description: "Delete to end of line",
         context: KeybindContext::Editing,
     },
     Keybind {
-        key: "Ctrl+A",
+        key: key::LINE_START.label,
         description: "Jump to start of line",
         context: KeybindContext::Editing,
     },
     Keybind {
-        key: "Ctrl+U/D",
+        key: key::SCROLL_HALF_LABEL,
         description: "Scroll half page up / down",
         context: KeybindContext::Editing,
     },
     Keybind {
-        key: "Ctrl+Y/E",
+        key: key::SCROLL_LINE_LABEL,
         description: "Scroll one line up / down",
         context: KeybindContext::Editing,
     },
     Keybind {
-        key: "Ctrl+G",
+        key: key::SCROLL_TOP.label,
         description: "Scroll to top",
         context: KeybindContext::Editing,
     },
     Keybind {
-        key: "Ctrl+B",
+        key: key::SCROLL_BOTTOM.label,
         description: "Scroll to bottom",
         context: KeybindContext::Editing,
     },
     Keybind {
-        key: "Ctrl+Q",
+        key: key::POP_QUEUE.label,
         description: "Pop queue",
         context: KeybindContext::Editing,
     },
@@ -258,7 +363,7 @@ pub const KEYBINDS: &[Keybind] = &[
         context: KeybindContext::Picker,
     },
     Keybind {
-        key: "Ctrl+D",
+        key: key::DELETE.label,
         description: "Delete session",
         context: KeybindContext::SessionPicker,
     },

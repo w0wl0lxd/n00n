@@ -1,3 +1,4 @@
+use crate::components::keybindings::key;
 use crate::theme;
 use maki_agent::{TodoItem, TodoStatus, ToolOutput};
 use ratatui::Frame;
@@ -8,9 +9,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use std::collections::HashMap;
 
 const PANEL_TITLE: &str = " Todos ";
-const HIDE_KEY: &str = " Ctrl+T";
 const HIDE_DESC: &str = " to hide ";
-const SHOW_HINT: &str = "Ctrl+T";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Visibility {
@@ -89,7 +88,7 @@ impl TodoPanel {
         let t = theme::current();
         Some(Line::from(vec![
             Span::styled(format!(" {done}/{total} "), Style::new().fg(t.foreground)),
-            Span::styled(SHOW_HINT, t.keybind_key),
+            Span::styled(key::TODO_PANEL.label, t.keybind_key),
             Span::raw(" "),
         ]))
     }
@@ -132,7 +131,7 @@ impl TodoPanel {
             .title_top(Line::from(PANEL_TITLE).left_aligned())
             .title_bottom(
                 Line::from(vec![
-                    Span::styled(HIDE_KEY, t.keybind_key),
+                    Span::styled(format!(" {}", key::TODO_PANEL.label), t.keybind_key),
                     Span::styled(HIDE_DESC, t.form_hint),
                 ])
                 .right_aligned(),
@@ -237,7 +236,7 @@ mod tests {
         let hint = panel.hint_line().unwrap();
         let text: String = hint.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("2/4"));
-        assert!(text.contains(SHOW_HINT));
+        assert!(text.contains(key::TODO_PANEL.label));
     }
 
     #[test]

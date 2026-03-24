@@ -1,5 +1,6 @@
 use crate::components::Overlay;
 use crate::components::is_ctrl;
+use crate::components::keybindings::key;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -7,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 
 const TITLE: &str = " Memory Files ";
-const FOOTER_HINTS: &[(&str, &str)] = &[("Enter", "open"), ("Ctrl-D", "delete")];
+const FOOTER_HINTS: &[(&str, &str)] = &[("Enter", "open"), (key::DELETE.label, "delete")];
 
 pub enum MemoryModalAction {
     Consumed,

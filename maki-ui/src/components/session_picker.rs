@@ -2,6 +2,7 @@ use std::thread;
 
 use crate::AppSession;
 use crate::components::Overlay;
+use crate::components::keybindings::key;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -12,7 +13,7 @@ use ratatui::layout::{Position, Rect};
 
 const TITLE: &str = " Sessions ";
 const NO_SESSIONS_MSG: &str = "No previous sessions";
-const FOOTER_HINTS: &[(&str, &str)] = &[("Enter", "open"), ("Ctrl-D", "delete")];
+const FOOTER_HINTS: &[(&str, &str)] = &[("Enter", "open"), (key::DELETE.label, "delete")];
 
 pub enum SessionPickerAction {
     Consumed,
