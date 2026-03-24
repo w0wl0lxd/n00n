@@ -18,7 +18,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const NO_MATCHES: &str = "No matches";
 const LOADING_LABEL: &str = "Loading...";
@@ -638,9 +638,31 @@ fn find_scroll_offset_for_bottom<T: PickerItem>(
     find_scroll_offset_for(filtered, items, len - 1, viewport_height)
 }
 
+fn max_label_width(detail: &str, area_width: u16) -> usize {
+    area_width.saturating_sub(detail.width() as u16 + 1 + DETAIL_RIGHT_PAD) as usize
+}
+
 fn detail_padding(label: &str, detail: &str, area_width: u16) -> usize {
-    area_width.saturating_sub(label.width() as u16 + detail.width() as u16 + 1 + DETAIL_RIGHT_PAD)
-        as usize
+    max_label_width(detail, area_width).saturating_sub(label.width())
+}
+
+fn truncate_label(label: &str, max_width: usize) -> String {
+    if label.width() <= max_width {
+        return label.to_string();
+    }
+    let target = max_width.saturating_sub(1);
+    let mut width = 0;
+    let mut result = String::with_capacity(label.len());
+    for ch in label.chars() {
+        let cw = ch.width().unwrap_or(0);
+        if width + cw > target {
+            break;
+        }
+        width += cw;
+        result.push(ch);
+    }
+    result.push('\u{2026}');
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -714,6 +736,7 @@ fn render_list<T: PickerItem>(
         let label = format!("  {}", item.label());
         let line = match item.detail() {
             Some(detail) => {
+                let label = truncate_label(&label, max_label_width(detail, area.width));
                 let pad = detail_padding(&label, detail, area.width);
                 let detail_style = if i == selected {
                     style
@@ -952,15 +975,6 @@ mod tests {
         assert_eq!(s.scroll_offset, 2);
     }
 
-    #[test]
-    fn detail_padding_consistent_with_multibyte_chars() {
-        let detail = "2h ago";
-        let width = 60;
-        let pad_ascii = detail_padding("  abcdefghijk", detail, width);
-        let pad_ellipsis = detail_padding("  abcdefgh\u{2026}", detail, width);
-        assert_eq!(pad_ellipsis - pad_ascii, 2);
-    }
-
     #[test_case(key(KeyCode::Esc) ; "esc_closes_loading")]
     #[test_case(kb::QUIT.to_key_event() ; "ctrl_c_closes_loading")]
     fn loading_cancel_keys(cancel_key: KeyEvent) {
@@ -1038,5 +1052,31 @@ mod tests {
         p.open_toggleable(entries(&["A"]), vec![true], " Test ");
         p.retain(|_| false);
         assert!(!p.is_open());
+    }
+
+    #[test_case("short", 10 => "short" ; "no_truncation_needed")]
+    #[test_case("abcdefghijklmno", 10 => "abcdefghi\u{2026}" ; "long_ascii_truncated")]
+    #[test_case("ab\u{4e16}\u{754c}cde", 6 => "ab\u{4e16}\u{2026}" ; "wide_chars_truncated")]
+    fn truncate_label_cases(label: &str, max_width: usize) -> String {
+        truncate_label(label, max_width)
+    }
+
+    #[test]
+    fn detail_right_edge_consistent_for_long_and_short_labels() {
+        let width: u16 = 40;
+        let detail = "2h ago";
+        let max_w = max_label_width(detail, width);
+
+        let end_col = |label: &str| -> usize {
+            let t = truncate_label(label, max_w);
+            t.width()
+                + detail_padding(&t, detail, width)
+                + detail.width()
+                + DETAIL_RIGHT_PAD as usize
+        };
+
+        let long = "  ".to_string() + &"x".repeat(60);
+        assert_eq!(end_col(&long), end_col("  hi"));
+        assert!(end_col(&long) <= width as usize);
     }
 }
