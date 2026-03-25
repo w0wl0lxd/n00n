@@ -88,6 +88,7 @@ fn check(
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct RawConfig {
+    always_yolo: Option<bool>,
     ui: UiFileConfig,
     agent: AgentFileConfig,
     provider: ProviderFileConfig,
@@ -220,6 +221,7 @@ pub struct PermissionsConfig {
 }
 
 pub struct Config {
+    pub always_yolo: bool,
     pub ui: UiConfig,
     pub agent: AgentConfig,
     pub provider: ProviderConfig,
@@ -662,6 +664,7 @@ pub fn load_config(cwd: &Path, no_rtk: bool) -> Config {
     let permissions = load_permissions(cwd);
 
     Config {
+        always_yolo: raw.always_yolo.unwrap_or(false),
         ui: UiConfig::from_file(raw.ui),
         agent: AgentConfig::from_file(raw.agent, no_rtk, &raw.index),
         provider: ProviderConfig::from_file(raw.provider),
@@ -1011,6 +1014,7 @@ mod tests {
     #[test_case("agent",    "bash_timeout_secs",    1 ; "agent_bash_timeout_too_low")]
     fn validate_rejects_invalid_sections(section: &str, field: &str, value: u64) {
         let mut config = Config {
+            always_yolo: false,
             ui: UiConfig::default(),
             agent: AgentConfig::default(),
             provider: ProviderConfig::default(),

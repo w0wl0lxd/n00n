@@ -169,7 +169,7 @@ fn run() -> Result<()> {
             let storage = DataDir::resolve().context("resolve data directory")?;
             let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
             let mut config = load_config(&cwd, cli.no_rtk);
-            if cli.yolo {
+            if cli.yolo || config.always_yolo {
                 config.permissions.allow_all = true;
             }
             config.validate()?;
