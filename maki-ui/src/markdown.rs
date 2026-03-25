@@ -649,10 +649,14 @@ fn split_normal_blocks<'a>(text: &'a str) -> Vec<TextBlock<'a>> {
         let (_, line) = lines_with_offsets[i];
         if is_table_row(line) {
             let table_start = i;
+            let header_cols = parse_table_cells(line).len();
             let mut sep_idx = None;
             let mut j = i;
             while j < lines_with_offsets.len() && is_table_row(lines_with_offsets[j].1) {
-                if sep_idx.is_none() && is_separator_row(lines_with_offsets[j].1) {
+                if sep_idx.is_none()
+                    && is_separator_row(lines_with_offsets[j].1)
+                    && parse_table_cells(lines_with_offsets[j].1).len() >= header_cols
+                {
                     sep_idx = Some(j - table_start);
                 }
                 j += 1;
@@ -2483,5 +2487,24 @@ mod tests {
         assert_eq!(kept_lines.len(), 3);
         assert!(kept_lines[1].ends_with("..."));
         assert!(kept_lines[1].len() <= MAX_LINE_CHARS + 3);
+    }
+
+    #[test]
+    fn streaming_table_no_flicker_during_separator() {
+        let full = "| Name | Value |\n| --- | --- |\n| foo | 42 |";
+        let mut ever_table = false;
+        for i in 1..=full.len() {
+            let partial = &full[..i];
+            let blocks = parse_blocks(partial);
+            let is_table = blocks.iter().any(|b| matches!(b, TextBlock::Table { .. }));
+            if is_table {
+                ever_table = true;
+            }
+            assert!(
+                !ever_table || is_table,
+                "once recognized as table, must stay table at byte {i}: {partial:?}"
+            );
+        }
+        assert!(ever_table, "table should be recognized at some point");
     }
 }
