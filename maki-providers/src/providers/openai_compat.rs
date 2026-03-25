@@ -1,7 +1,5 @@
 use flume::Sender;
-use futures_lite::io::AsyncBufReadExt;
-use futures_lite::io::BufReader;
-use futures_lite::prelude::*;
+use futures_lite::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use isahc::{AsyncReadResponseExt, HttpClient, Request};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -313,8 +311,7 @@ pub async fn parse_sse(
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
 
-    while let Some(line) = lines.next().await {
-        let line = line?;
+    while let Some(line) = super::next_sse_line(&mut lines).await? {
         let data = match line.strip_prefix("data: ") {
             Some(d) => d.trim(),
             None => continue,

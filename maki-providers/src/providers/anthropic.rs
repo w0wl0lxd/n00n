@@ -6,7 +6,6 @@ use std::env;
 use std::sync::{Arc, Mutex};
 
 use flume::Sender;
-use futures_lite::StreamExt;
 use futures_lite::io::{AsyncBufReadExt, BufReader};
 use isahc::{AsyncReadResponseExt, HttpClient, Request};
 use serde::{Deserialize, Serialize};
@@ -522,8 +521,7 @@ async fn parse_sse(
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
 
-    while let Some(line) = lines.next().await {
-        let line = line?;
+    while let Some(line) = super::next_sse_line(&mut lines).await? {
         if let Some(event_type) = line.strip_prefix("event: ") {
             current_event = event_type.to_string();
             continue;

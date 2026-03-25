@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use futures_lite::StreamExt;
+use futures_lite::io::AsyncBufRead;
 use isahc::config::Configurable;
 use serde::Deserialize;
 
@@ -13,7 +15,7 @@ pub(crate) mod openai_compat;
 pub(crate) mod zai;
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const RECV_TIMEOUT: Duration = Duration::from_secs(300);
+pub(crate) const SSE_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct ResolvedAuth {
     pub base_url: Option<String>,
@@ -68,14 +70,24 @@ impl SseErrorPayload {
     }
 }
 
-pub(crate) fn http_client() -> isahc::HttpClient {
-    http_client_with(CONNECT_TIMEOUT, RECV_TIMEOUT)
+pub(crate) async fn next_sse_line<R: AsyncBufRead + Unpin>(
+    lines: &mut futures_lite::io::Lines<R>,
+) -> Result<Option<String>, AgentError> {
+    futures_lite::future::or(
+        async { lines.next().await.transpose().map_err(AgentError::from) },
+        async {
+            smol::Timer::after(SSE_INACTIVITY_TIMEOUT).await;
+            Err(AgentError::Timeout {
+                secs: SSE_INACTIVITY_TIMEOUT.as_secs(),
+            })
+        },
+    )
+    .await
 }
 
-pub(crate) fn http_client_with(connect: Duration, stream: Duration) -> isahc::HttpClient {
+pub(crate) fn http_client() -> isahc::HttpClient {
     isahc::HttpClient::builder()
-        .connect_timeout(connect)
-        .timeout(stream)
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .expect("failed to build HTTP client")
 }
