@@ -341,7 +341,24 @@ impl MessagesPanel {
             }
             _ => {}
         }
-        msg.tool_output = Some(Arc::new(event.output));
+        if let ToolOutput::Batch {
+            entries: new_entries,
+            text,
+        } = &event.output
+            && let Some(arc) = &mut msg.tool_output
+            && let ToolOutput::Batch {
+                entries: existing,
+                text: existing_text,
+            } = Arc::make_mut(arc)
+        {
+            for (existing, new) in existing.iter_mut().zip(new_entries) {
+                existing.status = new.status;
+                existing.output = new.output.clone();
+            }
+            *existing_text = text.clone();
+        } else {
+            msg.tool_output = Some(Arc::new(event.output));
+        }
         msg.live_output = None;
         if was_in_progress {
             self.in_progress_count -= 1;
@@ -1921,82 +1938,93 @@ mod tests {
         );
     }
 
-    #[test]
-    fn update_tool_model_batch_inner_id() {
-        let mut panel = MessagesPanel::new(UiConfig::default());
-        panel.tool_start(ToolStartEvent {
-            id: "b1".into(),
-            tool: "batch",
-            summary: "2 tools".into(),
-            annotation: None,
+    fn batch_entry(tool: &str, summary: &str, status: BatchToolStatus) -> BatchToolEntry {
+        BatchToolEntry {
+            tool: tool.into(),
+            summary: summary.into(),
+            status,
             input: None,
-            output: Some(ToolOutput::Batch {
-                entries: vec![
-                    BatchToolEntry {
-                        tool: "task".into(),
-                        summary: "research".into(),
-                        status: BatchToolStatus::InProgress,
-                        input: None,
-                        output: None,
-                        annotation: None,
-                    },
-                    BatchToolEntry {
-                        tool: "read".into(),
-                        summary: "file.rs".into(),
-                        status: BatchToolStatus::Pending,
-                        input: None,
-                        output: None,
-                        annotation: None,
-                    },
-                ],
-                text: String::new(),
-            }),
-        });
-        rebuild(&mut panel);
-
-        panel.update_tool_model("b1__0", "anthropic/claude-haiku-4-20250414");
-
-        let batch_output = panel.messages[0].tool_output.as_deref().unwrap();
-        let ToolOutput::Batch { entries, .. } = batch_output else {
-            panic!("expected Batch");
-        };
-        assert_eq!(
-            entries[0].annotation.as_deref(),
-            Some("anthropic/claude-haiku-4-20250414")
-        );
-        assert!(entries[1].annotation.is_none());
+            output: None,
+            annotation: None,
+        }
     }
 
-    #[test]
-    fn update_tool_summary_batch_inner_id() {
-        let mut panel = MessagesPanel::new(UiConfig::default());
+    fn batch_start(panel: &mut MessagesPanel, entries: Vec<BatchToolEntry>) {
         panel.tool_start(ToolStartEvent {
             id: "b1".into(),
             tool: "batch",
-            summary: "2 tools".into(),
+            summary: format!("{} tools", entries.len()),
             annotation: None,
             input: None,
             output: Some(ToolOutput::Batch {
-                entries: vec![BatchToolEntry {
-                    tool: "task".into(),
-                    summary: "old".into(),
-                    status: BatchToolStatus::InProgress,
-                    input: None,
-                    output: None,
-                    annotation: None,
-                }],
+                entries,
                 text: String::new(),
             }),
         });
-        rebuild(&mut panel);
+    }
 
-        panel.update_tool_summary("b1__0", "new name");
+    fn batch_done(panel: &mut MessagesPanel, entries: Vec<BatchToolEntry>) {
+        panel.tool_done(ToolDoneEvent {
+            id: "b1".into(),
+            tool: "batch",
+            output: ToolOutput::Batch {
+                entries,
+                text: String::new(),
+            },
+            is_error: false,
+        });
+    }
 
+    fn batch_entries(panel: &MessagesPanel) -> &[BatchToolEntry] {
         let ToolOutput::Batch { entries, .. } = panel.messages[0].tool_output.as_deref().unwrap()
         else {
             panic!("expected Batch");
         };
-        assert_eq!(entries[0].summary, "new name");
+        entries
+    }
+
+    #[test]
+    fn tool_done_batch_preserves_entry_annotations() {
+        let mut panel = MessagesPanel::new(UiConfig::default());
+        batch_start(
+            &mut panel,
+            vec![
+                batch_entry("task", "research", BatchToolStatus::InProgress),
+                batch_entry("read", "file.rs", BatchToolStatus::Pending),
+            ],
+        );
+
+        let model = "anthropic/claude-haiku-4-20250414";
+        panel.update_tool_model("b1__0", model);
+
+        let mut done_entries = vec![
+            batch_entry("task", "research", BatchToolStatus::Success),
+            batch_entry("read", "file.rs", BatchToolStatus::Success),
+        ];
+        done_entries[0].output = Some(ToolOutput::Plain("result".into()));
+        done_entries[1].output = Some(ToolOutput::Plain("contents".into()));
+        batch_done(&mut panel, done_entries);
+
+        let entries = batch_entries(&panel);
+        assert_eq!(entries[0].annotation.as_deref(), Some(model));
+        assert!(entries[1].annotation.is_none());
+    }
+
+    #[test]
+    fn tool_done_batch_preserves_entry_summaries() {
+        let mut panel = MessagesPanel::new(UiConfig::default());
+        batch_start(
+            &mut panel,
+            vec![batch_entry("task", "original", BatchToolStatus::InProgress)],
+        );
+
+        panel.update_tool_summary("b1__0", "renamed by ui");
+
+        let mut done_entries = vec![batch_entry("task", "original", BatchToolStatus::Success)];
+        done_entries[0].output = Some(ToolOutput::Plain("done".into()));
+        batch_done(&mut panel, done_entries);
+
+        assert_eq!(batch_entries(&panel)[0].summary, "renamed by ui");
     }
 
     #[test]
