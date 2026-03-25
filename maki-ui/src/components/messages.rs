@@ -1135,8 +1135,12 @@ impl MessagesPanel {
                         let rule = hr_line(self.viewport_width, theme::current().plan_rule);
                         lines.insert(0, rule.clone());
                         lines.push(rule);
+                    } else {
+                        lines.clear();
                     }
-                    lines.push(Line::from(""));
+                    if !msg.text.is_empty() {
+                        lines.push(Line::from(""));
+                    }
                     lines.push(Line::from(Span::styled(
                         pp.to_owned(),
                         theme::current().plan_path,
