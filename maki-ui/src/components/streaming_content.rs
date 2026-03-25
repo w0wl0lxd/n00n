@@ -14,15 +14,16 @@ use ratatui::text::Line;
 /// Code blocks use `CodeHighlighter` which caches completed lines internally,
 /// so repeated `render_block` calls only re-highlight the last (incomplete) line.
 ///
-/// Table column widths are monotonically grown (`table_col_widths`) so that
-/// adding a wider row never causes earlier rows to shift. This prevents
-/// flicker during table streaming.
+/// Table column widths are monotonically grown per table (`table_col_widths`)
+/// so that adding a wider row never causes earlier rows to shift. Each table
+/// in a message gets its own independent width vec to prevent cross-table
+/// interference.
 #[derive(Default)]
 struct StreamingCache {
     byte_len: usize,
     lines: Vec<Line<'static>>,
     highlighters: Vec<CodeHighlighter>,
-    table_col_widths: Vec<usize>,
+    table_col_widths: Vec<Vec<usize>>,
 }
 
 impl StreamingCache {
@@ -63,6 +64,7 @@ impl StreamingCache {
             render_block(block, &mut self.lines, &mut state, &mut ctx);
         }
         self.highlighters.truncate(state.code_idx);
+        self.table_col_widths.truncate(state.table_idx);
 
         finalize_lines(&mut self.lines, prefix, prefix_style);
         true

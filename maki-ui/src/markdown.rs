@@ -1058,6 +1058,7 @@ pub fn plain_lines(
 pub(crate) struct RenderState {
     pub first_line: bool,
     pub code_idx: usize,
+    pub table_idx: usize,
 }
 
 impl RenderState {
@@ -1065,6 +1066,7 @@ impl RenderState {
         Self {
             first_line: true,
             code_idx: 0,
+            table_idx: 0,
         }
     }
 }
@@ -1075,7 +1077,7 @@ pub(crate) struct RenderCtx<'a, 'b> {
     pub prefix_style: Style,
     pub highlighters: &'b mut Option<&'a mut Vec<CodeHighlighter>>,
     pub width: u16,
-    pub table_col_widths: Option<&'b mut Vec<usize>>,
+    pub table_col_widths: Option<&'b mut Vec<Vec<usize>>>,
 }
 
 pub(crate) fn render_block(
@@ -1146,14 +1148,21 @@ pub(crate) fn render_block(
                 state.first_line = false;
             }
             ensure_blank_line(lines);
+            let pw = ctx.table_col_widths.as_deref_mut().map(|all| {
+                if state.table_idx >= all.len() {
+                    all.resize_with(state.table_idx + 1, Vec::new);
+                }
+                &mut all[state.table_idx]
+            });
             lines.extend(render_table(
                 rows,
                 *header_end,
                 ctx.text_style,
                 ctx.width,
-                ctx.table_col_widths.as_deref_mut(),
+                pw,
             ));
             ensure_blank_line(lines);
+            state.table_idx += 1;
         }
     }
 }
@@ -2390,6 +2399,43 @@ mod tests {
                 "persistent width shrank at col {i}: {old} -> {new}"
             );
         }
+    }
+
+    #[test]
+    fn second_table_does_not_widen_first_table() {
+        let style = Style::default();
+        let width: u16 = 120;
+        let mut all_widths: Vec<Vec<usize>> = Vec::new();
+        let table1 = "| A | B |\n| --- | --- |\n| x | y |";
+        let table2_wide = "\n\nsome text\n\n| Very Wide Column | Another Wide Col |\n| --- | --- |\n| long content here | more long content |";
+
+        let render = |input: &str, widths: &mut Vec<Vec<usize>>| {
+            let blocks = parse_blocks(input);
+            let mut lines = Vec::new();
+            let mut state = RenderState::new();
+            let mut hl_opt: Option<&mut Vec<CodeHighlighter>> = None;
+            let mut ctx = RenderCtx {
+                prefix: "",
+                text_style: style,
+                prefix_style: style,
+                highlighters: &mut hl_opt,
+                width,
+                table_col_widths: Some(widths),
+            };
+            for block in &blocks {
+                render_block(block, &mut lines, &mut state, &mut ctx);
+            }
+        };
+
+        render(table1, &mut all_widths);
+        let table1_widths_before = all_widths[0].clone();
+
+        let both = format!("{table1}{table2_wide}");
+        render(&both, &mut all_widths);
+        assert_eq!(
+            all_widths[0], table1_widths_before,
+            "table 1 widths changed after table 2 appeared"
+        );
     }
 
     #[test_case("short\nlines\n", "short\nlines\n" ; "short_text_unchanged")]
