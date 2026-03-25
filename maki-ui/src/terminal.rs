@@ -52,7 +52,8 @@ pub(crate) fn resume(terminal: &mut ratatui::DefaultTerminal) {
 fn push_keyboard_enhancement() {
     stdout()
         .execute(PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
         ))
         .ok();
 }

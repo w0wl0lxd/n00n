@@ -150,8 +150,10 @@ pub mod key {
     pub const NEXT_PREV_CHAT_LABEL: &str = mod_key!("N/P");
     pub const SCROLL_HALF_LABEL: &str = mod_key!("U/D");
     pub const SCROLL_LINE_LABEL: &str = mod_key!("Y/E");
-    pub const WORD_ARROWS_LABEL: &str = mod_key!("←/→");
-    pub const WORD_DEL_LABEL: &str = mod_key!("Del");
+    pub const WORD_ARROWS_LABEL: &str = mod_key!("←/→ / ⌥←/→");
+    pub const WORD_DEL_LABEL: &str = mod_key!("Del / ⌥Del");
+    pub const WORD_BACKSPACE_LABEL: &str = mod_key!("W / ⌥⌫");
+    pub const LINE_HOME_SUPER_LABEL: &str = "⌘←/→";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,7 +250,7 @@ pub const KEYBINDS: &[Keybind] = &[
         context: KeybindContext::Editing,
     },
     Keybind {
-        key: "\\+Enter",
+        key: "\\+Enter / ⇧↵",
         description: "Newline",
         context: KeybindContext::Editing,
     },
@@ -263,7 +265,7 @@ pub const KEYBINDS: &[Keybind] = &[
         context: KeybindContext::Editing,
     },
     Keybind {
-        key: key::DELETE_WORD.label,
+        key: key::WORD_BACKSPACE_LABEL,
         description: "Delete word backward",
         context: KeybindContext::Editing,
     },
@@ -285,6 +287,11 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         key: key::LINE_START.label,
         description: "Jump to start of line",
+        context: KeybindContext::Editing,
+    },
+    Keybind {
+        key: key::LINE_HOME_SUPER_LABEL,
+        description: "Jump to start/end of line",
         context: KeybindContext::Editing,
     },
     Keybind {

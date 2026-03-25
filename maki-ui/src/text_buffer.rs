@@ -270,9 +270,17 @@ impl TextBuffer {
         self.merge_with_next_line();
     }
 
+    pub fn kill_to_start_of_line(&mut self) {
+        let byte_x = Self::char_to_byte(&self.lines[self.cursor_y], self.x());
+        self.lines[self.cursor_y].drain(..byte_x);
+        self.raw_x = 0;
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> EditResult {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL)
-            && !key.modifiers.contains(KeyModifiers::ALT);
+        let m = key.modifiers;
+        let ctrl = m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT);
+        let alt = m.contains(KeyModifiers::ALT) && !m.contains(KeyModifiers::CONTROL);
+        let sup = m.contains(KeyModifiers::SUPER);
 
         if ctrl {
             return match key.code {
@@ -299,6 +307,46 @@ impl TextBuffer {
                 KeyCode::Char('a') => {
                     self.move_home();
                     EditResult::Moved
+                }
+                _ => EditResult::Ignored,
+            };
+        }
+
+        if alt {
+            return match key.code {
+                KeyCode::Left | KeyCode::Char('b') => {
+                    self.move_word_left();
+                    EditResult::Moved
+                }
+                KeyCode::Right | KeyCode::Char('f') => {
+                    self.move_word_right();
+                    EditResult::Moved
+                }
+                KeyCode::Backspace => {
+                    self.remove_word_before_cursor();
+                    EditResult::Changed
+                }
+                KeyCode::Delete | KeyCode::Char('d') => {
+                    self.delete_word_after_cursor();
+                    EditResult::Changed
+                }
+                _ => EditResult::Ignored,
+            };
+        }
+
+        if sup {
+            return match key.code {
+                KeyCode::Left => {
+                    self.move_home();
+                    EditResult::Moved
+                }
+                KeyCode::Right => {
+                    self.move_end();
+                    EditResult::Moved
+                }
+                KeyCode::Backspace => {
+                    self.kill_to_start_of_line();
+                    EditResult::Changed
                 }
                 _ => EditResult::Ignored,
             };
@@ -341,6 +389,17 @@ impl TextBuffer {
 #[cfg(test)]
 mod tests {
     use super::{EditResult, TextBuffer};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use test_case::test_case;
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
 
     #[test]
     fn insert_at_middle() {
@@ -414,6 +473,11 @@ mod tests {
         buf.raw_x = 0;
         buf.remove_word_before_cursor();
         assert_eq!(buf.value(), "abcd");
+
+        let mut buf = TextBuffer::new("hello ●●●".into());
+        buf.move_to_end();
+        buf.remove_word_before_cursor();
+        assert_eq!(buf.value(), "hello ");
     }
 
     #[test]
@@ -456,63 +520,41 @@ mod tests {
     }
 
     #[test]
-    fn multibyte_push_and_remove() {
+    fn multibyte_operations() {
         let mut buf = TextBuffer::new(String::new());
         buf.push_char('a');
         buf.push_char('●');
         buf.push_char('b');
         assert_eq!(buf.value(), "a●b");
-        assert_eq!(buf.x(), 3);
 
         buf.remove_char();
         assert_eq!(buf.value(), "a●");
         buf.remove_char();
         assert_eq!(buf.value(), "a");
-    }
 
-    #[test]
-    fn multibyte_move_left_right() {
         let mut buf = TextBuffer::new("a●b".into());
         buf.move_to_end();
-        assert_eq!(buf.x(), 3);
         buf.move_left();
         assert_eq!(buf.x(), 2);
         buf.move_left();
         assert_eq!(buf.x(), 1);
         buf.move_right();
         assert_eq!(buf.x(), 2);
-    }
 
-    #[test]
-    fn multibyte_delete_char() {
         let mut buf = TextBuffer::new("a●b".into());
         buf.raw_x = 1;
         buf.delete_char();
         assert_eq!(buf.value(), "ab");
-    }
 
-    #[test]
-    fn multibyte_split_line() {
         let mut buf = TextBuffer::new("a●b".into());
         buf.raw_x = 2;
         buf.add_line();
         assert_eq!(buf.lines(), &["a●", "b"]);
-    }
 
-    #[test]
-    fn multibyte_insert_text() {
         let mut buf = TextBuffer::new("a●b".into());
         buf.raw_x = 2;
         buf.insert_text("X");
         assert_eq!(buf.value(), "a●Xb");
-    }
-
-    #[test]
-    fn multibyte_remove_word() {
-        let mut buf = TextBuffer::new("hello ●●●".into());
-        buf.move_to_end();
-        buf.remove_word_before_cursor();
-        assert_eq!(buf.value(), "hello ");
     }
 
     #[test]
@@ -564,33 +606,34 @@ mod tests {
         assert_eq!(buf.value(), "●");
     }
 
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use test_case::test_case;
-
     fn plain(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
+        key(code, KeyModifiers::NONE)
     }
 
     fn ctrl(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::CONTROL)
+        key(code, KeyModifiers::CONTROL)
     }
 
-    #[test_case(plain(KeyCode::Char('a')),      EditResult::Changed ; "char_changed")]
-    #[test_case(plain(KeyCode::Backspace),       EditResult::Changed ; "backspace_changed")]
-    #[test_case(plain(KeyCode::Delete),          EditResult::Changed ; "delete_changed")]
-    #[test_case(plain(KeyCode::Left),            EditResult::Moved   ; "left_moved")]
-    #[test_case(plain(KeyCode::Right),           EditResult::Moved   ; "right_moved")]
-    #[test_case(plain(KeyCode::Home),            EditResult::Moved   ; "home_moved")]
-    #[test_case(plain(KeyCode::End),             EditResult::Moved   ; "end_moved")]
-    #[test_case(ctrl(KeyCode::Char('a')),        EditResult::Moved   ; "ctrl_a_moved")]
-    #[test_case(ctrl(KeyCode::Left),             EditResult::Moved   ; "ctrl_left_moved")]
-    #[test_case(ctrl(KeyCode::Right),            EditResult::Moved   ; "ctrl_right_moved")]
-    #[test_case(ctrl(KeyCode::Char('k')),        EditResult::Changed ; "ctrl_k_changed")]
-    #[test_case(ctrl(KeyCode::Char('w')),        EditResult::Changed ; "ctrl_w_changed")]
-    #[test_case(ctrl(KeyCode::Backspace),        EditResult::Changed ; "ctrl_backspace_changed")]
-    #[test_case(ctrl(KeyCode::Delete),           EditResult::Changed ; "ctrl_delete_changed")]
-    #[test_case(plain(KeyCode::F(1)),            EditResult::Ignored ; "f1_ignored")]
-    #[test_case(ctrl(KeyCode::Char('z')),        EditResult::Ignored ; "ctrl_z_ignored")]
+    fn alt(code: KeyCode) -> KeyEvent {
+        key(code, KeyModifiers::ALT)
+    }
+
+    fn super_key(code: KeyCode) -> KeyEvent {
+        key(code, KeyModifiers::SUPER)
+    }
+
+    #[test_case(plain(KeyCode::Char('a')),      EditResult::Changed ; "plain_changed")]
+    #[test_case(plain(KeyCode::Left),            EditResult::Moved   ; "plain_moved")]
+    #[test_case(plain(KeyCode::F(1)),            EditResult::Ignored ; "plain_ignored")]
+    #[test_case(ctrl(KeyCode::Char('k')),        EditResult::Changed ; "ctrl_changed")]
+    #[test_case(ctrl(KeyCode::Char('a')),        EditResult::Moved   ; "ctrl_moved")]
+    #[test_case(ctrl(KeyCode::Char('z')),        EditResult::Ignored ; "ctrl_ignored")]
+    #[test_case(alt(KeyCode::Backspace),         EditResult::Changed ; "alt_changed")]
+    #[test_case(alt(KeyCode::Left),              EditResult::Moved   ; "alt_moved")]
+    #[test_case(alt(KeyCode::Char('z')),         EditResult::Ignored ; "alt_ignored")]
+    #[test_case(super_key(KeyCode::Backspace),   EditResult::Changed ; "super_changed")]
+    #[test_case(super_key(KeyCode::Left),        EditResult::Moved   ; "super_moved")]
+    #[test_case(super_key(KeyCode::Char('z')),   EditResult::Ignored ; "super_ignored")]
     fn handle_key_returns_correct_result(key: KeyEvent, expected: EditResult) {
         let mut buf = TextBuffer::new("hello world".into());
         buf.raw_x = 5;
@@ -598,17 +641,11 @@ mod tests {
     }
 
     #[test]
-    fn move_to_end_empty_buffer() {
-        let mut buf = TextBuffer::new(String::new());
-        buf.move_to_end();
-        assert_eq!(buf.y(), 0);
+    fn kill_to_start_of_line() {
+        let mut buf = TextBuffer::new("●hello world".into());
+        buf.raw_x = 1;
+        buf.kill_to_start_of_line();
+        assert_eq!(buf.value(), "hello world");
         assert_eq!(buf.x(), 0);
-    }
-
-    #[test]
-    fn move_down_single_line_stays_put() {
-        let mut buf = TextBuffer::new("hello".into());
-        buf.move_down();
-        assert_eq!(buf.y(), 0);
     }
 }

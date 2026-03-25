@@ -5,7 +5,7 @@ use crate::highlight;
 use crate::text_buffer::{EditResult, TextBuffer};
 use crate::theme;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use maki_storage::input_history::InputHistory;
 use std::mem;
 
@@ -86,6 +86,10 @@ impl InputBox {
                 return InputAction::None;
             }
             KeyCode::Tab | KeyCode::Esc => return InputAction::Passthrough(key),
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.buffer.add_line();
+                return InputAction::ContinueLine;
+            }
             KeyCode::Enter if self.char_before_cursor_is_backslash() => {
                 self.continue_line();
                 return InputAction::ContinueLine;

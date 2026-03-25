@@ -4,7 +4,9 @@ use std::time::Duration;
 use arc_swap::ArcSwapOption;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
-use crossterm::event::{self, Event, MouseButton, MouseEvent as CtMouseEvent, MouseEventKind};
+use crossterm::event::{
+    self, Event, KeyEventKind, MouseButton, MouseEvent as CtMouseEvent, MouseEventKind,
+};
 use maki_agent::permissions::PermissionManager;
 use maki_agent::skill::Skill;
 use maki_agent::{AgentConfig, CancelToken};
@@ -277,7 +279,8 @@ impl<'t> EventLoop<'t> {
     fn translate_input(&mut self) -> Result<Option<Msg>> {
         let raw = event::read()?;
         match raw {
-            Event::Key(key) => Ok(Some(Msg::Key(key))),
+            Event::Key(key) if key.kind == KeyEventKind::Press => Ok(Some(Msg::Key(key))),
+            Event::Key(_) => Ok(None),
             Event::Paste(text) => Ok(Some(Msg::Paste(text))),
             Event::Mouse(mouse) => Ok(self.translate_mouse(mouse)),
             _ => Ok(None),
