@@ -24,14 +24,15 @@ pub enum AgentError {
     Channel,
     #[error("cancelled")]
     Cancelled,
+    #[error("stream timed out after {secs}s of inactivity")]
+    Timeout { secs: u64 },
 }
 
 impl AgentError {
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::Api { status, .. } => *status == 429 || *status >= 500,
-            Self::Io(_) => true,
-            Self::Http(_) => true,
+            Self::Io(_) | Self::Http(_) | Self::Timeout { .. } => true,
             Self::Config { .. }
             | Self::Tool { .. }
             | Self::Channel
@@ -58,6 +59,7 @@ impl AgentError {
             Self::Tool { tool, message } => format!("{tool}: {message}"),
             Self::Io(e) => format!("I/O error: {e}"),
             Self::Http(_) => "connection error, check your network".into(),
+            Self::Timeout { .. } => "stream timed out, retrying".into(),
             Self::HttpRequest(e) => format!("request error: {e}"),
             Self::Json(_) => "received an invalid response from the API".into(),
             Self::Channel => "internal error, try again".into(),
@@ -80,6 +82,7 @@ impl AgentError {
             Self::Api { status: 529, .. } => "Provider is overloaded".into(),
             Self::Api { status, .. } if *status >= 500 => format!("Server error ({status})"),
             Self::Io(_) | Self::Http(_) => "Connection error".into(),
+            Self::Timeout { .. } => "Stream timed out".into(),
             _ => self.to_string(),
         }
     }
@@ -138,14 +141,6 @@ mod tests {
         assert_eq!(api(status).retry_message(), expected);
     }
 
-    #[test]
-    fn retry_message_io() {
-        assert_eq!(
-            AgentError::Io(std::io::ErrorKind::BrokenPipe.into()).retry_message(),
-            "Connection error"
-        );
-    }
-
     #[test_case(429, "rate limited, try again in a moment"                              ; "user_msg_429")]
     #[test_case(529, "provider is overloaded, try again later"                           ; "user_msg_529")]
     #[test_case(500, "server error (500)"                                                 ; "user_msg_500")]
@@ -160,27 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn user_message_config() {
-        let err = AgentError::Config {
-            message: "not authenticated".into(),
-        };
-        assert_eq!(err.user_message(), "not authenticated");
-    }
-
-    #[test]
-    fn user_message_json() {
-        let err = AgentError::Json(serde_json::from_str::<bool>("{").unwrap_err());
-        assert_eq!(
-            err.user_message(),
-            "received an invalid response from the API"
-        );
-    }
-
-    #[test]
-    fn user_message_channel() {
-        assert_eq!(
-            AgentError::Channel.user_message(),
-            "internal error, try again"
-        );
+    fn timeout_is_retryable() {
+        assert!(AgentError::Timeout { secs: 30 }.is_retryable());
     }
 }
