@@ -67,15 +67,15 @@ impl TsJsExtractor {
         let rules = [
             BodyMemberRule {
                 kind: "method_definition",
-                handler: BodyMemberHandler::Method(class_member_sig),
+                handler: BodyMemberHandler::Method(&class_member_sig),
             },
             BodyMemberRule {
                 kind: "public_field_definition",
-                handler: BodyMemberHandler::Method(class_member_sig),
+                handler: BodyMemberHandler::Method(&class_member_sig),
             },
             BodyMemberRule {
                 kind: "property_definition",
-                handler: BodyMemberHandler::Method(class_member_sig),
+                handler: BodyMemberHandler::Method(&class_member_sig),
             },
         ];
         let methods = extract_body_members(body, source, &rules);

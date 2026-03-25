@@ -226,16 +226,16 @@ impl SwiftExtractor {
         let rules = [
             BodyMemberRule {
                 kind: "function_declaration",
-                handler: BodyMemberHandler::Method(swift_fn_signature),
+                handler: BodyMemberHandler::Method(&swift_fn_signature),
             },
             BodyMemberRule {
                 kind: "init_declaration",
-                handler: BodyMemberHandler::Method(swift_fn_signature),
+                handler: BodyMemberHandler::Method(&swift_fn_signature),
             },
             BodyMemberRule {
                 kind: "property_declaration",
                 handler: BodyMemberHandler::FieldTruncated {
-                    format_fn: property_text_str,
+                    format_fn: &property_text_str,
                     counter: "property_declaration",
                 },
             },

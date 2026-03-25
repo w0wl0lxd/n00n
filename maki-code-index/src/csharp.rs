@@ -116,23 +116,23 @@ impl CSharpExtractor {
         let rules = [
             BodyMemberRule {
                 kind: "method_declaration",
-                handler: BodyMemberHandler::Method(|n, s| Some(method_signature_free(n, s))),
+                handler: BodyMemberHandler::Method(&|n, s| Some(method_signature_free(n, s))),
             },
             BodyMemberRule {
                 kind: "constructor_declaration",
-                handler: BodyMemberHandler::Method(|n, s| Some(method_signature_free(n, s))),
+                handler: BodyMemberHandler::Method(&|n, s| Some(method_signature_free(n, s))),
             },
             BodyMemberRule {
                 kind: "field_declaration",
                 handler: BodyMemberHandler::FieldTruncated {
-                    format_fn: field_text_free,
+                    format_fn: &field_text_free,
                     counter: "fields",
                 },
             },
             BodyMemberRule {
                 kind: "property_declaration",
                 handler: BodyMemberHandler::FieldTruncated {
-                    format_fn: property_text_free,
+                    format_fn: &property_text_free,
                     counter: "fields",
                 },
             },
@@ -147,11 +147,11 @@ impl CSharpExtractor {
         let rules = [
             BodyMemberRule {
                 kind: "method_declaration",
-                handler: BodyMemberHandler::Method(|n, s| Some(method_signature_free(n, s))),
+                handler: BodyMemberHandler::Method(&|n, s| Some(method_signature_free(n, s))),
             },
             BodyMemberRule {
                 kind: "property_declaration",
-                handler: BodyMemberHandler::Method(|n, s| Some(property_text_free(n, s))),
+                handler: BodyMemberHandler::Method(&|n, s| Some(property_text_free(n, s))),
             },
         ];
         extract_body_members(body, source, &rules)

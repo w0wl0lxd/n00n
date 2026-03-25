@@ -1,8 +1,8 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, compact_ws,
-    extract_enum_variants, line_range, node_text, truncate,
+    BodyMemberHandler, BodyMemberRule, ChildKind, LanguageExtractor, Section, SkeletonEntry,
+    compact_ws, extract_body_members, extract_enum_variants, node_text, truncate,
 };
 
 pub(crate) struct CppExtractor;
@@ -81,47 +81,26 @@ impl CppExtractor {
         let Some(body) = node.child_by_field_name("body") else {
             return Vec::new();
         };
-        let mut members = Vec::new();
-        let mut field_count = 0;
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            match child.kind() {
-                "function_definition" => {
-                    if let Some(sig) = self.method_sig(child, source) {
-                        let lr = line_range(
-                            child.start_position().row + 1,
-                            child.end_position().row + 1,
-                        );
-                        members.push(format!("{sig} {lr}"));
-                    }
-                }
-                "declaration" => {
-                    if let Some(sig) = self.decl_sig(child, source) {
-                        let lr = line_range(
-                            child.start_position().row + 1,
-                            child.end_position().row + 1,
-                        );
-                        members.push(format!("{sig} {lr}"));
-                    }
-                }
-                "field_declaration" => {
-                    field_count += 1;
-                    if field_count <= FIELD_TRUNCATE_THRESHOLD {
-                        let text = compact_ws(node_text(child, source).trim_end_matches(';'));
-                        let lr = line_range(
-                            child.start_position().row + 1,
-                            child.end_position().row + 1,
-                        );
-                        members.push(format!("{text} {lr}"));
-                    }
-                }
-                _ => {}
-            }
-        }
-        if field_count > FIELD_TRUNCATE_THRESHOLD {
-            members.push("...".into());
-        }
-        members
+        let rules = [
+            BodyMemberRule {
+                kind: "function_definition",
+                handler: BodyMemberHandler::Method(&|n, s| self.method_sig(n, s)),
+            },
+            BodyMemberRule {
+                kind: "declaration",
+                handler: BodyMemberHandler::Method(&|n, s| self.decl_sig(n, s)),
+            },
+            BodyMemberRule {
+                kind: "field_declaration",
+                handler: BodyMemberHandler::FieldTruncated {
+                    format_fn: &|n, s| {
+                        compact_ws(node_text(n, s).trim_end_matches(';')).into_owned()
+                    },
+                    counter: "field_declaration",
+                },
+            },
+        ];
+        extract_body_members(body, source, &rules)
     }
 
     fn method_sig(&self, node: Node, source: &[u8]) -> Option<String> {

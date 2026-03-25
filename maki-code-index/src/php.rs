@@ -1,8 +1,8 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, compact_ws,
-    extract_enum_variants, find_child, line_range, node_text, prefixed,
+    BodyMemberHandler, BodyMemberRule, ChildKind, LanguageExtractor, Section, SkeletonEntry,
+    compact_ws, extract_body_members, extract_enum_variants, find_child, node_text, prefixed,
 };
 
 pub(crate) struct PhpExtractor;
@@ -138,35 +138,20 @@ impl PhpExtractor {
         let Some(body) = node.child_by_field_name("body") else {
             return Vec::new();
         };
-        let mut members = Vec::new();
-        let mut field_count = 0usize;
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            match child.kind() {
-                "method_declaration" => {
-                    let sig = self.method_sig(child, source);
-                    let lr =
-                        line_range(child.start_position().row + 1, child.end_position().row + 1);
-                    members.push(format!("{sig} {lr}"));
-                }
-                "property_declaration" => {
-                    field_count += 1;
-                    if field_count <= FIELD_TRUNCATE_THRESHOLD {
-                        let text = self.property_text(child, source);
-                        let lr = line_range(
-                            child.start_position().row + 1,
-                            child.end_position().row + 1,
-                        );
-                        members.push(format!("{text} {lr}"));
-                    }
-                }
-                _ => {}
-            }
-        }
-        if field_count > FIELD_TRUNCATE_THRESHOLD {
-            members.push("...".into());
-        }
-        members
+        let rules = [
+            BodyMemberRule {
+                kind: "method_declaration",
+                handler: BodyMemberHandler::Method(&|n, s| Some(self.method_sig(n, s))),
+            },
+            BodyMemberRule {
+                kind: "property_declaration",
+                handler: BodyMemberHandler::FieldTruncated {
+                    format_fn: &|n, s| self.property_text(n, s),
+                    counter: "property_declaration",
+                },
+            },
+        ];
+        extract_body_members(body, source, &rules)
     }
 
     fn method_sig(&self, node: Node, source: &[u8]) -> String {

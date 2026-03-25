@@ -48,9 +48,9 @@ pub(crate) fn truncate(s: &str, max_chars: usize) -> Cow<'_, str> {
     }
     let boundary = s
         .char_indices()
-        .nth(max_chars.saturating_sub(3))
+        .nth(max_chars.saturating_sub(11))
         .map_or(s.len(), |(i, _)| i);
-    Cow::Owned(format!("{}...", &s[..boundary]))
+    Cow::Owned(format!("{}[truncated]", &s[..boundary]))
 }
 
 pub(crate) struct LineRange {
@@ -220,7 +220,7 @@ pub(crate) fn extract_fields_truncated(
         }
     }
     if total > FIELD_TRUNCATE_THRESHOLD {
-        fields.push("...".into());
+        fields.push("[truncated]".into());
     }
     fields
 }
@@ -231,9 +231,9 @@ pub(crate) struct BodyMemberRule<'a> {
 }
 
 pub(crate) enum BodyMemberHandler<'a> {
-    Method(fn(Node, &[u8]) -> Option<String>),
+    Method(&'a dyn Fn(Node, &[u8]) -> Option<String>),
     FieldTruncated {
-        format_fn: fn(Node, &[u8]) -> String,
+        format_fn: &'a dyn Fn(Node, &[u8]) -> String,
         counter: &'a str,
     },
 }
@@ -274,7 +274,7 @@ pub(crate) fn extract_body_members(
     for (counter, count) in &field_counts {
         if *count > FIELD_TRUNCATE_THRESHOLD {
             let _ = counter;
-            members.push("...".into());
+            members.push("[truncated]".into());
         }
     }
     members
@@ -721,7 +721,7 @@ mod tests {
     fn truncate_at_char_boundary() {
         let long = format!("{}{}", "a".repeat(55), "ü".repeat(10));
         let result = truncate(&long, 60);
-        assert!(result.ends_with("..."));
+        assert!(result.ends_with("[truncated]"));
         assert!(result.chars().count() <= 60);
     }
 

@@ -1,8 +1,8 @@
 use tree_sitter::Node;
 
 use crate::common::{
-    ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, compact_ws,
-    find_child, line_range, node_text, prefixed, truncate,
+    BodyMemberHandler, BodyMemberRule, ChildKind, LanguageExtractor, Section, SkeletonEntry,
+    compact_ws, extract_body_members, find_child, node_text, prefixed, truncate,
 };
 
 pub(crate) struct ScalaExtractor;
@@ -87,35 +87,45 @@ impl ScalaExtractor {
         }) else {
             return Vec::new();
         };
-        let mut members = Vec::new();
-        let mut field_count = 0usize;
-        let mut cursor = body.walk();
-        for child in body.children(&mut cursor) {
-            match child.kind() {
-                "function_definition" | "function_declaration" => {
-                    let sig = self.fn_sig(child, source);
-                    let lr =
-                        line_range(child.start_position().row + 1, child.end_position().row + 1);
-                    members.push(format!("{sig} {lr}"));
-                }
-                "val_definition" | "var_definition" | "val_declaration" | "var_declaration" => {
-                    field_count += 1;
-                    if field_count <= FIELD_TRUNCATE_THRESHOLD {
-                        let text = self.val_text(child, source);
-                        let lr = line_range(
-                            child.start_position().row + 1,
-                            child.end_position().row + 1,
-                        );
-                        members.push(format!("{text} {lr}"));
-                    }
-                }
-                _ => {}
-            }
-        }
-        if field_count > FIELD_TRUNCATE_THRESHOLD {
-            members.push("...".into());
-        }
-        members
+        let rules = [
+            BodyMemberRule {
+                kind: "function_definition",
+                handler: BodyMemberHandler::Method(&|n, s| Some(self.fn_sig(n, s))),
+            },
+            BodyMemberRule {
+                kind: "function_declaration",
+                handler: BodyMemberHandler::Method(&|n, s| Some(self.fn_sig(n, s))),
+            },
+            BodyMemberRule {
+                kind: "val_definition",
+                handler: BodyMemberHandler::FieldTruncated {
+                    format_fn: &|n, s| self.val_text(n, s),
+                    counter: "val",
+                },
+            },
+            BodyMemberRule {
+                kind: "var_definition",
+                handler: BodyMemberHandler::FieldTruncated {
+                    format_fn: &|n, s| self.val_text(n, s),
+                    counter: "val",
+                },
+            },
+            BodyMemberRule {
+                kind: "val_declaration",
+                handler: BodyMemberHandler::FieldTruncated {
+                    format_fn: &|n, s| self.val_text(n, s),
+                    counter: "val",
+                },
+            },
+            BodyMemberRule {
+                kind: "var_declaration",
+                handler: BodyMemberHandler::FieldTruncated {
+                    format_fn: &|n, s| self.val_text(n, s),
+                    counter: "val",
+                },
+            },
+        ];
+        extract_body_members(body, source, &rules)
     }
 
     fn fn_sig(&self, node: Node, source: &[u8]) -> String {

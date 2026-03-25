@@ -105,16 +105,16 @@ impl JavaExtractor {
             &[
                 BodyMemberRule {
                     kind: "method_declaration",
-                    handler: BodyMemberHandler::Method(method_signature_opt),
+                    handler: BodyMemberHandler::Method(&method_signature_opt),
                 },
                 BodyMemberRule {
                     kind: "constructor_declaration",
-                    handler: BodyMemberHandler::Method(method_signature_opt),
+                    handler: BodyMemberHandler::Method(&method_signature_opt),
                 },
                 BodyMemberRule {
                     kind: "field_declaration",
                     handler: BodyMemberHandler::FieldTruncated {
-                        format_fn: field_text,
+                        format_fn: &field_text,
                         counter: "field_declaration",
                     },
                 },
@@ -153,11 +153,11 @@ impl JavaExtractor {
             &[
                 BodyMemberRule {
                     kind: "method_declaration",
-                    handler: BodyMemberHandler::Method(method_signature_opt),
+                    handler: BodyMemberHandler::Method(&method_signature_opt),
                 },
                 BodyMemberRule {
                     kind: "constant_declaration",
-                    handler: BodyMemberHandler::Method(|n, s| Some(field_text(n, s))),
+                    handler: BodyMemberHandler::Method(&|n, s| Some(field_text(n, s))),
                 },
             ],
         )

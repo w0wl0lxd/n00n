@@ -101,7 +101,7 @@ impl RustExtractor {
         }
 
         if total > FIELD_TRUNCATE_THRESHOLD && fields.len() < total {
-            fields.push("...".into());
+            fields.push("[truncated]".into());
         }
 
         fields
