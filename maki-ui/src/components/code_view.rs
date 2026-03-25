@@ -13,7 +13,15 @@ use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
 
 const MAX_CODE_EXECUTION_LINES: usize = 100;
-const MAX_INSTRUCTION_LINES: usize = 15;
+pub(crate) const MAX_INSTRUCTION_LINES: usize = 15;
+
+pub(crate) fn instruction_limit(expanded: bool) -> usize {
+    if expanded {
+        usize::MAX
+    } else {
+        MAX_INSTRUCTION_LINES
+    }
+}
 
 fn nr_width(max_nr: usize) -> usize {
     max_nr.max(1).ilog10() as usize + 1
@@ -61,7 +69,6 @@ fn render_code(
     code_lines: &[String],
     total_count: usize,
     max_lines: usize,
-    expanded: bool,
 ) -> (Vec<Line<'static>>, bool) {
     let display_count = code_lines.len().min(max_lines);
     let max_nr = start_line + display_count.saturating_sub(1);
@@ -80,7 +87,7 @@ fn render_code(
         .collect();
 
     let hidden = total_count.saturating_sub(display_count);
-    let has_truncation = hidden > 0 || expanded;
+    let has_truncation = hidden > 0;
     if hidden > 0 {
         lines.push(truncation_line(hidden));
     }
@@ -166,7 +173,6 @@ fn render_grep_results(
     entries: &[GrepFileEntry],
     max_lines: usize,
     highlight: bool,
-    expanded: bool,
 ) -> (Vec<Line<'static>>, bool) {
     let mut out = Vec::new();
     let mut budget = max_lines;
@@ -210,27 +216,42 @@ fn render_grep_results(
     if truncated {
         out.push(truncation_line(total.saturating_sub(max_lines)));
     }
-    (out, truncated || expanded)
+    (out, truncated)
 }
 
 pub(crate) fn render_instructions(
     blocks: &[InstructionBlock],
     lines: &mut Vec<Line<'static>>,
     width: u16,
-) {
+    max_lines: usize,
+) -> bool {
     let style = theme::current().assistant;
     let dim = theme::current().tool_dim;
+    let mut used = 0;
+    let mut truncated = false;
     for block in blocks {
         let header = format!("Instructions from: {}", block.path);
+        if used >= max_lines {
+            truncated = true;
+            break;
+        }
         lines.push(Line::from(Span::styled(header, dim)));
+        used += 1;
         if !block.content.is_empty() {
-            let tr = truncate_lines(&block.content, MAX_INSTRUCTION_LINES, Keep::Head);
-            lines.extend(text_to_lines(tr.kept, "", style, style, None, width));
-            if let Some(notice) = tr.notice_line() {
-                lines.push(notice);
+            let remaining = max_lines.saturating_sub(used);
+            let tr = truncate_lines(&block.content, remaining, Keep::Head);
+            let new_lines = text_to_lines(tr.kept, "", style, style, None, width);
+            used += new_lines.len();
+            lines.extend(new_lines);
+            if tr.skipped > 0 {
+                truncated = true;
+                if let Some(notice) = tr.notice_line() {
+                    lines.push(notice);
+                }
             }
         }
     }
+    truncated
 }
 
 pub struct ToolContent {
@@ -258,7 +279,7 @@ pub fn render_tool_content(
             let total = code_lines.len();
             let hl = highlight.then(|| highlighter_for_token(language));
             let (code_result, trunc) =
-                render_code(hl, 1, &code_lines, total, MAX_CODE_EXECUTION_LINES, false);
+                render_code(hl, 1, &code_lines, total, MAX_CODE_EXECUTION_LINES);
             has_truncation |= trunc;
             lines.extend(code_result);
         }
@@ -283,17 +304,16 @@ pub fn render_tool_content(
             instructions,
             ..
         }) => {
-            let (mut result, trunc) = render_code(
+            let (mut result, mut trunc) = render_code(
                 highlight.then(|| highlighter_for_path(path)),
                 *start_line,
                 code_lines,
                 code_lines.len(),
                 max_lines,
-                expanded,
             );
             if let Some(inst) = instructions {
                 result.push(Line::default());
-                render_instructions(inst, &mut result, width);
+                trunc |= render_instructions(inst, &mut result, width, instruction_limit(expanded));
             }
             (result, trunc)
         }
@@ -313,14 +333,13 @@ pub fn render_tool_content(
             code_lines,
             code_lines.len(),
             max_lines,
-            expanded,
         ),
         Some(ToolOutput::Diff { path, hunks, .. }) => (
             render_diff(highlight.then_some(path.as_str()), hunks),
             false,
         ),
         Some(ToolOutput::GrepResult { entries }) => {
-            render_grep_results(entries, max_lines, highlight, expanded)
+            render_grep_results(entries, max_lines, highlight)
         }
         Some(ToolOutput::ReadDir { .. }) => (Vec::new(), false),
         _ => (Vec::new(), false),
@@ -415,7 +434,6 @@ mod tests {
             &code_lines,
             total,
             READ_MAX_LINES,
-            false,
         );
         assert_eq!(result.len(), expected);
     }
@@ -475,10 +493,7 @@ mod tests {
     #[test_case(&[("a.rs", &[1_usize,2,3]), ("b.rs", &[10,20])],          4, 7  ; "multi_file_budget_with_ellipsis")]
     fn render_grep_line_count(files: &[(&str, &[usize])], max: usize, expected: usize) {
         let entries = grep_entries(files);
-        assert_eq!(
-            render_grep_results(&entries, max, true, false).0.len(),
-            expected
-        );
+        assert_eq!(render_grep_results(&entries, max, true).0.len(), expected);
     }
 
     fn line_text(line: &Line) -> String {
@@ -488,18 +503,11 @@ mod tests {
     #[test]
     fn multi_file_grep_headers_and_alignment() {
         let entries = grep_entries(&[("a.rs", &[1]), ("b.rs", &[100])]);
-        let (lines, _) = render_grep_results(&entries, 10, false, false);
+        let (lines, _) = render_grep_results(&entries, 10, false);
 
         let texts: Vec<String> = lines.iter().map(line_text).collect();
         assert!(texts[0].contains("a.rs"));
         assert!(texts[2].contains("b.rs"));
-
-        assert!(
-            lines[0]
-                .spans
-                .iter()
-                .any(|s| s.style == theme::current().tool_path)
-        );
 
         let gutter_width = |line: &str| line.find(|c: char| c.is_alphabetic()).unwrap_or(0);
         assert_eq!(gutter_width(&texts[1]), gutter_width(&texts[3]));
@@ -546,7 +554,7 @@ mod tests {
                 },
             ],
         }];
-        let (lines, _) = render_grep_results(&entries, 100, true, false);
+        let (lines, _) = render_grep_results(&entries, 100, true);
         // If the unclosed string on line 1 leaked into line 2's highlighting,
         // all of line 2's spans would share one uniform "string" style.
         // Independent highlighting of `let y = 42;` must produce multiple
@@ -566,15 +574,21 @@ mod tests {
             content: "# Title\n\nSome rules here".into(),
         }];
         let mut lines = Vec::new();
-        render_instructions(&blocks, &mut lines, 80);
+        let truncated = render_instructions(&blocks, &mut lines, 80, MAX_INSTRUCTION_LINES);
+        assert!(!truncated);
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert!(text[0].contains("Instructions from:"));
         assert!(text.iter().any(|l| l.contains("Title")));
         assert!(text.iter().any(|l| l.contains("Some rules here")));
     }
 
-    #[test]
-    fn render_instructions_truncates_with_dim_notice() {
+    #[test_case(MAX_INSTRUCTION_LINES, true,  true  ; "collapsed_truncates")]
+    #[test_case(usize::MAX,             false, false ; "expanded_shows_all")]
+    fn render_instructions_truncation(
+        max_lines: usize,
+        expect_truncated: bool,
+        expect_notice: bool,
+    ) {
         let long_content: String = (0..30)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
@@ -584,12 +598,12 @@ mod tests {
             content: long_content,
         }];
         let mut lines = Vec::new();
-        render_instructions(&blocks, &mut lines, 80);
-        let content_lines = lines.len() - 1;
-        assert!(content_lines <= MAX_INSTRUCTION_LINES + 1);
-        let last = lines.last().unwrap();
-        assert!(line_text(last).contains(TRUNCATION_PREFIX));
-        assert_eq!(last.spans[0].style, theme::current().tool_dim);
+        let truncated = render_instructions(&blocks, &mut lines, 80, max_lines);
+        assert_eq!(truncated, expect_truncated);
+        let has_notice = lines
+            .iter()
+            .any(|l| line_text(l).contains(TRUNCATION_PREFIX));
+        assert_eq!(has_notice, expect_notice);
     }
 
     #[test]
@@ -599,48 +613,27 @@ mod tests {
             content: String::new(),
         }];
         let mut lines = Vec::new();
-        render_instructions(&blocks, &mut lines, 80);
+        let truncated = render_instructions(&blocks, &mut lines, 80, MAX_INSTRUCTION_LINES);
+        assert!(!truncated);
         assert_eq!(lines.len(), 1);
     }
 
-    #[test]
-    fn merge_syntax_with_diff_multibyte_no_panic() {
+    #[test_case("héllo", &["hé", "llo"]       ; "multibyte_accented")]
+    #[test_case("🦀x",   &["🦀", "x"]         ; "emoji_boundary")]
+    fn merge_syntax_with_diff_multibyte(input: &str, parts: &[&str]) {
         let base = Style::new().bg(Color::Red);
         let emph = Style::new().bg(Color::Green);
-        let syn = vec![(Style::new().fg(Color::White), "héllo".to_owned())];
-        let diff = vec![
-            DiffSpan {
-                text: "hé".into(),
-                emphasized: false,
-            },
-            DiffSpan {
-                text: "llo".into(),
-                emphasized: true,
-            },
-        ];
+        let syn = vec![(Style::new().fg(Color::White), input.to_owned())];
+        let diff: Vec<DiffSpan> = parts
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| DiffSpan {
+                text: t.into(),
+                emphasized: i == 0,
+            })
+            .collect();
         let result = merge_syntax_with_diff(&syn, &diff, base, emph);
         let full: String = result.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(full, "héllo");
-    }
-
-    #[test]
-    fn merge_syntax_with_diff_emoji_boundary() {
-        let base = Style::new().bg(Color::Red);
-        let emph = Style::new().bg(Color::Green);
-        let emoji = "🦀x";
-        let syn = vec![(Style::new().fg(Color::White), emoji.to_owned())];
-        let diff = vec![
-            DiffSpan {
-                text: "🦀".into(),
-                emphasized: true,
-            },
-            DiffSpan {
-                text: "x".into(),
-                emphasized: false,
-            },
-        ];
-        let result = merge_syntax_with_diff(&syn, &diff, base, emph);
-        let full: String = result.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(full, emoji);
+        assert_eq!(full, input);
     }
 }

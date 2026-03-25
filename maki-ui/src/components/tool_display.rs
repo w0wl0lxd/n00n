@@ -634,8 +634,6 @@ impl ToolLineBuilder {
             let mut line = Line::from(Span::styled(text, theme::current().tool_dim));
             line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
             self.lines.push(line);
-        } else if self.expanded {
-            self.has_truncation = true;
         }
     }
 
@@ -685,7 +683,13 @@ impl ToolLineBuilder {
     fn push_instructions(&mut self, blocks: &[InstructionBlock]) {
         let content_width = self.width.saturating_sub(TOOL_BODY_INDENT.len() as u16);
         let start = self.lines.len();
-        code_view::render_instructions(blocks, &mut self.lines, content_width);
+        let truncated = code_view::render_instructions(
+            blocks,
+            &mut self.lines,
+            content_width,
+            code_view::instruction_limit(self.expanded),
+        );
+        self.has_truncation |= truncated;
         for line in &mut self.lines[start..] {
             line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
         }
@@ -1479,13 +1483,13 @@ mod tests {
         let collapsed_text = lines_text(&collapsed);
         let expanded_text = lines_text(&expanded);
         assert!(collapsed.has_truncation);
-        assert!(expanded.has_truncation);
+        assert!(!expanded.has_truncation);
         assert!(!expanded_text.contains(BASH_WAITING_LABEL));
         assert!(expanded_text.contains("line 0"));
         assert!(!collapsed_text.contains("line 0"));
     }
 
-    #[test_case(200, true,  true,  false ; "expanded_shows_all")]
+    #[test_case(200, true,  false, false ; "expanded_shows_all")]
     #[test_case(200, false, true,  true  ; "collapsed_truncates")]
     #[test_case(3,   false, false, false ; "short_no_truncation")]
     fn bash_output_truncation(
@@ -1509,33 +1513,11 @@ mod tests {
     }
 
     fn read_output_msg(line_count: usize) -> DisplayMessage {
-        let lines: Vec<String> = (0..line_count).map(|i| format!("line {i}")).collect();
-        DisplayMessage {
-            role: DisplayRole::Tool(Box::new(ToolRole {
-                id: "t1".into(),
-                status: ToolStatus::Success,
-                name: READ_TOOL_NAME,
-            })),
-            text: "read /src/main.rs".into(),
-            tool_input: None,
-            tool_output: Some(Arc::new(ToolOutput::ReadCode {
-                path: "main.rs".into(),
-                start_line: 1,
-                lines,
-                total_lines: line_count,
-                instructions: None,
-            })),
-            live_output: None,
-            annotation: None,
-            plan_path: None,
-            truncated_lines: 0,
-            timestamp: None,
-            turn_usage: None,
-        }
+        read_output_msg_with(line_count, "line", None)
     }
 
     #[test_case(20, false, true,  true  ; "read_collapsed_truncates")]
-    #[test_case(20, true,  true,  false ; "read_expanded_shows_all")]
+    #[test_case(20, true,  false, false ; "read_expanded_shows_all")]
     #[test_case(3,  false, false, false ; "read_short_no_truncation")]
     fn read_output_truncation(
         line_count: usize,
@@ -1555,5 +1537,72 @@ mod tests {
         assert_eq!(tl.has_truncation, expect_truncation);
         let text = lines_text(&tl);
         assert_eq!(text.contains("click to expand"), expect_expand_notice);
+    }
+
+    fn read_msg_with_instructions(code_lines: usize, instruction_lines: usize) -> DisplayMessage {
+        let inst_content: String = (0..instruction_lines)
+            .map(|i| format!("inst {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        read_output_msg_with(
+            code_lines,
+            "code",
+            Some(vec![InstructionBlock {
+                path: "AGENTS.md".into(),
+                content: inst_content,
+            }]),
+        )
+    }
+
+    fn read_output_msg_with(
+        line_count: usize,
+        prefix: &str,
+        instructions: Option<Vec<InstructionBlock>>,
+    ) -> DisplayMessage {
+        let lines: Vec<String> = (0..line_count).map(|i| format!("{prefix} {i}")).collect();
+        DisplayMessage {
+            role: DisplayRole::Tool(Box::new(ToolRole {
+                id: "t1".into(),
+                status: ToolStatus::Success,
+                name: READ_TOOL_NAME,
+            })),
+            text: "read /src/main.rs".into(),
+            tool_input: None,
+            tool_output: Some(Arc::new(ToolOutput::ReadCode {
+                path: "main.rs".into(),
+                start_line: 1,
+                lines,
+                total_lines: line_count,
+                instructions,
+            })),
+            live_output: None,
+            annotation: None,
+            plan_path: None,
+            truncated_lines: 0,
+            timestamp: None,
+            turn_usage: None,
+        }
+    }
+
+    #[test_case(false, true,  false ; "collapsed_truncates_instructions")]
+    #[test_case(true,  false, true  ; "expanded_shows_all_instructions")]
+    fn read_code_with_instructions(
+        expanded: bool,
+        expect_truncation: bool,
+        expect_all_visible: bool,
+    ) {
+        let msg = read_msg_with_instructions(3, 30);
+        let tl = build_tool_lines(
+            &msg,
+            ToolStatus::Success,
+            Instant::now(),
+            80,
+            expanded,
+            &TOL,
+        );
+        assert_eq!(tl.has_truncation, expect_truncation);
+        let text = lines_text(&tl);
+        assert!(text.contains("Instructions from:"));
+        assert_eq!(text.contains("inst 29"), expect_all_visible);
     }
 }
