@@ -15,6 +15,7 @@ pub enum MemoryModalAction {
     Close,
     OpenFile(String),
     DeleteFile(String),
+    ConfirmDelete,
 }
 
 pub struct MemoryEntry {
@@ -117,7 +118,7 @@ impl MemoryModal {
         }
 
         self.confirming = Some((selected.name.clone(), generation));
-        MemoryModalAction::Consumed
+        MemoryModalAction::ConfirmDelete
     }
 
     #[cfg(test)]
@@ -189,7 +190,7 @@ mod tests {
         let mut modal = MemoryModal::new();
         modal.open(vec![]);
         assert!(matches!(
-            modal.handle_key(key_ev(KeyCode::Enter)),
+            modal.handle_key(ctrl_d()),
             MemoryModalAction::Consumed
         ));
         assert!(modal.is_open());
@@ -212,7 +213,7 @@ mod tests {
         modal.open(sample_entries());
         assert!(matches!(
             modal.handle_key(ctrl_d()),
-            MemoryModalAction::Consumed
+            MemoryModalAction::ConfirmDelete
         ));
         assert!(modal.is_confirming());
     }
@@ -238,7 +239,7 @@ mod tests {
         assert!(!modal.is_confirming());
         assert!(matches!(
             modal.handle_key(ctrl_d()),
-            MemoryModalAction::Consumed
+            MemoryModalAction::ConfirmDelete
         ));
     }
 

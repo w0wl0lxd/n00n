@@ -449,6 +449,12 @@ impl App {
                 MemoryModalAction::DeleteFile(filename) => {
                     return self.delete_memory_file(&filename);
                 }
+                MemoryModalAction::ConfirmDelete => {
+                    self.status_bar.flash(format!(
+                        "Press {} again to confirm delete",
+                        key::DELETE.label
+                    ));
+                }
                 MemoryModalAction::Close | MemoryModalAction::Consumed => {}
             }
             return vec![];
