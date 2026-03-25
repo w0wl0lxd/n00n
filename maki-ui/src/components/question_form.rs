@@ -90,7 +90,7 @@ impl QuestionForm {
         self.questions
             .iter()
             .zip(self.answers.iter())
-            .map(|(q, a)| format!("{}: {}", q.question, format_answer(a)))
+            .map(|(q, a)| format!("Q: {}\n  → **{}**", q.question, format_answer(a)))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -887,11 +887,14 @@ mod tests {
         form.open(single_q_with_options());
         assert_eq!(
             form.format_answers_display(),
-            format!("Pick a DB: {NO_ANSWER}")
+            format!("Q: Pick a DB\n  → **{NO_ANSWER}**")
         );
 
         form.handle_key(key(KeyCode::Enter));
-        assert_eq!(form.format_answers_display(), "Pick a DB: PostgreSQL");
+        assert_eq!(
+            form.format_answers_display(),
+            "Q: Pick a DB\n  → **PostgreSQL**"
+        );
 
         let mut form = QuestionForm::new();
         form.open(multi_q());
@@ -900,7 +903,7 @@ mod tests {
         form.handle_key(key(KeyCode::Enter));
         assert_eq!(
             form.format_answers_display(),
-            "Language?: Rust\nFramework?: Actix"
+            "Q: Language?\n  → **Rust**\nQ: Framework?\n  → **Actix**"
         );
     }
 }
