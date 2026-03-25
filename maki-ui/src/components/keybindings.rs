@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use strum::EnumIter;
 
 macro_rules! mod_key {
     ($suffix:expr) => {
@@ -146,17 +147,9 @@ pub mod key {
     pub const DELETE: Bind = ctrl_bind!('d');
     pub const KILL_LINE: Bind = ctrl_bind!('k');
     pub const LINE_START: Bind = ctrl_bind!('a');
-
-    pub const NEXT_PREV_CHAT_LABEL: &str = mod_key!("N/P");
-    pub const SCROLL_HALF_LABEL: &str = mod_key!("U/D");
-    pub const SCROLL_LINE_LABEL: &str = mod_key!("Y/E");
-    pub const WORD_ARROWS_LABEL: &str = mod_key!("←/→ / ⌥←/→");
-    pub const WORD_DEL_LABEL: &str = mod_key!("Del / ⌥Del");
-    pub const WORD_BACKSPACE_LABEL: &str = mod_key!("W / ⌥⌫");
-    pub const LINE_HOME_SUPER_LABEL: &str = "⌘←/→";
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter)]
 pub enum KeybindContext {
     General,
     Editing,
@@ -207,200 +200,277 @@ impl KeybindContext {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    All,
+    MacOnly,
+}
+
+impl Platform {
+    pub const fn is_visible(self) -> bool {
+        match self {
+            Self::All => true,
+            Self::MacOnly => cfg!(target_os = "macos"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum KeyLabel {
+    Single(&'static str),
+    Alt(&'static str, &'static str),
+    /// Alt on Mac, Single (first) on other platforms
+    MacAlt(&'static str, &'static str),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ResolvedLabel {
+    Single(&'static str),
+    Alt(&'static str, &'static str),
+}
+
+impl KeyLabel {
+    pub fn resolve(self) -> ResolvedLabel {
+        match self {
+            Self::Single(s) => ResolvedLabel::Single(s),
+            Self::Alt(a, b) => ResolvedLabel::Alt(a, b),
+            Self::MacAlt(a, b) => {
+                if cfg!(target_os = "macos") {
+                    ResolvedLabel::Alt(a, b)
+                } else {
+                    ResolvedLabel::Single(a)
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn flat_str(&self) -> String {
+        match self.resolve() {
+            ResolvedLabel::Single(s) => s.to_string(),
+            ResolvedLabel::Alt(a, b) => format!("{a}/{b}"),
+        }
+    }
+}
+
 pub struct Keybind {
-    pub key: &'static str,
+    pub label: KeyLabel,
     pub description: &'static str,
     pub context: KeybindContext,
+    pub platform: Platform,
 }
 
 pub const KEYBINDS: &[Keybind] = &[
     Keybind {
-        key: key::QUIT.label,
+        label: KeyLabel::Single(key::QUIT.label),
         description: "Quit / clear input",
         context: KeybindContext::General,
+        platform: Platform::All,
     },
     Keybind {
-        key: key::HELP.label,
+        label: KeyLabel::Single(key::HELP.label),
         description: "Show keybindings",
         context: KeybindContext::General,
+        platform: Platform::All,
     },
     Keybind {
-        key: key::NEXT_PREV_CHAT_LABEL,
+        label: KeyLabel::Alt(key::NEXT_CHAT.label, key::PREV_CHAT.label),
         description: "Next / previous task chat",
         context: KeybindContext::General,
+        platform: Platform::All,
     },
     Keybind {
-        key: key::SEARCH.label,
+        label: KeyLabel::Single(key::SEARCH.label),
         description: "Search messages",
         context: KeybindContext::General,
+        platform: Platform::All,
     },
     Keybind {
-        key: key::OPEN_EDITOR.label,
+        label: KeyLabel::Single(key::OPEN_EDITOR.label),
         description: "Open plan in editor",
         context: KeybindContext::General,
+        platform: Platform::All,
     },
     Keybind {
-        key: key::TODO_PANEL.label,
+        label: KeyLabel::Single(key::TODO_PANEL.label),
         description: "Toggle todo panel",
         context: KeybindContext::General,
+        platform: Platform::All,
     },
     Keybind {
-        key: "Enter",
+        label: KeyLabel::Single("Enter"),
         description: "Submit prompt",
         context: KeybindContext::Editing,
+        platform: Platform::All,
     },
     Keybind {
-        key: "\\+Enter / ⇧↵",
+        label: KeyLabel::MacAlt("\\+Enter", "⇧↵"),
         description: "Newline",
         context: KeybindContext::Editing,
+        platform: Platform::All,
     },
     Keybind {
-        key: "Tab",
+        label: KeyLabel::Single("Tab"),
         description: "Toggle mode",
         context: KeybindContext::Editing,
+        platform: Platform::All,
     },
     Keybind {
-        key: "/command",
+        label: KeyLabel::Single("/command"),
         description: "Open command palette",
         context: KeybindContext::Editing,
+        platform: Platform::All,
     },
     Keybind {
-        key: key::WORD_BACKSPACE_LABEL,
+        label: KeyLabel::MacAlt(key::DELETE_WORD.label, "⌥⌫"),
         description: "Delete word backward",
         context: KeybindContext::Editing,
+        platform: Platform::All,
     },
     Keybind {
-        key: key::WORD_ARROWS_LABEL,
+        label: KeyLabel::Alt(mod_key!("←"), mod_key!("→")),
         description: "Move word left / right",
         context: KeybindContext::Editing,
+        platform: Platform::MacOnly,
     },
     Keybind {
-        key: key::WORD_DEL_LABEL,
+        label: KeyLabel::Alt(mod_key!("Del"), "⌥Del"),
         description: "Delete word forward",
         context: KeybindContext::Editing,
+        platform: Platform::MacOnly,
     },
     Keybind {
-        key: key::KILL_LINE.label,
+        label: KeyLabel::Single(key::KILL_LINE.label),
         description: "Delete to end of line",
         context: KeybindContext::Editing,
+        platform: Platform::MacOnly,
     },
     Keybind {
-        key: key::LINE_START.label,
+        label: KeyLabel::Single(key::LINE_START.label),
         description: "Jump to start of line",
         context: KeybindContext::Editing,
+        platform: Platform::MacOnly,
     },
     Keybind {
-        key: key::LINE_HOME_SUPER_LABEL,
+        label: KeyLabel::Alt("⌘←", "⌘→"),
         description: "Jump to start/end of line",
         context: KeybindContext::Editing,
+        platform: Platform::MacOnly,
     },
     Keybind {
-        key: key::SCROLL_HALF_LABEL,
+        label: KeyLabel::Alt(key::SCROLL_HALF_UP.label, key::SCROLL_HALF_DOWN.label),
         description: "Scroll half page up / down",
         context: KeybindContext::Editing,
+        platform: Platform::All,
     },
     Keybind {
-        key: key::SCROLL_LINE_LABEL,
+        label: KeyLabel::Alt(key::SCROLL_LINE_UP.label, key::SCROLL_LINE_DOWN.label),
         description: "Scroll one line up / down",
         context: KeybindContext::Editing,
+        platform: Platform::All,
     },
     Keybind {
-        key: key::SCROLL_TOP.label,
+        label: KeyLabel::Single(key::SCROLL_TOP.label),
         description: "Scroll to top",
         context: KeybindContext::Editing,
+        platform: Platform::All,
     },
     Keybind {
-        key: key::SCROLL_BOTTOM.label,
+        label: KeyLabel::Single(key::SCROLL_BOTTOM.label),
         description: "Scroll to bottom",
         context: KeybindContext::Editing,
+        platform: Platform::All,
     },
     Keybind {
-        key: key::POP_QUEUE.label,
+        label: KeyLabel::Single(key::POP_QUEUE.label),
         description: "Pop queue",
         context: KeybindContext::Editing,
+        platform: Platform::All,
     },
     Keybind {
-        key: "Esc Esc",
+        label: KeyLabel::Single("Esc Esc"),
         description: "Rewind",
         context: KeybindContext::Editing,
+        platform: Platform::All,
     },
     Keybind {
-        key: "↑/↓",
+        label: KeyLabel::Alt("↑", "↓"),
         description: "Navigate input history",
         context: KeybindContext::Streaming,
+        platform: Platform::All,
     },
     Keybind {
-        key: "Esc Esc",
+        label: KeyLabel::Single("Esc Esc"),
         description: "Cancel agent",
         context: KeybindContext::Streaming,
+        platform: Platform::All,
     },
     Keybind {
-        key: "↑/↓",
+        label: KeyLabel::Alt("↑", "↓"),
         description: "Navigate options",
         context: KeybindContext::FormInput,
+        platform: Platform::All,
     },
     Keybind {
-        key: "Enter",
+        label: KeyLabel::Single("Enter"),
         description: "Select option",
         context: KeybindContext::FormInput,
+        platform: Platform::All,
     },
     Keybind {
-        key: "Esc",
+        label: KeyLabel::Single("Esc"),
         description: "Close",
         context: KeybindContext::FormInput,
+        platform: Platform::All,
     },
     Keybind {
-        key: "↑/↓",
+        label: KeyLabel::Alt("↑", "↓"),
         description: "Navigate",
         context: KeybindContext::Picker,
+        platform: Platform::All,
     },
     Keybind {
-        key: "Enter",
+        label: KeyLabel::Single("Enter"),
         description: "Select",
         context: KeybindContext::Picker,
+        platform: Platform::All,
     },
     Keybind {
-        key: "Esc",
+        label: KeyLabel::Single("Esc"),
         description: "Close",
         context: KeybindContext::Picker,
+        platform: Platform::All,
     },
     Keybind {
-        key: "Type",
+        label: KeyLabel::Single("Type"),
         description: "Filter",
         context: KeybindContext::Picker,
+        platform: Platform::All,
     },
     Keybind {
-        key: key::DELETE.label,
+        label: KeyLabel::Single(key::DELETE.label),
         description: "Delete session",
         context: KeybindContext::SessionPicker,
+        platform: Platform::All,
     },
     Keybind {
-        key: "Enter",
+        label: KeyLabel::Single("Enter"),
         description: "Remove item",
         context: KeybindContext::QueueFocus,
+        platform: Platform::All,
     },
     Keybind {
-        key: "Tab",
+        label: KeyLabel::Single("Tab"),
         description: "Toggle mode",
         context: KeybindContext::CommandPalette,
+        platform: Platform::All,
     },
 ];
 
-pub const ALL_CONTEXTS: &[KeybindContext] = &[
-    KeybindContext::General,
-    KeybindContext::Editing,
-    KeybindContext::Streaming,
-    KeybindContext::Picker,
-    KeybindContext::TaskPicker,
-    KeybindContext::SessionPicker,
-    KeybindContext::RewindPicker,
-    KeybindContext::ThemePicker,
-    KeybindContext::ModelPicker,
-    KeybindContext::QueueFocus,
-    KeybindContext::CommandPalette,
-    KeybindContext::Search,
-    KeybindContext::FormInput,
-];
+pub fn all_contexts() -> impl Iterator<Item = KeybindContext> {
+    use strum::IntoEnumIterator;
+    KeybindContext::iter()
+}
 
 #[cfg(test)]
 mod tests {
@@ -408,7 +478,7 @@ mod tests {
 
     #[test]
     fn every_context_has_at_least_one_keybind() {
-        for &ctx in ALL_CONTEXTS {
+        for ctx in all_contexts() {
             let has_own = KEYBINDS.iter().any(|kb| kb.context == ctx);
             let has_parent = ctx
                 .parent()
@@ -427,9 +497,9 @@ mod tests {
             for (j, b) in KEYBINDS.iter().enumerate() {
                 if i != j && a.context == b.context {
                     assert!(
-                        a.key != b.key || a.description != b.description,
+                        a.label.flat_str() != b.label.flat_str() || a.description != b.description,
                         "duplicate keybind: {} - {} in {:?}",
-                        a.key,
+                        a.label.flat_str(),
                         a.description,
                         a.context,
                     );

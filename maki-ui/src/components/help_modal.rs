@@ -1,6 +1,6 @@
 use crate::components::ModalScroll;
 use crate::components::Overlay;
-use crate::components::keybindings::{ALL_CONTEXTS, KEYBINDS, key};
+use crate::components::keybindings::{KEYBINDS, ResolvedLabel, all_contexts, key};
 use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
 use crate::theme;
@@ -10,13 +10,42 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 
 const TITLE: &str = " Keybindings ";
-const KEY_COL_WIDTH: usize = 16;
+const KEY_COL_WIDTH: usize = 20;
 
 pub struct HelpModal {
     open: bool,
     scroll: ModalScroll,
+}
+
+const ALT_SEP: &str = " / ";
+
+fn key_spans(label: ResolvedLabel, pad: usize, prefix: &str) -> Vec<Span<'static>> {
+    let theme = theme::current();
+    match label {
+        ResolvedLabel::Single(s) => {
+            let w = UnicodeWidthStr::width(s);
+            let trailing = pad.saturating_sub(w);
+            vec![Span::styled(
+                format!("{prefix}{s}{:trailing$}", ""),
+                theme.keybind_key,
+            )]
+        }
+        ResolvedLabel::Alt(a, b) => {
+            let aw = UnicodeWidthStr::width(a);
+            let bw = UnicodeWidthStr::width(b);
+            let sep_w = UnicodeWidthStr::width(ALT_SEP);
+            let content_w = aw + sep_w + bw;
+            let trailing = pad.saturating_sub(content_w);
+            vec![
+                Span::styled(format!("{prefix}{a}"), theme.keybind_key),
+                Span::styled(ALT_SEP, theme.keybind_desc),
+                Span::styled(format!("{b}{:trailing$}", ""), theme.keybind_key),
+            ]
+        }
+    }
 }
 
 impl HelpModal {
@@ -66,7 +95,7 @@ impl HelpModal {
         let theme = theme::current();
 
         let mut first = true;
-        for &ctx in ALL_CONTEXTS {
+        for ctx in all_contexts() {
             if ctx.parent().is_some() {
                 continue;
             }
@@ -80,19 +109,23 @@ impl HelpModal {
                 theme.keybind_section,
             )));
 
-            for kb in KEYBINDS.iter().filter(|kb| kb.context == ctx) {
-                lines.push(Line::from(vec![
-                    Span::styled(format!("  {:KEY_COL_WIDTH$}", kb.key), theme.keybind_key),
-                    Span::styled(kb.description, theme.keybind_desc),
-                ]));
+            for kb in KEYBINDS
+                .iter()
+                .filter(|kb| kb.context == ctx && kb.platform.is_visible())
+            {
+                let mut spans = key_spans(kb.label.resolve(), KEY_COL_WIDTH, "  ");
+                spans.push(Span::styled(kb.description, theme.keybind_desc));
+                lines.push(Line::from(spans));
             }
 
-            for &child in ALL_CONTEXTS {
+            for child in all_contexts() {
                 if child.parent() != Some(ctx) {
                     continue;
                 }
-                let child_binds: Vec<_> =
-                    KEYBINDS.iter().filter(|kb| kb.context == child).collect();
+                let child_binds: Vec<_> = KEYBINDS
+                    .iter()
+                    .filter(|kb| kb.context == child && kb.platform.is_visible())
+                    .collect();
                 if child_binds.is_empty() {
                     continue;
                 }
@@ -102,13 +135,9 @@ impl HelpModal {
                     theme.keybind_section,
                 )));
                 for kb in child_binds {
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("    {:width$}", kb.key, width = KEY_COL_WIDTH - 2),
-                            theme.keybind_key,
-                        ),
-                        Span::styled(kb.description, theme.keybind_desc),
-                    ]));
+                    let mut spans = key_spans(kb.label.resolve(), KEY_COL_WIDTH - 2, "    ");
+                    spans.push(Span::styled(kb.description, theme.keybind_desc));
+                    lines.push(Line::from(spans));
                 }
             }
         }
