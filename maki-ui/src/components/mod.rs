@@ -93,8 +93,17 @@ impl ModalScroll {
         }
     }
 
+    pub fn new_top() -> Self {
+        Self {
+            auto_scroll: false,
+            ..Self::new()
+        }
+    }
+
     pub fn reset(&mut self) {
+        let auto_scroll = self.auto_scroll;
         *self = Self::new();
+        self.auto_scroll = auto_scroll;
     }
 
     pub fn offset(&self) -> u16 {

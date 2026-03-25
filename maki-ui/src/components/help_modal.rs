@@ -23,7 +23,7 @@ impl HelpModal {
     pub fn new() -> Self {
         Self {
             open: false,
-            scroll: ModalScroll::new(),
+            scroll: ModalScroll::new_top(),
         }
     }
 
