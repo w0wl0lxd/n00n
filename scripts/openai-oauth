@@ -2,7 +2,7 @@
 """
 OpenAI OAuth dynamic provider for maki (device code flow).
 
-Install: cp scripts/providers/openai-oauth ~/.maki/providers/openai-oauth && chmod +x ~/.maki/providers/openai-oauth
+Install: cp scripts/openai-oauth ~/.maki/providers/openai-oauth && chmod +x ~/.maki/providers/openai-oauth
 Usage:   maki auth login openai-oauth
          maki -m openai-oauth/gpt-4.1
 
