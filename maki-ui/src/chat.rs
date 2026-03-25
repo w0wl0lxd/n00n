@@ -236,9 +236,9 @@ impl Chat {
         self.messages_panel.load_messages(msgs);
     }
 
-    pub fn push_user_message(&mut self, text: &str) {
+    pub fn push_user_message(&mut self, text: impl Into<String>) {
         self.messages_panel
-            .push(DisplayMessage::new(DisplayRole::User, text.to_string()));
+            .push(DisplayMessage::new(DisplayRole::User, text.into()));
     }
 
     pub fn shell_tool_start(&mut self, event: ToolStartEvent) {

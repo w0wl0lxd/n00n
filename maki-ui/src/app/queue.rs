@@ -228,7 +228,7 @@ impl App {
     fn display_queued_msg(&mut self, msg: &QueuedMessage) {
         self.main_chat().flush();
         self.main_chat()
-            .push_user_message(&format_with_images(&msg.text, msg.images.len()));
+            .push_user_message(format_with_images(&msg.text, msg.images.len()));
         self.main_chat().enable_auto_scroll();
     }
 }

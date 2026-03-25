@@ -409,7 +409,7 @@ impl App {
             let answer = match action {
                 QuestionFormAction::Submit(a) => {
                     let display = self.question_form.format_answers_display();
-                    self.main_chat().push_user_message(&display);
+                    self.main_chat().push_user_message(display);
                     a
                 }
                 QuestionFormAction::Dismiss => String::new(),
@@ -706,7 +706,7 @@ impl App {
             let sigil = if prefix.visible { "!" } else { "!!" };
             let display = format!("{sigil} {}", prefix.command);
             self.main_chat().flush();
-            self.main_chat().push_user_message(&display);
+            self.main_chat().push_user_message(display);
             self.main_chat().enable_auto_scroll();
             return vec![Action::ShellCommand {
                 id,
