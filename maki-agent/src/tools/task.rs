@@ -106,6 +106,7 @@ impl Task {
                         | AgentEvent::Error { .. }
                         | AgentEvent::ToolOutput { .. }
                         | AgentEvent::ToolPending { .. }
+                        | AgentEvent::SubagentHistory { .. }
                 ) {
                     continue;
                 }
@@ -149,9 +150,9 @@ impl Task {
             .result
             .map_err(|e| format!("sub-agent error: {e}"))?;
 
-        let text = outcome
-            .history
-            .as_slice()
+        let messages = outcome.history.into_vec();
+
+        let text = messages
             .iter()
             .rev()
             .filter(|m| matches!(m.role, Role::Assistant))
@@ -160,9 +161,17 @@ impl Task {
                 ContentBlock::Text { text } => Some(text.as_str()),
                 _ => None,
             })
-            .unwrap_or("(no response)");
+            .unwrap_or("(no response)")
+            .to_string();
 
-        Ok(ToolOutput::Plain(text.to_string()))
+        if let Some(tool_use_id) = ctx.tool_use_id.clone() {
+            let _ = ctx.event_tx.send(AgentEvent::SubagentHistory {
+                tool_use_id,
+                messages,
+            });
+        }
+
+        Ok(ToolOutput::Plain(text))
     }
 
     pub fn start_summary(&self) -> String {

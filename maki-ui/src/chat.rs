@@ -129,6 +129,7 @@ impl Chat {
             AgentEvent::AuthRequired => {
                 return ChatEventResult::AuthRequired;
             }
+            AgentEvent::SubagentHistory { .. } => {}
         }
         ChatEventResult::Continue
     }

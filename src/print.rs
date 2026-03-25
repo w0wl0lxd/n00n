@@ -283,6 +283,7 @@ pub fn run(
             | AgentEvent::AuthRequired
             | AgentEvent::PermissionRequest { .. }
             | AgentEvent::QuestionPrompt { .. }
+            | AgentEvent::SubagentHistory { .. }
             | AgentEvent::Retry { .. } => {
                 if is_stream_json {
                     println!("{}", serde_json::to_string(&envelope)?);

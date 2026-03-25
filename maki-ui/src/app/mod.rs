@@ -756,6 +756,18 @@ impl App {
             return vec![];
         }
 
+        if let AgentEvent::SubagentHistory {
+            tool_use_id,
+            messages,
+        } = envelope.event
+        {
+            self.state
+                .session
+                .subagent_messages
+                .insert(tool_use_id, messages);
+            return vec![];
+        }
+
         let subagent_id = envelope
             .subagent
             .as_ref()

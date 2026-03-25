@@ -1,4 +1,5 @@
-use crate::chat::{Chat, history_to_display};
+use crate::chat::{Chat, DONE_TEXT, history_to_display};
+use crate::components::DisplayRole;
 use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
 use maki_providers::{Model, TokenUsage};
@@ -113,6 +114,15 @@ impl App {
             self.chat_index.insert(sa.tool_use_id.clone(), idx);
             let mut chat = Chat::new(sa.name, self.ui_config);
             chat.model_id = sa.model;
+            if let Some(messages) = self.state.session.subagent_messages.get(&sa.tool_use_id) {
+                let display = history_to_display(
+                    messages,
+                    &self.state.session.tool_outputs,
+                    &self.ui_config.tool_output_lines,
+                );
+                chat.load_messages(display);
+                chat.mark_finished(DisplayRole::Done, DONE_TEXT);
+            }
             self.chats.push(chat);
         }
     }
@@ -162,6 +172,7 @@ impl App {
         self.state.session.messages.truncate(entry.turn_index);
         for id in &stale_ids {
             self.state.session.tool_outputs.remove(id);
+            self.state.session.subagent_messages.remove(id);
         }
 
         self.reset_ui_chrome();

@@ -34,6 +34,10 @@ impl History {
     pub fn truncate(&mut self, len: usize) {
         self.messages.truncate(len);
     }
+
+    pub fn into_vec(self) -> Vec<Message> {
+        self.messages
+    }
 }
 
 pub(crate) fn sanitize_cancelled_history(history: &mut History, rollback_len: usize) {

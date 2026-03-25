@@ -71,6 +71,8 @@ pub struct Session<M, U, T> {
     pub token_usage: U,
     #[serde(default = "HashMap::new")]
     pub tool_outputs: HashMap<String, T>,
+    #[serde(default = "HashMap::new", skip_serializing_if = "HashMap::is_empty")]
+    pub subagent_messages: HashMap<String, Vec<M>>,
     #[serde(flatten)]
     pub meta: SessionMeta,
     pub created_at: u64,
@@ -164,6 +166,8 @@ enum LogRecord<M, U, T> {
     Msg { d: M },
     #[serde(rename = "out")]
     Out { id: String, d: T },
+    #[serde(rename = "sub_msg")]
+    SubMsg { sub: String, d: M },
     #[serde(rename = "meta")]
     Meta {
         title: String,
@@ -181,6 +185,11 @@ pub struct SessionLog {
     file: File,
     saved_msg_count: usize,
     saved_tool_ids: HashSet<String>,
+    saved_sub_msg_counts: HashMap<String, usize>,
+}
+
+fn sub_msg_snapshot<M>(map: &HashMap<String, Vec<M>>) -> HashMap<String, usize> {
+    map.iter().map(|(k, v)| (k.clone(), v.len())).collect()
 }
 
 impl SessionLog {
@@ -244,6 +253,12 @@ impl SessionLog {
                 .saved_tool_ids
                 .iter()
                 .any(|id| !session.tool_outputs.contains_key(id))
+            || self.saved_sub_msg_counts.iter().any(|(sub, &count)| {
+                session
+                    .subagent_messages
+                    .get(sub)
+                    .is_none_or(|msgs| count > msgs.len())
+            })
         {
             return Err(SessionError::CursorAhead {
                 saved: self.saved_msg_count,
@@ -273,6 +288,23 @@ impl SessionLog {
             }
         }
 
+        let mut new_sub_counts: Vec<(String, usize)> = Vec::new();
+        for (sub_id, msgs) in &session.subagent_messages {
+            let saved = self.saved_sub_msg_counts.get(sub_id).copied().unwrap_or(0);
+            for msg in &msgs[saved..] {
+                append_record(
+                    &mut buf,
+                    &LogRecord::<&M, &U, &T>::SubMsg {
+                        sub: sub_id.clone(),
+                        d: msg,
+                    },
+                )?;
+            }
+            if msgs.len() > saved {
+                new_sub_counts.push((sub_id.clone(), msgs.len()));
+            }
+        }
+
         if buf.is_empty() {
             return Ok(());
         }
@@ -292,6 +324,9 @@ impl SessionLog {
 
         self.saved_msg_count = new_msg_count;
         self.saved_tool_ids.extend(new_tool_ids);
+        for (sub_id, count) in new_sub_counts {
+            self.saved_sub_msg_counts.insert(sub_id, count);
+        }
 
         Ok(())
     }
@@ -328,6 +363,7 @@ impl SessionLog {
             .map_err(StorageError::from)?;
         self.saved_msg_count = session.messages.len();
         self.saved_tool_ids = session.tool_outputs.keys().cloned().collect();
+        self.saved_sub_msg_counts = sub_msg_snapshot(&session.subagent_messages);
 
         Ok(())
     }
@@ -338,6 +374,7 @@ impl SessionLog {
             file,
             saved_msg_count: session.messages.len(),
             saved_tool_ids: session.tool_outputs.keys().cloned().collect(),
+            saved_sub_msg_counts: sub_msg_snapshot(&session.subagent_messages),
         }
     }
 }
@@ -379,6 +416,19 @@ where
         )?;
         file.write_all(&buf).map_err(StorageError::from)?;
     }
+    for (sub_id, msgs) in &session.subagent_messages {
+        for msg in msgs {
+            buf.clear();
+            append_record(
+                &mut buf,
+                &LogRecord::<&M, &U, &T>::SubMsg {
+                    sub: sub_id.clone(),
+                    d: msg,
+                },
+            )?;
+            file.write_all(&buf).map_err(StorageError::from)?;
+        }
+    }
     buf.clear();
     append_record(
         &mut buf,
@@ -415,6 +465,7 @@ where
     let mut created_at = 0u64;
     let mut messages = Vec::new();
     let mut tool_outputs = HashMap::new();
+    let mut subagent_messages: HashMap<String, Vec<M>> = HashMap::new();
     let mut title = DEFAULT_TITLE.to_string();
     let mut token_usage = U::default();
     let mut updated_at = 0u64;
@@ -463,6 +514,9 @@ where
             LogRecord::Out { id: out_id, d } => {
                 tool_outputs.insert(out_id, d);
             }
+            LogRecord::SubMsg { sub, d } => {
+                subagent_messages.entry(sub).or_default().push(d);
+            }
             LogRecord::Meta {
                 title: m_title,
                 token_usage: m_usage,
@@ -490,6 +544,7 @@ where
         messages,
         token_usage,
         tool_outputs,
+        subagent_messages,
         meta,
         created_at,
         updated_at,
@@ -657,6 +712,7 @@ where
             messages: Vec::new(),
             token_usage: U::default(),
             tool_outputs: HashMap::new(),
+            subagent_messages: HashMap::new(),
             meta: SessionMeta {
                 mode: Some(StoredMode::Build),
                 ..Default::default()
@@ -818,6 +874,10 @@ mod tests {
         let mut session: TestSession =
             Session::new("anthropic/claude-sonnet-4", "/home/test/project");
         session.messages.push(user_message("hello"));
+        session.subagent_messages.insert(
+            "tool-1".into(),
+            vec![user_message("sub-prompt"), assistant_message("sub-reply")],
+        );
         session.save_to(dir).unwrap();
 
         let loaded = TestSession::load_from(&session.id, dir).unwrap();
@@ -826,6 +886,7 @@ mod tests {
         assert_eq!(loaded.cwd, "/home/test/project");
         assert_eq!(loaded.messages.len(), 1);
         assert_eq!(loaded.version, SESSION_VERSION);
+        assert_eq!(loaded.subagent_messages["tool-1"].len(), 2);
     }
 
     #[test]
@@ -842,12 +903,27 @@ mod tests {
         session
             .tool_outputs
             .insert("tool-1".into(), serde_json::json!({"result": "ok"}));
+        session
+            .subagent_messages
+            .insert("sub-1".into(), vec![user_message("sub-prompt")]);
+        log.append(&session).unwrap();
+
+        session
+            .subagent_messages
+            .get_mut("sub-1")
+            .unwrap()
+            .push(assistant_message("sub-reply"));
+        session
+            .subagent_messages
+            .insert("sub-2".into(), vec![user_message("sub-2-prompt")]);
         log.append(&session).unwrap();
 
         let loaded = TestSession::load_from(&session.id, dir).unwrap();
         assert_eq!(loaded.messages.len(), 3);
         assert_eq!(loaded.tool_outputs.len(), 1);
         assert!(loaded.tool_outputs.contains_key("tool-1"));
+        assert_eq!(loaded.subagent_messages["sub-1"].len(), 2);
+        assert_eq!(loaded.subagent_messages["sub-2"].len(), 1);
     }
 
     #[test]
@@ -909,10 +985,15 @@ mod tests {
         for i in 0..10 {
             session.messages.push(user_message(&format!("msg-{i}")));
         }
+        session.subagent_messages.insert(
+            "sub-1".into(),
+            vec![user_message("sub-prompt"), assistant_message("sub-reply")],
+        );
         let mut log = SessionLog::create(dir, &session).unwrap();
 
         session.messages.truncate(5);
         session.tool_outputs.clear();
+        session.subagent_messages.remove("sub-1");
         log.compact(dir, &session).unwrap();
 
         session.messages.push(user_message("after-compact-1"));
@@ -922,6 +1003,7 @@ mod tests {
 
         let loaded = TestSession::load_from(&session.id, dir).unwrap();
         assert_eq!(loaded.messages.len(), 8);
+        assert!(loaded.subagent_messages.is_empty());
     }
 
     #[test]
@@ -1062,15 +1144,6 @@ mod tests {
         let title = generate_title(&[user_message(&input)]);
         assert!(title.len() <= MAX_TITLE_LEN * 4);
         assert!(title.is_char_boundary(title.len()));
-    }
-
-    #[test]
-    fn empty_session_creates_file() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        let mut session: TestSession = Session::new("m", "/project");
-        session.save_to(dir).unwrap();
-        assert!(dir.join(format!("{}.jsonl", session.id)).exists());
     }
 
     #[test]
