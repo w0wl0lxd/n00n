@@ -11,7 +11,7 @@ use tracing::warn;
 use crate::cancel::CancelToken;
 use crate::{AgentError, AgentEvent, EventSender};
 
-const STREAM_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(30);
+const STREAM_INACTIVITY_TIMEOUT: Duration = Duration::from_mins(5);
 
 async fn forward_provider_events(
     prx: flume::Receiver<ProviderEvent>,
