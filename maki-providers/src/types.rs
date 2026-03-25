@@ -24,10 +24,21 @@ pub enum ImageMediaType {
     Webp,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ImageSource {
     pub media_type: ImageMediaType,
     pub data: Arc<str>,
+}
+
+impl Serialize for ImageSource {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("ImageSource", 3)?;
+        state.serialize_field("type", "base64")?;
+        state.serialize_field("media_type", &self.media_type)?;
+        state.serialize_field("data", &self.data)?;
+        state.end()
+    }
 }
 
 impl ImageSource {
@@ -259,5 +270,17 @@ mod tests {
     fn image_source_data_url(media: ImageMediaType, mime: &str) {
         let source = ImageSource::new(media, Arc::from("dGVzdA=="));
         assert_eq!(source.to_data_url(), format!("data:{mime};base64,dGVzdA=="));
+    }
+
+    #[test]
+    fn image_source_serde_injects_type_base64() {
+        let source = ImageSource::new(ImageMediaType::Png, Arc::from("abc123"));
+        let json = serde_json::to_value(&source).unwrap();
+        assert_eq!(json["type"], "base64");
+        assert_eq!(json["media_type"], "image/png");
+        assert_eq!(json["data"], "abc123");
+        let deserialized: ImageSource = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.media_type, ImageMediaType::Png);
+        assert_eq!(&*deserialized.data, "abc123");
     }
 }
