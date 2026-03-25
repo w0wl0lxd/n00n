@@ -17,6 +17,7 @@ use tracing::info;
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 const REAP_TIMEOUT: Duration = Duration::from_secs(5);
+const RTK_REWRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
 static RTK_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
     StdCommand::new("rtk")
@@ -141,7 +142,14 @@ impl Bash {
         let (command, workdir) = self.resolved();
         let no_rtk = ctx.config.no_rtk;
         let cmd_owned = command.to_owned();
-        let rewritten = smol::unblock(move || rtk_rewrite(&cmd_owned, no_rtk)).await;
+        let rewritten = futures_lite::future::or(
+            async { smol::unblock(move || rtk_rewrite(&cmd_owned, no_rtk)).await },
+            async {
+                async_io::Timer::after(RTK_REWRITE_TIMEOUT).await;
+                None
+            },
+        )
+        .await;
         let command = rewritten.as_deref().unwrap_or(command);
 
         info!(command, workdir, timeout_secs, "bash executing");
