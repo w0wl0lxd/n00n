@@ -680,7 +680,7 @@ register_tools! {
 }
 
 use maki_providers::provider::BoxFuture;
-use maki_providers::{Message, ProviderEvent, StreamResponse};
+use maki_providers::{Message, ProviderEvent, StreamResponse, ThinkingConfig};
 
 struct NullProvider;
 
@@ -692,6 +692,7 @@ impl Provider for NullProvider {
         _: &'a str,
         _: &'a Value,
         _: &'a flume::Sender<ProviderEvent>,
+        _: ThinkingConfig,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async { unimplemented!() })
     }

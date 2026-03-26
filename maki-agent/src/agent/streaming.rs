@@ -1,6 +1,6 @@
 use maki_providers::provider::Provider;
 use maki_providers::retry::{MAX_TIMEOUT_RETRIES, RetryState};
-use maki_providers::{Message, Model, ProviderEvent, StreamResponse};
+use maki_providers::{Message, Model, ProviderEvent, StreamResponse, ThinkingConfig};
 use serde_json::Value;
 use tracing::warn;
 
@@ -20,6 +20,7 @@ async fn forward_provider_events(prx: flume::Receiver<ProviderEvent>, event_tx: 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn stream_with_retry(
     provider: &dyn Provider,
     model: &Model,
@@ -28,6 +29,7 @@ pub(crate) async fn stream_with_retry(
     tools: &Value,
     event_tx: &EventSender,
     cancel: &CancelToken,
+    thinking: ThinkingConfig,
 ) -> Result<StreamResponse, AgentError> {
     let mut retry = RetryState::new();
     loop {
@@ -37,7 +39,7 @@ pub(crate) async fn stream_with_retry(
             async move { forward_provider_events(prx, &event_tx).await }
         });
         let result = futures_lite::future::race(
-            provider.stream_message(model, messages, system, tools, &ptx),
+            provider.stream_message(model, messages, system, tools, &ptx, thinking),
             async {
                 cancel.cancelled().await;
                 Err(AgentError::Cancelled)

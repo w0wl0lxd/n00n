@@ -24,7 +24,7 @@ use std::path::PathBuf;
 
 pub use maki_providers::AgentError;
 use maki_providers::Message;
-pub use maki_providers::{ImageMediaType, ImageSource};
+pub use maki_providers::{ImageMediaType, ImageSource, ThinkingConfig};
 pub use types::{
     AgentEvent, BatchProgressEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan,
     Envelope, EventSender, GrepFileEntry, GrepMatch, InstructionBlock, NO_FILES_FOUND,
@@ -53,6 +53,7 @@ pub struct AgentInput {
     pub pending_plan: Option<PathBuf>,
     pub images: Vec<ImageSource>,
     pub preamble: Vec<Message>,
+    pub thinking: ThinkingConfig,
 }
 
 impl AgentInput {

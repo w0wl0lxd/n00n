@@ -80,6 +80,11 @@ const COMMANDS: &[Command] = &[
         max_args: 0,
     },
     Command {
+        name: "/thinking",
+        description: "Toggle extended thinking (off, adaptive, or budget)",
+        max_args: 1,
+    },
+    Command {
         name: "/exit",
         description: "Exit the application",
         max_args: 0,

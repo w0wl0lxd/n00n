@@ -13,7 +13,7 @@ use tracing::{debug, warn};
 
 use crate::model::{Model, models_for_provider};
 use crate::provider::{BoxFuture, Provider, ProviderKind};
-use crate::{AgentError, Message, ProviderEvent, StreamResponse};
+use crate::{AgentError, Message, ProviderEvent, StreamResponse, ThinkingConfig};
 
 use super::ResolvedAuth;
 use super::anthropic::Anthropic;
@@ -354,9 +354,10 @@ impl Provider for DynamicProvider {
         system: &'a str,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
+        thinking: ThinkingConfig,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         self.inner
-            .stream_message(model, messages, system, tools, event_tx)
+            .stream_message(model, messages, system, tools, event_tx, thinking)
     }
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {

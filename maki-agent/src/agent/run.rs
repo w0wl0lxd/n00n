@@ -4,7 +4,7 @@ use serde_json::Value;
 use tracing::{error, info, warn};
 
 use maki_providers::provider::Provider;
-use maki_providers::{Message, Model, StopReason, StreamResponse, TokenUsage};
+use maki_providers::{Message, Model, StopReason, StreamResponse, ThinkingConfig, TokenUsage};
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
 use super::history::{History, sanitize_cancelled_history};
@@ -71,6 +71,7 @@ pub struct Agent {
     config: AgentConfig,
     reauth_attempts: u32,
     permissions: Arc<PermissionManager>,
+    thinking: ThinkingConfig,
 }
 
 impl Agent {
@@ -97,6 +98,7 @@ impl Agent {
             rollback_len: 0,
             mcp: None,
             reauth_attempts: 0,
+            thinking: ThinkingConfig::Off,
         }
     }
 
@@ -137,6 +139,7 @@ impl Agent {
         }
         self.history.push(msg);
         self.mode = input.mode;
+        self.thinking = input.thinking;
 
         info!(
             model = %self.model.id,
@@ -182,6 +185,7 @@ impl Agent {
             &self.tools,
             &self.event_tx,
             &self.cancel,
+            self.thinking,
         )
         .await
         {
@@ -390,7 +394,8 @@ mod tests {
 
     use maki_providers::provider::{BoxFuture, Provider};
     use maki_providers::{
-        ContentBlock, Message, Model, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
+        ContentBlock, Message, Model, ProviderEvent, Role, StopReason, StreamResponse,
+        ThinkingConfig, TokenUsage,
     };
     use serde_json::Value;
     use test_case::test_case;
@@ -420,6 +425,7 @@ mod tests {
             _: &'a str,
             _: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
+            _: ThinkingConfig,
         ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
             Box::pin(async {
                 let mut responses = self.responses.lock().unwrap();
@@ -692,6 +698,7 @@ mod tests {
                     _: &'a str,
                     _: &'a Value,
                     _: &'a flume::Sender<ProviderEvent>,
+                    _: ThinkingConfig,
                 ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
                     Box::pin(async {
                         futures_lite::future::pending::<()>().await;

@@ -1,6 +1,6 @@
 use std::env;
 
-use maki_providers::{ContentBlock, Message, Model, TokenUsage};
+use maki_providers::{ContentBlock, Message, Model, ThinkingConfig, TokenUsage};
 use tracing::info;
 
 use super::history::History;
@@ -32,6 +32,7 @@ pub(super) async fn compact_history(
         &empty_tools,
         event_tx,
         cancel,
+        ThinkingConfig::Off,
     )
     .await?;
 
@@ -104,7 +105,8 @@ mod tests {
 
     use maki_providers::provider::{BoxFuture, Provider};
     use maki_providers::{
-        ContentBlock, Message, Model, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
+        ContentBlock, Message, Model, ProviderEvent, Role, StopReason, StreamResponse,
+        ThinkingConfig, TokenUsage,
     };
     use serde_json::Value;
     use test_case::test_case;
@@ -132,6 +134,7 @@ mod tests {
             _: &'a str,
             _: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
+            _: ThinkingConfig,
         ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
             Box::pin(async {
                 let mut responses = self.responses.lock().unwrap();

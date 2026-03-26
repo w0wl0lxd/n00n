@@ -16,7 +16,8 @@ use crate::model::Model;
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
 use crate::{
-    AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
+    AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse,
+    ThinkingConfig, TokenUsage,
 };
 
 const API_VERSION: &str = "2023-06-01";
@@ -394,6 +395,7 @@ impl Provider for Anthropic {
         system: &'a str,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
+        thinking: ThinkingConfig,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
             let wire_messages = build_wire_messages(messages);
@@ -415,7 +417,7 @@ impl Provider for Anthropic {
                 json!([system_block])
             };
 
-            let body = json!({
+            let mut body = json!({
                 "model": model.id,
                 "max_tokens": model.max_output_tokens,
                 "system": system_blocks,
@@ -424,7 +426,9 @@ impl Provider for Anthropic {
                 "stream": true,
             });
 
-            debug!(model = %model.id, num_messages = messages.len(), "sending API request");
+            thinking.apply_to_body(&mut body);
+
+            debug!(model = %model.id, num_messages = messages.len(), ?thinking, "sending API request");
             self.do_stream_request(&body, event_tx).await
         })
     }

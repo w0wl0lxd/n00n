@@ -5,7 +5,7 @@ use tracing::warn;
 use crate::model::Model;
 use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
-use crate::{AgentError, Message, ProviderEvent, StreamResponse};
+use crate::{AgentError, Message, ProviderEvent, StreamResponse, ThinkingConfig};
 
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
 
@@ -154,6 +154,7 @@ impl Provider for Zai {
         system: &'a str,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
+        _thinking: ThinkingConfig,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
             let body = self.0.build_body(model, messages, system, tools);

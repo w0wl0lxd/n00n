@@ -226,6 +226,7 @@ impl App {
             auto_scroll: chat.auto_scroll(),
             chat_name,
             retry_info: self.retry_info.as_ref(),
+            thinking_label: self.state.thinking.status_label(),
         };
         self.status_bar.view(frame, status_area, &ctx);
     }

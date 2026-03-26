@@ -3,7 +3,7 @@ use std::sync::Arc;
 use flume::Sender;
 use futures_lite::future;
 use maki_providers::provider::Provider;
-use maki_providers::{Message, Model, ProviderEvent};
+use maki_providers::{Message, Model, ProviderEvent, ThinkingConfig};
 use serde_json::Value;
 
 use crate::components::btw_modal::BtwEvent;
@@ -42,7 +42,14 @@ async fn run_btw(
     let (event_tx, event_rx) = flume::unbounded();
     let tools = Value::Array(vec![]);
 
-    let stream_fut = provider.stream_message(&model, &messages, BTW_SYSTEM, &tools, &event_tx);
+    let stream_fut = provider.stream_message(
+        &model,
+        &messages,
+        BTW_SYSTEM,
+        &tools,
+        &event_tx,
+        ThinkingConfig::Off,
+    );
 
     let forward_fut = async {
         while let Ok(event) = event_rx.recv_async().await {

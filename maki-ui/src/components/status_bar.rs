@@ -41,6 +41,7 @@ pub struct StatusBarContext<'a> {
     pub auto_scroll: bool,
     pub chat_name: Option<&'a str>,
     pub retry_info: Option<&'a RetryInfo>,
+    pub thinking_label: Option<Cow<'static, str>>,
 }
 
 pub struct StatusBar {
@@ -148,6 +149,13 @@ impl StatusBar {
                     ctx.model_id.to_string(),
                     theme::current().status_context,
                 ));
+
+                if let Some(ref label) = ctx.thinking_label {
+                    right_spans.push(Span::styled(
+                        format!(" [{label}]"),
+                        theme::current().status_context,
+                    ));
+                }
 
                 let rest_text = format!(
                     "  {} ({}%) ${:.3} ",

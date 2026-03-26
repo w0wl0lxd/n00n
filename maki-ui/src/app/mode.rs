@@ -104,6 +104,7 @@ impl App {
             mode: self.agent_mode(),
             pending_plan: self.state.plan.pending_plan().map(Path::to_path_buf),
             images: msg.images.clone(),
+            thinking: self.state.thinking,
             ..Default::default()
         }
     }

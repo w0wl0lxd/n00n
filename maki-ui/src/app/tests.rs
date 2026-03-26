@@ -2183,3 +2183,36 @@ fn bash_prefix_overrides_mode() {
     app.input_box.set_input("ls".into());
     assert_eq!(&*app.mode_label().0, "[BUILD]");
 }
+
+#[test]
+fn thinking_toggle_cycles_off_adaptive() {
+    let mut app = test_app();
+    assert_eq!(app.state.thinking, ThinkingConfig::Off);
+
+    app.execute_command(cmd("/thinking"));
+    assert_eq!(app.state.thinking, ThinkingConfig::Adaptive);
+
+    app.execute_command(cmd("/thinking"));
+    assert_eq!(app.state.thinking, ThinkingConfig::Off);
+}
+
+#[test]
+fn thinking_explicit_args() {
+    let mut app = test_app();
+
+    app.execute_command(ParsedCommand {
+        name: "/thinking",
+        args: "8192".into(),
+    });
+    assert_eq!(app.state.thinking, ThinkingConfig::Budget(8192));
+}
+
+#[test]
+fn thinking_non_anthropic_flashes_error() {
+    let mut app = test_app();
+    app.state.model.provider = maki_providers::provider::ProviderKind::OpenAi;
+
+    app.execute_command(cmd("/thinking"));
+    assert_eq!(app.state.thinking, ThinkingConfig::Off);
+    assert!(app.status_bar.flash_text().is_some());
+}

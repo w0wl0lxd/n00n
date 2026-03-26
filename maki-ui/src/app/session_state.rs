@@ -6,7 +6,7 @@ use arc_swap::ArcSwap;
 use maki_agent::ToolOutput;
 use maki_agent::permissions::PermissionManager;
 use maki_config::Effect;
-use maki_providers::{Message, Model, TokenUsage};
+use maki_providers::{Message, Model, ThinkingConfig, TokenUsage};
 use maki_storage::DataDir;
 use maki_storage::sessions::{StoredEffect, StoredMode, StoredRule};
 
@@ -22,6 +22,7 @@ pub(crate) struct SessionState {
     pub mode: Mode,
     pub plan: PlanState,
     pub warnings: Vec<String>,
+    pub thinking: ThinkingConfig,
 }
 
 const PLAN_FILE_MISSING_WARNING: &str = "Plan file was deleted \u{2014} started a new plan";
@@ -70,6 +71,7 @@ impl SessionState {
             mode,
             plan,
             warnings,
+            thinking: ThinkingConfig::Off,
         }
     }
 
@@ -96,6 +98,9 @@ impl SessionState {
     }
 
     pub fn update_model(&mut self, model: &Model) {
+        if !model.provider.supports_thinking() {
+            self.thinking = ThinkingConfig::Off;
+        }
         self.session.model = model.spec();
         self.model = model.clone();
     }

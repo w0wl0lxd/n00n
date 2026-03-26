@@ -52,7 +52,7 @@ use maki_agent::QuestionInfo;
 use maki_agent::permissions::{PermissionDecision, PermissionManager};
 use maki_agent::{AgentEvent, Envelope, ImageSource, McpServerInfo, SubagentInfo, ToolOutput};
 use maki_config::UiConfig;
-use maki_providers::{Message, Model};
+use maki_providers::{Message, Model, ThinkingConfig};
 use maki_storage::DataDir;
 use maki_storage::input_history::InputHistory;
 use maki_storage::model::persist_model;
@@ -985,6 +985,20 @@ impl App {
                     "YOLO mode disabled"
                 };
                 self.flash(msg.into());
+                vec![]
+            }
+            "/thinking" => {
+                if !self.state.model.provider.supports_thinking() {
+                    self.flash("Thinking requires Anthropic provider".into());
+                    return vec![];
+                }
+                match ThinkingConfig::parse(cmd.args.trim(), self.state.thinking) {
+                    Ok(thinking) => {
+                        self.state.thinking = thinking;
+                        self.flash(format!("Thinking: {thinking}"));
+                    }
+                    Err(msg) => self.flash(msg.into()),
+                }
                 vec![]
             }
             "/exit" => self.quit(),

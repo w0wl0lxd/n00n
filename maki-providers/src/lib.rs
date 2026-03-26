@@ -11,5 +11,5 @@ pub use providers::dynamic;
 pub use providers::openai_auth;
 pub use types::{
     ContentBlock, ImageMediaType, ImageSource, Message, ProviderEvent, Role, StopReason,
-    StreamResponse,
+    StreamResponse, ThinkingConfig,
 };

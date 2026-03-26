@@ -10,7 +10,7 @@ use crate::model::{Model, models_for_provider};
 use crate::providers::dynamic;
 use crate::providers::openai::OpenAi;
 use crate::providers::zai::{Zai, ZaiPlan};
-use crate::{AgentError, Message, ProviderEvent, StreamResponse};
+use crate::{AgentError, Message, ProviderEvent, StreamResponse, ThinkingConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, EnumIter)]
 #[strum(serialize_all = "kebab-case")]
@@ -30,6 +30,10 @@ impl ProviderKind {
             Self::Zai => "Z.AI",
             Self::ZaiCodingPlan => "Z.AI Coding",
         }
+    }
+
+    pub const fn supports_thinking(self) -> bool {
+        matches!(self, Self::Anthropic)
     }
 
     pub fn create(self) -> Result<Box<dyn Provider>, AgentError> {
@@ -52,6 +56,7 @@ pub trait Provider: Send + Sync {
         system: &'a str,
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
+        thinking: ThinkingConfig,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>>;
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>>;

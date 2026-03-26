@@ -3,11 +3,12 @@
 //! from the UI). `user_text()` returns `None` for these, so system-injected messages
 //! (cancel markers, compaction prompts) stay invisible without a separate type.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use maki_storage::sessions::TitleSource;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use strum::{Display, IntoStaticStr};
 
 use crate::TokenUsage;
@@ -215,6 +216,68 @@ impl StopReason {
     }
 }
 
+const MIN_THINKING_BUDGET: u32 = 1024;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThinkingConfig {
+    #[default]
+    Off,
+    Adaptive,
+    Budget(u32),
+}
+
+impl ThinkingConfig {
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    pub fn apply_to_body(self, body: &mut Value) {
+        match self {
+            Self::Off => {}
+            Self::Adaptive => {
+                body["thinking"] = json!({"type": "adaptive"});
+            }
+            Self::Budget(n) => {
+                body["thinking"] = json!({"type": "enabled", "budget_tokens": n});
+            }
+        }
+    }
+
+    pub fn parse(input: &str, current: Self) -> Result<Self, &'static str> {
+        match input {
+            "" => Ok(if current.is_enabled() {
+                Self::Off
+            } else {
+                Self::Adaptive
+            }),
+            "off" => Ok(Self::Off),
+            "adaptive" => Ok(Self::Adaptive),
+            n => match n.parse::<u32>() {
+                Ok(budget) if budget >= MIN_THINKING_BUDGET => Ok(Self::Budget(budget)),
+                _ => Err("Usage: /thinking [off|adaptive|<budget\u{2265}1024>]"),
+            },
+        }
+    }
+
+    pub fn status_label(self) -> Option<Cow<'static, str>> {
+        match self {
+            Self::Off => None,
+            Self::Adaptive => Some(Cow::Borrowed("thinking")),
+            Self::Budget(n) => Some(Cow::Owned(format!("thinking: {n}"))),
+        }
+    }
+}
+
+impl std::fmt::Display for ThinkingConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Off => f.write_str("off"),
+            Self::Adaptive => f.write_str("adaptive"),
+            Self::Budget(n) => write!(f, "budget: {n}"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct StreamResponse {
     pub message: Message,
@@ -282,5 +345,40 @@ mod tests {
         let deserialized: ImageSource = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.media_type, ImageMediaType::Png);
         assert_eq!(&*deserialized.data, "abc123");
+    }
+
+    #[test]
+    fn thinking_config_display() {
+        assert_eq!(ThinkingConfig::Off.to_string(), "off");
+        assert_eq!(ThinkingConfig::Adaptive.to_string(), "adaptive");
+        assert_eq!(ThinkingConfig::Budget(10000).to_string(), "budget: 10000");
+    }
+
+    #[test]
+    fn thinking_apply_to_body() {
+        let mut off = json!({"model": "test"});
+        ThinkingConfig::Off.apply_to_body(&mut off);
+        assert!(off.get("thinking").is_none());
+
+        let mut adaptive = json!({"model": "test"});
+        ThinkingConfig::Adaptive.apply_to_body(&mut adaptive);
+        assert_eq!(adaptive["thinking"]["type"], "adaptive");
+
+        let mut budget = json!({"model": "test"});
+        ThinkingConfig::Budget(10000).apply_to_body(&mut budget);
+        assert_eq!(budget["thinking"]["type"], "enabled");
+        assert_eq!(budget["thinking"]["budget_tokens"], 10000);
+    }
+
+    #[test_case("",         ThinkingConfig::Off,      Ok(ThinkingConfig::Adaptive)  ; "toggle_on")]
+    #[test_case("",         ThinkingConfig::Adaptive, Ok(ThinkingConfig::Off)       ; "toggle_off")]
+    #[test_case("off",      ThinkingConfig::Adaptive, Ok(ThinkingConfig::Off)       ; "explicit_off")]
+    #[test_case("adaptive", ThinkingConfig::Off,      Ok(ThinkingConfig::Adaptive)  ; "explicit_adaptive")]
+    #[test_case("8192",     ThinkingConfig::Off,      Ok(ThinkingConfig::Budget(8192)) ; "explicit_budget")]
+    #[test_case("512",      ThinkingConfig::Off,      Err(())                       ; "budget_too_small")]
+    #[test_case("garbage",  ThinkingConfig::Off,      Err(())                       ; "invalid_input")]
+    fn thinking_parse(input: &str, current: ThinkingConfig, expected: Result<ThinkingConfig, ()>) {
+        let result = ThinkingConfig::parse(input, current).map_err(|_| ());
+        assert_eq!(result, expected);
     }
 }
