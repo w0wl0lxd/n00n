@@ -1,5 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+const TAB_SPACES: &str = "  ";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditResult {
     Ignored,
@@ -68,7 +70,8 @@ impl TextBuffer {
     }
 
     pub fn insert_text(&mut self, text: &str) {
-        for (i, chunk) in text.split('\n').enumerate() {
+        let sanitized = text.replace('\t', TAB_SPACES);
+        for (i, chunk) in sanitized.split('\n').enumerate() {
             if i > 0 {
                 self.add_line();
             }
@@ -456,6 +459,13 @@ mod tests {
         buf.raw_x = 2;
         buf.insert_text("X\nY");
         assert_eq!(buf.lines(), &["abX", "Ycd"]);
+    }
+
+    #[test]
+    fn insert_text_replaces_tabs_with_spaces() {
+        let mut buf = TextBuffer::new(String::new());
+        buf.insert_text("\tindented\n\t\tdouble");
+        assert_eq!(buf.lines(), &["  indented", "    double"]);
     }
 
     #[test]
