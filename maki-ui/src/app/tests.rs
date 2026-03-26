@@ -1243,7 +1243,10 @@ fn form_submit_pushes_answer_to_chat() {
 
     app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(!app.question_form.is_visible());
-    assert_eq!(app.chats[0].last_message_text(), "Pick a DB: PostgreSQL");
+    assert_eq!(
+        app.chats[0].last_message_text(),
+        "Q: Pick a DB\n  → **PostgreSQL**"
+    );
     assert!(rx.try_recv().is_ok());
 }
 
