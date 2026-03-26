@@ -1,7 +1,6 @@
 use crate::animation::Typewriter;
 use crate::highlight::CodeHighlighter;
 use crate::markdown::{RenderCtx, RenderState, finalize_lines, parse_blocks, render_block};
-use crate::theme;
 
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -74,7 +73,6 @@ impl StreamingCache {
 pub(crate) struct StreamingContent {
     typewriter: Typewriter,
     cache: StreamingCache,
-    dim: bool,
     prefix: &'static str,
     text_style: Style,
     prefix_style: Style,
@@ -90,22 +88,9 @@ impl StreamingContent {
         Self {
             typewriter: Typewriter::with_speed(ms_per_char),
             cache: StreamingCache::default(),
-            dim: false,
             prefix,
             text_style,
             prefix_style,
-        }
-    }
-
-    pub fn new_dim(
-        prefix: &'static str,
-        text_style: Style,
-        prefix_style: Style,
-        ms_per_char: u64,
-    ) -> Self {
-        Self {
-            dim: true,
-            ..Self::new(prefix, text_style, prefix_style, ms_per_char)
         }
     }
 
@@ -140,16 +125,13 @@ impl StreamingContent {
 
     pub fn render_lines(&mut self, width: u16) -> &[Line<'static>] {
         self.typewriter.tick();
-        let changed = self.cache.get_or_update(
+        self.cache.get_or_update(
             self.typewriter.visible(),
             self.prefix,
             self.text_style,
             self.prefix_style,
             width,
         );
-        if changed && self.dim {
-            theme::dim_lines(&mut self.cache.lines);
-        }
         &self.cache.lines
     }
 
@@ -282,15 +264,6 @@ mod tests {
         cache.invalidate();
         cache.get_or_update(text, "", style, style, width);
         assert_eq!(cache_lines_text(&cache), full_render_lines(text, "", width));
-    }
-
-    #[test]
-    fn dim_cache_no_panic_when_finalize_pops_stable_blank() {
-        let style = Style::default();
-        let width = 80;
-        let mut sc = StreamingContent::new_dim("", style, style, 4);
-        sc.set_buffer("```py\nx\n```\n```js\n");
-        sc.render_lines(width);
     }
 
     #[test_case(

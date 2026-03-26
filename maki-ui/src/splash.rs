@@ -1,5 +1,5 @@
 use crate::components::keybindings::key;
-use crate::theme;
+use crate::theme::{self, lerp_u8};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -405,11 +405,6 @@ fn extract_rgb(color: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
         Color::Rgb(r, g, b) => (r, g, b),
         _ => fallback,
     }
-}
-
-#[inline(always)]
-fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t.clamp(0.0, 1.0)) as u8
 }
 
 fn ease_out_cubic(t: f32) -> f32 {

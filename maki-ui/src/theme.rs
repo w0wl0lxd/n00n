@@ -5,7 +5,6 @@ use std::sync::{Arc, LazyLock};
 use arc_swap::{ArcSwap, Guard};
 use maki_storage::DataDir;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
 use serde::Deserialize;
 use syntect::highlighting::{
     Color as SynColor, FontStyle, ScopeSelectors, StyleModifier, ThemeItem, ThemeSettings,
@@ -607,7 +606,12 @@ impl Theme {
             user: style("user"),
             assistant: style("assistant"),
             assistant_prefix: style("assistant_prefix"),
-            thinking: style("thinking"),
+            thinking: brighten_toward(
+                style("thinking"),
+                color("comment"),
+                color("foreground"),
+                0.3,
+            ),
             tool_bg: style("tool_bg"),
             tool: style("tool"),
             tool_path: style("tool_path"),
@@ -713,37 +717,24 @@ impl Theme {
     }
 }
 
-const fn midpoint(a: u8, b: u8) -> u8 {
-    (a as u16 / 2 + b as u16 / 2) as u8
+pub(crate) fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t.clamp(0.0, 1.0)) as u8
 }
 
-fn dim_style(style: Style, bg: Color) -> Style {
-    let Color::Rgb(br, bg_g, bb) = bg else {
-        return style;
-    };
-    match style.fg {
-        Some(Color::Rgb(r, g, b)) => style.fg(Color::Rgb(
-            midpoint(r, br),
-            midpoint(g, bg_g),
-            midpoint(b, bb),
+fn brighten_toward(style: Style, from: Color, to: Color, t: f32) -> Style {
+    match (from, to) {
+        (Color::Rgb(fr, fg, fb), Color::Rgb(tr, tg, tb)) => style.fg(Color::Rgb(
+            lerp_u8(fr, tr, t),
+            lerp_u8(fg, tg, t),
+            lerp_u8(fb, tb, t),
         )),
         _ => style,
-    }
-}
-
-pub fn dim_lines(lines: &mut [Line<'_>]) {
-    let bg = current().background;
-    for line in lines {
-        for span in &mut line.spans {
-            span.style = dim_style(span.style, bg);
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::text::Span;
 
     fn dracula_toml() -> &'static str {
         BUNDLED_THEMES
@@ -806,21 +797,6 @@ mod tests {
     #[test]
     fn invalid_toml_returns_error() {
         assert!(Theme::from_toml("not valid {{{{").is_err());
-    }
-
-    #[test]
-    fn dim_lines_blends_toward_background() {
-        let mut lines = vec![Line::from(Span::styled(
-            "text",
-            Style::new().fg(Color::Rgb(0xff, 0xff, 0xff)),
-        ))];
-        dim_lines(&mut lines);
-        let fg = lines[0].spans[0].style.fg.unwrap();
-        assert_ne!(fg, Color::Rgb(0xff, 0xff, 0xff));
-        let Color::Rgb(r, _, _) = fg else {
-            panic!("expected Rgb");
-        };
-        assert!(r < 0xff);
     }
 
     #[test]

@@ -152,7 +152,7 @@ impl MessagesPanel {
         let ms = ui_config.typewriter_ms_per_char;
         Self {
             messages: Vec::new(),
-            streaming_thinking: StreamingContent::new_dim(
+            streaming_thinking: StreamingContent::new(
                 thinking.prefix,
                 thinking.text_style,
                 thinking.prefix_style,
@@ -1169,9 +1169,6 @@ impl MessagesPanel {
                 } else {
                     plain_lines(&msg.text, prefix, style.text_style, style.prefix_style)
                 };
-                if msg.role == DisplayRole::Thinking {
-                    theme::dim_lines(&mut lines);
-                }
                 if let Some(pp) = &msg.plan_path {
                     if !msg.text.is_empty() {
                         let rule = hr_line(self.viewport_width, theme::current().plan_rule);
