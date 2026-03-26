@@ -1,6 +1,8 @@
 use crate::components::ModalScroll;
 use crate::components::Overlay;
-use crate::components::keybindings::{ALT_SEP, KEYBINDS, ResolvedLabel, all_contexts, key};
+use crate::components::keybindings::{
+    ALT_SEP, KEYBINDS, KeybindContext, ResolvedLabel, all_contexts, key,
+};
 use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
 use crate::theme;
@@ -16,6 +18,11 @@ const TITLE: &str = " Keybindings ";
 const KEY_COL_GAP: usize = 2;
 const PREFIX_TOP: &str = "  ";
 const PREFIX_CHILD: &str = "    ";
+
+const INPUT_PREFIXES: &[(&str, &str)] = &[
+    ("!", "Run shell command (visible to agent)"),
+    ("!!", "Run shell command (hidden from agent)"),
+];
 
 pub struct HelpModal {
     open: bool,
@@ -171,6 +178,23 @@ impl HelpModal {
                         PREFIX_CHILD,
                     );
                     spans.push(Span::styled(kb.description, theme.keybind_desc));
+                    lines.push(Line::from(spans));
+                }
+            }
+
+            if ctx == KeybindContext::Editing {
+                lines.push(Line::default());
+                lines.push(Line::from(Span::styled(
+                    "    Input Prefixes",
+                    theme.keybind_section,
+                )));
+                for &(pfx, desc) in INPUT_PREFIXES {
+                    let mut spans = key_spans(
+                        ResolvedLabel::Single(pfx),
+                        key_col_width - KEY_COL_GAP,
+                        PREFIX_CHILD,
+                    );
+                    spans.push(Span::styled(desc, theme.keybind_desc));
                     lines.push(Line::from(spans));
                 }
             }
