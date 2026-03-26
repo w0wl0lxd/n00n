@@ -18,6 +18,15 @@ const LIST_INDENT: &str = "  ";
 const MIN_COL_WIDTH: usize = 5;
 const MAX_LINE_CHARS: usize = 500;
 
+/// Rendered line range of a markdown code block (post-wrap, excluding
+/// blank-line padding from `ensure_blank_line`). Used by partial selection
+/// to reconstruct ``` fences that are lost during rendering.
+pub struct CodeBlockRange {
+    pub start_line: u16,
+    pub end_line: u16,
+    pub lang: String,
+}
+
 fn fit_width(text: &str, max_width: usize) -> usize {
     let mut width = 0;
     for (i, ch) in text.char_indices() {
@@ -1180,13 +1189,46 @@ pub(crate) fn finalize_lines(lines: &mut Vec<Line<'static>>, prefix: &str, prefi
     }
 }
 
+/// Skip blank lines inserted by `ensure_blank_line` around code blocks.
+fn find_first_code_line(lines: &[Line<'_>], from: usize) -> usize {
+    (from..lines.len())
+        .find(|&i| !is_blank_line(&lines[i]))
+        .unwrap_or(from)
+}
+
+fn find_last_code_line(lines: &[Line<'_>], from: usize) -> usize {
+    (from..lines.len())
+        .rfind(|&i| !is_blank_line(&lines[i]))
+        .unwrap_or(from)
+}
+
 pub fn text_to_lines<'a>(
+    text: &str,
+    prefix: &'a str,
+    text_style: Style,
+    prefix_style: Style,
+    highlighters: Option<&'a mut Vec<CodeHighlighter>>,
+    width: u16,
+) -> Vec<Line<'static>> {
+    text_to_lines_with_ranges(
+        text,
+        prefix,
+        text_style,
+        prefix_style,
+        highlighters,
+        width,
+        None,
+    )
+}
+
+pub fn text_to_lines_with_ranges<'a>(
     text: &str,
     prefix: &'a str,
     text_style: Style,
     prefix_style: Style,
     mut highlighters: Option<&'a mut Vec<CodeHighlighter>>,
     width: u16,
+    mut ranges_out: Option<&mut Vec<CodeBlockRange>>,
 ) -> Vec<Line<'static>> {
     let text = text.trim_start_matches('\n');
     let blocks = parse_blocks(text);
@@ -1202,7 +1244,19 @@ pub fn text_to_lines<'a>(
     };
 
     for block in &blocks {
+        let before = lines.len();
         render_block(block, &mut lines, &mut state, &mut ctx);
+        if let (TextBlock::Code { lang, .. }, Some(ranges)) = (block, ranges_out.as_deref_mut()) {
+            let start = find_first_code_line(&lines, before) as u16;
+            let end = find_last_code_line(&lines, before) as u16;
+            if start <= end {
+                ranges.push(CodeBlockRange {
+                    start_line: start,
+                    end_line: end,
+                    lang: lang.to_string(),
+                });
+            }
+        }
     }
 
     if let Some(hl) = ctx.highlighters {
@@ -2514,5 +2568,26 @@ mod tests {
             );
         }
         assert!(ever_table, "table should be recognized at some point");
+    }
+
+    #[test]
+    fn code_block_ranges_tracked() {
+        let md = "```py\na\n```\n\ntext\n\n```js\nb\n```";
+        let mut ranges = Vec::new();
+        let lines = text_to_lines_with_ranges(
+            md,
+            "",
+            Style::default(),
+            Style::default(),
+            None,
+            TEST_WIDTH,
+            Some(&mut ranges),
+        );
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].lang, "py");
+        assert_eq!(ranges[1].lang, "js");
+        assert!(ranges[0].start_line <= ranges[0].end_line);
+        assert!(ranges[0].end_line < ranges[1].start_line);
+        assert!((ranges[1].end_line as usize) < lines.len());
     }
 }

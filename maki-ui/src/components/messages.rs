@@ -7,7 +7,9 @@ use super::tool_display::{
 use super::{DisplayMessage, DisplayRole, ToolRole, ToolStatus, apply_scroll_delta};
 use crate::animation::spinner_str;
 use crate::components::keybindings::key;
-use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
+use crate::markdown::{
+    CodeBlockRange, hr_line, plain_lines, text_to_lines_with_ranges, truncate_output,
+};
 use crate::render_worker::RenderWorker;
 use crate::selection::{self, LineBreaks, ScreenSelection, Selection};
 use crate::splash::{ColorTransition, Splash};
@@ -30,9 +32,6 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 
 use super::scrollbar::render_vertical_scrollbar;
 
-/// `copy_text` holds raw source text for clipboard copy (from
-/// `ToolLines::copy_text` for tool segments, prefix+text for others).
-/// Fully-selected segments use this instead of lossy cell scraping.
 #[derive(Default, PartialEq, Eq)]
 struct HighlightKey {
     has_output: bool,
@@ -48,10 +47,18 @@ impl HighlightKey {
     }
 }
 
+/// Clipboard copy strategy:
+/// - Fully-selected segments → `copy_text` (raw markdown/structured output, lossless)
+/// - Partially-selected segments → cell scraping from a temp buffer
+/// - Partial + code blocks → `extract_with_fences` reconstructs ``` fences
+///   for fully-covered blocks; partially-covered blocks fall back to scraping
 #[derive(Default)]
 struct Segment {
     lines: Vec<Line<'static>>,
     copy_text: String,
+    /// Populated only for markdown segments (assistant/user). Empty for tool segments
+    /// because their code blocks are rendered differently (│-prefixed, no fences).
+    code_block_ranges: Vec<CodeBlockRange>,
     tool_id: Option<String>,
     msg_index: Option<usize>,
     cached_height: Option<(u16, u16)>,
@@ -897,7 +904,23 @@ impl MessagesPanel {
             };
 
             let breaks = LineBreaks::from_lines(&seg.lines, width);
-            selection::append_rows(&tmp, tmp_area, &ss, rel_start, rel_end, &mut out, &breaks);
+
+            // Tool segments never populate code_block_ranges, so is_empty() covers them
+            if seg.code_block_ranges.is_empty() {
+                selection::append_rows(&tmp, tmp_area, &ss, rel_start, rel_end, &mut out, &breaks);
+                continue;
+            }
+
+            extract_with_fences(
+                &tmp,
+                tmp_area,
+                &ss,
+                rel_start,
+                rel_end,
+                &breaks,
+                &seg.code_block_ranges,
+                &mut out,
+            );
         }
         out
     }
@@ -1132,14 +1155,16 @@ impl MessagesPanel {
                 } else {
                     style.prefix
                 };
+                let mut code_block_ranges = Vec::new();
                 let mut lines = if style.use_markdown {
-                    text_to_lines(
+                    text_to_lines_with_ranges(
                         &msg.text,
                         prefix,
                         style.text_style,
                         style.prefix_style,
                         None,
                         self.viewport_width,
+                        Some(&mut code_block_ranges),
                     )
                 } else {
                     plain_lines(&msg.text, prefix, style.text_style, style.prefix_style)
@@ -1176,6 +1201,7 @@ impl MessagesPanel {
                 self.cached_segments.push(Segment {
                     lines,
                     copy_text,
+                    code_block_ranges,
                     msg_index: Some(i),
                     ..Segment::default()
                 });
@@ -1189,6 +1215,83 @@ fn parse_batch_inner_id(tool_id: &str) -> Option<(&str, usize)> {
     let (batch_id, idx_str) = tool_id.rsplit_once("__")?;
     let idx = idx_str.parse().ok()?;
     Some((batch_id, idx))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extract_with_fences(
+    buf: &Buffer,
+    area: Rect,
+    ss: &ScreenSelection,
+    rel_start: u16,
+    rel_end: u16,
+    breaks: &LineBreaks,
+    ranges: &[CodeBlockRange],
+    out: &mut String,
+) {
+    let mut cursor = rel_start;
+    let full_width = area.width.saturating_sub(1);
+
+    let scrape_to = |out: &mut String, start: u16, end: u16, sc: u16, ec: u16| {
+        let chunk_ss = ScreenSelection {
+            start_row: start,
+            start_col: sc,
+            end_row: end.saturating_sub(1),
+            end_col: ec,
+        };
+        selection::append_rows(buf, area, &chunk_ss, start, end, out, breaks);
+    };
+
+    let start_col_for = |row: u16| -> u16 { if row == rel_start { ss.start_col } else { 0 } };
+
+    for cb in ranges {
+        if cb.end_line < rel_start || cb.start_line >= rel_end {
+            continue;
+        }
+        let fully_covered = rel_start <= cb.start_line && cb.end_line < rel_end;
+
+        if cursor < cb.start_line {
+            let chunk_end = if fully_covered {
+                cb.start_line
+            } else {
+                cb.start_line.min(rel_end)
+            };
+            scrape_to(out, cursor, chunk_end, start_col_for(cursor), full_width);
+        }
+
+        if fully_covered {
+            let trimmed = out.trim_end_matches('\n').len();
+            out.truncate(trimmed);
+            out.push_str("\n\n```");
+            out.push_str(&cb.lang);
+            out.push('\n');
+            scrape_to(out, cb.start_line, cb.end_line + 1, 0, full_width);
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("```\n\n");
+            cursor = cb.end_line + 1;
+        } else {
+            let block_start = cb.start_line.max(rel_start);
+            let block_end = (cb.end_line + 1).min(rel_end);
+            let ec = if block_end == rel_end {
+                ss.end_col
+            } else {
+                full_width
+            };
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push_str("\n\n");
+            }
+            scrape_to(out, block_start, block_end, start_col_for(block_start), ec);
+            cursor = block_end;
+        }
+    }
+
+    if cursor < rel_end {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push_str("\n\n");
+        }
+        scrape_to(out, cursor, rel_end, start_col_for(cursor), ss.end_col);
+    }
 }
 
 struct RenderCursor {
@@ -2429,5 +2532,67 @@ mod tests {
         assert!(!parent.contains("file contents"));
         let child = seg_copy(&panel, "b1__0");
         assert!(child.contains("file contents"));
+    }
+
+    #[test]
+    fn extract_partial_full_code_block_has_fences() {
+        let md = "hello\n\n```python\nprint('hi')\n```\n\ngoodbye";
+        let mut panel = MessagesPanel::new(UiConfig::default());
+        panel.push(DisplayMessage::new(DisplayRole::Assistant, md.into()));
+        render(&mut panel, 80, 24);
+        let total: u16 = panel.segment_heights().iter().sum();
+        let area = Rect::new(0, 0, 80, 24);
+        let sel = make_sel(area, (0, 0), ((total - 1) as u32, 79));
+        let text = panel.extract_selection_text(&sel, area);
+        assert!(text.contains("hello"), "text before: {text:?}");
+        assert!(text.contains("goodbye"), "text after: {text:?}");
+        assert!(text.contains("```python"), "code fence: {text:?}");
+        assert!(text.contains("print('hi')"), "code content: {text:?}");
+    }
+
+    #[test]
+    fn extract_partial_code_block_not_fully_selected_has_no_fences() {
+        let md = "before\n\n```rust\nline1\nline2\nline3\n```\n\nafter";
+        let mut panel = MessagesPanel::new(UiConfig::default());
+        panel.push(DisplayMessage::new(DisplayRole::Assistant, md.into()));
+        render(&mut panel, 80, 24);
+        let total: u16 = panel.segment_heights().iter().sum();
+        let area = Rect::new(0, 0, 80, 24);
+        let mid = total / 2;
+        let sel = make_sel(area, (mid as u32, 0), ((total - 1) as u32, 79));
+        let text = panel.extract_selection_text(&sel, area);
+        assert!(
+            !text.contains("```"),
+            "partially-covered code block should not have fences: {text:?}"
+        );
+    }
+
+    #[test]
+    fn extract_partial_boundary_has_newline_separation() {
+        let md = "before\n\n```rust\nline1\nline2\nline3\n```\n\nafter";
+        let mut panel = MessagesPanel::new(UiConfig::default());
+        panel.push(DisplayMessage::new(DisplayRole::Assistant, md.into()));
+        render(&mut panel, 80, 24);
+        let total: u16 = panel.segment_heights().iter().sum();
+        let cb = &panel.cached_segments[0].code_block_ranges[0];
+        let area = Rect::new(0, 0, 80, 24);
+
+        let sel_start = make_sel(area, (0, 0), (cb.start_line as u32 + 1, 79));
+        let text = panel.extract_selection_text(&sel_start, area);
+        assert!(text.contains("before"), "text before code: {text:?}");
+        assert!(text.contains("line1"), "code start: {text:?}");
+        assert!(
+            !text.contains("beforel"),
+            "must be newline-separated: {text:?}"
+        );
+
+        let sel_end = make_sel(area, (cb.end_line as u32, 0), ((total - 1) as u32, 79));
+        let text = panel.extract_selection_text(&sel_end, area);
+        assert!(text.contains("line3"), "code end: {text:?}");
+        assert!(text.contains("after"), "text after code: {text:?}");
+        assert!(
+            !text.contains("line3after"),
+            "must be newline-separated: {text:?}"
+        );
     }
 }
