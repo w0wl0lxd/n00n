@@ -31,8 +31,8 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 use super::scrollbar::render_vertical_scrollbar;
 
 /// `copy_text` holds raw source text for clipboard copy (from
-/// `DisplayMessage::copy_text()`). Fully-selected segments use this instead
-/// of lossy cell scraping.
+/// `ToolLines::copy_text` for tool segments, prefix+text for others).
+/// Fully-selected segments use this instead of lossy cell scraping.
 #[derive(Default, PartialEq, Eq)]
 struct HighlightKey {
     has_output: bool,
@@ -1001,7 +1001,7 @@ impl MessagesPanel {
         }
 
         let seg = &mut self.cached_segments[seg_idx];
-        seg.copy_text = msg.copy_text();
+        seg.copy_text = tl.copy_text.clone();
         seg.update_with_reuse(tl, &self.hl_worker);
 
         if let Some(ToolOutput::Batch { entries, .. }) = msg.tool_output.as_deref() {
@@ -1011,7 +1011,6 @@ impl MessagesPanel {
                 .map(|(j, entry)| {
                     let child_id = format!("{tool_id}__{j}");
                     let child_expanded = self.expanded_tools.contains(&child_id);
-                    let copy = batch_entry_copy_text(entry);
                     let tl = build_batch_entry_lines(
                         entry,
                         j,
@@ -1020,6 +1019,7 @@ impl MessagesPanel {
                         child_expanded,
                         &self.tool_output_lines,
                     );
+                    let copy = tl.copy_text.clone();
                     (child_id, copy, tl)
                 })
                 .collect();
@@ -1085,7 +1085,7 @@ impl MessagesPanel {
                     );
                 }
                 let id = t.id.clone();
-                let copy_text = msg.copy_text();
+                let copy_text = tl.copy_text.clone();
                 push_spacer_if_needed(&mut self.cached_segments);
                 let mut seg = Segment {
                     copy_text,
@@ -1109,7 +1109,7 @@ impl MessagesPanel {
                             &self.tool_output_lines,
                         );
                         let mut seg = Segment {
-                            copy_text: batch_entry_copy_text(entry),
+                            copy_text: tl.copy_text.clone(),
                             tool_id: Some(child_id),
                             msg_index: Some(i),
                             ..Segment::default()
@@ -1183,18 +1183,6 @@ impl MessagesPanel {
         }
         self.cached_msg_count = self.messages.len();
     }
-}
-
-fn batch_entry_copy_text(entry: &BatchToolEntry) -> String {
-    let mut out = format!("{}> {}", entry.tool, entry.summary);
-    if let Some(output) = &entry.output {
-        let text = output.as_display_text();
-        if !text.is_empty() {
-            out.push('\n');
-            out.push_str(&text);
-        }
-    }
-    out
 }
 
 fn parse_batch_inner_id(tool_id: &str) -> Option<(&str, usize)> {

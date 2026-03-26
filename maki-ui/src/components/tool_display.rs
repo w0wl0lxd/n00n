@@ -254,6 +254,8 @@ pub fn done_style() -> RoleStyle {
 
 pub struct ToolLines {
     pub lines: Vec<Line<'static>>,
+    /// Plain-text for clipboard. Built in parallel with `lines` by ToolLineBuilder.
+    pub copy_text: String,
     pub highlight: Option<HighlightRequest>,
     pub spinner_lines: Vec<usize>,
     pub content_indent: &'static str,
@@ -489,6 +491,7 @@ fn resolve_output<'a>(
 
 struct ToolLineBuilder {
     lines: Vec<Line<'static>>,
+    copy_text: String,
     spinner_lines: Vec<usize>,
     content_range: (usize, usize),
     width: u16,
@@ -508,6 +511,7 @@ impl ToolLineBuilder {
         };
         Self {
             lines: Vec::new(),
+            copy_text: String::new(),
             spinner_lines: Vec::new(),
             content_range: (0, 0),
             width: width.saturating_sub(outer_indent.len() as u16),
@@ -525,13 +529,23 @@ impl ToolLineBuilder {
             theme::current().tool_prefix,
         )];
         spans.extend(style_tool_header(tool_name, header));
+        let mut copy = format!("{tool_name}> {header}");
         if let Some(ann) = annotation {
             spans.push(Span::styled(
                 format!(" ({ann})"),
                 theme::current().tool_annotation,
             ));
+            write!(copy, " ({ann})").unwrap();
         }
         self.lines.push(Line::from(spans));
+        self.copy_text = copy;
+    }
+
+    fn push_copy(&mut self, text: &str) {
+        if !self.copy_text.is_empty() {
+            self.copy_text.push('\n');
+        }
+        self.copy_text.push_str(text);
     }
 
     fn prepend_indicator(&mut self, indicator: Indicator, started_at: Instant) {
@@ -568,6 +582,12 @@ impl ToolLineBuilder {
             self.lines.push(line);
         }
         self.content_range = (start, self.lines.len());
+        if let Some(ToolInput::Code { code, .. }) = input {
+            self.push_copy(code.trim_end());
+        }
+        if let Some(text) = output.and_then(|o| o.structured_display_text()) {
+            self.push_copy(&text);
+        }
     }
 
     fn push_resolved_output(
@@ -602,6 +622,7 @@ impl ToolLineBuilder {
                 ToolKind::Index => self.push_index_body(text),
                 _ => push_text_lines(&mut self.lines, text, TOOL_BODY_INDENT),
             }
+            self.push_copy(text);
             if matches!(self.keep, Keep::Head) {
                 self.push_truncation_count(resolved.skipped);
             }
@@ -708,6 +729,7 @@ impl ToolLineBuilder {
         self.spinner_lines.iter_mut().for_each(|l| *l += 3);
         self.content_range.0 += 3;
         self.content_range.1 += 3;
+        self.copy_text.insert(0, '\n');
     }
 
     fn finish(
@@ -733,6 +755,7 @@ impl ToolLineBuilder {
         );
         ToolLines {
             lines: self.lines,
+            copy_text: self.copy_text,
             highlight,
             spinner_lines: self.spinner_lines,
             content_indent,

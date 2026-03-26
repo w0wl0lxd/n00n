@@ -262,46 +262,6 @@ impl DisplayMessage {
         }
     }
 
-    /// Source of truth for `Segment::copy_text`. Tool messages reconstruct
-    /// from structured data (diffs, grep, etc.); non-tool messages return raw
-    /// text (preserving markdown).
-    pub fn copy_text(&self) -> String {
-        match &self.role {
-            DisplayRole::Tool(t) => {
-                let name = t.name;
-                let (header, body) = self.text.split_once('\n').unwrap_or((&self.text, ""));
-                let mut out = format!("{name}> {header}");
-                if let Some(ToolInput::Code { code, .. }) = self.tool_input.as_deref() {
-                    out.push('\n');
-                    out.push_str(code.trim_end());
-                }
-                match self.tool_output.as_deref() {
-                    Some(
-                        structured @ (ToolOutput::Diff { .. }
-                        | ToolOutput::ReadCode { .. }
-                        | ToolOutput::ReadDir { .. }
-                        | ToolOutput::WriteCode { .. }
-                        | ToolOutput::MemoryWrite { .. }
-                        | ToolOutput::GrepResult { .. }
-                        | ToolOutput::GlobResult { .. }
-                        | ToolOutput::TodoList(_)),
-                    ) => {
-                        out.push('\n');
-                        out.push_str(&structured.as_display_text());
-                    }
-                    Some(ToolOutput::Batch { .. }) => {}
-                    _ if !body.is_empty() => {
-                        out.push('\n');
-                        out.push_str(body);
-                    }
-                    _ => {}
-                }
-                out
-            }
-            _ => self.text.clone(),
-        }
-    }
-
     pub fn plan(text: String, plan_path: String) -> Self {
         Self {
             role: DisplayRole::Assistant,
@@ -402,72 +362,5 @@ mod tests {
     #[test_case(0, 5, 0    ; "clamp_underflow")]
     fn apply_scroll_delta_cases(offset: u16, delta: i32, expected: u16) {
         assert_eq!(apply_scroll_delta(offset, delta), expected);
-    }
-
-    fn tool_msg(text: &str) -> DisplayMessage {
-        DisplayMessage::new(
-            DisplayRole::Tool(Box::new(ToolRole {
-                id: "t1".into(),
-                status: ToolStatus::Success,
-                name: "read",
-            })),
-            text.into(),
-        )
-    }
-
-    #[test]
-    fn copy_text_non_tool_returns_text() {
-        let msg = DisplayMessage::new(DisplayRole::Assistant, "hello\nworld".into());
-        assert_eq!(msg.copy_text(), "hello\nworld");
-    }
-
-    #[test]
-    fn copy_text_tool_structured_output_uses_as_display_text() {
-        let mut msg = tool_msg("read /src/main.rs\nignored body");
-        msg.tool_output = Some(Arc::new(ToolOutput::ReadCode {
-            path: "main.rs".into(),
-            start_line: 1,
-            lines: vec!["fn main() {}".into()],
-            total_lines: 1,
-            instructions: None,
-        }));
-        assert_eq!(msg.copy_text(), "read> read /src/main.rs\n1: fn main() {}");
-    }
-
-    #[test]
-    fn copy_text_tool_with_code_input() {
-        let mut msg = tool_msg("bash\nold body");
-        msg.tool_input = Some(Arc::new(ToolInput::Code {
-            language: "bash".into(),
-            code: "echo hi\n".into(),
-        }));
-        msg.tool_output = Some(Arc::new(ToolOutput::Plain("done".into())));
-        assert_eq!(msg.copy_text(), "read> bash\necho hi\nold body");
-    }
-
-    #[test_case("header\nbody text", Some(ToolOutput::Plain("done".into())), "read> header\nbody text" ; "plain_falls_through_to_body")]
-    #[test_case("header only",       None,                                      "read> header only"       ; "no_output_no_body")]
-    fn copy_text_tool_fallback(text: &str, output: Option<ToolOutput>, expected: &str) {
-        let mut msg = tool_msg(text);
-        msg.tool_output = output.map(Arc::new);
-        assert_eq!(msg.copy_text(), expected);
-    }
-
-    #[test]
-    fn copy_text_tool_batch_excludes_children() {
-        use maki_agent::{BatchToolEntry, BatchToolStatus};
-        let mut msg = tool_msg("batch\n3 tools ran");
-        msg.tool_output = Some(Arc::new(ToolOutput::Batch {
-            entries: vec![BatchToolEntry {
-                tool: "read".into(),
-                summary: "file.rs".into(),
-                status: BatchToolStatus::Success,
-                input: None,
-                output: Some(ToolOutput::Plain("contents".into())),
-                annotation: None,
-            }],
-            text: "ignored".into(),
-        }));
-        assert_eq!(msg.copy_text(), "read> batch");
     }
 }

@@ -247,6 +247,20 @@ impl ToolOutput {
         }
     }
 
+    pub fn structured_display_text(&self) -> Option<String> {
+        match self {
+            Self::Diff { .. }
+            | Self::ReadCode { .. }
+            | Self::ReadDir { .. }
+            | Self::WriteCode { .. }
+            | Self::MemoryWrite { .. }
+            | Self::GrepResult { .. }
+            | Self::GlobResult { .. }
+            | Self::TodoList(_) => Some(self.as_display_text()),
+            _ => None,
+        }
+    }
+
     pub fn is_empty_result(&self) -> bool {
         match self {
             Self::GlobResult { files } => files.is_empty(),
