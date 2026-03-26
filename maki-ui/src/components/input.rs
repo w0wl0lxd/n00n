@@ -232,7 +232,6 @@ impl InputBox {
             self.history_index = None;
             let draft = mem::take(&mut self.draft);
             self.set_input(draft);
-            self.buffer.move_to_end();
         }
     }
 
@@ -650,6 +649,12 @@ mod tests {
         type_text(&mut input, "line1");
         input.buffer.add_line();
         type_text(&mut input, "line2");
+        assert!(input.is_at_last_line());
+        input.history_up();
+        input.history_down();
+        assert_eq!(input.buffer.value(), "line1\nline2");
+        assert!(input.is_at_first_line());
+
         input.submit();
         input.history_up();
         assert_eq!(input.buffer.value(), "line1\nline2");
