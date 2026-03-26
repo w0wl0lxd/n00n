@@ -2427,4 +2427,19 @@ mod tests {
             "auto-scroll should not show beginning of streaming text"
         );
     }
+
+    #[test]
+    fn batch_parent_copy_text_excludes_children() {
+        let mut panel = MessagesPanel::new(UiConfig::default());
+        let mut entry = batch_entry("read", "file.rs", BatchToolStatus::Success);
+        entry.output = Some(ToolOutput::Plain("file contents".into()));
+        let entries = vec![entry];
+        batch_start(&mut panel, entries.clone());
+        batch_done(&mut panel, entries);
+        rebuild(&mut panel);
+        let parent = seg_copy(&panel, "b1");
+        assert!(!parent.contains("file contents"));
+        let child = seg_copy(&panel, "b1__0");
+        assert!(child.contains("file contents"));
+    }
 }

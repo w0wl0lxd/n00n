@@ -289,18 +289,7 @@ impl DisplayMessage {
                         out.push('\n');
                         out.push_str(&structured.as_display_text());
                     }
-                    Some(ToolOutput::Batch { entries, .. }) => {
-                        for entry in entries {
-                            out.push_str(&format!("\n  {} {}", entry.tool, entry.summary));
-                            if let Some(output) = &entry.output {
-                                let text = output.as_display_text();
-                                if !text.is_empty() {
-                                    out.push('\n');
-                                    out.push_str(&text);
-                                }
-                            }
-                        }
-                    }
+                    Some(ToolOutput::Batch { .. }) => {}
                     _ if !body.is_empty() => {
                         out.push('\n');
                         out.push_str(body);
@@ -465,10 +454,18 @@ mod tests {
     }
 
     #[test]
-    fn copy_text_tool_batch_empty_entries() {
+    fn copy_text_tool_batch_excludes_children() {
+        use maki_agent::{BatchToolEntry, BatchToolStatus};
         let mut msg = tool_msg("batch\n3 tools ran");
         msg.tool_output = Some(Arc::new(ToolOutput::Batch {
-            entries: vec![],
+            entries: vec![BatchToolEntry {
+                tool: "read".into(),
+                summary: "file.rs".into(),
+                status: BatchToolStatus::Success,
+                input: None,
+                output: Some(ToolOutput::Plain("contents".into())),
+                annotation: None,
+            }],
             text: "ignored".into(),
         }));
         assert_eq!(msg.copy_text(), "read> batch");
