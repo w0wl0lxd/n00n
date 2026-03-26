@@ -86,7 +86,17 @@ impl InputBox {
                 return InputAction::None;
             }
             KeyCode::Tab | KeyCode::Esc => return InputAction::Passthrough(key),
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            KeyCode::Enter
+                if key.modifiers.intersects(
+                    KeyModifiers::SHIFT
+                        .union(KeyModifiers::CONTROL)
+                        .union(KeyModifiers::ALT),
+                ) =>
+            {
+                self.buffer.add_line();
+                return InputAction::ContinueLine;
+            }
+            KeyCode::Char('j') if key.modifiers == KeyModifiers::CONTROL => {
                 self.buffer.add_line();
                 return InputAction::ContinueLine;
             }

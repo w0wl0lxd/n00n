@@ -50,11 +50,11 @@ pub(crate) fn resume(terminal: &mut ratatui::DefaultTerminal) {
 }
 
 fn push_keyboard_enhancement() {
-    stdout()
-        .execute(PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-        ))
-        .ok();
+    if let Err(e) = stdout().execute(PushKeyboardEnhancementFlags(
+        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+    )) {
+        tracing::warn!(error = %e, "failed to enable keyboard enhancement (Kitty protocol)");
+    }
 }
 
 pub(crate) fn open_in_editor(

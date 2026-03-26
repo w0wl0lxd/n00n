@@ -1,6 +1,6 @@
 use crate::components::ModalScroll;
 use crate::components::Overlay;
-use crate::components::keybindings::{KEYBINDS, ResolvedLabel, all_contexts, key};
+use crate::components::keybindings::{ALT_SEP, KEYBINDS, ResolvedLabel, all_contexts, key};
 use crate::components::modal::Modal;
 use crate::components::scrollbar::render_vertical_scrollbar;
 use crate::theme;
@@ -13,14 +13,14 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 const TITLE: &str = " Keybindings ";
-const KEY_COL_WIDTH: usize = 20;
+const KEY_COL_GAP: usize = 2;
+const PREFIX_TOP: &str = "  ";
+const PREFIX_CHILD: &str = "    ";
 
 pub struct HelpModal {
     open: bool,
     scroll: ModalScroll,
 }
-
-const ALT_SEP: &str = " / ";
 
 fn key_spans(label: ResolvedLabel, pad: usize, prefix: &str) -> Vec<Span<'static>> {
     let theme = theme::current();
@@ -33,19 +33,41 @@ fn key_spans(label: ResolvedLabel, pad: usize, prefix: &str) -> Vec<Span<'static
                 theme.keybind_key,
             )]
         }
-        ResolvedLabel::Alt(a, b) => {
-            let aw = UnicodeWidthStr::width(a);
-            let bw = UnicodeWidthStr::width(b);
-            let sep_w = UnicodeWidthStr::width(ALT_SEP);
-            let content_w = aw + sep_w + bw;
-            let trailing = pad.saturating_sub(content_w);
-            vec![
-                Span::styled(format!("{prefix}{a}"), theme.keybind_key),
-                Span::styled(ALT_SEP, theme.keybind_desc),
-                Span::styled(format!("{b}{:trailing$}", ""), theme.keybind_key),
-            ]
-        }
+        ResolvedLabel::Alt(a, b) => multi_key_spans(&[a, b], pad, prefix, &theme),
+        ResolvedLabel::Multi(keys) => multi_key_spans(keys, pad, prefix, &theme),
     }
+}
+
+fn multi_key_spans(
+    keys: &[&'static str],
+    pad: usize,
+    prefix: &str,
+    theme: &crate::theme::Theme,
+) -> Vec<Span<'static>> {
+    let sep_w = UnicodeWidthStr::width(ALT_SEP);
+    let content_w: usize = keys
+        .iter()
+        .map(|k| UnicodeWidthStr::width(*k))
+        .sum::<usize>()
+        + sep_w * keys.len().saturating_sub(1);
+    let trailing = pad.saturating_sub(content_w);
+    let mut spans = Vec::with_capacity(keys.len() * 2);
+    for (i, k) in keys.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(ALT_SEP, theme.keybind_desc));
+        }
+        let text = if i == 0 && i == keys.len() - 1 {
+            format!("{prefix}{k}{:trailing$}", "")
+        } else if i == 0 {
+            format!("{prefix}{k}")
+        } else if i == keys.len() - 1 {
+            format!("{k}{:trailing$}", "")
+        } else {
+            (*k).to_string()
+        };
+        spans.push(Span::styled(text, theme.keybind_key));
+    }
+    spans
 }
 
 impl HelpModal {
@@ -94,6 +116,14 @@ impl HelpModal {
         let mut lines: Vec<Line> = Vec::new();
         let theme = theme::current();
 
+        let key_col_width = KEYBINDS
+            .iter()
+            .filter(|kb| kb.platform.is_visible())
+            .map(|kb| kb.label.resolve().display_width())
+            .max()
+            .unwrap_or(0)
+            + KEY_COL_GAP;
+
         let mut first = true;
         for ctx in all_contexts() {
             if ctx.parent().is_some() {
@@ -113,7 +143,7 @@ impl HelpModal {
                 .iter()
                 .filter(|kb| kb.context == ctx && kb.platform.is_visible())
             {
-                let mut spans = key_spans(kb.label.resolve(), KEY_COL_WIDTH, "  ");
+                let mut spans = key_spans(kb.label.resolve(), key_col_width, PREFIX_TOP);
                 spans.push(Span::styled(kb.description, theme.keybind_desc));
                 lines.push(Line::from(spans));
             }
@@ -135,7 +165,11 @@ impl HelpModal {
                     theme.keybind_section,
                 )));
                 for kb in child_binds {
-                    let mut spans = key_spans(kb.label.resolve(), KEY_COL_WIDTH - 2, "    ");
+                    let mut spans = key_spans(
+                        kb.label.resolve(),
+                        key_col_width - KEY_COL_GAP,
+                        PREFIX_CHILD,
+                    );
                     spans.push(Span::styled(kb.description, theme.keybind_desc));
                     lines.push(Line::from(spans));
                 }

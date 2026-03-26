@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use strum::EnumIter;
+use unicode_width::UnicodeWidthStr;
 
 macro_rules! mod_key {
     ($suffix:expr) => {
@@ -221,12 +222,36 @@ pub enum KeyLabel {
     Alt(&'static str, &'static str),
     /// Alt on Mac, Single (first) on other platforms
     MacAlt(&'static str, &'static str),
+    /// Multi on Mac, Multi (first slice) on other platforms
+    MacMulti(&'static [&'static str], &'static [&'static str]),
 }
+
+pub const ALT_SEP: &str = " / ";
 
 #[derive(Debug, Clone, Copy)]
 pub enum ResolvedLabel {
     Single(&'static str),
     Alt(&'static str, &'static str),
+    Multi(&'static [&'static str]),
+}
+
+impl ResolvedLabel {
+    pub fn display_width(self) -> usize {
+        match self {
+            Self::Single(s) => UnicodeWidthStr::width(s),
+            Self::Alt(a, b) => {
+                let sep_w = UnicodeWidthStr::width(ALT_SEP);
+                UnicodeWidthStr::width(a) + sep_w + UnicodeWidthStr::width(b)
+            }
+            Self::Multi(keys) => {
+                let sep_w = UnicodeWidthStr::width(ALT_SEP);
+                keys.iter()
+                    .map(|k| UnicodeWidthStr::width(*k))
+                    .sum::<usize>()
+                    + sep_w * keys.len().saturating_sub(1)
+            }
+        }
+    }
 }
 
 impl KeyLabel {
@@ -241,6 +266,13 @@ impl KeyLabel {
                     ResolvedLabel::Single(a)
                 }
             }
+            Self::MacMulti(normal, mac) => {
+                if cfg!(target_os = "macos") {
+                    ResolvedLabel::Multi(mac)
+                } else {
+                    ResolvedLabel::Multi(normal)
+                }
+            }
         }
     }
 
@@ -249,6 +281,7 @@ impl KeyLabel {
         match self.resolve() {
             ResolvedLabel::Single(s) => s.to_string(),
             ResolvedLabel::Alt(a, b) => format!("{a}/{b}"),
+            ResolvedLabel::Multi(keys) => keys.join("/"),
         }
     }
 }
@@ -304,7 +337,7 @@ pub const KEYBINDS: &[Keybind] = &[
         platform: Platform::All,
     },
     Keybind {
-        label: KeyLabel::MacAlt("\\+Enter", "⇧↵"),
+        label: KeyLabel::MacMulti(&["\\+Enter", "Ctrl+J", "Alt+Enter"], &["⇧↵", "⌃J", "⌥↵"]),
         description: "Newline",
         context: KeybindContext::Editing,
         platform: Platform::All,
