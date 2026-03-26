@@ -64,6 +64,7 @@ impl SessionState {
         let context_size = session.meta.context_size;
 
         Self {
+            thinking: session.meta.thinking.map(Into::into).unwrap_or_default(),
             session,
             model,
             token_usage,
@@ -71,7 +72,6 @@ impl SessionState {
             mode,
             plan,
             warnings,
-            thinking: ThinkingConfig::Off,
         }
     }
 
@@ -93,6 +93,7 @@ impl SessionState {
         self.session.meta.plan_path = self.plan.path().map(|p| p.to_string_lossy().into_owned());
         self.session.meta.plan_written = self.plan.pending_plan().is_some();
         self.session.meta.session_rules = rules_to_stored(&permissions.session_rules_snapshot());
+        self.session.meta.thinking = Some(self.thinking.into());
         self.session.updated_at = maki_storage::now_epoch();
         self.session.update_title_if_default();
     }

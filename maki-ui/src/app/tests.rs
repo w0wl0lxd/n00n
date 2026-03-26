@@ -2216,3 +2216,16 @@ fn thinking_non_anthropic_flashes_error() {
     assert_eq!(app.state.thinking, ThinkingConfig::Off);
     assert!(app.status_bar.flash_text().is_some());
 }
+
+#[test]
+fn thinking_restored_from_session_meta() {
+    use maki_storage::sessions::StoredThinking;
+
+    let tmp = TempDir::new().unwrap();
+    let storage = DataDir::from_path(tmp.path().to_path_buf());
+    let mut session = AppSession::new("test-model", "/tmp/test");
+    session.meta.thinking = Some(StoredThinking::Budget { tokens: 4096 });
+
+    let state = SessionState::from_session(session, &test_model(), &storage);
+    assert_eq!(state.thinking, ThinkingConfig::Budget(4096));
+}

@@ -58,6 +58,8 @@ pub struct SessionMeta {
     pub queued_messages: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<StoredSubagent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<StoredThinking>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +107,14 @@ pub struct StoredRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     pub effect: StoredEffect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "kind")]
+pub enum StoredThinking {
+    Off,
+    Adaptive,
+    Budget { tokens: u32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -822,6 +832,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::StoredThinking;
     use super::{
         CWD_INDEX_FILE, DEFAULT_TITLE, MAX_TITLE_LEN, SESSION_VERSION, generate_title,
         load_cwd_index, update_cwd_index,
@@ -1223,5 +1234,36 @@ mod tests {
             err,
             SessionError::VersionMismatch { found: 999, .. }
         ));
+    }
+
+    #[test_case(StoredThinking::Off ; "off")]
+    #[test_case(StoredThinking::Adaptive ; "adaptive")]
+    #[test_case(StoredThinking::Budget { tokens: 4096 } ; "budget")]
+    fn stored_thinking_serde_round_trip(variant: StoredThinking) {
+        let json = serde_json::to_string(&variant).unwrap();
+        let parsed: StoredThinking = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, variant);
+    }
+
+    #[test]
+    fn session_meta_thinking_backward_compat() {
+        let json = r#"{"mode":"build"}"#;
+        let meta: super::SessionMeta = serde_json::from_str(json).unwrap();
+        assert!(meta.thinking.is_none());
+    }
+
+    #[test]
+    fn session_thinking_persists_through_save_load() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.meta.thinking = Some(StoredThinking::Budget { tokens: 8192 });
+        session.save_to(dir).unwrap();
+
+        let loaded = TestSession::load_from(&session.id, dir).unwrap();
+        assert_eq!(
+            loaded.meta.thinking,
+            Some(StoredThinking::Budget { tokens: 8192 })
+        );
     }
 }

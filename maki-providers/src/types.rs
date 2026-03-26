@@ -6,7 +6,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use maki_storage::sessions::TitleSource;
+use maki_storage::sessions::{StoredThinking, TitleSource};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use strum::{Display, IntoStaticStr};
@@ -273,7 +273,27 @@ impl std::fmt::Display for ThinkingConfig {
         match self {
             Self::Off => f.write_str("off"),
             Self::Adaptive => f.write_str("adaptive"),
-            Self::Budget(n) => write!(f, "budget: {n}"),
+            Self::Budget(n) => write!(f, "{n}"),
+        }
+    }
+}
+
+impl From<StoredThinking> for ThinkingConfig {
+    fn from(s: StoredThinking) -> Self {
+        match s {
+            StoredThinking::Off => Self::Off,
+            StoredThinking::Adaptive => Self::Adaptive,
+            StoredThinking::Budget { tokens } => Self::Budget(tokens),
+        }
+    }
+}
+
+impl From<ThinkingConfig> for StoredThinking {
+    fn from(c: ThinkingConfig) -> Self {
+        match c {
+            ThinkingConfig::Off => Self::Off,
+            ThinkingConfig::Adaptive => Self::Adaptive,
+            ThinkingConfig::Budget(n) => Self::Budget { tokens: n },
         }
     }
 }
@@ -348,13 +368,6 @@ mod tests {
     }
 
     #[test]
-    fn thinking_config_display() {
-        assert_eq!(ThinkingConfig::Off.to_string(), "off");
-        assert_eq!(ThinkingConfig::Adaptive.to_string(), "adaptive");
-        assert_eq!(ThinkingConfig::Budget(10000).to_string(), "budget: 10000");
-    }
-
-    #[test]
     fn thinking_apply_to_body() {
         let mut off = json!({"model": "test"});
         ThinkingConfig::Off.apply_to_body(&mut off);
@@ -380,5 +393,14 @@ mod tests {
     fn thinking_parse(input: &str, current: ThinkingConfig, expected: Result<ThinkingConfig, ()>) {
         let result = ThinkingConfig::parse(input, current).map_err(|_| ());
         assert_eq!(result, expected);
+    }
+
+    #[test_case(ThinkingConfig::Off      ; "off")]
+    #[test_case(ThinkingConfig::Adaptive ; "adaptive")]
+    #[test_case(ThinkingConfig::Budget(8192) ; "budget")]
+    fn thinking_display_round_trip(config: ThinkingConfig) {
+        let s = config.to_string();
+        let parsed = ThinkingConfig::parse(&s, ThinkingConfig::Off).unwrap();
+        assert_eq!(parsed, config);
     }
 }
