@@ -2,7 +2,7 @@ use crate::components::form::{overlay_impl, render_form, selected_prefix};
 use crate::components::hint_line;
 use crate::components::keybindings::key;
 use crate::markdown::text_to_lines;
-use crate::text_buffer::TextBuffer;
+use crate::text_buffer::{TextBuffer, is_newline_key};
 use crate::theme;
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -22,6 +22,7 @@ const HINT_PAIRS_TOGGLE: &[(&str, &str)] = &[
     ("Tab", "submit"),
     ("Esc", "dismiss"),
 ];
+const HINT_PAIRS_CUSTOM: &[(&str, &str)] = &[("Enter", "confirm"), ("Esc", "back")];
 const NO_ANSWER: &str = "(no answer)";
 const MAX_QUESTION_LINES_NO_OPTIONS: usize = 10;
 const SEPARATOR: &str = "─";
@@ -193,6 +194,11 @@ impl QuestionForm {
             return QuestionFormAction::Dismiss;
         }
 
+        if is_newline_key(&key) {
+            self.buffer.add_line();
+            return QuestionFormAction::Consumed;
+        }
+
         match key.code {
             KeyCode::Enter => {
                 let text = self.buffer.value().trim().to_string();
@@ -289,7 +295,9 @@ impl QuestionForm {
         }
 
         lines.push(Line::default());
-        let pairs = if !self.on_confirm_tab() && self.current_question_is_multi() {
+        let pairs = if self.editing_custom {
+            HINT_PAIRS_CUSTOM
+        } else if !self.on_confirm_tab() && self.current_question_is_multi() {
             HINT_PAIRS_TOGGLE
         } else {
             HINT_PAIRS
@@ -419,21 +427,32 @@ impl QuestionForm {
     }
 
     fn render_text_input(&self, lines: &mut Vec<Line<'static>>) {
-        let val = self.buffer.value();
-        let byte_x = TextBuffer::char_to_byte(&val, self.buffer.x());
-        let (before, after) = val.split_at(byte_x);
-        let mut chars = after.chars();
-        let cursor_ch = chars.next().map_or(" ".to_string(), |c| c.to_string());
-        let mut spans = vec![
-            Span::styled("  → ", theme::current().form_arrow),
-            Span::raw(before.to_string()),
-            Span::styled(cursor_ch, Style::new().reversed()),
-        ];
-        let rest: String = chars.collect();
-        if !rest.is_empty() {
-            spans.push(Span::raw(rest));
+        let cursor_y = self.buffer.y();
+        let t = theme::current();
+        for (i, buf_line) in self.buffer.lines().iter().enumerate() {
+            let prefix = if i == 0 { "  → " } else { "    " };
+            if i == cursor_y {
+                let byte_x = TextBuffer::char_to_byte(buf_line, self.buffer.x());
+                let (before, after) = buf_line.split_at(byte_x);
+                let mut chars = after.chars();
+                let cursor_ch = chars.next().map_or(" ".to_string(), |c| c.to_string());
+                let mut spans = vec![
+                    Span::styled(prefix, t.form_arrow),
+                    Span::raw(before.to_string()),
+                    Span::styled(cursor_ch, Style::new().reversed()),
+                ];
+                let rest: String = chars.collect();
+                if !rest.is_empty() {
+                    spans.push(Span::raw(rest));
+                }
+                lines.push(Line::from(spans));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, t.form_arrow),
+                    Span::raw(buf_line.clone()),
+                ]));
+            }
         }
-        lines.push(Line::from(spans));
     }
 
     fn render_confirm(&self, lines: &mut Vec<Line<'static>>, inner_width: u16) {
@@ -516,6 +535,16 @@ mod tests {
     use super::*;
     use crate::components::key;
     use crate::components::keybindings::key as kb;
+    use crossterm::event::{KeyEventKind, KeyEventState, KeyModifiers};
+
+    fn key_with_mods(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
 
     fn assert_submit(action: QuestionFormAction) -> Vec<Vec<String>> {
         match action {
@@ -905,5 +934,28 @@ mod tests {
             form.format_answers_display(),
             "Q: Language?\n  → **Rust**\nQ: Framework?\n  → **Actix**"
         );
+    }
+
+    #[test]
+    fn custom_input_multiline() {
+        let mut form = QuestionForm::new();
+        form.open(single_q_with_options());
+        enter_custom_mode(&mut form);
+
+        for c in "first".chars() {
+            form.handle_key(key(KeyCode::Char(c)));
+        }
+        form.handle_key(key_with_mods(KeyCode::Enter, KeyModifiers::SHIFT));
+        for c in "second".chars() {
+            form.handle_key(key(KeyCode::Char(c)));
+        }
+
+        form.handle_key(key(KeyCode::Up));
+        assert_eq!(form.buffer.y(), 0, "up navigates to previous line");
+        form.handle_key(key(KeyCode::Down));
+        assert_eq!(form.buffer.y(), 1, "down navigates back");
+
+        let action = form.handle_key(key(KeyCode::Enter));
+        assert_eq!(assert_submit(action), vec![vec!["first\nsecond"]]);
     }
 }

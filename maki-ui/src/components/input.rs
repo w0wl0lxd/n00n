@@ -2,10 +2,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app::shell::parse_shell_prefix;
 use crate::highlight;
-use crate::text_buffer::{EditResult, TextBuffer};
+use crate::text_buffer::{EditResult, TextBuffer, is_newline_key};
 use crate::theme;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 use maki_storage::input_history::InputHistory;
 use std::mem;
 
@@ -77,26 +77,8 @@ impl InputBox {
                 self.history_down();
                 return InputAction::None;
             }
-            KeyCode::Up => {
-                self.buffer.move_up();
-                return InputAction::None;
-            }
-            KeyCode::Down => {
-                self.buffer.move_down();
-                return InputAction::None;
-            }
             KeyCode::Tab | KeyCode::Esc => return InputAction::Passthrough(key),
-            KeyCode::Enter
-                if key.modifiers.intersects(
-                    KeyModifiers::SHIFT
-                        .union(KeyModifiers::CONTROL)
-                        .union(KeyModifiers::ALT),
-                ) =>
-            {
-                self.buffer.add_line();
-                return InputAction::ContinueLine;
-            }
-            KeyCode::Char('j') if key.modifiers == KeyModifiers::CONTROL => {
+            _ if is_newline_key(&key) => {
                 self.buffer.add_line();
                 return InputAction::ContinueLine;
             }

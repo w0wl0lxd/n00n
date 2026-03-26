@@ -1,5 +1,15 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+pub fn is_newline_key(key: &KeyEvent) -> bool {
+    (matches!(key.code, KeyCode::Enter)
+        && key.modifiers.intersects(
+            KeyModifiers::SHIFT
+                .union(KeyModifiers::CONTROL)
+                .union(KeyModifiers::ALT),
+        ))
+        || (key.code == KeyCode::Char('j') && key.modifiers == KeyModifiers::CONTROL)
+}
+
 const TAB_SPACES: &str = "  ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -384,6 +394,14 @@ impl TextBuffer {
                 self.move_end();
                 EditResult::Moved
             }
+            KeyCode::Up => {
+                self.move_up();
+                EditResult::Moved
+            }
+            KeyCode::Down => {
+                self.move_down();
+                EditResult::Moved
+            }
             _ => EditResult::Ignored,
         }
     }
@@ -644,6 +662,8 @@ mod tests {
     #[test_case(super_key(KeyCode::Backspace),   EditResult::Changed ; "super_changed")]
     #[test_case(super_key(KeyCode::Left),        EditResult::Moved   ; "super_moved")]
     #[test_case(super_key(KeyCode::Char('z')),   EditResult::Ignored ; "super_ignored")]
+    #[test_case(plain(KeyCode::Up),              EditResult::Moved   ; "plain_up")]
+    #[test_case(plain(KeyCode::Down),            EditResult::Moved   ; "plain_down")]
     fn handle_key_returns_correct_result(key: KeyEvent, expected: EditResult) {
         let mut buf = TextBuffer::new("hello world".into());
         buf.raw_x = 5;
