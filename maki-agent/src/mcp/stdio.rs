@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use async_lock::Mutex;
-use async_process::Child;
+
 use futures_lite::io::BufReader;
 use futures_lite::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use serde_json::Value;
@@ -21,20 +21,7 @@ type PendingMap = HashMap<u64, channel::Sender<Result<Value, McpError>>>;
 
 const MAX_BODY_SIZE: usize = 64 * 1024 * 1024;
 
-struct ChildGuard(Child);
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        unsafe {
-            libc::killpg(self.0.id() as i32, libc::SIGKILL);
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = self.0.kill();
-        }
-    }
-}
+use crate::ChildGuard;
 
 pub struct StdioTransport {
     name: Arc<str>,
@@ -142,7 +129,7 @@ impl StdioTransport {
             alive,
             _reader_task: reader_task,
             _stderr_task: stderr_task,
-            _child: ChildGuard(child),
+            _child: ChildGuard::new(child),
         })
     }
 
@@ -330,7 +317,7 @@ impl McpTransport for StdioTransport {
             self.alive.store(false, Ordering::Release);
             #[cfg(unix)]
             unsafe {
-                libc::killpg(self._child.0.id() as i32, libc::SIGTERM);
+                libc::killpg(self._child.id() as i32, libc::SIGTERM);
             }
             smol::Timer::after(Duration::from_millis(200)).await;
             // Drop of self._child (ChildGuard) sends SIGKILL to process group
@@ -346,48 +333,6 @@ impl McpTransport for StdioTransport {
     }
 
     fn child_pids(&self) -> Vec<u32> {
-        vec![self._child.0.id()]
-    }
-}
-
-#[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-
-    fn spawn_sleep() -> Child {
-        let mut std_cmd = std::process::Command::new("sleep");
-        std_cmd.arg("60");
-        unsafe {
-            std_cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-        let mut cmd: async_process::Command = std_cmd.into();
-        cmd.spawn().expect("failed to spawn sleep")
-    }
-
-    fn is_alive(pid: u32) -> bool {
-        unsafe { libc::kill(pid as i32, 0) == 0 }
-    }
-
-    fn wait_for_death(pid: u32) {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            if !is_alive(pid) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        panic!("process {pid} still alive after 2s");
-    }
-
-    #[test]
-    fn drop_kills_child_process() {
-        let child = spawn_sleep();
-        let pid = child.id();
-        assert!(is_alive(pid));
-        drop(ChildGuard(child));
-        wait_for_death(pid);
+        vec![self._child.id()]
     }
 }

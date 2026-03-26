@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-use async_process::{Child, Command, Stdio};
+use async_process::{Command, Stdio};
 use futures_lite::StreamExt;
 use futures_lite::io::{AsyncBufReadExt, BufReader};
 use maki_agent::{
@@ -16,7 +16,6 @@ use super::App;
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 const SHELL_TIMEOUT: Duration = Duration::from_secs(300);
-const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ShellPrefix {
@@ -224,7 +223,7 @@ async fn run_command(
     if let Some(stderr) = child.stderr.take() {
         spawn_line_reader(BufReader::new(stderr), line_tx.clone());
     }
-    let mut guard = ChildGuard::new(child);
+    let mut guard = maki_agent::ChildGuard::new(child);
     drop(line_tx);
 
     let mut output = String::new();
@@ -281,7 +280,7 @@ async fn run_command(
     }
 
     let status =
-        race_deadline!(async { guard.wait().await.map_err(|e| format!("wait error: {e}")) });
+        race_deadline!(async { guard.status().await.map_err(|e| format!("wait error: {e}")) });
     match status {
         Ok(status) => {
             flush_output(tx, id, &output);
@@ -324,58 +323,6 @@ fn spawn_line_reader<R: futures_lite::io::AsyncRead + Unpin + Send + 'static>(
         }
     })
     .detach();
-}
-
-struct ChildGuard(Option<Child>);
-
-impl ChildGuard {
-    fn new(child: Child) -> Self {
-        Self(Some(child))
-    }
-
-    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        match self.0.take() {
-            Some(mut child) => child.status().await,
-            None => Ok(std::process::ExitStatus::default()),
-        }
-    }
-
-    async fn kill_and_reap(&mut self) {
-        if let Some(mut child) = self.0.take() {
-            Self::signal_kill(&mut child);
-            futures_lite::future::or(
-                async {
-                    let _ = child.status().await;
-                },
-                async {
-                    smol::Timer::after(REAP_TIMEOUT).await;
-                },
-            )
-            .await;
-        }
-    }
-
-    fn signal_kill(child: &mut Child) {
-        #[cfg(unix)]
-        unsafe {
-            libc::killpg(child.id() as i32, libc::SIGKILL);
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = child.kill();
-        }
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
-            Self::signal_kill(&mut child);
-            std::thread::spawn(move || {
-                let _ = smol::block_on(child.status());
-            });
-        }
-    }
 }
 
 #[cfg(test)]

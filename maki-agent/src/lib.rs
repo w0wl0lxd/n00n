@@ -6,6 +6,8 @@
 
 pub mod agent;
 pub mod cancel;
+pub mod child_guard;
+pub use child_guard::ChildGuard;
 pub mod mcp;
 pub use mcp::config::McpServerInfo;
 pub use mcp::config::McpServerStatus;

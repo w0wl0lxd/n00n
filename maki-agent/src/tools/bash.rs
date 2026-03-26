@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-use async_process::{Child, Command};
+use async_process::Command;
 use futures_lite::StreamExt;
 use futures_lite::io::{AsyncBufReadExt, BufReader};
 use maki_tool_macro::Tool;
@@ -16,7 +16,6 @@ use super::{relative_path, truncate_output};
 use tracing::info;
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
-const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const RTK_REWRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
 static RTK_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
@@ -195,7 +194,7 @@ impl Bash {
         if let Some(stderr) = child.stderr.take() {
             spawn_line_reader(BufReader::new(stderr), line_tx.clone());
         }
-        let mut guard = ChildGuard::new(child);
+        let mut guard = crate::ChildGuard::new(child);
         drop(line_tx);
 
         let mut output = String::new();
@@ -251,7 +250,7 @@ impl Bash {
         }
 
         let status =
-            race_deadline!(async { guard.wait().await.map_err(|e| format!("wait error: {e}")) });
+            race_deadline!(async { guard.status().await.map_err(|e| format!("wait error: {e}")) });
         match status {
             Ok(status) => {
                 flush_output(ctx, &output, &mut last_len);
@@ -311,52 +310,6 @@ impl super::ToolDefaults for Bash {
     fn permission(&self) -> Option<String> {
         let (command, _) = self.resolved();
         Some(command.to_string())
-    }
-}
-
-struct ChildGuard(Option<Child>);
-
-impl ChildGuard {
-    fn new(child: Child) -> Self {
-        Self(Some(child))
-    }
-
-    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        self.0.take().unwrap().status().await
-    }
-
-    async fn kill_and_reap(&mut self) {
-        if let Some(mut child) = self.0.take() {
-            Self::signal_kill(&mut child);
-            futures_lite::future::or(
-                async {
-                    let _ = child.status().await;
-                },
-                async {
-                    async_io::Timer::after(REAP_TIMEOUT).await;
-                },
-            )
-            .await;
-        }
-    }
-
-    fn signal_kill(child: &mut Child) {
-        #[cfg(unix)]
-        unsafe {
-            libc::killpg(child.id() as i32, libc::SIGKILL);
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = child.kill();
-        }
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        if let Some(child) = &mut self.0 {
-            Self::signal_kill(child);
-        }
     }
 }
 
@@ -514,7 +467,6 @@ mod tests {
         for _ in 0..200 {
             smol::Timer::after(Duration::from_millis(50)).await;
             if path.exists() {
-                smol::Timer::after(Duration::from_millis(50)).await;
                 return;
             }
         }
@@ -558,27 +510,6 @@ mod tests {
             let err = b.execute(&ctx).await.unwrap_err();
             assert!(err.contains("cancelled"));
             assert_pid_dead(&pidfile, "grandchild process should be dead").await;
-        });
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn future_drop_kills_process_group() {
-        smol::block_on(async {
-            let dir = tempfile::tempdir().unwrap();
-            let pidfile = dir.path().join("pid");
-            let cmd = format!("echo $$ > {}; sleep 300", pidfile.display());
-            let ctx = stub_ctx(&AgentMode::Build);
-            let mut b = bash(&cmd);
-            b.timeout = Some(10);
-
-            let pidpath = pidfile.clone();
-            let handle = smol::spawn(async move { b.execute(&ctx).await });
-
-            wait_for_pidfile(&pidpath).await;
-            drop(handle);
-
-            assert_pid_dead(&pidfile, "process group should be dead after future drop").await;
         });
     }
 }
