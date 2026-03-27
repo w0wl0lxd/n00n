@@ -299,6 +299,10 @@ pub fn history_to_display(
                         ContentBlock::Text { text } if !text.is_empty() => {
                             display.push(DisplayMessage::new(DisplayRole::Assistant, text.clone()));
                         }
+                        ContentBlock::Thinking { thinking, .. } if !thinking.is_empty() => {
+                            display
+                                .push(DisplayMessage::new(DisplayRole::Thinking, thinking.clone()));
+                        }
                         ContentBlock::ToolUse { id, name, input } => {
                             let static_name = ToolCall::static_name(name).unwrap_or("unknown");
                             let tool_call = ToolCall::from_api(name, input).ok();
@@ -838,5 +842,28 @@ mod tests {
         let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default());
         assert!(display[0].tool_output.is_none());
         assert!(display[0].text.contains("fn main"));
+    }
+
+    #[test]
+    fn history_to_display_thinking_blocks() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "reasoning".into(),
+                    signature: None,
+                },
+                ContentBlock::Text {
+                    text: "answer".into(),
+                },
+                ContentBlock::RedactedThinking { data: "x".into() },
+            ],
+            ..Default::default()
+        }];
+        let display = history_to_display(&msgs, &HashMap::new(), &ToolOutputLines::default());
+        assert_eq!(display.len(), 2);
+        assert_eq!(display[0].role, DisplayRole::Thinking);
+        assert_eq!(display[0].text, "reasoning");
+        assert_eq!(display[1].role, DisplayRole::Assistant);
     }
 }

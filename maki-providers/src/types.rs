@@ -78,6 +78,14 @@ pub enum ContentBlock {
     Text {
         text: String,
     },
+    Thinking {
+        thinking: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+    RedactedThinking {
+        data: String,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -402,5 +410,15 @@ mod tests {
         let s = config.to_string();
         let parsed = ThinkingConfig::parse(&s, ThinkingConfig::Off).unwrap();
         assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn thinking_serde_no_signature_omits_field() {
+        let block = ContentBlock::Thinking {
+            thinking: "x".into(),
+            signature: None,
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert!(json.get("signature").is_none());
     }
 }

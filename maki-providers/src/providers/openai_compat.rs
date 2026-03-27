@@ -173,7 +173,9 @@ pub fn convert_messages(messages: &[Message], system: &str) -> Vec<Value> {
                                 "content": content,
                             }));
                         }
-                        ContentBlock::ToolUse { .. } => {}
+                        ContentBlock::ToolUse { .. }
+                        | ContentBlock::Thinking { .. }
+                        | ContentBlock::RedactedThinking { .. } => {}
                     }
                 }
 
@@ -205,7 +207,10 @@ pub fn convert_messages(messages: &[Message], system: &str) -> Vec<Value> {
                                 }
                             }));
                         }
-                        ContentBlock::ToolResult { .. } | ContentBlock::Image { .. } => {}
+                        ContentBlock::ToolResult { .. }
+                        | ContentBlock::Image { .. }
+                        | ContentBlock::Thinking { .. }
+                        | ContentBlock::RedactedThinking { .. } => {}
                     }
                 }
 
@@ -307,6 +312,7 @@ pub async fn parse_sse(
     let mut lines = reader.lines();
 
     let mut text = String::new();
+    let mut reasoning_text = String::new();
     let mut tool_accumulators: Vec<ToolAccumulator> = Vec::new();
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
@@ -364,6 +370,7 @@ pub async fn parse_sse(
         if let Some(reasoning) = delta.reasoning_content
             && !reasoning.is_empty()
         {
+            reasoning_text.push_str(&reasoning);
             event_tx
                 .send_async(ProviderEvent::ThinkingDelta { text: reasoning })
                 .await?;
@@ -413,6 +420,13 @@ pub async fn parse_sse(
     }
 
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
+
+    if !reasoning_text.is_empty() {
+        content_blocks.push(ContentBlock::Thinking {
+            thinking: reasoning_text,
+            signature: None,
+        });
+    }
 
     if !text.is_empty() {
         content_blocks.push(ContentBlock::Text { text });
@@ -504,7 +518,10 @@ data: [DONE]\n";
             let resp = parse_sse(Cursor::new(sse.as_bytes()), &tx).await.unwrap();
 
             assert!(
-                matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Hello")
+                matches!(&resp.message.content[0], ContentBlock::Thinking { thinking, .. } if thinking == "Let me think...")
+            );
+            assert!(
+                matches!(&resp.message.content[1], ContentBlock::Text { text } if text == "Hello")
             );
 
             let mut thinking = Vec::new();

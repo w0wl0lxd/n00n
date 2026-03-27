@@ -256,11 +256,13 @@ struct MessageStartEvent {
 enum SseContentBlock {
     Text,
     Thinking,
+    RedactedThinking { data: String },
     ToolUse { id: String, name: String },
 }
 
 #[derive(Deserialize)]
 struct ContentBlockStartEvent {
+    index: usize,
     content_block: SseContentBlock,
 }
 
@@ -271,12 +273,15 @@ enum Delta {
     Text { text: String },
     #[serde(rename = "thinking_delta")]
     Thinking { thinking: String },
+    #[serde(rename = "signature_delta")]
+    Signature { signature: String },
     #[serde(rename = "input_json_delta")]
     InputJson { partial_json: String },
 }
 
 #[derive(Deserialize)]
 struct ContentBlockDeltaEvent {
+    index: usize,
     delta: Delta,
 }
 
@@ -522,6 +527,7 @@ async fn parse_sse(
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
     let mut current_tool_json = String::new();
     let mut current_event = String::new();
+    let mut current_block_idx: usize = 0;
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
 
@@ -545,58 +551,82 @@ async fn parse_sse(
                 }
             }
             "content_block_start" => match serde_json::from_str::<ContentBlockStartEvent>(data) {
-                Ok(ev) => match ev.content_block {
-                    SseContentBlock::Text => {
-                        content_blocks.push(ContentBlock::Text {
-                            text: String::new(),
-                        });
+                Ok(ev) => {
+                    current_block_idx = ev.index;
+                    match ev.content_block {
+                        SseContentBlock::Text => {
+                            content_blocks.push(ContentBlock::Text {
+                                text: String::new(),
+                            });
+                        }
+                        SseContentBlock::Thinking => {
+                            content_blocks.push(ContentBlock::Thinking {
+                                thinking: String::new(),
+                                signature: None,
+                            });
+                        }
+                        SseContentBlock::RedactedThinking { data } => {
+                            content_blocks.push(ContentBlock::RedactedThinking { data });
+                        }
+                        SseContentBlock::ToolUse { id, name } => {
+                            current_tool_json.clear();
+                            event_tx
+                                .send_async(ProviderEvent::ToolUseStart {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                })
+                                .await?;
+                            content_blocks.push(ContentBlock::ToolUse {
+                                id,
+                                name,
+                                input: Value::Null,
+                            });
+                        }
                     }
-                    SseContentBlock::Thinking => {}
-                    SseContentBlock::ToolUse { id, name } => {
-                        current_tool_json.clear();
-                        event_tx
-                            .send_async(ProviderEvent::ToolUseStart {
-                                id: id.clone(),
-                                name: name.clone(),
-                            })
-                            .await?;
-                        content_blocks.push(ContentBlock::ToolUse {
-                            id,
-                            name,
-                            input: Value::Null,
-                        });
-                    }
-                },
+                }
                 Err(e) => warn!(error = %e, "failed to parse content_block_start"),
             },
             "content_block_delta" => match serde_json::from_str::<ContentBlockDeltaEvent>(data) {
-                Ok(ev) => match ev.delta {
-                    Delta::Text { text } => {
-                        if !text.is_empty() {
-                            if let Some(ContentBlock::Text { text: t }) = content_blocks.last_mut()
-                            {
-                                t.push_str(&text);
+                Ok(ev) => {
+                    current_block_idx = ev.index;
+                    let block = content_blocks.get_mut(current_block_idx);
+                    match ev.delta {
+                        Delta::Text { text } => {
+                            if !text.is_empty() {
+                                if let Some(ContentBlock::Text { text: t }) = block {
+                                    t.push_str(&text);
+                                }
+                                event_tx
+                                    .send_async(ProviderEvent::TextDelta { text })
+                                    .await?;
                             }
-                            event_tx
-                                .send_async(ProviderEvent::TextDelta { text })
-                                .await?;
+                        }
+                        Delta::Thinking { thinking } => {
+                            if !thinking.is_empty() {
+                                if let Some(ContentBlock::Thinking { thinking: t, .. }) = block {
+                                    t.push_str(&thinking);
+                                }
+                                event_tx
+                                    .send_async(ProviderEvent::ThinkingDelta { text: thinking })
+                                    .await?;
+                            }
+                        }
+                        Delta::Signature { signature } => {
+                            if let Some(ContentBlock::Thinking { signature: sig, .. }) = block {
+                                *sig = Some(signature);
+                            }
+                        }
+                        Delta::InputJson { partial_json } => {
+                            current_tool_json.push_str(&partial_json);
                         }
                     }
-                    Delta::Thinking { thinking } => {
-                        if !thinking.is_empty() {
-                            event_tx
-                                .send_async(ProviderEvent::ThinkingDelta { text: thinking })
-                                .await?;
-                        }
-                    }
-                    Delta::InputJson { partial_json } => {
-                        current_tool_json.push_str(&partial_json);
-                    }
-                },
+                }
                 Err(e) => warn!(error = %e, "failed to parse content_block_delta"),
             },
             "content_block_stop" => {
-                if let Some(ContentBlock::ToolUse { name, input, .. }) = content_blocks.last_mut() {
+                if let Some(ContentBlock::ToolUse { name, input, .. }) =
+                    content_blocks.get_mut(current_block_idx)
+                {
                     *input = match serde_json::from_str(&current_tool_json) {
                         Ok(v) => {
                             debug!(tool = %name, json = %current_tool_json, "tool input JSON");
@@ -669,10 +699,10 @@ event: content_block_start\n\
 data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
 \n\
 event: content_block_delta\n\
-data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\
 \n\
 event: content_block_delta\n\
-data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\
 \n\
 event: content_block_stop\n\
 data: {\"type\":\"content_block_stop\"}\n\
@@ -721,10 +751,10 @@ event: content_block_start\n\
 data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu_1\",\"name\":\"bash\"}}\n\
 \n\
 event: content_block_delta\n\
-data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\":\"}}\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\":\"}}\n\
 \n\
 event: content_block_delta\n\
-data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\" \\\"echo hi\\\"}\"}}\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\" \\\"echo hi\\\"}\"}}\n\
 \n\
 event: content_block_stop\n\
 data: {\"type\":\"content_block_stop\"}\n\
@@ -845,7 +875,7 @@ event: content_block_start\n\
 data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu_2\",\"name\":\"read\"}}\n\
 \n\
 event: content_block_delta\n\
-data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{broken\"}}\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{broken\"}}\n\
 \n\
 event: content_block_stop\n\
 data: {\"type\":\"content_block_stop\"}\n\
@@ -862,6 +892,99 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n";
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].1, "read");
             assert_eq!(*tools[0].2, Value::Object(Default::default()));
+        })
+    }
+
+    #[test]
+    fn parse_sse_thinking_blocks() {
+        smol::block_on(async {
+            let sse_data = b"\
+event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\
+\n\
+event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\" think\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig123\"}}\n\
+\n\
+event: content_block_stop\n\
+data: {\"type\":\"content_block_stop\"}\n\
+\n\
+event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\
+\n\
+event: content_block_stop\n\
+data: {\"type\":\"content_block_stop\"}\n\
+\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n";
+
+            let (tx, rx) = flume::unbounded();
+            let resp = parse_sse(mock_response(sse_data), &tx).await.unwrap();
+
+            assert!(
+                matches!(&resp.message.content[0], ContentBlock::Thinking { thinking, signature }
+                    if thinking == "Let me think" && *signature == Some("sig123".to_string()))
+            );
+            assert!(
+                matches!(&resp.message.content[1], ContentBlock::Text { text } if text == "Hello")
+            );
+
+            let thinking_deltas: Vec<_> = rx
+                .drain()
+                .filter_map(|e| match e {
+                    ProviderEvent::ThinkingDelta { text } => Some(text),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(thinking_deltas, vec!["Let me", " think"]);
+        })
+    }
+
+    #[test]
+    fn parse_sse_redacted_thinking() {
+        smol::block_on(async {
+            let sse_data = b"\
+event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\
+\n\
+event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"opaque_data\"}}\n\
+\n\
+event: content_block_stop\n\
+data: {\"type\":\"content_block_stop\"}\n\
+\n\
+event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\
+\n\
+event: content_block_stop\n\
+data: {\"type\":\"content_block_stop\"}\n\
+\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n";
+
+            let (tx, _rx) = flume::unbounded();
+            let resp = parse_sse(mock_response(sse_data), &tx).await.unwrap();
+
+            assert!(
+                matches!(&resp.message.content[0], ContentBlock::RedactedThinking { data } if data == "opaque_data")
+            );
+            assert!(
+                matches!(&resp.message.content[1], ContentBlock::Text { text } if text == "Hi")
+            );
         })
     }
 }

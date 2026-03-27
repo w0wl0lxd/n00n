@@ -21,6 +21,7 @@ pub(super) async fn compact_history(
     let compact_start = std::time::Instant::now();
     let mut compaction_history: Vec<Message> = history.as_slice().to_vec();
     strip_images(&mut compaction_history);
+    strip_thinking(&mut compaction_history);
     compaction_history.push(Message::user(crate::prompt::COMPACTION_USER.to_string()));
 
     let empty_tools = serde_json::json!([]);
@@ -90,6 +91,17 @@ fn strip_images(messages: &mut [Message]) {
                 };
             }
         }
+    }
+}
+
+fn strip_thinking(messages: &mut [Message]) {
+    for msg in messages {
+        msg.content.retain(|block| {
+            !matches!(
+                block,
+                ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+            )
+        });
     }
 }
 
@@ -247,5 +259,28 @@ mod tests {
             matches!(&messages[0].content[0], ContentBlock::Text { text } if text == IMAGE_PLACEHOLDER)
         );
         assert!(matches!(&messages[0].content[1], ContentBlock::Text { text } if text == "hello"));
+    }
+
+    #[test]
+    fn strip_thinking_removes_thinking_blocks() {
+        let mut messages = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "hmm".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::Text {
+                    text: "hello".into(),
+                },
+                ContentBlock::RedactedThinking {
+                    data: "opaque".into(),
+                },
+            ],
+            ..Default::default()
+        }];
+        strip_thinking(&mut messages);
+        assert_eq!(messages[0].content.len(), 1);
+        assert!(matches!(&messages[0].content[0], ContentBlock::Text { text } if text == "hello"));
     }
 }
