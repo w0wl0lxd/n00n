@@ -12,6 +12,7 @@ pub mod dynamic;
 pub(crate) mod openai;
 pub mod openai_auth;
 pub(crate) mod openai_compat;
+pub(crate) mod synthetic;
 pub(crate) mod zai;
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);

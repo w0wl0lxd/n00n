@@ -10,7 +10,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::provider::ProviderKind;
-use crate::providers::{anthropic, dynamic, openai, zai};
+use crate::providers::{anthropic, dynamic, openai, synthetic, zai};
 
 pub const DEFAULT_SPEC: &str = "anthropic/claude-opus-4-6";
 
@@ -43,6 +43,7 @@ pub enum ModelFamily {
     Claude,
     Glm,
     Gpt,
+    Synthetic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -100,13 +101,14 @@ pub(crate) fn models_for_provider(provider: ProviderKind) -> &'static [ModelEntr
         ProviderKind::Anthropic => anthropic::models(),
         ProviderKind::OpenAi => openai::models(),
         ProviderKind::Zai | ProviderKind::ZaiCodingPlan => zai::models(),
+        ProviderKind::Synthetic => synthetic::models(),
     }
 }
 
 impl ModelFamily {
     pub fn supports_tool_examples(self) -> bool {
         match self {
-            ModelFamily::Claude | ModelFamily::Gpt => true,
+            ModelFamily::Claude | ModelFamily::Gpt | ModelFamily::Synthetic => true,
             ModelFamily::Glm => false,
         }
     }
@@ -233,6 +235,8 @@ mod tests {
     #[test_case("anthropic/claude-99-turbo", ModelError::UnknownModel("claude-99-turbo".into()) ; "unknown_anthropic_model")]
     #[test_case("zai/glm-99", ModelError::UnknownModel("glm-99".into()) ; "unknown_zai_model")]
     #[test_case("openai/gpt-99", ModelError::UnknownModel("gpt-99".into()) ; "unknown_openai_model")]
+    #[test_case("synthetic/hf:nonexistent", ModelError::UnknownModel("hf:nonexistent".into()) ; "unknown_synthetic_model")]
+
     fn from_spec_errors(spec: &str, expected: ModelError) {
         let err = Model::from_spec(spec).unwrap_err();
         assert_eq!(

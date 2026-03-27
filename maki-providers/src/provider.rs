@@ -7,8 +7,10 @@ use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 use tracing::{debug, warn};
 
 use crate::model::{Model, models_for_provider};
+use crate::providers::anthropic::Anthropic;
 use crate::providers::dynamic;
 use crate::providers::openai::OpenAi;
+use crate::providers::synthetic::Synthetic;
 use crate::providers::zai::{Zai, ZaiPlan};
 use crate::{AgentError, Message, ProviderEvent, StreamResponse, ThinkingConfig};
 
@@ -20,6 +22,7 @@ pub enum ProviderKind {
     OpenAi,
     Zai,
     ZaiCodingPlan,
+    Synthetic,
 }
 
 impl ProviderKind {
@@ -29,19 +32,21 @@ impl ProviderKind {
             Self::OpenAi => "OpenAI",
             Self::Zai => "Z.AI",
             Self::ZaiCodingPlan => "Z.AI Coding",
+            Self::Synthetic => "Synthetic",
         }
     }
 
     pub const fn supports_thinking(self) -> bool {
-        matches!(self, Self::Anthropic)
+        matches!(self, Self::Anthropic | Self::Synthetic)
     }
 
     pub fn create(self) -> Result<Box<dyn Provider>, AgentError> {
         match self {
-            Self::Anthropic => Ok(Box::new(crate::providers::anthropic::Anthropic::new()?)),
+            Self::Anthropic => Ok(Box::new(Anthropic::new()?)),
             Self::OpenAi => Ok(Box::new(OpenAi::new()?)),
             Self::Zai => Ok(Box::new(Zai::new(ZaiPlan::Standard)?)),
             Self::ZaiCodingPlan => Ok(Box::new(Zai::new(ZaiPlan::Coding)?)),
+            Self::Synthetic => Ok(Box::new(Synthetic::new()?)),
         }
     }
 }
