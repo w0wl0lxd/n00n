@@ -27,6 +27,14 @@ User experience:
 * `/cd` to change dir.
 * Use `--print --output-format stream-json` to run UI-less. Output is compatible with Claude Code, so you can easily replace your existing solutions (although I wouldn't recommend that, maki is very new).
 
+Supported providers:
+* OpenAI - `OPENAI_API_KEY` and OAuth via `maki auth login openai`.
+* Anthropic - `ANTHROPIC_API_KEY` only (using OAuth is against TOS).
+* Z.AI - `ZHIPU_API_KEY`.
+* Synthetic - `SYNTHETIC_API_KEY`.
+
+**Dynamic providers** - if there's a provider maki doesn't support currently, and it uses openai / anthropic API, you can ask maki (using a different temp provider) to write you a small script to access it anyway. Example for [anthropic](https://github.com/tontinton/maki/blob/main/scripts/providers/ollama-anthropic), example for [openai](https://github.com/tontinton/maki/blob/main/scripts/providers/ollama-openai).
+
 ## MCP Servers
 
 Configure MCP servers in `~/.config/maki/config.toml` (global) or `.maki/config.toml` (project, takes precedence).
