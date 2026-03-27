@@ -145,6 +145,7 @@ pub mod key {
     pub const SEARCH: Bind = ctrl_bind!('f');
     pub const OPEN_EDITOR: Bind = ctrl_bind!('o');
     pub const TODO_PANEL: Bind = ctrl_bind!('t');
+    pub const TASKS: Bind = ctrl_bind!('x');
     pub const DELETE: Bind = ctrl_bind!('d');
     pub const KILL_LINE: Bind = ctrl_bind!('k');
     pub const LINE_START: Bind = ctrl_bind!('a');
@@ -327,6 +328,12 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         label: KeyLabel::Single(key::TODO_PANEL.label),
         description: "Toggle todo panel",
+        context: KeybindContext::General,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Single(key::TASKS.label),
+        description: "Open tasks",
         context: KeybindContext::General,
         platform: Platform::All,
     },

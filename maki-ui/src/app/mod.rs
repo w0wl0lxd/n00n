@@ -310,6 +310,13 @@ impl App {
         }
     }
 
+    fn open_tasks(&mut self) {
+        let names: Vec<String> = self.chats.iter().map(|c| c.name.clone()).collect();
+        self.task_picker_original = Some(self.active_chat);
+        self.task_picker.open(names, " Tasks ");
+        self.task_picker.select(self.active_chat);
+    }
+
     /// Ctrl shortcuts that work regardless of form/overlay state.
     fn handle_global_ctrl(&mut self, key: KeyEvent) -> Option<Vec<Action>> {
         if !is_ctrl(&key) {
@@ -337,6 +344,14 @@ impl App {
             self.active_chat = (self.active_chat + 1).min(self.chats.len() - 1);
             #[cfg(feature = "demo")]
             self.check_demo_questions();
+            return Some(vec![]);
+        }
+        if key::TASKS.matches(key) {
+            if self.task_picker.is_open() {
+                self.task_picker.close();
+            } else if !self.has_modal_overlay() {
+                self.open_tasks();
+            }
             return Some(vec![]);
         }
         if !self.has_modal_overlay() {
@@ -928,10 +943,7 @@ impl App {
         self.input_box.discard();
         match cmd.name {
             "/tasks" => {
-                let names: Vec<String> = self.chats.iter().map(|c| c.name.clone()).collect();
-                self.task_picker_original = Some(self.active_chat);
-                self.task_picker.open(names, " Tasks ");
-                self.task_picker.select(self.active_chat);
+                self.open_tasks();
                 vec![]
             }
             "/compact" => {

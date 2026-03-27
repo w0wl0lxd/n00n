@@ -805,6 +805,15 @@ fn tasks_command_opens_picker() {
     assert!(app.task_picker.is_open());
 }
 
+#[test]
+fn ctrl_x_toggles_tasks_picker() {
+    let mut app = test_app();
+    app.update(Msg::Key(kb::TASKS.to_key_event()));
+    assert!(app.task_picker.is_open());
+    app.update(Msg::Key(kb::TASKS.to_key_event()));
+    assert!(!app.task_picker.is_open());
+}
+
 fn app_with_subagent_id(id: &str) -> App {
     let mut app = test_app();
     app.status = Status::Streaming;
