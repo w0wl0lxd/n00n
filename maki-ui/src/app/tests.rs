@@ -145,7 +145,7 @@ fn ctrl_c_clears_nonempty_input() {
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
     assert!(actions.is_empty());
     assert!(!app.should_quit);
-    assert_eq!(app.input_box.buffer.value(), "");
+    assert!(app.input_box.is_empty());
 }
 
 #[test]
@@ -157,6 +157,21 @@ fn ctrl_c_quits_when_input_empty() {
         assert!(app.should_quit);
         assert!(matches!(&actions[0], Action::Quit));
     }
+}
+
+#[test]
+fn ctrl_c_clears_images_before_quitting() {
+    use maki_agent::ImageMediaType;
+    use std::sync::Arc;
+
+    let mut app = test_app();
+    let img = ImageSource::new(ImageMediaType::Png, Arc::from("dGVzdA=="));
+    app.input_box.attach_image(img);
+
+    let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
+    assert!(actions.is_empty());
+    assert!(!app.should_quit);
+    assert!(app.input_box.is_empty());
 }
 
 #[test]

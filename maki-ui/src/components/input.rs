@@ -194,6 +194,10 @@ impl InputBox {
         self.scroll_y = 0;
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.buffer.value().trim().is_empty() && self.pending_images.is_empty()
+    }
+
     pub fn attach_image(&mut self, source: ImageSource) {
         self.pending_images.push(source);
     }

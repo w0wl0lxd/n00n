@@ -320,14 +320,12 @@ impl App {
                 return None;
             }
             self.command_palette.close();
-            return Some(
-                if !self.is_main_chat() || self.input_box.buffer.value().trim().is_empty() {
-                    self.quit()
-                } else {
-                    self.input_box.discard();
-                    vec![]
-                },
-            );
+            return Some(if !self.is_main_chat() || self.input_box.is_empty() {
+                self.quit()
+            } else {
+                self.input_box.discard();
+                vec![]
+            });
         }
         if key::PREV_CHAT.matches(key) {
             self.active_chat = self.active_chat.saturating_sub(1);
