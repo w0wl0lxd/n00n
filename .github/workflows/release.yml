@@ -1,0 +1,137 @@
+# To release:
+#   git tag vX.Y.Z
+#   git push origin vX.Y.Z
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  BINARY_NAME: maki
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Get tag
+        id: tag
+        run: echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --title "$GITHUB_REF_NAME" --generate-notes
+
+  build-release:
+    name: Build (${{ matrix.target }})
+    needs: create-release
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            cross: false
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            cross: false
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        if: ${{ !matrix.cross }}
+        run: rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: ${{ matrix.cross }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build (cross)
+        if: ${{ matrix.cross }}
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build (cargo)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          tag="${{ needs.create-release.outputs.tag }}"
+          archive="${BINARY_NAME}-${tag}-${{ matrix.target }}.tar.gz"
+          cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}"
+          tar czf "${archive}" "${BINARY_NAME}"
+          echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          tag="${{ needs.create-release.outputs.tag }}"
+          archive="${BINARY_NAME}-${tag}-${{ matrix.target }}.zip"
+          cp "target/${{ matrix.target }}/release/${BINARY_NAME}.exe" "${BINARY_NAME}.exe"
+          7z a "${archive}" "${BINARY_NAME}.exe"
+          echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.create-release.outputs.tag }}" "${{ env.ARCHIVE }}" --repo "$GITHUB_REPOSITORY"
+
+  checksums:
+    name: Checksums
+    needs: [create-release, build-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ needs.create-release.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --dir artifacts
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > ../sha256sums.txt
+          cat ../sha256sums.txt
+
+      - name: Upload checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.create-release.outputs.tag }}" sha256sums.txt --repo "$GITHUB_REPOSITORY"
+
+  publish-release:
+    name: Publish Release
+    needs: [create-release, checksums]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark release as published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${{ needs.create-release.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --draft=false
