@@ -2149,6 +2149,7 @@ dependencies = [
  "futures-lite 2.6.1",
  "getrandom 0.3.4",
  "image",
+ "isahc",
  "jiff",
  "libc",
  "maki-agent",

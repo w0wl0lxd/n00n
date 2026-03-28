@@ -18,6 +18,7 @@ pub mod splash;
 mod storage_writer;
 mod text_buffer;
 mod theme;
+mod update;
 
 mod agent;
 mod event_loop;

@@ -153,6 +153,7 @@ impl<'t> EventLoop<'t> {
         } = params;
 
         std::thread::spawn(crate::highlight::warmup);
+        crate::update::spawn_check();
 
         let bg = spawn_model_fetch();
         let storage_writer = Arc::new(StorageWriter::new(storage.clone()));

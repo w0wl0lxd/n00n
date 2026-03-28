@@ -1,5 +1,6 @@
 use crate::components::keybindings::key;
 use crate::theme::{self, lerp_u8};
+use crate::update;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -136,7 +137,9 @@ impl Splash {
             ease_out_cubic(t / FADE_DURATION)
         };
 
-        let top_y = area.y + area.height.saturating_sub(5) / 2;
+        let new_version = update::latest_version();
+        let block_height = 6;
+        let top_y = area.y + area.height.saturating_sub(block_height) / 2;
         let tag_y = top_y + 1;
         let help_y = tag_y + 2;
 
@@ -144,8 +147,13 @@ impl Splash {
             self.render_field(area, buf, t + self.field_offset, fade, accent);
         }
         self.render_logo(area, buf, t, fade, top_y, accent);
-        self.render_tagline(area, buf, fade, tag_y);
+        render_centered_faded(area, buf, fade, 0.75, tag_y, TAGLINE);
         self.render_help(area, buf, fade, help_y, accent);
+        let version_text = match new_version {
+            Some(v) => format!("v{} available", v),
+            None => format!("v{}", update::CURRENT),
+        };
+        render_right_faded(area, buf, fade, 0.4, area.y, &version_text);
     }
 
     fn render_field(&self, area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color) {
@@ -319,38 +327,6 @@ impl Splash {
         }
     }
 
-    fn render_tagline(&self, area: Rect, buf: &mut Buffer, fade: f32, tag_y: u16) {
-        if tag_y >= area.y + area.height {
-            return;
-        }
-
-        let theme = theme::current();
-        let bg = theme.background;
-        let (fg_r, fg_g, fg_b) = extract_rgb(theme.foreground, (200, 200, 200));
-        let (bg_r, bg_g, bg_b) = extract_rgb(bg, (15, 15, 25));
-
-        let tag_x = area.x + (area.width.saturating_sub(TAGLINE.len() as u16)) / 2;
-        let alpha = 0.75 * fade;
-        let style = Style::new()
-            .fg(Color::Rgb(
-                lerp_u8(bg_r, fg_r, alpha),
-                lerp_u8(bg_g, fg_g, alpha),
-                lerp_u8(bg_b, fg_b, alpha),
-            ))
-            .bg(bg);
-
-        for (col, ch) in TAGLINE.chars().enumerate() {
-            let x = tag_x + col as u16;
-            if x >= area.x + area.width {
-                break;
-            }
-
-            if let Some(cell) = buf.cell_mut((x, tag_y)) {
-                cell.set_char(ch).set_style(style);
-            }
-        }
-    }
-
     fn render_help(&self, area: Rect, buf: &mut Buffer, fade: f32, help_y: u16, accent: Color) {
         if help_y >= area.y + area.height {
             return;
@@ -396,6 +372,77 @@ impl Splash {
 
                 col += 1;
             }
+        }
+    }
+}
+
+fn render_right_faded(area: Rect, buf: &mut Buffer, fade: f32, intensity: f32, y: u16, text: &str) {
+    if y >= area.y + area.height {
+        return;
+    }
+
+    let theme = theme::current();
+    let bg = theme.background;
+    let (fg_r, fg_g, fg_b) = extract_rgb(theme.foreground, (200, 200, 200));
+    let (bg_r, bg_g, bg_b) = extract_rgb(bg, (15, 15, 25));
+
+    let alpha = intensity * fade;
+    let style = Style::new()
+        .fg(Color::Rgb(
+            lerp_u8(bg_r, fg_r, alpha),
+            lerp_u8(bg_g, fg_g, alpha),
+            lerp_u8(bg_b, fg_b, alpha),
+        ))
+        .bg(bg);
+
+    let char_count = text.chars().count() as u16;
+    let x_start = area.x + area.width.saturating_sub(char_count + 1);
+    for (i, ch) in text.chars().enumerate() {
+        let x = x_start + i as u16;
+        if x >= area.x + area.width {
+            break;
+        }
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.set_char(ch).set_style(style);
+        }
+    }
+}
+
+fn render_centered_faded(
+    area: Rect,
+    buf: &mut Buffer,
+    fade: f32,
+    intensity: f32,
+    y: u16,
+    text: &str,
+) {
+    if y >= area.y + area.height {
+        return;
+    }
+
+    let theme = theme::current();
+    let bg = theme.background;
+    let (fg_r, fg_g, fg_b) = extract_rgb(theme.foreground, (200, 200, 200));
+    let (bg_r, bg_g, bg_b) = extract_rgb(bg, (15, 15, 25));
+
+    let alpha = intensity * fade;
+    let style = Style::new()
+        .fg(Color::Rgb(
+            lerp_u8(bg_r, fg_r, alpha),
+            lerp_u8(bg_g, fg_g, alpha),
+            lerp_u8(bg_b, fg_b, alpha),
+        ))
+        .bg(bg);
+
+    let char_count = text.chars().count() as u16;
+    let x_start = area.x + area.width.saturating_sub(char_count) / 2;
+    for (i, ch) in text.chars().enumerate() {
+        let x = x_start + i as u16;
+        if x >= area.x + area.width {
+            break;
+        }
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.set_char(ch).set_style(style);
         }
     }
 }
