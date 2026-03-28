@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use color_eyre::eyre::Context;
+use maki_agent::mcp::{config as mcp_config, oauth as mcp_oauth};
 use maki_agent::skill::{self, Skill};
 use maki_config::load_config;
 use maki_storage::DataDir;
@@ -90,6 +91,25 @@ enum Command {
     Index {
         path: String,
     },
+    /// Manage MCP server authentication
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpAction {
+    /// Authenticate with an MCP server
+    Auth {
+        /// Server name from config
+        server: String,
+    },
+    /// Remove stored OAuth credentials for an MCP server
+    Logout {
+        /// Server name from config
+        server: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -164,6 +184,39 @@ fn run() -> Result<()> {
                     eprintln!("warning: {warning}");
                 }
             }));
+        }
+        Some(Command::Mcp { action }) => {
+            let storage = DataDir::resolve().context("resolve data directory")?;
+            match action {
+                McpAction::Auth { server } => {
+                    smol::block_on(async {
+                        let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
+                        let config = mcp_config::load_config(&cwd);
+                        let raw = config.mcp.get(&server).ok_or_else(|| {
+                            color_eyre::eyre::eyre!("unknown MCP server: {server}")
+                        })?;
+                        let url = match mcp_config::parse_server(server.clone(), raw.clone())?
+                            .transport
+                        {
+                            mcp_config::Transport::Http { url, .. } => url,
+                            _ => color_eyre::eyre::bail!(
+                                "server '{server}' is not an HTTP transport"
+                            ),
+                        };
+                        mcp_oauth::authenticate(&server, &url, None, &storage).await?;
+                        eprintln!("Successfully authenticated with MCP server '{server}'");
+                        Ok(())
+                    })?;
+                }
+                McpAction::Logout { server } => {
+                    let deleted = maki_storage::auth::delete_mcp_auth(&storage, &server)?;
+                    if deleted {
+                        eprintln!("Removed OAuth credentials for MCP server '{server}'");
+                    } else {
+                        eprintln!("No stored credentials for MCP server '{server}'");
+                    }
+                }
+            }
         }
         None => {
             let storage = DataDir::resolve().context("resolve data directory")?;

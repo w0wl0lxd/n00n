@@ -430,19 +430,14 @@ command = ["project"]
     }
 
     #[test]
-    fn persist_enabled_creates_new_file() {
+    fn persist_enabled_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        persist_enabled(&path, "srv", false).unwrap();
-        let content = fs::read_to_string(&path).unwrap();
-        let doc: toml_edit::DocumentMut = content.parse().unwrap();
-        assert_eq!(doc["mcp"]["srv"]["enabled"].as_bool(), Some(false));
-    }
 
-    #[test]
-    fn persist_enabled_preserves_existing_fields() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
+        persist_enabled(&path, "srv", false).unwrap();
+        let doc: toml_edit::DocumentMut = fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(doc["mcp"]["srv"]["enabled"].as_bool(), Some(false));
+
         fs::write(
             &path,
             r#"[mcp.srv]
@@ -453,8 +448,7 @@ enabled = true
         )
         .unwrap();
         persist_enabled(&path, "srv", false).unwrap();
-        let content = fs::read_to_string(&path).unwrap();
-        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+        let doc: toml_edit::DocumentMut = fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(doc["mcp"]["srv"]["enabled"].as_bool(), Some(false));
         assert!(doc["mcp"]["srv"]["command"].is_array());
         assert_eq!(doc["mcp"]["srv"]["timeout"].as_integer(), Some(5000));
