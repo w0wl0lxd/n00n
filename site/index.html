@@ -819,8 +819,7 @@
       .hero { grid-template-columns: 1fr; text-align: center; padding-inline: 1rem; }
       .hero-intro { display: flex; flex-direction: column; align-items: center; }
       .hero-actions { justify-content: center; }
-      .hero-preview { width: 100%; }
-      .hero-preview .tui { transform-origin: top center; }
+      .hero-preview { text-align: left; width: 100%; }
       .pitch { grid-template-columns: 1fr; }
 
       .provider-grid { gap: 0.75rem; }
@@ -1132,6 +1131,7 @@
       tui.style.transform = `scale(${s})`;
       container.style.height = (tui.offsetHeight * s) + 'px';
     } else {
+      tui.style.transform = '';
       container.style.height = '';
     }
   }
