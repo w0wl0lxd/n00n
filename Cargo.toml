@@ -2,6 +2,15 @@
 name = "maki"
 version = "0.1.0"
 edition = "2024"
+authors = ["Tony Solomonik <tony.solomonik@gmail.com>"]
+description = "AI coding agent. Native Rust TUI. Immediate startup, 60 FPS, low memory."
+license = "MIT"
+repository = "https://github.com/tontinton/maki"
+homepage = "https://maki.sh"
+readme = "README.md"
+keywords = ["ai", "agent", "cli", "tui", "coding"]
+categories = ["command-line-utilities", "development-tools"]
+rust-version = "1.85"
 
 [[bin]]
 name = "maki"
@@ -34,6 +43,10 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+authors = ["Tony Solomonik <tony.solomonik@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/tontinton/maki"
+rust-version = "1.85"
 
 [workspace.dependencies]
 maki-agent = { path = "maki-agent" }
