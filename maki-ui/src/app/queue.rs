@@ -189,8 +189,10 @@ impl App {
             }
             QueuedItem::Compact => crate::AgentCommand::Compact(self.run_id),
         };
-        let _ = tx.try_send(cmd);
-        self.queue.mark_dispatched();
+        // Only mark dispatched on success; a failed send with dispatched=true would deadlock the queue.
+        if tx.try_send(cmd).is_ok() {
+            self.queue.mark_dispatched();
+        }
     }
 
     pub(super) fn on_queue_item_consumed(&mut self) {
