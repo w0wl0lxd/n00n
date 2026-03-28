@@ -316,6 +316,7 @@ pub async fn parse_sse(
     let mut tool_accumulators: Vec<ToolAccumulator> = Vec::new();
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
+    let mut is_first_content = true;
 
     while let Some(line) = super::next_sse_line(&mut lines).await? {
         let data = match line.strip_prefix("data: ") {
@@ -379,10 +380,18 @@ pub async fn parse_sse(
         if let Some(content) = delta.content
             && !content.is_empty()
         {
-            text.push_str(&content);
-            event_tx
-                .send_async(ProviderEvent::TextDelta { text: content })
-                .await?;
+            let content = if is_first_content {
+                is_first_content = false;
+                content.trim_start().to_string()
+            } else {
+                content
+            };
+            if !content.is_empty() {
+                text.push_str(&content);
+                event_tx
+                    .send_async(ProviderEvent::TextDelta { text: content })
+                    .await?;
+            }
         }
 
         if let Some(tc_deltas) = delta.tool_calls {
