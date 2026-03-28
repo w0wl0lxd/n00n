@@ -176,10 +176,19 @@ impl McpTransport for HttpTransport {
             let (status, headers, body_str) = self.send_http(http_req).await?;
 
             if !status.is_success() {
+                let reason = if status == StatusCode::UNAUTHORIZED {
+                    headers
+                        .get("www-authenticate")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or(&body_str)
+                        .to_string()
+                } else {
+                    body_str
+                };
                 return Err(McpError::HttpError {
                     server: self.server(),
                     status: status.as_u16(),
-                    reason: body_str,
+                    reason,
                 });
             }
 

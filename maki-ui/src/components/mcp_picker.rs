@@ -67,6 +67,9 @@ impl McpPicker {
                     McpServerStatus::Failed(e) => {
                         format!("{} \u{00b7} error: {}", info.transport_kind, e)
                     }
+                    McpServerStatus::NeedsAuth { .. } => {
+                        format!("{} \u{00b7} needs auth", info.transport_kind)
+                    }
                 },
             })
             .collect();
@@ -133,6 +136,7 @@ mod tests {
                 tool_count: 5,
                 status: McpServerStatus::Running,
                 config_path: PathBuf::from("/home/.config/maki/config.toml"),
+                url: None,
             },
             McpServerInfo {
                 name: "github".into(),
@@ -140,6 +144,7 @@ mod tests {
                 tool_count: 3,
                 status: McpServerStatus::Disabled,
                 config_path: PathBuf::from("/project/.maki/config.toml"),
+                url: None,
             },
         ]))
     }

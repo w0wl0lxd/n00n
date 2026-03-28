@@ -14,7 +14,9 @@ pub mod transport;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
+use async_lock::RwLock;
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
@@ -42,13 +44,26 @@ struct ServerEntry {
     transport_kind: &'static str,
     origin: PathBuf,
     status: McpServerStatus,
+    url: Option<String>,
+    timeout: Duration,
 }
 
-pub struct McpManager {
+struct McpManagerInner {
     transports: HashMap<Arc<str>, Box<dyn McpTransport>>,
     tools: Vec<McpToolDef>,
     tool_index: HashMap<&'static str, usize>,
     entries: Vec<ServerEntry>,
+}
+
+pub struct McpManager {
+    inner: RwLock<McpManagerInner>,
+}
+
+fn transport_url(transport: &Transport) -> Option<String> {
+    match transport {
+        Transport::Http { url, .. } => Some(url.clone()),
+        Transport::Stdio { .. } => None,
+    }
 }
 
 impl McpManager {
@@ -87,6 +102,8 @@ impl McpManager {
                     transport_kind: kind,
                     origin,
                     status: McpServerStatus::Disabled,
+                    url: None,
+                    timeout: Duration::default(),
                 });
                 continue;
             }
@@ -104,6 +121,8 @@ impl McpManager {
                         transport_kind: kind,
                         origin,
                         status: McpServerStatus::Failed(e.to_string()),
+                        url: None,
+                        timeout: Duration::default(),
                     });
                 }
             }
@@ -121,6 +140,8 @@ impl McpManager {
 
         for handle in handles {
             let (p, result) = handle.await;
+            let url = transport_url(&p.config.transport);
+            let timeout = p.config.timeout;
             match result {
                 Ok((t, server_tools)) => {
                     let server_name: Arc<str> = Arc::from(p.config.name.as_str());
@@ -143,15 +164,31 @@ impl McpManager {
                         transport_kind: p.kind,
                         origin: p.origin,
                         status: McpServerStatus::Running,
+                        url,
+                        timeout,
                     });
                 }
                 Err(e) => {
-                    warn!(server = %p.config.name, error = %e, "failed to start MCP server");
+                    let status = if let McpError::HttpError {
+                        status: 401,
+                        ref reason,
+                        ..
+                    } = e
+                    {
+                        McpServerStatus::NeedsAuth {
+                            url: Some(reason.clone()),
+                        }
+                    } else {
+                        warn!(server = %p.config.name, error = %e, "failed to start MCP server");
+                        McpServerStatus::Failed(e.to_string())
+                    };
                     entries.push(ServerEntry {
                         name: p.config.name,
                         transport_kind: p.kind,
                         origin: p.origin,
-                        status: McpServerStatus::Failed(e.to_string()),
+                        status,
+                        url,
+                        timeout,
                     });
                 }
             }
@@ -165,10 +202,12 @@ impl McpManager {
         );
 
         Some(Arc::new(Self {
-            transports,
-            tools,
-            tool_index,
-            entries,
+            inner: RwLock::new(McpManagerInner {
+                transports,
+                tools,
+                tool_index,
+                entries,
+            }),
         }))
     }
 
@@ -205,25 +244,28 @@ impl McpManager {
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
-        self.tool_index.contains_key(name)
+        self.inner.read_blocking().tool_index.contains_key(name)
     }
 
     pub fn interned_name(&self, name: &str) -> &'static str {
-        self.tool_index
+        self.inner
+            .read_blocking()
+            .tool_index
             .get_key_value(name)
             .map(|(&k, _)| k)
             .unwrap_or("unknown_mcp")
     }
 
     pub async fn call_tool(&self, qualified_name: &str, args: &Value) -> Result<String, McpError> {
-        let idx = self
+        let inner = self.inner.read().await;
+        let idx = inner
             .tool_index
             .get(qualified_name)
             .ok_or_else(|| McpError::UnknownTool {
                 name: qualified_name.into(),
             })?;
-        let def = &self.tools[*idx];
-        let t = self
+        let def = &inner.tools[*idx];
+        let t = inner
             .transports
             .get(&def.server_name)
             .ok_or_else(|| McpError::ServerDied {
@@ -233,7 +275,8 @@ impl McpManager {
     }
 
     pub fn extend_tools(&self, tools: &mut Value, disabled: &[String]) {
-        for t in self
+        let inner = self.inner.read_blocking();
+        for t in inner
             .tools
             .iter()
             .filter(|t| !disabled.contains(&t.server_name.to_string()))
@@ -249,11 +292,13 @@ impl McpManager {
     }
 
     pub fn server_infos(&self, disabled: &[String]) -> Vec<McpServerInfo> {
+        let inner = self.inner.read_blocking();
         let mut counts: HashMap<&str, usize> = HashMap::new();
-        for tool in &self.tools {
+        for tool in &inner.tools {
             *counts.entry(&tool.server_name).or_default() += 1;
         }
-        self.entries
+        inner
+            .entries
             .iter()
             .map(|entry| {
                 let status = if disabled.contains(&entry.name) {
@@ -272,13 +317,15 @@ impl McpManager {
                     },
                     status,
                     config_path: entry.origin.clone(),
+                    url: entry.url.clone(),
                 }
             })
             .collect()
     }
 
     pub async fn shutdown(self) {
-        let handles: Vec<_> = self
+        let inner = self.inner.into_inner();
+        let handles: Vec<_> = inner
             .transports
             .into_iter()
             .map(|(name, t)| {
@@ -294,10 +341,86 @@ impl McpManager {
     }
 
     pub fn child_pids(&self) -> Vec<u32> {
-        self.transports
+        self.inner
+            .read_blocking()
+            .transports
             .values()
             .flat_map(|t| t.child_pids())
             .collect()
+    }
+
+    pub async fn reconnect_server(
+        &self,
+        server_name: &str,
+        server_url: &str,
+        access_token: &str,
+    ) -> Result<(), McpError> {
+        let timeout = {
+            let inner = self.inner.read().await;
+            inner
+                .entries
+                .iter()
+                .find(|e| e.name == server_name)
+                .map(|e| e.timeout)
+                .unwrap_or_default()
+        };
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            format!("Bearer {access_token}"),
+        );
+        let transport: Box<dyn McpTransport> = Box::new(HttpTransport::new(
+            server_name,
+            server_url,
+            &headers,
+            timeout,
+        )?);
+        transport::initialize(transport.as_ref()).await?;
+        let new_tools = transport::list_tools(transport.as_ref()).await?;
+
+        let mut inner = self.inner.write().await;
+        let server_key: Arc<str> = Arc::from(server_name);
+
+        inner.tools.retain(|t| *t.server_name != *server_name);
+        inner.tool_index.clear();
+        let rebind: Vec<_> = inner
+            .tools
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.qualified_name, i))
+            .collect();
+        for (name, i) in rebind {
+            inner.tool_index.insert(name, i);
+        }
+
+        for tool_info in new_tools {
+            let qualified = format!("{server_name}{SEPARATOR}{}", tool_info.name);
+            let interned = intern(qualified);
+            let idx = inner.tools.len();
+            inner.tools.push(McpToolDef {
+                qualified_name: interned,
+                server_name: Arc::clone(&server_key),
+                raw_name: tool_info.name,
+                description: tool_info.description,
+                input_schema: tool_info.input_schema,
+            });
+            inner.tool_index.insert(interned, idx);
+        }
+
+        inner.transports.insert(Arc::clone(&server_key), transport);
+
+        for entry in &mut inner.entries {
+            if entry.name == server_name {
+                entry.status = McpServerStatus::Running;
+            }
+        }
+
+        info!(
+            server = server_name,
+            tools = inner.tools.len(),
+            "MCP server reconnected after OAuth"
+        );
+        Ok(())
     }
 }
 
@@ -312,7 +435,19 @@ pub fn kill_process_groups(pids: &[u32]) {
 pub fn kill_process_groups(_pids: &[u32]) {}
 
 fn intern(name: String) -> &'static str {
-    Box::leak(name.into_boxed_str())
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let mut set = CACHE
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(&existing) = set.get(name.as_str()) {
+        return existing;
+    }
+    let leaked: &'static str = Box::leak(name.into_boxed_str());
+    set.insert(leaked);
+    leaked
 }
 
 #[cfg(test)]
@@ -355,45 +490,24 @@ mod tests {
     }
 
     #[test]
-    fn invalid_config_creates_failed_entry() {
+    fn mixed_config_produces_correct_entries() {
         smol::block_on(async {
-            let config = make_config(vec![("srv", stdio_raw(&[]))]);
+            let mut disabled = stdio_raw(&["echo"]);
+            disabled.enabled = false;
+            let config = make_config(vec![
+                ("disabled-srv", disabled),
+                ("bad-srv", stdio_raw(&[])),
+                ("also-bad", stdio_raw(&[])),
+            ]);
             let mgr = McpManager::start_with_config(config).await.unwrap();
-            let infos = mgr.server_infos(&[]);
-            assert_eq!(infos.len(), 1);
-            assert_eq!(infos[0].name, "srv");
+            let mut infos = mgr.server_infos(&[]);
+            infos.sort_by(|a, b| a.name.cmp(&b.name));
+            assert_eq!(infos.len(), 3);
             assert!(matches!(infos[0].status, McpServerStatus::Failed(_)));
             assert_eq!(infos[0].tool_count, 0);
-        });
-    }
-
-    #[test]
-    fn disabled_config_creates_disabled_entry() {
-        smol::block_on(async {
-            let mut raw = stdio_raw(&["echo"]);
-            raw.enabled = false;
-            let config = make_config(vec![("srv", raw)]);
-            let mgr = McpManager::start_with_config(config).await.unwrap();
-            let infos = mgr.server_infos(&[]);
-            assert_eq!(infos.len(), 1);
-            assert_eq!(infos[0].name, "srv");
-            assert_eq!(infos[0].status, McpServerStatus::Disabled);
-            assert_eq!(infos[0].config_path, PathBuf::from("/test/config.toml"));
-        });
-    }
-
-    #[test]
-    fn failed_server_does_not_block_others() {
-        smol::block_on(async {
-            let config = make_config(vec![("bad", stdio_raw(&[])), ("also-bad", stdio_raw(&[]))]);
-            let mgr = McpManager::start_with_config(config).await.unwrap();
-            let infos = mgr.server_infos(&[]);
-            assert_eq!(infos.len(), 2);
-            assert!(
-                infos
-                    .iter()
-                    .all(|i| matches!(i.status, McpServerStatus::Failed(_)))
-            );
+            assert!(matches!(infos[1].status, McpServerStatus::Failed(_)));
+            assert_eq!(infos[2].status, McpServerStatus::Disabled);
+            assert_eq!(infos[2].config_path, PathBuf::from("/test/config.toml"));
         });
     }
 }

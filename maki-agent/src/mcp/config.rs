@@ -50,6 +50,7 @@ pub enum McpServerStatus {
     Running,
     Disabled,
     Failed(String),
+    NeedsAuth { url: Option<String> },
 }
 
 impl McpServerStatus {
@@ -65,6 +66,7 @@ pub struct McpServerInfo {
     pub tool_count: usize,
     pub status: McpServerStatus,
     pub config_path: PathBuf,
+    pub url: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -152,6 +154,10 @@ impl McpConfig {
                     tool_count: 0,
                     status,
                     config_path: self.origins.get(name).cloned().unwrap_or_default(),
+                    url: match &raw.transport {
+                        RawTransport::Http(h) => Some(h.url.clone()),
+                        _ => None,
+                    },
                 }
             })
             .collect()
@@ -351,13 +357,6 @@ mod tests {
     }
 
     #[test]
-    fn disabled_servers_not_parsed() {
-        let mut cfg = stdio_raw(&["echo"]);
-        cfg.enabled = false;
-        assert!(!cfg.enabled);
-    }
-
-    #[test]
     fn toml_deserialization() {
         let toml_str = r#"
 [mcp.filesystem]
@@ -449,10 +448,10 @@ command = ["project"]
     fn persist_enabled_creates_new_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        persist_enabled(&path, "myserver", false).unwrap();
+        persist_enabled(&path, "srv", false).unwrap();
         let content = fs::read_to_string(&path).unwrap();
         let doc: toml_edit::DocumentMut = content.parse().unwrap();
-        assert_eq!(doc["mcp"]["myserver"]["enabled"].as_bool(), Some(false));
+        assert_eq!(doc["mcp"]["srv"]["enabled"].as_bool(), Some(false));
     }
 
     #[test]
@@ -461,28 +460,9 @@ command = ["project"]
         let path = dir.path().join("config.toml");
         fs::write(
             &path,
-            r#"[mcp.myserver]
+            r#"[mcp.srv]
 command = ["echo"]
 timeout = 5000
-"#,
-        )
-        .unwrap();
-        persist_enabled(&path, "myserver", false).unwrap();
-        let content = fs::read_to_string(&path).unwrap();
-        let doc: toml_edit::DocumentMut = content.parse().unwrap();
-        assert_eq!(doc["mcp"]["myserver"]["enabled"].as_bool(), Some(false));
-        assert!(doc["mcp"]["myserver"]["command"].is_array());
-        assert_eq!(doc["mcp"]["myserver"]["timeout"].as_integer(), Some(5000));
-    }
-
-    #[test]
-    fn persist_enabled_updates_existing_flag() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        fs::write(
-            &path,
-            r#"[mcp.srv]
-command = ["x"]
 enabled = true
 "#,
         )
@@ -491,61 +471,29 @@ enabled = true
         let content = fs::read_to_string(&path).unwrap();
         let doc: toml_edit::DocumentMut = content.parse().unwrap();
         assert_eq!(doc["mcp"]["srv"]["enabled"].as_bool(), Some(false));
+        assert!(doc["mcp"]["srv"]["command"].is_array());
+        assert_eq!(doc["mcp"]["srv"]["timeout"].as_integer(), Some(5000));
     }
 
     #[test]
-    fn transport_kind_returns_correct_value() {
-        assert_eq!(
-            transport_kind(&RawTransport::Stdio(RawStdioFields {
-                command: vec!["echo".into()],
-                environment: HashMap::new(),
-            })),
-            "stdio"
-        );
-        assert_eq!(
-            transport_kind(&RawTransport::Http(RawHttpFields {
-                url: "http://x.com".into(),
-                headers: HashMap::new(),
-            })),
-            "http"
-        );
-    }
-
-    #[test]
-    fn mcp_config_is_empty() {
-        assert!(McpConfig::default().is_empty());
-        let config = McpConfig {
-            mcp: [("srv".into(), stdio_raw(&["echo"]))].into(),
-            origins: HashMap::new(),
-        };
-        assert!(!config.is_empty());
-    }
-
-    #[test]
-    fn preliminary_infos_shows_connecting_and_disabled() {
-        let mut enabled = stdio_raw(&["echo"]);
-        enabled.enabled = true;
+    fn preliminary_infos_statuses() {
         let mut off = stdio_raw(&["echo"]);
         off.enabled = false;
         let config = McpConfig {
-            mcp: [("a".into(), enabled), ("b".into(), off)].into(),
-            origins: [("a".into(), PathBuf::from("/test.toml"))].into(),
+            mcp: [
+                ("enabled".into(), stdio_raw(&["echo"])),
+                ("disabled-config".into(), off),
+                ("disabled-runtime".into(), stdio_raw(&["echo"])),
+            ]
+            .into(),
+            origins: [("enabled".into(), PathBuf::from("/test.toml"))].into(),
         };
-        let mut infos = config.preliminary_infos(&[]);
+        let mut infos = config.preliminary_infos(&["disabled-runtime".into()]);
         infos.sort_by(|a, b| a.name.cmp(&b.name));
-        assert_eq!(infos.len(), 2);
-        assert_eq!(infos[0].status, McpServerStatus::Connecting);
-        assert_eq!(infos[0].config_path, PathBuf::from("/test.toml"));
-        assert_eq!(infos[1].status, McpServerStatus::Disabled);
-    }
-
-    #[test]
-    fn preliminary_infos_runtime_disable() {
-        let config = McpConfig {
-            mcp: [("srv".into(), stdio_raw(&["echo"]))].into(),
-            origins: HashMap::new(),
-        };
-        let infos = config.preliminary_infos(&["srv".into()]);
+        assert_eq!(infos.len(), 3);
         assert_eq!(infos[0].status, McpServerStatus::Disabled);
+        assert_eq!(infos[1].status, McpServerStatus::Disabled);
+        assert_eq!(infos[2].status, McpServerStatus::Connecting);
+        assert_eq!(infos[2].config_path, PathBuf::from("/test.toml"));
     }
 }

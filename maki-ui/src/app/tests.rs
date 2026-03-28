@@ -1893,6 +1893,7 @@ fn mcp_toggle_dispatches_action() {
         tool_count: 2,
         status: McpServerStatus::Running,
         config_path: PathBuf::from("/tmp/config.toml"),
+        url: None,
     }])));
     app.execute_command(cmd("/mcp"));
 
