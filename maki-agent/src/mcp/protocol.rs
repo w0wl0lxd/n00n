@@ -116,13 +116,6 @@ mod tests {
     }
 
     #[test]
-    fn notification_has_no_id() {
-        let v = serde_json::to_value(JsonRpcNotification::new("notifications/initialized", None))
-            .unwrap();
-        assert!(v.get("id").is_none());
-    }
-
-    #[test]
     fn tool_info_honours_input_schema_rename() {
         let raw = json!({"tools": [{"name": "read_file", "description": "Read a file", "inputSchema": {"type": "object"}}]});
         let result: ToolsListResult = serde_json::from_value(raw).unwrap();

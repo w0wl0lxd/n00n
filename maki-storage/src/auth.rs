@@ -198,24 +198,24 @@ mod tests {
         assert_eq!(loaded.tokens.unwrap().access, "acc");
     }
 
-    #[test]
-    fn mcp_auth_url_mismatch_returns_none() {
-        let tmp = TempDir::new().unwrap();
-        let dir = DataDir::from_path(tmp.path().to_path_buf());
-        save_mcp_auth(&dir, "srv", &test_mcp_data()).unwrap();
-        assert!(load_mcp_auth(&dir, "srv", "https://other.example.com").is_none());
-    }
-
-    #[test]
-    fn mcp_auth_expired_client_secret_returns_none() {
-        let tmp = TempDir::new().unwrap();
-        let dir = DataDir::from_path(tmp.path().to_path_buf());
-        let data = McpAuthData {
+    #[test_case(
+        test_mcp_data(),
+        "https://other.example.com"
+        ; "url_mismatch"
+    )]
+    #[test_case(
+        McpAuthData {
             client_secret: Some("s".into()),
             client_secret_expires_at: Some(1),
             ..test_mcp_data()
-        };
+        },
+        TEST_URL
+        ; "expired_client_secret"
+    )]
+    fn mcp_auth_load_returns_none(data: McpAuthData, lookup_url: &str) {
+        let tmp = TempDir::new().unwrap();
+        let dir = DataDir::from_path(tmp.path().to_path_buf());
         save_mcp_auth(&dir, "srv", &data).unwrap();
-        assert!(load_mcp_auth(&dir, "srv", TEST_URL).is_none());
+        assert!(load_mcp_auth(&dir, "srv", lookup_url).is_none());
     }
 }

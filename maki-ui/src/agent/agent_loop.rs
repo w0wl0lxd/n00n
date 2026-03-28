@@ -168,8 +168,9 @@ impl AgentLoop {
 
         if let Some(ref mgr) = mcp_manager {
             mgr.extend_tools(&mut self.tools, &self.disabled);
-            self.mcp_infos
-                .store(Arc::new(mgr.server_infos(&self.disabled)));
+            let infos = mgr.server_infos(&self.disabled);
+            spawn_oauth_for_needs_auth(&infos, mgr, &self.mcp_infos, &self.disabled);
+            self.mcp_infos.store(Arc::new(infos));
             *self.mcp_pids.lock().unwrap_or_else(|e| e.into_inner()) = mgr.child_pids();
         }
 
@@ -348,5 +349,65 @@ impl AgentLoop {
                 });
             }
         }
+    }
+}
+
+fn spawn_oauth_for_needs_auth(
+    infos: &[McpServerInfo],
+    mgr: &Arc<McpManager>,
+    mcp_infos: &Arc<ArcSwap<Vec<McpServerInfo>>>,
+    disabled: &[String],
+) {
+    use maki_agent::mcp::config::McpServerStatus;
+
+    for info in infos {
+        let McpServerStatus::NeedsAuth { ref url } = info.status else {
+            continue;
+        };
+        let Some(ref server_url) = info.url else {
+            continue;
+        };
+        let mgr = Arc::clone(mgr);
+        let server_name = info.name.clone();
+        let server_url = server_url.clone();
+        let www_auth = url.clone();
+        let mcp_infos = Arc::clone(mcp_infos);
+        let disabled = disabled.to_vec();
+        smol::spawn(async move {
+            let storage = match maki_storage::DataDir::resolve() {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(server = %server_name, error = %e, "cannot resolve storage for OAuth");
+                    return;
+                }
+            };
+            let auth_data = match maki_agent::mcp::oauth::authenticate(
+                &server_name,
+                &server_url,
+                www_auth.as_deref(),
+                &storage,
+            )
+            .await
+            {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!(server = %server_name, error = %e, "background OAuth failed");
+                    return;
+                }
+            };
+            let Some(ref tokens) = auth_data.tokens else {
+                return;
+            };
+            if let Err(e) = mgr
+                .reconnect_server(&server_name, &server_url, &tokens.access)
+                .await
+            {
+                tracing::warn!(server = %server_name, error = %e, "OAuth reconnect failed");
+                return;
+            }
+            mcp_infos.store(Arc::new(mgr.server_infos(&disabled)));
+            tracing::info!(server = %server_name, "MCP server authenticated via OAuth");
+        })
+        .detach();
     }
 }

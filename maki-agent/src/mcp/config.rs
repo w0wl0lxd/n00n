@@ -311,22 +311,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn empty_command_rejected() {
-        let err = parse_server("srv".into(), stdio_raw(&[])).unwrap_err();
-        assert!(err.to_string().contains("empty command"));
-    }
-
-    #[test]
-    fn builtin_name_collision_rejected() {
-        let err = parse_server("bash".into(), stdio_raw(&["echo"])).unwrap_err();
-        assert!(err.to_string().contains("conflicts with built-in"));
-    }
-
-    #[test]
-    fn invalid_server_name_rejected() {
-        let err = parse_server("bad name!".into(), stdio_raw(&["echo"])).unwrap_err();
-        assert!(err.to_string().contains("ASCII alphanumeric"));
+    #[test_case("srv",       stdio_raw(&[]),            "empty command"        ; "empty_command")]
+    #[test_case("bash",      stdio_raw(&["echo"]),      "conflicts with built-in" ; "builtin_name_collision")]
+    #[test_case("bad name!", stdio_raw(&["echo"]),      "ASCII alphanumeric"   ; "invalid_server_name")]
+    #[test_case("srv",       http_raw("ftp://bad.com"), "http://"              ; "invalid_http_url")]
+    fn parse_server_rejects(name: &str, cfg: RawServerConfig, expected_msg: &str) {
+        let err = parse_server(name.into(), cfg).unwrap_err();
+        assert!(err.to_string().contains(expected_msg), "got: {err}");
     }
 
     #[test_case(0               ; "zero")]
@@ -336,12 +327,6 @@ mod tests {
         cfg.timeout = timeout;
         let err = parse_server("srv".into(), cfg).unwrap_err();
         assert!(err.to_string().contains("timeout"));
-    }
-
-    #[test]
-    fn invalid_http_url_rejected() {
-        let err = parse_server("srv".into(), http_raw("ftp://bad.com")).unwrap_err();
-        assert!(err.to_string().contains("http://"));
     }
 
     #[test]

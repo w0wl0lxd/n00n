@@ -2,7 +2,6 @@ mod agent_loop;
 mod command_router;
 
 use std::collections::HashMap;
-use std::mem;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -56,26 +55,6 @@ impl AgentHandles {
 
     pub(crate) fn cancel(self) {
         let _ = self.cmd_tx.try_send(AgentCommand::Cancel);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn respawn(
-        &mut self,
-        history: Vec<Message>,
-        provider: &Arc<dyn Provider>,
-        model: &Model,
-        skills: &Arc<[Skill]>,
-        config: AgentConfig,
-        permissions: &Arc<PermissionManager>,
-        app: &mut App,
-    ) {
-        let mcp = self.mcp.clone();
-        let old = mem::replace(
-            self,
-            spawn_agent(provider, model, history, skills, config, permissions, mcp),
-        );
-        old.cancel();
-        self.apply_to_app(app);
     }
 
     pub(crate) fn shutdown(self, timeout: Duration) {

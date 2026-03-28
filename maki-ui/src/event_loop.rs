@@ -1,3 +1,4 @@
+use std::mem;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,8 +12,8 @@ use maki_agent::permissions::PermissionManager;
 use maki_agent::skill::Skill;
 use maki_agent::{AgentConfig, CancelToken};
 use maki_config::UiConfig;
-use maki_providers::Model;
 use maki_providers::provider::{Provider, fetch_all_models, from_model};
+use maki_providers::{Message, Model};
 use maki_storage::DataDir;
 use tracing::warn;
 
@@ -318,6 +319,24 @@ impl<'t> EventLoop<'t> {
         }
     }
 
+    fn respawn_agent(&mut self, history: Vec<Message>) {
+        let mcp = self.handles.mcp.clone();
+        let old = mem::replace(
+            &mut self.handles,
+            spawn_agent(
+                &self.provider,
+                &self.model,
+                history,
+                &self.skills,
+                self.config,
+                &self.permissions,
+                mcp,
+            ),
+        );
+        old.cancel();
+        self.handles.apply_to_app(&mut self.app);
+    }
+
     fn handle_action(&mut self, action: Action) {
         match action {
             Action::SendMessage(input) => {
@@ -325,30 +344,14 @@ impl<'t> EventLoop<'t> {
                 input.preamble = self.app.shell.drain_results();
                 let cmd = AgentCommand::Run(input, self.app.run_id);
                 if self.handles.cmd_tx.try_send(cmd).is_err() {
-                    self.handles.respawn(
-                        Vec::new(),
-                        &self.provider,
-                        &self.model,
-                        &self.skills,
-                        self.config,
-                        &self.permissions,
-                        &mut self.app,
-                    );
+                    self.respawn_agent(Vec::new());
                 }
             }
             Action::CancelAgent => {
                 let _ = self.handles.cmd_tx.try_send(AgentCommand::Cancel);
             }
             Action::NewSession => {
-                self.handles.respawn(
-                    Vec::new(),
-                    &self.provider,
-                    &self.model,
-                    &self.skills,
-                    self.config,
-                    &self.permissions,
-                    &mut self.app,
-                );
+                self.respawn_agent(Vec::new());
             }
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
@@ -359,15 +362,7 @@ impl<'t> EventLoop<'t> {
                     self.model = new_model;
                     self.provider = Arc::from(new_provider);
                 }
-                self.handles.respawn(
-                    loaded.messages,
-                    &self.provider,
-                    &self.model,
-                    &self.skills,
-                    self.config,
-                    &self.permissions,
-                    &mut self.app,
-                );
+                self.respawn_agent(loaded.messages);
                 *self
                     .handles
                     .tool_outputs
@@ -427,15 +422,7 @@ impl<'t> EventLoop<'t> {
                     let history = Vec::clone(&self.handles.history.load());
                     self.provider = Arc::from(new_provider);
                     self.model = new_model;
-                    self.handles.respawn(
-                        history,
-                        &self.provider,
-                        &self.model,
-                        &self.skills,
-                        self.config,
-                        &self.permissions,
-                        &mut self.app,
-                    );
+                    self.respawn_agent(history);
                 }
                 Err(e) => self.app.flash(format!("Failed to create provider: {e}")),
             },
