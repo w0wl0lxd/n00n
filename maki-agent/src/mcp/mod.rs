@@ -6,6 +6,7 @@
 pub mod config;
 pub mod error;
 pub mod http;
+pub mod oauth;
 pub mod protocol;
 pub mod stdio;
 pub mod transport;

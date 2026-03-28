@@ -15,6 +15,7 @@ tracing = { workspace = true }
 ignore = { workspace = true }
 strum = { workspace = true }
 maki-tool-macro = { workspace = true }
+maki-storage = { workspace = true }
 htmd = { workspace = true }
 regex = { workspace = true }
 grep-regex = { workspace = true }
@@ -33,9 +34,13 @@ toml = { workspace = true }
 toml_edit = { workspace = true }
 isahc = { workspace = true }
 libc = { workspace = true }
+open = { workspace = true }
 dirs = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-bash = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+getrandom = { workspace = true }
 
 
 [dev-dependencies]
