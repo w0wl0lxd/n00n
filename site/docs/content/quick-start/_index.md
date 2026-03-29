@@ -22,7 +22,7 @@ Export a key for at least one provider:
 | Z.AI | `ZHIPU_API_KEY` |
 | Synthetic | `SYNTHETIC_API_KEY` |
 
-OpenAI also supports OAuth via device flow. If no key is set, Maki will walk you through it on first launch.
+OpenAI also supports OAuth via device flow. Run `maki auth login openai` and it will walk you through setting it up.
 
 ## Run
 
@@ -61,10 +61,10 @@ Add a `.maki/` directory to your project root for per-project settings:
 ```
 .maki/
 ├── config.toml        # Overrides global config
-├── permissions.toml   # Permission rules
-└── AGENTS.md          # Loaded into agent context automatically
+└── permissions.toml   # Permission rules
+AGENTS.md              # Loaded into agent context automatically
 ```
 
-`AGENTS.md` is loaded at the start of every session. Put coding conventions, repo quirks, or off-limits directories in here.
+`AGENTS.md` is loaded at the start of every session. Put coding conventions, repo quirks & gotchas, or off-limits directories in here. Maki will automatically load `AGENTS.md` files inside subdirs when doing a `read` in the subdir.
 
 See [Configuration](/docs/configuration/) for all options.
