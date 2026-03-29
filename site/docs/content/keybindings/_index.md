@@ -5,77 +5,69 @@ weight = 7
 
 # Keybindings
 
-On macOS, `Ctrl` maps to `Cmd` (⌘) where it makes sense.
+On macOS, `Ctrl` maps to `Cmd` where it makes sense.
 
 ## General
 
 | Key | Action |
 |-----|--------|
-| Ctrl+C | Quit / clear input |
-| Ctrl+H | Show keybindings |
-| Ctrl+N | Next task chat |
-| Ctrl+P | Previous task chat |
-| Ctrl+F | Search messages |
-| Ctrl+O | Open plan in editor |
-| Ctrl+T | Toggle todo panel |
-| Ctrl+X | Open tasks |
+| `Ctrl+C` | Quit / clear input |
+| `Ctrl+H` | Show keybindings |
+| `Ctrl+N` / `Ctrl+P` | Next / previous task chat |
+| `Ctrl+F` | Search messages |
+| `Ctrl+O` | Open plan in editor |
+| `Ctrl+T` | Toggle todo panel |
+| `Ctrl+X` | Open tasks |
 
 ## Editing
 
 | Key | Action |
 |-----|--------|
-| Enter | Submit prompt |
-| Shift+Enter / Ctrl+J / Alt+Enter | Insert newline |
-| Tab | Toggle mode |
-| / | Open command palette (at start of input) |
-| Ctrl+W | Delete word backward |
-| Ctrl+K | Delete to end of line |
-| Ctrl+A | Jump to start of line |
-| Ctrl+U | Scroll half page up |
-| Ctrl+D | Scroll half page down |
-| Ctrl+Y | Scroll one line up |
-| Ctrl+E | Scroll one line down |
-| Ctrl+G | Scroll to top |
-| Ctrl+B | Scroll to bottom |
-| Ctrl+Q | Pop queue |
-| Esc Esc | Rewind |
+| `Enter` | Submit prompt |
+| `\+Enter` / `Ctrl+J` / `Alt+Enter` | Newline |
+| `Tab` | Toggle mode |
+| `/command` | Open command palette |
+| `Ctrl+W` | Delete word backward |
+| `Ctrl+U` / `Ctrl+D` | Scroll half page up / down |
+| `Ctrl+Y` / `Ctrl+E` | Scroll one line up / down |
+| `Ctrl+G` | Scroll to top |
+| `Ctrl+B` | Scroll to bottom |
+| `Ctrl+Q` | Pop queue |
+| `Esc Esc` | Rewind |
 
 ### macOS-specific
 
 | Key | Action |
 |-----|--------|
-| ⌥⌫ | Delete word backward |
-| ⌃← / ⌃→ | Move word left / right |
-| ⌥Del | Delete word forward |
-| ⌘← / ⌘→ | Jump to start / end of line |
+| `Ctrl+←` / `Ctrl+→` | Move word left / right |
+| `Ctrl+Del` / `⌥Del` | Delete word forward |
+| `Ctrl+K` | Delete to end of line |
+| `Ctrl+A` | Jump to start of line |
+| `⌘←` / `⌘→` | Jump to start/end of line |
 
-## Streaming
-
-While the agent is running:
-
-| Key | Action |
-|-----|--------|
-| ↑ / ↓ | Navigate input history |
-| Esc Esc | Cancel agent |
-
-## Form Input
+## While Streaming
 
 | Key | Action |
 |-----|--------|
-| ↑ / ↓ | Navigate options |
-| Enter | Select option |
-| Esc | Close |
+| `↑` / `↓` | Navigate input history |
+| `Esc Esc` | Cancel agent |
 
-## Picker
-
-Pickers are used for sessions, models, themes, and more.
+## Form
 
 | Key | Action |
 |-----|--------|
-| ↑ / ↓ | Navigate |
-| Enter | Select |
-| Esc | Close |
-| Type | Filter |
+| `↑` / `↓` | Navigate options |
+| `Enter` | Select option |
+| `Esc` | Close |
+
+## Pickers
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Navigate |
+| `Enter` | Select |
+| `Esc` | Close |
+| `Type` | Filter |
 
 ## Context-Specific
 
@@ -83,15 +75,12 @@ Some pickers add extra bindings on top of the defaults:
 
 | Context | Key | Action |
 |---------|-----|--------|
-| Session Picker | Ctrl+D | Delete session |
-| Queue Focus | Enter | Remove item |
-| Command Palette | Tab | Toggle mode |
+| Session Picker | `Ctrl+D` | Delete session |
+| Queue | `Enter` | Remove item |
+| Commands | `Tab` | Toggle mode |
 
 ## Context Inheritance
 
 Child contexts inherit their parent's bindings and add their own.
 
-- **Picker** is the base for: TaskPicker, SessionPicker, RewindPicker, ThemePicker, ModelPicker, QueueFocus, CommandPalette, Search
-- **SessionPicker** adds: Delete session
-- **QueueFocus** adds: Remove item
-- **CommandPalette** adds: Toggle mode
+- **Pickers** is the base for: Task Picker, Session Picker, Rewind Picker, Theme Picker, Model Picker, Queue, Commands, Search

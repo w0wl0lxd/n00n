@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use dirs::home_dir;
 
+use maki_config_macro::ConfigSection;
 use serde::Deserialize;
 use thiserror::Error;
 use tracing::warn;
@@ -14,48 +15,94 @@ pub const PROJECT_CONFIG_FILE: &str = ".maki/config.toml";
 const PERMISSIONS_FILE: &str = ".config/maki/permissions.toml";
 const PROJECT_PERMISSIONS_FILE: &str = ".maki/permissions.toml";
 
-const DEFAULT_MAX_OUTPUT_BYTES: usize = 50 * 1024;
+pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 50 * 1024;
 pub const DEFAULT_MAX_OUTPUT_LINES: usize = 2000;
-const DEFAULT_MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
-const DEFAULT_MAX_LINE_BYTES: usize = 500;
-const DEFAULT_FLASH_DURATION_MS: u64 = 1500;
-const DEFAULT_TYPEWRITER_MS_PER_CHAR: u64 = 4;
-const DEFAULT_MOUSE_SCROLL_LINES: u32 = 3;
+pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
+pub const DEFAULT_MAX_LINE_BYTES: usize = 500;
+pub const DEFAULT_FLASH_DURATION_MS: u64 = 1500;
+pub const DEFAULT_TYPEWRITER_MS_PER_CHAR: u64 = 4;
+pub const DEFAULT_MOUSE_SCROLL_LINES: u32 = 3;
 
-const DEFAULT_BASH_TIMEOUT_SECS: u64 = 120;
-const DEFAULT_CODE_EXECUTION_TIMEOUT_SECS: u64 = 30;
-const DEFAULT_MAX_CONTINUATION_TURNS: u32 = 3;
-const DEFAULT_COMPACTION_BUFFER: u32 = 30_000;
-const DEFAULT_SEARCH_RESULT_LIMIT: usize = 100;
-const DEFAULT_INTERPRETER_MAX_MEMORY_MB: usize = 50;
+pub const DEFAULT_BASH_TIMEOUT_SECS: u64 = 120;
+pub const DEFAULT_CODE_EXECUTION_TIMEOUT_SECS: u64 = 30;
+pub const DEFAULT_MAX_CONTINUATION_TURNS: u32 = 3;
+pub const DEFAULT_COMPACTION_BUFFER: u32 = 30_000;
+pub const DEFAULT_SEARCH_RESULT_LIMIT: usize = 100;
+pub const DEFAULT_INTERPRETER_MAX_MEMORY_MB: usize = 50;
 
-const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
-const DEFAULT_STREAM_TIMEOUT_SECS: u64 = 300;
+pub const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
+pub const DEFAULT_STREAM_TIMEOUT_SECS: u64 = 300;
 
-const DEFAULT_MAX_LOG_BYTES_MB: u64 = 200;
-const DEFAULT_MAX_LOG_FILES: u32 = 10;
-const DEFAULT_INPUT_HISTORY_SIZE: usize = 100;
+pub const DEFAULT_MAX_LOG_BYTES_MB: u64 = 200;
+pub const DEFAULT_MAX_LOG_FILES: u32 = 10;
+pub const DEFAULT_INPUT_HISTORY_SIZE: usize = 100;
 
-const DEFAULT_MAX_FILE_SIZE_MB: u64 = 2;
+pub const DEFAULT_MAX_FILE_SIZE_MB: u64 = 2;
 
-const MIN_OUTPUT_BYTES: usize = 1024;
-const MIN_OUTPUT_LINES: usize = 10;
-const MIN_RESPONSE_BYTES: usize = 1024;
-const MIN_LINE_BYTES: usize = 80;
-const MIN_BASH_TIMEOUT_SECS: u64 = 5;
-const MIN_CODE_EXECUTION_TIMEOUT_SECS: u64 = 5;
-const MIN_MAX_CONTINUATION_TURNS: u32 = 1;
-const MIN_COMPACTION_BUFFER: u32 = 1_000;
-const MIN_SEARCH_RESULT_LIMIT: usize = 10;
-const MIN_INTERPRETER_MAX_MEMORY_MB: usize = 10;
-const MIN_MOUSE_SCROLL_LINES: u32 = 1;
-const MIN_TOOL_OUTPUT_LINES: usize = 1;
-const MIN_MAX_LOG_BYTES_MB: u64 = 1;
-const MIN_MAX_LOG_FILES: u32 = 1;
-const MIN_INPUT_HISTORY_SIZE: usize = 10;
-const MIN_MAX_FILE_SIZE_MB: u64 = 1;
-const MIN_CONNECT_TIMEOUT_SECS: u64 = 1;
-const MIN_STREAM_TIMEOUT_SECS: u64 = 10;
+pub const MIN_OUTPUT_BYTES: usize = 1024;
+pub const MIN_OUTPUT_LINES: usize = 10;
+pub const MIN_RESPONSE_BYTES: usize = 1024;
+pub const MIN_LINE_BYTES: usize = 80;
+pub const MIN_BASH_TIMEOUT_SECS: u64 = 5;
+pub const MIN_CODE_EXECUTION_TIMEOUT_SECS: u64 = 5;
+pub const MIN_MAX_CONTINUATION_TURNS: u32 = 1;
+pub const MIN_COMPACTION_BUFFER: u32 = 1_000;
+pub const MIN_SEARCH_RESULT_LIMIT: usize = 10;
+pub const MIN_INTERPRETER_MAX_MEMORY_MB: usize = 10;
+pub const MIN_MOUSE_SCROLL_LINES: u32 = 1;
+pub const MIN_TOOL_OUTPUT_LINES: usize = 1;
+pub const MIN_MAX_LOG_BYTES_MB: u64 = 1;
+pub const MIN_MAX_LOG_FILES: u32 = 1;
+pub const MIN_INPUT_HISTORY_SIZE: usize = 10;
+pub const MIN_MAX_FILE_SIZE_MB: u64 = 1;
+pub const MIN_CONNECT_TIMEOUT_SECS: u64 = 1;
+pub const MIN_STREAM_TIMEOUT_SECS: u64 = 10;
+
+#[derive(Debug, Clone, Copy)]
+pub enum ConfigValue {
+    Bool(bool),
+    U32(u32),
+    U64(u64),
+    Usize(usize),
+    OptionalString,
+}
+
+impl ConfigValue {
+    pub fn format_default(&self) -> String {
+        match self {
+            Self::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+            Self::U32(v) => v.to_string(),
+            Self::U64(v) => v.to_string(),
+            Self::Usize(v) => v.to_string(),
+            Self::OptionalString => "none".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ConfigField {
+    pub name: &'static str,
+    pub ty: &'static str,
+    pub default: ConfigValue,
+    pub min: Option<u64>,
+    pub description: &'static str,
+}
+
+pub const TOP_LEVEL_FIELDS: &[ConfigField] = &[ConfigField {
+    name: "always_yolo",
+    ty: "bool",
+    default: ConfigValue::Bool(false),
+    min: None,
+    description: "Start every session with YOLO mode (skip permission prompts, deny rules still apply)",
+}];
+
+pub const INDEX_FIELDS: &[ConfigField] = &[ConfigField {
+    name: "max_file_size_mb",
+    ty: "u64",
+    default: ConfigValue::U64(DEFAULT_MAX_FILE_SIZE_MB),
+    min: Some(MIN_MAX_FILE_SIZE_MB),
+    description: "Max file size for indexing (MB)",
+}];
 
 #[derive(Debug, Error)]
 #[error("invalid config: {section}.{field} = {value} is below minimum ({min})")]
@@ -229,13 +276,47 @@ pub struct Config {
     pub permissions: PermissionsConfig,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, ConfigSection)]
+#[config(section = "ui")]
 pub struct UiConfig {
+    #[config(default = true, desc = "Show splash animation on startup")]
     pub splash_animation: bool,
+
+    #[config(default = DEFAULT_FLASH_DURATION_MS, desc = "Duration of flash messages (ms)")]
     pub flash_duration_ms: u64,
+
+    #[config(default = DEFAULT_TYPEWRITER_MS_PER_CHAR, desc = "Typewriter effect speed (ms/char)")]
     pub typewriter_ms_per_char: u64,
+
+    #[config(default = DEFAULT_MOUSE_SCROLL_LINES, min = MIN_MOUSE_SCROLL_LINES, desc = "Lines per mouse wheel scroll")]
     pub mouse_scroll_lines: u32,
+
+    #[config(skip, default = "ToolOutputLines::default()")]
     pub tool_output_lines: ToolOutputLines,
+}
+
+impl UiConfig {
+    pub fn flash_duration(&self) -> Duration {
+        Duration::from_millis(self.flash_duration_ms)
+    }
+
+    fn from_file(f: UiFileConfig) -> Self {
+        Self {
+            splash_animation: f.splash_animation.unwrap_or(true),
+            flash_duration_ms: f.flash_duration_ms.unwrap_or(DEFAULT_FLASH_DURATION_MS),
+            typewriter_ms_per_char: f
+                .typewriter_ms_per_char
+                .unwrap_or(DEFAULT_TYPEWRITER_MS_PER_CHAR),
+            mouse_scroll_lines: f.mouse_scroll_lines.unwrap_or(DEFAULT_MOUSE_SCROLL_LINES),
+            tool_output_lines: ToolOutputLines::from_file(f.tool_output_lines),
+        }
+    }
+
+    pub fn validate_all(&self) -> Result<(), ConfigError> {
+        self.validate()?;
+        self.tool_output_lines.validate()?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,6 +344,18 @@ impl ToolOutputLines {
         web: 3,
         other: 3,
     };
+
+    pub const FIELD_DEFAULTS: &[(&'static str, usize)] = &[
+        ("bash", Self::DEFAULT.bash),
+        ("code_execution", Self::DEFAULT.code_execution),
+        ("task", Self::DEFAULT.task),
+        ("index", Self::DEFAULT.index),
+        ("grep", Self::DEFAULT.grep),
+        ("read", Self::DEFAULT.read),
+        ("write", Self::DEFAULT.write),
+        ("web", Self::DEFAULT.web),
+        ("other", Self::DEFAULT.other),
+    ];
 
     fn from_file(f: Option<ToolOutputLinesFile>) -> Self {
         let d = Self::DEFAULT;
@@ -313,80 +406,44 @@ impl Default for ToolOutputLines {
     }
 }
 
-impl Default for UiConfig {
-    fn default() -> Self {
-        Self {
-            splash_animation: true,
-            flash_duration_ms: DEFAULT_FLASH_DURATION_MS,
-            typewriter_ms_per_char: DEFAULT_TYPEWRITER_MS_PER_CHAR,
-            mouse_scroll_lines: DEFAULT_MOUSE_SCROLL_LINES,
-            tool_output_lines: ToolOutputLines::default(),
-        }
-    }
-}
-
-impl UiConfig {
-    pub fn flash_duration(&self) -> Duration {
-        Duration::from_millis(self.flash_duration_ms)
-    }
-
-    fn from_file(f: UiFileConfig) -> Self {
-        Self {
-            splash_animation: f.splash_animation.unwrap_or(true),
-            flash_duration_ms: f.flash_duration_ms.unwrap_or(DEFAULT_FLASH_DURATION_MS),
-            typewriter_ms_per_char: f
-                .typewriter_ms_per_char
-                .unwrap_or(DEFAULT_TYPEWRITER_MS_PER_CHAR),
-            mouse_scroll_lines: f.mouse_scroll_lines.unwrap_or(DEFAULT_MOUSE_SCROLL_LINES),
-            tool_output_lines: ToolOutputLines::from_file(f.tool_output_lines),
-        }
-    }
-
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        check(
-            "ui",
-            "mouse_scroll_lines",
-            self.mouse_scroll_lines as u64,
-            MIN_MOUSE_SCROLL_LINES as u64,
-        )?;
-        self.tool_output_lines.validate()?;
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, ConfigSection)]
+#[config(section = "agent")]
 pub struct AgentConfig {
-    pub no_rtk: bool,
+    #[config(default = DEFAULT_MAX_OUTPUT_BYTES, min = MIN_OUTPUT_BYTES, desc = "Max tool output size (bytes)")]
     pub max_output_bytes: usize,
-    pub max_output_lines: usize,
-    pub max_response_bytes: usize,
-    pub max_line_bytes: usize,
-    pub bash_timeout_secs: u64,
-    pub code_execution_timeout_secs: u64,
-    pub max_continuation_turns: u32,
-    pub compaction_buffer: u32,
-    pub search_result_limit: usize,
-    pub interpreter_max_memory_mb: usize,
-    pub index_max_file_size: u64,
-}
 
-impl Default for AgentConfig {
-    fn default() -> Self {
-        Self {
-            no_rtk: false,
-            max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
-            max_output_lines: DEFAULT_MAX_OUTPUT_LINES,
-            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
-            max_line_bytes: DEFAULT_MAX_LINE_BYTES,
-            bash_timeout_secs: DEFAULT_BASH_TIMEOUT_SECS,
-            code_execution_timeout_secs: DEFAULT_CODE_EXECUTION_TIMEOUT_SECS,
-            max_continuation_turns: DEFAULT_MAX_CONTINUATION_TURNS,
-            compaction_buffer: DEFAULT_COMPACTION_BUFFER,
-            search_result_limit: DEFAULT_SEARCH_RESULT_LIMIT,
-            interpreter_max_memory_mb: DEFAULT_INTERPRETER_MAX_MEMORY_MB,
-            index_max_file_size: DEFAULT_MAX_FILE_SIZE_MB * 1024 * 1024,
-        }
-    }
+    #[config(default = DEFAULT_MAX_OUTPUT_LINES, min = MIN_OUTPUT_LINES, desc = "Max tool output lines")]
+    pub max_output_lines: usize,
+
+    #[config(default = DEFAULT_MAX_RESPONSE_BYTES, min = MIN_RESPONSE_BYTES, desc = "Max LLM response size (bytes)")]
+    pub max_response_bytes: usize,
+
+    #[config(default = DEFAULT_MAX_LINE_BYTES, min = MIN_LINE_BYTES, desc = "Max bytes per line before truncation")]
+    pub max_line_bytes: usize,
+
+    #[config(default = DEFAULT_BASH_TIMEOUT_SECS, min = MIN_BASH_TIMEOUT_SECS, desc = "Bash command timeout (seconds)")]
+    pub bash_timeout_secs: u64,
+
+    #[config(default = DEFAULT_CODE_EXECUTION_TIMEOUT_SECS, min = MIN_CODE_EXECUTION_TIMEOUT_SECS, desc = "Code execution timeout (seconds)")]
+    pub code_execution_timeout_secs: u64,
+
+    #[config(default = DEFAULT_MAX_CONTINUATION_TURNS, min = MIN_MAX_CONTINUATION_TURNS, desc = "Max automatic continuation turns")]
+    pub max_continuation_turns: u32,
+
+    #[config(default = DEFAULT_COMPACTION_BUFFER, min = MIN_COMPACTION_BUFFER, desc = "Token buffer reserved during compaction")]
+    pub compaction_buffer: u32,
+
+    #[config(default = DEFAULT_SEARCH_RESULT_LIMIT, min = MIN_SEARCH_RESULT_LIMIT, desc = "Max results from grep/glob searches")]
+    pub search_result_limit: usize,
+
+    #[config(default = DEFAULT_INTERPRETER_MAX_MEMORY_MB, min = MIN_INTERPRETER_MAX_MEMORY_MB, desc = "Memory limit for code interpreter (MB)")]
+    pub interpreter_max_memory_mb: usize,
+
+    #[config(skip, default = false)]
+    pub no_rtk: bool,
+
+    #[config(skip, default = "DEFAULT_MAX_FILE_SIZE_MB * 1024 * 1024")]
+    pub index_max_file_size: u64,
 }
 
 impl AgentConfig {
@@ -421,67 +478,8 @@ impl AgentConfig {
         }
     }
 
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        check(
-            "agent",
-            "max_output_bytes",
-            self.max_output_bytes as u64,
-            MIN_OUTPUT_BYTES as u64,
-        )?;
-        check(
-            "agent",
-            "max_output_lines",
-            self.max_output_lines as u64,
-            MIN_OUTPUT_LINES as u64,
-        )?;
-        check(
-            "agent",
-            "max_response_bytes",
-            self.max_response_bytes as u64,
-            MIN_RESPONSE_BYTES as u64,
-        )?;
-        check(
-            "agent",
-            "max_line_bytes",
-            self.max_line_bytes as u64,
-            MIN_LINE_BYTES as u64,
-        )?;
-        check(
-            "agent",
-            "bash_timeout_secs",
-            self.bash_timeout_secs,
-            MIN_BASH_TIMEOUT_SECS,
-        )?;
-        check(
-            "agent",
-            "code_execution_timeout_secs",
-            self.code_execution_timeout_secs,
-            MIN_CODE_EXECUTION_TIMEOUT_SECS,
-        )?;
-        check(
-            "agent",
-            "max_continuation_turns",
-            self.max_continuation_turns as u64,
-            MIN_MAX_CONTINUATION_TURNS as u64,
-        )?;
-        check(
-            "agent",
-            "compaction_buffer",
-            self.compaction_buffer as u64,
-            MIN_COMPACTION_BUFFER as u64,
-        )?;
-        check(
-            "agent",
-            "search_result_limit",
-            self.search_result_limit as u64,
-            MIN_SEARCH_RESULT_LIMIT as u64,
-        )?;
-        check(
-            "agent",
-            "interpreter_max_memory_mb",
-            self.interpreter_max_memory_mb as u64,
-            MIN_INTERPRETER_MAX_MEMORY_MB as u64,
-        )?;
+    pub fn validate_all(&self) -> Result<(), ConfigError> {
+        self.validate()?;
         check(
             "agent",
             "max_file_size_mb",
@@ -492,10 +490,23 @@ impl AgentConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ConfigSection)]
+#[config(section = "provider", fields_only)]
 pub struct ProviderConfig {
+    #[config(
+        ty = "String",
+        desc = "Default model identifier (e.g. `anthropic/claude-sonnet-4-6`)"
+    )]
     pub default_model: Option<String>,
+
+    #[config(key = "connect_timeout_secs", ty = "u64", default = DEFAULT_CONNECT_TIMEOUT_SECS,
+             min = MIN_CONNECT_TIMEOUT_SECS, val = "self.connect_timeout.as_secs()",
+             desc = "HTTP connect timeout (seconds)")]
     pub connect_timeout: Duration,
+
+    #[config(key = "stream_timeout_secs", ty = "u64", default = DEFAULT_STREAM_TIMEOUT_SECS,
+             min = MIN_STREAM_TIMEOUT_SECS, val = "self.stream_timeout.as_secs()",
+             desc = "Streaming response timeout (seconds)")]
     pub stream_timeout: Duration,
 }
 
@@ -522,28 +533,22 @@ impl ProviderConfig {
             ),
         }
     }
-
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        check(
-            "provider",
-            "connect_timeout_secs",
-            self.connect_timeout.as_secs(),
-            MIN_CONNECT_TIMEOUT_SECS,
-        )?;
-        check(
-            "provider",
-            "stream_timeout_secs",
-            self.stream_timeout.as_secs(),
-            MIN_STREAM_TIMEOUT_SECS,
-        )?;
-        Ok(())
-    }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, ConfigSection)]
+#[config(section = "storage", fields_only)]
 pub struct StorageConfig {
+    #[config(key = "max_log_bytes_mb", ty = "u64", default = DEFAULT_MAX_LOG_BYTES_MB,
+             min = MIN_MAX_LOG_BYTES_MB, val = "self.max_log_bytes / (1024 * 1024)",
+             desc = "Max total log size (MB)")]
     pub max_log_bytes: u64,
+
+    #[config(default = DEFAULT_MAX_LOG_FILES, min = MIN_MAX_LOG_FILES,
+             desc = "Max number of log files to keep")]
     pub max_log_files: u32,
+
+    #[config(default = DEFAULT_INPUT_HISTORY_SIZE, min = MIN_INPUT_HISTORY_SIZE,
+             desc = "Number of input history entries to retain")]
     pub input_history_size: usize,
 }
 
@@ -565,34 +570,12 @@ impl StorageConfig {
             input_history_size: f.input_history_size.unwrap_or(DEFAULT_INPUT_HISTORY_SIZE),
         }
     }
-
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        check(
-            "storage",
-            "max_log_bytes_mb",
-            self.max_log_bytes / (1024 * 1024),
-            MIN_MAX_LOG_BYTES_MB,
-        )?;
-        check(
-            "storage",
-            "max_log_files",
-            self.max_log_files as u64,
-            MIN_MAX_LOG_FILES as u64,
-        )?;
-        check(
-            "storage",
-            "input_history_size",
-            self.input_history_size as u64,
-            MIN_INPUT_HISTORY_SIZE as u64,
-        )?;
-        Ok(())
-    }
 }
 
 impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
-        self.ui.validate()?;
-        self.agent.validate()?;
+        self.ui.validate_all()?;
+        self.agent.validate_all()?;
         self.provider.validate()?;
         self.storage.validate()?;
         Ok(())

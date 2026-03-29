@@ -74,14 +74,14 @@ impl FromStr for ModelTier {
     }
 }
 
-pub(crate) struct ModelEntry {
-    pub(crate) prefixes: &'static [&'static str],
-    pub(crate) tier: ModelTier,
-    pub(crate) family: ModelFamily,
-    pub(crate) default: bool,
-    pub(crate) pricing: ModelPricing,
-    pub(crate) max_output_tokens: u32,
-    pub(crate) context_window: u32,
+pub struct ModelEntry {
+    pub prefixes: &'static [&'static str],
+    pub tier: ModelTier,
+    pub family: ModelFamily,
+    pub default: bool,
+    pub pricing: ModelPricing,
+    pub max_output_tokens: u32,
+    pub context_window: u32,
 }
 
 fn lookup_entry<'a>(
@@ -94,7 +94,7 @@ fn lookup_entry<'a>(
         .ok_or_else(|| ModelError::UnknownModel(model_id.to_string()))
 }
 
-pub(crate) fn models_for_provider(provider: ProviderKind) -> &'static [ModelEntry] {
+pub fn models_for_provider(provider: ProviderKind) -> &'static [ModelEntry] {
     match provider {
         ProviderKind::Anthropic => anthropic::models(),
         ProviderKind::OpenAi => openai::models(),

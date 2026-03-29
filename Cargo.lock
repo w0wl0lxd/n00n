@@ -2191,6 +2191,7 @@ name = "maki-config"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "maki-config-macro",
  "serde",
  "tempfile",
  "test-case",
@@ -2198,6 +2199,27 @@ dependencies = [
  "toml",
  "toml_edit",
  "tracing",
+]
+
+[[package]]
+name = "maki-config-macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "maki-docgen"
+version = "0.1.0"
+dependencies = [
+ "maki-agent",
+ "maki-config",
+ "maki-providers",
+ "maki-ui",
+ "serde_json",
+ "strum",
 ]
 
 [[package]]

@@ -15,11 +15,11 @@ Maki talks to LLM providers over their HTTP APIs. Models are split into three ti
 - **API**: `https://api.anthropic.com/v1/messages`
 - **Features**: Prompt caching, thinking mode (adaptive/budgeted), advanced tool use
 
-| Tier | Models |
-|------|--------|
-| Weak | claude-3-haiku, claude-3-5-haiku, claude-haiku-4-5 |
-| Medium | claude-3-sonnet, claude-3-5-sonnet, claude-3-7-sonnet, claude-sonnet-4, claude-sonnet-4-5, claude-sonnet-4-6 |
-| Strong | claude-3-opus, claude-opus-4-5, claude-opus-4-6 |
+| Tier | Models | Pricing (in/out per 1M tokens) | Context |
+|------|--------|-------------------------------|---------|
+| Weak | claude-3-haiku, claude-3-5-haiku, **claude-haiku-4-5** (default) | $0.25 / $1.25 | 200K ctx / 4K out |
+| Medium | claude-3-sonnet, claude-3-5-sonnet, claude-3-7-sonnet, claude-sonnet-4, claude-sonnet-4-5, **claude-sonnet-4-6** (default) | $3.00 / $15.00 | 200K ctx / 4K out |
+| Strong | claude-opus-4-5, **claude-opus-4-6** (default), claude-3-opus, claude-opus-4-0, claude-opus-4-1 | $5.00 / $25.00 | 200K ctx / 64K out |
 
 Defaults: claude-haiku-4-5 (weak), claude-sonnet-4-6 (medium), claude-opus-4-6 (strong)
 
@@ -28,42 +28,42 @@ Defaults: claude-haiku-4-5 (weak), claude-sonnet-4-6 (medium), claude-opus-4-6 (
 - **Env var**: `OPENAI_API_KEY` (also supports OAuth device flow)
 - **API**: `https://api.openai.com/v1`
 
-| Tier | Models |
-|------|--------|
-| Weak | gpt-5.4-nano, gpt-5.4-mini, gpt-4.1-nano |
-| Medium | gpt-4.1-mini, gpt-4.1, o4-mini |
-| Strong | gpt-5.4, o3 |
+| Tier | Models | Pricing (in/out per 1M tokens) | Context |
+|------|--------|-------------------------------|---------|
+| Weak | **gpt-5.4-nano** (default), gpt-5.4-mini, gpt-4.1-nano | $0.20 / $1.25 | 400K ctx / 128K out |
+| Medium | gpt-4.1-mini, **gpt-4.1** (default), o4-mini | $0.40 / $1.60 | 1047K ctx / 32K out |
+| Strong | **gpt-5.4** (default), o3 | $2.50 / $15.00 | 1050K ctx / 128K out |
 
 Defaults: gpt-5.4-nano (weak), gpt-4.1 (medium), gpt-5.4 (strong)
 
 ### Z.AI
 
-- **Env var**: `ZHIPU_API_KEY`
-- **API**: `https://api.z.ai/api/paas/v4` (standard) / `https://api.z.ai/api/coding/paas/v4` (coding)
+- **Env var**: `ZHIPU_API_KEY` (shared across both endpoints)
+- **API endpoints**:
+  - `https://api.z.ai/api/paas/v4`
+  - `https://api.z.ai/api/coding/paas/v4`
 
-Z.AI has two endpoints: standard and coding. The coding endpoint is used for code-specific models.
+| Tier | Models | Pricing (in/out per 1M tokens) | Context |
+|------|--------|-------------------------------|---------|
+| Weak | **glm-4.7-flash** (default), glm-4.5-flash, glm-4.5-air | $0.00 / $0.00 | 200K ctx / 131K out |
+| Medium | **glm-4.7, glm-4.6** (default), glm-4.5 | $0.60 / $2.20 | 200K ctx / 131K out |
+| Strong | **glm-5-code** (default), glm-5 | $1.20 / $5.00 | 200K ctx / 131K out |
 
-| Tier | Models |
-|------|--------|
-| Weak | glm-4.7-flash, glm-4.5-flash, glm-4.5-air |
-| Medium | glm-4.7, glm-4.6, glm-4.5 |
-| Strong | glm-5, glm-5-code |
-
-Defaults: glm-4.7-flash (weak), glm-4.7 (medium), glm-5-code (strong)
+Defaults: glm-5-code (strong), glm-4.7-flash (weak), glm-4.7 (medium)
 
 ### Synthetic
 
 - **Env var**: `SYNTHETIC_API_KEY`
 - **API**: `https://api.synthetic.new/openai/v1`
-- **Features**: Reasoning effort support (low/medium/high)
+- **Features**: Reasoning effort support (low/medium/high), open-weight models
 
-Synthetic hosts open-weight models via an OpenAI-compatible API.
+| Tier | Models | Pricing (in/out per 1M tokens) | Context |
+|------|--------|-------------------------------|---------|
+| Weak | **hf:zai-org/GLM-4.7-Flash** (default) | $0.10 / $0.50 | 200K ctx / 131K out |
+| Medium | **hf:deepseek-ai/DeepSeek-V3.2** (default) | $0.56 / $1.68 | 200K ctx / 131K out |
+| Strong | **hf:moonshotai/Kimi-K2.5** (default) | $0.45 / $3.40 | 200K ctx / 131K out |
 
-| Tier | Models |
-|------|--------|
-| Weak | hf:zai-org/GLM-4.7-Flash |
-| Medium | hf:deepseek-ai/DeepSeek-V3.2 |
-| Strong | hf:moonshotai/Kimi-K2.5 |
+Defaults: hf:moonshotai/Kimi-K2.5 (strong), hf:deepseek-ai/DeepSeek-V3.2 (medium), hf:zai-org/GLM-4.7-Flash (weak)
 
 ## Model Identifiers
 
@@ -89,7 +89,7 @@ To add a custom provider or proxy, drop an executable script into `~/.maki/provi
 | `logout` | interactive | Clear credentials |
 | `refresh` | 30s | Refresh auth tokens |
 
-The `base` field specifies which built-in provider to inherit the model catalog from. Valid values: `Anthropic`, `OpenAi`, `Zai`, `ZaiCodingPlan`, `Synthetic`. For example, a proxy in front of Anthropic sets `base` to `Anthropic` and all Claude models are available, routed through your auth.
+The `base` field specifies which built-in provider to inherit the model catalog from. Valid values: `anthropic`, `openai`, `zai`, `zai-coding-plan`, `synthetic`. For example, a proxy in front of Anthropic sets `base` to `anthropic` and all Claude models are available, routed through your auth.
 
 Dynamic provider models are namespaced as `{slug}/{model_id}` (e.g. `myproxy/claude-sonnet-4-6`).
 

@@ -11,164 +11,173 @@ Maki ships with 17 built-in tools. This is the full reference.
 
 ### `bash`
 
-Runs shell commands. Use it for git, builds, tests, and anything else you'd type in a terminal. Not for reading or writing files.
+Execute a bash command.
+Commands run in <cwd> by default.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `command` | string | yes | | The bash command to execute |
-| `description` | string | no | | Short description (3-5 words) |
-| `timeout` | u64 | no | 120 | Timeout in seconds |
+| `command` | string | yes |  | The bash command to execute |
+| `description` | string | no |  | Short description (3-5 words) of what the command does |
+| `timeout` | integer | no | 120 | Timeout in seconds |
 | `workdir` | string | no | cwd | Working directory |
 
 ### `read`
 
-Reads a file or directory listing. Output includes 1-indexed line numbers for precise references.
+Read a file or directory. Returns contents with line numbers (1-indexed).
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `path` | string | yes | | Absolute path to file or directory |
-| `offset` | usize | no | | Start line (1-indexed) |
-| `limit` | usize | no | 2000 | Max lines to read |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | integer | no | Max number of lines to read |
+| `offset` | integer | no | Line number to start from (1-indexed) |
+| `path` | string | yes | Absolute path to the file or directory |
 
 ### `write`
 
-Overwrites a file with new content. Creates parent directories if needed.
+Write content to a file, replacing existing content.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes | Absolute path |
-| `content` | string | yes | Complete file content |
+| `content` | string | yes | The complete file content to write |
+| `path` | string | yes | Absolute path to the file |
 
 ### `edit`
 
-Finds an exact string in a file and replaces it. The match must be unique unless `replace_all` is set.
+Replace an exact string match in a file.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `path` | string | yes | | Absolute path |
-| `old_string` | string | yes | | Exact string to find |
-| `new_string` | string | yes | | Replacement string |
-| `replace_all` | bool | no | false | Replace all occurrences |
+| `new_string` | string | yes |  | Replacement string |
+| `old_string` | string | yes |  | Exact string to find (must match uniquely unless replace_all is true) |
+| `path` | string | yes |  | Absolute path to the file |
+| `replace_all` | boolean | no | false | Replace all occurrences |
 
 ### `multiedit`
 
-Applies multiple replacements to the same file atomically. Edits run in sequence, each seeing the result of the previous. If any edit fails, nothing is written.
+Make multiple find-and-replace edits to a single file atomically.
+Prefer this over edit when making multiple changes to the same file.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes | Absolute path |
-| `edits` | array | yes | Array of `{old_string, new_string, replace_all?}` |
+| `edits` | array | yes | Array of edit operations to apply sequentially |
+| `path` | string | yes | Absolute path to the file |
 
 ### `glob`
 
-Finds files matching a glob pattern. Respects `.gitignore` and returns results sorted by modification time (newest first).
+Find files by glob pattern.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `pattern` | string | yes | | Glob pattern (e.g. `**/*.rs`) |
-| `path` | string | no | cwd | Directory to search |
+| `path` | string | no | cwd | Directory to search in |
+| `pattern` | string | yes |  | Glob pattern (e.g. **/*.rs, src/**/*.ts) |
 
 ### `grep`
 
-Searches file contents with regex. Respects `.gitignore`. Results are grouped by file and sorted by modification time.
+Search file contents using regex.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `pattern` | string | yes | | Regex pattern |
-| `path` | string | no | cwd | Directory to search |
-| `include` | string | no | | File glob filter (e.g. `*.rs`) |
+| `include` | string | no |  | File glob filter (e.g. *.rs) |
+| `path` | string | no | cwd | Directory to search in |
+| `pattern` | string | yes |  | Regex pattern to search for |
 
 ### `index`
 
-Returns a compact skeleton of a source file: imports, type definitions, and function signatures, all with line numbers. Uses 70-90% fewer tokens than reading the full file. Powered by tree-sitter, supports 15+ languages.
+Return a compact skeleton of a source file: imports, type definitions, function signatures, and structure with their line numbers sorrounded by []. ~70-90% fewer tokens than reading the full file.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `path` | string | yes | Absolute path |
+| `path` | string | yes | Absolute path to the file |
 
 ## Execution & Control
 
 ### `batch`
 
-Runs 1 to 25 independent tool calls in parallel. Partial failures don't block the rest. Useful when reading multiple files or running unrelated lookups at once.
+Executes multiple independent tool calls concurrently to reduce round-trips.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `tool_calls` | array | yes | Array of `{tool, parameters}` |
+| `tool_calls` | array | yes | Array of tool calls to execute in parallel |
 
 ### `code_execution`
 
-Runs Python in a sandboxed interpreter. All tools are available as async functions inside the sandbox, so the agent can chain calls, filter results, or do light data processing in one round trip.
+Execute Python code in a sandboxed interpreter. Tools are available as callable functions.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `code` | string | yes | | Python code (must `await` tool calls) |
-| `timeout` | u64 | no | 30 | Timeout in seconds (max 300) |
+| `code` | string | yes |  | Python code to execute. Tools are async functions that return strings (not objects). You MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
+| `timeout` | integer | no | 30, max 300 | Timeout in seconds |
 
 ### `question`
 
-Asks the user a question. Can present predefined options for single or multi-select answers.
+Use this tool when you need to ask the user questions during execution. This allows you to:
+- Gather user preferences or requirements
+- Clarify ambiguous instructions
+- Get decisions on implementation choices as you work
+- Offer choices to the user about what direction to take
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `questions` | array | yes | Array of question objects with `question`, `options`, `multiple` |
+| `questions` | array | yes | List of questions to ask the user |
 
 ## External
 
 ### `webfetch`
 
-Fetches the contents of a URL. HTTP is upgraded to HTTPS automatically. Max response size is 5MB.
+Fetch a URL and return its contents. Best inside code_execution.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `url` | string | yes | | URL to fetch |
-| `format` | string | no | markdown | Output format: markdown, text, html |
-| `timeout` | u64 | no | 30 | Timeout in seconds |
+| `format` | string | no |  | Output format: markdown (default), text, or html |
+| `timeout` | integer | no | 30, max 120 | Timeout in seconds |
+| `url` | string | yes |  | URL to fetch (http:// or https://) |
 
 ### `websearch`
 
-Searches the web via Exa AI. Useful for real-time information not available in the codebase.
+Search the web for real-time information using Exa AI. Best inside code_execution.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `query` | string | yes | | Search query |
-| `num_results` | u64 | no | 8 | Number of results |
+| `num_results` | integer | no | 8 | Number of results to return |
+| `query` | string | yes |  | Search query |
 
 ## Agent & Knowledge
 
 ### `task`
 
-Runs a sub-agent on an independent task. Research agents are read-only; general agents get full tool access. Model tier is configurable, so lightweight tasks don't use expensive models.
+Launch an autonomous subagent to perform tasks independently. Best combined with batch.
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `description` | string | yes | | Short task description (3-5 words) |
-| `prompt` | string | yes | | Detailed prompt |
-| `subagent_type` | string | no | research | `research` (read-only) or `general` |
-| `model_tier` | string | no | current | `strong`, `medium`, or `weak` |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `description` | string | yes | Short (3-5 words) description of the task |
+| `model_tier` | string | no | Model tier (optional, omit to use current model, capped at current tier):
+- "strong" (e.g. Opus): Deep reasoning, complex architecture, subtle bugs. ~5x cost of medium.
+- "medium" (e.g. Sonnet): Balanced. Refactors, features, multi-file changes.
+- "weak" (e.g. Haiku): Fast/cheap. Search, summarize, boilerplate, simple edits. |
+| `prompt` | string | yes | Detailed task prompt for the agent |
+| `subagent_type` | string | no | Subagent type: "research" (read-only, default) or "general" (can modify files) |
 
 ### `todowrite`
 
-Creates or updates a todo list for tracking multi-step work. Each item has a content string, a status, and a priority.
+Create or update a structured todo list to track tasks.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `todos` | array | yes | Array of `{content, status, priority}` |
+| `todos` | array | yes | The updated todo list |
 
 ### `memory`
 
-A persistent, project-scoped scratchpad. Used to save learnings, patterns, and decisions that should survive across sessions.
+Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `command` | string | yes | `view`, `write`, or `delete` |
-| `path` | string | no | Relative path (omit to list all) |
-| `content` | string | no | Content for `write` |
+| `command` | string | yes | Command: view, write, delete |
+| `content` | string | no | File content for 'write' |
+| `path` | string | no | Relative path (e.g. 'architecture.md'). Omit to list all. |
 
 ### `skill`
 
-Loads a named skill, giving the agent detailed instructions for a specific kind of task. Skills are focused, reusable, and opinionated.
+Load a skill by name to get detailed instructions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `name` | string | yes | Skill name |
+| `name` | string | yes | Name of the skill to load |

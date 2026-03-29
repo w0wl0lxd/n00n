@@ -26,5 +26,8 @@ pylint:
     ruff check scripts/
     ty check scripts/
 
+gen-docs:
+    cargo run -p maki-docgen
+
 # Full CI check
 ci: fmt-check lint pylint test

@@ -47,12 +47,12 @@ max_file_size_mb = 4
 
 ### `[ui]`
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `splash_animation` | bool | `true` | Show splash animation on startup |
-| `flash_duration_ms` | u64 | `1500` | Duration of flash messages (ms) |
-| `typewriter_ms_per_char` | u64 | `4` | Typewriter effect speed (ms/char) |
-| `mouse_scroll_lines` | u32 | `3` | Lines per mouse wheel scroll (min: 1) |
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `splash_animation` | bool | `true` | - | Show splash animation on startup |
+| `flash_duration_ms` | u64 | `1500` | - | Duration of flash messages (ms) |
+| `typewriter_ms_per_char` | u64 | `4` | - | Typewriter effect speed (ms/char) |
+| `mouse_scroll_lines` | u32 | `3` | 1 | Lines per mouse wheel scroll |
 
 ### `[ui.tool_output_lines]`
 
@@ -77,35 +77,35 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `max_output_bytes` | usize | `51200` | 1024 | Max tool output size (bytes) |
 | `max_output_lines` | usize | `2000` | 10 | Max tool output lines |
 | `max_response_bytes` | usize | `5242880` | 1024 | Max LLM response size (bytes) |
-| `max_line_bytes` | usize | `500` | 80 | Max bytes per output line |
-| `bash_timeout_secs` | u64 | `120` | 5 | Bash command timeout |
-| `code_execution_timeout_secs` | u64 | `30` | 5 | Python sandbox timeout |
-| `max_continuation_turns` | u32 | `3` | 1 | Max continuation turns |
-| `compaction_buffer` | u32 | `30000` | 1000 | Context compaction buffer |
-| `search_result_limit` | usize | `100` | 10 | Max search results |
-| `interpreter_max_memory_mb` | usize | `50` | 10 | Python interpreter memory limit (MB) |
+| `max_line_bytes` | usize | `500` | 80 | Max bytes per line before truncation |
+| `bash_timeout_secs` | u64 | `120` | 5 | Bash command timeout (seconds) |
+| `code_execution_timeout_secs` | u64 | `30` | 5 | Code execution timeout (seconds) |
+| `max_continuation_turns` | u32 | `3` | 1 | Max automatic continuation turns |
+| `compaction_buffer` | u32 | `30000` | 1000 | Token buffer reserved during compaction |
+| `search_result_limit` | usize | `100` | 10 | Max results from grep/glob searches |
+| `interpreter_max_memory_mb` | usize | `50` | 10 | Memory limit for code interpreter (MB) |
 
 ### `[provider]`
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `default_model` | string | none | n/a | Default LLM model (e.g. `anthropic/claude-sonnet-4-6`) |
-| `connect_timeout_secs` | u64 | `10` | 1 | API connection timeout |
-| `stream_timeout_secs` | u64 | `300` | 10 | Streaming response timeout |
+| `default_model` | String | `none` | - | Default model identifier (e.g. `anthropic/claude-sonnet-4-6`) |
+| `connect_timeout_secs` | u64 | `10` | 1 | HTTP connect timeout (seconds) |
+| `stream_timeout_secs` | u64 | `300` | 10 | Streaming response timeout (seconds) |
 
 ### `[storage]`
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_log_bytes_mb` | u64 | `200` | 1 | Max log file size (MB) |
-| `max_log_files` | u32 | `10` | 1 | Max number of log files |
-| `input_history_size` | usize | `100` | 10 | REPL input history entries |
+| `max_log_bytes_mb` | u64 | `200` | 1 | Max total log size (MB) |
+| `max_log_files` | u32 | `10` | 1 | Max number of log files to keep |
+| `input_history_size` | usize | `100` | 10 | Number of input history entries to retain |
 
 ### `[index]`
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `max_file_size_mb` | u64 | `2` | 1 | Max file size for tree-sitter indexing (MB) |
+| `max_file_size_mb` | u64 | `2` | 1 | Max file size for indexing (MB) |
 
 ## Validation
 

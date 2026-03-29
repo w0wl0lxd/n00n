@@ -36,8 +36,39 @@ impl ProviderKind {
         }
     }
 
+    pub const fn api_key_env(self) -> &'static str {
+        match self {
+            Self::Anthropic => "ANTHROPIC_API_KEY",
+            Self::OpenAi => "OPENAI_API_KEY",
+            Self::Zai | Self::ZaiCodingPlan => "ZHIPU_API_KEY",
+            Self::Synthetic => "SYNTHETIC_API_KEY",
+        }
+    }
+
+    pub const fn base_url(self) -> &'static str {
+        match self {
+            Self::Anthropic => "https://api.anthropic.com/v1/messages",
+            Self::OpenAi => "https://api.openai.com/v1",
+            Self::Zai => "https://api.z.ai/api/paas/v4",
+            Self::ZaiCodingPlan => "https://api.z.ai/api/coding/paas/v4",
+            Self::Synthetic => "https://api.synthetic.new/openai/v1",
+        }
+    }
+
     pub const fn supports_thinking(self) -> bool {
         matches!(self, Self::Anthropic | Self::Synthetic)
+    }
+
+    pub const fn features(self) -> Option<&'static str> {
+        match self {
+            Self::Anthropic => {
+                Some("Prompt caching, thinking mode (adaptive/budgeted), advanced tool use")
+            }
+            Self::Synthetic => {
+                Some("Reasoning effort support (low/medium/high), open-weight models")
+            }
+            _ => None,
+        }
     }
 
     pub fn create(self) -> Result<Box<dyn Provider>, AgentError> {

@@ -5,7 +5,7 @@ pub(crate) mod form;
 pub(crate) mod help_modal;
 pub(crate) mod index_highlight;
 pub mod input;
-pub(crate) mod keybindings;
+pub mod keybindings;
 pub(crate) mod list_picker;
 pub(crate) mod mcp_picker;
 pub(crate) mod memory_modal;

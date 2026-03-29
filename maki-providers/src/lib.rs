@@ -6,7 +6,10 @@ pub mod retry;
 pub(crate) mod types;
 
 pub use error::AgentError;
-pub use model::{Model, ModelError, ModelFamily, ModelPricing, ModelTier, TokenUsage};
+pub use model::{
+    Model, ModelEntry, ModelError, ModelFamily, ModelPricing, ModelTier, TokenUsage,
+    models_for_provider,
+};
 pub use providers::dynamic;
 pub use providers::openai_auth;
 pub use types::{
