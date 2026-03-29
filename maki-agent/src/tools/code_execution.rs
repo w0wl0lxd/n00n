@@ -25,7 +25,7 @@ use super::truncate_output;
 use super::{Deadline, INTERPRETER_TOOLS};
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
-const PREAMBLE: &str = "import re\nimport asyncio\nimport sys\nimport os\n";
+const PREAMBLE: &str = "import re\nimport asyncio\nimport sys\nimport os\nimport json\n";
 
 #[derive(Tool, Debug, Clone)]
 pub struct CodeInterpreter {

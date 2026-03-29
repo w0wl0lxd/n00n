@@ -6,7 +6,7 @@ Good use case is filtering on web tool results.
 - All tools are async: `result = await read(path='file.txt')`
 - Tools return strings, not Python objects. Parse output yourself.
 - Use `asyncio.gather()` for concurrent calls within one execution.
-- Available libs: re, asyncio, sys, os.
+- Available libs: re, asyncio, sys, os, json.
 - No imports, no classes, no filesystem/network access.
 - 30 second timeout (configurable via `timeout` parameter).
 - Avoid calling another tool when no transformation of its output is performed.
