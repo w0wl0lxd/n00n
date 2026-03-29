@@ -17,7 +17,7 @@ Syntax highlighting comes from <a href="https://github.com/trishume/syntect" tar
 
 ### `maki-agent`
 
-The core agent loop. Runs on <a href="https://github.com/smol-rs/smol" target="_blank">`smol`</a>, sends messages to the LLM, reads responses, and executes tools as needed.
+The core agent loop. Runs on <a href="https://github.com/smol-rs/smol" target="_blank">`smol`</a> for faster compile times than tokio, sends messages to the LLM, reads responses, and executes tools as needed.
 
 - 17 built-in tools, each with typed inputs and outputs
 - A three-layer permission system: session rules, config rules, and builtin defaults (checked in that order)
