@@ -96,12 +96,12 @@ enum Command {
 enum AuthAction {
     /// Authenticate with a provider
     Login {
-        /// Provider slug (e.g. anthropic-oauth)
+        /// Provider slug (e.g. openai)
         provider: String,
     },
     /// Remove stored credentials for a provider
     Logout {
-        /// Provider slug (e.g. anthropic-oauth)
+        /// Provider slug (e.g. openai)
         provider: String,
     },
 }
