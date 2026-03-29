@@ -49,6 +49,10 @@ impl ProviderKind {
             Self::Synthetic => Ok(Box::new(Synthetic::new()?)),
         }
     }
+
+    pub fn is_available(self) -> bool {
+        self.create().is_ok()
+    }
 }
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

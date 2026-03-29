@@ -13,8 +13,8 @@ use maki_storage::DataDir;
 use maki_ui::AppSession;
 use tracing_subscriber::EnvFilter;
 
-use maki_providers::model::{DEFAULT_SPEC, Model};
-use maki_providers::provider::fetch_all_models;
+use maki_providers::model::{Model, ModelTier};
+use maki_providers::provider::{ProviderKind, fetch_all_models};
 use maki_providers::{dynamic, openai_auth};
 use maki_storage::log::RotatingFileWriter;
 use maki_storage::model::{persist_model, read_model};
@@ -265,11 +265,34 @@ fn resolve_model(
         }
         tracing::warn!(spec, "saved model no longer valid, falling back to default");
     }
-    let default = provider_config
-        .default_model
-        .as_deref()
-        .unwrap_or(DEFAULT_SPEC);
-    Ok(Model::from_spec(default).expect("default model spec is always valid"))
+    if let Some(spec) = provider_config.default_model.as_deref() {
+        return Model::from_spec(spec).context("invalid default_model in config");
+    }
+    auto_detect_model().ok_or_else(|| {
+        color_eyre::eyre::eyre!(
+            "no provider available - set an API key (e.g. ANTHROPIC_API_KEY) or run `maki auth login`\n\nSee https://maki.sh/docs/providers/ for setup instructions"
+        )
+    })
+}
+
+const PROVIDER_PRIORITY: &[ProviderKind] = &[
+    ProviderKind::Anthropic,
+    ProviderKind::OpenAi,
+    ProviderKind::Zai,
+    ProviderKind::ZaiCodingPlan,
+];
+
+fn auto_detect_model() -> Option<Model> {
+    for tier in [ModelTier::Strong, ModelTier::Medium] {
+        for &provider in PROVIDER_PRIORITY {
+            if provider.is_available()
+                && let Ok(model) = Model::from_tier(provider, tier)
+            {
+                return Some(model);
+            }
+        }
+    }
+    None
 }
 
 fn install_panic_log_hook() {

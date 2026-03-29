@@ -12,8 +12,6 @@ use serde::{Deserialize, Serialize};
 use crate::provider::ProviderKind;
 use crate::providers::{anthropic, dynamic, openai, synthetic, zai};
 
-pub const DEFAULT_SPEC: &str = "anthropic/claude-opus-4-6";
-
 const PER_MILLION: f64 = 1_000_000.0;
 
 #[derive(Debug, thiserror::Error)]
