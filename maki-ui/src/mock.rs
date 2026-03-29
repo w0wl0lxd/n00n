@@ -707,6 +707,12 @@ print(f'Total lines across config: {total}')"
             "}\n",
             "```\n",
             "\n",
+            "### Lua one-liner\n",
+            "\n",
+            "```lua\n",
+            "print(\"hello from lua\")\n",
+            "```\n",
+            "\n",
             "Tabs render correctly above.",
         ).into(),
     }));

@@ -1077,37 +1077,85 @@ fn batch_parent_copy_text_excludes_children() {
 }
 
 #[test]
-fn extract_code_block_fences_only_when_fully_selected() {
-    let md = "before\n\n```rust\nline1\nline2\nline3\nline4\nline5\n```\n\nafter";
-    let mut panel = MessagesPanel::new(UiConfig::default());
-    panel.push(DisplayMessage::new(DisplayRole::Assistant, md.into()));
-    render(&mut panel, 80, 24);
+fn partial_code_only_rows_in_mixed_msg_no_fences() {
+    let panel = panel_with_msgs(
+        &["before\n\n```rust\nline1\nline2\nline3\n```\n\nafter"],
+        80,
+        24,
+    );
+    let cb = &panel.cache.segments()[0].code_block_ranges[0];
+    let area = Rect::new(0, 0, 80, 24);
+    let sel = make_sel(area, (cb.start_line as u32, 0), (cb.end_line as u32, 79));
+    let text = panel.extract_selection_text(&sel, area);
+    assert!(
+        !text.contains("```"),
+        "selecting only code rows in a mixed msg should not have fences: {text:?}"
+    );
+    assert!(text.contains("line1"));
+    assert!(!text.contains("before"));
+    assert!(!text.contains("after"));
+}
+
+#[test]
+fn code_only_select_no_fences() {
+    let panel = panel_with_msgs(&["```rust\nfoo\n```"], 80, 24);
+    let cb = &panel.cache.segments()[0].code_block_ranges[0];
+    let area = Rect::new(0, 0, 80, 24);
+    let sel = make_sel(area, (cb.start_line as u32, 0), (cb.end_line as u32, 79));
+    let text = panel.extract_selection_text(&sel, area);
+    assert!(
+        !text.contains("```"),
+        "code-only selection should not have fences: {text:?}"
+    );
+    assert!(text.contains("foo"));
+}
+
+#[test]
+fn code_block_with_both_sides_has_fences() {
+    let panel = panel_with_msgs(&["before\n\n```rust\nfoo\n```\n\nafter"], 80, 24);
+    let total: u16 = panel.segment_heights().iter().sum();
+    let area = Rect::new(0, 0, 80, 24);
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), ((total - 1) as u32, 79));
+    let text = panel.extract_selection_text(&sel, area);
+    assert!(
+        text.contains("```rust"),
+        "selection with both sides should have fences: {text:?}"
+    );
+}
+
+#[test]
+fn code_block_one_side_has_fences() {
+    let panel = panel_with_msgs(&["before\n\n```rust\nfoo\n```\n\nafter"], 80, 24);
+    let cb = &panel.cache.segments()[0].code_block_ranges[0];
     let total: u16 = panel.segment_heights().iter().sum();
     let area = Rect::new(0, 0, 80, 24);
 
-    let full = make_sel(area, (0, 0), ((total - 1) as u32, 79));
-    let full_text = panel.extract_selection_text(&full, area);
+    let sel_before_and_code = make_sel(area, (0, MAKI_PREFIX_LEN), (cb.end_line as u32, 79));
+    let text = panel.extract_selection_text(&sel_before_and_code, area);
+    assert!(text.contains("before"));
+    assert!(text.contains("foo"));
     assert!(
-        full_text.contains("```rust"),
-        "full select should have fences"
+        text.contains("```rust"),
+        "before+code has non-code rows so fences expected: {text:?}"
     );
-    assert!(full_text.contains("line1"), "full select should have code");
 
-    let mid = total / 2;
-    let partial = make_sel(area, (mid as u32, 0), ((total - 1) as u32, 79));
-    let partial_text = panel.extract_selection_text(&partial, area);
+    let sel_code_and_after = make_sel(area, (cb.start_line as u32, 0), ((total - 1) as u32, 79));
+    let text = panel.extract_selection_text(&sel_code_and_after, area);
+    assert!(text.contains("foo"));
+    assert!(text.contains("after"));
     assert!(
-        !partial_text.contains("```"),
-        "partial select should not have fences: {partial_text:?}"
+        text.contains("```rust"),
+        "code+after has non-code rows so fences expected: {text:?}"
     );
 }
 
 #[test]
 fn extract_partial_boundary_has_newline_separation() {
-    let md = "before\n\n```rust\nline1\nline2\nline3\n```\n\nafter";
-    let mut panel = MessagesPanel::new(UiConfig::default());
-    panel.push(DisplayMessage::new(DisplayRole::Assistant, md.into()));
-    render(&mut panel, 80, 24);
+    let panel = panel_with_msgs(
+        &["before\n\n```rust\nline1\nline2\nline3\n```\n\nafter"],
+        80,
+        24,
+    );
     let total: u16 = panel.segment_heights().iter().sum();
     let cb = &panel.cache.segments()[0].code_block_ranges[0];
     let area = Rect::new(0, 0, 80, 24);

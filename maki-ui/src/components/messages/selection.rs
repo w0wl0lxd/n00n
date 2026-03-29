@@ -50,7 +50,10 @@ pub(super) fn extract_selection_text(
             None => continue,
         };
 
-        if fully_enclosed && !seg.copy_text.is_empty() {
+        if fully_enclosed
+            && !seg.copy_text.is_empty()
+            && has_non_code_rows(0, h, &seg.code_block_ranges)
+        {
             out.push_str(&seg.copy_text);
             continue;
         }
@@ -107,6 +110,21 @@ pub(super) fn extract_selection_text(
     out
 }
 
+fn has_non_code_rows(rel_start: u16, rel_end: u16, ranges: &[CodeBlockRange]) -> bool {
+    let mut covered = rel_start;
+    for cb in ranges {
+        if cb.start_line >= rel_end || cb.end_line < rel_start {
+            continue;
+        }
+        let cb_start = cb.start_line.max(rel_start);
+        if covered < cb_start {
+            return true;
+        }
+        covered = covered.max(cb.end_line + 1);
+    }
+    covered < rel_end
+}
+
 #[allow(clippy::too_many_arguments)]
 fn extract_with_fences(
     buf: &Buffer,
@@ -133,11 +151,13 @@ fn extract_with_fences(
 
     let start_col_for = |row: u16| -> u16 { if row == rel_start { ss.start_col } else { 0 } };
 
+    let emit_fences = has_non_code_rows(rel_start, rel_end, ranges);
+
     for cb in ranges {
         if cb.end_line < rel_start || cb.start_line >= rel_end {
             continue;
         }
-        let fully_covered = rel_start <= cb.start_line && cb.end_line < rel_end;
+        let fully_covered = emit_fences && rel_start <= cb.start_line && cb.end_line < rel_end;
 
         if cursor < cb.start_line {
             let chunk_end = if fully_covered {
