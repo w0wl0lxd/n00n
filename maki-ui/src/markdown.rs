@@ -21,6 +21,7 @@ const MAX_LINE_CHARS: usize = 500;
 /// Rendered line range of a markdown code block (post-wrap, excluding
 /// blank-line padding from `ensure_blank_line`). Used by partial selection
 /// to reconstruct ``` fences that are lost during rendering.
+#[derive(Clone)]
 pub struct CodeBlockRange {
     pub start_line: u16,
     pub end_line: u16,

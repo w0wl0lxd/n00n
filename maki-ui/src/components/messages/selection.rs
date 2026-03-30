@@ -20,10 +20,13 @@ pub(super) fn extract_selection_text(
 ) -> String {
     let (doc_start, doc_end) = sel.normalized();
     let width = viewport_width;
+
+    let heights: Vec<u16> = cache.segments().iter().map(|s| s.height(width)).collect();
+
     let mut out = String::new();
     let mut doc_row: u32 = 0;
 
-    for (i, &h) in cache.heights().iter().enumerate() {
+    for (i, &h) in heights.iter().enumerate() {
         let seg_start = doc_row;
         let seg_end = doc_row + h as u32;
         doc_row = seg_end;
@@ -45,10 +48,7 @@ pub(super) fn extract_selection_text(
             out.push('\n');
         }
 
-        let seg = match cache.get(i) {
-            Some(s) => s,
-            None => continue,
-        };
+        let Some(seg) = cache.get(i) else { continue };
 
         if fully_enclosed
             && !seg.copy_text.is_empty()
@@ -58,13 +58,13 @@ pub(super) fn extract_selection_text(
             continue;
         }
 
-        if seg.lines.is_empty() {
+        if seg.lines().is_empty() {
             continue;
         }
 
         let tmp_area = Rect::new(0, 0, width, h);
         let mut tmp = Buffer::empty(tmp_area);
-        Paragraph::new(seg.lines.to_vec())
+        Paragraph::new(seg.lines().to_vec())
             .wrap(Wrap { trim: false })
             .render(tmp_area, &mut tmp);
 
@@ -89,7 +89,7 @@ pub(super) fn extract_selection_text(
             end_col,
         };
 
-        let breaks = LineBreaks::from_lines(&seg.lines, width);
+        let breaks = LineBreaks::from_lines(seg.lines(), width);
 
         if seg.code_block_ranges.is_empty() {
             selection::append_rows(&tmp, tmp_area, &ss, rel_start, rel_end, &mut out, &breaks);

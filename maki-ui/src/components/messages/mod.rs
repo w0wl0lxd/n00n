@@ -443,12 +443,13 @@ impl MessagesPanel {
     }
 
     pub fn scroll_to_segment(&mut self, segment_index: usize) {
+        let width = self.viewport_width;
         let offset = self
             .cache
-            .heights()
+            .segments()
             .iter()
             .take(segment_index)
-            .map(|&h| h as u32)
+            .map(|s| s.height(width) as u32)
             .sum::<u32>()
             .min(u16::MAX as u32) as u16;
         self.scroll_top = offset.min(self.max_scroll());
@@ -477,13 +478,8 @@ impl MessagesPanel {
             return false;
         }
         let doc_row = (row.saturating_sub(area.y)) as u32 + self.scroll_top as u32;
-        let mut cumulative: u32 = 0;
-        let idx = self.cache.heights().iter().position(|&h| {
-            cumulative += h as u32;
-            doc_row < cumulative
-        });
-        let Some(idx) = idx else { return false };
-        let Some(seg) = self.cache.get(idx) else {
+        let width = self.viewport_width;
+        let Some((_, seg)) = self.cache.segment_at_row(doc_row, width) else {
             return false;
         };
         let Some(tool_id) = seg.tool_id.as_deref() else {
@@ -550,8 +546,6 @@ impl MessagesPanel {
             self.update_spinners();
         }
 
-        self.cache.recompute_heights(width);
-
         let cached_count = self.cache.len();
         let spacer_lines: [Line<'static>; 1] = [Line::default()];
         let mut streaming_heights: Vec<u16> = Vec::new();
@@ -566,14 +560,9 @@ impl MessagesPanel {
             streaming_heights.push(wrapped_line_count(lines, width));
         }
 
-        let total_lines: u16 = self
-            .cache
-            .heights()
-            .iter()
-            .chain(streaming_heights.iter())
-            .map(|&h| h as u32)
-            .sum::<u32>()
-            .min(u16::MAX as u32) as u16;
+        let cached_height = self.cache.total_height(width);
+        let streaming_sum: u32 = streaming_heights.iter().map(|&h| h as u32).sum();
+        let total_lines: u16 = (cached_height + streaming_sum).min(u16::MAX as u32) as u16;
         self.last_total_lines = total_lines;
         let max_scroll = total_lines.saturating_sub(self.viewport_height);
         self.scroll_top = self.scroll_top.min(max_scroll);
@@ -593,10 +582,10 @@ impl MessagesPanel {
             if cursor.past_bottom() {
                 break;
             }
-            let h = self.cache.heights()[i];
+            let h = seg.height(width);
             let highlight = self.highlight_segment == Some(i);
             let style = seg.tool_id.as_ref().map(|_| theme::current().tool_bg);
-            cursor.render(&seg.lines, h, style, highlight, frame);
+            cursor.render(seg.lines(), h, style, highlight, frame);
         }
 
         let mut height_idx = 0usize;
@@ -629,8 +618,13 @@ impl MessagesPanel {
         self.scroll_top
     }
 
-    pub fn segment_heights(&self) -> &[u16] {
-        self.cache.heights()
+    pub fn segment_heights(&self) -> Vec<u16> {
+        let width = self.viewport_width;
+        self.cache
+            .segments()
+            .iter()
+            .map(|s| s.height(width))
+            .collect()
     }
 
     pub fn segment_copy_texts(&self) -> Vec<&str> {
@@ -680,15 +674,9 @@ impl MessagesPanel {
         );
         for seg in self.cache.segments_mut() {
             let is_child = seg.tool_id.as_deref().is_some_and(|id| id.contains("__"));
-            for &line_idx in &seg.spinner_lines {
-                if let Some(line) = seg.lines.get_mut(line_idx)
-                    && !line.spans.is_empty()
-                {
-                    let span_idx = if line_idx == 0 && !is_child { 0 } else { 1 };
-                    if line.spans.len() > span_idx {
-                        line.spans[span_idx] = spinner_span.clone();
-                    }
-                }
+            for &line_idx in &seg.spinner_lines.clone() {
+                let span_idx = if line_idx == 0 && !is_child { 0 } else { 1 };
+                seg.update_spinner(line_idx, span_idx, spinner_span.clone());
             }
         }
     }

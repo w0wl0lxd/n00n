@@ -182,7 +182,7 @@ impl Chat {
         self.messages_panel.scroll_top()
     }
 
-    pub fn segment_heights(&self) -> &[u16] {
+    pub fn segment_heights(&self) -> Vec<u16> {
         self.messages_panel.segment_heights()
     }
 

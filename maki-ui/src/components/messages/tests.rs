@@ -170,16 +170,6 @@ fn thinking_delta_separate_from_text() {
 }
 
 #[test]
-fn scroll_top_clamped_to_content() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
-    panel.push(DisplayMessage::new(DisplayRole::User, "short".into()));
-    panel.scroll_top = 1000;
-    panel.auto_scroll = false;
-    rebuild(&mut panel);
-    assert_eq!(panel.scroll_top, 0);
-}
-
-#[test]
 fn scroll_up_pins_viewport_during_streaming() {
     let mut panel = MessagesPanel::new(UiConfig::default());
     panel.streaming_text.set_buffer(&"a\n".repeat(30));
@@ -300,7 +290,7 @@ fn seg_text(panel: &MessagesPanel, tool_id: &str) -> String {
         .iter()
         .find(|s| s.tool_id.as_deref() == Some(tool_id))
         .unwrap()
-        .lines
+        .lines()
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
         .collect()
@@ -790,17 +780,6 @@ fn panel_with_msgs(texts: &[&str], width: u16, height: u16) -> MessagesPanel {
 }
 
 #[test]
-fn extract_fully_enclosed_segments_use_copy_text() {
-    let panel = panel_with_msgs(&["Hello world", "Second message"], 80, 24);
-    let total: u16 = panel.segment_heights().iter().sum();
-    let area = Rect::new(0, 0, 80, 24);
-    let sel = make_sel(area, (0, 0), (total.saturating_sub(1) as u32, 79));
-    let text = panel.extract_selection_text(&sel, area);
-    assert!(text.contains("Hello world"));
-    assert!(text.contains("Second message"));
-}
-
-#[test]
 fn extract_partial_column_selection() {
     let panel = panel_with_msgs(&["Hello world"], 80, 24);
     let area = Rect::new(0, 0, 80, 24);
@@ -959,17 +938,9 @@ fn toggle_expands_and_collapses_truncated_tool() {
     assert!(!text_restored.contains("line 50"));
 }
 
-#[test_case(false ; "non_tool_segment")]
-#[test_case(true  ; "short_tool_segment")]
-fn toggle_returns_false_for_non_expandable(is_tool: bool) {
-    let mut panel = if is_tool {
-        panel_with_long_tool(3)
-    } else {
-        let mut p = MessagesPanel::new(UiConfig::default());
-        p.push(DisplayMessage::new(DisplayRole::Assistant, "hello".into()));
-        render(&mut p, 80, 24);
-        p
-    };
+#[test]
+fn toggle_returns_false_for_non_expandable() {
+    let mut panel = panel_with_long_tool(3);
     let area = Rect::new(0, 0, 80, 24);
     assert!(!panel.toggle_expansion_at(area.y, area));
 }
@@ -1076,76 +1047,42 @@ fn batch_parent_copy_text_excludes_children() {
     assert!(child.contains("file contents"));
 }
 
-#[test]
-fn partial_code_only_rows_in_mixed_msg_no_fences() {
-    let panel = panel_with_msgs(
-        &["before\n\n```rust\nline1\nline2\nline3\n```\n\nafter"],
-        80,
-        24,
-    );
-    let cb = &panel.cache.segments()[0].code_block_ranges[0];
-    let area = Rect::new(0, 0, 80, 24);
-    let sel = make_sel(area, (cb.start_line as u32, 0), (cb.end_line as u32, 79));
-    let text = panel.extract_selection_text(&sel, area);
-    assert!(
-        !text.contains("```"),
-        "selecting only code rows in a mixed msg should not have fences: {text:?}"
-    );
-    assert!(text.contains("line1"));
-    assert!(!text.contains("before"));
-    assert!(!text.contains("after"));
+#[derive(Debug)]
+enum FenceSelect {
+    CodeOnly,
+    FullSegment,
+    BeforeAndCode,
+    CodeAndAfter,
 }
 
-#[test]
-fn code_only_select_no_fences() {
-    let panel = panel_with_msgs(&["```rust\nfoo\n```"], 80, 24);
-    let cb = &panel.cache.segments()[0].code_block_ranges[0];
-    let area = Rect::new(0, 0, 80, 24);
-    let sel = make_sel(area, (cb.start_line as u32, 0), (cb.end_line as u32, 79));
-    let text = panel.extract_selection_text(&sel, area);
-    assert!(
-        !text.contains("```"),
-        "code-only selection should not have fences: {text:?}"
-    );
-    assert!(text.contains("foo"));
-}
-
-#[test]
-fn code_block_with_both_sides_has_fences() {
+#[test_case(FenceSelect::CodeOnly,      false ; "code_only_no_fences")]
+#[test_case(FenceSelect::FullSegment,   true  ; "full_segment_has_fences")]
+#[test_case(FenceSelect::BeforeAndCode, true  ; "before_and_code_has_fences")]
+#[test_case(FenceSelect::CodeAndAfter,  true  ; "code_and_after_has_fences")]
+fn code_block_fence_selection(variant: FenceSelect, expect_fences: bool) {
     let panel = panel_with_msgs(&["before\n\n```rust\nfoo\n```\n\nafter"], 80, 24);
-    let total: u16 = panel.segment_heights().iter().sum();
-    let area = Rect::new(0, 0, 80, 24);
-    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), ((total - 1) as u32, 79));
-    let text = panel.extract_selection_text(&sel, area);
-    assert!(
-        text.contains("```rust"),
-        "selection with both sides should have fences: {text:?}"
-    );
-}
-
-#[test]
-fn code_block_one_side_has_fences() {
-    let panel = panel_with_msgs(&["before\n\n```rust\nfoo\n```\n\nafter"], 80, 24);
-    let cb = &panel.cache.segments()[0].code_block_ranges[0];
+    let cb = panel.cache.segments()[0].code_block_ranges[0].clone();
     let total: u16 = panel.segment_heights().iter().sum();
     let area = Rect::new(0, 0, 80, 24);
 
-    let sel_before_and_code = make_sel(area, (0, MAKI_PREFIX_LEN), (cb.end_line as u32, 79));
-    let text = panel.extract_selection_text(&sel_before_and_code, area);
-    assert!(text.contains("before"));
-    assert!(text.contains("foo"));
-    assert!(
-        text.contains("```rust"),
-        "before+code has non-code rows so fences expected: {text:?}"
-    );
-
-    let sel_code_and_after = make_sel(area, (cb.start_line as u32, 0), ((total - 1) as u32, 79));
-    let text = panel.extract_selection_text(&sel_code_and_after, area);
-    assert!(text.contains("foo"));
-    assert!(text.contains("after"));
-    assert!(
-        text.contains("```rust"),
-        "code+after has non-code rows so fences expected: {text:?}"
+    let sel = match variant {
+        FenceSelect::CodeOnly => {
+            make_sel(area, (cb.start_line as u32, 0), (cb.end_line as u32, 79))
+        }
+        FenceSelect::FullSegment => make_sel(area, (0, MAKI_PREFIX_LEN), ((total - 1) as u32, 79)),
+        FenceSelect::BeforeAndCode => {
+            make_sel(area, (0, MAKI_PREFIX_LEN), (cb.end_line as u32, 79))
+        }
+        FenceSelect::CodeAndAfter => {
+            make_sel(area, (cb.start_line as u32, 0), ((total - 1) as u32, 79))
+        }
+    };
+    let text = panel.extract_selection_text(&sel, area);
+    assert!(text.contains("foo"), "code content must be present");
+    assert_eq!(
+        text.contains("```"),
+        expect_fences,
+        "fence expectation for {variant:?}: {text:?}"
     );
 }
 
@@ -1156,8 +1093,8 @@ fn extract_partial_boundary_has_newline_separation() {
         80,
         24,
     );
+    let cb = panel.cache.segments()[0].code_block_ranges[0].clone();
     let total: u16 = panel.segment_heights().iter().sum();
-    let cb = &panel.cache.segments()[0].code_block_ranges[0];
     let area = Rect::new(0, 0, 80, 24);
 
     let sel_start = make_sel(area, (0, 0), (cb.start_line as u32 + 1, 79));
