@@ -249,29 +249,6 @@
       top: -4px;
       left: 7px;
     }
-    .moon-2 {
-      position: absolute;
-      width: 28px;
-      height: 28px;
-      border-radius: 50%;
-      background: oklch(94% 0.03 85);
-      box-shadow:
-        0 0 16px oklch(92% 0.04 85 / 0.4),
-        0 0 50px oklch(92% 0.04 85 / 0.15);
-      top: -60px;
-      left: -200px;
-    }
-    .moon-2::after {
-      content: '';
-      position: absolute;
-      width: 22px;
-      height: 22px;
-      border-radius: 50%;
-      background: linear-gradient(135deg, var(--sky-start), var(--sky-end));
-      top: -3px;
-      left: 5px;
-    }
-
 
     .hero h1 {
       font-weight: 800;
@@ -834,7 +811,6 @@
 
       .provider-grid { gap: 0.75rem; }
       .provider-chip { padding: 0.65rem 1.25rem; font-size: 0.88rem; }
-      .moon-2 { display: none; }
     }
     @media (max-width: 480px) {
       .hero-actions { flex-direction: column; align-items: center; }
@@ -877,7 +853,6 @@
   </div>
   <div class="moon-group">
     <div class="moon"></div>
-    <div class="moon-2"></div>
   </div>
 
   <div class="hero-intro">
