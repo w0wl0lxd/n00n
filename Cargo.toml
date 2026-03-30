@@ -116,6 +116,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 dirs = "6"
 tree-sitter = "0.26"
 tree-sitter-bash = "0.25"
+monty = { git = "https://github.com/pydantic/monty.git", rev = "7a0d4b7", package = "monty" }
 
 wait-timeout = "0.2"
 
