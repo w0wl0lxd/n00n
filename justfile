@@ -33,4 +33,4 @@ gen-docs-check:
     cargo run -p maki-docgen -- --check
 
 # Full CI check
-ci: fmt-check lint pylint test
+ci: fmt-check lint pylint test gen-docs-check
