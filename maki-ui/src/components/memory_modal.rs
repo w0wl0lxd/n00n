@@ -87,7 +87,7 @@ impl MemoryModal {
 
         self.confirming = None;
 
-        if key.code == KeyCode::Enter {
+        if key.code == KeyCode::Enter || key::OPEN_EDITOR.matches(key) {
             return match self.picker.selected_item() {
                 Some(entry) => MemoryModalAction::OpenFile(entry.name.clone()),
                 None => MemoryModalAction::Consumed,
