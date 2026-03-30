@@ -65,6 +65,15 @@ jobs:
           tool: cargo-machete
       - run: cargo machete
 
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: extractions/setup-just@v2
+      - run: just gen-docs-check
+
   build:
     name: Build
     runs-on: ubuntu-latest

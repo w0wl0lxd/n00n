@@ -29,5 +29,8 @@ pylint:
 gen-docs:
     cargo run -p maki-docgen
 
+gen-docs-check:
+    cargo run -p maki-docgen -- --check
+
 # Full CI check
 ci: fmt-check lint pylint test

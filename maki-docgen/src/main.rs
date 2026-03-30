@@ -5,8 +5,13 @@ mod gen_tools;
 
 use std::fs;
 use std::path::Path;
+use std::process::ExitCode;
 
 const CONTENT_DIR: &str = "site/docs/content";
+
+fn page_path(section: &str) -> std::path::PathBuf {
+    Path::new(CONTENT_DIR).join(section).join("_index.md")
+}
 
 fn write_page(section: &str, content: &str) {
     let dir = Path::new(CONTENT_DIR).join(section);
@@ -16,9 +21,48 @@ fn write_page(section: &str, content: &str) {
     println!("wrote {}", path.display());
 }
 
-fn main() {
-    write_page("tools", &gen_tools::generate());
-    write_page("providers", &gen_providers::generate());
-    write_page("configuration", &gen_config::generate());
-    write_page("keybindings", &gen_keybindings::generate());
+fn check_page(section: &str, expected: &str) -> bool {
+    let path = page_path(section);
+    match fs::read_to_string(&path) {
+        Ok(existing) if existing == expected => {
+            println!("ok {}", path.display());
+            true
+        }
+        Ok(_) => {
+            println!("mismatch {}", path.display());
+            false
+        }
+        Err(_) => {
+            println!("missing {}", path.display());
+            false
+        }
+    }
+}
+
+fn main() -> ExitCode {
+    let check = std::env::args().any(|a| a == "--check");
+
+    let pages = [
+        ("tools", gen_tools::generate()),
+        ("providers", gen_providers::generate()),
+        ("configuration", gen_config::generate()),
+        ("keybindings", gen_keybindings::generate()),
+    ];
+
+    if check {
+        let all_ok = pages
+            .iter()
+            .all(|(section, content)| check_page(section, content));
+        if all_ok {
+            ExitCode::SUCCESS
+        } else {
+            eprintln!("docs out of date, run `just gen-docs` to update");
+            ExitCode::FAILURE
+        }
+    } else {
+        for (section, content) in pages {
+            write_page(section, &content);
+        }
+        ExitCode::SUCCESS
+    }
 }
