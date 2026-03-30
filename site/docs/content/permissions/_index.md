@@ -102,7 +102,7 @@ Deny rules are saved with the exact scope. You denied something specific, so it 
 
 ## YOLO Mode
 
-To skip all prompts, toggle YOLO with the `/yolo` command. Explicit deny rules still apply.
+To skip all prompts, toggle YOLO with the `/yolo` command, or run with `--yolo`. Explicit deny rules still apply.
 
 To start in YOLO mode every time:
 
