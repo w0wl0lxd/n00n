@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::components::keybindings::key;
 use crate::theme;
 
@@ -12,7 +14,7 @@ const QUEUE_LABEL: &str = " Queue ";
 const FOCUSED_HINT: &str = " - Enter to delete";
 
 pub struct QueueEntry<'a> {
-    pub text: &'a str,
+    pub text: Cow<'a, str>,
     pub color: ratatui::style::Color,
 }
 

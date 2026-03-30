@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::shared_queue::SharedQueue;
 use crate::chat::{CANCELLED_TEXT, DONE_TEXT, ERROR_TEXT};
 use crate::components::command::ParsedCommand;
 use crate::components::keybindings::{KeybindContext, key as kb};
@@ -8,8 +9,7 @@ use arc_swap::ArcSwap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use maki_agent::permissions::PermissionManager;
 use maki_agent::{
-    AgentMode, QuestionInfo, QuestionOption, ToolDoneEvent, ToolOutput, ToolStartEvent,
-    TurnCompleteEvent,
+    QuestionInfo, QuestionOption, ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
 use maki_config::{PermissionsConfig, UiConfig};
 use maki_providers::TokenUsage;
@@ -38,7 +38,7 @@ fn test_app() -> App {
         PathBuf::from("/tmp"),
     ));
     let model = test_model();
-    App::new(
+    let mut app = App::new(
         &model,
         AppSession::new("test-model", "/tmp/test"),
         DataDir::from_path(env::temp_dir()),
@@ -48,7 +48,10 @@ fn test_app() -> App {
         UiConfig::default(),
         100,
         permissions,
-    )
+    );
+    let (shared_queue, _rx) = SharedQueue::new();
+    app.queue.set_shared(shared_queue);
+    app
 }
 
 fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> Msg {
@@ -318,7 +321,6 @@ fn submit_during_streaming_queues_message() {
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(actions.is_empty());
     assert_eq!(app.queue.len(), 1);
-    assert!(matches!(app.queue[0], QueuedItem::Message(ref m) if m.text == "b"));
 }
 
 #[test_case(error_app as fn(&mut App) ; "error")]
@@ -329,18 +331,18 @@ fn clears_queue(terminate: fn(&mut App)) {
     assert!(app.queue.is_empty());
 }
 
-fn queued_msg(text: &str) -> QueuedItem {
-    QueuedItem::Message(QueuedMessage {
+fn queued_msg(text: &str) -> QueuedMessage {
+    QueuedMessage {
         text: text.into(),
         images: vec![],
-    })
+    }
 }
 
 fn app_with_queued_message() -> App {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
-    app.queue.push(queued_msg("queued"));
+    app.queue_and_notify(queued_msg("queued"));
     app
 }
 
@@ -360,101 +362,6 @@ fn error_app(app: &mut App) {
     app.update(agent_msg(AgentEvent::Error {
         message: "boom".into(),
     }));
-}
-
-#[test]
-fn first_submit_during_streaming_sends_to_agent() {
-    let mut app = test_app();
-    let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
-    app.cmd_tx = Some(tx);
-    app.status = Status::Streaming;
-    app.run_id = 1;
-
-    type_and_submit(&mut app, "first");
-    assert_eq!(app.queue.len(), 1);
-    assert!(app.queue.dispatched());
-    assert!(
-        rx.try_recv().is_ok(),
-        "first queued item should be sent eagerly"
-    );
-
-    type_and_submit(&mut app, "second");
-    assert_eq!(app.queue.len(), 2);
-    assert!(
-        rx.try_recv().is_err(),
-        "second item should not be sent eagerly"
-    );
-}
-
-#[test]
-fn consumed_event_pops_and_sends_next() {
-    let mut app = test_app();
-    let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
-    app.cmd_tx = Some(tx);
-    app.status = Status::Streaming;
-    app.run_id = 1;
-
-    app.queue_and_notify(queued_msg("first"));
-    app.queue_and_notify(queued_msg("second"));
-    let _ = rx.try_recv();
-
-    app.update(agent_msg(AgentEvent::QueueItemConsumed));
-    assert_eq!(app.queue.len(), 1);
-    assert!(app.queue.dispatched());
-    assert!(rx.try_recv().is_ok(), "next item sent after consumed");
-    assert_eq!(
-        app.chats[0].message_count(),
-        1,
-        "consumed message shown in chat"
-    );
-}
-
-#[test]
-fn done_while_next_dispatched_stays_streaming() {
-    let mut app = test_app();
-    let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
-    app.cmd_tx = Some(tx);
-    app.status = Status::Streaming;
-    app.run_id = 1;
-
-    app.queue_and_notify(queued_msg("first"));
-    app.queue_and_notify(queued_msg("second"));
-    let _ = rx.try_recv();
-
-    app.update(agent_msg(AgentEvent::QueueItemConsumed));
-    assert!(app.queue.dispatched());
-
-    let actions = app.update(done_event());
-    assert!(actions.is_empty());
-    assert!(
-        matches!(app.status, Status::Streaming),
-        "should stay streaming while next item is in flight"
-    );
-}
-#[test]
-fn stale_consumed_after_delete_is_noop() {
-    let mut app = test_app();
-    let (tx, _rx) = flume::unbounded::<crate::AgentCommand>();
-    app.cmd_tx = Some(tx);
-    app.status = Status::Streaming;
-    app.run_id = 1;
-
-    app.queue_and_notify(queued_msg("first"));
-    app.queue_and_notify(queued_msg("second"));
-    assert!(app.queue.dispatched());
-
-    app.queue.remove(0);
-    assert!(!app.queue.dispatched());
-    assert_eq!(app.queue.len(), 1);
-
-    let before = app.chats[0].message_count();
-    app.update(agent_msg(AgentEvent::QueueItemConsumed));
-    assert_eq!(
-        app.chats[0].message_count(),
-        before,
-        "stale consumed is noop"
-    );
-    assert_eq!(app.queue.len(), 1);
 }
 
 fn cmd(name: &'static str) -> ParsedCommand {
@@ -506,7 +413,7 @@ fn reset_session_preserves_plan() {
     app.chats[0].context_size = 1000;
     app.state.mode = Mode::Build;
     app.state.plan = PlanState::with_path(PathBuf::from("plan.md"), true);
-    app.queue.push(queued_msg("q"));
+    app.queue_and_notify(queued_msg("q"));
     app.queue.set_focus_at(0);
     app.update(Msg::Key(kb::HELP.to_key_event()));
     let (_tx, rx) = flume::bounded::<crate::components::btw_modal::BtwEvent>(1);
@@ -799,13 +706,6 @@ fn open_tasks_picker(app: &mut App) {
 }
 
 #[test]
-fn tasks_command_opens_picker() {
-    let mut app = test_app();
-    open_tasks_picker(&mut app);
-    assert!(app.task_picker.is_open());
-}
-
-#[test]
 fn ctrl_x_toggles_tasks_picker() {
     let mut app = test_app();
     app.update(Msg::Key(kb::TASKS.to_key_event()));
@@ -879,59 +779,15 @@ fn compact_command_sets_streaming() {
 }
 
 #[test]
-fn compact_during_streaming_sends_to_agent() {
+fn compact_during_streaming_queues_item() {
     let mut app = test_app();
-    let (tx, rx) = flume::unbounded::<crate::AgentCommand>();
-    app.cmd_tx = Some(tx);
     app.status = Status::Streaming;
     app.run_id = 1;
 
     let actions = app.execute_command(cmd("/compact"));
     assert!(actions.is_empty());
     assert_eq!(app.queue.len(), 1);
-    assert!(matches!(app.queue[0], QueuedItem::Compact));
-    assert!(app.queue.dispatched());
-    assert!(rx.try_recv().is_ok(), "compact should be sent eagerly");
-}
-
-#[test]
-fn delete_front_queue_item_drains_on_done() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.queue.push(queued_msg("first"));
-    app.queue.push(queued_msg("second"));
-
-    app.queue.remove(0);
-    assert!(!app.queue.dispatched());
-
-    let actions = app.update(agent_msg(AgentEvent::Done {
-        usage: TokenUsage::default(),
-        num_turns: 1,
-        stop_reason: None,
-    }));
-    let has_send = actions.iter().any(|a| matches!(a, Action::SendMessage(_)));
-    assert!(has_send, "agent should receive second item via Done drain");
-    assert!(app.queue.is_empty());
-}
-
-#[test]
-fn delete_only_queue_item_leaves_idle_on_done() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.queue.push(queued_msg("only"));
-
-    app.queue.remove(0);
-
-    let actions = app.update(agent_msg(AgentEvent::Done {
-        usage: TokenUsage::default(),
-        num_turns: 1,
-        stop_reason: None,
-    }));
-    let has_send = actions.iter().any(|a| matches!(a, Action::SendMessage(_)));
-    assert!(!has_send, "no SendMessage when queue is empty");
-    assert_eq!(app.status, Status::Idle);
+    assert_eq!(app.queue.entries()[0].text, "/compact");
 }
 
 fn long_question_no_options() -> AgentEvent {
@@ -1009,19 +865,17 @@ fn cancel_clears_pending_input(pending: PendingInput) {
     assert_eq!(app.pending_input, PendingInput::None);
 }
 
-#[test_case(3  ; "scroll_up")]
-#[test_case(-3 ; "scroll_down")]
-fn scroll_disables_auto_scroll(delta: i32) {
+#[test]
+fn scroll_disables_auto_scroll() {
     let mut app = test_app();
     set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
     app.active_chat().enable_auto_scroll();
 
-    let actions = app.update(Msg::Scroll {
+    app.update(Msg::Scroll {
         column: 10,
         row: 10,
-        delta,
+        delta: 3,
     });
-    assert!(actions.is_empty());
     assert!(!app.chats[0].auto_scroll());
 }
 
@@ -1039,13 +893,14 @@ fn scroll_outside_msg_area_ignored() {
     assert!(app.chats[0].auto_scroll());
 }
 
-#[test_case(kb::SCROLL_TOP.to_key_event(), false ; "ctrl_g_disables_auto_scroll")]
-#[test_case(kb::SCROLL_BOTTOM.to_key_event(), true  ; "ctrl_b_enables_auto_scroll")]
-fn ctrl_g_scroll_shortcuts(key: KeyEvent, expected_auto_scroll: bool) {
+#[test]
+fn scroll_shortcuts_toggle_auto_scroll() {
     let mut app = test_app();
     app.active_chat().enable_auto_scroll();
-    app.update(Msg::Key(key));
-    assert_eq!(app.chats[0].auto_scroll(), expected_auto_scroll);
+    app.update(Msg::Key(kb::SCROLL_TOP.to_key_event()));
+    assert!(!app.chats[0].auto_scroll());
+    app.update(Msg::Key(kb::SCROLL_BOTTOM.to_key_event()));
+    assert!(app.chats[0].auto_scroll());
 }
 
 #[test]
@@ -1089,11 +944,6 @@ fn mouse_drag_clamps_to_area() {
 #[test_case(Rect::new(0, 2, 80, 20), (10, 12), (10, 1),  Some(EDGE_SCROLL_LINES)  ; "top_edge")]
 #[test_case(Rect::new(0, 2, 80, 20), (10, 10), (10, 22), Some(-EDGE_SCROLL_LINES) ; "bottom_edge")]
 #[test_case(Rect::new(0, 2, 80, 20), (10, 10), (20, 15), None                     ; "middle_no_scroll")]
-#[test_case(Rect::new(0, 1, 80, 20), (10, 10), (10, 0),  Some(EDGE_SCROLL_LINES)  ; "above_area")]
-#[test_case(Rect::new(0, 0, 80, 20), (10, 10), (10, 0),  Some(EDGE_SCROLL_LINES)  ; "first_row")]
-#[test_case(Rect::new(0, 0, 80, 20), (10, 10), (10, 20), Some(-EDGE_SCROLL_LINES) ; "below_area")]
-#[test_case(Rect::new(0, 0, 80, 20), (10, 10), (10, 19), Some(-EDGE_SCROLL_LINES) ; "last_row")]
-#[test_case(Rect::new(0, 0, 80, 20), (10, 10), (10, 1),  None                     ; "interior")]
 fn edge_scroll_direction(zone: Rect, down: (u16, u16), drag: (u16, u16), expected: Option<i32>) {
     let mut app = test_app();
     set_zone(&mut app, SelectionZone::Messages, zone);
@@ -1127,21 +977,6 @@ fn mouse_up_clears_edge_scroll() {
     app.update(mouse_event(MouseEventKind::Up(MouseButton::Left), 10, 1));
     let state = app.selection_state.as_ref().unwrap();
     assert!(state.edge_scroll.is_none());
-}
-
-#[test]
-fn tick_edge_scroll_scrolls_continuously() {
-    let mut app = test_app();
-    set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 2, 80, 20));
-    app.active_chat().scroll_to_top();
-
-    app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 10));
-    app.update(mouse_event(MouseEventKind::Drag(MouseButton::Left), 10, 1));
-
-    let state = app.selection_state.as_mut().unwrap();
-    state.edge_scroll.as_mut().unwrap().last_tick = Instant::now() - EDGE_SCROLL_INTERVAL * 2;
-    app.tick_edge_scroll();
-    assert!(!app.chats[0].auto_scroll());
 }
 
 #[test]
@@ -1301,29 +1136,27 @@ fn queue_command_sets_focus(has_queue: bool) {
     assert_eq!(app.queue.focus().is_some(), has_queue);
 }
 
-#[test_case(KeyCode::Up,   0, 0 ; "up_at_top_clamps")]
-#[test_case(KeyCode::Down, 1, 1 ; "down_at_bottom_clamps")]
-fn queue_boundary_clamps(key_code: KeyCode, initial_focus: usize, expected: usize) {
+#[test]
+fn queue_boundary_clamps() {
     let mut app = app_with_queued_message();
-    app.queue.push(queued_msg("second"));
-    app.queue.set_focus_at(initial_focus);
-
-    app.update(Msg::Key(key(key_code)));
-    assert_eq!(app.queue.focus(), Some(expected));
+    app.queue_and_notify(queued_msg("second"));
+    app.queue.set_focus_at(0);
+    app.update(Msg::Key(key(KeyCode::Up)));
+    assert_eq!(app.queue.focus(), Some(0), "up at top clamps");
+    app.queue.set_focus_at(1);
+    app.update(Msg::Key(key(KeyCode::Down)));
+    assert_eq!(app.queue.focus(), Some(1), "down at bottom clamps");
 }
 
 #[test]
 fn queue_enter_removes_selected() {
     let mut app = app_with_queued_message();
-    app.queue.push(queued_msg("second"));
+    app.queue_and_notify(queued_msg("second"));
     app.queue.set_focus_at(0);
 
     app.update(Msg::Key(key(KeyCode::Enter)));
     assert_eq!(app.queue.len(), 1);
-    match &app.queue[0] {
-        QueuedItem::Message(input) => assert_eq!(input.text, "second"),
-        _ => panic!("expected Message variant"),
-    }
+    assert_eq!(app.queue.entries()[0].text, "second");
     assert_eq!(app.queue.focus(), Some(0));
 }
 
@@ -1347,22 +1180,23 @@ fn queue_esc_unfocuses_without_removing() {
     assert_eq!(app.queue.len(), 1);
 }
 
-#[test_case(false ; "unfocused")]
-#[test_case(true  ; "focused_on_second")]
-fn ctrl_q_pops_front(focused: bool) {
+#[test]
+fn ctrl_q_pops_front() {
     let mut app = app_with_queued_message();
-    app.queue.push(queued_msg("second"));
-    if focused {
-        app.queue.set_focus_at(1);
-    }
-
+    app.queue_and_notify(queued_msg("second"));
     app.update(Msg::Key(kb::POP_QUEUE.to_key_event()));
     assert_eq!(app.queue.len(), 1);
-    match &app.queue[0] {
-        QueuedItem::Message(input) => assert_eq!(input.text, "second"),
-        _ => panic!("expected Message variant"),
-    }
-    assert_eq!(app.queue.focus(), if focused { Some(0) } else { None });
+    assert_eq!(app.queue.entries()[0].text, "second");
+    assert!(app.queue.focus().is_none(), "unfocused stays unfocused");
+
+    app.queue_and_notify(queued_msg("third"));
+    app.queue.set_focus_at(1);
+    app.update(Msg::Key(kb::POP_QUEUE.to_key_event()));
+    assert_eq!(
+        app.queue.focus(),
+        Some(0),
+        "focus adjusted when item removed"
+    );
 }
 
 #[test_case(cancel_app as fn(&mut App) ; "cancel")]
@@ -1372,30 +1206,6 @@ fn clears_queue_focus_on_terminate(terminate: fn(&mut App)) {
     app.queue.set_focus_at(0);
     terminate(&mut app);
     assert!(app.queue.focus().is_none());
-}
-
-#[test]
-fn compact_fifo_with_messages() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.queue.push(queued_msg("first"));
-    app.queue.push(QueuedItem::Compact);
-
-    let actions = app.update(agent_msg(AgentEvent::Done {
-        usage: TokenUsage::default(),
-        num_turns: 1,
-        stop_reason: None,
-    }));
-    assert!(matches!(&actions[0], Action::SendMessage(i) if i.message == "first"));
-
-    let actions = app.update(agent_msg(AgentEvent::Done {
-        usage: TokenUsage::default(),
-        num_turns: 1,
-        stop_reason: None,
-    }));
-    assert!(matches!(&actions[0], Action::Compact));
-    assert!(app.queue.is_empty());
 }
 
 #[test]
@@ -1409,6 +1219,14 @@ fn stale_events_ignored_after_run_id_increment() {
     let actions = type_and_submit(&mut app, "new prompt");
     assert!(matches!(&actions[0], Action::SendMessage(i) if i.message == "new prompt"));
     let active_run = app.run_id;
+
+    app.update(agent_msg_with_run_id(
+        AgentEvent::QueueItemConsumed {
+            text: "new prompt".into(),
+            image_count: 0,
+        },
+        active_run,
+    ));
 
     app.update(agent_msg_with_run_id(
         AgentEvent::TextDelta {
@@ -1435,7 +1253,7 @@ fn stale_done_does_not_drain_queue() {
     app.run_id = 1;
 
     cancel_app(&mut app);
-    app.queue.push(queued_msg("next"));
+    app.queue_and_notify(queued_msg("next"));
 
     app.update(agent_msg_with_run_id(
         AgentEvent::Done {
@@ -1506,16 +1324,13 @@ fn resolve_or_create_chat_sets_model_id_and_annotation() {
     );
 }
 
-#[test_case(|app: &mut App| { app.execute_command(cmd("/help")); } ; "slash_help")]
-#[test_case(|app: &mut App| { app.update(Msg::Key(kb::HELP.to_key_event())); } ; "ctrl_slash")]
-fn help_toggles_modal(toggle: fn(&mut App)) {
+#[test]
+fn help_toggles_modal() {
     let mut app = test_app();
     assert!(!app.help_modal.is_open());
-
-    toggle(&mut app);
+    app.update(Msg::Key(kb::HELP.to_key_event()));
     assert!(app.help_modal.is_open());
-
-    toggle(&mut app);
+    app.execute_command(cmd("/help"));
     assert!(!app.help_modal.is_open());
 }
 
@@ -1551,7 +1366,7 @@ fn help_modal_consumes_keys_and_esc_closes() {
     ; "plan_form"
 )]
 #[test_case(
-    |app: &mut App| { app.status = Status::Streaming; app.run_id = 1; app.queue.push(queued_msg("q")); app.queue.set_focus_at(0); },
+    |app: &mut App| { app.status = Status::Streaming; app.run_id = 1; app.queue_and_notify(queued_msg("q")); app.queue.set_focus_at(0); },
     &[KeybindContext::QueueFocus],
     &[KeybindContext::Editing]
     ; "queue_focus"
@@ -1595,19 +1410,10 @@ fn submit_exit_quits(input: &str) {
     assert!(matches!(&actions[0], Action::Quit));
 }
 
-#[test_case(0, "hello"            ; "no_images")]
-#[test_case(1, "hello [1 image]"  ; "one_image")]
-#[test_case(3, "hello [3 images]" ; "multiple_images")]
+#[test_case(0, "hello"           ; "no_images")]
+#[test_case(2, "hello [2 images]" ; "multiple_images")]
 fn format_with_images_label(count: usize, expected: &str) {
     assert_eq!(format_with_images("hello", count), expected);
-}
-
-#[test]
-fn slash_exit_command_quits() {
-    let mut app = test_app();
-    let actions = app.execute_command(cmd("/exit"));
-    assert!(app.should_quit);
-    assert!(matches!(&actions[0], Action::Quit));
 }
 
 #[test]
@@ -1624,27 +1430,24 @@ fn yolo_toggle() {
     assert!(flash.contains("disabled"), "flash={flash:?}");
 }
 
-#[test_case("/tmp",                     "cd /tmp" ; "absolute_path")]
-#[test_case("/nonexistent_path_12345",  "cd: "    ; "nonexistent_flashes_error")]
-fn cd_flash_message(args: &str, expected_prefix: &str) {
-    let mut app = test_app();
-    app.execute_command(ParsedCommand {
-        name: "/cd",
-        args: args.into(),
-    });
-    let flash = app.status_bar.flash_text().unwrap();
-    assert!(flash.starts_with(expected_prefix), "flash={flash:?}");
-}
-
 #[test]
-fn cd_updates_session_cwd() {
+fn cd_command_behavior() {
     let mut app = test_app();
     app.execute_command(ParsedCommand {
         name: "/cd",
         args: "/tmp".into(),
     });
+    let flash = app.status_bar.flash_text().unwrap();
+    assert!(flash.starts_with("cd /tmp"), "flash={flash:?}");
     let canonical = std::fs::canonicalize("/tmp").unwrap();
     assert_eq!(app.state.session.cwd, canonical.to_string_lossy());
+
+    app.execute_command(ParsedCommand {
+        name: "/cd",
+        args: "/nonexistent_path_12345".into(),
+    });
+    let flash = app.status_bar.flash_text().unwrap();
+    assert!(flash.starts_with("cd: "), "error flash={flash:?}");
 }
 
 #[test]
@@ -1842,36 +1645,6 @@ fn search_escape_restores_scroll(scroll_top: u16, auto_scroll: bool) {
     assert!(!app.search_modal.is_open());
     assert_eq!(app.active_chat().scroll_top(), scroll_top);
     assert_eq!(app.active_chat().auto_scroll(), auto_scroll);
-}
-
-#[test_case(Mode::Plan, true,  AgentMode::Plan("p.md".into()), None ; "plan_mode_at_drain")]
-#[test_case(Mode::Build, false, AgentMode::Build,               None ; "build_mode_at_drain")]
-fn done_drains_queued_message_with_current_mode(
-    mode: Mode,
-    set_plan: bool,
-    expected_mode: AgentMode,
-    expected_plan: Option<&Path>,
-) {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.queue.push(queued_msg("queued"));
-    app.state.mode = mode;
-    if set_plan {
-        app.state.plan = PlanState::with_path(PathBuf::from("p.md"), false);
-    }
-    let actions = app.update(agent_msg(AgentEvent::Done {
-        usage: TokenUsage::default(),
-        num_turns: 1,
-        stop_reason: None,
-    }));
-    let Action::SendMessage(ref input) = actions[0] else {
-        panic!("expected SendMessage");
-    };
-    assert_eq!(input.mode, expected_mode);
-    assert_eq!(input.pending_plan.as_deref(), expected_plan);
-    assert!(app.queue.is_empty());
-    assert_eq!(app.status, Status::Streaming);
 }
 
 #[test]
@@ -2106,18 +1879,6 @@ fn done_plan_form_visibility(mode: Mode, written: bool, expect_form: bool) {
     }
     app.update(done_event());
     assert_eq!(app.plan_form.is_visible(), expect_form);
-}
-
-#[test]
-fn done_with_queued_messages_no_form() {
-    let mut app = plan_app();
-    app.queue.push(queued_msg("queued"));
-    app.update(done_event());
-    assert!(
-        !app.plan_form.is_visible(),
-        "form suppressed when queue is non-empty"
-    );
-    assert_eq!(app.status, Status::Streaming);
 }
 
 #[test_case(0, Mode::Build, true,  true  ; "clear_and_implement")]

@@ -18,7 +18,7 @@ use crate::skill::Skill;
 use crate::tools::{Deadline, ToolContext};
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
-    TurnCompleteEvent,
+    InterruptSource, TurnCompleteEvent,
 };
 
 const MAX_REAUTH_ATTEMPTS: u32 = 2;
@@ -30,7 +30,6 @@ enum TurnOutcome {
 
 pub struct RunOutcome {
     pub history: History,
-    pub cmd_rx: Option<flume::Receiver<ExtractedCommand>>,
     pub result: Result<(), AgentError>,
 }
 
@@ -59,7 +58,7 @@ pub struct Agent {
     skills: Arc<[Skill]>,
     mode: AgentMode,
     user_response_rx: Option<Arc<async_lock::Mutex<flume::Receiver<String>>>>,
-    cmd_rx: Option<flume::Receiver<ExtractedCommand>>,
+    interrupt_source: Option<Arc<dyn InterruptSource>>,
     cancel: CancelToken,
     total_usage: TokenUsage,
     num_turns: u32,
@@ -88,7 +87,7 @@ impl Agent {
             tools: run.tools,
             mode: AgentMode::default(),
             user_response_rx: None,
-            cmd_rx: None,
+            interrupt_source: None,
             cancel: CancelToken::none(),
             total_usage: TokenUsage::default(),
             num_turns: 0,
@@ -115,8 +114,8 @@ impl Agent {
         self
     }
 
-    pub fn with_cmd_rx(mut self, rx: flume::Receiver<ExtractedCommand>) -> Self {
-        self.cmd_rx = Some(rx);
+    pub fn with_interrupt_source(mut self, source: Arc<dyn InterruptSource>) -> Self {
+        self.interrupt_source = Some(source);
         self
     }
 
@@ -156,7 +155,6 @@ impl Agent {
 
         RunOutcome {
             history: self.history,
-            cmd_rx: self.cmd_rx,
             result,
         }
     }
@@ -358,15 +356,18 @@ impl Agent {
     }
 
     async fn handle_queued_command(&mut self) -> Result<bool, AgentError> {
-        let Some(rx) = self.cmd_rx.as_mut() else {
+        let Some(ref source) = self.interrupt_source else {
             return Ok(false);
         };
-        let Ok(cmd) = rx.try_recv() else {
+        let Some(cmd) = source.poll() else {
             return Ok(false);
         };
-        self.event_tx.send(AgentEvent::QueueItemConsumed)?;
         match cmd {
             ExtractedCommand::Interrupt(mut input, _) => {
+                self.event_tx.send(AgentEvent::QueueItemConsumed {
+                    text: input.message.clone(),
+                    image_count: input.images.len(),
+                })?;
                 for msg in std::mem::take(&mut input.preamble) {
                     self.history.push(msg);
                 }
@@ -381,8 +382,6 @@ impl Agent {
             ExtractedCommand::Compact(_) => {
                 self.do_compact().await?;
             }
-            ExtractedCommand::Cancel => return Err(AgentError::Cancelled),
-            ExtractedCommand::Ignore => unreachable!("Ignore is never constructed"),
         }
         Ok(true)
     }
@@ -390,6 +389,7 @@ impl Agent {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
     use maki_providers::provider::{BoxFuture, Provider};
@@ -404,6 +404,24 @@ mod tests {
     use crate::Envelope;
     use crate::permissions::PermissionManager;
     use crate::skill::Skill;
+
+    struct MockInterruptSource {
+        commands: Mutex<VecDeque<ExtractedCommand>>,
+    }
+
+    impl MockInterruptSource {
+        fn new(commands: Vec<ExtractedCommand>) -> Arc<Self> {
+            Arc::new(Self {
+                commands: Mutex::new(commands.into()),
+            })
+        }
+    }
+
+    impl InterruptSource for MockInterruptSource {
+        fn poll(&self) -> Option<ExtractedCommand> {
+            self.commands.lock().unwrap().pop_front()
+        }
+    }
 
     struct MockProvider {
         responses: Mutex<Vec<StreamResponse>>,
@@ -577,12 +595,14 @@ mod tests {
     #[test_case(None,        false, false ; "channel_empty")]
     fn interrupt_handling(queued: Option<bool>, expect_consumed: bool, expect_injected: bool) {
         smol::block_on(async {
-            let (cmd_tx, cmd_rx) = flume::unbounded::<ExtractedCommand>();
-            if queued.is_some() {
-                cmd_tx
-                    .send(ExtractedCommand::Interrupt(default_input(), 0))
-                    .unwrap();
-            }
+            let source = if queued.is_some() {
+                Some(MockInterruptSource::new(vec![ExtractedCommand::Interrupt(
+                    default_input(),
+                    0,
+                )]))
+            } else {
+                None
+            };
 
             let tool_use = queued.unwrap_or(true);
             let responses = if tool_use {
@@ -599,11 +619,18 @@ mod tests {
 
             let (agent, event_rx) =
                 make_agent(MockProvider::new(responses), History::new(Vec::new()));
-            let outcome = agent.with_cmd_rx(cmd_rx).run(default_input()).await;
+            let agent = match source {
+                Some(s) => agent.with_interrupt_source(s),
+                None => agent,
+            };
+            let outcome = agent.run(default_input()).await;
             let events = drain_events(&event_rx);
 
             assert_eq!(
-                has_event(&events, |e| matches!(e, AgentEvent::QueueItemConsumed)),
+                has_event(&events, |e| matches!(
+                    e,
+                    AgentEvent::QueueItemConsumed { .. }
+                )),
                 expect_consumed,
             );
             assert_eq!(
@@ -614,40 +641,26 @@ mod tests {
     }
 
     #[test_case(
-        vec![],
-        vec![ExtractedCommand::Cancel],
-        vec![text_response(StopReason::EndTurn)]
-        ; "cancel_keeps_turn_and_adds_marker"
-    )]
-    #[test_case(
-        vec![Message::user("old".into())],
-        vec![ExtractedCommand::Cancel],
-        vec![text_response(StopReason::EndTurn)]
-        ; "cancel_preserves_prior_and_turn"
-    )]
-    #[test_case(
         (0..10).map(|i| Message::user(format!("msg {i}"))).collect(),
-        vec![ExtractedCommand::Compact(0), ExtractedCommand::Cancel],
+        vec![ExtractedCommand::Compact(0)],
         vec![tool_call_response("glob", "t1"), text_response(StopReason::EndTurn), text_response(StopReason::EndTurn)]
-        ; "cancel_after_compaction_preserves_summary"
+        ; "compaction_via_interrupt_source"
     )]
-    fn cancel_rollback(
+    fn compaction_through_interrupt(
         prior: Vec<Message>,
         commands: Vec<ExtractedCommand>,
         responses: Vec<StreamResponse>,
     ) {
         smol::block_on(async {
-            let (cmd_tx, cmd_rx) = flume::unbounded::<ExtractedCommand>();
-            for cmd in commands {
-                cmd_tx.send(cmd).unwrap();
-            }
+            let source = MockInterruptSource::new(commands);
 
             let (agent, _event_rx) = make_agent(MockProvider::new(responses), History::new(prior));
-            let outcome = agent.with_cmd_rx(cmd_rx).run(default_input()).await;
+            let outcome = agent
+                .with_interrupt_source(source)
+                .run(default_input())
+                .await;
 
-            assert!(matches!(outcome.result, Err(AgentError::Cancelled)));
-            assert!(!outcome.history.as_slice().is_empty());
-            assert_ends_with_cancel_marker(&outcome.history);
+            assert!(outcome.result.is_ok());
         });
     }
 

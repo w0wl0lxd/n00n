@@ -474,7 +474,10 @@ pub enum AgentEvent {
         id: String,
         questions: Vec<QuestionInfo>,
     },
-    QueueItemConsumed,
+    QueueItemConsumed {
+        text: String,
+        image_count: usize,
+    },
     Done {
         usage: TokenUsage,
         num_turns: u32,

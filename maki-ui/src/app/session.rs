@@ -7,9 +7,9 @@ use maki_storage::sessions::StoredSubagent;
 
 use crate::AppSession;
 
-use super::queue::{QueuedItem, QueuedMessage};
 use super::session_state::{SessionState, stored_to_rules};
 use super::{App, Mode, PendingInput, PlanState};
+use crate::agent::QueuedMessage;
 
 impl App {
     pub(crate) fn save_session(&mut self) {
@@ -36,8 +36,7 @@ impl App {
 
         self.state.session.meta.todo_dismissed = self.todo_panel.is_user_dismissed();
 
-        self.state.session.meta.queued_messages =
-            self.queue.text_messages().map(|m| m.text.clone()).collect();
+        self.state.session.meta.queued_messages = self.queue.text_messages();
 
         self.state.session.meta.subagents = self
             .chats
@@ -103,10 +102,11 @@ impl App {
         }
 
         for text in std::mem::take(&mut self.state.session.meta.queued_messages) {
-            self.queue.push(QueuedItem::Message(QueuedMessage {
+            let msg = QueuedMessage {
                 text,
                 images: Vec::new(),
-            }));
+            };
+            self.queue_and_notify(msg);
         }
 
         for sa in std::mem::take(&mut self.state.session.meta.subagents) {

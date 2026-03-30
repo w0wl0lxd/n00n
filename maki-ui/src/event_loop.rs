@@ -17,7 +17,9 @@ use maki_storage::DataDir;
 use tracing::warn;
 
 use crate::AppSession;
-use crate::agent::{AgentCommand, AgentHandles, McpState, spawn_agent, toggle_disabled};
+use crate::agent::{
+    AgentCommand, AgentHandles, McpState, shared_queue::QueueItem, spawn_agent, toggle_disabled,
+};
 use crate::app::shell::{ShellEvent, spawn_shell};
 use crate::app::{App, Msg};
 #[cfg(feature = "demo")]
@@ -336,10 +338,13 @@ impl<'t> EventLoop<'t> {
             Action::SendMessage(input) => {
                 let mut input = *input;
                 input.preamble = self.app.shell.drain_results();
-                let cmd = AgentCommand::Run(input, self.app.run_id);
-                if self.handles.cmd_tx.try_send(cmd).is_err() {
-                    self.respawn_agent(Vec::new());
-                }
+                let run_id = self.app.run_id;
+                self.handles.queue.push(QueueItem::Message {
+                    text: input.message.clone(),
+                    image_count: input.images.len(),
+                    input,
+                    run_id,
+                });
             }
             Action::CancelAgent => {
                 let _ = self.handles.cmd_tx.try_send(AgentCommand::Cancel);
@@ -365,10 +370,9 @@ impl<'t> EventLoop<'t> {
             }
             Action::ChangeModel(spec) => self.change_model(spec),
             Action::Compact => {
-                let _ = self
-                    .handles
-                    .cmd_tx
-                    .try_send(AgentCommand::Compact(self.app.run_id));
+                self.handles.queue.push(QueueItem::Compact {
+                    run_id: self.app.run_id,
+                });
             }
             Action::ToggleMcp(server_name, enabled) => {
                 toggle_disabled(&mut self.handles.mcp.disabled, &server_name, enabled);

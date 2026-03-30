@@ -278,7 +278,7 @@ pub fn run(
             | AgentEvent::ToolOutput { .. }
             | AgentEvent::ToolDone(_)
             | AgentEvent::BatchProgress(_)
-            | AgentEvent::QueueItemConsumed
+            | AgentEvent::QueueItemConsumed { .. }
             | AgentEvent::AutoCompacting
             | AgentEvent::AuthRequired
             | AgentEvent::PermissionRequest { .. }

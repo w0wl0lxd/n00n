@@ -13,13 +13,14 @@ use maki_agent::template::Vars;
 use maki_agent::tools::ToolCall;
 use maki_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelToken,
-    CancelTrigger, Envelope, EventSender, ExtractedCommand, History, LoadedInstructions,
+    CancelTrigger, Envelope, EventSender, History, LoadedInstructions,
 };
 use maki_providers::provider::Provider;
 use maki_providers::{AgentError, Message, Model, TokenUsage};
 use serde_json::Value;
 use tracing::error;
 
+use super::shared_queue::{QueueItem, SharedQueue};
 use super::toggle_disabled;
 
 pub(super) struct AgentLoop {
@@ -43,12 +44,13 @@ pub(super) struct AgentLoop {
     min_run_id: u64,
     agent_tx: flume::Sender<Envelope>,
     answer_rx: Arc<async_lock::Mutex<flume::Receiver<String>>>,
-    ecmd_rx: Option<flume::Receiver<ExtractedCommand>>,
+    notify_rx: flume::Receiver<()>,
+    queue: Arc<SharedQueue>,
     toggle_rx: flume::Receiver<(String, bool)>,
 }
 
 enum LoopEvent {
-    Command(ExtractedCommand),
+    Queue,
     Toggle(String, bool),
 }
 
@@ -67,7 +69,8 @@ impl AgentLoop {
         permissions: Arc<PermissionManager>,
         agent_tx: flume::Sender<Envelope>,
         answer_rx: flume::Receiver<String>,
-        ecmd_rx: flume::Receiver<ExtractedCommand>,
+        notify_rx: flume::Receiver<()>,
+        queue: Arc<SharedQueue>,
         toggle_rx: flume::Receiver<(String, bool)>,
         cancel_trigger: Arc<Mutex<Option<CancelTrigger>>>,
         cancel: CancelToken,
@@ -93,7 +96,8 @@ impl AgentLoop {
             min_run_id: 0,
             agent_tx,
             answer_rx: Arc::new(async_lock::Mutex::new(answer_rx)),
-            ecmd_rx: Some(ecmd_rx),
+            notify_rx,
+            queue,
             toggle_rx,
         }
     }
@@ -105,13 +109,10 @@ impl AgentLoop {
 
         loop {
             let event = {
-                let ecmd_rx = self
-                    .ecmd_rx
-                    .as_ref()
-                    .expect("ecmd_rx available between runs");
+                let notify_rx = &self.notify_rx;
                 let toggle_rx = &self.toggle_rx;
                 futures_lite::future::race(
-                    async { ecmd_rx.recv_async().await.ok().map(LoopEvent::Command) },
+                    async { notify_rx.recv_async().await.ok().map(|_| LoopEvent::Queue) },
                     async {
                         toggle_rx
                             .recv_async()
@@ -127,8 +128,37 @@ impl AgentLoop {
 
             match event {
                 LoopEvent::Toggle(name, enabled) => self.handle_mcp_toggle(name, enabled),
-                LoopEvent::Command(cmd) => self.handle_command(cmd).await,
+                LoopEvent::Queue => {
+                    while let Some(entry) = self.queue.pop() {
+                        if entry.run_id() < self.min_run_id {
+                            continue;
+                        }
+                        self.process_entry(entry).await;
+                    }
+                }
             }
+        }
+    }
+
+    async fn process_entry(&mut self, entry: QueueItem) {
+        let run_id = entry.run_id();
+        let event_tx = EventSender::new(self.agent_tx.clone(), run_id);
+
+        let result = match entry {
+            QueueItem::Message {
+                text,
+                image_count,
+                input,
+                ..
+            } => {
+                let _ = event_tx.send(AgentEvent::QueueItemConsumed { text, image_count });
+                self.do_agent_run(input, event_tx, run_id).await
+            }
+            QueueItem::Compact { .. } => self.do_compact(&event_tx).await,
+        };
+
+        if let Err(e) = result {
+            self.emit_error(run_id, e);
         }
     }
 
@@ -177,29 +207,6 @@ impl AgentLoop {
         self.mcp_manager = mcp_manager;
     }
 
-    async fn handle_command(&mut self, cmd: ExtractedCommand) {
-        let (event_tx, run_id) = match &cmd {
-            ExtractedCommand::Interrupt(_, run_id) | ExtractedCommand::Compact(run_id)
-                if *run_id >= self.min_run_id =>
-            {
-                (EventSender::new(self.agent_tx.clone(), *run_id), *run_id)
-            }
-            _ => return,
-        };
-
-        let result = match cmd {
-            ExtractedCommand::Compact(_) => self.do_compact(&event_tx).await,
-            ExtractedCommand::Interrupt(input, run_id) => {
-                self.do_agent_run(input, event_tx, run_id).await
-            }
-            ExtractedCommand::Cancel | ExtractedCommand::Ignore => return,
-        };
-
-        if let Err(e) = result {
-            self.emit_error(run_id, e);
-        }
-    }
-
     async fn do_compact(&mut self, event_tx: &EventSender) -> Result<(), AgentError> {
         let result =
             agent::compact(&*self.provider, &self.model, &mut self.history, event_tx).await;
@@ -231,7 +238,6 @@ impl AgentLoop {
 
         while self.answer_rx.lock().await.try_recv().is_ok() {}
 
-        let ecmd_rx = self.ecmd_rx.take().expect("ecmd_rx available before run");
         let agent = Agent::new(
             AgentParams {
                 provider: Arc::clone(&self.provider),
@@ -249,7 +255,7 @@ impl AgentLoop {
         )
         .with_loaded_instructions(self.loaded_instructions.clone())
         .with_user_response_rx(Arc::clone(&self.answer_rx))
-        .with_cmd_rx(ecmd_rx)
+        .with_interrupt_source(Arc::clone(&self.queue) as Arc<dyn maki_agent::InterruptSource>)
         .with_cancel(cancel)
         .with_mcp(self.mcp_manager.clone());
 
@@ -258,7 +264,6 @@ impl AgentLoop {
         self.set_cancel_trigger(None);
         self.history = outcome.history;
         self.sync_shared_history();
-        self.ecmd_rx = Some(outcome.cmd_rx.expect("cmd_rx was set"));
 
         if matches!(outcome.result, Err(AgentError::Cancelled)) {
             self.min_run_id = run_id + 1;

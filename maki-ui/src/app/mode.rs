@@ -9,7 +9,7 @@ use maki_storage::plans;
 use ratatui::style::{Color, Modifier, Style};
 
 use super::App;
-use super::queue::QueuedMessage;
+use crate::agent::QueuedMessage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mode {

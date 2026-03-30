@@ -43,9 +43,11 @@ pub enum AgentMode {
 
 pub enum ExtractedCommand {
     Interrupt(AgentInput, u64),
-    Cancel,
     Compact(u64),
-    Ignore,
+}
+
+pub trait InterruptSource: Send + Sync {
+    fn poll(&self) -> Option<ExtractedCommand>;
 }
 
 #[derive(Default)]

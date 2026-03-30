@@ -1,5 +1,6 @@
 mod agent_loop;
 mod command_router;
+pub(crate) mod shared_queue;
 
 use std::collections::HashMap;
 use std::mem;
@@ -10,9 +11,7 @@ use arc_swap::ArcSwap;
 use maki_agent::mcp::config::McpServerInfo;
 use maki_agent::permissions::PermissionManager;
 use maki_agent::skill::Skill;
-use maki_agent::{
-    AgentConfig, AgentInput, CancelToken, CancelTrigger, Envelope, ExtractedCommand, ToolOutput,
-};
+use maki_agent::{AgentConfig, CancelToken, CancelTrigger, Envelope, ToolOutput};
 use maki_providers::provider::Provider;
 use maki_providers::{Message, Model};
 use tracing::{info, warn};
@@ -21,10 +20,9 @@ use crate::app::App;
 
 use self::agent_loop::AgentLoop;
 use self::command_router::spawn_command_router;
+pub(crate) use self::shared_queue::{QueuedMessage, SharedQueue};
 
 pub(crate) enum AgentCommand {
-    Run(AgentInput, u64),
-    Compact(u64),
     Cancel,
     ToggleMcp(String, bool),
 }
@@ -43,6 +41,7 @@ pub(crate) struct AgentHandles {
     pub(crate) history: Arc<ArcSwap<Vec<Message>>>,
     pub(crate) tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>>,
     pub(crate) mcp: McpState,
+    pub(crate) queue: Arc<SharedQueue>,
     task: smol::Task<()>,
 }
 
@@ -52,6 +51,7 @@ impl AgentHandles {
         app.cmd_tx = Some(self.cmd_tx.clone());
         app.shared_history = Some(Arc::clone(&self.history));
         app.shared_tool_outputs = Some(Arc::clone(&self.tool_outputs));
+        app.queue.set_shared(Arc::clone(&self.queue));
     }
 
     pub(crate) fn cancel(self) {
@@ -125,8 +125,8 @@ pub(crate) fn spawn_agent(
     let (agent_tx, agent_rx) = flume::unbounded::<Envelope>();
     let (cmd_tx, cmd_rx) = flume::unbounded::<AgentCommand>();
     let (answer_tx, answer_rx) = flume::unbounded::<String>();
-    let (ecmd_tx, ecmd_rx) = flume::unbounded::<ExtractedCommand>();
     let (toggle_tx, toggle_rx) = flume::unbounded::<(String, bool)>();
+    let (queue, notify_rx) = SharedQueue::new();
     let shared_history: Arc<ArcSwap<Vec<Message>>> =
         Arc::new(ArcSwap::from_pointee(initial_history.clone()));
     let shared_tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>> =
@@ -135,7 +135,7 @@ pub(crate) fn spawn_agent(
     let cancel_trigger: Arc<Mutex<Option<CancelTrigger>>> =
         Arc::new(Mutex::new(Some(init_trigger)));
 
-    spawn_command_router(cmd_rx, ecmd_tx, toggle_tx, Arc::clone(&cancel_trigger));
+    spawn_command_router(cmd_rx, toggle_tx, Arc::clone(&cancel_trigger));
 
     let agent_loop = AgentLoop::new(
         Arc::clone(provider),
@@ -150,7 +150,8 @@ pub(crate) fn spawn_agent(
         Arc::clone(permissions),
         agent_tx,
         answer_rx,
-        ecmd_rx,
+        notify_rx,
+        Arc::clone(&queue),
         toggle_rx,
         cancel_trigger,
         init_cancel,
@@ -165,6 +166,7 @@ pub(crate) fn spawn_agent(
         history: shared_history,
         tool_outputs: shared_tool_outputs,
         mcp: mcp_state,
+        queue,
         task,
     }
 }

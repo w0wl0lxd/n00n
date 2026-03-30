@@ -60,10 +60,11 @@ use maki_storage::model::persist_model;
 use crate::storage_writer::StorageWriter;
 use ratatui::layout::Position;
 
+pub(crate) use crate::agent::QueuedMessage;
 pub(crate) use mode::{Mode, PlanState};
 #[cfg(test)]
-use mouse::{EDGE_SCROLL_INTERVAL, EDGE_SCROLL_LINES};
-pub(crate) use queue::{MessageQueue, QueuedItem, QueuedMessage};
+use mouse::EDGE_SCROLL_LINES;
+pub(crate) use queue::MessageQueue;
 use session_state::SessionState;
 
 const CANCEL_MSG: &str = "Cancelled.";
@@ -729,7 +730,7 @@ impl App {
         }
         let msg: QueuedMessage = sub.into();
         if self.status == Status::Streaming {
-            self.queue_and_notify(QueuedItem::Message(msg));
+            self.queue_and_notify(msg);
             vec![]
         } else {
             self.run_id += 1;
@@ -855,8 +856,10 @@ impl App {
 
         let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);
 
-        if matches!(result, ChatEventResult::QueueItemConsumed) && chat_idx == 0 {
-            self.on_queue_item_consumed();
+        if let ChatEventResult::QueueItemConsumed { text, image_count } = result {
+            if chat_idx == 0 {
+                self.on_queue_item_consumed(&text, image_count);
+            }
             return vec![];
         }
 
@@ -873,9 +876,6 @@ impl App {
                     self.save_session();
                     self.chat_index.clear();
                     self.subagent_answers.clear();
-                    if let Some(actions) = self.on_agent_done() {
-                        return actions;
-                    }
                     self.status = Status::Idle;
                     if self.state.mode == Mode::Plan && self.state.plan.pending_plan().is_some() {
                         self.plan_form.open();
@@ -909,8 +909,9 @@ impl App {
                     ));
                     self.pending_input = PendingInput::AuthRetry;
                 }
-                ChatEventResult::PermissionRequest { .. } => unreachable!(),
-                ChatEventResult::Continue | ChatEventResult::QueueItemConsumed => {}
+                ChatEventResult::PermissionRequest { .. }
+                | ChatEventResult::QueueItemConsumed { .. } => unreachable!(),
+                ChatEventResult::Continue => {}
             }
         }
         vec![]
@@ -948,7 +949,7 @@ impl App {
             }
             "/compact" => {
                 if self.status == Status::Streaming {
-                    self.queue_and_notify(QueuedItem::Compact);
+                    self.queue_compact();
                     return vec![];
                 }
                 self.status = Status::Streaming;
