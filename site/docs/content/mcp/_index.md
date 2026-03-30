@@ -50,7 +50,7 @@ Pick one: `command` makes it a stdio server, `url` makes it HTTP.
 
 ## Server Names
 
-Names must be ASCII alphanumeric (hyphens allowed). Double underscores (`__`) are reserved — they separate server and tool names internally. Names cannot collide with built-in tools.
+Names must be ASCII alphanumeric (hyphens allowed). Double underscores (`__`) are reserved - they separate server and tool names internally. Names cannot collide with built-in tools.
 
 ## Tool Namespacing
 
