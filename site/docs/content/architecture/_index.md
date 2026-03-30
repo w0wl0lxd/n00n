@@ -54,11 +54,3 @@ Supports 15+ languages, each behind a feature gate so you only compile the gramm
 A Python sandbox for the `code_execution` tool. Runs on <a href="https://github.com/pydantic/monty" target="_blank">monty</a>, pydantic's minimal Python runtime, so user code is isolated from the host.
 
 The sandbox enforces memory limits, and the agent's tools are exposed as async Python functions inside it. Input and output are JSON-serialized.
-
-## Key Patterns
-
-- **Async runtime**: <a href="https://github.com/smol-rs/smol" target="_blank">`smol`</a> for async, <a href="https://github.com/zesterer/flume" target="_blank">`flume`</a> channels for communication between components
-- **Feature gates**: Language support in `maki-code-index` is opt-in, one feature per grammar
-- **Config layering**: Project config overrides global config, merged field by field
-- **Tool permissions**: Three layers checked in order: session → config → builtin
-- **Atomic writes**: All persistent state uses write-to-tmp-then-rename, no half-written files
