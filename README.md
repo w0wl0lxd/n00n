@@ -37,6 +37,16 @@ Supported providers:
 
 **Dynamic providers** - if there's a provider maki doesn't support currently, and it uses openai / anthropic API, you can ask maki (using a different temp provider) to write you a small script to access it anyway. Example for [anthropic](https://github.com/tontinton/maki/blob/main/scripts/providers/ollama-anthropic), example for [openai](https://github.com/tontinton/maki/blob/main/scripts/providers/ollama-openai).
 
+Install:
+
+```sh
+# Official release
+cargo install maki
+
+# From main branch
+cargo install --git https://github.com/tontinton/maki.git maki
+```
+
 More info at the [official docs](http://maki.sh/docs).
 
 > DISCLAIMER: >90% of code in maki was written by maki. The code is not as good as what I would've made in the artisinal hand-made style. But it's also not entirely vibe coded. I just think people should be honest about their use of AI in projects in this era.
