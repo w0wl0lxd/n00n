@@ -82,3 +82,29 @@ If one server fails, the rest still start normally.
 ## Shutdown
 
 All transports shut down in parallel. For HTTP, Maki sends a DELETE request with the session ID to clean up.
+
+## OAuth for HTTP Servers
+
+Some MCP servers require authentication. Maki handles this automatically using OAuth.
+
+When a server needs auth, Maki opens your browser to log in. After you authenticate, the server connects and you're good to go. Other servers keep working while you authenticate.
+
+Tokens refresh automatically. If you change the server URL in your config, you'll need to log in again.
+
+### CLI Commands
+
+```bash
+# Manually trigger auth for a server
+maki mcp auth <server-name>
+
+# Log out (remove stored tokens)
+maki mcp logout <server-name>
+```
+
+### Server Status
+
+When OAuth is involved, you'll see one extra status:
+
+| Status | Meaning |
+|--------|---------|
+| NeedsAuth | Server requires authentication; check your browser |
