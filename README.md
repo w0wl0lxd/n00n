@@ -37,33 +37,6 @@ Supported providers:
 
 **Dynamic providers** - if there's a provider maki doesn't support currently, and it uses openai / anthropic API, you can ask maki (using a different temp provider) to write you a small script to access it anyway. Example for [anthropic](https://github.com/tontinton/maki/blob/main/scripts/providers/ollama-anthropic), example for [openai](https://github.com/tontinton/maki/blob/main/scripts/providers/ollama-openai).
 
+More info at the [official docs](http://maki.sh/docs).
+
 > DISCLAIMER: >90% of code in maki was written by maki. The code is not as good as what I would've made in the artisinal hand-made style. But it's also not entirely vibe coded. I just think people should be honest about their use of AI in projects in this era.
-
-## MCP Servers
-
-Configure MCP servers in `~/.config/maki/config.toml` (global) or `.maki/config.toml` (project, takes precedence).
-
-### Local (stdio)
-
-```toml
-[mcp.filesystem]
-command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-
-[mcp.github]
-command = ["gh", "mcp-server"]
-environment = { GITHUB_TOKEN = "ghp_xxxx" }
-```
-
-### Remote (HTTP)
-
-```toml
-[mcp.analytics]
-url = "https://mcp.example.com/mcp"
-headers = { Authorization = "Bearer tok123" }
-```
-
-### Options
-
-All servers support `timeout = 30000` (ms, max 300000) and `enabled = true/false`.
-
-Server names must be alphanumeric + hyphens and not collide with built-in tools. Tools are exposed as `<server>__<tool>`.
