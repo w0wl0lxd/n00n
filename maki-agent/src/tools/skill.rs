@@ -21,7 +21,7 @@ impl SkillTool {
 
     pub async fn execute(&self, ctx: &ToolContext) -> Result<ToolOutput, String> {
         Skill::find(&self.name, &ctx.skills)
-            .map(|s| ToolOutput::Plain(s.format_content()))
+            .map(|s| s.to_tool_output())
             .ok_or_else(|| format!("{NOT_FOUND}{}", self.name))
     }
 

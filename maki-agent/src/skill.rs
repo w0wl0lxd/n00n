@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 
 use tracing::{debug, warn};
 
+use crate::ToolOutput;
+
 const PROJECT_SKILL_DIRS: &[&str] = &[
     ".maki/skills",
     ".claude/skills",
@@ -57,17 +59,15 @@ impl Skill {
         skills.iter().find(|s| s.name == name)
     }
 
-    pub fn format_content(&self) -> String {
-        format!(
-            r#"<skill_content name="{}">
-{}
-
-Base directory for this skill: {}
-</skill_content>"#,
-            self.name,
-            self.content,
-            self.location.parent().unwrap_or(&self.location).display()
-        )
+    pub fn to_tool_output(&self) -> ToolOutput {
+        let lines: Vec<String> = self.content.lines().map(String::from).collect();
+        ToolOutput::ReadCode {
+            path: self.location.display().to_string(),
+            start_line: 1,
+            total_lines: lines.len(),
+            lines,
+            instructions: None,
+        }
     }
 }
 
