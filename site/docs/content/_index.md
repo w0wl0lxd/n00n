@@ -20,5 +20,6 @@ Written in Rust. Built to keep cost and token usage low without losing capabilit
 - **Session persistence.** Pick up where you left off, context and permissions intact.
 - **Python sandbox.** A minimal interpreter for running Python snippets safely inside the agent loop.
 - **Code indexing.** Tree-sitter powered file skeletons for 15+ languages, so the model can understand structure without reading every line.
+- **Headless mode.** Run non-interactively with `--print` for scripts and CI. Compatible with Claude Code output format.
 
 Ready to try it? Head to the [Quick Start](/docs/quick-start/).
