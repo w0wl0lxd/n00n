@@ -17,4 +17,5 @@ maki-config = { workspace = true }
 maki-providers = { workspace = true }
 maki-ui = { workspace = true }
 serde_json = { workspace = true }
+smol = { workspace = true }
 strum = { workspace = true }

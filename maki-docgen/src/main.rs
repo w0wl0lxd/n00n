@@ -42,11 +42,25 @@ fn check_page(section: &str, expected: &str) -> bool {
 fn main() -> ExitCode {
     let check = std::env::args().any(|a| a == "--check");
 
+    let ((tools, providers), (config, keybindings)) = smol::block_on(async {
+        smol::future::zip(
+            smol::future::zip(
+                smol::unblock(gen_tools::generate),
+                smol::unblock(gen_providers::generate),
+            ),
+            smol::future::zip(
+                smol::unblock(gen_config::generate),
+                smol::unblock(gen_keybindings::generate),
+            ),
+        )
+        .await
+    });
+
     let pages = [
-        ("tools", gen_tools::generate()),
-        ("providers", gen_providers::generate()),
-        ("configuration", gen_config::generate()),
-        ("keybindings", gen_keybindings::generate()),
+        ("tools", tools),
+        ("providers", providers),
+        ("configuration", config),
+        ("keybindings", keybindings),
     ];
 
     if check {

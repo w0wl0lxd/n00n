@@ -2243,6 +2243,7 @@ dependencies = [
  "maki-providers",
  "maki-ui",
  "serde_json",
+ "smol",
  "strum",
 ]
 
