@@ -1,4 +1,3 @@
-use std::mem;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -320,21 +319,15 @@ impl<'t> EventLoop<'t> {
     }
 
     fn respawn_agent(&mut self, history: Vec<Message>) {
-        let mcp = self.handles.mcp.clone();
-        let old = mem::replace(
-            &mut self.handles,
-            spawn_agent(
-                &self.provider,
-                &self.model,
-                history,
-                &self.skills,
-                self.config,
-                &self.permissions,
-                mcp,
-            ),
+        self.handles.respawn(
+            history,
+            &self.provider,
+            &self.model,
+            &self.skills,
+            self.config,
+            &self.permissions,
+            &mut self.app,
         );
-        old.cancel();
-        self.handles.apply_to_app(&mut self.app);
     }
 
     fn handle_action(&mut self, action: Action) {

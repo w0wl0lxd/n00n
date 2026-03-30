@@ -346,6 +346,28 @@ struct DynamicProvider {
     auth: Arc<Mutex<ResolvedAuth>>,
 }
 
+impl DynamicProvider {
+    fn run_auth_script(&self, subcommand: &'static str) -> BoxFuture<'_, Result<(), AgentError>> {
+        Box::pin(async move {
+            let script_path = self.script_path;
+            let auth = self.auth.clone();
+            smol::unblock(move || {
+                let stdout = run_script(script_path, subcommand, SCRIPT_TIMEOUT)?;
+                let parsed: ScriptResolvedAuth =
+                    serde_json::from_str(&stdout).map_err(|e| AgentError::Config {
+                        message: format!(
+                            "{} {subcommand}: invalid JSON: {e}",
+                            script_path.display()
+                        ),
+                    })?;
+                *auth.lock().unwrap() = parsed.into();
+                Ok(())
+            })
+            .await
+        })
+    }
+}
+
 impl Provider for DynamicProvider {
     fn stream_message<'a>(
         &'a self,
@@ -365,20 +387,11 @@ impl Provider for DynamicProvider {
     }
 
     fn refresh_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
-        Box::pin(async {
-            let script_path = self.script_path;
-            let auth = self.auth.clone();
-            smol::unblock(move || {
-                let stdout = run_script(script_path, "refresh", SCRIPT_TIMEOUT)?;
-                let parsed: ScriptResolvedAuth =
-                    serde_json::from_str(&stdout).map_err(|e| AgentError::Config {
-                        message: format!("{} refresh: invalid JSON: {e}", script_path.display()),
-                    })?;
-                *auth.lock().unwrap() = parsed.into();
-                Ok(())
-            })
-            .await
-        })
+        self.run_auth_script("refresh")
+    }
+
+    fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
+        self.run_auth_script("resolve")
     }
 }
 

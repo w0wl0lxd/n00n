@@ -281,4 +281,16 @@ impl Provider for OpenAi {
             }
         })
     }
+
+    fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
+        Box::pin(async {
+            let Some(storage) = self.storage.clone() else {
+                return Ok(());
+            };
+            let resolved = smol::unblock(move || openai_auth::resolve(&storage)).await?;
+            *self.auth.lock().unwrap() = resolved;
+            debug!("reloaded OpenAI auth from storage");
+            Ok(())
+        })
+    }
 }

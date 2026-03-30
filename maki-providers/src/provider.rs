@@ -104,6 +104,10 @@ pub trait Provider: Send + Sync {
     fn refresh_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async { Ok(()) })
     }
+
+    fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 pub fn from_model(model: &Model) -> Result<Box<dyn Provider>, AgentError> {

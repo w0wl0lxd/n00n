@@ -441,6 +441,15 @@ impl Provider for Anthropic {
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
         Box::pin(self.do_list_models())
     }
+
+    fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
+        Box::pin(async {
+            let resolved = resolve_auth()?;
+            *self.auth.lock().unwrap() = resolved;
+            debug!("reloaded Anthropic auth from env");
+            Ok(())
+        })
+    }
 }
 
 #[derive(Deserialize)]

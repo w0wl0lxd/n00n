@@ -7,6 +7,10 @@ weight = 5
 
 Maki talks to LLM providers over their HTTP APIs. Models are split into three tiers: **weak** (cheap and fast), **medium** (balanced), and **strong** (highest capability, highest cost).
 
+## Auth Reloading
+
+Maki re-reads auth from storage and environment variables each time a new agent spawns (`/new`, retry, session load). If you run `maki auth login` in another terminal or change an env var, the next session picks it up without a restart.
+
 ## Built-in Providers
 
 ### Anthropic
@@ -88,6 +92,8 @@ To add a custom provider or proxy, drop an executable script into `~/.maki/provi
 | `login` | interactive | OAuth or credential flow |
 | `logout` | interactive | Clear credentials |
 | `refresh` | 30s | Refresh auth tokens |
+
+`resolve` is called each time a new agent spawns, so scripts should read tokens from disk instead of caching them in memory. That way auth changes from other processes get picked up.
 
 The `base` field specifies which built-in provider to inherit the model catalog from. Valid values: `anthropic`, `openai`, `zai`, `zai-coding-plan`, `synthetic`. For example, a proxy in front of Anthropic sets `base` to `anthropic` and all Claude models are available, routed through your auth.
 

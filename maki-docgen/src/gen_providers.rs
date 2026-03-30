@@ -8,6 +8,10 @@ title = "Providers"
 weight = 5
 +++"#;
 
+const AUTH_RELOADING: &str = r#"## Auth Reloading
+
+Maki re-reads auth from storage and environment variables each time a new agent spawns (`/new`, retry, session load). If you run `maki auth login` in another terminal or change an env var, the next session picks it up without a restart."#;
+
 const MODEL_IDENTIFIERS: &str = r#"## Model Identifiers
 
 Models are referenced as `provider/model_id`:
@@ -35,6 +39,8 @@ To add a custom provider or proxy, drop an executable script into `~/.maki/provi
 | `login` | interactive | OAuth or credential flow |
 | `logout` | interactive | Clear credentials |
 | `refresh` | 30s | Refresh auth tokens |
+
+`resolve` is called each time a new agent spawns, so scripts should read tokens from disk instead of caching them in memory. That way auth changes from other processes get picked up.
 
 The `base` field specifies which built-in provider to inherit the model catalog from. Valid values: {}. For example, a proxy in front of Anthropic sets `base` to `anthropic` and all Claude models are available, routed through your auth.
 
@@ -225,6 +231,7 @@ pub fn generate() -> String {
          Models are split into three tiers: **weak** (cheap and fast), \
          **medium** (balanced), and **strong** (highest capability, highest cost).\n"
     );
+    let _ = writeln!(out, "{AUTH_RELOADING}\n");
     let _ = writeln!(out, "## Built-in Providers\n");
 
     for section in &build_sections() {
