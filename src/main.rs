@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
-use color_eyre::eyre::Context;
+use color_eyre::eyre::{Context, bail};
+use maki_agent::ToolCall;
 use maki_agent::mcp::{config as mcp_config, oauth as mcp_oauth};
 use maki_agent::skill::{self, Skill};
 use maki_config::load_config;
@@ -67,8 +68,34 @@ struct Cli {
     #[arg(long)]
     yolo: bool,
 
+    /// Pre-approve tools (comma-separated). Accepts PascalCase (Claude Code) or snake_case.
+    #[arg(long, value_delimiter = ',')]
+    allowed_tools: Vec<String>,
+
     /// Initial prompt (reads stdin if omitted in --print mode)
     prompt: Option<String>,
+}
+
+fn normalize_tool_name(name: &str) -> Result<String> {
+    let mut result = String::with_capacity(name.len() + 4);
+    for (i, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(c.to_ascii_lowercase());
+        } else {
+            result.push(c);
+        }
+    }
+    if ToolCall::static_name(&result).is_none() {
+        bail!(
+            "unknown tool '{}'. Valid tools: {}",
+            name,
+            ToolCall::all_names().join(", ")
+        );
+    }
+    Ok(result)
 }
 
 fn discover(disable: bool) -> Vec<Skill> {
@@ -224,6 +251,13 @@ fn run() -> Result<()> {
             let mut config = load_config(&cwd, cli.no_rtk);
             if cli.yolo || config.always_yolo {
                 config.permissions.allow_all = true;
+            }
+            if !cli.allowed_tools.is_empty() {
+                config.agent.allowed_tools = cli
+                    .allowed_tools
+                    .iter()
+                    .map(|t| normalize_tool_name(t))
+                    .collect::<Result<Vec<_>>>()?;
             }
             config.validate()?;
             let model = resolve_model(cli.model.as_deref(), &config.provider, &storage)?;
@@ -383,4 +417,27 @@ fn init_logging(storage: &DataDir, storage_config: &maki_config::StorageConfig) 
         .with_env_filter(filter)
         .with_writer(writer)
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_case::test_case;
+
+    #[test_case("Read", "read")]
+    #[test_case("Bash", "bash")]
+    #[test_case("CodeExecution", "code_execution")]
+    #[test_case("code_execution", "code_execution"; "snake_passthrough")]
+    fn normalize_tool_name_valid_inputs(input: &str, expected: &str) {
+        assert_eq!(normalize_tool_name(input).unwrap(), expected);
+    }
+
+    #[test]
+    fn normalize_tool_name_rejects_unknown() {
+        let result = normalize_tool_name("NonExistentTool");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unknown tool"));
+        assert!(err.contains("bash"));
+    }
 }

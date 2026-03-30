@@ -323,7 +323,7 @@ impl Agent {
             cancel: self.cancel.clone(),
             mcp: self.mcp.clone(),
             deadline: Deadline::None,
-            config: self.config,
+            config: self.config.clone(),
             permissions: Arc::clone(&self.permissions),
         }
     }

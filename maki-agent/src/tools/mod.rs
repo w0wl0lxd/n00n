@@ -55,6 +55,24 @@ pub struct DescriptionContext<'a> {
     pub skills: &'a [Skill],
 }
 
+#[derive(Debug, Clone, Default)]
+pub enum ToolFilter {
+    #[default]
+    All,
+    Only(Vec<&'static str>),
+    AllExcept(Vec<&'static str>),
+}
+
+impl ToolFilter {
+    fn matches(&self, name: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Only(allowed) => allowed.contains(&name),
+            Self::AllExcept(blocked) => !blocked.contains(&name),
+        }
+    }
+}
+
 pub const BASH_TOOL_NAME: &str = bash::Bash::NAME;
 pub const BATCH_TOOL_NAME: &str = batch::Batch::NAME;
 pub const EDIT_TOOL_NAME: &str = edit::Edit::NAME;
@@ -627,19 +645,6 @@ macro_rules! register_tools {
                 ]
             }
 
-            pub fn definitions(vars: &Vars, skills: &[Skill], supports_examples: bool) -> Value {
-                Value::Array(Self::all_defs(vars, skills, supports_examples).into_iter().map(|(_, def)| def).collect())
-            }
-
-            pub fn definitions_filtered(vars: &Vars, allowed: &[&str], supports_examples: bool) -> Value {
-                Value::Array(
-                    Self::all_defs(vars, &[], supports_examples).into_iter()
-                        .filter(|(name, _)| allowed.contains(name))
-                        .map(|(_, def)| def)
-                        .collect()
-                )
-            }
-
             pub fn static_name(name: &str) -> Option<&'static str> {
                 match name {
                     $(<$inner>::NAME => Some(<$inner>::NAME),)+
@@ -647,13 +652,21 @@ macro_rules! register_tools {
                 }
             }
 
-            pub fn definitions_excluding(vars: &Vars, skills: &[Skill], blocked: &[&str], supports_examples: bool) -> Value {
+            pub fn all_names() -> &'static [&'static str] {
+                &[$(<$inner>::NAME),+]
+            }
+
+            pub fn definitions_with_filter(vars: &Vars, skills: &[Skill], filter: &ToolFilter, supports_examples: bool) -> Value {
                 Value::Array(
                     Self::all_defs(vars, skills, supports_examples).into_iter()
-                        .filter(|(name, _)| !blocked.contains(name))
+                        .filter(|(name, _)| filter.matches(name))
                         .map(|(_, def)| def)
                         .collect()
                 )
+            }
+
+            pub fn definitions(vars: &Vars, skills: &[Skill], supports_examples: bool) -> Value {
+                Self::definitions_with_filter(vars, skills, &ToolFilter::All, supports_examples)
             }
         }
     };
@@ -794,23 +807,23 @@ mod tests {
         assert_eq!(timeout_annotation(secs), expected);
     }
 
-    #[test_case(Deadline::None,                                         120, Ok(120) ; "none_passthrough")]
-    #[test_case(Deadline::after(Duration::from_secs(60)),               10,  Ok(10)  ; "shorter_timeout_preserved")]
-    #[test_case(Deadline::At(Instant::now() - Duration::from_secs(1)),  120, Err(DEADLINE_EXCEEDED_MSG.into()) ; "expired")]
-    fn deadline_cap_timeout_cases(d: Deadline, timeout: u64, expected: Result<u64, String>) {
-        let result = d.cap_timeout(timeout);
-        match expected {
-            Ok(v) => assert_eq!(result.unwrap(), v),
-            Err(e) => assert_eq!(result.unwrap_err(), e),
-        }
-    }
-
     #[test]
-    fn deadline_cap_timeout_clamps_to_remaining() {
-        let d = Deadline::At(Instant::now() + Duration::from_secs(300));
-        let result = d.cap_timeout(600).unwrap();
-        assert!(result <= 300, "should clamp to remaining, got {result}");
-        assert!(result >= 1, "should be at least 1s, got {result}");
+    fn deadline_cap_timeout() {
+        assert_eq!(Deadline::None.cap_timeout(120).unwrap(), 120);
+
+        let future = Deadline::after(Duration::from_secs(60));
+        assert_eq!(future.cap_timeout(10).unwrap(), 10);
+
+        let expired = Deadline::At(Instant::now() - Duration::from_secs(1));
+        assert_eq!(expired.cap_timeout(120).unwrap_err(), DEADLINE_EXCEEDED_MSG);
+
+        let clamped = Deadline::after(Duration::from_secs(300))
+            .cap_timeout(600)
+            .unwrap();
+        assert!(
+            (295..=300).contains(&clamped),
+            "expected ~300, got {clamped}"
+        );
     }
 
     #[test_case("short",                            "short"                             ; "short_passthrough")]
@@ -996,7 +1009,8 @@ mod tests {
     #[test]
     fn definitions_filtered_returns_only_requested() {
         let vars = Vars::new().set("{cwd}", "/tmp");
-        let filtered = ToolCall::definitions_filtered(&vars, &["bash", "read"], true);
+        let filter = ToolFilter::Only(vec!["bash", "read"]);
+        let filtered = ToolCall::definitions_with_filter(&vars, &[], &filter, true);
         let names: Vec<&str> = filtered
             .as_array()
             .unwrap()

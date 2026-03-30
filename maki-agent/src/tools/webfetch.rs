@@ -35,14 +35,14 @@ impl WebFetch {
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         ctx.cancel
-            .race(self.do_fetch(ctx.deadline, ctx.config))
+            .race(self.do_fetch(ctx.deadline, &ctx.config))
             .await?
     }
 
     async fn do_fetch(
         &self,
         deadline: super::Deadline,
-        config: maki_config::AgentConfig,
+        config: &maki_config::AgentConfig,
     ) -> Result<ToolOutput, String> {
         let url = validate_and_upgrade_url(&self.url)?;
         check_ssrf(&url)?;

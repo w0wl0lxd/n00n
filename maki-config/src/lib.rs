@@ -406,7 +406,7 @@ impl Default for ToolOutputLines {
     }
 }
 
-#[derive(Debug, Clone, Copy, ConfigSection)]
+#[derive(Debug, Clone, ConfigSection)]
 #[config(section = "agent")]
 pub struct AgentConfig {
     #[config(default = DEFAULT_MAX_OUTPUT_BYTES, min = MIN_OUTPUT_BYTES, desc = "Max tool output size (bytes)")]
@@ -444,6 +444,9 @@ pub struct AgentConfig {
 
     #[config(skip, default = "DEFAULT_MAX_FILE_SIZE_MB * 1024 * 1024")]
     pub index_max_file_size: u64,
+
+    #[config(skip, default = "Vec::new()")]
+    pub allowed_tools: Vec<String>,
 }
 
 impl AgentConfig {
@@ -475,6 +478,7 @@ impl AgentConfig {
                 .unwrap_or(DEFAULT_MAX_FILE_SIZE_MB)
                 * 1024
                 * 1024,
+            allowed_tools: Vec::new(),
         }
     }
 

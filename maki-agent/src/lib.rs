@@ -20,6 +20,7 @@ pub(crate) mod prompt;
 pub mod skill;
 pub mod template;
 pub mod tools;
+pub use tools::{ToolCall, ToolFilter};
 pub mod types;
 
 use std::path::PathBuf;

@@ -14,7 +14,7 @@ use maki_providers::{ContentBlock, Model, ModelError, Role};
 use maki_tool_macro::Tool;
 use tracing::info;
 
-use super::{GENERAL_SUBAGENT_TOOLS, RESEARCH_SUBAGENT_TOOLS, ToolContext};
+use super::{GENERAL_SUBAGENT_TOOLS, RESEARCH_SUBAGENT_TOOLS, ToolContext, ToolFilter};
 use crate::agent;
 use crate::template;
 use crate::tools::ToolCall;
@@ -80,9 +80,11 @@ impl Task {
         let (instructions, _) =
             smol::unblock(move || agent::load_instruction_files(&cwd_owned)).await;
         system.push_str(&instructions);
-        let tools = ToolCall::definitions_filtered(
+        let filter = ToolFilter::Only(tool_names.to_vec());
+        let tools = ToolCall::definitions_with_filter(
             &vars,
-            tool_names,
+            &[],
+            &filter,
             model.family.supports_tool_examples(),
         );
 
@@ -128,7 +130,7 @@ impl Task {
                 provider,
                 model,
                 skills: Arc::clone(&ctx.skills),
-                config: ctx.config,
+                config: ctx.config.clone(),
                 permissions: Arc::clone(&ctx.permissions),
             },
             AgentRunParams {
@@ -192,9 +194,10 @@ mod tests {
 
     #[test_case(RESEARCH_SUBAGENT_TOOLS ; "research_subagent_tools")]
     #[test_case(GENERAL_SUBAGENT_TOOLS  ; "general_subagent_tools")]
-    fn subagent_tools_all_registered(tools: &[&str]) {
+    fn subagent_tools_all_registered(tools: &'static [&'static str]) {
         let vars = template::Vars::new();
-        let filtered = ToolCall::definitions_filtered(&vars, tools, true);
+        let filter = ToolFilter::Only(tools.to_vec());
+        let filtered = ToolCall::definitions_with_filter(&vars, &[], &filter, true);
         assert_eq!(filtered.as_array().unwrap().len(), tools.len());
     }
 }

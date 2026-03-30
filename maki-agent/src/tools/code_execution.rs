@@ -58,7 +58,7 @@ impl CodeInterpreter {
         let event_tx = ctx.event_tx.clone();
         let mode = ctx.mode.clone();
         let cancel = ctx.cancel.clone();
-        let config = ctx.config;
+        let config = ctx.config.clone();
         let permissions = ctx.permissions.clone();
         let deadline = Deadline::after(timeout);
         let limits = runner::limits(timeout, config.interpreter_max_memory_mb * 1024 * 1024);
@@ -68,10 +68,22 @@ impl CodeInterpreter {
         // There is no safe way to kill a blocking thread.
         ctx.cancel
             .race(smol::unblock(move || {
-                let tools =
-                    build_tool_fns(&event_tx, &mode, &cancel, deadline, config, &permissions);
-                let resolver =
-                    build_async_resolver(&event_tx, &mode, &cancel, deadline, config, &permissions);
+                let tools = build_tool_fns(
+                    &event_tx,
+                    &mode,
+                    &cancel,
+                    deadline,
+                    config.clone(),
+                    &permissions,
+                );
+                let resolver = build_async_resolver(
+                    &event_tx,
+                    &mode,
+                    &cancel,
+                    deadline,
+                    config.clone(),
+                    &permissions,
+                );
                 let code = format!("{PREAMBLE}{code}");
 
                 let result = if let Some(ref id) = tool_use_id {
@@ -160,6 +172,7 @@ fn build_tool_fns(
         let mode = mode.clone();
         let cancel = cancel.clone();
         let permissions = Arc::clone(permissions);
+        let config = config.clone();
 
         tools.insert(
             name.clone(),
@@ -178,7 +191,7 @@ fn build_tool_fns(
                         Arc::clone(&permissions),
                     );
                     inner_ctx.deadline = deadline;
-                    inner_ctx.config = config;
+                    inner_ctx.config = config.clone();
                     let done = block_on(call.execute(&inner_ctx, String::new()));
                     if done.is_error {
                         Err(done.output.as_text())
@@ -207,6 +220,7 @@ fn build_async_resolver(
     let permissions = Arc::clone(permissions);
 
     Box::new(move |pending_calls: Vec<PendingCall>| {
+        let config = config.clone();
         smol::future::block_on(async {
             let call_ids: Vec<u32> = pending_calls.iter().map(|pc| pc.call_id).collect();
             let mut set = TaskSet::new();
@@ -215,6 +229,7 @@ fn build_async_resolver(
                 let mode = mode.clone();
                 let cancel = cancel.clone();
                 let permissions = Arc::clone(&permissions);
+                let config = config.clone();
 
                 set.spawn(async move {
                     if let Err(e) = deadline.check() {

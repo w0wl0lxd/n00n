@@ -59,7 +59,7 @@ maki "check for security issues" --print --output-format json | jq -e '.is_error
 
 # Batch processing
 for file in src/*.rs; do
-  maki "add doc comments to $file" --print --yolo
+  maki "add doc comments to $file" --print --allowed-tools Bash,Edit
 done
 
 # Cost tracking

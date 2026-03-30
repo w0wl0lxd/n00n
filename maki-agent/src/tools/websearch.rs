@@ -30,14 +30,14 @@ impl WebSearch {
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
         ctx.cancel
-            .race(self.do_search(ctx.deadline, ctx.config))
+            .race(self.do_search(ctx.deadline, &ctx.config))
             .await?
     }
 
     async fn do_search(
         &self,
         deadline: super::Deadline,
-        config: maki_config::AgentConfig,
+        config: &maki_config::AgentConfig,
     ) -> Result<ToolOutput, String> {
         let num_results = self.num_results.unwrap_or(DEFAULT_NUM_RESULTS);
 

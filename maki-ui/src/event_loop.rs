@@ -189,7 +189,7 @@ impl<'t> EventLoop<'t> {
             &model,
             initial_history,
             &skills,
-            config,
+            config.clone(),
             &permissions,
             mcp_state,
         );
@@ -327,7 +327,7 @@ impl<'t> EventLoop<'t> {
             &self.provider,
             &self.model,
             &self.skills,
-            self.config,
+            self.config.clone(),
             &self.permissions,
             &mut self.app,
         );
@@ -394,7 +394,7 @@ impl<'t> EventLoop<'t> {
                     visible,
                     self.shell_tx.clone(),
                     cancel,
-                    self.config,
+                    self.config.clone(),
                 );
             }
             Action::OpenEditor(path) => {

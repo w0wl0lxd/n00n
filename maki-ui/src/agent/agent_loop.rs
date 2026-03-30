@@ -10,7 +10,7 @@ use maki_agent::permissions::PermissionManager;
 use maki_agent::skill::Skill;
 use maki_agent::template;
 use maki_agent::template::Vars;
-use maki_agent::tools::ToolCall;
+use maki_agent::tools::{ToolCall, ToolFilter};
 use maki_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelToken,
     CancelTrigger, Envelope, EventSender, History, LoadedInstructions,
@@ -169,11 +169,7 @@ impl AgentLoop {
             return false;
         }
 
-        self.tools = ToolCall::definitions(
-            &self.vars,
-            &self.skills,
-            self.model.family.supports_tool_examples(),
-        );
+        self.tools = self.build_tools();
 
         let cwd = PathBuf::from(self.vars.apply("{cwd}").into_owned());
         self.init_mcp(&cwd).await;
@@ -243,7 +239,7 @@ impl AgentLoop {
                 provider: Arc::clone(&self.provider),
                 model: self.model.clone(),
                 skills: Arc::clone(&self.skills),
-                config: self.config,
+                config: self.config.clone(),
                 permissions: Arc::clone(&self.permissions),
             },
             AgentRunParams {
@@ -284,15 +280,27 @@ impl AgentLoop {
     }
 
     fn rebuild_tools(&mut self) {
-        let mut tools = ToolCall::definitions(
-            &self.vars,
-            &self.skills,
-            self.model.family.supports_tool_examples(),
-        );
+        let mut tools = self.build_tools();
         if let Some(ref mcp) = self.mcp_manager {
             mcp.extend_tools(&mut tools, &self.disabled);
         }
         self.tools = tools;
+    }
+
+    fn build_tools(&self) -> Value {
+        let examples = self.model.family.supports_tool_examples();
+        let filter = if self.config.allowed_tools.is_empty() {
+            ToolFilter::All
+        } else {
+            let refs: Vec<&'static str> = self
+                .config
+                .allowed_tools
+                .iter()
+                .filter_map(|s| ToolCall::static_name(s))
+                .collect();
+            ToolFilter::Only(refs)
+        };
+        ToolCall::definitions_with_filter(&self.vars, &self.skills, &filter, examples)
     }
 
     async fn reload_instructions(&mut self) {

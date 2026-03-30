@@ -36,6 +36,9 @@ tracing-subscriber = { workspace = true }
 smol = { workspace = true }
 flume = { workspace = true }
 
+[dev-dependencies]
+test-case = { workspace = true }
+
 [workspace]
 members = [
   "maki-agent",
