@@ -233,6 +233,7 @@ impl<'t> EventLoop<'t> {
         self.app.tick_error_expiry();
         self.app.poll_image_paste();
         self.app.btw_modal.poll();
+        self.app.status_bar.poll_branch_update();
     }
 
     fn drain_channels(&mut self) -> bool {

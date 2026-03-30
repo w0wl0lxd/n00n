@@ -117,6 +117,7 @@ dirs = "6"
 tree-sitter = "0.26"
 tree-sitter-bash = "0.25"
 monty = { git = "https://github.com/pydantic/monty.git", rev = "7a0d4b7", package = "monty" }
+notify = { version = "9.0.0-rc.2", default-features = false, features = ["flume"] }
 
 wait-timeout = "0.2"
 

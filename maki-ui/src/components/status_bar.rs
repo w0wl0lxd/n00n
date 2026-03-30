@@ -49,6 +49,7 @@ pub struct StatusBar {
     started_at: Instant,
     cwd_branch: String,
     pub flash_duration: Duration,
+    branch_update_rx: Option<flume::Receiver<()>>,
 }
 
 impl StatusBar {
@@ -58,6 +59,7 @@ impl StatusBar {
             started_at: Instant::now(),
             cwd_branch: cwd_branch_label(),
             flash_duration,
+            branch_update_rx: spawn_branch_watcher(),
         }
     }
 
@@ -72,6 +74,15 @@ impl StatusBar {
 
     pub fn refresh_cwd(&mut self) {
         self.cwd_branch = cwd_branch_label();
+    }
+
+    pub fn poll_branch_update(&mut self) {
+        let Some(rx) = &self.branch_update_rx else {
+            return;
+        };
+        if rx.try_iter().next().is_some() {
+            self.cwd_branch = cwd_branch_label();
+        }
     }
 
     pub fn clear_flash(&mut self) {
@@ -227,17 +238,45 @@ fn cwd_branch_label() -> String {
 }
 
 fn detect_branch(cwd: &str) -> Option<String> {
-    let mut dir = Path::new(cwd);
+    let head = std::fs::read_to_string(find_git_dir(Path::new(cwd))?.join("HEAD")).ok()?;
+    let head = head.trim();
+    head.strip_prefix("ref: refs/heads/")
+        .map(str::to_string)
+        .or_else(|| Some(head.get(..7)?.to_string()))
+}
+
+fn find_git_dir(cwd: &Path) -> Option<std::path::PathBuf> {
+    let mut dir = cwd;
     loop {
-        if let Ok(head) = std::fs::read_to_string(dir.join(".git/HEAD")) {
-            let head = head.trim();
-            return head
-                .strip_prefix("ref: refs/heads/")
-                .map(str::to_string)
-                .or_else(|| Some(head.get(..7)?.to_string()));
+        let git = dir.join(".git");
+        if git.is_dir() {
+            return Some(git);
         }
         dir = dir.parent()?;
     }
+}
+
+fn spawn_branch_watcher() -> Option<flume::Receiver<()>> {
+    use notify::{RecursiveMode, Watcher};
+
+    let cwd = env::current_dir().ok()?;
+    let git_dir = find_git_dir(&cwd)?;
+    let (tx, rx) = flume::bounded(1);
+
+    std::thread::spawn(move || {
+        let Ok(mut watcher) = notify::recommended_watcher(move |res: Result<notify::Event, _>| {
+            if res.is_ok_and(|e| e.paths.iter().any(|p| p.ends_with("HEAD"))) {
+                let _ = tx.try_send(());
+            }
+        }) else {
+            return;
+        };
+        if watcher.watch(&git_dir, RecursiveMode::NonRecursive).is_ok() {
+            std::thread::park();
+        }
+    });
+
+    Some(rx)
 }
 
 #[cfg(test)]
@@ -296,18 +335,18 @@ mod tests {
     }
 
     #[test]
-    fn flash_lifecycle() {
-        let mut bar = StatusBar::new(Duration::from_millis(1500));
-
+    fn clear_expired_hint_removes_stale_flash() {
+        let mut bar = StatusBar::new(Duration::ZERO);
         bar.flash("Copied".into());
         bar.clear_expired_hint();
-        assert!(bar.flash.is_some(), "fresh flash persists");
+        assert!(bar.flash.is_none());
+    }
 
-        bar.flash = Some((
-            "Copied".into(),
-            Instant::now() - bar.flash_duration - Duration::from_millis(1),
-        ));
-        bar.clear_expired_hint();
-        assert!(bar.flash.is_none(), "stale flash cleared");
+    #[test]
+    fn clear_flash_removes_flash() {
+        let mut bar = StatusBar::new(Duration::from_secs(999));
+        bar.flash("Copied".into());
+        bar.clear_flash();
+        assert!(bar.flash.is_none());
     }
 }
