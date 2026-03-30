@@ -5,7 +5,7 @@ weight = 8
 
 # Architecture
 
-Maki is a Rust workspace split into 8 crates. The UI, agent logic, LLM providers, and storage each live in their own crate so they can evolve independently.
+Maki is a Rust workspace. The UI, agent logic, LLM providers, and storage each live in their own crate for faster compile times.
 
 ## Crate Overview
 
@@ -54,10 +54,6 @@ Supports 15+ languages, each behind a feature gate so you only compile the gramm
 A Python sandbox for the `code_execution` tool. Runs on <a href="https://github.com/pydantic/monty" target="_blank">monty</a>, pydantic's minimal Python runtime, so user code is isolated from the host.
 
 The sandbox enforces memory limits, and the agent's tools are exposed as async Python functions inside it. Input and output are JSON-serialized.
-
-### `maki-tool-macro`
-
-A proc-macro crate that generates the boilerplate for registering tools, parsing their parameters, and dispatching calls.
 
 ## Key Patterns
 
