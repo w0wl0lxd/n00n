@@ -1,6 +1,8 @@
 +++
 title = "Headless Mode"
-weight = 7
+weight = 8
+[extra]
+group = "Reference"
 +++
 
 # Headless Mode

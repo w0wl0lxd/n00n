@@ -1,6 +1,8 @@
 +++
 title = "Architecture"
-weight = 8
+weight = 9
+[extra]
+group = "Internals"
 +++
 
 # Architecture

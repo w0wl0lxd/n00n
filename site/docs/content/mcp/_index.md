@@ -1,6 +1,8 @@
 +++
 title = "MCP"
 weight = 6
+[extra]
+group = "Reference"
 +++
 
 # MCP (Model Context Protocol)

@@ -738,23 +738,22 @@
       <span class="search-hint">/</span>
       <div class="search-results" id="search-results"></div>
     </div>
+{%- set root = get_section(path="_index.md") -%}
+    {%- set sections = [] -%}
+    {%- for sub in root.subsections -%}
+      {%- set s = get_section(path=sub) -%}
+      {%- set_global sections = sections | concat(with=[s]) -%}
+    {%- endfor -%}
+    {%- for group in ["Getting Started", "Reference", "Internals"] -%}
     <div class="sidebar-group">
-      <div class="sidebar-label">Getting Started</div>
-      <a href="{{ config.base_url }}/quick-start/">Quick Start</a>
-      <a href="{{ config.base_url }}/configuration/">Configuration</a>
+      <div class="sidebar-label">{{ group }}</div>
+      {%- for s in sections -%}
+        {%- if s.extra.group == group -%}
+      <a href="{{ s.permalink }}">{{ s.title }}</a>
+        {%- endif -%}
+      {%- endfor -%}
     </div>
-    <div class="sidebar-group">
-      <div class="sidebar-label">Reference</div>
-      <a href="{{ config.base_url }}/keybindings/">Keybindings</a>
-      <a href="{{ config.base_url }}/providers/">Providers</a>
-      <a href="{{ config.base_url }}/tools/">Tools</a>
-      <a href="{{ config.base_url }}/permissions/">Permissions</a>
-      <a href="{{ config.base_url }}/mcp/">MCP</a>
-    </div>
-    <div class="sidebar-group">
-      <div class="sidebar-label">Internals</div>
-      <a href="{{ config.base_url }}/architecture/">Architecture</a>
-    </div>
+    {%- endfor -%}
   </nav>
 
   <main class="main-content">

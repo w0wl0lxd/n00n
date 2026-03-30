@@ -1,6 +1,8 @@
 +++
 title = "Quick Start"
 weight = 1
+[extra]
+group = "Getting Started"
 +++
 
 # Quick Start

@@ -1,6 +1,8 @@
 +++
 title = "Keybindings"
 weight = 7
+[extra]
+group = "Reference"
 +++
 
 # Keybindings

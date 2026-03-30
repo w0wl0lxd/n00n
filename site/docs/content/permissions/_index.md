@@ -1,6 +1,8 @@
 +++
 title = "Permissions"
 weight = 4
+[extra]
+group = "Reference"
 +++
 
 # Permissions

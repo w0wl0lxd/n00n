@@ -1,6 +1,8 @@
 +++
 title = "Providers"
 weight = 5
+[extra]
+group = "Reference"
 +++
 
 # Providers
