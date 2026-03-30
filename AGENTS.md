@@ -47,3 +47,9 @@ Rust workspace, key crates in root dir:
 - **maki-code-index**: index tool implementation using tree-sitter (returns a compact skeleton of a source file)
 - **maki-storage**: Persistent state across runs (e.g. sessions, auth)
 - **maki-config**: User config
+
+## Docs
+
+Homepage is in ./site/.
+User docs are in ./site/docs/, any feature concerning users should be added there as well.
+Tone: warm, simple, concise, easy for non-native English. No em dashes, no emojis, no AI tone.
