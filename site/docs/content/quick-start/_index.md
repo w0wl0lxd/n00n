@@ -38,7 +38,7 @@ Type a prompt, press **Enter**, and the agent starts working.
 
 ## Keybindings
 
-- **Newline in input**: Shift+Enter, Ctrl+J, or Alt+Enter
+- **Newline in input**: \\+Enter, Ctrl+J, or Alt+Enter
 - **Scroll output**: Ctrl+U / Ctrl+D (half page), Ctrl+Y / Ctrl+E (line)
 - **Cancel streaming**: Esc Esc
 - **Quit**: Ctrl+C
