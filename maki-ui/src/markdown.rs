@@ -121,6 +121,7 @@ pub struct Truncated<'a> {
 }
 
 impl<'a> Truncated<'a> {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn notice_line(&self) -> Option<Line<'static>> {
         if self.skipped > 0 {
             let text = truncation_notice(self.skipped);

@@ -237,6 +237,9 @@ pub enum ToolOutput {
         text: String,
     },
     QuestionAnswers(Vec<QuestionAnswer>),
+    Instructions {
+        blocks: Vec<InstructionBlock>,
+    },
 }
 
 impl ToolOutput {
@@ -245,6 +248,21 @@ impl ToolOutput {
             Self::WriteCode { path, .. } | Self::Diff { path, .. } => Some(path),
             _ => None,
         }
+    }
+
+    pub fn instructions(&self) -> Option<&[InstructionBlock]> {
+        match self {
+            Self::ReadCode { instructions, .. } | Self::ReadDir { instructions, .. } => {
+                instructions.as_deref()
+            }
+            _ => None,
+        }
+    }
+
+    pub fn owned_instructions(&self) -> Option<Vec<InstructionBlock>> {
+        self.instructions()
+            .filter(|b| !b.is_empty())
+            .map(|b| b.to_vec())
     }
 
     pub fn structured_display_text(&self) -> Option<String> {
@@ -276,6 +294,13 @@ impl ToolOutput {
         match self {
             Self::Diff { summary, .. } => summary.clone(),
             Self::TodoList(_) => "ok".into(),
+            Self::ReadCode { instructions, .. } | Self::ReadDir { instructions, .. } => {
+                let mut out = self.as_display_text();
+                if let Some(blocks) = instructions {
+                    append_instructions(&mut out, blocks);
+                }
+                out
+            }
             _ => self.as_display_text(),
         }
     }
@@ -286,18 +311,11 @@ impl ToolOutput {
             Self::MemoryWrite { path, lines } => {
                 format!("wrote {path} ({} lines)", lines.len().max(1))
             }
-            Self::ReadDir { text, instructions } => {
-                let mut out = text.clone();
-                if let Some(blocks) = instructions {
-                    append_instructions(&mut out, blocks);
-                }
-                out
-            }
+            Self::ReadDir { text, .. } => text.clone(),
             Self::ReadCode {
                 start_line,
                 lines,
                 total_lines,
-                instructions,
                 ..
             } => {
                 let mut out: String = lines
@@ -315,9 +333,6 @@ impl ToolOutput {
                             remaining
                         ));
                     }
-                }
-                if let Some(blocks) = instructions {
-                    append_instructions(&mut out, blocks);
                 }
                 out
             }
@@ -396,6 +411,11 @@ impl ToolOutput {
                 }
                 table.truncate(table.trim_end().len());
                 table
+            }
+            Self::Instructions { blocks } => {
+                let mut out = String::new();
+                append_instructions(&mut out, blocks);
+                out
             }
         }
     }
@@ -761,7 +781,7 @@ mod tests {
         10,
         vec!["fn foo()".into(), "fn bar()".into()],
         Some(vec![InstructionBlock { path: "AGENTS.md".into(), content: "do stuff".into() }]),
-        "10: fn foo()\n11: fn bar()\n\n... truncated 89 more lines. Use offset/limit to read further.\n\n---\nInstructions from: AGENTS.md\ndo stuff"
+        "10: fn foo()\n11: fn bar()\n\n... truncated 89 more lines. Use offset/limit to read further."
         ; "with_instructions"
     )]
     #[test_case(
@@ -785,6 +805,24 @@ mod tests {
             instructions,
         };
         assert_eq!(output.as_display_text(), expected);
+    }
+
+    #[test]
+    fn read_code_as_text_includes_instructions() {
+        let output = ToolOutput::ReadCode {
+            path: "a.rs".into(),
+            start_line: 1,
+            lines: vec!["fn main()".into()],
+            total_lines: 1,
+            instructions: Some(vec![InstructionBlock {
+                path: "AGENTS.md".into(),
+                content: "do stuff".into(),
+            }]),
+        };
+        let text = output.as_text();
+        assert!(text.contains("1: fn main()"));
+        assert!(text.contains("Instructions from: AGENTS.md"));
+        assert!(text.contains("do stuff"));
     }
 
     #[test]

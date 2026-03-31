@@ -1,3 +1,4 @@
+use super::segment;
 use super::*;
 use crate::components::scrollbar::SCROLLBAR_THUMB;
 use crate::selection::{Selection, SelectionZone};
@@ -1047,4 +1048,93 @@ fn search_text_includes_truncated_bash_output() {
     });
     rebuild(&mut panel);
     assert!(seg_search(&panel, "t1").contains(&full_output));
+}
+
+fn instruction_blocks() -> Vec<InstructionBlock> {
+    vec![InstructionBlock {
+        path: "agents.md".into(),
+        content: "follow style guide".into(),
+    }]
+}
+
+fn read_code_with_instructions(blocks: Vec<InstructionBlock>) -> ToolOutput {
+    ToolOutput::ReadCode {
+        path: "file.rs".into(),
+        start_line: 1,
+        lines: vec!["fn main() {}".into()],
+        total_lines: 1,
+        instructions: Some(blocks),
+    }
+}
+
+fn prev_segment_is_spacer(panel: &MessagesPanel, tool_id: &str) -> bool {
+    let idx = panel.cache.find_by_tool_id(tool_id).unwrap();
+    panel.cache.get(idx - 1).unwrap().tool_id.is_none()
+}
+
+#[test]
+fn instruction_segment_has_spacer_before_it() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.tool_start(start("t1", "read"));
+    panel.tool_done(ToolDoneEvent {
+        id: "t1".into(),
+        tool: "read",
+        output: read_code_with_instructions(instruction_blocks()),
+        is_error: false,
+    });
+    rebuild(&mut panel);
+
+    let inst_id = segment::instruction_id("t1");
+    assert!(prev_segment_is_spacer(&panel, &inst_id));
+}
+
+#[test]
+fn batch_instruction_segment_has_no_spacer() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut entry = batch_entry("read", "file.rs", BatchToolStatus::Success);
+    entry.output = Some(read_code_with_instructions(instruction_blocks()));
+    let entries = vec![entry];
+    batch_start(&mut panel, entries.clone());
+    batch_done(&mut panel, entries);
+    rebuild(&mut panel);
+
+    let inst_id = segment::instruction_id("b1__0");
+    assert!(!prev_segment_is_spacer(&panel, &inst_id));
+}
+
+fn seg_line_count(panel: &MessagesPanel, tool_id: &str) -> usize {
+    panel
+        .cache
+        .segments()
+        .iter()
+        .find(|s| s.tool_id.as_deref() == Some(tool_id))
+        .unwrap()
+        .lines()
+        .len()
+}
+
+#[test]
+fn toggle_instruction_segment_expands_and_collapses() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    let blocks = vec![InstructionBlock {
+        path: "agents.md".into(),
+        content: "x\n".repeat(100),
+    }];
+    panel.tool_start(start("t1", "read"));
+    panel.tool_done(ToolDoneEvent {
+        id: "t1".into(),
+        tool: "read",
+        output: read_code_with_instructions(blocks),
+        is_error: false,
+    });
+    rebuild(&mut panel);
+
+    let inst_id = segment::instruction_id("t1");
+    let collapsed = seg_line_count(&panel, &inst_id);
+
+    panel.toggle_expansion(&inst_id);
+    assert!(seg_line_count(&panel, &inst_id) > collapsed);
+
+    panel.toggle_expansion(&inst_id);
+    assert_eq!(seg_line_count(&panel, &inst_id), collapsed);
 }

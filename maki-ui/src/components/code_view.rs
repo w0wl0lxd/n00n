@@ -2,7 +2,7 @@ use crate::highlight::{
     fallback_span, highlight_code_plain, highlight_line, highlighter_for_path,
     highlighter_for_syntax, highlighter_for_token, syntax_for_path,
 };
-use crate::markdown::{Keep, text_to_lines, truncate_lines, truncation_notice};
+use crate::markdown::truncation_notice;
 use crate::theme;
 
 use maki_agent::{
@@ -222,34 +222,41 @@ fn render_grep_results(
 pub(crate) fn render_instructions(
     blocks: &[InstructionBlock],
     lines: &mut Vec<Line<'static>>,
-    width: u16,
     max_lines: usize,
+    highlight: bool,
 ) -> bool {
-    let style = theme::current().assistant;
     let dim = theme::current().tool_dim;
     let mut used = 0;
     let mut truncated = false;
-    for block in blocks {
-        let header = format!("Instructions from: {}", block.path);
+    let multi = blocks.len() > 1;
+
+    for (i, block) in blocks.iter().enumerate() {
         if used >= max_lines {
             truncated = true;
             break;
         }
-        lines.push(Line::from(Span::styled(header, dim)));
-        used += 1;
-        if !block.content.is_empty() {
-            let remaining = max_lines.saturating_sub(used);
-            let tr = truncate_lines(&block.content, remaining, Keep::Head);
-            let new_lines = text_to_lines(tr.kept, "", style, style, None, width);
-            used += new_lines.len();
-            lines.extend(new_lines);
-            if tr.skipped > 0 {
+
+        if multi {
+            lines.push(Line::from(Span::styled(block.path.clone(), dim)));
+            used += 1;
+            if i > 0 && used >= max_lines {
                 truncated = true;
-                if let Some(notice) = tr.notice_line() {
-                    lines.push(notice);
-                }
+                break;
             }
         }
+
+        if block.content.is_empty() {
+            continue;
+        }
+
+        let code_lines: Vec<String> = block.content.lines().map(String::from).collect();
+        let total = code_lines.len();
+        let remaining = max_lines.saturating_sub(used);
+        let hl = highlight.then(|| highlighter_for_path(&block.path));
+        let (rendered, was_truncated) = render_code(hl, 1, &code_lines, total, remaining);
+        used += rendered.len();
+        truncated |= was_truncated;
+        lines.extend(rendered);
     }
     truncated
 }
@@ -263,9 +270,7 @@ pub fn render_tool_content(
     input: Option<&ToolInput>,
     output: Option<&ToolOutput>,
     highlight: bool,
-    width: u16,
     max_lines: usize,
-    expanded: bool,
 ) -> ToolContent {
     let mut lines = Vec::new();
     let mut has_truncation = false;
@@ -301,22 +306,14 @@ pub fn render_tool_content(
             path,
             start_line,
             lines: code_lines,
-            instructions,
             ..
-        }) => {
-            let (mut result, mut trunc) = render_code(
-                highlight.then(|| highlighter_for_path(path)),
-                *start_line,
-                code_lines,
-                code_lines.len(),
-                max_lines,
-            );
-            if let Some(inst) = instructions {
-                result.push(Line::default());
-                trunc |= render_instructions(inst, &mut result, width, instruction_limit(expanded));
-            }
-            (result, trunc)
-        }
+        }) => render_code(
+            highlight.then(|| highlighter_for_path(path)),
+            *start_line,
+            code_lines,
+            code_lines.len(),
+            max_lines,
+        ),
         Some(
             ToolOutput::WriteCode {
                 path,
@@ -340,6 +337,11 @@ pub fn render_tool_content(
         ),
         Some(ToolOutput::GrepResult { entries }) => {
             render_grep_results(entries, max_lines, highlight)
+        }
+        Some(ToolOutput::Instructions { blocks }) => {
+            let mut instruction_lines = Vec::new();
+            let trunc = render_instructions(blocks, &mut instruction_lines, max_lines, highlight);
+            (instruction_lines, trunc)
         }
         Some(ToolOutput::ReadDir { .. }) => (Vec::new(), false),
         _ => (Vec::new(), false),
@@ -574,10 +576,13 @@ mod tests {
             content: "# Title\n\nSome rules here".into(),
         }];
         let mut lines = Vec::new();
-        let truncated = render_instructions(&blocks, &mut lines, 80, MAX_INSTRUCTION_LINES);
+        let truncated = render_instructions(&blocks, &mut lines, MAX_INSTRUCTION_LINES, false);
         assert!(!truncated);
         let text: Vec<String> = lines.iter().map(line_text).collect();
-        assert!(text[0].contains("Instructions from:"));
+        assert!(
+            text[0].starts_with("1 "),
+            "first line should have gutter line number"
+        );
         assert!(text.iter().any(|l| l.contains("Title")));
         assert!(text.iter().any(|l| l.contains("Some rules here")));
     }
@@ -598,7 +603,7 @@ mod tests {
             content: long_content,
         }];
         let mut lines = Vec::new();
-        let truncated = render_instructions(&blocks, &mut lines, 80, max_lines);
+        let truncated = render_instructions(&blocks, &mut lines, max_lines, false);
         assert_eq!(truncated, expect_truncated);
         let has_notice = lines
             .iter()
@@ -613,9 +618,9 @@ mod tests {
             content: String::new(),
         }];
         let mut lines = Vec::new();
-        let truncated = render_instructions(&blocks, &mut lines, 80, MAX_INSTRUCTION_LINES);
+        let truncated = render_instructions(&blocks, &mut lines, MAX_INSTRUCTION_LINES, false);
         assert!(!truncated);
-        assert_eq!(lines.len(), 1);
+        assert_eq!(lines.len(), 0);
     }
 
     #[test_case("héllo", &["hé", "llo"]       ; "multibyte_accented")]

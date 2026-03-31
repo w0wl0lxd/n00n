@@ -5,6 +5,24 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use std::cell::Cell;
 
+const INST_SUFFIX: &str = "__inst";
+
+pub fn is_instruction_segment(id: &str) -> bool {
+    id.ends_with(INST_SUFFIX)
+}
+
+pub fn instruction_id(parent_id: &str) -> String {
+    format!("{parent_id}{INST_SUFFIX}")
+}
+
+pub fn instruction_parent(id: &str) -> Option<&str> {
+    id.strip_suffix(INST_SUFFIX)
+}
+
+pub fn is_child_segment(id: &str) -> bool {
+    id.contains("__")
+}
+
 #[derive(Clone, Copy, Default)]
 struct CachedHeight {
     at_width: u16,
@@ -14,14 +32,12 @@ struct CachedHeight {
 #[derive(Default, PartialEq, Eq)]
 struct HighlightKey {
     has_output: bool,
-    expanded: bool,
 }
 
 impl HighlightKey {
     fn from_request(hl: Option<&HighlightRequest>) -> Self {
         Self {
             has_output: hl.is_some_and(|h| h.output.is_some()),
-            expanded: hl.is_some_and(|h| h.expanded),
         }
     }
 }
@@ -46,6 +62,13 @@ impl Segment {
         Self {
             tool_id: Some(tool_id),
             msg_index,
+            ..Self::default()
+        }
+    }
+
+    pub fn spacer() -> Self {
+        Self {
+            lines: vec![Line::default()],
             ..Self::default()
         }
     }
@@ -253,10 +276,7 @@ impl SegmentCache {
 
     pub fn push_spacer_if_needed(&mut self) {
         if !self.segments.is_empty() {
-            self.segments.push(Segment {
-                lines: vec![Line::default()],
-                ..Segment::default()
-            });
+            self.segments.push(Segment::spacer());
         }
     }
 

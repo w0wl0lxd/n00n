@@ -20,9 +20,7 @@ struct RenderJob {
     id: u64,
     tool_input: Option<Arc<ToolInput>>,
     tool_output: Option<Arc<ToolOutput>>,
-    width: u16,
     max_lines: usize,
-    expanded: bool,
 }
 
 pub struct RenderResult {
@@ -69,18 +67,14 @@ impl RenderWorker {
         &self,
         tool_input: Option<Arc<ToolInput>>,
         tool_output: Option<Arc<ToolOutput>>,
-        width: u16,
         max_lines: usize,
-        expanded: bool,
     ) -> u64 {
         let id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
         let _ = self.job_tx.send(RenderJob {
             id,
             tool_input,
             tool_output,
-            width,
             max_lines,
-            expanded,
         });
         self.maybe_spawn_thread();
         id
@@ -121,9 +115,7 @@ fn worker_loop(inner: &PoolInner) {
             job.tool_input.as_deref(),
             job.tool_output.as_deref(),
             true,
-            job.width,
             job.max_lines,
-            job.expanded,
         );
         if inner
             .result_tx

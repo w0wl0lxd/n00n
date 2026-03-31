@@ -97,7 +97,6 @@ pub const TOOL_BODY_INDENT: &str = "  ";
 
 const TOOL_SEPARATOR: &str = "──────────────────";
 const CODE_EXECUTION_OUTPUT_SEPARATOR: &str = "────────────";
-const INSTRUCTION_SEPARATOR: &str = "────────────";
 const BASH_WAITING_LABEL: &str = "Waiting for output...";
 const BASH_NO_OUTPUT_LABEL: &str = "No output.";
 const BASH_OUTPUT_SEPARATOR: &str = "──────";
@@ -266,9 +265,7 @@ pub struct HighlightRequest {
     pub range: (usize, usize),
     pub input: Option<Arc<ToolInput>>,
     pub output: Option<Arc<ToolOutput>>,
-    pub width: u16,
     pub max_lines: usize,
-    pub expanded: bool,
 }
 
 impl HighlightRequest {
@@ -276,9 +273,7 @@ impl HighlightRequest {
         range: (usize, usize),
         input: Option<Arc<ToolInput>>,
         output: Option<Arc<ToolOutput>>,
-        width: u16,
         max_lines: usize,
-        expanded: bool,
     ) -> Option<Self> {
         if range.0 == range.1 {
             return None;
@@ -288,7 +283,8 @@ impl HighlightRequest {
             | ToolOutput::WriteCode { .. }
             | ToolOutput::Diff { .. }
             | ToolOutput::GrepResult { .. }
-            | ToolOutput::MemoryWrite { .. } => Some(o),
+            | ToolOutput::MemoryWrite { .. }
+            | ToolOutput::Instructions { .. } => Some(o),
             ToolOutput::Plain(_)
             | ToolOutput::ReadDir { .. }
             | ToolOutput::TodoList(_)
@@ -296,13 +292,14 @@ impl HighlightRequest {
             | ToolOutput::GlobResult { .. }
             | ToolOutput::QuestionAnswers(_) => None,
         });
+        if input.is_none() && output.is_none() {
+            return None;
+        }
         Some(Self {
             range,
             input,
             output,
-            width,
             max_lines,
-            expanded,
         })
     }
 }
@@ -310,13 +307,7 @@ impl HighlightRequest {
 impl ToolLines {
     pub fn send_highlight(&self, worker: &RenderWorker) -> Option<u64> {
         let hl = self.highlight.as_ref()?;
-        Some(worker.send(
-            hl.input.clone(),
-            hl.output.clone(),
-            hl.width,
-            hl.max_lines,
-            hl.expanded,
-        ))
+        Some(worker.send(hl.input.clone(), hl.output.clone(), hl.max_lines))
     }
 }
 
@@ -402,7 +393,6 @@ struct ResolvedOutput<'a> {
     text: Option<Cow<'a, str>>,
     full_text: Option<Cow<'a, str>>,
     skipped: usize,
-    instructions: Option<&'a [InstructionBlock]>,
 }
 
 fn resolve_output<'a>(
@@ -414,17 +404,11 @@ fn resolve_output<'a>(
     keep: Keep,
     expanded: bool,
 ) -> ResolvedOutput<'a> {
-    let instructions = match output {
-        Some(ToolOutput::ReadDir { instructions, .. }) => instructions.as_deref(),
-        _ => None,
-    };
-
     if let Some(ToolOutput::Batch { .. } | ToolOutput::QuestionAnswers(_)) = output {
         return ResolvedOutput {
             text: None,
             full_text: None,
             skipped: 0,
-            instructions,
         };
     }
 
@@ -443,7 +427,6 @@ fn resolve_output<'a>(
                     text: None,
                     full_text: None,
                     skipped: 0,
-                    instructions,
                 };
             }
             None => match live_output {
@@ -463,7 +446,6 @@ fn resolve_output<'a>(
                     text: None,
                     full_text: None,
                     skipped: 0,
-                    instructions,
                 };
             }
             (None, None) => (None, 0),
@@ -487,7 +469,6 @@ fn resolve_output<'a>(
         text,
         full_text,
         skipped,
-        instructions,
     }
 }
 
@@ -499,7 +480,6 @@ struct ToolLineBuilder {
     width: u16,
     outer_indent: &'static str,
     has_truncation: bool,
-    expanded: bool,
     max_lines: usize,
     keep: Keep,
 }
@@ -519,7 +499,6 @@ impl ToolLineBuilder {
             width: width.saturating_sub(outer_indent.len() as u16),
             outer_indent,
             has_truncation: false,
-            expanded,
             max_lines,
             keep: limits.keep,
         }
@@ -568,15 +547,7 @@ impl ToolLineBuilder {
     }
 
     fn push_code_content(&mut self, input: Option<&ToolInput>, output: Option<&ToolOutput>) {
-        let content_width = self.width.saturating_sub(TOOL_BODY_INDENT.len() as u16);
-        let content = code_view::render_tool_content(
-            input,
-            output,
-            false,
-            content_width,
-            self.max_lines,
-            self.expanded,
-        );
+        let content = code_view::render_tool_content(input, output, false, self.max_lines);
         self.has_truncation |= content.has_truncation;
         let start = self.lines.len();
         for mut line in content.lines {
@@ -600,7 +571,7 @@ impl ToolLineBuilder {
     ) {
         let has_code = self.content_range.1 > self.content_range.0;
 
-        if resolved.text.is_none() && resolved.instructions.is_none() {
+        if resolved.text.is_none() {
             if has_code && kind == ToolKind::Bash {
                 self.push_bash_output_label(TOOL_BODY_INDENT, is_done, false);
             }
@@ -633,8 +604,6 @@ impl ToolLineBuilder {
                 self.push_truncation_count(resolved.skipped);
             }
         }
-
-        self.maybe_push_instructions(resolved.instructions);
     }
 
     fn push_markdown_body(&mut self, text: &str) {
@@ -693,35 +662,6 @@ impl ToolLineBuilder {
         }
     }
 
-    fn maybe_push_instructions(&mut self, blocks: Option<&[InstructionBlock]>) {
-        if let Some(blocks) = blocks {
-            self.push_instruction_separator(TOOL_BODY_INDENT);
-            self.push_instructions(blocks);
-        }
-    }
-
-    fn push_instruction_separator(&mut self, indent: &str) {
-        self.lines.push(Line::from(Span::styled(
-            format!("{indent}{INSTRUCTION_SEPARATOR}"),
-            theme::current().tool_dim,
-        )));
-    }
-
-    fn push_instructions(&mut self, blocks: &[InstructionBlock]) {
-        let content_width = self.width.saturating_sub(TOOL_BODY_INDENT.len() as u16);
-        let start = self.lines.len();
-        let truncated = code_view::render_instructions(
-            blocks,
-            &mut self.lines,
-            content_width,
-            code_view::instruction_limit(self.expanded),
-        );
-        self.has_truncation |= truncated;
-        for line in &mut self.lines[start..] {
-            line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
-        }
-    }
-
     fn prepend_separator(&mut self, index: usize) {
         if index == 0 {
             return;
@@ -749,16 +689,7 @@ impl ToolLineBuilder {
                 line.spans.insert(0, Span::raw(self.outer_indent));
             }
         }
-        let full_width = self.width + self.outer_indent.len() as u16;
-        let content_width = full_width.saturating_sub(content_indent.len() as u16);
-        let highlight = HighlightRequest::new(
-            self.content_range,
-            input,
-            output,
-            content_width,
-            self.max_lines,
-            self.expanded,
-        );
+        let highlight = HighlightRequest::new(self.content_range, input, output, self.max_lines);
         ToolLines {
             lines: self.lines,
             search_text: self.search_text,
@@ -873,6 +804,60 @@ pub(crate) fn append_annotation(ann: &mut Option<String>, suffix: &str) {
         Some(a) => write!(a, " · {suffix}").unwrap(),
         None => *ann = Some(suffix.to_owned()),
     }
+}
+
+pub fn build_instructions_lines(
+    blocks: &[InstructionBlock],
+    width: u16,
+    expanded: bool,
+    batch_index: Option<usize>,
+) -> ToolLines {
+    let in_batch = batch_index.is_some();
+    let (outer_indent, content_indent) = if in_batch {
+        (BATCH_INDENT, BATCH_CONTENT_INDENT)
+    } else {
+        ("", TOOL_BODY_INDENT)
+    };
+
+    let header = blocks.first().map_or("", |b| b.path.as_str());
+    let annotation = if blocks.len() > 1 {
+        Some(format!("+{}", blocks.len() - 1))
+    } else {
+        None
+    };
+
+    let limits = OutputLimits {
+        max_lines: code_view::instruction_limit(expanded),
+        keep: Keep::Tail,
+    };
+    let mut b = ToolLineBuilder::new(width, outer_indent, expanded, limits);
+    b.push_header("load", header, annotation.as_deref());
+    b.prepend_indicator(Indicator::Success, Instant::now());
+
+    let start = b.lines.len();
+    let has_truncation = code_view::render_instructions(blocks, &mut b.lines, b.max_lines, false);
+    b.has_truncation |= has_truncation;
+    let inner_indent = &content_indent[outer_indent.len()..];
+    for line in &mut b.lines[start..] {
+        line.spans.insert(0, Span::raw(inner_indent));
+    }
+    b.content_range = (start, b.lines.len());
+
+    b.push_search_text(
+        &blocks
+            .iter()
+            .map(|bl| bl.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    );
+
+    if let Some(idx) = batch_index {
+        b.prepend_separator(idx);
+    }
+    let output = Arc::new(ToolOutput::Instructions {
+        blocks: blocks.to_vec(),
+    });
+    b.finish(None, Some(output), content_indent)
 }
 
 #[cfg(test)]
@@ -1349,38 +1334,38 @@ mod tests {
         assert!(line_has_styled(&tl, "pub", t.index_keyword));
     }
 
-    #[test_case(None,       None,    "bash",  false, false ; "none_output_none_body")]
-    #[test_case(None,       Some("hello"), "bash", true, false ; "none_output_with_body")]
+    #[test_case(None,       None,    "bash",  false ; "none_output_none_body")]
+    #[test_case(None,       Some("hello"), "bash", true ; "none_output_with_body")]
     #[test_case(
-        Some(ToolOutput::Plain("world".into())), None, "bash", true, false
+        Some(ToolOutput::Plain("world".into())), None, "bash", true
         ; "plain_no_body_uses_plain"
     )]
     #[test_case(
-        Some(ToolOutput::Plain("world".into())), Some("override"), "bash", true, false
+        Some(ToolOutput::Plain("world".into())), Some("override"), "bash", true
         ; "body_takes_priority_over_plain"
     )]
     #[test_case(
-        Some(ToolOutput::Plain(String::new())), None, "bash", false, false
+        Some(ToolOutput::Plain(String::new())), None, "bash", false
         ; "empty_plain_resolves_to_none"
     )]
     #[test_case(
         Some(ToolOutput::Batch { entries: vec![], text: String::new() }),
-        None, "batch", false, false
+        None, "batch", false
         ; "batch_always_none"
     )]
     #[test_case(
         Some(ToolOutput::ReadDir { text: "dir listing".into(), instructions: None }),
-        None, "read", true, false
+        None, "read", true
         ; "readdir_uses_text_field"
     )]
     #[test_case(
         Some(ToolOutput::GlobResult { files: vec!["a.rs".into()] }),
-        None, "glob", true, false
+        None, "glob", true
         ; "glob_uses_display_text"
     )]
     #[test_case(
         Some(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec![], total_lines: 0, instructions: None }),
-        None, "read", false, false
+        None, "read", false
         ; "structured_output_resolves_to_none"
     )]
     fn resolve_output_text_presence(
@@ -1388,7 +1373,6 @@ mod tests {
         body: Option<&str>,
         tool: &str,
         expect_text: bool,
-        expect_instructions: bool,
     ) {
         let kind = ToolKind::from_name(tool);
         let limits = kind.output_limits(&TOL);
@@ -1402,30 +1386,6 @@ mod tests {
             false,
         );
         assert_eq!(resolved.text.is_some(), expect_text);
-        assert_eq!(resolved.instructions.is_some(), expect_instructions);
-    }
-
-    #[test]
-    fn resolve_output_readdir_preserves_instructions() {
-        let blocks = vec![InstructionBlock {
-            path: "test".into(),
-            content: "instructions here".into(),
-        }];
-        let output = ToolOutput::ReadDir {
-            text: "listing".into(),
-            instructions: Some(blocks),
-        };
-        let limits = ToolKind::Read.output_limits(&TOL);
-        let resolved = resolve_output(
-            Some(&output),
-            None,
-            None,
-            0,
-            limits.max_lines,
-            limits.keep,
-            false,
-        );
-        assert!(resolved.instructions.is_some());
     }
 
     #[test]
@@ -1615,23 +1575,54 @@ mod tests {
 
     #[test_case(false, true,  false ; "collapsed_truncates_instructions")]
     #[test_case(true,  false, true  ; "expanded_shows_all_instructions")]
-    fn read_code_with_instructions(
-        expanded: bool,
-        expect_truncation: bool,
-        expect_all_visible: bool,
-    ) {
+    fn instructions_segment(expanded: bool, expect_truncation: bool, expect_all_visible: bool) {
         let msg = read_msg_with_instructions(3, 30);
-        let tl = build_tool_lines(
-            &msg,
-            ToolStatus::Success,
-            Instant::now(),
-            80,
-            expanded,
-            &TOL,
-        );
+        let output = msg.tool_output.as_deref().unwrap();
+        let blocks = output.instructions().unwrap();
+        let tl = build_instructions_lines(blocks, 80, expanded, None);
         assert_eq!(tl.has_truncation, expect_truncation);
         let text = lines_text(&tl);
-        assert!(text.contains("Instructions from:"));
         assert_eq!(text.contains("inst 29"), expect_all_visible);
+    }
+
+    #[test]
+    fn read_code_tool_lines_exclude_instructions() {
+        let msg = read_msg_with_instructions(3, 30);
+        let tl = build_tool_lines(&msg, ToolStatus::Success, Instant::now(), 80, false, &TOL);
+        let text = lines_text(&tl);
+        assert!(
+            !text.contains("inst 0"),
+            "instruction content should not appear in read tool lines"
+        );
+    }
+
+    #[test]
+    fn instructions_has_highlight_request() {
+        let blocks = vec![InstructionBlock {
+            path: "agents.md".into(),
+            content: "follow style guide".into(),
+        }];
+        let tl = build_instructions_lines(&blocks, 80, false, None);
+        assert!(tl.highlight.is_some());
+        let text = lines_text(&tl);
+        assert!(text.contains("follow style guide"));
+    }
+
+    #[test]
+    fn instructions_in_batch_has_indent_and_separator() {
+        let blocks = vec![InstructionBlock {
+            path: "agents.md".into(),
+            content: "follow style guide".into(),
+        }];
+        let tl = build_instructions_lines(&blocks, 80, false, Some(1));
+        let text = lines_text(&tl);
+        assert!(text.contains("load> "));
+        assert_eq!(tl.content_indent, BATCH_CONTENT_INDENT);
+        assert!(
+            tl.lines
+                .iter()
+                .any(|l| l.spans.iter().any(|s| s.content.contains('─'))),
+            "batch instruction should have separator"
+        );
     }
 }
