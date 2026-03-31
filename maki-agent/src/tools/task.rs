@@ -57,13 +57,17 @@ impl Task {
         {
             let requested: ModelTier = tier_str.parse().map_err(|e: ModelError| e.to_string())?;
             let effective = requested.min(ctx.model.tier);
-            let mut resolved_model =
-                Model::from_tier(ctx.model.provider, effective).map_err(|e| e.to_string())?;
-            resolved_model.dynamic_slug = ctx.model.dynamic_slug.clone();
-            let resolved_provider = provider::from_model_async(&resolved_model)
-                .await
-                .map_err(|e| e.to_string())?;
-            (resolved_model, Arc::from(resolved_provider))
+            if effective == ctx.model.tier {
+                (Model::clone(&ctx.model), Arc::clone(&ctx.provider))
+            } else {
+                let mut resolved_model =
+                    Model::from_tier(ctx.model.provider, effective).map_err(|e| e.to_string())?;
+                resolved_model.dynamic_slug = ctx.model.dynamic_slug.clone();
+                let resolved_provider = provider::from_model_async(&resolved_model)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                (resolved_model, Arc::from(resolved_provider))
+            }
         } else {
             (Model::clone(&ctx.model), Arc::clone(&ctx.provider))
         };
