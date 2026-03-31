@@ -110,6 +110,7 @@ fn write_param_table(out: &mut String, params: &[Param]) {
         )
         .unwrap();
         for p in params {
+            let desc = p.description.replace('\n', "<br>");
             writeln!(
                 out,
                 "| `{}` | {} | {} | {} | {} |",
@@ -117,7 +118,7 @@ fn write_param_table(out: &mut String, params: &[Param]) {
                 p.ty,
                 if p.required { "yes" } else { "no" },
                 p.default,
-                p.description
+                desc
             )
             .unwrap();
         }
@@ -125,13 +126,14 @@ fn write_param_table(out: &mut String, params: &[Param]) {
         writeln!(out, "| Parameter | Type | Required | Description |").unwrap();
         writeln!(out, "|-----------|------|----------|-------------|").unwrap();
         for p in params {
+            let desc = p.description.replace('\n', "<br>");
             writeln!(
                 out,
                 "| `{}` | {} | {} | {} |",
                 p.name,
                 p.ty,
                 if p.required { "yes" } else { "no" },
-                p.description
+                desc
             )
             .unwrap();
         }
