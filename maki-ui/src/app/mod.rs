@@ -716,6 +716,10 @@ impl App {
         }
 
         if let Some(prefix) = shell::parse_shell_prefix(&sub.text) {
+            let cmd = prefix.command.trim();
+            if cmd == "cd" || cmd.starts_with("cd ") {
+                self.flash("Only /cd can change the working directory".into());
+            }
             let id = self.shell.next_id();
             let sigil = if prefix.visible { "!" } else { "!!" };
             let display = format!("{sigil} {}", prefix.command);
