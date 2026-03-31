@@ -157,7 +157,7 @@ fn render_diff(path: Option<&str>, hunks: &[DiffHunk]) -> Vec<Line<'static>> {
                         spans.extend(merge_syntax_with_diff(&syn, ds, base, emph));
                     } else {
                         spans.push(Span::styled(
-                            full,
+                            crate::highlight::normalize_text(&full),
                             base.patch(theme::current().code_fallback),
                         ));
                     }

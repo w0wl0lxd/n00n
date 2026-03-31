@@ -2515,5 +2515,4 @@ mod tests {
         }
         assert!(ever_table, "table should be recognized at some point");
     }
-
 }

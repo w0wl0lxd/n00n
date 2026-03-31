@@ -1,5 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::highlight::TAB_SPACES;
+
 pub fn is_newline_key(key: &KeyEvent) -> bool {
     (matches!(key.code, KeyCode::Enter)
         && key.modifiers.intersects(
@@ -9,8 +11,6 @@ pub fn is_newline_key(key: &KeyEvent) -> bool {
         ))
         || (key.code == KeyCode::Char('j') && key.modifiers == KeyModifiers::CONTROL)
 }
-
-const TAB_SPACES: &str = "  ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditResult {

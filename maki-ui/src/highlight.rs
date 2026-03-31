@@ -10,7 +10,7 @@ use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
 const TOKEN_ALIASES: &[(&str, &str)] = &[("jsx", "js")];
-const TAB_SPACES: &str = "  ";
+pub const TAB_SPACES: &str = "  ";
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 
@@ -49,7 +49,7 @@ fn syntax_theme() -> &'static syntect::highlighting::Theme {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-fn normalize_text(text: &str) -> String {
+pub fn normalize_text(text: &str) -> String {
     text.trim_end_matches('\n').replace('\t', TAB_SPACES)
 }
 

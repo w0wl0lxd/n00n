@@ -878,11 +878,8 @@ impl MessagesPanel {
 
                 let copy_text = format!("{prefix}{}", msg.text);
                 self.cache.push_spacer_if_needed();
-                self.cache.push(Segment::with_lines(
-                    lines,
-                    copy_text,
-                    Some(i),
-                ));
+                self.cache
+                    .push(Segment::with_lines(lines, copy_text, Some(i)));
             }
         }
         self.cache.mark_built(self.messages.len());
