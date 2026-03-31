@@ -384,26 +384,73 @@ pub(crate) trait ToolDefaults {
     fn augment_description(_description: &mut String, _ctx: &DescriptionContext) {}
 }
 
-fn sanitize_tool_input(input: &Value) -> Value {
-    let Some(obj) = input.as_object() else {
-        return input.clone();
+pub(crate) fn sanitize_tool_input(input: &Value) -> Value {
+    let obj = match input.as_object() {
+        Some(o) => o,
+        None => {
+            return input
+                .as_str()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .filter(|v| v.is_object())
+                .map(|v| sanitize_tool_input(&v))
+                .unwrap_or_else(|| input.clone());
+        }
     };
-    let mut sanitized = obj.clone();
-    for (key, val) in &mut sanitized {
-        if let Value::String(s) = val {
-            let quote_count = s.chars().filter(|&c| c == '"').count();
-            let stripped = if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-                s[1..s.len() - 1].to_string()
-            } else if s.ends_with('"') && quote_count % 2 == 1 {
-                s[..s.len() - 1].to_string()
-            } else {
-                continue;
-            };
-            warn!(field = %key, original = %s, fixed = %stripped, "stripped stray quotes from tool param");
-            *val = Value::String(stripped);
+
+    if let Some(inner) = obj.get("parameters").filter(|_| obj.len() == 1) {
+        return sanitize_tool_input(inner);
+    }
+
+    let mut out = serde_json::Map::new();
+    for (key, val) in obj {
+        let norm_key = to_snake_case(key);
+        let new_val = val
+            .as_str()
+            .map(|s| strip_stray_quotes(key, s))
+            .unwrap_or_else(|| val.clone());
+        if norm_key != *key {
+            warn!(original = %key, normalized = %norm_key, "normalized camelCase key to snake_case");
+        }
+        out.insert(norm_key, new_val);
+    }
+    Value::Object(out)
+}
+
+fn strip_stray_quotes(field: &str, s: &str) -> Value {
+    let t = s.trim();
+    let fixed = if t.len() >= 2
+        && t.starts_with('"')
+        && t.ends_with('"')
+        && !t[1..t.len() - 1].contains('"')
+    {
+        Some(&t[1..t.len() - 1])
+    } else if t.ends_with('"') && t.chars().filter(|&c| c == '"').count() % 2 == 1 {
+        Some(&t[..t.len() - 1])
+    } else {
+        None
+    };
+    match fixed {
+        Some(f) => {
+            warn!(field = %field, original = %s, fixed = %f, "stripped stray quotes from tool param");
+            Value::String(f.to_string())
+        }
+        None => Value::String(s.to_string()),
+    }
+}
+
+fn to_snake_case(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 4);
+    for (i, c) in s.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(c.to_ascii_lowercase());
+        } else {
+            result.push(c);
         }
     }
-    Value::Object(sanitized)
+    result
 }
 
 fn coerce_value(val: &Value, field: &str, json_type: &str) -> Option<Value> {
@@ -426,10 +473,23 @@ pub(crate) fn deserialize_with_coercion<T: serde::de::DeserializeOwned>(
     field: &str,
     json_type: &str,
 ) -> Result<T, String> {
-    serde_json::from_value::<T>(raw.clone()).or_else(|e| {
+    serde_json::from_value::<T>(raw.clone()).or_else(|_| {
         coerce_value(raw, field, json_type)
             .and_then(|c| serde_json::from_value(c).ok())
-            .ok_or_else(|| format!("field '{}': {}", field, e))
+            .ok_or_else(|| {
+                let got_type = match raw {
+                    Value::String(_) => "string",
+                    Value::Number(_) => "number",
+                    Value::Bool(_) => "boolean",
+                    Value::Array(_) => "array",
+                    Value::Object(_) => "object",
+                    Value::Null => "null",
+                };
+                format!(
+                    "The parameter '{}' type is expected as '{}' but provided as '{}'",
+                    field, json_type, got_type
+                )
+            })
     })
 }
 
@@ -508,10 +568,9 @@ macro_rules! register_tools {
 
         impl ToolCall {
             pub fn from_api(name: &str, input: &Value) -> Result<Self, AgentError> {
-                let input = sanitize_tool_input(input);
                 match name {
                     $(<$inner>::NAME => {
-                        <$inner>::parse_input(&input)
+                        <$inner>::parse_input(input)
                             .map(|v| ToolCall::$Variant(Box::new(v)))
                             .map_err(|msg| AgentError::Tool { tool: name.to_string(), message: msg })
                     })+
@@ -808,22 +867,27 @@ mod tests {
     }
 
     #[test]
-    fn deadline_cap_timeout() {
+    fn deadline_none_passes_through() {
         assert_eq!(Deadline::None.cap_timeout(120).unwrap(), 120);
+    }
 
-        let future = Deadline::after(Duration::from_secs(60));
-        assert_eq!(future.cap_timeout(10).unwrap(), 10);
+    #[test]
+    fn deadline_uses_requested_when_under_remaining() {
+        let deadline = Deadline::after(Duration::from_secs(60));
+        assert_eq!(deadline.cap_timeout(10).unwrap(), 10);
+    }
 
-        let expired = Deadline::At(Instant::now() - Duration::from_secs(1));
+    #[test]
+    fn deadline_expired_returns_error() {
+        let expired = Deadline::At(Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
         assert_eq!(expired.cap_timeout(120).unwrap_err(), DEADLINE_EXCEEDED_MSG);
+    }
 
-        let clamped = Deadline::after(Duration::from_secs(300))
-            .cap_timeout(600)
-            .unwrap();
-        assert!(
-            (295..=300).contains(&clamped),
-            "expected ~300, got {clamped}"
-        );
+    #[test]
+    fn deadline_clamps_timeout_to_remaining() {
+        let deadline = Deadline::after(Duration::from_secs(5));
+        let clamped = deadline.cap_timeout(600).unwrap();
+        assert!((1..=5).contains(&clamped), "expected 1-5, got {clamped}");
     }
 
     #[test_case("short",                            "short"                             ; "short_passthrough")]
@@ -1080,6 +1144,21 @@ mod tests {
         json!({"limit": 10})
         ; "non_string_values_unchanged"
     )]
+    #[test_case(
+        json!({"parameters": {"path": "/tmp/x"}}),
+        json!({"path": "/tmp/x"})
+        ; "unwrap_nested_parameters"
+    )]
+    #[test_case(
+        json!({"oldString": "foo", "newString": "bar"}),
+        json!({"old_string": "foo", "new_string": "bar"})
+        ; "camel_to_snake_case"
+    )]
+    #[test_case(
+        json!("{\"path\": \"/tmp/x\"}"),
+        json!({"path": "/tmp/x"})
+        ; "parse_stringified_json"
+    )]
     fn sanitize_tool_input_cases(input: Value, expected: Value) {
         assert_eq!(sanitize_tool_input(&input), expected);
     }
@@ -1142,29 +1221,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_path_tilde_expands() {
+    fn resolve_path_cases() {
+        let cwd = env::current_dir().unwrap();
         let home = dirs::home_dir().unwrap();
+
         assert_eq!(
             resolve_path("~/foo/bar").unwrap(),
             format!("{}/foo/bar", home.display())
         );
-    }
-
-    #[test]
-    fn resolve_path_tilde_alone() {
-        let home = dirs::home_dir().unwrap();
         assert_eq!(resolve_path("~").unwrap(), home.to_string_lossy());
-    }
-
-    #[test]
-    fn resolve_path_absolute_unchanged() {
         assert_eq!(resolve_path("/etc/hosts").unwrap(), "/etc/hosts");
-    }
-
-    #[test]
-    fn resolve_path_relative_joins_cwd() {
-        let cwd = std::env::current_dir().unwrap();
-        let expected = cwd.join("src/main.rs").to_string_lossy().into_owned();
-        assert_eq!(resolve_path("src/main.rs").unwrap(), expected);
+        assert_eq!(
+            resolve_path("src/main.rs").unwrap(),
+            cwd.join("src/main.rs").to_string_lossy()
+        );
     }
 }

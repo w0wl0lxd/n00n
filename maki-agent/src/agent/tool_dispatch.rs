@@ -120,10 +120,13 @@ fn parse_tool_calls<'a>(
                     id: id.to_owned(),
                     call,
                 }),
+                Err(AgentError::Tool { message, .. }) => {
+                    warn!(tool = %name, error = %message, "failed to parse tool call");
+                    errors.push(ToolDoneEvent::error(id.to_owned(), message));
+                }
                 Err(e) => {
-                    let msg = format!("failed to parse tool {name}: {e}");
                     warn!(tool = %name, error = %e, "failed to parse tool call");
-                    errors.push(ToolDoneEvent::error(id.to_owned(), msg));
+                    errors.push(ToolDoneEvent::error(id.to_owned(), e.to_string()));
                 }
             }
         }

@@ -96,6 +96,7 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
     let mut prop_entries = Vec::new();
     let mut required_entries = Vec::new();
     let mut field_extractions = Vec::new();
+    let mut schema_hint_parts = Vec::new();
 
     for field in &fields.named {
         let field_name = field.ident.as_ref().unwrap();
@@ -127,6 +128,17 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
             required_entries.push(quote! { required.push(#field_str.to_string()); });
         }
 
+        let hint_suffix = if optional { "?" } else { "" };
+        let type_hint = match json_type {
+            "string" => "str",
+            "integer" => "int",
+            "boolean" => "bool",
+            "number" => "num",
+            "array" => "[...]",
+            _ => "obj",
+        };
+        schema_hint_parts.push(format!("{}{}: {}", field_str, hint_suffix, type_hint));
+
         if optional {
             field_extractions.push(quote! {
                 let #field_name: #field_ty = {
@@ -145,7 +157,7 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
                 let #field_name: #field_ty = {
                     let raw = input.get(#field_str).cloned().or_else(|| {
                         crate::tools::rescue_field(input, #field_str)
-                    }).ok_or_else(|| format!("missing required field '{}'", #field_str))?;
+                    }).ok_or_else(|| format!("The required parameter '{}' is missing. Expected: {}", #field_str, Self::schema_hint()))?;
                     crate::tools::deserialize_with_coercion(&raw, #field_str, #json_type)?
                 };
             });
@@ -157,6 +169,8 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
         .iter()
         .map(|f| f.ident.as_ref().unwrap())
         .collect();
+
+    let schema_hint_str = format!("{{ {} }}", schema_hint_parts.join(", "));
 
     let expanded = quote! {
         impl #name {
@@ -173,7 +187,12 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
                 })
             }
 
+            pub(crate) fn schema_hint() -> &'static str {
+                #schema_hint_str
+            }
+
             pub(crate) fn parse_input(input: &serde_json::Value) -> Result<Self, String> {
+                let input = &crate::tools::sanitize_tool_input(input);
                 #(#field_extractions)*
                 Ok(Self { #(#field_names),* })
             }

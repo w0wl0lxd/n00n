@@ -219,4 +219,13 @@ mod tests {
             "error should mention field name: {err}"
         );
     }
+
+    #[test]
+    fn parse_input_error_includes_schema_hint() {
+        let err = Read::parse_input(&json!({})).unwrap_err();
+        assert!(
+            err.contains("path") && err.contains("Expected:"),
+            "error should mention missing field and schema: {err}"
+        );
+    }
 }
