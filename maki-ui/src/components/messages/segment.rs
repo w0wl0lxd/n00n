@@ -1,4 +1,3 @@
-use crate::markdown::CodeBlockRange;
 use crate::render_worker::RenderWorker;
 
 use super::super::tool_display::{HighlightRequest, ToolLines};
@@ -31,7 +30,6 @@ impl HighlightKey {
 pub(super) struct Segment {
     lines: Vec<Line<'static>>,
     pub copy_text: String,
-    pub code_block_ranges: Vec<CodeBlockRange>,
     pub tool_id: Option<String>,
     pub msg_index: Option<usize>,
     pub has_truncation: bool,
@@ -55,13 +53,11 @@ impl Segment {
     pub fn with_lines(
         lines: Vec<Line<'static>>,
         copy_text: String,
-        code_block_ranges: Vec<CodeBlockRange>,
         msg_index: Option<usize>,
     ) -> Self {
         Self {
             lines,
             copy_text,
-            code_block_ranges,
             msg_index,
             ..Self::default()
         }

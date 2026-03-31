@@ -17,7 +17,7 @@ use super::tool_display::{
 use super::{DisplayMessage, DisplayRole, ToolRole, ToolStatus, apply_scroll_delta};
 use crate::animation::spinner_str;
 use crate::components::keybindings::key;
-use crate::markdown::{hr_line, plain_lines, text_to_lines_with_ranges, truncate_output};
+use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
 use crate::render_worker::RenderWorker;
 use crate::selection::Selection;
 use crate::splash::{ColorTransition, Splash};
@@ -840,16 +840,14 @@ impl MessagesPanel {
                 } else {
                     style.prefix
                 };
-                let mut code_block_ranges = Vec::new();
                 let mut lines = if style.use_markdown {
-                    text_to_lines_with_ranges(
+                    text_to_lines(
                         &msg.text,
                         prefix,
                         style.text_style,
                         style.prefix_style,
                         None,
                         self.viewport_width,
-                        Some(&mut code_block_ranges),
                     )
                 } else {
                     plain_lines(&msg.text, prefix, style.text_style, style.prefix_style)
@@ -883,7 +881,6 @@ impl MessagesPanel {
                 self.cache.push(Segment::with_lines(
                     lines,
                     copy_text,
-                    code_block_ranges,
                     Some(i),
                 ));
             }
