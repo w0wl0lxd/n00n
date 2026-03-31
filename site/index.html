@@ -802,7 +802,7 @@
 
     /* ── RESPONSIVE ── */
     @media (max-width: 768px) {
-      .nav-right a:not(.nav-cta) { display: none; }
+      .nav-right a:not(.nav-cta):not([href="/docs/"]) { display: none; }
       .hero { grid-template-columns: 1fr; text-align: center; padding-inline: 1rem; }
       .hero-intro { display: flex; flex-direction: column; align-items: center; }
       .hero-actions { justify-content: center; }
