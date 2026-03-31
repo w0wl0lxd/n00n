@@ -10,8 +10,10 @@ group = "Getting Started"
 ## Install
 
 ```bash
-cargo install maki
+cargo install --locked maki-ai
 ```
+
+Or download a pre-built binary from [GitHub Releases](https://github.com/tontinton/maki/releases/latest).
 
 ## API Keys
 

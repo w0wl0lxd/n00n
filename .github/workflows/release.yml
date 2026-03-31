@@ -113,9 +113,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ needs.create-release.outputs.tag }}" sha256sums.txt --repo "$GITHUB_REPOSITORY" --clobber
 
+  publish-crates:
+    name: Publish to crates.io
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y python3-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --no-verify
+
   publish-release:
     name: Publish Release
-    needs: [create-release, checksums]
+    needs: [create-release, checksums, publish-crates]
     runs-on: ubuntu-latest
     steps:
       - name: Mark release as published

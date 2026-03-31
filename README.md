@@ -41,11 +41,13 @@ Install:
 
 ```sh
 # Official release
-cargo install maki
+cargo install --locked maki-ai
 
-# From main branch
-cargo install --git https://github.com/tontinton/maki.git maki
+# From main branch - living on the edge
+cargo install --locked --git https://github.com/tontinton/maki.git maki-ai
 ```
+
+Or download a pre-built binary from [GitHub Releases](https://github.com/tontinton/maki/releases/latest).
 
 More info at the [official docs](http://maki.sh/docs).
 
