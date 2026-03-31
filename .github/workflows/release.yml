@@ -103,7 +103,7 @@ jobs:
       - name: Upload artifact
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ needs.create-release.outputs.tag }}" "${{ env.ARCHIVE }}" --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "${{ needs.create-release.outputs.tag }}" "${{ env.ARCHIVE }}" --repo "$GITHUB_REPOSITORY" --clobber
 
   checksums:
     name: Checksums
@@ -124,7 +124,7 @@ jobs:
       - name: Upload checksums
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ needs.create-release.outputs.tag }}" sha256sums.txt --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "${{ needs.create-release.outputs.tag }}" sha256sums.txt --repo "$GITHUB_REPOSITORY" --clobber
 
   publish-release:
     name: Publish Release
