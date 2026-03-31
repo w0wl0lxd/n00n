@@ -4,6 +4,8 @@ const FRONTMATTER: &str = "\
 +++
 title = \"Keybindings\"
 weight = 7
+[extra]
+group = \"Reference\"
 +++";
 
 const MAIN_CONTEXTS: &[KeybindContext] = &[

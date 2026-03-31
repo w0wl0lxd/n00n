@@ -77,6 +77,8 @@ pub fn generate() -> String {
 +++
 title = \"Configuration\"
 weight = 2
+[extra]
+group = \"Getting Started\"
 +++
 
 # Configuration
