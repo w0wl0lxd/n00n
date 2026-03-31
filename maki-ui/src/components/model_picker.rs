@@ -55,14 +55,19 @@ impl ModelPicker {
         }
     }
 
-    pub fn open(&mut self) {
+    pub fn open(&mut self, current_spec: &str) {
         let guard = self.models.load();
         let specs = guard.as_deref();
         self.last_spec_count = specs.map_or(0, Vec::len);
-        let entries = specs
+        let entries: Vec<ModelEntry> = specs
             .map(|s| s.iter().filter_map(|s| parse_model_entry(s)).collect())
             .unwrap_or_default();
+        let current_idx = entries
+            .iter()
+            .position(|e| e.spec == current_spec)
+            .unwrap_or(0);
         self.picker.open(entries, TITLE);
+        self.picker.select(current_idx);
     }
 
     fn try_refresh(&mut self) {
@@ -171,7 +176,7 @@ mod tests {
     #[test]
     fn select_returns_full_spec() {
         let mut p = ModelPicker::new(test_models());
-        p.open();
+        p.open("");
         let action = p.handle_key(key(KeyCode::Enter));
         assert!(
             matches!(action, ModelPickerAction::Select(ref s) if s == "anthropic/claude-sonnet-4-20250514")
@@ -182,7 +187,7 @@ mod tests {
     #[test_case(kb::QUIT.to_key_event()    ; "ctrl_c_closes")]
     fn close_keys(cancel_key: KeyEvent) {
         let mut p = ModelPicker::new(test_models());
-        p.open();
+        p.open("");
         let action = p.handle_key(cancel_key);
         assert!(matches!(action, ModelPickerAction::Close));
         assert!(!p.is_open());
@@ -192,7 +197,7 @@ mod tests {
     fn open_with_no_models_still_opens() {
         let models = Arc::new(ArcSwapOption::empty());
         let mut p = ModelPicker::new(models);
-        p.open();
+        p.open("");
         assert!(p.is_open());
     }
 
@@ -200,7 +205,7 @@ mod tests {
     fn refresh_populates_when_models_arrive() {
         let models = Arc::new(ArcSwapOption::empty());
         let mut p = ModelPicker::new(models.clone());
-        p.open();
+        p.open("");
         assert_eq!(p.last_spec_count, 0);
 
         models.store(Some(Arc::new(vec![
@@ -217,7 +222,7 @@ mod tests {
             "anthropic/claude-sonnet-4-20250514".into(),
         ])));
         let mut p = ModelPicker::new(models.clone());
-        p.open();
+        p.open("");
 
         p.handle_key(key(KeyCode::Char('o')));
         p.handle_key(key(KeyCode::Char('p')));
@@ -233,6 +238,16 @@ mod tests {
         assert!(
             matches!(action, ModelPickerAction::Select(ref s) if s.contains("opus")),
             "after refresh, 'op' filter should match opus"
+        );
+    }
+
+    #[test]
+    fn open_preselects_current_model() {
+        let mut p = ModelPicker::new(test_models());
+        p.open("anthropic/claude-opus-4-6-20260101");
+        let action = p.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(action, ModelPickerAction::Select(ref s) if s == "anthropic/claude-opus-4-6-20260101")
         );
     }
 
