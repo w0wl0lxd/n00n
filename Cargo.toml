@@ -20,7 +20,7 @@ path = "src/main.rs"
 demo = ["maki-ui/demo"]
 
 [dependencies]
-maki-ui = { path = "maki-ui" }
+maki-ui = { workspace = true }
 maki-agent = { workspace = true }
 maki-code-index = { workspace = true }
 maki-config = { workspace = true }
