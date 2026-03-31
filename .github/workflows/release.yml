@@ -48,7 +48,7 @@ jobs:
             cross: true
           - target: x86_64-apple-darwin
             runner: macos-14
-            cross: true
+            cross: false
           - target: aarch64-apple-darwin
             runner: macos-14
             cross: false
