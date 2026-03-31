@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_lite::StreamExt;
 use futures_lite::io::AsyncBufRead;
@@ -16,7 +16,11 @@ pub(crate) mod synthetic;
 pub(crate) mod zai;
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-pub(crate) const SSE_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(300);
+pub(crate) const SSE_CONTENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub(crate) fn content_deadline() -> Instant {
+    Instant::now() + SSE_CONTENT_TIMEOUT
+}
 
 pub struct ResolvedAuth {
     pub base_url: Option<String>,
@@ -73,13 +77,15 @@ impl SseErrorPayload {
 
 pub(crate) async fn next_sse_line<R: AsyncBufRead + Unpin>(
     lines: &mut futures_lite::io::Lines<R>,
+    deadline: Instant,
 ) -> Result<Option<String>, AgentError> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
     futures_lite::future::or(
         async { lines.next().await.transpose().map_err(AgentError::from) },
         async {
-            smol::Timer::after(SSE_INACTIVITY_TIMEOUT).await;
+            smol::Timer::after(remaining).await;
             Err(AgentError::Timeout {
-                secs: SSE_INACTIVITY_TIMEOUT.as_secs(),
+                secs: SSE_CONTENT_TIMEOUT.as_secs(),
             })
         },
     )
@@ -96,6 +102,7 @@ pub(crate) fn http_client() -> isahc::HttpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_lite::io::AsyncBufReadExt;
     use test_case::test_case;
 
     #[test_case("a b", "a%20b" ; "space")]
@@ -103,5 +110,38 @@ mod tests {
     #[test_case("abc", "abc"   ; "passthrough")]
     fn urlenc_encodes(input: &str, expected: &str) {
         assert_eq!(urlenc(input), expected);
+    }
+
+    struct NeverReader;
+
+    impl futures_lite::io::AsyncRead for NeverReader {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl futures_lite::io::AsyncBufRead for NeverReader {
+        fn poll_fill_buf(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<&[u8]>> {
+            std::task::Poll::Pending
+        }
+
+        fn consume(self: std::pin::Pin<&mut Self>, _amt: usize) {}
+    }
+
+    #[test]
+    fn next_sse_line_expired_deadline_returns_timeout() {
+        smol::block_on(async {
+            let mut lines = NeverReader.lines();
+            let past = Instant::now() - Duration::from_secs(1);
+            let err = next_sse_line(&mut lines, past).await.unwrap_err();
+            assert!(matches!(err, AgentError::Timeout { .. }));
+        })
     }
 }

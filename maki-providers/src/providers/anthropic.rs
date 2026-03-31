@@ -539,8 +539,9 @@ async fn parse_sse(
     let mut current_block_idx: usize = 0;
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
+    let mut deadline = super::content_deadline();
 
-    while let Some(line) = super::next_sse_line(&mut lines).await? {
+    while let Some(line) = super::next_sse_line(&mut lines, deadline).await? {
         if let Some(event_type) = line.strip_prefix("event: ") {
             current_event = event_type.to_string();
             continue;
@@ -550,6 +551,8 @@ async fn parse_sse(
             Some(d) => d,
             None => continue,
         };
+
+        deadline = super::content_deadline();
 
         match current_event.as_str() {
             "message_start" => {
