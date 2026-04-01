@@ -30,11 +30,11 @@ impl BatchEntry {
     fn item_schema() -> Value {
         serde_json::json!({
             "type": "object",
+            "required": ["tool", "parameters"],
             "properties": {
                 "tool": { "type": "string", "description": "The name of the tool to execute" },
                 "parameters": { "type": "object", "description": "Parameters for the tool" }
-            },
-            "required": ["tool", "parameters"]
+            }
         })
     }
 

@@ -181,8 +181,8 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
                 #(#required_entries)*
                 serde_json::json!({
                     "type": "object",
-                    "properties": serde_json::Value::Object(props),
                     "required": required,
+                    "properties": serde_json::Value::Object(props),
                     "additionalProperties": false
                 })
             }
