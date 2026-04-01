@@ -326,7 +326,7 @@
 
     .install-line code {
       display: inline-block;
-      padding: 0.5rem 1.25rem;
+      padding: 0.35rem 0.9rem;
       background: #1e1e2e;
       color: #cdd6f4;
       border: 1px solid #313244;
@@ -336,6 +336,10 @@
       letter-spacing: 0.02em;
       user-select: none;
     }
+    .install-line .sh-cmd { color: #89b4fa; }
+    .install-line .sh-flag { color: #a6adc8; }
+    .install-line .sh-url { color: #a6e3a1; }
+    .install-line .sh-pipe { color: #f38ba8; font-weight: 700; }
 
     /* ── MAIN CONTENT ── */
     .content {
@@ -746,7 +750,7 @@
     .copy-toast {
       position: absolute;
       top: 50%;
-      left: calc(100% + 0.6rem);
+      left: calc(100% + 0.35rem);
       transform: translateY(-50%) translateX(-4px);
       font-size: 0.78rem;
       font-weight: 700;
@@ -867,7 +871,7 @@
       <a href="#features" class="btn-ghost">Features</a>
     </div>
     <div class="install-line">
-      <code onclick="navigator.clipboard.writeText('curl -fsSL https://maki.sh/install.sh | sh');showCopyToast(this)">curl -fsSL https://maki.sh/install.sh | sh</code>
+      <code onclick="navigator.clipboard.writeText('curl -fsSL https://maki.sh/install.sh | sh');showCopyToast(this)"><span class="sh-cmd">curl</span> <span class="sh-flag">-fsSL</span> <span class="sh-url">https://maki.sh/install.sh</span> <span class="sh-pipe">|</span> <span class="sh-cmd">sh</span></code>
       <span class="copy-toast">copied!</span>
     </div>
   </div>
