@@ -1611,8 +1611,17 @@ fn auth_required_sets_pending_auth_retry() {
     assert_eq!(app.chats[0].last_message_text(), AUTH_EXPIRED_MSG,);
 }
 
-#[test]
-fn auth_retry_submit_sends_empty_answer() {
+fn auth_retry_enter(app: &mut App) -> Vec<Action> {
+    app.update(Msg::Key(key(KeyCode::Enter)))
+}
+
+fn auth_retry_type_then_enter(app: &mut App) -> Vec<Action> {
+    type_and_submit(app, "ignored")
+}
+
+#[test_case(auth_retry_enter          ; "bare_enter")]
+#[test_case(auth_retry_type_then_enter ; "typed_text_then_enter")]
+fn auth_retry_sends_empty_answer(submit: fn(&mut App) -> Vec<Action>) {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
@@ -1622,7 +1631,7 @@ fn auth_retry_submit_sends_empty_answer() {
     app.update(agent_msg(AgentEvent::AuthRequired));
     assert_eq!(app.pending_input, PendingInput::AuthRetry);
 
-    let actions = type_and_submit(&mut app, "ignored");
+    let actions = submit(&mut app);
     assert!(actions.is_empty());
     assert_eq!(app.pending_input, PendingInput::None);
     assert_eq!(rx.try_recv().unwrap(), "");

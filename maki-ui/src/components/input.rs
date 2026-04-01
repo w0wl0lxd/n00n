@@ -53,6 +53,19 @@ pub struct Submission {
     pub images: Vec<ImageSource>,
 }
 
+impl Submission {
+    pub fn empty() -> Self {
+        Self {
+            text: String::new(),
+            images: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty() && self.images.is_empty()
+    }
+}
+
 pub struct InputBox {
     pub(crate) buffer: TextBuffer,
     history: InputHistory,
@@ -89,7 +102,7 @@ impl InputBox {
             KeyCode::Enter => {
                 return match self.submit() {
                     Some(sub) => InputAction::Submit(sub),
-                    None => InputAction::None,
+                    None => InputAction::Submit(Submission::empty()),
                 };
             }
             _ => {}

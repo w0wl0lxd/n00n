@@ -712,6 +712,9 @@ impl App {
             self.send_answer(sub.text);
             return vec![];
         }
+        if sub.is_empty() {
+            return vec![];
+        }
         if sub.text.trim() == "exit" {
             return self.quit();
         }
