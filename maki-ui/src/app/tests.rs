@@ -2010,3 +2010,32 @@ fn thinking_restored_from_session_meta() {
     let state = SessionState::from_session(session, &test_model(), &storage);
     assert_eq!(state.thinking, ThinkingConfig::Budget(4096));
 }
+
+#[test]
+fn agent_error_creates_synthetic_tool_done_with_message() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+
+    app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
+        id: "t1".into(),
+        tool: "bash",
+        summary: "echo hello".into(),
+        annotation: None,
+        input: None,
+        output: None,
+    }))));
+    assert_eq!(app.main_chat().in_progress_count(), 1);
+
+    let error_msg = "Provider is overloaded";
+    app.update(agent_msg(AgentEvent::Error {
+        message: error_msg.into(),
+    }));
+
+    assert_eq!(app.main_chat().in_progress_count(), 0);
+    let text = app.main_chat().last_message_text();
+    assert!(
+        text.contains(error_msg),
+        "tool output should contain error: {text}"
+    );
+}

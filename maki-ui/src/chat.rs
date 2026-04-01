@@ -211,8 +211,12 @@ impl Chat {
         self.messages_panel.flush();
     }
 
-    pub fn fail_in_progress(&mut self) {
-        self.messages_panel.fail_in_progress();
+    pub fn cancel_in_progress(&mut self) {
+        self.messages_panel.cancel_in_progress();
+    }
+
+    pub fn fail_in_progress_with_message(&mut self, message: String) {
+        self.messages_panel.fail_in_progress_with_message(message);
     }
 
     pub fn push(&mut self, msg: DisplayMessage) {

@@ -753,7 +753,7 @@ impl App {
         self.shell.cancel_all();
         for chat in &mut self.chats {
             chat.flush();
-            chat.fail_in_progress();
+            chat.cancel_in_progress();
         }
         self.main_chat()
             .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
@@ -887,14 +887,14 @@ impl App {
                     }
                 }
                 ChatEventResult::Error(message) => {
-                    self.status = Status::error(message);
+                    self.status = Status::error(message.clone());
                     self.status_bar.clear_flash();
                     self.save_session();
                     self.queue.clear();
                     self.subagent_answers.clear();
                     self.finish_subagents(DisplayRole::Error, ERROR_TEXT);
                     for chat in &mut self.chats {
-                        chat.fail_in_progress();
+                        chat.fail_in_progress_with_message(message.clone());
                     }
                 }
                 ChatEventResult::QuestionPrompt { questions } => {

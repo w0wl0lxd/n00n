@@ -350,10 +350,34 @@ impl MessagesPanel {
     pub fn stream_reset(&mut self) {
         self.streaming_thinking.clear();
         self.streaming_text.clear();
-        self.fail_in_progress();
+        self.cancel_in_progress();
     }
 
-    pub fn fail_in_progress(&mut self) {
+    pub fn fail_in_progress_with_message(&mut self, message: String) {
+        let ids: Vec<(String, &'static str)> = self
+            .messages
+            .iter()
+            .filter_map(|m| {
+                if let DisplayRole::Tool(t) = &m.role
+                    && t.status == ToolStatus::InProgress
+                {
+                    Some((t.id.clone(), t.name))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (id, tool) in ids {
+            self.tool_done(ToolDoneEvent {
+                id,
+                tool,
+                output: ToolOutput::Plain(message.clone()),
+                is_error: true,
+            });
+        }
+    }
+
+    pub fn cancel_in_progress(&mut self) {
         let affected_ids: Vec<String> = self
             .messages
             .iter_mut()

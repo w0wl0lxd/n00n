@@ -367,7 +367,7 @@ fn bash_live_output_with_code_input() {
 
 #[test_case(true  ; "after_cache_built")]
 #[test_case(false ; "before_cache_built")]
-fn fail_in_progress_marks_pending_as_error(cache_built: bool) {
+fn cancel_in_progress_marks_pending_as_error(cache_built: bool) {
     let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "read")]);
     panel.tool_done(ToolDoneEvent {
         id: "t1".into(),
@@ -379,7 +379,7 @@ fn fail_in_progress_marks_pending_as_error(cache_built: bool) {
         rebuild(&mut panel);
     }
 
-    panel.fail_in_progress();
+    panel.cancel_in_progress();
 
     assert_eq!(panel.in_progress_count(), 0);
     assert!(!panel.is_animating());
@@ -401,9 +401,9 @@ fn new_tool_after_in_place_update() {
 }
 
 #[test]
-fn tool_done_after_fail_in_progress_does_not_underflow() {
+fn tool_done_after_cancel_in_progress_does_not_underflow() {
     let mut panel = panel_with_tools(&[("t1", "bash"), ("t2", "read")]);
-    panel.fail_in_progress();
+    panel.cancel_in_progress();
     assert_eq!(panel.in_progress_count(), 0);
 
     panel.tool_done(ToolDoneEvent {
