@@ -150,7 +150,7 @@ impl Splash {
         render_centered_faded(area, buf, fade, 0.75, tag_y, TAGLINE);
         self.render_help(area, buf, fade, help_y, accent);
         let version_text = match new_version {
-            Some(v) => format!("v{} available", v),
+            Some(v) => format!("v{} - v{} available", update::CURRENT, v),
             None => format!("v{}", update::CURRENT),
         };
         render_right_faded(area, buf, fade, 0.4, area.y, &version_text);
