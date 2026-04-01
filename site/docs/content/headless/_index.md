@@ -7,7 +7,7 @@ group = "Reference"
 
 # Headless Mode
 
-Run Maki non-interactively with `--print`. Useful for scripts, CI, and automation.
+Run Maki non-interactively with `--print` / `-p`. Useful for scripts, CI, and automation.
 
 ```bash
 maki "explain this codebase" --print
@@ -16,7 +16,7 @@ maki "explain this codebase" --print
 Pipe via stdin:
 
 ```bash
-echo "list all TODO comments" | maki --print
+echo "list all TODO comments" | maki -p
 ```
 
 ## Output Formats
@@ -79,13 +79,12 @@ Migrate an API across many files:
 ```bash
 grep -rl 'old_api_call' src/ | while read file; do
   maki "In $file, migrate old_api_call() to new_api_call(). \
-    Keep behavior identical." --print --yolo --allowed-tools Read,Edit
+    Keep behavior identical." -p --yolo --allowed-tools Read,Edit
 done
 ```
 
 Cost tracking:
 
 ```bash
-maki "refactor the database layer" --print --output-format json \
-  | jq '.total_cost_usd'
+maki "refactor the database layer" -p --output-format json | jq '.total_cost_usd'
 ```
