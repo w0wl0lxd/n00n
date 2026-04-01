@@ -85,12 +85,15 @@ impl Task {
             smol::unblock(move || agent::load_instruction_files(&cwd_owned)).await;
         system.push_str(&instructions);
         let filter = ToolFilter::Only(tool_names.to_vec());
-        let tools = ToolCall::definitions_with_filter(
+        let mut tools = ToolCall::definitions_with_filter(
             &vars,
             &[],
             &filter,
             model.family.supports_tool_examples(),
         );
+        if let Some(ref mcp) = ctx.mcp {
+            mcp.extend_tools(&mut tools, &[]);
+        }
 
         let (sub_tx, sub_rx) = flume::unbounded::<crate::Envelope>();
         let sub_event_tx = EventSender::new(sub_tx, ctx.event_tx.run_id());
@@ -145,7 +148,8 @@ impl Task {
             },
         )
         .with_user_response_rx(answer_rx)
-        .with_cancel(child_cancel);
+        .with_cancel(child_cancel)
+        .with_mcp(ctx.mcp.clone());
         let start = Instant::now();
         let outcome = agent.run(input).await;
         let duration_ms = start.elapsed().as_millis() as u64;
