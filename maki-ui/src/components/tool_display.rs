@@ -254,8 +254,8 @@ pub fn done_style() -> RoleStyle {
 
 pub struct ToolLines {
     pub lines: Vec<Line<'static>>,
-    /// Plain-text for clipboard. Built in parallel with `lines` by ToolLineBuilder.
-    pub copy_text: String,
+    /// Plain-text for search. Built in parallel with `lines` by ToolLineBuilder.
+    pub search_text: String,
     pub highlight: Option<HighlightRequest>,
     pub spinner_lines: Vec<usize>,
     pub content_indent: &'static str,
@@ -400,6 +400,7 @@ impl From<BatchToolStatus> for Indicator {
 
 struct ResolvedOutput<'a> {
     text: Option<Cow<'a, str>>,
+    full_text: Option<Cow<'a, str>>,
     skipped: usize,
     instructions: Option<&'a [InstructionBlock]>,
 }
@@ -421,51 +422,51 @@ fn resolve_output<'a>(
     if let Some(ToolOutput::Batch { .. } | ToolOutput::QuestionAnswers(_)) = output {
         return ResolvedOutput {
             text: None,
+            full_text: None,
             skipped: 0,
             instructions,
         };
     }
 
-    let (raw_text, already_truncated) = if expanded {
-        if let Some(o) = output {
-            match o {
-                ToolOutput::Plain(t) => (Some(Cow::Borrowed(t.as_str())), 0),
-                ToolOutput::ReadDir { text, .. } => (Some(Cow::Borrowed(text.as_str())), 0),
-                ToolOutput::GlobResult { .. } => (Some(Cow::Owned(o.as_display_text())), 0),
-                _ => {
-                    return ResolvedOutput {
-                        text: None,
-                        skipped: 0,
-                        instructions,
-                    };
-                }
-            }
-        } else if let Some(live) = live_output {
-            (Some(Cow::Borrowed(live)), 0)
-        } else {
-            match body {
-                Some(b) => (Some(Cow::Borrowed(b)), pre_truncated),
-                None => (None, 0),
-            }
-        }
-    } else {
-        match (body, output) {
-            (Some(b), _) => (Some(Cow::Borrowed(b)), pre_truncated),
-            (None, Some(ToolOutput::Plain(t))) => (Some(Cow::Borrowed(t.as_str())), 0),
-            (None, Some(ToolOutput::ReadDir { text, .. })) => {
-                (Some(Cow::Borrowed(text.as_str())), 0)
-            }
-            (None, Some(o @ ToolOutput::GlobResult { .. })) => {
-                (Some(Cow::Owned(o.as_display_text())), 0)
-            }
-            (None, None) => (None, 0),
-            _ => {
+    let full_text: Option<Cow<'a, str>> = match output {
+        Some(ToolOutput::Plain(t)) => Some(Cow::Borrowed(t.as_str())),
+        Some(ToolOutput::ReadDir { text, .. }) => Some(Cow::Borrowed(text.as_str())),
+        Some(o @ ToolOutput::GlobResult { .. }) => Some(Cow::Owned(o.as_display_text())),
+        _ => None,
+    };
+
+    let (raw_text, already_truncated): (Option<Cow<'a, str>>, usize) = if expanded {
+        match &full_text {
+            Some(t) => (Some(t.clone()), 0),
+            None if output.is_some() => {
                 return ResolvedOutput {
                     text: None,
+                    full_text: None,
                     skipped: 0,
                     instructions,
                 };
             }
+            None => match live_output {
+                Some(live) => (Some(Cow::Borrowed(live)), 0),
+                None => match body {
+                    Some(b) => (Some(Cow::Borrowed(b)), pre_truncated),
+                    None => (None, 0),
+                },
+            },
+        }
+    } else {
+        match (body, &full_text) {
+            (Some(b), _) => (Some(Cow::Borrowed(b)), pre_truncated),
+            (None, Some(t)) => (Some(t.clone()), 0),
+            (None, None) if output.is_some() => {
+                return ResolvedOutput {
+                    text: None,
+                    full_text: None,
+                    skipped: 0,
+                    instructions,
+                };
+            }
+            (None, None) => (None, 0),
         }
     };
 
@@ -484,6 +485,7 @@ fn resolve_output<'a>(
 
     ResolvedOutput {
         text,
+        full_text,
         skipped,
         instructions,
     }
@@ -491,7 +493,7 @@ fn resolve_output<'a>(
 
 struct ToolLineBuilder {
     lines: Vec<Line<'static>>,
-    copy_text: String,
+    search_text: String,
     spinner_lines: Vec<usize>,
     content_range: (usize, usize),
     width: u16,
@@ -511,7 +513,7 @@ impl ToolLineBuilder {
         };
         Self {
             lines: Vec::new(),
-            copy_text: String::new(),
+            search_text: String::new(),
             spinner_lines: Vec::new(),
             content_range: (0, 0),
             width: width.saturating_sub(outer_indent.len() as u16),
@@ -538,14 +540,14 @@ impl ToolLineBuilder {
             write!(copy, " ({ann})").unwrap();
         }
         self.lines.push(Line::from(spans));
-        self.copy_text = copy;
+        self.search_text = copy;
     }
 
-    fn push_copy(&mut self, text: &str) {
-        if !self.copy_text.is_empty() {
-            self.copy_text.push('\n');
+    fn push_search_text(&mut self, text: &str) {
+        if !self.search_text.is_empty() {
+            self.search_text.push('\n');
         }
-        self.copy_text.push_str(text);
+        self.search_text.push_str(text);
     }
 
     fn prepend_indicator(&mut self, indicator: Indicator, started_at: Instant) {
@@ -583,10 +585,10 @@ impl ToolLineBuilder {
         }
         self.content_range = (start, self.lines.len());
         if let Some(ToolInput::Code { code, .. }) = input {
-            self.push_copy(code.trim_end());
+            self.push_search_text(code.trim_end());
         }
         if let Some(text) = output.and_then(|o| o.structured_display_text()) {
-            self.push_copy(&text);
+            self.push_search_text(&text);
         }
     }
 
@@ -622,7 +624,11 @@ impl ToolLineBuilder {
                 ToolKind::Index => self.push_index_body(text),
                 _ => push_text_lines(&mut self.lines, text, TOOL_BODY_INDENT),
             }
-            self.push_copy(text);
+            if let Some(full) = &resolved.full_text {
+                self.push_search_text(full);
+            } else {
+                self.push_search_text(text);
+            }
             if matches!(self.keep, Keep::Head) {
                 self.push_truncation_count(resolved.skipped);
             }
@@ -729,7 +735,7 @@ impl ToolLineBuilder {
         self.spinner_lines.iter_mut().for_each(|l| *l += 3);
         self.content_range.0 += 3;
         self.content_range.1 += 3;
-        self.copy_text.insert(0, '\n');
+        self.search_text.insert(0, '\n');
     }
 
     fn finish(
@@ -755,7 +761,7 @@ impl ToolLineBuilder {
         );
         ToolLines {
             lines: self.lines,
-            copy_text: self.copy_text,
+            search_text: self.search_text,
             highlight,
             spinner_lines: self.spinner_lines,
             content_indent,

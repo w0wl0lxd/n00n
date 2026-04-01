@@ -191,8 +191,8 @@ impl Chat {
         self.messages_panel.segment_heights()
     }
 
-    pub fn segment_copy_texts(&self) -> Vec<&str> {
-        self.messages_panel.segment_copy_texts()
+    pub fn segment_search_texts(&self) -> Vec<&str> {
+        self.messages_panel.segment_search_texts()
     }
 
     pub fn extract_selection_text(&self, sel: &Selection, msg_area: Rect) -> String {

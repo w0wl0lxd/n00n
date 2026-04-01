@@ -627,8 +627,8 @@ impl MessagesPanel {
             .collect()
     }
 
-    pub fn segment_copy_texts(&self) -> Vec<&str> {
-        self.cache.copy_texts()
+    pub fn segment_search_texts(&self) -> Vec<&str> {
+        self.cache.search_texts()
     }
 
     pub fn extract_selection_text(&self, sel: &Selection, msg_area: Rect) -> String {
@@ -721,7 +721,7 @@ impl MessagesPanel {
         );
 
         let seg = self.cache.get_mut(seg_idx).unwrap();
-        seg.copy_text = tl.copy_text.clone();
+        seg.search_text = tl.search_text.clone();
         seg.update_with_reuse(tl, &self.hl_worker);
 
         self.build_and_upsert_batch_children(seg_idx, tool_id);
@@ -752,20 +752,20 @@ impl MessagesPanel {
                     child_expanded,
                     &self.tool_output_lines,
                 );
-                let copy = tl.copy_text.clone();
-                (child_id, copy, tl)
+                let search = tl.search_text.clone();
+                (child_id, search, tl)
             })
             .collect();
         let child_prefix = format!("{tool_id}__");
         let msg_index = self.cache.get(parent_idx).and_then(|s| s.msg_index);
-        for (child_id, copy, tl) in children {
+        for (child_id, search, tl) in children {
             if let Some(cseg_idx) = self.cache.find_by_tool_id(&child_id) {
                 let cseg = self.cache.get_mut(cseg_idx).unwrap();
-                cseg.copy_text = copy;
+                cseg.search_text = search;
                 cseg.update_with_reuse(tl, &self.hl_worker);
             } else {
-                let mut seg = Segment::with_tool(child_id, msg_index);
-                seg.copy_text = copy;
+                let mut seg = Segment::with_tool(child_id.to_string(), msg_index);
+                seg.search_text = search;
                 seg.apply_highlight(tl, &self.hl_worker);
                 let insert_pos = self
                     .cache
@@ -801,10 +801,10 @@ impl MessagesPanel {
                     &self.tool_output_lines,
                 );
                 let id = t.id.clone();
-                let copy_text = tl.copy_text.clone();
+                let search_text = tl.search_text.clone();
                 self.cache.push_spacer_if_needed();
                 let mut seg = Segment::with_tool(id.clone(), Some(i));
-                seg.copy_text = copy_text;
+                seg.search_text = search_text;
                 seg.apply_highlight(tl, &self.hl_worker);
                 self.cache.push(seg);
 
@@ -821,7 +821,7 @@ impl MessagesPanel {
                             &self.tool_output_lines,
                         );
                         let mut seg = Segment::with_tool(child_id, Some(i));
-                        seg.copy_text = tl.copy_text.clone();
+                        seg.search_text = tl.search_text.clone();
                         seg.apply_highlight(tl, &self.hl_worker);
                         self.cache.push(seg);
                     }
@@ -876,10 +876,10 @@ impl MessagesPanel {
                     )));
                 }
 
-                let copy_text = format!("{prefix}{}", msg.text);
+                let search_text = format!("{prefix}{}", msg.text);
                 self.cache.push_spacer_if_needed();
                 self.cache
-                    .push(Segment::with_lines(lines, copy_text, Some(i)));
+                    .push(Segment::with_lines(lines, search_text, Some(i)));
             }
         }
         self.cache.mark_built(self.messages.len());

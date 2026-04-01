@@ -34,25 +34,11 @@ pub(super) fn extract_selection_text(
             continue;
         }
 
-        let fully_enclosed = selection::range_covers(
-            doc_start,
-            doc_end,
-            seg_start,
-            seg_end.saturating_sub(1),
-            msg_area.x,
-            msg_area.x + msg_area.width.saturating_sub(1),
-        );
-
         if !out.is_empty() {
             out.push('\n');
         }
 
         let Some(seg) = cache.get(i) else { continue };
-
-        if fully_enclosed && !seg.copy_text.is_empty() {
-            out.push_str(&seg.copy_text);
-            continue;
-        }
 
         if seg.lines().is_empty() {
             continue;

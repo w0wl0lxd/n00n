@@ -475,7 +475,7 @@ impl App {
             match self.search_modal.handle_key(key) {
                 SearchAction::Consumed => {
                     let chat = &mut self.chats[self.active_chat];
-                    let texts = chat.segment_copy_texts();
+                    let texts = chat.segment_search_texts();
                     self.search_modal.update_matches(&texts);
                     sync_search_highlight(&self.search_modal, chat);
                 }
@@ -1185,7 +1185,7 @@ impl App {
         if self.search_modal.is_open() {
             self.search_modal.handle_paste(text);
             let chat = &mut self.chats[self.active_chat];
-            let texts = chat.segment_copy_texts();
+            let texts = chat.segment_search_texts();
             self.search_modal.update_matches(&texts);
             sync_search_highlight(&self.search_modal, chat);
             return;

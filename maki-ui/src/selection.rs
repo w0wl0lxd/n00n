@@ -11,9 +11,8 @@
 //! - Copy happens inside `view()`, not on mouse-up. The terminal buffer only
 //!   has valid cell data during rendering.
 //!
-//! - Fully-selected segments use `copy_text` (raw markdown/structured output)
-//!   instead of scraping cells. Partial selections fall back to cell scraping.
-//!   This preserves headings, blank lines, diffs, etc. that rendering strips.
+//! - All selections extract from the rendered buffer via cell scraping.
+//!   Code block `| ` prefixes are stripped. Truncated content stays truncated.
 //!
 //! - `has_selection` freezes auto-scroll in `MessagesPanel::view()` so the
 //!   viewport doesn't jump while the user is dragging.

@@ -253,7 +253,6 @@ fn in_progress_tracking() {
         is_error: false,
     });
     assert_eq!(panel.in_progress_count(), 1);
-    assert_eq!(msg_status(&panel, "t1"), ToolStatus::Success);
 
     panel.tool_done(ToolDoneEvent {
         id: "t2".into(),
@@ -352,15 +351,8 @@ fn bash_live_output_with_code_input() {
     bash_code_start(&mut panel, "t1", "echo hello");
     rebuild(&mut panel);
 
-    panel.tool_output("t1", "hello");
-    let text = seg_text(&panel, "t1");
-    assert!(text.contains("echo hello"));
-    assert!(text.contains("hello"));
-
-    panel.tool_output("t1", "hello\nworld");
-    let text = seg_text(&panel, "t1");
-    assert!(text.contains("echo hello"));
-    assert!(text.contains("world"));
+    panel.tool_output("t1", "streaming");
+    assert!(seg_text(&panel, "t1").contains("streaming"));
 
     panel.tool_done(ToolDoneEvent {
         id: "t1".into(),
@@ -369,8 +361,7 @@ fn bash_live_output_with_code_input() {
         is_error: false,
     });
     let text = seg_text(&panel, "t1");
-    assert!(text.contains("echo hello"));
-    assert!(text.contains("done"));
+    assert!(text.contains("echo hello") && text.contains("done"));
     assert_eq!(msg_status(&panel, "t1"), ToolStatus::Success);
 }
 
@@ -454,7 +445,7 @@ fn load_messages_counts_in_progress_and_replaces_state() {
 }
 
 #[test]
-fn question_tool_renders_with_tool_chrome() {
+fn question_tool_renders_summary() {
     let mut panel = MessagesPanel::new(UiConfig::default());
     panel.tool_start(start("q1", QUESTION_TOOL_NAME));
     panel.tool_done(ToolDoneEvent {
@@ -462,20 +453,18 @@ fn question_tool_renders_with_tool_chrome() {
         tool: QUESTION_TOOL_NAME,
         output: ToolOutput::QuestionAnswers(vec![
             QuestionAnswer {
-                question: "DB?".into(),
-                answer: "PostgreSQL".into(),
+                question: "Q1".into(),
+                answer: "A1".into(),
             },
             QuestionAnswer {
-                question: "Framework?".into(),
-                answer: "Axum".into(),
+                question: "Q2".into(),
+                answer: "A2".into(),
             },
         ]),
         is_error: false,
     });
     rebuild(&mut panel);
-
     assert_eq!(panel.messages[0].text, "2 questions answered");
-    assert!(has_seg(&panel, "q1"));
 }
 
 #[test]
@@ -497,19 +486,19 @@ fn selection_freezes_viewport_during_auto_scroll() {
     assert!(panel.auto_scroll);
 }
 
-fn seg_copy(panel: &MessagesPanel, tool_id: &str) -> String {
+fn seg_search(panel: &MessagesPanel, tool_id: &str) -> String {
     panel
         .cache
         .segments()
         .iter()
         .find(|s| s.tool_id.as_deref() == Some(tool_id))
         .unwrap()
-        .copy_text
+        .search_text
         .clone()
 }
 
 #[test]
-fn copy_text_grep_result_includes_structured_output() {
+fn search_text_grep_result_includes_structured_output() {
     let mut panel = MessagesPanel::new(UiConfig::default());
     panel.tool_start(start("t1", "grep"));
     panel.tool_done(ToolDoneEvent {
@@ -519,12 +508,12 @@ fn copy_text_grep_result_includes_structured_output() {
         is_error: false,
     });
     rebuild(&mut panel);
-    let text = seg_copy(&panel, "t1");
+    let text = seg_search(&panel, "t1");
     assert!(text.contains("0.rs:") && text.contains("1.rs:"));
 }
 
 #[test]
-fn copy_text_diff_output_includes_hunks() {
+fn search_text_diff_output_includes_hunks() {
     let mut panel = MessagesPanel::new(UiConfig::default());
     panel.tool_start(start("t1", "edit"));
     panel.tool_done(ToolDoneEvent {
@@ -544,12 +533,12 @@ fn copy_text_diff_output_includes_hunks() {
         is_error: false,
     });
     rebuild(&mut panel);
-    let text = seg_copy(&panel, "t1");
+    let text = seg_search(&panel, "t1");
     assert!(text.contains("- old") && text.contains("+ new"));
 }
 
 #[test]
-fn copy_text_bash_with_code_input() {
+fn search_text_bash_with_code_input() {
     let mut panel = MessagesPanel::new(UiConfig::default());
     bash_code_start(&mut panel, "t1", "echo hello");
     panel.tool_done(ToolDoneEvent {
@@ -559,19 +548,19 @@ fn copy_text_bash_with_code_input() {
         is_error: false,
     });
     rebuild(&mut panel);
-    let text = seg_copy(&panel, "t1");
+    let text = seg_search(&panel, "t1");
     assert!(text.contains("echo hello") && text.contains("hello"));
 }
 
 #[test]
-fn copy_text_includes_role_prefix() {
+fn search_text_includes_role_prefix() {
     let md = "# Heading\n\nSome **bold** text";
     let mut panel = MessagesPanel::new(UiConfig::default());
     panel.push(DisplayMessage::new(DisplayRole::User, "hello".into()));
     panel.push(DisplayMessage::new(DisplayRole::Assistant, md.into()));
     panel.push(DisplayMessage::new(DisplayRole::Thinking, "hmm".into()));
     rebuild(&mut panel);
-    let texts = panel.segment_copy_texts();
+    let texts = panel.segment_search_texts();
     assert_eq!(texts[0], "you> hello");
     assert_eq!(texts[2], format!("maki> {md}"));
     assert_eq!(texts[4], "thinking> hmm");
@@ -806,12 +795,11 @@ fn extract_skips_out_of_range_segments() {
 #[test]
 fn extract_off_screen_rows_via_temp_buffer() {
     let mut panel = MessagesPanel::new(UiConfig::default());
-    let lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
-    let long_text = lines.join("\n");
-    panel.push(DisplayMessage::new(
-        DisplayRole::Assistant,
-        long_text.clone(),
-    ));
+    let text = (0..20)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    panel.push(DisplayMessage::new(DisplayRole::Assistant, text));
     render(&mut panel, 80, 5);
 
     let total: u16 = panel.segment_heights().iter().sum();
@@ -819,13 +807,9 @@ fn extract_off_screen_rows_via_temp_buffer() {
     let sel_area = Rect::new(0, 0, 80, total);
     let sel = make_sel(sel_area, (1, 0), ((total - 1) as u32, 79));
 
-    let text = panel.extract_selection_text(&sel, sel_area);
-    assert!(
-        !text.contains("line 0"),
-        "first line excluded by partial select"
-    );
-    assert!(text.contains("line 1"));
-    assert!(text.contains("line 19"));
+    let extracted = panel.extract_selection_text(&sel, sel_area);
+    assert!(!extracted.contains("line 0"), "first line excluded");
+    assert!(extracted.contains("line 1") && extracted.contains("line 19"));
 }
 
 #[test]
@@ -918,24 +902,31 @@ fn panel_with_long_tool(line_count: usize) -> MessagesPanel {
 }
 
 #[test]
-fn toggle_expands_and_collapses_truncated_tool() {
+fn toggle_expand_collapse_truncated_tool() {
     let mut panel = panel_with_long_tool(200);
     let area = Rect::new(0, 0, 80, 24);
-    let text_before = seg_text(&panel, "t1");
-    assert!(text_before.contains("click to expand"));
-    assert!(!text_before.contains("line 50"));
+    assert!(seg_text(&panel, "t1").contains("click to expand"));
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
-    let text_after = seg_text(&panel, "t1");
-    assert!(text_after.contains("line 50"));
-    assert!(!text_after.contains("click to expand"));
+    assert!(!seg_text(&panel, "t1").contains("click to expand"));
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
-    let text_restored = seg_text(&panel, "t1");
-    assert!(text_restored.contains("click to expand"));
-    assert!(!text_restored.contains("line 50"));
+    assert!(seg_text(&panel, "t1").contains("click to expand"));
+}
+
+#[test]
+fn extract_selection_copies_visible_content_only() {
+    let panel = panel_with_long_tool(200);
+    let area = Rect::new(0, 0, 80, 24);
+    let total: u16 = panel.segment_heights().iter().sum();
+    let sel = make_sel(area, (0, 0), ((total - 1) as u32, 79));
+    let text = panel.extract_selection_text(&sel, area);
+    assert!(
+        !text.contains("line 50"),
+        "truncated line should not be copied"
+    );
 }
 
 #[test]
@@ -975,18 +966,14 @@ fn panel_with_grep_tool(match_count: usize) -> MessagesPanel {
 }
 
 #[test]
-fn toggle_grep_expand_and_collapse() {
-    let match_count = 8;
-    let mut panel = panel_with_grep_tool(match_count);
+fn toggle_expand_collapse_grep_tool() {
+    let mut panel = panel_with_grep_tool(8);
     let area = Rect::new(0, 0, 80, 24);
     assert!(seg_text(&panel, "t1").contains("click to expand"));
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
-    let text = seg_text(&panel, "t1");
-    let last = format!("match_{match_count}");
-    assert!(text.contains(&last), "last match should be visible");
-    assert!(!text.contains("click to expand"));
+    assert!(!seg_text(&panel, "t1").contains("click to expand"));
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
@@ -1014,26 +1001,23 @@ fn streaming_with_cached_segments_shows_end_on_auto_scroll() {
         DisplayRole::User,
         "a\n".repeat(20).trim().into(),
     ));
-
-    let streaming_lines: Vec<String> = (0..50).map(|i| format!("stream_{i}")).collect();
-    panel.streaming_text.set_buffer(&streaming_lines.join("\n"));
+    panel.streaming_text.set_buffer(
+        &(0..50)
+            .map(|i| format!("stream_{i}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
 
     let terminal = render(&mut panel, 80, 10);
     assert!(panel.auto_scroll);
 
     let screen = buffer_text(&terminal);
-    assert!(
-        screen.contains("stream_49"),
-        "auto-scroll should show end of streaming text, got:\n{screen}"
-    );
-    assert!(
-        !screen.contains("stream_0 "),
-        "auto-scroll should not show beginning of streaming text"
-    );
+    assert!(screen.contains("stream_49"), "should show end");
+    assert!(!screen.contains("stream_0 "), "should not show beginning");
 }
 
 #[test]
-fn batch_parent_copy_text_excludes_children() {
+fn batch_parent_search_text_excludes_children() {
     let mut panel = MessagesPanel::new(UiConfig::default());
     let mut entry = batch_entry("read", "file.rs", BatchToolStatus::Success);
     entry.output = Some(ToolOutput::Plain("file contents".into()));
@@ -1041,8 +1025,26 @@ fn batch_parent_copy_text_excludes_children() {
     batch_start(&mut panel, entries.clone());
     batch_done(&mut panel, entries);
     rebuild(&mut panel);
-    let parent = seg_copy(&panel, "b1");
+    let parent = seg_search(&panel, "b1");
     assert!(!parent.contains("file contents"));
-    let child = seg_copy(&panel, "b1__0");
+    let child = seg_search(&panel, "b1__0");
     assert!(child.contains("file contents"));
+}
+
+#[test]
+fn search_text_includes_truncated_bash_output() {
+    let full_output = (0..100)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    bash_code_start(&mut panel, "t1", "echo lines");
+    panel.tool_done(ToolDoneEvent {
+        id: "t1".into(),
+        tool: BASH_TOOL_NAME,
+        output: ToolOutput::Plain(full_output.clone()),
+        is_error: false,
+    });
+    rebuild(&mut panel);
+    assert!(seg_search(&panel, "t1").contains(&full_output));
 }

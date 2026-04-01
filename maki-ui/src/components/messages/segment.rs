@@ -29,7 +29,7 @@ impl HighlightKey {
 #[derive(Default)]
 pub(super) struct Segment {
     lines: Vec<Line<'static>>,
-    pub copy_text: String,
+    pub search_text: String,
     pub tool_id: Option<String>,
     pub msg_index: Option<usize>,
     pub has_truncation: bool,
@@ -52,12 +52,12 @@ impl Segment {
 
     pub fn with_lines(
         lines: Vec<Line<'static>>,
-        copy_text: String,
+        search_text: String,
         msg_index: Option<usize>,
     ) -> Self {
         Self {
             lines,
-            copy_text,
+            search_text,
             msg_index,
             ..Self::default()
         }
@@ -260,8 +260,11 @@ impl SegmentCache {
         }
     }
 
-    pub fn copy_texts(&self) -> Vec<&str> {
-        self.segments.iter().map(|s| s.copy_text.as_str()).collect()
+    pub fn search_texts(&self) -> Vec<&str> {
+        self.segments
+            .iter()
+            .map(|s| s.search_text.as_str())
+            .collect()
     }
 
     pub fn invalidate_from_msg_count(&mut self) {
