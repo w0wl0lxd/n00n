@@ -5,6 +5,7 @@ import json
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 SESSION_DIR = Path.home() / ".maki" / "sessions"
 CHARS_PER_TOKEN = 4  # rough estimate for token counting from char length
@@ -139,7 +140,7 @@ def print_table(title, headers, rows, aligns=None):
 
 def analyze_tool_distribution(all_calls):
     """Aggregate stats per tool."""
-    stats = defaultdict(lambda: {
+    stats: dict[str, dict[str, Any]] = defaultdict(lambda: {
         "count": 0,
         "input_chars": 0,
         "output_chars": 0,
@@ -329,7 +330,7 @@ def print_top_expensive_calls(all_calls, n=15):
 
 def print_batch_subtool_analysis(batch_sub_calls):
     """Analyze what tools are called inside batch and their output sizes."""
-    stats = defaultdict(lambda: {"count": 0, "output_tokens": 0, "sizes": []})
+    stats: dict[str, dict[str, Any]] = defaultdict(lambda: {"count": 0, "output_tokens": 0, "sizes": []})
     for call in batch_sub_calls:
         name = call["name"]
         s = stats[name]
