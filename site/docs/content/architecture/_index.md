@@ -29,7 +29,7 @@ The core agent loop. Runs on <a href="https://github.com/smol-rs/smol" target="_
 
 ### `maki-providers`
 
-A single interface over multiple LLM HTTP APIs: Anthropic, OpenAI, Z.AI, and a Synthetic provider for testing.
+A single interface over multiple LLM HTTP APIs.
 
 Custom provider definitions placed in `~/.maki/providers/` are picked up at runtime. The crate handles streaming, token counting, retries, and prompt caching. Models are grouped into pricing tiers (weak, medium, strong) so the agent can choose appropriately.
 
