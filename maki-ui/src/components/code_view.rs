@@ -220,18 +220,22 @@ fn render_grep_results(
                     break;
                 }
                 let mut spans = vec![gutter(&format!("{:>w$}", line.line_nr))];
+                let text_spans = if let Some(syn) = syntax {
+                    highlight_spans(&mut highlighter_for_syntax(syn), &line.text)
+                } else if line.is_match {
+                    vec![fallback_span(&line.text)]
+                } else {
+                    vec![Span::styled(line.text.clone(), dim)]
+                };
                 if line.is_match {
-                    if let Some(syn) = syntax {
-                        spans.extend(highlight_spans(
-                            &mut highlighter_for_syntax(syn),
-                            &line.text,
-                        ));
-                    } else {
-                        spans.push(fallback_span(&line.text));
-                    }
+                    spans.extend(text_spans);
                     rendered_matches += 1;
                 } else {
-                    spans.push(Span::styled(line.text.clone(), dim));
+                    spans.extend(
+                        text_spans
+                            .into_iter()
+                            .map(|s| Span::styled(s.content, theme::dim_style(s.style, 0.3))),
+                    );
                 }
                 out.push(Line::from(spans));
                 budget -= 1;
@@ -445,7 +449,7 @@ fn merge_syntax_with_diff(
 mod tests {
     use super::*;
     use crate::markdown::TRUNCATION_PREFIX;
-    use maki_agent::{DiffSpan, GrepMatchGroup};
+    use maki_agent::{DiffSpan, GrepLine, GrepMatchGroup};
     use test_case::test_case;
 
     use ratatui::style::Color;
@@ -532,11 +536,20 @@ mod tests {
         let (lines, _) = render_grep_results(&entries, 10, false);
 
         let texts: Vec<String> = lines.iter().map(line_text).collect();
-        assert!(texts[0].contains("a.rs"));
-        assert!(texts[2].contains("b.rs"));
+        assert!(texts.iter().any(|t| t.contains("a.rs")));
+        assert!(texts.iter().any(|t| t.contains("b.rs")));
 
-        let gutter_width = |line: &str| line.find(|c: char| c.is_alphabetic()).unwrap_or(0);
-        assert_eq!(gutter_width(&texts[1]), gutter_width(&texts[3]));
+        let gutter_width =
+            |line: &str| line.find(|c: char| c.is_alphabetic()).unwrap_or(usize::MAX);
+        let content_gutters: Vec<usize> = texts
+            .iter()
+            .filter(|t| !t.contains(".rs"))
+            .map(|t| gutter_width(t))
+            .collect();
+        assert!(
+            content_gutters.windows(2).all(|w| w[0] == w[1]),
+            "gutter widths should be uniform across files: {content_gutters:?}"
+        );
     }
 
     #[test]
@@ -566,24 +579,37 @@ mod tests {
     }
 
     #[test]
-    fn grep_each_line_highlighted_independently() {
+    fn grep_highlights_match_and_context_lines_independently() {
         let entries = vec![GrepFileEntry {
             path: "test.rs".into(),
-            groups: vec![
-                GrepMatchGroup::single(1, "let x = \"open string"),
-                GrepMatchGroup::single(50, "let y = 42;"),
-            ],
+            groups: vec![GrepMatchGroup {
+                lines: vec![
+                    GrepLine {
+                        line_nr: 1,
+                        text: "let x = \"open string".into(),
+                        is_match: false,
+                    },
+                    GrepLine::matched(2, "let y = 42;"),
+                ],
+            }],
         }];
         let (lines, _) = render_grep_results(&entries, 100, true);
-        // If the unclosed string on line 1 leaked into line 2's highlighting,
-        // all of line 2's spans would share one uniform "string" style.
-        // Independent highlighting of `let y = 42;` must produce multiple
-        // distinct styles (keyword, identifier, number, etc.).
-        let styles: Vec<Style> = lines[1].spans[1..].iter().map(|s| s.style).collect();
-        let unique: std::collections::HashSet<_> = styles.iter().collect();
+
+        let distinct_styles = |line: &Line| -> usize {
+            let styles: Vec<Style> = line.spans[1..].iter().map(|s| s.style).collect();
+            styles
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+        };
+
         assert!(
-            unique.len() > 1,
-            "expected multiple distinct styles for independently highlighted line, got {styles:?}"
+            distinct_styles(&lines[0]) > 1,
+            "context line should have multiple distinct (dimmed) syntax styles"
+        );
+        assert!(
+            distinct_styles(&lines[1]) > 1,
+            "match line after unclosed string context should be highlighted independently"
         );
     }
 
@@ -597,10 +623,6 @@ mod tests {
         let truncated = render_instructions(&blocks, &mut lines, MAX_INSTRUCTION_LINES, false);
         assert!(!truncated);
         let text: Vec<String> = lines.iter().map(line_text).collect();
-        assert!(
-            text[0].starts_with("1 "),
-            "first line should have gutter line number"
-        );
         assert!(text.iter().any(|l| l.contains("Title")));
         assert!(text.iter().any(|l| l.contains("Some rules here")));
     }

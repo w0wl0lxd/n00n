@@ -721,6 +721,17 @@ pub(crate) fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t.clamp(0.0, 1.0)) as u8
 }
 
+pub(crate) fn dim_style(style: Style, factor: f32) -> Style {
+    match (style.fg, current().background) {
+        (Some(Color::Rgb(fr, fg, fb)), Color::Rgb(br, bg, bb)) => style.fg(Color::Rgb(
+            lerp_u8(fr, br, factor),
+            lerp_u8(fg, bg, factor),
+            lerp_u8(fb, bb, factor),
+        )),
+        _ => style,
+    }
+}
+
 fn brighten_toward(style: Style, from: Color, to: Color, t: f32) -> Style {
     match (from, to) {
         (Color::Rgb(fr, fg, fb), Color::Rgb(tr, tg, tb)) => style.fg(Color::Rgb(
