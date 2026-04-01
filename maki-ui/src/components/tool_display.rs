@@ -119,7 +119,12 @@ pub(crate) fn tool_output_annotation(output: &ToolOutput, kind: ToolKind) -> Opt
         }
         ToolOutput::WriteCode { byte_count, .. } => Some(format!("{byte_count} bytes")),
         ToolOutput::MemoryWrite { lines, .. } => Some(format!("{} lines", lines.len())),
-        ToolOutput::GrepResult { entries } => Some(format!("{} files", entries.len())),
+        ToolOutput::GrepResult { entries } => {
+            let matches: usize = entries.iter().map(|e| e.match_count()).sum();
+            let files = entries.len();
+            let f = if files == 1 { "file" } else { "files" };
+            Some(format!("{matches} matches in {files} {f}"))
+        }
         ToolOutput::GlobResult { files } if !files.is_empty() => {
             Some(format!("{} files", files.len()))
         }
@@ -868,7 +873,9 @@ mod tests {
     use crate::components::{DisplayRole, ToolRole};
     use crate::markdown::TRUNCATION_PREFIX;
     use maki_agent::tools::{BASH_TOOL_NAME, READ_TOOL_NAME, WRITE_TOOL_NAME};
-    use maki_agent::{BatchToolEntry, BatchToolStatus, GrepFileEntry, ToolInput, ToolOutput};
+    use maki_agent::{
+        BatchToolEntry, BatchToolStatus, GrepFileEntry, GrepMatchGroup, ToolInput, ToolOutput,
+    };
     use test_case::test_case;
 
     fn code_input() -> Option<ToolInput> {
@@ -1172,7 +1179,7 @@ mod tests {
     #[test_case("read",  ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec!["x".into(); 5], total_lines: 5, instructions: None }, Some("5 lines") ; "read_code_full_file")]
     #[test_case("read",  ToolOutput::ReadCode { path: "a.rs".into(), start_line: 10, lines: vec!["x".into(); 5], total_lines: 100, instructions: None }, Some("5 of 100 lines") ; "read_code_partial")]
     #[test_case("write", ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
-    #[test_case("grep",  ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), matches: vec![] }] }, Some("1 files") ; "grep_file_count")]
+    #[test_case("grep",  ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, Some("1 matches in 1 file") ; "grep_file_count")]
     #[test_case("glob",  ToolOutput::GlobResult { files: vec!["a".into(), "b".into()] }, Some("2 files") ; "glob_file_count")]
     #[test_case("glob",  ToolOutput::GlobResult { files: vec![] },            None                ; "glob_empty_no_annotation")]
     #[test_case("edit",  ToolOutput::Diff { path: "a.rs".into(), hunks: vec![], summary: "ok".into() }, None ; "diff_no_annotation")]

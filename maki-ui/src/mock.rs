@@ -5,8 +5,9 @@ use maki_agent::tools::{
 };
 use maki_agent::{
     AgentEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan, Envelope,
-    GrepFileEntry, GrepMatch, QuestionInfo, QuestionOption, SubagentInfo, TodoItem, TodoPriority,
-    TodoStatus, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent, TurnCompleteEvent,
+    GrepFileEntry, GrepMatchGroup, QuestionInfo, QuestionOption, SubagentInfo, TodoItem,
+    TodoPriority, TodoStatus, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
+    TurnCompleteEvent,
 };
 use maki_providers::{Message, TokenUsage};
 
@@ -328,17 +329,11 @@ pub fn mock_events() -> Vec<MockEvent> {
             entries: vec![
                 GrepFileEntry {
                     path: "src/config/mod.rs".into(),
-                    matches: vec![GrepMatch {
-                        line_nr: 3,
-                        text: "pub struct ConfigBuilder {".into(),
-                    }],
+                    groups: vec![GrepMatchGroup::single(3, "pub struct ConfigBuilder {")],
                 },
                 GrepFileEntry {
                     path: "src/main.rs".into(),
-                    matches: vec![GrepMatch {
-                        line_nr: 12,
-                        text: "use config::ConfigBuilder;".into(),
-                    }],
+                    groups: vec![GrepMatchGroup::single(12, "use config::ConfigBuilder;")],
                 },
             ],
         },
@@ -753,23 +748,14 @@ print(f'Total lines across config: {total}')"
                 entries: vec![
                     GrepFileEntry {
                         path: "src/http/client.rs".into(),
-                        matches: vec![
-                            GrepMatch {
-                                line_nr: 22,
-                                text: "pub struct ClientBuilder {".into(),
-                            },
-                            GrepMatch {
-                                line_nr: 45,
-                                text: "impl ClientBuilder {".into(),
-                            },
+                        groups: vec![
+                            GrepMatchGroup::single(22, "pub struct ClientBuilder {"),
+                            GrepMatchGroup::single(45, "impl ClientBuilder {"),
                         ],
                     },
                     GrepFileEntry {
                         path: "src/db/pool.rs".into(),
-                        matches: vec![GrepMatch {
-                            line_nr: 8,
-                            text: "pub struct PoolBuilder {".into(),
-                        }],
+                        groups: vec![GrepMatchGroup::single(8, "pub struct PoolBuilder {")],
                     },
                 ],
             },
@@ -830,10 +816,10 @@ print(f'Total lines across config: {total}')"
             ToolOutput::GrepResult {
                 entries: vec![GrepFileEntry {
                     path: "src/auth/token.rs".into(),
-                    matches: vec![GrepMatch {
-                        line_nr: 31,
-                        text: "fn validate_token(token: &str) -> Result<Claims> {".into(),
-                    }],
+                    groups: vec![GrepMatchGroup::single(
+                        31,
+                        "fn validate_token(token: &str) -> Result<Claims> {",
+                    )],
                 }],
             },
             false,
@@ -920,23 +906,14 @@ print(f'Total lines across config: {total}')"
                 entries: vec![
                     GrepFileEntry {
                         path: "src/http/client.rs".into(),
-                        matches: vec![
-                            GrepMatch {
-                                line_nr: 90,
-                                text: "#[test]".into(),
-                            },
-                            GrepMatch {
-                                line_nr: 105,
-                                text: "#[test]".into(),
-                            },
+                        groups: vec![
+                            GrepMatchGroup::single(90, "#[test]"),
+                            GrepMatchGroup::single(105, "#[test]"),
                         ],
                     },
                     GrepFileEntry {
                         path: "src/db/pool.rs".into(),
-                        matches: vec![GrepMatch {
-                            line_nr: 44,
-                            text: "#[test]".into(),
-                        }],
+                        groups: vec![GrepMatchGroup::single(44, "#[test]")],
                     },
                 ],
             },

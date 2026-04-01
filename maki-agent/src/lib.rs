@@ -31,9 +31,10 @@ use maki_providers::Message;
 pub use maki_providers::{ImageMediaType, ImageSource, ThinkingConfig};
 pub use types::{
     AgentEvent, BatchProgressEvent, BatchToolEntry, BatchToolStatus, DiffHunk, DiffLine, DiffSpan,
-    Envelope, EventSender, GrepFileEntry, GrepMatch, InstructionBlock, NO_FILES_FOUND,
-    QuestionAnswer, QuestionInfo, QuestionOption, SubagentInfo, TodoItem, TodoPriority, TodoStatus,
-    ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent, TurnCompleteEvent,
+    Envelope, EventSender, GrepFileEntry, GrepLine, GrepMatchGroup, InstructionBlock,
+    NO_FILES_FOUND, QuestionAnswer, QuestionInfo, QuestionOption, SubagentInfo, TodoItem,
+    TodoPriority, TodoStatus, ToolDoneEvent, ToolInput, ToolOutput, ToolStartEvent,
+    TurnCompleteEvent,
 };
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

@@ -6,7 +6,7 @@ use maki_agent::tools::{
     BASH_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, QUESTION_TOOL_NAME, WRITE_TOOL_NAME,
 };
 use maki_agent::{
-    BatchToolEntry, DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatch, QuestionAnswer,
+    BatchToolEntry, DiffHunk, DiffLine, DiffSpan, GrepFileEntry, GrepMatchGroup, QuestionAnswer,
     ToolInput, ToolOutput,
 };
 use ratatui::backend::TestBackend;
@@ -57,7 +57,7 @@ fn tool_done_updates_start_status(is_error: bool, expected: ToolStatus) {
 #[test_case(
     "grep",
     grep_output(2),
-    Some("2 files")
+    Some("2 matches in 2 files")
     ; "grep_files"
 )]
 fn tool_done_sets_annotation(tool: &'static str, output: ToolOutput, expected: Option<&str>) {
@@ -93,10 +93,7 @@ fn grep_output(n_files: usize) -> ToolOutput {
         entries: (0..n_files)
             .map(|i| GrepFileEntry {
                 path: format!("{i}.rs"),
-                matches: vec![GrepMatch {
-                    line_nr: 1,
-                    text: String::new(),
-                }],
+                groups: vec![GrepMatchGroup::single(1, "")],
             })
             .collect(),
     }
@@ -940,11 +937,8 @@ fn toggle_returns_false_for_non_expandable() {
 fn panel_with_grep_tool(match_count: usize) -> MessagesPanel {
     let entries = vec![GrepFileEntry {
         path: "src/main.rs".into(),
-        matches: (1..=match_count)
-            .map(|i| GrepMatch {
-                line_nr: i,
-                text: format!("match_{i}"),
-            })
+        groups: (1..=match_count)
+            .map(|i| GrepMatchGroup::single(i, format!("match_{i}")))
             .collect(),
     }];
     let mut panel = MessagesPanel::new(UiConfig::default());

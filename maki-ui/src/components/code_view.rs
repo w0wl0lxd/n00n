@@ -176,21 +176,26 @@ fn render_grep_results(
 ) -> (Vec<Line<'static>>, bool) {
     let mut out = Vec::new();
     let mut budget = max_lines;
-    let total: usize = entries.iter().map(|e| e.matches.len()).sum();
+    let total_matches: usize = entries.iter().map(|e| e.match_count()).sum();
+    let mut rendered_matches: usize = 0;
 
     let global_max_nr = entries
         .iter()
-        .flat_map(|e| e.matches.iter().map(|m| m.line_nr))
+        .flat_map(|e| {
+            e.groups
+                .iter()
+                .flat_map(|g| g.lines.iter().map(|l| l.line_nr))
+        })
         .max()
         .unwrap_or(1);
     let w = nr_width(global_max_nr);
     let multi = entries.len() > 1;
+    let dim = theme::current().tool_dim;
 
     for entry in entries {
         if budget == 0 {
             break;
         }
-        let take = entry.matches.len().min(budget);
 
         if multi {
             out.push(Line::from(Span::styled(
@@ -200,21 +205,43 @@ fn render_grep_results(
         }
 
         let syntax = highlight.then(|| syntax_for_path(&entry.path));
+        let has_context = entry.groups.iter().any(|g| g.lines.len() > 1);
 
-        for m in entry.matches.iter().take(take) {
-            let mut spans = vec![gutter(&format!("{:>w$}", m.line_nr))];
-            if let Some(syn) = syntax {
-                spans.extend(highlight_spans(&mut highlighter_for_syntax(syn), &m.text));
-            } else {
-                spans.push(fallback_span(&m.text));
+        for (gi, group) in entry.groups.iter().enumerate() {
+            if budget == 0 {
+                break;
             }
-            out.push(Line::from(spans));
-            budget -= 1;
+            if gi > 0 && has_context {
+                out.push(Line::from(Span::styled("  --".to_owned(), dim)));
+                budget -= 1;
+            }
+            for line in &group.lines {
+                if budget == 0 {
+                    break;
+                }
+                let mut spans = vec![gutter(&format!("{:>w$}", line.line_nr))];
+                if line.is_match {
+                    if let Some(syn) = syntax {
+                        spans.extend(highlight_spans(
+                            &mut highlighter_for_syntax(syn),
+                            &line.text,
+                        ));
+                    } else {
+                        spans.push(fallback_span(&line.text));
+                    }
+                    rendered_matches += 1;
+                } else {
+                    spans.push(Span::styled(line.text.clone(), dim));
+                }
+                out.push(Line::from(spans));
+                budget -= 1;
+            }
         }
     }
-    let truncated = total > max_lines;
+    let truncated = budget == 0 && rendered_matches < total_matches;
     if truncated {
-        out.push(truncation_line(total.saturating_sub(max_lines)));
+        let hidden = total_matches - rendered_matches;
+        out.push(truncation_line(hidden));
     }
     (out, truncated)
 }
@@ -418,7 +445,7 @@ fn merge_syntax_with_diff(
 mod tests {
     use super::*;
     use crate::markdown::TRUNCATION_PREFIX;
-    use maki_agent::{DiffSpan, GrepMatch};
+    use maki_agent::{DiffSpan, GrepMatchGroup};
     use test_case::test_case;
 
     use ratatui::style::Color;
@@ -479,12 +506,9 @@ mod tests {
             .iter()
             .map(|(path, nrs)| GrepFileEntry {
                 path: path.to_string(),
-                matches: nrs
+                groups: nrs
                     .iter()
-                    .map(|&n| GrepMatch {
-                        line_nr: n,
-                        text: format!("code at {path}:{n}"),
-                    })
+                    .map(|&n| GrepMatchGroup::single(n, format!("code at {path}:{n}")))
                     .collect(),
             })
             .collect()
@@ -545,15 +569,9 @@ mod tests {
     fn grep_each_line_highlighted_independently() {
         let entries = vec![GrepFileEntry {
             path: "test.rs".into(),
-            matches: vec![
-                GrepMatch {
-                    line_nr: 1,
-                    text: "let x = \"open string".into(),
-                },
-                GrepMatch {
-                    line_nr: 50,
-                    text: "let y = 42;".into(),
-                },
+            groups: vec![
+                GrepMatchGroup::single(1, "let x = \"open string"),
+                GrepMatchGroup::single(50, "let y = 42;"),
             ],
         }];
         let (lines, _) = render_grep_results(&entries, 100, true);

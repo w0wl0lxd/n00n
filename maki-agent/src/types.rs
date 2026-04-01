@@ -39,13 +39,55 @@ pub struct DiffHunk {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrepFileEntry {
     pub path: String,
-    pub matches: Vec<GrepMatch>,
+    pub groups: Vec<GrepMatchGroup>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GrepMatch {
+pub struct GrepMatchGroup {
+    pub lines: Vec<GrepLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrepLine {
     pub line_nr: usize,
     pub text: String,
+    pub is_match: bool,
+}
+
+impl GrepLine {
+    pub fn matched(line_nr: usize, text: impl Into<String>) -> Self {
+        Self {
+            line_nr,
+            text: text.into(),
+            is_match: true,
+        }
+    }
+
+    pub fn context(line_nr: usize, text: impl Into<String>) -> Self {
+        Self {
+            line_nr,
+            text: text.into(),
+            is_match: false,
+        }
+    }
+}
+
+impl GrepMatchGroup {
+    pub fn single(line_nr: usize, text: impl Into<String>) -> Self {
+        Self {
+            lines: vec![GrepLine::matched(line_nr, text)],
+        }
+    }
+
+    pub fn match_count(&self) -> usize {
+        self.lines.iter().filter(|l| l.is_match).count()
+    }
+}
+
+impl GrepFileEntry {
+    pub fn match_count(&self) -> usize {
+        self.groups.iter().map(|g| g.match_count()).sum()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -358,8 +400,15 @@ impl ToolOutput {
                     }
                     out.push_str(&entry.path);
                     out.push(':');
-                    for m in &entry.matches {
-                        out.push_str(&format!("\n  {}: {}", m.line_nr, m.text));
+                    let has_context = entry.groups.iter().any(|g| g.lines.len() > 1);
+                    for (gi, group) in entry.groups.iter().enumerate() {
+                        if gi > 0 && has_context {
+                            out.push_str("\n  --");
+                        }
+                        for line in &group.lines {
+                            let sep = if line.is_match { ":" } else { " " };
+                            let _ = write!(out, "\n  {}{sep} {}", line.line_nr, line.text);
+                        }
                     }
                 }
                 out
@@ -662,23 +711,14 @@ mod tests {
             entries: vec![
                 GrepFileEntry {
                     path: "src/a.rs".into(),
-                    matches: vec![
-                        GrepMatch {
-                            line_nr: 3,
-                            text: "fn foo()".into(),
-                        },
-                        GrepMatch {
-                            line_nr: 10,
-                            text: "fn bar()".into(),
-                        },
+                    groups: vec![
+                        GrepMatchGroup::single(3, "fn foo()"),
+                        GrepMatchGroup::single(10, "fn bar()"),
                     ],
                 },
                 GrepFileEntry {
                     path: "src/b.rs".into(),
-                    matches: vec![GrepMatch {
-                        line_nr: 1,
-                        text: "use crate".into(),
-                    }],
+                    groups: vec![GrepMatchGroup::single(1, "use crate")],
                 },
             ],
         };
@@ -688,6 +728,31 @@ mod tests {
         assert!(text.contains("10: fn bar()"));
         assert!(text.contains("src/b.rs"));
         assert!(text.contains("1: use crate"));
+    }
+
+    #[test]
+    fn as_text_grep_result_with_context() {
+        let output = ToolOutput::GrepResult {
+            entries: vec![GrepFileEntry {
+                path: "src/a.rs".into(),
+                groups: vec![
+                    GrepMatchGroup {
+                        lines: vec![
+                            GrepLine::context(2, "let x = 1;"),
+                            GrepLine::matched(3, "fn foo()"),
+                            GrepLine::context(4, "let y = 2;"),
+                        ],
+                    },
+                    GrepMatchGroup::single(20, "fn bar()"),
+                ],
+            }],
+        };
+        let text = output.as_text();
+        assert!(text.contains("2  let x = 1;"), "context before: {text}");
+        assert!(text.contains("3: fn foo()"), "match line: {text}");
+        assert!(text.contains("4  let y = 2;"), "context after: {text}");
+        assert!(text.contains("--"), "group separator: {text}");
+        assert!(text.contains("20: fn bar()"), "second group: {text}");
     }
 
     #[test_case(ToolOutput::WriteCode { path: "src/lib.rs".into(), byte_count: 10, lines: vec![] }, Some("src/lib.rs") ; "write_code")]
