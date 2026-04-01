@@ -7,7 +7,7 @@ group = "Reference"
 
 # Keybindings
 
-On macOS, `Ctrl` maps to `Cmd` where it makes sense.
+On macOS, `Ctrl` maps to `Cmd` where it makes sense (run `/help` for exact keybindings).
 
 ## General
 
