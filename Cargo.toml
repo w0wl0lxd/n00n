@@ -1,5 +1,5 @@
 [package]
-name = "maki-ai"
+name = "maki"
 version = "0.1.0"
 edition = "2024"
 authors = ["Tony Solomonik <tony.solomonik@gmail.com>"]

@@ -9,8 +9,27 @@ group = "Getting Started"
 
 ## Install
 
-```bash
-cargo install --locked maki-ai
+Recommended way to install:
+
+```sh
+# Download and read the script first (don't blindly trust shell scripts).
+curl -fsSL https://maki.sh/install.sh -o install.sh
+cat install.sh
+
+# Then run.
+chmod +x install.sh && sh install.sh
+```
+
+One-liner:
+
+```sh
+curl -fsSL https://maki.sh/install.sh | sh
+```
+
+Living on the edge (main branch):
+
+```sh
+cargo install --locked --git https://github.com/tontinton/maki.git maki
 ```
 
 Or download a pre-built binary from [GitHub Releases](https://github.com/tontinton/maki/releases/latest).

@@ -24,6 +24,7 @@ cp index.html "$OUT/"
 cp asciinema-player.css "$OUT/"
 cp asciinema-player.min.js "$OUT/"
 cp demo.cast "$OUT/"
+cp ../install.sh "$OUT/"
 
 # 2. Build Zola docs
 cd docs

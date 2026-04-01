@@ -2177,6 +2177,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "maki"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "flume 0.11.1",
+ "maki-agent",
+ "maki-code-index",
+ "maki-config",
+ "maki-providers",
+ "maki-storage",
+ "maki-ui",
+ "serde",
+ "serde_json",
+ "smol",
+ "test-case",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "maki-agent"
 version = "0.1.0"
 dependencies = [
@@ -2219,28 +2241,6 @@ dependencies = [
  "tracing",
  "tree-sitter",
  "tree-sitter-bash",
-]
-
-[[package]]
-name = "maki-ai"
-version = "0.1.0"
-dependencies = [
- "clap",
- "color-eyre",
- "flume 0.11.1",
- "maki-agent",
- "maki-code-index",
- "maki-config",
- "maki-providers",
- "maki-storage",
- "maki-ui",
- "serde",
- "serde_json",
- "smol",
- "test-case",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

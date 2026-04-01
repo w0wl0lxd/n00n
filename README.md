@@ -37,14 +37,27 @@ Supported providers:
 
 **Dynamic providers** - if there's a provider maki doesn't support currently, and it uses openai / anthropic API, you can ask maki (using a different temp provider) to write you a small script to access it anyway. Example for [anthropic](https://github.com/tontinton/maki/blob/main/scripts/providers/ollama-anthropic), example for [openai](https://github.com/tontinton/maki/blob/main/scripts/providers/ollama-openai).
 
-Install:
+Recommended way to install:
 
 ```sh
-# Official release
-cargo install --locked maki-ai
+# Download and read the script first (don't blindly trust shell scripts).
+curl -fsSL https://maki.sh/install.sh -o install.sh
+cat install.sh
 
-# From main branch - living on the edge
-cargo install --locked --git https://github.com/tontinton/maki.git maki-ai
+# Then run.
+chmod +x install.sh && sh install.sh
+```
+
+One-liner:
+
+```sh
+curl -fsSL https://maki.sh/install.sh | sh
+```
+
+Living on the edge (main branch):
+
+```sh
+cargo install --locked --git https://github.com/tontinton/maki.git maki
 ```
 
 Or download a pre-built binary from [GitHub Releases](https://github.com/tontinton/maki/releases/latest).
