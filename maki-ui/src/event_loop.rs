@@ -7,6 +7,7 @@ use color_eyre::eyre::Context;
 use crossterm::event::{
     self, Event, KeyEventKind, MouseButton, MouseEvent as CtMouseEvent, MouseEventKind,
 };
+use maki_agent::command::CustomCommand;
 use maki_agent::permissions::PermissionManager;
 use maki_agent::skill::Skill;
 use maki_agent::{AgentConfig, CancelToken};
@@ -37,6 +38,7 @@ const IDLE_POLL_INTERVAL_MS: u64 = 100;
 pub struct EventLoopParams {
     pub model: Model,
     pub skills: Vec<Skill>,
+    pub commands: Vec<CustomCommand>,
     pub session: AppSession,
     pub storage: DataDir,
     pub config: AgentConfig,
@@ -144,6 +146,7 @@ impl<'t> EventLoop<'t> {
         let EventLoopParams {
             model,
             skills,
+            commands,
             session,
             storage,
             config,
@@ -165,6 +168,7 @@ impl<'t> EventLoop<'t> {
         let resumed = !session.messages.is_empty();
         let initial_history = session.messages.clone();
 
+        let custom_commands: Arc<[CustomCommand]> = Arc::from(commands);
         let mut app = App::new(
             &model,
             session,
@@ -175,6 +179,7 @@ impl<'t> EventLoop<'t> {
             ui_config,
             input_history_size,
             Arc::clone(&permissions),
+            custom_commands,
         );
 
         #[cfg(feature = "demo")]

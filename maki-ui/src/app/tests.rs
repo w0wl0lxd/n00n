@@ -48,6 +48,7 @@ fn test_app() -> App {
         UiConfig::default(),
         100,
         permissions,
+        Arc::from([]),
     );
     let (shared_queue, _rx) = SharedQueue::new();
     app.queue.set_shared(shared_queue);
@@ -139,42 +140,36 @@ fn typing_and_submit() {
     assert_eq!(app.status, Status::Streaming);
 }
 
-#[test]
-fn ctrl_c_clears_nonempty_input() {
-    let mut app = test_app();
+fn with_text(app: &mut App) {
     app.update(Msg::Key(key(KeyCode::Char('h'))));
     app.update(Msg::Key(key(KeyCode::Char('i'))));
-
-    let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
-    assert!(actions.is_empty());
-    assert!(!app.should_quit);
-    assert!(app.input_box.is_empty());
 }
 
-#[test]
-fn ctrl_c_quits_when_input_empty() {
-    for status in [Status::Idle, Status::Streaming] {
-        let mut app = test_app();
-        app.status = status;
-        let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
-        assert!(app.should_quit);
-        assert!(matches!(&actions[0], Action::Quit));
-    }
-}
-
-#[test]
-fn ctrl_c_clears_images_before_quitting() {
+fn with_image(app: &mut App) {
     use maki_agent::ImageMediaType;
-    use std::sync::Arc;
-
-    let mut app = test_app();
     let img = ImageSource::new(ImageMediaType::Png, Arc::from("dGVzdA=="));
     app.input_box.attach_image(img);
+}
 
+#[test_case(with_text as fn(&mut App)  ; "clears_text")]
+#[test_case(with_image as fn(&mut App) ; "clears_image")]
+fn ctrl_c_clears_nonempty_input(setup: fn(&mut App)) {
+    let mut app = test_app();
+    setup(&mut app);
     let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
     assert!(actions.is_empty());
     assert!(!app.should_quit);
     assert!(app.input_box.is_empty());
+}
+
+#[test_case(Status::Idle      ; "idle")]
+#[test_case(Status::Streaming ; "streaming")]
+fn ctrl_c_quits_when_input_empty(status: Status) {
+    let mut app = test_app();
+    app.status = status;
+    let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
+    assert!(app.should_quit);
+    assert!(matches!(&actions[0], Action::Quit));
 }
 
 #[test]
@@ -271,15 +266,13 @@ fn altgr_chars_not_swallowed_by_ctrl_handler() {
     assert_eq!(app.input_box.buffer.value(), "hi\\");
 }
 
-#[test]
-fn paste_works_regardless_of_status() {
-    for status in [Status::Idle, Status::Streaming] {
-        let mut app = test_app();
-        app.status = status;
-        let actions = app.update(Msg::Paste("pasted".into()));
-        assert!(actions.is_empty());
-        assert_eq!(app.input_box.buffer.value(), "pasted");
-    }
+#[test_case(Status::Idle      ; "idle")]
+#[test_case(Status::Streaming ; "streaming")]
+fn paste_works_regardless_of_status(status: Status) {
+    let mut app = test_app();
+    app.status = status;
+    app.update(Msg::Paste("pasted".into()));
+    assert_eq!(app.input_box.buffer.value(), "pasted");
 }
 
 #[test]
@@ -364,9 +357,9 @@ fn error_app(app: &mut App) {
     }));
 }
 
-fn cmd(name: &'static str) -> ParsedCommand {
+fn cmd(name: &str) -> ParsedCommand {
     ParsedCommand {
-        name,
+        name: name.to_string(),
         args: String::new(),
     }
 }
@@ -484,6 +477,7 @@ fn load_session_clears_plan() {
             },
             PathBuf::from("/tmp"),
         )),
+        Arc::from([]),
     );
     app.state
         .session
@@ -1410,7 +1404,8 @@ fn submit_exit_quits(input: &str) {
     assert!(matches!(&actions[0], Action::Quit));
 }
 
-#[test_case(0, "hello"           ; "no_images")]
+#[test_case(0, "hello"            ; "no_images")]
+#[test_case(1, "hello [1 image]"  ; "single_image")]
 #[test_case(2, "hello [2 images]" ; "multiple_images")]
 fn format_with_images_label(count: usize, expected: &str) {
     assert_eq!(format_with_images("hello", count), expected);
@@ -1434,7 +1429,7 @@ fn yolo_toggle() {
 fn cd_command_behavior() {
     let mut app = test_app();
     app.execute_command(ParsedCommand {
-        name: "/cd",
+        name: "/cd".into(),
         args: "/tmp".into(),
     });
     let flash = app.status_bar.flash_text().unwrap();
@@ -1443,7 +1438,7 @@ fn cd_command_behavior() {
     assert_eq!(app.state.session.cwd, canonical.to_string_lossy());
 
     app.execute_command(ParsedCommand {
-        name: "/cd",
+        name: "/cd".into(),
         args: "/nonexistent_path_12345".into(),
     });
     let flash = app.status_bar.flash_text().unwrap();
@@ -1728,7 +1723,7 @@ fn open_editor(setup: Option<(&str, bool)>, expect_flash: bool) {
 fn btw_empty_flashes_error() {
     let mut app = test_app();
     let actions = app.execute_command(ParsedCommand {
-        name: "/btw",
+        name: "/btw".into(),
         args: String::new(),
     });
     assert!(actions.is_empty());
@@ -1742,7 +1737,7 @@ fn btw_empty_flashes_error() {
 fn btw_with_question_returns_action() {
     let mut app = test_app();
     let actions = app.execute_command(ParsedCommand {
-        name: "/btw",
+        name: "/btw".into(),
         args: "what is rust?".into(),
     });
     assert!(matches!(&actions[..], [Action::Btw(q)] if q == "what is rust?"));
@@ -1987,7 +1982,7 @@ fn thinking_explicit_args() {
     let mut app = test_app();
 
     app.execute_command(ParsedCommand {
-        name: "/thinking",
+        name: "/thinking".into(),
         args: "8192".into(),
     });
     assert_eq!(app.state.thinking, ThinkingConfig::Budget(8192));

@@ -1,0 +1,66 @@
++++
+title = "Commands"
+weight = 5
+[extra]
+group = "Reference"
++++
+
+# Commands
+
+Type `/` in the input box to open the command palette.
+
+## Built-in commands
+
+| Command | Description |
+|---------|-------------|
+| `/tasks` | Browse and search tasks |
+| `/compact` | Summarize and compact conversation history |
+| `/new` | Start a new session |
+| `/help` | Show keybindings |
+| `/queue` | Remove items from queue |
+| `/sessions` | Browse and switch sessions |
+| `/model` | Switch model |
+| `/theme` | Switch color theme |
+| `/mcp` | Configure MCP servers |
+| `/cd` | Change working directory |
+| `/btw` | Ask a quick question (no tools, no history pollution) |
+| `/memory` | List memory files for this project |
+| `/yolo` | Toggle YOLO mode (skip all permission prompts) |
+| `/thinking` | Toggle extended thinking (off, adaptive, or budget) |
+| `/exit` | Exit the application |
+
+## Custom commands
+
+You can define your own slash commands as Markdown files.
+
+### Project commands
+
+Place `.md` files in `.maki/commands/` in your project root.
+They appear in the palette as `/project:<filename>`.
+
+### User commands
+
+Place `.md` files in `~/.maki/commands/`.
+They appear in the palette as `/user:<filename>`.
+
+Project commands override user commands with the same name.
+
+`.claude/commands/` directories are also supported for compatibility.
+
+### Metadata
+
+You can add optional metadata at the top of the file between `---` lines to set `name`, `description`, and `argument-hint`:
+
+```markdown
+---
+description: Review code for issues
+argument-hint: <file>
+---
+Review $ARGUMENTS and suggest improvements.
+```
+
+### Arguments
+
+Use `$ARGUMENTS` in the command body. It gets replaced with whatever you type after the command name.
+
+For example, `/project:review main.rs` replaces `$ARGUMENTS` with `main.rs`.

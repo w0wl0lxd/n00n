@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use color_eyre::Result;
 use color_eyre::eyre::{Context, bail};
 use maki_agent::ToolCall;
+use maki_agent::command::{self, CustomCommand};
 use maki_agent::mcp::{config as mcp_config, oauth as mcp_oauth};
 use maki_agent::skill::{self, Skill};
 use maki_config::load_config;
@@ -60,6 +61,10 @@ struct Cli {
     #[arg(long)]
     no_skills: bool,
 
+    /// Skip loading custom commands from .maki/commands, .claude/commands, etc.
+    #[arg(long)]
+    no_commands: bool,
+
     /// Disable rtk command rewriting
     #[arg(long)]
     no_rtk: bool,
@@ -104,6 +109,14 @@ fn discover(disable: bool) -> Vec<Skill> {
     }
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
     skill::discover_skills(&cwd)
+}
+
+fn discover_cmds(disable: bool) -> Vec<CustomCommand> {
+    if disable {
+        return Vec::new();
+    }
+    let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
+    command::discover_commands(&cwd)
 }
 
 #[derive(Subcommand)]
@@ -264,6 +277,7 @@ fn run() -> Result<()> {
             init_logging(&storage, &config.storage);
             install_panic_log_hook();
             let skills = discover(cli.no_skills);
+            let commands = discover_cmds(cli.no_commands);
             if cli.print {
                 print::run(
                     &model,
@@ -292,6 +306,7 @@ fn run() -> Result<()> {
                 let session_id = maki_ui::run(maki_ui::EventLoopParams {
                     model,
                     skills,
+                    commands,
                     session,
                     storage,
                     config: config.agent,

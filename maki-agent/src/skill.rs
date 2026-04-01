@@ -83,7 +83,7 @@ pub fn build_skill_list_description(skills: &[Skill]) -> String {
     desc
 }
 
-fn find_project_ancestor_dirs(cwd: &Path) -> Vec<PathBuf> {
+pub(crate) fn find_project_ancestor_dirs(cwd: &Path) -> Vec<PathBuf> {
     let mut dirs = vec![cwd.to_path_buf()];
     let mut current = cwd;
 
@@ -138,7 +138,7 @@ fn parse_skill(content: &str, path: &Path) -> Option<Skill> {
     })
 }
 
-fn split_frontmatter(content: &str) -> (String, String) {
+pub(crate) fn split_frontmatter(content: &str) -> (String, String) {
     let content = content.trim_start();
     if !content.starts_with("---") {
         return (String::new(), content.to_string());
@@ -154,7 +154,7 @@ fn split_frontmatter(content: &str) -> (String, String) {
     (frontmatter, body)
 }
 
-fn parse_frontmatter(frontmatter: &str, default_name: &str) -> (String, String) {
+pub(crate) fn parse_frontmatter(frontmatter: &str, default_name: &str) -> (String, String) {
     let mut name = default_name.to_string();
     let mut description = String::new();
 

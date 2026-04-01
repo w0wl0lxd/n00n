@@ -15,6 +15,7 @@ pub(crate) mod task_set;
 pub use agent::{Agent, AgentParams, AgentRunParams, History, LoadedInstructions, RunOutcome};
 pub use cancel::{CancelToken, CancelTrigger};
 pub use maki_config::{AgentConfig, PermissionsConfig, UiConfig};
+pub mod command;
 pub mod permissions;
 pub(crate) mod prompt;
 pub mod skill;

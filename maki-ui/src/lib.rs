@@ -7,6 +7,7 @@ pub mod animation;
 pub mod app;
 pub mod chat;
 mod components;
+pub use components::command::{BUILTIN_COMMANDS, BuiltinCommand};
 pub use components::keybindings;
 mod highlight;
 mod image;

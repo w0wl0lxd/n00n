@@ -152,6 +152,7 @@ impl App {
         ui_config: UiConfig,
         input_history_size: usize,
         permissions: Arc<PermissionManager>,
+        custom_commands: Arc<[maki_agent::command::CustomCommand]>,
     ) -> Self {
         let state = SessionState::from_session(session, model, &storage);
         Self {
@@ -159,7 +160,7 @@ impl App {
             active_chat: 0,
             chat_index: HashMap::new(),
             input_box: InputBox::new(InputHistory::load(&storage, input_history_size)),
-            command_palette: CommandPalette::new(),
+            command_palette: CommandPalette::new(custom_commands),
             task_picker: ListPicker::new(),
             task_picker_original: None,
             theme_picker: ThemePicker::new(),
@@ -946,7 +947,7 @@ impl App {
 
     fn execute_command(&mut self, cmd: ParsedCommand) -> Vec<Action> {
         self.input_box.discard();
-        match cmd.name {
+        match cmd.name.as_str() {
             "/tasks" => {
                 self.open_tasks();
                 vec![]
@@ -1017,7 +1018,29 @@ impl App {
                 vec![]
             }
             "/exit" => self.quit(),
+            name if name.starts_with("/project:") || name.starts_with("/user:") => {
+                self.execute_custom_command(name, &cmd.args)
+            }
             _ => vec![],
+        }
+    }
+
+    fn execute_custom_command(&mut self, name: &str, args: &str) -> Vec<Action> {
+        let Some(cmd) = self.command_palette.find_custom_command(name) else {
+            self.flash(format!("Unknown command: {name}"));
+            return vec![];
+        };
+        let rendered = cmd.render(args);
+        let msg = QueuedMessage {
+            text: rendered,
+            images: Vec::new(),
+        };
+        if self.status == Status::Streaming {
+            self.queue_and_notify(msg);
+            vec![]
+        } else {
+            self.run_id += 1;
+            self.start_from_queue(&msg)
         }
     }
 

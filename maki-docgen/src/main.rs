@@ -1,3 +1,4 @@
+mod gen_commands;
 mod gen_config;
 mod gen_keybindings;
 mod gen_providers;
@@ -42,7 +43,7 @@ fn check_page(section: &str, expected: &str) -> bool {
 fn main() -> ExitCode {
     let check = std::env::args().any(|a| a == "--check");
 
-    let ((tools, providers), (config, keybindings)) = smol::block_on(async {
+    let ((tools, providers), (config, (keybindings, commands))) = smol::block_on(async {
         smol::future::zip(
             smol::future::zip(
                 smol::unblock(gen_tools::generate),
@@ -50,7 +51,10 @@ fn main() -> ExitCode {
             ),
             smol::future::zip(
                 smol::unblock(gen_config::generate),
-                smol::unblock(gen_keybindings::generate),
+                smol::future::zip(
+                    smol::unblock(gen_keybindings::generate),
+                    smol::unblock(gen_commands::generate),
+                ),
             ),
         )
         .await
@@ -61,6 +65,7 @@ fn main() -> ExitCode {
         ("providers", providers),
         ("configuration", config),
         ("keybindings", keybindings),
+        ("commands", commands),
     ];
 
     if check {

@@ -1,90 +1,93 @@
-use crate::theme;
+use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent};
+use maki_agent::command::CustomCommand;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 
-struct Command {
-    name: &'static str,
-    description: &'static str,
-    max_args: usize,
+use crate::theme;
+
+pub struct BuiltinCommand {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub max_args: usize,
 }
 
-const COMMANDS: &[Command] = &[
-    Command {
+pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
+    BuiltinCommand {
         name: "/tasks",
         description: "Browse and search tasks",
         max_args: 0,
     },
-    Command {
+    BuiltinCommand {
         name: "/compact",
         description: "Summarize and compact conversation history",
         max_args: 0,
     },
-    Command {
+    BuiltinCommand {
         name: "/new",
         description: "Start a new session",
         max_args: 0,
     },
-    Command {
+    BuiltinCommand {
         name: "/help",
         description: "Show keybindings",
         max_args: 0,
     },
-    Command {
+    BuiltinCommand {
         name: "/queue",
         description: "Remove items from queue",
         max_args: 0,
     },
-    Command {
+    BuiltinCommand {
         name: "/sessions",
         description: "Browse and switch sessions",
         max_args: 0,
     },
-    Command {
+    BuiltinCommand {
         name: "/model",
         description: "Switch model",
         max_args: 0,
     },
-    Command {
+    BuiltinCommand {
         name: "/theme",
         description: "Switch color theme",
         max_args: 0,
     },
-    Command {
+    BuiltinCommand {
         name: "/mcp",
         description: "Configure MCP servers",
         max_args: 0,
     },
-    Command {
+    BuiltinCommand {
         name: "/cd",
         description: "Change working directory",
         max_args: 1,
     },
-    Command {
+    BuiltinCommand {
         name: "/btw",
         description: "Ask a quick question (no tools, no history pollution)",
         max_args: usize::MAX,
     },
-    Command {
+    BuiltinCommand {
         name: "/memory",
         description: "List memory files for this project",
         max_args: 0,
     },
-    Command {
+    BuiltinCommand {
         name: "/yolo",
         description: "Toggle YOLO mode (skip all permission prompts)",
         max_args: 0,
     },
-    Command {
+    BuiltinCommand {
         name: "/thinking",
         description: "Toggle extended thinking (off, adaptive, or budget)",
         max_args: 1,
     },
-    Command {
+    BuiltinCommand {
         name: "/exit",
         description: "Exit the application",
         max_args: 0,
@@ -92,24 +95,8 @@ const COMMANDS: &[Command] = &[
 ];
 
 pub struct ParsedCommand {
-    pub name: &'static str,
+    pub name: String,
     pub args: String,
-}
-
-#[cfg(test)]
-fn parse_command(input: &str) -> Option<ParsedCommand> {
-    let stripped = input.strip_prefix('/')?;
-    let (cmd_word, args) = match stripped.split_once(char::is_whitespace) {
-        Some((c, a)) => (c, a.trim()),
-        None => (stripped, ""),
-    };
-    let cmd = COMMANDS
-        .iter()
-        .find(|c| c.name[1..].eq_ignore_ascii_case(cmd_word))?;
-    Some(ParsedCommand {
-        name: cmd.name,
-        args: args.to_string(),
-    })
 }
 
 pub enum CommandAction {
@@ -119,16 +106,24 @@ pub enum CommandAction {
     Passthrough,
 }
 
+#[derive(Clone)]
+enum FilteredItem {
+    Builtin(usize),
+    Custom(usize),
+}
+
 pub struct CommandPalette {
     selected: usize,
-    filtered: Vec<usize>,
+    filtered: Vec<FilteredItem>,
+    custom: Arc<[CustomCommand]>,
 }
 
 impl CommandPalette {
-    pub fn new() -> Self {
+    pub fn new(custom_commands: Arc<[CustomCommand]>) -> Self {
         Self {
             selected: 0,
             filtered: Vec::new(),
+            custom: custom_commands,
         }
     }
 
@@ -182,15 +177,26 @@ impl CommandPalette {
         } else {
             parts.len().saturating_sub(1)
         };
-        self.filtered = COMMANDS
-            .iter()
-            .enumerate()
-            .filter(|(_, cmd)| {
-                cmd.name[1..].to_ascii_lowercase().starts_with(&cmd_lower)
-                    && arg_count <= cmd.max_args
-            })
-            .map(|(i, _)| i)
-            .collect();
+
+        self.filtered.clear();
+
+        for (i, cmd) in BUILTIN_COMMANDS.iter().enumerate() {
+            if cmd.name[1..].to_ascii_lowercase().starts_with(&cmd_lower)
+                && arg_count <= cmd.max_args
+            {
+                self.filtered.push(FilteredItem::Builtin(i));
+            }
+        }
+
+        for (i, cmd) in self.custom.iter().enumerate() {
+            let display = cmd.display_name();
+            let entry_name = &display[1..];
+            let max_args = if cmd.has_args() { usize::MAX } else { 0 };
+            if entry_name.to_ascii_lowercase().starts_with(&cmd_lower) && arg_count <= max_args {
+                self.filtered.push(FilteredItem::Custom(i));
+            }
+        }
+
         self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
     }
 
@@ -220,9 +226,23 @@ impl CommandPalette {
         };
     }
 
+    fn item_name(&self, item: &FilteredItem) -> String {
+        match item {
+            FilteredItem::Builtin(i) => BUILTIN_COMMANDS[*i].name.to_string(),
+            FilteredItem::Custom(i) => self.custom[*i].display_name(),
+        }
+    }
+
+    fn item_description(&self, item: &FilteredItem) -> &str {
+        match item {
+            FilteredItem::Builtin(i) => BUILTIN_COMMANDS[*i].description,
+            FilteredItem::Custom(i) => &self.custom[*i].description,
+        }
+    }
+
     pub fn confirm(&self, input: &str) -> Option<ParsedCommand> {
-        let &idx = self.filtered.get(self.selected)?;
-        let name = COMMANDS[idx].name;
+        let item = self.filtered.get(self.selected)?;
+        let name = self.item_name(item);
         let args = input
             .strip_prefix('/')
             .and_then(|s| s.split_once(char::is_whitespace))
@@ -232,6 +252,12 @@ impl CommandPalette {
             name,
             args: args.to_string(),
         })
+    }
+
+    pub fn find_custom_command(&self, display_name: &str) -> Option<&CustomCommand> {
+        self.custom
+            .iter()
+            .find(|c| c.display_name() == display_name)
     }
 
     pub fn view(&self, frame: &mut Frame, input_area: Rect) -> Option<Rect> {
@@ -248,12 +274,12 @@ impl CommandPalette {
         const GAP: usize = 2;
         let max_name = filtered
             .iter()
-            .map(|&i| COMMANDS[i].name.len())
+            .map(|item| self.item_name(item).len())
             .max()
             .unwrap_or(0);
         let max_desc = filtered
             .iter()
-            .map(|&i| COMMANDS[i].description.len())
+            .map(|item| self.item_description(item).len())
             .max()
             .unwrap_or(0);
         const PAD: usize = 1;
@@ -266,28 +292,31 @@ impl CommandPalette {
             height: popup_height,
         };
 
+        let names: Vec<String> = filtered.iter().map(|item| self.item_name(item)).collect();
+
         let lines: Vec<Line> = filtered
             .iter()
             .enumerate()
-            .map(|(i, &cmd_idx)| {
-                let cmd = &COMMANDS[cmd_idx];
+            .map(|(i, item)| {
+                let name = &names[i];
+                let desc = self.item_description(item);
                 let selected = i == self.selected;
-                let name_pad = max_name - cmd.name.len() + GAP;
+                let name_pad = max_name - name.len() + GAP;
                 if selected {
                     let s = theme::current().cmd_selected;
                     Line::from(vec![
                         Span::styled(" ".repeat(PAD), s),
-                        Span::styled(cmd.name, s),
+                        Span::styled(name.clone(), s),
                         Span::styled(" ".repeat(name_pad), s),
-                        Span::styled(cmd.description, s),
+                        Span::styled(desc, s),
                         Span::styled(" ".repeat(PAD), s),
                     ])
                 } else {
                     Line::from(vec![
                         Span::raw(" ".repeat(PAD)),
-                        Span::styled(cmd.name, theme::current().cmd_name),
+                        Span::styled(name.clone(), theme::current().cmd_name),
                         Span::raw(" ".repeat(name_pad)),
-                        Span::styled(cmd.description, theme::current().cmd_desc),
+                        Span::styled(desc, theme::current().cmd_desc),
                         Span::raw(" ".repeat(PAD)),
                     ])
                 }
@@ -310,16 +339,48 @@ mod tests {
     use test_case::test_case;
 
     fn synced(input: &str) -> CommandPalette {
-        let mut p = CommandPalette::new();
+        let mut p = CommandPalette::new(Arc::from([]));
         p.sync(input);
         p
+    }
+
+    fn synced_with_custom(input: &str, custom: Arc<[CustomCommand]>) -> CommandPalette {
+        let mut p = CommandPalette::new(custom);
+        p.sync(input);
+        p
+    }
+
+    fn sample_custom() -> Arc<[CustomCommand]> {
+        Arc::from([
+            CustomCommand {
+                name: "review".into(),
+                description: "Code review".into(),
+                content: "Review $ARGUMENTS".into(),
+                scope: maki_agent::command::CommandScope::Project,
+                accepts_args: true,
+            },
+            CustomCommand {
+                name: "fix".into(),
+                description: "Quick fix".into(),
+                content: "Fix the code".into(),
+                scope: maki_agent::command::CommandScope::User,
+                accepts_args: false,
+            },
+        ])
     }
 
     #[test]
     fn slash_shows_all_commands() {
         let p = synced("/");
         assert!(p.is_active());
-        assert_eq!(p.filtered.len(), COMMANDS.len());
+        assert_eq!(p.filtered.len(), BUILTIN_COMMANDS.len());
+    }
+
+    #[test]
+    fn slash_shows_all_including_custom() {
+        let p = synced_with_custom("/", sample_custom());
+        assert!(p.is_active());
+        assert_eq!(p.filtered.len(), BUILTIN_COMMANDS.len() + 2);
     }
 
     #[test]
@@ -339,6 +400,14 @@ mod tests {
     }
 
     #[test]
+    fn filter_custom_by_prefix() {
+        let p = synced_with_custom("/project:r", sample_custom());
+        assert!(p.is_active());
+        assert_eq!(p.filtered.len(), 1);
+        assert!(matches!(p.filtered[0], FilteredItem::Custom(0)));
+    }
+
+    #[test]
     fn navigation_wraps() {
         let mut p = synced("/");
         p.move_up();
@@ -349,7 +418,7 @@ mod tests {
 
     #[test]
     fn confirm_when_inactive_returns_none() {
-        let p = CommandPalette::new();
+        let p = CommandPalette::new(Arc::from([]));
         assert!(p.confirm("").is_none());
     }
 
@@ -366,7 +435,8 @@ mod tests {
         let p = synced("/cd ~/foo");
         assert!(p.is_active());
         assert_eq!(p.filtered.len(), 1);
-        assert_eq!(COMMANDS[p.filtered[0]].name, "/cd");
+        let name = p.item_name(&p.filtered[0]);
+        assert_eq!(name, "/cd");
     }
 
     #[test_case("/compact ", false ; "zero_arg_cmd_with_space")]
@@ -381,22 +451,49 @@ mod tests {
         assert_eq!(p.is_active(), expect_active);
     }
 
-    #[test_case("/cd", Some("/cd"), ""              ; "no_args")]
-    #[test_case("/cd ~/foo", Some("/cd"), "~/foo"   ; "with_args")]
-    #[test_case("/CD ~/foo", Some("/cd"), "~/foo"   ; "case_insensitive")]
-    #[test_case("/compact", Some("/compact"), ""    ; "other_command")]
-    #[test_case("/btw hello world", Some("/btw"), "hello world" ; "btw_multi_word")]
-    #[test_case("/nonexistent", None, ""            ; "unknown")]
-    #[test_case("hello", None, ""                   ; "no_slash")]
-    fn parse_command_cases(input: &str, expected_name: Option<&str>, expected_args: &str) {
-        let result = parse_command(input);
-        match expected_name {
-            Some(name) => {
-                let cmd = result.unwrap();
-                assert_eq!(cmd.name, name);
-                assert_eq!(cmd.args, expected_args);
-            }
-            None => assert!(result.is_none()),
-        }
+    #[test]
+    fn custom_command_with_args_stays_active() {
+        let p = synced_with_custom("/project:review some args", sample_custom());
+        assert!(p.is_active());
+    }
+
+    #[test]
+    fn custom_command_without_args_hides_on_space() {
+        let p = synced_with_custom("/user:fix ", sample_custom());
+        assert!(!p.is_active());
+    }
+
+    #[test_case("/cd", "/cd", ""              ; "no_args")]
+    #[test_case("/cd ~/foo", "/cd", "~/foo"   ; "with_args")]
+    #[test_case("/CD ~/foo", "/cd", "~/foo"   ; "case_insensitive")]
+    #[test_case("/compact", "/compact", ""    ; "other_command")]
+    #[test_case("/btw hello world", "/btw", "hello world" ; "btw_multi_word")]
+    fn confirm_parses_args(input: &str, expected_name: &str, expected_args: &str) {
+        let mut p = CommandPalette::new(Arc::from([]));
+        p.sync(input);
+        let cmd = p.confirm(input).unwrap();
+        assert_eq!(cmd.name, expected_name);
+        assert_eq!(cmd.args, expected_args);
+    }
+
+    #[test]
+    fn confirm_custom_command() {
+        let custom = sample_custom();
+        let mut p = CommandPalette::new(custom);
+        p.sync("/project:review");
+        assert!(p.is_active());
+        let cmd = p.confirm("/project:review some-file.rs").unwrap();
+        assert_eq!(cmd.name, "/project:review");
+        assert_eq!(cmd.args, "some-file.rs");
+    }
+
+    #[test]
+    fn find_custom_command_lookup() {
+        let custom = sample_custom();
+        let p = CommandPalette::new(custom);
+        let found = p.find_custom_command("/project:review");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().content, "Review $ARGUMENTS");
+        assert!(p.find_custom_command("/nonexistent").is_none());
     }
 }
