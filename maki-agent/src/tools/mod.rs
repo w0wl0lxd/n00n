@@ -418,24 +418,13 @@ pub(crate) fn sanitize_tool_input(input: &Value) -> Value {
 
 fn strip_stray_quotes(field: &str, s: &str) -> Value {
     let t = s.trim();
-    let fixed = if t.len() >= 2
-        && t.starts_with('"')
-        && t.ends_with('"')
-        && !t[1..t.len() - 1].contains('"')
+    if let Some(inner) = t.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+        && !inner.contains('"')
     {
-        Some(&t[1..t.len() - 1])
-    } else if t.ends_with('"') && t.chars().filter(|&c| c == '"').count() % 2 == 1 {
-        Some(&t[..t.len() - 1])
-    } else {
-        None
-    };
-    match fixed {
-        Some(f) => {
-            warn!(field = %field, original = %s, fixed = %f, "stripped stray quotes from tool param");
-            Value::String(f.to_string())
-        }
-        None => Value::String(s.to_string()),
+        warn!(field = %field, original = %s, fixed = %inner, "stripped stray quotes from tool param");
+        return Value::String(inner.to_string());
     }
+    Value::String(s.to_string())
 }
 
 fn to_snake_case(s: &str) -> String {
@@ -1108,8 +1097,8 @@ mod tests {
     )]
     #[test_case(
         json!({"pattern": "TODO\""}),
-        json!({"pattern": "TODO"})
-        ; "trailing_only_quote_stripped"
+        json!({"pattern": "TODO\""})
+        ; "trailing_quote_preserved"
     )]
     #[test_case(
         json!({"pattern": "say \"hello\""}),
