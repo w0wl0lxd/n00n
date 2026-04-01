@@ -296,6 +296,7 @@ impl ToolOutput {
             Self::ReadCode {
                 start_line,
                 lines,
+                total_lines,
                 instructions,
                 ..
             } => {
@@ -305,6 +306,16 @@ impl ToolOutput {
                     .map(|(i, line)| format!("{}: {line}", start_line + i))
                     .collect::<Vec<_>>()
                     .join("\n");
+                let lines_shown = lines.len();
+                if *total_lines > lines_shown {
+                    let remaining = total_lines - (start_line - 1 + lines_shown);
+                    if remaining > 0 {
+                        out.push_str(&format!(
+                            "\n\n... truncated {} more lines. Use offset/limit to read further.",
+                            remaining
+                        ));
+                    }
+                }
                 if let Some(blocks) = instructions {
                     append_instructions(&mut out, blocks);
                 }
@@ -750,14 +761,14 @@ mod tests {
         10,
         vec!["fn foo()".into(), "fn bar()".into()],
         Some(vec![InstructionBlock { path: "AGENTS.md".into(), content: "do stuff".into() }]),
-        "10: fn foo()\n11: fn bar()\n\n---\nInstructions from: AGENTS.md\ndo stuff"
+        "10: fn foo()\n11: fn bar()\n\n... truncated 89 more lines. Use offset/limit to read further.\n\n---\nInstructions from: AGENTS.md\ndo stuff"
         ; "with_instructions"
     )]
     #[test_case(
         1,
         vec!["line1".into()],
         None,
-        "1: line1"
+        "1: line1\n\n... truncated 99 more lines. Use offset/limit to read further."
         ; "without_instructions"
     )]
     fn read_code_display_text(
