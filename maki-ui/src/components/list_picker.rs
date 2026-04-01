@@ -190,6 +190,9 @@ impl<T: PickerItem> State<T> {
                 self.viewport_height,
             );
         }
+        let max_offset =
+            find_scroll_offset_for_bottom(&self.filtered, &self.items, self.viewport_height);
+        self.scroll_offset = self.scroll_offset.min(max_offset);
     }
 
     fn selected_item_index(&self) -> Option<usize> {
@@ -981,6 +984,22 @@ mod tests {
         s.selected = 2;
         s.ensure_visible();
         assert_eq!(s.scroll_offset, 2);
+    }
+
+    #[test]
+    fn ensure_visible_clamps_scroll_offset_after_filter() {
+        let mut p = ListPicker::new();
+        let items: Vec<Entry> = (0..20).map(|i| Entry::new(&format!("Item {i}"))).collect();
+        p.open(items, " Test ");
+        let s = ready_state_mut(&mut p);
+        s.viewport_height = 10;
+        s.scroll_offset = 10;
+        s.selected = 15;
+
+        s.search.insert_text("0");
+        s.update_search_and_clamp();
+        s.ensure_visible();
+        assert_eq!(s.scroll_offset, 0);
     }
 
     #[test_case(key(KeyCode::Esc) ; "esc_closes_loading")]
