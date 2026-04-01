@@ -65,11 +65,12 @@ impl QuestionOption {
     pub fn item_schema() -> Value {
         serde_json::json!({
             "type": "object",
+            "required": ["label"],
             "properties": {
                 "label": { "type": "string", "description": "Option label" },
                 "description": { "type": "string", "description": "Option description" }
             },
-            "required": ["label"]
+            "additionalProperties": false
         })
     }
 }
@@ -89,6 +90,7 @@ impl QuestionInfo {
     pub fn item_schema() -> Value {
         serde_json::json!({
             "type": "object",
+            "required": ["question"],
             "properties": {
                 "question": { "type": "string", "description": "The question text" },
                 "header": { "type": "string", "description": "Short tab header for the question" },
@@ -99,7 +101,7 @@ impl QuestionInfo {
                 },
                 "multiple": { "type": "boolean", "description": "Whether multiple options can be selected" }
             },
-            "required": ["question"]
+            "additionalProperties": false
         })
     }
 }
@@ -115,12 +117,13 @@ impl TodoItem {
     pub fn item_schema() -> Value {
         serde_json::json!({
             "type": "object",
+            "required": ["content", "status", "priority"],
             "properties": {
                 "content": { "type": "string", "description": "Task description" },
                 "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"] },
                 "priority": { "type": "string", "enum": ["high", "medium", "low"] }
             },
-            "required": ["content", "status", "priority"]
+            "additionalProperties": false
         })
     }
 }

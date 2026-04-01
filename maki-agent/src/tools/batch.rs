@@ -34,7 +34,8 @@ impl BatchEntry {
             "properties": {
                 "tool": { "type": "string", "description": "The name of the tool to execute" },
                 "parameters": { "type": "object", "description": "Parameters for the tool" }
-            }
+            },
+            "additionalProperties": false
         })
     }
 

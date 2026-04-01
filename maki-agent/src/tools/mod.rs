@@ -814,7 +814,6 @@ mod tests {
     use super::test_support::stub_ctx;
     use super::*;
 
-    const DEADLINE_EXCEEDED_MSG: &str = super::DEADLINE_EXCEEDED;
     const LINE_LIMIT: usize = 500;
 
     #[test_case(30,  "30s timeout"   ; "seconds_only")]
@@ -824,28 +823,22 @@ mod tests {
         assert_eq!(timeout_annotation(secs), expected);
     }
 
-    #[test]
-    fn deadline_none_passes_through() {
-        assert_eq!(Deadline::None.cap_timeout(120).unwrap(), 120);
+    #[test_case(Deadline::None,                          120, 120 ; "none_passes_through")]
+    #[test_case(Deadline::after(Duration::from_secs(60)), 10,  10  ; "requested_under_remaining")]
+    fn cap_timeout_ok(deadline: Deadline, requested: u64, expected: u64) {
+        assert_eq!(deadline.cap_timeout(requested).unwrap(), expected);
     }
 
     #[test]
-    fn deadline_uses_requested_when_under_remaining() {
-        let deadline = Deadline::after(Duration::from_secs(60));
-        assert_eq!(deadline.cap_timeout(10).unwrap(), 10);
+    fn cap_timeout_clamps_to_remaining() {
+        let clamped = Deadline::after(Duration::from_secs(30)).cap_timeout(600).unwrap();
+        assert!((1..=30).contains(&clamped), "expected 1..=30, got {clamped}");
     }
 
     #[test]
-    fn deadline_expired_returns_error() {
+    fn cap_timeout_expired() {
         let expired = Deadline::At(Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
-        assert_eq!(expired.cap_timeout(120).unwrap_err(), DEADLINE_EXCEEDED_MSG);
-    }
-
-    #[test]
-    fn deadline_clamps_timeout_to_remaining() {
-        let deadline = Deadline::after(Duration::from_secs(5));
-        let clamped = deadline.cap_timeout(600).unwrap();
-        assert!((1..=5).contains(&clamped), "expected 1-5, got {clamped}");
+        assert_eq!(expired.cap_timeout(120).unwrap_err(), DEADLINE_EXCEEDED);
     }
 
     #[test_case("short",                            "short"                             ; "short_passthrough")]
@@ -1016,15 +1009,31 @@ mod tests {
 
     #[test]
     fn tool_definitions_schema_requires_additional_properties_false() {
+        fn check_object_schemas(schema: &Value, path: &str) {
+            if schema.get("type").and_then(|v| v.as_str()) == Some("object")
+                && schema.get("properties").is_some()
+            {
+                assert_eq!(
+                    schema.get("additionalProperties"),
+                    Some(&json!(false)),
+                    "{path} missing additionalProperties: false",
+                );
+            }
+            if let Some(props) = schema.get("properties").and_then(|v| v.as_object()) {
+                for (key, val) in props {
+                    check_object_schemas(val, &format!("{path}.properties.{key}"));
+                }
+            }
+            if let Some(items) = schema.get("items") {
+                check_object_schemas(items, &format!("{path}.items"));
+            }
+        }
+
         let vars = Vars::new().set("{cwd}", "/tmp");
         let all = ToolCall::definitions(&vars, &[], true);
         for def in all.as_array().unwrap() {
-            assert_eq!(
-                def["input_schema"]["additionalProperties"],
-                json!(false),
-                "tool {} missing additionalProperties: false",
-                def["name"]
-            );
+            let name = def["name"].as_str().unwrap();
+            check_object_schemas(&def["input_schema"], name);
         }
     }
 

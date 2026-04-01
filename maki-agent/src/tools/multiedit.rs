@@ -21,12 +21,13 @@ impl EditEntry {
     fn item_schema() -> Value {
         serde_json::json!({
             "type": "object",
+            "required": ["old_string", "new_string"],
             "properties": {
                 "old_string": { "type": "string", "description": "Exact string to find" },
                 "new_string": { "type": "string", "description": "Replacement string" },
                 "replace_all": { "type": "boolean", "description": "Replace all occurrences (default false)" }
             },
-            "required": ["old_string", "new_string"]
+            "additionalProperties": false
         })
     }
 }
