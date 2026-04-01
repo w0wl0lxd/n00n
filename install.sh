@@ -9,7 +9,7 @@ main() {
     need_cmd curl
 
     case "$(uname -s)" in
-        Linux)  os="unknown-linux-gnu" ;;
+        Linux)  os="unknown-linux-musl" ;;
         Darwin) os="apple-darwin" ;;
         *) err "unsupported OS: $(uname -s)" ;;
     esac
