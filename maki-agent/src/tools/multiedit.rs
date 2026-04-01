@@ -2,34 +2,21 @@ use std::fs;
 
 use crate::{DiffHunk, DiffLine, DiffSpan, ToolOutput};
 use serde::Deserialize;
-use serde_json::Value;
 use similar::ChangeTag;
 
-use maki_tool_macro::Tool;
+use maki_tool_macro::{Args, Tool};
 
 use super::fuzzy_replace;
 use super::{line_at_offset, relative_path};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Args, Debug, Clone, Deserialize)]
 struct EditEntry {
+    #[param(description = "Exact string to find")]
     old_string: String,
+    #[param(description = "Replacement string")]
     new_string: String,
+    #[param(description = "Replace all occurrences (default false)")]
     replace_all: Option<bool>,
-}
-
-impl EditEntry {
-    fn item_schema() -> Value {
-        serde_json::json!({
-            "type": "object",
-            "required": ["old_string", "new_string"],
-            "properties": {
-                "old_string": { "type": "string", "description": "Exact string to find" },
-                "new_string": { "type": "string", "description": "Replacement string" },
-                "replace_all": { "type": "boolean", "description": "Replace all occurrences (default false)" }
-            },
-            "additionalProperties": false
-        })
-    }
 }
 
 #[derive(Tool, Debug, Clone)]

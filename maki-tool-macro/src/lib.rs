@@ -1,6 +1,8 @@
-//! Derives `schema()` (JSON Schema for the API) and `parse_input()` (deserialize from API JSON)
-//! from struct fields. `#[param(description = "...")]` maps to JSON Schema description.
-//! Optional fields (`Option<T>`) are excluded from `required`. `Vec` fields emit `"type": "array"`.
+//! Derive macros for tool schemas.
+//!
+//! - `Tool`: generates `schema()`, `parse_input()`, `schema_hint()` for top-level tool structs.
+//! - `Args`: generates `item_schema()` for structs used as `Vec<T>` items in tool schemas.
+//! - `ArgEnum`: generates `item_schema()` for `#[serde(rename_all = "snake_case")]` enums.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -77,6 +79,151 @@ fn vec_item_schema(ty: &Type) -> TokenStream2 {
     quote! { serde_json::json!({}) }
 }
 
+fn has_serde_default(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        if !attr.path().is_ident("serde") {
+            return false;
+        }
+        let Ok(nested) = attr.parse_args::<Meta>() else {
+            return false;
+        };
+        matches!(nested, Meta::Path(p) if p.is_ident("default"))
+    })
+}
+
+fn to_snake_case(s: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn is_plain_object(ty: &Type) -> bool {
+    if let Type::Path(tp) = ty
+        && let Some(seg) = tp.path.segments.last()
+    {
+        return seg.ident == "Value";
+    }
+    false
+}
+
+fn field_schema_token(field_ty: &Type) -> TokenStream2 {
+    let json_type = json_type_str(field_ty);
+    let unwrapped = unwrapped_type(field_ty);
+    if json_type == "array" {
+        let item_schema = vec_item_schema(unwrapped);
+        quote! {
+            serde_json::json!({
+                "type": "array",
+                "items": #item_schema
+            })
+        }
+    } else if json_type == "object" && !is_plain_object(unwrapped) {
+        quote! { #unwrapped::item_schema() }
+    } else {
+        quote! { serde_json::json!({ "type": #json_type }) }
+    }
+}
+
+#[proc_macro_derive(ArgEnum)]
+pub fn derive_arg_enum(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    let Data::Enum(data) = &input.data else {
+        return syn::Error::new_spanned(name, "ArgEnum can only be derived on enums")
+            .to_compile_error()
+            .into();
+    };
+
+    let variants: Vec<String> = data
+        .variants
+        .iter()
+        .map(|v| to_snake_case(&v.ident.to_string()))
+        .collect();
+
+    let expanded = quote! {
+        impl #name {
+            pub fn item_schema() -> serde_json::Value {
+                serde_json::json!({
+                    "type": "string",
+                    "enum": [#(#variants),*]
+                })
+            }
+        }
+    };
+    expanded.into()
+}
+
+#[proc_macro_derive(Args, attributes(param))]
+pub fn derive_args(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    let Data::Struct(data) = &input.data else {
+        return syn::Error::new_spanned(name, "Args can only be derived on structs")
+            .to_compile_error()
+            .into();
+    };
+    let Fields::Named(fields) = &data.fields else {
+        return syn::Error::new_spanned(name, "Args requires named fields")
+            .to_compile_error()
+            .into();
+    };
+
+    let mut prop_entries = Vec::new();
+    let mut required_entries = Vec::new();
+
+    for field in &fields.named {
+        let field_name = field.ident.as_ref().unwrap();
+        let field_ty = &field.ty;
+        let field_str = field_name.to_string();
+        let desc = param_description(&field.attrs).unwrap_or_default();
+        let optional = is_option(field_ty) || has_serde_default(&field.attrs);
+        let base = field_schema_token(field_ty);
+
+        prop_entries.push(quote! {
+            let mut entry = #base;
+            if let serde_json::Value::Object(ref mut m) = entry {
+                if !#desc.is_empty() {
+                    m.insert("description".to_string(), serde_json::Value::String(#desc.to_string()));
+                }
+            }
+            props.insert(#field_str.to_string(), entry);
+        });
+
+        if !optional {
+            required_entries.push(quote! { required.push(#field_str.to_string()); });
+        }
+    }
+
+    let expanded = quote! {
+        impl #name {
+            pub fn item_schema() -> serde_json::Value {
+                let mut props = serde_json::Map::new();
+                #(#prop_entries)*
+                let mut required = Vec::<String>::new();
+                #(#required_entries)*
+                serde_json::json!({
+                    "type": "object",
+                    "required": required,
+                    "properties": serde_json::Value::Object(props),
+                    "additionalProperties": false
+                })
+            }
+        }
+    };
+    expanded.into()
+}
+
 #[proc_macro_derive(Tool, attributes(param))]
 pub fn derive_tool(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -104,7 +251,7 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
         let field_str = field_name.to_string();
         let desc = param_description(&field.attrs).unwrap_or_default();
         let json_type = json_type_str(field_ty);
-        let optional = is_option(field_ty);
+        let optional = is_option(field_ty) || has_serde_default(&field.attrs);
 
         if json_type == "array" {
             let item_schema = vec_item_schema(field_ty);

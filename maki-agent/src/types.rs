@@ -3,8 +3,8 @@ use std::path::Path;
 
 use flume::Sender;
 use maki_providers::{AgentError, ContentBlock, Message, Role, StopReason, TokenUsage};
+use maki_tool_macro::{ArgEnum, Args};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 pub const NO_FILES_FOUND: &str = "No files found";
 
@@ -54,81 +54,39 @@ pub struct QuestionAnswer {
     pub answer: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Args, Debug, Clone, Serialize, Deserialize)]
 pub struct QuestionOption {
+    #[param(description = "Option label")]
     pub label: String,
     #[serde(default)]
+    #[param(description = "Option description")]
     pub description: String,
 }
 
-impl QuestionOption {
-    pub fn item_schema() -> Value {
-        serde_json::json!({
-            "type": "object",
-            "required": ["label"],
-            "properties": {
-                "label": { "type": "string", "description": "Option label" },
-                "description": { "type": "string", "description": "Option description" }
-            },
-            "additionalProperties": false
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Args, Debug, Clone, Serialize, Deserialize)]
 pub struct QuestionInfo {
+    #[param(description = "The question text")]
     pub question: String,
     #[serde(default)]
+    #[param(description = "Short tab header for the question")]
     pub header: String,
     #[serde(default)]
+    #[param(description = "List of predefined options")]
     pub options: Vec<QuestionOption>,
     #[serde(default)]
+    #[param(description = "Whether multiple options can be selected")]
     pub multiple: bool,
 }
 
-impl QuestionInfo {
-    pub fn item_schema() -> Value {
-        serde_json::json!({
-            "type": "object",
-            "required": ["question"],
-            "properties": {
-                "question": { "type": "string", "description": "The question text" },
-                "header": { "type": "string", "description": "Short tab header for the question" },
-                "options": {
-                    "type": "array",
-                    "description": "List of predefined options",
-                    "items": QuestionOption::item_schema()
-                },
-                "multiple": { "type": "boolean", "description": "Whether multiple options can be selected" }
-            },
-            "additionalProperties": false
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Args, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TodoItem {
+    #[param(description = "Task description")]
     pub content: String,
     pub status: TodoStatus,
     pub priority: TodoPriority,
 }
 
-impl TodoItem {
-    pub fn item_schema() -> Value {
-        serde_json::json!({
-            "type": "object",
-            "required": ["content", "status", "priority"],
-            "properties": {
-                "content": { "type": "string", "description": "Task description" },
-                "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"] },
-                "priority": { "type": "string", "enum": ["high", "medium", "low"] }
-            },
-            "additionalProperties": false
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(ArgEnum, Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
     Pending,
@@ -148,7 +106,7 @@ impl TodoStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, strum::Display)]
+#[derive(ArgEnum, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, strum::Display)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum TodoPriority {

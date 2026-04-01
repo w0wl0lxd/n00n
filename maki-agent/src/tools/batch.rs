@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::task_set::TaskSet;
-use maki_tool_macro::Tool;
+use maki_tool_macro::{Args, Tool};
 use tracing::{error, info};
 
 use std::time::Instant;
@@ -20,25 +20,15 @@ use super::{ToolCall, ToolContext};
 
 const MAX_BATCH_SIZE: usize = 25;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Args, Debug, Clone, Deserialize)]
 pub(super) struct BatchEntry {
+    #[param(description = "The name of the tool to execute")]
     tool: String,
+    #[param(description = "Parameters for the tool")]
     parameters: Value,
 }
 
 impl BatchEntry {
-    fn item_schema() -> Value {
-        serde_json::json!({
-            "type": "object",
-            "required": ["tool", "parameters"],
-            "properties": {
-                "tool": { "type": "string", "description": "The name of the tool to execute" },
-                "parameters": { "type": "object", "description": "Parameters for the tool" }
-            },
-            "additionalProperties": false
-        })
-    }
-
     fn to_batch_entry(
         &self,
         status: BatchToolStatus,
