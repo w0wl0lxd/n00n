@@ -121,11 +121,11 @@ fn parse_tool_calls<'a>(
                     call,
                 }),
                 Err(AgentError::Tool { message, .. }) => {
-                    warn!(tool = %name, error = %message, "failed to parse tool call");
+                    warn!(tool = %name, input = %input, error = %message, "failed to parse tool call");
                     errors.push(ToolDoneEvent::error(id.to_owned(), message));
                 }
                 Err(e) => {
-                    warn!(tool = %name, error = %e, "failed to parse tool call");
+                    warn!(tool = %name, input = %input, error = %e, "failed to parse tool call");
                     errors.push(ToolDoneEvent::error(id.to_owned(), e.to_string()));
                 }
             }
