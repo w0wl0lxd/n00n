@@ -20,7 +20,7 @@ use super::scrollbar::render_vertical_scrollbar;
 use super::{apply_scroll_delta, visual_line_count};
 use crate::selection::LineBreaks;
 
-const MAX_INPUT_LINES: u16 = 15;
+const MAX_INPUT_LINES: u16 = 20;
 const CHEVRON: &str = super::CHEVRON;
 const NEWLINE_PAD: &str = "  ";
 const PREFIX_WIDTH: u16 = 2;
