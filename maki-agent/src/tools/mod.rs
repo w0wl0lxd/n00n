@@ -444,8 +444,8 @@ fn to_snake_case(s: &str) -> String {
 
 fn coerce_value(val: &Value, field: &str, json_type: &str) -> Option<Value> {
     let coerced = match (val, json_type) {
-        (Value::String(s), "integer") => parse_leading_number::<i64>(s).map(Value::from),
-        (Value::String(s), "number") => parse_leading_number::<f64>(s).map(Value::from),
+        (Value::String(s), "integer") => parse_number::<i64>(s).map(Value::from),
+        (Value::String(s), "number") => parse_number::<f64>(s).map(Value::from),
         (Value::String(s), "boolean") => match s.trim() {
             "true" => Some(Value::Bool(true)),
             "false" => Some(Value::Bool(false)),
@@ -482,16 +482,8 @@ pub(crate) fn deserialize_with_coercion<T: serde::de::DeserializeOwned>(
     })
 }
 
-fn parse_leading_number<T: std::str::FromStr>(s: &str) -> Option<T> {
-    let s = s.trim_start();
-    let numeric_end = s
-        .strip_prefix('-')
-        .unwrap_or(s)
-        .find(|c: char| !c.is_ascii_digit() && c != '.')
-        .map_or(s.len(), |i| i + s.starts_with('-') as usize);
-    (numeric_end > s.starts_with('-') as usize)
-        .then(|| s[..numeric_end].parse().ok())
-        .flatten()
+fn parse_number<T: std::str::FromStr>(s: &str) -> Option<T> {
+    s.trim().parse().ok()
 }
 
 macro_rules! register_tools {
@@ -1131,9 +1123,9 @@ mod tests {
 
     #[test_case(Value::String("30".into()),                       "integer", Some(json!(30))    ; "string_to_integer")]
     #[test_case(Value::String("-5".into()),                       "integer", Some(json!(-5))    ; "negative_string_to_integer")]
-    #[test_case(Value::String("-3-5".into()),                     "integer", Some(json!(-3))    ; "negative_with_extra_dash")]
     #[test_case(Value::String(" 42".into()),                      "integer", Some(json!(42))    ; "leading_whitespace")]
-    #[test_case(Value::String("30, \"offset\": 2075".into()),     "integer", Some(json!(30))    ; "embedded_trailing_fields")]
+    #[test_case(Value::String("30, \"offset\": 2075".into()),     "integer", None               ; "embedded_trailing_fields_rejected")]
+    #[test_case(Value::String("-3-5".into()),                     "integer", None               ; "malformed_number_rejected")]
     #[test_case(Value::String("true".into()),                     "boolean", Some(json!(true))  ; "string_true_to_bool")]
     #[test_case(Value::String("false".into()),                    "boolean", Some(json!(false)) ; "string_false_to_bool")]
     #[test_case(Value::String("1.25".into()),                      "number",  Some(json!(1.25))  ; "string_to_float")]
