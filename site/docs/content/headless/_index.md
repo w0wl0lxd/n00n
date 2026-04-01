@@ -53,15 +53,39 @@ Difference: ~40% fewer tokens used on average.
 
 ## Examples
 
+Pipe compiler errors back for a fix:
+
 ```bash
-# CI check
-maki "check for security issues" --print --output-format json | jq -e '.is_error == false'
+cargo build 2>&1 | maki "Fix these compiler errors." --print --yolo
+```
 
-# Batch processing
-for file in src/*.rs; do
-  maki "add doc comments to $file" --print --allowed-tools Bash,Edit
+Generate a changelog from recent commits:
+
+```bash
+git log --oneline v1.2.0..HEAD | maki "Write a user-facing \
+  changelog grouped by: Added, Changed, Fixed. Skip chores." --print
+```
+
+Automated PR summaries in CI:
+
+```bash
+SUMMARY=$(git diff main..HEAD | maki "Write a 2-3 sentence \
+  summary of this change for a PR description." --print)
+gh pr edit --body "$SUMMARY"
+```
+
+Migrate an API across many files:
+
+```bash
+grep -rl 'old_api_call' src/ | while read file; do
+  maki "In $file, migrate old_api_call() to new_api_call(). \
+    Keep behavior identical." --print --yolo --allowed-tools Read,Edit
 done
+```
 
-# Cost tracking
-maki "refactor this" --print --output-format json | jq '.total_cost_usd'
+Cost tracking:
+
+```bash
+maki "refactor the database layer" --print --output-format json \
+  | jq '.total_cost_usd'
 ```
