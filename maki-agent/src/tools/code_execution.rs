@@ -28,7 +28,7 @@ const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 const PREAMBLE: &str = "import re\nimport asyncio\nimport sys\nimport os\nimport json\n";
 
 #[derive(Tool, Debug, Clone)]
-pub struct CodeInterpreter {
+pub struct CodeExecution {
     #[param(
         description = "Python code to execute. Tools are async functions that return strings (not objects). You MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency."
     )]
@@ -37,7 +37,7 @@ pub struct CodeInterpreter {
     timeout: Option<u64>,
 }
 
-impl CodeInterpreter {
+impl CodeExecution {
     pub const NAME: &str = "code_execution";
     pub const DESCRIPTION: &str = include_str!("code_execution.md");
     pub const EXAMPLES: Option<&str> = Some(
@@ -135,7 +135,7 @@ impl CodeInterpreter {
     }
 }
 
-impl super::ToolDefaults for CodeInterpreter {
+impl super::ToolDefaults for CodeExecution {
     fn start_input(&self) -> Option<ToolInput> {
         Some(ToolInput::Script {
             language: "python".into(),
@@ -321,7 +321,7 @@ mod tests {
             let path_str = path.to_string_lossy();
 
             let ctx = stub_ctx(&AgentMode::Build);
-            let ci = CodeInterpreter {
+            let ci = CodeExecution {
                 code: format!("result = await read(path='{path_str}')\nprint(result)"),
                 timeout: None,
             };
@@ -343,7 +343,7 @@ mod tests {
             let (trigger, cancel) = crate::cancel::CancelToken::new();
             let mut ctx = stub_ctx(&AgentMode::Build);
             ctx.cancel = cancel;
-            let ci = CodeInterpreter {
+            let ci = CodeExecution {
                 code: "1 + 1".into(),
                 timeout: None,
             };

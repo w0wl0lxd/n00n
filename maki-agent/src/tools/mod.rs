@@ -89,7 +89,7 @@ pub const WEBFETCH_TOOL_NAME: &str = webfetch::WebFetch::NAME;
 pub const WEBSEARCH_TOOL_NAME: &str = websearch::WebSearch::NAME;
 pub const WRITE_TOOL_NAME: &str = write::Write::NAME;
 pub const MEMORY_TOOL_NAME: &str = memory::Memory::NAME;
-pub const CODE_EXECUTION_TOOL_NAME: &str = code_execution::CodeInterpreter::NAME;
+pub const CODE_EXECUTION_TOOL_NAME: &str = code_execution::CodeExecution::NAME;
 
 pub(crate) const INTERPRETER_TOOLS: &[&str] = &[
     "read",
@@ -705,7 +705,7 @@ register_tools! {
     Skill(skill::SkillTool),
     Task(task::Task),
     Batch(batch::Batch),
-    CodeInterpreter(code_execution::CodeInterpreter),
+    CodeExecution(code_execution::CodeExecution),
     Memory(memory::Memory),
 }
 
