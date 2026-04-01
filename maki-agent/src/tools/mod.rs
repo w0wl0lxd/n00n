@@ -831,8 +831,13 @@ mod tests {
 
     #[test]
     fn cap_timeout_clamps_to_remaining() {
-        let clamped = Deadline::after(Duration::from_secs(30)).cap_timeout(600).unwrap();
-        assert!((1..=30).contains(&clamped), "expected 1..=30, got {clamped}");
+        let clamped = Deadline::after(Duration::from_secs(30))
+            .cap_timeout(600)
+            .unwrap();
+        assert!(
+            (1..=30).contains(&clamped),
+            "expected 1..=30, got {clamped}"
+        );
     }
 
     #[test]
