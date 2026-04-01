@@ -78,12 +78,12 @@ Search file contents using regex.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `context_after` | integer | no | 0 | Lines of context after each match |
-| `context_before` | integer | no | 0 | Lines of context before each match |
-| `include` | string | no |  | File glob filter (e.g. *.rs) |
-| `limit` | integer | no |  | Max number of match groups to return |
+| `context_after` | integer | no |  | Context lines after match |
+| `context_before` | integer | no |  | Context lines before match |
+| `include` | string | no |  | File glob filter (e.g. *.c) |
+| `limit` | integer | no |  | Max match groups to return |
 | `path` | string | no | cwd | Directory to search in |
-| `pattern` | string | yes |  | Regex pattern to search for |
+| `pattern` | string | yes |  | Regex pattern |
 
 ### `index`
 
