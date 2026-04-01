@@ -44,7 +44,9 @@ impl Grep {
     pub const EXAMPLES: Option<&str> = Some(r#"[{"pattern": "fn main", "include": "*.rs"}]"#);
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let pattern = self.pattern.clone();
+        // This is really ugly, but for some odd reason the AI sends an escaped quote at the end by accident,
+        // retrying again and again, until 1 time it sends without. Too frequently.
+        let pattern = self.pattern.trim_end_matches('"').to_string();
         let include = self.include.clone();
         let path = self.path.clone();
         let search_limit = ctx.config.search_result_limit;
