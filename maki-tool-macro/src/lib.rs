@@ -141,24 +141,17 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
 
         if optional {
             field_extractions.push(quote! {
-                let #field_name: #field_ty = {
-                    let raw = input.get(#field_str).cloned().unwrap_or(serde_json::Value::Null);
-                    if raw.is_null() {
-                        crate::tools::rescue_field(input, #field_str)
-                            .map(|v| crate::tools::deserialize_with_coercion(&v, #field_str, #json_type))
-                            .transpose()?
-                    } else {
-                        Some(crate::tools::deserialize_with_coercion(&raw, #field_str, #json_type)?)
-                    }
-                };
+                let #field_name: #field_ty = input
+                    .get(#field_str)
+                    .filter(|v| !v.is_null())
+                    .map(|v| crate::tools::deserialize_with_coercion(v, #field_str, #json_type))
+                    .transpose()?;
             });
         } else {
             field_extractions.push(quote! {
                 let #field_name: #field_ty = {
-                    let raw = input.get(#field_str).cloned().or_else(|| {
-                        crate::tools::rescue_field(input, #field_str)
-                    }).ok_or_else(|| format!("The required parameter '{}' is missing. Expected: {}", #field_str, Self::schema_hint()))?;
-                    crate::tools::deserialize_with_coercion(&raw, #field_str, #json_type)?
+                    let raw = input.get(#field_str).filter(|v| !v.is_null()).ok_or_else(|| format!("The required parameter '{}' is missing. Expected: {}", #field_str, Self::schema_hint()))?;
+                    crate::tools::deserialize_with_coercion(raw, #field_str, #json_type)?
                 };
             });
         }

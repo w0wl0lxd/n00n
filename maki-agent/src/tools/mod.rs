@@ -505,29 +505,6 @@ fn parse_leading_number<T: std::str::FromStr>(s: &str) -> Option<T> {
         .flatten()
 }
 
-pub(crate) fn rescue_field(input: &Value, field_name: &str) -> Option<Value> {
-    let obj = input.as_object()?;
-    let needle = format!("\"{}\":", field_name);
-    for (key, val) in obj {
-        if key == field_name {
-            continue;
-        }
-        let Some(s) = val.as_str() else { continue };
-        let Some(pos) = s.find(&needle) else { continue };
-        let after = s[pos + needle.len()..].trim_start();
-        for c in [after, after.split(", \"").next().unwrap_or(after)] {
-            let probe = format!("{{\"{field_name}\": {c}}}");
-            if let Ok(parsed) = serde_json::from_str::<Value>(&probe)
-                && let Some(v) = parsed.get(field_name)
-            {
-                warn!(field = %field_name, source_key = %key, rescued = %v, "rescued missing field from embedded value");
-                return Some(v.clone());
-            }
-        }
-    }
-    None
-}
-
 macro_rules! register_tools {
     ($($Variant:ident($inner:path)),+ $(,)?) => {
         $(const _: () = { fn _assert_defaults<T: ToolDefaults>() {} fn _check() { _assert_defaults::<$inner>() } };)+
@@ -1176,26 +1153,6 @@ mod tests {
     #[test_case(Value::String("".into()),                         "integer", None               ; "empty_string")]
     fn coerce_value_cases(val: Value, json_type: &str, expected: Option<Value>) {
         assert_eq!(coerce_value(&val, "test_field", json_type), expected);
-    }
-
-    #[test_case(
-        json!({"path": "x", "limit": "30, \"offset\": 2075"}), "offset", Some(json!(2075))
-        ; "rescue_embedded_offset"
-    )]
-    #[test_case(
-        json!({"path": "x", "limit": "30"}), "offset", None
-        ; "no_embedded_field"
-    )]
-    #[test_case(
-        json!({"command": "echo offset: 42"}), "offset", None
-        ; "no_json_quotes_no_rescue"
-    )]
-    #[test_case(
-        json!({"offset": "embedded \"offset\": 99"}), "offset", None
-        ; "skip_self_referencing_field"
-    )]
-    fn rescue_field_cases(input: Value, field_name: &str, expected: Option<Value>) {
-        assert_eq!(rescue_field(&input, field_name), expected);
     }
 
     #[test]

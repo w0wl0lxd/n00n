@@ -205,13 +205,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_input_rescues_embedded_offset() {
-        let r = Read::parse_input(&json!({"path": "x", "limit": "30, \"offset\": 2075"})).unwrap();
-        assert_eq!(r.limit, Some(30));
-        assert_eq!(r.offset, Some(2075));
-    }
-
-    #[test]
     fn parse_input_bad_coercion_returns_error() {
         let err = Read::parse_input(&json!({"path": "x", "limit": "not_a_number"})).unwrap_err();
         assert!(
