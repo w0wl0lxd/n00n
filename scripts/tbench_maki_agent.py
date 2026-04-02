@@ -139,7 +139,11 @@ class MakiAgent(BaseInstalledAgent):
         )
         await self.exec_as_root(
             environment,
-            command="mkdir -p /root/.maki/auth /root/.maki/providers && cp /mnt/maki-auth/* /root/.maki/auth/ && cp /mnt/maki-providers/* /root/.maki/providers/ && chmod +x /root/.maki/providers/*",
+            command="if [ -d /mnt/maki-auth ]; then mkdir -p /root/.maki/auth && cp /mnt/maki-auth/* /root/.maki/auth/; fi",
+        )
+        await self.exec_as_root(
+            environment,
+            command="if [ -d /mnt/maki-providers ]; then mkdir -p /root/.maki/providers && cp /mnt/maki-providers/* /root/.maki/providers/ && chmod +x /root/.maki/providers/*; fi",
         )
 
     @with_prompt_template
