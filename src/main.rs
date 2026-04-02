@@ -128,9 +128,8 @@ enum Command {
     },
     /// List all available models
     Models,
-    Index {
-        path: String,
-    },
+    /// Run the index tool on a file to see how it looks like
+    Index { path: String },
     /// Manage MCP server authentication
     Mcp {
         #[command(subcommand)]
