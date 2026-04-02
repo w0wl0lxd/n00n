@@ -25,7 +25,7 @@ use crate::app::shell::{ShellEvent, spawn_shell};
 use crate::app::{App, Msg};
 #[cfg(feature = "demo")]
 use crate::components;
-use crate::components::Action;
+use crate::components::{Action, Status};
 
 #[cfg(feature = "demo")]
 use crate::mock;
@@ -249,10 +249,19 @@ impl<'t> EventLoop<'t> {
         }
 
         let mut had_agent_msg = false;
-        while let Ok(envelope) = self.handles.agent_rx.try_recv() {
-            had_agent_msg = true;
-            let actions = self.app.update(Msg::Agent(Box::new(envelope)));
-            self.dispatch(actions);
+        loop {
+            match self.handles.agent_rx.try_recv() {
+                Ok(envelope) => {
+                    had_agent_msg = true;
+                    let actions = self.app.update(Msg::Agent(Box::new(envelope)));
+                    self.dispatch(actions);
+                }
+                Err(flume::TryRecvError::Disconnected) if self.app.status == Status::Streaming => {
+                    self.app.status = Status::error("agent stopped unexpectedly".into());
+                    break;
+                }
+                Err(_) => break,
+            }
         }
 
         while let Ok(warning) = self.warn_rx.try_recv() {

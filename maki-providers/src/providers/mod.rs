@@ -16,7 +16,9 @@ pub(crate) mod synthetic;
 pub(crate) mod zai;
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-pub(crate) const SSE_CONTENT_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const SSE_CONTENT_TIMEOUT: Duration = Duration::from_secs(120);
+const LOW_SPEED_BYTES_PER_SEC: u32 = 1;
+const LOW_SPEED_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) fn content_deadline() -> Instant {
     Instant::now() + SSE_CONTENT_TIMEOUT
@@ -95,6 +97,7 @@ pub(crate) async fn next_sse_line<R: AsyncBufRead + Unpin>(
 pub(crate) fn http_client() -> isahc::HttpClient {
     isahc::HttpClient::builder()
         .connect_timeout(CONNECT_TIMEOUT)
+        .low_speed_timeout(LOW_SPEED_BYTES_PER_SEC, LOW_SPEED_TIMEOUT)
         .build()
         .expect("failed to build HTTP client")
 }
