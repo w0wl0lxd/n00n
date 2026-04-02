@@ -163,7 +163,7 @@ class MakiAgent(BaseInstalledAgent):
         )
 
     def populate_context_post_run(self, context: AgentContext) -> None:
-        log_path = self.logs_dir / "agent" / AGENT_LOG_FILE
+        log_path = self.logs_dir / AGENT_LOG_FILE
         if not log_path.exists():
             print(f"No maki log found at {log_path}")
             return
