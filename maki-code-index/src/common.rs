@@ -13,6 +13,11 @@ use tree_sitter::Node;
 pub(crate) const FIELD_TRUNCATE_THRESHOLD: usize = 8;
 const LINE_WRAP_THRESHOLD: usize = 120;
 
+pub(crate) fn truncated_msg(total: usize) -> String {
+    let omitted = total - FIELD_TRUNCATE_THRESHOLD;
+    format!("[{omitted} more truncated]")
+}
+
 pub(crate) fn node_text<'a>(node: Node<'a>, source: &'a [u8]) -> &'a str {
     node.utf8_text(source).unwrap_or("")
 }
@@ -220,7 +225,7 @@ pub(crate) fn extract_fields_truncated(
         }
     }
     if total > FIELD_TRUNCATE_THRESHOLD {
-        fields.push("[truncated]".into());
+        fields.push(truncated_msg(total));
     }
     fields
 }
@@ -271,10 +276,9 @@ pub(crate) fn extract_body_members(
             }
         }
     }
-    for (counter, count) in &field_counts {
+    for count in field_counts.values() {
         if *count > FIELD_TRUNCATE_THRESHOLD {
-            let _ = counter;
-            members.push("[truncated]".into());
+            members.push(truncated_msg(*count));
         }
     }
     members

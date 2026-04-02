@@ -3,7 +3,7 @@ use tree_sitter::Node;
 use crate::common::{
     ChildKind, FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, expand_import,
     find_child, fn_signature, has_test_attr, line_range, node_text, prefixed, relevant_attr_texts,
-    vis_prefix,
+    truncated_msg, vis_prefix,
 };
 
 pub(crate) struct RustExtractor;
@@ -101,7 +101,7 @@ impl RustExtractor {
         }
 
         if total > FIELD_TRUNCATE_THRESHOLD && fields.len() < total {
-            fields.push("[truncated]".into());
+            fields.push(truncated_msg(total));
         }
 
         fields

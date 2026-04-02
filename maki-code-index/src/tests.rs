@@ -124,7 +124,7 @@ fn rust_many_fields_truncated() {
         "struct Big {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n    e: u8,\n    f: u8,\n    g: u8,\n    h: u8,\n    i: u8,\n    j: u8,\n}\n",
         Language::Rust,
     );
-    has(&out, &["[truncated]"]);
+    has(&out, &["[2 more truncated]"]);
 }
 
 #[test]
