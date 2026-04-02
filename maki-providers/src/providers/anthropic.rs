@@ -676,6 +676,7 @@ async fn parse_sse(
                     message: data.to_string(),
                 });
             }
+            "message_stop" => break,
             _ => {}
         }
     }
