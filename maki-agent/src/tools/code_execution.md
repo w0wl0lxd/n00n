@@ -1,6 +1,6 @@
 Execute Python code in a sandboxed interpreter. Tools are available as callable functions.
 
-Use for dependent/chained tool calls and filtering/processing results. This dramatically improves performance over sequential tool calls.
+Use for workflows of dependent/chained tool calls and filtering/processing results. This **DRAMATICALLY** improves performance over sequential tool calls!
 Good use case is filtering on web tool results.
 
 - All tools are async: `result = await read(path='file.txt')`
