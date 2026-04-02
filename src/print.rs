@@ -266,26 +266,14 @@ pub fn run(
         } = envelope;
         let parent_tool_use_id = subagent.as_ref().map(|s| s.parent_tool_use_id.as_str());
 
-        if verbose_out.is_none() && is_stream_json {
-            let done = matches!(event, AgentEvent::Done { .. });
-            println!("{}", serde_json::to_string(&envelope)?);
-            if done {
-                break;
-            }
-            continue;
-        }
-
         match event {
             AgentEvent::TextDelta { text } => {
                 if parent_tool_use_id.is_none() {
                     result_text.push_str(text);
                 }
-                if is_stream_json {
-                    println!("{}", serde_json::to_string(&envelope)?);
-                }
             }
-            AgentEvent::ThinkingDelta { .. }
-            | AgentEvent::ToolPending { .. }
+            AgentEvent::ThinkingDelta { .. } => {}
+            AgentEvent::ToolPending { .. }
             | AgentEvent::ToolStart(_)
             | AgentEvent::ToolOutput { .. }
             | AgentEvent::ToolDone(_)
@@ -302,6 +290,9 @@ pub fn run(
                 }
             }
             AgentEvent::TurnComplete(tc) => {
+                if is_stream_json {
+                    println!("{}", serde_json::to_string(&envelope)?);
+                }
                 if let Some(out) = &mut verbose_out {
                     let content_value = serde_json::to_value(&tc.message.content)?;
                     out.emit(&AssistantEvent {
@@ -318,6 +309,9 @@ pub fn run(
                 }
             }
             AgentEvent::ToolResultsSubmitted { message } => {
+                if is_stream_json {
+                    println!("{}", serde_json::to_string(&envelope)?);
+                }
                 if let Some(out) = &mut verbose_out {
                     let content_value = serde_json::to_value(&message.content)?;
                     out.emit(&UserEvent {
@@ -336,12 +330,18 @@ pub fn run(
                 num_turns: turns,
                 stop_reason: sr,
             } => {
+                if is_stream_json {
+                    println!("{}", serde_json::to_string(&envelope)?);
+                }
                 num_turns = *turns;
                 usage = *u;
                 stop_reason = *sr;
                 break;
             }
             AgentEvent::Error { message } => {
+                if is_stream_json {
+                    println!("{}", serde_json::to_string(&envelope)?);
+                }
                 is_error = true;
                 result_text = message.clone();
                 break;
