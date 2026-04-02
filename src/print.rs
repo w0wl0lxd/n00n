@@ -18,7 +18,7 @@
 use std::env;
 use std::io::{self, Read};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use clap::ValueEnum;
 use color_eyre::Result;
@@ -38,6 +38,8 @@ use serde::Serialize;
 use serde_json::Value;
 use tracing::error;
 use uuid::Uuid;
+
+const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, ValueEnum)]
 pub enum OutputFormat {
@@ -190,7 +192,7 @@ pub fn run(
         .unwrap_or_default();
 
     let model_clone = model.clone();
-    smol::spawn(async move {
+    let agent_task = smol::spawn(async move {
         let event_tx = EventSender::new(raw_tx, 0);
         let provider: Arc<dyn Provider> = match provider::from_model_async(&model_clone).await {
             Ok(p) => Arc::from(p),
@@ -231,8 +233,7 @@ pub fn run(
                 message: e.user_message(),
             });
         }
-    })
-    .detach();
+    });
 
     let is_stream_json = matches!(format, OutputFormat::StreamJson);
     let mut verbose_out = verbose.then(|| match format {
@@ -347,6 +348,18 @@ pub fn run(
             }
         }
     }
+
+    smol::block_on(async {
+        futures_lite::future::or(
+            async {
+                agent_task.await;
+            },
+            async {
+                smol::Timer::after(AGENT_SHUTDOWN_TIMEOUT).await;
+            },
+        )
+        .await;
+    });
 
     let duration_ms = start.elapsed().as_millis();
     let total_cost_usd = usage.cost(&model.pricing);

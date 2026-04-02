@@ -69,17 +69,34 @@ impl ChildGuard {
             let _ = child.kill();
         }
     }
+
+    // Best-effort non-blocking reap after SIGKILL to prevent zombie accumulation.
+    // All normal paths call .status() or .kill_and_reap() first, so this only
+    // fires on unexpected drops (panics, early returns). Uses WNOHANG to never
+    // block the async executor.
+    #[cfg(unix)]
+    fn reap_nonblocking(&mut self) {
+        if self.child.take().is_some() {
+            unsafe {
+                libc::waitpid(self.pid as i32, std::ptr::null_mut(), libc::WNOHANG);
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn reap_nonblocking(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.try_status();
+        }
+    }
 }
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if self.child.is_some() {
             self.signal_kill();
-            let mut child = self.child.take().unwrap();
-            std::thread::spawn(move || {
-                let _ = smol::block_on(child.status());
-            });
         }
+        self.reap_nonblocking();
     }
 }
 
