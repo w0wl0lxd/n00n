@@ -128,7 +128,7 @@ Use this tool when you need to ask the user questions during execution. This all
 
 ### `webfetch`
 
-Fetch a URL and return its contents. Best inside code_execution.
+Fetch a URL and return its contents.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -138,7 +138,7 @@ Fetch a URL and return its contents. Best inside code_execution.
 
 ### `websearch`
 
-Search the web for real-time information using Exa AI. Best inside code_execution.
+Search the web for real-time information using Exa AI.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
