@@ -11,7 +11,7 @@ pub use model::{
     models_for_provider,
 };
 pub use providers::dynamic;
-pub use providers::openai_auth;
+pub use providers::openai::auth as openai_auth;
 pub use types::{
     ContentBlock, ImageMediaType, ImageSource, Message, ProviderEvent, Role, StopReason,
     StreamResponse, ThinkingConfig,

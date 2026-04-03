@@ -35,6 +35,10 @@ impl OpenAiCompatProvider {
         }
     }
 
+    pub(crate) fn client(&self) -> &HttpClient {
+        &self.client
+    }
+
     pub fn build_body(
         &self,
         model: &crate::model::Model,

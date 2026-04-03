@@ -10,7 +10,6 @@ use crate::AgentError;
 pub(crate) mod anthropic;
 pub mod dynamic;
 pub(crate) mod openai;
-pub mod openai_auth;
 pub(crate) mod openai_compat;
 pub(crate) mod synthetic;
 pub(crate) mod zai;

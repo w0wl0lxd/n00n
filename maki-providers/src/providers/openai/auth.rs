@@ -244,10 +244,23 @@ pub(crate) fn refresh_tokens(tokens: &OAuthTokens) -> Result<OAuthTokens, AgentE
     Ok(into_oauth_tokens(token_resp))
 }
 
+pub(crate) const CODING_PLAN_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+
 pub(crate) fn build_oauth_resolved(tokens: &OAuthTokens) -> ResolvedAuth {
     ResolvedAuth {
         base_url: None,
         headers: vec![("authorization".into(), format!("Bearer {}", tokens.access))],
+    }
+}
+
+pub(crate) fn build_coding_plan_resolved(tokens: &OAuthTokens) -> ResolvedAuth {
+    let mut headers = vec![("authorization".into(), format!("Bearer {}", tokens.access))];
+    if let Some(account_id) = &tokens.account_id {
+        headers.push(("chatgpt-account-id".into(), account_id.clone()));
+    }
+    ResolvedAuth {
+        base_url: Some(CODING_PLAN_BASE_URL.into()),
+        headers,
     }
 }
 
@@ -336,10 +349,7 @@ mod tests {
         );
         let token = format!("{header}.{payload}.sig");
         assert_eq!(extract_account_id(&token).as_deref(), Some("acct_123"));
-    }
 
-    #[test]
-    fn extract_account_id_missing() {
         assert_eq!(extract_account_id("not.a.jwt"), None);
         assert_eq!(extract_account_id("invalid"), None);
     }
