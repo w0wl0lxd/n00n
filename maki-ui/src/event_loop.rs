@@ -360,8 +360,11 @@ impl<'t> EventLoop<'t> {
                     run_id,
                 });
             }
-            Action::CancelAgent => {
-                let _ = self.handles.cmd_tx.try_send(AgentCommand::Cancel);
+            Action::CancelAgent { run_id } => {
+                let _ = self
+                    .handles
+                    .cmd_tx
+                    .try_send(AgentCommand::Cancel { run_id });
             }
             Action::NewSession => {
                 self.respawn_agent(Vec::new());

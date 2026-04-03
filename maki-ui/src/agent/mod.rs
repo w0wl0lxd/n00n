@@ -1,4 +1,5 @@
 mod agent_loop;
+mod cancel_map;
 mod command_router;
 pub(crate) mod shared_queue;
 
@@ -11,7 +12,9 @@ use arc_swap::ArcSwap;
 use maki_agent::mcp::config::McpServerInfo;
 use maki_agent::permissions::PermissionManager;
 use maki_agent::skill::Skill;
-use maki_agent::{AgentConfig, CancelToken, CancelTrigger, Envelope, ToolOutput};
+use maki_agent::{AgentConfig, CancelToken, Envelope, ToolOutput};
+
+use self::cancel_map::CancelMap;
 use maki_providers::provider::Provider;
 use maki_providers::{Message, Model};
 use tracing::{info, warn};
@@ -23,7 +26,8 @@ use self::command_router::spawn_command_router;
 pub(crate) use self::shared_queue::{QueuedMessage, SharedQueue};
 
 pub(crate) enum AgentCommand {
-    Cancel,
+    Cancel { run_id: u64 },
+    CancelAll,
     ToggleMcp(String, bool),
 }
 
@@ -55,7 +59,7 @@ impl AgentHandles {
     }
 
     pub(crate) fn cancel(self) {
-        let _ = self.cmd_tx.try_send(AgentCommand::Cancel);
+        let _ = self.cmd_tx.try_send(AgentCommand::CancelAll);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -82,7 +86,7 @@ impl AgentHandles {
     }
 
     pub(crate) fn shutdown(self, timeout: Duration) {
-        let _ = self.cmd_tx.try_send(AgentCommand::Cancel);
+        let _ = self.cmd_tx.try_send(AgentCommand::CancelAll);
         let task = self.task;
         drop((self.cmd_tx, self.agent_rx, self.answer_tx));
         info!("waiting for agent to finish (timeout {timeout:?})");
@@ -132,10 +136,9 @@ pub(crate) fn spawn_agent(
     let shared_tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let (init_trigger, init_cancel) = CancelToken::new();
-    let cancel_trigger: Arc<Mutex<Option<CancelTrigger>>> =
-        Arc::new(Mutex::new(Some(init_trigger)));
+    let cancel_map = Arc::new(Mutex::new(CancelMap::new(0, init_trigger)));
 
-    spawn_command_router(cmd_rx, toggle_tx, Arc::clone(&cancel_trigger));
+    spawn_command_router(cmd_rx, toggle_tx, Arc::clone(&cancel_map));
 
     let agent_loop = AgentLoop::new(
         Arc::clone(provider),
@@ -153,7 +156,7 @@ pub(crate) fn spawn_agent(
         notify_rx,
         Arc::clone(&queue),
         toggle_rx,
-        cancel_trigger,
+        cancel_map,
         init_cancel,
     );
 

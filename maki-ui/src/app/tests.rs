@@ -995,7 +995,7 @@ fn double_esc_cancels_flushes_and_fails_tools() {
 
     app.last_esc = Some(Instant::now());
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(matches!(&actions[0], Action::CancelAgent));
+    assert!(matches!(&actions[0], Action::CancelAgent { .. }));
     assert_eq!(app.status, Status::Idle);
     assert_eq!(app.chats[0].in_progress_count(), 0);
 }

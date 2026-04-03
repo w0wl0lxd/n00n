@@ -747,6 +747,7 @@ impl App {
     }
 
     fn handle_cancel(&mut self) -> Vec<Action> {
+        let cancelled_run = self.run_id;
         self.run_id += 1;
         self.retry_info = None;
         self.close_all_overlays();
@@ -762,7 +763,9 @@ impl App {
             .push(DisplayMessage::new(DisplayRole::Error, CANCEL_MSG.into()));
         self.queue.clear();
         self.status = Status::Idle;
-        vec![Action::CancelAgent]
+        vec![Action::CancelAgent {
+            run_id: cancelled_run,
+        }]
     }
 
     fn handle_agent_event(&mut self, envelope: Envelope) -> Vec<Action> {

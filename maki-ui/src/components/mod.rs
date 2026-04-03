@@ -175,7 +175,9 @@ pub enum Action {
         command: String,
         visible: bool,
     },
-    CancelAgent,
+    CancelAgent {
+        run_id: u64,
+    },
     NewSession,
     LoadSession(Box<LoadedSession>),
     ChangeModel(String),

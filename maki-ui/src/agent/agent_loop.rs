@@ -20,6 +20,7 @@ use maki_providers::{AgentError, Message, Model, TokenUsage};
 use serde_json::Value;
 use tracing::error;
 
+use super::cancel_map::CancelMap;
 use super::shared_queue::{QueueItem, SharedQueue};
 use super::toggle_disabled;
 
@@ -38,7 +39,7 @@ pub(super) struct AgentLoop {
     mcp_pids: Arc<Mutex<Vec<u32>>>,
     history: History,
     shared_history: Arc<ArcSwap<Vec<Message>>>,
-    cancel_trigger: Arc<Mutex<Option<CancelTrigger>>>,
+    cancel_map: Arc<Mutex<CancelMap>>,
     cancel: CancelToken,
     permissions: Arc<PermissionManager>,
     min_run_id: u64,
@@ -72,7 +73,7 @@ impl AgentLoop {
         notify_rx: flume::Receiver<()>,
         queue: Arc<SharedQueue>,
         toggle_rx: flume::Receiver<(String, bool)>,
-        cancel_trigger: Arc<Mutex<Option<CancelTrigger>>>,
+        cancel_map: Arc<Mutex<CancelMap>>,
         cancel: CancelToken,
     ) -> Self {
         Self {
@@ -90,7 +91,7 @@ impl AgentLoop {
             mcp_pids,
             history: History::new(initial_history),
             shared_history,
-            cancel_trigger,
+            cancel_map,
             cancel,
             permissions,
             min_run_id: 0,
@@ -230,7 +231,7 @@ impl AgentLoop {
 
         let system = agent::build_system_prompt(&self.vars, &input.mode, &self.instructions);
         let (trigger, cancel) = CancelToken::new();
-        self.set_cancel_trigger(Some(trigger));
+        self.set_cancel_trigger(run_id, trigger);
 
         while self.answer_rx.lock().await.try_recv().is_ok() {}
 
@@ -257,7 +258,7 @@ impl AgentLoop {
 
         let outcome = agent.run(input).await;
 
-        self.set_cancel_trigger(None);
+        self.clear_cancel_trigger(run_id);
         self.history = outcome.history;
         self.sync_shared_history();
 
@@ -338,11 +339,18 @@ impl AgentLoop {
         self.shared_history.store(Arc::new(snapshot));
     }
 
-    fn set_cancel_trigger(&self, trigger: Option<CancelTrigger>) {
-        *self
-            .cancel_trigger
+    fn set_cancel_trigger(&self, run_id: u64, trigger: CancelTrigger) {
+        self.cancel_map
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = trigger;
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(run_id, trigger);
+    }
+
+    fn clear_cancel_trigger(&self, run_id: u64) {
+        self.cancel_map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(run_id);
     }
 
     fn emit_error(&self, run_id: u64, error: AgentError) {
