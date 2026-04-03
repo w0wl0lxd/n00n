@@ -55,7 +55,7 @@ async fn dispatch(
     memories_dir: &Path,
 ) -> Result<ToolOutput, String> {
     match command {
-        "view" => cmd_view(path, memories_dir).await.map(ToolOutput::Plain),
+        "view" => cmd_view(path, memories_dir).await,
         "write" => {
             cmd_write(
                 path.ok_or("'path' is required for write")?,
@@ -74,14 +74,18 @@ async fn dispatch(
     }
 }
 
-async fn cmd_view(path: Option<&str>, memories_dir: &Path) -> Result<String, String> {
+async fn cmd_view(path: Option<&str>, memories_dir: &Path) -> Result<ToolOutput, String> {
     match path {
-        None => list_memories(memories_dir).await,
+        None => list_memories(memories_dir).await.map(ToolOutput::Plain),
         Some(p) => {
             let file_path = safe_resolve(memories_dir, p)?;
-            smol::fs::read_to_string(&file_path)
+            let content = smol::fs::read_to_string(&file_path)
                 .await
-                .map_err(|e| format!("read error: {e}"))
+                .map_err(|e| format!("read error: {e}"))?;
+            Ok(ToolOutput::MemoryRead {
+                path: p.to_owned(),
+                lines: content.lines().map(ToOwned::to_owned).collect(),
+            })
         }
     }
 }
@@ -338,17 +342,24 @@ mod tests {
     fn write_view_overwrite_list_delete_lifecycle() {
         let (_dir, memories) = tmp_memories();
 
-        assert_eq!(run(cmd_view(None, &memories)).unwrap(), "No memories yet.");
+        let list = run(cmd_view(None, &memories)).unwrap().as_display_text();
+        assert_eq!(list, "No memories yet.");
 
         let content = "# Architecture\nMicroservices";
         run(cmd_write("arch.md", content, &memories)).unwrap();
-        assert_eq!(run(cmd_view(Some("arch.md"), &memories)).unwrap(), content);
+        let viewed = run(cmd_view(Some("arch.md"), &memories))
+            .unwrap()
+            .as_display_text();
+        assert_eq!(viewed, content);
 
         run(cmd_write("arch.md", "v2", &memories)).unwrap();
-        assert_eq!(run(cmd_view(Some("arch.md"), &memories)).unwrap(), "v2");
+        let viewed = run(cmd_view(Some("arch.md"), &memories))
+            .unwrap()
+            .as_display_text();
+        assert_eq!(viewed, "v2");
 
         run(cmd_write("notes.md", "hello", &memories)).unwrap();
-        let listing = run(cmd_view(None, &memories)).unwrap();
+        let listing = run(cmd_view(None, &memories)).unwrap().as_display_text();
         assert!(listing.contains("arch.md"));
         assert!(listing.contains("notes.md"));
         assert!(listing.contains("2 files"));

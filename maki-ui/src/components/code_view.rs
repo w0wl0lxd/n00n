@@ -354,6 +354,10 @@ pub fn render_tool_content(
             | ToolOutput::MemoryWrite {
                 path,
                 lines: code_lines,
+            }
+            | ToolOutput::MemoryRead {
+                path,
+                lines: code_lines,
             },
         ) => render_code(
             highlight.then(|| highlighter_for_path(path)),
