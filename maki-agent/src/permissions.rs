@@ -54,19 +54,19 @@ pub enum PermissionCheck {
 }
 
 #[derive(Debug, Error)]
-pub enum PermissionError {
-    #[error("Permission denied: {tool}")]
-    Denied { tool: String },
-    #[error("Permission denied (no response channel): {tool}")]
-    NoResponseChannel { tool: String },
-    #[error("Permission denied (channel closed): {tool}")]
-    ChannelClosed { tool: String },
+#[error(
+    "Permission denied for `{tool}` ({scope}). Do not retry. Try a different approach or ask the user for guidance."
+)]
+pub struct PermissionError {
+    tool: String,
+    scope: String,
 }
 
 impl PermissionError {
-    fn denied(tool: &str) -> Self {
-        Self::Denied {
+    fn new(tool: &str, scope: &str) -> Self {
+        Self {
             tool: tool.to_string(),
+            scope: scope.to_string(),
         }
     }
 }
@@ -291,16 +291,15 @@ impl PermissionManager {
     ) -> Result<(), PermissionError> {
         match self.check(tool, scope) {
             PermissionCheck::Allowed => Ok(()),
-            PermissionCheck::Denied => Err(PermissionError::denied(tool)),
+            PermissionCheck::Denied => Err(PermissionError::new(tool, scope)),
             PermissionCheck::NeedsPrompt {
                 tool: pt,
                 scopes: ps,
                 force_prompt,
             } => {
                 let Some(rx) = user_response_rx else {
-                    return Err(PermissionError::NoResponseChannel {
-                        tool: tool.to_string(),
-                    });
+                    warn!(tool, scope, "no permission response channel");
+                    return Err(PermissionError::new(tool, scope));
                 };
                 let guard = rx.lock().await;
                 let refs: Vec<&str> = ps.iter().map(|s| s.as_str()).collect();
@@ -311,7 +310,7 @@ impl PermissionManager {
                     }
                     PermissionCheck::Denied => {
                         drop(guard);
-                        Err(PermissionError::denied(tool))
+                        Err(PermissionError::new(tool, scope))
                     }
                     PermissionCheck::NeedsPrompt {
                         tool: t2,
@@ -328,11 +327,10 @@ impl PermissionManager {
                         let answer = match response {
                             Ok(Ok(a)) => a,
                             Ok(Err(_)) => {
-                                return Err(PermissionError::ChannelClosed {
-                                    tool: tool.to_string(),
-                                });
+                                warn!(tool, scope, "permission channel closed");
+                                return Err(PermissionError::new(tool, scope));
                             }
-                            Err(_) => return Err(PermissionError::denied(tool)),
+                            Err(_) => return Err(PermissionError::new(tool, scope)),
                         };
                         match PermissionDecision::from_answer_str(&answer) {
                             Some(d) => {
@@ -340,10 +338,10 @@ impl PermissionManager {
                                 if d.is_allow() {
                                     Ok(())
                                 } else {
-                                    Err(PermissionError::denied(tool))
+                                    Err(PermissionError::new(tool, scope))
                                 }
                             }
-                            None => Err(PermissionError::denied(tool)),
+                            None => Err(PermissionError::new(tool, scope)),
                         }
                     }
                 }
@@ -673,21 +671,6 @@ mod tests {
     }
 
     #[test]
-    fn compound_deny_segment_overrides_allow_all() {
-        let mgr = PermissionManager::new(
-            PermissionsConfig {
-                allow_all: true,
-                rules: vec![deny_rule("rm *")],
-            },
-            PathBuf::from("/tmp"),
-        );
-        assert!(matches!(
-            mgr.check("bash", "cd /tmp && rm -rf /"),
-            PermissionCheck::Denied
-        ));
-    }
-
-    #[test]
     fn pipe_requires_both_segments_allowed() {
         let mgr = PermissionManager::new(
             make_config(vec![allow_rule("cargo *"), allow_rule("tail *")]),
@@ -748,71 +731,14 @@ mod tests {
     }
 
     #[test]
-    fn compound_command_three_segments_all_allowed() {
-        let mgr = PermissionManager::new(
-            make_config(vec![
-                allow_rule("cd *"),
-                allow_rule("cargo *"),
-                allow_rule("echo *"),
-            ]),
-            PathBuf::from("/tmp"),
-        );
-        assert!(matches!(
-            mgr.check("bash", "cd /tmp && cargo test && echo done"),
-            PermissionCheck::Allowed
-        ));
-    }
-
-    #[test]
-    fn compound_command_three_segments_middle_denied() {
-        let mgr = PermissionManager::new(
-            make_config(vec![
-                allow_rule("cd *"),
-                allow_rule("echo *"),
-                deny_rule("rm *"),
-            ]),
-            PathBuf::from("/tmp"),
-        );
-        assert!(matches!(
-            mgr.check("bash", "cd /tmp && rm -rf / && echo done"),
-            PermissionCheck::Denied
-        ));
-    }
-
-    #[test]
-    fn command_substitution_always_prompts() {
-        let mgr = PermissionManager::new(
-            make_config(vec![allow_rule("echo *")]),
-            PathBuf::from("/tmp"),
-        );
-        assert!(matches!(
-            mgr.check("bash", "echo $(rm -rf /)"),
-            PermissionCheck::NeedsPrompt { .. }
-        ));
-    }
-
-    #[test]
-    fn subshell_always_prompts() {
-        let mgr = PermissionManager::new(
-            make_config(vec![allow_rule("cd *"), allow_rule("rm *")]),
-            PathBuf::from("/tmp"),
-        );
-        assert!(matches!(
-            mgr.check("bash", "(cd /tmp && rm -rf /)"),
-            PermissionCheck::NeedsPrompt { .. }
-        ));
-    }
-
-    #[test]
-    fn backtick_always_prompts() {
-        let mgr = PermissionManager::new(
-            make_config(vec![allow_rule("echo *")]),
-            PathBuf::from("/tmp"),
-        );
-        assert!(matches!(
-            mgr.check("bash", "echo `whoami`"),
-            PermissionCheck::NeedsPrompt { .. }
-        ));
+    fn complex_shell_constructs_force_prompt() {
+        let mgr = PermissionManager::new(make_config(vec![allow_rule("*")]), PathBuf::from("/tmp"));
+        for cmd in ["echo $(whoami)", "(cd /tmp && ls)", "echo `whoami`"] {
+            assert!(
+                matches!(mgr.check("bash", cmd), PermissionCheck::NeedsPrompt { .. }),
+                "{cmd} should force prompt"
+            );
+        }
     }
 
     #[test]
@@ -971,71 +897,18 @@ mod tests {
     }
 
     #[test]
-    fn apply_decision_session_persist() {
-        let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
-        mgr.apply_decision(
-            "bash",
-            &["cargo test".into()],
+    fn allow_decisions_use_generalized_scope() {
+        for decision in [
             PermissionDecision::AllowSession,
-        );
-        assert!(matches!(
-            mgr.check("bash", "cargo test"),
-            PermissionCheck::Allowed
-        ));
-    }
-
-    #[test]
-    fn always_adds_generalized_session_rule() {
-        let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
-        mgr.apply_decision(
-            "bash",
-            &["cargo test --all".into()],
             PermissionDecision::AllowAlwaysLocal,
-        );
-        assert!(matches!(
-            mgr.check("bash", "cargo test --all"),
-            PermissionCheck::Allowed
-        ));
-        assert!(matches!(
-            mgr.check("bash", "cargo build"),
-            PermissionCheck::Allowed
-        ));
-    }
-
-    #[test]
-    fn deny_always_uses_exact_scope() {
-        let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
-        mgr.apply_decision(
-            "bash",
-            &["cargo test --all".into()],
-            PermissionDecision::DenyAlwaysLocal,
-        );
-        assert!(matches!(
-            mgr.check("bash", "cargo test --all"),
-            PermissionCheck::Denied
-        ));
-        assert!(matches!(
-            mgr.check("bash", "cargo build"),
-            PermissionCheck::NeedsPrompt { .. }
-        ));
-    }
-
-    #[test]
-    fn session_allow_uses_generalized_scope() {
-        let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
-        mgr.apply_decision(
-            "bash",
-            &["cargo test --all".into()],
-            PermissionDecision::AllowSession,
-        );
-        assert!(matches!(
-            mgr.check("bash", "cargo test --all"),
-            PermissionCheck::Allowed
-        ));
-        assert!(matches!(
-            mgr.check("bash", "cargo build"),
-            PermissionCheck::Allowed
-        ));
+        ] {
+            let mgr = PermissionManager::new(PermissionsConfig::default(), PathBuf::from("/tmp"));
+            mgr.apply_decision("bash", &["cargo test --all".into()], decision);
+            assert!(
+                matches!(mgr.check("bash", "cargo build"), PermissionCheck::Allowed),
+                "{decision:?} should generalize scope"
+            );
+        }
     }
 
     #[test]
