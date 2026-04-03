@@ -16,6 +16,7 @@ pub(crate) mod synthetic;
 pub(crate) mod zai;
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const SSE_LINE_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const SSE_CONTENT_TIMEOUT: Duration = Duration::from_secs(120);
 const LOW_SPEED_BYTES_PER_SEC: u32 = 1;
 const LOW_SPEED_TIMEOUT: Duration = Duration::from_secs(30);
@@ -79,16 +80,25 @@ impl SseErrorPayload {
 
 pub(crate) async fn next_sse_line<R: AsyncBufRead + Unpin>(
     lines: &mut futures_lite::io::Lines<R>,
-    deadline: Instant,
+    content_deadline: Instant,
 ) -> Result<Option<String>, AgentError> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    let line_deadline = Instant::now() + SSE_LINE_TIMEOUT;
+    let remaining = line_deadline
+        .min(content_deadline)
+        .saturating_duration_since(Instant::now());
     futures_lite::future::or(
         async { lines.next().await.transpose().map_err(AgentError::from) },
         async {
             smol::Timer::after(remaining).await;
-            Err(AgentError::Timeout {
-                secs: SSE_CONTENT_TIMEOUT.as_secs(),
-            })
+            if content_deadline <= line_deadline {
+                Err(AgentError::Timeout {
+                    secs: SSE_CONTENT_TIMEOUT.as_secs(),
+                })
+            } else {
+                Err(AgentError::Timeout {
+                    secs: SSE_LINE_TIMEOUT.as_secs(),
+                })
+            }
         },
     )
     .await

@@ -317,9 +317,9 @@ pub async fn parse_sse(
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
     let mut is_first_content = true;
-    let mut deadline = super::content_deadline();
+    let mut content_deadline = super::content_deadline();
 
-    while let Some(line) = super::next_sse_line(&mut lines, deadline).await? {
+    while let Some(line) = super::next_sse_line(&mut lines, content_deadline).await? {
         let data = match line.strip_prefix("data: ") {
             Some(d) => d.trim(),
             None => continue,
@@ -345,7 +345,7 @@ pub async fn parse_sse(
         };
 
         if let Some(u) = chunk.usage {
-            deadline = super::content_deadline();
+            content_deadline = super::content_deadline();
             let cached = u
                 .prompt_tokens_details
                 .map(|d| d.cached_tokens)
@@ -363,7 +363,7 @@ pub async fn parse_sse(
         };
 
         if let Some(reason) = choice.finish_reason {
-            deadline = super::content_deadline();
+            content_deadline = super::content_deadline();
             stop_reason = Some(StopReason::from_openai(&reason));
         }
 
@@ -374,7 +374,7 @@ pub async fn parse_sse(
         if let Some(reasoning) = delta.reasoning_content
             && !reasoning.is_empty()
         {
-            deadline = super::content_deadline();
+            content_deadline = super::content_deadline();
             reasoning_text.push_str(&reasoning);
             event_tx
                 .send_async(ProviderEvent::ThinkingDelta { text: reasoning })
@@ -384,7 +384,7 @@ pub async fn parse_sse(
         if let Some(content) = delta.content
             && !content.is_empty()
         {
-            deadline = super::content_deadline();
+            content_deadline = super::content_deadline();
             let content = if is_first_content {
                 is_first_content = false;
                 content.trim_start().to_string()
@@ -400,7 +400,7 @@ pub async fn parse_sse(
         }
 
         if let Some(tc_deltas) = delta.tool_calls {
-            deadline = super::content_deadline();
+            content_deadline = super::content_deadline();
             for tc in tc_deltas {
                 while tool_accumulators.len() <= tc.index {
                     tool_accumulators.push(ToolAccumulator {

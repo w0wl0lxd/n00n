@@ -539,9 +539,9 @@ async fn parse_sse(
     let mut current_block_idx: usize = 0;
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
-    let mut deadline = super::content_deadline();
+    let mut content_deadline = super::content_deadline();
 
-    while let Some(line) = super::next_sse_line(&mut lines, deadline).await? {
+    while let Some(line) = super::next_sse_line(&mut lines, content_deadline).await? {
         if let Some(event_type) = line.strip_prefix("event: ") {
             current_event = event_type.to_string();
             continue;
@@ -552,10 +552,9 @@ async fn parse_sse(
             None => continue,
         };
 
-        deadline = super::content_deadline();
-
         match current_event.as_str() {
             "message_start" => {
+                content_deadline = super::content_deadline();
                 if let Ok(ev) = serde_json::from_str::<MessageStartEvent>(data)
                     && let Some(u) = ev.message.usage
                 {
@@ -564,6 +563,7 @@ async fn parse_sse(
             }
             "content_block_start" => match serde_json::from_str::<ContentBlockStartEvent>(data) {
                 Ok(ev) => {
+                    content_deadline = super::content_deadline();
                     current_block_idx = ev.index;
                     match ev.content_block {
                         SseContentBlock::Text => {
@@ -600,6 +600,7 @@ async fn parse_sse(
             },
             "content_block_delta" => match serde_json::from_str::<ContentBlockDeltaEvent>(data) {
                 Ok(ev) => {
+                    content_deadline = super::content_deadline();
                     current_block_idx = ev.index;
                     let block = content_blocks.get_mut(current_block_idx);
                     match ev.delta {
@@ -636,6 +637,7 @@ async fn parse_sse(
                 Err(e) => warn!(error = %e, "failed to parse content_block_delta"),
             },
             "content_block_stop" => {
+                content_deadline = super::content_deadline();
                 if let Some(ContentBlock::ToolUse { name, input, .. }) =
                     content_blocks.get_mut(current_block_idx)
                 {
@@ -653,6 +655,7 @@ async fn parse_sse(
                 }
             }
             "message_delta" => {
+                content_deadline = super::content_deadline();
                 if let Ok(ev) = serde_json::from_str::<MessageDeltaEvent>(data) {
                     if let Some(u) = ev.usage {
                         usage.output = u.output_tokens;
