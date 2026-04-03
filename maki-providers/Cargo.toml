@@ -17,6 +17,7 @@ futures-lite = { workspace = true }
 isahc = { workspace = true }
 base64 = { workspace = true }
 wait-timeout = { workspace = true }
+fastrand = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }

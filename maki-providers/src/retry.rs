@@ -17,6 +17,8 @@ impl RetryState {
     pub fn next_delay(&mut self) -> (u32, Duration) {
         self.attempt += 1;
         let delay = (DELAY.saturating_mul(self.attempt)).min(MAX_DELAY);
-        (self.attempt, delay)
+        let half = delay / 2;
+        let jitter = Duration::from_millis(fastrand::u64(0..=half.as_millis() as u64));
+        (self.attempt, half + jitter)
     }
 }

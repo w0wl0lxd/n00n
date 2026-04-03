@@ -2266,6 +2266,7 @@ version = "0.1.6"
 dependencies = [
  "base64",
  "dirs",
+ "fastrand",
  "flume 0.11.1",
  "futures-lite",
  "isahc",
