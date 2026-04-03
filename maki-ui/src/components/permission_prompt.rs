@@ -10,6 +10,7 @@ use maki_agent::permissions::generalized_scopes;
 use crate::components::Overlay;
 use crate::components::form::render_form;
 use crate::components::hint_line;
+use crate::components::is_ctrl;
 use crate::theme;
 
 const HINT_ALLOW_ROW: &[(&str, &str)] = &[
@@ -158,6 +159,9 @@ impl PermissionPrompt {
         let Self::Open { state, .. } = self else {
             return None;
         };
+        if is_ctrl(&key) && key.code == KeyCode::Char('c') {
+            return Some(PermissionAction::Deny);
+        }
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -310,5 +314,28 @@ impl PermissionPrompt {
         let lines = self.build_lines();
         let para = Paragraph::new(lines).wrap(Wrap { trim: false });
         para.line_count(inner_width) as u16 + 2
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::{PermissionAction, PermissionPrompt};
+
+    fn open_prompt() -> PermissionPrompt {
+        let mut prompt = PermissionPrompt::new();
+        prompt.open("id".into(), "bash".into(), vec!["execute".into()], None);
+        prompt
+    }
+
+    fn ctrl_c() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn ctrl_c_denies() {
+        let mut prompt = open_prompt();
+        assert_eq!(prompt.handle_key(ctrl_c()), Some(PermissionAction::Deny));
     }
 }

@@ -2048,3 +2048,16 @@ fn agent_error_creates_synthetic_tool_done_with_message() {
         "tool output should contain error: {text}"
     );
 }
+
+#[test]
+fn ctrl_c_denies_permission_prompt() {
+    let mut app = test_app();
+    app.permission_prompt
+        .open("id".into(), "bash".into(), vec!["execute".into()], None);
+    assert!(app.permission_prompt.is_open());
+
+    let actions = app.update(Msg::Key(kb::QUIT.to_key_event()));
+    assert!(!app.should_quit);
+    assert!(!app.permission_prompt.is_open());
+    assert!(actions.is_empty());
+}
