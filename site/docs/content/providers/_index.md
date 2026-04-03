@@ -90,6 +90,7 @@ To add a custom provider or proxy, drop an executable script into `~/.maki/provi
 | Subcommand | Timeout | What it does |
 |------------|---------|--------|
 | `info` | 5s | Return JSON with `display_name`, `base` provider, `has_auth` |
+| `models` | 5s | Return JSON array of model entries (optional) |
 | `resolve` | 30s | Return auth JSON (`base_url`, `headers`) |
 | `login` | interactive | OAuth or credential flow |
 | `logout` | interactive | Clear credentials |
@@ -97,7 +98,15 @@ To add a custom provider or proxy, drop an executable script into `~/.maki/provi
 
 `resolve` is called each time a new agent spawns, so scripts should read tokens from disk instead of caching them in memory. That way auth changes from other processes get picked up.
 
-The `base` field specifies which built-in provider to inherit the model catalog from. Valid values: `anthropic`, `openai`, `zai`, `zai-coding-plan`, `synthetic`. For example, a proxy in front of Anthropic sets `base` to `anthropic` and all Claude models are available, routed through your auth.
+The `base` field specifies which built-in provider to inherit the model catalog from. Valid values: `anthropic`, `openai`, `zai`, `zai-coding-plan`, `synthetic`.
+
+If your provider serves models not in the base catalog, add a `models` subcommand returning:
+
+```json
+[{"id": "my-model-v2", "tier": "strong", "context_window": 200000, "max_output_tokens": 16384}]
+```
+
+Only `id` is required. Optional fields: `tier` (default `medium`), `context_window` (128K), `max_output_tokens` (16K), `pricing` (`{input, output, cache_write, cache_read}`, all per 1M tokens), `default`. Without this subcommand, the base provider's models are used.
 
 Dynamic provider models are namespaced as `{slug}/{model_id}` (e.g. `myproxy/claude-sonnet-4-6`).
 

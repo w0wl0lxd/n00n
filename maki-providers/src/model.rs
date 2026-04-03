@@ -28,7 +28,7 @@ pub enum ModelError {
     NoDefault(ProviderKind, ModelTier),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ModelPricing {
     pub input: f64,
     pub output: f64,
@@ -44,7 +44,8 @@ pub enum ModelFamily {
     Synthetic,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ModelTier {
     Weak,
     Medium,
@@ -162,6 +163,9 @@ impl Model {
         }
 
         if let Some(base) = dynamic::base_for_slug(provider_str) {
+            if let Some(model) = dynamic::lookup_model(provider_str, model_id) {
+                return Ok(model);
+            }
             let entries = models_for_provider(base);
             let entry = lookup_entry(entries, model_id)?;
             return Ok(Self {

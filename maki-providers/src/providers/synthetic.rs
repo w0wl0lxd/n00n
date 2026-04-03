@@ -5,6 +5,7 @@ use crate::model::{Model, ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
 use crate::{AgentError, Message, ProviderEvent, StreamResponse, ThinkingConfig};
 
+use super::ResolvedAuth;
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
 
 static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
@@ -62,11 +63,20 @@ pub(crate) fn models() -> &'static [ModelEntry] {
     ]
 }
 
-pub struct Synthetic(OpenAiCompatProvider);
+pub struct Synthetic {
+    compat: OpenAiCompatProvider,
+    auth: ResolvedAuth,
+}
 
 impl Synthetic {
     pub fn new() -> Result<Self, AgentError> {
-        Ok(Self(OpenAiCompatProvider::new(&CONFIG)?))
+        let api_key = std::env::var(CONFIG.api_key_env).map_err(|_| AgentError::Config {
+            message: format!("{} not set", CONFIG.api_key_env),
+        })?;
+        Ok(Self {
+            compat: OpenAiCompatProvider::new(&CONFIG),
+            auth: ResolvedAuth::bearer(&api_key),
+        })
     }
 }
 
@@ -81,7 +91,7 @@ impl Provider for Synthetic {
         thinking: ThinkingConfig,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let mut body = self.0.build_body(model, messages, system, tools);
+            let mut body = self.compat.build_body(model, messages, system, tools);
             match thinking {
                 ThinkingConfig::Off => {}
                 ThinkingConfig::Adaptive => {
@@ -98,11 +108,13 @@ impl Provider for Synthetic {
                     body["reasoning_effort"] = json!(effort);
                 }
             };
-            self.0.do_stream(model, &body, event_tx).await
+            self.compat
+                .do_stream(model, &body, event_tx, &self.auth)
+                .await
         })
     }
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
-        Box::pin(self.0.do_list_models())
+        Box::pin(self.compat.do_list_models(&self.auth))
     }
 }

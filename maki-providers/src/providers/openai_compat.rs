@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{debug, warn};
 
+use super::ResolvedAuth;
 use crate::{
     AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
 };
@@ -23,26 +24,13 @@ pub(crate) struct OpenAiCompatConfig {
 
 pub(crate) struct OpenAiCompatProvider {
     client: HttpClient,
-    auth_header: String,
     config: &'static OpenAiCompatConfig,
 }
 
 impl OpenAiCompatProvider {
-    pub fn new(config: &'static OpenAiCompatConfig) -> Result<Self, AgentError> {
-        let api_key = std::env::var(config.api_key_env).map_err(|_| AgentError::Config {
-            message: format!("{} not set", config.api_key_env),
-        })?;
-        Ok(Self {
-            client: super::http_client(),
-            auth_header: format!("Bearer {api_key}"),
-            config,
-        })
-    }
-
-    pub fn without_auth(config: &'static OpenAiCompatConfig) -> Self {
+    pub fn new(config: &'static OpenAiCompatConfig) -> Self {
         Self {
             client: super::http_client(),
-            auth_header: String::new(),
             config,
         }
     }
@@ -72,29 +60,33 @@ impl OpenAiCompatProvider {
         body
     }
 
+    fn build_request(
+        &self,
+        method: &str,
+        path: &str,
+        auth: &ResolvedAuth,
+    ) -> isahc::http::request::Builder {
+        let base = auth.base_url.as_deref().unwrap_or(self.config.base_url);
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(format!("{base}{path}"));
+        for (key, value) in &auth.headers {
+            builder = builder.header(key.as_str(), value.as_str());
+        }
+        builder
+    }
+
     pub async fn do_stream(
         &self,
         model: &crate::model::Model,
         body: &Value,
         event_tx: &Sender<ProviderEvent>,
-    ) -> Result<StreamResponse, AgentError> {
-        self.do_stream_with_header(model, body, event_tx, &self.auth_header)
-            .await
-    }
-
-    pub async fn do_stream_with_header(
-        &self,
-        model: &crate::model::Model,
-        body: &Value,
-        event_tx: &Sender<ProviderEvent>,
-        auth_header: &str,
+        auth: &ResolvedAuth,
     ) -> Result<StreamResponse, AgentError> {
         let json_body = serde_json::to_vec(body)?;
-        let request = Request::builder()
-            .method("POST")
-            .uri(format!("{}/chat/completions", self.config.base_url))
+        let request = self
+            .build_request("POST", "/chat/completions", auth)
             .header("content-type", "application/json")
-            .header("authorization", auth_header)
             .body(json_body)?;
 
         debug!(
@@ -113,19 +105,8 @@ impl OpenAiCompatProvider {
         }
     }
 
-    pub async fn do_list_models(&self) -> Result<Vec<String>, AgentError> {
-        self.do_list_models_with_header(&self.auth_header).await
-    }
-
-    pub async fn do_list_models_with_header(
-        &self,
-        auth_header: &str,
-    ) -> Result<Vec<String>, AgentError> {
-        let request = Request::builder()
-            .method("GET")
-            .uri(format!("{}/models", self.config.base_url))
-            .header("authorization", auth_header)
-            .body(())?;
+    pub async fn do_list_models(&self, auth: &ResolvedAuth) -> Result<Vec<String>, AgentError> {
+        let request = self.build_request("GET", "/models", auth).body(())?;
         let mut response = self.client.send_async(request).await?;
         if response.status().as_u16() != 200 {
             return Err(AgentError::from_response(response).await);

@@ -11,7 +11,7 @@ use serde_json::Value;
 use strum::IntoEnumIterator;
 use tracing::{debug, warn};
 
-use crate::model::{Model, models_for_provider};
+use crate::model::{Model, ModelPricing, ModelTier, models_for_provider};
 use crate::provider::{BoxFuture, Provider, ProviderKind};
 use crate::{AgentError, Message, ProviderEvent, StreamResponse, ThinkingConfig};
 
@@ -30,6 +30,7 @@ struct DynamicProviderMeta {
     system_prefix: Option<String>,
     has_auth: bool,
     script_path: PathBuf,
+    models: Vec<ScriptModel>,
 }
 
 #[derive(Deserialize)]
@@ -39,6 +40,31 @@ struct ScriptInfo {
     #[serde(default)]
     system_prefix: Option<String>,
     has_auth: bool,
+}
+
+#[derive(Deserialize)]
+struct ScriptModel {
+    id: String,
+    #[serde(default = "default_tier")]
+    tier: ModelTier,
+    #[serde(default = "default_max_output_tokens")]
+    max_output_tokens: u32,
+    #[serde(default = "default_context_window")]
+    context_window: u32,
+    #[serde(default)]
+    pricing: Option<ModelPricing>,
+}
+
+fn default_tier() -> ModelTier {
+    ModelTier::Medium
+}
+
+fn default_max_output_tokens() -> u32 {
+    16384
+}
+
+fn default_context_window() -> u32 {
+    128_000
 }
 
 #[derive(Deserialize)]
@@ -234,6 +260,14 @@ fn discover_in(dir: &Path) -> Vec<DynamicProviderMeta> {
             }
         };
 
+        let models = match run_script(&path, "models", INFO_TIMEOUT) {
+            Ok(s) => serde_json::from_str::<Vec<ScriptModel>>(&s).unwrap_or_else(|e| {
+                warn!(slug, error = %e, "invalid models JSON, falling back to base models");
+                Vec::new()
+            }),
+            Err(_) => Vec::new(),
+        };
+
         result.push(DynamicProviderMeta {
             slug,
             display_name: info.display_name,
@@ -241,6 +275,7 @@ fn discover_in(dir: &Path) -> Vec<DynamicProviderMeta> {
             system_prefix: info.system_prefix.filter(|s| !s.is_empty()),
             has_auth: info.has_auth,
             script_path: path,
+            models,
         });
     }
 
@@ -327,9 +362,15 @@ pub fn display_name(slug: &str) -> Option<&'static str> {
 pub fn dynamic_model_specs() -> Vec<String> {
     let mut specs = Vec::new();
     for meta in discover() {
-        for entry in models_for_provider(meta.base) {
-            for prefix in entry.prefixes {
-                specs.push(format!("{}/{prefix}", meta.slug));
+        if meta.models.is_empty() {
+            for entry in models_for_provider(meta.base) {
+                for prefix in entry.prefixes {
+                    specs.push(format!("{}/{prefix}", meta.slug));
+                }
+            }
+        } else {
+            for m in &meta.models {
+                specs.push(format!("{}/{}", meta.slug, m.id));
             }
         }
     }
@@ -338,6 +379,22 @@ pub fn dynamic_model_specs() -> Vec<String> {
 
 pub fn base_for_slug(slug: &str) -> Option<ProviderKind> {
     find_meta(slug).map(|m| m.base)
+}
+
+pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
+    let meta = find_meta(slug)?;
+    let script_model = meta.models.iter().find(|m| model_id.starts_with(&m.id))?;
+    let family = meta.base.family();
+    Some(Model {
+        id: model_id.to_string(),
+        provider: meta.base,
+        dynamic_slug: Some(slug.to_string()),
+        tier: script_model.tier,
+        family,
+        pricing: script_model.pricing.clone().unwrap_or_default(),
+        max_output_tokens: script_model.max_output_tokens,
+        context_window: script_model.context_window,
+    })
 }
 
 struct DynamicProvider {
@@ -450,6 +507,21 @@ mod tests {
         assert_eq!(info.system_prefix.as_deref(), Some("You are X."));
     }
 
+    #[test]
+    fn script_model_deserialization() {
+        let full = r#"{"id": "my-model", "tier": "strong", "max_output_tokens": 32000, "context_window": 200000, "pricing": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.30}}"#;
+        let model: ScriptModel = serde_json::from_str(full).unwrap();
+        assert_eq!(model.id, "my-model");
+        assert_eq!(model.tier, ModelTier::Strong);
+        assert!(model.pricing.is_some());
+
+        let minimal: ScriptModel = serde_json::from_str(r#"{"id": "custom-v1"}"#).unwrap();
+        assert_eq!(minimal.tier, ModelTier::Medium);
+        assert_eq!(minimal.max_output_tokens, 16384);
+        assert_eq!(minimal.context_window, 128_000);
+        assert!(minimal.pricing.is_none());
+    }
+
     #[cfg(unix)]
     fn write_script(dir: &Path, name: &str, info_json: &str) -> PathBuf {
         let path = dir.join(name);
@@ -476,58 +548,39 @@ mod tests {
         assert_eq!(providers[0].display_name, "Test");
         assert_eq!(providers[0].base, ProviderKind::Anthropic);
         assert!(providers[0].has_auth);
+        assert!(providers[0].models.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test_case("anthropic", r#"{"display_name": "Fake", "base": "anthropic", "has_auth": false}"# ; "builtin_collision")]
+    #[test_case("has.dot", r#"{"display_name": "Bad", "base": "anthropic", "has_auth": false}"# ; "invalid_slug")]
+    #[test_case("weird", r#"{"display_name": "Weird", "base": "unknown-provider", "has_auth": false}"# ; "unknown_base")]
+    fn discover_skips_invalid(name: &str, info_json: &str) {
+        let tmp = TempDir::new().unwrap();
+        write_script(tmp.path(), name, info_json);
+        assert!(discover_in(tmp.path()).is_empty());
     }
 
     #[cfg(unix)]
     #[test]
-    fn discover_skips_builtin_collision() {
+    fn discover_parses_models_subcommand() {
         let tmp = TempDir::new().unwrap();
-        write_script(
-            tmp.path(),
-            "anthropic",
-            r#"{"display_name": "Fake", "base": "anthropic", "has_auth": false}"#,
-        );
+        let path = tmp.path().join("custom-llm");
+        let script = r#"#!/bin/sh
+case "$1" in
+  info) echo '{"display_name": "Custom", "base": "openai", "has_auth": false}' ;;
+  models) echo '[{"id": "custom-v1", "tier": "strong", "max_output_tokens": 32000, "context_window": 200000}]' ;;
+  resolve) echo '{"headers": {"authorization": "Bearer test"}}' ;;
+  *) exit 1 ;;
+esac
+"#;
+        fs::write(&path, script).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         let providers = discover_in(tmp.path());
-        assert!(providers.is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn discover_skips_invalid_slug() {
-        let tmp = TempDir::new().unwrap();
-        write_script(
-            tmp.path(),
-            "has.dot",
-            r#"{"display_name": "Bad", "base": "anthropic", "has_auth": false}"#,
-        );
-        let providers = discover_in(tmp.path());
-        assert!(providers.is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn discover_skips_unknown_base() {
-        let tmp = TempDir::new().unwrap();
-        write_script(
-            tmp.path(),
-            "weird",
-            r#"{"display_name": "Weird", "base": "unknown-provider", "has_auth": false}"#,
-        );
-        let providers = discover_in(tmp.path());
-        assert!(providers.is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn run_script_captures_output() {
-        let tmp = TempDir::new().unwrap();
-        let path = write_script(
-            tmp.path(),
-            "test-script",
-            r#"{"display_name": "T", "base": "anthropic", "has_auth": false}"#,
-        );
-        let stdout = run_script(&path, "resolve", SCRIPT_TIMEOUT).unwrap();
-        assert!(stdout.contains("Bearer test"));
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].models.len(), 1);
+        assert_eq!(providers[0].models[0].id, "custom-v1");
+        assert_eq!(providers[0].models[0].tier, ModelTier::Strong);
     }
 
     #[cfg(unix)]
@@ -539,7 +592,9 @@ mod tests {
             "test-err",
             r#"{"display_name": "T", "base": "anthropic", "has_auth": false}"#,
         );
-        let err = run_script(&path, "nonexistent", SCRIPT_TIMEOUT).unwrap_err();
-        assert!(matches!(err, AgentError::Config { .. }));
+        assert!(matches!(
+            run_script(&path, "nonexistent", SCRIPT_TIMEOUT).unwrap_err(),
+            AgentError::Config { .. }
+        ));
     }
 }

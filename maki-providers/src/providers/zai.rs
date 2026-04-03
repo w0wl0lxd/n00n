@@ -7,6 +7,7 @@ use crate::model::{ModelEntry, ModelFamily, ModelPricing, ModelTier};
 use crate::provider::{BoxFuture, Provider};
 use crate::{AgentError, Message, ProviderEvent, StreamResponse, ThinkingConfig};
 
+use super::ResolvedAuth;
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
 
 static CONFIG_STANDARD: OpenAiCompatConfig = OpenAiCompatConfig {
@@ -134,7 +135,10 @@ pub enum ZaiPlan {
     Coding,
 }
 
-pub struct Zai(OpenAiCompatProvider);
+pub struct Zai {
+    compat: OpenAiCompatProvider,
+    auth: ResolvedAuth,
+}
 
 impl Zai {
     pub fn new(plan: ZaiPlan) -> Result<Self, AgentError> {
@@ -142,7 +146,13 @@ impl Zai {
             ZaiPlan::Standard => &CONFIG_STANDARD,
             ZaiPlan::Coding => &CONFIG_CODING,
         };
-        Ok(Self(OpenAiCompatProvider::new(config)?))
+        let api_key = std::env::var(config.api_key_env).map_err(|_| AgentError::Config {
+            message: format!("{} not set", config.api_key_env),
+        })?;
+        Ok(Self {
+            compat: OpenAiCompatProvider::new(config),
+            auth: ResolvedAuth::bearer(&api_key),
+        })
     }
 }
 
@@ -157,8 +167,12 @@ impl Provider for Zai {
         _thinking: ThinkingConfig,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let body = self.0.build_body(model, messages, system, tools);
-            match self.0.do_stream(model, &body, event_tx).await {
+            let body = self.compat.build_body(model, messages, system, tools);
+            match self
+                .compat
+                .do_stream(model, &body, event_tx, &self.auth)
+                .await
+            {
                 Err(AgentError::Api { status, message })
                     if (status == 429 || status >= 500)
                         && (message.contains("1113") || message.contains("nsufficien")) =>
@@ -175,6 +189,6 @@ impl Provider for Zai {
     }
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
-        Box::pin(self.0.do_list_models())
+        Box::pin(self.compat.do_list_models(&self.auth))
     }
 }

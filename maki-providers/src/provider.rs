@@ -6,7 +6,7 @@ use serde_json::Value;
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 use tracing::{debug, warn};
 
-use crate::model::{Model, models_for_provider};
+use crate::model::{Model, ModelFamily, models_for_provider};
 use crate::providers::anthropic::Anthropic;
 use crate::providers::dynamic;
 use crate::providers::openai::OpenAi;
@@ -68,6 +68,15 @@ impl ProviderKind {
                 Some("Reasoning effort support (low/medium/high), open-weight models")
             }
             _ => None,
+        }
+    }
+
+    pub const fn family(self) -> ModelFamily {
+        match self {
+            Self::Anthropic => ModelFamily::Claude,
+            Self::OpenAi => ModelFamily::Gpt,
+            Self::Zai | Self::ZaiCodingPlan => ModelFamily::Glm,
+            Self::Synthetic => ModelFamily::Synthetic,
         }
     }
 
