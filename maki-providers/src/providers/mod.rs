@@ -16,14 +16,9 @@ pub(crate) mod synthetic;
 pub(crate) mod zai;
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-pub(crate) const SSE_LINE_TIMEOUT: Duration = Duration::from_secs(30);
-pub(crate) const SSE_CONTENT_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const SSE_TIMEOUT: Duration = Duration::from_secs(120);
 const LOW_SPEED_BYTES_PER_SEC: u32 = 1;
 const LOW_SPEED_TIMEOUT: Duration = Duration::from_secs(30);
-
-pub(crate) fn content_deadline() -> Instant {
-    Instant::now() + SSE_CONTENT_TIMEOUT
-}
 
 pub struct ResolvedAuth {
     pub base_url: Option<String>,
@@ -78,30 +73,28 @@ impl SseErrorPayload {
     }
 }
 
+/// Read the next SSE line, resetting the deadline on every received line.
+/// Any received line (including pings, blank separators) proves the connection
+/// is alive. Dead connections are caught by the HTTP-layer LOW_SPEED_TIMEOUT.
 pub(crate) async fn next_sse_line<R: AsyncBufRead + Unpin>(
     lines: &mut futures_lite::io::Lines<R>,
-    content_deadline: Instant,
+    deadline: &mut Instant,
 ) -> Result<Option<String>, AgentError> {
-    let line_deadline = Instant::now() + SSE_LINE_TIMEOUT;
-    let remaining = line_deadline
-        .min(content_deadline)
-        .saturating_duration_since(Instant::now());
-    futures_lite::future::or(
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let result = futures_lite::future::or(
         async { lines.next().await.transpose().map_err(AgentError::from) },
         async {
             smol::Timer::after(remaining).await;
-            if content_deadline <= line_deadline {
-                Err(AgentError::Timeout {
-                    secs: SSE_CONTENT_TIMEOUT.as_secs(),
-                })
-            } else {
-                Err(AgentError::Timeout {
-                    secs: SSE_LINE_TIMEOUT.as_secs(),
-                })
-            }
+            Err(AgentError::Timeout {
+                secs: SSE_TIMEOUT.as_secs(),
+            })
         },
     )
-    .await
+    .await;
+    if let Ok(Some(_)) = &result {
+        *deadline = Instant::now() + SSE_TIMEOUT;
+    }
+    result
 }
 
 pub(crate) fn http_client() -> isahc::HttpClient {
@@ -152,8 +145,8 @@ mod tests {
     fn next_sse_line_expired_deadline_returns_timeout() {
         smol::block_on(async {
             let mut lines = NeverReader.lines();
-            let past = Instant::now() - Duration::from_secs(1);
-            let err = next_sse_line(&mut lines, past).await.unwrap_err();
+            let mut past = Instant::now() - Duration::from_secs(1);
+            let err = next_sse_line(&mut lines, &mut past).await.unwrap_err();
             assert!(matches!(err, AgentError::Timeout { .. }));
         })
     }
