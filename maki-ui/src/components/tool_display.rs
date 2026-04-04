@@ -18,7 +18,7 @@ use maki_providers::{ModelPricing, TokenUsage};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
-use crate::markdown::{Keep, text_to_lines, truncate_output, truncation_notice};
+use crate::markdown::{Keep, should_truncate, text_to_lines, truncate_output, truncation_notice};
 use maki_agent::tools::{
     BASH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME,
     INDEX_TOOL_NAME, MEMORY_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, TASK_TOOL_NAME,
@@ -632,7 +632,7 @@ impl ToolLineBuilder {
     }
 
     fn push_truncation_count(&mut self, skipped: usize) {
-        if skipped > 0 {
+        if should_truncate(skipped) {
             self.has_truncation = true;
             let text = truncation_notice(skipped);
             let mut line = Line::from(Span::styled(text, theme::current().tool_dim));

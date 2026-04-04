@@ -2,7 +2,7 @@ use crate::highlight::{
     fallback_span, highlight_code_plain, highlight_line, highlighter_for_path,
     highlighter_for_syntax, highlighter_for_token, syntax_for_path,
 };
-use crate::markdown::truncation_notice;
+use crate::markdown::{should_truncate, truncation_notice};
 use crate::theme;
 
 use maki_agent::{
@@ -70,7 +70,14 @@ fn render_code(
     total_count: usize,
     max_lines: usize,
 ) -> (Vec<Line<'static>>, bool) {
-    let display_count = code_lines.len().min(max_lines);
+    let capped = code_lines.len().min(max_lines);
+    let hidden = total_count.saturating_sub(capped);
+    let has_truncation = should_truncate(hidden);
+    let display_count = if has_truncation {
+        capped
+    } else {
+        code_lines.len()
+    };
     let max_nr = start_line + display_count.saturating_sub(1);
     let w = nr_width(max_nr);
 
@@ -86,9 +93,7 @@ fn render_code(
         })
         .collect();
 
-    let hidden = total_count.saturating_sub(display_count);
-    let has_truncation = hidden > 0;
-    if hidden > 0 {
+    if has_truncation {
         lines.push(truncation_line(hidden));
     }
     (lines, has_truncation)
@@ -242,9 +247,13 @@ fn render_grep_results(
             }
         }
     }
-    let truncated = budget == 0 && rendered_matches < total_matches;
+    let hidden = if budget == 0 {
+        total_matches - rendered_matches
+    } else {
+        0
+    };
+    let truncated = should_truncate(hidden);
     if truncated {
-        let hidden = total_matches - rendered_matches;
         out.push(truncation_line(hidden));
     }
     (out, truncated)
@@ -463,6 +472,7 @@ mod tests {
     #[test_case(20, 20, READ_MAX_LINES + 1 ; "truncates_with_ellipsis")]
     #[test_case(3,  3,  3                    ; "no_truncation_when_short")]
     #[test_case(5,  50, 5 + 1                ; "total_exceeds_available_lines")]
+    #[test_case(6,  6,  6                    ; "one_hidden_shows_all")]
     fn render_code_line_count(input_lines: usize, total: usize, expected: usize) {
         let code_lines: Vec<String> = (0..input_lines).map(|i| format!("line {i}")).collect();
         let (result, _) = render_code(
@@ -524,7 +534,8 @@ mod tests {
 
     #[test_case(&[("a.rs", &[1,2,3,4,5,6,7,8,9,10_usize] as &[usize])], 3, 4  ; "truncates_with_ellipsis")]
     #[test_case(&[("a.rs", &[1_usize,2])],                                5, 2  ; "no_truncation_when_fits")]
-    #[test_case(&[("a.rs", &[1_usize,2,3]), ("b.rs", &[10,20])],          4, 7  ; "multi_file_budget_with_ellipsis")]
+    #[test_case(&[("a.rs", &[1_usize,2,3]), ("b.rs", &[10,20])],          4, 6  ; "multi_file_budget_one_hidden")]
+    #[test_case(&[("a.rs", &[1_usize,2])],                                1, 1  ; "one_hidden_match_no_truncation")]
     fn render_grep_line_count(files: &[(&str, &[usize])], max: usize, expected: usize) {
         let entries = grep_entries(files);
         assert_eq!(render_grep_results(&entries, max, true).0.len(), expected);

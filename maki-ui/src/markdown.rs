@@ -12,6 +12,7 @@ use unicode_width::UnicodeWidthStr;
 pub(crate) const CODE_BAR: &str = "│ ";
 pub(crate) const CODE_BAR_WRAP: &str = "│";
 pub const TRUNCATION_PREFIX: &str = "...";
+const MIN_TRUNCATABLE_LINES: usize = 2;
 const BULLET: &str = "• ";
 const HR_CHAR: char = '─';
 const LIST_INDENT: &str = "  ";
@@ -109,9 +110,16 @@ pub enum Keep {
     Tail,
 }
 
+pub fn should_truncate(hidden: usize) -> bool {
+    hidden >= MIN_TRUNCATABLE_LINES
+}
+
 pub fn truncation_notice(count: usize) -> String {
-    let label = if count == 1 { "line" } else { "lines" };
-    format!("{TRUNCATION_PREFIX} ({count} {label}) click to expand")
+    debug_assert!(
+        should_truncate(count),
+        "truncation_notice called with count={count} below threshold"
+    );
+    format!("{TRUNCATION_PREFIX} ({count} lines) click to expand")
 }
 
 pub struct Truncated<'a> {
@@ -123,7 +131,7 @@ pub struct Truncated<'a> {
 impl<'a> Truncated<'a> {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn notice_line(&self) -> Option<Line<'static>> {
-        if self.skipped > 0 {
+        if should_truncate(self.skipped) {
             let text = truncation_notice(self.skipped);
             Some(Line::from(Span::styled(text, theme::current().tool_dim)))
         } else {
@@ -133,7 +141,7 @@ impl<'a> Truncated<'a> {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn into_string(self) -> String {
-        if self.skipped == 0 {
+        if !should_truncate(self.skipped) {
             return self.kept.to_owned();
         }
         let notice = truncation_notice(self.skipped);
@@ -1284,7 +1292,7 @@ pub fn truncate_lines(s: &str, max: usize, keep: Keep) -> Truncated<'_> {
             }
         }
     };
-    if result.skipped == 1 {
+    if result.skipped > 0 && !should_truncate(result.skipped) {
         return Truncated {
             kept: s,
             skipped: 0,
@@ -1302,6 +1310,7 @@ mod tests {
     fn bs() -> Style {
         theme::current().bold
     }
+
     fn cs() -> Style {
         theme::current().inline_code
     }
@@ -1569,7 +1578,7 @@ mod tests {
     }
 
     #[test_case(5,  "click to expand"   ; "collapsed_shows_expand")]
-    #[test_case(1,  "(1 line)"           ; "collapsed_singular")]
+    #[test_case(2,  "(2 lines)"          ; "collapsed_plural")]
     fn truncation_notice_text(count: usize, expected_substr: &str) {
         let notice = truncation_notice(count);
         assert!(
