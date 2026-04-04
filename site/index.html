@@ -1154,7 +1154,7 @@
     <div class="index-split">
       <div class="index-pane">
         <div class="index-pane-label">main.rs</div>
-        <pre><span class="kw">use</span> <span class="ty">std</span>::fs;
+        <pre><span class="kw">use</span> std::fs;
 <span class="kw">use</span> clap::<span class="ty">Parser</span>;
 <span class="kw">use</span> color_eyre::<span class="ty">Result</span>;
 
@@ -1200,8 +1200,8 @@
     lines: <span class="kw">bool</span>
 
 <span class="sec">fns:</span>
-  <span class="fn">count_words</span>(text: &amp;str) -&gt; <span class="ty">usize</span> <span class="rng">[11-13]</span>
-  <span class="fn">count_lines</span>(text: &amp;str) -&gt; <span class="ty">usize</span> <span class="rng">[15-17]</span>
+  <span class="fn">count_words</span>(text: &amp;<span class="ty">str</span>) -&gt; <span class="ty">usize</span> <span class="rng">[11-13]</span>
+  <span class="fn">count_lines</span>(text: &amp;<span class="ty">str</span>) -&gt; <span class="ty">usize</span> <span class="rng">[15-17]</span>
   <span class="fn">main</span>() -&gt; <span class="ty">Result</span>&lt;()&gt; <span class="rng">[19-29]</span></pre>
       </div>
     </div>
