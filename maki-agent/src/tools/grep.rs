@@ -166,7 +166,7 @@ impl Grep {
     }
 
     pub fn start_summary(&self) -> String {
-        let mut s = self.pattern.clone();
+        let mut s = self.pattern.trim_end_matches('"').to_string();
         if let Some(inc) = &self.include {
             s.push_str(" [");
             s.push_str(inc);
