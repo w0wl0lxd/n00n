@@ -358,7 +358,7 @@ impl AgentLoop {
 
     fn sync_shared_history_with_pending(&self, input: &AgentInput) {
         let mut snapshot = self.history.as_slice().to_vec();
-        snapshot.push(Message::user(input.effective_message()));
+        snapshot.push(Message::user(input.message.clone()));
         self.shared_history.store(Arc::new(snapshot));
     }
 

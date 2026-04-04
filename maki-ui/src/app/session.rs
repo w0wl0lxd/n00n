@@ -136,13 +136,10 @@ impl App {
     }
 
     pub(super) fn reset_session(&mut self) -> Vec<Action> {
-        let written_plan = self.state.plan.pending_plan().is_some();
         self.reset_ui_chrome();
         self.state.token_usage = TokenUsage::default();
         self.state.context_size = 0;
-        if !written_plan {
-            self.state.plan = PlanState::new();
-        }
+        self.state.plan = PlanState::None;
         if self.state.mode == Mode::Plan {
             self.enter_plan();
         }

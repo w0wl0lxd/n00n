@@ -2,7 +2,6 @@
 //!
 //! `AgentMode::Build` executes tools freely; `Plan(path)` restricts writes to the plan file only.
 //! `ExtractedCommand` injects control signals (interrupt, cancel, compact) into a running agent.
-//! `AgentInput::effective_message` prepends plan context to the prompt when a pending plan exists in Build mode.
 
 pub mod agent;
 pub mod cancel;
@@ -68,81 +67,8 @@ pub struct McpPromptRef {
 pub struct AgentInput {
     pub message: String,
     pub mode: AgentMode,
-    pub pending_plan: Option<PathBuf>,
     pub images: Vec<ImageSource>,
     pub preamble: Vec<Message>,
     pub thinking: ThinkingConfig,
     pub prompt: Option<Box<McpPromptRef>>,
-}
-
-impl AgentInput {
-    pub fn effective_message(&self) -> String {
-        match &self.pending_plan {
-            Some(path) if self.mode == AgentMode::Build && path.exists() => {
-                format!(
-                    "A plan was written to {}. Follow the plan.\n\n{}",
-                    path.display(),
-                    self.message
-                )
-            }
-            _ => self.message.clone(),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use tempfile::TempDir;
-
-    use super::*;
-
-    #[test]
-    fn effective_message_no_plan() {
-        let input = AgentInput {
-            message: "do stuff".into(),
-            mode: AgentMode::Build,
-            ..Default::default()
-        };
-        assert_eq!(input.effective_message(), "do stuff");
-    }
-
-    #[test]
-    fn effective_message_with_existing_plan() {
-        let dir = TempDir::new().unwrap();
-        let plan_path = dir.path().join("plan.md");
-        fs::write(&plan_path, "the plan").unwrap();
-        let input = AgentInput {
-            message: "go".into(),
-            mode: AgentMode::Build,
-            pending_plan: Some(plan_path.clone()),
-            ..Default::default()
-        };
-        let msg = input.effective_message();
-        assert!(msg.contains(plan_path.to_str().unwrap()));
-        assert!(msg.contains("go"));
-    }
-
-    #[test]
-    fn effective_message_skips_missing_plan() {
-        let input = AgentInput {
-            message: "go".into(),
-            mode: AgentMode::Build,
-            pending_plan: Some(PathBuf::from("/nonexistent/plan.md")),
-            ..Default::default()
-        };
-        assert_eq!(input.effective_message(), "go");
-    }
-
-    #[test]
-    fn effective_message_plan_mode_ignores_pending() {
-        let input = AgentInput {
-            message: "plan this".into(),
-            mode: AgentMode::Plan(PathBuf::from("/tmp/p.md")),
-            pending_plan: Some(PathBuf::from("/tmp/p.md")),
-            ..Default::default()
-        };
-        assert_eq!(input.effective_message(), "plan this");
-    }
 }

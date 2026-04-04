@@ -218,27 +218,13 @@ fn toggle_mode_state_machine() {
     assert_eq!(app.state.plan.path().unwrap(), first_path);
 }
 
-#[test_case(Mode::Build, true,  Some("plan.md") ; "build_sends_written_plan")]
-#[test_case(Mode::Build, false, None              ; "build_ignores_unwritten_plan")]
-#[test_case(Mode::Plan,  true,  Some("plan.md") ; "plan_sends_written_plan")]
-fn submit_pending_plan(mode: Mode, written: bool, expected: Option<&str>) {
-    let mut app = test_app();
-    app.state.mode = mode;
-    app.state.plan = PlanState::with_path(PathBuf::from("plan.md"), written);
-    let actions = type_and_submit(&mut app, "x");
-    let Action::SendMessage(ref input) = actions[0] else {
-        panic!("expected SendMessage");
-    };
-    assert_eq!(input.pending_plan.as_deref(), expected.map(Path::new));
-}
-
 #[test_case(ToolOutput::WriteCode { path: "/tmp/plans/test.md".into(), byte_count: 100, lines: vec![] }, true  ; "write_matching")]
 #[test_case(ToolOutput::Diff { path: "/tmp/plans/test.md".into(), hunks: vec![], summary: String::new() }, true  ; "edit_matching")]
 #[test_case(ToolOutput::WriteCode { path: "/tmp/other.rs".into(), byte_count: 100, lines: vec![] }, false ; "write_non_matching")]
 fn tool_done_sets_plan_written_flag(output: ToolOutput, expect_written: bool) {
     let mut app = test_app();
     app.state.mode = Mode::Plan;
-    app.state.plan = PlanState::with_path(PathBuf::from("/tmp/plans/test.md"), false);
+    app.state.plan = PlanState::Drafting(PathBuf::from("/tmp/plans/test.md"));
     app.status = Status::Streaming;
     app.run_id = 1;
 
@@ -401,12 +387,12 @@ fn ctrl_c_closes_palette() {
 }
 
 #[test]
-fn reset_session_preserves_plan() {
+fn reset_session_clears_plan() {
     let mut app = test_app();
     app.state.token_usage.input = 500;
     app.chats[0].context_size = 1000;
     app.state.mode = Mode::Build;
-    app.state.plan = PlanState::with_path(PathBuf::from("plan.md"), true);
+    app.state.plan = PlanState::Written(PathBuf::from("plan.md"));
     app.queue_and_notify(queued_msg("q"));
     app.queue.set_focus_at(0);
     app.update(Msg::Key(kb::HELP.to_key_event()));
@@ -418,8 +404,7 @@ fn reset_session_preserves_plan() {
     assert_eq!(app.state.token_usage.input, 0);
     assert_eq!(app.chats[0].context_size, 0);
     assert_eq!(app.state.mode, Mode::Build);
-    assert_eq!(app.state.plan.path(), Some(Path::new("plan.md")));
-    assert!(app.state.plan.is_written());
+    assert_eq!(app.state.plan, PlanState::None);
     assert!(app.queue.is_empty());
     assert_eq!(app.chats.len(), 1);
     assert_eq!(app.chats[0].name, "Main");
@@ -434,23 +419,21 @@ fn reset_session_preserves_plan() {
 fn reset_session_assigns_new_plan_path_in_plan_mode() {
     let mut app = test_app();
     app.state.mode = Mode::Plan;
-    app.state.plan = PlanState::with_path(PathBuf::from("old-plan.md"), false);
+    app.state.plan = PlanState::Drafting(PathBuf::from("old-plan.md"));
     app.reset_session();
     assert_eq!(app.state.mode, Mode::Plan);
     assert!(app.state.plan.path().is_some());
     assert_ne!(app.state.plan.path(), Some(Path::new("old-plan.md")));
 }
 
-#[test_case(true,  Some("leftover.md") ; "preserves_written")]
-#[test_case(false, None                 ; "clears_unwritten")]
-fn reset_session_plan_in_build_mode(written: bool, expected_path: Option<&str>) {
+#[test]
+fn reset_session_clears_drafting_plan_in_build_mode() {
     let mut app = test_app();
     app.state.mode = Mode::Build;
-    app.state.plan = PlanState::with_path(PathBuf::from("leftover.md"), written);
+    app.state.plan = PlanState::Drafting(PathBuf::from("leftover.md"));
     app.reset_session();
     assert_eq!(app.state.mode, Mode::Build);
-    assert_eq!(app.state.plan.path(), expected_path.map(Path::new));
-    assert_eq!(app.state.plan.is_written(), written);
+    assert_eq!(app.state.plan, PlanState::None);
 }
 
 #[test]
@@ -488,7 +471,7 @@ fn load_session_clears_plan() {
     app.state.session.save(&app.storage).unwrap();
     let id = app.state.session.id.clone();
     app.state.mode = Mode::Build;
-    app.state.plan = PlanState::with_path(PathBuf::from("old-plan.md"), true);
+    app.state.plan = PlanState::Written(PathBuf::from("old-plan.md"));
     app.load_session(id);
     assert_eq!(app.state.mode, Mode::Build);
     assert_eq!(app.state.plan.path(), None);
@@ -1711,16 +1694,13 @@ fn paste_routing(setup: fn(&mut App), expected_input: &str) {
     assert_eq!(app.input_box.buffer.value(), expected_input);
 }
 
-#[test_case(None,                                 true ; "no_plan")]
-#[test_case(Some(("/tmp/plan.md", false)),         true ; "plan_not_written")]
-#[test_case(Some(("/tmp/plan.md", true)),          false ; "plan_written")]
-fn open_editor(setup: Option<(&str, bool)>, expect_flash: bool) {
+#[test_case(PlanState::None,                                       true  ; "no_plan")]
+#[test_case(PlanState::Drafting(PathBuf::from("/tmp/plan.md")),     false ; "plan_drafting")]
+#[test_case(PlanState::Written(PathBuf::from("/tmp/plan.md")),      false ; "plan_written")]
+fn open_editor(plan: PlanState, expect_flash: bool) {
     let mut app = test_app();
-    let plan_path = setup.map(|(p, w)| {
-        let pb = PathBuf::from(p);
-        app.state.plan = PlanState::with_path(pb.clone(), w);
-        pb
-    });
+    let plan_path = plan.path().map(Path::to_path_buf);
+    app.state.plan = plan;
     let actions = app.update(Msg::Key(kb::OPEN_EDITOR.to_key_event()));
     if expect_flash {
         assert!(actions.is_empty());
@@ -1869,21 +1849,19 @@ fn plan_app() -> App {
     app.status = Status::Streaming;
     app.run_id = 1;
     app.state.mode = Mode::Plan;
-    app.state.plan = PlanState::with_path(PathBuf::from("test-plan.md"), true);
+    app.state.plan = PlanState::Written(PathBuf::from("test-plan.md"));
     app
 }
 
-#[test_case(Mode::Plan,  true,  true  ; "plan_mode_written_opens_form")]
-#[test_case(Mode::Plan,  false, false ; "plan_mode_unwritten_no_form")]
-#[test_case(Mode::Build, false, false ; "build_mode_no_form")]
-fn done_plan_form_visibility(mode: Mode, written: bool, expect_form: bool) {
+#[test_case(Mode::Plan,  PlanState::Written(PathBuf::from("test-plan.md")),  true  ; "plan_mode_written_opens_form")]
+#[test_case(Mode::Plan,  PlanState::Drafting(PathBuf::from("test-plan.md")), false ; "plan_mode_unwritten_no_form")]
+#[test_case(Mode::Build, PlanState::None,                                    false ; "build_mode_no_form")]
+fn done_plan_form_visibility(mode: Mode, plan: PlanState, expect_form: bool) {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
     app.state.mode = mode;
-    if mode == Mode::Plan {
-        app.state.plan = PlanState::with_path(PathBuf::from("test-plan.md"), written);
-    }
+    app.state.plan = plan;
     app.update(done_event());
     assert_eq!(app.plan_form.is_visible(), expect_form);
 }
@@ -1915,6 +1893,16 @@ fn plan_form_menu_options(
         actions.iter().any(|a| matches!(a, Action::SendMessage(i) if i.message == "Implement the plan at `test-plan.md`.")),
         has_send_message
     );
+}
+
+#[test]
+fn implement_plan_clear_context_does_not_leak_plan_state() {
+    let mut app = plan_app();
+    app.update(done_event());
+    assert!(app.plan_form.is_visible());
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(app.state.mode, Mode::Build);
+    assert_eq!(app.state.plan, PlanState::None);
 }
 
 #[test]

@@ -130,12 +130,8 @@ impl Agent {
     }
 
     pub async fn run(mut self, input: AgentInput) -> RunOutcome {
-        let ai_text = input.effective_message();
         self.rollback_len = self.history.len();
-        let mut msg = Message::user_with_images(ai_text.clone(), input.images);
-        if ai_text != input.message {
-            msg.display_text = Some(input.message);
-        }
+        let msg = Message::user_with_images(input.message.clone(), input.images);
         self.history.push(msg);
         self.mode = input.mode;
         self.thinking = input.thinking;
@@ -143,7 +139,7 @@ impl Agent {
         info!(
             model = %self.model.id,
             mode = ?self.mode,
-            message_len = ai_text.len(),
+            message_len = input.message.len(),
             "agent run started"
         );
 
@@ -373,9 +369,8 @@ impl Agent {
                 }
                 self.mode = input.mode.clone();
                 let display = input.message.clone();
-                let msg = input.effective_message();
                 let wrapped = format!(
-                    "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{msg}\n</user-interrupt>"
+                    "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{display}\n</user-interrupt>"
                 );
                 self.history.push(Message::user_display(wrapped, display));
             }

@@ -26,48 +26,38 @@ impl Mode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PlanState {
-    path: Option<PathBuf>,
-    written: bool,
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum PlanState {
+    #[default]
+    None,
+    Drafting(PathBuf),
+    Written(PathBuf),
 }
 
 impl PlanState {
-    pub(crate) fn new() -> Self {
-        Self {
-            path: None,
-            written: false,
-        }
-    }
-
-    pub(crate) fn with_path(path: PathBuf, written: bool) -> Self {
-        Self {
-            path: Some(path),
-            written,
-        }
-    }
-
     pub(crate) fn path(&self) -> Option<&Path> {
-        self.path.as_deref()
+        match self {
+            Self::None => Option::None,
+            Self::Drafting(p) | Self::Written(p) => Some(p),
+        }
     }
 
     pub(crate) fn mark_written(&mut self) {
-        self.written = true;
+        if let Self::Drafting(p) = self {
+            *self = Self::Written(std::mem::take(p));
+        }
     }
 
-    #[cfg(test)]
     pub(crate) fn is_written(&self) -> bool {
-        self.written
-    }
-
-    pub(crate) fn pending_plan(&self) -> Option<&Path> {
-        if self.written { self.path() } else { None }
+        matches!(self, Self::Written(_))
     }
 
     pub(crate) fn allocate_path(&mut self, storage: &DataDir) {
-        self.path.get_or_insert_with(|| {
-            plans::new_plan_path(storage).unwrap_or_else(|_| PathBuf::from("plans/plan.md"))
-        });
+        if matches!(self, Self::None) {
+            *self = Self::Drafting(
+                plans::new_plan_path(storage).unwrap_or_else(|_| PathBuf::from("plans/plan.md")),
+            );
+        }
     }
 }
 
@@ -102,7 +92,6 @@ impl App {
         AgentInput {
             message: msg.text.clone(),
             mode: self.agent_mode(),
-            pending_plan: self.state.plan.pending_plan().map(Path::to_path_buf),
             images: msg.images.clone(),
             thinking: self.state.thinking,
             ..Default::default()

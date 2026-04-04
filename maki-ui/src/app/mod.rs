@@ -615,7 +615,7 @@ impl App {
             if key::POP_QUEUE.matches(key) {
                 self.queue.remove(0);
             } else if key::OPEN_EDITOR.matches(key) {
-                return match self.state.plan.pending_plan() {
+                return match self.state.plan.path() {
                     Some(p) => vec![Action::OpenEditor(p.to_path_buf())],
                     None => {
                         self.flash(FLASH_NO_PLAN.into());
@@ -891,7 +891,7 @@ impl App {
                     self.chat_index.clear();
                     self.subagent_answers.clear();
                     self.status = Status::Idle;
-                    if self.state.mode == Mode::Plan && self.state.plan.pending_plan().is_some() {
+                    if self.state.mode == Mode::Plan && self.state.plan.is_written() {
                         self.plan_form.open();
                     }
                 }
@@ -1337,29 +1337,36 @@ impl App {
     }
 
     fn implement_plan(&mut self, clear_context: bool) -> Vec<Action> {
+        let plan_snapshot = match std::mem::take(&mut self.state.plan) {
+            PlanState::Written(p) => Some((
+                std::fs::read_to_string(&p).unwrap_or_default(),
+                p.display().to_string(),
+            )),
+            _ => None,
+        };
+
+        self.state.mode = Mode::Build;
+
         let mut actions = if clear_context {
             self.reset_session()
         } else {
             vec![]
         };
-        if let Some(pp) = self.state.plan.path() {
-            let content = std::fs::read_to_string(pp).unwrap_or_default();
-            let path_str = pp.display().to_string();
+
+        let text = if let Some((content, path_str)) = plan_snapshot {
+            let text = format!("{} at `{}`.", IMPLEMENT_MSG_PREFIX, path_str);
             self.main_chat()
                 .push(DisplayMessage::plan(content, path_str));
-        }
-        let text = match self.state.plan.path() {
-            Some(p) => format!("{} at `{}`.", IMPLEMENT_MSG_PREFIX, p.display()),
-            None => format!("{}.", IMPLEMENT_MSG_PREFIX),
+            text
+        } else {
+            format!("{}.", IMPLEMENT_MSG_PREFIX)
         };
-        self.state.mode = Mode::Build;
         self.run_id += 1;
         let msg = QueuedMessage {
             text,
             images: vec![],
         };
         actions.extend(self.start_from_queue(&msg));
-        self.state.plan = PlanState::new();
         actions
     }
 }
