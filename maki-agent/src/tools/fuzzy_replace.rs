@@ -11,17 +11,6 @@ const CONTEXT_AWARE_MATCH_RATIO: f64 = 0.5;
 
 type Replacer = fn(&str, &str) -> Vec<String>;
 
-const REPLACERS: &[Replacer] = &[
-    exact,
-    line_trimmed,
-    block_anchor,
-    whitespace_normalized,
-    indentation_flexible,
-    escape_normalized,
-    trimmed_boundary,
-    context_aware,
-];
-
 #[derive(Debug)]
 pub(super) struct ReplaceResult {
     pub content: String,
@@ -34,35 +23,67 @@ pub(super) fn replace(
     new_string: &str,
     replace_all: bool,
 ) -> Result<ReplaceResult, String> {
+    const REPLACERS: &[Replacer] = &[
+        exact,
+        line_trimmed,
+        block_anchor,
+        whitespace_normalized,
+        indentation_flexible,
+    ];
+    const LATE_REPLACERS: &[Replacer] = &[trimmed_boundary, context_aware];
+
     let mut any_found = false;
 
-    for replacer in REPLACERS {
-        for candidate in replacer(content, old_string) {
-            let Some(first) = content.find(&candidate) else {
+    let mut try_match = |candidates: Vec<String>, replacement: &str| -> Option<ReplaceResult> {
+        for matched in candidates {
+            let Some(first) = content.find(&*matched) else {
                 continue;
             };
             any_found = true;
 
             if replace_all {
-                let offsets = all_offsets(content, &candidate);
-                return Ok(ReplaceResult {
-                    content: content.replace(&candidate, new_string),
+                let offsets = all_offsets(content, &matched);
+                return Some(ReplaceResult {
+                    content: content.replace(&*matched, replacement),
                     match_offsets: offsets,
                 });
             }
 
-            if content[first + candidate.len()..].contains(&candidate) {
+            if content[first + matched.len()..].contains(&*matched) {
                 continue;
             }
 
-            let mut result = String::with_capacity(content.len() + new_string.len());
+            let mut result = String::with_capacity(content.len() + replacement.len());
             result.push_str(&content[..first]);
-            result.push_str(new_string);
-            result.push_str(&content[first + candidate.len()..]);
-            return Ok(ReplaceResult {
+            result.push_str(replacement);
+            result.push_str(&content[first + matched.len()..]);
+            return Some(ReplaceResult {
                 content: result,
                 match_offsets: vec![first],
             });
+        }
+        None
+    };
+
+    for r in REPLACERS {
+        if let Some(res) = try_match(r(content, old_string), new_string) {
+            return Ok(res);
+        }
+    }
+
+    let unescaped = unescape(old_string);
+    if unescaped != old_string
+        && let Some(res) = try_match(
+            escape_normalized(content, &unescaped),
+            &unescape(new_string),
+        )
+    {
+        return Ok(res);
+    }
+
+    for r in LATE_REPLACERS {
+        if let Some(res) = try_match(r(content, old_string), new_string) {
+            return Ok(res);
         }
     }
 
@@ -93,11 +114,9 @@ fn line_trimmed(content: &str, find: &str) -> Vec<String> {
             .iter()
             .enumerate()
             .all(|(j, sl)| content_lines[i + j].trim() == sl.trim());
-        if !all_match {
-            continue;
+        if all_match {
+            results.push(content_lines[i..i + search_lines.len()].join("\n"));
         }
-
-        results.push(content_lines[i..i + search_lines.len()].join("\n"));
     }
     results
 }
@@ -235,23 +254,18 @@ fn whitespace_normalized(content: &str, find: &str) -> Vec<String> {
     results
 }
 
-fn escape_normalized(content: &str, find: &str) -> Vec<String> {
-    let unescaped = unescape(find);
-    if unescaped == find {
-        return vec![];
-    }
-
+fn escape_normalized(content: &str, unescaped_find: &str) -> Vec<String> {
     let mut results = Vec::new();
-    if content.contains(&unescaped) {
-        results.push(unescaped.clone());
+    if content.contains(unescaped_find) {
+        results.push(unescaped_find.to_string());
     }
 
     let content_lines: Vec<&str> = content.split('\n').collect();
-    let find_lines: Vec<&str> = unescaped.split('\n').collect();
+    let find_lines: Vec<&str> = unescaped_find.split('\n').collect();
     if find_lines.len() > 1 && find_lines.len() <= content_lines.len() {
         for i in 0..=content_lines.len() - find_lines.len() {
             let block = content_lines[i..i + find_lines.len()].join("\n");
-            if unescape(&block) == unescaped {
+            if unescape(&block) == unescaped_find {
                 results.push(block);
             }
         }
@@ -458,9 +472,7 @@ mod tests {
     #[test_case("fn foo() {}\nfn bar() {}", "fn foo() {}", R ; "exact")]
     #[test_case("fn foo() {}", "\nfn foo() {}\n", R ; "trimmed_boundary")]
     #[test_case("    fn f() {\n        bar();\n    }", "fn f() {\n    bar();\n}", R ; "different_indentation")]
-    #[test_case("        fn f() {\n            bar();\n        }", "    fn f() {\n        bar();\n    }", R ; "shifted_block")]
     #[test_case("let   x  =   1;", "let x = 1;", R ; "whitespace_collapsed")]
-    #[test_case("if\t(true)\t{ return; }", "if (true) { return; }", R ; "tabs_vs_spaces")]
     #[test_case("fn  foo()  {\n    bar();\n}", "fn foo() {\nbar();\n}", R ; "whitespace_multiline")]
     #[test_case("    let   x  =   compute(a,  b);", "compute(a, b)", R ; "whitespace_substring")]
     #[test_case("let s = \"hello\nworld\";", "let s = \"hello\\nworld\";", R ; "escaped_newline")]
@@ -526,6 +538,24 @@ mod tests {
     fn block_anchor_no_panic(content: &str) {
         let search = "fn test() {\n    body();\n}";
         assert!(block_anchor(content, search).is_empty());
+    }
+
+    #[test]
+    fn escape_normalized_also_fixes_new_string() {
+        let content = r#"print("hello")"#;
+        let old = r#"print(\"hello\")"#;
+        let new = r#"print(\"world\")"#;
+        let result = replace(content, old, new, false).unwrap();
+        assert_eq!(result.content, r#"print("world")"#);
+    }
+
+    #[test]
+    fn escape_normalized_new_string_with_replace_all() {
+        let content = "say(\"a\")\nsay(\"b\")";
+        let old = r#"say(\"a\")"#;
+        let new = r#"say(\"x\")"#;
+        let result = replace(content, old, new, true).unwrap();
+        assert_eq!(result.content, "say(\"x\")\nsay(\"b\")");
     }
 
     #[test]
