@@ -16,6 +16,7 @@
   <noscript><link rel="stylesheet" href="asciinema-player.css"></noscript>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    html { scroll-padding-top: 5rem; scroll-behavior: smooth; }
 
     :root {
       --lavender: oklch(85% 0.06 280);
@@ -390,6 +391,17 @@
     .pitch-item strong {
       font-weight: 800;
       font-size: 1rem;
+    }
+    .pitch-item strong a {
+      color: inherit;
+      text-decoration: underline;
+      text-decoration-color: var(--lavender);
+      text-underline-offset: 2px;
+      text-decoration-thickness: 2px;
+      transition: text-decoration-color 0.2s;
+    }
+    .pitch-item strong a:hover {
+      text-decoration-color: var(--salmon);
     }
     .pitch-item p {
       font-size: 0.92rem;
@@ -1068,14 +1080,14 @@
       <div class="pitch-item">
         <div class="pip pip-lavender"></div>
         <div>
-          <strong>index</strong>
+          <strong><a href="#showcase-index">index</a></strong>
           <p>Parses 15 languages into skeletons: imports, type defs, function signatures with their line ranges. Adds 59 tok/turn but saves 224 tok/turn on reads, netting 165 tok/turn saved. My usage indicated reads are ~65% of all tokens, so this optimization is big.</p>
         </div>
       </div>
       <div class="pitch-item">
         <div class="pip pip-salmon"></div>
         <div>
-          <strong>code_execution</strong>
+          <strong><a href="#showcase-exec">code_execution</a></strong>
           <p>A sandboxed Python interpreter with memory and time limits. All tools are exposed as <code>async</code> functions, so the model can <code>asyncio.gather()</code> a bunch of reads, grep the results, and only return what matters. Intermediate data never reaches your context.</p>
         </div>
       </div>
