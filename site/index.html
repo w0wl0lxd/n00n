@@ -1,4 +1,4 @@
-ooDOCTYPE html>
+<DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -573,6 +573,173 @@ ooDOCTYPE html>
     }
 
 
+    /* ── TOOL SHOWCASES ── */
+    .showcase {
+      margin-bottom: clamp(4rem, 8vw, 6rem);
+    }
+    .showcase-header {
+      margin-bottom: 2rem;
+    }
+    .showcase-header span {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: var(--muted);
+      margin-bottom: 0.4rem;
+    }
+    .showcase-header h2 {
+      font-weight: 800;
+      font-size: clamp(1.35rem, 2.5vw, 1.7rem);
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+      margin-bottom: 0.5rem;
+    }
+    .showcase-header p {
+      font-size: 0.92rem;
+      color: var(--text-secondary);
+      max-width: 55ch;
+      line-height: 1.55;
+    }
+    .showcase-header code {
+      font-size: 0.88rem;
+      background: oklch(90% 0.03 270 / 0.5);
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
+    }
+
+    /* index tool split view */
+    .index-split {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 0;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px oklch(20% 0.04 270 / 0.15), 0 0 0 1px oklch(30% 0.02 270 / 0.2);
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 0.82rem;
+      line-height: 1.6;
+      background: #1e1e2e;
+    }
+    .index-pane {
+      overflow: hidden;
+      position: relative;
+    }
+    .index-pane-label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.3rem 1rem;
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: oklch(55% 0.02 270);
+      background: oklch(18% 0.02 270);
+    }
+    .index-pane pre {
+      margin: 0;
+      padding: 0.8rem 1rem;
+      overflow-x: auto;
+      color: #cdd6f4;
+    }
+    .index-divider {
+      width: 1px;
+      background: oklch(32% 0.04 270);
+    }
+    .index-pane .ln  { color: oklch(40% 0.015 270); user-select: none; }
+    .index-pane .kw  { color: #cba6f7; }
+    .index-pane .ty  { color: #f9e2af; }
+    .index-pane .fn  { color: #89b4fa; }
+    .index-pane .st  { color: #a6e3a1; }
+    .index-pane .cm  { color: oklch(50% 0.02 270); font-style: italic; }
+    .index-pane .at  { color: #f38ba8; }
+    .index-pane .op  { color: #89dceb; }
+    .index-pane .sec { color: #f9e2af; font-weight: 700; }
+    .index-pane .dim { color: oklch(50% 0.015 270); }
+    .index-pane .rng { color: oklch(55% 0.06 280); }
+
+    .showcase-stat {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.6rem;
+      margin-top: 1.5rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.88rem;
+      color: var(--text-secondary);
+    }
+    .stat-num {
+      font-weight: 800;
+      color: var(--deep-navy);
+    }
+    .stat-arrow {
+      color: oklch(45% 0.03 270);
+    }
+    .stat-result {
+      padding: 0.3rem 0.75rem;
+      border-radius: 20px;
+      font-size: 0.82rem;
+      font-weight: 800;
+      background: oklch(92% 0.06 150 / 0.5);
+      color: oklch(38% 0.12 150);
+    }
+
+    /* code_execution showcase */
+    .exec-demo {
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px oklch(20% 0.04 270 / 0.15), 0 0 0 1px oklch(30% 0.02 270 / 0.2);
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 0.82rem;
+      line-height: 1.6;
+      background: #1e1e2e;
+    }
+    .exec-body {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+    }
+    .exec-pane {
+      overflow: hidden;
+    }
+    .exec-pane-label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.3rem 1rem;
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: oklch(55% 0.02 270);
+      background: oklch(18% 0.02 270);
+    }
+    .exec-pane pre {
+      margin: 0;
+      padding: 0.8rem 1rem;
+      overflow-x: auto;
+      color: #cdd6f4;
+    }
+    .exec-divider {
+      width: 1px;
+      background: oklch(32% 0.04 270);
+    }
+    .exec-pane .kw  { color: #cba6f7; }
+    .exec-pane .fn  { color: #89b4fa; }
+    .exec-pane .st  { color: #a6e3a1; }
+    .exec-pane .cm  { color: oklch(50% 0.02 270); font-style: italic; }
+    .exec-pane .op  { color: #89dceb; }
+    .exec-pane .nb  { color: #fab387; }
+    .exec-pane .dim { color: oklch(50% 0.015 270); }
+    .exec-pane .out { color: oklch(70% 0.08 150); }
+    .exec-pane .err { color: #f38ba8; }
+
+
+
+    @media (max-width: 768px) {
+      .index-split { grid-template-columns: 1fr; }
+      .index-divider { width: auto; height: 1px; }
+      .exec-body { grid-template-columns: 1fr; }
+      .exec-divider { width: auto; height: 1px; }
+    }
+
     /* ── BOTTOM SKY ── */
     .bottom-sky {
       position: relative;
@@ -959,6 +1126,125 @@ ooDOCTYPE html>
           <p>Long-term memory that persists across sessions. Tell maki to remember something, somtimes it picks things up on its own. Double-Escape to rewind. Plan mode restricts the agent to read-only. MCP servers over stdio or HTTP. Skills. 26 themes. Paste images. <code>--print</code> for headless (output is Claude Code-compatible).</p>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div class="divider reveal"></div>
+
+  <!-- INDEX TOOL SHOWCASE -->
+  <div class="showcase reveal" id="showcase-index">
+    <div class="showcase-header">
+      <span>See it in action</span>
+      <h2>index: read less, know more</h2>
+      <p>Instead of reading full files, <code>index</code> parses with tree-sitter and returns a compact skeleton. The model sees the structure, then reads only the lines it needs.</p>
+    </div>
+
+    <div class="index-split">
+      <div class="index-pane">
+        <div class="index-pane-label">main.rs</div>
+        <pre><span class="kw">use</span> <span class="ty">std</span>::fs;
+<span class="kw">use</span> clap::<span class="ty">Parser</span>;
+<span class="kw">use</span> color_eyre::<span class="ty">Result</span>;
+
+<span class="at">#[derive(Parser)]</span>
+<span class="kw">struct</span> <span class="ty">Args</span> {
+    paths: <span class="ty">Vec</span>&lt;<span class="ty">PathBuf</span>&gt;,
+    <span class="at">#[arg(short, long)]</span>
+    lines: <span class="kw">bool</span>,
+}
+
+<span class="kw">fn</span> <span class="fn">count_words</span>(text: &amp;<span class="ty">str</span>) -&gt; <span class="ty">usize</span> {
+    text.<span class="fn">split_whitespace</span>().<span class="fn">count</span>()
+}
+
+<span class="kw">fn</span> <span class="fn">count_lines</span>(text: &amp;<span class="ty">str</span>) -&gt; <span class="ty">usize</span> {
+    text.<span class="fn">lines</span>().<span class="fn">count</span>()
+}
+
+<span class="kw">fn</span> <span class="fn">main</span>() -&gt; <span class="ty">Result</span>&lt;()&gt; {
+    <span class="kw">let</span> args = <span class="ty">Args</span>::<span class="fn">parse</span>();
+    <span class="kw">for</span> path <span class="kw">in</span> &amp;args.paths {
+        <span class="kw">let</span> text = fs::<span class="fn">read_to_string</span>(path)?;
+        <span class="kw">let</span> n = <span class="kw">if</span> args.lines {
+            <span class="fn">count_lines</span>(&amp;text)
+        } <span class="kw">else</span> {
+            <span class="fn">count_words</span>(&amp;text)
+        };
+        <span class="fn">println!</span>(<span class="st">"{}: {n}"</span>, path.<span class="fn">display</span>());
+    }
+    <span class="ty">Ok</span>(())
+}</pre>
+      </div>
+      <div class="index-divider"></div>
+      <div class="index-pane">
+        <div class="index-pane-label">maki index main.rs</div>
+        <pre><span class="sec">imports:</span> <span class="rng">[1-3]</span>
+  clap::<span class="ty">Parser</span>, color_eyre::<span class="ty">Result</span>, std::fs
+
+<span class="sec">types:</span>
+  <span class="at">#[derive(Parser)]</span>
+  <span class="kw">struct</span> <span class="ty">Args</span> <span class="rng">[5-9]</span>
+    paths: <span class="ty">Vec</span>&lt;<span class="ty">PathBuf</span>&gt;
+    lines: <span class="kw">bool</span>
+
+<span class="sec">fns:</span>
+  <span class="fn">count_words</span>(text: &amp;str) -&gt; <span class="ty">usize</span> <span class="rng">[11-13]</span>
+  <span class="fn">count_lines</span>(text: &amp;str) -&gt; <span class="ty">usize</span> <span class="rng">[15-17]</span>
+  <span class="fn">main</span>() -&gt; <span class="ty">Result</span>&lt;()&gt; <span class="rng">[19-29]</span></pre>
+      </div>
+    </div>
+
+    <div class="showcase-stat">
+      <span class="stat-num">29</span> lines <span class="stat-arrow">&rarr;</span> <span class="stat-num">13</span> lines
+      <span class="stat-result">55% smaller</span>
+    </div>
+  </div>
+
+  <div class="divider reveal"></div>
+
+  <!-- CODE_EXECUTION SHOWCASE -->
+  <div class="showcase reveal" id="showcase-exec">
+    <div class="showcase-header">
+      <span>See it in action</span>
+      <h2>code_execution: think inside the sandbox</h2>
+      <p>Tools are exposed as <code>async</code> Python functions. The model writes a script, runs it sandboxed, and only the <code>print()</code> output enters your context.</p>
+    </div>
+
+    <div class="exec-demo">
+      <div class="exec-body">
+        <div class="exec-pane">
+          <div class="exec-pane-label">script</div>
+          <pre>cfg, meta = <span class="kw">await</span> asyncio.<span class="fn">gather</span>(
+    <span class="fn">read</span>(path=<span class="st">'Cargo.toml'</span>),
+    <span class="fn">bash</span>(command=<span class="st">'cargo metadata'</span>)
+)
+deps = json.<span class="fn">loads</span>(meta)
+
+used = <span class="fn">set</span>(re.<span class="fn">findall</span>(
+    <span class="st">r'use (\w+)::'</span>, cfg
+))
+declared = {
+    p[<span class="st">'name'</span>]
+    <span class="kw">for</span> p <span class="kw">in</span> deps[<span class="st">'packages'</span>]
+}
+
+stale = declared - used
+<span class="kw">for</span> s <span class="kw">in</span> <span class="fn">sorted</span>(stale):
+    <span class="fn">print</span>(s)</pre>
+        </div>
+        <div class="exec-divider"></div>
+        <div class="exec-pane">
+          <div class="exec-pane-label">output</div>
+          <pre><span class="out">base64</span>
+<span class="out">hmac</span>
+<span class="out">once_cell</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="showcase-stat">
+      <span class="stat-num">~18k</span> tokens <span class="stat-arrow">&rarr;</span> <span class="stat-num">~40</span> tokens
+      <span class="stat-result">450x reduction</span>
     </div>
   </div>
 
