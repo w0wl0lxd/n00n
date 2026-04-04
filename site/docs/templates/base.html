@@ -69,7 +69,6 @@
       --inline-code-color: oklch(38% 0.10 275);
       --inline-code-border: oklch(89% 0.03 278);
       --code-block-border: oklch(28% 0.03 275);
-      --code-block-accent: oklch(50% 0.12 275 / 0.3);
       --table-head-bg: oklch(94% 0.03 278);
       --table-border: oklch(88% 0.04 278);
       --table-row-border: oklch(92% 0.02 280);
@@ -134,7 +133,6 @@
       --inline-code-color: oklch(72% 0.08 275);
       --inline-code-border: oklch(28% 0.03 275);
       --code-block-border: oklch(24% 0.03 275);
-      --code-block-accent: oklch(55% 0.10 275 / 0.25);
       --table-head-bg: oklch(20% 0.025 275);
       --table-border: oklch(26% 0.03 275);
       --table-row-border: oklch(22% 0.02 275);
@@ -419,16 +417,6 @@
       overflow-x: auto;
       margin-bottom: 1.5rem;
       border: 1px solid var(--code-block-border);
-      position: relative;
-    }
-    pre::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 1px;
-      background: linear-gradient(90deg, var(--code-block-accent), oklch(60% 0.08 290 / 0.15), transparent);
     }
     pre code {
       background: none;
