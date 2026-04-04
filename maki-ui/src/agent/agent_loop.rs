@@ -321,7 +321,7 @@ impl AgentLoop {
     }
 
     fn build_tools(&self, model: &Model) -> Value {
-        let examples = model.family.supports_tool_examples();
+        let examples = model.supports_tool_examples();
         let filter = ToolFilter::from_config(&self.config, &[]);
         let ctx = DescriptionContext {
             skills: &self.skills,

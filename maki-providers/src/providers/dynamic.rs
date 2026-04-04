@@ -47,6 +47,8 @@ struct ScriptModel {
     id: String,
     #[serde(default = "default_tier")]
     tier: ModelTier,
+    #[serde(default)]
+    supports_tool_examples: Option<bool>,
     #[serde(default = "default_max_output_tokens")]
     max_output_tokens: u32,
     #[serde(default = "default_context_window")]
@@ -384,13 +386,29 @@ pub fn base_for_slug(slug: &str) -> Option<ProviderKind> {
 pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
     let meta = find_meta(slug)?;
     let script_model = meta.models.iter().find(|m| model_id.starts_with(&m.id))?;
-    let family = meta.base.family();
     Some(Model {
         id: model_id.to_string(),
         provider: meta.base,
         dynamic_slug: Some(slug.to_string()),
         tier: script_model.tier,
-        family,
+        family: meta.base.family(),
+        supports_tool_examples_override: script_model.supports_tool_examples,
+        pricing: script_model.pricing.clone().unwrap_or_default(),
+        max_output_tokens: script_model.max_output_tokens,
+        context_window: script_model.context_window,
+    })
+}
+
+pub fn find_model_for_tier(slug: &str, tier: ModelTier) -> Option<Model> {
+    let meta = find_meta(slug)?;
+    let script_model = meta.models.iter().find(|m| m.tier == tier)?;
+    Some(Model {
+        id: script_model.id.clone(),
+        provider: meta.base,
+        dynamic_slug: Some(slug.to_string()),
+        tier,
+        family: meta.base.family(),
+        supports_tool_examples_override: script_model.supports_tool_examples,
         pricing: script_model.pricing.clone().unwrap_or_default(),
         max_output_tokens: script_model.max_output_tokens,
         context_window: script_model.context_window,
@@ -509,14 +527,16 @@ mod tests {
 
     #[test]
     fn script_model_deserialization() {
-        let full = r#"{"id": "my-model", "tier": "strong", "max_output_tokens": 32000, "context_window": 200000, "pricing": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.30}}"#;
+        let full = r#"{"id": "my-model", "tier": "strong", "supports_tool_examples": true, "max_output_tokens": 32000, "context_window": 200000, "pricing": {"input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.30}}"#;
         let model: ScriptModel = serde_json::from_str(full).unwrap();
         assert_eq!(model.id, "my-model");
         assert_eq!(model.tier, ModelTier::Strong);
+        assert_eq!(model.supports_tool_examples, Some(true));
         assert!(model.pricing.is_some());
 
         let minimal: ScriptModel = serde_json::from_str(r#"{"id": "custom-v1"}"#).unwrap();
         assert_eq!(minimal.tier, ModelTier::Medium);
+        assert_eq!(minimal.supports_tool_examples, None);
         assert_eq!(minimal.max_output_tokens, 16384);
         assert_eq!(minimal.context_window, 128_000);
         assert!(minimal.pricing.is_none());

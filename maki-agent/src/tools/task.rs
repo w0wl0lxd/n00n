@@ -62,9 +62,12 @@ impl Task {
             if effective == ctx.model.tier {
                 (Model::clone(&ctx.model), Arc::clone(&ctx.provider))
             } else {
-                let mut resolved_model =
-                    Model::from_tier(ctx.model.provider, effective).map_err(|e| e.to_string())?;
-                resolved_model.dynamic_slug = ctx.model.dynamic_slug.clone();
+                let resolved_model = Model::from_tier_dynamic(
+                    ctx.model.provider,
+                    effective,
+                    ctx.model.dynamic_slug.as_deref(),
+                )
+                .map_err(|e| e.to_string())?;
                 let resolved_provider = provider::from_model_async(&resolved_model)
                     .await
                     .map_err(|e| e.to_string())?;
@@ -95,8 +98,7 @@ impl Task {
             skills: &[],
             filter: &filter,
         };
-        let mut tools =
-            ToolCall::definitions(&vars, &ctx_desc, model.family.supports_tool_examples());
+        let mut tools = ToolCall::definitions(&vars, &ctx_desc, model.supports_tool_examples());
         if let Some(ref mcp) = ctx.mcp {
             mcp.extend_tools(&mut tools, &[]);
         }

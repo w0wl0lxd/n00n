@@ -330,6 +330,7 @@ pub(crate) fn test_model() -> maki_providers::Model {
         dynamic_slug: None,
         tier: maki_providers::ModelTier::Medium,
         family: maki_providers::ModelFamily::Claude,
+        supports_tool_examples_override: None,
         pricing: test_pricing(),
         max_output_tokens: 8192,
         context_window: TEST_CONTEXT_WINDOW,

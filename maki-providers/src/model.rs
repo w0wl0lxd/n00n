@@ -120,12 +120,18 @@ pub struct Model {
     pub dynamic_slug: Option<String>,
     pub tier: ModelTier,
     pub family: ModelFamily,
+    pub supports_tool_examples_override: Option<bool>,
     pub pricing: ModelPricing,
     pub max_output_tokens: u32,
     pub context_window: u32,
 }
 
 impl Model {
+    pub fn supports_tool_examples(&self) -> bool {
+        self.supports_tool_examples_override
+            .unwrap_or_else(|| self.family.supports_tool_examples())
+    }
+
     pub fn spec(&self) -> String {
         if let Some(slug) = &self.dynamic_slug {
             format!("{slug}/{}", self.id)
@@ -144,6 +150,19 @@ impl Model {
         Self::from_spec(&format!("{provider}/{model_id}"))
     }
 
+    pub fn from_tier_dynamic(
+        provider: ProviderKind,
+        tier: ModelTier,
+        dynamic_slug: Option<&str>,
+    ) -> Result<Self, ModelError> {
+        if let Some(slug) = dynamic_slug
+            && let Some(model) = dynamic::find_model_for_tier(slug, tier)
+        {
+            return Ok(model);
+        }
+        Self::from_tier(provider, tier)
+    }
+
     pub fn from_spec(spec: &str) -> Result<Self, ModelError> {
         let (provider_str, model_id) = spec.split_once('/').ok_or(ModelError::InvalidFormat)?;
 
@@ -156,6 +175,7 @@ impl Model {
                 dynamic_slug: None,
                 tier: entry.tier,
                 family: entry.family,
+                supports_tool_examples_override: None,
                 pricing: entry.pricing.clone(),
                 max_output_tokens: entry.max_output_tokens,
                 context_window: entry.context_window,
@@ -174,6 +194,7 @@ impl Model {
                 dynamic_slug: Some(provider_str.to_string()),
                 tier: entry.tier,
                 family: entry.family,
+                supports_tool_examples_override: None,
                 pricing: entry.pricing.clone(),
                 max_output_tokens: entry.max_output_tokens,
                 context_window: entry.context_window,

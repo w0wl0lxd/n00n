@@ -151,7 +151,7 @@ pub fn run(
         skills: &skills,
         filter: &filter,
     };
-    let mut tools = ToolCall::definitions(&vars, &ctx, model.family.supports_tool_examples());
+    let mut tools = ToolCall::definitions(&vars, &ctx, model.supports_tool_examples());
 
     let mcp_manager = smol::block_on(McpManager::start(&cwd_path));
 
