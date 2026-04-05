@@ -128,19 +128,26 @@
     /* ── HERO ── */
     .hero {
       min-height: 100vh;
-      display: grid;
-      grid-template-columns: 30% 1fr;
-      grid-template-rows: 1fr;
+      display: flex;
       align-items: center;
+      justify-content: center;
       padding: 6rem clamp(2rem, 4vw, 4rem) 3rem;
       position: relative;
       background: linear-gradient(180deg, var(--sky-start) 0%, var(--sky-end) 40%, var(--lavender) 70%, var(--soft-pink) 100%);
       overflow: hidden;
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 30% 1fr;
+      align-items: center;
       gap: 2.5rem;
+      width: 100%;
+      max-width: 1280px;
+      position: relative;
+      z-index: 2;
     }
     .hero-intro {
       position: relative;
-      z-index: 2;
     }
 
     .hero-clouds {
@@ -987,7 +994,8 @@
     /* ── RESPONSIVE ── */
     @media (max-width: 768px) {
       .nav-right a:not(.nav-cta):not([href="/docs/"]) { display: none; }
-      .hero { grid-template-columns: 1fr; text-align: center; padding-inline: 1rem; }
+      .hero { padding-inline: 1rem; }
+      .hero-grid { grid-template-columns: 1fr; text-align: center; }
       .hero-intro { display: flex; flex-direction: column; align-items: center; }
       .hero-actions { justify-content: center; }
       .hero-preview { text-align: left; width: 100%; }
@@ -1039,6 +1047,7 @@
     <div class="moon"></div>
   </div>
 
+  <div class="hero-grid">
   <div class="hero-intro">
     <h1>maki</h1>
     <p class="hero-tagline">the efficient coder</p>
@@ -1069,6 +1078,7 @@
         <div id="demo-player"></div>
       </div>
     </div>
+  </div>
   </div>
 </section>
 
