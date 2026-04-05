@@ -20,7 +20,6 @@ const INSTRUCTION_FILES: &[&str] = &[
 ];
 
 const LOCAL_INSTRUCTION_FILE: &str = "AGENTS.local.md";
-const SYSTEM_INSTRUCTIONS_FILE: &str = "SYSTEM.md";
 
 #[derive(Clone, Default)]
 pub struct LoadedInstructions(Arc<Mutex<HashSet<PathBuf>>>);
@@ -89,10 +88,10 @@ fn append_instruction_files(out: &mut String, cwd: &str) {
     }
 
     if let Some(home) = dirs::home_dir()
-        && let Ok(content) = fs::read_to_string(home.join(".maki").join(SYSTEM_INSTRUCTIONS_FILE))
+        && let Ok(content) = fs::read_to_string(home.join(".maki").join("AGENTS.md"))
     {
         out.push_str(&format!(
-            "\n\nSystem instructions (~/.maki/{SYSTEM_INSTRUCTIONS_FILE}):\n{content}"
+            "\n\nGlobal instructions (~/.maki/AGENTS.md):\n{content}"
         ));
     }
 }
