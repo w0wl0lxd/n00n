@@ -155,9 +155,12 @@ impl Model {
         tier: ModelTier,
         dynamic_slug: Option<&str>,
     ) -> Result<Self, ModelError> {
-        if let Some(slug) = dynamic_slug
-            && let Some(model) = dynamic::find_model_for_tier(slug, tier)
-        {
+        if let Some(slug) = dynamic_slug {
+            if let Some(model) = dynamic::find_model_for_tier(slug, tier) {
+                return Ok(model);
+            }
+            let mut model = Self::from_tier(provider, tier)?;
+            model.dynamic_slug = Some(slug.to_string());
             return Ok(model);
         }
         Self::from_tier(provider, tier)
