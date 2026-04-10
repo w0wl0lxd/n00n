@@ -1091,14 +1091,14 @@
       <div class="pitch-item">
         <div class="pip pip-lavender"></div>
         <div>
-          <strong><a href="#showcase-index">index</a></strong>
+          <strong><a href="#index">index</a></strong>
           <p>Parses 15 languages into skeletons: imports, type defs, function signatures with their line ranges. Adds 59 tok/turn but saves 224 tok/turn on reads, netting 165 tok/turn saved. My usage indicated reads are ~65% of all tokens, so this optimization is big.</p>
         </div>
       </div>
       <div class="pitch-item">
         <div class="pip pip-salmon"></div>
         <div>
-          <strong><a href="#showcase-exec">code_execution</a></strong>
+          <strong><a href="#exec">code_execution</a></strong>
           <p>A sandboxed Python interpreter with memory and time limits. All tools are exposed as <code>async</code> functions, so the model can <code>asyncio.gather()</code> a bunch of reads, grep the results, and only return what matters. Intermediate data never reaches your context.</p>
         </div>
       </div>
@@ -1155,7 +1155,7 @@
   <div class="divider reveal"></div>
 
   <!-- INDEX TOOL SHOWCASE -->
-  <div class="showcase reveal" id="showcase-index">
+  <div class="showcase reveal" id="index">
     <div class="showcase-header">
       <span>See it in action</span>
       <h2>index: read less, know more</h2>
@@ -1226,7 +1226,7 @@
   <div class="divider reveal"></div>
 
   <!-- CODE_EXECUTION SHOWCASE -->
-  <div class="showcase reveal" id="showcase-exec">
+  <div class="showcase reveal" id="exec">
     <div class="showcase-header">
       <span>See it in action</span>
       <h2>code_execution: think inside the sandbox</h2>
