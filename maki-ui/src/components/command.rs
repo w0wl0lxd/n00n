@@ -193,8 +193,7 @@ impl CommandPalette {
         self.filtered.clear();
 
         for (i, cmd) in BUILTIN_COMMANDS.iter().enumerate() {
-            if cmd.name[1..].to_ascii_lowercase().starts_with(&cmd_lower)
-                && arg_count <= cmd.max_args
+            if cmd.name[1..].to_ascii_lowercase().contains(&cmd_lower) && arg_count <= cmd.max_args
             {
                 self.filtered.push(FilteredItem::Builtin(i));
             }
@@ -204,7 +203,7 @@ impl CommandPalette {
             let display = cmd.display_name();
             let entry_name = &display[1..];
             let max_args = if cmd.has_args() { usize::MAX } else { 0 };
-            if entry_name.to_ascii_lowercase().starts_with(&cmd_lower) && arg_count <= max_args {
+            if entry_name.to_ascii_lowercase().contains(&cmd_lower) && arg_count <= max_args {
                 self.filtered.push(FilteredItem::Custom(i));
             }
         }
@@ -218,7 +217,7 @@ impl CommandPalette {
             if prompt
                 .display_name
                 .to_ascii_lowercase()
-                .starts_with(&cmd_lower)
+                .contains(&cmd_lower)
                 && arg_count <= max_args
             {
                 self.filtered.push(FilteredItem::McpPrompt(i));
@@ -428,18 +427,18 @@ mod tests {
         assert!(!p.is_active());
     }
 
-    #[test_case("/co", true ; "compact_prefix")]
-    #[test_case("/ne", true ; "lowercase_prefix")]
-    #[test_case("/NE", true ; "uppercase_prefix")]
+    #[test_case("/mp", true ; "compact_substring")]
+    #[test_case("/ew", true ; "lowercase_substring")]
+    #[test_case("/EW", true ; "uppercase_substring")]
     #[test_case("/zzz", false ; "no_match")]
-    fn filter_by_prefix(input: &str, expect_active: bool) {
+    fn filter_by_substring(input: &str, expect_active: bool) {
         let p = synced(input);
         assert_eq!(p.is_active(), expect_active);
     }
 
     #[test]
-    fn filter_custom_by_prefix() {
-        let p = synced_with_custom("/project:r", sample_custom());
+    fn filter_custom_by_substring() {
+        let p = synced_with_custom("/review", sample_custom());
         assert!(p.is_active());
         assert_eq!(p.filtered.len(), 1);
         assert!(matches!(p.filtered[0], FilteredItem::Custom(0)));
@@ -563,8 +562,8 @@ mod tests {
     }
 
     #[test]
-    fn filter_mcp_prompt_by_prefix() {
-        let p = synced_with_prompts("/myserver:c");
+    fn filter_mcp_prompt_by_substring() {
+        let p = synced_with_prompts("/code");
         assert!(p.is_active());
         assert_eq!(p.filtered.len(), 1);
         assert!(matches!(p.filtered[0], FilteredItem::McpPrompt(0)));
