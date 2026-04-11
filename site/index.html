@@ -1230,37 +1230,37 @@
       <div class="exec-body">
         <div class="exec-pane">
           <div class="exec-pane-label">script</div>
-          <pre>cfg, meta = <span class="kw">await</span> asyncio.<span class="fn">gather</span>(
-    <span class="fn">read</span>(path=<span class="st">'Cargo.toml'</span>),
-    <span class="fn">bash</span>(command=<span class="st">'cargo metadata'</span>)
+          <pre><span class="cm"># find dead exports in a TS repo</span>
+files = <span class="kw">await</span> <span class="fn">glob</span>(pattern=<span class="st">'src/**/*.ts'</span>)
+srcs = <span class="kw">await</span> asyncio.<span class="fn">gather</span>(
+    *[<span class="fn">read</span>(path=f) <span class="kw">for</span> f <span class="kw">in</span> files]
 )
-deps = json.<span class="fn">loads</span>(meta)
 
-used = <span class="fn">set</span>(re.<span class="fn">findall</span>(
-    <span class="st">r'use (\w+)::'</span>, cfg
-))
-declared = {
-    p[<span class="st">'name'</span>]
-    <span class="kw">for</span> p <span class="kw">in</span> deps[<span class="st">'packages'</span>]
-}
+exports = {}
+imports = <span class="fn">set</span>()
+<span class="kw">for</span> f, src <span class="kw">in</span> <span class="fn">zip</span>(files, srcs):
+    <span class="kw">for</span> m <span class="kw">in</span> re.<span class="fn">finditer</span>(<span class="st">r'^export \w+ (\w+)'</span>, src, re.M):
+        exports[m.<span class="fn">group</span>(1)] = f
+    <span class="kw">for</span> m <span class="kw">in</span> re.<span class="fn">finditer</span>(<span class="st">r'import\s*\{([^}]+)\}'</span>, src):
+        imports.<span class="fn">update</span>(n.<span class="fn">strip</span>() <span class="kw">for</span> n <span class="kw">in</span> m.<span class="fn">group</span>(1).<span class="fn">split</span>(<span class="st">','</span>))
 
-stale = declared - used
-<span class="kw">for</span> s <span class="kw">in</span> <span class="fn">sorted</span>(stale):
-    <span class="fn">print</span>(s)</pre>
+<span class="kw">for</span> name, f <span class="kw">in</span> exports.<span class="fn">items</span>():
+    <span class="kw">if</span> name <span class="kw">not in</span> imports:
+        <span class="fn">print</span>(<span class="st">f'{f}  {name}'</span>)</pre>
         </div>
         <div class="exec-divider"></div>
         <div class="exec-pane">
           <div class="exec-pane-label">output</div>
-          <pre><span class="out">base64</span>
-<span class="out">hmac</span>
-<span class="out">once_cell</span></pre>
+          <pre><span class="out">src/lib/csv.ts       parseCsvLegacy</span>
+<span class="out">src/auth/jwt.ts      signV1</span>
+<span class="out">src/utils/phone.ts   formatE164</span></pre>
         </div>
       </div>
     </div>
 
     <div class="showcase-stat">
-      <span class="stat-num">~18k</span> tokens <span class="stat-arrow">&rarr;</span> <span class="stat-num">~40</span> tokens
-      <span class="stat-result">450x reduction</span>
+      <span class="stat-num">~40k</span> tokens <span class="stat-arrow">&rarr;</span> <span class="stat-num">~30</span> tokens
+      <span class="stat-result">1300x reduction</span>
     </div>
   </div>
 
