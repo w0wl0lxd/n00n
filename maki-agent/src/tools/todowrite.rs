@@ -8,7 +8,7 @@ pub struct TodoWrite {
 }
 
 impl TodoWrite {
-    pub const NAME: &str = "todowrite";
+    pub const NAME: &str = "todo_write";
     pub const DESCRIPTION: &str = include_str!("todowrite.md");
     pub const EXAMPLES: Option<&str> = Some(
         r#"[{"todos": [{"content": "Add error handling", "status": "pending", "priority": "high"}]}]"#,

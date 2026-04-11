@@ -172,7 +172,7 @@ Launch an autonomous subagent to perform tasks independently. Best combined with
 | `prompt` | string | yes | Detailed task prompt for the agent |
 | `subagent_type` | string | no | Subagent type: "research" (read-only, default) or "general" (can modify files) |
 
-### `todowrite`
+### `todo_write`
 
 Create or update a structured todo list to track tasks.
 

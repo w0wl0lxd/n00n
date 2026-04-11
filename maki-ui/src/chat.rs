@@ -711,7 +711,7 @@ mod tests {
                 ToolOutput::GrepResult { entries: vec![] },
             ),
             (
-                "todowrite",
+                "todo_write",
                 serde_json::json!({"todos": []}),
                 ToolOutput::TodoList(vec![]),
             ),
