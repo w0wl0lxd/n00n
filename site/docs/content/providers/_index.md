@@ -46,7 +46,7 @@ Defaults: gpt-5.4-nano (weak), gpt-4.1 (medium), gpt-5.4 (strong)
 
 ### Ollama
 
-- **Env var**: `OLLAMA_HOST` (optional, defaults to `http://localhost:11434`)
+- **Env var**: `OLLAMA_HOST` (required, e.g. `http://localhost:11434`)
 - **API**: `http://localhost:11434/v1`
 - **Features**: Local inference, no API key required, any model via ollama pull
 

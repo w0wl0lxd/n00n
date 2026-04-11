@@ -101,7 +101,7 @@ impl ProviderKind {
         match self {
             Self::Anthropic => Ok(Box::new(Anthropic::new()?)),
             Self::OpenAi => Ok(Box::new(OpenAi::new()?)),
-            Self::Ollama => Ok(Box::new(Ollama::new())),
+            Self::Ollama => Ok(Box::new(Ollama::new()?)),
             Self::Mistral => Ok(Box::new(Mistral::new()?)),
             Self::Zai => Ok(Box::new(Zai::new(ZaiPlan::Standard)?)),
             Self::ZaiCodingPlan => Ok(Box::new(Zai::new(ZaiPlan::Coding)?)),

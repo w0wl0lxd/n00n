@@ -98,7 +98,7 @@ struct ProviderSection {
 fn format_auth(kind: ProviderKind) -> String {
     let env = kind.api_key_env();
     if env.is_empty() {
-        "`OLLAMA_HOST` (optional, defaults to `http://localhost:11434`)".to_string()
+        "`OLLAMA_HOST` (required, e.g. `http://localhost:11434`)".to_string()
     } else {
         format!("`{env}`")
     }

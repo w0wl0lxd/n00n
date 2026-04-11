@@ -10,6 +10,8 @@ use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
 
 pub(crate) const DEFAULT_MAX_OUTPUT: u32 = 16384;
 pub(crate) const DEFAULT_CONTEXT: u32 = 128_000;
+const HOST_ENV: &str = "OLLAMA_HOST";
+const HOST_NOT_SET: &str = "OLLAMA_HOST not set";
 
 static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     api_key_env: "",
@@ -29,17 +31,17 @@ pub struct Ollama {
 }
 
 impl Ollama {
-    pub fn new() -> Self {
-        let base_url = std::env::var("OLLAMA_HOST")
-            .ok()
-            .map(|host| format!("{host}/v1"));
-        Self {
+    pub fn new() -> Result<Self, AgentError> {
+        let host = std::env::var(HOST_ENV).map_err(|_| AgentError::Config {
+            message: HOST_NOT_SET.into(),
+        })?;
+        Ok(Self {
             compat: OpenAiCompatProvider::new(&CONFIG),
             auth: ResolvedAuth {
-                base_url,
+                base_url: Some(format!("{host}/v1")),
                 headers: Vec::new(),
             },
-        }
+        })
     }
 }
 
@@ -64,5 +66,36 @@ impl Provider for Ollama {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
         Box::pin(self.compat.do_list_models(&self.auth))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn new_without_host_errors() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded test section guarded by ENV_LOCK.
+        unsafe { std::env::remove_var(HOST_ENV) };
+        match Ollama::new() {
+            Err(AgentError::Config { message }) => assert_eq!(message, HOST_NOT_SET),
+            Err(other) => panic!("expected Config error, got {other:?}"),
+            Ok(_) => panic!("expected error when {HOST_ENV} is unset"),
+        }
+    }
+
+    #[test]
+    fn new_with_host_builds_auth() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded test section guarded by ENV_LOCK.
+        unsafe { std::env::set_var(HOST_ENV, "http://x:1234") };
+        let ollama = Ollama::new().expect("should build when host set");
+        assert_eq!(ollama.auth.base_url.as_deref(), Some("http://x:1234/v1"));
+        // SAFETY: single-threaded test section guarded by ENV_LOCK.
+        unsafe { std::env::remove_var(HOST_ENV) };
     }
 }
