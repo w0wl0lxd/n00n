@@ -473,6 +473,19 @@
       min-height: 330px;
       min-width: 774px;
     }
+    @media (hover: hover) {
+      .tui-body:hover .player-controls {
+        opacity: 1;
+        transform: translateY(0);
+        pointer-events: auto;
+      }
+    }
+    .tui-body .player-controls:focus-within,
+    .tui-body .player-controls.force-visible {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
     .tui-loader {
       position: absolute;
       inset: 0;
@@ -526,7 +539,155 @@
     .tui-body .ap-overlay-start {
       display: none !important;
     }
-    #demo-player {
+
+    /* ── PLAYER CONTROLS ── */
+    .player-controls {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.5rem 0.75rem;
+      background: #000;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      opacity: 0;
+      transform: translateY(6px);
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      z-index: 6;
+    }
+    .player-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      background: transparent;
+      border: 1px solid oklch(30% 0.02 270);
+      border-radius: 6px;
+      color: oklch(70% 0.02 270);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+    }
+    .player-btn:hover {
+      background: oklch(25% 0.02 270);
+      color: oklch(90% 0.02 270);
+      border-color: oklch(40% 0.03 270);
+    }
+    .player-btn:active {
+      transform: scale(0.95);
+    }
+    .player-btn svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+    }
+    .player-progress {
+      flex: 1;
+      height: 6px;
+      background: oklch(25% 0.02 270);
+      border-radius: 3px;
+      cursor: pointer;
+      position: relative;
+    }
+    .player-progress::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: -10px;
+      bottom: -10px;
+    }
+    .player-progress-bar {
+      height: 100%;
+      background: oklch(60% 0.08 280);
+      border-radius: 3px;
+      width: 0%;
+      transition: width 0.1s linear;
+    }
+    .player-time {
+      color: oklch(98% 0 0);
+      font-size: 0.82rem;
+      font-weight: 700;
+      min-width: 85px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+    .player-speed {
+      position: relative;
+      margin-left: 0.25rem;
+    }
+    .speed-toggle {
+      padding: 0.2rem 0.55rem;
+      background: transparent;
+      border: 1px solid oklch(40% 0.02 270);
+      border-radius: 4px;
+      color: oklch(98% 0 0);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      min-width: 36px;
+    }
+    .speed-toggle:hover {
+      background: oklch(25% 0.02 270);
+      color: oklch(90% 0.02 270);
+      border-color: oklch(40% 0.03 270);
+    }
+    .speed-menu {
+      position: absolute;
+      bottom: calc(100% + 6px);
+      right: 0;
+      background: oklch(18% 0.02 270);
+      border: 1px solid oklch(30% 0.02 270);
+      border-radius: 6px;
+      padding: 0.25rem 0;
+      min-width: 72px;
+      box-shadow: 0 8px 24px oklch(0% 0 0 / 0.4);
+      opacity: 0;
+      transform: translateY(4px);
+      pointer-events: none;
+      transition: opacity 0.15s ease, transform 0.15s ease;
+      z-index: 10;
+    }
+    .speed-menu.open {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+    .speed-option {
+      display: block;
+      width: 100%;
+      padding: 0.35rem 0.9rem 0.35rem 1.6rem;
+      background: transparent;
+      border: none;
+      color: oklch(95% 0.01 270);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-align: left;
+      cursor: pointer;
+      position: relative;
+      transition: background 0.12s ease, color 0.12s ease;
+    }
+    .speed-option:hover {
+      background: oklch(25% 0.02 270);
+      color: oklch(95% 0.02 270);
+    }
+    .speed-option.active {
+      color: oklch(75% 0.1 280);
+    }
+    .speed-option.active::before {
+      content: '✓';
+      position: absolute;
+      left: 0.55rem;
+      color: oklch(75% 0.1 280);
     }
 
 
@@ -996,6 +1157,17 @@
 
       .provider-grid { gap: 0.75rem; }
       .provider-chip { padding: 0.65rem 1.25rem; font-size: 0.88rem; }
+
+      /* always show player controls below the player on mobile */
+      .tui-body { min-width: 0; }
+      .tui-body .player-controls {
+        position: static;
+        opacity: 1;
+        transform: none;
+        pointer-events: auto;
+        background: oklch(16% 0.015 270);
+        border-top: 1px solid oklch(22% 0.02 270);
+      }
     }
     @media (max-width: 480px) {
       .hero-actions { flex-direction: column; align-items: center; }
@@ -1069,6 +1241,26 @@
       <div class="tui-body">
         <div class="tui-loader" id="demo-loader"><div class="tui-spinner"></div></div>
         <div id="demo-player"></div>
+        <div class="player-controls">
+          <button class="player-btn" id="play-btn" aria-label="Play/Pause">
+            <svg viewBox="0 0 24 24" id="play-icon"><path d="M8 5v14l11-7z"/></svg>
+            <svg viewBox="0 0 24 24" id="pause-icon" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+          </button>
+          <div class="player-progress" id="progress-bar">
+            <div class="player-progress-bar" id="progress-fill"></div>
+          </div>
+          <span class="player-time" id="time-display">0:00 / 0:00</span>
+          <div class="player-speed">
+            <button class="speed-toggle" id="speed-toggle" aria-haspopup="true" aria-expanded="false">2.0x</button>
+            <div class="speed-menu" id="speed-menu" role="menu">
+              <button class="speed-option" data-speed="0.5" role="menuitem">0.5x</button>
+              <button class="speed-option" data-speed="1" role="menuitem">1.0x</button>
+              <button class="speed-option" data-speed="1.5" role="menuitem">1.5x</button>
+              <button class="speed-option active" data-speed="2" role="menuitem">2.0x</button>
+              <button class="speed-option" data-speed="3" role="menuitem">3.0x</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -1407,11 +1599,11 @@ imports = <span class="fn">set</span>()
 </script>
 <script src="asciinema-player.min.js"></script>
 <script>
-  const player = AsciinemaPlayer.create('demo.cast', document.getElementById('demo-player'), {
+  let player = AsciinemaPlayer.create('demo.cast', document.getElementById('demo-player'), {
     autoPlay: true,
     preload: true,
     loop: true,
-    speed: 1.3,
+    speed: 2.0,
     idleTimeLimit: 2,
     fit: false,
     terminalFontSize: 'medium',
@@ -1419,43 +1611,24 @@ imports = <span class="fn">set</span>()
     terminalFontFamily: "'JetBrains Mono', monospace",
     theme: 'dracula',
   });
-  let naturalTuiWidth = 0;
-  let naturalTuiHeight = 0;
   let scaleTuiRaf = 0;
-  function measureTui() {
-    const tui = document.querySelector('.hero-preview .tui');
-    if (!tui) return null;
-    // One-time natural-size measurement (TUI content is fixed).
-    if (!naturalTuiWidth) {
-      const prevTransform = tui.style.transform;
-      const prevPosition = tui.style.position;
-      const prevVisibility = tui.style.visibility;
-      const prevWidth = tui.style.width;
-      tui.style.transform = 'none';
-      tui.style.position = 'absolute';
-      tui.style.visibility = 'hidden';
-      tui.style.width = 'auto';
-      naturalTuiWidth = tui.offsetWidth;
-      naturalTuiHeight = tui.offsetHeight;
-      tui.style.transform = prevTransform;
-      tui.style.position = prevPosition;
-      tui.style.visibility = prevVisibility;
-      tui.style.width = prevWidth;
-    }
-    return tui;
-  }
   function scaleTui() {
     if (scaleTuiRaf) return;
     scaleTuiRaf = requestAnimationFrame(() => {
       scaleTuiRaf = 0;
-      const tui = measureTui();
-      if (!tui || !naturalTuiWidth) return;
+      const tui = document.querySelector('.hero-preview .tui');
+      if (!tui) return;
       const container = tui.parentElement;
+      const prevTransform = tui.style.transform;
+      tui.style.transform = 'none';
+      const naturalWidth = tui.offsetWidth;
+      const naturalHeight = tui.offsetHeight;
+      tui.style.transform = prevTransform;
       const available = container.clientWidth;
-      if (naturalTuiWidth > available) {
-        const s = available / naturalTuiWidth;
+      if (naturalWidth > available) {
+        const s = available / naturalWidth;
         tui.style.transform = `scale(${s})`;
-        container.style.height = (naturalTuiHeight * s) + 'px';
+        container.style.height = (naturalHeight * s) + 'px';
       } else {
         tui.style.transform = '';
         container.style.height = '';
@@ -1471,6 +1644,143 @@ imports = <span class="fn">set</span>()
     setTimeout(() => loader.remove(), 300);
     scaleTui();
   });
+
+  // Player controls
+  const playBtn = document.getElementById('play-btn');
+  const playIcon = document.getElementById('play-icon');
+  const pauseIcon = document.getElementById('pause-icon');
+  const progressBar = document.getElementById('progress-bar');
+  const progressFill = document.getElementById('progress-fill');
+  const timeDisplay = document.getElementById('time-display');
+  let isPlaying = true;
+  let progressRaf = null;
+  let currentSpeed = 2.0;
+  let playerContainer = document.getElementById('demo-player');
+
+  function createPlayer(speed, autoPlay = true, startTime = 0) {
+    const container = playerContainer;
+    container.innerHTML = '';
+    const newPlayer = AsciinemaPlayer.create('demo.cast', container, {
+      autoPlay: autoPlay,
+      preload: true,
+      loop: true,
+      speed: speed,
+      idleTimeLimit: 2,
+      fit: false,
+      terminalFontSize: 'medium',
+      controls: false,
+      terminalFontFamily: "'JetBrains Mono', monospace",
+      theme: 'dracula',
+    });
+    if (startTime > 0) {
+      newPlayer.seek(startTime);
+    }
+    return newPlayer;
+  }
+
+  function formatTime(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  function updateProgress() {
+    if (!player) return;
+    const current = player.getCurrentTime();
+    const duration = player.getDuration();
+    if (duration > 0) {
+      const pct = (current / duration) * 100;
+      progressFill.style.width = pct + '%';
+      timeDisplay.textContent = `${formatTime(current)} / ${formatTime(duration)}`;
+    }
+    if (isPlaying) {
+      progressRaf = requestAnimationFrame(updateProgress);
+    }
+  }
+
+  playBtn.addEventListener('click', () => {
+    if (isPlaying) {
+      player.pause();
+    } else {
+      player.play();
+    }
+  });
+
+  player.addEventListener('play', () => {
+    isPlaying = true;
+    playIcon.style.display = 'none';
+    pauseIcon.style.display = 'block';
+    progressRaf = requestAnimationFrame(updateProgress);
+  });
+
+  player.addEventListener('pause', () => {
+    isPlaying = false;
+    playIcon.style.display = 'block';
+    pauseIcon.style.display = 'none';
+    if (progressRaf) cancelAnimationFrame(progressRaf);
+  });
+
+  progressBar.addEventListener('click', (e) => {
+    const rect = progressBar.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    const duration = player.getDuration();
+    player.seek(duration * pct);
+  });
+
+  // Speed controls (YouTube-style popup)
+  const speedToggle = document.getElementById('speed-toggle');
+  const speedMenu = document.getElementById('speed-menu');
+  const speedOptions = document.querySelectorAll('.speed-option');
+
+  function closeSpeedMenu() {
+    speedMenu.classList.remove('open');
+    speedToggle.setAttribute('aria-expanded', 'false');
+  }
+
+  speedToggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = speedMenu.classList.toggle('open');
+    speedToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!speedMenu.contains(e.target) && e.target !== speedToggle) {
+      closeSpeedMenu();
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeSpeedMenu();
+  });
+
+  speedOptions.forEach(opt => {
+    opt.addEventListener('click', () => {
+      const speed = parseFloat(opt.dataset.speed);
+      const currentTime = player.getCurrentTime();
+      player.dispose();
+      currentSpeed = speed;
+      player = createPlayer(speed, true, currentTime);
+      speedOptions.forEach(o => o.classList.remove('active'));
+      opt.classList.add('active');
+      speedToggle.textContent = opt.textContent;
+      closeSpeedMenu();
+      player.addEventListener('play', () => {
+        isPlaying = true;
+        playIcon.style.display = 'none';
+        pauseIcon.style.display = 'block';
+        progressRaf = requestAnimationFrame(updateProgress);
+      });
+      player.addEventListener('pause', () => {
+        isPlaying = false;
+        playIcon.style.display = 'block';
+        pauseIcon.style.display = 'none';
+        if (progressRaf) cancelAnimationFrame(progressRaf);
+      });
+    });
+  });
+
+  // Start progress updates
+  progressRaf = requestAnimationFrame(updateProgress);
 </script>
 
 </body>
