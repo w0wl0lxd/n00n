@@ -30,13 +30,14 @@ User experience:
 * Use `--print --output-format stream-json` to run UI-less. Output is compatible with Claude Code, so you can easily replace your existing solutions (although I wouldn't recommend that, maki is very new).
 
 Supported providers:
-* OpenAI - `OPENAI_API_KEY` and OAuth via `maki auth login openai`.
 * Anthropic - `ANTHROPIC_API_KEY` only (using OAuth is against TOS).
+* OpenAI - `OPENAI_API_KEY` and OAuth via `maki auth login openai`.
+* Ollama - `OLLAMA_HOST` for local (e.g. `http://localhost:11434`), or `OLLAMA_API_KEY` for cloud.
+* Mistral - `MISTRAL_API_KEY`.
 * Z.AI - `ZHIPU_API_KEY`.
 * Synthetic - `SYNTHETIC_API_KEY`.
-* Mistral - `MISTRAL_API_KEY`.
 
-**Dynamic providers** - if there's a provider maki doesn't support currently, and it uses openai / anthropic API, you can ask maki (using a different temp provider) to write you a small script to access it anyway. Example for [anthropic](https://github.com/tontinton/maki/blob/main/scripts/providers/ollama-anthropic), example for [openai](https://github.com/tontinton/maki/blob/main/scripts/providers/ollama-openai).
+**Dynamic providers** - drop an executable script into `~/.maki/providers/` to add custom providers or proxies. See [docs](https://maki.sh/docs/providers/#dynamic-providers) for details.
 
 Recommended way to install:
 
