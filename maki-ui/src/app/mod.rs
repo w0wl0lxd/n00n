@@ -246,6 +246,7 @@ impl App {
         match msg {
             Msg::Key(key) => self.handle_key(key),
             Msg::Paste(text) => {
+                let text = text.replace("\r\n", "\n").replace('\r', "\n");
                 if text.is_empty() {
                     if self.is_main_chat() && self.image_paste_rx.is_none() {
                         self.start_image_paste();

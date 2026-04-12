@@ -261,6 +261,15 @@ fn paste_works_regardless_of_status(status: Status) {
     assert_eq!(app.input_box.buffer.value(), "pasted");
 }
 
+#[test_case("a\rb\rc",       "a\nb\nc"       ; "bare_cr")]
+#[test_case("a\r\nb\r\nc",   "a\nb\nc"       ; "crlf")]
+#[test_case("a\r\nb\rc\nd",  "a\nb\nc\nd"    ; "mixed")]
+fn paste_normalizes_line_endings(input: &str, expected: &str) {
+    let mut app = test_app();
+    app.update(Msg::Paste(input.into()));
+    assert_eq!(app.input_box.buffer.value(), expected);
+}
+
 #[test]
 fn paste_routed_to_question_form_in_custom_mode() {
     let mut app = test_app();
