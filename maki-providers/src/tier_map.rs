@@ -2,11 +2,11 @@
 //!
 //! Tier resolution combines three layers, in priority order:
 //!
-//! 1. **User overrides** — explicit tier assignments persisted to
+//! 1. **User overrides** - explicit tier assignments persisted to
 //!    `~/.maki/model-tiers` (JSON). Apply to any provider.
-//! 2. **Static entries** — `ModelEntry::tier` from the provider's built-in
+//! 2. **Static entries** - `ModelEntry::tier` from the provider's built-in
 //!    registry. Consulted by `model.rs` via [`TierMap::tier_for`].
-//! 3. **Auto-assignment** — for providers that accept arbitrary models
+//! 3. **Auto-assignment** - for providers that accept arbitrary models
 //!    (e.g. Ollama), derived from the position in the ordered list returned
 //!    by `list_models()`.
 //!
@@ -61,7 +61,7 @@ pub struct TierMap {
     /// on-disk output.
     overrides: BTreeMap<String, ModelTier>,
     /// Ordered model IDs per provider, populated from `list_models()`.
-    /// Not persisted — rebuilt every session. Used for auto-assignment on
+    /// Not persisted - rebuilt every session. Used for auto-assignment on
     /// providers that accept arbitrary models.
     known_models: HashMap<ProviderKind, Vec<String>>,
 }

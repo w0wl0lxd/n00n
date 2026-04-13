@@ -80,7 +80,7 @@ impl App {
             Mode::Plan => match self.state.plan.path() {
                 Some(p) => AgentMode::Plan(p.to_path_buf()),
                 None => {
-                    debug_assert!(false, "Plan mode without path — invariant violated");
+                    debug_assert!(false, "Plan mode without path - invariant violated");
                     AgentMode::Build
                 }
             },

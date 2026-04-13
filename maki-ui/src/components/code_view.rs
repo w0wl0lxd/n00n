@@ -621,7 +621,7 @@ mod tests {
     }
 
     /// Reference color: highlight `text` as part of `prefix` and return the fg
-    /// for the substring `find`. This is the "ground truth" — what the
+    /// for the substring `find`. This is the "ground truth" - what the
     /// highlighter produces when it walks the file from the start.
     fn fg_in_context(path: &str, prefix: &str, text: &str, find: &str) -> ratatui::style::Color {
         let mut hl = highlighter_for_path(path);

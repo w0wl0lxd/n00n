@@ -151,7 +151,7 @@ pub async fn authenticate(
 
     info!(server = server_name, endpoint = %auth_server.authorization_endpoint, "opening browser for OAuth");
     if let Err(e) = open::that(&auth_url) {
-        warn!(server = server_name, error = %e, "failed to open browser — manually visit the auth URL in logs");
+        warn!(server = server_name, error = %e, "failed to open browser - manually visit the auth URL in logs");
     }
 
     let result = callback

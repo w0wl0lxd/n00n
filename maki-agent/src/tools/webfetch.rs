@@ -224,7 +224,7 @@ fn is_private_ip(ip: &IpAddr) -> bool {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_private_ip(&IpAddr::V4(v4));
             }
-            // IPv4-compatible (deprecated): ::x.x.x.x — to_ipv4() catches these
+            // IPv4-compatible (deprecated): ::x.x.x.x - to_ipv4() catches these
             if let Some(v4) = v6.to_ipv4() {
                 return is_private_ip(&IpAddr::V4(v4));
             }

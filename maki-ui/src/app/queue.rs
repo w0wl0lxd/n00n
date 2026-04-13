@@ -1,5 +1,5 @@
 //! Queue for messages typed while the agent is busy.
-//!
+
 use super::{App, format_with_images};
 
 use crate::agent::shared_queue::{QueueItem, QueueSender};
