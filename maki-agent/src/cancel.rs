@@ -47,6 +47,9 @@ impl CancelToken {
     }
 
     pub async fn race<T>(&self, future: impl Future<Output = T>) -> Result<T, String> {
+        if self.is_cancelled() {
+            return Err("cancelled".into());
+        }
         futures_lite::future::race(async { Ok(future.await) }, async {
             self.cancelled().await;
             Err("cancelled".into())
