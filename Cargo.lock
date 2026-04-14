@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "maki"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "clap",
  "color-eyre",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "maki-agent"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "arc-swap",
  "async-io",
@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "maki-code-index"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "ignore",
  "memchr",
@@ -2228,7 +2228,7 @@ dependencies = [
 
 [[package]]
 name = "maki-config"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "dirs",
  "dotenvy",
@@ -2244,7 +2244,7 @@ dependencies = [
 
 [[package]]
 name = "maki-config-macro"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2253,7 +2253,7 @@ dependencies = [
 
 [[package]]
 name = "maki-docgen"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "maki-agent",
  "maki-config",
@@ -2266,7 +2266,7 @@ dependencies = [
 
 [[package]]
 name = "maki-interpreter"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "monty",
  "serde_json",
@@ -2277,7 +2277,7 @@ dependencies = [
 
 [[package]]
 name = "maki-providers"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "base64",
  "dirs",
@@ -2299,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "maki-storage"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "dirs",
  "getrandom 0.3.4",
@@ -2316,7 +2316,7 @@ dependencies = [
 
 [[package]]
 name = "maki-tool-macro"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2325,7 +2325,7 @@ dependencies = [
 
 [[package]]
 name = "maki-ui"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "arboard",
  "arc-swap",
