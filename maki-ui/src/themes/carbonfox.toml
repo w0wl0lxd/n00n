@@ -132,12 +132,12 @@ todo_cancelled       = { fg = "red", modifiers = ["crossed_out"] }
 
 table_border         = { fg = "comment" }
 plan_rule            = { fg = "purple", modifiers = ["bold"] }
-cmd_selected         = { fg = "background", bg = "purple" }
-cmd_name             = { fg = "blue" }
+cmd_selected         = { fg = "background", bg = "blue" }
+cmd_name             = { fg = "cyan" }
 cmd_desc             = { fg = "comment" }
 highlight_text       = { fg = "orange" }
-panel_border         = { fg = "purple" }
-panel_title          = { fg = "purple", modifiers = ["bold"] }
+panel_border         = { fg = "blue" }
+panel_title          = { fg = "blue", modifiers = ["bold"] }
 cursor               = { fg = "background", bg = "foreground" }
 keybind_key          = { fg = "cyan", modifiers = ["bold"] }
 keybind_section      = { fg = "purple", modifiers = ["bold"] }

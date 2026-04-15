@@ -126,12 +126,12 @@ todo_completed    = { fg = "green" }
 todo_in_progress  = { fg = "yellow" }
 todo_pending      = { fg = "comment" }
 todo_cancelled    = { fg = "red", modifiers = ["crossed_out"] }
-cmd_selected      = { fg = "background", bg = "purple" }
+cmd_selected      = { fg = "background", bg = "cyan" }
 cmd_name          = { fg = "blue" }
 cmd_desc          = { fg = "comment" }
 highlight_text    = { fg = "pink" }
-panel_border      = { fg = "purple" }
-panel_title       = { fg = "purple", modifiers = ["bold"] }
+panel_border      = { fg = "cyan" }
+panel_title       = { fg = "cyan", modifiers = ["bold"] }
 picker_search_prefix = { fg = "comment" }
 cursor            = { fg = "background", bg = "foreground" }
 keybind_key       = { fg = "cyan", modifiers = ["bold"] }
