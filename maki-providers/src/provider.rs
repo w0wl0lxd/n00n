@@ -108,6 +108,30 @@ impl ProviderKind {
         matches!(self, Self::Ollama | Self::Google)
     }
 
+    pub const fn fallback_max_output(self) -> u32 {
+        match self {
+            Self::Anthropic => 128_000,
+            Self::OpenAi => 100_000,
+            Self::Google => 65_536,
+            Self::Ollama => 16_384,
+            Self::Mistral => 32_000,
+            Self::Zai | Self::ZaiCodingPlan => 16_000,
+            Self::Synthetic => 32_000,
+        }
+    }
+
+    pub const fn fallback_context_window(self) -> u32 {
+        match self {
+            Self::Anthropic => 200_000,
+            Self::OpenAi => 200_000,
+            Self::Google => 1_000_000,
+            Self::Ollama => 128_000,
+            Self::Mistral => 128_000,
+            Self::Zai | Self::ZaiCodingPlan => 128_000,
+            Self::Synthetic => 128_000,
+        }
+    }
+
     pub fn create(self, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
         match self {
             Self::Anthropic => Ok(Box::new(Anthropic::new(timeouts)?)),

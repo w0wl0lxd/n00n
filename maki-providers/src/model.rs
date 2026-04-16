@@ -204,13 +204,12 @@ impl Model {
                     e.max_output_tokens,
                     e.context_window,
                 ),
-                None if provider.accepts_arbitrary_models() => (
+                None => (
                     provider.family(),
                     ModelPricing::ZERO,
-                    ollama::DEFAULT_MAX_OUTPUT,
-                    ollama::DEFAULT_CONTEXT,
+                    provider.fallback_max_output(),
+                    provider.fallback_context_window(),
                 ),
-                None => return Err(ModelError::UnknownModel(model_id.to_string())),
             };
             return Ok(Self {
                 id: model_id.to_string(),
@@ -298,11 +297,6 @@ mod tests {
 
     #[test_case("no-slash-here", ModelError::InvalidFormat ; "invalid_format")]
     #[test_case("foobar/gpt-4", ModelError::UnsupportedProvider("foobar".into()) ; "unsupported_provider")]
-    #[test_case("anthropic/claude-99-turbo", ModelError::UnknownModel("claude-99-turbo".into()) ; "unknown_anthropic_model")]
-    #[test_case("zai/glm-99", ModelError::UnknownModel("glm-99".into()) ; "unknown_zai_model")]
-    #[test_case("openai/gpt-99", ModelError::UnknownModel("gpt-99".into()) ; "unknown_openai_model")]
-    #[test_case("synthetic/hf:nonexistent", ModelError::UnknownModel("hf:nonexistent".into()) ; "unknown_synthetic_model")]
-
     fn from_spec_errors(spec: &str, expected: ModelError) {
         let err = Model::from_spec(spec).unwrap_err();
         assert_eq!(
@@ -402,12 +396,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ollama_arbitrary_model_accepted() {
-        let model = Model::from_spec("ollama/my-custom-model").unwrap();
-        assert_eq!(model.provider, ProviderKind::Ollama);
-        assert_eq!(model.id, "my-custom-model");
-        assert_eq!(model.tier, ModelTier::Medium);
-        assert_eq!(model.family, ModelFamily::Generic);
+    #[test_case("anthropic/claude-99-turbo", ProviderKind::Anthropic, "claude-99-turbo" ; "unknown_anthropic_model_accepted")]
+    #[test_case("zai/glm-99", ProviderKind::Zai, "glm-99" ; "unknown_zai_model_accepted")]
+    #[test_case("openai/gpt-99", ProviderKind::OpenAi, "gpt-99" ; "unknown_openai_model_accepted")]
+    #[test_case("synthetic/hf:nonexistent", ProviderKind::Synthetic, "hf:nonexistent" ; "unknown_synthetic_model_accepted")]
+    #[test_case("ollama/my-custom-model", ProviderKind::Ollama, "my-custom-model" ; "unknown_ollama_model_accepted")]
+    fn unknown_model_accepted(spec: &str, expected_provider: ProviderKind, expected_id: &str) {
+        let model = Model::from_spec(spec).unwrap();
+        assert_eq!(model.provider, expected_provider);
+        assert_eq!(model.id, expected_id);
+        assert_eq!(model.family, expected_provider.family());
     }
 }

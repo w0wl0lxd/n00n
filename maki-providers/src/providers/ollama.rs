@@ -8,8 +8,6 @@ use crate::{AgentError, Message, ProviderEvent, StreamResponse, ThinkingConfig};
 use super::ResolvedAuth;
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
 
-pub(crate) const DEFAULT_MAX_OUTPUT: u32 = 16384;
-pub(crate) const DEFAULT_CONTEXT: u32 = 128_000;
 const HOST_ENV: &str = "OLLAMA_HOST";
 const API_KEY_ENV: &str = "OLLAMA_API_KEY";
 const CLOUD_BASE_URL: &str = "https://ollama.com/v1";
