@@ -72,4 +72,4 @@ Or download a pre-built binary from [GitHub Releases](https://github.com/tontint
 
 More info at the [official docs](http://maki.sh/docs).
 
-> DISCLAIMER: >90% of code in maki was written by maki. The code is not as good as what I would've made in the artisinal hand-made style. But it's also not entirely vibe coded. I just think people should be honest about their use of AI in projects in this era.
+> DISCLAIMER: >90% of code in maki was written by maki. The code is not as good as what I would've made in the artisinal hand-made style. But it's also not entirely vibe coded, and definitely not vibe designed. I just think people should be honest about their use of AI in projects in this era.
