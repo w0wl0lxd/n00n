@@ -44,11 +44,11 @@ impl FileReadTracker {
         let guard = self.0.lock().unwrap();
         match guard.get(&normalized) {
             None => Err(format!(
-                "file must be read before editing: {}",
+                "file must be read before editing with read tool: {}",
                 path.display()
             )),
             Some(&recorded) if recorded != current_mtime => Err(format!(
-                "file changed since last read: {} - re-read before editing",
+                "file changed since last read: {} - re-read using read tool before editing",
                 path.display()
             )),
             Some(_) => Ok(()),
