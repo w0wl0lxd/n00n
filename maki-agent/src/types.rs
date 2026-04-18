@@ -309,7 +309,7 @@ impl ToolOutput {
                     .join("\n");
                 let lines_shown = lines.len();
                 if *total_lines > lines_shown {
-                    let remaining = total_lines - (start_line - 1 + lines_shown);
+                    let remaining = total_lines.saturating_sub(start_line - 1 + lines_shown);
                     if remaining > 0 {
                         out.push_str(&format!(
                             "\n\n... truncated {} more lines. Use offset/limit to read further.",
@@ -842,5 +842,35 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn read_code_display_text_no_overflow_on_edge_cases() {
+        // Test case that would cause overflow: total_lines=0, start_line=1, lines_shown=1
+        let output = ToolOutput::ReadCode {
+            path: "test.rs".to_string(),
+            start_line: 1,
+            lines: vec!["line 1".to_string()],
+            total_lines: 0,
+            instructions: None,
+        };
+
+        let display_text = output.as_display_text();
+        // Should not panic and should not show truncation message
+        assert!(!display_text.contains("truncated"));
+        assert_eq!(display_text, "1: line 1");
+
+        // Test normal truncation case
+        let output2 = ToolOutput::ReadCode {
+            path: "test.rs".to_string(),
+            start_line: 1,
+            lines: vec!["line 1".to_string(), "line 2".to_string()],
+            total_lines: 5,
+            instructions: None,
+        };
+
+        let display_text2 = output2.as_display_text();
+        // Should show truncation message
+        assert!(display_text2.contains("truncated 3 more lines"));
     }
 }
