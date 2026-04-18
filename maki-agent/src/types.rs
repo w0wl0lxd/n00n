@@ -223,6 +223,13 @@ pub enum ToolOutput {
     },
 }
 
+/// Remaining lines after a 1-indexed window `[start_line .. start_line + shown)`
+/// within a file of `total` lines. Uses saturating ops so no input can overflow.
+fn lines_remaining_after(total: usize, start_line: usize, shown: usize) -> usize {
+    let end = start_line.saturating_add(shown).saturating_sub(1);
+    total.saturating_sub(end)
+}
+
 impl ToolOutput {
     pub fn written_path(&self) -> Option<&str> {
         match self {
@@ -307,15 +314,11 @@ impl ToolOutput {
                     .map(|(i, line)| format!("{}: {line}", start_line + i))
                     .collect::<Vec<_>>()
                     .join("\n");
-                let lines_shown = lines.len();
-                if *total_lines > lines_shown {
-                    let remaining = total_lines.saturating_sub(start_line - 1 + lines_shown);
-                    if remaining > 0 {
-                        out.push_str(&format!(
-                            "\n\n... truncated {} more lines. Use offset/limit to read further.",
-                            remaining
-                        ));
-                    }
+                let remaining = lines_remaining_after(*total_lines, *start_line, lines.len());
+                if remaining > 0 {
+                    out.push_str(&format!(
+                        "\n\n... truncated {remaining} more lines. Use offset/limit to read further.",
+                    ));
                 }
                 out
             }
@@ -844,33 +847,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn read_code_display_text_no_overflow_on_edge_cases() {
-        // Test case that would cause overflow: total_lines=0, start_line=1, lines_shown=1
-        let output = ToolOutput::ReadCode {
-            path: "test.rs".to_string(),
-            start_line: 1,
-            lines: vec!["line 1".to_string()],
-            total_lines: 0,
-            instructions: None,
-        };
-
-        let display_text = output.as_display_text();
-        // Should not panic and should not show truncation message
-        assert!(!display_text.contains("truncated"));
-        assert_eq!(display_text, "1: line 1");
-
-        // Test normal truncation case
-        let output2 = ToolOutput::ReadCode {
-            path: "test.rs".to_string(),
-            start_line: 1,
-            lines: vec!["line 1".to_string(), "line 2".to_string()],
-            total_lines: 5,
-            instructions: None,
-        };
-
-        let display_text2 = output2.as_display_text();
-        // Should show truncation message
-        assert!(display_text2.contains("truncated 3 more lines"));
+    #[test_case(100, 10, 2, 89 ; "middle_of_file")]
+    #[test_case(100, 1, 1, 99  ; "first_line_only")]
+    #[test_case(5, 1, 5, 0     ; "all_lines_shown")]
+    #[test_case(5, 1, 2, 3     ; "partial_from_start")]
+    #[test_case(5, 3, 3, 0     ; "partial_to_end")]
+    #[test_case(0, 1, 1, 0     ; "backward_compat_total_zero")]
+    #[test_case(0, 1, 0, 0     ; "empty_lines_total_zero")]
+    #[test_case(10, 10, 1, 0   ; "last_line")]
+    fn lines_remaining(total: usize, start: usize, shown: usize, expected: usize) {
+        assert_eq!(lines_remaining_after(total, start, shown), expected);
     }
 }
