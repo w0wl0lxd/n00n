@@ -1,5 +1,14 @@
 local indexer = require("indexer")
 
+local failures = {}
+
+local function case(name, fn)
+  local ok, err = pcall(fn)
+  if not ok then
+    table.insert(failures, name .. ": " .. tostring(err))
+  end
+end
+
 local function idx(source, lang)
   local result, err = indexer.index_source(source, lang)
   assert(result, "index failed for " .. lang .. ": " .. tostring(err))
@@ -8,18 +17,17 @@ end
 
 local function has(output, needles)
   for _, n in ipairs(needles) do
-    assert(output:find(n, 1, true), "missing '" .. n .. "' in:\n" .. output)
+    assert(output:find(n, 1, true), "missing '" .. n .. "'")
   end
 end
 
 local function lacks(output, needles)
   for _, n in ipairs(needles) do
-    assert(not output:find(n, 1, true), "unexpected '" .. n .. "' in:\n" .. output)
+    assert(not output:find(n, 1, true), "unexpected '" .. n .. "'")
   end
 end
 
--- rust_all_sections
-do
+case("rust_all_sections", function()
   local src = [[//! Module doc
 use std::collections::HashMap;
 use std::io;
@@ -99,28 +107,25 @@ macro_rules! my_macro { () => {}; }
     "macros:",
     "my_macro!",
   })
-end
+end)
 
--- rust_many_fields_truncated
-do
+case("rust_many_fields_truncated", function()
   local out = idx(
     "struct Big {\n    a: u8,\n    b: u8,\n    c: u8,\n    d: u8,\n    e: u8,\n    f: u8,\n    g: u8,\n    h: u8,\n    i: u8,\n    j: u8,\n}\n",
     "rust"
   )
   has(out, { "[2 more truncated]" })
-end
+end)
 
--- rust_test_module_collapsed
-do
+case("rust_test_module_collapsed", function()
   local src =
     "fn main() {}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn it_works() { assert!(true); }\n}\n"
   local out = idx(src, "rust")
   has(out, { "tests:" })
   lacks(out, { "it_works" })
-end
+end)
 
--- rust_test_detection
-do
+case("rust_test_detection", function()
   local cases = {
     { src = "#[test]\nfn it_works() { assert!(true); }\n", test = true, name = "standalone_test" },
     { src = "#[tokio::test]\nasync fn my_test() {}\n", test = true, name = "tokio_test" },
@@ -138,10 +143,9 @@ do
       lacks(out, { "tests:" })
     end
   end
-end
+end)
 
--- rust_doc_comment_line_ranges
-do
+case("rust_doc_comment_line_ranges", function()
   local cases = {
     { src = "/// Documented\n/// More docs\npub fn foo() {}\n", expected = "pub foo() [1-3]" },
     {
@@ -155,10 +159,9 @@ do
     local out = idx(c.src, "rust")
     has(out, { c.expected })
   end
-end
+end)
 
--- python_all_sections
-do
+case("python_all_sections", function()
   local src = [==["""Module docstring."""
 
 import os
@@ -199,10 +202,9 @@ def process(data: list) -> dict:
     "fns:",
     "process(data: list) -> dict",
   })
-end
+end)
 
--- ts_all_sections
-do
+case("ts_all_sections", function()
   local src = [==[/** Function docs */
 import { Request, Response } from 'express';
 
@@ -240,10 +242,9 @@ export function handler(req: Request): Response { return new Response(); }
     "fns:",
     "export handler(req: Request)",
   })
-end
+end)
 
--- go_all_sections
-do
+case("go_all_sections", function()
   local src = [==[
 package main
 
@@ -303,10 +304,9 @@ func main() {
     "fns:",
     "main()",
   })
-end
+end)
 
--- java_all_sections
-do
+case("java_all_sections", function()
   local src = [==[
 package com.example;
 
@@ -349,10 +349,9 @@ public enum Direction implements Displayable {
     "public enum Direction implements Displayable",
     "UP, DOWN",
   })
-end
+end)
 
--- ruby_all_sections
-do
+case("ruby_all_sections", function()
   local src = [==[
 require "net/http"
 require_relative "lib/helper"
@@ -412,10 +411,9 @@ end
     "fns:",
     "standalone(x, y)",
   })
-end
+end)
 
--- c_all_sections
-do
+case("c_all_sections", function()
   local src = [==[
 /** Module header */
 #include <stdio.h>
@@ -480,10 +478,9 @@ int main(int argc, char **argv) {
     "void process(const char *input, size_t len)",
     "int main(int argc, char **argv)",
   })
-end
+end)
 
--- csharp_all_sections
-do
+case("csharp_all_sections", function()
   local src = [==[
 using System;
 using System.Collections.Generic;
@@ -544,10 +541,9 @@ public struct Vector3 : IEquatable<Vector3>
     "public record Point",
     "public struct Vector3",
   })
-end
+end)
 
--- lua_all_sections
-do
+case("lua_all_sections", function()
   local src = [==[
 local json = require("cjson")
 local x, y = require("foo"), require("bar")
@@ -580,10 +576,9 @@ end
     "M.helper(x)",
     "M:method(self, val)",
   })
-end
+end)
 
--- cpp_all_sections
-do
+case("cpp_all_sections", function()
   local src = [==[
 #include <iostream>
 #include "mylib.h"
@@ -643,10 +638,9 @@ typedef unsigned long ulong;
     "identity",
     "typedef unsigned long ulong",
   })
-end
+end)
 
--- php_all_sections
-do
+case("php_all_sections", function()
   local src = [==[<?php
 namespace App\Services;
 
@@ -701,10 +695,9 @@ enum Status
     "types:",
     "enum Status",
   })
-end
+end)
 
--- swift_all_sections
-do
+case("swift_all_sections", function()
   local src = [==[
 import Foundation
 import UIKit
@@ -758,10 +751,9 @@ let MAX_COUNT = 100
     "fns:",
     "process",
   })
-end
+end)
 
--- scala_all_sections
-do
+case("scala_all_sections", function()
   local src = [==[
 package com.example
 
@@ -809,10 +801,9 @@ type Callback = String => Unit
     "types:",
     "type Callback",
   })
-end
+end)
 
--- bash_all_sections
-do
+case("bash_all_sections", function()
   local src = [==[
 #!/bin/bash
 
@@ -836,10 +827,9 @@ function process() {
     "my_func()",
     "process()",
   })
-end
+end)
 
--- kotlin_all_sections
-do
+case("kotlin_all_sections", function()
   local src = [==[
 package com.example
 
@@ -884,10 +874,9 @@ enum class Color {
     "fns:",
     "topLevel",
   })
-end
+end)
 
--- elixir_all_sections
-do
+case("elixir_all_sections", function()
   local src = [==[
 defmodule MyApp.Web do
   alias Phoenix.Controller
@@ -935,10 +924,9 @@ end
     "fns:",
     "handle_event(event, state)",
   })
-end
+end)
 
--- markdown_atx_headings
-do
+case("markdown_atx_headings", function()
   local src =
     "# Main Title\n\n## Section 1\n\nSome text here.\n\n### Subsection 1.1\n\nMore content.\n\n## Section 2\n\n### Another Subsection 2.1\n\n#### Deep Heading 2.1.3\n\n# Footer Title\n\nAnd some more content\n"
   local out = idx(src, "markdown")
@@ -953,18 +941,16 @@ do
     "# Footer Title [17-20]",
   })
   lacks(out, { "Some text here", "More content", "And some more content" })
-end
+end)
 
--- markdown_atx_headings_no_newline
-do
+case("markdown_atx_headings_no_newline", function()
   local src = "# Main Title\nSome text here\n# Footer Title"
   local out = idx(src, "markdown")
   has(out, { "headings:", "# Main Title [1-2]", "# Footer Title [3]" })
   lacks(out, { "Some text here" })
-end
+end)
 
--- markdown_setext_headings
-do
+case("markdown_setext_headings", function()
   local src =
     "Heading 1\n=========\n\nSome text here\n\nHeading 1.1\n---------\n\nMore content\n\nHeading 2\n=========\n\nAnd some more content\n"
   local out = idx(src, "markdown")
@@ -975,4 +961,8 @@ do
     "# Heading 2 [11-15]",
   })
   lacks(out, { "Some text here", "More content", "And some more content" })
+end)
+
+if #failures > 0 then
+  error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end
