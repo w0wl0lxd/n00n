@@ -281,35 +281,25 @@ fn evaluate_predicates(
         let args = &predicate.args;
 
         match base_op {
-            "eq?" => {
-                if eval_eq(captures, source, args, mods.any) == mods.negated {
-                    return false;
-                }
+            "eq?" if eval_eq(captures, source, args, mods.any) == mods.negated => {
+                return false;
             }
-            "match?" | "lua-match?" => {
-                if eval_match(captures, source, args, mods.any, regex_cache) == mods.negated {
-                    return false;
-                }
+            "match?" | "lua-match?"
+                if eval_match(captures, source, args, mods.any, regex_cache) == mods.negated =>
+            {
+                return false;
             }
-            "contains?" => {
-                if eval_contains(captures, source, args, mods.any) == mods.negated {
-                    return false;
-                }
+            "contains?" if eval_contains(captures, source, args, mods.any) == mods.negated => {
+                return false;
             }
-            "any-of?" => {
-                if eval_any_of(captures, source, args) == mods.negated {
-                    return false;
-                }
+            "any-of?" if eval_any_of(captures, source, args) == mods.negated => {
+                return false;
             }
-            "has-ancestor?" => {
-                if eval_has_ancestor(captures, args) == mods.negated {
-                    return false;
-                }
+            "has-ancestor?" if eval_has_ancestor(captures, args) == mods.negated => {
+                return false;
             }
-            "has-parent?" => {
-                if eval_has_parent(captures, args) == mods.negated {
-                    return false;
-                }
+            "has-parent?" if eval_has_parent(captures, args) == mods.negated => {
+                return false;
             }
             "set!" => {
                 eval_set(args, metadata);

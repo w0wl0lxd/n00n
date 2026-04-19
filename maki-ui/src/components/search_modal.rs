@@ -1,3 +1,5 @@
+use std::cmp::Reverse;
+
 use crate::components::Overlay;
 use crate::components::keybindings::key;
 use crate::components::modal::Modal;
@@ -182,7 +184,7 @@ impl SearchModal {
             }
         }
 
-        self.matches.sort_by(|a, b| b.score.cmp(&a.score));
+        self.matches.sort_by_key(|m| Reverse(m.score));
     }
 
     pub fn current_segment_index(&self) -> Option<usize> {

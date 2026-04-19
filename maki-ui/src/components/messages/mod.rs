@@ -201,15 +201,15 @@ impl MessagesPanel {
         }
 
         match &event.output {
-            ToolOutput::Plain(text) | ToolOutput::ReadDir { text, .. } => {
-                if event.tool.as_ref() != WEBFETCH_TOOL_NAME {
-                    let limits =
-                        ToolKind::from_name(&event.tool).output_limits(&self.tool_output_lines);
-                    let tr = truncate_output(text, limits.max_lines, limits.keep);
-                    msg.truncated_lines = tr.skipped;
-                    if !tr.kept.is_empty() {
-                        msg.text = format!("{}\n{}", msg.text, tr.kept);
-                    }
+            ToolOutput::Plain(text) | ToolOutput::ReadDir { text, .. }
+                if event.tool.as_ref() != WEBFETCH_TOOL_NAME =>
+            {
+                let limits =
+                    ToolKind::from_name(&event.tool).output_limits(&self.tool_output_lines);
+                let tr = truncate_output(text, limits.max_lines, limits.keep);
+                msg.truncated_lines = tr.skipped;
+                if !tr.kept.is_empty() {
+                    msg.text = format!("{}\n{}", msg.text, tr.kept);
                 }
             }
             ToolOutput::QuestionAnswers(pairs) => {
@@ -228,10 +228,8 @@ impl MessagesPanel {
                     msg.text = format!("{}\n{}", msg.text, tr.kept);
                 }
             }
-            ToolOutput::GrepResult { entries } => {
-                if entries.is_empty() {
-                    msg.text = format!("{}\n{NO_FILES_FOUND}", msg.text);
-                }
+            ToolOutput::GrepResult { entries } if entries.is_empty() => {
+                msg.text = format!("{}\n{NO_FILES_FOUND}", msg.text);
             }
             ToolOutput::Batch { entries, .. } => {
                 let failed = entries

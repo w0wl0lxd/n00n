@@ -7,6 +7,7 @@
 //!
 //! Legacy `.json` files are loaded transparently and converted to `.jsonl` on next save.
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
@@ -776,7 +777,7 @@ where
 
     pub fn list_in(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, SessionError> {
         let mut summaries = scan_headers(cwd, dir)?;
-        summaries.sort_unstable_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        summaries.sort_unstable_by_key(|s| Reverse(s.updated_at));
         Ok(summaries)
     }
 

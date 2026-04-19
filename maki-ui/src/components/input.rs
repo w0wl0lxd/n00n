@@ -297,16 +297,14 @@ impl InputBox {
             .map(|line| visual_line_count(line.width(), ew) as u16)
             .sum();
 
-        let wrap_row = if ew == 0 {
-            0
-        } else {
+        let wrap_row = {
             let line = &self.buffer.lines()[self.buffer.y()];
             let cursor_col: usize = line
                 .chars()
                 .take(self.buffer.x())
                 .map(|c| c.width().unwrap_or(1))
                 .sum();
-            (cursor_col / ew) as u16
+            cursor_col.checked_div(ew).unwrap_or(0) as u16
         };
 
         lines_above + wrap_row

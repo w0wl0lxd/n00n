@@ -1,3 +1,5 @@
+use std::cmp::Reverse;
+
 use crate::ToolOutput;
 use maki_tool_macro::Tool;
 use serde::Deserialize;
@@ -42,7 +44,7 @@ impl Glob {
                 })
                 .collect();
 
-            entries.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            entries.sort_unstable_by_key(|e| Reverse(e.0));
             entries.truncate(search_limit);
 
             Ok(ToolOutput::GlobResult {
