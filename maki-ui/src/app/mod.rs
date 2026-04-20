@@ -365,6 +365,9 @@ impl App {
         if !is_ctrl(&key) {
             return None;
         }
+        if key::SUSPEND.matches(key) && cfg!(unix) {
+            return Some(self.suspend());
+        }
         if key::QUIT.matches(key) {
             if self.any_overlay_open() || self.queue.focus().is_some() {
                 return None;
@@ -755,6 +758,10 @@ impl App {
             }
             InputAction::ContinueLine | InputAction::None => vec![],
         }
+    }
+
+    fn suspend(&mut self) -> Vec<Action> {
+        vec![Action::Suspend]
     }
 
     fn quit(&mut self) -> Vec<Action> {

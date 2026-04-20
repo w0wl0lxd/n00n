@@ -73,19 +73,30 @@ impl Drop for TerminalGuard {
     }
 }
 
-pub(crate) fn suspend() {
+pub(crate) fn suspend(terminal: &mut ratatui::DefaultTerminal) {
+    teardown();
+    #[cfg(unix)]
+    unsafe {
+        libc::raise(libc::SIGTSTP);
+    }
+    resume(terminal);
+}
+
+fn teardown() {
     pop_terminal_modes();
     terminal::disable_raw_mode().ok();
     stdout().execute(LeaveAlternateScreen).ok();
+    stdout().flush().ok();
 }
 
 fn pop_terminal_modes() {
+    stdout().execute(crossterm::cursor::Show).ok();
     stdout().execute(PopKeyboardEnhancementFlags).ok();
     stdout().execute(DisableMouseCapture).ok();
     stdout().execute(DisableBracketedPaste).ok();
 }
 
-pub(crate) fn resume(terminal: &mut ratatui::DefaultTerminal) {
+fn resume(terminal: &mut ratatui::DefaultTerminal) {
     stdout().execute(EnterAlternateScreen).ok();
     stdout().execute(EnableBracketedPaste).ok();
     stdout().execute(EnableMouseCapture).ok();
@@ -133,7 +144,7 @@ pub(crate) fn open_in_editor(
         return Err("Empty $VISUAL or $EDITOR".to_string());
     }
 
-    suspend();
+    teardown();
 
     let result = std::process::Command::new(&args[0])
         .args(&args[1..])

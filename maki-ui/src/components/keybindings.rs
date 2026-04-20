@@ -143,6 +143,7 @@ pub mod key {
     pub const OPEN_EDITOR: Bind = ctrl_bind!('o');
     pub const TODO_PANEL: Bind = ctrl_bind!('t');
     pub const TASKS: Bind = ctrl_bind!('x');
+    pub const SUSPEND: Bind = ctrl_bind!('z');
     pub const DELETE: Bind = ctrl_bind!('d');
     pub const KILL_LINE: Bind = ctrl_bind!('k');
     pub const LINE_START: Bind = ctrl_bind!('a');
@@ -211,6 +212,7 @@ impl KeybindContext {
 pub enum Platform {
     All,
     MacOnly,
+    UnixOnly,
 }
 
 impl Platform {
@@ -218,6 +220,7 @@ impl Platform {
         match self {
             Self::All => true,
             Self::MacOnly => cfg!(target_os = "macos"),
+            Self::UnixOnly => cfg!(unix),
         }
     }
 }
@@ -347,6 +350,12 @@ pub const KEYBINDS: &[Keybind] = &[
         description: "Open tasks",
         context: KeybindContext::General,
         platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Single(key::SUSPEND.label),
+        description: "Suspend process",
+        context: KeybindContext::General,
+        platform: Platform::UnixOnly,
     },
     Keybind {
         label: KeyLabel::Single("Enter"),

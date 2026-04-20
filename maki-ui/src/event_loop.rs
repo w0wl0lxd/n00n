@@ -4,6 +4,7 @@ use std::time::Duration;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use color_eyre::Result;
 use color_eyre::eyre::Context;
+
 use crossterm::event::{
     self, Event, KeyEventKind, MouseButton, MouseEvent as CtMouseEvent, MouseEventKind,
 };
@@ -463,6 +464,7 @@ impl<'t> EventLoop<'t> {
                 self.app
                     .start_btw(question, Arc::clone(&slot.provider), slot.model.clone());
             }
+            Action::Suspend => terminal::suspend(self.terminal),
             Action::Quit => {}
         }
     }

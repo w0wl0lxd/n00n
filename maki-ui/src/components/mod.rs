@@ -195,6 +195,7 @@ pub enum Action {
     OpenEditor(PathBuf),
     EditInputInEditor,
     Btw(String),
+    Suspend,
     Quit,
 }
 
