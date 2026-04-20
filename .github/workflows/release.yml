@@ -56,10 +56,13 @@ jobs:
 
       - name: Install musl toolchain (Linux)
         if: runner.os == 'Linux'
+        env:
+          MUSL_CROSS_VERSION: "20250929"
         run: |
-          sudo apt-get update && sudo apt-get install -y musl-tools g++
-          arch=$(echo "${{ matrix.target }}" | cut -d- -f1)
-          sudo ln -sf /usr/bin/g++ /usr/local/bin/${arch}-linux-musl-g++
+          sudo mkdir -p /opt/x-tools
+          curl -fsSL "https://github.com/cross-tools/musl-cross/releases/download/${MUSL_CROSS_VERSION}/${{ matrix.target }}.tar.xz" \
+            | sudo tar -xJf - -C /opt/x-tools
+          echo "/opt/x-tools/${{ matrix.target }}/bin" >> "$GITHUB_PATH"
 
       - name: Install Rust toolchain
         run: rustup target add ${{ matrix.target }}
@@ -67,6 +70,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}-${{ needs.create-release.outputs.tag }}
+
+      - name: Configure musl environment (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          prefix="${{ matrix.target }}"
+          echo "CC=${prefix}-gcc" >> "$GITHUB_ENV"
+          echo "CXX=${prefix}-g++" >> "$GITHUB_ENV"
+          echo "AR=${prefix}-ar" >> "$GITHUB_ENV"
+          target_upper=$(echo "${{ matrix.target }}" | tr '[:lower:]-' '[:upper:]_')
+          echo "CARGO_TARGET_${target_upper}_LINKER=${prefix}-gcc" >> "$GITHUB_ENV"
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
