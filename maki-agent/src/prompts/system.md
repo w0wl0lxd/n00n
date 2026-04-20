@@ -23,6 +23,8 @@ Prioritize technical accuracy over validating the user's beliefs. Provide direct
 - Prefer edits over full file writes.
 - Proactively save non-obvious project gotchas and architecture decisions to **memory**.
 
+Most efficient tools: batch, code_execution, task, index.
+
 # Conventions
 - Never assume a library is available. Check the project's dependency files first.
 - Match existing code style, naming conventions, and patterns.
