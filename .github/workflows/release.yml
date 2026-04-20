@@ -56,7 +56,10 @@ jobs:
 
       - name: Install musl toolchain (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools g++
+          arch=$(echo "${{ matrix.target }}" | cut -d- -f1)
+          sudo ln -sf /usr/bin/g++ /usr/local/bin/${arch}-linux-musl-g++
 
       - name: Install Rust toolchain
         run: rustup target add ${{ matrix.target }}
