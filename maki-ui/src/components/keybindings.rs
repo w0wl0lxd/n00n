@@ -4,11 +4,7 @@ use unicode_width::UnicodeWidthStr;
 
 macro_rules! mod_key {
     ($suffix:expr) => {
-        if cfg!(target_os = "macos") {
-            concat!("⌘", $suffix)
-        } else {
-            concat!("Ctrl+", $suffix)
-        }
+        concat!("Ctrl+", $suffix)
     };
 }
 
@@ -383,7 +379,7 @@ pub const KEYBINDS: &[Keybind] = &[
         platform: Platform::All,
     },
     Keybind {
-        label: KeyLabel::Alt(mod_key!("←"), mod_key!("→")),
+        label: KeyLabel::Alt("⌥←", "⌥→"),
         description: "Move word left / right",
         context: KeybindContext::Editing,
         platform: Platform::MacOnly,
@@ -407,7 +403,7 @@ pub const KEYBINDS: &[Keybind] = &[
         platform: Platform::MacOnly,
     },
     Keybind {
-        label: KeyLabel::Alt("⌘←", "⌘→"),
+        label: KeyLabel::Alt("Home", "End"),
         description: "Jump to start/end of line",
         context: KeybindContext::Editing,
         platform: Platform::MacOnly,
@@ -527,7 +523,7 @@ pub const KEYBINDS: &[Keybind] = &[
         platform: Platform::All,
     },
     Keybind {
-        label: KeyLabel::MacMulti(&["Ctrl+1/2/3"], &["⌘1/2/3"]),
+        label: KeyLabel::MacMulti(&["Ctrl+1/2/3"], &["Ctrl+1/2/3"]),
         description: "Set tier (strong/medium/weak)",
         context: KeybindContext::ModelPicker,
         platform: Platform::All,
