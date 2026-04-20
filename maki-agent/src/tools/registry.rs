@@ -58,17 +58,17 @@ pub type ExecFuture<'a> = Pin<Box<dyn Future<Output = Result<ToolOutput, String>
 
 pub enum SummaryFuture {
     Ready(String),
-    Pending(Pin<Box<dyn Future<Output = String> + Send>>),
+    Pending {
+        fallback: String,
+        fut: Pin<Box<dyn Future<Output = String> + Send>>,
+    },
 }
 
 impl SummaryFuture {
     pub fn into_ready(self) -> String {
         match self {
             Self::Ready(s) => s,
-            Self::Pending(_) => {
-                debug_assert!(false, "into_ready() on Pending SummaryFuture");
-                String::new()
-            }
+            Self::Pending { fallback, .. } => fallback,
         }
     }
 }
@@ -79,7 +79,7 @@ impl Future for SummaryFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<String> {
         match self.get_mut() {
             Self::Ready(s) => Poll::Ready(std::mem::take(s)),
-            Self::Pending(fut) => fut.as_mut().poll(cx),
+            Self::Pending { fut, .. } => fut.as_mut().poll(cx),
         }
     }
 }

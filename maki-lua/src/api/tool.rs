@@ -91,23 +91,24 @@ impl ToolInvocation for LuaToolInvocation {
         let plugin = Arc::clone(&self.plugin);
         let input = self.input.clone();
         let tx = self.tx.clone();
-        SummaryFuture::Pending(Box::pin(async move {
-            let sent = tx
-                .send_async(Request::ComputeSummary {
-                    plugin: Arc::clone(&plugin),
-                    tool: Arc::clone(&tool),
-                    input,
-                    reply: reply_tx,
-                })
-                .await;
-            if sent.is_err() {
-                return tool.to_string();
-            }
-            reply_rx
-                .recv_async()
-                .await
-                .unwrap_or_else(|_| tool.to_string())
-        }))
+        let fallback = tool.to_string();
+        SummaryFuture::Pending {
+            fallback: fallback.clone(),
+            fut: Box::pin(async move {
+                let sent = tx
+                    .send_async(Request::ComputeSummary {
+                        plugin: Arc::clone(&plugin),
+                        tool: Arc::clone(&tool),
+                        input,
+                        reply: reply_tx,
+                    })
+                    .await;
+                if sent.is_err() {
+                    return fallback;
+                }
+                reply_rx.recv_async().await.unwrap_or(fallback)
+            }),
+        }
     }
 
     fn execute<'a>(self: Box<Self>, ctx: &'a ToolContext) -> ExecFuture<'a> {
