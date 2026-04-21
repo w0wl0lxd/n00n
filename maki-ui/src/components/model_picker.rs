@@ -21,19 +21,19 @@ fn footer_line() -> Line<'static> {
     Line::from(vec![
         Span::styled("  Enter", t.keybind_key),
         Span::styled(" select", t.form_hint),
-        Span::styled("  Ctrl+1 ", t.keybind_key),
+        Span::styled("  Alt+1 ", t.keybind_key),
         Span::styled("(set strong)", t.form_hint),
         Span::styled(" / ", t.form_hint),
-        Span::styled("Ctrl+2 ", t.keybind_key),
+        Span::styled("Alt+2 ", t.keybind_key),
         Span::styled("(set medium)", t.form_hint),
         Span::styled(" / ", t.form_hint),
-        Span::styled("Ctrl+3 ", t.keybind_key),
+        Span::styled("Alt+3 ", t.keybind_key),
         Span::styled("(set weak)", t.form_hint),
     ])
 }
 
 fn tier_for_shortcut(key: KeyEvent) -> Option<ModelTier> {
-    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+    if !key.modifiers.contains(KeyModifiers::ALT) {
         return None;
     }
     match key.code {
@@ -204,8 +204,8 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use test_case::test_case;
 
-    fn ctrl_key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::CONTROL)
+    fn alt_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::ALT)
     }
 
     fn test_models() -> Arc<ArcSwapOption<Vec<String>>> {
@@ -309,14 +309,14 @@ mod tests {
         assert!(parse_model_entry("no-slash").is_none());
     }
 
-    // Regression: Ctrl+1/2/3 must work on every provider, not just Ollama.
-    #[test_case(KeyCode::Char('1'), ModelTier::Strong ; "ctrl_1_strong")]
-    #[test_case(KeyCode::Char('2'), ModelTier::Medium ; "ctrl_2_medium")]
-    #[test_case(KeyCode::Char('3'), ModelTier::Weak   ; "ctrl_3_weak")]
+    // Regression: Alt+1/2/3 must work on every provider, not just Ollama.
+    #[test_case(KeyCode::Char('1'), ModelTier::Strong ; "alt_1_strong")]
+    #[test_case(KeyCode::Char('2'), ModelTier::Medium ; "alt_2_medium")]
+    #[test_case(KeyCode::Char('3'), ModelTier::Weak   ; "alt_3_weak")]
     fn tier_shortcut_assigns_and_keeps_picker_open(code: KeyCode, want: ModelTier) {
         let mut p = ModelPicker::new(test_models());
         p.open("");
-        let action = p.handle_key(ctrl_key(code));
+        let action = p.handle_key(alt_key(code));
         assert!(
             matches!(&action, ModelPickerAction::AssignTier(s, t)
                 if s == "anthropic/claude-sonnet-4-20250514" && *t == want),

@@ -523,7 +523,7 @@ pub const KEYBINDS: &[Keybind] = &[
         platform: Platform::All,
     },
     Keybind {
-        label: KeyLabel::MacMulti(&["Ctrl+1/2/3"], &["Ctrl+1/2/3"]),
+        label: KeyLabel::Single("Alt+1/2/3"),
         description: "Set tier (strong/medium/weak)",
         context: KeybindContext::ModelPicker,
         platform: Platform::All,
