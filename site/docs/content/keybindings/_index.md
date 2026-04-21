@@ -7,7 +7,7 @@ group = "Reference"
 
 # Keybindings
 
-On macOS, `Ctrl` maps to `Cmd` where it makes sense (run `/help` for exact keybindings).
+On macOS, some bindings use Option or Fn keys instead (run `/help` for exact keybindings).
 
 ## General
 
@@ -43,11 +43,11 @@ On macOS, `Ctrl` maps to `Cmd` where it makes sense (run `/help` for exact keybi
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+←` / `Ctrl+→` | Move word left / right |
+| `⌥←` / `⌥→` | Move word left / right |
 | `Ctrl+Del` / `⌥Del` | Delete word forward |
 | `Ctrl+K` | Delete to end of line |
 | `Ctrl+A` | Jump to start of line |
-| `⌘←` / `⌘→` | Jump to start/end of line |
+| `Home` / `End` | Jump to start/end of line |
 
 ## While Streaming
 
@@ -82,7 +82,7 @@ Some pickers add extra bindings on top of the defaults:
 | Session Picker | `Ctrl+D` | Delete session |
 | Queue | `Enter` | Remove item |
 | Commands | `Tab` | Toggle mode |
-| Model Picker | `Ctrl+1/2/3` | Set tier (strong/medium/weak) |
+| Model Picker | `Alt+1/2/3` | Set tier (strong/medium/weak) |
 
 ## Context Inheritance
 

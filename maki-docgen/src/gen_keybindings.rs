@@ -121,7 +121,7 @@ fn write_inheritance(out: &mut String) {
 pub fn generate() -> String {
     let mut out = String::from(FRONTMATTER);
     out.push_str("\n\n# Keybindings\n\n");
-    out.push_str("On macOS, `Ctrl` maps to `Cmd` where it makes sense (run `/help` for exact keybindings).\n");
+    out.push_str("On macOS, some bindings use Option or Fn keys instead (run `/help` for exact keybindings).\n");
 
     for &ctx in MAIN_CONTEXTS {
         write_section(&mut out, ctx);
