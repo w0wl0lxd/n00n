@@ -42,7 +42,7 @@ impl Grep {
     pub const NAME: &str = "grep";
     pub const DESCRIPTION: &str = include_str!("grep.md");
     pub const EXAMPLES: Option<&str> = Some(
-        r##"[{"pattern": "fn main", "include": "*.rs"}, {"pattern": "#\\[derive\\(", "include": "*.rs"}]"##,
+        r##"[{"pattern": "fn main", "include": "*.rs"}, {"pattern": "#\\[derive\\(|struct", "include": "*.rs"}]"##,
     );
 
     pub async fn execute(&self, ctx: &super::ToolContext) -> Result<ToolOutput, String> {
