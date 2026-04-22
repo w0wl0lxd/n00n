@@ -1232,7 +1232,7 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("edits[0].new_string"), "got: {msg}");
-        assert!(msg.contains("missing"), "got: {msg}");
+        assert!(msg.contains("required"), "got: {msg}");
     }
 
     #[test]

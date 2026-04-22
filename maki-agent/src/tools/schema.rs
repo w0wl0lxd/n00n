@@ -41,11 +41,9 @@ impl ParamKind {
             Value::Object(_) => Self::Object,
         }
     }
-}
 
-impl Display for ParamKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+    fn as_str(self) -> &'static str {
+        match self {
             Self::Null => "null",
             Self::Bool => "boolean",
             Self::Integer => "integer",
@@ -53,7 +51,13 @@ impl Display for ParamKind {
             Self::String => "string",
             Self::Array => "array",
             Self::Object => "object",
-        })
+        }
+    }
+}
+
+impl Display for ParamKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -279,7 +283,9 @@ pub struct ToolInputError {
 
 #[derive(Debug)]
 pub enum ToolInputErrorKind {
-    Missing,
+    Missing {
+        expected: &'static str,
+    },
     TypeMismatch {
         expected: ParamKind,
         got: ParamKind,
@@ -311,7 +317,9 @@ impl Display for ToolInputError {
             write!(f, "invalid parameter '{}': ", self.path)?;
         }
         match &self.kind {
-            ToolInputErrorKind::Missing => f.write_str("missing"),
+            ToolInputErrorKind::Missing { expected } => {
+                write!(f, "required, expected {expected}")
+            }
             ToolInputErrorKind::TypeMismatch {
                 expected,
                 got,
@@ -461,6 +469,16 @@ fn validate_array(
         .map(Value::Array)
 }
 
+fn schema_type_name(schema: &ParamSchema) -> &'static str {
+    match schema {
+        ParamSchema::Primitive { kind, .. } => kind.as_str(),
+        ParamSchema::Enum { .. } => "string (enum)",
+        ParamSchema::Array { .. } => "array",
+        ParamSchema::Object { .. } => "object",
+        ParamSchema::Any { .. } => "any",
+    }
+}
+
 fn validate_object(
     properties: &'static [Property],
     value: Value,
@@ -478,9 +496,10 @@ fn validate_object(
                 out.insert((*name).into(), validated);
             }
             None if *required => {
-                return Err(
-                    path.with_field(name, |p| ToolInputError::at(p, ToolInputErrorKind::Missing))
-                );
+                let expected = schema_type_name(sub_schema);
+                return Err(path.with_field(name, |p| {
+                    ToolInputError::at(p, ToolInputErrorKind::Missing { expected })
+                }));
             }
             None => {}
         }
@@ -594,7 +613,7 @@ mod tests {
 
     use super::*;
 
-    const MSG_MISSING: &str = "missing";
+    const MSG_MISSING: &str = "required, expected";
     const MSG_EXPECTED_ARRAY: &str = "expected array";
     const MSG_JSON_ENCODED_HINT: &str = "Pass a JSON array";
     const MSG_EXPECTED_ONE_OF: &str = "expected one of";
@@ -665,7 +684,7 @@ mod tests {
             json!({"path": "/x", "edits": [{"old_string": "a"}]}),
         )
         .unwrap_err();
-        assert!(matches!(err.kind, ToolInputErrorKind::Missing));
+        assert!(matches!(err.kind, ToolInputErrorKind::Missing { .. }));
         assert_eq!(err.path.to_string(), "edits[0].new_string");
         let rendered = err.to_string();
         assert!(rendered.contains(MSG_MISSING), "render: {rendered}");
@@ -689,7 +708,7 @@ mod tests {
         });
         let err = validate(&MULTIEDIT_LIKE, input).unwrap_err();
         assert_eq!(err.path.to_string(), "edits[0].new_string");
-        assert!(matches!(err.kind, ToolInputErrorKind::Missing));
+        assert!(matches!(err.kind, ToolInputErrorKind::Missing { .. }));
     }
 
     #[test]
