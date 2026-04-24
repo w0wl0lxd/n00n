@@ -333,9 +333,13 @@ pub fn append_right_info(
         0
     };
     let suffix_len =
-        usage.map_or(0, UnicodeWidthStr::width) + timestamp.map_or(0, str::len) + separator;
-    let header_width: usize = line.spans.iter().map(|s| s.content.len()).sum();
-    let w = width as usize + 1;
+        usage.map_or(0, UnicodeWidthStr::width) + timestamp.map_or(0, str::len) + separator + 1;
+    let header_width: usize = line
+        .spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    let w = width as usize;
     if header_width + 1 + suffix_len > w {
         return;
     }
