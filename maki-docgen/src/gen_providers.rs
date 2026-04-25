@@ -10,7 +10,7 @@ weight = 5
 group = "Reference"
 +++"#;
 
-const TIER_PICKER_NOTE: &str = r#"Open the model picker with `/model` and press `Ctrl+1`, `Ctrl+2`, or `Ctrl+3` on any row to reassign it to strong, medium, or weak. Your overrides are saved to `~/.maki/model-tiers` and apply across sessions."#;
+const TIER_PICKER_NOTE: &str = r#"Open the model picker with `/model` and press `Alt+1`, `Alt+2`, or `Alt+3` on any row to reassign it to strong, medium, or weak. Your overrides are saved to `~/.maki/model-tiers` and apply across sessions."#;
 
 const AUTH_RELOADING: &str = r#"## Auth Reloading
 
@@ -243,7 +243,7 @@ fn write_section(out: &mut String, section: &ProviderSection) {
     if section.entries.is_empty() {
         let _ = writeln!(
             out,
-            "Maki asks your local Ollama for the list of installed models, so there's no built-in catalog. Tiers are guessed from list order: the first model becomes strong, the second medium, and the rest weak. If that guess is wrong, open `/model` and press `Ctrl+1`, `Ctrl+2`, or `Ctrl+3` on any row to reassign it. Your choices are saved to `~/.maki/model-tiers`."
+            "Maki asks your local Ollama for the list of installed models, so there's no built-in catalog. Tiers are guessed from list order: the first model becomes strong, the second medium, and the rest weak. If that guess is wrong, open `/model` and press `Alt+1`, `Alt+2`, or `Alt+3` on any row to reassign it. Your choices are saved to `~/.maki/model-tiers`."
         );
     } else {
         write_model_table(out, section.entries);

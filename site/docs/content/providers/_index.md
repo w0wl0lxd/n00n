@@ -9,7 +9,7 @@ group = "Reference"
 
 Maki talks to LLM providers over their HTTP APIs. Models are split into three tiers: **weak** (cheap and fast), **medium** (balanced), and **strong** (highest capability, highest cost).
 
-Open the model picker with `/model` and press `Ctrl+1`, `Ctrl+2`, or `Ctrl+3` on any row to reassign it to strong, medium, or weak. Your overrides are saved to `~/.maki/model-tiers` and apply across sessions.
+Open the model picker with `/model` and press `Alt+1`, `Alt+2`, or `Alt+3` on any row to reassign it to strong, medium, or weak. Your overrides are saved to `~/.maki/model-tiers` and apply across sessions.
 
 ## Auth Reloading
 
@@ -64,7 +64,7 @@ Defaults: gemini-2.5-pro (strong), gemini-2.5-flash (medium), gemini-2.0-flash-l
 - **API**: `http://localhost:11434/v1`
 - **Features**: Local inference via OLLAMA_HOST, or cloud via OLLAMA_API_KEY
 
-Maki asks your local Ollama for the list of installed models, so there's no built-in catalog. Tiers are guessed from list order: the first model becomes strong, the second medium, and the rest weak. If that guess is wrong, open `/model` and press `Ctrl+1`, `Ctrl+2`, or `Ctrl+3` on any row to reassign it. Your choices are saved to `~/.maki/model-tiers`.
+Maki asks your local Ollama for the list of installed models, so there's no built-in catalog. Tiers are guessed from list order: the first model becomes strong, the second medium, and the rest weak. If that guess is wrong, open `/model` and press `Alt+1`, `Alt+2`, or `Alt+3` on any row to reassign it. Your choices are saved to `~/.maki/model-tiers`.
 
 ### Mistral
 
