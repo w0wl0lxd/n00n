@@ -4,7 +4,7 @@ mod tui;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 
 use crate::cli::{AuthAction, Cli, Command, McpAction};
 use crate::update;
@@ -12,7 +12,7 @@ use crate::update;
 pub fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Command::Auth { action }) => {
-            let storage = DataDir::resolve().context("resolve data directory")?;
+            let storage = StateDir::resolve().context("resolve data directory")?;
             match action {
                 AuthAction::Login { provider } => subcmd::auth_login(&provider, &storage)?,
                 AuthAction::Logout { provider } => subcmd::auth_logout(&provider, &storage)?,
@@ -25,7 +25,7 @@ pub fn dispatch(cli: Cli) -> Result<()> {
             subcmd::models();
         }
         Some(Command::Mcp { action }) => {
-            let storage = DataDir::resolve().context("resolve data directory")?;
+            let storage = StateDir::resolve().context("resolve data directory")?;
             match action {
                 McpAction::Auth { server } => subcmd::mcp_auth(&server, &storage)?,
                 McpAction::Logout { server } => subcmd::mcp_logout(&server, &storage)?,

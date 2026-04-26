@@ -5,7 +5,7 @@ use crate::agent::QueuedMessage;
 use crate::components::Status;
 use crate::theme;
 use maki_agent::{AgentInput, AgentMode};
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 use maki_storage::plans;
 use ratatui::style::{Color, Modifier, Style};
 
@@ -63,7 +63,7 @@ impl PlanState {
         matches!(self, Self::Ready(_))
     }
 
-    pub(crate) fn allocate_path(&mut self, storage: &DataDir) {
+    pub(crate) fn allocate_path(&mut self, storage: &StateDir) {
         if matches!(self, Self::None) {
             *self = Self::Drafting(
                 plans::new_plan_path(storage).unwrap_or_else(|_| PathBuf::from("plans/plan.md")),

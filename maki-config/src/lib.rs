@@ -3,16 +3,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-#[cfg(unix)]
-use dirs::home_dir;
-
 use maki_config_macro::ConfigSection;
+use maki_storage::paths;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::warn;
 
-#[cfg(unix)]
-const GLOBAL_CONFIG_DIR: &str = ".config/maki";
 const PROJECT_DIR: &str = ".maki";
 pub const PROJECT_CONFIG_FILE: &str = ".maki/config.toml";
 const CONFIG_FILE: &str = "config.toml";
@@ -698,14 +694,7 @@ fn build_permissions(
 }
 
 fn global_dir() -> Option<PathBuf> {
-    #[cfg(unix)]
-    {
-        home_dir().map(|h| h.join(GLOBAL_CONFIG_DIR))
-    }
-    #[cfg(not(unix))]
-    {
-        dirs::config_dir().map(|c| c.join("maki"))
-    }
+    paths::config_dir().ok()
 }
 
 fn load_env_files_with_global(cwd: &Path, global: Option<&Path>) {

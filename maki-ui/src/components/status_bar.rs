@@ -214,7 +214,7 @@ impl StatusBar {
 }
 
 fn collapse_home(path: &str) -> String {
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = maki_storage::paths::home() else {
         return path.to_string();
     };
     collapse_home_with(path, &home.to_string_lossy())

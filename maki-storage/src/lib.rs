@@ -1,10 +1,11 @@
-//! Persistent storage under `~/.maki`. `atomic_write` writes to `.tmp` then renames for crash
+//! Persistent storage. `atomic_write` writes to `.tmp` then renames for crash
 //! safety. `atomic_write_permissions` sets file mode before rename (for auth keys at 0600).
 
 pub mod auth;
 pub mod input_history;
 pub mod log;
 pub mod model;
+pub mod paths;
 pub mod plans;
 pub mod sessions;
 pub mod theme;
@@ -17,17 +18,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DATA_DIR_NAME: &str = ".maki";
+use paths::state_dir;
 
 #[derive(Debug, Clone)]
-pub struct DataDir(PathBuf);
+pub struct StateDir(PathBuf);
 
-impl DataDir {
+impl StateDir {
     pub fn resolve() -> Result<Self, StorageError> {
-        let dir = dirs::home_dir()
-            .ok_or(StorageError::HomeNotSet)?
-            .join(DATA_DIR_NAME);
-        fs::create_dir_all(&dir)?;
+        let dir = state_dir()?;
         Ok(Self(dir))
     }
 

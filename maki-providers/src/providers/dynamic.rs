@@ -102,7 +102,9 @@ fn builtin_slugs() -> Vec<String> {
 }
 
 fn providers_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".maki").join(PROVIDERS_DIR))
+    maki_storage::paths::config_dir()
+        .ok()
+        .map(|d| d.join(PROVIDERS_DIR))
 }
 
 fn run_script(path: &Path, subcommand: &str, timeout: Duration) -> Result<String, AgentError> {

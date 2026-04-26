@@ -15,7 +15,7 @@ pub(crate) fn create_uv_table(lua: &Lua) -> LuaResult<Table> {
     t.set(
         "os_homedir",
         lua.create_function(|_, ()| {
-            Ok(dirs::home_dir().and_then(|p| p.to_str().map(String::from)))
+            Ok(maki_storage::paths::home().and_then(|p| p.to_str().map(String::from)))
         })?,
     )?;
 

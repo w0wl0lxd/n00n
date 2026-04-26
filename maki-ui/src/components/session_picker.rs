@@ -7,7 +7,7 @@ use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jiff::Timestamp;
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 
@@ -55,7 +55,7 @@ impl SessionPicker {
         }
     }
 
-    pub fn open(&mut self, cwd: &str, current_session_id: &str, dir: &DataDir) {
+    pub fn open(&mut self, cwd: &str, current_session_id: &str, dir: &StateDir) {
         self.picker.open_loading(TITLE);
         let cwd = cwd.to_owned();
         let current_session_id = current_session_id.to_owned();

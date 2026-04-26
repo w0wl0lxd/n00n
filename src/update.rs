@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use maki_storage::version::{self, VersionError};
-use maki_storage::{DataDir, StorageError};
+use maki_storage::{StateDir, StorageError};
 
 const INSTALL_SCRIPT_URL: &str = "https://maki.sh/install.sh";
 const BACKUP_FILENAME: &str = "maki_backup";
@@ -66,7 +66,7 @@ fn fetch_script() -> Result<String, UpdateError> {
     })
 }
 
-fn backup_binary(exe_path: &Path, storage: &DataDir) -> Result<PathBuf, UpdateError> {
+fn backup_binary(exe_path: &Path, storage: &StateDir) -> Result<PathBuf, UpdateError> {
     let backup_path = storage.path().join(BACKUP_FILENAME);
     std::fs::copy(exe_path, &backup_path).map_err(|e| UpdateError::Backup {
         path: backup_path.clone(),
@@ -161,7 +161,7 @@ pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
     println!();
 
     let exe_path = std::env::current_exe().map_err(UpdateError::CurrentExe)?;
-    let storage = DataDir::resolve()?;
+    let storage = StateDir::resolve()?;
 
     let script = fetch_script()?;
 
@@ -190,7 +190,7 @@ pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
 
 pub fn rollback() -> Result<(), UpdateError> {
     let exe_path = std::env::current_exe().map_err(UpdateError::CurrentExe)?;
-    let storage = DataDir::resolve()?;
+    let storage = StateDir::resolve()?;
     let backup_path = storage.path().join(BACKUP_FILENAME);
 
     if !backup_path.exists() {

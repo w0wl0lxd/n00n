@@ -97,7 +97,7 @@ fn append_instruction_files(out: &mut String, cwd: &str, home: Option<&Path>) {
 }
 
 pub fn load_instruction_text(cwd: &str) -> String {
-    load_instruction_text_with_home(cwd, dirs::home_dir().as_deref())
+    load_instruction_text_with_home(cwd, maki_storage::paths::home().as_deref())
 }
 
 fn load_instruction_text_with_home(cwd: &str, home: Option<&Path>) -> String {
@@ -107,7 +107,7 @@ fn load_instruction_text_with_home(cwd: &str, home: Option<&Path>) -> String {
 }
 
 pub fn load_instructions(cwd: &str) -> Instructions {
-    load_instructions_with_home(cwd, dirs::home_dir().as_deref())
+    load_instructions_with_home(cwd, maki_storage::paths::home().as_deref())
 }
 
 fn load_instructions_with_home(cwd: &str, home: Option<&Path>) -> Instructions {

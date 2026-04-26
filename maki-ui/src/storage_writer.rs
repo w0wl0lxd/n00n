@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 use maki_storage::sessions::{SESSIONS_DIR, SessionError, SessionLog};
 use tracing::warn;
 
@@ -21,7 +21,7 @@ pub struct StorageWriter {
 }
 
 impl StorageWriter {
-    pub fn new(dir: DataDir) -> Self {
+    pub fn new(dir: StateDir) -> Self {
         let latest: Arc<Mutex<Option<Box<AppSession>>>> = Arc::new(Mutex::new(None));
         let writer_latest = Arc::clone(&latest);
         let (notify, notify_rx) = flume::bounded::<()>(1);
@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn shutdown_drains_pending_session() {
-        let dir = DataDir::from_path(env::temp_dir().join("maki-test-sw"));
+        let dir = StateDir::from_path(env::temp_dir().join("maki-test-sw"));
         let writer = StorageWriter::new(dir);
         writer.send(Box::new(AppSession::new("test-model", "/tmp")));
         writer.shutdown(Duration::from_secs(2));

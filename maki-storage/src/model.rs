@@ -1,14 +1,14 @@
 use std::fs;
 
-use crate::{DataDir, atomic_write};
+use crate::{StateDir, atomic_write};
 
 const MODEL_FILE: &str = "model";
 
-pub fn persist_model(dir: &DataDir, spec: &str) {
+pub fn persist_model(dir: &StateDir, spec: &str) {
     let _ = atomic_write(&dir.path().join(MODEL_FILE), spec.as_bytes());
 }
 
-pub fn read_model(dir: &DataDir) -> Option<String> {
+pub fn read_model(dir: &StateDir) -> Option<String> {
     let raw = fs::read_to_string(dir.path().join(MODEL_FILE)).ok()?;
     let spec = raw.trim();
     (!spec.is_empty()).then(|| spec.to_owned())
@@ -22,7 +22,7 @@ mod tests {
     #[test]
     fn round_trip() {
         let tmp = TempDir::new().unwrap();
-        let dir = DataDir::from_path(tmp.path().to_path_buf());
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
 
         assert!(read_model(&dir).is_none());
 
@@ -39,7 +39,7 @@ mod tests {
     #[test]
     fn whitespace_and_empty_treated_as_none() {
         let tmp = TempDir::new().unwrap();
-        let dir = DataDir::from_path(tmp.path().to_path_buf());
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
 
         fs::write(dir.path().join(MODEL_FILE), "  \n").unwrap();
         assert!(read_model(&dir).is_none());

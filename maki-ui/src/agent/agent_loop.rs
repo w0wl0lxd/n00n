@@ -320,7 +320,7 @@ fn spawn_oauth_for_needs_auth(handle: &McpHandle) {
         let server_url = server_url.clone();
         let www_auth = url.clone();
         smol::spawn(async move {
-            let storage = match maki_storage::DataDir::resolve() {
+            let storage = match maki_storage::StateDir::resolve() {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!(server = %server_name, error = %e, "cannot resolve storage for OAuth");

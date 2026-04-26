@@ -20,7 +20,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use isahc::HttpClient;
 use isahc::config::Configurable;
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 use maki_storage::auth::{McpAuthData, load_mcp_auth, save_mcp_auth};
 use tracing::{info, warn};
 
@@ -32,7 +32,7 @@ pub async fn authenticate(
     server_name: &str,
     server_url: &str,
     www_authenticate: Option<&str>,
-    storage: &DataDir,
+    storage: &StateDir,
 ) -> Result<McpAuthData, McpError> {
     let wrap = |e: OAuthError| McpError::OAuthFailed {
         server: server_name.into(),

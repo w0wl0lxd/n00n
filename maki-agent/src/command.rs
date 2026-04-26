@@ -46,7 +46,7 @@ impl CustomCommand {
 }
 
 pub fn discover_commands(cwd: &Path) -> Vec<CustomCommand> {
-    let home = dirs::home_dir();
+    let home = maki_storage::paths::home();
     discover_commands_inner(cwd, home.as_deref())
 }
 

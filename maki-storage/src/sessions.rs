@@ -18,7 +18,7 @@ use tracing::warn;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::{DataDir, StorageError, atomic_write, now_epoch};
+use crate::{StateDir, StorageError, atomic_write, now_epoch};
 
 const SESSION_VERSION: u32 = 1;
 const LOG_FORMAT_VERSION: u32 = 2;
@@ -733,7 +733,7 @@ where
         }
     }
 
-    pub fn save(&mut self, dir: &DataDir) -> Result<(), SessionError> {
+    pub fn save(&mut self, dir: &StateDir) -> Result<(), SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         self.save_to(&sessions_dir)
     }
@@ -744,7 +744,7 @@ where
         Ok(())
     }
 
-    pub fn load(id: &str, dir: &DataDir) -> Result<Self, SessionError> {
+    pub fn load(id: &str, dir: &StateDir) -> Result<Self, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::load_from(id, &sessions_dir)
     }
@@ -770,7 +770,7 @@ where
         Ok(session)
     }
 
-    pub fn list(cwd: &str, dir: &DataDir) -> Result<Vec<SessionSummary>, SessionError> {
+    pub fn list(cwd: &str, dir: &StateDir) -> Result<Vec<SessionSummary>, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::list_in(cwd, &sessions_dir)
     }
@@ -781,7 +781,7 @@ where
         Ok(summaries)
     }
 
-    pub fn latest(cwd: &str, dir: &DataDir) -> Result<Option<Self>, SessionError> {
+    pub fn latest(cwd: &str, dir: &StateDir) -> Result<Option<Self>, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::latest_in(cwd, &sessions_dir)
     }
@@ -807,7 +807,7 @@ where
         }
     }
 
-    pub fn delete(id: &str, dir: &DataDir) -> Result<(), SessionError> {
+    pub fn delete(id: &str, dir: &StateDir) -> Result<(), SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::delete_from(id, &sessions_dir)
     }

@@ -3,7 +3,7 @@ use std::{env, thread};
 
 use isahc::ReadResponseExt;
 use isahc::config::Configurable;
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 use maki_storage::auth::{OAuthTokens, delete_tokens, load_tokens, now_millis, save_tokens};
 use serde::Deserialize;
 use tracing::{debug, error, warn};
@@ -265,11 +265,11 @@ pub(crate) fn build_coding_plan_resolved(tokens: &OAuthTokens) -> ResolvedAuth {
     }
 }
 
-pub(crate) fn is_oauth(dir: &DataDir) -> bool {
+pub(crate) fn is_oauth(dir: &StateDir) -> bool {
     load_tokens(dir, PROVIDER).is_some()
 }
 
-pub fn resolve(dir: &DataDir) -> Result<ResolvedAuth, AgentError> {
+pub fn resolve(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
     if let Some(tokens) = load_tokens(dir, PROVIDER) {
         if !tokens.is_expired() {
             debug!("using OpenAI OAuth authentication");
@@ -301,7 +301,7 @@ pub fn resolve(dir: &DataDir) -> Result<ResolvedAuth, AgentError> {
     })
 }
 
-pub fn login(dir: &DataDir) -> Result<(), AgentError> {
+pub fn login(dir: &StateDir) -> Result<(), AgentError> {
     let device = request_device_code()?;
 
     println!("Open this URL in your browser:\n\n  {DEVICE_AUTH_URL}\n");
@@ -324,7 +324,7 @@ pub fn login(dir: &DataDir) -> Result<(), AgentError> {
     Ok(())
 }
 
-pub fn logout(dir: &DataDir) -> Result<(), AgentError> {
+pub fn logout(dir: &StateDir) -> Result<(), AgentError> {
     if delete_tokens(dir, PROVIDER)? {
         println!("Logged out of OpenAI.");
     } else {

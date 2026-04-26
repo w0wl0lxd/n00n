@@ -16,7 +16,7 @@ use maki_config::UiConfig;
 use maki_providers::Timeouts;
 use maki_providers::provider::{Provider, fetch_all_models, from_model};
 use maki_providers::{Message, Model};
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 use tracing::warn;
 
 use crate::AppSession;
@@ -41,7 +41,7 @@ pub struct EventLoopParams {
     pub skills: Vec<Skill>,
     pub commands: Vec<CustomCommand>,
     pub session: AppSession,
-    pub storage: DataDir,
+    pub storage: StateDir,
     pub config: AgentConfig,
     pub ui_config: UiConfig,
     pub input_history_size: usize,

@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use crate::{DataDir, StorageError, atomic_write_permissions};
+use crate::{StateDir, StorageError, atomic_write_permissions};
 
 const AUTH_DIR: &str = "auth";
 const AUTH_FILE_MODE: u32 = 0o600;
@@ -49,7 +49,7 @@ pub fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-fn auth_path(dir: &DataDir, filename: &str) -> PathBuf {
+fn auth_path(dir: &StateDir, filename: &str) -> PathBuf {
     dir.path().join(AUTH_DIR).join(format!("{filename}.json"))
 }
 
@@ -77,23 +77,23 @@ fn delete_auth(path: &Path) -> Result<bool, StorageError> {
     Ok(false)
 }
 
-pub fn load_tokens(dir: &DataDir, provider: &str) -> Option<OAuthTokens> {
+pub fn load_tokens(dir: &StateDir, provider: &str) -> Option<OAuthTokens> {
     load_auth(&auth_path(dir, provider))
 }
 
 pub fn save_tokens(
-    dir: &DataDir,
+    dir: &StateDir,
     provider: &str,
     tokens: &OAuthTokens,
 ) -> Result<(), StorageError> {
     save_auth(&auth_path(dir, provider), tokens)
 }
 
-pub fn delete_tokens(dir: &DataDir, provider: &str) -> Result<bool, StorageError> {
+pub fn delete_tokens(dir: &StateDir, provider: &str) -> Result<bool, StorageError> {
     delete_auth(&auth_path(dir, provider))
 }
 
-pub fn load_mcp_auth(dir: &DataDir, server_name: &str, expected_url: &str) -> Option<McpAuthData> {
+pub fn load_mcp_auth(dir: &StateDir, server_name: &str, expected_url: &str) -> Option<McpAuthData> {
     let data: McpAuthData = load_auth(&auth_path(dir, &format!("mcp-{server_name}")))?;
     if data.server_url != expected_url {
         return None;
@@ -107,14 +107,14 @@ pub fn load_mcp_auth(dir: &DataDir, server_name: &str, expected_url: &str) -> Op
 }
 
 pub fn save_mcp_auth(
-    dir: &DataDir,
+    dir: &StateDir,
     server_name: &str,
     data: &McpAuthData,
 ) -> Result<(), StorageError> {
     save_auth(&auth_path(dir, &format!("mcp-{server_name}")), data)
 }
 
-pub fn delete_mcp_auth(dir: &DataDir, server_name: &str) -> Result<bool, StorageError> {
+pub fn delete_mcp_auth(dir: &StateDir, server_name: &str) -> Result<bool, StorageError> {
     delete_auth(&auth_path(dir, &format!("mcp-{server_name}")))
 }
 
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn save_load_delete_round_trip() {
         let tmp = TempDir::new().unwrap();
-        let dir = DataDir::from_path(tmp.path().to_path_buf());
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
         let tokens = OAuthTokens {
             access: "access_tok".into(),
             refresh: "refresh_tok".into(),
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn mcp_auth_round_trip() {
         let tmp = TempDir::new().unwrap();
-        let dir = DataDir::from_path(tmp.path().to_path_buf());
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
         let data = McpAuthData {
             tokens: Some(OAuthTokens {
                 access: "acc".into(),
@@ -214,7 +214,7 @@ mod tests {
     )]
     fn mcp_auth_load_returns_none(data: McpAuthData, lookup_url: &str) {
         let tmp = TempDir::new().unwrap();
-        let dir = DataDir::from_path(tmp.path().to_path_buf());
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
         save_mcp_auth(&dir, "srv", &data).unwrap();
         assert!(load_mcp_auth(&dir, "srv", lookup_url).is_none());
     }

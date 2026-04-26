@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::fs;
 
-use crate::{DataDir, StorageError, atomic_write};
+use crate::{StateDir, StorageError, atomic_write};
 
 const HISTORY_FILE: &str = "input_history.json";
 pub const MAX_ENTRIES: usize = 100;
@@ -22,7 +22,7 @@ impl Default for InputHistory {
 }
 
 impl InputHistory {
-    pub fn load(dir: &DataDir, max_entries: usize) -> Self {
+    pub fn load(dir: &StateDir, max_entries: usize) -> Self {
         let path = dir.path().join(HISTORY_FILE);
         let data = match fs::read(&path) {
             Ok(d) => d,
@@ -44,7 +44,7 @@ impl InputHistory {
         history
     }
 
-    pub fn save(&self, dir: &DataDir) -> Result<(), StorageError> {
+    pub fn save(&self, dir: &StateDir) -> Result<(), StorageError> {
         let data = serde_json::to_vec(&self.entries)?;
         atomic_write(&dir.path().join(HISTORY_FILE), &data)
     }
@@ -85,9 +85,9 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    fn tmp_dir() -> (tempfile::TempDir, DataDir) {
+    fn tmp_dir() -> (tempfile::TempDir, StateDir) {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = DataDir::from_path(tmp.path().to_path_buf());
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
         (tmp, dir)
     }
 

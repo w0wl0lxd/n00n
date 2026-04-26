@@ -5,7 +5,7 @@ use color_eyre::eyre::Context;
 
 use maki_providers::model::{Model, ModelTier};
 use maki_providers::provider::ProviderKind;
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 use maki_storage::log::RotatingFileWriter;
 use maki_storage::model::{persist_model, read_model};
 use tracing_subscriber::EnvFilter;
@@ -21,7 +21,7 @@ const PROVIDER_PRIORITY: &[ProviderKind] = &[
 pub fn resolve_model(
     explicit: Option<&str>,
     provider_config: &maki_config::ProviderConfig,
-    storage: &DataDir,
+    storage: &StateDir,
 ) -> Result<Model> {
     if let Some(spec) = explicit {
         let model = Model::from_spec(spec).context("invalid --model spec")?;
@@ -77,7 +77,7 @@ pub fn install_panic_log_hook() {
     }));
 }
 
-pub fn init_logging(storage: &DataDir, storage_config: &maki_config::StorageConfig) {
+pub fn init_logging(storage: &StateDir, storage_config: &maki_config::StorageConfig) {
     let Ok(writer) = RotatingFileWriter::new(
         storage,
         storage_config.max_log_bytes,

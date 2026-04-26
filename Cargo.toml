@@ -127,7 +127,7 @@ nucleo = "0.5"
 nucleo-matcher = "0.3"
 open = "5"
 criterion = { version = "0.5", features = ["html_reports"] }
-dirs = "6"
+etcetera = "0.11"
 dotenvy = "0.15"
 tree-sitter = "0.26"
 include_dir = "0.7"

@@ -5,11 +5,11 @@ use mlua::{Lua, Result as LuaResult, Table};
 
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = maki_storage::paths::home() {
             return home.join(rest);
         }
     } else if path == "~" {
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = maki_storage::paths::home() {
             return home;
         }
     }

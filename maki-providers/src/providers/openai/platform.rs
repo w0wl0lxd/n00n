@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use flume::Sender;
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 use serde_json::Value;
 use tracing::{debug, warn};
 
@@ -31,13 +31,13 @@ fn is_codex_model(model_id: &str) -> bool {
 pub struct OpenAi {
     compat: OpenAiCompatProvider,
     auth: Arc<Mutex<ResolvedAuth>>,
-    storage: Option<DataDir>,
+    storage: Option<StateDir>,
     system_prefix: Option<String>,
 }
 
 impl OpenAi {
     pub fn new(timeouts: crate::providers::Timeouts) -> Result<Self, AgentError> {
-        let storage = DataDir::resolve()?;
+        let storage = StateDir::resolve()?;
         let resolved = auth::resolve(&storage)?;
         let compat = OpenAiCompatProvider::new(&CONFIG, timeouts);
         Ok(Self {

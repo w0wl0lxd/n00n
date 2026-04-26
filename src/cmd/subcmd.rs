@@ -11,9 +11,9 @@ use maki_config::load_config;
 use maki_lua::PluginHost;
 use maki_providers::provider::fetch_all_models;
 use maki_providers::{copilot_auth, dynamic, openai_auth};
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 
-pub fn auth_login(provider: &str, storage: &DataDir) -> Result<()> {
+pub fn auth_login(provider: &str, storage: &StateDir) -> Result<()> {
     match provider {
         "openai" => openai_auth::login(storage)?,
         "copilot" => copilot_auth::login()?,
@@ -22,7 +22,7 @@ pub fn auth_login(provider: &str, storage: &DataDir) -> Result<()> {
     Ok(())
 }
 
-pub fn auth_logout(provider: &str, storage: &DataDir) -> Result<()> {
+pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
     match provider {
         "openai" => openai_auth::logout(storage)?,
         "copilot" => copilot_auth::logout()?,
@@ -72,7 +72,7 @@ pub fn index(path: &str, no_plugins: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn mcp_auth(server: &str, storage: &DataDir) -> Result<()> {
+pub fn mcp_auth(server: &str, storage: &StateDir) -> Result<()> {
     smol::block_on(async {
         let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
         let config = mcp_config::load_config(&cwd);
@@ -90,7 +90,7 @@ pub fn mcp_auth(server: &str, storage: &DataDir) -> Result<()> {
     })
 }
 
-pub fn mcp_logout(server: &str, storage: &DataDir) -> Result<()> {
+pub fn mcp_logout(server: &str, storage: &StateDir) -> Result<()> {
     let deleted = maki_storage::auth::delete_mcp_auth(storage, server)?;
     if deleted {
         eprintln!("Removed OAuth credentials for MCP server '{server}'");

@@ -11,7 +11,7 @@ use maki_agent::tools::ToolRegistry;
 use maki_config::load_config;
 use maki_lua::PluginHost;
 use maki_providers::model::Model;
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 use maki_ui::AppSession;
 
 use crate::cli::{Cli, normalize_tool_name};
@@ -38,7 +38,7 @@ fn resolve_session(
     session_id: Option<String>,
     model: &str,
     cwd: &str,
-    storage: &DataDir,
+    storage: &StateDir,
 ) -> Result<AppSession> {
     if let Some(id) = session_id {
         return AppSession::load(&id, storage).map_err(|e| color_eyre::eyre::eyre!("{e}"));
@@ -70,7 +70,7 @@ fn read_initial_prompt(cli_prompt: Option<String>) -> Result<Option<String>> {
 }
 
 pub fn run(cli: Cli) -> Result<()> {
-    let storage = DataDir::resolve().context("resolve data directory")?;
+    let storage = StateDir::resolve().context("resolve data directory")?;
     maki_providers::tier_map::load_from_storage(&storage);
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());

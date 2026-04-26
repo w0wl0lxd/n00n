@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{OnceLock, RwLock};
 
-use maki_storage::{DataDir, atomic_write};
+use maki_storage::{StateDir, atomic_write};
 use tracing::warn;
 
 use crate::model::ModelTier;
@@ -37,7 +37,7 @@ pub fn tier_map() -> &'static RwLock<TierMap> {
 
 /// Load persisted overrides from `~/.maki/model-tiers` into the global map.
 /// Replaces any previously-loaded overrides but preserves `known_models`.
-pub fn load_from_storage(dir: &DataDir) {
+pub fn load_from_storage(dir: &StateDir) {
     let overrides = read_overrides(dir.path().join(TIERS_FILE).as_path());
     tier_map().write().unwrap().set_overrides(overrides);
 }
@@ -45,7 +45,7 @@ pub fn load_from_storage(dir: &DataDir) {
 /// Atomically set an override and write the new state to disk.
 /// Releases the write lock before touching the filesystem, so I/O latency
 /// does not block other tier reads.
-pub fn set_and_persist(spec: String, tier: ModelTier, dir: &DataDir) {
+pub fn set_and_persist(spec: String, tier: ModelTier, dir: &StateDir) {
     let snapshot = {
         let mut map = tier_map().write().unwrap();
         map.set(spec, tier);

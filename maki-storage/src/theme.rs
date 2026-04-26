@@ -1,14 +1,14 @@
 use std::fs;
 
-use crate::DataDir;
+use crate::StateDir;
 
 const THEME_FILE: &str = "theme";
 
-pub fn persist_theme_name(dir: &DataDir, name: &str) {
+pub fn persist_theme_name(dir: &StateDir, name: &str) {
     let _ = fs::write(dir.path().join(THEME_FILE), name);
 }
 
-pub fn read_theme_name(dir: &DataDir) -> Option<String> {
+pub fn read_theme_name(dir: &StateDir) -> Option<String> {
     let name = fs::read_to_string(dir.path().join(THEME_FILE)).ok()?;
     let name = name.trim();
     (!name.is_empty()).then(|| name.to_owned())
@@ -22,7 +22,7 @@ mod tests {
     #[test]
     fn theme_persistence_round_trip() {
         let tmp = TempDir::new().unwrap();
-        let dir = DataDir::from_path(tmp.path().to_path_buf());
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
 
         assert!(read_theme_name(&dir).is_none());
 

@@ -7,7 +7,7 @@ use maki_agent::ToolOutput;
 use maki_agent::permissions::PermissionManager;
 use maki_config::Effect;
 use maki_providers::{Message, Model, ThinkingConfig, TokenUsage};
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 use maki_storage::sessions::{StoredEffect, StoredMode, StoredRule};
 
 use crate::AppSession;
@@ -31,7 +31,7 @@ impl SessionState {
     pub fn from_session(
         mut session: AppSession,
         fallback_model: &Model,
-        storage: &DataDir,
+        storage: &StateDir,
     ) -> Self {
         let model = Model::from_spec(&session.model).unwrap_or_else(|_| {
             session.model = fallback_model.spec();
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn plan_mode_without_path_allocates_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let storage = DataDir::from_path(tmp.path().to_path_buf());
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
         let session = make_plan_session(Some(StoredMode::Plan), None);
         let state = SessionState::from_session(session, &test_model(), &storage);
         assert_eq!(state.mode, Mode::Plan);
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn plan_mode_with_missing_file_allocates_new_path_and_warns() {
         let tmp = tempfile::tempdir().unwrap();
-        let storage = DataDir::from_path(tmp.path().to_path_buf());
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
         let session =
             make_plan_session(Some(StoredMode::Plan), Some("/nonexistent/plan.md".into()));
         let state = SessionState::from_session(session, &test_model(), &storage);
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn plan_mode_with_existing_file_preserves_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let storage = DataDir::from_path(tmp.path().to_path_buf());
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
         let plan_file = tmp.path().join("existing-plan.md");
         std::fs::write(&plan_file, "# Plan").unwrap();
         let session = make_plan_session(
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn build_mode_does_not_allocate_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let storage = DataDir::from_path(tmp.path().to_path_buf());
+        let storage = StateDir::from_path(tmp.path().to_path_buf());
         let session = make_plan_session(Some(StoredMode::Build), None);
         let state = SessionState::from_session(session, &test_model(), &storage);
         assert_eq!(state.mode, Mode::Build);

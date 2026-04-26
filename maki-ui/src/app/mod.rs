@@ -58,7 +58,7 @@ use maki_agent::{
 };
 use maki_config::UiConfig;
 use maki_providers::{Message, Model, ThinkingConfig};
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 use maki_storage::input_history::InputHistory;
 use maki_storage::model::persist_model;
 
@@ -158,7 +158,7 @@ pub struct App {
     pub(super) clipboard: ClipboardState,
     pub(super) last_esc: Option<Instant>,
 
-    pub(crate) storage: DataDir,
+    pub(crate) storage: StateDir,
     pub(crate) shared_history: Option<Arc<ArcSwap<Vec<Message>>>>,
     pub(crate) shared_tool_outputs: Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
     pub(crate) image_paste_rx: Option<flume::Receiver<Result<ImageSource, String>>>,
@@ -174,7 +174,7 @@ impl App {
     pub fn new(
         model: &Model,
         session: AppSession,
-        storage: DataDir,
+        storage: StateDir,
         available_models: Arc<ArcSwapOption<Vec<String>>>,
         mcp_reader: McpSnapshotReader,
         storage_writer: Arc<StorageWriter>,
@@ -1194,11 +1194,11 @@ impl App {
 
     fn cmd_cd(&mut self, args: &str) -> Vec<Action> {
         let path = if args.is_empty() {
-            dirs::home_dir().unwrap_or_default()
+            maki_storage::paths::home().unwrap_or_default()
         } else {
             match args.strip_prefix('~') {
                 Some(rest) => {
-                    let home = dirs::home_dir().unwrap_or_default();
+                    let home = maki_storage::paths::home().unwrap_or_default();
                     if rest.is_empty() {
                         home
                     } else {

@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use crate::DataDir;
+use crate::StateDir;
 
 const LOG_FILE_NAME: &str = "maki.log";
 const LOCK_FILE_NAME: &str = "maki.log.lock";
@@ -43,7 +43,7 @@ pub struct RotatingFileWriter {
 }
 
 impl RotatingFileWriter {
-    pub fn new(data_dir: &DataDir, max_bytes: u64, max_files: u32) -> io::Result<Self> {
+    pub fn new(data_dir: &StateDir, max_bytes: u64, max_files: u32) -> io::Result<Self> {
         Self::with_limits(data_dir.path(), max_bytes, max_files)
     }
 

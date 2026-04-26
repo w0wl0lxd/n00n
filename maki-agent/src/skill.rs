@@ -34,7 +34,7 @@ pub struct Skill {
 }
 
 pub fn discover_skills(cwd: &Path) -> Vec<Skill> {
-    let home = dirs::home_dir();
+    let home = maki_storage::paths::home();
     discover_skills_inner(cwd, home.as_deref())
 }
 

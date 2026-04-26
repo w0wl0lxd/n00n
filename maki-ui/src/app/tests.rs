@@ -30,7 +30,7 @@ fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
 }
 
 fn test_app() -> App {
-    let writer = Arc::new(StorageWriter::new(DataDir::from_path(env::temp_dir())));
+    let writer = Arc::new(StorageWriter::new(StateDir::from_path(env::temp_dir())));
     let permissions = Arc::new(PermissionManager::new(
         PermissionsConfig {
             allow_all: false,
@@ -42,7 +42,7 @@ fn test_app() -> App {
     let mut app = App::new(
         &model,
         AppSession::new("test-model", "/tmp/test"),
-        DataDir::from_path(env::temp_dir()),
+        StateDir::from_path(env::temp_dir()),
         Arc::new(ArcSwapOption::empty()),
         McpSnapshotReader::empty(),
         writer,
@@ -447,8 +447,8 @@ fn reset_session_clears_drafting_plan_in_build_mode() {
 #[test]
 fn load_session_clears_plan() {
     let tmp = TempDir::new().unwrap();
-    let dir = DataDir::from_path(tmp.path().to_path_buf());
-    let writer = Arc::new(StorageWriter::new(DataDir::from_path(
+    let dir = StateDir::from_path(tmp.path().to_path_buf());
+    let writer = Arc::new(StorageWriter::new(StateDir::from_path(
         tmp.path().to_path_buf(),
     )));
     let model = test_model();
@@ -2153,7 +2153,7 @@ fn thinking_non_anthropic_flashes_error() {
 #[test]
 fn thinking_restored_from_session_meta() {
     let tmp = TempDir::new().unwrap();
-    let storage = DataDir::from_path(tmp.path().to_path_buf());
+    let storage = StateDir::from_path(tmp.path().to_path_buf());
     let mut session = AppSession::new("test-model", "/tmp/test");
     session.meta.thinking = Some(StoredThinking::Budget { tokens: 4096 });
 

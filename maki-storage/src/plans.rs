@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use crate::{DataDir, StorageError};
+use crate::{StateDir, StorageError};
 
 const PLANS_DIR: &str = "plans";
 const SLUG_RETRIES: usize = 10;
@@ -16,7 +16,7 @@ fn load_words(text: &'static str) -> Vec<&'static str> {
     words
 }
 
-pub fn new_plan_path(dir: &DataDir) -> Result<PathBuf, StorageError> {
+pub fn new_plan_path(dir: &StateDir) -> Result<PathBuf, StorageError> {
     let plans_dir = dir.ensure_subdir(PLANS_DIR)?;
     for _ in 0..SLUG_RETRIES {
         let path = plans_dir.join(format!("{}.md", generate_slug()));
@@ -46,7 +46,7 @@ fn generate_slug() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DataDir;
+    use crate::StateDir;
 
     #[test]
     fn slug_format_invariants() {
@@ -65,7 +65,7 @@ mod tests {
     #[test]
     fn new_plan_path_under_plans_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = DataDir::from_path(tmp.path().to_path_buf());
+        let dir = StateDir::from_path(tmp.path().to_path_buf());
         let path = new_plan_path(&dir).unwrap();
         assert!(path.starts_with(tmp.path().join("plans")));
         assert_eq!(path.extension().and_then(|e| e.to_str()), Some("md"));

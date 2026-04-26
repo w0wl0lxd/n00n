@@ -67,7 +67,7 @@ fn gh_config_paths() -> Vec<PathBuf> {
 fn config_dir() -> Option<PathBuf> {
     env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+        .or_else(|| maki_storage::paths::home().map(|home| home.join(".config")))
 }
 
 fn extract_json_oauth_token(contents: &str, domain: &str) -> Option<String> {

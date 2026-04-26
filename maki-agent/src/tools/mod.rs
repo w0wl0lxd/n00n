@@ -238,7 +238,7 @@ pub(crate) fn resolve_search_path(path: Option<&str>) -> Result<String, String> 
 }
 
 static CWD: LazyLock<Option<PathBuf>> = LazyLock::new(|| env::current_dir().ok());
-static HOME: LazyLock<Option<PathBuf>> = LazyLock::new(dirs::home_dir);
+static HOME: LazyLock<Option<PathBuf>> = LazyLock::new(maki_storage::paths::home);
 
 pub(crate) fn relative_path(path: &str) -> String {
     let p = Path::new(path);
@@ -1154,7 +1154,7 @@ mod tests {
     #[test]
     fn relative_path_cases() {
         let cwd = env::current_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let home = maki_storage::paths::home().unwrap();
 
         let cases: &[(&str, &str)] = &[
             (&format!("{}/src/main.rs", cwd.display()), "src/main.rs"),
@@ -1176,7 +1176,7 @@ mod tests {
     #[test]
     fn resolve_path_cases() {
         let cwd = env::current_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let home = maki_storage::paths::home().unwrap();
 
         assert_eq!(
             resolve_path("~/foo/bar").unwrap(),

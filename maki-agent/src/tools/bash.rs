@@ -574,7 +574,7 @@ mod tests {
     #[test_case("ls",              Some("~/projects"), "projects" ; "explicit_workdir_tilde")]
     #[test_case("cd ~/foo && ls",   None,               "foo"      ; "cd_prefix_tilde")]
     fn resolved_workdir_expands_tilde(cmd: &str, workdir: Option<&str>, suffix: &str) {
-        let home = dirs::home_dir().unwrap();
+        let home = maki_storage::paths::home().unwrap();
         let b = Bash {
             command: cmd.into(),
             timeout: None,

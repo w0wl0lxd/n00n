@@ -33,7 +33,7 @@ pub(crate) fn try_parse_image_path(text: &str) -> Option<(PathBuf, ImageMediaTyp
         return None;
     }
     let path = if let Some(rest) = path_str.strip_prefix("~/") {
-        dirs::home_dir()?.join(rest)
+        maki_storage::paths::home()?.join(rest)
     } else {
         PathBuf::from(&path_str)
     };
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn try_parse_image_path_tilde() {
         let (path, media) = try_parse_image_path("~/Pictures/photo.jpg").expect("should parse");
-        let home = dirs::home_dir().unwrap();
+        let home = maki_storage::paths::home().unwrap();
         assert_eq!(path, home.join("Pictures/photo.jpg"));
         assert_eq!(media, ImageMediaType::Jpeg);
     }
