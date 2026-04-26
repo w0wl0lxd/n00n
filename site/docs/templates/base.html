@@ -718,7 +718,7 @@
       {%- set s = get_section(path=sub) -%}
       {%- set_global sections = sections | concat(with=[s]) -%}
     {%- endfor -%}
-    {%- for group in ["Getting Started", "Reference", "Internals"] -%}
+    {%- for group in ["Getting Started", "Reference"] -%}
     <div class="sidebar-group">
       <div class="sidebar-label">{{ group }}</div>
       {%- for s in sections -%}
