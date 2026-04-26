@@ -74,6 +74,7 @@ pub struct Copilot {
 
 impl Copilot {
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
+        auth::load_token()?;
         Ok(Self {
             client: super::http_client(timeouts),
             stream_timeout: timeouts.stream,
