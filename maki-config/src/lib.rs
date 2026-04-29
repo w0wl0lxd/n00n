@@ -620,8 +620,13 @@ impl PluginsConfig {
     fn from_file(f: PluginsFileConfig) -> Self {
         let enabled = f.enabled.unwrap_or(true);
         let init_file = f.init_file.or_else(|| {
-            let path = global_dir()?.join("init.lua");
-            path.is_file().then_some(path)
+            for dir in config_search_dirs(global_dir().as_deref()).iter().rev() {
+                let path = dir.join("init.lua");
+                if path.is_file() {
+                    return Some(path);
+                }
+            }
+            None
         });
         Self {
             enabled,
@@ -697,6 +702,19 @@ fn global_dir() -> Option<PathBuf> {
     paths::config_dir().ok()
 }
 
+fn config_search_dirs(global: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(d) = global {
+        dirs.push(d.to_path_buf());
+    }
+    if let Ok(xdg) = paths::xdg_config_dir()
+        && dirs.first() != Some(&xdg)
+    {
+        dirs.push(xdg);
+    }
+    dirs
+}
+
 fn load_env_files_with_global(cwd: &Path, global: Option<&Path>) {
     let mut vars = HashMap::new();
     if let Some(path) = global {
@@ -722,18 +740,18 @@ fn collect_env_vars(path: &Path, vars: &mut HashMap<String, String>) {
 }
 
 pub fn load_config(cwd: &Path, no_rtk: bool) -> Config {
-    load_config_with_global(cwd, no_rtk, global_dir())
+    let global_dirs = config_search_dirs(global_dir().as_deref());
+    load_config_inner(cwd, no_rtk, &global_dirs)
 }
 
-fn load_config_with_global(cwd: &Path, no_rtk: bool, global: Option<PathBuf>) -> Config {
-    load_env_files_with_global(cwd, global.as_deref());
+fn load_config_inner(cwd: &Path, no_rtk: bool, global_dirs: &[PathBuf]) -> Config {
+    load_env_files_with_global(cwd, global_dirs.first().map(|p| p.as_path()));
 
     let mut base = toml::Table::new();
-    if let Some(t) = global
-        .as_ref()
-        .and_then(|d| read_table(&d.join(CONFIG_FILE)))
-    {
-        merge_tables(&mut base, t);
+    for dir in global_dirs {
+        if let Some(t) = read_table(&dir.join(CONFIG_FILE)) {
+            merge_tables(&mut base, t);
+        }
     }
     if let Some(t) = read_table(&cwd.join(PROJECT_DIR).join(CONFIG_FILE)) {
         merge_tables(&mut base, t);
@@ -752,15 +770,18 @@ fn load_config_with_global(cwd: &Path, no_rtk: bool, global: Option<PathBuf>) ->
         agent: AgentConfig::from_file(raw.agent, no_rtk, &raw.index),
         provider: ProviderConfig::from_file(raw.provider),
         storage: StorageConfig::from_file(raw.storage),
-        permissions: load_permissions_with_global(cwd, global.as_deref()),
+        permissions: load_permissions_inner(cwd, global_dirs),
         plugins: PluginsConfig::from_file(raw.plugins),
     }
 }
 
-fn load_permissions_with_global(cwd: &Path, global: Option<&Path>) -> PermissionsConfig {
-    let global_perms = global
-        .and_then(|d| read_permissions_file(&d.join(PERMISSIONS_FILE)))
-        .unwrap_or_default();
+fn load_permissions_inner(cwd: &Path, global_dirs: &[PathBuf]) -> PermissionsConfig {
+    let mut global_perms = PermissionsFileConfig::default();
+    for dir in global_dirs {
+        if let Some(p) = read_permissions_file(&dir.join(PERMISSIONS_FILE)) {
+            global_perms = p;
+        }
+    }
 
     let project_perms =
         read_permissions_file(&cwd.join(PROJECT_DIR).join(PERMISSIONS_FILE)).unwrap_or_default();
@@ -802,7 +823,14 @@ fn read_table(path: &Path) -> Option<toml::Table> {
 }
 
 pub fn global_config_path() -> Option<PathBuf> {
-    global_dir().map(|d| d.join(CONFIG_FILE))
+    let dirs = config_search_dirs(global_dir().as_deref());
+    for dir in dirs.iter().rev() {
+        let path = dir.join(CONFIG_FILE);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    dirs.first().map(|d| d.join(CONFIG_FILE))
 }
 
 pub fn append_permission_rule(
@@ -811,7 +839,10 @@ pub fn append_permission_rule(
     effect: Effect,
     target: &PermissionTarget,
 ) -> Result<(), String> {
-    append_permission_rule_with_global(tool, scope, effect, target, global_dir())
+    let dir = config_search_dirs(global_dir().as_deref())
+        .into_iter()
+        .last();
+    append_permission_rule_with_global(tool, scope, effect, target, dir)
 }
 
 fn append_permission_rule_with_global(
@@ -985,7 +1016,7 @@ mod tests {
         )
         .unwrap();
 
-        let config = load_config_with_global(dir.path(), false, Some(global));
+        let config = load_config_inner(dir.path(), false, &[global]);
 
         assert!(!config.ui.splash_animation);
         assert_eq!(config.ui.flash_duration_ms, 2000);
@@ -1135,7 +1166,7 @@ mod tests {
              [bash]\nallow = [\n    \"cargo *\",\n]\ndeny = [\n    \"rm -rf *\",\n]\n",
         );
 
-        let perms = load_permissions_with_global(dir.path(), Some(&global));
+        let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global));
         assert!(perms.allow_all);
         assert_eq!(perms.rules.len(), 2);
         assert_eq!(perms.rules[0].effect, Effect::Deny);
@@ -1163,7 +1194,7 @@ mod tests {
         )
         .unwrap();
 
-        let perms = load_permissions_with_global(dir.path(), Some(&global));
+        let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global));
         assert!(!perms.allow_all);
         assert_eq!(perms.rules.len(), 4);
 
@@ -1195,7 +1226,7 @@ mod tests {
         fs::create_dir_all(&maki_dir).unwrap();
         fs::write(maki_dir.join("permissions.toml"), "allow_all = true\n").unwrap();
 
-        let perms = load_permissions_with_global(dir.path(), Some(&global));
+        let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global));
         assert!(!perms.allow_all);
     }
 
@@ -1233,7 +1264,7 @@ mod tests {
     fn no_permissions_file_returns_defaults() {
         let dir = TempDir::new().unwrap();
         let global = global_config_dir(dir.path());
-        let perms = load_permissions_with_global(dir.path(), Some(&global));
+        let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global));
         assert!(!perms.allow_all);
         assert!(perms.rules.is_empty());
     }
@@ -1247,7 +1278,7 @@ mod tests {
             "[bash]\nallow = [\"git *\"]\ndeny = [\"rm *\"]\n",
         );
 
-        let perms = load_permissions_with_global(dir.path(), Some(&global));
+        let perms = load_permissions_inner(dir.path(), std::slice::from_ref(&global));
         assert_eq!(perms.rules[0].effect, Effect::Deny);
         assert_eq!(perms.rules[1].effect, Effect::Allow);
     }
@@ -1316,7 +1347,7 @@ mod tests {
             std::env::set_var(PROCESS_WINS, "process");
         }
 
-        let _config = load_config_with_global(dir.path(), false, Some(global));
+        let _config = load_config_inner(dir.path(), false, &[global]);
 
         assert_eq!(std::env::var(GLOBAL_ONLY).unwrap(), "global");
         assert_eq!(std::env::var(PROJECT_SHADOWS).unwrap(), "project");
