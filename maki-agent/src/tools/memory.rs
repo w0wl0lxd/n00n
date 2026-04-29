@@ -29,7 +29,10 @@ impl Memory {
     );
 
     pub async fn execute(&self, _ctx: &super::ToolContext) -> Result<ToolOutput, String> {
-        let memories_dir = resolve_memories_dir()?;
+        let memories_dir = match self.command.as_str() {
+            "view" => resolve_memories_read_dir()?,
+            _ => resolve_memories_dir()?,
+        };
         dispatch(
             &self.command,
             self.path.as_deref(),
@@ -230,16 +233,27 @@ async fn dir_total_bytes(dir: &Path) -> u64 {
     total
 }
 
-pub fn resolve_memories_dir() -> Result<PathBuf, String> {
+fn memories_path_suffix() -> Result<String, String> {
     let cwd = std::env::current_dir().map_err(|e| format!("cannot get cwd: {e}"))?;
     let root = find_git_root(&cwd);
-    let project_id = project_id(&root);
-    let home = maki_storage::paths::home().ok_or("home directory not found")?;
-    Ok(home
-        .join(".maki")
-        .join("projects")
-        .join(project_id)
-        .join("memories"))
+    let id = project_id(&root);
+    Ok(format!("projects/{id}/memories"))
+}
+
+pub fn resolve_memories_dir() -> Result<PathBuf, String> {
+    let suffix = memories_path_suffix()?;
+    let state = maki_storage::paths::state_dir().map_err(|e| format!("state dir: {e}"))?;
+    Ok(state.join(suffix))
+}
+
+fn resolve_memories_read_dir() -> Result<PathBuf, String> {
+    if let Some(legacy) = maki_storage::paths::legacy_home_dir() {
+        let dir = legacy.join(memories_path_suffix()?);
+        if dir.is_dir() {
+            return Ok(dir);
+        }
+    }
+    resolve_memories_dir()
 }
 
 fn find_git_root(start: &Path) -> PathBuf {
@@ -281,7 +295,7 @@ pub fn list_memory_files() -> Option<String> {
 }
 
 pub fn list_memory_entries() -> Option<Vec<(String, u64)>> {
-    let memories_dir = resolve_memories_dir().ok()?;
+    let memories_dir = resolve_memories_read_dir().ok()?;
     if !memories_dir.exists() {
         return None;
     }

@@ -100,3 +100,18 @@ pub fn cache_dir() -> Result<PathBuf, std::io::Error> {
 pub fn home() -> Option<PathBuf> {
     etcetera::home_dir().ok()
 }
+
+pub fn legacy_home_dir() -> Option<PathBuf> {
+    etcetera::home_dir()
+        .ok()
+        .map(|h| h.join(FALLBACK_DIR))
+        .filter(|d| d.is_dir())
+}
+
+pub fn user_config_dirs(home: Option<&Path>, subdir: &str) -> Vec<PathBuf> {
+    let legacy = home
+        .map(|h| h.join(FALLBACK_DIR).join(subdir))
+        .or_else(|| legacy_home_dir().map(|d| d.join(subdir)));
+    let xdg = config_dir().ok().map(|d| d.join(subdir));
+    [legacy, xdg].into_iter().flatten().collect()
+}

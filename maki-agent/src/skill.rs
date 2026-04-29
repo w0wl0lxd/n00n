@@ -18,8 +18,7 @@ const PROJECT_SKILL_DIRS: &[&str] = &[
     ".agents/skills",
 ];
 
-const GLOBAL_SKILL_DIRS: &[&str] = &[
-    ".maki/skills",
+const GLOBAL_THIRD_PARTY_SKILL_DIRS: &[&str] = &[
     ".claude/skills",
     ".config/opencode/skills",
     ".agents/skills",
@@ -41,8 +40,11 @@ pub fn discover_skills(cwd: &Path) -> Vec<Skill> {
 fn discover_skills_inner(cwd: &Path, home: Option<&Path>) -> Vec<Skill> {
     let mut skills: HashMap<String, Skill> = HashMap::new();
 
+    for dir in maki_storage::paths::user_config_dirs(home, "skills") {
+        scan_skill_dir(&dir, &mut skills);
+    }
     if let Some(home) = home {
-        for dir in GLOBAL_SKILL_DIRS {
+        for dir in GLOBAL_THIRD_PARTY_SKILL_DIRS {
             scan_skill_dir(&home.join(dir), &mut skills);
         }
     }

@@ -9,7 +9,8 @@ use tracing::{debug, warn};
 
 use crate::skill::{find_project_ancestor_dirs, parse_frontmatter};
 
-const COMMAND_DIRS: &[&str] = &[".maki/commands", ".claude/commands"];
+const PROJECT_COMMAND_DIRS: &[&str] = &[".maki/commands", ".claude/commands"];
+const GLOBAL_THIRD_PARTY_COMMAND_DIRS: &[&str] = &[".claude/commands"];
 const ARGUMENTS_PLACEHOLDER: &str = "$ARGUMENTS";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,14 +54,17 @@ pub fn discover_commands(cwd: &Path) -> Vec<CustomCommand> {
 fn discover_commands_inner(cwd: &Path, home: Option<&Path>) -> Vec<CustomCommand> {
     let mut commands: HashMap<String, CustomCommand> = HashMap::new();
 
+    for dir in maki_storage::paths::user_config_dirs(home, "commands") {
+        scan_command_dir(&dir, CommandScope::User, &mut commands);
+    }
     if let Some(home) = home {
-        for dir in COMMAND_DIRS {
+        for dir in GLOBAL_THIRD_PARTY_COMMAND_DIRS {
             scan_command_dir(&home.join(dir), CommandScope::User, &mut commands);
         }
     }
 
     for dir in find_project_ancestor_dirs(cwd) {
-        for cmd_dir in COMMAND_DIRS {
+        for cmd_dir in PROJECT_COMMAND_DIRS {
             scan_command_dir(&dir.join(cmd_dir), CommandScope::Project, &mut commands);
         }
     }

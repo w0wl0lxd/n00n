@@ -3,7 +3,7 @@
 //! Tier resolution combines three layers, in priority order:
 //!
 //! 1. **User overrides** - explicit tier assignments persisted to
-//!    `~/.maki/model-tiers` (JSON). Apply to any provider.
+//!    `~/.local/state/maki/model-tiers` (JSON). Apply to any provider.
 //! 2. **Static entries** - `ModelEntry::tier` from the provider's built-in
 //!    registry. Consulted by `model.rs` via [`TierMap::tier_for`].
 //! 3. **Auto-assignment** - for providers that accept arbitrary models
@@ -35,7 +35,7 @@ pub fn tier_map() -> &'static RwLock<TierMap> {
     TIERS.get_or_init(|| RwLock::new(TierMap::default()))
 }
 
-/// Load persisted overrides from `~/.maki/model-tiers` into the global map.
+/// Load persisted overrides from `state_dir()/model-tiers` into the global map.
 /// Replaces any previously-loaded overrides but preserves `known_models`.
 pub fn load_from_storage(dir: &StateDir) {
     let overrides = read_overrides(dir.path().join(TIERS_FILE).as_path());

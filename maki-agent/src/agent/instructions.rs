@@ -87,12 +87,12 @@ fn append_instruction_files(out: &mut String, cwd: &str, home: Option<&Path>) {
         ));
     }
 
-    if let Some(home) = home
-        && let Ok(content) = fs::read_to_string(home.join(".maki").join("AGENTS.md"))
-    {
-        out.push_str(&format!(
-            "\n\nGlobal instructions (~/.maki/AGENTS.md):\n{content}"
-        ));
+    for path in maki_storage::paths::user_config_dirs(home, "AGENTS.md") {
+        if let Ok(content) = fs::read_to_string(&path) {
+            let display = path.display();
+            out.push_str(&format!("\n\nGlobal instructions ({display}):\n{content}"));
+            break;
+        }
     }
 }
 
