@@ -1,11 +1,14 @@
+use std::mem;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use maki_agent::command::CustomCommand;
 use maki_agent::{McpPromptInfo, McpSnapshotReader};
+use nucleo::pattern::{CaseMatching, Normalization};
+use nucleo::{Config, Matcher, Nucleo, Utf32String};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 
@@ -108,19 +111,33 @@ pub enum CommandAction {
 }
 
 #[derive(Clone)]
-enum FilteredItem {
-    Builtin(usize),
+enum CommandType {
+    Builtin(&'static BuiltinCommand),
     Custom(usize),
     McpPrompt(usize),
 }
 
+struct CommandItem {
+    name: String,
+    max_args: usize,
+    command_type: CommandType,
+}
+
+struct Match {
+    command_type: CommandType,
+    indices: Vec<u32>,
+}
+
 pub struct CommandPalette {
     selected: usize,
-    filtered: Vec<FilteredItem>,
+    filtered: Vec<Match>,
     custom: Arc<[CustomCommand]>,
     mcp_reader: McpSnapshotReader,
     mcp_prompts: Vec<McpPromptInfo>,
     mcp_generation: u64,
+    nucleo: Nucleo<CommandItem>,
+    matcher: Matcher,
+    current_arg_count: usize,
 }
 
 impl CommandPalette {
@@ -129,6 +146,8 @@ impl CommandPalette {
         let mcp_generation = snap.generation;
         let prompts = snap.prompts.clone();
         drop(snap);
+
+        let nucleo = Self::build_nucleo(&custom_commands, &prompts);
         Self {
             selected: 0,
             filtered: Vec::new(),
@@ -136,7 +155,57 @@ impl CommandPalette {
             mcp_reader,
             mcp_prompts: prompts,
             mcp_generation,
+            nucleo,
+            matcher: Matcher::new(Config::DEFAULT),
+            current_arg_count: 0,
         }
+    }
+
+    fn build_nucleo(
+        custom_commands: &[CustomCommand],
+        mcp_prompts: &[McpPromptInfo],
+    ) -> Nucleo<CommandItem> {
+        let nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| {}), None, 1);
+        let injector = nucleo.injector();
+
+        for cmd in BUILTIN_COMMANDS.iter() {
+            let item = CommandItem {
+                name: cmd.name.to_string(),
+                max_args: cmd.max_args,
+                command_type: CommandType::Builtin(cmd),
+            };
+            injector.push(item, |item, cols| {
+                cols[0] = Utf32String::from(item.name.as_str());
+            });
+        }
+
+        for (i, cmd) in custom_commands.iter().enumerate() {
+            let item = CommandItem {
+                name: cmd.display_name(),
+                max_args: if cmd.has_args() { usize::MAX } else { 0 },
+                command_type: CommandType::Custom(i),
+            };
+            injector.push(item, |item, cols| {
+                cols[0] = Utf32String::from(item.name.as_str());
+            });
+        }
+
+        for (i, prompt) in mcp_prompts.iter().enumerate() {
+            let item = CommandItem {
+                name: format!("/{}", prompt.display_name),
+                max_args: if prompt.arguments.is_empty() {
+                    0
+                } else {
+                    usize::MAX
+                },
+                command_type: CommandType::McpPrompt(i),
+            };
+            injector.push(item, |item, cols| {
+                cols[0] = Utf32String::from(item.name.as_str());
+            });
+        }
+
+        nucleo
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, input: &str) -> CommandAction {
@@ -180,54 +249,75 @@ impl CommandPalette {
         if snap.generation != self.mcp_generation {
             self.mcp_generation = snap.generation;
             self.mcp_prompts = snap.prompts.clone();
+            self.nucleo = Self::build_nucleo(&self.custom, &self.mcp_prompts);
         }
         drop(snap);
         let Some(stripped) = input.strip_prefix('/') else {
             self.filtered.clear();
+            self.current_arg_count = 0;
             return;
         };
+
         let parts: Vec<&str> = stripped.split_whitespace().collect();
         let cmd_word = parts.first().copied().unwrap_or(stripped);
-        let cmd_lower = cmd_word.to_ascii_lowercase();
         let trailing_space = stripped.ends_with(char::is_whitespace);
-        let arg_count = if trailing_space {
+
+        self.current_arg_count = if trailing_space {
             parts.len()
         } else {
             parts.len().saturating_sub(1)
         };
 
+        self.nucleo.pattern.reparse(
+            0,
+            cmd_word,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            false,
+        );
+
+        // Tick to get matches
+        self.tick();
+    }
+
+    fn tick(&mut self) {
+        let status = self.nucleo.tick(100);
+        if status.changed {
+            self.refresh_matches();
+        }
+    }
+
+    fn refresh_matches(&mut self) {
+        let snapshot = self.nucleo.snapshot();
+        let pattern = snapshot.pattern();
+        let has_pattern = !pattern.column_pattern(0).atoms.is_empty();
+
         self.filtered.clear();
+        let count = snapshot.matched_item_count();
+        for item in snapshot.matched_items(0..count) {
+            let cmd_item = &item.data;
+            let col = &item.matcher_columns[0];
 
-        for (i, cmd) in BUILTIN_COMMANDS.iter().enumerate() {
-            if cmd.name[1..].to_ascii_lowercase().contains(&cmd_lower) && arg_count <= cmd.max_args
-            {
-                self.filtered.push(FilteredItem::Builtin(i));
+            if self.current_arg_count > cmd_item.max_args {
+                continue;
             }
-        }
 
-        for (i, cmd) in self.custom.iter().enumerate() {
-            let display = cmd.display_name();
-            let entry_name = &display[1..];
-            let max_args = if cmd.has_args() { usize::MAX } else { 0 };
-            if entry_name.to_ascii_lowercase().contains(&cmd_lower) && arg_count <= max_args {
-                self.filtered.push(FilteredItem::Custom(i));
-            }
-        }
-
-        for (i, prompt) in self.mcp_prompts.iter().enumerate() {
-            let max_args = if prompt.arguments.is_empty() {
-                0
+            let indices = if has_pattern {
+                let mut indices_buf = vec![];
+                pattern.column_pattern(0).indices(
+                    col.slice(..),
+                    &mut self.matcher,
+                    &mut indices_buf,
+                );
+                indices_buf
             } else {
-                usize::MAX
+                Vec::new()
             };
-            if prompt
-                .display_name
-                .to_ascii_lowercase()
-                .contains(&cmd_lower)
-                && arg_count <= max_args
-            {
-                self.filtered.push(FilteredItem::McpPrompt(i));
-            }
+
+            self.filtered.push(Match {
+                command_type: cmd_item.command_type.clone(),
+                indices,
+            });
         }
 
         self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
@@ -235,6 +325,7 @@ impl CommandPalette {
 
     pub fn close(&mut self) {
         self.filtered.clear();
+        self.current_arg_count = 0;
     }
 
     pub fn move_up(&mut self) {
@@ -259,19 +350,19 @@ impl CommandPalette {
         };
     }
 
-    fn item_name(&self, item: &FilteredItem) -> String {
-        match item {
-            FilteredItem::Builtin(i) => BUILTIN_COMMANDS[*i].name.to_string(),
-            FilteredItem::Custom(i) => self.custom[*i].display_name(),
-            FilteredItem::McpPrompt(i) => format!("/{}", self.mcp_prompts[*i].display_name),
+    fn item_name(&self, m: &Match) -> String {
+        match &m.command_type {
+            CommandType::Builtin(cmd) => cmd.name.to_string(),
+            CommandType::Custom(i) => self.custom[*i].display_name(),
+            CommandType::McpPrompt(i) => format!("/{}", self.mcp_prompts[*i].display_name),
         }
     }
 
-    fn item_description(&self, item: &FilteredItem) -> &str {
-        match item {
-            FilteredItem::Builtin(i) => BUILTIN_COMMANDS[*i].description,
-            FilteredItem::Custom(i) => &self.custom[*i].description,
-            FilteredItem::McpPrompt(i) => &self.mcp_prompts[*i].description,
+    fn item_description(&self, m: &Match) -> &str {
+        match &m.command_type {
+            CommandType::Builtin(cmd) => cmd.description,
+            CommandType::Custom(i) => &self.custom[*i].description,
+            CommandType::McpPrompt(i) => &self.mcp_prompts[*i].description,
         }
     }
 
@@ -332,44 +423,78 @@ impl CommandPalette {
             height: popup_height,
         };
 
-        let names: Vec<String> = filtered.iter().map(|item| self.item_name(item)).collect();
-
+        let t = theme::current();
         let lines: Vec<Line> = filtered
             .iter()
             .enumerate()
-            .map(|(i, item)| {
-                let name = &names[i];
-                let desc = self.item_description(item);
+            .map(|(i, m)| {
+                let name = self.item_name(m);
+                let desc = self.item_description(m);
                 let selected = i == self.selected;
                 let name_pad = max_name - name.len() + GAP;
+
                 if selected {
-                    let s = theme::current().cmd_selected;
-                    Line::from(vec![
-                        Span::styled(" ".repeat(PAD), s),
-                        Span::styled(name.clone(), s),
-                        Span::styled(" ".repeat(name_pad), s),
-                        Span::styled(desc, s),
-                        Span::styled(" ".repeat(PAD), s),
-                    ])
+                    let s = t.cmd_selected;
+                    let highlighted_name = self.build_highlighted_spans(&name, &m.indices, s);
+                    let mut spans = vec![Span::styled(" ".repeat(PAD), s)];
+                    spans.extend(highlighted_name);
+                    spans.push(Span::styled(" ".repeat(name_pad), s));
+                    spans.push(Span::styled(desc, s));
+                    spans.push(Span::styled(" ".repeat(PAD), s));
+                    Line::from(spans)
                 } else {
-                    Line::from(vec![
-                        Span::raw(" ".repeat(PAD)),
-                        Span::styled(name.clone(), theme::current().cmd_name),
-                        Span::raw(" ".repeat(name_pad)),
-                        Span::styled(desc, theme::current().cmd_desc),
-                        Span::raw(" ".repeat(PAD)),
-                    ])
+                    let highlighted_name =
+                        self.build_highlighted_spans(&name, &m.indices, t.cmd_name);
+                    let mut spans = vec![Span::raw(" ".repeat(PAD))];
+                    spans.extend(highlighted_name);
+                    spans.push(Span::raw(" ".repeat(name_pad)));
+                    spans.push(Span::styled(desc, t.cmd_desc));
+                    spans.push(Span::raw(" ".repeat(PAD)));
+                    Line::from(spans)
                 }
             })
             .collect();
 
         frame.render_widget(Clear, popup);
         frame.render_widget(
-            Paragraph::new(lines).style(Style::new().bg(theme::current().background)),
+            Paragraph::new(lines).style(Style::new().bg(t.background)),
             popup,
         );
 
         Some(popup)
+    }
+
+    fn build_highlighted_spans(&self, text: &str, indices: &[u32], base: Style) -> Vec<Span<'_>> {
+        if indices.is_empty() {
+            return vec![Span::styled(text.to_string(), base)];
+        }
+
+        let t = theme::current();
+        let highlight = base
+            .fg(t.highlight_text.fg.unwrap_or_default())
+            .add_modifier(Modifier::BOLD);
+
+        let mut spans = Vec::new();
+        let mut in_match = false;
+        let mut run = String::new();
+
+        for (i, ch) in text.chars().enumerate() {
+            let is_match = indices.binary_search(&(i as u32)).is_ok();
+            if is_match != in_match && !run.is_empty() {
+                spans.push(Span::styled(
+                    mem::take(&mut run),
+                    if in_match { highlight } else { base },
+                ));
+            }
+            in_match = is_match;
+            run.push(ch);
+        }
+
+        if !run.is_empty() {
+            spans.push(Span::styled(run, if in_match { highlight } else { base }));
+        }
+
+        spans
     }
 }
 
@@ -447,7 +572,7 @@ mod tests {
         let p = synced_with_custom("/review", sample_custom());
         assert!(p.is_active());
         assert_eq!(p.filtered.len(), 1);
-        assert!(matches!(p.filtered[0], FilteredItem::Custom(0)));
+        assert!(matches!(p.filtered[0].command_type, CommandType::Custom(0)));
     }
 
     #[test]
@@ -510,6 +635,8 @@ mod tests {
     #[test_case("/cd ~/foo", "/cd", "~/foo"   ; "with_args")]
     #[test_case("/CD ~/foo", "/cd", "~/foo"   ; "case_insensitive")]
     #[test_case("/compact", "/compact", ""    ; "other_command")]
+    #[test_case("/cmp", "/compact", ""    ; "fuzzy-match-1")]
+    #[test_case("/pct", "/compact", ""    ; "fuzzy-match-2")]
     #[test_case("/btw hello world", "/btw", "hello world" ; "btw_multi_word")]
     fn confirm_parses_args(input: &str, expected_name: &str, expected_args: &str) {
         let mut p = CommandPalette::new(Arc::from([]), empty_snapshot());
@@ -577,7 +704,10 @@ mod tests {
         let p = synced_with_prompts("/code");
         assert!(p.is_active());
         assert_eq!(p.filtered.len(), 1);
-        assert!(matches!(p.filtered[0], FilteredItem::McpPrompt(0)));
+        assert!(matches!(
+            p.filtered[0].command_type,
+            CommandType::McpPrompt(0)
+        ));
     }
 
     #[test]
@@ -592,7 +722,7 @@ mod tests {
         assert!(
             !p.filtered
                 .iter()
-                .any(|f| matches!(f, FilteredItem::McpPrompt(1)))
+                .any(|f| matches!(f.command_type, CommandType::McpPrompt(1)))
         );
     }
 
@@ -612,10 +742,83 @@ mod tests {
         p.selected = p
             .filtered
             .iter()
-            .position(|f| matches!(f, FilteredItem::McpPrompt(0)))
+            .position(|f| matches!(f.command_type, CommandType::McpPrompt(0)))
             .unwrap();
         let cmd = p.confirm(input).unwrap();
         assert_eq!(cmd.name, "/myserver:code-review");
         assert_eq!(cmd.args, "my-diff-content");
+    }
+
+    #[test]
+    fn mcp_update_clears_old_prompts() {
+        let reader = sample_prompts();
+        let mut p = CommandPalette::new(Arc::from([]), reader);
+
+        p.sync("/");
+        let initial_count = p
+            .filtered
+            .iter()
+            .filter(|f| matches!(f.command_type, CommandType::McpPrompt(_)))
+            .count();
+        assert_eq!(initial_count, 2, "Should have 2 MCP prompts initially");
+
+        let updated_reader = McpSnapshotReader::from_snapshot(McpSnapshot {
+            infos: vec![],
+            prompts: vec![McpPromptInfo {
+                display_name: "myserver:new-prompt".into(),
+                qualified_name: "myserver/new-prompt".into(),
+                description: "A new prompt".into(),
+                arguments: vec![],
+            }],
+            pids: vec![],
+            generation: 1, // Different generation to trigger update
+        });
+
+        p.mcp_reader = updated_reader;
+        p.sync("/");
+
+        let updated_count = p
+            .filtered
+            .iter()
+            .filter(|f| matches!(f.command_type, CommandType::McpPrompt(_)))
+            .count();
+        assert_eq!(
+            updated_count, 1,
+            "Should have only 1 MCP prompt after update"
+        );
+
+        assert!(!p.filtered.is_empty(), "Should have filtered results");
+        let prompt = &p
+            .filtered
+            .iter()
+            .find(|f| matches!(f.command_type, CommandType::McpPrompt(_)))
+            .expect("Should have at least one MCP prompt");
+        match &prompt.command_type {
+            CommandType::McpPrompt(i) => {
+                assert_eq!(p.mcp_prompts[*i].display_name, "myserver:new-prompt");
+            }
+            _ => panic!("Should have MCP prompt"),
+        }
+    }
+
+    #[test_case("/cmp", "/compact" ; "compact_fuzzy")]
+    #[test_case("/new", "/new" ; "new_exact")]
+    #[test_case("/tsk", "/tasks" ; "tasks_fuzzy")]
+    #[test_case("/mem", "/memory" ; "memory_prefix")]
+    #[test_case("/sess", "/sessions" ; "sessions_prefix")]
+    fn nucleo_highlights_matching_indices(input: &str, expected_cmd: &str) {
+        let p = synced(input);
+        assert!(p.is_active(), "Input '{}' should activate palette", input);
+        // Find the expected match
+        let matched = p
+            .filtered
+            .iter()
+            .find(|m| p.item_name(m) == expected_cmd)
+            .unwrap_or_else(|| panic!("Should find {} for input {}", expected_cmd, input));
+        // Should have some highlight indices
+        assert!(
+            !matched.indices.is_empty(),
+            "Match should have highlight indices"
+        );
     }
 }
