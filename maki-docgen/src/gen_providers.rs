@@ -255,7 +255,11 @@ fn write_section(out: &mut String, section: &ProviderSection) {
     if section.entries.is_empty() {
         let _ = writeln!(
             out,
-            "Maki asks Ollama for the list of installed models, so there's no built-in catalog. Tiers are guessed from list order: the first model becomes strong, the second medium, and the rest weak. If that guess is wrong, open `/model` and press `Alt+1`, `Alt+2`, or `Alt+3` on any row to reassign it. Your choices are saved to `~/.maki/model-tiers`."
+            "This provider talks the OpenAI-compatible `/v1` API, so it also works with llama.cpp's server, LocalAI, or anything else that speaks the same protocol. Just point `OLLAMA_HOST` to the right address (e.g. `http://localhost:8080` for llama.cpp).\n"
+        );
+        let _ = writeln!(
+            out,
+            "Maki asks the server for the list of installed models, so there's no built-in catalog. Tiers are guessed from list order: the first model becomes strong, the second medium, and the rest weak. If that guess is wrong, open `/model` and press `Alt+1`, `Alt+2`, or `Alt+3` on any row to reassign it. Your choices are saved to `~/.maki/model-tiers`."
         );
     } else {
         write_model_table(out, section.entries);
