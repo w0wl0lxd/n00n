@@ -1,5 +1,3 @@
-# maki - An efficient AI coding agent
-
 <img src="./banner.png">
 
 An AI coding agent optimized for minimal use of context tokens, while providing a great user experience.
@@ -85,3 +83,10 @@ Or download a pre-built binary from [GitHub Releases](https://github.com/tontint
 More info at the [official docs](http://maki.sh/docs).
 
 > DISCLAIMER: >90% of code in maki was written by maki, guided by humans. The code is not as good as what I would've made in the artisinal hand-made style. But it's also not slop / vibe coded. I just think people should be honest about their use of AI in projects in this era.
+
+## Extending with lua
+
+Currently working on a refactor so maki is a core agent UI loop with features like tools, UI elements, and storage all controlled by lua plugins.
+This will allow you to customize the hell out of maki.
+
+Status: webfetch, websearch, index, bash are plugins (in the `./plugins` dir).
