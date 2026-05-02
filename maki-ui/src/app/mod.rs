@@ -80,6 +80,7 @@ const AUTH_EXPIRED_MSG: &str =
     "Token expired. Run `maki auth login` in another terminal, then press Enter to retry.";
 const FLASH_NO_PLAN: &str = "No plan file";
 const IMPLEMENT_MSG_PREFIX: &str = "Implement the plan";
+const IMPLEMENT_PARALLEL_HINT: &str = "For multi-step (3+) plans: use batch+task to parallelize, assign each subagent a separate module and restrict its tests to that module to avoid interference.";
 
 const TASK_DONE_DETAIL: &str = "✓ ";
 
@@ -1434,7 +1435,7 @@ impl App {
         };
 
         let text = if let Some((content, path_str)) = plan_snapshot {
-            let text = format!("{} at `{}`.", IMPLEMENT_MSG_PREFIX, path_str);
+            let text = format!("{IMPLEMENT_MSG_PREFIX} at `{path_str}`. {IMPLEMENT_PARALLEL_HINT}");
             self.main_chat()
                 .push(DisplayMessage::plan(content, path_str));
             text
@@ -1452,11 +1453,11 @@ impl App {
 }
 
 fn sync_search_highlight(modal: &SearchModal, chat: &mut Chat) {
-    let seg_idx = modal.current_segment_index();
-    if let Some(idx) = seg_idx {
-        chat.scroll_to_segment(idx);
+    let idx = modal.current_segment_index();
+    if let Some(i) = idx {
+        chat.scroll_to_segment(i);
     }
-    chat.set_highlight_segment(seg_idx);
+    chat.set_highlight_segment(idx);
 }
 
 fn format_with_images(text: &str, image_count: usize) -> String {

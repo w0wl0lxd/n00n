@@ -1983,8 +1983,12 @@ fn plan_form_menu_options(
         actions.iter().any(|a| matches!(a, Action::NewSession)),
         has_new_session
     );
+    let expected_msg =
+        format!("{IMPLEMENT_MSG_PREFIX} at `test-plan.md`. {IMPLEMENT_PARALLEL_HINT}");
     assert_eq!(
-        actions.iter().any(|a| matches!(a, Action::SendMessage(i) if i.message == "Implement the plan at `test-plan.md`.")),
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::SendMessage(i) if i.message == expected_msg)),
         has_send_message
     );
 }
