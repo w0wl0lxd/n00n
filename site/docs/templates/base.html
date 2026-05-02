@@ -19,7 +19,13 @@
         document.documentElement.style.background = 'oklch(97% 0.015 90)';
       }
     })();
-  </script>
+  document.querySelectorAll('.content-inner table').forEach(t => {
+    const wrap = document.createElement('div');
+    wrap.className = 'table-wrap';
+    t.parentNode.insertBefore(wrap, t);
+    wrap.appendChild(t);
+  });
+</script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Nunito:wght@400;700;800&family=Fraunces:opsz,wght@9..144,700&display=swap" rel="stylesheet">
@@ -308,12 +314,14 @@
     /* ── MAIN CONTENT ── */
     .main-content {
       flex: 1;
+      min-width: 0;
       margin-left: var(--sidebar-w);
       padding: 2.75rem clamp(2rem, 5vw, 3.5rem) 5rem;
       max-width: calc(var(--content-max) + var(--sidebar-w) + 7rem);
     }
     .main-content > .content-inner {
       max-width: var(--content-max);
+      overflow-x: auto;
     }
 
     /* ── TYPOGRAPHY ── */
@@ -431,15 +439,18 @@
     .giallo-l { display: inline-block; min-height: 1lh; width: 100%; }
 
     /* ── TABLES ── */
+    .table-wrap {
+      overflow-x: auto;
+      margin-bottom: 1.5rem;
+      border-radius: 10px;
+      border: 1px solid var(--table-border);
+    }
     table {
       width: 100%;
       border-collapse: separate;
       border-spacing: 0;
-      margin-bottom: 1.5rem;
       font-size: 0.87rem;
-      border-radius: 10px;
       overflow: hidden;
-      border: 1px solid var(--table-border);
     }
     thead {
       background: var(--table-head-bg);
@@ -620,7 +631,12 @@
         transition: opacity 0.3s var(--ease-smooth);
       }
       .sidebar-overlay.open { display: block; }
-      .main-content { margin-left: 0; }
+      .main-content {
+        margin-left: 0;
+        padding: 2rem 1.25rem 4rem;
+      }
+      .topnav { padding: 0 1rem; }
+      .topnav-right a:not(.topnav-github) { display: none; }
     }
 
     /* ── THEME TRANSITION ── */
