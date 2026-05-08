@@ -269,7 +269,12 @@ impl App {
         });
 
         if layout.input_area.height > 0 {
-            let input_inner = selection::inset_border(layout.input_area);
+            let input_inner = Rect::new(
+                layout.input_area.x,
+                layout.input_area.y + 1,
+                layout.input_area.width,
+                layout.input_area.height.saturating_sub(2),
+            );
             self.zones[SelectionZone::Input.idx()] = Some(SelectableZone {
                 area: input_inner,
                 highlight_area: input_inner,
