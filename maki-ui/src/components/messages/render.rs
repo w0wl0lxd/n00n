@@ -1,5 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 
@@ -56,10 +57,7 @@ impl RenderCursor {
             for row in seg_area.y..seg_area.y + seg_area.height {
                 for col in seg_area.x..seg_area.x + seg_area.width {
                     if let Some(cell) = frame.buffer_mut().cell_mut((col, row)) {
-                        let fg = cell.fg;
-                        let bg = cell.bg;
-                        cell.set_fg(bg);
-                        cell.set_bg(fg);
+                        cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
                     }
                 }
             }
