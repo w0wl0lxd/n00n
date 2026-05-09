@@ -35,7 +35,7 @@ maki.api.register_tool({
     return input.query
   end,
 
-  restore = function(output, _input, _is_error, ctx)
+  restore = function(_input, output, _is_error, ctx)
     return ToolView.restore(output, web_view_opts(ctx))
   end,
 

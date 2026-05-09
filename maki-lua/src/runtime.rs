@@ -763,7 +763,7 @@ impl LuaRuntime {
             .create_userdata(crate::api::ctx::RestoreCtx { tool_output_lines })
             .ok()?;
         let ret = thread
-            .into_async::<LuaValue>((output, input_lua, is_error, ctx_ud))
+            .into_async::<LuaValue>((input_lua, output, is_error, ctx_ud))
             .ok()?
             .await
             .inspect_err(|e| tracing::warn!(tool, error = %e, "restore callback failed"))

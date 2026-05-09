@@ -272,7 +272,7 @@ maki.api.register_tool({
     return s
   end,
 
-  restore = function(output, input, is_error, ctx)
+  restore = function(input, output, is_error, ctx)
     local command = resolve_command(input)
     local buf, view = create_bash_view(command, ctx)
     if is_error then

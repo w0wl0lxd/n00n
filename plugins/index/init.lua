@@ -127,7 +127,7 @@ Return a compact overview of a source file: imports, type definitions, function 
   header = function(input)
     return render_header(input.path)
   end,
-  restore = function(output, input, _is_error, ctx)
+  restore = function(input, output, _is_error, ctx)
     local buf, header = render_index(output, input.path, ctx)
     return { body = buf, header = header }
   end,
