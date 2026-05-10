@@ -121,13 +121,17 @@ impl FilePickerModal {
                             };
                             if !entry
                                 .file_type()
-                                .is_some_and(|ft| ft.is_file() || ft.is_symlink())
+                                .is_some_and(|ft| ft.is_file() || ft.is_dir() || ft.is_symlink())
                             {
                                 return ignore::WalkState::Continue;
                             }
                             let path = entry.path().strip_prefix(&root).unwrap_or(entry.path());
+                            let mut name = path.to_string_lossy().into_owned();
+                            if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                                name.push(std::path::MAIN_SEPARATOR);
+                            }
                             injector.push((), |_, cols| {
-                                cols[0] = Utf32String::from(path.to_string_lossy().as_ref());
+                                cols[0] = Utf32String::from(name.as_str());
                             });
                             ignore::WalkState::Continue
                         })
