@@ -383,14 +383,14 @@ impl App {
             return Some(self.suspend());
         }
         if key::QUIT.matches(key) {
-            if self.status == Status::Streaming {
-                return Some(self.handle_cancel());
-            }
             if self.any_overlay_open() || self.queue.focus().is_some() {
                 return None;
             }
             self.command_palette.close();
             return Some(if !self.is_main_chat() || self.input_box.is_empty() {
+                if self.status == Status::Streaming {
+                    return Some(self.handle_cancel());
+                }
                 self.quit()
             } else {
                 self.input_box.discard();
