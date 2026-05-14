@@ -206,6 +206,7 @@ impl<'t> EventLoop<'t> {
             storage,
             bg.available,
             handles.mcp_reader(),
+            handles.mcp_config_errors.clone(),
             lua_command_reader,
             Arc::clone(&storage_writer),
             ui_config,
@@ -223,6 +224,10 @@ impl<'t> EventLoop<'t> {
         }
 
         handles.apply_to_app(&mut app);
+
+        if !handles.mcp_config_errors.is_empty() {
+            app.flash(format!("MCP config error: {}", handles.mcp_config_errors));
+        }
 
         if resumed {
             restore_session(&mut app, &handles);

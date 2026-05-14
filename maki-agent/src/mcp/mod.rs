@@ -29,8 +29,8 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use self::config::{
-    McpConfig, McpServerInfo, McpServerStatus, ServerConfig, Transport, load_config, parse_server,
-    transport_kind,
+    McpConfig, McpConfigErrors, McpServerInfo, McpServerStatus, ServerConfig, Transport,
+    load_config, parse_server, transport_kind,
 };
 use self::error::McpError;
 use self::http::HttpTransport;
@@ -298,19 +298,21 @@ impl McpHandle {
     }
 }
 
-pub async fn start(cwd: &Path) -> Option<McpHandle> {
+pub async fn start(cwd: &Path) -> (Option<McpHandle>, McpConfigErrors) {
+    tracing::info!(cwd = %cwd.display(), "starting MCP");
     let cwd = cwd.to_owned();
-    let config = smol::unblock(move || load_config(&cwd)).await;
-    start_with_config(config).await
+    let (config, config_errors) = smol::unblock(move || load_config(&cwd)).await;
+    let handle = start_with_config(config).await;
+    (handle, config_errors)
 }
 
 pub async fn start_with_config(config: McpConfig) -> Option<McpHandle> {
     if config.is_empty() {
+        tracing::info!("no MCP servers configured, skipping");
         return None;
     }
 
     let mut inner = parse_entries(config);
-
     start_enabled(&mut inner).await;
     inner.generation += 1;
 
@@ -865,7 +867,8 @@ mod tests {
     #[test]
     fn start_with_config_produces_terminal_statuses() {
         smol::block_on(async {
-            assert!(start_with_config(McpConfig::default()).await.is_none());
+            let handle = start_with_config(McpConfig::default()).await;
+            assert!(handle.is_none());
 
             let mut disabled = stdio_raw(&["unused-disabled-cmd"]);
             disabled.enabled = false;
@@ -873,7 +876,8 @@ mod tests {
                 ("disabled-srv", disabled),
                 ("bad-srv", stdio_raw(&[])),
             ]);
-            let handle = start_with_config(config).await.unwrap();
+            let handle = start_with_config(config).await;
+            let handle = handle.unwrap();
             let infos = handle.reader().load().infos.clone();
 
             let bad = infos.iter().find(|i| i.name == "bad-srv").unwrap();

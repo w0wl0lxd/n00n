@@ -9,9 +9,9 @@ use arc_swap::ArcSwap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use maki_agent::permissions::PermissionManager;
 use maki_agent::{
-    ImageMediaType, McpServerInfo, McpServerStatus, McpSnapshot, McpSnapshotReader, QuestionInfo,
-    QuestionOption, TodoItem, TodoPriority, TodoStatus, ToolDoneEvent, ToolOutput, ToolStartEvent,
-    TurnCompleteEvent,
+    ImageMediaType, McpConfigErrors, McpServerInfo, McpServerStatus, McpSnapshot,
+    McpSnapshotReader, QuestionInfo, QuestionOption, TodoItem, TodoPriority, TodoStatus,
+    ToolDoneEvent, ToolOutput, ToolStartEvent, TurnCompleteEvent,
 };
 use maki_config::{PermissionsConfig, UiConfig};
 use maki_lua::LuaCommandReader;
@@ -47,6 +47,7 @@ fn test_app() -> App {
         StateDir::from_path(env::temp_dir()),
         Arc::new(ArcSwapOption::empty()),
         McpSnapshotReader::empty(),
+        McpConfigErrors::new(PathBuf::new()),
         LuaCommandReader::empty(),
         writer,
         UiConfig::default(),
@@ -467,6 +468,7 @@ fn load_session_clears_plan() {
         dir,
         Arc::new(ArcSwapOption::empty()),
         McpSnapshotReader::empty(),
+        McpConfigErrors::new(PathBuf::new()),
         LuaCommandReader::empty(),
         writer,
         UiConfig::default(),
@@ -1922,20 +1924,23 @@ fn mcp_command_opens_picker() {
 #[test]
 fn mcp_toggle_dispatches_action() {
     let mut app = test_app();
-    app.mcp_picker = McpPicker::new(McpSnapshotReader::from_snapshot(McpSnapshot {
-        infos: vec![McpServerInfo {
-            name: "test-srv".into(),
-            transport_kind: "stdio",
-            tool_count: 2,
-            prompt_count: 0,
-            status: McpServerStatus::Running,
-            config_path: PathBuf::from("/tmp/config.toml"),
-            url: None,
-        }],
-        prompts: vec![],
-        pids: vec![],
-        generation: 0,
-    }));
+    app.mcp_picker = McpPicker::new(
+        McpSnapshotReader::from_snapshot(McpSnapshot {
+            infos: vec![McpServerInfo {
+                name: "test-srv".into(),
+                transport_kind: "stdio",
+                tool_count: 2,
+                prompt_count: 0,
+                status: McpServerStatus::Running,
+                config_path: PathBuf::from("/tmp/config.toml"),
+                url: None,
+            }],
+            prompts: vec![],
+            pids: vec![],
+            generation: 0,
+        }),
+        McpConfigErrors::new(PathBuf::new()),
+    );
     app.execute_command(cmd("/mcp"));
 
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));

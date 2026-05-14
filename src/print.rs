@@ -142,6 +142,12 @@ pub fn run(
         .map(|h| h.collect_prompt_extras())
         .unwrap_or_default();
 
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let (mcp_handle, mcp_config_errors) = smol::block_on(maki_agent::mcp::start(&cwd));
+    if !mcp_config_errors.is_empty() {
+        eprintln!("MCP config error: {mcp_config_errors}");
+    }
+
     let handle = maki_agent::headless::spawn(HeadlessParams {
         model: model.clone(),
         config,
@@ -150,6 +156,8 @@ pub fn run(
         prompt,
         prompt_extras,
         excluded_tools: vec![QUESTION_TOOL_NAME],
+        mcp_handle,
+        initial_wd: cwd,
     });
 
     let HeadlessHandle {

@@ -54,7 +54,8 @@ use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use maki_agent::QuestionInfo;
 use maki_agent::permissions::PermissionManager;
 use maki_agent::{
-    AgentEvent, Envelope, ImageSource, McpPromptInfo, McpSnapshotReader, SubagentInfo, ToolOutput,
+    AgentEvent, Envelope, ImageSource, McpConfigErrors, McpPromptInfo, McpSnapshotReader,
+    SubagentInfo, ToolOutput,
 };
 use maki_config::UiConfig;
 use maki_lua::{EventHandle, LuaCommandReader};
@@ -182,6 +183,7 @@ impl App {
         storage: StateDir,
         available_models: Arc<ArcSwapOption<Vec<String>>>,
         mcp_reader: McpSnapshotReader,
+        mcp_config_errors: McpConfigErrors,
         lua_command_reader: LuaCommandReader,
         storage_writer: Arc<StorageWriter>,
         ui_config: UiConfig,
@@ -204,7 +206,7 @@ impl App {
             task_picker_original: None,
             theme_picker: ThemePicker::new(),
             model_picker: ModelPicker::new(available_models),
-            mcp_picker: McpPicker::new(mcp_reader),
+            mcp_picker: McpPicker::new(mcp_reader, mcp_config_errors),
             session_picker: SessionPicker::new(),
             rewind_picker: RewindPicker::new(),
             help_modal: HelpModal::new(),

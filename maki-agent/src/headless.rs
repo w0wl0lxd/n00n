@@ -1,4 +1,4 @@
-use std::env;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use flume::Receiver;
@@ -6,13 +6,12 @@ use serde_json::Value;
 use tracing::error;
 
 use crate::agent::{self, History};
-use crate::mcp;
 use crate::permissions::PermissionManager;
 use crate::template;
 use crate::tools::{DescriptionContext, FileReadTracker, ToolFilter, ToolRegistry};
 use crate::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope,
-    EventSender, PermissionsConfig, ToolOutputLines,
+    EventSender, McpHandle, PermissionsConfig, ToolOutputLines,
 };
 use maki_providers::Timeouts;
 use maki_providers::model::Model;
@@ -26,6 +25,8 @@ pub struct HeadlessParams {
     pub prompt: String,
     pub prompt_extras: Vec<String>,
     pub excluded_tools: Vec<&'static str>,
+    pub mcp_handle: Option<McpHandle>,
+    pub initial_wd: PathBuf,
 }
 
 pub struct HeadlessHandle {
@@ -37,21 +38,15 @@ pub struct HeadlessHandle {
 }
 
 pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
-    let cwd_path = env::current_dir().unwrap_or_else(|_| ".".into());
-    let cwd = cwd_path.to_string_lossy().into_owned();
+    let working_dir = params.initial_wd.to_string_lossy().into_owned();
     let vars = template::env_vars();
     let mode = AgentMode::Build;
     let instructions = agent::load_instructions(&vars.apply("{cwd}"));
 
     let filter = ToolFilter::from_config(&params.config, &params.excluded_tools);
     let ctx = DescriptionContext { filter: &filter };
-    let mut tools =
+    let tools =
         ToolRegistry::native().definitions(&vars, &ctx, params.model.supports_tool_examples());
-
-    let mcp_handle = smol::block_on(mcp::start(&cwd_path));
-    if let Some(ref handle) = mcp_handle {
-        handle.extend_tools(&mut tools);
-    }
 
     let system =
         agent::build_system_prompt(&vars, &mode, &instructions.text, &params.prompt_extras);
@@ -59,11 +54,13 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
     let tool_names = extract_tool_names(&tools);
 
     let (raw_tx, event_rx) = flume::unbounded::<Envelope>();
+
     let session_id = uuid::Uuid::new_v4().to_string();
 
     let task = smol::spawn({
         let session_id = session_id.clone();
-        let mcp_shutdown = mcp_handle.clone();
+        let mcp_shutdown = params.mcp_handle.clone();
+        let working_dir_path = params.initial_wd.clone();
         async move {
             let event_tx = EventSender::new(raw_tx, 0);
             let provider: Arc<dyn Provider> =
@@ -86,7 +83,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                     tool_output_lines: ToolOutputLines::default(),
                     permissions: Arc::new(PermissionManager::new(
                         params.permissions_config,
-                        cwd_path,
+                        working_dir_path,
                     )),
                     session_id: Some(session_id),
                     timeouts: params.timeouts,
@@ -100,7 +97,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                 },
             )
             .with_loaded_instructions(instructions.loaded)
-            .with_mcp(mcp_handle);
+            .with_mcp(params.mcp_handle);
 
             let outcome = agent
                 .run(AgentInput {
@@ -127,7 +124,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
         event_rx,
         tool_names,
         session_id,
-        cwd,
+        cwd: working_dir,
         task,
     }
 }

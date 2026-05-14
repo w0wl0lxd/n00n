@@ -91,6 +91,7 @@ pub struct ListPicker<T> {
     max_visible: Option<u16>,
     generation: u64,
     footer: Option<FooterSpec>,
+    error_text: Option<String>,
 }
 
 enum FooterSpec {
@@ -235,6 +236,7 @@ impl<T: PickerItem> ListPicker<T> {
             max_visible: None,
             generation: 0,
             footer: None,
+            error_text: None,
         }
     }
 
@@ -292,6 +294,10 @@ impl<T: PickerItem> ListPicker<T> {
             s.selected = index.min(s.filtered.len().saturating_sub(1));
             s.ensure_visible();
         }
+    }
+
+    pub fn set_error_text(&mut self, text: Option<String>) {
+        self.error_text = text;
     }
 
     pub fn replace_items(&mut self, items: Vec<T>) {
@@ -550,9 +556,15 @@ impl<T: PickerItem> ListPicker<T> {
                 }
                 popup
             }
-            Some(PickerState::Ready(s)) => {
-                render_ready(frame, area, s, &self.title, self.max_visible, footer)
-            }
+            Some(PickerState::Ready(s)) => render_ready(
+                frame,
+                area,
+                s,
+                &self.title,
+                self.max_visible,
+                footer,
+                self.error_text.as_deref(),
+            ),
         }
     }
 }
@@ -574,6 +586,7 @@ fn render_ready<T: PickerItem>(
     title: &str,
     max_visible: Option<u16>,
     footer: Option<&FooterSpec>,
+    error_text: Option<&str>,
 ) -> Rect {
     let footer_rows = if footer.is_some() { 1u16 } else { 0 };
     let content_rows = if s.filtered.is_empty() {
@@ -585,28 +598,51 @@ fn render_ready<T: PickerItem>(
             None => rows,
         }
     };
+    let error_rows = error_text.is_some() as u16;
     let modal = Modal {
         title,
         width_percent: MIN_WIDTH_PERCENT,
         max_height_percent: MAX_HEIGHT_PERCENT,
     };
-    let (popup, inner) = modal.render(frame, area, content_rows + SEARCH_ROW + footer_rows);
-    let viewport_h = inner.height.saturating_sub(SEARCH_ROW + footer_rows);
+    let (popup, inner) = modal.render(
+        frame,
+        area,
+        content_rows + SEARCH_ROW + footer_rows + error_rows,
+    );
+    let viewport_h = inner
+        .height
+        .saturating_sub(error_rows + SEARCH_ROW + footer_rows);
     s.viewport_height = viewport_h as usize;
     s.ensure_visible();
 
-    let constraints: Vec<Constraint> = if footer.is_some() {
-        vec![
-            Constraint::Min(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ]
-    } else {
-        vec![Constraint::Min(1), Constraint::Length(1)]
-    };
+    let mut constraints: Vec<Constraint> =
+        Vec::with_capacity(3 + footer.is_some() as usize + error_text.is_some() as usize);
+    if error_text.is_some() {
+        constraints.push(Constraint::Length(1)); // error line
+    }
+    constraints.push(Constraint::Min(1)); // list
+    constraints.push(Constraint::Length(1)); // search
+    if footer.is_some() {
+        constraints.push(Constraint::Length(1)); // footer
+    }
+
     let areas = Layout::vertical(constraints).split(inner);
-    let list_area = areas[0];
-    let search_area = areas[1];
+    let mut area_idx = 0;
+
+    if let Some(err) = error_text {
+        let line = Line::from(Span::styled(
+            format!("  Error: {err}"),
+            theme::current().error,
+        ));
+        frame.render_widget(Paragraph::new(vec![line]), areas[area_idx]);
+        area_idx += 1;
+    }
+
+    let list_area = areas[area_idx];
+    area_idx += 1;
+
+    let search_area = areas[area_idx];
+    area_idx += 1;
 
     render_list(
         frame,
@@ -621,7 +657,7 @@ fn render_ready<T: PickerItem>(
     render_search(frame, search_area, &s.search);
 
     if let Some(spec) = footer {
-        render_footer(frame, areas[2], spec);
+        render_footer(frame, areas[area_idx], spec);
     }
 
     let total_visual = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len());

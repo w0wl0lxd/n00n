@@ -86,7 +86,7 @@ pub fn index(path: &str, no_plugins: bool) -> Result<()> {
 pub fn mcp_auth(server: &str, storage: &StateDir) -> Result<()> {
     smol::block_on(async {
         let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
-        let config = mcp_config::load_config(&cwd);
+        let (config, _) = mcp_config::load_config(&cwd);
         let raw = config
             .mcp
             .get(server)

@@ -2,7 +2,7 @@ use crossterm::event::KeyEvent;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
-use maki_agent::{McpServerInfo, McpServerStatus, McpSnapshotReader};
+use maki_agent::{McpConfigErrors, McpServerInfo, McpServerStatus, McpSnapshotReader};
 
 use crate::components::Overlay;
 use crate::components::list_picker::{ListPicker, PickerAction, PickerItem};
@@ -71,14 +71,16 @@ impl PickerItem for McpEntry {
 pub struct McpPicker {
     picker: ListPicker<McpEntry>,
     snapshot: McpSnapshotReader,
+    config_errors: McpConfigErrors,
     last_generation: u64,
 }
 
 impl McpPicker {
-    pub fn new(snapshot: McpSnapshotReader) -> Self {
+    pub fn new(snapshot: McpSnapshotReader, config_errors: McpConfigErrors) -> Self {
         Self {
             picker: ListPicker::new(),
             snapshot,
+            config_errors,
             last_generation: 0,
         }
     }
@@ -87,6 +89,8 @@ impl McpPicker {
         let guard = self.snapshot.load();
         self.last_generation = guard.generation;
         let (entries, enabled) = build_entries(&guard.infos);
+        let errors = (!self.config_errors.is_empty()).then(|| self.config_errors.to_string());
+        self.picker.set_error_text(errors);
         self.picker.open_toggleable(entries, enabled, TITLE);
     }
 
@@ -151,7 +155,7 @@ mod tests {
     use crate::components::key;
     use crate::components::keybindings::key as kb;
     use crossterm::event::{KeyCode, KeyEvent};
-    use maki_agent::McpSnapshot;
+    use maki_agent::{McpServerInfo, McpSnapshot};
     use std::path::PathBuf;
     use test_case::test_case;
 
@@ -185,7 +189,7 @@ mod tests {
 
     #[test]
     fn toggle_returns_server_name_and_new_state() {
-        let mut p = McpPicker::new(test_snapshot());
+        let mut p = McpPicker::new(test_snapshot(), McpConfigErrors::new(PathBuf::new()));
         p.open();
         let action = p.handle_key(key(KeyCode::Enter));
         assert!(matches!(
@@ -197,7 +201,7 @@ mod tests {
     #[test_case(key(KeyCode::Esc)       ; "esc_closes")]
     #[test_case(kb::QUIT.to_key_event() ; "ctrl_c_closes")]
     fn close_keys(cancel_key: KeyEvent) {
-        let mut p = McpPicker::new(test_snapshot());
+        let mut p = McpPicker::new(test_snapshot(), McpConfigErrors::new(PathBuf::new()));
         p.open();
         let action = p.handle_key(cancel_key);
         assert!(matches!(action, McpPickerAction::Close));
@@ -206,7 +210,10 @@ mod tests {
 
     #[test]
     fn open_with_empty_infos() {
-        let mut p = McpPicker::new(McpSnapshotReader::empty());
+        let mut p = McpPicker::new(
+            McpSnapshotReader::empty(),
+            McpConfigErrors::new(PathBuf::new()),
+        );
         p.open();
         assert!(p.is_open());
     }

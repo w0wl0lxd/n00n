@@ -13,8 +13,8 @@ use arc_swap::ArcSwap;
 use maki_agent::mcp;
 use maki_agent::permissions::PermissionManager;
 use maki_agent::{
-    AgentConfig, CancelToken, Envelope, McpCommand, McpHandle, McpSnapshotReader, ToolOutput,
-    ToolOutputLines,
+    AgentConfig, CancelToken, Envelope, McpCommand, McpConfigErrors, McpHandle, McpSnapshotReader,
+    ToolOutput, ToolOutputLines,
 };
 use maki_lua::EventHandle;
 
@@ -46,6 +46,7 @@ pub(crate) struct AgentHandles {
     pub(crate) history: Arc<ArcSwap<Vec<Message>>>,
     pub(crate) tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>>,
     pub(crate) mcp_handle: Option<McpHandle>,
+    pub(crate) mcp_config_errors: McpConfigErrors,
     pub(crate) queue: QueueSender,
     pub(crate) timeouts: maki_providers::Timeouts,
     task: smol::Task<()>,
@@ -66,7 +67,7 @@ impl AgentHandles {
         timeouts: maki_providers::Timeouts,
         lua_handle: Option<EventHandle>,
     ) -> Self {
-        let mcp_handle = smol::block_on(mcp::start(&cwd));
+        let (mcp_handle, mcp_config_errors) = smol::block_on(mcp::start(&cwd));
         spawn_agent_internal(
             model_slot,
             initial_history,
@@ -74,6 +75,7 @@ impl AgentHandles {
             tool_output_lines,
             permissions,
             mcp_handle,
+            mcp_config_errors,
             session_id,
             timeouts,
             lua_handle,
@@ -127,6 +129,7 @@ impl AgentHandles {
             tool_output_lines,
             permissions,
             self.mcp_handle.clone(),
+            self.mcp_config_errors.clone(),
             Some(app.state.session.id.clone()),
             self.timeouts,
             lua_handle,
@@ -175,6 +178,7 @@ fn spawn_agent_internal(
     tool_output_lines: ToolOutputLines,
     permissions: &Arc<PermissionManager>,
     mcp_handle: Option<McpHandle>,
+    mcp_config_errors: McpConfigErrors,
     session_id: Option<String>,
     timeouts: maki_providers::Timeouts,
     lua_handle: Option<EventHandle>,
@@ -220,6 +224,7 @@ fn spawn_agent_internal(
         history: shared_history,
         tool_outputs: shared_tool_outputs,
         mcp_handle,
+        mcp_config_errors,
         queue: queue_tx,
         timeouts,
         task,

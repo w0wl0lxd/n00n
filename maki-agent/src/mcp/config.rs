@@ -15,6 +15,81 @@ const MCP_CONFIG_FILE: &str = "mcp.toml";
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 300_000;
 
+#[derive(Debug, Clone)]
+pub enum McpConfigError {
+    Read { path: PathBuf, error: String },
+    Parse { path: PathBuf, error: String },
+}
+
+/// Generates a compacted but still human-meaningful version of a path.
+fn compact_path(path: &Path, base_path: &Path) -> String {
+    let mut path_string = path.to_string_lossy().into_owned();
+
+    if let Ok(stripped) = path.strip_prefix(base_path) {
+        path_string = format!(".{}{}", std::path::MAIN_SEPARATOR, stripped.display());
+    };
+    if !path_string.starts_with('.')
+        && let Some(home) = maki_storage::paths::home()
+        && let Ok(stripped) = path.strip_prefix(&home)
+    {
+        path_string = format!("~{}{}", std::path::MAIN_SEPARATOR, stripped.display());
+    };
+
+    path_string
+}
+
+/// Wraps a `Vec` of `McpConfigError`s for compact display.
+#[derive(Clone, Debug)]
+pub struct McpConfigErrors {
+    errors: Vec<McpConfigError>,
+    initial_wd: PathBuf,
+}
+
+impl McpConfigErrors {
+    pub fn new(working_directory: PathBuf) -> Self {
+        McpConfigErrors {
+            errors: Vec::new(),
+            initial_wd: working_directory,
+        }
+    }
+
+    fn add_error(&mut self, e: McpConfigError) {
+        self.errors.push(e);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
+impl std::fmt::Display for McpConfigErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut shown = self
+            .errors
+            .iter()
+            .take(2)
+            .map(|e: &McpConfigError| match e {
+                McpConfigError::Read { path, .. } => {
+                    format!("failed to read {}", compact_path(path, &self.initial_wd))
+                }
+                McpConfigError::Parse { path, .. } => {
+                    format!("failed to parse {}", compact_path(path, &self.initial_wd))
+                }
+            });
+        if let Some(first) = shown.next() {
+            write!(f, "{}", first)?;
+            for rest in shown {
+                write!(f, "; {}", rest)?;
+            }
+        }
+        let hidden = self.errors.len().saturating_sub(2);
+        if hidden > 0 {
+            write!(f, "; ... ({} more)", hidden)?;
+        }
+        Ok(())
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -199,28 +274,48 @@ pub fn transport_kind(raw: &RawTransport) -> &'static str {
     }
 }
 
-pub fn load_config(cwd: &Path) -> McpConfig {
+pub fn load_config(cwd: &Path) -> (McpConfig, McpConfigErrors) {
     let mut merged = McpConfig::default();
+    let mut errors = McpConfigErrors::new(cwd.to_path_buf());
 
     if let Some(global_dir) = global_config_dir() {
         let global_path = global_dir.join(MCP_CONFIG_FILE);
-        if let Some(cfg) = read_config(&global_path) {
-            for name in cfg.mcp.keys() {
-                merged.origins.insert(name.clone(), global_path.clone());
+        match read_config(&global_path) {
+            Ok(None) => {}
+            Ok(Some(cfg)) => {
+                tracing::info!(
+                    path = %global_path.display(),
+                    servers = cfg.mcp.len(),
+                    "loaded mcp config"
+                );
+                for name in cfg.mcp.keys() {
+                    merged.origins.insert(name.clone(), global_path.clone());
+                }
+                merged.mcp.extend(cfg.mcp);
             }
-            merged.mcp.extend(cfg.mcp);
+            Err(e) => errors.add_error(e),
         }
     }
 
     let project_path = cwd.join(".maki").join(MCP_CONFIG_FILE);
-    if let Some(cfg) = read_config(&project_path) {
-        for name in cfg.mcp.keys() {
-            merged.origins.insert(name.clone(), project_path.clone());
+    match read_config(&project_path) {
+        Ok(None) => {}
+        Ok(Some(cfg)) => {
+            tracing::info!(
+                path = %project_path.display(),
+                servers = cfg.mcp.len(),
+                "loaded mcp config"
+            );
+            for name in cfg.mcp.keys() {
+                merged.origins.insert(name.clone(), project_path.clone());
+            }
+            merged.mcp.extend(cfg.mcp);
         }
-        merged.mcp.extend(cfg.mcp);
+        Err(e) => {
+            errors.add_error(e);
+        }
     }
-
-    merged
+    (merged, errors)
 }
 
 pub fn persist_enabled(
@@ -255,15 +350,40 @@ pub fn persist_enabled(
     Ok(())
 }
 
-fn read_config(path: &Path) -> Option<McpConfig> {
-    let content = fs::read_to_string(path).ok()?;
-    match toml::from_str(&content) {
-        Ok(cfg) => Some(cfg),
-        Err(e) => {
-            tracing::warn!(path = %path.display(), error = %e, "failed to parse MCP config");
-            None
+fn read_config(path: &Path) -> Result<Option<McpConfig>, McpConfigError> {
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::info!(
+                path = %path.display(),
+                "no mcp config to read"
+            );
+            return Ok(None);
         }
-    }
+        Err(e) => {
+            tracing::error!(
+                path = %path.display(),
+                error = %e,
+                "failed to read mcp config"
+            );
+            return Err(McpConfigError::Read {
+                path: path.into(),
+                error: e.to_string(),
+            });
+        }
+    };
+    toml::from_str(&content)
+        .inspect_err(|e| {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to parse mcp config")
+        })
+        .map_err(|e| McpConfigError::Parse {
+            path: path.into(),
+            error: e.to_string(),
+        })
+        .map(Some)
 }
 
 #[cfg(test)]
@@ -390,8 +510,10 @@ command = ["project"]
         )
         .unwrap();
 
-        let project_cfg = read_config(&project_maki_dir.join("mcp.toml")).unwrap();
-        let global_cfg = read_config(&global_dir.join("mcp.toml")).unwrap();
+        let project_cfg = read_config(&project_maki_dir.join("mcp.toml"))
+            .unwrap()
+            .unwrap();
+        let global_cfg = read_config(&global_dir.join("mcp.toml")).unwrap().unwrap();
 
         let mut merged = McpConfig::default();
         merged.mcp.extend(global_cfg.mcp);
@@ -456,5 +578,42 @@ enabled = true
         assert_eq!(infos[1].status, McpServerStatus::Disabled);
         assert_eq!(infos[2].status, McpServerStatus::Connecting);
         assert_eq!(infos[2].config_path, PathBuf::from("/test.toml"));
+    }
+
+    #[test]
+    fn read_config_directory_path_returns_read_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.toml");
+        fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            read_config(&path),
+            Err(McpConfigError::Read { .. })
+        ));
+    }
+
+    #[test]
+    fn read_config_invalid_toml_returns_parse_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.toml");
+        fs::write(&path, "this is not valid toml {{").unwrap();
+        assert!(matches!(
+            read_config(&path),
+            Err(McpConfigError::Parse { .. })
+        ));
+    }
+
+    #[test]
+    fn read_config_valid_toml_returns_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.toml");
+        fs::write(
+            &path,
+            r#"[mcp.valid]
+command = ["echo", "hello"]
+"#,
+        )
+        .unwrap();
+        let cfg = read_config(&path).unwrap().unwrap();
+        assert!(cfg.mcp.contains_key("valid"));
     }
 }

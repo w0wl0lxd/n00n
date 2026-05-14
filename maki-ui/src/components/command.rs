@@ -820,7 +820,7 @@ mod tests {
                 arguments: vec![],
             }],
             pids: vec![],
-            generation: 1, // Different generation to trigger update
+            generation: 1,
         });
 
         p.mcp_reader = updated_reader;
