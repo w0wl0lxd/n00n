@@ -13,6 +13,7 @@ use tracing_subscriber::EnvFilter;
 const PROVIDER_PRIORITY: &[ProviderKind] = &[
     ProviderKind::Anthropic,
     ProviderKind::OpenAi,
+    ProviderKind::Copilot,
     ProviderKind::Zai,
     ProviderKind::ZaiCodingPlan,
     ProviderKind::Synthetic,
@@ -40,7 +41,7 @@ pub fn resolve_model(
     }
     auto_detect_model().ok_or_else(|| {
         color_eyre::eyre::eyre!(
-            "no provider available - set an API key (e.g. ANTHROPIC_API_KEY) or run `maki auth login`\n\nSee https://maki.sh/docs/providers/ for setup instructions"
+            "no provider available - set an API key (e.g. ANTHROPIC_API_KEY), run `maki auth login`, or use -m to specify a model\n\nSee https://maki.sh/docs/providers/ for setup instructions"
         )
     })
 }
