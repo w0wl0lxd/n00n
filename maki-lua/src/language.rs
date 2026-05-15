@@ -21,6 +21,7 @@ pub enum Language {
     Elixir,
     Markdown,
     Starlark,
+    Zig,
 }
 
 impl Language {
@@ -45,6 +46,7 @@ impl Language {
             "elixir" => Some(Self::Elixir),
             "markdown" => Some(Self::Markdown),
             "starlark" => Some(Self::Starlark),
+            "zig" => Some(Self::Zig),
             _ => None,
         }
     }
@@ -70,6 +72,7 @@ impl Language {
             "ex" | "exs" => Some(Self::Elixir),
             "md" | "markdown" => Some(Self::Markdown),
             "bzl" => Some(Self::Starlark),
+            "zig" => Some(Self::Zig),
             _ => None,
         }
     }
@@ -95,6 +98,7 @@ impl Language {
             Self::Elixir => tree_sitter_elixir::LANGUAGE.into(),
             Self::Markdown => tree_sitter_md::LANGUAGE.into(),
             Self::Starlark => tree_sitter_starlark::LANGUAGE.into(),
+            Self::Zig => tree_sitter_zig::LANGUAGE.into(),
         }
     }
 }

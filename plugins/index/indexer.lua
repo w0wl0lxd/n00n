@@ -41,6 +41,7 @@ local EXT_TO_LANG = {
   md = "markdown",
   markdown = "markdown",
   bzl = "bazel_bzl",
+  zig = "zig",
 }
 
 local FILENAME_TO_LANG = {
