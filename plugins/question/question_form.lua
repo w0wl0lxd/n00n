@@ -407,7 +407,7 @@ local function render_selecting(state, width)
       lines[#lines + 1] = spans
     end
     if is_cur then
-      focus_row = state.cursor == 1 and 1 or #lines
+      focus_row = #lines
     end
 
     if i < #opts then
