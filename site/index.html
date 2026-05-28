@@ -1646,8 +1646,10 @@ imports = <span class="fn">set</span>()
 
   player.addEventListener('play', () => {
     const loader = document.getElementById('demo-loader');
-    loader.classList.add('hidden');
-    setTimeout(() => loader.remove(), 300);
+    if (loader) {
+      loader.classList.add('hidden');
+      setTimeout(() => loader.remove(), 300);
+    }
     scaleTui();
   });
 
