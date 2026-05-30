@@ -24,6 +24,7 @@ pub enum Language {
     Markdown,
     Starlark,
     Zig,
+    Nix,
 }
 
 impl Language {
@@ -51,6 +52,7 @@ impl Language {
             "markdown" => Some(Self::Markdown),
             "starlark" => Some(Self::Starlark),
             "zig" => Some(Self::Zig),
+            "nix" => Some(Self::Nix),
             _ => None,
         }
     }
@@ -79,6 +81,7 @@ impl Language {
             "md" | "markdown" => Some(Self::Markdown),
             "bzl" => Some(Self::Starlark),
             "zig" => Some(Self::Zig),
+            "nix" => Some(Self::Nix),
             _ => None,
         }
     }
@@ -107,6 +110,7 @@ impl Language {
             Self::Markdown => tree_sitter_md::LANGUAGE.into(),
             Self::Starlark => tree_sitter_starlark::LANGUAGE.into(),
             Self::Zig => tree_sitter_zig::LANGUAGE.into(),
+            Self::Nix => tree_sitter_nix::LANGUAGE.into(),
         }
     }
 }
