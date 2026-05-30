@@ -89,6 +89,7 @@
               python3
               ripgrep
               ruff
+              rust-analyzer
               rustc
               rustfmt
               stylua
