@@ -17,7 +17,7 @@ fn write_table_with_min(out: &mut String, fields: &[ConfigField]) {
             out,
             "| `{name}` | {ty} | `{default}` | {min} | {desc} |",
             name = f.name,
-            ty = f.ty,
+            ty = escape_pipes(f.ty),
             desc = f.description,
         )
         .unwrap();
@@ -33,11 +33,15 @@ fn write_table_no_min(out: &mut String, fields: &[ConfigField]) {
             out,
             "| `{name}` | {ty} | `{default}` | {desc} |",
             name = f.name,
-            ty = f.ty,
+            ty = escape_pipes(f.ty),
             desc = f.description,
         )
         .unwrap();
     }
+}
+
+fn escape_pipes(ty: &str) -> String {
+    ty.replace('|', "\\|")
 }
 
 fn has_any_min(fields: &[ConfigField]) -> bool {
