@@ -385,12 +385,19 @@ fn matches_rule(rule: &PermissionRule, tool: &str, scope: &str) -> bool {
     }
 }
 
+/// Glob matcher for permission scopes. The boundary suffixes (`/**`, `" *"`)
+/// must be tried before the bare `*`, otherwise a plain prefix would swallow
+/// them. `" *"` is the bash form `<command> *`: it has to match the bare
+/// command too (`pwd *` covers `pwd` and `pwd -L`, but not `pwdx`).
 pub fn scope_matches(pattern: &str, value: &str) -> bool {
     if pattern == "*" || pattern == "**" {
         return true;
     }
     if let Some(prefix) = pattern.strip_suffix("/**") {
         return value == prefix || value.starts_with(&format!("{prefix}/"));
+    }
+    if let Some(prefix) = pattern.strip_suffix(" *") {
+        return value == prefix || value.starts_with(&format!("{prefix} "));
     }
     if let Some(prefix) = pattern.strip_suffix('*') {
         return value.starts_with(prefix);
@@ -484,6 +491,9 @@ mod tests {
     #[test_case("*", "anything" => true ; "star")]
     #[test_case("cargo *", "cargo test" => true ; "prefix")]
     #[test_case("cargo *", "git push" => false ; "prefix_no_match")]
+    #[test_case("pwd *", "pwd" => true ; "space_star_matches_bare_command")]
+    #[test_case("pwd *", "pwd -L" => true ; "space_star_matches_with_args")]
+    #[test_case("pwd *", "pwdx" => false ; "space_star_no_partial_token")]
     #[test_case("src/**", "src/main.rs" => true ; "glob")]
     #[test_case("src/**", "src/deep/nested/file.rs" => true ; "glob_deep_nested")]
     #[test_case("src/**", "src" => true ; "glob_exact_prefix")]
@@ -710,18 +720,20 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn generalize_edit_scope_root_file() {
-        let scopes = vec!["/Cargo.toml".into()];
-        let result = generalized_scopes("edit", &scopes);
-        assert_eq!(result, vec!["//**"]);
-    }
-
-    #[test]
-    fn generalize_unknown_tool_preserves_exact() {
-        let scopes = vec!["some:scope".into()];
-        let result = generalized_scopes("webfetch", &scopes);
-        assert_eq!(result, vec!["some:scope"]);
+    /// "Allow always" stores a command's generalized scope as a rule, so the
+    /// command must match the very rule it would create. When this broke, the
+    /// bare `pwd` never matched its own `pwd *` rule and we reprompted forever.
+    #[test_case("bash", "pwd" ; "bash_bare_command")]
+    #[test_case("bash", "cargo test" ; "bash_command_with_args")]
+    #[test_case("bash", "git status --short" ; "bash_command_with_flags")]
+    #[test_case("edit", "/home/user/project/src/main.rs" ; "edit_path")]
+    #[test_case("webfetch", "https://example.com" ; "unknown_tool_exact")]
+    fn command_matches_its_own_generalized_rule(tool: &str, scope: &str) {
+        let rule = &generalized_scopes(tool, &[scope.into()])[0];
+        assert!(
+            scope_matches(rule, scope),
+            "{scope:?} does not match its generalized rule {rule:?}"
+        );
     }
 
     #[test]

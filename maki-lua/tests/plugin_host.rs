@@ -1122,3 +1122,28 @@ fn bash_timeout_round_trip() {
         "restored body missing timeout marker; got: {text:?}"
     );
 }
+
+/// Guards the stale-cancelled-handle bug: `permission_scopes` must run the
+/// plugin callback and return its parsed result, never fall back to the raw
+/// input JSON. A leaked `{"command":...}` scope breaks allow rules, so we
+/// reprompt on every call. Covers both a parseable and an unparseable command.
+#[test_case::test_case("git status" ; "parseable command")]
+#[test_case::test_case("echo 'unterminated" ; "unparseable command")]
+fn bash_permission_scopes_never_falls_back_to_json(command: &str) {
+    let reg = fresh_registry();
+    let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    host.load_builtins(&PluginsConfig::from_tools(HashMap::new()))
+        .unwrap();
+
+    let input = serde_json::json!({ "command": command });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes())
+        .expect("permission_scopes returned None (would fall back to raw JSON)");
+
+    assert!(
+        !scopes.scopes.iter().any(|s| s.contains("\"command\"")),
+        "fell back to raw JSON scope: {:?}",
+        scopes.scopes
+    );
+}
