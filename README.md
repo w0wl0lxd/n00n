@@ -47,7 +47,7 @@ An AI coding agent optimized for minimal use of context tokens, while providing 
 * OpenRouter - `OPENROUTER_API_KEY`.
 * Synthetic - `SYNTHETIC_API_KEY`.
 
-**Dynamic providers** - drop an executable script into `~/.maki/providers/` to add custom providers or proxies. See [docs](https://maki.sh/docs/providers/#dynamic-providers) for details.
+**Dynamic providers** - drop an executable script into `~/.config/maki/providers/` to add custom providers or proxies. See [docs](https://maki.sh/docs/providers/#dynamic-providers) for details.
 
 ## Installation
 
