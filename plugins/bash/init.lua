@@ -322,7 +322,7 @@ maki.api.register_tool({
       return { llm_output = "error: command is required", is_error = true }
     end
 
-    local command, workdir = input.command, input.workdir
+    local command, workdir = parse_cd_hint(input)
     local config = ctx:config()
     local timeout_secs = input.timeout or (config and config.bash_timeout_secs) or 120
     local max_lines = (config and config.max_output_lines) or 2000
