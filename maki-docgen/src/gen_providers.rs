@@ -107,6 +107,7 @@ fn format_context(entry: &ModelEntry) -> String {
 }
 
 struct ProviderSection {
+    kind: ProviderKind,
     name: &'static str,
     auth_line: String,
     urls: Vec<&'static str>,
@@ -135,6 +136,7 @@ fn build_sections() -> Vec<ProviderSection> {
                 }
                 zai_done = true;
                 sections.push(ProviderSection {
+                    kind: ProviderKind::Zai,
                     name: "Z.AI",
                     auth_line: format!(
                         "{} (shared across both endpoints)",
@@ -153,6 +155,7 @@ fn build_sections() -> Vec<ProviderSection> {
             }
             ProviderKind::OpenAi => {
                 sections.push(ProviderSection {
+                    kind,
                     name: kind.display_name(),
                     auth_line: format!("{} (also supports OAuth device flow)", format_auth(kind)),
                     urls: vec![kind.base_url()],
@@ -162,6 +165,7 @@ fn build_sections() -> Vec<ProviderSection> {
             }
             ProviderKind::Copilot => {
                 sections.push(ProviderSection {
+                    kind,
                     name: kind.display_name(),
                     auth_line: format!(
                         "{} or `~/.config/github-copilot/{{hosts.json,apps.json}}`",
@@ -174,6 +178,7 @@ fn build_sections() -> Vec<ProviderSection> {
             }
             _ => {
                 sections.push(ProviderSection {
+                    kind,
                     name: kind.display_name(),
                     auth_line: format_auth(kind),
                     urls: vec![kind.base_url()],
@@ -252,6 +257,27 @@ fn write_model_table(out: &mut String, entries: &[ModelEntry]) {
     }
 }
 
+fn no_catalog_note(kind: ProviderKind) -> &'static str {
+    match kind {
+        ProviderKind::Ollama => {
+            "This provider talks the OpenAI-compatible `/v1` API, so it also works with \
+             llama.cpp's server, LocalAI, or anything else that speaks the same protocol. \
+             Just point `OLLAMA_HOST` to the right address \
+             (e.g. `http://localhost:8080` for llama.cpp)."
+        }
+        ProviderKind::LlamaCpp => {
+            "Connects to any OpenAI-compatible `/v1` endpoint. Point `LLAMA_CPP_HOST` \
+             to your server address (defaults to `http://localhost:8080`)."
+        }
+        ProviderKind::OpenRouter => {
+            "OpenRouter aggregates models from many providers behind a single API key. \
+             Browse available models at [openrouter.ai/models](https://openrouter.ai/models). \
+             Use any model ID directly (e.g. `openrouter/anthropic/claude-sonnet-4`)."
+        }
+        _ => "No hardcoded model catalog. Use any model ID supported by this provider.",
+    }
+}
+
 fn write_section(out: &mut String, section: &ProviderSection) {
     let _ = writeln!(out, "### {}\n", section.name);
     let _ = writeln!(out, "- **Env var**: {}", section.auth_line);
@@ -272,10 +298,7 @@ fn write_section(out: &mut String, section: &ProviderSection) {
     let _ = writeln!(out);
 
     if section.entries.is_empty() {
-        let _ = writeln!(
-            out,
-            "This provider talks the OpenAI-compatible `/v1` API, so it also works with llama.cpp's server, LocalAI, or anything else that speaks the same protocol. Just point `OLLAMA_HOST` to the right address (e.g. `http://localhost:8080` for llama.cpp)."
-        );
+        let _ = writeln!(out, "{}", no_catalog_note(section.kind));
     } else {
         write_model_table(out, section.entries);
     }

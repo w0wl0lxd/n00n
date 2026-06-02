@@ -105,7 +105,7 @@ This provider talks the OpenAI-compatible `/v1` API, so it also works with llama
 - **API**: `http://localhost:8080/v1`
 - **Features**: Local or remote inference via LLAMA_CPP_HOST, set optional key via LLAMA_CPP_API_KEY
 
-This provider talks the OpenAI-compatible `/v1` API, so it also works with llama.cpp's server, LocalAI, or anything else that speaks the same protocol. Just point `OLLAMA_HOST` to the right address (e.g. `http://localhost:8080` for llama.cpp).
+Connects to any OpenAI-compatible `/v1` endpoint. Point `LLAMA_CPP_HOST` to your server address (defaults to `http://localhost:8080`).
 
 ### Mistral
 
@@ -154,7 +154,7 @@ Defaults: deepseek-v4-flash (medium), deepseek-v4-pro (strong)
 - **API**: `https://openrouter.ai/api/v1`
 - **Features**: 300+ models from all providers, prompt caching, provider routing
 
-This provider talks the OpenAI-compatible `/v1` API, so it also works with llama.cpp's server, LocalAI, or anything else that speaks the same protocol. Just point `OLLAMA_HOST` to the right address (e.g. `http://localhost:8080` for llama.cpp).
+OpenRouter aggregates models from many providers behind a single API key. Browse available models at [openrouter.ai/models](https://openrouter.ai/models). Use any model ID directly (e.g. `openrouter/anthropic/claude-sonnet-4`).
 
 ### Synthetic
 
