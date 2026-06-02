@@ -90,3 +90,7 @@ Currently working on a refactor so maki is a core agent UI loop with features li
 This will allow you to customize the hell out of maki.
 
 Status: webfetch, websearch, index, bash, skill, memory, and question tools are Lua plugins (in the `./plugins` dir).
+
+## Example config
+
+[tontinton/makiconf](https://github.com/tontinton/makiconf) - includes a [semble](https://github.com/MinishLab/semble) tool (Lua code) for semantic code search, and an [ast-grep](https://ast-grep.github.io) MCP server for AST-based search and replace.
