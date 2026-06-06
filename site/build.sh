@@ -25,6 +25,13 @@ cp asciinema-player.css "$OUT/"
 cp asciinema-player.min.js "$OUT/"
 cp demo.cast "$OUT/"
 cp ../install.sh "$OUT/"
+cp favicon.ico "$OUT/"
+cp favicon-16x16.png "$OUT/"
+cp favicon-32x32.png "$OUT/"
+cp apple-touch-icon.png "$OUT/"
+cp android-chrome-192x192.png "$OUT/"
+cp android-chrome-512x512.png "$OUT/"
+cp site.webmanifest "$OUT/"
 
 # 2. Build Zola docs
 cd docs
