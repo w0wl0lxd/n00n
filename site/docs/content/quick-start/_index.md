@@ -42,22 +42,9 @@ Or download a pre-built binary from [GitHub Releases](https://github.com/tontint
 
 ## API Keys
 
-Export a key for at least one provider:
+Export a key for at least one provider (e.g. `ANTHROPIC_API_KEY`). Some providers support OAuth login instead via `maki auth login <provider>`.
 
-| Provider | Environment Variable |
-|----------|---------------------|
-| Anthropic | `ANTHROPIC_API_KEY` |
-| OpenAI | `OPENAI_API_KEY` |
-| Google (Gemini) | `GEMINI_API_KEY` |
-| DeepSeek | `DEEPSEEK_API_KEY` |
-| Mistral | `MISTRAL_API_KEY` |
-| OpenRouter | `OPENROUTER_API_KEY` |
-| Z.AI | `ZHIPU_API_KEY` |
-| Synthetic | `SYNTHETIC_API_KEY` |
-| Ollama | No key needed (local) |
-| LlamaCpp | No key needed (local) |
-
-Some providers support OAuth login instead. Run `maki auth login <provider>` (works for OpenAI, Copilot, and custom providers).
+See [Providers](/docs/providers/) for the full list of supported providers, environment variables, and setup instructions.
 
 ## Run
 
