@@ -48,10 +48,16 @@ Export a key for at least one provider:
 |----------|---------------------|
 | Anthropic | `ANTHROPIC_API_KEY` |
 | OpenAI | `OPENAI_API_KEY` |
+| Google (Gemini) | `GEMINI_API_KEY` |
+| DeepSeek | `DEEPSEEK_API_KEY` |
+| Mistral | `MISTRAL_API_KEY` |
+| OpenRouter | `OPENROUTER_API_KEY` |
 | Z.AI | `ZHIPU_API_KEY` |
 | Synthetic | `SYNTHETIC_API_KEY` |
+| Ollama | No key needed (local) |
+| LlamaCpp | No key needed (local) |
 
-OpenAI also supports OAuth via device flow. Run `maki auth login openai` and it will walk you through setting it up.
+Some providers support OAuth login instead. Run `maki auth login <provider>` (works for OpenAI, Copilot, and custom providers).
 
 ## Run
 
@@ -68,6 +74,7 @@ Type a prompt, press **Enter**, and the agent starts working.
 - **Newline in input**: \\+Enter, Ctrl+J, or Alt+Enter
 - **Scroll output**: Ctrl+U / Ctrl+D (half page), Ctrl+Y / Ctrl+E (line)
 - **Cancel streaming**: Esc Esc
+- **Rewind (when idle)**: Esc Esc
 - **Quit**: Ctrl+C
 - **All keybindings**: Ctrl+H
 
@@ -79,12 +86,12 @@ Set a default in your config:
 -- ~/.config/maki/init.lua
 maki.setup({
     provider = {
-        default_model = "anthropic/claude-sonnet-4-6",
+        default_model = "anthropic/claude-sonnet-4-20250514",
     },
 })
 ```
 
-You can also switch models mid-session with the built-in model picker.
+Switch models mid-session with the `/model` command.
 
 ## Project Configuration
 
@@ -94,11 +101,14 @@ Add a `.maki/` directory to your project root for per-project settings:
 .maki/
 ├── init.lua           # Overrides global config
 ├── permissions.toml   # Permission rules
-└── mcp.toml           # MCP server config
+├── mcp.toml           # MCP server config
+└── commands/          # Custom slash commands (.md files)
 AGENTS.md              # Loaded into agent context automatically
 AGENTS.local.md        # Personal per-project instructions (gitignored)
 ```
 
-`AGENTS.md` is loaded at the start of every session. Put coding conventions, repo quirks & gotchas, or off-limits directories in here. Maki will automatically load `AGENTS.md` files inside subdirs when doing a `read` in the subdir.
+Maki also recognizes `CLAUDE.md`, `COPILOT.md`, `.cursorrules`, `CONVENTIONS.md`, `GEMINI.md`, and others as instruction files (first match wins).
+
+`AGENTS.md` is loaded at the start of every session. Put coding conventions, repo quirks & gotchas, or off-limits directories in here. Maki will automatically load instruction files inside subdirs when doing a `read` in the subdir.
 
 See [Configuration](/docs/configuration/) for all options.
