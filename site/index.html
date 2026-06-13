@@ -841,7 +841,8 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 0.6rem;
+      flex-wrap: wrap;
+      gap: 0.4rem 0.6rem;
       margin-top: 1.5rem;
       font-family: 'JetBrains Mono', monospace;
       font-size: 0.88rem;
@@ -1409,7 +1410,7 @@
     </div>
 
     <div class="showcase-stat">
-      <span class="stat-num">29</span> lines <span class="stat-arrow">-></span> <span class="stat-num">13</span> lines
+      <span><span class="stat-num">29</span> lines</span> <span class="stat-arrow">&rarr;</span> <span><span class="stat-num">13</span> lines</span>
       <span class="stat-result">55% smaller</span>
     </div>
   </div>
@@ -1457,7 +1458,7 @@ imports = <span class="fn">set</span>()
     </div>
 
     <div class="showcase-stat">
-      <span class="stat-num">~40k</span> tokens <span class="stat-arrow">-></span> <span class="stat-num">~30</span> tokens
+      <span><span class="stat-num">~40k</span> tokens</span> <span class="stat-arrow">&rarr;</span> <span><span class="stat-num">~30</span> tokens</span>
       <span class="stat-result">1300x reduction</span>
     </div>
   </div>
