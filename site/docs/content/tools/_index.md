@@ -72,7 +72,7 @@ Find files by glob pattern.
 | `path` | string | no | cwd | Directory to search in |
 | `pattern` | string | no |  | Glob pattern (e.g. **/*.rs, src/**/*.ts) |
 
-### `grep`
+### `grep` *(lua plugin)*
 
 Search file contents using regex.
 
