@@ -36,6 +36,7 @@ pub type BufClickHandler = Arc<dyn Fn(&str, u32) -> Option<maki_lua::ClickReply>
 
 pub struct EventLoopParams {
     pub model: Model,
+    pub needs_login: bool,
     pub commands: Vec<CustomCommand>,
     pub session: AppSession,
     pub storage: StateDir,
@@ -63,6 +64,8 @@ pub(crate) struct EventLoop<'t> {
     shell_tx: flume::Sender<ShellEvent>,
     shell_rx: flume::Receiver<ShellEvent>,
     warn_rx: flume::Receiver<String>,
+    warn_tx: flume::Sender<String>,
+    available_models: Arc<ArcSwapOption<Vec<String>>>,
     storage_writer: Arc<StorageWriter>,
     timeouts: Timeouts,
     ui_action_rx: Option<flume::Receiver<UiAction>>,
@@ -72,31 +75,43 @@ pub(crate) struct EventLoop<'t> {
 struct BackgroundModels {
     available: Arc<ArcSwapOption<Vec<String>>>,
     warn_rx: flume::Receiver<String>,
+    warn_tx: flume::Sender<String>,
     task: smol::Task<()>,
+}
+
+fn merge_batch(
+    available: &Arc<ArcSwapOption<Vec<String>>>,
+    batch: maki_providers::provider::ModelBatch,
+    warn_tx: &flume::Sender<String>,
+) {
+    for w in batch.warnings {
+        let _ = warn_tx.try_send(w);
+    }
+    if batch.models.is_empty() {
+        return;
+    }
+    let mut merged = available.load().as_deref().cloned().unwrap_or_default();
+    for spec in &batch.models {
+        if !merged.contains(spec) {
+            merged.push(spec.clone());
+        }
+    }
+    available.store(Some(Arc::new(merged)));
 }
 
 fn spawn_model_fetch() -> BackgroundModels {
     let available: Arc<ArcSwapOption<Vec<String>>> = Arc::new(ArcSwapOption::empty());
     let bg = Arc::clone(&available);
     let (warn_tx, warn_rx) = flume::unbounded::<String>();
+    let warn_tx_bg = warn_tx.clone();
     let task = smol::spawn(async move {
-        let warn_tx = warn_tx;
-        fetch_all_models(|batch| {
-            for w in batch.warnings {
-                let _ = warn_tx.try_send(w);
-            }
-            if batch.models.is_empty() {
-                return;
-            }
-            let mut merged = bg.load().as_deref().cloned().unwrap_or_default();
-            merged.extend(batch.models);
-            bg.store(Some(Arc::new(merged)));
-        })
-        .await;
+        let warn_tx = warn_tx_bg;
+        fetch_all_models(|batch| merge_batch(&bg, batch, &warn_tx)).await;
     });
     BackgroundModels {
         available,
         warn_rx,
+        warn_tx,
         task,
     }
 }
@@ -123,6 +138,7 @@ impl<'t> EventLoop<'t> {
     ) -> Result<Self> {
         let EventLoopParams {
             model,
+            needs_login,
             commands,
             session,
             storage,
@@ -151,8 +167,13 @@ impl<'t> EventLoop<'t> {
         let initial_history = session.messages.clone();
         let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
 
-        let provider: Arc<dyn Provider> =
-            Arc::from(from_model(&model, timeouts).context("create provider")?);
+        let provider: Arc<dyn Provider> = if needs_login {
+            Arc::from(maki_providers::provider::from_model_fallback(
+                &model, timeouts,
+            ))
+        } else {
+            Arc::from(from_model(&model, timeouts).context("create provider")?)
+        };
         let model_slot = Arc::new(ArcSwap::from_pointee(ModelSlot {
             model: model.clone(),
             provider,
@@ -174,7 +195,7 @@ impl<'t> EventLoop<'t> {
             &model,
             session,
             storage,
-            bg.available,
+            bg.available.clone(),
             handles.mcp_reader(),
             handles.mcp_config_errors.clone(),
             lua_command_reader,
@@ -189,6 +210,10 @@ impl<'t> EventLoop<'t> {
         app.exit_on_done = exit_on_done;
         app.buf_click = buf_click;
         app.lua_event_handle = lua_event_handle;
+
+        if needs_login {
+            app.login_picker.open(app.storage.clone());
+        }
 
         handles.apply_to_app(&mut app);
 
@@ -210,6 +235,8 @@ impl<'t> EventLoop<'t> {
             shell_tx,
             shell_rx,
             warn_rx: bg.warn_rx,
+            warn_tx: bg.warn_tx,
+            available_models: bg.available,
             storage_writer,
             timeouts,
             ui_action_rx,
@@ -432,6 +459,7 @@ impl<'t> EventLoop<'t> {
                     .unwrap_or_else(|e| e.into_inner()) = loaded.tool_outputs;
             }
             Action::ChangeModel(spec) => self.change_model(spec),
+            Action::RefreshProvider { slug } => self.refresh_provider(slug),
             Action::AssignTier(spec, tier) => {
                 maki_providers::tier_map::set_and_persist(spec, tier, &self.app.storage);
             }
@@ -480,6 +508,7 @@ impl<'t> EventLoop<'t> {
                     .start_btw(question, Arc::clone(&slot.provider), slot.model.clone());
             }
             Action::Suspend => terminal::suspend(self.terminal),
+            Action::RefreshModels => self.refresh_models(),
             Action::Quit => {}
         }
     }
@@ -497,6 +526,34 @@ impl<'t> EventLoop<'t> {
                 Err(e) => self.app.flash(format!("Failed to create provider: {e}")),
             },
             Err(e) => self.app.flash(format!("Invalid model: {e}")),
+        }
+    }
+
+    fn refresh_models(&self) {
+        let available = Arc::clone(&self.available_models);
+        let warn_tx = self.warn_tx.clone();
+        available.store(None);
+        smol::spawn(async move {
+            fetch_all_models(|batch| merge_batch(&available, batch, &warn_tx)).await;
+        })
+        .detach();
+    }
+
+    fn refresh_provider(&mut self, slug: String) {
+        let current = self.model_slot.load();
+        let current_model = &current.model;
+
+        if current_model.provider.to_string() == slug {
+            if let Ok(provider) = maki_providers::provider::from_model(current_model, self.timeouts)
+            {
+                self.model_slot.store(Arc::new(ModelSlot {
+                    model: current_model.clone(),
+                    provider: Arc::from(provider),
+                }));
+            }
+        } else if let Some(builtin) = maki_config::providers::builtin_provider(&slug) {
+            let spec = builtin.default_model.to_string();
+            self.change_model(spec);
         }
     }
 
