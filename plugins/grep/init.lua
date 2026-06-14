@@ -70,6 +70,27 @@ local function dim_spans(spans)
   return result
 end
 
+local function apply_grep_highlights(hl_tasks, view)
+  for _, task in ipairs(hl_tasks) do
+    local texts = {}
+    for _, fl in ipairs(task.lines) do
+      texts[#texts + 1] = fl.text
+    end
+
+    local highlighted = maki.ui.highlight(table.concat(texts, "\n"), task.ext, { independent = true })
+    if highlighted then
+      for i, fl in ipairs(task.lines) do
+        local hl_spans = highlighted[i]
+        if hl_spans then
+          local nr_span = view.all_lines[fl.idx][1]
+          local spans = fl.is_match and hl_spans or dim_spans(hl_spans)
+          view:update_line(fl.idx, { nr_span, table.unpack(spans) })
+        end
+      end
+    end
+  end
+end
+
 local function build_grep_view(entries, ctx)
   local buf = maki.ui.buf()
   local view = ToolView.new(buf, grep_view_opts(ctx))
@@ -118,28 +139,8 @@ local function build_grep_view(entries, ctx)
 
   view:finish()
 
-  maki.async.run(function()
-    for _, task in ipairs(hl_tasks) do
-      local texts = {}
-      for _, fl in ipairs(task.lines) do
-        texts[#texts + 1] = fl.text
-      end
-
-      local highlighted = maki.ui.highlight(table.concat(texts, "\n"), task.ext, { independent = true })
-      if highlighted then
-        for i, fl in ipairs(task.lines) do
-          local hl_spans = highlighted[i]
-          if hl_spans then
-            local nr_span = view.all_lines[fl.idx][1]
-            local spans = fl.is_match and hl_spans or dim_spans(hl_spans)
-            view:update_line(fl.idx, { nr_span, table.unpack(spans) })
-          end
-        end
-      end
-    end
-
-    view:flush()
-  end)
+  apply_grep_highlights(hl_tasks, view)
+  view:flush()
 
   buf:on("click", function()
     view:toggle()
