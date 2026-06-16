@@ -262,16 +262,35 @@ impl ThinkingConfig {
         }
     }
 
-    pub fn apply_to_body(self, body: &mut Value) {
+    pub fn apply_to_body(self, body: &mut Value, model_id: &str) {
         match self {
             Self::Off => {}
             Self::Adaptive => {
                 body["thinking"] = json!({"type": "adaptive"});
             }
+            Self::Budget(n) if Self::requires_adaptive(model_id) => {
+                body["thinking"] = json!({"type": "adaptive"});
+                body["output_config"]["effort"] = json!(Self::budget_to_effort(n));
+            }
             Self::Budget(n) => {
                 body["thinking"] = json!({"type": "enabled", "budget_tokens": n});
             }
         }
+    }
+
+    /// Version check, not an allowlist, so future Opus releases work automatically.
+    fn requires_adaptive(model_id: &str) -> bool {
+        let Some(version) = model_id.strip_prefix("claude-opus-") else {
+            return false;
+        };
+        let mut parts = version.split('-');
+        let (Some(Ok(major)), Some(Ok(minor))) = (
+            parts.next().map(str::parse::<u32>),
+            parts.next().map(str::parse::<u32>),
+        ) else {
+            return false;
+        };
+        (major, minor) >= (4, 7)
     }
 
     pub fn apply_reasoning_effort(self, body: &mut Value) {
@@ -412,16 +431,18 @@ mod tests {
         assert_eq!(&*deserialized.data, "abc123");
     }
 
-    #[test_case(ThinkingConfig::Off,          None                                                ; "off")]
-    #[test_case(ThinkingConfig::Adaptive,     Some(json!({"type": "adaptive"}))                    ; "adaptive")]
-    #[test_case(ThinkingConfig::Budget(10000), Some(json!({"type": "enabled", "budget_tokens": 10000})) ; "budget")]
-    fn thinking_apply_to_body(config: ThinkingConfig, expected: Option<Value>) {
-        let mut body = json!({"model": "test"});
-        config.apply_to_body(&mut body);
-        match expected {
-            Some(e) => assert_eq!(body["thinking"], e),
-            None => assert!(body.get("thinking").is_none()),
-        }
+    #[test_case(ThinkingConfig::Off, "claude-opus-4-5", json!({}) ; "off")]
+    #[test_case(ThinkingConfig::Adaptive, "claude-opus-4-5", json!({"thinking": {"type": "adaptive"}}) ; "adaptive")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-5", json!({"thinking": {"type": "enabled", "budget_tokens": 10000}}) ; "budget_legacy_old_opus")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-sonnet-4-6", json!({"thinking": {"type": "enabled", "budget_tokens": 10000}}) ; "budget_legacy_sonnet")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-6", json!({"thinking": {"type": "enabled", "budget_tokens": 10000}}) ; "budget_legacy_opus_4_6")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-7", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_opus_4_7")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4-8-1m", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_opus_4_8_long_context")]
+    #[test_case(ThinkingConfig::Budget(10000), "claude-opus-5-0", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_future_opus_5")]
+    fn thinking_apply_to_body(config: ThinkingConfig, model_id: &str, expected: Value) {
+        let mut body = json!({});
+        config.apply_to_body(&mut body, model_id);
+        assert_eq!(body, expected);
     }
 
     #[test_case(ThinkingConfig::Off,          None            ; "off")]

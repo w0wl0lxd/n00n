@@ -272,7 +272,7 @@ impl Copilot {
             "tools": tools,
             "stream": true,
         });
-        thinking.apply_to_body(&mut body);
+        thinking.apply_to_body(&mut body, &model.id);
 
         let request = self
             .build_post(&auth, MESSAGES_PATH, Some("conversation-agent"), &body)?

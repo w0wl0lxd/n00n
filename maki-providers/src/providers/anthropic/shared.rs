@@ -205,7 +205,7 @@ pub(super) fn build_request_body_with_system(
         "tools": wire_tools,
     });
 
-    thinking.apply_to_body(&mut body);
+    thinking.apply_to_body(&mut body, &model.id);
     body
 }
 
