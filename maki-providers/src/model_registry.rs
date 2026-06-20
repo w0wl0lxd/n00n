@@ -158,10 +158,6 @@ impl ModelRegistry {
             .collect();
         (!tiers.is_empty()).then(|| tiers.join("/"))
     }
-
-    pub fn is_override(&self, spec: &str) -> bool {
-        self.overrides.values().any(|s| s.as_str() == spec)
-    }
 }
 
 fn tier_for_position(pos: usize) -> ModelTier {
