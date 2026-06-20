@@ -218,7 +218,7 @@ pub fn run(cli: Cli) -> Result<()> {
         )
         .context("run UI")?;
         if let Some(session_id) = session_id {
-            eprintln!("session: {session_id}");
+            eprintln!("Resume session:\n\n  maki -s {session_id}");
         }
         if exit_code != 0 {
             std::process::exit(exit_code);
