@@ -144,7 +144,7 @@ impl Anthropic {
         }
     }
 
-    async fn do_list_models(&self) -> Result<Vec<String>, AgentError> {
+    async fn do_list_models(&self) -> Result<Vec<crate::model::ModelInfo>, AgentError> {
         let mut models = Vec::new();
         let mut after_id: Option<String> = None;
 
@@ -163,12 +163,14 @@ impl Anthropic {
             let body_text = response.text().await?;
             let page: ModelsPage = serde_json::from_str(&body_text)?;
             for m in page.data {
-                // The API never tells us about `-1m`, so we mint it ourselves for
-                // any model that reports a 1M window.
                 if m.max_input_tokens >= shared::LONG_CONTEXT_WINDOW {
-                    models.push(format!("{}{}", m.id, shared::LONG_CONTEXT_SUFFIX));
+                    models.push(crate::model::ModelInfo::id_only(format!(
+                        "{}{}",
+                        m.id,
+                        shared::LONG_CONTEXT_SUFFIX
+                    )));
                 }
-                models.push(m.id);
+                models.push(crate::model::ModelInfo::id_only(m.id));
             }
 
             if !page.has_more {
@@ -177,7 +179,7 @@ impl Anthropic {
             after_id = page.last_id;
         }
 
-        models.sort();
+        models.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(models)
     }
 }
@@ -233,7 +235,7 @@ impl Provider for Anthropic {
         })
     }
 
-    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(self.do_list_models())
     }
 
@@ -257,7 +259,7 @@ impl Provider for Anthropic {
 }
 
 #[derive(Deserialize)]
-struct ModelInfo {
+struct ApiModelInfo {
     id: String,
     #[serde(default)]
     max_input_tokens: u32,
@@ -265,7 +267,7 @@ struct ModelInfo {
 
 #[derive(Deserialize)]
 struct ModelsPage {
-    data: Vec<ModelInfo>,
+    data: Vec<ApiModelInfo>,
     has_more: bool,
     last_id: Option<String>,
 }

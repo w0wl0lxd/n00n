@@ -435,14 +435,17 @@ pub fn auth_status(storage: &StateDir) -> Result<()> {
 }
 
 pub fn models() {
-    smol::block_on(fetch_all_models(|batch| {
-        for model in batch.models {
-            println!("{model}");
-        }
-        for warning in batch.warnings {
-            eprintln!("warning: {warning}");
-        }
-    }));
+    smol::block_on(fetch_all_models(
+        |batch| {
+            for model in batch.models {
+                println!("{model}");
+            }
+            for warning in batch.warnings {
+                eprintln!("warning: {warning}");
+            }
+        },
+        None,
+    ));
 }
 
 pub fn index(path: &str, no_plugins: bool) -> Result<()> {

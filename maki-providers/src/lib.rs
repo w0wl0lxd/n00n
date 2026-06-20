@@ -1,15 +1,15 @@
 pub(crate) mod error;
 pub mod model;
+pub mod model_registry;
 pub mod provider;
 pub(crate) mod providers;
 pub mod retry;
-pub mod tier_map;
 pub(crate) mod types;
 
 pub use error::AgentError;
 pub use model::{
-    FastPricing, Model, ModelEntry, ModelError, ModelFamily, ModelPricing, ModelTier, TokenUsage,
-    models_for_provider,
+    FastPricing, Model, ModelEntry, ModelError, ModelFamily, ModelInfo, ModelPricing, ModelTier,
+    TokenUsage, models_for_provider,
 };
 pub use providers::Timeouts;
 pub use providers::copilot::auth as copilot_auth;

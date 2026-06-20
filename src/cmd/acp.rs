@@ -13,7 +13,7 @@ use crate::setup;
 
 pub fn run(model_arg: Option<String>, yolo: bool) -> Result<()> {
     let storage = StateDir::resolve().context("resolve data directory")?;
-    maki_providers::tier_map::load_from_storage(&storage);
+    maki_providers::model_registry::load_from_storage(&storage);
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
     load_env_files(&cwd);

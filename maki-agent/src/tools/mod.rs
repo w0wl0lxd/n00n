@@ -574,7 +574,9 @@ impl Provider for NullProvider {
         Box::pin(async { unimplemented!() })
     }
 
-    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, crate::AgentError>> {
+    fn list_models(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<maki_providers::ModelInfo>, crate::AgentError>> {
         Box::pin(async { unimplemented!() })
     }
 }

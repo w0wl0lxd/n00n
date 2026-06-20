@@ -127,7 +127,10 @@ impl OpenAiCompatProvider {
         }
     }
 
-    pub async fn do_list_models(&self, auth: &ResolvedAuth) -> Result<Vec<String>, AgentError> {
+    pub async fn do_list_models(
+        &self,
+        auth: &ResolvedAuth,
+    ) -> Result<Vec<crate::model::ModelInfo>, AgentError> {
         let request = self.build_request("GET", "/models", auth).body(())?;
         let mut response = self.client.send_async(request).await?;
         if response.status().as_u16() != 200 {
@@ -135,15 +138,41 @@ impl OpenAiCompatProvider {
         }
 
         let body: Value = serde_json::from_str(&response.text().await?)?;
-        let mut models: Vec<String> = body["data"]
+        let mut models: Vec<crate::model::ModelInfo> = body["data"]
             .as_array()
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|m| m["id"].as_str().map(String::from))
+                    .filter_map(|m| {
+                        let id = m["id"].as_str()?;
+                        let context_window = m["context_length"]
+                            .as_u64()
+                            .or_else(|| m["max_model_len"].as_u64())
+                            .and_then(|v| u32::try_from(v).ok());
+                        let max_output_tokens =
+                            m["max_tokens"].as_u64().and_then(|v| u32::try_from(v).ok());
+                        let pricing = m["pricing"]
+                            .as_object()
+                            .and_then(|p| {
+                                Some(crate::model::ModelPricing {
+                                    input: p.get("prompt")?.as_str()?.parse().ok()?,
+                                    output: p.get("completion")?.as_str()?.parse().ok()?,
+                                    cache_write: p.get("cache_creation")?.as_str()?.parse().ok()?,
+                                    cache_read: p.get("cache_read")?.as_str()?.parse().ok()?,
+                                    fast: None,
+                                })
+                            })
+                            .unwrap_or_default();
+                        Some(crate::model::ModelInfo {
+                            id: id.to_string(),
+                            context_window,
+                            max_output_tokens,
+                            pricing: Some(pricing),
+                        })
+                    })
                     .collect()
             })
             .unwrap_or_default();
-        models.sort();
+        models.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(models)
     }
 }

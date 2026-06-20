@@ -669,11 +669,11 @@ impl Provider for Bedrock {
         })
     }
 
-    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async {
-            let models: Vec<String> = shared::models()
+            let models: Vec<crate::model::ModelInfo> = shared::models()
                 .iter()
-                .map(|entry| entry.prefixes[0].to_string())
+                .map(|entry| crate::model::ModelInfo::id_only(entry.prefixes[0].to_string()))
                 .collect();
             Ok(models)
         })

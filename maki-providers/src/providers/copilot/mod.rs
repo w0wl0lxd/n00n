@@ -552,17 +552,17 @@ impl Provider for Copilot {
         })
     }
 
-    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async move {
             let models = self.fetch_models().await?;
-            let ids = models
+            let infos = models
                 .iter()
-                .map(|model| model.id.clone())
+                .map(|model| crate::model::ModelInfo::id_only(model.id.clone()))
                 .collect::<Vec<_>>();
             let mut guard = self.models.lock().unwrap();
             guard.clear();
             guard.extend(models.into_iter().map(|model| (model.id.clone(), model)));
-            Ok(ids)
+            Ok(infos)
         })
     }
 

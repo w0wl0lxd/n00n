@@ -498,7 +498,7 @@ impl Provider for DynamicProvider {
             .stream_message(model, messages, system, tools, event_tx, opts, session_id)
     }
 
-    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         self.inner.list_models()
     }
 

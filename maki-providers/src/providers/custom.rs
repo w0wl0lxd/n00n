@@ -110,7 +110,7 @@ pub fn discover_models(timeouts: Timeouts) -> Vec<String> {
                 match result {
                     Ok(models) => {
                         for m in models {
-                            all_specs.push(format!("{slug_c}/{m}"));
+                            all_specs.push(format!("{slug_c}/{}", m.id));
                         }
                     }
                     Err(e) => {
@@ -154,7 +154,7 @@ impl Provider for CustomOpenAiProvider {
         })
     }
 
-    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         let auth = self.auth.lock().unwrap().clone();
         Box::pin(async move { self.compat.do_list_models(&auth).await })
     }

@@ -469,7 +469,7 @@ mod tests {
             })
         }
 
-        fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+        fn list_models(&self) -> BoxFuture<'_, Result<Vec<maki_providers::ModelInfo>, AgentError>> {
             Box::pin(async { unimplemented!() })
         }
     }
@@ -743,7 +743,10 @@ mod tests {
                         unreachable!()
                     })
                 }
-                fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+                fn list_models(
+                    &self,
+                ) -> BoxFuture<'_, Result<Vec<maki_providers::ModelInfo>, AgentError>>
+                {
                     Box::pin(async { unimplemented!() })
                 }
             }

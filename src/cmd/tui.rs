@@ -62,7 +62,7 @@ fn read_initial_prompt(cli_prompt: Option<String>) -> Result<Option<String>> {
 
 pub fn run(cli: Cli) -> Result<()> {
     let storage = StateDir::resolve().context("resolve data directory")?;
-    maki_providers::tier_map::load_from_storage(&storage);
+    maki_providers::model_registry::load_from_storage(&storage);
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
 

@@ -180,14 +180,14 @@ impl Provider for OpenAi {
         })
     }
 
-    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async {
             if self.is_oauth() {
                 let models = super::models()
                     .iter()
                     .flat_map(|e| e.prefixes.iter())
                     .filter(|id| is_codex_model(id))
-                    .map(|&s| s.to_string())
+                    .map(|&s| crate::model::ModelInfo::id_only(s.to_string()))
                     .collect();
                 return Ok(models);
             }

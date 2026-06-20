@@ -236,7 +236,7 @@ impl Provider for Google {
         Box::pin(self.do_stream(model, messages, system, tools, event_tx, opts.thinking))
     }
 
-    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         let url = self.models_url();
         let request = self.build_request("GET", &url).body(()).unwrap();
         let client = self.client.clone();
@@ -247,7 +247,7 @@ impl Provider for Google {
             }
             let body_text = response.text().await?;
             let models_response: ModelsListResponse = serde_json::from_str(&body_text)?;
-            let mut ids: Vec<String> = models_response
+            let mut infos: Vec<crate::model::ModelInfo> = models_response
                 .models
                 .into_iter()
                 .filter(|m| {
@@ -256,14 +256,16 @@ impl Provider for Google {
                         .any(|m| m == "generateContent")
                 })
                 .map(|m| {
-                    m.name
+                    let id = m
+                        .name
                         .strip_prefix("models/")
                         .map(String::from)
-                        .unwrap_or(m.name)
+                        .unwrap_or(m.name);
+                    crate::model::ModelInfo::id_only(id)
                 })
                 .collect();
-            ids.sort();
-            Ok(ids)
+            infos.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(infos)
         })
     }
 
@@ -468,12 +470,12 @@ struct SseResponse {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelsListResponse {
-    models: Vec<ModelInfo>,
+    models: Vec<ApiModelInfo>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ModelInfo {
+struct ApiModelInfo {
     name: String,
     #[serde(default)]
     supported_generation_methods: Vec<String>,

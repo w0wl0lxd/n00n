@@ -6,7 +6,7 @@ use serde_json::Value;
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 use tracing::{debug, warn};
 
-use crate::model::{Model, ModelFamily, models_for_provider};
+use crate::model::{Model, ModelFamily, ModelInfo, models_for_provider};
 use crate::providers::Timeouts;
 use crate::providers::anthropic::Anthropic;
 use crate::providers::anthropic::bedrock;
@@ -226,7 +226,7 @@ pub trait Provider: Send + Sync {
         session_id: Option<&'a str>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>>;
 
-    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>>;
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, AgentError>>;
 
     fn refresh_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async { Ok(()) })
@@ -287,7 +287,7 @@ impl Provider for UnconfiguredProvider {
         })
     }
 
-    fn list_models(&self) -> BoxFuture<'_, Result<Vec<String>, AgentError>> {
+    fn list_models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, AgentError>> {
         Box::pin(async {
             Err(AgentError::Config {
                 message: NOT_CONFIGURED.to_string(),
@@ -338,7 +338,10 @@ pub fn available_model_specs() -> Vec<String> {
     specs
 }
 
-pub async fn fetch_all_models(mut on_ready: impl FnMut(ModelBatch)) {
+pub async fn fetch_all_models(
+    mut on_ready: impl FnMut(ModelBatch),
+    on_done: Option<Box<dyn FnOnce() + Send>>,
+) {
     let (tx, rx) = flume::unbounded();
     let timeouts = Timeouts::default();
 
@@ -350,25 +353,25 @@ pub async fn fetch_all_models(mut on_ready: impl FnMut(ModelBatch)) {
         let tx = tx.clone();
         smol::spawn(async move {
             let batch = match provider.list_models().await {
-                Ok(ids) => {
+                Ok(models) => {
                     if kind.accepts_arbitrary_models() {
-                        crate::tier_map::tier_map()
+                        crate::model_registry::model_registry()
                             .write()
                             .unwrap()
-                            .set_known_models(kind, ids.clone());
+                            .set_known_models(kind, models.clone());
                     }
-                    let mut models: Vec<String> =
-                        ids.into_iter().map(|id| format!("{kind}/{id}")).collect();
+                    let mut specs: Vec<String> =
+                        models.iter().map(|m| format!("{kind}/{}", m.id)).collect();
                     for entry in models_for_provider(kind) {
                         for prefix in entry.prefixes {
                             let spec = format!("{kind}/{prefix}");
-                            if !models.contains(&spec) {
-                                models.push(spec);
+                            if !specs.contains(&spec) {
+                                specs.push(spec);
                             }
                         }
                     }
                     ModelBatch {
-                        models,
+                        models: specs,
                         warnings: Vec::new(),
                     }
                 }
@@ -410,8 +413,8 @@ pub async fn fetch_all_models(mut on_ready: impl FnMut(ModelBatch)) {
             };
             let batch = match dynamic::create(&slug, timeouts) {
                 Ok(provider) => match provider.list_models().await {
-                    Ok(ids) => ModelBatch {
-                        models: ids.into_iter().map(|id| format!("{slug}/{id}")).collect(),
+                    Ok(models) => ModelBatch {
+                        models: models.iter().map(|m| format!("{slug}/{}", m.id)).collect(),
                         warnings: Vec::new(),
                     },
                     Err(e) => static_fallback(e.to_string()),
@@ -441,5 +444,8 @@ pub async fn fetch_all_models(mut on_ready: impl FnMut(ModelBatch)) {
 
     while let Ok(batch) = rx.recv_async().await {
         on_ready(batch);
+    }
+    if let Some(done) = on_done {
+        done();
     }
 }

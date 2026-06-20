@@ -67,7 +67,9 @@ impl Task {
                 (Model::clone(&ctx.model), Arc::clone(&ctx.provider))
             } else {
                 let resolved_model = {
-                    let map = maki_providers::tier_map::tier_map().read().unwrap();
+                    let map = maki_providers::model_registry::model_registry()
+                        .read()
+                        .unwrap();
                     map.spec_for_tier(ctx.model.provider, effective)
                         .or_else(|| map.spec_for_tier_any(effective))
                         .and_then(|spec| Model::from_spec(&spec).ok())
