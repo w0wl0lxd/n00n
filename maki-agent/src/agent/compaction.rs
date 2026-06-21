@@ -1,6 +1,8 @@
 use std::env;
 
-use maki_providers::{ContentBlock, Message, Model, RequestOptions, TokenUsage};
+use maki_providers::{
+    ContentBlock, Message, Model, RequestOptions, Role, StreamResponse, TokenUsage,
+};
 use tracing::info;
 
 use super::history::History;
@@ -26,25 +28,62 @@ pub(super) async fn compact_history(
     compaction_history.push(Message::user(crate::prompt::COMPACTION_USER.to_string()));
 
     let empty_tools = serde_json::json!([]);
-    let response = stream_with_retry(
-        provider,
-        model,
-        &compaction_history,
-        crate::prompt::COMPACTION_SYSTEM,
-        &empty_tools,
-        event_tx,
-        cancel,
-        RequestOptions::default(),
-        None,
-    )
-    .await?;
+    let max_attempts = 3;
+    let mut last_error = None;
 
-    event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
+    for attempt in 0..max_attempts {
+        match stream_with_retry(
+            provider,
+            model,
+            &compaction_history,
+            crate::prompt::COMPACTION_SYSTEM,
+            &empty_tools,
+            event_tx,
+            cancel,
+            RequestOptions::default(),
+            None,
+        )
+        .await
+        {
+            Ok(response) => {
+                if attempt > 0 {
+                    info!(
+                        attempt,
+                        "compaction succeeded after truncating oldest rounds"
+                    );
+                }
+                return Ok(finish_compact(
+                    response,
+                    history,
+                    event_tx,
+                    compact_start,
+                    model,
+                ));
+            }
+            Err(e) if e.is_context_overflow() && attempt < max_attempts - 1 => {
+                last_error = Some(e);
+                truncate_oldest_round(&mut compaction_history);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(last_error.unwrap())
+}
+
+fn finish_compact(
+    response: StreamResponse,
+    history: &mut History,
+    event_tx: &EventSender,
+    compact_start: std::time::Instant,
+    model: &Model,
+) -> TokenUsage {
+    let _ = event_tx.send(AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
         message: response.message.clone(),
         usage: response.usage,
         model: model.id.clone(),
         context_size: Some(response.usage.output),
-    })))?;
+    })));
 
     let new_history = vec![
         Message::user("What did we do so far?".into()),
@@ -57,7 +96,7 @@ pub(super) async fn compact_history(
         "compaction completed"
     );
 
-    Ok(response.usage)
+    response.usage
 }
 
 pub async fn compact(
@@ -127,6 +166,47 @@ fn strip_old_tool_results(messages: &mut [Message]) {
                 seen += 1;
             }
         }
+    }
+}
+
+fn truncate_oldest_round(messages: &mut Vec<Message>) {
+    if messages.len() <= 1 {
+        return;
+    }
+
+    let mut remove_count = 1;
+
+    if matches!(messages.first().map(|m| &m.role), Some(Role::Assistant)) {
+        let has_tool_calls = messages[0].has_tool_calls();
+        if has_tool_calls {
+            let next_has_tool_results = messages.get(1).is_some_and(|m| {
+                matches!(m.role, Role::User)
+                    && m.content
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+            });
+            if next_has_tool_results {
+                remove_count = 2;
+            }
+        }
+    } else if matches!(messages.first().map(|m| &m.role), Some(Role::User))
+        && matches!(messages.get(1).map(|m| &m.role), Some(Role::Assistant))
+    {
+        // Dropping a lone user message would leave assistant-first, which some providers reject.
+        // Remove the assistant too to keep the conversation well-formed.
+        remove_count = 2;
+    }
+
+    messages.drain(..remove_count);
+
+    // After draining, the first message might still be an assistant (e.g. consecutive
+    // assistant messages). Keep draining until the first message is user or we're empty.
+    while messages.len() > 1 && matches!(messages.first().map(|m| &m.role), Some(Role::Assistant)) {
+        let mut drop = 1;
+        if matches!(messages.get(1).map(|m| &m.role), Some(Role::User)) {
+            drop = 2;
+        }
+        messages.drain(..drop);
     }
 }
 
@@ -366,5 +446,130 @@ mod tests {
         assert!(
             matches!(&messages[0].content[5], ContentBlock::Text { text } if text == "keep me")
         );
+    }
+
+    #[test]
+    fn truncate_oldest_round_removes_single_user_message() {
+        let mut messages = vec![
+            Message::user("first".into()),
+            Message::user("second".into()),
+        ];
+        truncate_oldest_round(&mut messages);
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(&messages[0].content[0], ContentBlock::Text { text } if text == "second"));
+    }
+
+    #[test]
+    fn truncate_oldest_round_removes_assistant_tool_pair() {
+        let mut messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({}),
+                }],
+                ..Default::default()
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "output".into(),
+                    is_error: false,
+                }],
+                ..Default::default()
+            },
+            Message::user("keep me".into()),
+        ];
+        truncate_oldest_round(&mut messages);
+        assert_eq!(messages.len(), 1);
+        assert!(
+            matches!(&messages[0].content[0], ContentBlock::Text { text } if text == "keep me")
+        );
+    }
+
+    #[test]
+    fn truncate_oldest_round_removes_assistant_without_matching_tool_result() {
+        let mut messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({}),
+                }],
+                ..Default::default()
+            },
+            Message::user("no tool result".into()),
+        ];
+        truncate_oldest_round(&mut messages);
+        assert_eq!(messages.len(), 1);
+        assert!(
+            matches!(&messages[0].content[0], ContentBlock::Text { text } if text == "no tool result")
+        );
+    }
+
+    #[test]
+    fn truncate_oldest_round_noop_on_single_message() {
+        let mut messages = vec![Message::user("only".into())];
+        truncate_oldest_round(&mut messages);
+        assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn truncate_oldest_round_removes_plain_assistant() {
+        let mut messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "reply".into(),
+                }],
+                ..Default::default()
+            },
+            Message::user("keep me".into()),
+        ];
+        truncate_oldest_round(&mut messages);
+        assert_eq!(messages.len(), 1);
+        assert!(
+            matches!(&messages[0].content[0], ContentBlock::Text { text } if text == "keep me")
+        );
+    }
+
+    #[test]
+    fn truncate_oldest_round_consecutive_assistants_drains_until_user() {
+        // [User, Assistant(no tools), Assistant(tools), User(results)] drains 2,
+        // leaving Assistant-first — keep draining until first is User.
+        let mut messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "plain reply".into(),
+                }],
+                ..Default::default()
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({}),
+                }],
+                ..Default::default()
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "output".into(),
+                    is_error: false,
+                }],
+                ..Default::default()
+            },
+            Message::user("keep me".into()),
+        ];
+        truncate_oldest_round(&mut messages);
+        assert!(!messages.is_empty());
+        assert!(matches!(messages[0].role, Role::User));
     }
 }
