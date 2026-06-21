@@ -11,4 +11,4 @@ pub use instructions::{
     Instructions, LoadedInstructions, build_system_prompt, find_subdirectory_instructions,
     is_instruction_file, load_instruction_text, load_instructions,
 };
-pub use run::{Agent, AgentParams, AgentRunParams};
+pub use run::{Agent, AgentParams, AgentRunParams, resolve_compaction_model};

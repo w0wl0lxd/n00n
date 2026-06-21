@@ -104,6 +104,7 @@ pub enum ModelTier {
     Weak,
     Medium,
     Strong,
+    Compaction,
 }
 
 impl fmt::Display for ModelTier {
@@ -112,6 +113,7 @@ impl fmt::Display for ModelTier {
             Self::Weak => "weak",
             Self::Medium => "medium",
             Self::Strong => "strong",
+            Self::Compaction => "compaction",
         })
     }
 }
@@ -124,6 +126,7 @@ impl FromStr for ModelTier {
             "weak" => Ok(Self::Weak),
             "medium" => Ok(Self::Medium),
             "strong" => Ok(Self::Strong),
+            "compaction" => Ok(Self::Compaction),
             other => Err(ModelError::InvalidTier(other.to_string())),
         }
     }
@@ -373,7 +376,12 @@ mod tests {
     use strum::IntoEnumIterator;
     use test_case::test_case;
 
-    const TIERS: [ModelTier; 3] = [ModelTier::Weak, ModelTier::Medium, ModelTier::Strong];
+    const TIERS: [ModelTier; 4] = [
+        ModelTier::Weak,
+        ModelTier::Medium,
+        ModelTier::Strong,
+        ModelTier::Compaction,
+    ];
 
     #[test_case("no-slash-here", ModelError::InvalidFormat ; "invalid_format")]
     #[test_case("foobar/gpt-4", ModelError::UnsupportedProvider("foobar".into()) ; "unsupported_provider")]
@@ -499,6 +507,10 @@ mod tests {
                 if provider == ProviderKind::DeepSeek && tier == ModelTier::Weak {
                     continue;
                 }
+                // Compaction is user-assigned only, not in static registry
+                if tier == ModelTier::Compaction {
+                    continue;
+                }
                 let model = Model::from_tier(provider, tier).unwrap();
                 assert_eq!(model.provider, provider);
                 assert_eq!(model.tier, tier);
@@ -529,6 +541,10 @@ mod tests {
             let entries = models_for_provider(provider);
             for &tier in &TIERS {
                 if provider == ProviderKind::DeepSeek && tier == ModelTier::Weak {
+                    continue;
+                }
+                // Compaction is user-assigned only, not in static registry
+                if tier == ModelTier::Compaction {
                     continue;
                 }
                 let count = entries

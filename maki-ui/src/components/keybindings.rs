@@ -533,8 +533,8 @@ pub const KEYBINDS: &[Keybind] = &[
         platform: Platform::All,
     },
     Keybind {
-        label: KeyLabel::Single("1/2/3"),
-        description: "Set tier (strong/medium/weak)",
+        label: KeyLabel::Single("1/2/3/4"),
+        description: "Set tier (strong/medium/weak/compaction)",
         context: KeybindContext::ModelPicker,
         platform: Platform::All,
     },

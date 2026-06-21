@@ -23,6 +23,23 @@ use maki_config::ToolOutputLines;
 
 const MAX_REAUTH_ATTEMPTS: u32 = 2;
 
+pub fn resolve_compaction_model(
+    provider: &Arc<dyn Provider>,
+    model: &Model,
+    timeouts: maki_providers::Timeouts,
+) -> (Arc<dyn Provider>, Model) {
+    if let Some(spec) = maki_providers::model_registry::model_registry()
+        .read()
+        .unwrap()
+        .spec_for_tier_any(maki_providers::ModelTier::Compaction)
+        && let Ok(m) = Model::from_spec(&spec)
+        && let Ok(p) = maki_providers::provider::from_model(&m, timeouts)
+    {
+        return (Arc::from(p), m);
+    }
+    (Arc::clone(provider), model.clone())
+}
+
 enum TurnOutcome {
     Continue,
     Done(Option<StopReason>),
@@ -359,9 +376,11 @@ impl<'h> Agent<'h> {
     }
 
     async fn do_compact(&mut self) -> Result<(), AgentError> {
+        let (compact_provider, compact_model) =
+            resolve_compaction_model(&self.provider, &self.model, self.timeouts);
         self.total_usage += compaction::compact_history(
-            &*self.provider,
-            &self.model,
+            &*compact_provider,
+            &compact_model,
             self.history,
             &self.event_tx,
             &self.cancel,

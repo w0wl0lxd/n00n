@@ -10,7 +10,7 @@ weight = 5
 group = "Reference"
 +++"#;
 
-const TIER_PICKER_NOTE: &str = r#"Open the model picker with `/model` and press `1`, `2`, or `3` on any row to reassign it to strong, medium, or weak. Your overrides are saved to `~/.local/state/maki/model-tiers` and apply across sessions."#;
+const TIER_PICKER_NOTE: &str = r#"Open the model picker with `/model` and press `1`, `2`, `3`, or `4` on any row to assign it to strong, medium, weak, or compaction. Press the same key again to remove the assignment. Your overrides are saved to `~/.local/state/maki/model-tiers` and apply across sessions."#;
 
 const AUTH_RELOADING: &str = r#"## Auth Reloading
 
@@ -93,6 +93,7 @@ fn tier_label(tier: ModelTier) -> &'static str {
         ModelTier::Weak => "Weak",
         ModelTier::Medium => "Medium",
         ModelTier::Strong => "Strong",
+        ModelTier::Compaction => "Compaction",
     }
 }
 
@@ -310,7 +311,8 @@ pub fn generate() -> String {
         out,
         "Maki talks to LLM providers over their HTTP APIs. \
          Models are split into three tiers: **weak** (cheap and fast), \
-         **medium** (balanced), and **strong** (highest capability, highest cost).\n"
+         **medium** (balanced), and **strong** (highest capability, highest cost). \
+         There is also a **compaction** tier for choosing a dedicated model to summarize context when the conversation grows long.\n"
     );
     let _ = writeln!(out, "{TIER_PICKER_NOTE}\n");
     let _ = writeln!(out, "{AUTH_RELOADING}\n");

@@ -128,6 +128,7 @@ impl ModelRegistry {
             ModelTier::Strong => 0,
             ModelTier::Medium => 1,
             ModelTier::Weak => 2,
+            ModelTier::Compaction => return None,
         };
         let idx = slot.min(models.len() - 1);
         let spec = format!("{provider}/{}", models[idx].id);
