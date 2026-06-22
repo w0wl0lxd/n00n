@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tracing::{error, info, warn};
 
+use maki_providers::ContentBlock;
 use maki_providers::provider::Provider;
 use maki_providers::{Message, Model, RequestOptions, StopReason, StreamResponse, TokenUsage};
 
@@ -77,6 +78,7 @@ pub struct Agent<'h> {
     interrupt_source: Option<Arc<dyn InterruptSource>>,
     cancel: CancelToken,
     total_usage: TokenUsage,
+    context_size: u32,
     num_turns: u32,
     recent_calls: RecentCalls,
     auto_compact: bool,
@@ -92,7 +94,7 @@ pub struct Agent<'h> {
     timeouts: maki_providers::Timeouts,
     file_tracker: Arc<FileReadTracker>,
     prompt_slots: Arc<crate::prompt::ResolvedSlots>,
-    subagent_cancels: Arc<CancelMap<String>>,
+    subagent_cancels: Arc<crate::cancel::CancelMap<String>>,
 }
 
 impl<'h> Agent<'h> {
@@ -113,6 +115,7 @@ impl<'h> Agent<'h> {
             interrupt_source: None,
             cancel: CancelToken::none(),
             total_usage: TokenUsage::default(),
+            context_size: 0,
             num_turns: 0,
             recent_calls: RecentCalls::new(),
             auto_compact: compaction::auto_compact_enabled(),
@@ -248,9 +251,13 @@ impl<'h> Agent<'h> {
         self.emit_turn_complete(&response)?;
         let usage = response.usage;
         self.total_usage += usage;
+        self.context_size = usage.total_input();
 
         if has_tools {
+            let history_len_before = self.history.len();
             self.process_tool_calls(response).await?;
+            self.context_size +=
+                estimate_message_tokens(&self.history.as_slice()[history_len_before..]);
         } else {
             self.history.push(response.message);
 
@@ -265,7 +272,7 @@ impl<'h> Agent<'h> {
             }
         }
 
-        if self.try_auto_compact(&usage).await? || self.handle_queued_command().await? {
+        if self.try_auto_compact().await? || self.handle_queued_command().await? {
             return Ok(TurnOutcome::Continue);
         }
 
@@ -363,13 +370,20 @@ impl<'h> Agent<'h> {
         }
     }
 
-    async fn try_auto_compact(&mut self, usage: &TokenUsage) -> Result<bool, AgentError> {
+    async fn try_auto_compact(&mut self) -> Result<bool, AgentError> {
         if !self.auto_compact
-            || !compaction::is_overflow(usage, &self.model, self.config.compaction_buffer)
+            || !compaction::is_overflow(
+                &TokenUsage {
+                    input: self.context_size,
+                    ..Default::default()
+                },
+                &self.model,
+                self.config.compaction_buffer,
+            )
         {
             return Ok(false);
         }
-        info!(total_input = usage.total_input(), "auto-compacting");
+        info!(context_size = self.context_size, "auto-compacting");
         self.event_tx.send(AgentEvent::AutoCompacting)?;
         self.do_compact().await?;
         Ok(true)
@@ -421,6 +435,22 @@ impl<'h> Agent<'h> {
         }
         Ok(true)
     }
+}
+
+const CHARS_PER_TOKEN: usize = 4;
+
+fn estimate_message_tokens(messages: &[Message]) -> u32 {
+    let total_bytes: usize = messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.len()),
+            ContentBlock::ToolResult { content, .. } => Some(content.len()),
+            ContentBlock::ToolUse { input, .. } => Some(input.to_string().len()),
+            _ => None,
+        })
+        .sum();
+    (total_bytes.max(CHARS_PER_TOKEN) / CHARS_PER_TOKEN) as u32
 }
 
 #[cfg(test)]
@@ -709,10 +739,10 @@ mod tests {
         });
     }
 
-    #[test_case(true,  900, true  ; "enabled_and_over_threshold")]
-    #[test_case(true,  100, false ; "enabled_but_below_threshold")]
-    #[test_case(false, 900, false ; "disabled_even_over_threshold")]
-    fn try_auto_compact_behavior(enabled: bool, total_input: u32, expected: bool) {
+    #[test_case(true,  170_000, true  ; "enabled_and_over_threshold")]
+    #[test_case(true,  150_000, false ; "enabled_but_below_threshold")]
+    #[test_case(false, 170_000, false ; "disabled_even_over_threshold")]
+    fn try_auto_compact_behavior(enabled: bool, context_size: u32, expected: bool) {
         smol::block_on(async {
             let responses = if expected {
                 vec![text_response(StopReason::EndTurn)]
@@ -721,14 +751,10 @@ mod tests {
             };
             let mut history = History::new(vec![Message::user("go".into())]);
             let (mut agent, event_rx) = make_agent(MockProvider::new(responses), &mut history);
-            agent.model = Arc::new(small_context_model(1000, 200));
+            agent.model = Arc::new(small_context_model(200_000, 8_192));
             agent.auto_compact = enabled;
-
-            let usage = TokenUsage {
-                input: total_input,
-                ..Default::default()
-            };
-            let result = agent.try_auto_compact(&usage).await.unwrap();
+            agent.context_size = context_size;
+            let result = agent.try_auto_compact().await.unwrap();
 
             assert_eq!(result, expected);
             drop(agent);

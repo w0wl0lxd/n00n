@@ -118,7 +118,7 @@ pub async fn compact(
 }
 
 pub(super) fn is_overflow(usage: &TokenUsage, model: &Model, compaction_buffer: u32) -> bool {
-    let reserved = compaction_buffer.min(model.max_output_tokens);
+    let reserved = compaction_buffer.max(model.max_output_tokens);
     let usable = model.context_window.saturating_sub(reserved);
     usage.context_tokens() >= usable
 }
@@ -325,9 +325,9 @@ mod tests {
         });
     }
 
-    #[test_case(179_999, 0,       0,       0,      200_000, 20_000, false ; "below_threshold")]
-    #[test_case(180_000, 0,       0,       0,      200_000, 20_000, true  ; "at_threshold")]
-    #[test_case(190_000, 0,       0,       0,      200_000, 10_000, true  ; "small_max_output_uses_it_as_reserve")]
+    #[test_case(159_999, 0,       0,       0,      200_000, 20_000, false ; "below_threshold")]
+    #[test_case(160_000, 0,       0,       0,      200_000, 20_000, true  ; "at_threshold")]
+    #[test_case(190_000, 0,       0,       0,      200_000, 10_000, true  ; "large_buffer_takes_precedence_over_small_max_output")]
     #[test_case(100,     0,       0,       0,      100,     20_000, true  ; "tiny_context_window")]
     #[test_case(5_000,   165_000, 10_000,  0,      200_000, 20_000, true  ; "cached_tokens_count_toward_overflow")]
     #[test_case(100_000, 0,       0,       80_000, 200_000, 20_000, true  ; "output_tokens_count_toward_overflow")]
