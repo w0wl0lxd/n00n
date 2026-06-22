@@ -41,6 +41,10 @@ impl OpenAiCompatProvider {
         &self.client
     }
 
+    pub(crate) fn config(&self) -> &'static OpenAiCompatConfig {
+        self.config
+    }
+
     pub(crate) fn stream_timeout(&self) -> Duration {
         self.stream_timeout
     }

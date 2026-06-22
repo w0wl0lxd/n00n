@@ -1,6 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use flume::Sender;
+use isahc::AsyncReadResponseExt;
+use isahc::http::Request;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::model::Model;
@@ -18,6 +21,7 @@ pub(crate) struct LocalEndpointConfig {
     pub default_host: &'static str,
     pub default_model: &'static str,
     pub cloud_fallback_url: Option<&'static str>,
+    pub llamacpp_discovery: bool,
     pub compat: OpenAiCompatConfig,
     pub thinking_budget_field: bool,
 }
@@ -28,6 +32,7 @@ pub(crate) struct LocalEndpoint {
     key_pool: Option<KeyPool>,
     system_prefix: Option<String>,
     thinking_budget_field: bool,
+    use_llamacpp_discovery: bool,
 }
 
 impl LocalEndpoint {
@@ -55,6 +60,7 @@ impl LocalEndpoint {
             key_pool: None,
             system_prefix: None,
             thinking_budget_field: cfg.thinking_budget_field,
+            use_llamacpp_discovery: cfg.llamacpp_discovery,
         }
     }
 
@@ -95,6 +101,7 @@ impl LocalEndpoint {
             key_pool,
             system_prefix: None,
             thinking_budget_field: cfg.thinking_budget_field,
+            use_llamacpp_discovery: cfg.llamacpp_discovery,
         })
     }
 }
@@ -134,7 +141,11 @@ impl Provider for LocalEndpoint {
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async move {
             let auth = self.auth.lock().unwrap().clone();
-            self.compat.do_list_models(&auth).await
+            if self.use_llamacpp_discovery {
+                self.discover_llamacpp_models(&auth).await
+            } else {
+                self.compat.do_list_models(&auth).await
+            }
         })
     }
 
@@ -149,6 +160,148 @@ impl Provider for LocalEndpoint {
     }
 }
 
+const LLAMACPP_DEFAULT_CTX: u32 = 128_000;
+
+enum ServerMode {
+    Router,
+    Single,
+    Legacy,
+}
+
+#[derive(Deserialize)]
+struct LlamaCppModelsResponse {
+    #[serde(default)]
+    data: Vec<LlamaCppModelData>,
+}
+
+#[derive(Deserialize)]
+struct LlamaCppModelData {
+    id: String,
+    #[serde(default)]
+    meta: Option<LlamaCppMeta>,
+    #[serde(default)]
+    status: Option<LlamaCppStatus>,
+    #[serde(default)]
+    max_model_len: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct LlamaCppMeta {
+    #[serde(default)]
+    n_ctx: u32,
+}
+
+#[derive(Deserialize)]
+struct LlamaCppStatus {
+    #[serde(default)]
+    args: Vec<String>,
+}
+
+impl LocalEndpoint {
+    async fn discover_llamacpp_models(
+        &self,
+        auth: &ResolvedAuth,
+    ) -> Result<Vec<crate::model::ModelInfo>, AgentError> {
+        let client = self.compat.client();
+        let base = auth
+            .base_url
+            .as_deref()
+            .unwrap_or(self.compat.config().base_url);
+        let root = base.strip_suffix("/v1").unwrap_or(base);
+
+        let props: serde_json::Value = serde_json::from_str(
+            &get_text(client, auth, &format!("{root}/props?autoload=false")).await?,
+        )?;
+
+        let models_text = get_text(client, auth, &format!("{root}/v1/models")).await?;
+        let body: LlamaCppModelsResponse = serde_json::from_str(&models_text)?;
+
+        let mode = if props["role"].as_str() == Some("router") {
+            ServerMode::Router
+        } else if body.data.first().is_some_and(|m| m.max_model_len.is_some()) {
+            ServerMode::Legacy
+        } else {
+            ServerMode::Single
+        };
+
+        let props_n_ctx = props["n_ctx"]
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(0);
+
+        let mut models: Vec<crate::model::ModelInfo> = body
+            .data
+            .into_iter()
+            .map(|m| {
+                let context_window = extract_ctx_from_model(&m, &mode, props_n_ctx);
+                crate::model::ModelInfo {
+                    id: m.id,
+                    context_window: Some(context_window),
+                    max_output_tokens: None,
+                    pricing: Some(crate::model::ModelPricing::ZERO),
+                }
+            })
+            .collect();
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(models)
+    }
+}
+
+fn extract_ctx_from_model(model: &LlamaCppModelData, mode: &ServerMode, props_n_ctx: u32) -> u32 {
+    match mode {
+        ServerMode::Router => {
+            if let Some(ctx) = model
+                .meta
+                .as_ref()
+                .and_then(|m| (m.n_ctx > 0).then_some(m.n_ctx))
+            {
+                return ctx;
+            }
+            if let Some(args) = model.status.as_ref().map(|s| &s.args) {
+                if let Some(ctx) = extract_ctx_arg(args, "--ctx-size") {
+                    return ctx;
+                }
+                if let Some(ctx) = extract_ctx_arg(args, "--fit-ctx") {
+                    return ctx;
+                }
+            }
+            LLAMACPP_DEFAULT_CTX
+        }
+        ServerMode::Single => model
+            .meta
+            .as_ref()
+            .and_then(|m| (m.n_ctx > 0).then_some(m.n_ctx))
+            .unwrap_or(LLAMACPP_DEFAULT_CTX),
+        ServerMode::Legacy => model
+            .max_model_len
+            .filter(|&v| v > 0)
+            .or_else(|| (props_n_ctx > 0).then_some(props_n_ctx))
+            .unwrap_or(LLAMACPP_DEFAULT_CTX),
+    }
+}
+
+fn extract_ctx_arg(args: &[String], flag: &str) -> Option<u32> {
+    let idx = args.iter().position(|a| a == flag)?;
+    args.get(idx + 1)?.parse().ok()
+}
+
+async fn get_text(
+    client: &isahc::HttpClient,
+    auth: &ResolvedAuth,
+    url: &str,
+) -> Result<String, AgentError> {
+    let mut request = Request::builder().method("GET").uri(url);
+    for (key, value) in &auth.headers {
+        request = request.header(key.as_str(), value.as_str());
+    }
+    let request = request.body(())?;
+    let mut response = client.send_async(request).await?;
+    if response.status().as_u16() != 200 {
+        return Err(AgentError::from_response(response).await);
+    }
+    Ok(response.text().await?)
+}
+
 pub(crate) const OLLAMA: LocalEndpointConfig = LocalEndpointConfig {
     slug: "ollama",
     display_name: "Ollama",
@@ -157,6 +310,7 @@ pub(crate) const OLLAMA: LocalEndpointConfig = LocalEndpointConfig {
     default_host: "http://localhost:11434",
     default_model: "ollama/qwen3",
     cloud_fallback_url: Some("https://ollama.com/v1"),
+    llamacpp_discovery: false,
     compat: OpenAiCompatConfig {
         api_key_env: "",
         base_url: "http://localhost:11434/v1",
@@ -175,6 +329,7 @@ pub(crate) const LLAMACPP: LocalEndpointConfig = LocalEndpointConfig {
     default_host: "http://localhost:8080",
     default_model: "llama-cpp/default",
     cloud_fallback_url: None,
+    llamacpp_discovery: true,
     compat: OpenAiCompatConfig {
         api_key_env: "",
         base_url: "http://localhost:8080/v1",
@@ -267,6 +422,236 @@ mod tests {
                 assert_eq!(message, "LLAMA_CPP_HOST not set");
             }
             other => panic!("expected Config error, got {:?}", other.err()),
+        }
+    }
+
+    #[test]
+    fn ollama_uses_openai_compat_discovery() {
+        let ep = LocalEndpoint::build(&OLLAMA, TEST_TIMEOUTS, None, Some("http://x:1234".into()))
+            .unwrap();
+        assert!(!ep.use_llamacpp_discovery);
+    }
+
+    #[test]
+    fn llamacpp_uses_llamacpp_discovery() {
+        let ep = LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, None, Some("http://x:1234".into()))
+            .unwrap();
+        assert!(ep.use_llamacpp_discovery);
+    }
+
+    mod extract_ctx {
+        use super::super::*;
+
+        fn model_with_meta(n_ctx: u32) -> LlamaCppModelData {
+            LlamaCppModelData {
+                id: "test".into(),
+                meta: Some(LlamaCppMeta { n_ctx }),
+                status: None,
+                max_model_len: None,
+            }
+        }
+
+        fn model_with_status(args: Vec<String>) -> LlamaCppModelData {
+            LlamaCppModelData {
+                id: "test".into(),
+                meta: None,
+                status: Some(LlamaCppStatus { args }),
+                max_model_len: None,
+            }
+        }
+
+        fn model_with_max_model_len(v: u32) -> LlamaCppModelData {
+            LlamaCppModelData {
+                id: "test".into(),
+                meta: None,
+                status: None,
+                max_model_len: Some(v),
+            }
+        }
+
+        fn model_empty() -> LlamaCppModelData {
+            LlamaCppModelData {
+                id: "test".into(),
+                meta: None,
+                status: None,
+                max_model_len: None,
+            }
+        }
+
+        #[test]
+        fn router_mode_uses_meta_n_ctx() {
+            let model = model_with_meta(32768);
+            assert_eq!(
+                extract_ctx_from_model(&model, &ServerMode::Router, 0),
+                32768
+            );
+        }
+
+        #[test]
+        fn router_mode_falls_back_to_ctx_size_arg() {
+            let model = model_with_status(vec![
+                "--model".into(),
+                "foo.gguf".into(),
+                "--ctx-size".into(),
+                "16384".into(),
+            ]);
+            assert_eq!(
+                extract_ctx_from_model(&model, &ServerMode::Router, 0),
+                16384
+            );
+        }
+
+        #[test]
+        fn router_mode_falls_back_to_fit_ctx_arg() {
+            let model = model_with_status(vec![
+                "--model".into(),
+                "foo.gguf".into(),
+                "--fit-ctx".into(),
+                "24000".into(),
+            ]);
+            assert_eq!(
+                extract_ctx_from_model(&model, &ServerMode::Router, 0),
+                24000
+            );
+        }
+
+        #[test]
+        fn router_mode_prefers_ctx_size_over_fit_ctx() {
+            let model = model_with_status(vec![
+                "--ctx-size".into(),
+                "8192".into(),
+                "--fit-ctx".into(),
+                "16384".into(),
+            ]);
+            assert_eq!(extract_ctx_from_model(&model, &ServerMode::Router, 0), 8192);
+        }
+
+        #[test]
+        fn router_mode_prefers_meta_over_args() {
+            let mut model = model_with_meta(4096);
+            model.status = Some(LlamaCppStatus {
+                args: vec!["--ctx-size".into(), "65536".into()],
+            });
+            assert_eq!(extract_ctx_from_model(&model, &ServerMode::Router, 0), 4096);
+        }
+
+        #[test]
+        fn router_mode_defaults_when_no_info() {
+            let model = model_empty();
+            assert_eq!(
+                extract_ctx_from_model(&model, &ServerMode::Router, 0),
+                LLAMACPP_DEFAULT_CTX
+            );
+        }
+
+        #[test]
+        fn single_mode_uses_meta_n_ctx() {
+            let model = model_with_meta(131072);
+            assert_eq!(
+                extract_ctx_from_model(&model, &ServerMode::Single, 0),
+                131072
+            );
+        }
+
+        #[test]
+        fn single_mode_defaults_when_no_meta() {
+            let model = model_empty();
+            assert_eq!(
+                extract_ctx_from_model(&model, &ServerMode::Single, 0),
+                LLAMACPP_DEFAULT_CTX
+            );
+        }
+
+        #[test]
+        fn legacy_mode_uses_max_model_len() {
+            let model = model_with_max_model_len(4096);
+            assert_eq!(extract_ctx_from_model(&model, &ServerMode::Legacy, 0), 4096);
+        }
+
+        #[test]
+        fn legacy_mode_falls_back_to_props_n_ctx() {
+            let model = model_empty();
+            assert_eq!(
+                extract_ctx_from_model(&model, &ServerMode::Legacy, 8192),
+                8192
+            );
+        }
+
+        #[test]
+        fn legacy_mode_prefers_max_model_len_over_props_n_ctx() {
+            let model = model_with_max_model_len(2048);
+            assert_eq!(
+                extract_ctx_from_model(&model, &ServerMode::Legacy, 8192),
+                2048
+            );
+        }
+
+        #[test]
+        fn legacy_mode_ignores_zero_max_model_len() {
+            let model = model_with_max_model_len(0);
+            assert_eq!(
+                extract_ctx_from_model(&model, &ServerMode::Legacy, 4096),
+                4096
+            );
+        }
+
+        #[test]
+        fn legacy_mode_defaults_when_no_info() {
+            let model = model_empty();
+            assert_eq!(
+                extract_ctx_from_model(&model, &ServerMode::Legacy, 0),
+                LLAMACPP_DEFAULT_CTX
+            );
+        }
+
+        #[test]
+        fn zero_n_ctx_treated_as_absent() {
+            let model = model_with_meta(0);
+            assert_eq!(
+                extract_ctx_from_model(&model, &ServerMode::Single, 0),
+                LLAMACPP_DEFAULT_CTX
+            );
+        }
+    }
+
+    mod extract_ctx_arg {
+        use super::super::*;
+
+        #[test]
+        fn extracts_value_after_flag() {
+            let args = vec!["--ctx-size".into(), "4096".into()];
+            assert_eq!(extract_ctx_arg(&args, "--ctx-size"), Some(4096));
+        }
+
+        #[test]
+        fn returns_none_for_missing_flag() {
+            let args = vec!["--model".into(), "foo.gguf".into()];
+            assert_eq!(extract_ctx_arg(&args, "--ctx-size"), None);
+        }
+
+        #[test]
+        fn returns_none_for_flag_at_end() {
+            let args = vec!["--ctx-size".into()];
+            assert_eq!(extract_ctx_arg(&args, "--ctx-size"), None);
+        }
+
+        #[test]
+        fn returns_none_for_non_numeric_value() {
+            let args = vec!["--ctx-size".into(), "abc".into()];
+            assert_eq!(extract_ctx_arg(&args, "--ctx-size"), None);
+        }
+
+        #[test]
+        fn finds_flag_among_others() {
+            let args = vec![
+                "--model".into(),
+                "foo.gguf".into(),
+                "--ctx-size".into(),
+                "16384".into(),
+                "--threads".into(),
+                "8".into(),
+            ];
+            assert_eq!(extract_ctx_arg(&args, "--ctx-size"), Some(16384));
         }
     }
 }
