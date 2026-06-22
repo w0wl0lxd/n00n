@@ -185,8 +185,9 @@ impl StatusBar {
                 }
 
                 let rest_text = format!(
-                    "  {} ({}%) ${:.3} ",
+                    "  {}/{} ({}%) ${:.3} ",
                     format_tokens(ctx.stats.context_size),
+                    format_tokens(ctx.stats.context_window),
                     pct,
                     ctx.stats.usage.cost(ctx.stats.pricing, ctx.fast),
                 );
