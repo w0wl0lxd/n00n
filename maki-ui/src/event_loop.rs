@@ -323,6 +323,11 @@ impl<'t> EventLoop<'t> {
             self.app.flash(warning);
         }
 
+        let slot_model = self.model_slot.load();
+        if slot_model.model.context_window != self.app.state.model.context_window {
+            self.app.update_model(&slot_model.model);
+        }
+
         if let Some(rx) = &self.ui_action_rx {
             while let Ok(action) = rx.try_recv() {
                 match action {
