@@ -425,7 +425,11 @@ pub fn base_for_slug(slug: &str) -> Option<ProviderKind> {
 
 pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
     let meta = find_meta(slug)?;
-    let script_model = meta.models.iter().find(|m| model_id.starts_with(&m.id))?;
+    let script_model = meta
+        .models
+        .iter()
+        .filter(|m| model_id.starts_with(&m.id))
+        .max_by_key(|m| m.id.len())?;
     Some(Model {
         id: model_id.to_string(),
         provider: meta.base,

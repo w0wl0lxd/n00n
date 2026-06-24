@@ -148,7 +148,10 @@ fn lookup_entry<'a>(
 ) -> Result<&'a ModelEntry, ModelError> {
     entries
         .iter()
-        .find(|e| e.prefixes.iter().any(|p| model_id.starts_with(p)))
+        .flat_map(|e| e.prefixes.iter().map(move |p| (p, e)))
+        .filter(|(p, _)| model_id.starts_with(*p))
+        .max_by_key(|(p, _)| p.len())
+        .map(|(_, e)| e)
         .ok_or_else(|| ModelError::UnknownModel(model_id.to_string()))
 }
 

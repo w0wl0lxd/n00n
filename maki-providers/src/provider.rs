@@ -240,9 +240,11 @@ pub trait Provider: Send + Sync {
     fn rotate_key(&self) -> BoxFuture<'_, Result<bool, AgentError>> {
         Box::pin(async { Ok(false) })
     }
+
+    fn adjust_model(&self, _model: &mut Model) {}
 }
 
-pub fn from_model(model: &Model, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
+pub fn from_model(model: &mut Model, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
     if let Some(slug) = &model.dynamic_slug {
         if dynamic::display_name(slug).is_some() {
             debug!(slug, model = %model.id, "dynamic provider created");
@@ -252,11 +254,12 @@ pub fn from_model(model: &Model, timeouts: Timeouts) -> Result<Box<dyn Provider>
         return crate::providers::custom::create(slug, timeouts);
     }
     let provider = model.provider.create(timeouts)?;
+    provider.adjust_model(model);
     debug!(provider = %model.provider, model = %model.id, "provider created");
     Ok(provider)
 }
 
-pub fn from_model_fallback(model: &Model, timeouts: Timeouts) -> Box<dyn Provider> {
+pub fn from_model_fallback(model: &mut Model, timeouts: Timeouts) -> Box<dyn Provider> {
     match from_model(model, timeouts) {
         Ok(provider) => provider,
         Err(e) => {
@@ -298,7 +301,7 @@ impl Provider for UnconfiguredProvider {
 }
 
 pub async fn from_model_async(
-    model: &Model,
+    model: &mut Model,
     timeouts: Timeouts,
 ) -> Result<Box<dyn Provider>, AgentError> {
     let slug = model.dynamic_slug.clone();
@@ -312,6 +315,9 @@ pub async fn from_model_async(
         }
     })
     .await?;
+    if model.dynamic_slug.is_none() {
+        provider.adjust_model(model);
+    }
     debug!(provider = %kind, model = %id, "provider created");
     Ok(provider)
 }

@@ -66,7 +66,7 @@ impl Task {
             if effective == ctx.model.tier {
                 (Model::clone(&ctx.model), Arc::clone(&ctx.provider))
             } else {
-                let resolved_model = {
+                let mut resolved_model = {
                     let map = maki_providers::model_registry::model_registry()
                         .read()
                         .unwrap();
@@ -82,9 +82,10 @@ impl Task {
                     )
                     .map_err(|e| e.to_string())?,
                 );
-                let resolved_provider = provider::from_model_async(&resolved_model, ctx.timeouts)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let resolved_provider =
+                    provider::from_model_async(&mut resolved_model, ctx.timeouts)
+                        .await
+                        .map_err(|e| e.to_string())?;
                 (resolved_model, Arc::from(resolved_provider))
             }
         } else {

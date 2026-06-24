@@ -22,7 +22,9 @@ static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
 };
 
 // NOTE: OpenAI also offers these models for subscription usage via the Coding Plan
-const PLAN_MODELS: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2"];
+pub(crate) const PLAN_MODELS: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2"];
+
+const CODEX_PLAN_CONTEXT_WINDOW: u32 = 272_000;
 
 fn is_codex_model(model_id: &str) -> bool {
     model_id.contains("-codex") || PLAN_MODELS.contains(&model_id)
@@ -219,5 +221,11 @@ impl Provider for OpenAi {
             debug!("reloaded OpenAI auth from storage");
             Ok(())
         })
+    }
+
+    fn adjust_model(&self, model: &mut Model) {
+        if self.is_oauth() && PLAN_MODELS.iter().any(|p| model.id.starts_with(p)) {
+            model.context_window = model.context_window.min(CODEX_PLAN_CONTEXT_WINDOW);
+        }
     }
 }

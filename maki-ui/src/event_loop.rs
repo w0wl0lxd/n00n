@@ -109,14 +109,14 @@ fn spawn_model_fetch(model_slot: &Arc<ArcSwap<ModelSlot>>, timeouts: Timeouts) -
         let warn_tx = warn_tx_bg;
         let done = Box::new(move || {
             let spec = model_slot.load().model.spec();
-            let resolved = match Model::from_spec(&spec) {
+            let mut resolved = match Model::from_spec(&spec) {
                 Ok(m) => m,
                 Err(e) => {
                     warn!(spec = %spec, error = %e, "failed to resolve model after discovery");
                     return;
                 }
             };
-            let provider = match from_model(&resolved, timeouts) {
+            let provider = match from_model(&mut resolved, timeouts) {
                 Ok(p) => p,
                 Err(e) => {
                     warn!(spec = %spec, error = %e, "failed to create provider after discovery");
@@ -159,7 +159,7 @@ impl<'t> EventLoop<'t> {
         params: EventLoopParams,
     ) -> Result<Self> {
         let EventLoopParams {
-            model,
+            mut model,
             needs_login,
             commands,
             session,
@@ -190,10 +190,10 @@ impl<'t> EventLoop<'t> {
 
         let provider: Arc<dyn Provider> = if needs_login {
             Arc::from(maki_providers::provider::from_model_fallback(
-                &model, timeouts,
+                &mut model, timeouts,
             ))
         } else {
-            Arc::from(from_model(&model, timeouts).context("create provider")?)
+            Arc::from(from_model(&mut model, timeouts).context("create provider")?)
         };
         let model_slot = Arc::new(ArcSwap::from_pointee(ModelSlot {
             model: model.clone(),
@@ -476,8 +476,8 @@ impl<'t> EventLoop<'t> {
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
                 if loaded.model_spec != self.model_slot.load().model.spec()
-                    && let Ok(new_model) = Model::from_spec(&loaded.model_spec)
-                    && let Ok(new_provider) = from_model(&new_model, self.timeouts)
+                    && let Ok(mut new_model) = Model::from_spec(&loaded.model_spec)
+                    && let Ok(new_provider) = from_model(&mut new_model, self.timeouts)
                 {
                     self.model_slot.store(Arc::new(ModelSlot {
                         model: new_model,
@@ -551,7 +551,7 @@ impl<'t> EventLoop<'t> {
 
     fn change_model(&mut self, spec: String) {
         match Model::from_spec(&spec) {
-            Ok(new_model) => match from_model(&new_model, self.timeouts) {
+            Ok(mut new_model) => match from_model(&mut new_model, self.timeouts) {
                 Ok(new_provider) => {
                     self.app.update_model(&new_model);
                     self.model_slot.store(Arc::new(ModelSlot {
@@ -580,10 +580,10 @@ impl<'t> EventLoop<'t> {
         let current_model = &current.model;
 
         if current_model.provider.to_string() == slug {
-            if let Ok(provider) = maki_providers::provider::from_model(current_model, self.timeouts)
-            {
+            let mut m = current_model.clone();
+            if let Ok(provider) = maki_providers::provider::from_model(&mut m, self.timeouts) {
                 self.model_slot.store(Arc::new(ModelSlot {
-                    model: current_model.clone(),
+                    model: m,
                     provider: Arc::from(provider),
                 }));
             }

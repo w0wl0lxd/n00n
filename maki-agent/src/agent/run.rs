@@ -33,8 +33,8 @@ pub fn resolve_compaction_model(
         .read()
         .unwrap()
         .spec_for_tier_any(maki_providers::ModelTier::Compaction)
-        && let Ok(m) = Model::from_spec(&spec)
-        && let Ok(p) = maki_providers::provider::from_model(&m, timeouts)
+        && let Ok(mut m) = Model::from_spec(&spec)
+        && let Ok(p) = maki_providers::provider::from_model(&mut m, timeouts)
     {
         return (Arc::from(p), m);
     }
