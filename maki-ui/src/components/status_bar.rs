@@ -184,19 +184,26 @@ impl StatusBar {
                     right_spans.push(Span::styled(FAST_LABEL, theme::current().status_dim));
                 }
 
-                let rest_text = format!(
-                    "  {}/{} ({}%) ${:.3} ",
+                let context_text = format!(
+                    "  {}/{} ({}%)",
                     format_tokens(ctx.stats.context_size),
                     format_tokens(ctx.stats.context_window),
                     pct,
-                    ctx.stats.usage.cost(ctx.stats.pricing, ctx.fast),
                 );
+                let rest_text = if ctx.stats.pricing.is_zero() {
+                    format!("{context_text} ")
+                } else {
+                    format!(
+                        "{context_text} ${:.3} ",
+                        ctx.stats.usage.cost(ctx.stats.pricing, ctx.fast),
+                    )
+                };
                 right_spans.push(Span::styled(
                     rest_text,
                     Style::new().fg(theme::current().foreground),
                 ));
 
-                if ctx.stats.show_global {
+                if ctx.stats.show_global && !ctx.stats.pricing.is_zero() {
                     let global_text = format!(
                         " \u{03a3}${:.3} ",
                         ctx.stats.global_usage.cost(ctx.stats.pricing, ctx.fast),
