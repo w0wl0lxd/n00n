@@ -1149,7 +1149,7 @@ impl App {
             "/sessions" => self.open_session_picker(),
             "/model" => {
                 self.model_picker.open(&self.state.model.spec());
-                vec![]
+                vec![Action::RefreshModels]
             }
             "/theme" => {
                 self.theme_picker.open();
