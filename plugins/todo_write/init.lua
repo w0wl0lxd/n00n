@@ -59,8 +59,7 @@ local function ensure_win(visible)
   })
 end
 
-local function render_panel(visible)
-  ensure_win(visible)
+local function build_lines()
   local lines = {}
   for _, item in ipairs(items) do
     local marker = STATUS_MARKERS[item.status] or STATUS_MARKERS.pending
@@ -68,7 +67,12 @@ local function render_panel(visible)
       { marker[1] .. " " .. item.content, marker[2] },
     }
   end
-  buf:set_lines(lines)
+  return lines
+end
+
+local function render_panel(visible)
+  ensure_win(visible)
+  buf:set_lines(build_lines())
   win:set_config({ height = #items + 2 })
   if win:is_visible() then
     maki.ui.set_status_hint(nil)
@@ -118,10 +122,13 @@ maki.api.register_tool({
 
   restore = function(input)
     items = input.todos or {}
-    if #items > 0 then
-      render_panel(true)
+    if #items == 0 then
+      return nil
     end
-    return buf
+    render_panel(false)
+    local body = maki.ui.buf()
+    body:set_lines(build_lines())
+    return body
   end,
 
   handler = function(input)
