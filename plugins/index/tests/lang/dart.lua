@@ -68,3 +68,35 @@ class Calculator {
   local text, meta = idx_with_meta(src, "dart")
   helpers.assert_ranged_meta(text, meta, { "add(int", "subtract(int", "multiply(int" })
 end)
+
+case("dart_named_constructors", function()
+  local src = [==[
+class Shape {
+  Shape.unit();
+  factory Shape.fromJson(Map json) => Shape._();
+}
+]==]
+  local out = idx(src, "dart")
+  has(out, {
+    "classes:",
+    "class Shape",
+    "Shape.unit()",
+    "Shape.fromJson(Map json)",
+  })
+end)
+
+case("dart_generic_methods", function()
+  local src = [==[
+class A<T> {
+  T transform<R>(R input) => input;
+  Future<T> asyncMethod<T>() async => Future<T>.value();
+}
+]==]
+  local out = idx(src, "dart")
+  has(out, {
+    "classes:",
+    "class A<T>",
+    "transform<R>(R input) T",
+    "asyncMethod<T>() Future<T>",
+  })
+end)

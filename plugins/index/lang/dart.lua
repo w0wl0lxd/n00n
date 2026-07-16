@@ -33,47 +33,53 @@ return function(U)
     return tp_node and get_text(tp_node, source) or ""
   end
 
+  local function signature_name(sig_node, source)
+    local name_nodes = sig_node:field("name")
+    if #name_nodes == 0 then
+      return nil
+    end
+    local parts = {}
+    for _, n in ipairs(name_nodes) do
+      parts[#parts + 1] = get_text(n, source)
+    end
+    return table.concat(parts)
+  end
+
   local function signature_text(sig_node, source)
     local kind = sig_node:type()
-    if FUNCTION_LIKE_SIG_KINDS[kind] then
-      local name_node = sig_node:field("name")[1]
-      local params_node = sig_node:field("parameters")[1]
-      local ret_node = sig_node:field("return_type")[1]
-      if not name_node then
-        return nil
-      end
-      local name = get_text(name_node, source)
-      local params = params_node and get_text(params_node, source) or "()"
-      local ret = ret_node and get_text(ret_node, source)
-      if ret == "set" then
-        return compact_ws("set " .. name .. params)
-      elseif ret == "get" and params == "()" then
-        return compact_ws("get " .. name)
-      end
-      local ret_s = ret and (" " .. ret) or ""
-      return compact_ws(name .. params .. ret_s)
-    elseif kind == "getter_signature" then
-      local name_node = sig_node:field("name")[1]
-      local ret_node = sig_node:field("return_type")[1]
-      if not name_node then
-        return nil
-      end
-      local name = get_text(name_node, source)
-      local ret = ret_node and (" " .. get_text(ret_node, source)) or ""
-      return compact_ws("get " .. name .. ret)
-    elseif kind == "setter_signature" then
-      local name_node = sig_node:field("name")[1]
-      local params_node = sig_node:field("parameters")[1]
-      if not name_node then
-        return nil
-      end
-      local name = get_text(name_node, source)
-      local params = params_node and get_text(params_node, source) or "()"
-      return compact_ws("set " .. name .. params)
-    elseif kind == "operator_signature" then
+    if kind == "operator_signature" then
       return get_text(sig_node, source)
     end
-    return nil
+
+    local name = signature_name(sig_node, source)
+    if not name then
+      return nil
+    end
+
+    local params_node = find_child(sig_node, "formal_parameter_list")
+    local params = params_node and get_text(params_node, source) or "()"
+    local tp_node = find_child(sig_node, "type_parameters")
+    local tp = tp_node and get_text(tp_node, source) or ""
+
+    if kind == "getter_signature" then
+      local ret_node = sig_node:field("return_type")[1]
+      local ret = ret_node and (" " .. get_text(ret_node, source)) or ""
+      return compact_ws("get " .. name .. ret)
+    end
+
+    if kind == "setter_signature" then
+      return compact_ws("set " .. name .. params)
+    end
+
+    local ret_node = sig_node:field("return_type")[1]
+    local ret = ret_node and get_text(ret_node, source)
+    if ret == "set" then
+      return compact_ws("set " .. name .. params)
+    elseif ret == "get" and params == "()" then
+      return compact_ws("get " .. name)
+    end
+    local ret_s = ret and (" " .. ret) or ""
+    return compact_ws(name .. tp .. params .. ret_s)
   end
 
   local function find_signature(node)
