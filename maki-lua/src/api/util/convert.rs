@@ -1,13 +1,5 @@
-use mlua::{Lua, Result as LuaResult, Table, Value};
+use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Value};
 use serde_json::Value as JsonValue;
-
-const JSON_ARRAY_MARKER: &str = "__maki_json_array";
-
-fn array_metatable(lua: &Lua) -> LuaResult<Table> {
-    let meta = lua.create_table()?;
-    meta.set(JSON_ARRAY_MARKER, true)?;
-    Ok(meta)
-}
 
 pub(crate) fn err_pair(lua: &Lua, e: impl std::fmt::Display) -> LuaResult<(Value, Value)> {
     Ok((Value::Nil, Value::String(lua.create_string(e.to_string())?)))
@@ -52,7 +44,7 @@ pub(crate) fn json_to_lua(lua: &Lua, value: &JsonValue) -> LuaResult<Value> {
             for (idx, item) in items.iter().enumerate() {
                 table.set(idx + 1, json_to_lua(lua, item)?)?;
             }
-            table.set_metatable(Some(array_metatable(lua)?))?;
+            table.set_metatable(Some(lua.array_metatable()))?;
             Value::Table(table)
         }
         JsonValue::Object(map) => {
@@ -69,7 +61,7 @@ pub(crate) fn json_to_lua(lua: &Lua, value: &JsonValue) -> LuaResult<Value> {
 ///
 /// Symmetric counterpart to [`json_to_lua`]. We avoid mlua's `from_value`
 /// for the same `arbitrary_precision` reason documented above.
-pub(crate) fn lua_to_json(val: &Value) -> LuaResult<JsonValue> {
+pub(crate) fn lua_to_json(lua: &Lua, val: &Value) -> LuaResult<JsonValue> {
     Ok(match val {
         Value::Nil => JsonValue::Null,
         Value::Boolean(b) => JsonValue::Bool(*b),
@@ -79,24 +71,21 @@ pub(crate) fn lua_to_json(val: &Value) -> LuaResult<JsonValue> {
             .unwrap_or(JsonValue::Null),
         Value::String(s) => JsonValue::String(s.to_str()?.to_owned()),
         Value::Table(tbl) => {
-            let is_array = tbl
-                .metatable()
-                .and_then(|meta| meta.get::<bool>(JSON_ARRAY_MARKER).ok())
-                .unwrap_or(false);
-
             let len = tbl.raw_len();
-            if is_array || len > 0 {
+            let is_array = len > 0 || tbl.metatable().as_ref() == Some(&lua.array_metatable());
+
+            if is_array {
                 let mut arr = Vec::with_capacity(len);
                 for i in 1..=len {
                     let v: Value = tbl.raw_get(i)?;
-                    arr.push(lua_to_json(&v)?);
+                    arr.push(lua_to_json(lua, &v)?);
                 }
                 JsonValue::Array(arr)
             } else {
                 let mut map = serde_json::Map::new();
                 for pair in tbl.pairs::<String, Value>() {
                     let (k, v) = pair?;
-                    map.insert(k, lua_to_json(&v)?);
+                    map.insert(k, lua_to_json(lua, &v)?);
                 }
                 JsonValue::Object(map)
             }
@@ -119,7 +108,8 @@ mod tests {
     #[test_case(Value::Integer(42), serde_json::json!(42) ; "integer")]
     #[test_case(Value::Number(1.5), serde_json::json!(1.5) ; "float")]
     fn lua_to_json_scalars(input: Value, expected: JsonValue) {
-        let result = lua_to_json(&input).unwrap();
+        let lua = Lua::new();
+        let result = lua_to_json(&lua, &input).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -127,7 +117,8 @@ mod tests {
     #[test_case(f64::INFINITY ; "positive_infinity")]
     #[test_case(f64::NEG_INFINITY ; "negative_infinity")]
     fn lua_to_json_non_finite_floats_become_null(n: f64) {
-        let result = lua_to_json(&Value::Number(n)).unwrap();
+        let lua = Lua::new();
+        let result = lua_to_json(&lua, &Value::Number(n)).unwrap();
         assert_eq!(result, JsonValue::Null);
     }
 
@@ -135,7 +126,8 @@ mod tests {
     #[test_case(i64::MIN ; "i64_min")]
     #[test_case(0 ; "zero")]
     fn lua_to_json_integer_boundaries(n: i64) {
-        let result = lua_to_json(&Value::Integer(n)).unwrap();
+        let lua = Lua::new();
+        let result = lua_to_json(&lua, &Value::Integer(n)).unwrap();
         assert_eq!(result, serde_json::json!(n));
     }
 
@@ -143,7 +135,7 @@ mod tests {
     fn lua_to_json_string() {
         let lua = Lua::new();
         let s = lua.create_string("hello").unwrap();
-        let result = lua_to_json(&Value::String(s)).unwrap();
+        let result = lua_to_json(&lua, &Value::String(s)).unwrap();
         assert_eq!(result, serde_json::json!("hello"));
     }
 
@@ -155,7 +147,7 @@ mod tests {
         tbl.raw_set(2, 20).unwrap();
         tbl.raw_set(3, 30).unwrap();
 
-        let result = lua_to_json(&Value::Table(tbl)).unwrap();
+        let result = lua_to_json(&lua, &Value::Table(tbl)).unwrap();
         assert_eq!(result, serde_json::json!([10, 20, 30]));
     }
 
@@ -165,7 +157,7 @@ mod tests {
         let tbl = lua.create_table().unwrap();
         tbl.set("key", "value").unwrap();
 
-        let result = lua_to_json(&Value::Table(tbl)).unwrap();
+        let result = lua_to_json(&lua, &Value::Table(tbl)).unwrap();
         assert_eq!(result, serde_json::json!({"key": "value"}));
     }
 
@@ -174,7 +166,7 @@ mod tests {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
 
-        let result = lua_to_json(&Value::Table(tbl)).unwrap();
+        let result = lua_to_json(&lua, &Value::Table(tbl)).unwrap();
         assert_eq!(result, serde_json::json!({}));
     }
 
@@ -192,7 +184,7 @@ mod tests {
         let outer = lua.create_table().unwrap();
         outer.set("items", inner_arr).unwrap();
 
-        let result = lua_to_json(&Value::Table(outer)).unwrap();
+        let result = lua_to_json(&lua, &Value::Table(outer)).unwrap();
         assert_eq!(result, serde_json::json!({"items": [1, {"z": true}]}));
     }
 
@@ -205,7 +197,7 @@ mod tests {
         tbl.raw_set(3, "c").unwrap();
 
         let len = tbl.raw_len();
-        let result = lua_to_json(&Value::Table(tbl)).unwrap();
+        let result = lua_to_json(&lua, &Value::Table(tbl)).unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), len);
     }
@@ -214,7 +206,7 @@ mod tests {
     fn lua_to_json_function_becomes_null() {
         let lua = Lua::new();
         let func = lua.create_function(|_, ()| Ok(())).unwrap();
-        let result = lua_to_json(&Value::Function(func)).unwrap();
+        let result = lua_to_json(&lua, &Value::Function(func)).unwrap();
         assert_eq!(result, JsonValue::Null);
     }
 
@@ -224,7 +216,7 @@ mod tests {
         let thread = lua
             .create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
             .unwrap();
-        let result = lua_to_json(&Value::Thread(thread)).unwrap();
+        let result = lua_to_json(&lua, &Value::Thread(thread)).unwrap();
         assert_eq!(result, JsonValue::Null);
     }
 
@@ -253,7 +245,7 @@ mod tests {
         let original: JsonValue = serde_json::from_str(ROUNDTRIP_CASES[idx]).unwrap();
         let lua = Lua::new();
         let lua_val = json_to_lua(&lua, &original).unwrap();
-        let back = lua_to_json(&lua_val).unwrap();
+        let back = lua_to_json(&lua, &lua_val).unwrap();
         assert_eq!(back, original);
     }
 }
