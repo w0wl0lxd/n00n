@@ -20,6 +20,14 @@ return function(U)
     operator_signature = true,
   }
 
+  local FUNCTION_LIKE_SIG_KINDS = {
+    function_signature = true,
+    constructor_signature = true,
+    constant_constructor_signature = true,
+    factory_constructor_signature = true,
+    redirecting_factory_constructor_signature = true,
+  }
+
   local function type_params(node, source)
     local tp_node = node:field("type_parameters")[1]
     return tp_node and get_text(tp_node, source) or ""
@@ -27,18 +35,12 @@ return function(U)
 
   local function signature_text(sig_node, source)
     local kind = sig_node:type()
-    if
-      kind == "function_signature"
-      or kind == "constructor_signature"
-      or kind == "constant_constructor_signature"
-      or kind == "factory_constructor_signature"
-      or kind == "redirecting_factory_constructor_signature"
-    then
+    if FUNCTION_LIKE_SIG_KINDS[kind] then
       local name_node = sig_node:field("name")[1]
       local params_node = sig_node:field("parameters")[1]
       local ret_node = sig_node:field("return_type")[1]
       if not name_node then
-        return kind == "operator_signature" and get_text(sig_node, source) or nil
+        return nil
       end
       local name = get_text(name_node, source)
       local params = params_node and get_text(params_node, source) or "()"
@@ -101,52 +103,44 @@ return function(U)
     static_final_declaration_list = "static_final_declaration",
   }
 
+  local function field_text(id_node, source, type_node)
+    local name
+    if id_node:type() == "identifier" then
+      name = get_text(id_node, source)
+    else
+      local name_node = id_node:field("name")[1]
+      if not name_node then
+        return nil
+      end
+      name = get_text(name_node, source)
+    end
+    if type_node then
+      return name .. " " .. get_text(type_node, source)
+    end
+    return name
+  end
+
+  local function add_field(out, id_node, source, type_node, range_node)
+    local text = field_text(id_node, source, type_node)
+    if text then
+      local lr = format_range(line_start(range_node), line_end(range_node))
+      out[#out + 1] = ranged(text, lr)
+    end
+  end
+
   local function extract_field_like(node, source, out)
     local type_node = find_child(node, "type")
     for _, child in ipairs(node:children()) do
       local ckind = child:type()
-      if ckind == "initialized_identifier" then
-        local name_node = child:field("name")[1]
-        if name_node then
-          local name = get_text(name_node, source)
-          local text = type_node and (name .. " " .. get_text(type_node, source)) or name
-          local lr = format_range(line_start(child), line_end(child))
-          out[#out + 1] = ranged(text, lr)
-        end
-      elseif ckind == "static_final_declaration" then
-        local name_node = child:field("name")[1]
-        if name_node then
-          local name = get_text(name_node, source)
-          local text = type_node and (name .. " " .. get_text(type_node, source)) or name
-          local lr = format_range(line_start(child), line_end(child))
-          out[#out + 1] = ranged(text, lr)
-        end
-      elseif ckind == "identifier" then
-        local name = get_text(child, source)
-        local text = type_node and (name .. " " .. get_text(type_node, source)) or name
-        local lr = format_range(line_start(child), line_end(child))
-        out[#out + 1] = ranged(text, lr)
-      elseif FIELD_LIST_KINDS[ckind] then
+      local list_kind = FIELD_LIST_KINDS[ckind]
+      if list_kind then
         for _, id in ipairs(child:children()) do
-          local ikind = id:type()
-          local list_item_kind = FIELD_LIST_KINDS[ckind]
-          if ikind == list_item_kind or (list_item_kind == "identifier" and ikind == "identifier") then
-            if list_item_kind == "identifier" then
-              local name = get_text(id, source)
-              local text = type_node and (name .. " " .. get_text(type_node, source)) or name
-              local lr = format_range(line_start(id), line_end(id))
-              out[#out + 1] = ranged(text, lr)
-            else
-              local name_node = id:field("name")[1]
-              if name_node then
-                local name = get_text(name_node, source)
-                local text = type_node and (name .. " " .. get_text(type_node, source)) or name
-                local lr = format_range(line_start(id), line_end(id))
-                out[#out + 1] = ranged(text, lr)
-              end
-            end
+          if id:type() == list_kind then
+            add_field(out, id, source, type_node, id)
           end
         end
+      elseif ckind == "initialized_identifier" or ckind == "static_final_declaration" or ckind == "identifier" then
+        add_field(out, child, source, type_node, child)
       end
     end
   end
