@@ -80,9 +80,7 @@ pub(crate) fn lua_to_json(val: &Value) -> LuaResult<JsonValue> {
         Value::String(s) => JsonValue::String(s.to_str()?.to_owned()),
         Value::Table(tbl) => {
             let is_array = tbl
-                .get_metatable()
-                .ok()
-                .flatten()
+                .metatable()
                 .and_then(|meta| meta.get::<bool>(JSON_ARRAY_MARKER).ok())
                 .unwrap_or(false);
 
