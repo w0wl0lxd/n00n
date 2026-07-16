@@ -1,5 +1,13 @@
-use mlua::{Lua, Result as LuaResult, Value};
+use mlua::{Lua, Result as LuaResult, Table, Value};
 use serde_json::Value as JsonValue;
+
+const JSON_ARRAY_MARKER: &str = "__maki_json_array";
+
+fn array_metatable(lua: &Lua) -> LuaResult<Table> {
+    let meta = lua.create_table()?;
+    meta.set(JSON_ARRAY_MARKER, true)?;
+    Ok(meta)
+}
 
 pub(crate) fn err_pair(lua: &Lua, e: impl std::fmt::Display) -> LuaResult<(Value, Value)> {
     Ok((Value::Nil, Value::String(lua.create_string(e.to_string())?)))
@@ -44,6 +52,7 @@ pub(crate) fn json_to_lua(lua: &Lua, value: &JsonValue) -> LuaResult<Value> {
             for (idx, item) in items.iter().enumerate() {
                 table.set(idx + 1, json_to_lua(lua, item)?)?;
             }
+            table.set_metatable(Some(array_metatable(lua)?))?;
             Value::Table(table)
         }
         JsonValue::Object(map) => {
@@ -70,8 +79,15 @@ pub(crate) fn lua_to_json(val: &Value) -> LuaResult<JsonValue> {
             .unwrap_or(JsonValue::Null),
         Value::String(s) => JsonValue::String(s.to_str()?.to_owned()),
         Value::Table(tbl) => {
+            let is_array = tbl
+                .get_metatable()
+                .ok()
+                .flatten()
+                .and_then(|meta| meta.get::<bool>(JSON_ARRAY_MARKER).ok())
+                .unwrap_or(false);
+
             let len = tbl.raw_len();
-            if len > 0 {
+            if is_array || len > 0 {
                 let mut arr = Vec::with_capacity(len);
                 for i in 1..=len {
                     let v: Value = tbl.raw_get(i)?;
@@ -221,6 +237,8 @@ mod tests {
         "3.14",
         r#""hello""#,
         "[1,2,3]",
+        "[]",
+        r#"{}"#,
         r#"{"a":1,"b":[true,"x"]}"#,
     ];
 
@@ -230,7 +248,9 @@ mod tests {
     #[test_case(3 ; "float")]
     #[test_case(4 ; "string")]
     #[test_case(5 ; "array")]
-    #[test_case(6 ; "nested_object")]
+    #[test_case(6 ; "empty_array")]
+    #[test_case(7 ; "empty_object")]
+    #[test_case(8 ; "nested_object")]
     fn lua_to_json_roundtrip(idx: usize) {
         let original: JsonValue = serde_json::from_str(ROUNDTRIP_CASES[idx]).unwrap();
         let lua = Lua::new();
