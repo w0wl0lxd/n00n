@@ -27,6 +27,7 @@ require("tests.lang.ruby")
 require("tests.lang.rust")
 require("tests.lang.scala")
 require("tests.lang.swift")
+require("tests.lang.toml")
 require("tests.lang.typescript")
 require("tests.lang.zig")
 
