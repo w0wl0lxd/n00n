@@ -48,6 +48,7 @@ local EXT_TO_LANG = {
   zig = "zig",
   nix = "nix",
   dart = "dart",
+  sql = "sql",
 }
 
 local FILENAME_TO_LANG = {
