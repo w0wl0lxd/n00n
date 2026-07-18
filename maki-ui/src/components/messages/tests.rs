@@ -928,6 +928,50 @@ fn streaming_with_cached_segments_shows_end_on_auto_scroll() {
 }
 
 #[test]
+fn auto_scroll_approaches_bottom_smoothly() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.streaming_text.set_buffer(
+        &(0..50)
+            .map(|i| format!("stream_{i}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    panel.scroll_top = 0;
+    panel.auto_scroll = true;
+
+    let mut terminal = render(&mut panel, 80, 10);
+    let first = panel.scroll_top;
+    assert!(
+        first > 0 && first < 40,
+        "should not jump straight to bottom"
+    );
+
+    for _ in 0..12 {
+        terminal.draw(|f| panel.view(f, f.area(), false)).unwrap();
+    }
+    assert_eq!(
+        panel.scroll_top, 40,
+        "should reach bottom after a few frames"
+    );
+    assert!(panel.auto_scroll);
+}
+
+#[test]
+fn streaming_content_height_is_cached() {
+    use crate::components::streaming_content::StreamingContent;
+    use ratatui::style::Style;
+
+    let mut sc = StreamingContent::new("", Style::default(), Style::default(), 0);
+    sc.set_buffer("this is a very long line that definitely needs to wrap when the width is only forty characters\nshort");
+    let first = sc.height(80);
+    let second = sc.height(80);
+    assert_eq!(first, second);
+
+    let narrow = sc.height(40);
+    assert!(narrow > first, "width change should recompute height");
+}
+
+#[test]
 fn search_text_includes_truncated_bash_output() {
     let full_output = (0..100)
         .map(|i| format!("line {i}"))

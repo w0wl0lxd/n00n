@@ -5,7 +5,9 @@ mod selection;
 mod tests;
 
 use self::render::RenderCursor;
-use self::segment::{Segment, SegmentCache, wrapped_line_count};
+use self::segment::{Segment, SegmentCache};
+
+pub(crate) use self::segment::wrapped_line_count;
 
 use super::tool_display::{
     RenderCtx, ToolLines, append_annotation, append_right_info, assistant_style,
@@ -759,19 +761,19 @@ impl MessagesPanel {
             }
             streaming_heights.push(collapsed_thinking_lines.len() as u16);
         } else if !self.streaming_thinking.is_empty() {
-            let lines = self.streaming_thinking.render_lines(width);
+            let h = self.streaming_thinking.height(width);
             if cached_count > 0 || !streaming_heights.is_empty() {
                 streaming_heights.push(1);
             }
-            streaming_heights.push(wrapped_line_count(lines, width));
+            streaming_heights.push(h);
         }
 
         if !self.streaming_text.is_empty() {
-            let lines = self.streaming_text.render_lines(width);
+            let h = self.streaming_text.height(width);
             if cached_count > 0 || !streaming_heights.is_empty() {
                 streaming_heights.push(1);
             }
-            streaming_heights.push(wrapped_line_count(lines, width));
+            streaming_heights.push(h);
         }
 
         let cached_height = self.cache.total_height(width);
@@ -785,7 +787,11 @@ impl MessagesPanel {
                 self.auto_scroll = true;
             }
             if self.auto_scroll {
-                self.scroll_top = max_scroll;
+                let diff = max_scroll.saturating_sub(self.scroll_top);
+                if diff > 0 {
+                    let step = diff.div_ceil(4).max(1);
+                    self.scroll_top = self.scroll_top.saturating_add(step).min(max_scroll);
+                }
             }
         }
 
