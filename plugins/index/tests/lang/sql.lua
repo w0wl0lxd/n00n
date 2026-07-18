@@ -62,6 +62,12 @@ case("sql_create_index", function()
   has(out, { "INDEX idx_users_email ON users(email)" })
 end)
 
+case("sql_create_index_with_modifiers", function()
+  local src = "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email);\n"
+  local out = idx(src, "sql")
+  has(out, { "INDEX idx_users_email ON users(email)" })
+end)
+
 case("sql_create_index_unnamed", function()
   local src = "CREATE INDEX ON users (email, name);\n"
   local out = idx(src, "sql")
