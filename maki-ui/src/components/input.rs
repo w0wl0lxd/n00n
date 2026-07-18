@@ -77,6 +77,7 @@ pub struct InputBox {
     follow_cursor: bool,
     placeholder_hint: &'static str,
     pending_images: Vec<ImageSource>,
+    max_input_lines: u16,
 }
 
 impl InputBox {
@@ -166,7 +167,12 @@ impl InputBox {
             follow_cursor: true,
             placeholder_hint: random_placeholder_hint(),
             pending_images: Vec::new(),
+            max_input_lines: MAX_INPUT_LINES,
         }
+    }
+
+    pub fn set_max_input_lines(&mut self, max: u32) {
+        self.max_input_lines = max.clamp(1, u16::MAX as u32 - 2) as u16;
     }
 
     pub fn copy_text(&self) -> String {
@@ -198,7 +204,8 @@ impl InputBox {
         if !self.pending_images.is_empty() {
             visual_lines += 1;
         }
-        (visual_lines as u16).min(MAX_INPUT_LINES) + 2
+        let capped = visual_lines.min(self.max_input_lines as usize);
+        (capped + 2) as u16
     }
 
     pub fn is_at_first_line(&self) -> bool {
@@ -670,6 +677,16 @@ mod tests {
         }
         assert!(input.height(TEST_WIDTH) > base);
         assert!(input.height(TEST_WIDTH) <= MAX_INPUT_LINES + 2);
+    }
+
+    #[test]
+    fn height_respects_configured_max() {
+        let mut input = InputBox::new(InputHistory::default());
+        input.set_max_input_lines(3);
+        for _ in 0..10 {
+            input.buffer.add_line();
+        }
+        assert_eq!(input.height(TEST_WIDTH), 3 + 2);
     }
 
     #[test]
