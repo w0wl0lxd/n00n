@@ -71,24 +71,55 @@ pub(crate) fn lua_to_json(lua: &Lua, val: &Value) -> LuaResult<JsonValue> {
             .unwrap_or(JsonValue::Null),
         Value::String(s) => JsonValue::String(s.to_str()?.to_owned()),
         Value::Table(tbl) => {
-            let len = tbl.raw_len();
-            let is_array = len > 0 || tbl.metatable().as_ref() == Some(&lua.array_metatable());
-
-            if is_array {
+            // Tables created by json_to_lua for JSON arrays carry the array
+            // metatable. Honor it explicitly so empty arrays roundtrip.
+            if tbl.metatable().as_ref() == Some(&lua.array_metatable()) {
+                let len = tbl.raw_len();
                 let mut arr = Vec::with_capacity(len);
                 for i in 1..=len {
                     let v: Value = tbl.raw_get(i)?;
                     arr.push(lua_to_json(lua, &v)?);
                 }
-                JsonValue::Array(arr)
-            } else {
-                let mut map = serde_json::Map::new();
-                for pair in tbl.pairs::<String, Value>() {
-                    let (k, v) = pair?;
-                    map.insert(k, lua_to_json(lua, &v)?);
-                }
-                JsonValue::Object(map)
+                return Ok(JsonValue::Array(arr));
             }
+
+            let len = tbl.raw_len();
+            if len > 0 {
+                // A table with an array part might still carry hash keys (e.g.
+                // a tool input table that accidentally picked up an integer
+                // key). Scan the keys: if any non-positive-integer key exists,
+                // serialize as an object so string keys are not dropped.
+                let mut has_non_int = false;
+                for pair in tbl.pairs::<Value, Value>() {
+                    let (k, _) = pair?;
+                    if !matches!(k, Value::Integer(i) if i > 0) {
+                        has_non_int = true;
+                        break;
+                    }
+                }
+                if !has_non_int {
+                    let mut arr = Vec::with_capacity(len);
+                    for i in 1..=len {
+                        let v: Value = tbl.raw_get(i)?;
+                        arr.push(lua_to_json(lua, &v)?);
+                    }
+                    return Ok(JsonValue::Array(arr));
+                }
+            }
+
+            let mut map = serde_json::Map::new();
+            for pair in tbl.pairs::<Value, Value>() {
+                let (k, v) = pair?;
+                let key = match k {
+                    Value::String(s) => s.to_str()?.to_owned(),
+                    Value::Integer(i) => i.to_string(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Boolean(b) => b.to_string(),
+                    _ => continue,
+                };
+                map.insert(key, lua_to_json(lua, &v)?);
+            }
+            JsonValue::Object(map)
         }
         _ => JsonValue::Null,
     })
@@ -200,6 +231,20 @@ mod tests {
         let result = lua_to_json(&lua, &Value::Table(tbl)).unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), len);
+    }
+
+    #[test]
+    fn lua_to_json_mixed_table_becomes_object() {
+        let lua = Lua::new();
+        let tbl = lua.create_table().unwrap();
+        tbl.raw_set(1, "first").unwrap();
+        tbl.set("pattern", "grep").unwrap();
+
+        let result = lua_to_json(&lua, &Value::Table(tbl)).unwrap();
+        assert_eq!(
+            result,
+            serde_json::json!({"1": "first", "pattern": "grep"})
+        );
     }
 
     #[test]
