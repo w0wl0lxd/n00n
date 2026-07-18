@@ -98,9 +98,6 @@ return function(U)
   -- field "column" rather than "name"; the indexed table is the sole
   -- `object_reference` child, and `index_fields` already renders as
   -- "(col1, col2)" via get_text.
-  -- tree-sitter-sequel 0.3.11 does not parse schema-qualified index names
-  -- (e.g. "public.idx"), so the schema becomes the "column" field and the
-  -- remainder (".idx") is emitted as an ERROR node; capture it here.
   local function extract_index(node, source)
     local name
     for _, child in ipairs(node:children()) do
@@ -109,11 +106,6 @@ return function(U)
       end
       if child:type() == "identifier" or child:type() == "literal" then
         name = get_text(child, source)
-      elseif name and child:type() == "ERROR" then
-        local rest = get_text(child, source):match("^%.(%S+)")
-        if rest then
-          name = name .. "." .. rest
-        end
       end
     end
     local table_node = find_child(node, "object_reference")

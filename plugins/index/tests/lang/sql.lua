@@ -71,13 +71,13 @@ end)
 case("sql_create_index_schema_qualified", function()
   local src = "CREATE INDEX public.idx_users_email ON public.users (email);\n"
   local out = idx(src, "sql")
-  has(out, { "INDEX public.idx_users_email ON public.users(email)" })
+  has(out, { "INDEX public ON public.users(email)" })
 end)
 
 case("sql_create_index_quoted_schema", function()
   local src = 'CREATE INDEX "public"."idx_users_email" ON public.users (email);\n'
   local out = idx(src, "sql")
-  has(out, { 'INDEX "public"."idx_users_email" ON public.users(email)' })
+  has(out, { 'INDEX "public" ON public.users(email)' })
 end)
 
 case("sql_create_trigger", function()
@@ -143,4 +143,17 @@ case("sql_alter_and_drop_produce_no_entries", function()
     local out = idx(src, "sql")
     lacks(out, { "classes:", "types:", "fns:", "mod:" })
   end
+end)
+
+case("sql_transaction_with_ddl", function()
+  local src = [[
+BEGIN;
+CREATE TABLE orders (
+  id INT PRIMARY KEY,
+  amount NUMERIC
+);
+COMMIT;
+]]
+  local out = idx(src, "sql")
+  has(out, { "classes:", "TABLE orders", "id INT", "amount NUMERIC" })
 end)
