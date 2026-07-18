@@ -22,6 +22,8 @@ use ratatui::style::Color;
 pub(crate) const DONE_TEXT: &str = "Done!";
 pub(crate) const ERROR_TEXT: &str = "Error";
 pub(crate) const CANCELLED_TEXT: &str = "Cancelled";
+/// Messages rendered per frame when backfilling older history on resume.
+pub(crate) const RESTORE_BATCH_SIZE: usize = 32;
 
 pub enum ChatEventResult {
     Continue,
@@ -308,6 +310,10 @@ impl Chat {
 
     pub fn load_messages(&mut self, msgs: Vec<DisplayMessage>) {
         self.messages_panel.load_messages(msgs);
+    }
+
+    pub fn begin_restore(&mut self, msgs: Vec<DisplayMessage>, batch_size: usize) {
+        self.messages_panel.begin_restore(msgs, batch_size);
     }
 
     pub fn push_user_message(&mut self, text: impl Into<String>) {
