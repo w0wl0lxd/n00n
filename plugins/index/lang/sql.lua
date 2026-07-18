@@ -96,10 +96,15 @@ return function(U)
 
   -- create_index's optional name is exposed under the grammar field "column"
   -- (not "name"); the indexed table is the sole `object_reference` child, and
-  -- `index_fields` already renders as "(col1, col2)" via get_text.
+  -- `index_fields` already renders as "(col1, col2)" via get_text. The grammar
+  -- currently only yields the first identifier of a dotted name, so treat a
+  -- name followed by a dot as absent and fall back to the anonymous label.
   local function extract_index(node, source)
     local name_node = node:field("column")[1]
     local name = name_node and get_text(name_node, source)
+    if name and source:sub(name_node:end_byte() + 1, name_node:end_byte() + 1) == "." then
+      name = nil
+    end
     local table_node = find_child(node, "object_reference")
     local table_name = table_node and get_text(table_node, source) or "?"
     local fields_node = find_child(node, "index_fields")
