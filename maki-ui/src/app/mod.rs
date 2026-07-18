@@ -474,7 +474,7 @@ impl App {
             return Some(vec![]);
         }
         if key::SCROLL_BOTTOM.matches(key) {
-            self.active_chat().enable_auto_scroll();
+            self.active_chat().jump_to_bottom();
             return Some(vec![]);
         }
         if key::PLAN_TOGGLE.matches(key)

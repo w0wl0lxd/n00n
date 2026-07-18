@@ -200,6 +200,14 @@ impl Chat {
         self.messages_panel.enable_auto_scroll();
     }
 
+    pub fn jump_to_bottom(&mut self) {
+        self.messages_panel.jump_to_bottom();
+    }
+
+    pub fn jump_to_bottom_popup(&self) -> Option<Rect> {
+        self.messages_panel.jump_to_bottom_popup()
+    }
+
     pub fn scroll_to_segment(&mut self, segment_index: usize) {
         self.messages_panel.scroll_to_segment(segment_index);
     }
