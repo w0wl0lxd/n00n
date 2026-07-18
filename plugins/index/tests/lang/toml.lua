@@ -111,6 +111,42 @@ case("toml_table_field_truncation", function()
   lacks(out, { "k9 = 9", "[1 more truncated]" })
 end)
 
+case("toml_truncation_at_exact_threshold", function()
+  local src = "[data]\n"
+  for i = 1, 8 do
+    src = src .. "k" .. i .. " = " .. i .. "\n"
+  end
+  local out = idx(src, "toml")
+  has(out, { "[data]", "k1 = 1\n", "k8 = 8\n" })
+end)
+
+case("toml_quoted_and_dotted_keys", function()
+  local src = [==[
+    ["quoted.section"]
+    "weird.key" = 1
+    'single.quoted' = 2
+  ]==]
+  local out = idx(src, "toml")
+  has(out, {
+    '"quoted.section"',
+    "weird.key",
+    "single.quoted",
+  })
+end)
+
+case("toml_empty_table_and_top_level_pairs", function()
+  local src = [==[
+    top = "value"
+
+    [empty]
+
+    [next]
+    x = 1
+  ]==]
+  local out = idx(src, "toml")
+  has(out, { 'top = "value"', "[empty]", "[next]", "x" })
+end)
+
 case("toml_array_of_tables_multiple_elements", function()
   local src = [==[
     [[products]]
