@@ -3,6 +3,8 @@
 //! repo. `maki-docgen` calls [`site_page`] for the website; the plugin
 //! `require()` sandbox serves [`virtual_module`] to the skill plugin.
 
+use std::sync::LazyLock;
+
 use mlua::{Lua, Table};
 
 use crate::docs::{DocKind, FnDoc, ModuleDoc, api_docs};
@@ -121,6 +123,9 @@ const HELPERS_INTRO: &str = "## Shared helper modules\n\nThese ship inside maki;
 
 const FULL_SOURCE_MAX_BYTES: usize = 1024;
 
+static CACHED_REFERENCE: LazyLock<String> = LazyLock::new(reference);
+static CACHED_SKILL_CONTENT: LazyLock<String> = LazyLock::new(|| skill_content(&CACHED_REFERENCE));
+
 /// The skill carries the guide, example, and a line-numbered index into
 /// {reference}; the skill plugin writes the full reference to disk so the
 /// model reads only the sections it needs.
@@ -154,9 +159,9 @@ pub(crate) fn virtual_module(lua: &Lua, modname: &str) -> Option<mlua::Result<Ta
             table.set("name", NAME)?;
             table.set("description", DESCRIPTION)?;
             table.set("reference_placeholder", REFERENCE_PLACEHOLDER)?;
-            table.set("content", skill_content(&reference()))?;
+            table.set("content", &*CACHED_SKILL_CONTENT)?;
         } else {
-            table.set("content", reference())?;
+            table.set("content", &*CACHED_REFERENCE)?;
         }
         Ok(table)
     };
