@@ -68,6 +68,18 @@ case("sql_create_index_unnamed", function()
   has(out, { "INDEX ON users(email, name)" })
 end)
 
+case("sql_create_index_schema_qualified", function()
+  local src = "CREATE INDEX public.idx_users_email ON public.users (email);\n"
+  local out = idx(src, "sql")
+  has(out, { "INDEX public.idx_users_email ON public.users(email)" })
+end)
+
+case("sql_create_index_quoted_schema", function()
+  local src = 'CREATE INDEX "public"."idx_users_email" ON public.users (email);\n'
+  local out = idx(src, "sql")
+  has(out, { 'INDEX "public"."idx_users_email" ON public.users(email)' })
+end)
+
 case("sql_create_trigger", function()
   local src = [[
 CREATE TRIGGER set_updated_at

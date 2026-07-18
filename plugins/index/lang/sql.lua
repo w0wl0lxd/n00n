@@ -98,20 +98,32 @@ return function(U)
   -- field "column" rather than "name"; the indexed table is the sole
   -- `object_reference` child, and `index_fields` already renders as
   -- "(col1, col2)" via get_text.
+  -- tree-sitter-sequel 0.3.11 does not parse schema-qualified index names
+  -- (e.g. "public.idx"), so the schema becomes the "column" field and the
+  -- remainder (".idx") is emitted as an ERROR node; capture it here.
   local function extract_index(node, source)
-    local name_node = node:field("column")[1]
-    local name = name_node and get_text(name_node, source) or nil
+    local name
+    for _, child in ipairs(node:children()) do
+      if child:type() == "keyword_on" then
+        break
+      end
+      if child:type() == "identifier" or child:type() == "literal" then
+        name = get_text(child, source)
+      elseif name and child:type() == "ERROR" then
+        local rest = get_text(child, source):match("^%.(%S+)")
+        if rest then
+          name = name .. "." .. rest
+        end
+      end
+    end
     local table_node = find_child(node, "object_reference")
     local table_name = table_node and get_text(table_node, source) or "?"
     local fields_node = find_child(node, "index_fields")
     local cols = fields_node and compact_ws(get_text(fields_node, source)) or "()"
-    local label
     if name then
-      label = "INDEX " .. name .. " ON " .. table_name .. cols
-    else
-      label = "INDEX ON " .. table_name .. cols
+      return new_entry(SECTION.Function, node, "INDEX " .. name .. " ON " .. table_name .. cols)
     end
-    return new_entry(SECTION.Function, node, label)
+    return new_entry(SECTION.Function, node, "INDEX ON " .. table_name .. cols)
   end
 
   local function extract_type(node, source)
