@@ -474,6 +474,7 @@ impl FloatManager {
                 scroll_area,
                 scrollable as u16,
                 win.scroll_offset as u16,
+                None,
             );
         }
 

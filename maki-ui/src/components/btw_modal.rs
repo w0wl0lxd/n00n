@@ -150,7 +150,7 @@ impl BtwModal {
         frame.render_widget(paragraph, padded);
 
         if total > viewport_h {
-            render_vertical_scrollbar(frame, inner, total, scroll);
+            render_vertical_scrollbar(frame, inner, total, scroll, None);
         }
 
         popup
