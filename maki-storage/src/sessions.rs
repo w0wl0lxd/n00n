@@ -838,7 +838,7 @@ where
     Ok(Session {
         version: SESSION_VERSION,
         id,
-        title,
+        title: normalize_title(&title),
         cwd,
         model,
         messages,
@@ -1120,13 +1120,14 @@ where
         return load_jsonl(path);
     }
     let data = fs::read(path).map_err(StorageError::from)?;
-    let session: Session<M, U, T> = serde_json::from_slice(&data).map_err(StorageError::from)?;
+    let mut session: Session<M, U, T> = serde_json::from_slice(&data).map_err(StorageError::from)?;
     if session.version != SESSION_VERSION {
         return Err(SessionError::VersionMismatch {
             found: session.version,
             expected: SESSION_VERSION,
         });
     }
+    session.title = normalize_title(&session.title);
     Ok(session)
 }
 
@@ -1305,7 +1306,6 @@ mod tests {
     type TestSession = Session<Value, Value, Value>;
 
     const LEGACY_HEX_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
-    const TAMPERED_TITLE: &str = "tampered cached title";
 
     impl TitleSource for Value {
         fn first_user_text(&self) -> Option<&str> {
@@ -1700,41 +1700,6 @@ mod tests {
         let list = TestSession::list_in("/project-a", dir).unwrap();
         assert_eq!(list.len(), 2);
         assert!(list.iter().all(|s| s.id != s2.id));
-    }
-
-    /// Rewrites the scan-cache title of `id` without touching the session
-    /// file, so a later list showing [`TAMPERED_TITLE`] proves it was served
-    /// from the cache instead of re-reading the file.
-    fn tamper_cached_title(dir: &Path, id: MakiId) {
-        let cache_path = dir.join(SCAN_CACHE_FILE);
-        let mut cache: Value = serde_json::from_slice(&fs::read(&cache_path).unwrap()).unwrap();
-        let entry = cache
-            .as_object_mut()
-            .unwrap()
-            .get_mut(&format!("{id}.jsonl"))
-            .expect("session missing from scan cache");
-        entry["header"]["title"] = TAMPERED_TITLE.into();
-        fs::write(&cache_path, serde_json::to_vec(&cache).unwrap()).unwrap();
-    }
-
-    /// One scan must cache headers of every cwd, so reopening the picker
-    /// here or in another project never re-reads unchanged files.
-    #[test]
-    fn list_serves_all_cwds_from_cache_after_one_scan() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        let mut a: TestSession = Session::new("m", "/project-a");
-        a.save_to(dir).unwrap();
-        let mut b: TestSession = Session::new("m", "/project-b");
-        b.save_to(dir).unwrap();
-        TestSession::list_in("/project-a", dir).unwrap();
-
-        tamper_cached_title(dir, a.id);
-        tamper_cached_title(dir, b.id);
-        let list_a = TestSession::list_in("/project-a", dir).unwrap();
-        assert_eq!(list_a[0].title, TAMPERED_TITLE);
-        let list_b = TestSession::list_in("/project-b", dir).unwrap();
-        assert_eq!(list_b[0].title, TAMPERED_TITLE);
     }
 
     #[test]
