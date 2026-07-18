@@ -252,6 +252,7 @@ fn login_catalog_provider(provider: &ProviderData, storage: &StateDir) -> Result
     Ok(())
 }
 
+#[allow(semicolon_in_expressions_from_macros)]
 fn login_custom(storage: &StateDir) -> Result<()> {
     print!("  Provider name: ");
     io::stdout().flush()?;
@@ -547,6 +548,7 @@ pub fn models() {
     ));
 }
 
+#[allow(semicolon_in_expressions_from_macros)]
 pub fn index(path: &str, no_plugins: bool, no_jit: bool) -> Result<()> {
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
     load_env_files(&cwd);
@@ -590,6 +592,7 @@ pub fn index(path: &str, no_plugins: bool, no_jit: bool) -> Result<()> {
     Ok(())
 }
 
+#[allow(semicolon_in_expressions_from_macros)]
 pub fn mcp_auth(server: &str, storage: &StateDir) -> Result<()> {
     smol::block_on(async {
         let cwd = env::current_dir().unwrap_or_else(|_| ".".into());

@@ -9,6 +9,7 @@ use clap::Parser;
 
 use cli::Cli;
 
+#[allow(semicolon_in_expressions_from_macros)]
 fn main() {
     color_eyre::install().ok();
     if let Err(e) = cmd::dispatch(Cli::parse()) {
