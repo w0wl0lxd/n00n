@@ -441,7 +441,7 @@ impl SessionLog {
         let len = fs::metadata(&path).map_err(StorageError::from)?.len();
         if len > 0 {
             let mut file = File::open(&path).map_err(StorageError::from)?;
-            let tail = (len as usize).min(TAIL_BUF as usize);
+            let tail = len.min(TAIL_BUF) as usize;
             file.seek(SeekFrom::End(-(tail as i64)))
                 .map_err(StorageError::from)?;
             let mut buf = vec![0u8; tail];
@@ -449,18 +449,18 @@ impl SessionLog {
             let valid = buf
                 .iter()
                 .rposition(|&b| b == b'\n')
-                .map_or(0, |i| len as usize - tail + i + 1);
-            if valid < len as usize {
+                .map_or(0, |i| len - tail as u64 + i as u64 + 1);
+            if valid < len {
                 warn!(
                     path = %display_path,
-                    bytes = len - valid as u64,
+                    bytes = len - valid,
                     "truncating torn session log tail",
                 );
                 OpenOptions::new()
                     .write(true)
                     .open(&path)
                     .map_err(StorageError::from)?
-                    .set_len(valid as u64)
+                    .set_len(valid)
                     .map_err(StorageError::from)?;
             }
         }
@@ -895,20 +895,28 @@ where
     T: DeserializeOwned,
 {
     let mut state = ParseState::<M, U, T>::default();
-    let mut line = String::new();
+    let mut line_buf = Vec::new();
     let mut line_count = 0usize;
     loop {
-        line.clear();
-        let n = reader.read_line(&mut line).map_err(StorageError::from)?;
+        line_buf.clear();
+        let n = reader
+            .read_until(b'\n', &mut line_buf)
+            .map_err(StorageError::from)?;
         if n == 0 {
             break;
         }
         line_count += 1;
-        let trimmed = line.trim_end_matches(['\n', '\r']);
+        let mut trimmed = line_buf.as_slice();
+        if trimmed.ends_with(b"\n") {
+            trimmed = &trimmed[..trimmed.len() - 1];
+        }
+        if trimmed.ends_with(b"\r") {
+            trimmed = &trimmed[..trimmed.len() - 1];
+        }
         if trimmed.is_empty() {
             continue;
         }
-        state.fold_line(trimmed.as_bytes(), display_path, line_count)?;
+        state.fold_line(trimmed, display_path, line_count)?;
     }
     state.into_session(display_path)
 }
