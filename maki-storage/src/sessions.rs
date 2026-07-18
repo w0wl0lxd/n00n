@@ -434,25 +434,41 @@ impl SessionLog {
         T: Serialize + DeserializeOwned,
     {
         let path = jsonl_path(dir, session_id);
-        let bytes = fs::read(&path).map_err(StorageError::from)?;
-        let valid = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        let display_path = path.display().to_string();
 
-        if valid < bytes.len() {
-            warn!(
-                path = %path.display(),
-                bytes = bytes.len() - valid,
-                "truncating torn session log tail",
-            );
-            OpenOptions::new()
-                .write(true)
-                .open(&path)
-                .map_err(StorageError::from)?
-                .set_len(valid as u64)
+        // Truncate a torn tail (a partial final line from a crash) before
+        // parsing, so the stream reader never sees half a JSON record.
+        let len = fs::metadata(&path).map_err(StorageError::from)?.len();
+        if len > 0 {
+            let mut file = File::open(&path).map_err(StorageError::from)?;
+            let tail = (len as usize).min(TAIL_BUF as usize);
+            file.seek(SeekFrom::End(-(tail as i64)))
                 .map_err(StorageError::from)?;
+            let mut buf = vec![0u8; tail];
+            file.read_exact(&mut buf).map_err(StorageError::from)?;
+            let valid = buf
+                .iter()
+                .rposition(|&b| b == b'\n')
+                .map_or(0, |i| len as usize - tail + i + 1);
+            if valid < len as usize {
+                warn!(
+                    path = %display_path,
+                    bytes = len - valid as u64,
+                    "truncating torn session log tail",
+                );
+                OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .map_err(StorageError::from)?
+                    .set_len(valid as u64)
+                    .map_err(StorageError::from)?;
+            }
         }
 
-        let display = path.display().to_string();
-        let session = load_jsonl::<M, U, T>(&bytes[..valid], &display)?;
+        let session = {
+            let file = File::open(&path).map_err(StorageError::from)?;
+            parse_jsonl::<_, M, U, T>(BufReader::new(file), &display_path)?
+        };
 
         let file = OpenOptions::new()
             .append(true)
@@ -720,36 +736,71 @@ enum RawTag {
     Other,
 }
 
-fn load_jsonl<M, U, T>(data: &[u8], display_path: &str) -> Result<Session<M, U, T>, SessionError>
+// Streaming JSONL loader: parses a session log line-by-line from any reader
+// instead of buffering the whole file, keeping peak memory flat for large
+// session logs on resume.
+
+/// Accumulated session state while folding JSONL records. Shared by the
+/// in-memory (`&[u8]`) and streaming (reader) parse paths.
+struct ParseState<M, U, T> {
+    id: Option<MakiId>,
+    model: String,
+    cwd: String,
+    created_at: u64,
+    messages: Vec<M>,
+    tool_outputs: HashMap<String, T>,
+    subagent_messages: HashMap<String, Vec<M>>,
+    title: String,
+    token_usage: U,
+    updated_at: u64,
+    meta: SessionMeta,
+    got_header: bool,
+}
+
+impl<M, U, T> Default for ParseState<M, U, T>
+where
+    U: Default,
+{
+    fn default() -> Self {
+        Self {
+            id: None,
+            model: String::new(),
+            cwd: String::new(),
+            created_at: 0,
+            messages: Vec::new(),
+            tool_outputs: HashMap::new(),
+            subagent_messages: HashMap::new(),
+            title: DEFAULT_TITLE.to_string(),
+            token_usage: U::default(),
+            updated_at: 0,
+            meta: SessionMeta::default(),
+            got_header: false,
+        }
+    }
+}
+
+impl<M, U, T> ParseState<M, U, T>
 where
     M: DeserializeOwned,
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
-    let mut line_count = 0usize;
-
-    let mut id: Option<MakiId> = None;
-    let mut model = String::new();
-    let mut cwd = String::new();
-    let mut created_at = 0u64;
-    let mut messages = Vec::new();
-    let mut tool_outputs = HashMap::new();
-    let mut subagent_messages: HashMap<String, Vec<M>> = HashMap::new();
-    let mut title = DEFAULT_TITLE.to_string();
-    let mut token_usage = U::default();
-    let mut updated_at = 0u64;
-    let mut meta = SessionMeta::default();
-    let mut got_header = false;
-
-    for line in data.split(|&b| b == b'\n') {
-        line_count += 1;
+    /// Fold one JSONL line into the accumulated state. Empty lines are
+    /// ignored; unrecognized records are skipped (with a corrupt-header-id
+    /// check before the header is seen).
+    fn fold_line(
+        &mut self,
+        line: &[u8],
+        display_path: &str,
+        line_count: usize,
+    ) -> Result<(), SessionError> {
         if line.is_empty() {
-            continue;
+            return Ok(());
         }
         let record: LogRecord<M, U, T> = match serde_json::from_slice(line) {
             Ok(r) => r,
             Err(e) => {
-                if !got_header
+                if !self.got_header
                     && let Ok(RawTag::Header { id: raw_id }) = serde_json::from_slice(line)
                     && let Err(source) = raw_id.parse::<MakiId>()
                 {
@@ -765,7 +816,7 @@ where
                     line = line_count,
                     "skipping unrecognized JSONL record",
                 );
-                continue;
+                return Ok(());
             }
         };
         match record {
@@ -782,18 +833,18 @@ where
                         expected: LOG_FORMAT_VERSION,
                     });
                 }
-                id = Some(h_id);
-                model = h_model;
-                cwd = h_cwd;
-                created_at = h_created;
-                got_header = true;
+                self.id = Some(h_id);
+                self.model = h_model;
+                self.cwd = h_cwd;
+                self.created_at = h_created;
+                self.got_header = true;
             }
-            LogRecord::Msg { d } => messages.push(d),
+            LogRecord::Msg { d } => self.messages.push(d),
             LogRecord::Out { id: out_id, d } => {
-                tool_outputs.insert(out_id, d);
+                self.tool_outputs.insert(out_id, d);
             }
             LogRecord::SubMsg { sub, d } => {
-                subagent_messages.entry(sub).or_default().push(d);
+                self.subagent_messages.entry(sub).or_default().push(d);
             }
             LogRecord::Meta {
                 title: m_title,
@@ -801,30 +852,65 @@ where
                 updated_at: m_updated,
                 meta: m_meta,
             } => {
-                title = m_title;
-                token_usage = m_usage;
-                updated_at = m_updated;
-                meta = m_meta;
+                self.title = m_title;
+                self.token_usage = m_usage;
+                self.updated_at = m_updated;
+                self.meta = m_meta;
             }
         }
+        Ok(())
     }
 
-    let id = id.ok_or(StorageError::NotFound(display_path.to_string()))?;
+    fn into_session(self, display_path: &str) -> Result<Session<M, U, T>, SessionError> {
+        let id = self
+            .id
+            .ok_or_else(|| StorageError::NotFound(display_path.to_string()))?;
+        Ok(Session {
+            version: SESSION_VERSION,
+            id,
+            title: self.title,
+            cwd: self.cwd,
+            model: self.model,
+            messages: self.messages,
+            token_usage: self.token_usage,
+            tool_outputs: self.tool_outputs,
+            subagent_messages: self.subagent_messages,
+            meta: self.meta,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
 
-    Ok(Session {
-        version: SESSION_VERSION,
-        id,
-        title,
-        cwd,
-        model,
-        messages,
-        token_usage,
-        tool_outputs,
-        subagent_messages,
-        meta,
-        created_at,
-        updated_at,
-    })
+/// Parse a session log from any buffered reader, line by line. Avoids
+/// loading the whole file into memory at once.
+fn parse_jsonl<R, M, U, T>(
+    mut reader: R,
+    display_path: &str,
+) -> Result<Session<M, U, T>, SessionError>
+where
+    R: BufRead,
+    M: DeserializeOwned,
+    U: DeserializeOwned + Default,
+    T: DeserializeOwned,
+{
+    let mut state = ParseState::<M, U, T>::default();
+    let mut line = String::new();
+    let mut line_count = 0usize;
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).map_err(StorageError::from)?;
+        if n == 0 {
+            break;
+        }
+        line_count += 1;
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        state.fold_line(trimmed.as_bytes(), display_path, line_count)?;
+    }
+    state.into_session(display_path)
 }
 
 // -- CWD index --
@@ -1104,10 +1190,11 @@ where
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
-    let data = fs::read(path).map_err(StorageError::from)?;
     let mut session: Session<M, U, T> = if path.extension().is_some_and(|e| e == "jsonl") {
-        load_jsonl(&data, &path.display().to_string())?
+        let file = File::open(path).map_err(StorageError::from)?;
+        parse_jsonl::<_, M, U, T>(BufReader::new(file), &path.display().to_string())?
     } else {
+        let data = fs::read(path).map_err(StorageError::from)?;
         let session: Session<M, U, T> =
             serde_json::from_slice(&data).map_err(StorageError::from)?;
         if session.version != SESSION_VERSION {
