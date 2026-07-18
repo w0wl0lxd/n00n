@@ -72,23 +72,47 @@ pub(crate) fn lua_to_json(lua: &Lua, val: &Value) -> LuaResult<JsonValue> {
         Value::String(s) => JsonValue::String(s.to_str()?.to_owned()),
         Value::Table(tbl) => {
             let len = tbl.raw_len();
-            let is_array = len > 0 || tbl.metatable().as_ref() == Some(&lua.array_metatable());
 
-            if is_array {
+            // Tables created by json_to_lua for JSON arrays carry the array
+            // metatable, but a plugin can still attach string keys (e.g.
+            // `t.total = 5`). Scan the keys and only trust the metatable for an
+            // empty table, so a string key does not silently disappear. A
+            // non-positive-integer key, or an integer outside the 1..=len range
+            // (e.g. `{ [1] = "a", [10] = "b" }` when lua chooses len = 1),
+            // falls through to the object path so no key is dropped.
+            let mut has_non_int = false;
+            let mut any = false;
+            for pair in tbl.pairs::<Value, Value>() {
+                any = true;
+                let (k, _) = pair?;
+                if !matches!(k, Value::Integer(i) if i > 0 && (i as usize) <= len) {
+                    has_non_int = true;
+                    break;
+                }
+            }
+
+            if !has_non_int && (any || tbl.metatable().as_ref() == Some(&lua.array_metatable())) {
                 let mut arr = Vec::with_capacity(len);
                 for i in 1..=len {
                     let v: Value = tbl.raw_get(i)?;
                     arr.push(lua_to_json(lua, &v)?);
                 }
-                JsonValue::Array(arr)
-            } else {
-                let mut map = serde_json::Map::new();
-                for pair in tbl.pairs::<String, Value>() {
-                    let (k, v) = pair?;
-                    map.insert(k, lua_to_json(lua, &v)?);
-                }
-                JsonValue::Object(map)
+                return Ok(JsonValue::Array(arr));
             }
+
+            let mut map = serde_json::Map::new();
+            for pair in tbl.pairs::<Value, Value>() {
+                let (k, v) = pair?;
+                let key = match k {
+                    Value::String(s) => s.to_str()?.to_owned(),
+                    Value::Integer(i) => i.to_string(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Boolean(b) => b.to_string(),
+                    _ => continue,
+                };
+                map.insert(key, lua_to_json(lua, &v)?);
+            }
+            JsonValue::Object(map)
         }
         _ => JsonValue::Null,
     })
@@ -189,17 +213,39 @@ mod tests {
     }
 
     #[test]
-    fn lua_to_json_array_with_hole_reads_up_to_raw_len() {
+    fn lua_to_json_sparse_table_becomes_object() {
         let lua = Lua::new();
         let tbl = lua.create_table().unwrap();
         tbl.raw_set(1, "a").unwrap();
-        tbl.raw_set(2, Value::Nil).unwrap();
-        tbl.raw_set(3, "c").unwrap();
+        tbl.raw_set(10, "b").unwrap();
 
-        let len = tbl.raw_len();
         let result = lua_to_json(&lua, &Value::Table(tbl)).unwrap();
-        let arr = result.as_array().unwrap();
-        assert_eq!(arr.len(), len);
+        assert_eq!(result, serde_json::json!({"1": "a", "10": "b"}));
+    }
+
+    #[test]
+    fn lua_to_json_array_metatable_with_string_key_becomes_object() {
+        let lua = Lua::new();
+        let arr = json_to_lua(&lua, &serde_json::json!([10, 20])).unwrap();
+        let tbl = arr.as_table().unwrap();
+        tbl.set("total", 5).unwrap();
+
+        let result = lua_to_json(&lua, &arr).unwrap();
+        assert_eq!(result, serde_json::json!({"1": 10, "2": 20, "total": 5}));
+    }
+
+    #[test]
+    fn lua_to_json_mixed_table_becomes_object() {
+        let lua = Lua::new();
+        let tbl = lua.create_table().unwrap();
+        tbl.raw_set(1, "first").unwrap();
+        tbl.set("pattern", "grep").unwrap();
+
+        let result = lua_to_json(&lua, &Value::Table(tbl)).unwrap();
+        assert_eq!(
+            result,
+            serde_json::json!({"1": "first", "pattern": "grep"})
+        );
     }
 
     #[test]
