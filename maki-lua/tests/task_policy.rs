@@ -14,7 +14,6 @@ const TASK_PLUGIN_SRC: &str = include_str!("../../plugins/task/init.lua");
 
 // Mirrors of the plugin's error contracts and policy numbers.
 const STRUCTURED_OUTPUT_TOOL: &str = "structured_output";
-const MAX_STRUCTURED_RETRIES: usize = 2;
 const MAX_SCHEMA_ERRORS: usize = 3;
 const SCHEMA_COMPILE_ERROR: &str = "invalid output_schema";
 const STRUCTURED_MISSING_ERROR: &str = "subagent finished without calling structured_output";
@@ -121,6 +120,9 @@ maki.agent.session = function(ctx, opts)
   end
   function sess:close()
     recorder.closed = recorder.closed + 1
+  end
+  function sess:done(answer)
+    recorder.done_answer = answer
   end
   return sess
 end
@@ -284,7 +286,7 @@ fn invalid_then_valid_recovers_within_one_prompt() {
 }
 
 #[test]
-fn missing_structured_output_nudges_then_errors() {
+fn missing_structured_output_errors_without_nudging() {
     let (reg, _host) = load_task_host();
     let err = exec_tool(
         &reg,
@@ -295,11 +297,7 @@ fn missing_structured_output_nudges_then_errors() {
     assert_eq!(err, STRUCTURED_MISSING_ERROR);
 
     let snap = probe(&reg);
-    assert_eq!(snap["prompt_count"], json!(1 + MAX_STRUCTURED_RETRIES));
-    for i in 1..=MAX_STRUCTURED_RETRIES {
-        let nudge = snap["prompts"][i].as_str().expect("nudge prompt missing");
-        assert!(nudge.contains(STRUCTURED_OUTPUT_TOOL), "got: {nudge}");
-    }
+    assert_eq!(snap["prompt_count"], json!(1));
     assert_eq!(snap["closed"], json!(1));
 }
 
@@ -316,7 +314,7 @@ fn invalid_only_errors_with_bounded_schema_errors() {
     assert_eq!(err.lines().count(), 1 + MAX_SCHEMA_ERRORS, "got: {err}");
 
     let snap = probe(&reg);
-    assert_eq!(snap["prompt_count"], json!(1 + MAX_STRUCTURED_RETRIES));
+    assert_eq!(snap["prompt_count"], json!(1));
     let first_err = snap["first_err"].as_str().expect("first_err missing");
     assert_eq!(
         first_err.lines().count(),
@@ -335,15 +333,17 @@ fn prompt_error_maps_to_sub_agent_error() {
 }
 
 #[test]
-fn plain_path_returns_text_without_local_tools() {
+fn plain_path_returns_text_with_done_local_tool() {
     let (reg, _host) = load_task_host();
     let out = exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_PLAIN, None)).unwrap();
     assert_eq!(out, PLAIN_TEXT);
 
     let snap = probe(&reg);
-    assert_eq!(snap["has_local_tools"], json!(false));
+    assert_eq!(snap["has_local_tools"], json!(true));
     assert_eq!(snap["prompt_count"], json!(1));
-    assert_eq!(snap["prompts"][0], json!(TASK_PROMPT));
+    let prompt = snap["prompts"][0].as_str().expect("prompt missing");
+    assert!(prompt.starts_with(TASK_PROMPT), "got: {prompt}");
+    assert!(prompt.contains("done"), "prompt should mention done tool: {prompt}");
     assert_eq!(snap["closed"], json!(1));
 }
 
