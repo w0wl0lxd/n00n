@@ -1,4 +1,5 @@
 use crate::animation::Typewriter;
+use crate::components::messages::wrapped_line_count;
 use crate::markdown::paint_semantic;
 use crate::theme;
 
@@ -22,6 +23,7 @@ const STREAMING_MAX_LINE_BYTES: usize = 5_000;
 struct StreamingCache {
     key: Option<CacheKey>,
     lines: Vec<Line<'static>>,
+    rendered_height: Option<(u16, u16)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,7 @@ impl StreamingCache {
     fn invalidate(&mut self) {
         self.key = None;
         self.lines.clear();
+        self.rendered_height = None;
     }
 
     /// Returns `true` when the cache was repopulated. The caller passes a
@@ -72,6 +75,7 @@ impl StreamingCache {
         let semantic = renderer.render(text.as_ref(), width, theme_gen);
         self.lines = paint_semantic(&semantic, prefix, text_style, prefix_style);
         self.key = Some(key);
+        self.rendered_height = None;
         true
     }
 }
@@ -139,7 +143,7 @@ impl StreamingContent {
 
     pub fn render_lines(&mut self, width: u16) -> &[Line<'static>] {
         self.typewriter.tick();
-        self.cache.get_or_update(
+        let repopulated = self.cache.get_or_update(
             &mut self.renderer,
             self.typewriter.visible(),
             self.prefix,
@@ -147,11 +151,20 @@ impl StreamingContent {
             self.prefix_style,
             width,
         );
+        if repopulated || self.cache.rendered_height.is_none_or(|(w, _)| w != width) {
+            let height = wrapped_line_count(&self.cache.lines, width);
+            self.cache.rendered_height = Some((width, height));
+        }
         &self.cache.lines
     }
 
     pub fn cached_lines(&self) -> &[Line<'static>] {
         &self.cache.lines
+    }
+
+    pub fn height(&mut self, width: u16) -> u16 {
+        self.render_lines(width);
+        self.cache.rendered_height.map(|(_, h)| h).unwrap_or(0)
     }
 
     #[cfg(test)]
