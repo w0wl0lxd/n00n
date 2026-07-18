@@ -106,8 +106,9 @@ case("toml_table_field_truncation", function()
   for i = 1, 9 do
     src = src .. "k" .. i .. " = " .. i .. "\n"
   end
-  local text = idx(src, "toml")
-  has(text, { "[data]", "k1", "k9" })
+  local out = idx(src, "toml")
+  has(out, { "[data]", "k1 = 1\n", "k8 = 8\n", "k9\n" })
+  lacks(out, { "k9 = 9", "[1 more truncated]" })
 end)
 
 case("toml_array_of_tables_multiple_elements", function()

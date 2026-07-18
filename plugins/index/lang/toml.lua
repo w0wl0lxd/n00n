@@ -4,8 +4,10 @@
 -- classes, so this uses the custom `extract` style (like lang/nix.lua)
 -- instead of the shared extract_nodes/default_extract loop: each top-level
 -- `[table]` / `[[table_array_element]]` becomes a Constant entry labeled
--- with its dotted path, with its direct `pair` children flattened into
--- `key = value` lines (truncated and capped like nix's nested attrsets).
+-- with its dotted path, with its direct `pair` children flattened into lines.
+-- The first FIELD_TRUNCATE_THRESHOLD pairs render as `key = value` (value
+-- truncated), and the rest render as `key` only, so every key is visible
+-- without exploding the skeleton.
 -- Top-level pairs (before any table header) become their own Constant
 -- entries, mirroring how lang/nix.lua renders top-level bindings.
 --
@@ -20,6 +22,7 @@ return function(U)
   local new_entry = U.new_entry
   local format_skeleton = U.format_skeleton
   local SECTION = U.SECTION
+  local FIELD_TRUNCATE_THRESHOLD = U.FIELD_TRUNCATE_THRESHOLD
 
   local VALUE_TRUNCATE = 60
 
@@ -62,17 +65,19 @@ return function(U)
   -- Inline tables/arrays and multiline strings are rendered as a single
   -- truncated line rather than recursed into -- only `[table]` /
   -- `[[table_array_element]]` headers create nesting in the skeleton.
-  local function format_pair(node, source)
+  local function format_pair(node, source, include_value)
+    if include_value == nil then
+      include_value = true
+    end
     local key, value = pair_key_value(node)
     if not key then
       return nil
     end
     local key_text = get_text(key, source)
-    if not value then
-      return key_text
+    if include_value and value then
+      return key_text .. " = " .. truncate(compact_ws(get_text(value, source)), VALUE_TRUNCATE)
     end
-    local value_text = truncate(compact_ws(get_text(value, source)), VALUE_TRUNCATE)
-    return key_text .. " = " .. value_text
+    return key_text
   end
 
   local function table_header(node)
@@ -100,9 +105,8 @@ return function(U)
     local label = is_array and ("[[" .. path .. "]]") or ("[" .. path .. "]")
     local entry = new_entry(SECTION.Constant, node, label)
 
-    local pairs_list = table_pairs(node)
-    for _, p in ipairs(pairs_list) do
-      local text = format_pair(p, source)
+    for i, p in ipairs(table_pairs(node)) do
+      local text = format_pair(p, source, i <= FIELD_TRUNCATE_THRESHOLD)
       if text then
         entry.children[#entry.children + 1] = text
       end
