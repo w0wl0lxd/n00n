@@ -278,8 +278,16 @@ impl PluginHost {
             .map_err(|_| PluginError::HostDead)?;
             replies.push(reply_rx);
         }
+        let mut first_err = None;
         for rx in replies {
-            rx.recv().map_err(|_| PluginError::HostDead)??;
+            if let Err(e) = rx.recv().map_err(|_| PluginError::HostDead)?
+                && first_err.is_none()
+            {
+                first_err = Some(e);
+            }
+        }
+        if let Some(err) = first_err {
+            return Err(err);
         }
         Ok(())
     }
