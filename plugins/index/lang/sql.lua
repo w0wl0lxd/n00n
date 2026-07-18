@@ -102,8 +102,11 @@ return function(U)
   local function extract_index(node, source)
     local name_node = node:field("column")[1]
     local name = name_node and get_text(name_node, source)
-    if name and source:sub(name_node:end_byte() + 1, name_node:end_byte() + 1) == "." then
-      name = nil
+    if name then
+      local _, _, end_byte = name_node:end_()
+      if source:sub(end_byte + 1, end_byte + 1) == "." then
+        name = nil
+      end
     end
     local table_node = find_child(node, "object_reference")
     local table_name = table_node and get_text(table_node, source) or "?"
