@@ -665,15 +665,14 @@ fn resolve_session(cli: &Cli, cwd: &str) -> Result<(Option<SessionRef>, Vec<Mess
         (None, Vec::new())
     };
 
-    let cli_session_id = cli.session_id.as_deref().map(|s| {
-        s.parse::<SessionRef>()
-            .map_err(|e| eyre!("invalid session id {s:?}: {e}"))
-    });
-    let cli_session_id = match cli_session_id {
-        Some(Ok(id)) => Some(id),
-        Some(Err(e)) => return Err(e),
-        None => None,
-    };
+    let cli_session_id = cli
+        .session_id
+        .as_deref()
+        .map(|s| {
+            s.parse::<SessionRef>()
+                .map_err(|e| eyre!("invalid session id {s:?}: {e}"))
+        })
+        .transpose()?;
 
     Ok((cli_session_id.or(resumed_id), history))
 }

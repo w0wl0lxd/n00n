@@ -867,7 +867,7 @@ fn is_jsonl(path: &Path) -> bool {
 
 fn remove_legacy_files(dir: &Path, id: MakiId) -> Result<bool, SessionError> {
     let mut removed = try_remove(&json_path(dir, id))?;
-    for legacy in find_legacy_files(dir, id) {
+    for legacy in find_legacy_files(dir, id)? {
         removed |= try_remove(&legacy)?;
     }
     Ok(removed)
@@ -953,8 +953,9 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
     let mut cache = load_scan_cache(dir);
     let mut fresh = ScanCache::new();
     let mut dirty = false;
-    let mut out = Vec::new();
+    let mut selected = HashMap::<MakiId, (bool, SessionSummary)>::new();
     for path in session_entries(dir)? {
+        let from_jsonl = is_jsonl(&path);
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
@@ -965,7 +966,7 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
             Some(e) if e.size == size && e.mtime_ms == mtime_ms => e,
             _ => {
                 dirty = true;
-                let header = if is_jsonl(&path) {
+                let header = if from_jsonl {
                     scan_jsonl_header(&path)
                 } else {
                     scan_legacy_header(&path)
@@ -979,12 +980,19 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
         };
         if let Some(h) = &entry.header
             && h.cwd == cwd
+            && selected.get(&h.id).is_none_or(|(jsonl, _)| from_jsonl && !*jsonl)
         {
-            out.push(SessionSummary {
-                id: h.id,
-                title: normalize_title(&h.title),
-                updated_at: h.updated_at,
-            });
+            selected.insert(
+                h.id,
+                (
+                    from_jsonl,
+                    SessionSummary {
+                        id: h.id,
+                        title: normalize_title(&h.title),
+                        updated_at: h.updated_at,
+                    },
+                ),
+            );
         }
         fresh.insert(name.to_owned(), entry);
     }
@@ -995,7 +1003,7 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
     {
         warn!(error = %e, "failed to write session scan cache");
     }
-    Ok(out)
+    Ok(selected.into_values().map(|(_, s)| s).collect())
 }
 
 const TAIL_BUF: u64 = 4096;
@@ -1077,32 +1085,31 @@ fn is_session_file(p: &Path) -> bool {
         && p.extension().is_some_and(|e| e == "json" || e == "jsonl")
 }
 
-fn find_legacy_files(dir: &Path, id: MakiId) -> Vec<PathBuf> {
+fn find_legacy_files(dir: &Path, id: MakiId) -> Result<Vec<PathBuf>, SessionError> {
     let canonical = id.to_string();
-    session_entries(dir)
-        .unwrap_or_default()
+    Ok(session_entries(dir)?
         .into_iter()
         .filter(|p| {
             p.file_stem()
                 .and_then(|s| s.to_str())
                 .is_some_and(|s| s != canonical && s.parse::<MakiId>() == Ok(id))
         })
-        .collect()
+        .collect())
 }
 
-fn locate_session_file(dir: &Path, id: MakiId) -> Option<PathBuf> {
+fn locate_session_file(dir: &Path, id: MakiId) -> Result<Option<PathBuf>, SessionError> {
     for ext in ["jsonl", "json"] {
         let path = dir.join(format!("{id}.{ext}"));
         if path.exists() {
-            return Some(path);
+            return Ok(Some(path));
         }
     }
-    let legacy = find_legacy_files(dir, id);
-    legacy
+    let legacy = find_legacy_files(dir, id)?;
+    Ok(legacy
         .iter()
         .find(|p| is_jsonl(p))
         .or_else(|| legacy.first())
-        .cloned()
+        .cloned())
 }
 
 fn load_session_at<M, U, T>(path: &Path) -> Result<Session<M, U, T>, SessionError>
@@ -1199,10 +1206,16 @@ where
     }
 
     pub fn load_from(id: MakiId, dir: &Path) -> Result<Self, SessionError> {
-        let Some(path) = locate_session_file(dir, id) else {
+        let Some(path) = locate_session_file(dir, id)? else {
             return Err(StorageError::NotFound(id.to_string()).into());
         };
         let session = load_session_at::<M, U, T>(&path)?;
+        if session.id != id {
+            return Err(SessionError::IdMismatch {
+                log_id: session.id,
+                given_id: id,
+            });
+        }
         let canonical = jsonl_path(dir, id);
         if path != canonical {
             if let Err(e) = SessionLog::write_canonical(dir, &session) {
