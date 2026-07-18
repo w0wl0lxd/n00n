@@ -261,7 +261,7 @@ fn jump_to_bottom_popup_appears_when_scrolled_up() {
     assert!(text.contains(key::SCROLL_BOTTOM.label));
 
     panel.jump_to_bottom();
-    assert!(panel.auto_scroll());
+    assert!(panel.auto_scroll);
     render(&mut panel, 80, 10);
     assert!(panel.jump_to_bottom_popup().is_none());
 }
