@@ -79,7 +79,10 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), StorageError> {
         let _ = fs::remove_file(&tmp_path);
         StorageError::Io(e)
     })?;
-    Ok(sync_dir(parent)?)
+    if let Err(e) = sync_dir(parent) {
+        tracing::warn!(error = %e, "failed to sync parent directory");
+    }
+    Ok(())
 }
 
 pub(crate) fn atomic_write_permissions(
@@ -101,7 +104,10 @@ pub(crate) fn atomic_write_permissions(
         let _ = fs::remove_file(&tmp_path);
         StorageError::Io(e)
     })?;
-    Ok(sync_dir(parent)?)
+    if let Err(e) = sync_dir(parent) {
+        tracing::warn!(error = %e, "failed to sync parent directory");
+    }
+    Ok(())
 }
 
 /// Rename with fibonacci backoff to handle transient `PermissionDenied` from
