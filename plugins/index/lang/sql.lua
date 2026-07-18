@@ -94,20 +94,12 @@ return function(U)
     return new_entry(SECTION.Function, node, label)
   end
 
-  -- create_index's optional name is (confusingly) exposed under the grammar
-  -- field "column" rather than "name"; the indexed table is the sole
-  -- `object_reference` child, and `index_fields` already renders as
-  -- "(col1, col2)" via get_text.
+  -- create_index's optional name is exposed under the grammar field "column"
+  -- (not "name"); the indexed table is the sole `object_reference` child, and
+  -- `index_fields` already renders as "(col1, col2)" via get_text.
   local function extract_index(node, source)
-    local name
-    for _, child in ipairs(node:children()) do
-      if child:type() == "keyword_on" then
-        break
-      end
-      if child:type() == "identifier" or child:type() == "literal" then
-        name = get_text(child, source)
-      end
-    end
+    local name_node = node:field("column")[1]
+    local name = name_node and get_text(name_node, source)
     local table_node = find_child(node, "object_reference")
     local table_name = table_node and get_text(table_node, source) or "?"
     local fields_node = find_child(node, "index_fields")
