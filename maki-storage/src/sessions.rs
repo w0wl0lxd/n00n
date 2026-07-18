@@ -366,6 +366,7 @@ enum LogRecord<M, U, T> {
     Header {
         v: u32,
         id: MakiId,
+        #[serde(default)]
         model: String,
         cwd: String,
         created_at: u64,
