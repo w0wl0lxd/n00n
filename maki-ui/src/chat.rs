@@ -37,6 +37,7 @@ pub enum ChatEventResult {
         scopes: Vec<String>,
     },
     AuthRequired,
+    SubagentInputRequired,
 }
 
 pub struct Chat {
@@ -141,6 +142,9 @@ impl Chat {
             }
             AgentEvent::AuthRequired => {
                 return ChatEventResult::AuthRequired;
+            }
+            AgentEvent::SubagentInputRequired { .. } => {
+                return ChatEventResult::SubagentInputRequired;
             }
             AgentEvent::ToolSnapshot {
                 id,

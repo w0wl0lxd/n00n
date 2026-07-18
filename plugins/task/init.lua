@@ -11,13 +11,13 @@ local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_PROMPT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
-local MAX_STRUCTURED_RETRIES = 2
+local DONE_NAME = "done"
+local DONE_DESCRIPTION = "Call when the task is complete with your final answer."
+local DONE_PROMPT_SUFFIX = "\n\nWhen finished, call the done tool with your final answer."
 local MAX_SCHEMA_ERRORS = 3
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
 local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
 local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
-local NUDGE_MISSING =
-  "You did not call the structured_output tool. Call it now with your final result matching its input schema."
 local INVALID_INPUT_PREFIX =
   "Input does not match the required schema. Fix the errors and call structured_output again:\n"
 local BODY_INDENT_COLS = 4
@@ -124,6 +124,7 @@ local function handler(input, ctx)
     return { llm_output = tools_err, is_error = true }
   end
 
+  local sess
   local captured, last_errors
   local local_tools
   if validator then
@@ -138,7 +139,19 @@ local function handler(input, ctx)
             return nil, INVALID_INPUT_PREFIX .. last_errors
           end
           captured = value
+          sess:done(maki.json.encode(value))
           return STRUCTURED_OUTPUT_ACK
+        end,
+      },
+    }
+  else
+    local_tools = {
+      [DONE_NAME] = {
+        description = DONE_DESCRIPTION,
+        input_schema = { type = "string" },
+        handler = function(answer)
+          sess:done(answer)
+          return "Done."
         end,
       },
     }
@@ -152,7 +165,8 @@ local function handler(input, ctx)
 
   -- pcall so a raised error cannot leak the permit.
   local ok, out = pcall(function()
-    local sess, sess_err = maki.agent.session(ctx, {
+    local sess_err
+    sess, sess_err = maki.agent.session(ctx, {
       model_spec = model.spec,
       system = system,
       tools = tool_defs,
@@ -167,14 +181,11 @@ local function handler(input, ctx)
     local message = input.prompt
     if validator then
       message = message .. STRUCTURED_OUTPUT_PROMPT_SUFFIX
+    else
+      message = message .. DONE_PROMPT_SUFFIX
     end
 
     local result, err = sess:prompt(message)
-    local retries = 0
-    while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
-      retries = retries + 1
-      result, err = sess:prompt(NUDGE_MISSING)
-    end
 
     sess:close()
 

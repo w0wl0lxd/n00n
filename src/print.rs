@@ -240,6 +240,7 @@ pub fn run(
             | AgentEvent::CompactionDone
             | AgentEvent::AuthRequired
             | AgentEvent::PermissionRequest { .. }
+            | AgentEvent::SubagentInputRequired { .. }
             | AgentEvent::SubagentHistory { .. }
             | AgentEvent::ToolSnapshot { .. }
             | AgentEvent::ToolHeaderSnapshot { .. }

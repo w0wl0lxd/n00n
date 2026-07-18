@@ -93,6 +93,7 @@ fn subagent_info_with_tx(
         prompt: None,
         model: None,
         answer_tx,
+        prompt_tx: None,
     }
 }
 

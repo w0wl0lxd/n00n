@@ -94,10 +94,7 @@ const IMPLEMENT_PARALLEL_HINT: &str = "Use batch+task to parallelize, assign eac
 const TASK_DONE_DETAIL: &str = "✓ done";
 const TASK_ERROR_DETAIL: &str = "✗ error";
 const TASK_RUNNING_DETAIL: &str = "◈ running";
-const TASK_PANEL_FOOTER: &[(&str, &str)] = &[
-    ("enter", "attach"),
-    ("esc", "close"),
-];
+const TASK_PANEL_FOOTER: &[(&str, &str)] = &[("enter", "attach"), ("esc", "close")];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TaskStatus {
@@ -140,6 +137,9 @@ pub(super) enum PendingInput {
     None,
     AuthRetry {
         subagent_id: Option<String>,
+    },
+    SubagentFollowUp {
+        subagent_id: String,
     },
 }
 
@@ -205,6 +205,7 @@ pub struct App {
     pub(crate) restore_event_tx: Option<maki_agent::EventSender>,
     pub(super) restoring: Arc<AtomicBool>,
     subagent_answers: HashMap<String, flume::Sender<String>>,
+    subagent_prompts: HashMap<String, flume::Sender<String>>,
 }
 
 impl App {
@@ -284,6 +285,7 @@ impl App {
             restore_event_tx: None,
             restoring: Arc::new(AtomicBool::new(false)),
             subagent_answers: HashMap::new(),
+            subagent_prompts: HashMap::new(),
         };
         app.model_picker
             .set_recents(maki_storage::model::read_recents(&app.storage));
@@ -389,6 +391,15 @@ impl App {
         }
     }
 
+    fn send_subagent_prompt(&mut self, subagent_id: &str, message: String) {
+        if let Some(tx) = self.subagent_prompts.get(subagent_id) {
+            let _ = tx.try_send(message.clone());
+        }
+        if let Some(&idx) = self.chat_index.get(subagent_id) {
+            self.chats[idx].show_user_message(message);
+        }
+    }
+
     fn handle_scroll(&mut self, column: u16, row: u16, delta: i32) {
         if self.btw_modal.is_open() {
             self.btw_modal.scroll(delta);
@@ -443,7 +454,11 @@ impl App {
                     TaskStatus::Running
                 };
                 let usage = (c.token_usage.total_input() + c.token_usage.output > 0).then(|| {
-                    format!("{} in / {} out", c.token_usage.total_input(), c.token_usage.output)
+                    format!(
+                        "{} in / {} out",
+                        c.token_usage.total_input(),
+                        c.token_usage.output
+                    )
                 });
                 TaskEntry {
                     name: c.name.clone(),
@@ -888,6 +903,10 @@ impl App {
                 self.send_to_agent(subagent_id.as_deref(), String::new());
                 return vec![];
             }
+            PendingInput::SubagentFollowUp { subagent_id } => {
+                self.send_subagent_prompt(&subagent_id, sub.text);
+                return vec![];
+            }
             PendingInput::None => {}
         }
         if sub.is_empty() {
@@ -930,6 +949,7 @@ impl App {
         self.pending_input = PendingInput::None;
         self.finish_subagents(DisplayRole::Error, CANCELLED_TEXT);
         self.subagent_answers.clear();
+        self.subagent_prompts.clear();
         self.shell.cancel_all();
         for chat in &mut self.chats {
             chat.flush();
@@ -1123,6 +1143,17 @@ impl App {
             return vec![];
         }
 
+        if let ChatEventResult::SubagentInputRequired = result {
+            if let Some(id) = subagent_id {
+                self.pending_input = PendingInput::SubagentFollowUp { subagent_id: id };
+                self.chats[chat_idx].push(DisplayMessage::new(
+                    DisplayRole::Assistant,
+                    "Waiting for your follow-up...".into(),
+                ));
+            }
+            return vec![];
+        }
+
         if chat_idx == 0 {
             match result {
                 ChatEventResult::Done => {
@@ -1130,6 +1161,7 @@ impl App {
                     self.save_session();
                     self.chat_index.clear();
                     self.subagent_answers.clear();
+                    self.subagent_prompts.clear();
                     self.status = Status::Idle;
                     if let Some(ref handle) = self.lua_event_handle {
                         handle.fire_autocmd("TurnEnd", serde_json::json!({}));
@@ -1144,6 +1176,7 @@ impl App {
                     self.save_session();
                     self.queue.clear();
                     self.subagent_answers.clear();
+                    self.subagent_prompts.clear();
                     self.finish_subagents(DisplayRole::Error, ERROR_TEXT);
                     for chat in &mut self.chats {
                         chat.fail_in_progress_with_message(message.clone());
@@ -1156,6 +1189,7 @@ impl App {
                     }
                 }
                 ChatEventResult::AuthRequired
+                | ChatEventResult::SubagentInputRequired
                 | ChatEventResult::PermissionRequest { .. }
                 | ChatEventResult::QueueItemConsumed { .. } => unreachable!(),
                 ChatEventResult::Continue => {}
@@ -1173,6 +1207,9 @@ impl App {
         self.chat_index.insert(id.clone(), idx);
         if let Some(ref tx) = subagent.answer_tx {
             self.subagent_answers.insert(id.clone(), tx.clone());
+        }
+        if let Some(ref tx) = subagent.prompt_tx {
+            self.subagent_prompts.insert(id.clone(), tx.clone());
         }
         self.chats[0].update_tool_summary(id, &subagent.name);
         if let Some(ref model) = subagent.model {
