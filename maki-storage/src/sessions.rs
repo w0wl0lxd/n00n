@@ -648,9 +648,15 @@ where
 {
     fs::create_dir_all(dir).map_err(StorageError::from)?;
     let path = jsonl_path(dir, session.id);
-    let mut file = File::create(&path).map_err(StorageError::from)?;
-    write_full_session(&mut file, session)?;
-    file.sync_data().map_err(StorageError::from)?;
+    let tmp = path.with_extension("jsonl.tmp");
+    let mut tmp_file = File::create(&tmp).map_err(StorageError::from)?;
+    write_full_session(&mut tmp_file, session)?;
+    tmp_file.sync_data().map_err(StorageError::from)?;
+    fs::rename(&tmp, &path).map_err(StorageError::from)?;
+    let file = OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .map_err(StorageError::from)?;
     Ok(file)
 }
 
