@@ -47,6 +47,23 @@ pub(super) struct AgentLoop {
     timeouts: maki_providers::Timeouts,
     lua_handle: Option<EventHandle>,
     subagent_cancels: Arc<CancelMap<String>>,
+    /// Cache of the built tool definitions so we don't re-run every tool's
+    /// `description()` (which for Lua describe-fns is a cross-thread
+    /// round-trip) and re-serialize the JSON on every agent run. Invalidated
+    /// when anything that affects the definitions changes.
+    cached_tools: Value,
+    tools_key: Option<ToolsKey>,
+}
+
+/// Identifies a distinct set of tool definitions. Rebuilding is skipped when
+/// this matches the previous run.
+#[derive(Clone, PartialEq, Eq)]
+struct ToolsKey {
+    cwd: String,
+    workflow: bool,
+    model: String,
+    mcp_count: usize,
+    registry_count: usize,
 }
 
 impl AgentLoop {
@@ -92,6 +109,8 @@ impl AgentLoop {
             timeouts,
             lua_handle,
             subagent_cancels,
+            cached_tools: Value::Null,
+            tools_key: None,
         }
     }
 
@@ -271,15 +290,29 @@ impl AgentLoop {
         self.tools = tools;
     }
 
-    fn build_tools(&self, model: &Model, workflow: bool) -> Value {
-        let examples = model.supports_tool_examples();
-        let filter = ToolFilter::from_config(&self.config, model, &[]);
-        let ctx = DescriptionContext {
-            filter: &filter,
-            audience: ToolAudience::MAIN,
+    fn build_tools(&mut self, model: &Model, workflow: bool) -> Value {
+        let cwd = self.vars.apply("{cwd}").into_owned();
+        let mcp_count = self.mcp_handle.as_ref().map_or(0, |m| m.tool_count());
+        let registry_count = ToolRegistry::global().names().len();
+        let key = ToolsKey {
+            cwd,
             workflow,
+            model: model.spec(),
+            mcp_count,
+            registry_count,
         };
-        ToolRegistry::global().definitions(&self.vars, &ctx, examples)
+        if self.tools_key.as_ref() != Some(&key) {
+            let examples = model.supports_tool_examples();
+            let filter = ToolFilter::from_config(&self.config, model, &[]);
+            let ctx = DescriptionContext {
+                filter: &filter,
+                audience: ToolAudience::MAIN,
+                workflow,
+            };
+            self.cached_tools = ToolRegistry::global().definitions(&self.vars, &ctx, examples);
+            self.tools_key = Some(key);
+        }
+        self.cached_tools.clone()
     }
 
     async fn reload_instructions(&mut self) {
