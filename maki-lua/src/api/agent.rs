@@ -832,13 +832,23 @@ async fn prompt(
         let ui_id = s.ui_id.clone();
         let prompt_rx = Arc::clone(&s.prompt_rx);
         let event_tx = s.sub_event_tx.clone();
+        let child_cancel = s.child_cancel.clone();
         drop(guard);
 
         let _ = event_tx.send(AgentEvent::SubagentInputRequired { tool_use_id: ui_id });
 
-        current_message = match prompt_rx.lock().await.recv_async().await {
-            Ok(msg) => msg,
-            Err(_) => return Ok((None, Some("prompt channel closed".to_owned()))),
+        let recv_future = async {
+            prompt_rx.lock().await.recv_async().await.map_err(|_| "prompt channel closed")
+        };
+        let cancel_future = async {
+            child_cancel.cancelled().await;
+            Err::<String, _>("cancelled")
+        };
+
+        current_message = match select(pin!(recv_future), pin!(cancel_future)).await {
+            Either::Left((Ok(msg), _)) => msg,
+            Either::Left((Err(e), _)) => return Ok((None, Some(e.to_owned()))),
+            Either::Right((_, _)) => return Ok((None, Some("cancelled".to_owned()))),
         };
     }
 }
