@@ -311,6 +311,13 @@ impl McpHandle {
         }
     }
 
+    /// Number of currently advertised MCP tool descriptors. Cheap to read and
+    /// changes whenever an MCP server finishes its handshake, so it is a
+    /// suitable cache-invalidation signal for derived tool lists.
+    pub fn tool_count(&self) -> usize {
+        self.index.load().descriptors.len()
+    }
+
     pub async fn shutdown(&self) {
         let (ack_tx, ack_rx) = flume::bounded(1);
         self.send(McpCommand::Shutdown { ack: ack_tx });
