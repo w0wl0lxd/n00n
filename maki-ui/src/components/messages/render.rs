@@ -44,12 +44,11 @@ impl RenderCursor {
             .saturating_sub(self.skip)
             .min(self.bottom.saturating_sub(self.y));
         let seg_area = Rect::new(self.viewport.x, self.y, self.viewport.width, visible_h);
-        let mut p = Paragraph::new(lines.to_vec()).wrap(Wrap { trim: false });
         let mut base = style.unwrap_or_default();
         if highlight {
             base = base.add_modifier(Modifier::REVERSED);
         }
-        p = p.style(base);
+        let mut p = Paragraph::new(lines.to_vec()).style(base).wrap(Wrap { trim: false });
         if self.skip > 0 {
             p = p.scroll((self.skip, 0));
             self.skip = 0;
