@@ -437,7 +437,7 @@ pub const KEYBINDS: &[Keybind] = &[
     },
     Keybind {
         label: KeyLabel::Single(key::SCROLL_BOTTOM.label),
-        description: "Scroll to bottom",
+        description: "Scroll to bottom and resume auto-scroll",
         context: KeybindContext::Editing,
         platform: Platform::All,
     },

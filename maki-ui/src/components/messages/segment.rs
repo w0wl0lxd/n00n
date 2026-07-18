@@ -342,7 +342,7 @@ impl SegmentCache {
     }
 }
 
-pub(super) fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {
+pub(crate) fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {
     if width == 0 {
         return lines.len() as u16;
     }
