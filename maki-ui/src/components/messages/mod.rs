@@ -40,8 +40,13 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
 
 const THINKING_HIDDEN_HEADER: &str = "thinking> ...";
+pub(crate) const JUMP_TO_BOTTOM_TEXT: &str = "↓ bottom";
+const JUMP_TO_BOTTOM_THRESHOLD: u16 = 1;
+const JUMP_TO_BOTTOM_POPUP_HEIGHT: u16 = 1;
+const JUMP_TO_BOTTOM_POPUP_BOTTOM_MARGIN: u16 = 1;
 
 #[derive(Clone, Copy)]
 pub struct PromptProgress {
@@ -84,6 +89,7 @@ pub struct MessagesPanel {
     /// only bumps when colors actually land.
     rebake_requested: HashMap<String, u64>,
     prompt_progress: Option<PromptProgress>,
+    jump_to_bottom_popup: Option<Rect>,
 }
 
 impl MessagesPanel {
@@ -128,6 +134,7 @@ impl MessagesPanel {
             thinking_collapsed: !ui_config.show_thinking,
             rebake_requested: HashMap::new(),
             prompt_progress: None,
+            jump_to_bottom_popup: None,
         }
     }
 
@@ -530,6 +537,15 @@ impl MessagesPanel {
         self.auto_scroll = true;
     }
 
+    pub fn jump_to_bottom(&mut self) {
+        self.auto_scroll = true;
+        self.scroll_top = self.max_scroll();
+    }
+
+    pub fn jump_to_bottom_popup(&self) -> Option<Rect> {
+        self.jump_to_bottom_popup
+    }
+
     pub fn scroll_to_segment(&mut self, segment_index: usize) {
         let width = self.viewport_width;
         let offset = self
@@ -840,6 +856,49 @@ impl MessagesPanel {
         if total_lines > area.height {
             render_vertical_scrollbar(frame, area, total_lines, self.scroll_top);
         }
+
+        self.jump_to_bottom_popup = None;
+        let distance = max_scroll.saturating_sub(self.scroll_top);
+        let show_popup = max_scroll > 0 && !self.auto_scroll && distance > JUMP_TO_BOTTOM_THRESHOLD;
+        if show_popup {
+            self.render_jump_to_bottom_popup(frame, viewport);
+        }
+    }
+
+    fn render_jump_to_bottom_popup(&mut self, frame: &mut Frame, area: Rect) {
+        let text_style = theme::current().accent;
+        let keybind_style = theme::current().keybind_key;
+        let line = Line::from(vec![
+            Span::styled(JUMP_TO_BOTTOM_TEXT, text_style),
+            Span::styled(key::SCROLL_BOTTOM.label, keybind_style),
+        ]);
+        let text_width = line.width() as u16;
+
+        let block = Block::default()
+            .borders(Borders::LEFT | Borders::RIGHT)
+            .border_type(BorderType::Rounded)
+            .border_style(theme::current().panel_border)
+            .padding(Padding::horizontal(1))
+            .style(Style::new().bg(theme::current().background));
+        let dummy_area = Rect::new(0, 0, u16::MAX, JUMP_TO_BOTTOM_POPUP_HEIGHT);
+        let chrome_width = u16::MAX - block.inner(dummy_area).width;
+        let width = text_width.saturating_add(chrome_width);
+
+        let min_height = JUMP_TO_BOTTOM_POPUP_HEIGHT + JUMP_TO_BOTTOM_POPUP_BOTTOM_MARGIN;
+        if text_width == 0 || width > area.width || area.height < min_height {
+            return;
+        }
+        let x = area.x + (area.width - width) / 2;
+        let y = area
+            .bottom()
+            .saturating_sub(JUMP_TO_BOTTOM_POPUP_HEIGHT + JUMP_TO_BOTTOM_POPUP_BOTTOM_MARGIN);
+        let popup_area = Rect::new(x, y, width, JUMP_TO_BOTTOM_POPUP_HEIGHT);
+        self.jump_to_bottom_popup = Some(popup_area);
+
+        let inner = block.inner(popup_area);
+        frame.render_widget(Clear, popup_area);
+        frame.render_widget(block, popup_area);
+        frame.render_widget(Paragraph::new(line), inner);
     }
 
     fn max_scroll(&self) -> u16 {

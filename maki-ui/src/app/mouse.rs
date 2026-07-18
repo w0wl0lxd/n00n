@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crate::clipboard::CopyResult;
 use crate::selection::{self, ContentRegion, EdgeScroll, Selection, SelectionState, SelectionZone};
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 
 use super::App;
 
@@ -14,6 +14,16 @@ impl App {
     pub(super) fn handle_mouse(&mut self, event: MouseEvent) {
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                let pos = Position::new(event.column, event.row);
+                let render_chat = self.resolve_render_chat();
+                if !self.has_modal_overlay()
+                    && self.chats[render_chat]
+                        .jump_to_bottom_popup()
+                        .is_some_and(|r| r.contains(pos))
+                {
+                    self.chats[render_chat].jump_to_bottom();
+                    return;
+                }
                 if let Some(zone) = self.zone_at(event.row, event.column) {
                     if self.has_modal_overlay() && zone.zone != SelectionZone::Overlay {
                         return;

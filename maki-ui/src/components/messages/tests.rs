@@ -1,5 +1,6 @@
 use super::segment;
 use super::*;
+use crate::components::keybindings::key;
 use crate::components::scrollbar::SCROLLBAR_THUMB;
 use crate::selection::{Selection, SelectionZone};
 use maki_agent::tools::{BASH_TOOL_NAME, GREP_TOOL_NAME, WRITE_TOOL_NAME};
@@ -243,6 +244,26 @@ fn ctrl_d_to_bottom_re_enables_auto_scroll() {
     panel.scroll(-half);
     render(&mut panel, 80, 10);
     assert!(panel.auto_scroll);
+}
+
+#[test]
+fn jump_to_bottom_popup_appears_when_scrolled_up() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.streaming_text.set_buffer(&"a\n".repeat(30));
+    render(&mut panel, 80, 10);
+    assert!(panel.jump_to_bottom_popup().is_none());
+
+    panel.scroll(panel.half_page());
+    let terminal = render(&mut panel, 80, 10);
+    assert!(panel.jump_to_bottom_popup().is_some());
+    let text = buffer_text(&terminal);
+    assert!(text.contains(JUMP_TO_BOTTOM_TEXT));
+    assert!(text.contains(key::SCROLL_BOTTOM.label));
+
+    panel.jump_to_bottom();
+    assert!(panel.auto_scroll);
+    render(&mut panel, 80, 10);
+    assert!(panel.jump_to_bottom_popup().is_none());
 }
 
 #[test]
