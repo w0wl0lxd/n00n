@@ -454,6 +454,13 @@ impl SessionLog {
         let display = path.display().to_string();
         let session = load_jsonl::<M, U, T>(&bytes[..valid], &display)?;
 
+        if session.id != session_id {
+            return Err(SessionError::IdMismatch {
+                log_id: session.id,
+                given_id: session_id,
+            });
+        }
+
         let file = OpenOptions::new()
             .append(true)
             .open(&path)
