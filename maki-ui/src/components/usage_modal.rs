@@ -106,7 +106,7 @@ impl UsageModal {
         frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 
         if total > viewport_h {
-            render_vertical_scrollbar(frame, inner, total, scroll);
+            render_vertical_scrollbar(frame, inner, total, scroll, None);
         }
 
         let hint = Line::from(vec![
