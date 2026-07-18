@@ -77,13 +77,13 @@ end)
 case("sql_create_index_schema_qualified", function()
   local src = "CREATE INDEX public.idx_users_email ON public.users (email);\n"
   local out = idx(src, "sql")
-  has(out, { "INDEX public ON public.users(email)" })
+  has(out, { "INDEX ON public.users(email)" })
 end)
 
 case("sql_create_index_quoted_schema", function()
   local src = 'CREATE INDEX "public"."idx_users_email" ON public.users (email);\n'
   local out = idx(src, "sql")
-  has(out, { 'INDEX "public" ON public.users(email)' })
+  has(out, { "INDEX ON public.users(email)" })
 end)
 
 case("sql_create_trigger", function()
@@ -162,4 +162,57 @@ COMMIT;
 ]]
   local out = idx(src, "sql")
   has(out, { "classes:", "TABLE orders", "id INT", "amount NUMERIC" })
+end)
+
+case("sql_transaction_with_explicit_keyword", function()
+  local src = [[
+BEGIN TRANSACTION;
+CREATE TABLE logs (
+  id INT,
+  message TEXT
+);
+COMMIT TRANSACTION;
+]]
+  local out = idx(src, "sql")
+  has(out, { "TABLE logs", "id INT", "message TEXT" })
+end)
+
+case("sql_create_if_not_exists", function()
+  local src = "CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY);\n"
+  local out = idx(src, "sql")
+  has(out, { "TABLE users", "id INT" })
+end)
+
+case("sql_multiple_ddl_in_transaction", function()
+  local src = [[
+BEGIN;
+CREATE TABLE a (id INT);
+CREATE TABLE b (id INT);
+COMMIT;
+]]
+  local out = idx(src, "sql")
+  has(out, { "TABLE a", "TABLE b" })
+end)
+
+case("sql_transaction_with_comments", function()
+  local src = [[
+-- start tx
+BEGIN;
+/* create the orders table */
+CREATE TABLE orders (id INT);
+COMMIT;
+]]
+  local out = idx(src, "sql")
+  has(out, { "TABLE orders" })
+end)
+
+case("sql_error_recovery_ignores_bad_statement", function()
+  local src = [[
+CREATE TABLE good (id INT);
+CREATE TABLE (missing_name;
+CREATE TABLE also_good (name TEXT);
+]]
+  local out = idx(src, "sql")
+  has(out, { "TABLE good", "TABLE also_good", "name TEXT" })
+  lacks(out, { "missing_name" })
 end)
