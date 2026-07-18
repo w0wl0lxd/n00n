@@ -172,7 +172,7 @@ impl InputBox {
     }
 
     pub fn set_max_input_lines(&mut self, max: u32) {
-        self.max_input_lines = max.clamp(1, u16::MAX as u32) as u16;
+        self.max_input_lines = max.clamp(1, u16::MAX as u32 - 2) as u16;
     }
 
     pub fn copy_text(&self) -> String {
@@ -204,7 +204,8 @@ impl InputBox {
         if !self.pending_images.is_empty() {
             visual_lines += 1;
         }
-        (visual_lines as u16).min(self.max_input_lines) + 2
+        let capped = visual_lines.min(self.max_input_lines as usize);
+        (capped + 2) as u16
     }
 
     pub fn is_at_first_line(&self) -> bool {
