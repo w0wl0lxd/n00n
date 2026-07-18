@@ -134,11 +134,13 @@ pub struct Session<M, U, T> {
     pub updated_at: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SessionSummary {
     pub id: MakiId,
     pub title: String,
     pub updated_at: u64,
+    pub cwd: String,
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,6 +321,8 @@ struct LegacyHeader {
     version: u32,
     id: MakiId,
     title: String,
+    #[serde(default)]
+    model: String,
     cwd: String,
     updated_at: u64,
 }
@@ -451,8 +455,7 @@ impl SessionLog {
                 .map_err(StorageError::from)?;
         }
 
-        let display = path.display().to_string();
-        let session = load_jsonl::<M, U, T>(&bytes[..valid], &display)?;
+        let session = load_jsonl::<M, U, T>(&path)?;
 
         let file = OpenOptions::new()
             .append(true)
@@ -720,13 +723,15 @@ enum RawTag {
     Other,
 }
 
-fn load_jsonl<M, U, T>(data: &[u8], display_path: &str) -> Result<Session<M, U, T>, SessionError>
+fn load_jsonl<M, U, T>(path: &Path) -> Result<Session<M, U, T>, SessionError>
 where
     M: DeserializeOwned,
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
+    let mut reader = BufReader::new(File::open(path).map_err(StorageError::from)?);
     let mut line_count = 0usize;
+    let mut buf = Vec::new();
 
     let mut id: Option<MakiId> = None;
     let mut model = String::new();
@@ -741,26 +746,35 @@ where
     let mut meta = SessionMeta::default();
     let mut got_header = false;
 
-    for line in data.split(|&b| b == b'\n') {
+    loop {
+        buf.clear();
+        let bytes_read = reader
+            .read_until(b'\n', &mut buf)
+            .map_err(StorageError::from)?;
+        if bytes_read == 0 {
+            break;
+        }
         line_count += 1;
-        if line.is_empty() {
+        trim_newline(&mut buf);
+        if buf.is_empty() {
             continue;
         }
-        let record: LogRecord<M, U, T> = match serde_json::from_slice(line) {
+        let record: LogRecord<M, U, T> = match serde_json::from_slice(&buf) {
             Ok(r) => r,
             Err(e) => {
                 if !got_header
-                    && let Ok(RawTag::Header { id: raw_id }) = serde_json::from_slice(line)
+                    && let Ok(RawTag::Header { id: raw_id }) =
+                        serde_json::from_slice::<RawTag>(&buf)
                     && let Err(source) = raw_id.parse::<MakiId>()
                 {
                     return Err(SessionError::CorruptHeaderId {
-                        path: display_path.to_string(),
+                        path: path.display().to_string(),
                         raw_id,
                         source,
                     });
                 }
                 warn!(
-                    path = display_path,
+                    path = %path.display(),
                     error = %e,
                     line = line_count,
                     "skipping unrecognized JSONL record",
@@ -809,12 +823,12 @@ where
         }
     }
 
-    let id = id.ok_or(StorageError::NotFound(display_path.to_string()))?;
+    let id = id.ok_or(StorageError::NotFound(path.display().to_string()))?;
 
     Ok(Session {
         version: SESSION_VERSION,
         id,
-        title,
+        title: normalize_title(&title),
         cwd,
         model,
         messages,
@@ -825,6 +839,12 @@ where
         created_at,
         updated_at,
     })
+}
+
+fn trim_newline(buf: &mut Vec<u8>) {
+    while matches!(buf.last(), Some(b'\n') | Some(b'\r')) {
+        buf.pop();
+    }
 }
 
 // -- CWD index --
@@ -891,6 +911,8 @@ struct JsonlHeader {
     v: u32,
     id: MakiId,
     cwd: String,
+    #[serde(default)]
+    model: String,
 }
 
 #[derive(Deserialize)]
@@ -921,6 +943,8 @@ struct ScannedHeader {
     cwd: String,
     title: String,
     updated_at: u64,
+    #[serde(default)]
+    model: String,
 }
 
 type ScanCache = HashMap<String, ScanCacheEntry>;
@@ -977,6 +1001,8 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
                 id: h.id,
                 title: normalize_title(&h.title),
                 updated_at: h.updated_at,
+                cwd: h.cwd.clone(),
+                model: h.model.clone(),
             });
         }
         fresh.insert(name.to_owned(), entry);
@@ -1013,6 +1039,7 @@ fn scan_jsonl_header(path: &Path) -> Option<ScannedHeader> {
         cwd: header.cwd,
         title,
         updated_at,
+        model: header.model,
     })
 }
 
@@ -1051,6 +1078,7 @@ fn scan_legacy_header(path: &Path) -> Option<ScannedHeader> {
         cwd: h.cwd,
         title: h.title,
         updated_at: h.updated_at,
+        model: h.model,
     })
 }
 
@@ -1104,10 +1132,10 @@ where
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
-    let data = fs::read(path).map_err(StorageError::from)?;
     let mut session: Session<M, U, T> = if path.extension().is_some_and(|e| e == "jsonl") {
-        load_jsonl(&data, &path.display().to_string())?
+        load_jsonl(path)?
     } else {
+        let data = fs::read(path).map_err(StorageError::from)?;
         let session: Session<M, U, T> =
             serde_json::from_slice(&data).map_err(StorageError::from)?;
         if session.version != SESSION_VERSION {
