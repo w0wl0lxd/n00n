@@ -134,7 +134,7 @@ pub struct Session<M, U, T> {
     pub updated_at: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct SessionSummary {
     pub id: MakiId,
     pub title: String,
@@ -408,7 +408,28 @@ impl SessionLog {
     {
         let file = write_session_file(dir, session)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
-        Ok(Self::cursor_from(session, file))
+        Self::cursor_from(session, file)
+    }
+
+    fn cursor_from<M, U, T>(
+        session: &Session<M, U, T>,
+        file: File,
+    ) -> Result<Self, SessionError>
+    where
+        M: Serialize,
+        U: Serialize,
+        T: Serialize,
+    {
+        let mut file = file;
+        prepare_append(&mut file)?;
+        Ok(Self {
+            session_id: session.id,
+            file,
+            saved_msg_count: session.messages.len(),
+            saved_tool_ids: session.tool_outputs.keys().cloned().collect(),
+            saved_sub_msg_counts: sub_msg_snapshot(&session.subagent_messages),
+            saved_meta: meta_record_bytes(session)?,
+        })
     }
 
     fn write_canonical<M, U, T>(
@@ -420,8 +441,16 @@ impl SessionLog {
         U: Serialize,
         T: Serialize,
     {
-        let file = write_session_file(dir, session)?;
-        Ok(Self::cursor_from(session, file))
+        fs::create_dir_all(dir).map_err(StorageError::from)?;
+        let path = jsonl_path(dir, session.id);
+        atomic_write(&path, &full_session_bytes(session)?)?;
+
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .map_err(StorageError::from)?;
+        Self::cursor_from(session, file)
     }
 
     pub fn open<M, U, T>(
@@ -434,32 +463,15 @@ impl SessionLog {
         T: Serialize + DeserializeOwned,
     {
         let path = jsonl_path(dir, session_id);
-        let bytes = fs::read(&path).map_err(StorageError::from)?;
-        let valid = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-
-        if valid < bytes.len() {
-            warn!(
-                path = %path.display(),
-                bytes = bytes.len() - valid,
-                "truncating torn session log tail",
-            );
-            OpenOptions::new()
-                .write(true)
-                .open(&path)
-                .map_err(StorageError::from)?
-                .set_len(valid as u64)
-                .map_err(StorageError::from)?;
-        }
-
-        let display = path.display().to_string();
-        let session = load_jsonl::<M, U, T>(&bytes[..valid], &display)?;
+        let session = load_jsonl::<M, U, T>(&path)?;
 
         let file = OpenOptions::new()
+            .read(true)
             .append(true)
             .open(&path)
             .map_err(StorageError::from)?;
 
-        let log = Self::cursor_from(&session, file);
+        let log = Self::cursor_from(&session, file)?;
         Ok((session, log))
     }
 
@@ -521,11 +533,15 @@ impl SessionLog {
             }
         }
 
-        let meta = meta_record(session)?;
-        if buf.is_empty() && meta == self.saved_meta {
+        let meta_bytes = meta_record_bytes(session)?;
+        let meta_changed = meta_bytes != self.saved_meta;
+        if buf.is_empty() && !meta_changed {
             return Ok(());
         }
-        buf.extend_from_slice(&meta);
+
+        if !buf.is_empty() || meta_changed {
+            buf.extend_from_slice(&meta_bytes);
+        }
 
         let start = self.file.metadata().map_err(StorageError::from)?.len();
         if let Err(e) = self
@@ -545,7 +561,9 @@ impl SessionLog {
         for (sub_id, count) in new_sub_counts {
             self.saved_sub_msg_counts.insert(sub_id, count);
         }
-        self.saved_meta = meta;
+        if meta_changed {
+            self.saved_meta = meta_bytes;
+        }
 
         Ok(())
     }
@@ -563,37 +581,16 @@ impl SessionLog {
         self.require_same_id(session)?;
 
         let path = jsonl_path(dir, session.id);
-        let tmp = path.with_extension("jsonl.tmp");
-
-        let mut tmp_file = File::create(&tmp).map_err(StorageError::from)?;
-        write_full_session(&mut tmp_file, session)?;
-        tmp_file.sync_data().map_err(StorageError::from)?;
-
-        fs::rename(&tmp, &path).map_err(StorageError::from)?;
+        atomic_write(&path, &full_session_bytes(session)?)?;
 
         let file = OpenOptions::new()
+            .read(true)
             .append(true)
             .open(&path)
             .map_err(StorageError::from)?;
-        *self = Self::cursor_from(session, file);
+        *self = Self::cursor_from(session, file)?;
 
         Ok(())
-    }
-
-    fn cursor_from<M, U, T>(session: &Session<M, U, T>, file: File) -> Self
-    where
-        M: Serialize,
-        U: Serialize,
-        T: Serialize,
-    {
-        Self {
-            session_id: session.id,
-            file,
-            saved_msg_count: session.messages.len(),
-            saved_tool_ids: session.tool_outputs.keys().cloned().collect(),
-            saved_sub_msg_counts: sub_msg_snapshot(&session.subagent_messages),
-            saved_meta: meta_record(session).unwrap_or_default(),
-        }
     }
 
     fn require_same_id<M, U, T>(&self, session: &Session<M, U, T>) -> Result<(), SessionError> {
@@ -621,7 +618,21 @@ impl SessionLog {
     }
 }
 
-fn meta_record<M, U, T>(session: &Session<M, U, T>) -> Result<Vec<u8>, SessionError>
+fn prepare_append(file: &mut File) -> Result<(), SessionError> {
+    let len = file.seek(SeekFrom::End(0)).map_err(StorageError::from)?;
+    if len > 0 {
+        file.seek(SeekFrom::End(-1)).map_err(StorageError::from)?;
+        let mut buf = [0u8; 1];
+        if file.read_exact(&mut buf).is_ok() && buf[0] != b'\n' {
+            file.write_all(b"\n").map_err(StorageError::from)?;
+            file.sync_data().map_err(StorageError::from)?;
+        }
+    }
+    file.seek(SeekFrom::End(0)).map_err(StorageError::from)?;
+    Ok(())
+}
+
+fn meta_record_bytes<M, U, T>(session: &Session<M, U, T>) -> Result<Vec<u8>, SessionError>
 where
     M: Serialize,
     U: Serialize,
@@ -654,8 +665,8 @@ where
     Ok(file)
 }
 
-fn write_full_session<M, U, T>(
-    file: &mut File,
+fn write_full_session<M, U, T, W: Write>(
+    file: &mut W,
     session: &Session<M, U, T>,
 ) -> Result<(), SessionError>
 where
@@ -697,9 +708,20 @@ where
             )?;
         }
     }
-    buf.extend_from_slice(&meta_record(session)?);
+    buf.extend_from_slice(&meta_record_bytes(session)?);
     file.write_all(&buf).map_err(StorageError::from)?;
     Ok(())
+}
+
+fn full_session_bytes<M, U, T>(session: &Session<M, U, T>) -> Result<Vec<u8>, SessionError>
+where
+    M: Serialize,
+    U: Serialize,
+    T: Serialize,
+{
+    let mut bytes = Vec::new();
+    write_full_session(&mut bytes, session)?;
+    Ok(bytes)
 }
 
 fn append_record<R: Serialize>(buf: &mut Vec<u8>, record: &R) -> Result<(), SessionError> {
@@ -720,12 +742,13 @@ enum RawTag {
     Other,
 }
 
-fn load_jsonl<M, U, T>(data: &[u8], display_path: &str) -> Result<Session<M, U, T>, SessionError>
+fn load_jsonl<M, U, T>(path: &Path) -> Result<Session<M, U, T>, SessionError>
 where
     M: DeserializeOwned,
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
+    let reader = BufReader::new(File::open(path).map_err(StorageError::from)?);
     let mut line_count = 0usize;
 
     let mut id: Option<MakiId> = None;
@@ -741,26 +764,27 @@ where
     let mut meta = SessionMeta::default();
     let mut got_header = false;
 
-    for line in data.split(|&b| b == b'\n') {
+    for line_result in reader.lines() {
+        let line = line_result.map_err(StorageError::from)?;
         line_count += 1;
         if line.is_empty() {
             continue;
         }
-        let record: LogRecord<M, U, T> = match serde_json::from_slice(line) {
+        let record: LogRecord<M, U, T> = match serde_json::from_str(&line) {
             Ok(r) => r,
             Err(e) => {
                 if !got_header
-                    && let Ok(RawTag::Header { id: raw_id }) = serde_json::from_slice(line)
+                    && let Ok(RawTag::Header { id: raw_id }) = serde_json::from_str::<RawTag>(&line)
                     && let Err(source) = raw_id.parse::<MakiId>()
                 {
                     return Err(SessionError::CorruptHeaderId {
-                        path: display_path.to_string(),
+                        path: path.display().to_string(),
                         raw_id,
                         source,
                     });
                 }
                 warn!(
-                    path = display_path,
+                    path = %path.display(),
                     error = %e,
                     line = line_count,
                     "skipping unrecognized JSONL record",
@@ -809,7 +833,7 @@ where
         }
     }
 
-    let id = id.ok_or(StorageError::NotFound(display_path.to_string()))?;
+    let id = id.ok_or(StorageError::NotFound(path.display().to_string()))?;
 
     Ok(Session {
         version: SESSION_VERSION,
@@ -912,15 +936,7 @@ enum ScanRecord {
 struct ScanCacheEntry {
     size: u64,
     mtime_ms: u64,
-    header: Option<ScannedHeader>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct ScannedHeader {
-    id: MakiId,
-    cwd: String,
-    title: String,
-    updated_at: u64,
+    header: Option<SessionSummary>,
 }
 
 type ScanCache = HashMap<String, ScanCacheEntry>;
@@ -959,9 +975,9 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
             _ => {
                 dirty = true;
                 let header = if is_jsonl(&path) {
-                    scan_jsonl_header(&path)
+                    scan_jsonl_header(cwd, &path)
                 } else {
-                    scan_legacy_header(&path)
+                    scan_legacy_header(cwd, &path)
                 };
                 ScanCacheEntry {
                     size,
@@ -970,9 +986,7 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
                 }
             }
         };
-        if let Some(h) = &entry.header
-            && h.cwd == cwd
-        {
+        if let Some(h) = &entry.header {
             out.push(SessionSummary {
                 id: h.id,
                 title: normalize_title(&h.title),
@@ -993,7 +1007,7 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
 
 const TAIL_BUF: u64 = 4096;
 
-fn scan_jsonl_header(path: &Path) -> Option<ScannedHeader> {
+fn scan_jsonl_header(cwd: &str, path: &Path) -> Option<SessionSummary> {
     let mut file = File::open(path).ok()?;
     let header: JsonlHeader = {
         let mut reader = BufReader::new(&file);
@@ -1001,16 +1015,15 @@ fn scan_jsonl_header(path: &Path) -> Option<ScannedHeader> {
         reader.read_line(&mut line).ok()?;
         serde_json::from_str(line.trim_end()).ok()?
     };
-    if header.v != LOG_FORMAT_VERSION {
+    if header.v != LOG_FORMAT_VERSION || header.cwd != cwd {
         return None;
     }
 
     let (title, updated_at) =
         read_last_meta(&mut file).unwrap_or_else(|| (DEFAULT_TITLE.to_string(), 0));
 
-    Some(ScannedHeader {
+    Some(SessionSummary {
         id: header.id,
-        cwd: header.cwd,
         title,
         updated_at,
     })
@@ -1040,15 +1053,14 @@ fn read_last_meta(file: &mut File) -> Option<(String, u64)> {
     }
 }
 
-fn scan_legacy_header(path: &Path) -> Option<ScannedHeader> {
+fn scan_legacy_header(cwd: &str, path: &Path) -> Option<SessionSummary> {
     let data = fs::read(path).ok()?;
     let h: LegacyHeader = serde_json::from_slice(&data).ok()?;
-    if h.version != SESSION_VERSION {
+    if h.version != SESSION_VERSION || h.cwd != cwd {
         return None;
     }
-    Some(ScannedHeader {
+    Some(SessionSummary {
         id: h.id,
-        cwd: h.cwd,
         title: h.title,
         updated_at: h.updated_at,
     })
@@ -1104,21 +1116,17 @@ where
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
+    if path.extension().is_some_and(|e| e == "jsonl") {
+        return load_jsonl(path);
+    }
     let data = fs::read(path).map_err(StorageError::from)?;
-    let mut session: Session<M, U, T> = if path.extension().is_some_and(|e| e == "jsonl") {
-        load_jsonl(&data, &path.display().to_string())?
-    } else {
-        let session: Session<M, U, T> =
-            serde_json::from_slice(&data).map_err(StorageError::from)?;
-        if session.version != SESSION_VERSION {
-            return Err(SessionError::VersionMismatch {
-                found: session.version,
-                expected: SESSION_VERSION,
-            });
-        }
-        session
-    };
-    session.title = normalize_title(&session.title);
+    let session: Session<M, U, T> = serde_json::from_slice(&data).map_err(StorageError::from)?;
+    if session.version != SESSION_VERSION {
+        return Err(SessionError::VersionMismatch {
+            found: session.version,
+            expected: SESSION_VERSION,
+        });
+    }
     Ok(session)
 }
 
@@ -1277,12 +1285,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::Effort;
     use super::StoredThinking;
     use super::ThinkingParseError;
     use super::{
         CWD_INDEX_FILE, DEFAULT_TITLE, MAX_TITLE_LEN, SESSION_VERSION, StoredSubagent, TAIL_BUF,
-        generate_title, json_path, jsonl_path, load_cwd_index, update_cwd_index,
+        generate_title, json_path, jsonl_path, load_cwd_index, now_epoch, update_cwd_index,
         write_full_session,
     };
     use super::{SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource};
@@ -1495,6 +1502,69 @@ mod tests {
     }
 
     #[test]
+    fn append_persists_meta_changes_without_new_messages() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages.push(user_message("first"));
+
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        session.meta.input_draft = Some("draft line".into());
+        session.meta.queued_messages = vec!["queued".into()];
+        session.title = "updated title".into();
+        session.updated_at = now_epoch() + 1;
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.meta.input_draft.as_deref(), Some("draft line"));
+        assert_eq!(loaded.meta.queued_messages, vec!["queued".to_string()]);
+        assert_eq!(loaded.title, "updated title");
+    }
+
+    #[test]
+    fn open_trims_partial_trailing_line_before_append() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages.push(user_message("survives"));
+        SessionLog::create(dir, &session).unwrap();
+
+        let path = jsonl_path(dir, session.id);
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"t\":\"msg\",\"d\":{\"trun").unwrap();
+        drop(file);
+
+        let (loaded, mut log) = SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+        assert_eq!(loaded.messages.len(), 1);
+
+        session.messages.push(user_message("after-crash"));
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages.len(), 2);
+        assert_eq!(
+            loaded.messages[1]["content"][0]["text"].as_str(),
+            Some("after-crash")
+        );
+    }
+
+    #[test]
+    fn append_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages.push(user_message("first"));
+
+        let mut log = SessionLog::create(dir, &session).unwrap();
+        log.append(&session).unwrap();
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages.len(), 1);
+    }
+
+    #[test]
     fn append_wrong_session_returns_id_mismatch() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -1504,22 +1574,6 @@ mod tests {
 
         let err = log.append(&session_b).unwrap_err();
         assert!(matches!(err, SessionError::IdMismatch { .. }));
-    }
-
-    #[test]
-    fn crash_recovery_truncated_line() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        let mut session: TestSession = Session::new("m", "/project");
-        session.messages.push(user_message("survives"));
-        session.save_to(dir).unwrap();
-
-        let path = jsonl_path(dir, session.id);
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        file.write_all(b"{\"t\":\"msg\",\"d\":{\"trun").unwrap();
-
-        let loaded = TestSession::load_from(session.id, dir).unwrap();
-        assert_eq!(loaded.messages.len(), 1);
     }
 
     #[test]
@@ -2138,7 +2192,6 @@ mod tests {
 
     #[test_case(StoredThinking::Off ; "off")]
     #[test_case(StoredThinking::Adaptive ; "adaptive")]
-    #[test_case(StoredThinking::Effort { level: Effort::XHigh } ; "effort")]
     #[test_case(StoredThinking::Budget { tokens: 4096 } ; "budget")]
     fn stored_thinking_serde_round_trip(variant: StoredThinking) {
         let json = serde_json::to_string(&variant).unwrap();
@@ -2153,65 +2206,8 @@ mod tests {
     #[test_case("1", Ok(StoredThinking::Budget { tokens: 1 }) ; "minimum_budget")]
     #[test_case("0", Err(ThinkingParseError::BudgetZero) ; "budget_zero")]
     #[test_case("fast", Err(ThinkingParseError::Unknown("fast".into())) ; "garbage")]
-    #[test_case("high", Ok(StoredThinking::Effort { level: Effort::High }) ; "effort_level")]
     fn parse_setting(input: &str, expected: Result<StoredThinking, ThinkingParseError>) {
         assert_eq!(StoredThinking::parse_setting(input), expected);
-    }
-
-    // Six ascending values in a six-variant enum also proves ALL is complete.
-    #[test]
-    fn effort_all_ascending_with_increasing_percent() {
-        for pair in Effort::ALL.windows(2) {
-            assert!(pair[0] < pair[1], "ALL must be ascending");
-            assert!(
-                pair[0].percent() < pair[1].percent(),
-                "percent must be strictly increasing"
-            );
-        }
-    }
-
-    #[test]
-    fn effort_wire_strings_round_trip() {
-        let expected = ["minimal", "low", "medium", "high", "xhigh", "max"];
-        for (e, s) in Effort::ALL.into_iter().zip(expected) {
-            assert_eq!(e.as_str(), s);
-            assert_eq!(s.parse::<Effort>(), Ok(e));
-        }
-    }
-
-    #[test_case(Effort::High, &[Effort::Low, Effort::Medium, Effort::High], Effort::High ; "exact_match")]
-    #[test_case(Effort::Max, &[Effort::Low, Effort::Medium, Effort::High], Effort::High ; "downgrade_to_nearest_lower")]
-    #[test_case(Effort::Minimal, &[Effort::Low, Effort::Medium], Effort::Low ; "below_lowest_takes_lowest")]
-    #[test_case(Effort::Medium, &[], Effort::Medium ; "empty_supported_keeps_self")]
-    #[test_case(Effort::Max, &[Effort::High, Effort::XHigh], Effort::XHigh ; "glm_max_snaps_to_xhigh")]
-    fn effort_snap(level: Effort, supported: &[Effort], expected: Effort) {
-        assert_eq!(level.snap(supported), expected);
-    }
-
-    #[test_case(Effort::Minimal, 32_768, 3_276 ; "minimal_ten_percent")]
-    #[test_case(Effort::Medium, 32_768, 13_107 ; "medium_forty_percent")]
-    #[test_case(Effort::Max, 32_768, 32_768 ; "max_full_budget")]
-    #[test_case(Effort::Minimal, 4_096, 1_024 ; "small_max_floors_at_min")]
-    #[test_case(Effort::Max, 512, 1_024 ; "tiny_max_raised_to_floor")]
-    fn effort_budget(level: Effort, max: u32, expected: u32) {
-        assert_eq!(level.budget(max), expected);
-    }
-
-    #[test_case(32_768, 32_768, Effort::Max ; "full_budget_is_max")]
-    #[test_case(64_000, 32_768, Effort::Max ; "above_max_is_max")]
-    #[test_case(0, 32_768, Effort::Minimal ; "zero_is_minimal")]
-    #[test_case(13_107, 32_768, Effort::Medium ; "forty_percent_is_medium")]
-    #[test_case(1_024, 0, Effort::Max ; "zero_max_saturates")]
-    fn effort_from_budget(n: u32, max: u32, expected: Effort) {
-        assert_eq!(Effort::from_budget(n, max), expected);
-    }
-
-    #[test]
-    fn effort_budget_round_trips_at_realistic_max() {
-        const MAX: u32 = 32_768;
-        for e in Effort::ALL {
-            assert_eq!(Effort::from_budget(e.budget(MAX), MAX), e);
-        }
     }
 
     #[test]

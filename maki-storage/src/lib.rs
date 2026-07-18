@@ -78,7 +78,8 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), StorageError> {
     retry_rename(&tmp_path, path).map_err(|e| {
         let _ = fs::remove_file(&tmp_path);
         StorageError::Io(e)
-    })
+    })?;
+    Ok(sync_dir(parent)?)
 }
 
 pub(crate) fn atomic_write_permissions(
@@ -99,7 +100,8 @@ pub(crate) fn atomic_write_permissions(
     retry_rename(&tmp_path, path).map_err(|e| {
         let _ = fs::remove_file(&tmp_path);
         StorageError::Io(e)
-    })
+    })?;
+    Ok(sync_dir(parent)?)
 }
 
 /// Rename with fibonacci backoff to handle transient `PermissionDenied` from
@@ -131,6 +133,17 @@ fn retry_rename(src: &Path, dest: &Path) -> std::io::Result<()> {
 #[cfg(not(windows))]
 fn retry_rename(src: &Path, dest: &Path) -> std::io::Result<()> {
     fs::rename(src, dest)
+}
+
+/// Flush a directory's metadata so a file created/renamed inside it is
+/// guaranteed to be reachable after a crash. No-op on platforms where this is
+/// not meaningful or not supported.
+fn sync_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        fs::File::open(path)?.sync_all()?;
+    }
+    Ok(())
 }
 
 pub fn now_epoch() -> u64 {

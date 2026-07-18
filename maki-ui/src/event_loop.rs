@@ -8,7 +8,7 @@
 //! agent event, or keypress arrives instead of sleeping in `event::poll`.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use color_eyre::Result;
@@ -48,6 +48,7 @@ use crate::terminal;
 
 const ANIMATION_INTERVAL_MS: u64 = 16;
 const IDLE_POLL_INTERVAL_MS: u64 = 100;
+const PERIODIC_SAVE_INTERVAL: Duration = Duration::from_secs(1);
 /// Max events handled per frame so a flood cannot starve rendering.
 const DRAIN_BUDGET: usize = 256;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
@@ -207,6 +208,7 @@ pub(crate) struct EventLoop<'t> {
     warn_rx: flume::Receiver<String>,
     warn_tx: flume::Sender<String>,
     ui_action_rx: Option<flume::Receiver<UiAction>>,
+    last_save: Instant,
     _model_fetch_task: smol::Task<()>,
 }
 
@@ -400,6 +402,7 @@ impl<'t> EventLoop<'t> {
             warn_rx: bg.warn_rx,
             warn_tx: bg.warn_tx,
             ui_action_rx,
+            last_save: Instant::now(),
             _model_fetch_task: bg.task,
         })
     }
@@ -509,6 +512,19 @@ impl<'t> EventLoop<'t> {
             rt.app.status_bar.poll_branch_update();
             rt.app.mcp_picker.refresh();
         }
+        self.tick_periodic_save();
+    }
+
+    fn tick_periodic_save(&mut self) {
+        if self.last_save.elapsed() < PERIODIC_SAVE_INTERVAL {
+            return;
+        }
+        let app = &mut self.sessions[self.focused].app;
+        if app.status != Status::Streaming || !app.has_content() {
+            return;
+        }
+        app.save_session();
+        self.last_save = Instant::now();
     }
 
     fn handle_agent(&mut self, idx: usize, envelope: Box<maki_agent::Envelope>) {
