@@ -411,10 +411,7 @@ impl SessionLog {
         Self::cursor_from(session, file)
     }
 
-    fn cursor_from<M, U, T>(
-        session: &Session<M, U, T>,
-        file: File,
-    ) -> Result<Self, SessionError>
+    fn cursor_from<M, U, T>(session: &Session<M, U, T>, file: File) -> Result<Self, SessionError>
     where
         M: Serialize,
         U: Serialize,
@@ -1120,7 +1117,8 @@ where
         return load_jsonl(path);
     }
     let data = fs::read(path).map_err(StorageError::from)?;
-    let mut session: Session<M, U, T> = serde_json::from_slice(&data).map_err(StorageError::from)?;
+    let mut session: Session<M, U, T> =
+        serde_json::from_slice(&data).map_err(StorageError::from)?;
     if session.version != SESSION_VERSION {
         return Err(SessionError::VersionMismatch {
             found: session.version,
