@@ -159,9 +159,9 @@ pub(crate) fn virtual_module(lua: &Lua, modname: &str) -> Option<mlua::Result<Ta
             table.set("name", NAME)?;
             table.set("description", DESCRIPTION)?;
             table.set("reference_placeholder", REFERENCE_PLACEHOLDER)?;
-            table.set("content", &*CACHED_SKILL_CONTENT)?;
+            table.set("content", CACHED_SKILL_CONTENT.as_str())?;
         } else {
-            table.set("content", &*CACHED_REFERENCE)?;
+            table.set("content", CACHED_REFERENCE.as_str())?;
         }
         Ok(table)
     };
