@@ -18,10 +18,8 @@ return function(U)
   local compact_ws = U.compact_ws
   local truncate = U.truncate
   local new_entry = U.new_entry
-  local truncated_msg = U.truncated_msg
   local format_skeleton = U.format_skeleton
   local SECTION = U.SECTION
-  local FIELD_TRUNCATE_THRESHOLD = U.FIELD_TRUNCATE_THRESHOLD
 
   local VALUE_TRUNCATE = 60
 
@@ -103,18 +101,11 @@ return function(U)
     local entry = new_entry(SECTION.Constant, node, label)
 
     local pairs_list = table_pairs(node)
-    local total = #pairs_list
-    for i, p in ipairs(pairs_list) do
-      if i > FIELD_TRUNCATE_THRESHOLD then
-        break
-      end
+    for _, p in ipairs(pairs_list) do
       local text = format_pair(p, source)
       if text then
         entry.children[#entry.children + 1] = text
       end
-    end
-    if total > FIELD_TRUNCATE_THRESHOLD then
-      entry.children[#entry.children + 1] = truncated_msg(total)
     end
 
     return entry
