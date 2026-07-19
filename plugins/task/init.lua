@@ -23,6 +23,7 @@ local INVALID_INPUT_PREFIX =
 local BODY_INDENT_COLS = 4
 local MIN_MD_WIDTH = 20
 local DEFAULT_OUTPUT_LINES = 5
+local DEFAULT_MAX_LINE_BYTES = 500
 
 local description = [[Launch an autonomous subagent to perform tasks independently. Best combined with batch.
 
@@ -204,7 +205,11 @@ end
 -- this mirrors that for restore and batch children, which build the body here.
 local function restore(_input, output, is_error, ctx)
   local tol = ctx:tool_output_lines()
-  local opts = { max_lines = (tol and tol.task) or DEFAULT_OUTPUT_LINES, keep = "head" }
+  local opts = {
+    max_lines = (tol and tol.task) or DEFAULT_OUTPUT_LINES,
+    keep = "head",
+    max_line_bytes = DEFAULT_MAX_LINE_BYTES,
+  }
   if not is_error then
     local width = math.max(maki.ui.terminal_size().cols - BODY_INDENT_COLS, MIN_MD_WIDTH)
     local ok, md_lines = pcall(maki.ui.markdown, output, width)
