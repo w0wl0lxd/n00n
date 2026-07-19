@@ -568,10 +568,6 @@ pub fn index(path: &str, no_plugins: bool, no_jit: bool) -> Result<()> {
         .context("invalid config")?;
     config.permissions = load_permissions(&cwd);
 
-    for warning in &config.migration_warnings {
-        eprintln!("warning: {warning}");
-    }
-
     host.load_builtins(&config.plugins)
         .context("load builtin plugins")?;
 
@@ -609,7 +605,7 @@ pub fn mcp_auth(server: &str, storage: &StateDir) -> Result<()> {
         let url = match mcp_config::parse_server(server.to_owned(), raw.clone())?.transport {
             mcp_config::Transport::Http { url, .. } => url,
             _ => {
-                bail!("server '{server}' is not an HTTP transport");
+                color_eyre::eyre::bail!("server '{server}' is not an HTTP transport");
             }
         };
         mcp_oauth::authenticate(server, &url, None, storage, mcp_oauth::Interaction::Cli).await?;
@@ -658,11 +654,6 @@ pub fn prompt(
         .unwrap_or_default()
         .into_config(false)
         .context("invalid config")?;
-
-    for warning in &config.migration_warnings {
-        eprintln!("warning: {warning}");
-    }
-
     host.load_builtins(&config.plugins)
         .context("load builtin plugins")?;
 
