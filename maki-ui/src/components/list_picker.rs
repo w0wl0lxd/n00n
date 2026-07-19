@@ -63,6 +63,7 @@ pub struct ListPicker<T> {
     title: String,
     max_visible: Option<u16>,
     footer: Option<fn() -> Line<'static>>,
+    footer_hints: Option<&'static [(&'static str, &'static str)]>,
     error_text: Option<String>,
 }
 
@@ -231,6 +232,7 @@ impl<T: PickerItem> ListPicker<T> {
             title: String::new(),
             max_visible: None,
             footer: None,
+            footer_hints: None,
             error_text: None,
         }
     }
@@ -246,20 +248,7 @@ impl<T: PickerItem> ListPicker<T> {
     }
 
     pub fn set_footer(&mut self, hints: &'static [(&'static str, &'static str)]) {
-        self.footer = Some(|| {
-            let pairs: Vec<Span<'static>> = hints
-                .iter()
-                .flat_map(|(key, val)| {
-                    [
-                        Span::styled(*key, Style::default().add_modifier(Modifier::BOLD)),
-                        Span::raw(" "),
-                        Span::raw(*val),
-                        Span::raw("  "),
-                    ]
-                })
-                .collect();
-            Line::from(pairs)
-        });
+        self.footer_hints = Some(hints);
     }
 
     pub fn open_toggleable(&mut self, items: Vec<T>, enabled: Vec<bool>, title: impl Into<String>) {
@@ -458,7 +447,6 @@ impl<T: PickerItem> ListPicker<T> {
     }
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect) -> Rect {
-        let footer = self.footer;
         match self.state.as_mut() {
             None => Rect::default(),
             Some(s) => render_ready(
@@ -467,7 +455,8 @@ impl<T: PickerItem> ListPicker<T> {
                 s,
                 &self.title,
                 self.max_visible,
-                footer,
+                self.footer,
+                self.footer_hints,
                 self.error_text.as_deref(),
             ),
         }
@@ -491,9 +480,10 @@ fn render_ready<T: PickerItem>(
     title: &str,
     max_visible: Option<u16>,
     footer: Option<fn() -> Line<'static>>,
+    footer_hints: Option<&'static [(&'static str, &'static str)]>,
     error_text: Option<&str>,
 ) -> Rect {
-    let footer_rows = if footer.is_some() { 1u16 } else { 0 };
+    let footer_rows = if footer.is_some() || footer_hints.is_some() { 1u16 } else { 0 };
     let content_rows = if s.filtered.is_empty() {
         1
     } else {
@@ -563,6 +553,19 @@ fn render_ready<T: PickerItem>(
 
     if let Some(build) = footer {
         frame.render_widget(Paragraph::new(build()), areas[area_idx]);
+    } else if let Some(hints) = footer_hints {
+        let pairs: Vec<Span<'static>> = hints
+            .iter()
+            .flat_map(|(key, val)| {
+                [
+                    Span::styled(*key, Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(" "),
+                    Span::raw(*val),
+                    Span::raw("  "),
+                ]
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(Line::from(pairs)), areas[area_idx]);
     }
 
     let total_visual = visual_rows_in_range(&s.filtered, &s.items, 0, s.filtered.len());
