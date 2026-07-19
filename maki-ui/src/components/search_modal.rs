@@ -219,7 +219,7 @@ impl SearchModal {
 
         let total = self.matches.len() as u16;
         if total > viewport_h as u16 {
-            render_vertical_scrollbar(frame, list_area, total, self.scroll_offset as u16);
+            render_vertical_scrollbar(frame, list_area, total, self.scroll_offset as u16, None);
         }
 
         popup
