@@ -91,7 +91,7 @@ Find files by glob pattern.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `path` | string | no | cwd | Directory to search in |
-| `pattern` | string | no |  | Glob pattern (e.g. **/*.rs, src/**/*.ts) |
+| `pattern` | string | yes |  | Glob pattern (e.g. **/*.rs, src/**/*.ts) |
 
 ### `grep` *(lua plugin)*
 
@@ -163,7 +163,7 @@ Launch an autonomous subagent to perform tasks independently. Best combined with
 |-----------|------|----------|-------------|
 | `description` | string | yes | Short (3-5 words) description of the task |
 | `model_tier` | string | no | Model tier (optional, omit to use current model, capped at current tier):<br>- "strong" (e.g. Opus): Deep reasoning, complex architecture, subtle bugs, most critical sections. ~5x cost of medium.<br>- "medium" (e.g. Sonnet): Balanced. Refactors, features, multi-file changes.<br>- "weak" (e.g. Haiku): Fast/cheap. Search, summarize, boilerplate, simple edits. |
-| `output_schema` | string | no | JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string. |
+| `output_schema` | object | no | JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string. |
 | `prompt` | string | yes | Detailed task prompt for the agent |
 | `subagent_type` | string | no | Subagent type: "research" (read-only, default) or "general" (can modify files) |
 
