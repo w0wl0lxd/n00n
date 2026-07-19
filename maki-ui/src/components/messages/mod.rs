@@ -1429,7 +1429,13 @@ impl MessagesPanel {
             let text = msg.text.clone();
             let lines = self.build_cached_thinking_indicator(&text);
             let search_text = format!("thinking> {text}");
-            return vec![Segment::with_lines(lines, search_text, Some(msg_index))];
+            return vec![Segment::with_lines(
+                lines,
+                search_text,
+                Some(text),
+                0,
+                Some(msg_index),
+            )];
         }
         let style = match &msg.role {
             DisplayRole::User => user_style(),
@@ -1479,12 +1485,19 @@ impl MessagesPanel {
                 theme::current().tool_dim,
             )));
         }
+        let prefix_width = prefix.width() as u16;
         let search_text = format!("{prefix}{}", msg.text);
-        vec![Segment::with_lines(lines, search_text, Some(msg_index))]
+        vec![Segment::with_lines(
+            lines,
+            search_text,
+            Some(msg.text.clone()),
+            prefix_width,
+            Some(msg_index),
+        )]
     }
 
     fn rebuild_line_cache(&mut self) {
-        let start = self.cache.msg_count();
+        let _start = self.cache.msg_count();
         if !self.cache.needs_rebuild(self.messages.len()) {
             return;
         }
