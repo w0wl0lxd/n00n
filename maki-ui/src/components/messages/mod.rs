@@ -30,6 +30,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
+use unicode_width::UnicodeWidthStr;
+
 use super::scrollbar::{ScrollInfo, render_vertical_scrollbar};
 use super::streaming_content::StreamingContent;
 use maki_agent::{
@@ -1486,14 +1488,106 @@ impl MessagesPanel {
         if !self.cache.needs_rebuild(self.messages.len()) {
             return;
         }
-        let mut built = Vec::new();
-        for i in start..self.messages.len() {
-            if !self.cache.segments().is_empty() || !built.is_empty() {
-                built.push(Segment::spacer());
+        for i in self.cache.msg_count()..self.messages.len() {
+            let msg = &self.messages[i];
+
+            if let DisplayRole::Tool(t) = &msg.role {
+                let exp = self.expanded_tools.get(&t.id).copied().unwrap_or_default();
+                let status = t.status;
+                let tl = Self::build_tool_segment_lines(msg, status, &self.rctx(), exp);
+                let id = t.id.clone();
+                let search_text = tl.search_text.clone();
+                self.cache.push_spacer_if_needed();
+                let mut seg = Segment::with_tool(id.clone());
+                seg.search_text = search_text;
+                seg.raw_text = Some(msg.text.clone());
+                seg.apply_highlight(tl, &self.hl_worker);
+                self.cache.push(seg);
+
+                let blocks = msg
+                    .tool_output
+                    .as_deref()
+                    .and_then(|o| o.owned_instructions());
+                if let Some(blocks) = blocks {
+                    let last_idx = self.cache.len().saturating_sub(1);
+                    self.upsert_instruction_segment(&id, &blocks, last_idx);
+                }
+            } else {
+                if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
+                    let text = msg.text.clone();
+                    let lines = self.build_cached_thinking_indicator(&text);
+                    let search_text = format!("thinking> {text}");
+                    self.cache.push_spacer_if_needed();
+                    self.cache.push(Segment::with_lines(
+                        lines,
+                        search_text,
+                        Some(text),
+                        0,
+                        Some(i),
+                    ));
+                    continue;
+                }
+                let style = match &msg.role {
+                    DisplayRole::User => user_style(),
+                    DisplayRole::Assistant => assistant_style(),
+                    DisplayRole::Thinking => thinking_style(),
+                    DisplayRole::Error => error_style(),
+                    DisplayRole::Done => done_style(),
+                    DisplayRole::Tool(_) => unreachable!(),
+                };
+                let prefix = if msg.plan_path.is_some() {
+                    ""
+                } else {
+                    style.prefix
+                };
+                let mut lines = if style.use_markdown {
+                    text_to_lines(
+                        &msg.text,
+                        prefix,
+                        style.text_style,
+                        style.prefix_style,
+                        self.viewport_width,
+                        style.max_line_bytes,
+                    )
+                } else {
+                    plain_lines(&msg.text, prefix, style.text_style, style.prefix_style)
+                };
+                if let Some(pp) = &msg.plan_path {
+                    if !msg.text.is_empty() {
+                        let rule = hr_line(self.viewport_width, theme::current().plan_rule);
+                        lines.insert(0, rule.clone());
+                        lines.push(rule);
+                    } else {
+                        lines.clear();
+                    }
+                    if !msg.text.is_empty() {
+                        lines.push(Line::from(""));
+                    }
+                    lines.push(Line::from(Span::styled(
+                        pp.to_owned(),
+                        theme::current().plan_path,
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "{} to open in editor ($VISUAL / $EDITOR)",
+                            key::OPEN_EDITOR.label
+                        ),
+                        theme::current().tool_dim,
+                    )));
+                }
+
+                let prefix_width = prefix.width() as u16;
+                let search_text = format!("{prefix}{}", msg.text);
+                self.cache.push_spacer_if_needed();
+                self.cache.push(Segment::with_lines(
+                    lines,
+                    search_text,
+                    Some(msg.text.clone()),
+                    prefix_width,
+                    Some(i),
+                ));
             }
-            built.extend(self.build_segments_for_msg(&self.messages[i], i));
         }
-        self.cache.extend(built);
         self.cache.mark_built(self.messages.len());
     }
 }
