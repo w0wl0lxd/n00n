@@ -257,6 +257,37 @@ case("render_selecting_wraps_long_question_within_width", function()
   assert_all_within(QuestionForm._render(s, 40).lines, 40, "selecting")
 end)
 
+case("render_selecting_uses_radio_for_single_and_check_for_multiple", function()
+  local function line_text(line)
+    local parts = {}
+    for _, span in ipairs(line) do
+      parts[#parts + 1] = span[1]
+    end
+    return table.concat(parts)
+  end
+
+  local function contains(lines, text)
+    for _, line in ipairs(lines) do
+      if line_text(line):find(text, 1, true) then
+        return true
+      end
+    end
+    return false
+  end
+
+  local single = QuestionForm._initial_state(single_question())
+  press(single, "enter")
+  local single_lines = QuestionForm._render(single, 80).lines
+  assert(contains(single_lines, "(single answer)"), "single answer hint missing")
+  assert(contains(single_lines, "● Yes"), "single selected must use bullet")
+
+  local multi = QuestionForm._initial_state(single_question({ multiple = true }))
+  press(multi, "enter")
+  local multi_lines = QuestionForm._render(multi, 80).lines
+  assert(contains(multi_lines, "(multiple answers)"), "multiple answer hint missing")
+  assert(contains(multi_lines, "✓ Yes"), "multiple selected must use check")
+end)
+
 case("render_confirming_wraps_long_question_and_answer_within_width", function()
   local long_ans = string.rep("answerword ", 15)
   local long_q = string.rep("promptword ", 15)
