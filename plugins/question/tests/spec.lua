@@ -301,6 +301,44 @@ local function find_span_with_text(lines, text)
   return nil
 end
 
+local function render_card_text(card)
+  local lines = card:get_lines()
+  local text = {}
+  for _, line in ipairs(lines) do
+    for _, span in ipairs(line) do
+      text[#text + 1] = span[1]
+    end
+    text[#text + 1] = "\n"
+  end
+  return table.concat(text)
+end
+
+case("render_card_shows_single_answer_hint_and_radio_marker", function()
+  with_mock_ui(function(buf)
+    local questions = {
+      { question = "Pick one", multiple = false, options = { { label = "Yes" }, { label = "No" } } },
+    }
+    local card = QuestionHelpers.render_card(questions, { { "Yes" } }, { width = 80 })
+    local text = render_card_text(card)
+    assert(text:find("(single answer)", 1, true), "single answer hint")
+    assert(text:find("● Yes", 1, true), "selected single answer uses bullet")
+    assert(text:find("○ No", 1, true), "unselected single answer uses empty radio")
+  end)
+end)
+
+case("render_card_shows_multiple_answer_hint_and_check_marker", function()
+  with_mock_ui(function(buf)
+    local questions = {
+      { question = "Pick any", multiple = true, options = { { label = "A" }, { label = "B" } } },
+    }
+    local card = QuestionHelpers.render_card(questions, { { "A" } }, { width = 80 })
+    local text = render_card_text(card)
+    assert(text:find("(multiple answers)", 1, true), "multiple answer hint")
+    assert(text:find("✓ A", 1, true), "selected multiple answer uses check")
+    assert(text:find("  B", 1, true), "unselected multiple answer uses empty box")
+  end)
+end)
+
 case("question_md_falls_back_to_plain_text_on_invalid_markdown_return", function()
   local original = maki.ui.markdown
   local mocks = {
