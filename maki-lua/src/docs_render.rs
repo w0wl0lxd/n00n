@@ -3,6 +3,8 @@
 //! repo. `maki-docgen` calls [`site_page`] for the website; the plugin
 //! `require()` sandbox serves [`virtual_module`] to the skill plugin.
 
+use std::sync::LazyLock;
+
 use mlua::{Lua, Table};
 
 use crate::docs::{DocKind, FnDoc, ModuleDoc, api_docs};
@@ -121,6 +123,9 @@ const HELPERS_INTRO: &str = "## Shared helper modules\n\nThese ship inside maki;
 
 const FULL_SOURCE_MAX_BYTES: usize = 1024;
 
+static CACHED_REFERENCE: LazyLock<String> = LazyLock::new(reference);
+static CACHED_SKILL_CONTENT: LazyLock<String> = LazyLock::new(|| skill_content(&CACHED_REFERENCE));
+
 /// The skill carries the guide, example, and a line-numbered index into
 /// {reference}; the skill plugin writes the full reference to disk so the
 /// model reads only the sections it needs.
@@ -145,18 +150,20 @@ fn skill_content(reference: &str) -> String {
 /// Rendering repeats per runtime, but Lua's `loaded` table caches the result
 /// and the cost is a one-shot string build at plugin load.
 pub(crate) fn virtual_module(lua: &Lua, modname: &str) -> Option<mlua::Result<Table>> {
-    if modname != SKILL_MODULE && modname != REFERENCE_MODULE {
+    let is_skill = modname == SKILL_MODULE || modname == "skill.plugin_dev";
+    let is_ref = modname == REFERENCE_MODULE || modname == "skill.plugin_dev_reference";
+    if !is_skill && !is_ref {
         return None;
     }
     let build = || {
         let table = lua.create_table()?;
-        if modname == SKILL_MODULE {
+        if is_skill {
             table.set("name", NAME)?;
             table.set("description", DESCRIPTION)?;
             table.set("reference_placeholder", REFERENCE_PLACEHOLDER)?;
-            table.set("content", skill_content(&reference()))?;
+            table.set("content", CACHED_SKILL_CONTENT.as_str())?;
         } else {
-            table.set("content", reference())?;
+            table.set("content", CACHED_REFERENCE.as_str())?;
         }
         Ok(table)
     };
