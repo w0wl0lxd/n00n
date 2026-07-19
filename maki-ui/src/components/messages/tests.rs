@@ -1784,3 +1784,137 @@ fn stream_reset_clears_thinking_expand_state() {
         "new stream must stay hidden; got: {text}"
     );
 }
+fn mixed_messages(n: usize) -> Vec<DisplayMessage> {
+    (0..n)
+        .map(|i| {
+            if i % 3 == 0 {
+                let mut m = DisplayMessage::new(
+                    DisplayRole::Tool(Box::new(ToolRole {
+                        id: format!("t{i}"),
+                        status: ToolStatus::Success,
+                        name: Arc::from("bash"),
+                    })),
+                    format!("tool {i}"),
+                );
+                m.tool_raw_input = Some(Arc::new(serde_json::json!({ "command": "echo" })));
+                m.tool_output = Some(Arc::new(ToolOutput::Plain(format!("out {i}").into())));
+                m
+            } else if i % 2 == 0 {
+                DisplayMessage::new(DisplayRole::User, format!("user {i}"))
+            } else {
+                DisplayMessage::new(DisplayRole::Assistant, format!("assistant {i}"))
+            }
+        })
+        .collect()
+}
+
+fn assert_cache_equal(a: &MessagesPanel, b: &MessagesPanel) {
+    assert_eq!(a.message_count(), b.message_count(), "message_count");
+    assert_eq!(a.cache.len(), b.cache.len(), "segment count");
+    assert_eq!(a.cache.msg_count(), b.cache.msg_count(), "built msg_count");
+    assert_eq!(
+        a.cache.search_texts(),
+        b.cache.search_texts(),
+        "search_texts"
+    );
+    assert_eq!(
+        a.cache.total_height(80),
+        b.cache.total_height(80),
+        "total_height"
+    );
+    let ai: Vec<_> = a.cache.segments().iter().map(|s| s.msg_index).collect();
+    let bi: Vec<_> = b.cache.segments().iter().map(|s| s.msg_index).collect();
+    assert_eq!(ai, bi, "msg_index backlinks");
+    let at: Vec<_> = a
+        .cache
+        .segments()
+        .iter()
+        .map(|s| s.tool_id.clone())
+        .collect();
+    let bt: Vec<_> = b
+        .cache
+        .segments()
+        .iter()
+        .map(|s| s.tool_id.clone())
+        .collect();
+    assert_eq!(at, bt, "tool_ids");
+}
+
+#[test_case(0, 4, 0, vec![] ; "empty")]
+#[test_case(3, 4, 3, vec![] ; "below_batch_all_initial")]
+#[test_case(4, 4, 4, vec![] ; "exactly_batch_all_initial")]
+#[test_case(5, 4, 4, vec![1] ; "one_over_batch_one_backlog")]
+#[test_case(10, 4, 4, vec![4, 2] ; "two_batches")]
+#[test_case(12, 4, 4, vec![4, 4] ; "even_split")]
+fn restore_plan_splits_recent_first(
+    total: usize,
+    batch: usize,
+    initial: usize,
+    batches: Vec<usize>,
+) {
+    let plan = restore_plan(total, batch);
+    assert_eq!(plan.initial, initial);
+    assert_eq!(plan.prepend_batches, batches);
+}
+
+#[test]
+fn restore_plan_clamps_zero_batch_size() {
+    let plan = restore_plan(7, 0);
+    assert_eq!(plan.initial, 1);
+    assert_eq!(plan.prepend_batches, vec![1, 1, 1, 1, 1, 1]);
+}
+
+#[test]
+fn incremental_restore_matches_full_load() {
+    let msgs = mixed_messages(40);
+    let batch = 7;
+
+    let mut full = MessagesPanel::new(UiConfig::default());
+    full.load_messages(msgs.clone());
+    render(&mut full, 80, 24);
+
+    let mut incr = MessagesPanel::new(UiConfig::default());
+    incr.begin_restore(msgs, batch);
+    render(&mut incr, 80, 24);
+    while incr.is_restoring() {
+        render(&mut incr, 80, 24);
+    }
+
+    assert_cache_equal(&full, &incr);
+}
+
+#[test]
+fn incremental_restore_first_frame_shows_only_recent() {
+    let msgs = mixed_messages(21);
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.begin_restore(msgs, 7);
+    render(&mut panel, 80, 24);
+    assert_eq!(
+        panel.message_count(),
+        7,
+        "first frame renders only the recent batch"
+    );
+    assert!(panel.is_restoring(), "older history still pending");
+    while panel.is_restoring() {
+        render(&mut panel, 80, 24);
+    }
+    assert_eq!(
+        panel.message_count(),
+        21,
+        "full history loaded after backfill"
+    );
+    assert!(!panel.is_restoring());
+}
+
+#[test]
+fn incremental_restore_below_batch_loads_all_at_once() {
+    let msgs = mixed_messages(3);
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.begin_restore(msgs, 7);
+    render(&mut panel, 80, 24);
+    assert_eq!(panel.message_count(), 3);
+    assert!(
+        !panel.is_restoring(),
+        "no backlog when total fits one batch"
+    );
+}

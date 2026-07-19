@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use crate::chat::{Chat, DONE_TEXT, history_to_display};
+use crate::chat::{Chat, DONE_TEXT, RESTORE_BATCH_SIZE, history_to_display};
 use crate::components::DisplayRole;
 use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
@@ -102,7 +102,8 @@ impl App {
             &self.state.session.tool_outputs,
             &self.ui_config.tool_output_lines,
         );
-        self.main_chat().load_messages(display_msgs);
+        self.main_chat()
+            .begin_restore(display_msgs, RESTORE_BATCH_SIZE);
         self.main_chat().token_usage = self.state.token_usage;
         self.main_chat().context_size = self.state.context_size;
         if let Some(draft) = self.state.session.meta.input_draft.take() {
@@ -133,7 +134,7 @@ impl App {
                     &self.state.session.tool_outputs,
                     &self.ui_config.tool_output_lines,
                 );
-                chat.load_messages(display);
+                chat.begin_restore(display, RESTORE_BATCH_SIZE);
                 chat.mark_finished(DisplayRole::Done, DONE_TEXT);
                 self.fire_restore_items(items);
             }

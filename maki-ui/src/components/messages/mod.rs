@@ -93,6 +93,36 @@ pub struct MessagesPanel {
     rebake_requested: HashMap<String, u64>,
     prompt_progress: Option<PromptProgress>,
     jump_to_bottom_popup: Option<Rect>,
+    /// Older display messages waiting to be prepended in batches so a long
+    /// session resumes without blocking the first paint on full rendering.
+    restore_backlog: Vec<DisplayMessage>,
+    /// Per-frame prepend sizes, drained front-to-back by `drain_restore_backlog`.
+    restore_batches: VecDeque<usize>,
+}
+
+/// Incremental restore plan: show the `initial` (most recent) messages first,
+/// then prepend the remaining older messages in `prepend_batches`-sized chunks
+/// (drained front-to-back, each chunk taken from the end of the backlog so
+/// older history lands just above what is already rendered).
+struct RestorePlan {
+    initial: usize,
+    prepend_batches: Vec<usize>,
+}
+
+fn restore_plan(total: usize, batch_size: usize) -> RestorePlan {
+    let batch_size = batch_size.max(1);
+    let initial = total.min(batch_size);
+    let mut backlog = total - initial;
+    let mut prepend_batches = Vec::new();
+    while backlog > 0 {
+        let take = backlog.min(batch_size);
+        prepend_batches.push(take);
+        backlog -= take;
+    }
+    RestorePlan {
+        initial,
+        prepend_batches,
+    }
 }
 
 impl MessagesPanel {
@@ -138,6 +168,8 @@ impl MessagesPanel {
             rebake_requested: HashMap::new(),
             prompt_progress: None,
             jump_to_bottom_popup: None,
+            restore_backlog: Vec::new(),
+            restore_batches: VecDeque::new(),
         }
     }
 
@@ -171,6 +203,69 @@ impl MessagesPanel {
         self.rebake_requested.clear();
         self.highlight_segment = None;
         self.thinking_collapsed = !self.show_thinking;
+        self.restore_backlog.clear();
+        self.restore_batches.clear();
+    }
+
+    /// Splits `msgs` into an initial recent batch (rendered immediately) and an
+    /// older backlog that is prepended a few messages per frame so resuming a
+    /// long session does not block startup on a full render.
+    pub fn begin_restore(&mut self, msgs: Vec<DisplayMessage>, batch_size: usize) {
+        let plan = restore_plan(msgs.len(), batch_size);
+        let mut all = msgs;
+        let initial = all.split_off(all.len() - plan.initial);
+        self.load_messages(initial);
+        self.restore_backlog = all;
+        self.restore_batches = plan.prepend_batches.into();
+    }
+
+    pub fn is_restoring(&self) -> bool {
+        !self.restore_batches.is_empty()
+    }
+
+    fn drain_restore_backlog(&mut self) {
+        if self.restore_batches.is_empty() || self.cache.segments().is_empty() {
+            return;
+        }
+        let Some(take) = self.restore_batches.pop_front() else {
+            return;
+        };
+        let take = take.min(self.restore_backlog.len());
+        if take == 0 {
+            return;
+        }
+        let split = self.restore_backlog.len() - take;
+        let batch = self.restore_backlog.split_off(split);
+        self.prepend_messages(batch);
+    }
+
+    /// Prepends `msgs` (older history) in front of the existing messages,
+    /// building their render segments up front and shifting the cache so the
+    /// already-rendered recent tail stays intact.
+    pub fn prepend_messages(&mut self, mut msgs: Vec<DisplayMessage>) {
+        let n = msgs.len();
+        if n == 0 {
+            return;
+        }
+        if !self.show_thinking {
+            for msg in &mut msgs {
+                if matches!(msg.role, DisplayRole::Thinking) {
+                    msg.thinking_collapsed = true;
+                }
+            }
+        }
+        let mut built = Vec::new();
+        for (i, msg) in msgs.iter().enumerate() {
+            if !built.is_empty() {
+                built.push(Segment::spacer());
+            }
+            built.extend(self.build_segments_for_msg(msg, i));
+        }
+        if !built.is_empty() && !self.cache.segments().is_empty() {
+            built.push(Segment::spacer());
+        }
+        self.cache.prepend(built, n);
+        self.messages.splice(0..0, msgs);
     }
 
     pub fn thinking_delta(&mut self, text: &str) {
@@ -694,6 +789,7 @@ impl MessagesPanel {
             || self.accent.is_animating()
             || !self.live_bufs.is_empty()
             || self.streaming_thinking_collapsed()
+            || self.is_restoring()
     }
 
     fn streaming_thinking_collapsed(&self) -> bool {
@@ -743,6 +839,7 @@ impl MessagesPanel {
         }
         self.drain_highlights();
         self.poll_live_bufs();
+        self.drain_restore_backlog();
         self.rebuild_line_cache();
         if self.in_progress_count() > 0 {
             self.update_spinners();
@@ -1267,98 +1364,109 @@ impl MessagesPanel {
         }
     }
 
+    fn build_segments_for_msg(&self, msg: &DisplayMessage, msg_index: usize) -> Vec<Segment> {
+        if let DisplayRole::Tool(t) = &msg.role {
+            let exp = self.expanded_tools.get(&t.id).copied().unwrap_or_default();
+            let status = t.status;
+            let tl = Self::build_tool_segment_lines(msg, status, &self.rctx(), exp);
+            let id = t.id.clone();
+            let mut seg = Segment::with_tool(id.clone());
+            seg.search_text = tl.search_text.clone();
+            seg.apply_highlight(tl, &self.hl_worker);
+            let mut out = vec![seg];
+            let blocks = msg
+                .tool_output
+                .as_deref()
+                .and_then(|o| o.owned_instructions());
+            if let Some(blocks) = blocks
+                && !blocks.is_empty()
+            {
+                let inst_id = segment::instruction_id(&id);
+                let exp = self
+                    .expanded_tools
+                    .get(&inst_id)
+                    .copied()
+                    .unwrap_or_default();
+                let tl = build_instructions_lines(&blocks, self.viewport_width, exp.output);
+                let mut inst_seg = Segment::with_tool(inst_id);
+                inst_seg.search_text = tl.search_text.clone();
+                inst_seg.apply_highlight(tl, &self.hl_worker);
+                out.push(Segment::spacer());
+                out.push(inst_seg);
+            }
+            return out;
+        }
+        if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
+            let text = msg.text.clone();
+            let lines = self.build_cached_thinking_indicator(&text);
+            let search_text = format!("thinking> {text}");
+            return vec![Segment::with_lines(lines, search_text, Some(msg_index))];
+        }
+        let style = match &msg.role {
+            DisplayRole::User => user_style(),
+            DisplayRole::Assistant => assistant_style(),
+            DisplayRole::Thinking => thinking_style(),
+            DisplayRole::Error => error_style(),
+            DisplayRole::Done => done_style(),
+            DisplayRole::Tool(_) => unreachable!(),
+        };
+        let prefix = if msg.plan_path.is_some() {
+            ""
+        } else {
+            style.prefix
+        };
+        let mut lines = if style.use_markdown {
+            text_to_lines(
+                &msg.text,
+                prefix,
+                style.text_style,
+                style.prefix_style,
+                self.viewport_width,
+                style.max_line_bytes,
+            )
+        } else {
+            plain_lines(&msg.text, prefix, style.text_style, style.prefix_style)
+        };
+        if let Some(pp) = &msg.plan_path {
+            if !msg.text.is_empty() {
+                let rule = hr_line(self.viewport_width, theme::current().plan_rule);
+                lines.insert(0, rule.clone());
+                lines.push(rule);
+            } else {
+                lines.clear();
+            }
+            if !msg.text.is_empty() {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(Span::styled(
+                pp.to_owned(),
+                theme::current().plan_path,
+            )));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{} to open in editor ($VISUAL / $EDITOR)",
+                    key::OPEN_EDITOR.label
+                ),
+                theme::current().tool_dim,
+            )));
+        }
+        let search_text = format!("{prefix}{}", msg.text);
+        vec![Segment::with_lines(lines, search_text, Some(msg_index))]
+    }
+
     fn rebuild_line_cache(&mut self) {
+        let start = self.cache.msg_count();
         if !self.cache.needs_rebuild(self.messages.len()) {
             return;
         }
-        for i in self.cache.msg_count()..self.messages.len() {
-            let msg = &self.messages[i];
-
-            if let DisplayRole::Tool(t) = &msg.role {
-                let exp = self.expanded_tools.get(&t.id).copied().unwrap_or_default();
-                let status = t.status;
-                let tl = Self::build_tool_segment_lines(msg, status, &self.rctx(), exp);
-                let id = t.id.clone();
-                let search_text = tl.search_text.clone();
-                self.cache.push_spacer_if_needed();
-                let mut seg = Segment::with_tool(id.clone());
-                seg.search_text = search_text;
-                seg.apply_highlight(tl, &self.hl_worker);
-                self.cache.push(seg);
-
-                let blocks = msg
-                    .tool_output
-                    .as_deref()
-                    .and_then(|o| o.owned_instructions());
-                if let Some(blocks) = blocks {
-                    let last_idx = self.cache.len().saturating_sub(1);
-                    self.upsert_instruction_segment(&id, &blocks, last_idx);
-                }
-            } else {
-                if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
-                    let text = msg.text.clone();
-                    let lines = self.build_cached_thinking_indicator(&text);
-                    let search_text = format!("thinking> {text}");
-                    self.cache.push_spacer_if_needed();
-                    self.cache
-                        .push(Segment::with_lines(lines, search_text, Some(i)));
-                    continue;
-                }
-                let style = match &msg.role {
-                    DisplayRole::User => user_style(),
-                    DisplayRole::Assistant => assistant_style(),
-                    DisplayRole::Thinking => thinking_style(),
-                    DisplayRole::Error => error_style(),
-                    DisplayRole::Done => done_style(),
-                    DisplayRole::Tool(_) => unreachable!(),
-                };
-                let prefix = if msg.plan_path.is_some() {
-                    ""
-                } else {
-                    style.prefix
-                };
-                let mut lines = if style.use_markdown {
-                    text_to_lines(
-                        &msg.text,
-                        prefix,
-                        style.text_style,
-                        style.prefix_style,
-                        self.viewport_width,
-                        style.max_line_bytes,
-                    )
-                } else {
-                    plain_lines(&msg.text, prefix, style.text_style, style.prefix_style)
-                };
-                if let Some(pp) = &msg.plan_path {
-                    if !msg.text.is_empty() {
-                        let rule = hr_line(self.viewport_width, theme::current().plan_rule);
-                        lines.insert(0, rule.clone());
-                        lines.push(rule);
-                    } else {
-                        lines.clear();
-                    }
-                    if !msg.text.is_empty() {
-                        lines.push(Line::from(""));
-                    }
-                    lines.push(Line::from(Span::styled(
-                        pp.to_owned(),
-                        theme::current().plan_path,
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "{} to open in editor ($VISUAL / $EDITOR)",
-                            key::OPEN_EDITOR.label
-                        ),
-                        theme::current().tool_dim,
-                    )));
-                }
-
-                let search_text = format!("{prefix}{}", msg.text);
-                self.cache.push_spacer_if_needed();
-                self.cache
-                    .push(Segment::with_lines(lines, search_text, Some(i)));
+        let mut built = Vec::new();
+        for i in start..self.messages.len() {
+            if !self.cache.segments().is_empty() || !built.is_empty() {
+                built.push(Segment::spacer());
             }
+            built.extend(self.build_segments_for_msg(&self.messages[i], i));
         }
+        self.cache.extend(built);
         self.cache.mark_built(self.messages.len());
     }
 }

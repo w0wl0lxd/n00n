@@ -261,12 +261,28 @@ impl SegmentCache {
         self.msg_count = 0;
     }
 
-    pub fn push(&mut self, seg: Segment) {
-        self.segments.push(seg);
-    }
-
     pub fn insert(&mut self, pos: usize, seg: Segment) {
         self.segments.insert(pos, seg);
+    }
+
+    pub fn extend(&mut self, segs: Vec<Segment>) {
+        self.segments.extend(segs);
+    }
+
+    /// Inserts `segs` before the existing segments, shifting every
+    /// `msg_index` backlink by `shift` so it still points at the right
+    /// message after older messages are prepended at the front.
+    pub fn prepend(&mut self, mut segs: Vec<Segment>, shift: usize) {
+        if shift > 0 {
+            for seg in &mut self.segments {
+                if let Some(ref mut idx) = seg.msg_index {
+                    *idx += shift;
+                }
+            }
+        }
+        segs.append(&mut self.segments);
+        self.segments = segs;
+        self.msg_count += shift;
     }
 
     pub fn needs_rebuild(&self, msg_len: usize) -> bool {
@@ -321,12 +337,6 @@ impl SegmentCache {
 
     pub fn len(&self) -> usize {
         self.segments.len()
-    }
-
-    pub fn push_spacer_if_needed(&mut self) {
-        if !self.segments.is_empty() {
-            self.segments.push(Segment::spacer());
-        }
     }
 
     pub fn search_texts(&self) -> Vec<&str> {
