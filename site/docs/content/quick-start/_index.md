@@ -91,6 +91,7 @@ These are the defaults. Plugins and `init.lua` can rebind most of them with `mak
 - **Scroll output**: Ctrl+U / Ctrl+D (half page)
 - **Cancel streaming**: Esc Esc
 - **Rewind (when idle)**: Esc Esc
+- **Insert file path**: type `@` after whitespace to open the file picker (Esc leaves a literal `@`)
 - **Quit**: Ctrl+C
 - **All keybindings**: Ctrl+H
 
