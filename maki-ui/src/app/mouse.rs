@@ -8,7 +8,7 @@ use ratatui::layout::{Position, Rect};
 use super::App;
 
 pub(super) const EDGE_SCROLL_LINES: i32 = 1;
-pub(super) const EDGE_SCROLL_INTERVAL: Duration = Duration::from_millis(25);
+pub(super) const EDGE_SCROLL_INTERVAL: Duration = Duration::from_millis(16);
 
 impl App {
     pub(super) fn handle_mouse(&mut self, event: MouseEvent) {
