@@ -274,7 +274,9 @@ fn login_custom(storage: &StateDir) -> Result<()> {
         "1" | "openai" => "openai",
         "2" | "anthropic" => "anthropic",
         "3" | "google" => "google",
-        _ => return Err(eyre!("invalid protocol selection")),
+        _ => {
+            bail!("invalid protocol selection");
+        }
     };
 
     print!("  Base URL: ");
@@ -589,7 +591,9 @@ pub fn index(path: &str, no_plugins: bool, no_jit: bool) -> Result<()> {
     let result = smol::block_on(async { inv.execute(&ctx).await });
     match result.output {
         Ok(output) => print!("{}", output.as_text()),
-        Err(e) => return Err(eyre!("index failed: {e}")),
+        Err(e) => {
+            bail!("index failed: {e}");
+        }
     }
     Ok(())
 }
@@ -604,7 +608,9 @@ pub fn mcp_auth(server: &str, storage: &StateDir) -> Result<()> {
             .ok_or_else(|| color_eyre::eyre::eyre!("unknown MCP server: {server}"))?;
         let url = match mcp_config::parse_server(server.to_owned(), raw.clone())?.transport {
             mcp_config::Transport::Http { url, .. } => url,
-            _ => return Err(eyre!("server '{server}' is not an HTTP transport")),
+            _ => {
+                bail!("server '{server}' is not an HTTP transport");
+            }
         };
         mcp_oauth::authenticate(server, &url, None, storage, mcp_oauth::Interaction::Cli).await?;
         eprintln!("Successfully authenticated with MCP server '{server}'");
