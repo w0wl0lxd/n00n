@@ -247,6 +247,8 @@ impl PluginHost {
                 );
             }
         }
+
+        let mut prepared = Vec::with_capacity(config.names.len());
         for builtin in &config.names {
             let dir = match BUNDLED_PLUGINS.iter().find(|p| p.name == builtin.as_str()) {
                 Some(p) => &p.dir,
@@ -263,20 +265,45 @@ impl PluginHost {
                     plugin: builtin.clone(),
                     source: mlua::Error::runtime("bundled plugin missing init.lua"),
                 })?;
-            let name: Arc<str> = Arc::from(builtin.as_str());
             let opts = config
                 .opts
                 .get(builtin.as_str())
                 .cloned()
                 .map(Arc::new)
                 .unwrap_or_default();
-            self.send_load(
+            prepared.push((Arc::from(builtin.as_str()), init.to_owned(), opts));
+        }
+
+        // Pipeline: queue every LoadSource before collecting any reply. The
+        // Lua runtime is single-threaded, so it still loads plugins in order,
+        // but it now drains the queue back-to-back instead of paying a host
+        // round-trip between each one. A failing builtin no longer blocks the
+        // rest from loading; the first error (in send order) is returned.
+        let tx = self.tx()?;
+        let mut replies = Vec::with_capacity(prepared.len());
+        for (name, source, opts) in prepared {
+            let (reply_tx, reply_rx) = flume::bounded(1);
+            tx.send(Request::LoadSource {
                 name,
-                init.to_owned(),
-                None,
-                PluginPermissions::trusted(),
+                source,
+                plugin_dir: None,
+                permissions: PluginPermissions::trusted(),
                 opts,
-            )?;
+                reply: reply_tx,
+            })
+            .map_err(|_| PluginError::HostDead)?;
+            replies.push(reply_rx);
+        }
+        let mut first_err = None;
+        for rx in replies {
+            if let Err(e) = rx.recv().map_err(|_| PluginError::HostDead)?
+                && first_err.is_none()
+            {
+                first_err = Some(e);
+            }
+        }
+        if let Some(err) = first_err {
+            return Err(err);
         }
         Ok(())
     }
@@ -623,6 +650,17 @@ mod tests {
         drop(host);
         let slots = handle.collect_prompt_slots();
         assert!(contents(&slots, PromptId::System, Slot::ToolUsage).is_empty());
+    }
+
+    #[test]
+    fn pipelined_load_registers_every_builtin() {
+        let reg = Arc::new(ToolRegistry::new());
+        let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
+        host.load_builtins(&PluginsConfig::from_plugins(HashMap::new()))
+            .unwrap();
+        for tool in ["read", "grep", "glob", "bash"] {
+            assert!(reg.has(tool), "pipelined load must register {tool}");
+        }
     }
 
     /// Load `src` as one plugin, collect resolved slots.
