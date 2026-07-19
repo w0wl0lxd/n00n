@@ -96,9 +96,11 @@ impl App {
                 if event.column != zone.area.right().saturating_sub(1) {
                     return false;
                 }
-                let Some((thumb_start, thumb_end)) =
-                    scrollbar::vertical_thumb_bounds(info.content_len, zone.area.height, info.position)
-                else {
+                let Some((thumb_start, thumb_end)) = scrollbar::vertical_thumb_bounds(
+                    info.content_len,
+                    zone.area.height,
+                    info.position,
+                ) else {
                     return false;
                 };
 
@@ -139,8 +141,12 @@ impl App {
                 let row_rel = event.row.saturating_sub(track_y_start) as i32;
                 let max_thumb_start = (viewport_height as i32 - thumb_len as i32).max(0);
                 let new_thumb_start = (row_rel - grab_offset).clamp(0, max_thumb_start) as u16;
-                let position =
-                    scrollbar::position_for_thumb_row(content_len, viewport_height, thumb_len, new_thumb_start);
+                let position = scrollbar::position_for_thumb_row(
+                    content_len,
+                    viewport_height,
+                    thumb_len,
+                    new_thumb_start,
+                );
                 self.set_scroll_zone(zone, position);
                 true
             }

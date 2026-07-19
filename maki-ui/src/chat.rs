@@ -1,14 +1,14 @@
 //! Rebuilds display messages from stored sessions. Tool outputs get syntax
 //! highlighted, missing outputs fall back to plain text from `ToolResult`.
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
 use crate::components::messages::{MessagesPanel, PromptProgress};
 use crate::components::scrollbar::ScrollInfo;
 use crate::components::tool_display::append_annotation;
 use crate::components::{DisplayMessage, DisplayRole, ToolRole, ToolStatus};
 use crate::markdown::truncate_output;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 
 use crate::selection::Selection;
 use maki_agent::tools::{ToolInvocation, ToolRegistry, WRITE_TOOL_NAME};

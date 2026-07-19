@@ -392,7 +392,8 @@ impl App {
                         && matches!(zone.zone, SelectionZone::Messages | SelectionZone::Input)
                     {
                         let scroll = self.scroll_offset(zone.zone);
-                        if let Some(SelectionState::Dragging { sel, .. }) = &mut self.selection_state
+                        if let Some(SelectionState::Dragging { sel, .. }) =
+                            &mut self.selection_state
                         {
                             sel.update(row, column, scroll);
                         }
@@ -1196,10 +1197,8 @@ impl App {
                     self.subagent_answers.clear();
                     self.subagent_prompts.clear();
                     self.finish_subagents(DisplayRole::Error, ERROR_TEXT);
-                    self.chats[chat_idx].push(DisplayMessage::new(
-                        DisplayRole::Error,
-                        message.clone(),
-                    ));
+                    self.chats[chat_idx]
+                        .push(DisplayMessage::new(DisplayRole::Error, message.clone()));
                     for chat in &mut self.chats {
                         chat.fail_in_progress_with_message(message.clone());
                     }

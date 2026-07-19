@@ -16,6 +16,7 @@ const TASK_PLUGIN_SRC: &str = include_str!("../../plugins/task/init.lua");
 const STRUCTURED_OUTPUT_TOOL: &str = "structured_output";
 const MAX_SCHEMA_ERRORS: usize = 3;
 const SCHEMA_COMPILE_ERROR: &str = "invalid output_schema";
+const SCHEMA_ROOT_ERROR: &str = "output_schema must have type object";
 const STRUCTURED_MISSING_ERROR: &str = "subagent finished without calling structured_output";
 const STRUCTURED_INVALID_ERROR: &str = "subagent result does not match output_schema";
 const UNKNOWN_SUBAGENT_ERR: &str = "unknown subagent type: bogus";
@@ -115,6 +116,7 @@ end
 maki.agent.session = function(ctx, opts)
   recorder.sessions = recorder.sessions + 1
   recorder.has_local_tools = opts.local_tools ~= nil
+  recorder.done_schema = opts.local_tools and opts.local_tools.done and opts.local_tools.done.input_schema
   local sess = { opts = opts }
   function sess:prompt(msg)
     recorder.prompts[#recorder.prompts + 1] = msg
@@ -140,6 +142,7 @@ maki.api.register_tool({
       closed = recorder.closed,
       prompt_count = #recorder.prompts,
       has_local_tools = recorder.has_local_tools,
+      done_schema = recorder.done_schema,
       first_ack = recorder.first_ack,
       first_err = recorder.first_err,
       second_ack = recorder.second_ack,
@@ -220,7 +223,9 @@ fn multi_error_schema() -> Value {
 }
 
 #[test_case::test_case(json!({"subagent_type": "bogus"}), UNKNOWN_SUBAGENT_ERR ; "unknown_subagent_type")]
-#[test_case::test_case(json!({"output_schema": {"type": 42}}), SCHEMA_COMPILE_ERROR ; "invalid_output_schema")]
+#[test_case::test_case(json!({"output_schema": {"type": 42}}), SCHEMA_ROOT_ERROR ; "invalid_output_schema_type")]
+#[test_case::test_case(json!({"output_schema": {"type": "string"}}), SCHEMA_ROOT_ERROR ; "primitive_output_schema")]
+#[test_case::test_case(json!({"output_schema": {"type": "object", "properties": 42}}), SCHEMA_COMPILE_ERROR ; "invalid_object_output_schema")]
 fn bad_input_errors_before_any_session(extra: Value, expected_prefix: &str) {
     let (reg, _host) = load_task_host();
     let mut input = task_input(SCENARIO_PLAIN, None);
@@ -341,10 +346,27 @@ fn plain_path_returns_text_with_done_local_tool() {
 
     let snap = probe(&reg);
     assert_eq!(snap["has_local_tools"], json!(true));
+    assert_eq!(
+        snap["done_schema"],
+        json!({
+            "additionalProperties": false,
+            "type": "object",
+            "required": ["answer"],
+            "properties": {
+                "answer": {
+                    "description": "Final answer to return to the parent agent.",
+                    "type": "string",
+                }
+            },
+        })
+    );
     assert_eq!(snap["prompt_count"], json!(1));
     let prompt = snap["prompts"][0].as_str().expect("prompt missing");
     assert!(prompt.starts_with(TASK_PROMPT), "got: {prompt}");
-    assert!(prompt.contains("done"), "prompt should mention done tool: {prompt}");
+    assert!(
+        prompt.contains("done"),
+        "prompt should mention done tool: {prompt}"
+    );
     assert_eq!(snap["closed"], json!(1));
 }
 

@@ -48,7 +48,9 @@ impl RenderCursor {
         if highlight {
             base = base.add_modifier(Modifier::REVERSED);
         }
-        let mut p = Paragraph::new(lines.to_vec()).style(base).wrap(Wrap { trim: false });
+        let mut p = Paragraph::new(lines.to_vec())
+            .style(base)
+            .wrap(Wrap { trim: false });
         if self.skip > 0 {
             p = p.scroll((self.skip, 0));
             self.skip = 0;

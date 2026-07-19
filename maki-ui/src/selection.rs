@@ -1035,7 +1035,11 @@ mod tests {
     fn selection_start_col_clamped() {
         let area = Rect::new(10, 5, 40, 20);
         let right = Selection::start(8, 200, area, SelectionZone::Messages, 0);
-        assert_eq!(right.normalized().0.col, 48, "clamped to content right edge");
+        assert_eq!(
+            right.normalized().0.col,
+            48,
+            "clamped to content right edge"
+        );
         let left = Selection::start(8, 0, area, SelectionZone::Messages, 0);
         assert_eq!(left.normalized().0.col, 10, "clamped to area left edge");
     }

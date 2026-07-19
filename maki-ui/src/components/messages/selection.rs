@@ -76,7 +76,15 @@ pub(super) fn extract_selection_text(
         };
 
         let breaks = LineBreaks::from_lines(seg.lines(), width);
-        selection::append_rows(&tmp, tmp_area, &ss, rel_start as u16, rel_end as u16, &mut out, &breaks);
+        selection::append_rows(
+            &tmp,
+            tmp_area,
+            &ss,
+            rel_start as u16,
+            rel_end as u16,
+            &mut out,
+            &breaks,
+        );
     }
     out
 }

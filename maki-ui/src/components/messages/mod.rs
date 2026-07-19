@@ -34,11 +34,11 @@ use unicode_width::UnicodeWidthStr;
 
 use super::scrollbar::{ScrollInfo, render_vertical_scrollbar};
 use super::streaming_content::StreamingContent;
+use maki_agent::tools::TASK_TOOL_NAME;
 use maki_agent::{
     BufferSnapshot, EventSender, InstructionBlock, NO_FILES_FOUND, SharedBuf, ToolDoneEvent,
     ToolOutput, ToolStartEvent,
 };
-use maki_agent::tools::TASK_TOOL_NAME;
 use maki_lua::{EventHandle, WARM_TOOL_CAP};
 
 use ratatui::Frame;

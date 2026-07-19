@@ -99,7 +99,10 @@ fn collect_instruction_files(
         }
 
         if let Some((_, content)) = read_instruction(&dir.join(LOCAL_INSTRUCTION_FILE), loaded) {
-            out.push((format!("Local instructions ({LOCAL_INSTRUCTION_FILE})"), content));
+            out.push((
+                format!("Local instructions ({LOCAL_INSTRUCTION_FILE})"),
+                content,
+            ));
         }
     }
 
@@ -328,8 +331,14 @@ mod tests {
         fs::write(sub.join("AGENTS.md"), "crate rules").unwrap();
 
         let text = load_instructions_with_home(sub.to_str().unwrap(), None, None).text;
-        assert!(text.contains("crate rules"), "should load instructions from cwd");
-        assert!(text.contains("root rules"), "should load instructions from project root");
+        assert!(
+            text.contains("crate rules"),
+            "should load instructions from cwd"
+        );
+        assert!(
+            text.contains("root rules"),
+            "should load instructions from project root"
+        );
         assert!(
             text.find("crate rules").unwrap() < text.find("root rules").unwrap(),
             "closer instructions should come before root instructions"
