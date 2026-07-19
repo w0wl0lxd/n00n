@@ -97,7 +97,9 @@ impl InputBox {
             }
             KeyCode::Tab | KeyCode::Esc => return InputAction::Passthrough(key),
             KeyCode::Char('@')
-                if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                     && self.char_before_cursor_is_whitespace_or_start() =>
             {
                 return InputAction::OpenFilePicker;

@@ -120,7 +120,12 @@ mod tests {
         let top = position_for_thumb_row(content_len, viewport_height, thumb_len, 0);
         assert_eq!(top, 0);
 
-        let bottom = position_for_thumb_row(content_len, viewport_height, thumb_len, viewport_height - thumb_len);
+        let bottom = position_for_thumb_row(
+            content_len,
+            viewport_height,
+            thumb_len,
+            viewport_height - thumb_len,
+        );
         assert_eq!(bottom, max_scroll);
     }
 

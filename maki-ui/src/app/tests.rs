@@ -1221,7 +1221,10 @@ fn scroll_preserves_dragging_and_updates_cursor() {
     send_scroll(&mut app);
 
     assert!(
-        matches!(app.selection_state.as_ref().unwrap(), SelectionState::Dragging { .. }),
+        matches!(
+            app.selection_state.as_ref().unwrap(),
+            SelectionState::Dragging { .. }
+        ),
         "scroll keeps dragging"
     );
 

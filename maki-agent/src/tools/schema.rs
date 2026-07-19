@@ -6,6 +6,7 @@
 //! Validation errors are our own types with a single `Display` impl so the
 //! model never sees a raw serde message we did not write.
 
+use std::collections::HashSet;
 use std::fmt::{self, Display, Formatter, Write};
 
 use jsonrepair::{Options as RepairOpts, loads as repair_loads};
@@ -660,6 +661,156 @@ fn log_coercion(
     );
 }
 
+/// Sanitize a tool input schema to comply with OpenAI function-calling requirements.
+///
+/// OpenAI requires the top-level `parameters` of every function to be an object
+/// schema with `properties` and `required` as an array. MCP servers and plugins
+/// can return schemas that break these rules, so this function repairs them
+/// before they are sent to a provider.
+pub fn sanitize_tool_input_schema(mut schema: Value) -> Value {
+    if let Value::Object(map) = &mut schema
+        && is_object_schema(map)
+    {
+        sanitize_object_schema(map);
+        return schema;
+    }
+    wrap_root_schema(schema)
+}
+
+fn is_object_schema(map: &serde_json::Map<String, Value>) -> bool {
+    let type_str = map.get("type").and_then(|v| v.as_str());
+    type_str == Some("object")
+        || (type_str.is_none() && map.get("properties").and_then(|v| v.as_object()).is_some())
+        || map.is_empty()
+}
+
+fn wrap_root_schema(mut inner: Value) -> Value {
+    sanitize_property_schema(&mut inner);
+
+    let mut properties = serde_json::Map::new();
+    properties.insert("value".to_string(), inner);
+
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": ["value"],
+    })
+}
+
+fn sanitize_object_schema(map: &mut serde_json::Map<String, Value>) {
+    if map.get("type").and_then(|v| v.as_str()) != Some("object") {
+        map.insert("type".to_string(), json!("object"));
+    }
+    if !map.contains_key("properties") {
+        map.insert(
+            "properties".to_string(),
+            Value::Object(serde_json::Map::new()),
+        );
+    }
+
+    sanitize_required(map);
+
+    if let Some(props) = map.get_mut("properties").and_then(|p| p.as_object_mut()) {
+        for (_, prop_schema) in props {
+            sanitize_property_schema(prop_schema);
+        }
+    }
+}
+
+fn sanitize_property_schema(schema: &mut Value) {
+    match schema {
+        Value::Object(map) => {
+            let type_str = map.get("type").and_then(|v| v.as_str());
+
+            if type_str == Some("object") || (type_str.is_none() && map.contains_key("properties"))
+            {
+                sanitize_object_schema(map);
+            } else if type_str == Some("array") || map.contains_key("prefixItems") {
+                if type_str != Some("array") {
+                    map.insert("type".to_string(), json!("array"));
+                }
+                sanitize_array_schema(map);
+            } else if type_str.is_some() {
+                // Primitive or other typed property: leave as-is.
+            } else if map.contains_key("enum") {
+                map.insert("type".to_string(), json!("string"));
+            } else if map.contains_key("anyOf")
+                || map.contains_key("oneOf")
+                || map.contains_key("allOf")
+                || map.contains_key("$ref")
+            {
+                // Leave composite/reference schemas untouched.
+            } else {
+                // Ambiguous description-only schema defaults to object.
+                sanitize_object_schema(map);
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                sanitize_property_schema(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sanitize_array_schema(map: &mut serde_json::Map<String, Value>) {
+    if let Some(prefix) = map.remove("prefixItems") {
+        let items = match prefix {
+            Value::Array(mut arr) if !arr.is_empty() => {
+                let mut first = arr.remove(0);
+                sanitize_property_schema(&mut first);
+                first
+            }
+            _ => Value::Object(serde_json::Map::new()),
+        };
+        map.insert("items".to_string(), items);
+    }
+
+    if let Some(items) = map.get_mut("items") {
+        if items.is_array() {
+            let old = std::mem::take(items);
+            let mut arr = match old {
+                Value::Array(arr) => arr,
+                _ => Vec::new(),
+            };
+            let new_items = if arr.is_empty() {
+                Value::Object(serde_json::Map::new())
+            } else {
+                let mut first = arr.remove(0);
+                sanitize_property_schema(&mut first);
+                first
+            };
+            *items = new_items;
+        } else {
+            sanitize_property_schema(items);
+        }
+    } else {
+        map.insert("items".to_string(), Value::Object(serde_json::Map::new()));
+    }
+}
+
+fn sanitize_required(map: &mut serde_json::Map<String, Value>) {
+    let prop_keys: HashSet<String> = map
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .map(|p| p.keys().cloned().collect())
+        .unwrap_or_default();
+
+    match map.get_mut("required") {
+        Some(req_val) if req_val.is_object() => {
+            map["required"] = Value::Array(Vec::new());
+        }
+        Some(Value::Array(arr)) => {
+            arr.retain(|v| v.as_str().is_some_and(|s| prop_keys.contains(s)));
+        }
+        Some(_) => {
+            map["required"] = Value::Array(Vec::new());
+        }
+        None => {}
+    }
+}
+
 #[cfg(test)]
 pub(crate) const BOUNDED_ERR_MAX: usize = 400;
 
@@ -994,5 +1145,93 @@ mod tests {
             .extend(alias_field.as_object().unwrap().clone());
         let schema = try_from_json(&schema_json).unwrap();
         assert!(validate(schema, input).is_ok());
+    }
+
+    #[test_case(json!({"type": "string"}), json!({"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]}) ; "type_string_root")]
+    #[test_case(json!({"type": "integer"}), json!({"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"]}) ; "type_integer_root")]
+    #[test_case(json!({"type": "boolean"}), json!({"type": "object", "properties": {"value": {"type": "boolean"}}, "required": ["value"]}) ; "type_boolean_root")]
+    fn sanitize_primitive_root_wraps_as_object(input: Value, expected: Value) {
+        let result = sanitize_tool_input_schema(input);
+        assert_eq!(result, expected);
+    }
+
+    #[test_case(json!({"type": "object", "required": {}}), json!({"type": "object", "properties": {}, "required": []}) ; "required_object")]
+    #[test_case(json!({"type": "object", "required": {"foo": true}}), json!({"type": "object", "properties": {}, "required": []}) ; "required_object_with_content")]
+    fn sanitize_required_object_to_array(input: Value, expected: Value) {
+        let result = sanitize_tool_input_schema(input);
+        assert_eq!(result, expected);
+    }
+
+    #[test_case(json!({"type": "object"}), json!({"type": "object", "properties": {}}) ; "missing_properties")]
+    #[test_case(json!({}), json!({"type": "object", "properties": {}}) ; "empty_schema")]
+    fn sanitize_missing_properties(input: Value, expected: Value) {
+        let result = sanitize_tool_input_schema(input);
+        assert_eq!(result, expected);
+    }
+
+    #[test_case(json!({"type": "array", "prefixItems": [{"type": "string"}]}), json!({"type": "object", "properties": {"value": {"type": "array", "items": {"type": "string"}}}, "required": ["value"]}) ; "prefixitems_to_items")]
+    fn sanitize_prefixitems_to_items(input: Value, expected: Value) {
+        let result = sanitize_tool_input_schema(input);
+        assert_eq!(result, expected);
+    }
+
+    #[test_case(json!({"type": "object", "properties": {"foo": {"type": "string"}}, "required": ["foo", "bar"]}), json!({"type": "object", "properties": {"foo": {"type": "string"}}, "required": ["foo"]}) ; "required_filters_missing_props")]
+    fn sanitize_required_filters_missing_properties(input: Value, expected: Value) {
+        let result = sanitize_tool_input_schema(input);
+        assert_eq!(result, expected);
+    }
+
+    #[test_case(json!({"type": "object", "properties": {"foo": {"type": "string", "prefixItems": [{"type": "integer"}]}}}), json!({"type": "object", "properties": {"foo": {"type": "array", "items": {"type": "integer"}}}}) ; "nested_prefixitems")]
+    fn sanitize_nested_prefixitems(input: Value, expected: Value) {
+        let result = sanitize_tool_input_schema(input);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn sanitize_does_not_wrap_primitive_properties() {
+        let input = json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout": {"type": "integer"}
+            },
+            "required": ["command"]
+        });
+        let result = sanitize_tool_input_schema(input.clone());
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn sanitize_preserves_valid_schema() {
+        let valid = json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "count": {"type": "integer"}
+            },
+            "required": ["path"]
+        });
+        let result = sanitize_tool_input_schema(valid.clone());
+        assert_eq!(result, valid);
+    }
+
+    #[test]
+    fn sanitize_handles_string_with_description() {
+        let input = json!({
+            "type": "string",
+            "description": "A string value"
+        });
+        let expected = json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": "string",
+                    "description": "A string value"
+                }
+            },
+            "required": ["value"]
+        });
+        let result = sanitize_tool_input_schema(input);
+        assert_eq!(result, expected);
     }
 }

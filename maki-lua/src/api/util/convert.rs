@@ -242,10 +242,7 @@ mod tests {
         tbl.set("pattern", "grep").unwrap();
 
         let result = lua_to_json(&lua, &Value::Table(tbl)).unwrap();
-        assert_eq!(
-            result,
-            serde_json::json!({"1": "first", "pattern": "grep"})
-        );
+        assert_eq!(result, serde_json::json!({"1": "first", "pattern": "grep"}));
     }
 
     #[test]

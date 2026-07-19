@@ -484,7 +484,11 @@ fn render_ready<T: PickerItem>(
     footer_hints: Option<&'static [(&'static str, &'static str)]>,
     error_text: Option<&str>,
 ) -> Rect {
-    let footer_rows = if footer.is_some() || footer_hints.is_some() { 1u16 } else { 0 };
+    let footer_rows = if footer.is_some() || footer_hints.is_some() {
+        1u16
+    } else {
+        0
+    };
     let content_rows = if s.filtered.is_empty() {
         1
     } else {

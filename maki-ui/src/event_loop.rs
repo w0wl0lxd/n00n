@@ -1070,19 +1070,17 @@ impl<'t> EventLoop<'t> {
                 }
                 Err(e) => {
                     let msg = format!("Failed to create provider: {e}");
-                    self.focused_app().main_chat().push(DisplayMessage::new(
-                        DisplayRole::Error,
-                        msg.clone(),
-                    ));
+                    self.focused_app()
+                        .main_chat()
+                        .push(DisplayMessage::new(DisplayRole::Error, msg.clone()));
                     self.focused_app().flash(msg);
                 }
             },
             Err(e) => {
                 let msg = format!("Invalid model: {e}");
-                self.focused_app().main_chat().push(DisplayMessage::new(
-                    DisplayRole::Error,
-                    msg.clone(),
-                ));
+                self.focused_app()
+                    .main_chat()
+                    .push(DisplayMessage::new(DisplayRole::Error, msg.clone()));
                 self.focused_app().flash(msg);
             }
         }
