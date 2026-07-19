@@ -210,6 +210,10 @@ pub(crate) struct EventLoop<'t> {
     ui_action_rx: Option<flume::Receiver<UiAction>>,
     last_save: Instant,
     _model_fetch_task: smol::Task<()>,
+    /// Set when UI state changed and a fresh frame must be painted. Draws are
+    /// gated on this (or active animation) so we don't re-diff the whole
+    /// buffer on every idle tick. Resize also sets it.
+    dirty: bool,
 }
 
 /// One item from any of the event loop's sources; `None` from `next_wake`
@@ -404,6 +408,7 @@ impl<'t> EventLoop<'t> {
             ui_action_rx,
             last_save: Instant::now(),
             _model_fetch_task: bg.task,
+            dirty: true,
         })
     }
 
@@ -425,9 +430,13 @@ impl<'t> EventLoop<'t> {
             if let Err(e) = self.drain_channels() {
                 break Err(e);
             }
+            let should_draw = self.dirty || self.sessions[self.focused].app.is_animating();
             let app = &mut self.sessions[self.focused].app;
-            if let Err(e) = self.terminal.draw(|f| app.view(f)) {
-                break Err(e.into());
+            if should_draw {
+                if let Err(e) = self.terminal.draw(|f| app.view(f)) {
+                    break Err(e.into());
+                }
+                self.dirty = false;
             }
 
             if let Some(i) = self
@@ -488,6 +497,7 @@ impl<'t> EventLoop<'t> {
     }
 
     fn handle_wake(&mut self, wake: Wake) -> Result<()> {
+        self.dirty = true;
         match wake {
             Wake::Input(ev) => self.handle_input(ev),
             Wake::InputGone => return Err(eyre!("terminal input reader stopped")),
@@ -544,6 +554,7 @@ impl<'t> EventLoop<'t> {
         for rt in &mut self.sessions {
             if rt.app.status == Status::Streaming && rt.handles.agent_rx.is_disconnected() {
                 rt.app.status = Status::error("agent stopped unexpectedly".into());
+                self.dirty = true;
             }
         }
 
@@ -552,6 +563,7 @@ impl<'t> EventLoop<'t> {
         for rt in &mut self.sessions {
             if rt.app.state.session.model != spec {
                 rt.app.update_model(&slot_model.model);
+                self.dirty = true;
             }
         }
         drop(slot_model);
@@ -830,6 +842,10 @@ impl<'t> EventLoop<'t> {
 
     fn translate(&mut self, raw: Event) -> (Option<Msg>, Option<Event>) {
         match raw {
+            Event::Resize(..) => {
+                self.dirty = true;
+                (None, None)
+            }
             Event::Key(key) if key.kind == KeyEventKind::Press => (Some(Msg::Key(key)), None),
             Event::Key(_) => (None, None),
             Event::Paste(text) => (Some(Msg::Paste(text)), None),
