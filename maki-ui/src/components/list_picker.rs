@@ -15,7 +15,7 @@ use crate::theme;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -243,6 +243,23 @@ impl<T: PickerItem> ListPicker<T> {
     pub fn with_footer_builder(mut self, builder: fn() -> Line<'static>) -> Self {
         self.footer = Some(builder);
         self
+    }
+
+    pub fn set_footer(&mut self, hints: &'static [(&'static str, &'static str)]) {
+        self.footer = Some(|| {
+            let pairs: Vec<Span<'static>> = hints
+                .iter()
+                .flat_map(|(key, val)| {
+                    [
+                        Span::styled(*key, Style::default().add_modifier(Modifier::BOLD)),
+                        Span::raw(" "),
+                        Span::raw(*val),
+                        Span::raw("  "),
+                    ]
+                })
+                .collect();
+            Line::from(pairs)
+        });
     }
 
     pub fn open_toggleable(&mut self, items: Vec<T>, enabled: Vec<bool>, title: impl Into<String>) {
