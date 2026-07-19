@@ -26,7 +26,11 @@ use test_case::test_case;
 const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn set_zone(app: &mut App, zone: SelectionZone, area: Rect) {
-    app.zones.push(SelectableZone { area, zone });
+    app.zones.push(SelectableZone {
+        area,
+        zone,
+        scroll_info: None,
+    });
 }
 
 fn build_app(dir: StateDir, writer: Arc<StorageWriter>) -> App {
@@ -996,7 +1000,7 @@ fn mouse_drag_clamps_to_area() {
 
     let state = app.selection_state.as_ref().unwrap();
     let (_, end) = state.sel().normalized();
-    assert_eq!(end.col, 79);
+    assert_eq!(end.col, 78);
     assert_eq!(end.row, 19, "clamped to area bottom");
     assert!(
         app.selection_state.as_ref().unwrap().is_edge_scrolling(),

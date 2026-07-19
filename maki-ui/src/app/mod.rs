@@ -185,6 +185,7 @@ pub struct App {
     pub(super) retry_info: Option<RetryInfo>,
     pub(super) zones: ZoneRegistry,
     pub(super) selection_state: Option<SelectionState>,
+    pub(super) scrollbar_drag: Option<mouse::ScrollbarDrag>,
     pub(super) clipboard: ClipboardState,
     pub(super) last_esc: Option<Instant>,
 
@@ -267,6 +268,7 @@ impl App {
             retry_info: None,
             zones: ZoneRegistry::new(),
             selection_state: None,
+            scrollbar_drag: None,
             clipboard: ClipboardState::new(),
             last_esc: None,
             storage,
