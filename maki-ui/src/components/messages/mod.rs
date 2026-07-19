@@ -452,6 +452,7 @@ impl MessagesPanel {
         entry.script = !entry.script;
         entry.output = !entry.output;
         self.rebuild_expanded_tool(&tool_id);
+        self.auto_scroll = false;
         true
     }
 
@@ -637,6 +638,7 @@ impl MessagesPanel {
             entry.script = !entry.script;
         }
         self.rebuild_expanded_tool(&tool_id);
+        self.auto_scroll = false;
         true
     }
 
@@ -1088,6 +1090,7 @@ impl MessagesPanel {
         let height = self.build_streaming_collapsed_lines().len() as u32;
         if doc_row >= thinking_start && doc_row < thinking_start + height {
             self.thinking_collapsed = false;
+            self.auto_scroll = false;
             return true;
         }
         false
@@ -1106,6 +1109,7 @@ impl MessagesPanel {
         }
         msg.thinking_collapsed = !msg.thinking_collapsed;
         self.rebuild_thinking_segment(idx, width);
+        self.auto_scroll = false;
         true
     }
 
