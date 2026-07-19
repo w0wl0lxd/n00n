@@ -20,14 +20,91 @@ local function line_nr_fmt(count)
   return "%" .. w .. "d "
 end
 
+-- Truncate a UTF-8 string at a byte boundary that is also a codepoint
+-- boundary, appending an ellipsis if truncation happened.
+local function utf8_truncate_bytes(s, max_bytes)
+  if #s <= max_bytes then
+    return s
+  end
+  if max_bytes <= 0 then
+    return ""
+  end
+  local i = max_bytes
+  while i > 0 do
+    local next_b = s:byte(i + 1)
+    if not next_b or next_b < 0x80 or next_b >= 0xC0 then
+      break
+    end
+    i = i - 1
+  end
+  if i <= 0 then
+    return "…"
+  end
+  return s:sub(1, i) .. "…"
+end
+
+local function line_text_bytes(line)
+  if type(line) == "string" then
+    return #line
+  end
+  local n = 0
+  for _, span in ipairs(line) do
+    if type(span) == "string" then
+      n = n + #span
+    else
+      n = n + #(span[1] or "")
+    end
+  end
+  return n
+end
+
+local function truncate_line(line, max_bytes)
+  if not max_bytes or max_bytes <= 0 then
+    return line
+  end
+  if type(line) == "string" then
+    return utf8_truncate_bytes(line, max_bytes)
+  end
+  if line_text_bytes(line) <= max_bytes then
+    return line
+  end
+  local out = {}
+  local used = 0
+  for _, span in ipairs(line) do
+    if used >= max_bytes then
+      break
+    end
+    local text, style
+    if type(span) == "string" then
+      text = span
+    else
+      text = span[1] or ""
+      style = span[2]
+    end
+    local remaining = max_bytes - used
+    if #text > remaining then
+      text = utf8_truncate_bytes(text, remaining)
+    end
+    if style then
+      out[#out + 1] = { text, style }
+    else
+      out[#out + 1] = text
+    end
+    used = used + #text
+  end
+  return out
+end
+
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
--- (default "tail"), max_expand_lines (default 2000) kept for expansion.
+-- (default "tail"), max_expand_lines (default 2000) kept for expansion,
+-- max_line_bytes (optional) per-line byte cap applied at render time.
 function ToolView.new(buf, opts)
   local self = setmetatable({}, ToolView)
   self.buf = buf
   self.max = (opts and opts.max_lines) or 80
   self.keep = (opts and opts.keep) or "tail"
   self.max_expand_lines = (opts and opts.max_expand_lines) or 2000
+  self.max_line_bytes = (opts and opts.max_line_bytes) or nil
   self.header = {}
   self.ring = {}
   self.ring_start = 1
@@ -41,7 +118,11 @@ function ToolView.new(buf, opts)
 end
 
 function ToolView:set_header(lines)
-  self.header = lines
+  local capped = {}
+  for i = 1, #lines do
+    capped[i] = truncate_line(lines[i], self.max_line_bytes)
+  end
+  self.header = capped
   self:flush()
 end
 
@@ -57,6 +138,7 @@ function ToolView:clear()
 end
 
 function ToolView:append(line)
+  line = truncate_line(line, self.max_line_bytes)
   local all_idx
   if #self.all_lines < self.max_expand_lines then
     self.all_lines[#self.all_lines + 1] = line
@@ -184,6 +266,7 @@ function ToolView:flush()
 end
 
 function ToolView:update_line(all_idx, line)
+  line = truncate_line(line, self.max_line_bytes)
   self.all_lines[all_idx] = line
   for ri = 1, self.ring_count do
     if self.ring_map[ri] == all_idx then
