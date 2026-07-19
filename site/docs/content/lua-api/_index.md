@@ -818,8 +818,8 @@ A subagent session with its own conversation history.
 
 Create one with `noon.agent.session()`, then send messages with
 `:prompt()`. The session remembers previous turns, so you can have
-a multi-step conversation. Call `:done(answer)` from inside the
-subagent workflow to finish early, or `:close()` when you are done.
+a multi-step conversation. Call `:close()` when you are done, or let
+garbage collection handle it.
 
 ---
 
@@ -831,8 +831,7 @@ Session:prompt({message})
 
 Send a message to the subagent and wait for its full response. The agent
 loop runs to completion, calling tools as needed. Conversation history is
-kept across calls, so you can have a multi-turn conversation. If the
-subagent calls `done()` or the user sends an empty reply, the loop ends.
+kept across calls, so you can have a multi-turn conversation.
 
 The returned table has fields: `text` (string), `duration_ms` (integer),
 `input_tokens` (integer), `output_tokens` (integer).
@@ -854,23 +853,6 @@ print(r.input_tokens .. " input, " .. r.output_tokens .. " output tokens")
 
 ---
 
-### `Session:done()` {#Session-done}
-
-```lua
-Session:done({answer})
-```
-
-Mark the subagent conversation as complete and provide the final answer.
-This stops the `prompt()` loop and returns `answer` as the result text.
-
-**Parameters:**
-
-- `{answer}` (`string`) Final answer to return from the session.
-
-**Returns:** (`nil?`, `string?`) Error string on failure.
-
----
-
 ### `Session:close()` {#Session-close}
 
 ```lua
@@ -880,6 +862,26 @@ Session:close()
 Close the session and flush its history back to the parent agent. You can
 call this multiple times safely. If you forget, it runs automatically when
 the session is garbage collected.
+
+---
+
+### `Session:get_progress()` {#Session-get_progress}
+
+```lua
+Session:get_progress()
+```
+
+Poll the session for a progress snapshot while a prompt is running.
+
+Returns a table with:
+  `elapsed_ms` (integer): time since the session was created.
+  `current_tool` (string?): name of the tool currently running, if any.
+  `recent_tools` (table): names of the last few finished tools, oldest first.
+  `completed_count` (integer): total number of finished tools so far.
+  `done` (bool): true once the prompt has completed.
+
+The call returns at most every `PROGRESS_TIMEOUT_MS` milliseconds, or
+immediately when a tool starts or finishes.
 
 
 ## noon.async {#noon-async}
