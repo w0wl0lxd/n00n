@@ -18,7 +18,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
-use super::scrollbar::render_vertical_scrollbar;
+use super::scrollbar::{ScrollInfo, render_vertical_scrollbar};
 use super::{apply_scroll_delta, visual_line_count};
 use crate::selection::LineBreaks;
 
@@ -78,6 +78,8 @@ pub struct InputBox {
     placeholder_hint: &'static str,
     pending_images: Vec<ImageSource>,
     max_input_lines: u16,
+    last_total_vl: u16,
+    last_content_height: u16,
 }
 
 impl InputBox {
@@ -168,6 +170,8 @@ impl InputBox {
             placeholder_hint: random_placeholder_hint(),
             pending_images: Vec::new(),
             max_input_lines: MAX_INPUT_LINES,
+            last_total_vl: 1,
+            last_content_height: 1,
         }
     }
 
@@ -344,6 +348,8 @@ impl InputBox {
         }
         let max_scroll = total_vl.saturating_sub(content_height);
         self.scroll_y = self.scroll_y.min(max_scroll);
+        self.last_total_vl = total_vl;
+        self.last_content_height = content_height.max(1);
 
         let is_empty = self.buffer.value().is_empty();
         let mut styled_lines: Vec<Line> = if is_empty && self.pending_images.is_empty() {
@@ -436,12 +442,32 @@ impl InputBox {
         self.scroll_y
     }
 
+    pub fn scroll_info(&self, area: Rect) -> Option<ScrollInfo> {
+        if self.last_total_vl > area.height {
+            let max_scroll = self.last_total_vl.saturating_sub(area.height);
+            Some(ScrollInfo {
+                content_len: self.last_total_vl,
+                position: self.scroll_y.min(max_scroll),
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn set_scroll_y(&mut self, y: u16) {
+        self.scroll_y = y;
+        self.follow_cursor = false;
+    }
+
     pub fn history(&self) -> &InputHistory {
         &self.history
     }
 
     pub fn scroll(&mut self, delta: i32) {
-        self.scroll_y = apply_scroll_delta(self.scroll_y, delta);
+        let max_scroll = self
+            .last_total_vl
+            .saturating_sub(self.last_content_height.max(1));
+        self.scroll_y = apply_scroll_delta(self.scroll_y, delta).min(max_scroll);
         self.follow_cursor = false;
     }
 }
