@@ -829,6 +829,7 @@ async fn prompt(
             prompt: Some(message.clone()),
             model: Some(s.params.model.spec()),
             answer_tx: s.answer_tx.take(),
+            prompt_tx: None,
         });
     }
 
