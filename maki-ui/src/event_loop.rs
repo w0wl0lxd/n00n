@@ -1070,7 +1070,7 @@ impl<'t> EventLoop<'t> {
                 }
                 Err(e) => {
                     let msg = format!("Failed to create provider: {e}");
-                    self.app.main_chat().push(DisplayMessage::new(
+                    self.focused_app().main_chat().push(DisplayMessage::new(
                         DisplayRole::Error,
                         msg.clone(),
                     ));
@@ -1079,7 +1079,7 @@ impl<'t> EventLoop<'t> {
             },
             Err(e) => {
                 let msg = format!("Invalid model: {e}");
-                self.app.main_chat().push(DisplayMessage::new(
+                self.focused_app().main_chat().push(DisplayMessage::new(
                     DisplayRole::Error,
                     msg.clone(),
                 ));
