@@ -473,6 +473,7 @@ impl<T: PickerItem> Overlay for ListPicker<T> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_ready<T: PickerItem>(
     frame: &mut Frame,
     area: Rect,
