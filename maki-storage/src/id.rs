@@ -63,7 +63,10 @@ impl FromStr for MakiId {
         if let Ok(u) = Uuid::parse_str(s) {
             return Ok(Self(u.into_bytes()));
         }
-        decode_base58(s)
+        if let Ok(id) = decode_base58(s) {
+            return Ok(id);
+        }
+        Err(MakiIdParseError::InvalidBase58(s.chars().next().unwrap_or('\0'), 0))
     }
 }
 
