@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::shell::parse_shell_prefix;
@@ -76,6 +74,7 @@ pub struct InputBox {
     scroll_y: u16,
     follow_cursor: bool,
     placeholder_hint: &'static str,
+    placeholder_index: usize,
     pending_images: Vec<ImageSource>,
     max_input_lines: u16,
     last_total_vl: u16,
@@ -167,7 +166,8 @@ impl InputBox {
             draft: String::new(),
             scroll_y: 0,
             follow_cursor: true,
-            placeholder_hint: random_placeholder_hint(),
+            placeholder_hint: PLACEHOLDER_SUGGESTIONS[0],
+            placeholder_index: 0,
             pending_images: Vec::new(),
             max_input_lines: MAX_INPUT_LINES,
             last_total_vl: 1,
@@ -252,6 +252,8 @@ impl InputBox {
         self.draft.clear();
         self.buffer.clear();
         self.scroll_y = 0;
+        self.placeholder_index = (self.placeholder_index + 1) % PLACEHOLDER_SUGGESTIONS.len();
+        self.placeholder_hint = PLACEHOLDER_SUGGESTIONS[self.placeholder_index];
     }
 
     pub fn is_empty(&self) -> bool {
@@ -470,14 +472,6 @@ impl InputBox {
         self.scroll_y = apply_scroll_delta(self.scroll_y, delta).min(max_scroll);
         self.follow_cursor = false;
     }
-}
-
-fn random_placeholder_hint() -> &'static str {
-    let idx = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as usize % PLACEHOLDER_SUGGESTIONS.len())
-        .unwrap_or(0);
-    PLACEHOLDER_SUGGESTIONS[idx]
 }
 
 fn effective_width(content_width: usize) -> usize {
@@ -965,6 +959,19 @@ mod tests {
         let terminal = render_input(&mut input, 40, 4);
         let row = rendered_row(&terminal, 1);
         assert!(row.starts_with(CHEVRON), "placeholder row: {row:?}");
+    }
+
+    #[test]
+    fn placeholder_rotates_on_discard() {
+        let mut input = InputBox::new(InputHistory::default());
+        let first = input.placeholder_hint;
+        for i in 1..=PLACEHOLDER_SUGGESTIONS.len() {
+            input.discard();
+            if i < PLACEHOLDER_SUGGESTIONS.len() {
+                assert_ne!(input.placeholder_hint, first);
+            }
+        }
+        assert_eq!(input.placeholder_hint, first);
     }
 
     fn test_image() -> ImageSource {
