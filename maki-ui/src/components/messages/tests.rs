@@ -827,6 +827,19 @@ fn toggle_expand_collapse_truncated_tool() {
 }
 
 #[test]
+fn expand_truncated_tool_does_not_auto_scroll() {
+    let mut panel = panel_with_long_tool(200);
+    let area = Rect::new(0, 0, 80, 24);
+    let before_scroll = panel.scroll_top;
+    assert!(panel.auto_scroll, "auto_scroll should be on when content fits");
+
+    assert!(panel.toggle_expansion_at(area.y, area));
+    render(&mut panel, 80, 24);
+    assert!(!panel.auto_scroll, "expanding should pause auto-scroll");
+    assert_eq!(panel.scroll_top, before_scroll, "viewport should not jump");
+}
+
+#[test]
 fn extract_selection_copies_visible_content_only() {
     let panel = panel_with_long_tool(200);
     let area = Rect::new(0, 0, 80, 24);
