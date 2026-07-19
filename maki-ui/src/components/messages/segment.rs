@@ -269,12 +269,18 @@ impl SegmentCache {
         self.msg_count = 0;
     }
 
-    pub fn insert(&mut self, pos: usize, seg: Segment) {
-        self.segments.insert(pos, seg);
+    pub fn push(&mut self, seg: Segment) {
+        self.segments.push(seg);
     }
 
-    pub fn extend(&mut self, segs: Vec<Segment>) {
-        self.segments.extend(segs);
+    pub fn push_spacer_if_needed(&mut self) {
+        if !self.segments.is_empty() {
+            self.segments.push(Segment::spacer());
+        }
+    }
+
+    pub fn insert(&mut self, pos: usize, seg: Segment) {
+        self.segments.insert(pos, seg);
     }
 
     /// Inserts `segs` before the existing segments, shifting every
