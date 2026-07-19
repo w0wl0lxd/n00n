@@ -453,6 +453,7 @@ local function render_selecting(state, width)
   for _, md_line in ipairs(question_md(state, state.tab, usable)) do
     append_wrapped(lines, md_line, usable, " ", "", " ")
   end
+  lines[#lines + 1] = { { q.multiple and "  (multiple answers)" or "  (single answer)", "dim" } }
   lines[#lines + 1] = {}
 
   local opts = q.options or {}
@@ -460,7 +461,7 @@ local function render_selecting(state, width)
     local is_cur = (i == state.cursor)
     local checked = is_selected(state, opt.label)
     local pointer = is_cur and "▸ " or "  "
-    local chk = checked and "✓ " or "  "
+    local chk = checked and (q.multiple and "✓ " or "● ") or (q.multiple and "  " or "○ ")
     local opt_rows = render_option_rows(
       pointer,
       chk,
@@ -498,7 +499,7 @@ local function render_selecting(state, width)
     end
   else
     local cptr = custom_cur and "▸ " or "  "
-    local cchk = custom_checked and "✓ " or "  "
+    local cchk = custom_checked and (q.multiple and "✓ " or "● ") or (q.multiple and "  " or "○ ")
     local custom_desc = custom_checked and custom_text or nil
     local custom_rows = render_option_rows(
       cptr,
