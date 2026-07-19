@@ -961,7 +961,12 @@ impl MessagesPanel {
         }
 
         if total_lines > area.height {
-            render_vertical_scrollbar(frame, area, total_lines, self.scroll_top);
+            let is_active = self.in_progress_count() > 0
+                || !self.streaming_text.is_empty()
+                || !self.streaming_thinking.is_empty()
+                || !self.live_bufs.is_empty();
+            let style = is_active.then_some(theme::current().spinner);
+            render_vertical_scrollbar(frame, area, total_lines, self.scroll_top, style);
         }
 
         self.jump_to_bottom_popup = None;

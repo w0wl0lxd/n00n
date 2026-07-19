@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 pub const SCROLLBAR_THUMB: &str = "\u{2590}";
@@ -22,7 +23,13 @@ pub struct ScrollInfo {
     pub position: u16,
 }
 
-pub fn render_vertical_scrollbar(frame: &mut Frame, area: Rect, content_len: u16, position: u16) {
+pub fn render_vertical_scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    content_len: u16,
+    position: u16,
+    style: Option<Style>,
+) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
@@ -31,11 +38,14 @@ pub fn render_vertical_scrollbar(frame: &mut Frame, area: Rect, content_len: u16
         .content_length(max_scroll as usize + 1)
         .position(position as usize);
 
-    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+    let mut scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .thumb_symbol(SCROLLBAR_THUMB)
         .track_symbol(None)
         .begin_symbol(None)
         .end_symbol(None);
+    if let Some(style) = style {
+        scrollbar = scrollbar.style(style);
+    }
 
     frame.render_stateful_widget(scrollbar, area, &mut state);
 }
