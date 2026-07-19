@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use color_eyre::Result;
-use color_eyre::eyre::{Context, bail, eyre};
+use color_eyre::eyre::{Context, bail};
 
 use maki_agent::mcp::{config as mcp_config, oauth as mcp_oauth};
 use maki_agent::tools::ToolRegistry;
