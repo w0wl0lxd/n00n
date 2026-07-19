@@ -4,10 +4,11 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use syntect::highlighting::{
     FontStyle, HighlightIterator, HighlightState, Highlighter as SynHighlighter, Style as SynStyle,
-    Theme,
 };
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
+
+pub use syntect::highlighting::Theme;
 
 const TOKEN_ALIASES: &[(&str, &str)] = &[("jsx", "js")];
 pub const TAB_SPACES: &str = "  ";
@@ -109,7 +110,7 @@ pub struct Highlighter {
 }
 
 impl Highlighter {
-    fn new(syntax: &SyntaxReference, theme: Arc<Theme>) -> Self {
+    pub fn new(syntax: &SyntaxReference, theme: Arc<Theme>) -> Self {
         let syn_hl = SynHighlighter::new(&theme);
         Self {
             highlight_state: HighlightState::new(&syn_hl, ScopeStack::new()),
