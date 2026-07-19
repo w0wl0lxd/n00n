@@ -126,6 +126,9 @@ function QuestionHelpers.render_card(questions, answers, opts)
         line_no = line_no + 1
       end
 
+      lines[#lines + 1] = { { q.multiple and "    (multiple answers)" or "    (single answer)", "dim" } }
+      line_no = line_no + 1
+
       local ans = (not dismissed) and answers and answers[i] or nil
       if not ans or #ans == 0 then
         lines[#lines + 1] = { { "    (no answer)", "dim" } }
@@ -135,10 +138,10 @@ function QuestionHelpers.render_card(questions, answers, opts)
           local selected = is_selected(ans, opt.label)
           local line = {}
           if selected then
-            line[1] = { "    ✓ ", "success" }
+            line[1] = { q.multiple and "    ✓ " or "    ● ", "success" }
             line[2] = { opt.label, "success" }
           else
-            line[1] = { "      ", "" }
+            line[1] = { q.multiple and "      " or "    ○ ", q.multiple and "" or "dim" }
             line[2] = { opt.label, "dim" }
           end
           local has_desc = opt.description and opt.description ~= ""
@@ -164,7 +167,8 @@ function QuestionHelpers.render_card(questions, answers, opts)
         local customs = find_custom(ans, q.options)
         if customs then
           for _, text in ipairs(customs) do
-            lines[#lines + 1] = { { "    ✓ Custom: ", "success" }, { text, "success" } }
+            local marker = q.multiple and "    ✓ Custom: " or "    ● Custom: "
+            lines[#lines + 1] = { { marker, "success" }, { text, "success" } }
             line_no = line_no + 1
           end
         end
