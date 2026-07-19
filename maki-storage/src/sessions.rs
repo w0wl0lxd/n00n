@@ -139,6 +139,8 @@ pub struct SessionSummary {
     pub id: MakiId,
     pub title: String,
     pub updated_at: u64,
+    pub cwd: String,
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,6 +321,8 @@ struct LegacyHeader {
     version: u32,
     id: MakiId,
     title: String,
+    #[serde(default)]
+    model: String,
     cwd: String,
     updated_at: u64,
 }
@@ -362,6 +366,7 @@ enum LogRecord<M, U, T> {
     Header {
         v: u32,
         id: MakiId,
+        #[serde(default)]
         model: String,
         cwd: String,
         created_at: u64,
@@ -924,6 +929,8 @@ fn remove_from_cwd_index(dir: &Path, session_id: MakiId) -> Result<(), StorageEr
 struct JsonlHeader {
     v: u32,
     id: MakiId,
+    #[serde(default)]
+    model: String,
     cwd: String,
 }
 
@@ -1001,6 +1008,8 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
                 id: h.id,
                 title: normalize_title(&h.title),
                 updated_at: h.updated_at,
+                cwd: h.cwd.clone(),
+                model: h.model.clone(),
             });
         }
         fresh.insert(name.to_owned(), entry);
@@ -1036,6 +1045,8 @@ fn scan_jsonl_header(cwd: &str, path: &Path) -> Option<SessionSummary> {
         id: header.id,
         title,
         updated_at,
+        cwd: header.cwd.clone(),
+        model: header.model.clone(),
     })
 }
 
@@ -1073,6 +1084,8 @@ fn scan_legacy_header(cwd: &str, path: &Path) -> Option<SessionSummary> {
         id: h.id,
         title: h.title,
         updated_at: h.updated_at,
+        cwd: h.cwd.clone(),
+        model: h.model.clone(),
     })
 }
 
