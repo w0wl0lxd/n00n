@@ -522,7 +522,7 @@ fn render_ready<T: PickerItem>(
     }
     constraints.push(Constraint::Min(1)); // list
     constraints.push(Constraint::Length(1)); // search
-    if footer.is_some() {
+    if footer.is_some() || footer_hints.is_some() {
         constraints.push(Constraint::Length(1));
     }
 
@@ -814,6 +814,8 @@ mod tests {
     use crate::components::key;
     use crate::components::keybindings::key as kb;
     use crossterm::event::KeyCode;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use test_case::test_case;
 
     fn ready_state<T>(p: &ListPicker<T>) -> &State<T> {
@@ -849,6 +851,20 @@ mod tests {
 
     fn entries(names: &[&str]) -> Vec<Entry> {
         names.iter().map(|n| Entry::new(n)).collect()
+    }
+
+    #[test]
+    fn footer_hints_render_without_panicking() {
+        let mut picker = ListPicker::new();
+        picker.set_footer(&[("Enter", "open"), ("Esc", "close")]);
+        picker.open(entries(&["Main", "Task"]), " Tasks ");
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("terminal");
+
+        terminal
+            .draw(|frame| {
+                picker.view(frame, frame.area());
+            })
+            .expect("render");
     }
 
     #[test]
