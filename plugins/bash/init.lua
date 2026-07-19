@@ -155,12 +155,15 @@ local function append_line(output, line)
   output[#output + 1] = line
 end
 
+local DEFAULT_MAX_LINE_BYTES = 500
+
 local function create_bash_view(command, ctx)
   local tol = ctx:tool_output_lines()
   local buf = maki.ui.buf()
   local view = ToolView.new(buf, {
     max_lines = (tol and tol.bash) or 5,
     keep = "tail",
+    max_line_bytes = DEFAULT_MAX_LINE_BYTES,
   })
   view:set_header(build_header_lines(command))
   buf:on("click", function()
