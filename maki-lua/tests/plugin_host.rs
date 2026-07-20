@@ -1819,7 +1819,9 @@ fn setup_migrates_moved_plugin_option() {
         )
         .unwrap()
         .expect("expected Some(RawConfig)");
-    let config = raw.into_config(false).expect("config migration should succeed");
+    let config = raw
+        .into_config(false)
+        .expect("config migration should succeed");
     assert_eq!(
         config
             .plugins
