@@ -164,7 +164,7 @@ Launch an ALMAS team. A supervisor decomposes an SDLC goal into role agents and 
 | `goal` | string | yes | High-level SDLC goal, e.g. 'Add a retry helper and cover it with tests.' |
 | `compact` | boolean | no | Encode retrieved context as TOON (token-saving, opt-in). |
 | `model_tier` | string | no | Override the supervisor tier (weak/medium/strong). Defaults to strong. |
-| `mode` | string | no | "supervised" (default, review the plan) or "autonomous". |
+| `mode` | string | no | "supervised" (default, return the plan for review) or "autonomous". |
 | `use_retrieval` | boolean | no | Ground steps with repo retrieval. |
 | `auto_tier` | boolean | no | Route each subagent tier from its step prompt (opt-in). |
 

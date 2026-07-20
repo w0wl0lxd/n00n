@@ -152,7 +152,7 @@ local function handler(input, ctx)
   end
 
   local model_tier = input.model_tier
-  if not model_tier and input.auto_tier then
+  if input.auto_tier == true or (input.auto_tier == nil and opts.auto_tier) then
     model_tier = route_tier(input.prompt)
   end
 

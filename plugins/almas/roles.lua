@@ -38,7 +38,7 @@ M.ROLES = {
 function M.run(ctx, role, prompt, opts)
   opts = opts or {}
   local r = M.ROLES[role] or M.ROLES.developer
-  local tier = opts.model_tier or (opts.auto_tier and route_tier(prompt)) or r.tier
+  local tier = (opts.auto_tier and route_tier(prompt)) or opts.model_tier or r.tier
 
   local model, merr = noon.agent.resolve_model(ctx, { tier = tier })
   if merr then
