@@ -52,7 +52,7 @@ pub struct RoleStyle {
 
 pub fn assistant_style() -> RoleStyle {
     RoleStyle {
-        prefix: "N00n  ",
+        prefix: "n00n  ",
         text_style: theme::current().assistant,
         prefix_style: theme::current().assistant_prefix,
         use_markdown: true,

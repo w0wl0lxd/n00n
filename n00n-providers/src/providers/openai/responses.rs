@@ -19,18 +19,30 @@ pub(crate) fn build_body(
     messages: &[Message],
     system: &str,
     tools: &Value,
+    previous_response_id: Option<&str>,
+    prompt_cache_key: Option<&str>,
 ) -> Value {
     let input = convert_input(messages);
     let wire_tools = convert_tools(tools);
 
+    let store = previous_response_id.is_some();
     let mut body = json!({
         "model": model.id,
         "instructions": system,
         "input": input,
         "stream": true,
-        "store": false,
+        "store": store,
         "include": ["reasoning.encrypted_content"],
     });
+
+    if let Some(prev_id) = previous_response_id {
+        body["previous_response_id"] = json!(prev_id);
+    }
+
+    if let Some(cache_key) = prompt_cache_key {
+        body["prompt_cache_key"] = json!(cache_key);
+    }
+
     if wire_tools.as_array().is_some_and(|a| !a.is_empty()) {
         body["tools"] = wire_tools;
     }
@@ -143,7 +155,7 @@ pub(crate) async fn do_stream(
     event_tx: &Sender<ProviderEvent>,
     auth: &ResolvedAuth,
     stream_timeout: Duration,
-) -> Result<StreamResponse, AgentError> {
+) -> Result<(Option<String>, StreamResponse), AgentError> {
     let base = auth.base_url.as_deref().ok_or_else(|| AgentError::Config {
         message: "Responses API requires a base_url in auth".into(),
     })?;
@@ -195,6 +207,7 @@ pub(crate) struct ResponseAccumulator {
     usage: TokenUsage,
     stop_reason: Option<StopReason>,
     is_first_content: bool,
+    response_id: Option<String>,
 }
 
 impl ResponseAccumulator {
@@ -214,7 +227,12 @@ impl ResponseAccumulator {
             usage: TokenUsage::default(),
             stop_reason: None,
             is_first_content: true,
+            response_id: None,
         }
+    }
+
+    pub fn response_id(&self) -> Option<&str> {
+        self.response_id.as_deref()
     }
 
     pub async fn handle_event(
@@ -287,6 +305,12 @@ impl ResponseAccumulator {
                     if let Some(acc) = acc {
                         acc.arguments.push_str(&delta);
                     }
+                }
+            }
+
+            "response.created" => {
+                if let Some(id) = data["response"]["id"].as_str() {
+                    self.response_id = Some(id.to_string());
                 }
             }
 
@@ -533,7 +557,7 @@ pub(crate) async fn parse_sse(
     reader: impl AsyncBufRead + Unpin,
     event_tx: &Sender<ProviderEvent>,
     stream_timeout: Duration,
-) -> Result<StreamResponse, AgentError> {
+) -> Result<(Option<String>, StreamResponse), AgentError> {
     let mut lines = reader.lines();
 
     let mut acc = ResponseAccumulator::new();
@@ -592,14 +616,7 @@ pub(crate) async fn parse_sse(
         }
     }
 
-    if acc.stop_reason.is_none() {
-        return Err(AgentError::Api {
-            status: 422,
-            message: "Responses API stream ended without a terminal event".into(),
-        });
-    }
-
-    Ok(acc.into_stream_response())
+        "include": ["reasoning.encrypted_content"],
 }
 
 fn parse_usage(u: &Value) -> TokenUsage {
@@ -610,11 +627,17 @@ fn parse_usage(u: &Value) -> TokenUsage {
         .as_u64()
         .unwrap_or(0) as u32;
 
+    let cache_write = u["input_tokens_details"]["cache_write_tokens"]
+        .as_u64()
+        .unwrap_or(0) as u32;
+
     TokenUsage {
-        input: input_tokens.saturating_sub(cached),
+        input: input_tokens
+            .saturating_sub(cached)
+            .saturating_sub(cache_write),
         output: output_tokens,
         cache_read: cached,
-        cache_creation: 0,
+        cache_creation: cache_write,
     }
 }
 
@@ -626,7 +649,12 @@ mod tests {
 
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
 
-    async fn run_sse(sse: &str) -> (Result<StreamResponse, AgentError>, Vec<ProviderEvent>) {
+    async fn run_sse(
+        sse: &str,
+    ) -> (
+        Result<(Option<String>, StreamResponse), AgentError>,
+        Vec<ProviderEvent>,
+    ) {
         let (tx, rx) = flume::unbounded();
         let result = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT).await;
         (result, rx.drain().collect())
@@ -647,7 +675,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
 \n";
 
             let (resp, events) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
 
             assert_eq!(resp.usage.input, 60);
             assert_eq!(resp.usage.output, 10);
@@ -689,7 +717,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 \n";
 
             let (resp, events) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
 
             let tools: Vec<_> = resp.message.tool_uses().collect();
             assert_eq!(tools.len(), 2);
@@ -760,7 +788,7 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
 \n";
 
             let (resp, _) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
             assert_eq!(resp.stop_reason, Some(StopReason::MaxTokens));
             assert!(
                 matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "partial")
@@ -843,7 +871,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
 \n";
 
             let (resp, events) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
 
             assert_eq!(resp.usage.input, 90);
             assert_eq!(resp.usage.output, 20);
@@ -892,7 +920,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
 \n";
 
             let (resp, events) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
 
             assert!(
                 matches!(&resp.message.content[0], ContentBlock::Thinking { thinking, .. } if thinking == "Summary part")
@@ -921,7 +949,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
 \n";
 
             let (resp, _) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
 
             assert_eq!(resp.message.content.len(), 1);
             assert!(
@@ -946,7 +974,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"ou
 \n";
 
             let (resp, _) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
             let tools: Vec<_> = resp.message.tool_uses().collect();
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].1, "bash");
@@ -972,7 +1000,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 \n";
 
             let (resp, _) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
 
             let tools: Vec<_> = resp.message.tool_uses().collect();
             assert_eq!(tools.len(), 1);
@@ -1011,7 +1039,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 \n";
 
             let (resp, _) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
 
             let tools: Vec<_> = resp.message.tool_uses().collect();
             assert_eq!(tools.len(), 2);
@@ -1041,7 +1069,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 \n";
 
             let (resp, _) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
 
             let tools: Vec<_> = resp.message.tool_uses().collect();
             assert_eq!(tools.len(), 1);
@@ -1101,7 +1129,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 \n";
 
             let (resp, _) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
 
             let tools: Vec<_> = resp.message.tool_uses().collect();
             assert_eq!(tools.len(), 1);
@@ -1134,7 +1162,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
 \n";
 
             let (resp, _) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
 
             assert!(
                 matches!(&resp.message.content[0], ContentBlock::Thinking { thinking, .. } if thinking == "First part\n\nSecond part")
@@ -1158,7 +1186,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 \n";
 
             let (resp, _) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
 
             let tools: Vec<_> = resp.message.tool_uses().collect();
             assert_eq!(tools.len(), 1);
@@ -1184,7 +1212,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 \n";
 
             let (resp, _) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
 
             let tools: Vec<_> = resp.message.tool_uses().collect();
             assert_eq!(tools.len(), 1);
@@ -1277,11 +1305,117 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
 \n";
 
             let (resp, _) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
 
             assert_eq!(resp.usage.input, 60);
             assert_eq!(resp.usage.output, 10);
             assert_eq!(resp.usage.cache_read, 40);
         })
+    }
+
+    #[test]
+    fn parse_usage_with_cache_write_tokens() {
+        let usage = json!({
+            "input_tokens": 150,
+            "output_tokens": 20,
+            "input_tokens_details": {
+                "cached_tokens": 40,
+                "cache_write_tokens": 50
+            }
+        });
+        let parsed = parse_usage(&usage);
+        assert_eq!(parsed.input, 60);
+        assert_eq!(parsed.output, 20);
+        assert_eq!(parsed.cache_read, 40);
+        assert_eq!(parsed.cache_creation, 50);
+    }
+
+    #[test]
+    fn parse_usage_without_cache_write_tokens() {
+        let usage = json!({
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "input_tokens_details": {
+                "cached_tokens": 30
+            }
+        });
+        let parsed = parse_usage(&usage);
+        assert_eq!(parsed.input, 70);
+        assert_eq!(parsed.output, 10);
+        assert_eq!(parsed.cache_read, 30);
+        assert_eq!(parsed.cache_creation, 0);
+    }
+
+    #[test]
+    fn response_accumulator_captures_response_id() {
+        smol::block_on(async {
+            let sse = "\
+event: response.created\ndata: {\"response\":{\"id\":\"resp_123\"}}\n\
+|\n\
+event: response.completed\n\
+data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
+|\n";
+            let (resp, _) = run_sse(sse).await;
+            let (response_id, _) = resp.unwrap();
+            assert_eq!(response_id, Some("resp_123".to_string()));
+        })
+    }
+
+    #[test]
+    fn build_body_with_previous_response_id() {
+        let messages = vec![Message::user("test".to_string())];
+        let tools = json!([]);
+
+        let body = build_body(
+            &crate::model::Model {
+                id: "gpt-5.6-codex".to_string(),
+                provider: crate::provider::ProviderKind::OpenAi,
+                dynamic_slug: None,
+                tier: crate::model::ModelTier::Strong,
+                family: crate::model::ModelFamily::Gpt,
+                supports_tool_examples_override: None,
+                supports_thinking_override: None,
+                supports_vision_override: None,
+                pricing: Default::default(),
+                max_output_tokens: None,
+                context_window: 272_000,
+            },
+            &messages,
+            "system",
+            &tools,
+            Some("prev_resp"),
+            Some("cache_key"),
+        );
+        assert_eq!(body["previous_response_id"], "prev_resp");
+        assert_eq!(body["prompt_cache_key"], "cache_key");
+    }
+
+    #[test]
+    fn build_body_without_previous_response_id() {
+        let messages = vec![Message::user("test".to_string())];
+        let tools = json!([]);
+
+        let body = build_body(
+            &crate::model::Model {
+                id: "gpt-5.6-codex".to_string(),
+                provider: crate::provider::ProviderKind::OpenAi,
+                dynamic_slug: None,
+                tier: crate::model::ModelTier::Strong,
+                family: crate::model::ModelFamily::Gpt,
+                supports_tool_examples_override: None,
+                supports_thinking_override: None,
+                supports_vision_override: None,
+                pricing: Default::default(),
+                max_output_tokens: None,
+                context_window: 272_000,
+            },
+            &messages,
+            "system",
+            &tools,
+            None,
+            None,
+        );
+        assert!(body.get("previous_response_id").is_none());
+        assert!(body.get("prompt_cache_key").is_none());
     }
 }

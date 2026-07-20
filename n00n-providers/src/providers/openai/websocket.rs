@@ -17,6 +17,10 @@ use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, 
 
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
 
+pub(crate) fn is_websocket_model(model_id: &str) -> bool {
+    model_id.starts_with("gpt-5.6") && !model_id.contains("-codex")
+}
+
 pub(crate) fn build_request_body(
     model: &Model,
     messages: &[Message],
@@ -62,11 +66,11 @@ fn responses_websocket_url(base_url: Option<&str>) -> String {
 }
 
 pub(crate) async fn stream_message(
-    body: &Value,
+    body: Value,
     event_tx: &Sender<ProviderEvent>,
     auth: &ResolvedAuth,
     stream_timeout: Duration,
-) -> Result<StreamResponse, AgentError> {
+) -> Result<(Option<String>, StreamResponse), AgentError> {
     let url = responses_websocket_url(auth.base_url.as_deref());
     let mut request = url.into_client_request().map_err(ws_err)?;
     for (key, value) in &auth.headers {
@@ -85,7 +89,7 @@ pub(crate) async fn stream_message(
         .await
         .map_err(ws_err)?;
 
-    let create_event = build_create_event(body);
+    let create_event = build_create_event(&body);
     send_json(&mut ws, &create_event).await?;
 
     let mut acc = ResponseAccumulator::new();
@@ -114,7 +118,8 @@ pub(crate) async fn stream_message(
     }
 
     let _ = ws.close(None).await;
-    Ok(acc.into_stream_response())
+    let response_id = acc.response_id().map(|s| s.to_string());
+    Ok((response_id, acc.into_stream_response()))
 }
 
 fn ws_err(e: WsError) -> AgentError {
@@ -216,6 +221,16 @@ mod tests {
     use super::*;
     use serde_json::json;
     use test_case::test_case;
+
+    #[test_case("gpt-5.6", true)]
+    #[test_case("gpt-5.6-luna", true)]
+    #[test_case("gpt-5.6-terra-preview", true)]
+    #[test_case("gpt-5.6-codex", false ; "codex_models_use_http")]
+    #[test_case("gpt-5.5", false)]
+    #[test_case("gpt-5.3-codex", false)]
+    fn is_websocket_model_recognizes_gpt_5_6(model_id: &str, expected: bool) {
+        assert_eq!(is_websocket_model(model_id), expected);
+    }
 
     #[test_case(None, "wss://api.openai.com/v1/responses")]
     #[test_case(Some("https://api.openai.com/v1"), "wss://api.openai.com/v1/responses")]
