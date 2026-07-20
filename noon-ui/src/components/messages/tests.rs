@@ -215,7 +215,7 @@ fn render_sel(
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal
         .draw(|f| {
-            panel.view(f, f.area(), has_selection);
+            panel.view(f, f.area(), has_selection, false);
         })
         .unwrap();
     terminal
@@ -227,6 +227,37 @@ fn render(panel: &mut MessagesPanel, width: u16, height: u16) -> ratatui::Termin
 
 fn rebuild(panel: &mut MessagesPanel) {
     render(panel, 80, 24);
+}
+
+fn render_working(
+    panel: &mut MessagesPanel,
+    width: u16,
+    height: u16,
+) -> ratatui::Terminal<TestBackend> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| {
+            panel.view(f, f.area(), false, true);
+        })
+        .unwrap();
+    terminal
+}
+
+#[test]
+fn working_indicator_renders_when_streaming() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.text_delta("hello");
+    let terminal = render_working(&mut panel, 80, 10);
+    let buf = terminal.backend().buffer();
+    let last_row = buf.area.height - 1;
+    let row_text: String = (0..buf.area.width)
+        .filter_map(|x| buf.cell((x, last_row)).map(|c| c.symbol().to_string()))
+        .collect();
+    assert!(
+        row_text.contains("thinking..."),
+        "working indicator should render in last row: {row_text:?}"
+    );
 }
 
 #[test]
@@ -255,10 +286,28 @@ fn jump_to_bottom_popup_appears_when_scrolled_up() {
 
     panel.scroll(panel.half_page());
     let terminal = render(&mut panel, 80, 10);
-    assert!(panel.jump_to_bottom_popup().is_some());
+    let popup = panel.jump_to_bottom_popup().unwrap();
+    assert_eq!(popup.height, JUMP_TO_BOTTOM_POPUP_HEIGHT);
     let text = buffer_text(&terminal);
     assert!(text.contains(JUMP_TO_BOTTOM_TEXT));
     assert!(text.contains(key::SCROLL_BOTTOM.label));
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer.cell((popup.x, popup.y)).unwrap().symbol(), "╭");
+    assert_eq!(
+        buffer.cell((popup.right() - 1, popup.y)).unwrap().symbol(),
+        "╮"
+    );
+    assert_eq!(
+        buffer.cell((popup.x, popup.bottom() - 1)).unwrap().symbol(),
+        "╰"
+    );
+    assert_eq!(
+        buffer
+            .cell((popup.right() - 1, popup.bottom() - 1))
+            .unwrap()
+            .symbol(),
+        "╯"
+    );
 
     panel.jump_to_bottom();
     assert!(panel.auto_scroll);
@@ -1122,7 +1171,9 @@ fn auto_scroll_approaches_bottom_smoothly() {
     );
 
     for _ in 0..12 {
-        terminal.draw(|f| panel.view(f, f.area(), false)).unwrap();
+        terminal
+            .draw(|f| panel.view(f, f.area(), false, panel.is_working()))
+            .unwrap();
     }
     assert_eq!(
         panel.scroll_top, 40,
