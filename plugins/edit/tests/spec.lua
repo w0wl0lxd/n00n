@@ -1,4 +1,4 @@
-local fr = require("noon.fuzzy_replace")
+local fr = require("n00n.fuzzy_replace")
 
 local failures = {}
 

@@ -106,27 +106,27 @@ end)
 
 case("builtin_plugin_dev_skill_loads", function()
   local builtin = require("plugin_dev")
-  eq(builtin.name, "noon-plugin-dev")
+  eq(builtin.name, "n00n-plugin-dev")
   assert(#builtin.description > 0, "description should not be empty")
-  assert(builtin.content:find("# Writing noon plugins", 1, true), "content should contain the authoring guide")
+  assert(builtin.content:find("# Writing n00n plugins", 1, true), "content should contain the authoring guide")
   assert(#builtin.reference_placeholder > 0, "reference_placeholder should not be empty")
   assert(
     builtin.content:find(builtin.reference_placeholder, 1, true),
     "content should contain the reference path placeholder"
   )
-  assert(builtin.content:find("noon.api.register_tool", 1, true), "index should list register_tool")
+  assert(builtin.content:find("n00n.api.register_tool", 1, true), "index should list register_tool")
 end)
 
 case("builtin_plugin_dev_reference_loads", function()
   local ref = require("plugin_dev_reference")
-  assert(ref.content:find("### `noon.api.register_tool", 1, true), "reference should document register_tool")
+  assert(ref.content:find("### `n00n.api.register_tool", 1, true), "reference should document register_tool")
   assert(ref.content:find("Shared helper modules", 1, true), "reference should include helper modules")
 end)
 
 case("builtin_index_line_numbers_match_reference", function()
   local builtin = require("plugin_dev")
   local ref = require("plugin_dev_reference")
-  local lines = noon.split(ref.content, "\n")
+  local lines = n00n.split(ref.content, "\n")
   local checked = 0
   for ln, sig in builtin.content:gmatch("\n%- L(%d+) `([^`]+)`") do
     local target = lines[tonumber(ln)]

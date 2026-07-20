@@ -7,14 +7,14 @@ use std::thread::{self, JoinHandle};
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 
-use noon_agent::command::{self, CustomCommand};
-use noon_agent::tools::ToolRegistry;
-use noon_config::{Config, load_env_files, load_permissions};
-use noon_lua::PluginHost;
-use noon_providers::model::Model;
-use noon_storage::StateDir;
-use noon_storage::id::NoonId;
-use noon_ui::{AppSession, RunOutcome};
+use n00n_agent::command::{self, CustomCommand};
+use n00n_agent::tools::ToolRegistry;
+use n00n_config::{Config, load_env_files, load_permissions};
+use n00n_lua::PluginHost;
+use n00n_providers::model::Model;
+use n00n_storage::StateDir;
+use n00n_storage::id::N00nId;
+use n00n_ui::{AppSession, RunOutcome};
 
 use crate::cli::{Cli, normalize_tool_name};
 use crate::setup;
@@ -34,8 +34,8 @@ struct Stack {
 }
 
 impl Stack {
-    fn timeouts(&self) -> noon_providers::Timeouts {
-        noon_providers::Timeouts {
+    fn timeouts(&self) -> n00n_providers::Timeouts {
+        n00n_providers::Timeouts {
             connect: self.config.provider.connect_timeout,
             low_speed: self.config.provider.low_speed_timeout,
             stream: self.config.provider.stream_timeout,
@@ -197,7 +197,7 @@ fn resolve_session(
     storage: &StateDir,
 ) -> Result<AppSession> {
     if let Some(raw) = session_id {
-        let id: NoonId = raw
+        let id: N00nId = raw
             .parse()
             .map_err(|e| color_eyre::eyre::eyre!("invalid session id {raw:?}: {e}"))?;
         return AppSession::load(id, storage).map_err(|e| color_eyre::eyre::eyre!("{e}"));
@@ -230,7 +230,7 @@ fn read_initial_prompt(cli_prompt: Option<String>) -> Result<Option<String>> {
 
 pub fn run(mut cli: Cli) -> Result<()> {
     let storage = StateDir::resolve().context("resolve data directory")?;
-    noon_providers::model_registry::load_from_storage(&storage);
+    n00n_providers::model_registry::load_from_storage(&storage);
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
 
@@ -313,8 +313,8 @@ pub fn run(mut cli: Cli) -> Result<()> {
             Model::from_spec(&focused_tab.model).unwrap_or_else(|_| stack.model.clone())
         };
 
-        let outcome = noon_ui::run(
-            noon_ui::EventLoopParams {
+        let outcome = n00n_ui::run(
+            n00n_ui::EventLoopParams {
                 model,
                 needs_login: stack.needs_login,
                 commands: std::mem::take(&mut stack.commands),
@@ -325,7 +325,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
                 config: stack.config.agent.clone(),
                 ui_config: stack.config.ui,
                 input_history_size: stack.config.storage.input_history_size,
-                permissions: Arc::new(noon_agent::permissions::PermissionManager::new(
+                permissions: Arc::new(n00n_agent::permissions::PermissionManager::new(
                     stack.config.permissions.clone(),
                     cwd.clone(),
                 )),
@@ -344,7 +344,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
         match outcome {
             RunOutcome::Exit { session_id, code } => {
                 if let Some(session_id) = session_id {
-                    eprintln!("Resume session:\n\n  noon -s {session_id}");
+                    eprintln!("Resume session:\n\n  n00n -s {session_id}");
                 }
                 if code != 0 {
                     teardown.join();
@@ -387,14 +387,14 @@ pub fn run(mut cli: Cli) -> Result<()> {
 
 fn warn_stale_config_toml(cwd: &std::path::Path) {
     let stale_paths = [
-        noon_config::global_config_dir().map(|d| d.join("config.toml")),
-        Some(cwd.join(".noon/config.toml")),
+        n00n_config::global_config_dir().map(|d| d.join("config.toml")),
+        Some(cwd.join(".n00n/config.toml")),
     ];
     for path in stale_paths.into_iter().flatten() {
         if path.is_file() {
             tracing::warn!(
                 path = %path.display(),
-                "config.toml found but no longer used. Migrate to init.lua. See https://github.com/w0wl0lxd/noon/docs/configuration/"
+                "config.toml found but no longer used. Migrate to init.lua. See https://github.com/w0wl0lxd/n00n/docs/configuration/"
             );
         }
     }
@@ -404,7 +404,7 @@ fn warn_stale_config_toml(cwd: &std::path::Path) {
 mod tests {
     use super::*;
     use color_eyre::eyre::eyre;
-    use noon_config::RawConfig;
+    use n00n_config::RawConfig;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// `second_saw_first` requires both joins: `defer` joining the first

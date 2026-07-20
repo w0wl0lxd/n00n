@@ -3,11 +3,11 @@ use std::sync::Mutex;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 
-use noon_providers::model::{Model, ModelTier};
-use noon_providers::provider::ProviderKind;
-use noon_storage::StateDir;
-use noon_storage::log::RotatingFileWriter;
-use noon_storage::model::read_model;
+use n00n_providers::model::{Model, ModelTier};
+use n00n_providers::provider::ProviderKind;
+use n00n_storage::StateDir;
+use n00n_storage::log::RotatingFileWriter;
+use n00n_storage::model::read_model;
 use tracing_subscriber::EnvFilter;
 
 const PROVIDER_PRIORITY: &[ProviderKind] = &[
@@ -21,7 +21,7 @@ const PROVIDER_PRIORITY: &[ProviderKind] = &[
 
 pub fn resolve_model(
     explicit: Option<&str>,
-    provider_config: &noon_config::ProviderConfig,
+    provider_config: &n00n_config::ProviderConfig,
     storage: &StateDir,
 ) -> Result<Model> {
     if let Some(spec) = explicit {
@@ -39,7 +39,7 @@ pub fn resolve_model(
     }
     auto_detect_model().ok_or_else(|| {
         color_eyre::eyre::eyre!(
-            "no provider available - set an API key (e.g. ANTHROPIC_API_KEY), run `noon auth login`, or use -m to specify a model\n\nSee https://github.com/w0wl0lxd/noon/docs/providers/ for setup instructions"
+            "no provider available - set an API key (e.g. ANTHROPIC_API_KEY), run `n00n auth login`, or use -m to specify a model\n\nSee https://github.com/w0wl0lxd/n00n/docs/providers/ for setup instructions"
         )
     })
 }
@@ -77,7 +77,7 @@ pub fn install_panic_log_hook() {
     }));
 }
 
-pub fn init_logging(storage_config: &noon_config::StorageConfig) {
+pub fn init_logging(storage_config: &n00n_config::StorageConfig) {
     let Ok(writer) =
         RotatingFileWriter::new(storage_config.max_log_bytes, storage_config.max_log_files)
     else {

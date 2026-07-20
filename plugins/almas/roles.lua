@@ -3,7 +3,7 @@
 -- their own subagent session so we get accurate token/cost telemetry (PR-B).
 local M = {}
 
-local route_tier = require("noon.route_tier").route_tier
+local route_tier = require("n00n.route_tier").route_tier
 
 -- Role -> { tier, system }. Tiers follow the ALMAS "three Cs" cost-effectiveness:
 -- routine clarifying work is cheap, implementation of hard parts is strong.
@@ -34,27 +34,29 @@ M.ROLES = {
 -- @param ctx AgentContext
 -- @param role string Key into M.ROLES.
 -- @param prompt string Step prompt (already retrieval-augmented by caller).
--- @param opts table { model_tier?, auto_tier? }
+-- @param opts table { model?, model_tier?, auto_tier?, thinking? }
 function M.run(ctx, role, prompt, opts)
   opts = opts or {}
   local r = M.ROLES[role] or M.ROLES.developer
   local tier = (opts.auto_tier and route_tier(prompt)) or opts.model_tier or r.tier
+  local spec = opts.model
 
-  local model, merr = noon.agent.resolve_model(ctx, { tier = tier })
+  local model, merr = n00n.agent.resolve_model(ctx, { spec = spec, tier = not spec and tier or nil })
   if merr then
     return { ok = false, error = merr }
   end
-  local tools, terr = noon.agent.tools(ctx, { spec = model.spec, audience = "general_sub", include_mcp = true })
+  local tools, terr = n00n.agent.tools(ctx, { spec = model.spec, audience = "general_sub", include_mcp = true })
   if terr then
     return { ok = false, error = terr }
   end
 
-  local sess, serr = noon.agent.session(ctx, {
+  local sess, serr = n00n.agent.session(ctx, {
     model_spec = model.spec,
     system = r.system,
     tools = tools,
     audience = "general_sub",
     name = role,
+    thinking = opts.thinking,
   })
   if serr then
     return { ok = false, error = serr }
@@ -68,7 +70,7 @@ function M.run(ctx, role, prompt, opts)
 
   local cost = 0.0
   if res then
-    local c, cerr = noon.agent.usage_cost(model.spec, res.input_tokens or 0, res.output_tokens or 0)
+    local c, cerr = n00n.agent.usage_cost(model.spec, res.input_tokens or 0, res.output_tokens or 0)
     if not cerr then
       cost = c
     end

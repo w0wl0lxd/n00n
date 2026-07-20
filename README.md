@@ -6,7 +6,7 @@ An AI coding agent optimized for minimal use of context tokens, while providing 
 ### Context efficiency
 
 * `index` tool - uses [tree-sitter](https://tree-sitter.github.io/tree-sitter) to parse supported programming languages to produce a high level skeleton of a file, with exact start-end lines of each item (e.g. a function's implementation is in lines 150-165). Encouraged to be used before reads. For my usage it adds 59 tok/turn but saves 224 tok/turn on read calls, saving 165 tok/turn.
-* `code_execution` tool - uses [monty](https://github.com/pydantic/monty) to run an interpreter that has all other tools available as async functions. Noon uses it to filter / summarize / transform / pipe data to other tools as input, without it ever reaching and polluting the context window. Sandbox limited by time & memory.
+* `code_execution` tool - uses [monty](https://github.com/pydantic/monty) to run an interpreter that has all other tools available as async functions. N00n uses it to filter / summarize / transform / pipe data to other tools as input, without it ever reaching and polluting the context window. Sandbox limited by time & memory.
 * `tooned` - tooned does lossless conversion to TOON for any compatible data format, lowering token usage on JSON shaped data/files. 
 * `task` tool - when delegating work to subagents, the AI chooses whether to run weak / medium / strong model of used provider. Think haiku / sonnet / opus.
 * System prompt, tool descriptions, and tool examples are all concise, I've made sure not to bloat your context.
@@ -15,13 +15,13 @@ An AI coding agent optimized for minimal use of context tokens, while providing 
 ### User experience
 
 * SUPER fast startup, 60 FPS, and light on memory. Not running any JavaScript, using [ratatui](https://ratatui.rs) for TUI. Even the splash screen animation uses SIMD.
-* Extend with Neovim-like Lua plugins - [Builtin plugins](https://github.com/w0wl0lxd/noon/tree/main/plugins), [User made plugins showcase](https://github.com/w0wl0lxd/noon/discussions/452), [Lua API reference](https://github.com/w0wl0lxd/noon/docs/lua-api/).
-* Philosophy of not hiding anything - while other coding agents hide information as models improve (e.g. not showing number of lines read), noon leaves you in control.
+* Extend with Neovim-like Lua plugins - [Builtin plugins](https://github.com/w0wl0lxd/n00n/tree/main/plugins), [User made plugins showcase](https://github.com/w0wl0lxd/n00n/discussions/452), [Lua API reference](https://github.com/w0wl0lxd/n00n/docs/lua-api/).
+* Philosophy of not hiding anything - while other coding agents hide information as models improve (e.g. not showing number of lines read), n00n leaves you in control.
 * UI fits everything well on my small screen laptop.
 * Full visibility of subagents - each subagent gets their own "chat window" you can easily navigate between using `/tasks` (Ctrl-X), or Ctrl-N/P.
-* Sensible permission system - when the agent runs `git diff && rm -rf /`, what do you think will happen in your current coding agent? It will treat it as `git *`. Noon uses tree-sitter to parse the bash command and figure out the permissions requested are `git *` and `rm *`. Disable using `--yolo`.
+* Sensible permission system - when the agent runs `git diff && rm -rf /`, what do you think will happen in your current coding agent? It will treat it as `git *`. N00n uses tree-sitter to parse the bash command and figure out the permissions requested are `git *` and `rm *`. Disable using `--yolo`.
 * SSRF protection on `webfetch` calls.
-* A `memory` tool to keep long term context, just tell noon to remember something (sometimes it uses it automatically). Managed via `/memory` (view / edit / delete memories).
+* A `memory` tool to keep long term context, just tell n00n to remember something (sometimes it uses it automatically). Managed via `/memory` (view / edit / delete memories).
 * Fuzzy search with Ctrl-F.
 * `/btw` to run a command with the chat history without interfering with the current session.
 * Rewind on Escape-Escape (no code rewind yet, only chat history).
@@ -30,14 +30,14 @@ An AI coding agent optimized for minimal use of context tokens, while providing 
 * Resume sessions.
 * Skills & MCPs.
 * Plan mode.
-* Run bash commands using `!`, or `!!` if you want noon to not know about it.
+* Run bash commands using `!`, or `!!` if you want n00n to not know about it.
 * `/cd` to change dir.
-* Use `--print --output-format stream-json` to run UI-less. Output is compatible with Claude Code, so you can easily replace your existing solutions (although I wouldn't recommend that, noon is very new).
+* Use `--print --output-format stream-json` to run UI-less. Output is compatible with Claude Code, so you can easily replace your existing solutions (although I wouldn't recommend that, n00n is very new).
 
 ## Supported providers
 
 * Anthropic - `ANTHROPIC_API_KEY` only (using OAuth is against TOS). Bedrock supported via `CLAUDE_CODE_USE_BEDROCK=1`.
-* OpenAI - `OPENAI_API_KEY` and OAuth via `noon auth login openai`.
+* OpenAI - `OPENAI_API_KEY` and OAuth via `n00n auth login openai`.
 * Google - `GEMINI_API_KEY`.
 * Copilot - `GH_COPILOT_TOKEN` or an existing GitHub Copilot sign-in at `~/.config/github-copilot/`.
 * Ollama - `OLLAMA_HOST` for local (e.g. `http://localhost:11434`), or `OLLAMA_API_KEY` for cloud.
@@ -48,36 +48,36 @@ An AI coding agent optimized for minimal use of context tokens, while providing 
 * OpenRouter - `OPENROUTER_API_KEY`.
 * Synthetic - `SYNTHETIC_API_KEY`.
 
-**Dynamic providers** - drop an executable script into `~/.config/noon/providers/` to add custom providers or proxies. See [docs](https://github.com/w0wl0lxd/noon/docs/providers/#dynamic-providers) for details.
+**Dynamic providers** - drop an executable script into `~/.config/n00n/providers/` to add custom providers or proxies. See [docs](https://github.com/w0wl0lxd/n00n/docs/providers/#dynamic-providers) for details.
 
 ## Installation
 
 ### Living on the edge (main branch)
 
 ```sh
-cargo install --locked --git https://github.com/w0wl0lxd/noon.git noon
+cargo install --locked --git https://github.com/w0wl0lxd/n00n.git n00n
 ```
 
 ### With Nix
 
 ```sh
-nix run github:w0wl0lxd/noon
+nix run github:w0wl0lxd/n00n
 ```
 
-Or download a pre-built binary from [GitHub Releases](https://github.com/w0wl0lxd/noon/releases/latest).
+Or download a pre-built binary from [GitHub Releases](https://github.com/w0wl0lxd/n00n/releases/latest).
 
 ## ACP
 
-Run `noon acp` or configure your ACP supporting editor to use noon, e.g. in [Zed](https://zed.dev/)'s `settings.json`:
+Run `n00n acp` or configure your ACP supporting editor to use n00n, e.g. in [Zed](https://zed.dev/)'s `settings.json`:
 
 ```json
 "agent_servers": {
-  "Noon": {
+  "N00n": {
     "default_config_options": {
       "model": "deepseek/deepseek-v4-flash"
     },
     "type": "custom",
-    "command": "noon",
+    "command": "n00n",
     "args": ["acp"],
     "env": {}
   }
@@ -86,8 +86,8 @@ Run `noon acp` or configure your ACP supporting editor to use noon, e.g. in [Zed
 
 ## Documentation
 
-More info at the [official docs](https://github.com/w0wl0lxd/noon/docs).
+More info at the [official docs](https://github.com/w0wl0lxd/n00n/docs).
 
-> DISCLAIMER: >90% of code in noon was written by noon, guided by humans. The code is not as good as what I would've made in the artisanal hand-made style. But it's also not slop / vibe coded. I just think people should be honest about their use of AI in projects in this era.
+> DISCLAIMER: >90% of code in n00n was written by n00n, guided by humans. The code is not as good as what I would've made in the artisanal hand-made style. But it's also not slop / vibe coded. I just think people should be honest about their use of AI in projects in this era.
 
 

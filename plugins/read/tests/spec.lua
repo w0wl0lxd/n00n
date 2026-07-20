@@ -76,24 +76,24 @@ end
 local _tmpdir_counter = 0
 local function mktmpdir()
   _tmpdir_counter = _tmpdir_counter + 1
-  local name = "/tmp/noon_read_spec_" .. tostring(os.clock()):gsub("%.", "") .. "_" .. _tmpdir_counter
-  noon.fs.mkdir(name)
+  local name = "/tmp/n00n_read_spec_" .. tostring(os.clock()):gsub("%.", "") .. "_" .. _tmpdir_counter
+  n00n.fs.mkdir(name)
   return name
 end
 
 local function rmtree(dir)
-  local entries = noon.fs.dir(dir)
+  local entries = n00n.fs.dir(dir)
   if entries then
     for _, e in ipairs(entries) do
-      local p = noon.fs.joinpath(dir, e[1])
+      local p = n00n.fs.joinpath(dir, e[1])
       if e[2] == "directory" then
         rmtree(p)
       else
-        noon.fs.rm(p)
+        n00n.fs.rm(p)
       end
     end
   end
-  noon.fs.rm(dir)
+  n00n.fs.rm(dir)
 end
 
 -- line_nr_fmt: table-driven across all boundaries + alignment
@@ -211,13 +211,13 @@ end)
 
 case("dir_listing_sort_and_filter", function()
   local tmpdir = mktmpdir()
-  noon.fs.write(noon.fs.joinpath(tmpdir, "c.txt"), "")
-  noon.fs.write(noon.fs.joinpath(tmpdir, "a.txt"), "")
-  noon.fs.write(noon.fs.joinpath(tmpdir, "AGENTS.md"), "instructions")
-  noon.fs.mkdir(noon.fs.joinpath(tmpdir, "zdir"))
-  noon.fs.mkdir(noon.fs.joinpath(tmpdir, "adir"))
+  n00n.fs.write(n00n.fs.joinpath(tmpdir, "c.txt"), "")
+  n00n.fs.write(n00n.fs.joinpath(tmpdir, "a.txt"), "")
+  n00n.fs.write(n00n.fs.joinpath(tmpdir, "AGENTS.md"), "instructions")
+  n00n.fs.mkdir(n00n.fs.joinpath(tmpdir, "zdir"))
+  n00n.fs.mkdir(n00n.fs.joinpath(tmpdir, "adir"))
 
-  local entries, err = noon.fs.dir(tmpdir)
+  local entries, err = n00n.fs.dir(tmpdir)
   assert(err == nil, "dir listing should succeed: " .. tostring(err))
   local names = sort_dir_entries(entries, mock_is_instruction)
   eq(#names, 4)

@@ -1,7 +1,7 @@
 -- RAG-grounded retrieval seam (ALMAS Control Agent grounding).
 -- Lexical retrieval greps the repo for goal keywords. Vector retrieval ranks
 -- grep-gathered chunks by cosine similarity over hashing-trick embeddings
--- (offline; noon-providers exposes no embeddings API). usearch + real
+-- (offline; n00n-providers exposes no embeddings API). usearch + real
 -- embeddings can replace the embed step later without changing callers.
 local M = {}
 
@@ -31,7 +31,7 @@ local function retrieve_lexical(ctx, goal, k)
       break
     end
     local ok, out = pcall(function()
-      return noon.agent.call_tool(ctx, "grep", { pattern = kw, limit = 3 })
+      return n00n.agent.call_tool(ctx, "grep", { pattern = kw, limit = 3 })
     end)
     if ok and out and #out > 0 then
       picked[#picked + 1] = "## " .. kw .. "\n" .. out:sub(1, 400)
@@ -43,7 +43,7 @@ local function retrieve_lexical(ctx, goal, k)
   return table.concat(picked, "\n\n"):sub(1, MAX_BLOCK_BYTES)
 end
 
--- Vector retrieval (offline approximation). noon-providers exposes no embeddings
+-- Vector retrieval (offline approximation). n00n-providers exposes no embeddings
 -- API, so embed with the hashing trick: each token maps to a fixed-dim
 -- bag-of-words vector, and candidate chunks are ranked by cosine similarity to
 -- the goal. Drop-in for usearch + real embeddings later.
@@ -92,7 +92,7 @@ local function retrieve_vector(ctx, goal, k)
   local scored = {}
   for _, kw in ipairs(kws) do
     local ok, out = pcall(function()
-      return noon.agent.call_tool(ctx, "grep", { pattern = kw, limit = 3 })
+      return n00n.agent.call_tool(ctx, "grep", { pattern = kw, limit = 3 })
     end)
     if ok and out and #out > 0 then
       scored[#scored + 1] = {
@@ -126,5 +126,10 @@ function M.retrieve(ctx, goal, role, k)
   end
   return retrieve_vector(ctx, goal, k)
 end
+
+-- Exported so swarm.lua reuses the exact same hashing-trick vectors (no dup).
+M.embed = embed
+M.cosine = cosine
+M.VEC_DIM = VEC_DIM
 
 return M

@@ -36,7 +36,7 @@ function M.count_lines(s)
 end
 
 function M.project_id(path)
-  local base = noon.fs.basename(path) or "root"
+  local base = n00n.fs.basename(path) or "root"
   return base .. "-" .. M.fnv1a_64(path)
 end
 
@@ -54,8 +54,8 @@ function M.safe_resolve(memories_dir, relative)
   if relative:match("^%a:") then
     return nil, "path must be relative"
   end
-  local resolved = noon.fs.normalize(noon.fs.joinpath(memories_dir, relative))
-  local norm_base = noon.fs.normalize(memories_dir)
+  local resolved = n00n.fs.normalize(n00n.fs.joinpath(memories_dir, relative))
+  local norm_base = n00n.fs.normalize(memories_dir)
   local sep = norm_base:find("\\") and "\\" or "/"
   local prefix = norm_base .. sep
   if resolved:sub(1, #prefix) ~= prefix then
@@ -65,14 +65,14 @@ function M.safe_resolve(memories_dir, relative)
 end
 
 function M.collect_file_entries(dir)
-  local entries = noon.fs.dir(dir)
+  local entries = n00n.fs.dir(dir)
   if not entries then
     return {}
   end
   local files = {}
   for _, entry in ipairs(entries) do
     if entry[2] == "file" then
-      local meta = noon.fs.metadata(noon.fs.joinpath(dir, entry[1]))
+      local meta = n00n.fs.metadata(n00n.fs.joinpath(dir, entry[1]))
       if meta then
         files[#files + 1] = { entry[1], meta.size }
       end

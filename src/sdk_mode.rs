@@ -1,11 +1,11 @@
-//! SDK streaming mode: `noon --print --input-format stream-json`.
+//! SDK streaming mode: `n00n --print --input-format stream-json`.
 //!
 //! Wire protocol matches Claude Code's SDK interface so tools like Conductor, Windsurf, and custom
 //! orchestrators work without adaptation.
 //!
 //! Per-message wire ids (`uuid`, assistant `message.id`) use `uuid::Uuid::now_v7()` to emit the
-//! hyphenated-hex UUIDv7 shape that Claude Code SDK consumers expect, rather than noon's base58
-//! `NoonId` canonical form.
+//! hyphenated-hex UUIDv7 shape that Claude Code SDK consumers expect, rather than n00n's base58
+//! `N00nId` canonical form.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
@@ -17,19 +17,19 @@ use std::time::Instant;
 use color_eyre::Result;
 use color_eyre::eyre::{Context, eyre};
 use flume::{Receiver, Sender};
-use noon_agent::headless::{self, InteractiveHandle, InteractiveParams};
-use noon_agent::mcp;
-use noon_agent::permissions::PermissionAnswer;
-use noon_agent::prompt::ResolvedSlots;
-use noon_agent::tools::QUESTION_TOOL_NAME;
-use noon_agent::{
+use n00n_agent::headless::{self, InteractiveHandle, InteractiveParams};
+use n00n_agent::mcp;
+use n00n_agent::permissions::PermissionAnswer;
+use n00n_agent::prompt::ResolvedSlots;
+use n00n_agent::tools::QUESTION_TOOL_NAME;
+use n00n_agent::{
     AgentConfig, AgentEvent, AgentInput, AgentMode, Envelope, PermissionsConfig, ToolOutput,
 };
-use noon_providers::model::Model;
-use noon_providers::{ImageSource, Message, StopReason, Timeouts, TokenUsage};
-use noon_storage::StateDir;
-use noon_storage::id::SessionRef;
-use noon_storage::sessions::Session;
+use n00n_providers::model::Model;
+use n00n_providers::{ImageSource, Message, StopReason, Timeouts, TokenUsage};
+use n00n_storage::StateDir;
+use n00n_storage::id::SessionRef;
+use n00n_storage::sessions::Session;
 use serde::Serialize;
 use serde_json::Value;
 use tracing::warn;
@@ -391,7 +391,7 @@ impl StreamSynth {
     }
 }
 
-fn noon_to_claude_tool_name(name: &str) -> &str {
+fn n00n_to_claude_tool_name(name: &str) -> &str {
     TOOL_NAME_MAP
         .iter()
         .find(|(m, _)| *m == name)
@@ -517,7 +517,7 @@ pub fn run(params: SdkParams) -> Result<()> {
     let tools: Vec<&str> = handle
         .tool_names
         .iter()
-        .map(|t| noon_to_claude_tool_name(t))
+        .map(|t| n00n_to_claude_tool_name(t))
         .collect();
     writer.emit_system(
         "init",
@@ -919,7 +919,7 @@ impl EventPump {
                     let events = self.synth.tool_use(
                         &model,
                         &ts.id,
-                        noon_to_claude_tool_name(&name),
+                        n00n_to_claude_tool_name(&name),
                         &serde_json::to_string(&input)?,
                     );
                     self.emit_stream(events)?;
@@ -1007,7 +1007,7 @@ impl EventPump {
                         request_id: req_id,
                         request: ControlRequestInner {
                             subtype: "can_use_tool",
-                            tool_name: Some(noon_to_claude_tool_name(&tool_name).into()),
+                            tool_name: Some(n00n_to_claude_tool_name(&tool_name).into()),
                             input: Some(input),
                             tool_use_id: Some(id.clone()),
                         },
@@ -1039,7 +1039,7 @@ fn map_tool_names_in_content(content: &Value) -> Value {
                         && let Some(name) = block.get("name").and_then(Value::as_str)
                     {
                         let mut b = block.clone();
-                        b["name"] = Value::String(noon_to_claude_tool_name(name).to_string());
+                        b["name"] = Value::String(n00n_to_claude_tool_name(name).to_string());
                         return b;
                     }
                     block.clone()
@@ -1056,7 +1056,7 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    fn claude_to_noon_tool_name(name: &str) -> &str {
+    fn claude_to_n00n_tool_name(name: &str) -> &str {
         TOOL_NAME_MAP
             .iter()
             .find(|(_, c)| *c == name)
@@ -1079,15 +1079,15 @@ mod tests {
     #[test_case("index", "Index")]
     #[test_case("memory", "Memory")]
     #[test_case("question", "Question")]
-    fn noon_to_claude_roundtrip(noon: &str, claude: &str) {
-        assert_eq!(noon_to_claude_tool_name(noon), claude);
-        assert_eq!(claude_to_noon_tool_name(claude), noon);
+    fn n00n_to_claude_roundtrip(n00n: &str, claude: &str) {
+        assert_eq!(n00n_to_claude_tool_name(n00n), claude);
+        assert_eq!(claude_to_n00n_tool_name(claude), n00n);
     }
 
     #[test]
     fn unknown_tool_name_passthrough() {
-        assert_eq!(noon_to_claude_tool_name("unknown_tool"), "unknown_tool");
-        assert_eq!(claude_to_noon_tool_name("UnknownTool"), "UnknownTool");
+        assert_eq!(n00n_to_claude_tool_name("unknown_tool"), "unknown_tool");
+        assert_eq!(claude_to_n00n_tool_name("UnknownTool"), "UnknownTool");
     }
 
     const MODEL: &str = "test-model";
