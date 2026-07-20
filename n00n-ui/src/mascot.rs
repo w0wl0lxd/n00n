@@ -13,7 +13,7 @@ const BLINK_INTERVAL_MIN_MS: u64 = 2500;
 const BLINK_INTERVAL_MAX_MS: u64 = 4000;
 const BLINK_DURATION_MS: u128 = 120;
 const BREATHE_PERIOD_S: f32 = 2.0;
-const BREATHE_THRESHOLD: f32 = 0.85;
+const BREATHE_THRESHOLD: f32 = 0.0;
 const BRAILLE_COLS: usize = 2;
 const BRAILLE_ROWS: usize = 4;
 const SAMPLES_PER_CELL: usize = BRAILLE_COLS * BRAILLE_ROWS;
@@ -153,7 +153,7 @@ impl Mascot {
         }
 
         let now = Instant::now();
-        let delta = now.duration_since(self.last_tick);
+        let delta = now.saturating_duration_since(self.last_tick);
         self.last_tick = now;
 
         self.breathe_phase = (self.breathe_phase
@@ -172,7 +172,7 @@ impl Mascot {
         }
 
         if let Some(start) = self.gaze_start {
-            let elapsed = now.duration_since(start).as_millis();
+            let elapsed = now.saturating_duration_since(start).as_millis();
             let t = (elapsed as f64 / GAZE_TRANSITION_MS as f64).clamp(0.0, 1.0);
             self.gaze_x = self.gaze_from_x + (self.target_gaze_x - self.gaze_from_x) * t;
             self.gaze_y = self.gaze_from_y + (self.target_gaze_y - self.gaze_from_y) * t;
@@ -183,14 +183,14 @@ impl Mascot {
 
         if self.is_blinking {
             if let Some(start) = self.blink_start
-                && now.duration_since(start).as_millis() >= BLINK_DURATION_MS
+                && now.saturating_duration_since(start).as_millis() >= BLINK_DURATION_MS
             {
                 self.is_blinking = false;
                 self.blink_start = None;
                 self.last_blink = now;
                 self.next_blink_interval = random_blink_interval();
             }
-        } else if now.duration_since(self.last_blink).as_millis()
+        } else if now.saturating_duration_since(self.last_blink).as_millis()
             >= self.next_blink_interval as u128
         {
             self.is_blinking = true;
@@ -199,8 +199,7 @@ impl Mascot {
     }
 
     fn compute_target_gaze(&self, col: u16, row: u16, area: Rect) -> (f64, f64) {
-        let scale = (f64::from(area.width) / BASE_WIDTH)
-            .min(f64::from(area.height) / BASE_HEIGHT);
+        let scale = (f64::from(area.width) / BASE_WIDTH).min(f64::from(area.height) / BASE_HEIGHT);
         let center_x = f64::from(area.x) + f64::from(area.width) / 2.0;
         let center_y = f64::from(area.y) + f64::from(area.height) / 2.0;
 
@@ -215,13 +214,11 @@ impl Mascot {
         }
 
         let palette = Palette::new(theme);
-        let scale = (f64::from(area.width) / BASE_WIDTH)
-            .min(f64::from(area.height) / BASE_HEIGHT);
+        let scale = (f64::from(area.width) / BASE_WIDTH).min(f64::from(area.height) / BASE_HEIGHT);
         let draw_w = BASE_WIDTH * scale;
         let draw_h = BASE_HEIGHT * scale;
         let off_x = f64::from(area.x) + (f64::from(area.width) - draw_w) / 2.0;
-        let off_y = f64::from(area.y)
-            + (f64::from(area.height) - draw_h) / 2.0
+        let off_y = f64::from(area.y) + (f64::from(area.height) - draw_h) / 2.0
             - if self.breathe_phase.sin() > BREATHE_THRESHOLD {
                 1.0
             } else {
@@ -236,11 +233,12 @@ impl Mascot {
                 let mut n = 0;
                 for dy in 0..BRAILLE_ROWS {
                     for dx in 0..BRAILLE_COLS {
-                        let bx = (f64::from(tx) - off_x + (dx as f64 + 0.5) / BRAILLE_COLS as f64)
-                            * inv;
-                        let by = (f64::from(ty) - off_y + (dy as f64 + 0.5) / BRAILLE_ROWS as f64)
-                            * inv;
-                        let layer = sample_layer(bx, by, self.gaze_x, self.gaze_y, self.is_blinking);
+                        let bx =
+                            (f64::from(tx) - off_x + (dx as f64 + 0.5) / BRAILLE_COLS as f64) * inv;
+                        let by =
+                            (f64::from(ty) - off_y + (dy as f64 + 0.5) / BRAILLE_ROWS as f64) * inv;
+                        let layer =
+                            sample_layer(bx, by, self.gaze_x, self.gaze_y, self.is_blinking);
                         if let Some(pos) = counts[..n].iter().position(|(l, _)| *l == layer) {
                             counts[pos].1 += 1;
                         } else {
@@ -270,10 +268,10 @@ impl Mascot {
                 let mut mask: u8 = 0;
 
                 let sample = |dy: usize, dx: usize| {
-                    let bx = (f64::from(tx) - off_x + (dx as f64 + 0.5) / BRAILLE_COLS as f64)
-                        * inv;
-                    let by = (f64::from(ty) - off_y + (dy as f64 + 0.5) / BRAILLE_ROWS as f64)
-                        * inv;
+                    let bx =
+                        (f64::from(tx) - off_x + (dx as f64 + 0.5) / BRAILLE_COLS as f64) * inv;
+                    let by =
+                        (f64::from(ty) - off_y + (dy as f64 + 0.5) / BRAILLE_ROWS as f64) * inv;
                     sample_layer(bx, by, self.gaze_x, self.gaze_y, self.is_blinking)
                 };
 
@@ -350,16 +348,36 @@ impl Palette {
         let luma = 0.299 * f32::from(bg_r) + 0.587 * f32::from(bg_g) + 0.114 * f32::from(bg_b);
         let dark = luma < 100.0;
 
-        let hair_target = if dark { (245, 210, 215) } else { (190, 140, 145) };
-        let skin_target = if dark { (255, 224, 210) } else { (210, 160, 140) };
+        let hair_target = if dark {
+            (245, 210, 215)
+        } else {
+            (190, 140, 145)
+        };
+        let skin_target = if dark {
+            (255, 224, 210)
+        } else {
+            (210, 160, 140)
+        };
         let eye_target = if dark { (90, 180, 220) } else { (70, 140, 190) };
         let pupil_target = if dark { (40, 40, 55) } else { (30, 30, 40) };
-        let blush_target = if dark { (255, 165, 175) } else { (230, 130, 145) };
+        let blush_target = if dark {
+            (255, 165, 175)
+        } else {
+            (230, 130, 145)
+        };
         let nose_target = (255, 150, 160);
         let mouth_target = if dark { (185, 90, 110) } else { (160, 70, 90) };
-        let brow_target = if dark { (180, 140, 140) } else { (140, 100, 100) };
+        let brow_target = if dark {
+            (180, 140, 140)
+        } else {
+            (140, 100, 100)
+        };
         let lash_target = (60, 50, 55);
-        let collar_target = if dark { (140, 180, 255) } else { (110, 150, 220) };
+        let collar_target = if dark {
+            (140, 180, 255)
+        } else {
+            (110, 150, 220)
+        };
         let ribbon_target = (255, 120, 160);
 
         Self {
@@ -580,10 +598,26 @@ fn sample_layer(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> Layer 
         if circle_contains(x, y, 48.0 + gaze_x * 0.3, 27.0 + gaze_y * 0.3, 1.4) {
             layer = Layer::HighlightRight;
         }
-        if segment_contains(x, y, 24.5 + gaze_x, 25.0 + gaze_y, 35.5 + gaze_x, 25.0 + gaze_y, 0.5) {
+        if segment_contains(
+            x,
+            y,
+            24.5 + gaze_x,
+            25.0 + gaze_y,
+            35.5 + gaze_x,
+            25.0 + gaze_y,
+            0.5,
+        ) {
             layer = Layer::LashLeft;
         }
-        if segment_contains(x, y, 44.5 + gaze_x, 25.0 + gaze_y, 55.5 + gaze_x, 25.0 + gaze_y, 0.5) {
+        if segment_contains(
+            x,
+            y,
+            44.5 + gaze_x,
+            25.0 + gaze_y,
+            55.5 + gaze_x,
+            25.0 + gaze_y,
+            0.5,
+        ) {
             layer = Layer::LashRight;
         }
     }
@@ -626,15 +660,7 @@ fn triangle_contains(
     a >= 0.0 && b >= 0.0 && a + b <= 1.0
 }
 
-fn segment_contains(
-    px: f64,
-    py: f64,
-    x1: f64,
-    y1: f64,
-    x2: f64,
-    y2: f64,
-    thickness: f64,
-) -> bool {
+fn segment_contains(px: f64, py: f64, x1: f64, y1: f64, x2: f64, y2: f64, thickness: f64) -> bool {
     let vx = x2 - x1;
     let vy = y2 - y1;
     let wx = px - x1;
@@ -663,6 +689,22 @@ fn random_blink_interval() -> u64 {
 fn extract_rgb(color: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
     match color {
         Color::Rgb(r, g, b) => (r, g, b),
+        Color::Black => (0, 0, 0),
+        Color::Red => (205, 49, 49),
+        Color::Green => (13, 188, 121),
+        Color::Yellow => (229, 229, 16),
+        Color::Blue => (36, 114, 200),
+        Color::Magenta => (188, 63, 188),
+        Color::Cyan => (17, 168, 161),
+        Color::Gray => (128, 128, 128),
+        Color::DarkGray => (85, 85, 85),
+        Color::LightRed => (255, 85, 85),
+        Color::LightGreen => (85, 255, 85),
+        Color::LightYellow => (255, 255, 85),
+        Color::LightBlue => (85, 85, 255),
+        Color::LightMagenta => (255, 85, 255),
+        Color::LightCyan => (85, 255, 255),
+        Color::White => (255, 255, 255),
         _ => fallback,
     }
 }
@@ -704,11 +746,7 @@ mod tests {
         let theme = theme::current();
         mascot.render(area, &mut buf, &theme, accent());
 
-        let non_empty = buf
-            .content
-            .iter()
-            .filter(|c| c.symbol() != " ")
-            .count();
+        let non_empty = buf.content.iter().filter(|c| c.symbol() != " ").count();
         assert!(non_empty > 100);
     }
 
