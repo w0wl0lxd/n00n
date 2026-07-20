@@ -25,6 +25,16 @@ case("workflow_host_api_surface", function()
   eq(type(n00n.json.schema_validator), "function", "n00n.json.schema_validator must be a function")
   eq(type(n00n.json.encode), "function", "n00n.json.encode must be a function")
   eq(type(n00n.workflow.compile), "function", "n00n.workflow.compile must be a function")
+  eq(type(n00n.workflow.hash), "function", "n00n.workflow.hash must be a function")
+end)
+
+case("workflow_hash_is_stable_sha256", function()
+  local a = n00n.workflow.hash("abc")
+  local b = n00n.workflow.hash("abc")
+  eq(a, b, "hash must be deterministic")
+  eq(#a, 64, "sha256 hex is 64 chars")
+  eq(a, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+  assert(a ~= n00n.workflow.hash("abd"), "different inputs must differ")
 end)
 
 case("workflow_compile_sandbox_blocks_globals", function()
@@ -43,7 +53,19 @@ case("workflow_compile_sandbox_blocks_globals", function()
 end)
 
 case("workflow_compile_exposes_env_capabilities", function()
-  local env = { math = { floor = math.floor, max = math.max }, string = string, table = table }
+  local bare_string = { format = string.format }
+  local safe_string = setmetatable({}, {
+    __index = bare_string,
+    __newindex = function()
+      error("readonly", 0)
+    end,
+    __metatable = false,
+  })
+  local env = {
+    math = { floor = math.floor, max = math.max },
+    string = safe_string,
+    table = { concat = table.concat },
+  }
   local fn, err = n00n.workflow.compile("return math.random, math.floor, math.max, string.format, table.concat", env)
   eq(err, nil, "script must compile, got: " .. tostring(err))
   local rand, floor, max, sfmt, tconcat = fn()
@@ -52,6 +74,25 @@ case("workflow_compile_exposes_env_capabilities", function()
   assert(type(max) == "function", "math.max must be available")
   assert(type(sfmt) == "function", "string.format must be available")
   assert(type(tconcat) == "function", "table.concat must be available")
+end)
+
+case("workflow_sandbox_stdlib_is_readonly", function()
+  local bare = { format = string.format }
+  local safe = setmetatable({}, {
+    __index = bare,
+    __newindex = function()
+      error("readonly", 0)
+    end,
+    __metatable = false,
+  })
+  local host_format = string.format
+  local env = { string = safe }
+  local fn, err = n00n.workflow.compile("string.format = function() end return true", env)
+  eq(err, nil, "script must compile, got: " .. tostring(err))
+  local ok, run_err = pcall(fn)
+  eq(ok, false, "mutating sandboxed string must fail")
+  assert(tostring(run_err):find("readonly", 1, true), "must report readonly, got: " .. tostring(run_err))
+  eq(string.format, host_format, "host string.format must be unchanged")
 end)
 
 case("workflow_compile_reports_syntax_error", function()
@@ -127,7 +168,6 @@ case("workflow_schema_validator_available", function()
 end)
 
 case("workflow_stable_keying_is_order_insensitive_for_object_keys", function()
-  -- Mirrors the journal key construction used by the plugin: sorted object keys.
   local function stable_json(value)
     local t = type(value)
     if t == "nil" then
@@ -170,9 +210,23 @@ case("workflow_stable_keying_is_order_insensitive_for_object_keys", function()
     end
     return "{" .. table.concat(parts, ",") .. "}"
   end
-  local a = stable_json({ b = 1, a = 2 })
-  local b = stable_json({ a = 2, b = 1 })
-  eq(a, b, "object key order must not change the journal key payload")
+  local a = n00n.workflow.hash(stable_json({ b = 1, a = 2 }))
+  local b = n00n.workflow.hash(stable_json({ a = 2, b = 1 }))
+  eq(a, b, "object key order must not change the journal key")
+  eq(#a, 64, "journal key is full sha256 hex")
+end)
+
+case("workflow_run_id_allowlist_rejects_path_segments", function()
+  local function is_safe_run_id(run_id)
+    return type(run_id) == "string" and #run_id >= 8 and #run_id <= 128 and run_id:match("^[%x]+$") ~= nil
+  end
+  assert(is_safe_run_id("aabbccdd"), "plain hex must pass")
+  assert(is_safe_run_id(string.rep("a", 64)), "sha256 hex must pass")
+  eq(is_safe_run_id("../evil"), false, "path traversal must fail")
+  eq(is_safe_run_id("/tmp/abs"), false, "absolute path must fail")
+  eq(is_safe_run_id("a/../../b"), false, "nested traversal must fail")
+  eq(is_safe_run_id("short"), false, "too short must fail")
+  eq(is_safe_run_id(""), false, "empty must fail")
 end)
 
 if #failures > 0 then

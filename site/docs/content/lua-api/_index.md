@@ -4659,6 +4659,7 @@ primitives the plugin injects.
 
 ```lua
 local fn, err = n00n.workflow.compile("return 1 + 1", {})
+local key = n00n.workflow.hash("stable payload")
 ```
 
 ---
@@ -4687,6 +4688,29 @@ primitives the plugin injects. Returns (function, nil) on success, or
 ```lua
 local fn, err = n00n.workflow.compile("return agent({ prompt = 'hi' })", { agent = agent })
 if fn then print(fn()) end
+```
+
+---
+
+### `n00n.workflow.hash()` {#n00n-workflow-hash}
+
+```lua
+n00n.workflow.hash({data})
+```
+
+SHA-256 hex digest of {data}. Used by the workflow plugin for journal keys
+and run ids so identical agent opts collide only on a full 256-bit space.
+
+**Parameters:**
+
+- `{data}` (`string`) Bytes to hash (Lua string, treated as UTF-8 bytes).
+
+**Returns:** (`string`) Lowercase hex SHA-256 digest.
+
+**Example:**
+
+```lua
+local k = n00n.workflow.hash("prompt=hi")
 ```
 
 
