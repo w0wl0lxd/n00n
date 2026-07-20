@@ -1,6 +1,3 @@
-// n00n-lua wraps the Luau C runtime; unsafe is isolated to this FFI boundary.
-#![allow(unsafe_code)]
-
 mod api;
 pub mod docs;
 pub mod docs_render;
