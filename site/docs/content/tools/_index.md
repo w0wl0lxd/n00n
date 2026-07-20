@@ -155,6 +155,16 @@ Use this tool when you need to ask the user questions during execution. This all
 
 ## Agent & Knowledge
 
+### `agent_control` *(lua plugin)*
+
+Control background agents started by task or ALMAS.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `message` | string | no | Steering instructions. Required for message. |
+| `action` | string | yes | Control action. |
+| `agent_id` | string | no | Background agent id. Required for status, message, and stop. |
+
 ### `almas` *(lua plugin)*
 
 Launch an ALMAS team. A supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
@@ -247,15 +257,3 @@ Search the web for real-time information using Exa AI.
 |-----------|------|----------|---------|-------------|
 | `num_results` | integer | no | 8 | Number of results to return |
 | `query` | string | yes |  | Search query |
-
-## Additional tools
-
-### `agent_control` *(lua plugin)*
-
-Control background agents started by task or ALMAS.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `message` | string | no | Steering instructions. Required for message. |
-| `action` | string | yes | Control action. |
-| `agent_id` | string | no | Background agent id. Required for status, message, and stop. |

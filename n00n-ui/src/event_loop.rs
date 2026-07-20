@@ -738,8 +738,8 @@ impl<'t> EventLoop<'t> {
                     let idx = self
                         .position(id)
                         .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
-                    if SessionStatus::of(&self.sessions[idx].app) != SessionStatus::Working {
-                        return Err(format!("session is not working: {id}"));
+                    if SessionStatus::of(&self.sessions[idx].app) == SessionStatus::Idle {
+                        return Err(format!("session is idle: {id}"));
                     }
                     let actions = self.sessions[idx].app.cancel_current_run();
                     self.dispatch(idx, actions);

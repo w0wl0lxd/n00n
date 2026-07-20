@@ -228,6 +228,28 @@ mod tests {
         assert_eq!(val.get::<String>("focused").unwrap(), "abc");
     }
 
+    #[test]
+    fn cancel_forwards_session_id() {
+        let (tx, rx) = flume::unbounded::<UiAction>();
+        let lua = lua_with_session(Some(tx));
+        let checker = std::thread::spawn(move || {
+            let Ok(UiAction::Session {
+                req: SessionRequest::Cancel { id },
+                reply_tx,
+            }) = rx.recv()
+            else {
+                panic!("expected cancel request");
+            };
+            assert_eq!(id, "abc");
+            reply_tx.send(Ok(json!(true))).unwrap();
+        });
+        let (val, err): (bool, Option<String>) =
+            smol::block_on(lua.load("return session.cancel('abc')").eval_async()).unwrap();
+        checker.join().unwrap();
+        assert_eq!(err, None);
+        assert!(val);
+    }
+
     #[test_case("return session.prompt('hi', { session = 'abc' })", Some("abc") ; "explicit_session_id")]
     #[test_case("return session.prompt('hi')", None ; "defaults_to_focused")]
     fn prompt_forwards_text_and_session_id(code: &str, expected_id: Option<&str>) {

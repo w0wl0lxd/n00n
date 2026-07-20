@@ -797,6 +797,19 @@ fn batch_subagent_done_marker(is_error: bool, expected_text: &str, expected_role
     assert_eq!(app.chats[1].last_message_role(), Some(expected_role));
 }
 
+#[test]
+fn completed_subagent_chat_remains_discoverable_by_tool_id() {
+    let mut app = app_with_subagent();
+    finish_subagent_task(&mut app, false);
+    app.chat_index.clear();
+
+    let idx = app
+        .chats
+        .iter()
+        .position(|chat| chat.tool_use_id.as_deref() == Some("task1"));
+    assert_eq!(idx, Some(1));
+}
+
 fn open_tasks_picker(app: &mut App) {
     for c in "/tasks".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
