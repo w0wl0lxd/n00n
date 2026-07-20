@@ -39,6 +39,15 @@ impl HighlightKey {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum Surface {
+    #[default]
+    Plain,
+    User,
+    Assistant,
+    Tool,
+}
+
 #[derive(Default)]
 pub(super) struct Segment {
     lines: Vec<Line<'static>>,
@@ -61,12 +70,14 @@ pub(super) struct Segment {
     pub spinner_lines: Vec<(usize, usize)>,
     snapshot_base: Option<usize>,
     pub content_indent: &'static str,
+    surface: Surface,
 }
 
 impl Segment {
     pub fn with_tool(tool_id: String) -> Self {
         Self {
             tool_id: Some(tool_id),
+            surface: Surface::Tool,
             ..Self::default()
         }
     }
@@ -99,6 +110,42 @@ impl Segment {
         &self.lines
     }
 
+    pub fn set_surface(&mut self, surface: Surface) {
+        self.surface = surface;
+        self.invalidate_height();
+    }
+
+    pub fn surface(&self) -> Surface {
+        self.surface
+    }
+}
+
+impl Surface {
+    pub fn is_framed(self) -> bool {
+        matches!(self, Self::User | Self::Tool)
+    }
+}
+
+impl Segment {
+    pub fn copy_payload(&self) -> Option<(&str, &'static str)> {
+        let raw = self.raw_text.as_deref()?;
+        if let Some(code) = noon_markdown::single_code_block(raw) {
+            Some((code, "code"))
+        } else {
+            Some((raw, "markdown"))
+        }
+    }
+
+    pub fn content_inset(&self) -> u16 {
+        if self.surface.is_framed() { 2 } else { 0 }
+    }
+
+    fn content_width(&self, width: u16) -> u16 {
+        width
+            .saturating_sub(self.content_inset().saturating_mul(2))
+            .max(1)
+    }
+
     pub fn set_lines(&mut self, lines: Vec<Line<'static>>) {
         self.lines = lines;
         self.invalidate_height();
@@ -110,7 +157,8 @@ impl Segment {
         {
             return c.height;
         }
-        let h = wrapped_line_count(&self.lines, width);
+        let h = wrapped_line_count(&self.lines, self.content_width(width));
+        let h = h.saturating_add(self.content_inset());
         self.cached_height.set(Some(CachedHeight {
             at_width: width,
             height: h,
@@ -120,6 +168,8 @@ impl Segment {
 
     /// Maps a display row (after wrapping) back to the source line index.
     pub fn source_line_at(&self, rel_row: u16, width: u16) -> Option<usize> {
+        let rel_row = rel_row.saturating_sub(self.content_inset() / 2);
+        let width = self.content_width(width);
         let mut acc = 0u16;
         for (i, line) in self.lines.iter().enumerate() {
             acc = acc.saturating_add(wrapped_line_count(std::slice::from_ref(line), width));

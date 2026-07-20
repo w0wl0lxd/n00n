@@ -202,7 +202,7 @@ impl InputBox {
     }
 
     pub fn line_breaks(&self, content_width: u16) -> LineBreaks {
-        let ew = effective_width(content_width as usize);
+        let ew = effective_width(content_width.saturating_sub(2) as usize);
         LineBreaks::from_heights(
             self.buffer
                 .lines()
@@ -212,7 +212,7 @@ impl InputBox {
     }
 
     pub fn height(&self, width: u16) -> u16 {
-        let ew = effective_width(width as usize);
+        let ew = effective_width(width.saturating_sub(2) as usize);
         let mut visual_lines = total_visual_lines(&self.buffer, ew, true);
         if !self.pending_images.is_empty() {
             visual_lines += 1;
@@ -353,7 +353,7 @@ impl InputBox {
         top_right_hint: Option<Line<'_>>,
     ) {
         let content_height = area.height.saturating_sub(2);
-        let ew = effective_width(area.width as usize);
+        let ew = effective_width(area.width.saturating_sub(2) as usize);
 
         if self.follow_cursor {
             let visual_cursor_y = self.visual_cursor_y(ew);
@@ -442,8 +442,8 @@ impl InputBox {
 
         let text = Text::from(styled_lines);
         let mut block = Block::default()
-            .borders(Borders::TOP | Borders::BOTTOM)
-            .border_type(BorderType::Plain)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(border_style);
         if let Some(hint) = top_right_hint {
             block = block.title_top(hint.right_aligned());
@@ -807,7 +807,7 @@ mod tests {
     #[test]
     fn cursor_adds_extra_wrap_row_at_boundary() {
         let width: u16 = 12;
-        let ew = effective_width(width as usize);
+        let ew = effective_width(width.saturating_sub(2) as usize);
 
         let mut at_boundary = InputBox::new(InputHistory::default());
         type_text(&mut at_boundary, &"x".repeat(ew));
@@ -920,12 +920,23 @@ mod tests {
     }
 
     #[test]
+    fn composer_renders_complete_rounded_border() {
+        let mut input = InputBox::new(InputHistory::default());
+        let terminal = render_input(&mut input, 24, 3);
+
+        assert!(rendered_row(&terminal, 0).starts_with('╭'));
+        assert!(rendered_row(&terminal, 0).ends_with('╮'));
+        assert!(rendered_row(&terminal, 2).starts_with('╰'));
+        assert!(rendered_row(&terminal, 2).ends_with('╯'));
+    }
+
+    #[test]
     fn prefix_on_single_line() {
         let mut input = InputBox::new(InputHistory::default());
         type_text(&mut input, "hello");
         let terminal = render_input(&mut input, 20, 4);
         let row = rendered_row(&terminal, 1);
-        assert!(row.starts_with(CHEVRON), "row: {row:?}");
+        assert!(row.starts_with("│❯"), "row: {row:?}");
         assert!(row.contains("hello"));
     }
 
@@ -938,26 +949,22 @@ mod tests {
         let terminal = render_input(&mut input, 20, 5);
         let row0 = rendered_row(&terminal, 1);
         let row1 = rendered_row(&terminal, 2);
-        assert!(row0.starts_with(CHEVRON), "row0: {row0:?}");
-        assert!(row1.starts_with(NEWLINE_PAD), "row1: {row1:?}");
+        assert!(row0.starts_with("│❯"), "row0: {row0:?}");
+        assert!(row1.starts_with("│  "), "row1: {row1:?}");
     }
 
     #[test]
     fn wrapped_line_gets_no_padding() {
         let mut input = InputBox::new(InputHistory::default());
-        let ew = effective_width(14);
+        let ew = effective_width(12);
         type_text(&mut input, &"x".repeat(ew + 3));
         let terminal = render_input(&mut input, 14, 5);
         let row0 = rendered_row(&terminal, 1);
         let row1 = rendered_row(&terminal, 2);
-        assert!(row0.starts_with(CHEVRON), "row0: {row0:?}");
+        assert!(row0.starts_with("│❯"), "row0: {row0:?}");
         assert!(
-            !row1.starts_with(CHEVRON) && !row1.starts_with(NEWLINE_PAD),
-            "wrapped row should have no padding: {row1:?}"
-        );
-        assert!(
-            row1.starts_with("x"),
-            "wrapped row should start with content: {row1:?}"
+            row1.starts_with("│x"),
+            "wrapped row should start at the card inset: {row1:?}"
         );
     }
 
@@ -978,7 +985,7 @@ mod tests {
         let mut input = InputBox::new(InputHistory::default());
         let terminal = render_input(&mut input, 40, 4);
         let row = rendered_row(&terminal, 1);
-        assert!(row.starts_with(CHEVRON), "placeholder row: {row:?}");
+        assert!(row.starts_with("│❯"), "placeholder row: {row:?}");
     }
 
     #[test]
