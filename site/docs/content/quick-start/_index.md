@@ -7,27 +7,27 @@ group = "Getting Started"
 
 # Quick Start
 
-Install Noon, connect a provider, and run your first session. Takes a few minutes.
+Install N00n, connect a provider, and run your first session. Takes a few minutes.
 
 ## Install
 
 ### Living on the edge (main branch)
 
 ```sh
-cargo install --locked --git https://github.com/w0wl0lxd/noon.git noon
+cargo install --locked --git https://github.com/w0wl0lxd/n00n.git n00n
 ```
 
 ### With Nix
 
 ```sh
-nix run github:w0wl0lxd/noon
+nix run github:w0wl0lxd/n00n
 ```
 
-Or download a pre-built binary from [GitHub Releases](https://github.com/w0wl0lxd/noon/releases/latest).
+Or download a pre-built binary from [GitHub Releases](https://github.com/w0wl0lxd/n00n/releases/latest).
 
 ## API Keys
 
-Export a key for at least one provider (e.g. `ANTHROPIC_API_KEY`). Some providers support OAuth login instead via `noon auth login <provider>`.
+Export a key for at least one provider (e.g. `ANTHROPIC_API_KEY`). Some providers support OAuth login instead via `n00n auth login <provider>`.
 
 See [Providers](/docs/providers/) for the full list of supported providers, environment variables, and setup instructions.
 
@@ -36,14 +36,14 @@ See [Providers](/docs/providers/) for the full list of supported providers, envi
 From your project directory:
 
 ```bash
-noon
+n00n
 ```
 
 Type a prompt, press **Enter**, and the agent starts working.
 
 ## Keybindings
 
-These are the defaults. Plugins and `init.lua` can rebind most of them with `noon.keymap.set`; see [Keybindings](../keybindings/) for precedence and caveats.
+These are the defaults. Plugins and `init.lua` can rebind most of them with `n00n.keymap.set`; see [Keybindings](../keybindings/) for precedence and caveats.
 
 - **Newline in input**: \\+Enter, Ctrl+J, or Alt+Enter
 - **Scroll output**: Ctrl+U / Ctrl+D (half page)
@@ -58,8 +58,8 @@ These are the defaults. Plugins and `init.lua` can rebind most of them with `noo
 Set a default in your config:
 
 ```lua
--- ~/.config/noon/init.lua
-noon.setup({
+-- ~/.config/n00n/init.lua
+n00n.setup({
     provider = {
         default_model = "anthropic/claude-sonnet-4-20250514",
     },
@@ -70,10 +70,10 @@ Switch models mid-session with the `/model` command.
 
 ## Project Configuration
 
-Add a `.noon/` directory to your project root for per-project settings:
+Add a `.n00n/` directory to your project root for per-project settings:
 
 ```
-.noon/
+.n00n/
 ├── init.lua           # Overrides global config
 ├── permissions.toml   # Permission rules
 ├── mcp.toml           # MCP server config
@@ -82,8 +82,8 @@ AGENTS.md              # Loaded into agent context automatically
 AGENTS.local.md        # Personal per-project instructions (gitignored)
 ```
 
-Noon also recognizes `CLAUDE.md`, `COPILOT.md`, `.cursorrules`, `CONVENTIONS.md`, `GEMINI.md`, and others as instruction files (first match wins).
+N00n also recognizes `CLAUDE.md`, `COPILOT.md`, `.cursorrules`, `CONVENTIONS.md`, `GEMINI.md`, and others as instruction files (first match wins).
 
-`AGENTS.md` is loaded at the start of every session. Put coding conventions, repo quirks & gotchas, or off-limits directories in here. Noon will automatically load instruction files inside subdirs when doing a `read` in the subdir.
+`AGENTS.md` is loaded at the start of every session. Put coding conventions, repo quirks & gotchas, or off-limits directories in here. N00n will automatically load instruction files inside subdirs when doing a `read` in the subdir.
 
 See [Configuration](/docs/configuration/) for all options.

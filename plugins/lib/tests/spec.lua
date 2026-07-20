@@ -1,5 +1,5 @@
-local truncate = require("noon.truncate")
-local ToolView = require("noon.tool_view")
+local truncate = require("n00n.truncate")
+local ToolView = require("n00n.tool_view")
 
 local failures = {}
 
@@ -291,7 +291,7 @@ case("tool_view_max_line_bytes_default_off", function()
   eq(buf.lines[1], long)
 end)
 
-local TextInput = require("noon.text_input")
+local TextInput = require("n00n.text_input")
 
 case("text_input_insert_and_value", function()
   local input = TextInput.new()
@@ -1076,7 +1076,7 @@ case("text_input_trace_cases", function()
   end
 end)
 
-local ListPicker = require("noon.list_picker")
+local ListPicker = require("n00n.list_picker")
 
 case("set_highlight_number_width_scales", function()
   local buf = mock_buf()
@@ -1297,7 +1297,7 @@ case("render_lines_match_at_start_keeps_indent", function()
   eq(lines[1][2][2], "match_selected")
 end)
 
-local route_tier = require("noon.route_tier")
+local route_tier = require("n00n.route_tier")
 
 case("route_tier_weak_on_search", function()
   eq(route_tier.route_tier("search the codebase for auth middleware"), "weak")

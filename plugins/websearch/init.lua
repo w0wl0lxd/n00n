@@ -3,11 +3,11 @@ local REQUEST_TIMEOUT_SECS = 25
 local DEFAULT_NUM_RESULTS = 8
 
 local parse_sse_response = require("parse_sse")
-local truncate = require("noon.truncate")
-local ToolView = require("noon.tool_view")
-local output_limits = require("noon.output_limits")
+local truncate = require("n00n.truncate")
+local ToolView = require("n00n.tool_view")
+local output_limits = require("n00n.output_limits")
 
-local opts = noon.api.register_options(output_limits.extend({
+local opts = n00n.api.register_options(output_limits.extend({
   max_response_bytes = {
     default = 5 * 1024 * 1024,
     min = 1024,
@@ -20,7 +20,7 @@ local function web_view_opts(ctx)
   return { max_lines = (tol and tol.web) or 3, keep = "head" }
 end
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "websearch",
   kind = "fetch",
   description = "Search the web for real-time information using Exa AI.\n\n"
@@ -59,7 +59,7 @@ noon.api.register_tool({
 
     local num_results = input.num_results or DEFAULT_NUM_RESULTS
 
-    local payload, encode_err = noon.json.encode({
+    local payload, encode_err = n00n.json.encode({
       jsonrpc = "2.0",
       id = 1,
       method = "tools/call",
@@ -83,12 +83,12 @@ noon.api.register_tool({
       ["Content-Type"] = "application/json",
       ["Accept"] = "application/json, text/event-stream",
     }
-    local api_key = noon.uv.os_getenv("EXA_API_KEY")
+    local api_key = n00n.uv.os_getenv("EXA_API_KEY")
     if api_key then
       headers["x-api-key"] = api_key
     end
 
-    local resp, err = noon.net.request(EXA_MCP_ENDPOINT, {
+    local resp, err = n00n.net.request(EXA_MCP_ENDPOINT, {
       method = "POST",
       body = payload,
       headers = headers,

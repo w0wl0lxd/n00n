@@ -12,7 +12,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
-  BINARY_NAME: noon
+  BINARY_NAME: n00n
   GH_TOKEN: ${{ github.token }}
   GH_REPO: ${{ github.repository }}
 

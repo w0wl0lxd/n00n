@@ -37,7 +37,7 @@ zola build -o "../_build/docs"
 cd ..
 
 # 3. Markdown mirrors + llms.txt / llms-full.txt for LLM consumption
-BASE_URL="https://github.com/w0wl0lxd/noon"
+BASE_URL="https://github.com/w0wl0lxd/n00n"
 
 body() {
   awk '/^\+\+\+$/{c++; next} c>=2' "$1"
@@ -63,7 +63,7 @@ body docs/content/_index.md >"$OUT/docs/index.md"
 summary=$(first_paragraph docs/content/_index.md)
 
 {
-  echo "# Noon"
+  echo "# N00n"
   echo
   echo "> $summary"
   echo
@@ -71,7 +71,7 @@ summary=$(first_paragraph docs/content/_index.md)
   echo
   echo "## Docs"
   echo
-  echo "- [Noon Docs]($BASE_URL/docs/index.md): overview and map of the documentation"
+  echo "- [N00n Docs]($BASE_URL/docs/index.md): overview and map of the documentation"
   for f in $pages; do
     slug=$(basename "$(dirname "$f")")
     title=$(sed -n 's/^title = "\(.*\)"$/\1/p' "$f")

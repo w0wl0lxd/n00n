@@ -1,0 +1,17 @@
+[package]
+name = "n00n-markdown"
+description = "Theme-free markdown parser and width-aware renderer shared by n00n-ui and the n00n-lua bridge."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+n00n-highlight = { workspace = true }
+unicode-width = { workspace = true }
+
+[dev-dependencies]
+test-case = { workspace = true }
+fastrand = { workspace = true }

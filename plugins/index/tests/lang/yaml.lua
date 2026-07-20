@@ -6,7 +6,7 @@ local lacks = helpers.lacks
 
 case("yaml_top_level_keys", function()
   local src = [==[
-name: noon
+name: n00n
 version: "0.4.0"
 description: AI coding agent
 ]==]
@@ -79,7 +79,7 @@ end)
 
 case("yaml_quoted_keys_preserved", function()
   local src = [==[
-"full name": noon
+"full name": n00n
 'machine': x86
 ]==]
   local out = idx(src, "yaml")
@@ -312,7 +312,7 @@ end)
 
 case("yaml_ranged_meta", function()
   local src = [==[
-name: noon
+name: n00n
 metadata:
   author: alice
 ]==]

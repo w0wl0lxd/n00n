@@ -7,31 +7,31 @@ group = "Reference"
 
 # ACP (Agent Client Protocol)
 
-Run Noon inside your editor. `noon acp` starts an [ACP](https://agentclientprotocol.com/) server over stdio, so any ACP-capable editor (like [Zed](https://zed.dev/)) can drive Noon as its coding agent.
+Run N00n inside your editor. `n00n acp` starts an [ACP](https://agentclientprotocol.com/) server over stdio, so any ACP-capable editor (like [Zed](https://zed.dev/)) can drive N00n as its coding agent.
 
 ```bash
-noon acp
+n00n acp
 ```
 
 ## Zed setup
 
-Add Noon as a custom agent in Zed's `settings.json`:
+Add N00n as a custom agent in Zed's `settings.json`:
 
 ```json
 "agent_servers": {
-  "Noon": {
+  "N00n": {
     "default_config_options": {
       "model": "deepseek/deepseek-v4-flash"
     },
     "type": "custom",
-    "command": "noon",
+    "command": "n00n",
     "args": ["acp"],
     "env": {}
   }
 }
 ```
 
-The `model` value is a `provider/model-id` spec, same format as `noon --model`.
+The `model` value is a `provider/model-id` spec, same format as `n00n --model`.
 
 ## What works
 
@@ -42,4 +42,4 @@ The `model` value is a `provider/model-id` spec, same format as `noon --model`.
 - **Live tool calls.** Tool progress streams as it happens, including sub-agents and batched calls.
 - **Images and context.** Prompts can include images and editor-attached files.
 
-Authentication, providers, and permissions come from your normal Noon config. Set up [providers](/docs/providers/) first and ACP sessions just work.
+Authentication, providers, and permissions come from your normal N00n config. Set up [providers](/docs/providers/) first and ACP sessions just work.
