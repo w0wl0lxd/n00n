@@ -12,6 +12,9 @@ local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_PROMPT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
+local MAX_STRUCTURED_RETRIES = 2
+local NUDGE_MISSING =
+  "You did not call the structured_output tool. Call it now with your final result matching its input schema."
 local DONE_TOOL_NAME = "done"
 local DONE_DESCRIPTION = "Report your final answer. Call it exactly once when your task is complete."
 local DONE_ACK = "Answer recorded."
@@ -253,6 +256,11 @@ local function handler(input, ctx)
           message = message .. DONE_PROMPT_SUFFIX
         end
         local result, err = sess:prompt(message)
+        local retries = 0
+        while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
+          retries = retries + 1
+          result, err = sess:prompt(NUDGE_MISSING)
+        end
         if err then
           return { llm_output = "sub-agent error: " .. err, is_error = true }
         end
@@ -262,7 +270,11 @@ local function handler(input, ctx)
         end
         local output
         if validator then
-          output = noon.json.encode(captured)
+          local encoded, encode_err = noon.json.encode(captured)
+          if encode_err then
+            return { llm_output = "failed to encode structured output: " .. tostring(encode_err), is_error = true }
+          end
+          output = encoded
         elseif captured then
           output = captured
         else

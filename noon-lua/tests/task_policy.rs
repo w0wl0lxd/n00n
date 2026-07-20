@@ -342,14 +342,14 @@ fn prompt_error_maps_to_sub_agent_error() {
 }
 
 #[test]
-fn plain_path_returns_text_without_local_tools() {
+fn plain_path_returns_text_with_done_tool() {
     let (reg, _host) = load_task_host();
     let out = exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_PLAIN, None)).unwrap();
     assert_eq!(out, PLAIN_TEXT);
 
     let snap = probe(&reg);
-    assert_eq!(snap["has_local_tools"], json!(false));
-    assert!(snap.get("done_schema").is_none_or(Value::is_null));
+    assert_eq!(snap["has_local_tools"], json!(true));
+    assert_eq!(snap["done_schema"]["type"], json!("object"));
     assert_eq!(snap["prompt_count"], json!(1));
     let prompt = snap["prompts"][0].as_str().expect("prompt missing");
     assert!(prompt.starts_with(TASK_PROMPT), "got: {prompt}");

@@ -19,6 +19,9 @@ local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
+local MAX_STRUCTURED_RETRIES = 2
+local NUDGE_MISSING =
+  "You did not call the structured_output tool. Call it now with your final result matching its input schema."
 local MAX_SCHEMA_ERRORS = 3
 local SCHEMA_ROOT_ERROR = "output_schema must have type object"
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
@@ -31,6 +34,7 @@ local NO_META_ERROR = "workflow script must call meta({ name = ... }) before doi
 local SCRIPT_REQUIRED_ERROR = "script (string) is required"
 local NAME_LABEL_MAX = 40
 local DEFAULT_OUTPUT_LINES = 8
+local DEFAULT_MAX_LINE_BYTES = 500
 local MIN_BODY_WIDTH = 20
 local BODY_INDENT_COLS = 4
 local GENERAL_AUDIENCE = "general_sub"
@@ -115,7 +119,7 @@ local function parallel(fns, popts)
     error("parallel: fns must be an array of functions", 0)
   end
   popts = popts or {}
-  local concurrency = popts.concurrency or opts.max_concurrent_agents
+  local concurrency = math.max(1, math.min(popts.concurrency or opts.max_concurrent_agents, opts.max_concurrent_agents))
   local sem = noon.async.semaphore(concurrency)
   local wrapped = {}
   for i, f in ipairs(fns) do
@@ -163,6 +167,9 @@ local function make_agent(ctx, progress)
     if type(aopts.prompt) ~= "string" then
       error("agent: opts.prompt (string) is required", 0)
     end
+    if aopts.label and type(aopts.label) ~= "string" then
+      error("agent: opts.label must be a string", 0)
+    end
     local subagent_type = aopts.subagent_type or "general"
     if subagent_type ~= "general" and subagent_type ~= "research" then
       error("agent: unknown subagent_type: " .. tostring(subagent_type), 0)
@@ -172,7 +179,7 @@ local function make_agent(ctx, progress)
     -- Compile before spending tokens: a bad schema costs zero tokens.
     local validator
     if aopts.output_schema then
-      if aopts.output_schema.type ~= "object" then
+      if type(aopts.output_schema) ~= "table" or aopts.output_schema.type ~= "object" then
         error(SCHEMA_ROOT_ERROR, 0)
       end
       local compile_err
@@ -241,6 +248,11 @@ local function make_agent(ctx, progress)
       message = message .. STRUCTURED_OUTPUT_SUFFIX
     end
     local result, prompt_err = sess:prompt(message)
+    local retries = 0
+    while not prompt_err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
+      retries = retries + 1
+      result, prompt_err = sess:prompt(NUDGE_MISSING)
+    end
     sess:close()
     progress.agent_done(label)
 
@@ -251,7 +263,14 @@ local function make_agent(ctx, progress)
       local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
       error(msg, 0)
     end
-    return captured and noon.json.encode(captured) or result.text
+    if captured then
+      local encoded, encode_err = noon.json.encode(captured)
+      if encode_err then
+        error("failed to encode structured output: " .. tostring(encode_err), 0)
+      end
+      return encoded
+    end
+    return result.text
   end
 end
 
@@ -421,7 +440,8 @@ end
 
 local function header(input)
   if type(input.script) == "string" then
-    local name = input.script:match('name%s*=%s*"([^"]+)"')
+    local name = input.script:match('meta%s*%(.-name%s*=%s*"([^"]+)"')
+      or input.script:match("meta%s*%(.-name%s*=%s*'([^']+)'")
     if name then
       return name
     end
@@ -431,7 +451,11 @@ end
 
 local function restore(_input, output, is_error, ctx)
   local tol = ctx:tool_output_lines()
-  local restore_opts = { max_lines = (tol and tol.workflow) or DEFAULT_OUTPUT_LINES, keep = "head" }
+  local restore_opts = {
+    max_lines = (tol and tol.workflow) or DEFAULT_OUTPUT_LINES,
+    keep = "head",
+    max_line_bytes = DEFAULT_MAX_LINE_BYTES,
+  }
   if not is_error then
     local width = math.max(noon.ui.terminal_size().cols - BODY_INDENT_COLS, MIN_BODY_WIDTH)
     local ok, md_lines = pcall(noon.ui.markdown, output, width)
