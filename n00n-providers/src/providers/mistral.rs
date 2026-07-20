@@ -17,6 +17,8 @@ static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     max_tokens_field: "max_tokens",
     include_stream_usage: true,
     provider_name: "Mistral",
+    supports_prompt_cache_key: false,
+    supports_prompt_cache_breakpoint: false,
 };
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
@@ -197,7 +199,13 @@ impl Provider for Mistral {
             let auth = self.auth.lock().unwrap().clone();
             let mut buf = String::new();
             let system = super::with_prefix(&self.system_prefix, system, &mut buf);
-            let mut body = self.compat.build_body(model, messages, system, tools);
+            let mut body = self.compat.build_body_with_session(
+                model,
+                messages,
+                system,
+                tools,
+                session_id.map(|s| s.as_str()),
+            );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::HIGH_ONLY, model);
             // Convert assistant messages to Mistral's expected format with thinking content

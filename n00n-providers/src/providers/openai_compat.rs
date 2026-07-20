@@ -45,6 +45,8 @@ pub(crate) struct OpenAiCompatConfig {
     pub max_tokens_field: &'static str,
     pub include_stream_usage: bool,
     pub provider_name: &'static str,
+    pub supports_prompt_cache_key: bool,
+    pub supports_prompt_cache_breakpoint: bool,
 }
 
 pub(crate) struct OpenAiCompatProvider {
@@ -140,12 +142,13 @@ impl OpenAiCompatProvider {
         converted
     }
 
-    pub fn build_body(
+    pub fn build_body_with_session(
         &self,
         model: &crate::model::Model,
         messages: &[Message],
         system: &str,
         tools: &Value,
+        session_id: Option<&str>,
     ) -> Value {
         let wire_messages = convert_messages(messages, system);
         let wire_tools = self.wire_tools(tools);
@@ -163,6 +166,24 @@ impl OpenAiCompatProvider {
         }
         if wire_tools.as_array().is_some_and(|a| !a.is_empty()) {
             body["tools"] = wire_tools;
+        }
+        if let Some(sid) = session_id {
+            if self.config.supports_prompt_cache_key {
+                body["prompt_cache_key"] = json!(sid);
+            }
+            if self.config.supports_prompt_cache_breakpoint
+                && model.family == crate::model::ModelFamily::Gpt
+                && model.id.starts_with("gpt-5.6")
+                && let Some(msg) = body["messages"].as_array_mut().and_then(|arr| arr.first_mut())
+                && msg.get("role").and_then(Value::as_str) == Some("system")
+                && let Some(content) = msg.get("content").and_then(Value::as_str)
+            {
+                msg["content"] = json!([{
+                    "type": "text",
+                    "text": content,
+                    "prompt_cache_breakpoint": {"mode": "explicit"}
+                }]);
+            }
         }
         body
     }
@@ -464,10 +485,12 @@ struct ChunkChoice {
     finish_reason: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct PromptTokensDetails {
     #[serde(default)]
     cached_tokens: u32,
+    #[serde(default)]
+    cache_write_tokens: u32,
 }
 
 #[derive(Deserialize)]
@@ -535,13 +558,19 @@ pub async fn parse_sse(
         if let Some(u) = chunk.usage {
             let cached = u
                 .prompt_tokens_details
+                .as_ref()
                 .map(|d| d.cached_tokens)
                 .unwrap_or(0);
+            let cache_write = u
+                .prompt_tokens_details
+                .as_ref()
+                .map(|d| d.cache_write_tokens)
+                .unwrap_or(0);
             usage = TokenUsage {
-                input: u.prompt_tokens.saturating_sub(cached),
+                input: u.prompt_tokens.saturating_sub(cached).saturating_sub(cache_write),
                 output: u.completion_tokens,
                 cache_read: cached,
-                cache_creation: 0,
+                cache_creation: cache_write,
             };
         }
 
@@ -749,6 +778,28 @@ data: [DONE]\n";
                 }
             }
             assert_eq!(deltas, vec!["Hello", " world"]);
+        })
+    }
+
+    #[test]
+    fn parse_sse_with_cache_write_tokens() {
+        smol::block_on(async {
+            let sse = "\
+data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
+|\n\
+data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"prompt_tokens_details\":{\"cached_tokens\":30,\"cache_write_tokens\":20}}}\n\
+|\n\
+data: [DONE]\n";
+
+            let (tx, _rx) = flume::unbounded();
+            let resp = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT)
+                .await
+                .unwrap();
+
+            assert_eq!(resp.usage.input, 50);
+            assert_eq!(resp.usage.output, 10);
+            assert_eq!(resp.usage.cache_read, 30);
+            assert_eq!(resp.usage.cache_creation, 20);
         })
     }
 
@@ -1116,5 +1167,90 @@ data: [DONE]\n";
             assert_eq!(text_deltas, vec!["Hello"]);
             assert_eq!(thinking_deltas, vec!["Let me think", "..."]);
         })
+    }
+
+    #[test]
+    fn build_body_with_session_adds_prompt_cache_key() {
+        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            api_key_env: "TEST_KEY",
+            base_url: "https://test.com",
+            max_tokens_field: "max_tokens",
+            include_stream_usage: false,
+            provider_name: "Test",
+            supports_prompt_cache_key: true,
+            supports_prompt_cache_breakpoint: false,
+        };
+        let provider = OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default());
+        let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = json!([]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            "system",
+            &tools,
+            Some("session-123"),
+        );
+
+        assert_eq!(body["prompt_cache_key"], "session-123");
+    }
+
+    #[test]
+    fn build_body_without_session_no_prompt_cache_key() {
+        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            api_key_env: "TEST_KEY",
+            base_url: "https://test.com",
+            max_tokens_field: "max_tokens",
+            include_stream_usage: false,
+            provider_name: "Test",
+            supports_prompt_cache_key: true,
+            supports_prompt_cache_breakpoint: false,
+        };
+        let provider = OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default());
+        let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = json!([]);
+
+        let body = provider.build_body_with_session(&model, &messages, "system", &tools, None);
+
+        assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn build_body_with_session_adds_prompt_cache_breakpoint_for_gpt_5_6() {
+        static TEST_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
+            api_key_env: "TEST_KEY",
+            base_url: "https://test.com",
+            max_tokens_field: "max_tokens",
+            include_stream_usage: false,
+            provider_name: "Test",
+            supports_prompt_cache_key: false,
+            supports_prompt_cache_breakpoint: true,
+        };
+        let provider = OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default());
+        let model = crate::model::Model::from_spec("openai/gpt-5.6-luna").unwrap();
+        let messages = vec![Message::user("hello".to_string())];
+        let tools = json!([]);
+
+        let body = provider.build_body_with_session(
+            &model,
+            &messages,
+            "be helpful",
+            &tools,
+            Some("session-123"),
+        );
+
+        let system_msg = &body["messages"][0];
+        assert_eq!(system_msg["role"], "system");
+        assert!(system_msg["content"].is_array());
+        let content_array = system_msg["content"].as_array().unwrap();
+        assert_eq!(content_array.len(), 1);
+        assert_eq!(content_array[0]["type"], "text");
+        assert_eq!(content_array[0]["text"], "be helpful");
+        assert_eq!(
+            content_array[0]["prompt_cache_breakpoint"]["mode"],
+            "explicit"
+        );
     }
 }
