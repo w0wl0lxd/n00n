@@ -17,7 +17,11 @@ use crate::{AgentError, Message, ProviderEvent, StreamResponse};
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
 
 pub(crate) fn is_websocket_model(model_id: &str) -> bool {
-    model_id.starts_with("gpt-5.6") && !model_id.contains("-codex")
+    // The ChatGPT/Codex Coding Plan backend supports WebSocket for all of its
+    // codex and non-codex Responses API models. Also allow any gpt-5.6 preview
+    // variant that is not a codex model to reach the platform WebSocket.
+    super::platform::is_codex_model(model_id)
+        || (model_id.starts_with("gpt-5.6") && !model_id.contains("-codex"))
 }
 
 fn responses_websocket_url(base_url: Option<&str>) -> String {
@@ -52,6 +56,19 @@ pub(crate) async fn stream_message(
     auth: &ResolvedAuth,
     stream_timeout: Duration,
 ) -> Result<StreamResponse, AgentError> {
+    let mut auth = auth.clone();
+    if auth.base_url.as_deref() != Some(crate::providers::openai::auth::CODING_PLAN_BASE_URL)
+        && auth
+            .headers
+            .iter()
+            .all(|(k, _)| !k.eq_ignore_ascii_case("openai-beta"))
+    {
+        auth.headers.push((
+            "openai-beta".into(),
+            "responses_websockets=2026-02-06".into(),
+        ));
+    }
+
     let url = responses_websocket_url(auth.base_url.as_deref());
     let mut builder = Request::builder().uri(&url).method("GET");
     for (key, value) in &auth.headers {
@@ -199,11 +216,20 @@ mod tests {
 
     #[test_case("gpt-5.6", true)]
     #[test_case("gpt-5.6-luna", true)]
-    #[test_case("gpt-5.6-terra-preview", true)]
-    #[test_case("gpt-5.6-codex", false ; "codex_models_use_http")]
-    #[test_case("gpt-5.5", false)]
-    #[test_case("gpt-5.3-codex", false)]
-    fn is_websocket_model_recognizes_gpt_5_6(model_id: &str, expected: bool) {
+    #[test_case("gpt-5.6-terra", true)]
+    #[test_case("gpt-5.6-terra-preview", true ; "gpt_5_6_preview_reaches_platform_ws")]
+    #[test_case("gpt-5.6-codex", true ; "codex_models_use_websocket")]
+    #[test_case("gpt-5.5", true)]
+    #[test_case("gpt-5.5-preview", false ; "plan_preview_not_websocket")]
+    #[test_case("gpt-5.4", true)]
+    #[test_case("gpt-5.4-mini", true)]
+    #[test_case("gpt-5.4-nano", false ; "nano_not_coding_plan")]
+    #[test_case("gpt-5.2", true)]
+    #[test_case("gpt-5.3-codex", true)]
+    #[test_case("gpt-5.2-codex", true)]
+    #[test_case("gpt-5.1-codex", true)]
+    #[test_case("gpt-4.1", false)]
+    fn is_websocket_model_recognizes_supported_models(model_id: &str, expected: bool) {
         assert_eq!(is_websocket_model(model_id), expected);
     }
 
