@@ -27,7 +27,7 @@ local MIN_MD_WIDTH = 20
 local DEFAULT_OUTPUT_LINES = 5
 local DEFAULT_MAX_LINE_BYTES = 500
 
-local description = [[Launch an autonomous subagent to perform tasks independently. Best combined with batch.
+local description = [[Launch a single agent to perform tasks independently. Best combined with batch.
 
 Subagent types (set via `subagent_type`):
 - `research` (default): Read-only tools. For codebase exploration or gathering context.
