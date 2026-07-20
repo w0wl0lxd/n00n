@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, Message, Model, RequestOptions, Role, StopReason, StreamResponse, TokenUsage,
+    ContentBlock, Message, Model, RequestOptions, StopReason, StreamResponse, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -281,20 +281,12 @@ impl<'h> Agent<'h> {
             self.context_size +=
                 estimate_message_tokens(&self.history.as_slice()[history_len_before..]);
         } else {
-            let has_text = response.message.first_text_content().is_some();
+            let is_empty = response.message.content.is_empty();
 
-            if !has_text && !self.post_tool_empty_retried && self.history.has_recent_tool_results(5)
-            {
+            if is_empty && !self.post_tool_empty_retried && self.history.ends_with_tool_results() {
                 self.post_tool_empty_retried = true;
                 warn!("empty response after tool calls, nudging model to continue");
                 self.event_tx.send(AgentEvent::Nudge)?;
-                self.history.push(Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::Text {
-                        text: "(empty)".into(),
-                    }],
-                    ..Default::default()
-                });
                 self.history.push(Message::synthetic(NUDGE_PROMPT.into()));
                 return Ok(TurnOutcome::Continue);
             }
@@ -596,6 +588,21 @@ mod tests {
             message: Message {
                 role: Role::Assistant,
                 content: vec![],
+                ..Default::default()
+            },
+            usage: TokenUsage::default(),
+            stop_reason: Some(StopReason::EndTurn),
+        }
+    }
+
+    fn thinking_response() -> StreamResponse {
+        StreamResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Thinking {
+                    thinking: "done".into(),
+                    signature: None,
+                }],
                 ..Default::default()
             },
             usage: TokenUsage::default(),
@@ -958,6 +965,14 @@ mod tests {
         ],
         1, false
         ; "no_nudge_without_recent_tools"
+    )]
+    #[test_case(
+        vec![
+            tool_call_response("glob", "t1"),
+            thinking_response(),
+        ],
+        2, false
+        ; "no_nudge_on_reasoning_after_tools"
     )]
     fn nudge_behavior(responses: Vec<StreamResponse>, expected_turns: u32, expect_nudge: bool) {
         smol::block_on(async {
