@@ -66,7 +66,11 @@ impl Default for OpenAiSessionState {
 
 fn hash_messages(messages: &[Message]) -> u64 {
     let mut hasher = DefaultHasher::new();
-    hasher.write(serde_json::to_string(messages).unwrap_or_default().as_bytes());
+    hasher.write(
+        serde_json::to_string(messages)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
     hasher.finish()
 }
 
@@ -320,13 +324,9 @@ impl Provider for OpenAi {
                             previous_response_id.as_deref(),
                             prompt_cache_key.as_deref(),
                         );
-                        let (response_id, resp) = super::websocket::stream_message(
-                            body,
-                            event_tx,
-                            &auth,
-                            stream_timeout,
-                        )
-                        .await?;
+                        let (response_id, resp) =
+                            super::websocket::stream_message(body, event_tx, &auth, stream_timeout)
+                                .await?;
                         self.record_response(session_id, response_id, &tools_hash, messages);
                         Ok(resp)
                     })
