@@ -33,7 +33,8 @@ N00n is an AI coding agent (like Claude Code and opencode), that is built bottom
 ## Testing
 
 - cargo clippy --all --tests -- -D warnings
-- cargo nextest run --workspace
+- cargo nextest run --workspace (requires `cargo install cargo-nextest`; if absent use `cargo test --workspace`)
+- The `providers::dynamic` script-discovery tests rely on spawning external scripts and can be flaky under the default parallel test runner; run `n00n-providers` tests single-threaded (`RUST_TEST_THREADS=1 cargo test -p n00n-providers`) if they fail in parallel.
 
 Read `justfile` for more.
 

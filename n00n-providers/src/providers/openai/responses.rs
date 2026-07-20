@@ -77,14 +77,24 @@ pub(crate) fn convert_input(messages: &[Message]) -> Value {
                 }
             }
             Role::Assistant => {
-                let mut text_parts = Vec::new();
-                let mut tool_calls = Vec::new();
-
                 for block in &msg.content {
                     match block {
-                        ContentBlock::Text { text } => text_parts.push(text.as_str()),
-                        ContentBlock::ToolUse { id, name, input } => {
-                            tool_calls.push((id, name, input));
+                        ContentBlock::Text { text } => input.push(json!({
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": text}]
+                        })),
+                        ContentBlock::ToolUse {
+                            id,
+                            name,
+                            input: arguments,
+                        } => {
+                            input.push(json!({
+                                "type": "function_call",
+                                "call_id": id,
+                                "name": name,
+                                "arguments": arguments.to_string(),
+                            }));
                         }
                         ContentBlock::RedactedThinking { data } => {
                             if let Ok(item) = serde_json::from_str::<Value>(data)
@@ -97,24 +107,6 @@ pub(crate) fn convert_input(messages: &[Message]) -> Value {
                         | ContentBlock::Image { .. }
                         | ContentBlock::Thinking { .. } => {}
                     }
-                }
-
-                if !text_parts.is_empty() {
-                    let joined = text_parts.join("");
-                    input.push(json!({
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": joined}]
-                    }));
-                }
-
-                for (id, name, args) in tool_calls {
-                    input.push(json!({
-                        "type": "function_call",
-                        "call_id": id,
-                        "name": name,
-                        "arguments": args.to_string(),
-                    }));
                 }
             }
         }
@@ -195,6 +187,348 @@ struct ToolAccumulator {
     arguments: String,
 }
 
+pub(crate) struct ResponseAccumulator {
+    text: String,
+    reasoning_text: String,
+    reasoning_items: Vec<(u64, Value)>,
+    tool_accumulators: Vec<ToolAccumulator>,
+    usage: TokenUsage,
+    stop_reason: Option<StopReason>,
+    is_first_content: bool,
+}
+
+impl ResponseAccumulator {
+    pub fn new() -> Self {
+        Self {
+            text: String::new(),
+            reasoning_text: String::new(),
+            reasoning_items: Vec::new(),
+            tool_accumulators: Vec::new(),
+            usage: TokenUsage::default(),
+            stop_reason: None,
+            is_first_content: true,
+        }
+    }
+
+    pub async fn handle_event(
+        &mut self,
+        event_type: &str,
+        data: &Value,
+        event_tx: &Sender<ProviderEvent>,
+    ) -> Result<bool, AgentError> {
+        match event_type {
+            "response.output_text.delta" => {
+                if let Some(delta) = data["delta"].as_str()
+                    && !delta.is_empty()
+                {
+                    let delta = if self.is_first_content {
+                        self.is_first_content = false;
+                        delta.trim_start().to_string()
+                    } else {
+                        delta.to_string()
+                    };
+                    if !delta.is_empty() {
+                        self.text.push_str(&delta);
+                        event_tx
+                            .send_async(ProviderEvent::TextDelta { text: delta })
+                            .await?;
+                    }
+                }
+            }
+
+            "response.output_item.added" => {
+                let item = &data["item"];
+                let output_index = data["output_index"]
+                    .as_u64()
+                    .unwrap_or(self.tool_accumulators.len() as u64);
+                if item["type"].as_str() == Some("function_call") {
+                    let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
+                    let name = item["name"].as_str().unwrap_or_default().to_string();
+                    if !name.is_empty() {
+                        event_tx
+                            .send_async(ProviderEvent::ToolUseStart {
+                                id: call_id.clone(),
+                                name: name.clone(),
+                            })
+                            .await?;
+                    }
+                    self.tool_accumulators.push(ToolAccumulator {
+                        output_index,
+                        call_id,
+                        name,
+                        arguments: String::new(),
+                    });
+                }
+            }
+
+            "response.function_call_arguments.delta" => {
+                let delta: Cow<'_, str> = if let Some(s) = data["delta"].as_str() {
+                    Cow::Borrowed(s)
+                } else if let Some(obj) = data["delta"].as_object() {
+                    Cow::Owned(serde_json::to_string(obj).unwrap_or_default())
+                } else {
+                    Cow::Borrowed("")
+                };
+                if !delta.is_empty() {
+                    let acc = if let Some(idx) = data["output_index"].as_u64() {
+                        self.tool_accumulators
+                            .iter_mut()
+                            .find(|a| a.output_index == idx)
+                    } else {
+                        self.tool_accumulators.last_mut()
+                    };
+                    if let Some(acc) = acc {
+                        acc.arguments.push_str(&delta);
+                    }
+                }
+            }
+
+            "response.in_progress" => {
+                if let Some(pp) = data.get("prompt_progress") {
+                    let processed = pp["processed"].as_u64().unwrap_or(0) as u32;
+                    let total = pp["total"].as_u64().unwrap_or(0) as u32;
+                    let cache = pp["cache"].as_u64().unwrap_or(0) as u32;
+                    event_tx
+                        .send_async(ProviderEvent::PromptProgress {
+                            processed,
+                            total,
+                            cache,
+                        })
+                        .await?;
+                }
+            }
+
+            "response.output_item.done" => {
+                let item = &data["item"];
+                let output_index = data["output_index"].as_u64().unwrap_or_else(|| {
+                    (self.reasoning_items.len() + self.tool_accumulators.len()) as u64
+                });
+                if item["type"].as_str() == Some("reasoning") {
+                    if !self
+                        .reasoning_items
+                        .iter()
+                        .any(|(_, stored)| stored == item)
+                    {
+                        self.reasoning_items.push((output_index, item.clone()));
+                    }
+                } else if item["type"].as_str() == Some("message") && self.text.is_empty() {
+                    if let Some(content) = item["content"].as_array() {
+                        for part in content {
+                            if part["type"].as_str() == Some("output_text")
+                                && let Some(snapshot) = part["text"].as_str()
+                            {
+                                self.text.push_str(snapshot);
+                            }
+                        }
+                    }
+                } else if item["type"].as_str() == Some("function_call") {
+                    let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
+                    let name = item["name"].as_str().unwrap_or_default().to_string();
+                    let arguments = if let Some(s) = item["arguments"].as_str() {
+                        s.to_string()
+                    } else if let Some(obj) = item["arguments"].as_object() {
+                        serde_json::to_string(obj).unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    let acc = if let Some(idx) = data["output_index"].as_u64() {
+                        self.tool_accumulators
+                            .iter_mut()
+                            .find(|acc| acc.output_index == idx)
+                    } else {
+                        self.tool_accumulators.last_mut()
+                    };
+                    if let Some(acc) = acc {
+                        let should_emit_start = acc.name.is_empty() && !name.is_empty();
+                        if acc.call_id.is_empty() {
+                            acc.call_id = call_id.clone();
+                        }
+                        if acc.name.is_empty() {
+                            acc.name = name.clone();
+                        }
+                        if !arguments.is_empty() {
+                            acc.arguments = arguments;
+                        }
+                        if should_emit_start {
+                            event_tx
+                                .send_async(ProviderEvent::ToolUseStart {
+                                    id: acc.call_id.clone(),
+                                    name: acc.name.clone(),
+                                })
+                                .await?;
+                        }
+                    } else {
+                        if !name.is_empty() {
+                            event_tx
+                                .send_async(ProviderEvent::ToolUseStart {
+                                    id: call_id.clone(),
+                                    name: name.clone(),
+                                })
+                                .await?;
+                        }
+                        self.tool_accumulators.push(ToolAccumulator {
+                            output_index: self.tool_accumulators.len() as u64,
+                            call_id,
+                            name,
+                            arguments,
+                        });
+                    }
+                }
+            }
+
+            "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
+                if let Some(delta) = data["delta"].as_str()
+                    && !delta.is_empty()
+                {
+                    self.reasoning_text.push_str(delta);
+                    event_tx
+                        .send_async(ProviderEvent::ThinkingDelta {
+                            text: delta.to_string(),
+                        })
+                        .await?;
+                }
+            }
+
+            "response.reasoning_summary_part.added" if !self.reasoning_text.is_empty() => {
+                self.reasoning_text.push_str("\n\n");
+            }
+
+            "response.completed" => {
+                let resp = &data["response"];
+
+                if let Some(output) = resp["output"].as_array() {
+                    for (index, item) in output.iter().enumerate() {
+                        if item["type"].as_str() == Some("reasoning")
+                            && !self
+                                .reasoning_items
+                                .iter()
+                                .any(|(_, stored)| stored == item)
+                        {
+                            self.reasoning_items.push((index as u64, item.clone()));
+                        } else if item["type"].as_str() == Some("message")
+                            && self.text.is_empty()
+                            && let Some(content) = item["content"].as_array()
+                        {
+                            for part in content {
+                                if part["type"].as_str() == Some("output_text")
+                                    && let Some(snapshot) = part["text"].as_str()
+                                {
+                                    self.text.push_str(snapshot);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(u) = resp.get("usage") {
+                    self.usage = parse_usage(u);
+                }
+
+                let status = resp["status"].as_str().unwrap_or("completed");
+                self.stop_reason = Some(match status {
+                    "completed" => {
+                        if self.tool_accumulators.is_empty() {
+                            StopReason::EndTurn
+                        } else {
+                            StopReason::ToolUse
+                        }
+                    }
+                    "incomplete" => StopReason::MaxTokens,
+                    _ => StopReason::EndTurn,
+                });
+                return Ok(true);
+            }
+
+            "response.incomplete" => {
+                let resp = &data["response"];
+                if let Some(u) = resp.get("usage") {
+                    self.usage = parse_usage(u);
+                }
+                self.stop_reason = Some(StopReason::MaxTokens);
+                return Ok(true);
+            }
+
+            "response.failed" => {
+                let resp = &data["response"];
+                let error = &resp["error"];
+                let message = error["message"]
+                    .as_str()
+                    .unwrap_or("response generation failed")
+                    .to_string();
+                let code = error["code"].as_str().unwrap_or("server_error");
+                let status = match code {
+                    "rate_limit_exceeded" => 429,
+                    "server_error" => 500,
+                    _ => 500,
+                };
+                return Err(AgentError::Api { status, message });
+            }
+
+            _ => {}
+        }
+
+        Ok(false)
+    }
+
+    pub fn into_stream_response(mut self) -> StreamResponse {
+        let mut ordered_blocks =
+            Vec::with_capacity(self.reasoning_items.len() + self.tool_accumulators.len());
+        ordered_blocks.extend(self.reasoning_items.drain(..).map(|(index, item)| {
+            (
+                index,
+                ContentBlock::RedactedThinking {
+                    data: item.to_string(),
+                },
+            )
+        }));
+
+        for acc in self.tool_accumulators.drain(..) {
+            let input: Value = match serde_json::from_str(&acc.arguments) {
+                Ok(v) => {
+                    debug!(tool = %acc.name, json = %acc.arguments, "tool input JSON");
+                    v
+                }
+                Err(e) => {
+                    warn!(error = %e, tool = %acc.name, json = %acc.arguments, "malformed tool JSON, falling back to {{}}");
+                    Value::Object(Default::default())
+                }
+            };
+            ordered_blocks.push((
+                acc.output_index,
+                ContentBlock::ToolUse {
+                    id: acc.call_id,
+                    name: acc.name,
+                    input,
+                },
+            ));
+        }
+        ordered_blocks.sort_by_key(|(index, _)| *index);
+        let mut content_blocks: Vec<ContentBlock> =
+            ordered_blocks.into_iter().map(|(_, block)| block).collect();
+
+        if !self.reasoning_text.is_empty() {
+            content_blocks.push(ContentBlock::Thinking {
+                thinking: self.reasoning_text,
+                signature: None,
+            });
+        }
+
+        if !self.text.is_empty() {
+            content_blocks.push(ContentBlock::Text { text: self.text });
+        }
+
+        StreamResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: content_blocks,
+                ..Default::default()
+            },
+            usage: self.usage,
+            stop_reason: self.stop_reason,
+        }
+    }
+}
+
 pub(crate) async fn parse_sse(
     reader: impl AsyncBufRead + Unpin,
     event_tx: &Sender<ProviderEvent>,
@@ -202,14 +536,7 @@ pub(crate) async fn parse_sse(
 ) -> Result<StreamResponse, AgentError> {
     let mut lines = reader.lines();
 
-    let mut text = String::new();
-    let mut reasoning_text = String::new();
-    let mut reasoning_items: Vec<Value> = Vec::new();
-    let mut tool_accumulators: Vec<ToolAccumulator> = Vec::new();
-    let mut usage = TokenUsage::default();
-    let mut stop_reason: Option<StopReason> = None;
-    let mut terminal_event_received = false;
-    let mut is_first_content = true;
+    let mut acc = ResponseAccumulator::new();
     let mut deadline = Instant::now() + stream_timeout;
     let mut current_event = String::new();
 
@@ -256,349 +583,23 @@ pub(crate) async fn parse_sse(
             current_event.clone()
         };
 
-        match parsed_event.as_str() {
-            "response.output_text.delta" => {
-                let parsed: Value = match serde_json::from_str(data) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                if let Some(delta) = parsed["delta"].as_str()
-                    && !delta.is_empty()
-                {
-                    let delta = if is_first_content {
-                        is_first_content = false;
-                        delta.trim_start().to_string()
-                    } else {
-                        delta.to_string()
-                    };
-                    if !delta.is_empty() {
-                        text.push_str(&delta);
-                        event_tx
-                            .send_async(ProviderEvent::TextDelta { text: delta })
-                            .await?;
-                    }
-                }
-            }
-
-            "response.output_item.added" => {
-                let parsed: Value = match serde_json::from_str(data) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                let item = &parsed["item"];
-                let output_index = parsed["output_index"]
-                    .as_u64()
-                    .unwrap_or(tool_accumulators.len() as u64);
-                if item["type"].as_str() == Some("function_call") {
-                    let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
-                    let name = item["name"].as_str().unwrap_or_default().to_string();
-                    if !name.is_empty() {
-                        event_tx
-                            .send_async(ProviderEvent::ToolUseStart {
-                                id: call_id.clone(),
-                                name: name.clone(),
-                            })
-                            .await?;
-                    }
-                    tool_accumulators.push(ToolAccumulator {
-                        output_index,
-                        call_id,
-                        name,
-                        arguments: String::new(),
-                    });
-                }
-            }
-
-            "response.function_call_arguments.delta" => {
-                let parsed: Value = match serde_json::from_str(data) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                let delta: Cow<'_, str> = if let Some(s) = parsed["delta"].as_str() {
-                    Cow::Borrowed(s)
-                } else if let Some(obj) = parsed["delta"].as_object() {
-                    Cow::Owned(serde_json::to_string(obj).unwrap_or_default())
-                } else {
-                    Cow::Borrowed("")
-                };
-                if !delta.is_empty() {
-                    let acc = if let Some(idx) = parsed["output_index"].as_u64() {
-                        tool_accumulators.iter_mut().find(|a| a.output_index == idx)
-                    } else {
-                        tool_accumulators.last_mut()
-                    };
-                    if let Some(acc) = acc {
-                        acc.arguments.push_str(&delta);
-                    }
-                }
-            }
-
-            "response.in_progress" => {
-                let parsed: Value = match serde_json::from_str(data) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                if let Some(pp) = parsed.get("prompt_progress") {
-                    let processed = pp["processed"].as_u64().unwrap_or(0) as u32;
-                    let total = pp["total"].as_u64().unwrap_or(0) as u32;
-                    let cache = pp["cache"].as_u64().unwrap_or(0) as u32;
-                    event_tx
-                        .send_async(ProviderEvent::PromptProgress {
-                            processed,
-                            total,
-                            cache,
-                        })
-                        .await?;
-                }
-            }
-
-            "response.output_item.done" => {
-                let parsed: Value = match serde_json::from_str(data) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                let item = &parsed["item"];
-                if item["type"].as_str() == Some("message") && text.is_empty() {
-                    if let Some(content) = item["content"].as_array() {
-                        for part in content {
-                            if part["type"].as_str() == Some("output_text")
-                                && let Some(snapshot) = part["text"].as_str()
-                            {
-                                text.push_str(snapshot);
-                            }
-                        }
-                    }
-                } else if item["type"].as_str() == Some("reasoning") {
-                    reasoning_items.push(item.clone());
-                } else if item["type"].as_str() == Some("function_call") {
-                    let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
-                    let name = item["name"].as_str().unwrap_or_default().to_string();
-                    let arguments = if let Some(s) = item["arguments"].as_str() {
-                        s.to_string()
-                    } else if let Some(obj) = item["arguments"].as_object() {
-                        serde_json::to_string(obj).unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    let acc = if let Some(idx) = parsed["output_index"].as_u64() {
-                        tool_accumulators
-                            .iter_mut()
-                            .find(|acc| acc.output_index == idx)
-                    } else {
-                        tool_accumulators.last_mut()
-                    };
-                    if let Some(acc) = acc {
-                        let should_emit_start = acc.name.is_empty() && !name.is_empty();
-                        if acc.call_id.is_empty() {
-                            acc.call_id = call_id.clone();
-                        }
-                        if acc.name.is_empty() {
-                            acc.name = name.clone();
-                        }
-                        if !arguments.is_empty() {
-                            acc.arguments = arguments;
-                        }
-                        if should_emit_start {
-                            event_tx
-                                .send_async(ProviderEvent::ToolUseStart {
-                                    id: acc.call_id.clone(),
-                                    name: acc.name.clone(),
-                                })
-                                .await?;
-                        }
-                    } else {
-                        if !name.is_empty() {
-                            event_tx
-                                .send_async(ProviderEvent::ToolUseStart {
-                                    id: call_id.clone(),
-                                    name: name.clone(),
-                                })
-                                .await?;
-                        }
-                        tool_accumulators.push(ToolAccumulator {
-                            output_index: tool_accumulators.len() as u64,
-                            call_id,
-                            name,
-                            arguments,
-                        });
-                    }
-                }
-            }
-
-            "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
-                let parsed: Value = match serde_json::from_str(data) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                if let Some(delta) = parsed["delta"].as_str()
-                    && !delta.is_empty()
-                {
-                    reasoning_text.push_str(delta);
-                    event_tx
-                        .send_async(ProviderEvent::ThinkingDelta {
-                            text: delta.to_string(),
-                        })
-                        .await?;
-                }
-            }
-
-            "response.reasoning_summary_part.added" if !reasoning_text.is_empty() => {
-                reasoning_text.push_str("\n\n");
-            }
-
-            "response.completed" => {
-                let parsed: Value = match serde_json::from_str(data) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                let resp = &parsed["response"];
-
-                if let Some(u) = resp.get("usage") {
-                    usage = parse_usage(u);
-                }
-                terminal_event_received = true;
-
-                if let Some(output) = resp["output"].as_array() {
-                    for item in output {
-                        match item["type"].as_str() {
-                            Some("message") if text.is_empty() => {
-                                if let Some(content) = item["content"].as_array() {
-                                    for part in content {
-                                        if part["type"].as_str() == Some("output_text")
-                                            && let Some(snapshot) = part["text"].as_str()
-                                        {
-                                            text.push_str(snapshot);
-                                        }
-                                    }
-                                }
-                            }
-                            Some("reasoning") if !reasoning_items.contains(item) => {
-                                reasoning_items.push(item.clone());
-                            }
-                            Some("function_call") => {
-                                let call_id =
-                                    item["call_id"].as_str().unwrap_or_default().to_string();
-                                if !tool_accumulators.iter().any(|acc| acc.call_id == call_id) {
-                                    tool_accumulators.push(ToolAccumulator {
-                                        output_index: tool_accumulators.len() as u64,
-                                        call_id,
-                                        name: item["name"].as_str().unwrap_or_default().to_string(),
-                                        arguments: item["arguments"]
-                                            .as_str()
-                                            .unwrap_or_default()
-                                            .to_string(),
-                                    });
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                let status = resp["status"].as_str().unwrap_or("completed");
-                stop_reason = Some(match status {
-                    "completed" => {
-                        if tool_accumulators.is_empty() {
-                            StopReason::EndTurn
-                        } else {
-                            StopReason::ToolUse
-                        }
-                    }
-                    "incomplete" => StopReason::MaxTokens,
-                    _ => StopReason::EndTurn,
-                });
-            }
-
-            "response.incomplete" => {
-                terminal_event_received = true;
-                let parsed: Value = match serde_json::from_str(data) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                let resp = &parsed["response"];
-                if let Some(u) = resp.get("usage") {
-                    usage = parse_usage(u);
-                }
-                stop_reason = Some(StopReason::MaxTokens);
-            }
-
-            "response.failed" => {
-                terminal_event_received = true;
-                let parsed: Value = match serde_json::from_str(data) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                let resp = &parsed["response"];
-                let error = &resp["error"];
-                let message = error["message"]
-                    .as_str()
-                    .unwrap_or("response generation failed")
-                    .to_string();
-                let code = error["code"].as_str().unwrap_or("server_error");
-                let status = match code {
-                    "rate_limit_exceeded" => 429,
-                    "server_error" => 500,
-                    _ => 500,
-                };
-                return Err(AgentError::Api { status, message });
-            }
-
-            _ => {}
+        let parsed: Value = match serde_json::from_str(data) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if acc.handle_event(&parsed_event, &parsed, event_tx).await? {
+            break;
         }
     }
 
-    if !terminal_event_received {
+    if acc.stop_reason.is_none() {
         return Err(AgentError::Api {
             status: 422,
             message: "Responses API stream ended without a terminal event".into(),
         });
     }
 
-    let mut content_blocks: Vec<ContentBlock> = reasoning_items
-        .into_iter()
-        .map(|item| ContentBlock::RedactedThinking {
-            data: item.to_string(),
-        })
-        .collect();
-
-    if !reasoning_text.is_empty() {
-        content_blocks.push(ContentBlock::Thinking {
-            thinking: reasoning_text,
-            signature: None,
-        });
-    }
-
-    if !text.is_empty() {
-        content_blocks.push(ContentBlock::Text { text });
-    }
-
-    for acc in tool_accumulators {
-        let input: Value = match serde_json::from_str(&acc.arguments) {
-            Ok(v) => {
-                debug!(tool = %acc.name, json = %acc.arguments, "tool input JSON");
-                v
-            }
-            Err(e) => {
-                warn!(error = %e, tool = %acc.name, json = %acc.arguments, "malformed tool JSON, falling back to {{}}");
-                Value::Object(Default::default())
-            }
-        };
-        content_blocks.push(ContentBlock::ToolUse {
-            id: acc.call_id,
-            name: acc.name,
-            input,
-        });
-    }
-
-    Ok(StreamResponse {
-        message: Message {
-            role: Role::Assistant,
-            content: content_blocks,
-            ..Default::default()
-        },
-        usage,
-        stop_reason,
-    })
+    Ok(acc.into_stream_response())
 }
 
 fn parse_usage(u: &Value) -> TokenUsage {
@@ -1196,74 +1197,71 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
     #[test]
     fn build_body_requests_encrypted_reasoning() {
-        let body = build_body(
-            &crate::model::Model::from_spec("openai/gpt-5.6-sol").unwrap(),
-            &[],
-            "system",
-            &json!([]),
-        );
+        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let body = build_body(&model, &[], "system", &json!([]));
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
     }
 
     #[test]
-    fn convert_input_replays_encrypted_reasoning() {
-        let reasoning = json!({
-            "id": "rs_1",
-            "type": "reasoning",
-            "encrypted_content": "opaque",
-            "summary": []
-        });
+    fn convert_input_preserves_response_item_order() {
+        let reasoning_one =
+            json!({"id":"rs_1","type":"reasoning","encrypted_content":"one","summary":[]});
+        let reasoning_two =
+            json!({"id":"rs_2","type":"reasoning","encrypted_content":"two","summary":[]});
         let messages = vec![Message {
             role: Role::Assistant,
-            content: vec![ContentBlock::RedactedThinking {
-                data: reasoning.to_string(),
-            }],
+            content: vec![
+                ContentBlock::RedactedThinking {
+                    data: reasoning_one.to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "read".into(),
+                    input: json!({"path":"one"}),
+                },
+                ContentBlock::RedactedThinking {
+                    data: reasoning_two.to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "c2".into(),
+                    name: "read".into(),
+                    input: json!({"path":"two"}),
+                },
+            ],
             ..Default::default()
         }];
-
-        assert_eq!(convert_input(&messages), json!([reasoning]));
+        let input = convert_input(&messages);
+        assert_eq!(input[0], reasoning_one);
+        assert_eq!(input[1]["call_id"], "c1");
+        assert_eq!(input[2], reasoning_two);
+        assert_eq!(input[3]["call_id"], "c2");
     }
 
     #[test]
-    fn parse_sse_recovers_completed_message_snapshot() {
+    fn parse_sse_preserves_reasoning_and_tool_order() {
         smol::block_on(async {
-            let sse = "event: response.output_item.done\ndata: {\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Recovered\"}]}}\n\nevent: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n";
+            let sse = "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"one\",\"summary\":[]}}\n\nevent: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"one\\\"}\"}}\n\nevent: response.output_item.done\ndata: {\"output_index\":2,\"item\":{\"id\":\"rs_2\",\"type\":\"reasoning\",\"encrypted_content\":\"two\",\"summary\":[]}}\n\nevent: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n";
             let (resp, _) = run_sse(sse).await;
             let resp = resp.unwrap();
             assert!(
-                matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Recovered")
+                matches!(&resp.message.content[0], ContentBlock::RedactedThinking { data } if data.contains("one"))
+            );
+            assert!(
+                matches!(&resp.message.content[1], ContentBlock::ToolUse { id, .. } if id == "c1")
+            );
+            assert!(
+                matches!(&resp.message.content[2], ContentBlock::RedactedThinking { data } if data.contains("two"))
             );
         });
     }
 
     #[test]
-    fn parse_sse_rejects_stream_without_terminal_event() {
+    fn parse_sse_rejects_missing_terminal_event() {
         smol::block_on(async {
-            let sse = "event: response.output_text.delta\ndata: {\"delta\":\"partial\"}\n\n";
-            let (resp, _) = run_sse(sse).await;
+            let (resp, _) =
+                run_sse("event: response.output_text.delta\ndata: {\"delta\":\"partial\"}\n\n")
+                    .await;
             assert!(matches!(resp, Err(AgentError::Api { status: 422, .. })));
-        });
-    }
-
-    #[test]
-    fn parse_sse_allows_completed_empty_response() {
-        smol::block_on(async {
-            let sse =
-                "event: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n";
-            let (resp, _) = run_sse(sse).await;
-            assert!(resp.unwrap().message.content.is_empty());
-        });
-    }
-
-    #[test]
-    fn parse_sse_replays_reasoning_item() {
-        smol::block_on(async {
-            let sse = "event: response.output_item.done\ndata: {\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"opaque\",\"summary\":[]}}\n\nevent: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n";
-            let (resp, _) = run_sse(sse).await;
-            let resp = resp.unwrap();
-            assert!(
-                matches!(&resp.message.content[0], ContentBlock::RedactedThinking { data } if data.contains("opaque"))
-            );
         });
     }
 
