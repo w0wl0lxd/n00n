@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-Noon ships with 20 built-in tools. This is the full reference.
+Noon ships with 21 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -166,6 +166,15 @@ Launch an autonomous subagent to perform tasks independently. Best combined with
 | `prompt` | string | yes | Detailed task prompt for the agent |
 | `output_schema` | object | no | JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string. |
 | `subagent_type` | string | no | Subagent type: "research" (read-only, default) or "general" (can modify files) |
+
+### `workflow` *(lua plugin)*
+
+Run a workflow script that orchestrates many subagents at scale.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `script` | string | yes | Lua workflow script. First statement: meta({...}). Then orchestrate with agent/parallel/pipeline/phase/log. Must return the final answer as a string. |
+| `inputs` | object | no | Free-form object exposed to the script as the global `inputs`. |
 
 ### `todo_write` *(lua plugin)*
 
