@@ -135,7 +135,11 @@ impl AgentLoop {
                 ..
             } => {
                 if !displayed {
-                    let _ = event_tx.send(AgentEvent::QueueItemConsumed { text, image_count });
+                    let _ = event_tx.send(AgentEvent::QueueItemConsumed {
+                        text,
+                        image_count,
+                        images: input.images.clone(),
+                    });
                 }
                 self.do_agent_run(input, event_tx, run_id).await
             }

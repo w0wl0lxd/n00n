@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use n00n_agent::AgentInput;
-use n00n_agent::{BufferSnapshot, ToolInput, ToolOutput};
+use n00n_agent::{BufferSnapshot, ImageSource, ToolInput, ToolOutput};
 use n00n_providers::{Message, ModelTier};
 use ratatui::text::{Line, Span};
 
@@ -278,6 +278,7 @@ pub enum ToolStatus {
 pub struct DisplayMessage {
     pub role: DisplayRole,
     pub text: String,
+    pub images: Vec<ImageSource>,
     pub tool_input: Option<Arc<ToolInput>>,
     pub tool_raw_input: Option<Arc<serde_json::Value>>,
     pub tool_output: Option<Arc<ToolOutput>>,
@@ -298,6 +299,28 @@ impl DisplayMessage {
         Self {
             role,
             text,
+            images: Vec::new(),
+            tool_input: None,
+            tool_raw_input: None,
+            tool_output: None,
+            live_output: None,
+            annotation: None,
+            plan_path: None,
+            timestamp: None,
+            turn_usage: None,
+            truncated_lines: 0,
+            render_snapshot: None,
+            render_header: None,
+            snapshot_theme_gen: 0,
+            thinking_collapsed: false,
+        }
+    }
+
+    pub fn with_images(role: DisplayRole, text: String, images: Vec<ImageSource>) -> Self {
+        Self {
+            role,
+            text,
+            images,
             tool_input: None,
             tool_raw_input: None,
             tool_output: None,
@@ -318,6 +341,7 @@ impl DisplayMessage {
         Self {
             role: DisplayRole::Assistant,
             text,
+            images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
             tool_output: None,

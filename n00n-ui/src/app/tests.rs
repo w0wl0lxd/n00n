@@ -17,6 +17,7 @@ use n00n_lua::{HintReader, KeymapReader, LuaCommandReader};
 use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
 use n00n_storage::sessions::{StoredMode, StoredThinking};
 use ratatui::layout::Rect;
+use ratatui_image::picker::Picker;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -56,6 +57,7 @@ fn build_app(dir: StateDir, writer: Arc<StorageWriter>) -> App {
             PathBuf::from("/tmp"),
         )),
         Arc::from([]),
+        Arc::new(Picker::halfblocks()),
     )
 }
 
@@ -348,6 +350,7 @@ fn queue_item_consumed_pushes_deferred_user_message() {
         AgentEvent::QueueItemConsumed {
             text: "queued".into(),
             image_count: 0,
+            images: Vec::new(),
         },
         app.run_id,
     ));

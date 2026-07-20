@@ -1,12 +1,25 @@
 use crate::render_worker::RenderWorker;
+use crate::terminal_image::TerminalImage;
+use crate::theme;
 
 use super::super::code_view::SectionFlags;
 use super::super::tool_display::{HighlightRequest, ToolLines};
+use n00n_agent::{ImageMediaType, ImageSource};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
+use ratatui_image::picker::Picker;
 use std::cell::Cell;
 
 const INST_SUFFIX: &str = "__inst";
+
+fn media_type_label(media_type: ImageMediaType) -> &'static str {
+    match media_type {
+        ImageMediaType::Png => "png",
+        ImageMediaType::Jpeg => "jpeg",
+        ImageMediaType::Gif => "gif",
+        ImageMediaType::Webp => "webp",
+    }
+}
 
 pub fn is_instruction_segment(id: &str) -> bool {
     id.ends_with(INST_SUFFIX)
@@ -71,6 +84,7 @@ pub(super) struct Segment {
     snapshot_base: Option<usize>,
     pub content_indent: &'static str,
     surface: Surface,
+    image: Option<TerminalImage>,
 }
 
 impl Segment {
@@ -106,8 +120,48 @@ impl Segment {
         }
     }
 
+    pub fn with_image(
+        source: &ImageSource,
+        picker: &Picker,
+        width: u16,
+        surface: Surface,
+        msg_index: Option<usize>,
+    ) -> Self {
+        let mut seg = match TerminalImage::from_source(source, picker, width) {
+            Ok(term_img) => {
+                let search_text = format!(
+                    "[image: {} {}x{}]",
+                    media_type_label(source.media_type),
+                    term_img.size.width,
+                    term_img.size.height
+                );
+                Self {
+                    search_text: search_text.clone(),
+                    raw_text: Some(search_text),
+                    msg_index,
+                    image: Some(term_img),
+                    ..Self::default()
+                }
+            }
+            Err(err) => {
+                let search_text = format!("[image: {}]", err);
+                let lines = vec![Line::from(vec![Span::styled(
+                    search_text.clone(),
+                    theme::current().error,
+                )])];
+                Self::with_lines(lines, search_text.clone(), Some(search_text), 0, msg_index)
+            }
+        };
+        seg.set_surface(surface);
+        seg
+    }
+
     pub fn lines(&self) -> &[Line<'static>] {
         &self.lines
+    }
+
+    pub fn image(&self) -> Option<&TerminalImage> {
+        self.image.as_ref()
     }
 
     pub fn set_surface(&mut self, surface: Surface) {
@@ -156,6 +210,9 @@ impl Segment {
     }
 
     pub fn height(&self, width: u16) -> u16 {
+        if let Some(img) = &self.image {
+            return img.size.height;
+        }
         if let Some(c) = self.cached_height.get()
             && c.at_width == width
         {
@@ -171,6 +228,9 @@ impl Segment {
 
     /// Maps a display row (after wrapping) back to the source line index.
     pub fn source_line_at(&self, rel_row: u16, width: u16) -> Option<usize> {
+        if self.image.is_some() {
+            return None;
+        }
         let rel_row = rel_row.saturating_sub(self.content_inset() / 2);
         let width = self.content_width(width);
         let mut acc = 0u16;

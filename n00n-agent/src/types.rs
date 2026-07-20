@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use flume::Sender;
 use n00n_config::ToolKey;
-use n00n_providers::{AgentError, ContentBlock, Message, Role, StopReason, TokenUsage};
+use n00n_providers::{
+    AgentError, ContentBlock, ImageSource, Message, Role, StopReason, TokenUsage,
+};
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
@@ -552,6 +554,7 @@ pub enum AgentEvent {
     QueueItemConsumed {
         text: String,
         image_count: usize,
+        images: Vec<ImageSource>,
     },
     Done {
         usage: TokenUsage,
