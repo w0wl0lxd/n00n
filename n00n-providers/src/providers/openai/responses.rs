@@ -25,12 +25,13 @@ pub(crate) fn build_body(
     let input = convert_input(messages);
     let wire_tools = convert_tools(tools);
 
+    let store = previous_response_id.is_some();
     let mut body = json!({
         "model": model.id,
         "instructions": system,
         "input": input,
         "stream": true,
-        "store": false,
+        "store": store,
     });
 
     if let Some(prev_id) = previous_response_id {
