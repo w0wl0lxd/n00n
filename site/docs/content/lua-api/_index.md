@@ -62,7 +62,7 @@ a string belongs.
 | [`noon.async.Semaphore`](#noon-async-Semaphore) | A counting semaphore for limiting how many tasks run at once. |
 | [`noon.async.Permit`](#noon-async-Permit) | One slot in a semaphore, obtained from `Semaphore:acquire()`. |
 | [`noon.base64`](#noon-base64) | Base64 encoding and decoding, modelled after `vim.base64`. |
-| [`noon.env`](#noon-env) | Paths to noon's own directories (config, state, logs, legacy). |
+| [`noon.env`](#noon-env) | Paths to noon's own directories (config, state, logs). |
 | [`noon.fn`](#noon-fn) | Process and environment helpers, modeled after Neovim's `vim.fn` job |
 | [`noon.fs`](#noon-fs) | File-system utilities, modelled after `vim.fs` and `vim.uv`. |
 | [`noon.image`](#noon-image) | Small building blocks for working with images: probe metadata, decode |
@@ -1171,7 +1171,7 @@ noon.base64.decode("aGVsbG8=") -- "hello"
 
 ## noon.env {#noon-env}
 
-Paths to noon's own directories (config, state, logs, legacy).
+Paths to noon's own directories (config, state, logs).
 
 Use these to locate config files or persistent state without hard-coding paths.
 
@@ -1235,19 +1235,6 @@ Typically something like `~/.local/logs/noon`.
 ```lua
 local dir = noon.env.logs_dir()
 ```
-
----
-
-### `noon.env.legacy_dir()` {#noon-env-legacy_dir}
-
-```lua
-noon.env.legacy_dir()
-```
-
-Return the legacy config path (`~/.noon`), if it exists on disk.
-Useful for migration logic. Returns nil when there is no legacy directory.
-
-**Returns:** (`string?`) Legacy directory path, or nil if not present.
 
 
 ## noon.fn {#noon-fn}

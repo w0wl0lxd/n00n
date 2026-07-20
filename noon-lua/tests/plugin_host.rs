@@ -1808,34 +1808,6 @@ fn setup_rejects_bad_input(lua_src: &str, expected_substr: &str) {
 }
 
 #[test]
-fn setup_migrates_moved_plugin_option() {
-    let reg = fresh_registry();
-    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    let raw = host
-        .send_run_init_lua(
-            "noon.setup({ agent = { bash_timeout_secs = 120 } })".to_owned(),
-            "test_init.lua".to_owned(),
-            None,
-        )
-        .unwrap()
-        .expect("expected Some(RawConfig)");
-    let config = raw
-        .into_config(false)
-        .expect("config migration should succeed");
-    assert_eq!(
-        config
-            .plugins
-            .opts
-            .get("bash")
-            .expect("bash plugin config should exist")
-            .get("timeout_secs")
-            .expect("timeout_secs should be migrated")
-            .as_u64(),
-        Some(120)
-    );
-}
-
-#[test]
 fn setup_double_call_error() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();

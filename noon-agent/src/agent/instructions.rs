@@ -308,14 +308,13 @@ mod tests {
     }
 
     #[test]
-    fn load_instructions_includes_global_from_home() {
+    fn load_instructions_includes_global_from_xdg_config() {
         let cwd = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
-        fs::create_dir_all(home.path().join(".noon")).unwrap();
-        fs::write(home.path().join(".noon").join("AGENTS.md"), "global rules").unwrap();
+        let xdg = tempfile::tempdir().unwrap();
+        fs::write(xdg.path().join("AGENTS.md"), "global rules").unwrap();
 
         let text =
-            load_instructions_with_home(cwd.path().to_str().unwrap(), Some(home.path()), None).text;
+            load_instructions_with_home(cwd.path().to_str().unwrap(), None, Some(xdg.path())).text;
         assert!(text.contains("global rules"));
     }
 

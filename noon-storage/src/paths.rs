@@ -4,8 +4,6 @@ use std::sync::OnceLock;
 
 use etcetera::base_strategy::BaseStrategy;
 
-const FALLBACK_DIR: &str = ".noon";
-const NOON_STATE_DIR: &str = ".noon";
 const APP_NAME: &str = "noon";
 
 static STRATEGY: OnceLock<Option<Paths>> = OnceLock::new();
@@ -170,31 +168,15 @@ fn resolve() -> Option<&'static Paths> {
     STRATEGY
         .get_or_init(|| {
             let s = etcetera::choose_base_strategy().ok()?;
-            let home = etcetera::home_dir().ok()?;
-            let fallback_dir = home.join(FALLBACK_DIR);
-            let fallback_dir = fallback_dir.is_dir().then_some(fallback_dir);
-            let noon_state = home.join(NOON_STATE_DIR);
-            let noon_state = noon_state.is_dir().then_some(noon_state);
+            let data = s.data_dir().join(APP_NAME);
             let xdg_config = s.config_dir().join(APP_NAME);
-            let (data, cache, config) = match &fallback_dir {
-                Some(dir) => (dir.clone(), dir.clone(), dir.clone()),
-                None => (
-                    s.data_dir().join(APP_NAME),
-                    s.cache_dir().join(APP_NAME),
-                    xdg_config.clone(),
-                ),
-            };
-            let (state, logs) = if let Some(dir) = fallback_dir.as_ref().or(noon_state.as_ref()) {
-                (dir.clone(), dir.clone())
-            } else {
-                state_logs(&s, &data)
-            };
+            let (state, logs) = state_logs(&s, &data);
             Some(Paths {
-                config,
+                config: xdg_config.clone(),
                 data,
                 state,
                 logs,
-                cache,
+                cache: s.cache_dir().join(APP_NAME),
                 xdg_config,
             })
         })
@@ -243,47 +225,18 @@ pub fn cache_dir() -> Result<PathBuf, std::io::Error> {
     ensure(&p.cache)
 }
 
-pub struct XdgPaths {
-    pub config: PathBuf,
-    pub state: PathBuf,
-    pub logs: PathBuf,
-}
-
-pub fn xdg_paths() -> Result<XdgPaths, std::io::Error> {
-    let s = etcetera::choose_base_strategy().map_err(|_| err())?;
-    let data = s.data_dir().join(APP_NAME);
-    let (state, logs) = state_logs(&s, &data);
-    Ok(XdgPaths {
-        config: s.config_dir().join(APP_NAME),
-        state,
-        logs,
-    })
-}
-
 pub fn home() -> Option<PathBuf> {
     etcetera::home_dir().ok()
 }
 
-pub fn legacy_home_dir() -> Option<PathBuf> {
-    etcetera::home_dir()
-        .ok()
-        .map(|h| h.join(FALLBACK_DIR))
-        .filter(|d| d.is_dir())
-}
-
-/// Candidate config directories for `subdir` from `home` and `xdg_config`.
-/// Pure: no env reads, no process-home fallback. Production callers pass
-/// `config_dir().ok()` as `xdg_config` (which honors `XDG_CONFIG_HOME`, the
-/// `~/.noon` fallback, and the Windows `AppData\Roaming` strategy via
-/// `resolve()`); tests pass tempdirs.
 pub fn user_config_dirs(
-    home: Option<&Path>,
+    _home: Option<&Path>,
     xdg_config: Option<&Path>,
     subdir: &str,
 ) -> Vec<PathBuf> {
-    let legacy = home.map(|h| h.join(FALLBACK_DIR).join(subdir));
-    let xdg = xdg_config.map(|d| d.join(subdir));
-    [legacy, xdg].into_iter().flatten().collect()
+    xdg_config
+        .map(|dir| vec![dir.join(subdir)])
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -352,34 +305,11 @@ mod tests {
     }
 
     #[test]
-    fn user_config_dirs_returns_legacy_and_xdg() {
-        let home = tempfile::tempdir().unwrap();
-        let xdg = home.path().join(".config").join(APP_NAME);
-
-        let dirs = user_config_dirs(Some(home.path()), Some(&xdg), "AGENTS.md");
-        assert_eq!(
-            dirs,
-            vec![
-                home.path().join(FALLBACK_DIR).join("AGENTS.md"),
-                xdg.join("AGENTS.md"),
-            ]
-        );
-    }
-
-    #[test]
-    fn user_config_dirs_omits_legacy_when_home_none() {
+    fn user_config_dirs_uses_xdg() {
         let xdg = tempfile::tempdir().unwrap();
 
         let dirs = user_config_dirs(None, Some(xdg.path()), "AGENTS.md");
         assert_eq!(dirs, vec![xdg.path().join("AGENTS.md")]);
-    }
-
-    #[test]
-    fn user_config_dirs_omits_xdg_when_xdg_none() {
-        let home = tempfile::tempdir().unwrap();
-
-        let dirs = user_config_dirs(Some(home.path()), None, "AGENTS.md");
-        assert_eq!(dirs, vec![home.path().join(FALLBACK_DIR).join("AGENTS.md")]);
     }
 
     #[test]

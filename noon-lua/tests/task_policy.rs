@@ -353,6 +353,7 @@ fn plain_path_returns_text_without_local_tools() {
     assert_eq!(snap["prompt_count"], json!(1));
     let prompt = snap["prompts"][0].as_str().expect("prompt missing");
     assert!(prompt.starts_with(TASK_PROMPT), "got: {prompt}");
+    assert_eq!(prompt, TASK_PROMPT);
     assert_eq!(snap["closed"], json!(1));
 }
 
