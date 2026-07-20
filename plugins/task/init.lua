@@ -148,18 +148,13 @@ end
 
 local function handler(input, ctx)
   if input.background then
+    local forwarded = {}
+    for key, value in pairs(input) do
+      forwarded[key] = value
+    end
+    forwarded.background = false
     local prompt = "Use the task tool now with background=false. Do not only describe this request.\n\n"
-      .. n00n.json.encode({
-        description = input.description,
-        prompt = input.prompt,
-        subagent_type = input.subagent_type,
-        model = input.model,
-        model_tier = input.model_tier,
-        thinking = input.thinking,
-        auto_tier = input.auto_tier,
-        output_schema = input.output_schema,
-        background = false,
-      })
+      .. n00n.json.encode(forwarded)
     local id, err = n00n.session.new({ prompt = prompt, focus = false })
     if not id then
       return { llm_output = err, is_error = true }
