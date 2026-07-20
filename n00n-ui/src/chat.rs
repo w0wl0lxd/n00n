@@ -77,6 +77,10 @@ impl Chat {
         self.pending_turn_usage = Some(usage);
     }
 
+    pub fn on_mouse(&mut self, column: u16, row: u16) {
+        self.messages_panel.on_mouse(column, row);
+    }
+
     pub(crate) fn set_restore_channel(
         &mut self,
         event_handle: Option<n00n_lua::EventHandle>,

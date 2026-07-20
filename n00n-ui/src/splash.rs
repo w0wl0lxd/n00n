@@ -142,6 +142,26 @@ impl Splash {
     }
 
     pub fn render(&self, area: Rect, buf: &mut Buffer, accent: Color) {
+        self.render_field_only(area, buf, accent);
+        self.render_text(area, buf, accent, false);
+    }
+
+    pub fn render_field_only(&self, area: Rect, buf: &mut Buffer, accent: Color) {
+        if area.width < 20 || area.height < 5 {
+            return;
+        }
+        let t = self.start.elapsed().as_secs_f32();
+        let fade = if t >= FADE_DURATION {
+            1.0
+        } else {
+            ease_out_cubic(t / FADE_DURATION)
+        };
+        if self.animate {
+            self.render_field(area, buf, t + self.field_offset, fade, accent);
+        }
+    }
+
+    pub fn render_text(&self, area: Rect, buf: &mut Buffer, accent: Color, compact: bool) {
         if area.width < 20 || area.height < 5 {
             return;
         }
@@ -154,20 +174,18 @@ impl Splash {
         };
 
         let new_version = update::latest_version();
-        let block_height = 8;
-        let top_y = area.y + area.height.saturating_sub(block_height) / 2;
+        let block_height = if compact { 5 } else { 8 };
+        let top_y = area.y + area.height.saturating_sub(block_height) / if compact { 1 } else { 2 };
         let tag_y = top_y + 1;
-        let help_y = tag_y + 2;
-        let tip_y = help_y + 2;
+        let help_y = top_y + if compact { 2 } else { 3 };
+        let tip_y = top_y + if compact { 3 } else { 5 };
+        let version_y = if compact { top_y } else { area.y };
 
-        if self.animate {
-            self.render_field(area, buf, t + self.field_offset, fade, accent);
-        }
         self.render_logo(area, buf, t, fade, top_y, accent);
         render_centered_faded(area, buf, fade, 0.75, tag_y, TAGLINE);
         self.render_help(area, buf, fade, help_y, accent);
         self.render_tip(area, buf, fade, tip_y, accent);
-        render_version(area, buf, fade, area.y, new_version);
+        render_version(area, buf, fade, version_y, new_version);
     }
 
     fn render_field(&self, area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color) {

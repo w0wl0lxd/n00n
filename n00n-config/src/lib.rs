@@ -305,6 +305,7 @@ pub struct PluginFileConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct UiFileConfig {
     pub splash_animation: Option<bool>,
+    pub mascot: Option<bool>,
     pub scrollbar: Option<bool>,
     pub flash_duration_ms: Option<u64>,
     pub typewriter_ms_per_char: Option<u64>,
@@ -320,6 +321,7 @@ impl UiFileConfig {
             self,
             overlay,
             splash_animation,
+            mascot,
             scrollbar,
             flash_duration_ms,
             typewriter_ms_per_char,
@@ -822,6 +824,12 @@ pub struct UiConfig {
     )]
     pub show_thinking: bool,
 
+    #[config(
+        default = true,
+        desc = "Show the n00n mascot on the idle splash screen"
+    )]
+    pub mascot: bool,
+
     #[config(skip, default = "ToolOutputLines::default()")]
     pub tool_output_lines: ToolOutputLines,
 }
@@ -835,6 +843,7 @@ impl UiConfig {
     fn from_file(f: UiFileConfig) -> Self {
         Self {
             splash_animation: f.splash_animation.unwrap_or(true),
+            mascot: f.mascot.unwrap_or(true),
             scrollbar: f.scrollbar.unwrap_or(true),
             flash_duration_ms: f.flash_duration_ms.unwrap_or(DEFAULT_FLASH_DURATION_MS),
             typewriter_ms_per_char: f

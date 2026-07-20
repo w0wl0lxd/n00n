@@ -879,6 +879,8 @@ impl MessagesPanel {
         self.toggle_tool_expansion(&tool_id, truncation)
     }
 
+    pub fn on_mouse(&mut self, _column: u16, _row: u16) {}
+
     fn toggle_tool_expansion(&mut self, tool_id: &str, truncation: SectionFlags) -> bool {
         let tool_id = tool_id.to_owned();
         let (old_start, old_height) = self.segment_position(&tool_id);
