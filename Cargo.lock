@@ -2923,6 +2923,7 @@ dependencies = [
  "regex",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "smol",
  "tempfile",
  "test-case",

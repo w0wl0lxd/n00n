@@ -71,6 +71,7 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
     "view_image",
     "webfetch",
     "websearch",
+    "workflow",
     "write",
 ];
 
@@ -338,6 +339,7 @@ pub struct ToolOutputLinesFile {
     pub bash: Option<usize>,
     pub code_execution: Option<usize>,
     pub task: Option<usize>,
+    pub workflow: Option<usize>,
     pub index: Option<usize>,
     pub grep: Option<usize>,
     pub read: Option<usize>,
@@ -354,6 +356,7 @@ impl ToolOutputLinesFile {
             bash,
             code_execution,
             task,
+            workflow,
             index,
             grep,
             read,
@@ -845,6 +848,7 @@ pub struct ToolOutputLines {
     pub bash: usize,
     pub code_execution: usize,
     pub task: usize,
+    pub workflow: usize,
     pub index: usize,
     pub grep: usize,
     pub read: usize,
@@ -858,6 +862,7 @@ impl ToolOutputLines {
         bash: 5,
         code_execution: 5,
         task: 5,
+        workflow: 8,
         index: 3,
         grep: 3,
         read: 3,
@@ -870,6 +875,7 @@ impl ToolOutputLines {
         ("bash", Self::DEFAULT.bash),
         ("code_execution", Self::DEFAULT.code_execution),
         ("task", Self::DEFAULT.task),
+        ("workflow", Self::DEFAULT.workflow),
         ("index", Self::DEFAULT.index),
         ("grep", Self::DEFAULT.grep),
         ("read", Self::DEFAULT.read),
@@ -885,6 +891,7 @@ impl ToolOutputLines {
             bash: f.bash.unwrap_or(d.bash),
             code_execution: f.code_execution.unwrap_or(d.code_execution),
             task: f.task.unwrap_or(d.task),
+            workflow: f.workflow.unwrap_or(d.workflow),
             index: f.index.unwrap_or(d.index),
             grep: f.grep.unwrap_or(d.grep),
             read: f.read.unwrap_or(d.read),
@@ -894,11 +901,12 @@ impl ToolOutputLines {
         }
     }
 
-    fn fields(&self) -> [(&'static str, usize); 9] {
+    fn fields(&self) -> [(&'static str, usize); 10] {
         [
             ("bash", self.bash),
             ("code_execution", self.code_execution),
             ("task", self.task),
+            ("workflow", self.workflow),
             ("index", self.index),
             ("grep", self.grep),
             ("read", self.read),
@@ -925,6 +933,7 @@ impl ToolOutputLines {
             "bash" => self.bash,
             "code_execution" => self.code_execution,
             "task" => self.task,
+            "workflow" => self.workflow,
             "index" => self.index,
             "grep" | "glob" => self.grep,
             "read" => self.read,

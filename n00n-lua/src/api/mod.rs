@@ -21,6 +21,7 @@ pub(crate) mod treesitter;
 pub(crate) mod ui;
 pub(crate) mod util;
 pub(crate) mod uv;
+pub(crate) mod workflow;
 pub(crate) mod yaml;
 
 use std::sync::Arc;
@@ -73,6 +74,7 @@ pub(crate) fn create_n00n_global(
         interpreter::create_interpreter_table(lua, permissions)?,
     )?;
     n00n.set("agent", agent::create_agent_table(lua)?)?;
+    n00n.set("workflow", workflow::create_workflow_table(lua)?)?;
     n00n.set(
         "keymap",
         keymap::create_keymap_table(lua, Arc::clone(&plugin))?,
