@@ -1,0 +1,19 @@
+[mcp.ast-grep]
+command = ["/home/w0w/.local/bin/ast-grep-mcp-host"]
+timeout = 300000
+
+[mcp.codegraph]
+command = ["/home/w0w/.local/bin/codegraph-mcp-host"]
+timeout = 300000
+
+[mcp.context7]
+command = ["/home/w0w/.local/bin/context7-mcp-host"]
+timeout = 300000
+
+[mcp.exa]
+command = ["/home/w0w/.local/bin/exa-mcp-host"]
+timeout = 300000
+
+[mcp.thoughtbox]
+command = ["/run/current-system/sw/bin/thoughtbox-mcp-wrapped"]
+timeout = 300000
