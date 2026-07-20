@@ -677,9 +677,9 @@ fn search_text_includes_role_prefix() {
     panel.push(DisplayMessage::new(DisplayRole::Thinking, "hmm".into()));
     rebuild(&mut panel);
     let texts = panel.segment_search_texts();
-    assert_eq!(texts[0], "you> hello");
-    assert_eq!(texts[2], format!("noon> {md}"));
-    assert_eq!(texts[4], "thinking> hmm");
+    assert_eq!(texts[0], "  you      │ hello");
+    assert_eq!(texts[2], format!("  noon     │ {md}"));
+    assert_eq!(texts[4], "  thinking │ hmm");
 }
 
 #[test_case(&["short", &"x".repeat(200)], 80, 4 ; "long_line_wraps")]
@@ -763,7 +763,7 @@ fn stream_reset_clears_streaming_and_fails_tools() {
     assert_eq!(msg_status(&panel, "t1"), ToolStatus::Error);
 }
 
-const NOON_PREFIX_LEN: u16 = 6;
+const NOON_PREFIX_LEN: u16 = 13;
 
 fn make_sel(area: Rect, anchor: (u32, u16), cursor: (u32, u16)) -> Selection {
     let mut sel = Selection::start(

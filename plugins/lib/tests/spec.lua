@@ -1297,6 +1297,28 @@ case("render_lines_match_at_start_keeps_indent", function()
   eq(lines[1][2][2], "match_selected")
 end)
 
+local route_tier = require("noon.route_tier")
+
+case("route_tier_weak_on_search", function()
+  eq(route_tier.route_tier("search the codebase for auth middleware"), "weak")
+end)
+
+case("route_tier_strong_on_debug", function()
+  eq(route_tier.route_tier("debug a subtle race condition in the async scheduler"), "strong")
+end)
+
+case("route_tier_medium_default", function()
+  eq(route_tier.route_tier("add a config flag"), "medium")
+end)
+
+case("route_tier_empty_is_medium", function()
+  eq(route_tier.route_tier(""), "medium")
+end)
+
+case("route_tier_blank_prompt", function()
+  eq(route_tier.route_tier(nil), "medium")
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end

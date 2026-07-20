@@ -23,6 +23,7 @@ noon-providers = { workspace = true }
 mlua = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+toon-format = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 smol = { workspace = true }
@@ -80,4 +81,8 @@ test-case = { workspace = true }
 
 [[bench]]
 name = "luau_perf"
+harness = false
+
+[[bench]]
+name = "perf"
 harness = false
