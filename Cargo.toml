@@ -84,6 +84,7 @@ noon-highlight = { path = "noon-highlight" }
 noon-markdown = { path = "noon-markdown" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+toon-format = "0.5"
 bs58 = "0.5"
 uuid = { version = "1", default-features = false, features = ["std", "v7"] }
 zstd = { version = "0.13", default-features = false }
