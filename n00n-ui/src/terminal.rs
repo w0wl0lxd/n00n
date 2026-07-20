@@ -70,6 +70,7 @@ impl Drop for TerminalGuard {
     }
 }
 
+#[allow(unsafe_code)]
 pub(crate) fn suspend(terminal: &mut ratatui::DefaultTerminal) {
     teardown();
     #[cfg(unix)]

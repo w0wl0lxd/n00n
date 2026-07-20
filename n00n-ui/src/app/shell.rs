@@ -191,6 +191,7 @@ pub(crate) fn spawn_shell(
     .detach();
 }
 
+#[allow(unsafe_code)]
 async fn run_command(
     command: &str,
     id: &str,

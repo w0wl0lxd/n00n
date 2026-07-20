@@ -55,6 +55,7 @@ impl ChildGuard {
     }
 
     #[cfg(unix)]
+    #[allow(unsafe_code)]
     fn signal_kill(&self) {
         if self.child.is_some() {
             unsafe {
@@ -75,6 +76,7 @@ impl ChildGuard {
     // fires on unexpected drops (panics, early returns). Uses WNOHANG to never
     // block the async executor.
     #[cfg(unix)]
+    #[allow(unsafe_code)]
     fn reap_nonblocking(&mut self) {
         if self.child.take().is_some() {
             unsafe {
@@ -109,6 +111,7 @@ mod tests {
 
     use super::ChildGuard;
 
+    #[allow(unsafe_code)]
     fn spawn_sleep() -> Child {
         let mut std_cmd = std::process::Command::new("sleep");
         std_cmd.arg("60");
@@ -122,6 +125,7 @@ mod tests {
         cmd.spawn().expect("failed to spawn sleep")
     }
 
+    #[allow(unsafe_code)]
     fn is_alive(pid: u32) -> bool {
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
