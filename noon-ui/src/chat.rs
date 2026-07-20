@@ -270,6 +270,10 @@ impl Chat {
         self.messages_panel.extract_selection_text(sel, msg_area)
     }
 
+    pub fn copy_at(&self, row: u16, col: u16, area: Rect) -> Option<(String, &'static str)> {
+        self.messages_panel.copy_at(row, col, area)
+    }
+
     pub fn handle_click(&mut self, row: u16, area: Rect) {
         self.messages_panel.handle_click(row, area);
     }

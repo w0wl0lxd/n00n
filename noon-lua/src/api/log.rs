@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::Lua;
+use noon_lua_macro::{lua_fn, lua_table};
 
 fn log_emit(plugin: &str, level: &str, msg: &str) {
     match level {

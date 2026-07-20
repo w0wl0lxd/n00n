@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use async_lock::Mutex as AsyncMutex;
 use futures::future::{Either, select};
+use mlua::{Function, IntoLuaMulti, Lua, Result as LuaResult, Table, Value as LuaValue};
 use noon_agent::agent::tool_dispatch::{self, Emit};
 use noon_agent::cancel::CancelMap;
 use noon_agent::tools::interpreter_bridge;
@@ -29,7 +30,6 @@ use noon_providers::provider;
 use noon_providers::{ContentBlock, Model, ModelError, Role, ThinkingConfig};
 use noon_storage::id::NoonId;
 use noon_storage::sessions::StoredThinking;
-use mlua::{Function, IntoLuaMulti, Lua, Result as LuaResult, Table, Value as LuaValue};
 use serde_json::Value as JsonValue;
 use tracing::info;
 

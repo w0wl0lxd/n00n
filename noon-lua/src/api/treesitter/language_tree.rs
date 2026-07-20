@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::language::Language;
-use noon_lua_macro::{lua_class, lua_fn};
 use mlua::{Function, Lua, Result as LuaResult, Table, Value as LuaValue};
+use noon_lua_macro::{lua_class, lua_fn};
 use tree_sitter::{Parser, Tree};
 
 use super::tree::LuaTree;

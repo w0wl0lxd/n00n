@@ -35,12 +35,12 @@ pub struct RenderCtx<'a> {
     pub tool_output_lines: &'a ToolOutputLines,
 }
 
-pub const TOOL_INDICATOR: &str = "● ";
-pub const TOOL_BODY_INDENT: &str = "             ";
+pub const TOOL_INDICATOR: &str = "  ✓ ";
+pub const TOOL_BODY_INDENT: &str = "    ";
 pub(crate) const SPINNER_STYLE_NAME: &str = "spinner";
 pub(crate) const SPINNER_STYLE_PREFIX: &str = "spinner:";
 
-const CODE_OUTPUT_DIVIDER: &str = "  ────────────";
+const CODE_OUTPUT_DIVIDER: &str = "    ────────────";
 
 pub struct RoleStyle {
     pub prefix: &'static str,
@@ -52,7 +52,7 @@ pub struct RoleStyle {
 
 pub fn assistant_style() -> RoleStyle {
     RoleStyle {
-        prefix: "  noon     │ ",
+        prefix: "Noon  ",
         text_style: theme::current().assistant,
         prefix_style: theme::current().assistant_prefix,
         use_markdown: true,
@@ -62,7 +62,7 @@ pub fn assistant_style() -> RoleStyle {
 
 pub fn user_style() -> RoleStyle {
     RoleStyle {
-        prefix: "  you      │ ",
+        prefix: "You   ",
         text_style: theme::current().assistant,
         prefix_style: theme::current().user,
         use_markdown: true,
@@ -72,7 +72,7 @@ pub fn user_style() -> RoleStyle {
 
 pub fn thinking_style() -> RoleStyle {
     RoleStyle {
-        prefix: "  thinking │ ",
+        prefix: "Think ",
         text_style: theme::current().thinking,
         prefix_style: theme::current().thinking,
         use_markdown: true,
@@ -354,11 +354,11 @@ impl ToolLineBuilder {
         annotation: Option<&str>,
         render_header: Option<&BufferSnapshot>,
     ) {
-        let label: String = tool_name.chars().take(8).collect();
-        let mut spans = vec![Span::styled(
-            format!("{label:<8} │ "),
-            theme::current().tool_prefix,
-        )];
+        let label: String = tool_name.chars().take(12).collect();
+        let mut spans = vec![
+            Span::styled(label, theme::current().tool_prefix),
+            Span::styled("  ", theme::current().tool_dim),
+        ];
         if let Some(snapshot) = render_header {
             if let Some(first_line) = snapshot.lines.first() {
                 let line_idx = self.lines.len();
@@ -399,7 +399,7 @@ impl ToolLineBuilder {
                 (format!("{ch} "), theme::current().spinner)
             }
             Indicator::Success => (TOOL_INDICATOR.into(), theme::current().tool_success),
-            Indicator::Error => (TOOL_INDICATOR.into(), theme::current().tool_error),
+            Indicator::Error => ("  × ".into(), theme::current().tool_error),
         };
         for (line, span) in &mut self.spinner_lines {
             if *line == 0 {
@@ -1190,8 +1190,7 @@ mod tests {
             &test_rctx(80),
             SectionFlags::default(),
         );
-        // indicator + `tool> ` prefix + "3 tools " sit before the header spinner.
-        assert_eq!(tl.spinner_lines, vec![(0, 3), (0, 0)]);
+        assert_eq!(tl.spinner_lines, vec![(0, 4), (0, 0)]);
     }
 
     const DENIAL_MSG: &str = "Permission denied: user rejected";

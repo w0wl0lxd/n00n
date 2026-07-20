@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use noon_config::RawConfig;
 use mlua::{Function, Lua, LuaSerdeExt, Result as LuaResult};
+use noon_config::RawConfig;
 
 use crate::api::split::split__doc;
 use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};

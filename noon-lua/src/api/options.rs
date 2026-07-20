@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use noon_lua_macro::lua_fn;
 use mlua::{Lua, Result as LuaResult, Table, Value as LuaValue};
+use noon_lua_macro::lua_fn;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::api::util::convert::json_to_lua;

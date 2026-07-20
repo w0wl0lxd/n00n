@@ -126,6 +126,14 @@ pub enum Block {
     },
 }
 
+pub fn single_code_block(text: &str) -> Option<&str> {
+    let fence = find_code_fence(text)?;
+    if !text[..fence.before_end].trim().is_empty() || !text[fence.block_end..].trim().is_empty() {
+        return None;
+    }
+    Some(fence.code)
+}
+
 pub fn parse(text: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut rest = text;
@@ -1167,6 +1175,13 @@ mod tests {
                 .all(|s| s.emphasis.is_empty() && s.kind == SpanKind::Text)
         );
         assert_eq!(span_text(&spans), input);
+    }
+
+    #[test]
+    fn single_code_block_returns_raw_body() {
+        let input = "```rust\nfn main() {}\n```";
+        assert_eq!(single_code_block(input), Some("fn main() {}"));
+        assert_eq!(single_code_block(&format!("intro\n{input}")), None);
     }
 
     #[test]

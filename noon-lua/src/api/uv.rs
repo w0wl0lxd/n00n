@@ -1,5 +1,5 @@
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{Lua, Result as LuaResult};
+use noon_lua_macro::{lua_fn, lua_table};
 
 use crate::plugin_permissions::PluginPermissions;
 

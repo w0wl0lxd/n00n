@@ -667,7 +667,13 @@ mod tests {
             Arc::clone(&theme),
         );
 
-        let expected = fg_in_context("test.rs", "/*\nalpha\nbravo\ncharlie\n", "delta", "delta", theme);
+        let expected = fg_in_context(
+            "test.rs",
+            "/*\nalpha\nbravo\ncharlie\n",
+            "delta",
+            "delta",
+            theme,
+        );
         assert_eq!(diff_fg(&lines, "delta"), expected);
     }
 

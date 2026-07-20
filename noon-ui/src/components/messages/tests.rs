@@ -557,6 +557,118 @@ fn search_text_bash_with_code_input() {
 }
 
 #[test]
+fn assistant_markdown_renders_copy_action_and_raw_payload() {
+    let markdown = "# Result\n\n- one\n- two";
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.push(DisplayMessage::new(DisplayRole::Assistant, markdown.into()));
+    let terminal = render(&mut panel, 48, 10);
+    let text = buffer_text(&terminal);
+
+    assert!(text.contains("[copy]"), "rendered buffer: {text}");
+    assert!(text.contains("Result"), "rendered buffer: {text}");
+    assert_eq!(
+        panel.copy_at(0, 47, Rect::new(0, 0, 48, 10)),
+        Some((markdown.into(), "markdown")),
+    );
+}
+
+#[test]
+fn fenced_code_copy_action_returns_code_without_fence() {
+    let markdown = "```rust\nfn main() {}\n```";
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.push(DisplayMessage::new(DisplayRole::Assistant, markdown.into()));
+    render(&mut panel, 48, 10);
+
+    assert_eq!(
+        panel.copy_at(0, 47, Rect::new(0, 0, 48, 10)),
+        Some(("fn main() {}".into(), "code")),
+    );
+    assert_eq!(panel.copy_at(0, 20, Rect::new(0, 0, 48, 10)), None);
+}
+
+#[test]
+fn user_message_renders_as_bounded_card() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.push(DisplayMessage::new(DisplayRole::User, "hello".into()));
+    let terminal = render(&mut panel, 32, 8);
+    let text = buffer_text(&terminal);
+
+    assert!(text.contains('╭'), "rendered buffer: {text}");
+    assert!(text.contains('╰'), "rendered buffer: {text}");
+    assert!(text.contains("You   hello"), "rendered buffer: {text}");
+}
+
+#[test]
+fn copy_hit_target_requires_exact_visible_label() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.push(DisplayMessage::new(DisplayRole::Assistant, "answer".into()));
+    render(&mut panel, 48, 8);
+    let area = Rect::new(0, 0, 48, 8);
+
+    assert_eq!(
+        panel.copy_at(0, 42, area),
+        Some(("answer".into(), "markdown"))
+    );
+    assert_eq!(panel.copy_at(0, 41, area), None);
+}
+
+#[test]
+fn copy_action_stays_within_narrow_offset_area() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.push(DisplayMessage::new(DisplayRole::Assistant, "answer".into()));
+    let area = Rect::new(10, 0, 5, 8);
+    render(&mut panel, 5, 8);
+
+    assert_eq!(panel.copy_at(0, 9, area), None);
+    assert_eq!(
+        panel.copy_at(0, 10, area),
+        Some(("answer".into(), "markdown"))
+    );
+}
+
+#[test]
+fn partially_scrolled_user_card_does_not_replace_content_with_top_border() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.push(DisplayMessage::new(
+        DisplayRole::User,
+        "first\nsecond\nthird".into(),
+    ));
+    render(&mut panel, 24, 3);
+    panel.set_scroll_top(1);
+    let text = buffer_text(&render(&mut panel, 24, 3));
+
+    assert!(text.contains("You   first"), "rendered buffer: {text}");
+    assert!(!text.contains('╭'), "rendered buffer: {text}");
+}
+
+#[test]
+fn user_markdown_uses_card_content_width() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.push(DisplayMessage::new(DisplayRole::User, "---".into()));
+    render(&mut panel, 12, 8);
+
+    assert_eq!(panel.cache.get(0).unwrap().lines()[0].width(), 6);
+}
+
+#[test]
+fn restored_timed_and_legacy_thinking_use_distinct_labels() {
+    let mut timed = DisplayMessage::new(DisplayRole::Thinking, "timed".into());
+    timed.thinking_collapsed = true;
+    timed.annotation = Some("4s".into());
+    let mut legacy = DisplayMessage::new(DisplayRole::Thinking, "legacy".into());
+    legacy.thinking_collapsed = true;
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.load_messages(vec![timed, legacy]);
+    let text = buffer_text(&render(&mut panel, 80, 10));
+
+    assert!(text.contains("Thought for 4s"), "timed disclosure: {text}");
+    assert!(
+        text.contains("Thinking · 1 lines"),
+        "legacy disclosure: {text}"
+    );
+}
+
+#[test]
 fn search_text_includes_role_prefix() {
     let md = "# Heading\n\nSome **bold** text";
     let mut panel = MessagesPanel::new(UiConfig::default());
@@ -878,7 +990,10 @@ fn expand_truncated_tool_does_not_auto_scroll() {
     let mut panel = panel_with_long_tool(200);
     let area = Rect::new(0, 0, 80, 24);
     let before_scroll = panel.scroll_top;
-    assert!(panel.auto_scroll, "auto_scroll should be on when content fits");
+    assert!(
+        panel.auto_scroll,
+        "auto_scroll should be on when content fits"
+    );
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
@@ -1174,7 +1289,10 @@ fn handle_click_on_running_tool_forwards_live_without_recording() {
     let area = Rect::new(0, 0, 80, 24);
     assert!(panel.handle_click(area.y, area));
     assert!(panel.lua_clicks.is_empty());
-    assert!(!panel.auto_scroll, "clicking a running tool should pause auto-scroll");
+    assert!(
+        !panel.auto_scroll,
+        "clicking a running tool should pause auto-scroll"
+    );
 }
 
 #[test]
@@ -1198,7 +1316,10 @@ fn handle_click_on_done_tool_pauses_auto_scroll() {
     let area = Rect::new(0, 0, 80, 24);
     assert!(panel.auto_scroll, "auto_scroll should be on before click");
     assert!(panel.handle_click(area.y, area));
-    assert!(!panel.auto_scroll, "clicking a finished tool should pause auto-scroll");
+    assert!(
+        !panel.auto_scroll,
+        "clicking a finished tool should pause auto-scroll"
+    );
 }
 
 #[test]
@@ -1680,7 +1801,7 @@ fn rebake_without_channel_is_noop() {
 }
 
 #[test]
-fn hide_collapses_streaming_thinking() {
+fn hidden_config_still_streams_thinking_live() {
     let mut panel = MessagesPanel::new(UiConfig {
         show_thinking: false,
         ..UiConfig::default()
@@ -1690,26 +1811,13 @@ fn hide_collapses_streaming_thinking() {
         .set_buffer("line one\nline two\nline three");
     let terminal = render(&mut panel, 80, 10);
     let text = buffer_text(&terminal);
-    assert!(
-        text.contains("thinking> ..."),
-        "collapsed view should show hint; got: {text}"
-    );
-    assert!(
-        text.contains("3 lines"),
-        "should show live line counter; got: {text}"
-    );
-    assert!(
-        text.contains("click to expand"),
-        "should hint click-to-expand; got: {text}"
-    );
-    assert!(
-        !text.contains("line one"),
-        "reasoning must stay hidden; got: {text}"
-    );
+    assert!(text.contains("line one"), "live reasoning: {text}");
+    assert!(text.contains("line three"), "live reasoning: {text}");
+    assert!(!text.contains("click to expand"), "live reasoning: {text}");
 }
 
 #[test]
-fn hide_click_expands_streaming_thinking() {
+fn live_streaming_thinking_does_not_toggle_on_click() {
     let mut panel = MessagesPanel::new(UiConfig {
         show_thinking: false,
         ..UiConfig::default()
@@ -1717,21 +1825,14 @@ fn hide_click_expands_streaming_thinking() {
     panel.streaming_thinking.set_buffer("secret reasoning");
     let area = Rect::new(0, 0, 80, 10);
     render(&mut panel, 80, 10);
-    assert!(
-        panel.handle_click(0, area),
-        "clicking collapsed thinking should toggle expand"
-    );
-    assert!(!panel.thinking_collapsed);
+    assert!(!panel.handle_click(0, area));
     let terminal = render(&mut panel, 80, 10);
     let text = buffer_text(&terminal);
     assert!(
         text.contains("secret reasoning"),
         "expanded view should show reasoning; got: {text}"
     );
-    assert!(
-        !text.contains("click to expand"),
-        "collapsed hint should not appear after expand; got: {text}"
-    );
+    assert!(!text.contains("click to expand"), "live reasoning: {text}");
 }
 
 #[test]
@@ -1749,11 +1850,11 @@ fn hide_keeps_cached_thinking_as_indicator() {
     let terminal = render(&mut panel, 80, 10);
     let text = buffer_text(&terminal);
     assert!(
-        text.contains("thinking> ..."),
-        "cached thinking should persist as an indicator, not hide; got: {text}"
+        text.contains("Thought for"),
+        "completed thinking should retain its measured duration; got: {text}"
     );
     assert!(
-        text.contains("(1 lines)"),
+        text.contains("1 lines"),
         "footer always shows the line count; got: {text}"
     );
     assert!(
@@ -1767,14 +1868,24 @@ fn hide_keeps_cached_thinking_as_indicator() {
 }
 
 #[test]
-fn full_default_renders_streaming_thinking() {
+fn streaming_thinking_is_expanded_then_collapses_on_completion() {
     let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.thinking_delta("visible reasoning");
     panel.streaming_thinking.set_buffer("visible reasoning");
     let terminal = render(&mut panel, 80, 10);
     let text = buffer_text(&terminal);
     assert!(
         text.contains("visible reasoning"),
-        "default config renders reasoning; got: {text}"
+        "streaming reasoning stays expanded; got: {text}"
+    );
+
+    panel.flush();
+    let terminal = render(&mut panel, 80, 10);
+    let text = buffer_text(&terminal);
+    assert!(text.contains("Thought for"), "completed disclosure: {text}");
+    assert!(
+        !text.contains("visible reasoning"),
+        "collapsed reasoning: {text}"
     );
 }
 
@@ -1794,10 +1905,10 @@ fn hide_cached_thinking_persists_as_indicator() {
     let terminal = render(&mut panel, 80, 12);
     let text = buffer_text(&terminal);
     assert!(
-        text.contains("thinking> ..."),
-        "cached thinking should persist as an indicator, not hide; got: {text}"
+        text.contains("Thought for"),
+        "completed thinking should retain its measured duration; got: {text}"
     );
-    assert!(text.contains("(7 lines)"), "footer line count; got: {text}");
+    assert!(text.contains("7 lines"), "footer line count; got: {text}");
     assert!(
         text.contains("click to expand"),
         "footer should hint click-to-expand; got: {text}"
@@ -1839,34 +1950,22 @@ fn hide_cached_thinking_click_expands() {
 }
 
 #[test]
-fn stream_reset_clears_thinking_expand_state() {
-    let mut panel = MessagesPanel::new(UiConfig {
-        show_thinking: false,
-        ..UiConfig::default()
-    });
-    panel.streaming_thinking.set_buffer("secret reasoning");
-    let area = Rect::new(0, 0, 80, 10);
-    render(&mut panel, 80, 10);
-    assert!(
-        panel.handle_click(0, area),
-        "clicking collapsed thinking should toggle expand"
-    );
-    assert!(!panel.thinking_collapsed);
+fn stream_reset_keeps_new_thinking_expanded() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.thinking_delta("stale reasoning");
     panel.stream_reset();
-    assert!(
-        panel.thinking_collapsed,
-        "stream_reset must restore the collapsed default so it does not leak into retries"
-    );
+    panel.thinking_delta("fresh reasoning");
     panel.streaming_thinking.set_buffer("fresh reasoning");
+
     let terminal = render(&mut panel, 80, 10);
     let text = buffer_text(&terminal);
     assert!(
-        text.contains("thinking> ..."),
-        "new stream after reset should collapse again; got: {text}"
+        text.contains("fresh reasoning"),
+        "new streaming reasoning should be visible; got: {text}"
     );
     assert!(
-        !text.contains("fresh reasoning"),
-        "new stream must stay hidden; got: {text}"
+        !text.contains("stale reasoning"),
+        "reset must clear stale text"
     );
 }
 fn mixed_messages(n: usize) -> Vec<DisplayMessage> {

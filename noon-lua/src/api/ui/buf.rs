@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use mlua::{Function, Lua, Result as LuaResult, Table, Value as LuaValue};
 use noon_agent::types::InlineStyle;
 use noon_agent::{SharedBuf, SnapshotLine, SnapshotSpan, SpanStyle};
 use noon_lua_macro::{lua_class, lua_fn};
-use mlua::{Function, Lua, Result as LuaResult, Table, Value as LuaValue};
 
 use super::blit;
 use crate::runtime::{TaskHandle, lock_cell};

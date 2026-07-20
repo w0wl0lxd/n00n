@@ -7,6 +7,10 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use flume::Sender;
+use mlua::{
+    Function, Lua, LuaSerdeExt, MultiValue, RegistryKey, Result as LuaResult, Table,
+    Value as LuaValue,
+};
 use noon_agent::prompt::{PromptId, Slot, SlotKind, ValidNames};
 use noon_agent::tools::Tool;
 use noon_agent::tools::registry::{RegisteredTool, ToolRegistry};
@@ -22,10 +26,6 @@ use noon_agent::{
 };
 use noon_config::ToolOutputLines;
 use noon_lua_macro::{lua_fn, lua_table};
-use mlua::{
-    Function, Lua, LuaSerdeExt, MultiValue, RegistryKey, Result as LuaResult, Table,
-    Value as LuaValue,
-};
 use serde_json::{Value, json};
 
 use crate::api::options::{PluginOpts, register_options__doc, register_options__register};

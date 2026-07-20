@@ -41,18 +41,22 @@ pub(super) fn extract_selection_text(
         let rel_start = doc_start.row.saturating_sub(seg_start) as usize;
         let rel_end = ((doc_end.row + 1).saturating_sub(seg_start) as usize).min(h as usize);
 
+        let inset = seg.content_inset();
+        let content_x = msg_area.x.saturating_add(inset);
         let start_col = if seg_start > doc_start.row {
             0
         } else {
-            doc_start.col.saturating_sub(msg_area.x)
+            doc_start.col.saturating_sub(content_x)
         };
         let end_col = if seg_end < doc_end.row + 1 {
-            width.saturating_sub(1)
+            width
+                .saturating_sub(inset.saturating_mul(2))
+                .saturating_sub(1)
         } else {
-            doc_end.col.saturating_sub(msg_area.x)
+            doc_end.col.saturating_sub(content_x)
         };
 
-        let content_start = msg_area.x + seg.prefix_width;
+        let content_start = content_x + seg.prefix_width;
         let seg_fully_selected = seg_start >= doc_start.row
             && seg_end <= doc_end.row + 1
             && doc_start.col <= content_start
@@ -62,26 +66,27 @@ pub(super) fn extract_selection_text(
             continue;
         }
 
-        let tmp_area = Rect::new(0, 0, width, h);
+        let content_width = width.saturating_sub(inset.saturating_mul(2)).max(1);
+        let tmp_area = Rect::new(0, 0, content_width, h.saturating_sub(inset));
         let mut tmp = Buffer::empty(tmp_area);
         Paragraph::new(seg.lines().to_vec())
             .wrap(Wrap { trim: false })
             .render(tmp_area, &mut tmp);
 
         let ss = ScreenSelection {
-            start_row: rel_start as u16,
+            start_row: (rel_start as u16).saturating_sub(inset / 2),
             start_col,
-            end_row: rel_end.saturating_sub(1) as u16,
+            end_row: (rel_end.saturating_sub(1) as u16).saturating_sub(inset / 2),
             end_col,
         };
 
-        let breaks = LineBreaks::from_lines(seg.lines(), width);
+        let breaks = LineBreaks::from_lines(seg.lines(), content_width);
         selection::append_rows(
             &tmp,
             tmp_area,
             &ss,
-            rel_start as u16,
-            rel_end as u16,
+            (rel_start as u16).saturating_sub(inset / 2),
+            (rel_end as u16).saturating_sub(inset / 2),
             &mut out,
             &breaks,
         );
