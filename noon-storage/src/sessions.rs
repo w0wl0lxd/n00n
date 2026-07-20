@@ -1055,13 +1055,16 @@ fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
     if header.v != LOG_FORMAT_VERSION {
         return None;
     }
-    let (meta_title, updated_at) = lines.rev().find_map(|line| {
-        if let Ok(ScanRecord::Meta { title, updated_at }) = serde_json::from_slice(line) {
-            Some((title, updated_at))
-        } else {
-            None
-        }
-    })?;
+    let (meta_title, updated_at) = lines
+        .rev()
+        .find_map(|line| {
+            if let Ok(ScanRecord::Meta { title, updated_at }) = serde_json::from_slice(line) {
+                Some((title, updated_at))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
 
     Some(ScannedHeader {
         id: header.id,
@@ -1093,7 +1096,6 @@ fn is_session_file(path: &Path) -> bool {
             .and_then(|stem| stem.to_str())
             .and_then(|stem| stem.parse::<NoonId>().ok())
             .is_some_and(|id| jsonl_path(path.parent().unwrap_or(Path::new("")), id) == path)
-        && file_is_zst(path)
 }
 
 fn locate_session_file(dir: &Path, id: NoonId) -> Option<PathBuf> {
@@ -1263,14 +1265,15 @@ mod tests {
     use super::StoredThinking;
     use super::ThinkingParseError;
     use super::{
-        CWD_INDEX_FILE, DEFAULT_TITLE, MAX_TITLE_LEN, SESSION_VERSION, StoredSubagent,
-        generate_title, jsonl_path, load_cwd_index, now_epoch, update_cwd_index,
+        CWD_INDEX_FILE, DEFAULT_TITLE, LOG_FORMAT_VERSION, LogRecord, MAX_TITLE_LEN,
+        SESSION_VERSION, StoredSubagent, append_record, encode_frame, generate_title, jsonl_path,
+        load_cwd_index, now_epoch, update_cwd_index,
     };
     use super::{SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource};
     use crate::id::NoonId;
     use serde_json::Value;
     use std::collections::HashMap;
-    use std::fs::{self, OpenOptions};
+    use std::fs::{self, File, OpenOptions};
     use std::io::Write;
     use std::path::Path;
     use tempfile::TempDir;
@@ -1890,6 +1893,31 @@ mod tests {
         assert_eq!(list[0].cwd, "/project");
         assert_eq!(list[1].id, older.id);
         assert_eq!(list[1].updated_at, 150);
+    }
+
+    #[test]
+    fn scan_lists_session_without_meta_record() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let session: TestSession = Session::new("m", "/project");
+        let path = jsonl_path(dir, session.id);
+        let header = LogRecord::<String, Value, Value>::Header {
+            v: LOG_FORMAT_VERSION,
+            id: session.id,
+            model: session.model.clone(),
+            cwd: session.cwd.clone(),
+            created_at: session.created_at,
+            title: Some("header title".into()),
+        };
+        let mut bytes = Vec::new();
+        append_record(&mut bytes, &header).unwrap();
+        let mut file = File::create(path).unwrap();
+        encode_frame(&mut file, &bytes).unwrap();
+
+        let list = TestSession::list_in("/project", dir).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title, "header title");
+        assert_eq!(list[0].updated_at, 0);
     }
 
     #[test]
