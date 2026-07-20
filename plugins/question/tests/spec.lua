@@ -240,7 +240,7 @@ end)
 local function line_width(line)
   local w = 0
   for _, span in ipairs(line) do
-    w = w + maki.ui.display_width(span[1])
+    w = w + noon.ui.display_width(span[1])
   end
   return w
 end
