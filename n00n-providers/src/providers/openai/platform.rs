@@ -22,26 +22,41 @@ static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     provider_name: "OpenAI",
 };
 
-// Models OpenAI offers for subscription usage via the Coding Plan.
+// Non-codex models OpenAI offers for subscription usage via the Coding Plan.
 // Codex models are matched by their `-codex` substring in
 // `coding_plan_context_window`, so they never need listing here.
-pub(crate) const PLAN_MODELS: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2"];
+pub(crate) const PLAN_MODELS: &[&str] = &[
+    "gpt-5.6-luna",
+    "gpt-5.6-terra",
+    "gpt-5.6-sol",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.2",
+];
 
 const CODEX_PLAN_CONTEXT_WINDOW: u32 = 272_000;
+const GPT_5_6_PLAN_CONTEXT_WINDOW: u32 = 372_000;
 
 fn is_codex_model(model_id: &str) -> bool {
     coding_plan_context_window(model_id).is_some()
 }
 
 // Codex models match by substring so future releases route without a registry
-// edit; the named plans match exactly to avoid catching near-misses
-// like `gpt-5.5-preview`.
+// edit; the named non-codex plans match exactly to avoid catching near-misses
+// like `gpt-5.6-terra-preview`.
 fn coding_plan_context_window(model_id: &str) -> Option<u32> {
-    if model_id.contains("-codex") || PLAN_MODELS.contains(&model_id) {
-        Some(CODEX_PLAN_CONTEXT_WINDOW)
-    } else {
-        None
+    if model_id.contains("-codex") {
+        return Some(CODEX_PLAN_CONTEXT_WINDOW);
     }
+    if !PLAN_MODELS.contains(&model_id) {
+        return None;
+    }
+    Some(if model_id.starts_with("gpt-5.6-") {
+        GPT_5_6_PLAN_CONTEXT_WINDOW
+    } else {
+        CODEX_PLAN_CONTEXT_WINDOW
+    })
 }
 
 pub struct OpenAi {
@@ -165,6 +180,29 @@ impl Provider for OpenAi {
             let mut buf = String::new();
             let system = super::super::with_prefix(&self.system_prefix, system, &mut buf);
 
+            if super::websocket::is_websocket_model(&model.id) {
+                let stream_timeout = self.compat.stream_timeout();
+                return self
+                    .with_oauth_retry(|| async {
+                        let auth = if is_codex_model(&model.id) {
+                            self.codex_auth()?
+                        } else {
+                            self.current_auth()
+                        };
+                        super::websocket::stream_message(
+                            model,
+                            messages,
+                            system,
+                            tools,
+                            event_tx,
+                            &auth,
+                            stream_timeout,
+                        )
+                        .await
+                    })
+                    .await;
+            }
+
             if is_codex_model(&model.id) {
                 let body = super::responses::build_body(model, messages, system, tools);
                 let stream_timeout = self.compat.stream_timeout();
@@ -177,25 +215,6 @@ impl Provider for OpenAi {
                             &body,
                             event_tx,
                             &codex_auth,
-                            stream_timeout,
-                        )
-                        .await
-                    })
-                    .await;
-            }
-
-            if super::websocket::is_websocket_model(&model.id) {
-                let stream_timeout = self.compat.stream_timeout();
-                return self
-                    .with_oauth_retry(|| async {
-                        let auth = self.current_auth();
-                        super::websocket::stream_message(
-                            model,
-                            messages,
-                            system,
-                            tools,
-                            event_tx,
-                            &auth,
                             stream_timeout,
                         )
                         .await
@@ -275,21 +294,24 @@ mod tests {
     #[test_case("gpt-5.6-luna")]
     #[test_case("gpt-5.6-terra")]
     #[test_case("gpt-5.6-sol")]
-    fn gpt_5_6_models_are_not_coding_plan(model_id: &str) {
-        assert!(!is_codex_model(model_id));
+    fn gpt_5_6_models_use_coding_plan_and_websocket(model_id: &str) {
+        assert!(is_codex_model(model_id));
         assert!(crate::providers::openai::websocket::is_websocket_model(
             model_id
         ));
     }
 
+    #[test_case("gpt-5.6-luna", Some(372_000))]
+    #[test_case("gpt-5.6-terra", Some(372_000))]
+    #[test_case("gpt-5.6-sol", Some(372_000))]
     #[test_case("gpt-5.5", Some(272_000))]
     #[test_case("gpt-5.4", Some(272_000))]
     #[test_case("gpt-5.2", Some(272_000))]
     #[test_case("gpt-5.3-codex", Some(272_000))]
     #[test_case("gpt-5.7-codex", Some(272_000) ; "unlisted codex model still routes")]
     #[test_case("gpt-5.5-preview", None ; "non_plan_5_5_preview_rejected")]
-    #[test_case("gpt-5.6-luna", None ; "gpt_5_6_routes_via_websocket")]
     #[test_case("gpt-5.6-terra-preview", None ; "non_plan_5_6_preview_rejected")]
+    #[test_case("gpt-5.6-codex", Some(272_000) ; "codex_models_use_http")]
     #[test_case("gpt-5.4-nano", None ; "non_plan_5_4_nano_rejected")]
     fn coding_plan_context_window_resolves_plan_models(model_id: &str, expected: Option<u32>) {
         assert_eq!(coding_plan_context_window(model_id), expected);

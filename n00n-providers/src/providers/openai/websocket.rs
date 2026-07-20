@@ -17,7 +17,7 @@ use crate::{AgentError, Message, ProviderEvent, StreamResponse};
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
 
 pub(crate) fn is_websocket_model(model_id: &str) -> bool {
-    model_id.starts_with("gpt-5.6")
+    model_id.starts_with("gpt-5.6") && !model_id.contains("-codex")
 }
 
 fn responses_websocket_url(base_url: Option<&str>) -> String {
@@ -197,8 +197,10 @@ mod tests {
     use serde_json::json;
     use test_case::test_case;
 
+    #[test_case("gpt-5.6", true)]
     #[test_case("gpt-5.6-luna", true)]
     #[test_case("gpt-5.6-terra-preview", true)]
+    #[test_case("gpt-5.6-codex", false ; "codex_models_use_http")]
     #[test_case("gpt-5.5", false)]
     #[test_case("gpt-5.3-codex", false)]
     fn is_websocket_model_recognizes_gpt_5_6(model_id: &str, expected: bool) {
@@ -212,6 +214,10 @@ mod tests {
         "wss://proxy.example.com/v1/responses"
     )]
     #[test_case(Some("http://local.dev"), "ws://local.dev/responses")]
+    #[test_case(
+        Some(crate::providers::openai::auth::CODING_PLAN_BASE_URL),
+        "wss://chatgpt.com/backend-api/codex/responses"
+    )]
     fn responses_websocket_url_derives_from_base_url(base_url: Option<&str>, expected: &str) {
         assert_eq!(super::responses_websocket_url(base_url), expected);
     }
