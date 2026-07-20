@@ -4,3 +4,5 @@ runs.csv
 /.direnv/
 /site/_build/
 /site/.bin/
+/.antigravitycli/
+/.maki/
