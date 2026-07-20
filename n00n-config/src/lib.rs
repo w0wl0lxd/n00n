@@ -443,6 +443,10 @@ pub struct AgentFileConfig {
     pub max_output_lines: Option<usize>,
     pub max_continuation_turns: Option<u32>,
     pub compaction_buffer: Option<CompactionBuffer>,
+    pub max_input_tokens: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub max_total_tokens: Option<u32>,
+    pub max_context_tokens: Option<u32>,
 }
 
 impl AgentFileConfig {
@@ -453,7 +457,11 @@ impl AgentFileConfig {
             max_output_bytes,
             max_output_lines,
             max_continuation_turns,
-            compaction_buffer
+            compaction_buffer,
+            max_input_tokens,
+            max_output_tokens,
+            max_total_tokens,
+            max_context_tokens
         );
     }
 }
@@ -978,6 +986,18 @@ pub struct AgentConfig {
 
     #[config(skip, default = "Vec::new()")]
     pub disabled_tools: Vec<String>,
+
+    #[config(skip, default = "None")]
+    pub max_input_tokens: Option<u32>,
+
+    #[config(skip, default = "None")]
+    pub max_output_tokens: Option<u32>,
+
+    #[config(skip, default = "None")]
+    pub max_total_tokens: Option<u32>,
+
+    #[config(skip, default = "None")]
+    pub max_context_tokens: Option<u32>,
 }
 
 impl AgentConfig {
@@ -993,6 +1013,10 @@ impl AgentConfig {
             max_turns: None,
             allowed_tools: Vec::new(),
             disabled_tools,
+            max_input_tokens: file.max_input_tokens,
+            max_output_tokens: file.max_output_tokens,
+            max_total_tokens: file.max_total_tokens,
+            max_context_tokens: file.max_context_tokens,
         }
     }
 }
