@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use flume::Sender;
@@ -38,6 +39,12 @@ pub(crate) const PLAN_MODELS: &[&str] = &[
 const CODEX_PLAN_CONTEXT_WINDOW: u32 = 272_000;
 const GPT_5_6_PLAN_CONTEXT_WINDOW: u32 = 372_000;
 
+#[derive(Debug, Default)]
+struct OpenAiSessionState {
+    last_response_id: Option<String>,
+    last_message_count: usize,
+}
+
 fn is_codex_model(model_id: &str) -> bool {
     coding_plan_context_window(model_id).is_some()
 }
@@ -64,6 +71,7 @@ pub struct OpenAi {
     auth: Arc<Mutex<ResolvedAuth>>,
     storage: Option<StateDir>,
     system_prefix: Option<String>,
+    session_state: Arc<Mutex<HashMap<SessionRef, OpenAiSessionState>>>,
 }
 
 impl OpenAi {
@@ -76,6 +84,7 @@ impl OpenAi {
             auth: Arc::new(Mutex::new(resolved)),
             storage: Some(storage),
             system_prefix: None,
+            session_state: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -88,6 +97,7 @@ impl OpenAi {
             auth,
             storage: None,
             system_prefix: None,
+            session_state: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -174,7 +184,7 @@ impl Provider for OpenAi {
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
-        _session_id: Option<&'a SessionRef>,
+        session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
             let mut buf = String::new();
@@ -189,7 +199,7 @@ impl Provider for OpenAi {
                         } else {
                             self.current_auth()
                         };
-                        super::websocket::stream_message(
+                        let (_, resp) = super::websocket::stream_message(
                             model,
                             messages,
                             system,
@@ -198,18 +208,47 @@ impl Provider for OpenAi {
                             &auth,
                             stream_timeout,
                         )
-                        .await
+                        .await?;
+                        Ok(resp)
                     })
                     .await;
             }
 
             if is_codex_model(&model.id) {
-                let body = super::responses::build_body(model, messages, system, tools);
                 let stream_timeout = self.compat.stream_timeout();
                 return self
                     .with_oauth_retry(|| async {
                         let codex_auth = self.codex_auth()?;
-                        super::responses::do_stream(
+
+                        let (previous_response_id, incremental_messages) = if let Some(sid) = session_id {
+                            let mut state = self.session_state.lock().unwrap();
+                            let session_state = state.entry(sid.clone()).or_default();
+                            if messages.len() >= session_state.last_message_count {
+                                let prev_id = session_state.last_response_id.clone();
+                                let last_count = session_state.last_message_count;
+                                let incremental = &messages[last_count..];
+                                (prev_id, incremental)
+                            } else {
+                                session_state.last_response_id = None;
+                                session_state.last_message_count = 0;
+                                (None, messages)
+                            }
+                        } else {
+                            (None, messages)
+                        };
+
+                        let prompt_cache_key = session_id.map(|s| s.to_string());
+
+                        let body = super::responses::build_body(
+                            model,
+                            incremental_messages,
+                            system,
+                            tools,
+                            previous_response_id.as_deref(),
+                            prompt_cache_key.as_deref(),
+                        );
+
+                        let (response_id, resp) = super::responses::do_stream(
                             self.compat.client(),
                             model,
                             &body,
@@ -217,7 +256,16 @@ impl Provider for OpenAi {
                             &codex_auth,
                             stream_timeout,
                         )
-                        .await
+                        .await?;
+
+                        if let Some(sid) = session_id {
+                            let mut state = self.session_state.lock().unwrap();
+                            let session_state = state.entry(sid.clone()).or_default();
+                            session_state.last_response_id = response_id;
+                            session_state.last_message_count = messages.len();
+                        }
+
+                        Ok(resp)
                     })
                     .await;
             }
