@@ -58,14 +58,7 @@ impl RenderCursor {
         }
         let framed = surface.is_framed();
         let borders = if framed {
-            let mut borders = Borders::LEFT | Borders::RIGHT;
-            if segment_skip == 0 {
-                borders |= Borders::TOP;
-            }
-            if segment_skip.saturating_add(visible_h) == h {
-                borders |= Borders::BOTTOM;
-            }
-            borders
+            Borders::LEFT | Borders::RIGHT
         } else {
             Borders::NONE
         };
@@ -95,8 +88,7 @@ impl RenderCursor {
             p = p.block(block);
         }
         if segment_skip > 0 {
-            let content_skip = segment_skip.saturating_sub(u16::from(framed));
-            p = p.scroll((content_skip, 0));
+            p = p.scroll((segment_skip, 0));
             self.skip = 0;
         }
         frame.render_widget(p, seg_area);

@@ -362,48 +362,15 @@ n00n.api.register_tool({
   header = header,
 })
 
--- Interactive launcher so every almas mode and the new ibn/quorum/swarm options
--- are easy to trigger from the UI. Type `/almas` to open the picker; on submit it
--- hands a goal to the agent loop, which invokes the almas tool with the chosen
--- settings. This routes through the normal tool path (no separate execution).
-local ListPicker = require("n00n.list_picker")
+local TextInput = require("n00n.text_input")
 
 local ALMAS_MODES = { "supervised", "autonomous", "swarm" }
-
-local function build_launcher_items(prefs)
-  local items = {}
-  items[#items + 1] = {
-    label = "mode: " .. prefs.mode,
-    detail = "supervised | autonomous | swarm",
-  }
-  items[#items + 1] = {
-    label = "model_tier: " .. (prefs.model_tier or "strong"),
-    detail = "weak | medium | strong",
-  }
-  items[#items + 1] = {
-    label = "use_retrieval: " .. tostring(prefs.use_retrieval),
-    detail = "ground steps in repo context",
-  }
-  items[#items + 1] = {
-    label = "ibn_gate: " .. tostring(prefs.ibn_gate),
-    detail = "information-bottleneck β fan-out check",
-  }
-  items[#items + 1] = {
-    label = "quorum: " .. tostring(prefs.quorum),
-    detail = "EBFT diversity-aware validator quorum",
-  }
-  items[#items + 1] = {
-    label = "max_rounds: " .. tostring(prefs.max_rounds),
-    detail = "swarm only: coordination rounds",
-  }
-  items[#items + 1] = { label = "▶ Run almas", detail = "submit the goal" }
-  return items
-end
+local MODEL_TIERS = { "weak", "medium", "strong" }
 
 local function cycle(list, current)
   local idx = 1
-  for i, v in ipairs(list) do
-    if v == current then
+  for i, value in ipairs(list) do
+    if value == current then
       idx = i
       break
     end
@@ -411,11 +378,35 @@ local function cycle(list, current)
   return list[(idx % #list) + 1]
 end
 
-local function toggle(value)
-  return not value
+local function trim(value)
+  return (value or ""):match("^%s*(.-)%s*$")
 end
 
-local function run_launcher()
+local function agent_prompt(goal, prefs)
+  return string.format(
+    [[Use the almas tool now. Do not only describe ALMAS or restate this request.
+
+Goal:
+%s
+
+Configuration:
+- mode: %s
+- model_tier: %s
+- use_retrieval: %s
+- ibn_gate: %s
+- quorum: %s
+- max_rounds: %d]],
+    goal,
+    prefs.mode,
+    prefs.model_tier,
+    tostring(prefs.use_retrieval),
+    tostring(prefs.ibn_gate),
+    tostring(prefs.quorum),
+    prefs.max_rounds
+  )
+end
+
+local function run_launcher(initial_goal)
   local prefs = {
     mode = "supervised",
     model_tier = "strong",
@@ -424,62 +415,153 @@ local function run_launcher()
     quorum = true,
     max_rounds = 4,
   }
+  local goal = TextInput.new()
+  goal:insert_text(initial_goal or "")
+  local selected = 1
+  local editing_goal = trim(initial_goal) == ""
+  local width = 80
+  local buf = n00n.ui.buf()
+  local win
+
+  local function render()
+    local rows = {
+      { "Mode", prefs.mode },
+      { "Model tier", prefs.model_tier },
+      { "Retrieval", tostring(prefs.use_retrieval) },
+      { "IBN gate", tostring(prefs.ibn_gate) },
+      { "Quorum", tostring(prefs.quorum) },
+      { "Max rounds", tostring(prefs.max_rounds) },
+    }
+    local lines = {}
+    for i, row in ipairs(rows) do
+      local marker = selected == i and "❯ " or "  "
+      lines[#lines + 1] = {
+        { marker .. row[1] .. ": ", selected == i and "selected" or "dim" },
+        { row[2], selected == i and "selected" or "" },
+      }
+    end
+    lines[#lines + 1] = { { "", "" } }
+    local goal_style = selected == 7 and "selected" or "dim"
+    lines[#lines + 1] = { { (selected == 7 and "❯ " or "  ") .. "Goal", goal_style } }
+    local rendered = goal:render("  ", 2, width)
+    for _, line in ipairs(rendered.lines) do
+      lines[#lines + 1] = line
+    end
+    lines[#lines + 1] = { { "", "" } }
+    lines[#lines + 1] = {
+      { selected == 8 and "❯ Run ALMAS" or "  Run ALMAS", selected == 8 and "selected" or "item" },
+    }
+    buf:set_lines(lines)
+    if win then
+      if editing_goal then
+        win:set_cursor(8 + rendered.cursor_row)
+      elseif selected <= 6 then
+        win:set_cursor(selected)
+      elseif selected == 7 then
+        win:set_cursor(8)
+      else
+        win:set_cursor(#lines)
+      end
+    end
+  end
+
+  win = n00n.ui.open_win(buf, {
+    title = " ALMAS ",
+    footer = {
+      { "↑/↓", "navigate" },
+      { "Enter", "change/edit/run" },
+      { "Ctrl+Enter", "run" },
+      { "Esc", "cancel" },
+    },
+    width = "70%",
+    height = 16,
+    cursor_line = true,
+  })
+  width = win.width
+  render()
+
+  local function submit()
+    local value = trim(goal:value())
+    if value == "" then
+      selected = 7
+      editing_goal = true
+      n00n.ui.flash("Enter an ALMAS goal first")
+      render()
+      return false
+    end
+    local _, err = n00n.session.prompt(agent_prompt(value, prefs))
+    if err then
+      n00n.ui.flash("ALMAS: " .. err)
+      return false
+    end
+    win:close()
+    return true
+  end
 
   while true do
-    local items = build_launcher_items(prefs)
-    local choice = ListPicker.open(items, {
-      title = " ALMAS Launcher ",
-      footer = "enter: change/run · esc: cancel",
-    })
-    if choice.type ~= "choice" then
+    local event = win:recv()
+    if not event or event.type == "close" then
       return
+    elseif event.type == "resize" then
+      width = event.width
+      render()
+    elseif event.type == "paste" and editing_goal then
+      goal:insert_text(event.text)
+      render()
+    elseif event.type == "key" then
+      local key = event.key
+      if key == "esc" or key == "ctrl+c" then
+        win:close()
+        return
+      elseif key == "ctrl+enter" then
+        if submit() then
+          return
+        end
+      elseif editing_goal then
+        if key == "enter" then
+          editing_goal = false
+          selected = 8
+          render()
+        else
+          local result = goal:handle_key(key)
+          if result ~= TextInput.Result.IGNORED then
+            render()
+          end
+        end
+      elseif key == "up" then
+        selected = (selected - 2) % 8 + 1
+        render()
+      elseif key == "down" or key == "tab" then
+        selected = selected % 8 + 1
+        render()
+      elseif key == "enter" then
+        if selected == 1 then
+          prefs.mode = cycle(ALMAS_MODES, prefs.mode)
+        elseif selected == 2 then
+          prefs.model_tier = cycle(MODEL_TIERS, prefs.model_tier)
+        elseif selected == 3 then
+          prefs.use_retrieval = not prefs.use_retrieval
+        elseif selected == 4 then
+          prefs.ibn_gate = not prefs.ibn_gate
+        elseif selected == 5 then
+          prefs.quorum = not prefs.quorum
+        elseif selected == 6 then
+          prefs.max_rounds = prefs.max_rounds >= 8 and 2 or prefs.max_rounds + 1
+        elseif selected == 7 then
+          editing_goal = true
+        elseif submit() then
+          return
+        end
+        render()
+      end
     end
-    local label = items[choice.index].label
-    if label:find("mode:") then
-      prefs.mode = cycle(ALMAS_MODES, prefs.mode)
-    elseif label:find("model_tier:") then
-      prefs.model_tier = cycle({ "weak", "medium", "strong" }, prefs.model_tier)
-    elseif label:find("use_retrieval:") then
-      prefs.use_retrieval = toggle(prefs.use_retrieval)
-    elseif label:find("ibn_gate:") then
-      prefs.ibn_gate = toggle(prefs.ibn_gate)
-    elseif label:find("quorum:") then
-      prefs.quorum = toggle(prefs.quorum)
-    elseif label:find("max_rounds:") then
-      prefs.max_rounds = prefs.max_rounds >= 8 and 2 or prefs.max_rounds + 1
-    elseif label:find("Run almas") then
-      break
-    end
   end
-
-  local flags = {}
-  if not prefs.use_retrieval then
-    flags[#flags + 1] = "use_retrieval=false"
-  end
-  if not prefs.ibn_gate then
-    flags[#flags + 1] = "ibn_gate disabled"
-  end
-  if not prefs.quorum then
-    flags[#flags + 1] = "quorum disabled"
-  end
-  if prefs.mode == "swarm" then
-    flags[#flags + 1] = "max_rounds=" .. prefs.max_rounds
-  end
-
-  local summary = string.format(
-    "almas mode=%s model_tier=%s%s",
-    prefs.mode,
-    prefs.model_tier,
-    #flags > 0 and (" [" .. table.concat(flags, ", ") .. "]") or ""
-  )
-  n00n.ui.flash(summary)
-  return summary
 end
 
 n00n.api.register_command({
   name = "/almas",
-  description = "Launch ALMAS (supervised / autonomous / swarm) with ibn + quorum toggles",
-  handler = function()
-    run_launcher()
+  description = "Configure and run an ALMAS team for a goal",
+  handler = function(args)
+    run_launcher(trim(args))
   end,
 })

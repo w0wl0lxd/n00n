@@ -245,18 +245,18 @@ fn render_working(
 }
 
 #[test]
-fn working_indicator_renders_when_streaming() {
+fn working_state_does_not_overlay_thinking_status_on_chat() {
     let mut panel = MessagesPanel::new(UiConfig::default());
     panel.text_delta("hello");
     let terminal = render_working(&mut panel, 80, 10);
-    let buf = terminal.backend().buffer();
-    let last_row = buf.area.height - 1;
-    let row_text: String = (0..buf.area.width)
-        .filter_map(|x| buf.cell((x, last_row)).map(|c| c.symbol().to_string()))
-        .collect();
+    let text = buffer_text(&terminal);
     assert!(
-        row_text.contains("thinking..."),
-        "working indicator should render in last row: {row_text:?}"
+        text.contains("N00n"),
+        "streamed response stays in chat: {text:?}"
+    );
+    assert!(
+        !text.contains("thinking..."),
+        "working status belongs only in the bottom status bar: {text:?}"
     );
 }
 
@@ -636,15 +636,16 @@ fn fenced_code_copy_action_returns_code_without_fence() {
 }
 
 #[test]
-fn user_message_renders_as_bounded_card() {
+fn user_message_renders_as_compact_card() {
     let mut panel = MessagesPanel::new(UiConfig::default());
     panel.push(DisplayMessage::new(DisplayRole::User, "hello".into()));
     let terminal = render(&mut panel, 32, 8);
     let text = buffer_text(&terminal);
 
-    assert!(text.contains('╭'), "rendered buffer: {text}");
-    assert!(text.contains('╰'), "rendered buffer: {text}");
-    assert!(text.contains("You   hello"), "rendered buffer: {text}");
+    assert!(!text.contains('╭'), "rendered buffer: {text}");
+    assert!(!text.contains('╰'), "rendered buffer: {text}");
+    assert!(text.contains("│ You   hello"), "rendered buffer: {text}");
+    assert_eq!(panel.total_lines(), 1);
 }
 
 #[test]
@@ -682,11 +683,11 @@ fn partially_scrolled_user_card_does_not_replace_content_with_top_border() {
         DisplayRole::User,
         "first\nsecond\nthird".into(),
     ));
-    render(&mut panel, 24, 3);
+    render(&mut panel, 24, 2);
     panel.set_scroll_top(1);
-    let text = buffer_text(&render(&mut panel, 24, 3));
+    let text = buffer_text(&render(&mut panel, 24, 2));
 
-    assert!(text.contains("You   first"), "rendered buffer: {text}");
+    assert!(text.contains("│ second"), "rendered buffer: {text}");
     assert!(!text.contains('╭'), "rendered buffer: {text}");
 }
 
@@ -1331,6 +1332,9 @@ fn handle_click_on_done_tool_records_click_row() {
 fn handle_click_on_running_tool_forwards_live_without_recording() {
     let mut panel = MessagesPanel::new(UiConfig::default());
     panel.tool_start(start("t1", BASH_TOOL_NAME));
+    let live = Arc::new(n00n_agent::SharedBuf::new());
+    live.set_lines(vec![snap_line("streaming")]);
+    panel.register_live_buf("t1".into(), live);
     panel.tool_snapshot(
         "t1",
         BufferSnapshot::from_arc(Arc::new(vec![snap_line("streaming")])),
@@ -1344,6 +1348,29 @@ fn handle_click_on_running_tool_forwards_live_without_recording() {
         !panel.auto_scroll,
         "clicking a running tool should pause auto-scroll"
     );
+}
+
+#[test]
+fn handle_click_on_running_live_tool_before_first_snapshot_forwards_header_click() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.tool_start(start("t1", "task"));
+    panel.register_live_buf("t1".into(), Arc::new(n00n_agent::SharedBuf::new()));
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    panel.lua_event_handle = Some(handle);
+    render(&mut panel, 80, 24);
+
+    assert!(panel.handle_click(0, Rect::new(0, 0, 80, 24)));
+    assert_eq!(probe.try_recv(), Some(("click", vec![])));
+    assert!(!panel.auto_scroll);
+}
+
+#[test]
+fn running_tool_without_live_buffer_does_not_swallow_click() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.tool_start(start("t1", "task"));
+    render(&mut panel, 80, 24);
+
+    assert!(!panel.handle_click(0, Rect::new(0, 0, 80, 24)));
 }
 
 #[test]
