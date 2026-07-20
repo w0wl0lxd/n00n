@@ -267,7 +267,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k)
       results[#results + 1] = string.format("[%d] %s%s:\n%s", i, step.role, cost_line, r.text or "")
       total_cost = total_cost + (r.cost or 0)
 
-      if input.quorum ~= false and step.role == "reviewer" then
+      if input.quorum ~= false and (step.role == "tester" or step.role == "reviewer") then
         local verdict =
           quorum.validate(ctx, table.concat(results, "\n\n"), { n = 3, model = input.model, thinking = input.thinking })
         if not verdict.accepted then
@@ -486,7 +486,7 @@ local function run_launcher(initial_goal)
     use_retrieval = true,
     ibn_gate = true,
     quorum = true,
-    max_rounds = 4,
+    max_rounds = DEFAULT_SWARM_ROUNDS,
   }
   local model = TextInput.new()
   local goal = TextInput.new()
@@ -641,7 +641,7 @@ local function run_launcher(initial_goal)
         elseif selected == 8 then
           prefs.quorum = not prefs.quorum
         elseif selected == 9 then
-          prefs.max_rounds = prefs.max_rounds >= 8 and 2 or prefs.max_rounds + 1
+          prefs.max_rounds = prefs.max_rounds >= MAX_SWARM_ROUNDS and 1 or prefs.max_rounds + 1
         elseif selected == 10 then
           editing = "goal"
         elseif submit() then
