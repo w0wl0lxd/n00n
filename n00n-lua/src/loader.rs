@@ -92,6 +92,10 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/task"),
     },
     BundledPlugin {
+        name: "workflow",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/workflow"),
+    },
+    BundledPlugin {
         name: "almas",
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/almas"),
     },

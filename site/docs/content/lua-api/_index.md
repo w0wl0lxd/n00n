@@ -86,6 +86,7 @@ a string belongs.
 | [`n00n.ui.Win`](#n00n-ui-Win) | Handle to a floating or split window. |
 | [`n00n.ui.Buf`](#n00n-ui-Buf) | A content buffer that holds styled lines of text. |
 | [`n00n.uv`](#n00n-uv) | System and environment utilities, modelled after `vim.uv`. |
+| [`n00n.workflow`](#n00n-workflow) | Sandboxed workflow script compilation. |
 | [`n00n.yaml`](#n00n-yaml) | YAML encoding and decoding. |
 
 ## n00n {#n00n}
@@ -4647,6 +4648,71 @@ Returns nil when the variable is not set.
 
 ```lua
 local editor = n00n.uv.os_getenv("EDITOR") or "vi"
+```
+
+
+## n00n.workflow {#n00n-workflow}
+
+Sandboxed workflow script compilation.
+
+Plugins cannot reach Lua's `load`, so this compiles a workflow script
+with a caller-supplied environment table, keeping the script inside the
+primitives the plugin injects.
+
+```lua
+local fn, err = n00n.workflow.compile("return 1 + 1", {})
+local key = n00n.workflow.hash("stable payload")
+```
+
+---
+
+### `n00n.workflow.compile()` {#n00n-workflow-compile}
+
+```lua
+n00n.workflow.compile({source}, {env})
+```
+
+Compile {source} into a function whose global environment is exactly {env}.
+The chunk sees only the keys you put in {env}: anything else (n00n, os, io,
+require, print) reads as nil, so a workflow script stays inside the
+primitives the plugin injects. Returns (function, nil) on success, or
+(nil, error) when the source fails to compile.
+
+**Parameters:**
+
+- `{source}` (`string`) Lua source to compile.
+- `{env}` (`table`) The chunk's global environment.
+
+**Returns:** (`function|nil`, `string|nil`) The compiled chunk, or the compile error.
+
+**Example:**
+
+```lua
+local fn, err = n00n.workflow.compile("return agent({ prompt = 'hi' })", { agent = agent })
+if fn then print(fn()) end
+```
+
+---
+
+### `n00n.workflow.hash()` {#n00n-workflow-hash}
+
+```lua
+n00n.workflow.hash({data})
+```
+
+SHA-256 hex digest of {data}. Used by the workflow plugin for journal keys
+and run ids so identical agent opts collide only on a full 256-bit space.
+
+**Parameters:**
+
+- `{data}` (`string`) Bytes to hash (Lua string, treated as UTF-8 bytes).
+
+**Returns:** (`string`) Lowercase hex SHA-256 digest.
+
+**Example:**
+
+```lua
+local k = n00n.workflow.hash("prompt=hi")
 ```
 
 
