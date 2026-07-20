@@ -371,7 +371,7 @@ impl ToolInvocation for LuaToolInvocation {
         Some(Path::new(val))
     }
 
-    fn execute<'a>(self: Box<Self>, ctx: &'a ToolContext) -> ExecFuture<'a> {
+    fn execute(self: Box<Self>, ctx: &ToolContext) -> ExecFuture<'_> {
         let deadline = ctx.deadline;
         let plugin = self.plugin;
         let tool = self.tool;
@@ -538,8 +538,7 @@ fn validate_slot_prompt_compatibility(
         for &pid in prompts {
             if !pid.has_slot(slot) {
                 return Err(mlua::Error::runtime(format!(
-                    "slot '{}' is not available for prompt '{}'",
-                    slot, pid
+                    "slot '{slot}' is not available for prompt '{pid}'"
                 )));
             }
         }
@@ -561,8 +560,7 @@ fn parse_hint_content(lua: &Lua, spec: &Table) -> LuaResult<HintContent> {
             }
             if text.len() > MAX_HINT_CONTENT_SIZE {
                 return Err(mlua::Error::runtime(format!(
-                    "content exceeds the {} byte limit",
-                    MAX_HINT_CONTENT_SIZE
+                    "content exceeds the {MAX_HINT_CONTENT_SIZE} byte limit"
                 )));
             }
             Ok(HintContent::Static(text))

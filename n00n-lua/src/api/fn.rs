@@ -375,7 +375,7 @@ pub(crate) fn deliver_job_event(lua: &Lua, job_id: u32, event: &JobEvent) -> Lua
             JobEvent::Stdout(line) | JobEvent::Stderr(line) => {
                 Value::String(lua.create_string(line)?)
             }
-            JobEvent::Exit(code) => Value::Integer(*code as i64),
+            JobEvent::Exit(code) => Value::Integer(i64::from(*code)),
         };
         callback.call::<()>((job_id, arg))?;
     }
@@ -401,7 +401,7 @@ fn executable(_lua: &Lua, name: String) -> LuaResult<i32> {
         .map(|paths| env::split_paths(&paths).any(|dir| dir.join(&name).is_file()))
         .unwrap_or(false)
         || Path::new(&name).is_file();
-    Ok(if found { 1 } else { 0 })
+    Ok(i32::from(found))
 }
 
 lua_table! {

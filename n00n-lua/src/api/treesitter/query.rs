@@ -191,7 +191,7 @@ impl IterArgs {
         let stop_row = args_iter.next().and_then(lua_to_usize);
 
         Ok(Self {
-            lua_node: (&*lua_node).clone(),
+            lua_node: (*lua_node).clone(),
             source,
             start_row,
             stop_row,
@@ -216,7 +216,7 @@ impl IterEntry for CaptureEntry {
             meta_table.set(k.as_str(), v.as_str())?;
         }
         Ok(MultiValue::from_iter([
-            LuaValue::Integer((self.capture_index + 1) as i64),
+            LuaValue::Integer(i64::from(self.capture_index + 1)),
             lua.pack(self.node.clone())?,
             LuaValue::Table(meta_table),
             LuaValue::Table(lua.create_table()?),
@@ -239,7 +239,7 @@ impl IterEntry for MatchEntry {
             for (j, n) in nodes.iter().enumerate() {
                 nodes_table.raw_set(j + 1, n.clone())?;
             }
-            captures_table.raw_set((*cap_idx as i64) + 1, nodes_table)?;
+            captures_table.raw_set(i64::from(*cap_idx) + 1, nodes_table)?;
         }
         let meta_table = lua.create_table()?;
         for (k, v) in &self.metadata {
