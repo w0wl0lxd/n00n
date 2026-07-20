@@ -17,7 +17,7 @@ static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     max_tokens_field: "max_tokens",
     include_stream_usage: true,
     provider_name: "Mistral",
-    supports_prompt_cache_key: false,
+    supports_prompt_cache_key: true,
     supports_prompt_cache_breakpoint: false,
 };
 

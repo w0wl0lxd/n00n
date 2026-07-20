@@ -24,8 +24,8 @@ static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     max_tokens_field: "max_tokens",
     include_stream_usage: true,
     provider_name: "OpenRouter",
-    supports_prompt_cache_key: false,
-    supports_prompt_cache_breakpoint: false,
+    supports_prompt_cache_key: true,
+    supports_prompt_cache_breakpoint: true,
 };
 
 pub(crate) fn models() -> &'static [ModelEntry] {
