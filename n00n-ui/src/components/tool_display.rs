@@ -17,8 +17,8 @@ use unicode_width::UnicodeWidthStr;
 
 use n00n_providers::{ModelPricing, TokenUsage};
 
-use jiff::Timestamp;
 use jiff::tz::TimeZone;
+use jiff::Timestamp;
 
 use crate::markdown::{should_truncate, text_to_lines, truncate_output, truncation_notice};
 use n00n_agent::{
@@ -52,7 +52,7 @@ pub struct RoleStyle {
 
 pub fn assistant_style() -> RoleStyle {
     RoleStyle {
-        prefix: "N00n  ",
+        prefix: "n00n  ",
         text_style: theme::current().assistant,
         prefix_style: theme::current().assistant_prefix,
         use_markdown: true,
