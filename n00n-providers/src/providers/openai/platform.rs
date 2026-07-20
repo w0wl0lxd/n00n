@@ -104,7 +104,7 @@ fn incremental_for_state<'a>(
         state.last_message_count = 0;
     }
 
-    (None, &messages[state.last_message_count..])
+    (None, messages)
 }
 
 fn record_in_state(
