@@ -89,6 +89,7 @@ pub struct Line {
 }
 
 impl Line {
+    #[must_use]
     pub fn blank() -> Self {
         Self {
             kind: LineKind::Blank,
@@ -96,15 +97,18 @@ impl Line {
         }
     }
 
+    #[must_use]
     pub fn width(&self) -> usize {
         self.spans.iter().map(|s| s.text.width()).sum()
     }
 
+    #[must_use]
     pub fn is_blank(&self) -> bool {
         self.spans.is_empty() || self.spans.iter().all(|s| s.text.is_empty())
     }
 }
 
+#[must_use]
 pub fn render(text: &str, width: u16) -> Vec<Line> {
     Renderer::new().render(text, width, 0)
 }
@@ -131,12 +135,14 @@ impl Default for Renderer {
 }
 
 impl Renderer {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Skip paragraph/heading/list wrapping (ratatui re-wraps those at
     /// paint time). Code blocks and tables still wrap.
+    #[must_use]
     pub fn unwrapped() -> Self {
         Self {
             wrap_paragraphs: false,
@@ -322,7 +328,7 @@ fn render_line_block(lb: &LineBlock, lines: &mut Vec<Line>, ctx: &RenderCtx) {
     // Otherwise it shares row 1 and continuations indent to align.
     let (first_row_marker, cont_indent, content_width) = if marker_width >= width {
         if let Some(mut mk) = marker {
-            mk.text = mk.text.trim_start_matches(' ').to_owned();
+            mk.text = String::from(mk.text.trim_start_matches(' '));
             lines.push(Line {
                 kind: kind.clone(),
                 spans: vec![mk],
@@ -395,7 +401,7 @@ fn ensure_blank_line(lines: &mut Vec<Line>) {
 fn fit_width(text: &str, max_width: usize) -> usize {
     let mut width = 0;
     for (i, ch) in text.char_indices() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        let cw = UnicodeWidthChar::width(ch).map_or(0, |w| w);
         if width + cw > max_width {
             return i;
         }
@@ -507,7 +513,7 @@ fn constrain_col_widths(col_widths: &mut [usize], available: usize) {
     }
     let mut excess = col_widths.iter().sum::<usize>().saturating_sub(available);
     while excess > 0 {
-        let max_w = col_widths.iter().copied().max().unwrap_or(0);
+        let max_w = col_widths.iter().copied().max().map_or(0, |v| v);
         if max_w <= MIN_COL_WIDTH {
             break;
         }
@@ -551,7 +557,7 @@ fn wrap_spans(spans: Vec<Span>, max_width: usize) -> Vec<Vec<Span>> {
                 }
                 result.push(mem::take(&mut current));
                 remaining = max_width;
-                text = text.strip_prefix(' ').unwrap_or(text);
+                text = text.strip_prefix(' ').map_or(text, |s| s);
                 continue;
             }
             let (take, skip) = if fits < text.len() {
@@ -615,7 +621,7 @@ fn render_table(
     width: u16,
     persistent_widths: &mut Vec<usize>,
 ) -> Vec<Line> {
-    let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let col_count = rows.iter().map(Vec::len).max().map_or(0, |v| v);
     if col_count == 0 {
         return Vec::new();
     }
@@ -667,12 +673,12 @@ fn render_table(
 
         let wrapped_cells: Vec<Vec<Vec<Span>>> = (0..col_count)
             .map(|c| {
-                let cell = row.get(c).map(String::as_str).unwrap_or("");
+                let cell = row.get(c).map_or("", String::as_str);
                 wrap_spans(cell_spans(cell, header), col_widths[c])
             })
             .collect();
 
-        let row_height = wrapped_cells.iter().map(|c| c.len()).max().unwrap_or(1);
+        let row_height = wrapped_cells.iter().map(Vec::len).max().map_or(1, |v| v);
         let row_emphasis = if header {
             Emphasis::BOLD
         } else {
@@ -717,14 +723,17 @@ fn render_table(
     lines
 }
 
+#[must_use]
 pub fn hr_text(width: u16) -> String {
     iter::repeat_n(HR_CHAR, width as usize).collect()
 }
 
+#[must_use]
 pub fn truncate_long_lines(text: &str) -> Cow<'_, str> {
     truncate_long_lines_at(text, TOOL_OUTPUT_MAX_LINE_BYTES)
 }
 
+#[must_use]
 pub fn truncate_long_lines_at(text: &str, max_bytes: usize) -> Cow<'_, str> {
     if !text.lines().any(|l| l.len() > max_bytes) {
         return Cow::Borrowed(text);

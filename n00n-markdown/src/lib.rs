@@ -51,6 +51,7 @@ impl Emphasis {
         underline: true,
     };
 
+    #[must_use]
     pub fn merge(self, other: Self) -> Self {
         Self {
             bold: self.bold || other.bold,
@@ -60,6 +61,7 @@ impl Emphasis {
         }
     }
 
+    #[must_use]
     pub fn is_empty(self) -> bool {
         !self.bold && !self.italic && !self.strike && !self.underline
     }
@@ -126,6 +128,7 @@ pub enum Block {
     },
 }
 
+#[must_use]
 pub fn single_code_block(text: &str) -> Option<&str> {
     let fence = find_code_fence(text)?;
     if !text[..fence.before_end].trim().is_empty() || !text[fence.block_end..].trim().is_empty() {
@@ -134,6 +137,7 @@ pub fn single_code_block(text: &str) -> Option<&str> {
     Some(fence.code)
 }
 
+#[must_use]
 pub fn parse(text: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut rest = text;
@@ -284,6 +288,7 @@ fn classify_line(line: &str) -> LineBlock {
     }
 }
 
+#[must_use]
 pub fn block_prefix(kind: &BlockKind) -> Option<String> {
     match kind {
         BlockKind::UnorderedListItem { depth } => {
@@ -302,7 +307,7 @@ fn parse_heading(line: &str) -> Option<(u8, &str)> {
         return None;
     }
     let rest = &line[hashes..];
-    let level = hashes as u8;
+    let level = u8::try_from(hashes).ok()?;
     if let Some(stripped) = rest.strip_prefix(' ') {
         Some((level, stripped.trim_end()))
     } else if rest.is_empty() {
@@ -364,8 +369,8 @@ fn is_separator_row(line: &str) -> bool {
 
 fn parse_table_cells(line: &str) -> Vec<String> {
     let t = line.trim();
-    let inner = t.strip_prefix('|').unwrap_or(t);
-    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    let inner = t.strip_prefix('|').map_or(t, |s| s);
+    let inner = inner.strip_suffix('|').map_or(inner, |s| s);
 
     let bytes = inner.as_bytes();
     let mut cells = Vec::new();
@@ -390,7 +395,10 @@ fn parse_table_cells(line: &str) -> Vec<String> {
             current = String::new();
             i += 1;
         } else {
-            let ch = inner[i..].chars().next().unwrap();
+            let Some(ch) = inner[i..].chars().next() else {
+                i += 1;
+                continue;
+            };
             current.push(ch);
             i += ch.len_utf8();
         }
@@ -478,6 +486,7 @@ fn find_code_fence(text: &str) -> Option<CodeFence<'_>> {
 
 /// Emphasis composes additively. Code spans are atomic and carry the
 /// surrounding emphasis as a separate modifier.
+#[must_use]
 pub fn parse_inline(text: &str) -> Vec<InlineSpan> {
     parse_inline_impl(text, Emphasis::default(), ParseMode::WithCode)
 }
@@ -503,7 +512,7 @@ fn parse_inline_impl(text: &str, base: Emphasis, mode: ParseMode) -> Vec<InlineS
             }
             match mode {
                 ParseMode::WithCode => {
-                    spans.extend(parse_inline_impl(plain, base, ParseMode::EmphasisOnly))
+                    spans.extend(parse_inline_impl(plain, base, ParseMode::EmphasisOnly));
                 }
                 ParseMode::EmphasisOnly => spans.push(InlineSpan::text(plain.to_owned(), base)),
             }
@@ -951,7 +960,7 @@ mod tests {
 
     #[test]
     fn parse_inline_never_panics_on_arbitrary_unicode() {
-        let mut rng = fastrand::Rng::with_seed(0xC0FFEE);
+        let mut rng = fastrand::Rng::with_seed(0x00C0_FFEE);
         for _ in 0..500 {
             let n = rng.usize(0..200);
             let mut s = String::with_capacity(n);
