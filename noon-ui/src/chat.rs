@@ -243,7 +243,8 @@ impl Chat {
     }
 
     pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool, is_working: bool) {
-        self.messages_panel.view(frame, area, has_selection, is_working);
+        self.messages_panel
+            .view(frame, area, has_selection, is_working);
     }
 
     pub fn scroll_top(&self) -> u16 {

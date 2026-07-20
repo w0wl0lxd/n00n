@@ -965,7 +965,6 @@ enum ScanRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScannedHeader {
     id: NoonId,
-    #[serde(default)]
     cwd: String,
     title: String,
     updated_at: u64,

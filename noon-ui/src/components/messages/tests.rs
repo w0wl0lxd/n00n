@@ -1171,7 +1171,9 @@ fn auto_scroll_approaches_bottom_smoothly() {
     );
 
     for _ in 0..12 {
-        terminal.draw(|f| panel.view(f, f.area(), false, panel.is_working())).unwrap();
+        terminal
+            .draw(|f| panel.view(f, f.area(), false, panel.is_working()))
+            .unwrap();
     }
     assert_eq!(
         panel.scroll_top, 40,
