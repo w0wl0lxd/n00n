@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use flume::Sender;
 use n00n_storage::StateDir;
@@ -40,13 +41,27 @@ pub(crate) const PLAN_MODELS: &[&str] = &[
 
 const CODEX_PLAN_CONTEXT_WINDOW: u32 = 272_000;
 const GPT_5_6_PLAN_CONTEXT_WINDOW: u32 = 372_000;
+const SESSION_STATE_TTL: Duration = Duration::from_secs(3600); // 1 hour
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct OpenAiSessionState {
     last_response_id: Option<String>,
     last_message_count: usize,
     tools_hash: Option<String>,
     messages_hash: Option<u64>,
+    last_used: Instant,
+}
+
+impl Default for OpenAiSessionState {
+    fn default() -> Self {
+        Self {
+            last_response_id: None,
+            last_message_count: 0,
+            tools_hash: None,
+            messages_hash: None,
+            last_used: Instant::now(),
+        }
+    }
 }
 
 fn hash_messages(messages: &[Message]) -> u64 {
@@ -238,8 +253,14 @@ impl OpenAi {
         messages: &'a [Message],
     ) -> (Option<String>, &'a [Message]) {
         let mut state = self.session_state.lock().unwrap();
+
+        // Opportunistically evict stale sessions
+        let now = Instant::now();
+        state.retain(|_, s| now.duration_since(s.last_used) < SESSION_STATE_TTL);
+
         if let Some(sid) = session_id {
             let session_state = state.entry(sid.clone()).or_default();
+            session_state.last_used = now;
             incremental_for_state(session_state, tools_hash, messages)
         } else {
             (None, messages)
@@ -256,6 +277,7 @@ impl OpenAi {
         if let Some(sid) = session_id {
             let mut state = self.session_state.lock().unwrap();
             let session_state = state.entry(sid.clone()).or_default();
+            session_state.last_used = Instant::now();
             record_in_state(session_state, response_id, tools_hash, messages);
         }
     }
