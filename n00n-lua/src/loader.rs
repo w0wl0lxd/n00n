@@ -608,7 +608,7 @@ mod tests {
     fn with_jit_off_loads_builtins_and_registers_tools() {
         let reg = Arc::new(ToolRegistry::new());
         let mut host = PluginHost::with_jit(Arc::clone(&reg), false).unwrap();
-        host.load_builtins(&PluginsConfig::from_plugins(HashMap::new()))
+        host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))
             .unwrap();
         assert!(reg.has("glob"));
     }
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn load_builtins_on_disabled_host_is_noop() {
         let mut host = PluginHost::disabled();
-        host.load_builtins(&PluginsConfig::from_plugins(HashMap::new()))
+        host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))
             .unwrap();
     }
 
@@ -677,7 +677,7 @@ mod tests {
     fn pipelined_load_registers_every_builtin() {
         let reg = Arc::new(ToolRegistry::new());
         let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
-        host.load_builtins(&PluginsConfig::from_plugins(HashMap::new()))
+        host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))
             .unwrap();
         for tool in ["read", "grep", "glob", "bash"] {
             assert!(reg.has(tool), "pipelined load must register {tool}");
@@ -873,7 +873,7 @@ mod tests {
     #[test]
     fn disabled_host_skips_load_builtins() {
         let mut host = PluginHost::disabled();
-        let config = PluginsConfig::from_plugins(HashMap::new());
+        let config = PluginsConfig::from_plugins(&HashMap::new());
         assert!(
             !config.names.is_empty(),
             "default config enables builtin plugins"
