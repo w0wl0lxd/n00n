@@ -362,27 +362,27 @@ impl Provider for Google {
                     .await;
             }
 
-            let (use_cache, maybe_delete_name) = {
+            let (cached_content_name, old_name_to_delete) = {
                 let mut cache_state = self.cache_state.lock().unwrap();
                 if let Some(state) = cache_state.get(sid) {
                     if state.is_valid(current_tools_hash, current_message_count) {
-                        (true, None)
+                        (Some(state.name.clone()), None)
                     } else {
-                        let old_state = cache_state.remove(sid);
-                        (false, old_state.map(|s| s.name))
+                        let old_name = state.name.clone();
+                        cache_state.remove(sid);
+                        (None, Some(old_name))
                     }
                 } else {
-                    (false, None)
+                    (None, None)
                 }
             };
 
-            if let Some(name) = maybe_delete_name {
+            if let Some(name) = old_name_to_delete {
                 let _ = self.delete_cached_content(&name).await;
             }
 
-            let cached_content_name = if use_cache {
-                let cache_state = self.cache_state.lock().unwrap();
-                cache_state.get(sid).map(|s| s.name.clone()).unwrap_or_default()
+            let cached_content_name = if let Some(name) = cached_content_name {
+                name
             } else {
                 match self
                     .create_cached_content(&model.id, system, tools, messages)
