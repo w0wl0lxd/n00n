@@ -148,17 +148,17 @@ async fn resolve_model(
 /// read), so orchestrators like ALMAS can report cost without bundling a
 /// price table.
 ///
-/// @param spec string Model spec, e.g. `"anthropic/claude-3-5-haiku-20241022"`.
+/// @param spec string Model spec, e.g. `"anthropic/claude-haiku-4-5"`.
 /// @param input_tokens integer Prompt tokens.
 /// @param output_tokens integer Completion tokens.
 /// @return (number?, string?) Estimated USD cost, or `(nil, err)` on failure.
 /// @example
-/// local cost, err = noon.agent.usage_cost("anthropic/claude-3-5-haiku-20241022", 1200, 300)
+/// local cost, err = noon.agent.usage_cost("anthropic/claude-haiku-4-5", 1200, 300)
 /// if err then error(err) end
 /// print(string.format("$%.4f", cost))
 #[lua_fn]
-async fn usage_cost(
-    _lua: Lua,
+fn usage_cost(
+    _lua: &Lua,
     spec: String,
     input_tokens: u32,
     output_tokens: u32,

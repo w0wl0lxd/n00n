@@ -826,7 +826,7 @@ price table.
 
 **Parameters:**
 
-- `{spec}` (`string`) Model spec, e.g. `"anthropic/claude-3-5-haiku-20241022"`.
+- `{spec}` (`string`) Model spec, e.g. `"anthropic/claude-haiku-4-5"`.
 - `{input_tokens}` (`integer`) Prompt tokens.
 - `{output_tokens}` (`integer`) Completion tokens.
 
@@ -835,7 +835,7 @@ price table.
 **Example:**
 
 ```lua
-local cost, err = noon.agent.usage_cost("anthropic/claude-3-5-haiku-20241022", 1200, 300)
+local cost, err = noon.agent.usage_cost("anthropic/claude-haiku-4-5", 1200, 300)
 if err then error(err) end
 print(string.format("$%.4f", cost))
 ```
