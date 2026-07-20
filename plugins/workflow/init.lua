@@ -119,7 +119,10 @@ local function parallel(fns, popts)
     error("parallel: fns must be an array of functions", 0)
   end
   popts = popts or {}
-  local concurrency = math.max(1, math.min(popts.concurrency or opts.max_concurrent_agents, opts.max_concurrent_agents))
+  local concurrency = opts.max_concurrent_agents
+  if type(popts.concurrency) == "number" then
+    concurrency = math.max(1, math.min(popts.concurrency, opts.max_concurrent_agents))
+  end
   local sem = noon.async.semaphore(concurrency)
   local wrapped = {}
   for i, f in ipairs(fns) do
@@ -174,7 +177,7 @@ local function make_agent(ctx, progress)
     if subagent_type ~= "general" and subagent_type ~= "research" then
       error("agent: unknown subagent_type: " .. tostring(subagent_type), 0)
     end
-    local label = aopts.label or aopts.prompt:sub(1, NAME_LABEL_MAX)
+    local label = aopts.label or noon.ui.truncate_text(aopts.prompt, NAME_LABEL_MAX).head
 
     -- Compile before spending tokens: a bad schema costs zero tokens.
     local validator
@@ -412,8 +415,9 @@ local function handler(input, ctx)
   end
 
   noon.async.run(function()
-    local permit = workflow_semaphore:acquire()
+    local permit
     local ok, result = pcall(function()
+      permit = workflow_semaphore:acquire()
       local env = build_env(ctx, progress, input.inputs or {}, captured)
       local run_fn, load_err = noon.workflow.compile(input.script, env)
       if not run_fn then
@@ -428,7 +432,9 @@ local function handler(input, ctx)
       end
       return output
     end)
-    permit:release()
+    if permit then
+      permit:release()
+    end
     if not ok then
       error(result, 0)
     end
@@ -440,8 +446,8 @@ end
 
 local function header(input)
   if type(input.script) == "string" then
-    local name = input.script:match('meta%s*%(.-name%s*=%s*"([^"]+)"')
-      or input.script:match("meta%s*%(.-name%s*=%s*'([^']+)'")
+    local name = input.script:match('meta%s*%(%s*[%s%S]-name%s*=%s*"([^"]+)"')
+      or input.script:match("meta%s*%(%s*[%s%S]-name%s*=%s*'([^']+)'")
     if name then
       return name
     end
