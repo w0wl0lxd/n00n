@@ -40,6 +40,8 @@ Notes:
 4. Tell it to return concise summaries with file:line refs, not full file contents.
 5. With `auto_tier`, the model tier is picked from the prompt (cheap work -> weak,
    hard work -> strong). This is opt-in and off by default.
+6. Set background=true to start a non-blocking agent and receive an agent_id.
+   Use agent_control to inspect, steer, or stop it.
 ]]
 
 local schema = {
@@ -74,6 +76,10 @@ local schema = {
     auto_tier = {
       type = "boolean",
       description = "Pick model_tier from the prompt automatically (opt-in). Overrides model_tier when set.",
+    },
+    background = {
+      type = "boolean",
+      description = "Start this task in a separate background session and return its agent_id immediately.",
     },
     output_schema = {
       description = "JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string.",
@@ -141,6 +147,26 @@ local function make_preview(ctx, description)
 end
 
 local function handler(input, ctx)
+  if input.background then
+    local prompt = "Use the task tool now with background=false. Do not only describe this request.\n\n"
+      .. n00n.json.encode({
+        description = input.description,
+        prompt = input.prompt,
+        subagent_type = input.subagent_type,
+        model = input.model,
+        model_tier = input.model_tier,
+        thinking = input.thinking,
+        auto_tier = input.auto_tier,
+        output_schema = input.output_schema,
+        background = false,
+      })
+    local id, err = n00n.session.new({ prompt = prompt, focus = false })
+    if not id then
+      return { llm_output = err, is_error = true }
+    end
+    return n00n.json.encode({ agent_id = id, status = "started" })
+  end
+
   local subagent_type = input.subagent_type or "research"
   if subagent_type ~= "research" and subagent_type ~= "general" then
     return { llm_output = "unknown subagent type: " .. subagent_type, is_error = true }
@@ -213,19 +239,6 @@ local function handler(input, ctx)
 
   local preview = make_preview(ctx, input.description or "task")
 
-  local function on_finish(err, result)
-    if err then
-      ctx:finish({ llm_output = "task failed: " .. tostring(err), is_error = true, body = preview.buf })
-    else
-      ctx:finish({
-        llm_output = result.llm_output,
-        body = preview.buf,
-        is_error = result.is_error,
-        format = result.format,
-      })
-    end
-  end
-
   n00n.async.run(function()
     local permit = semaphore:acquire()
     local ok, out = pcall(function()
@@ -286,10 +299,16 @@ local function handler(input, ctx)
     end)
     permit:release()
     if not ok then
-      error(out, 0)
+      ctx:finish({ llm_output = "task failed: " .. tostring(out), is_error = true, body = preview.buf })
+      return
     end
-    return out
-  end, on_finish)
+    ctx:finish({
+      llm_output = out.llm_output,
+      body = preview.buf,
+      is_error = out.is_error,
+      format = out.format,
+    })
+  end)
 
   return nil
 end

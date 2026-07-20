@@ -4,7 +4,6 @@
 -- subagent on a cost-aware model tier. Built entirely on n00n.agent.* and the
 -- existing provider/model-tier machinery — no core changes.
 local memory = require("mem")
-local refine = require("refine")
 local retrieve = require("retrieve")
 local roles = require("roles")
 local ibn = require("ibn")
@@ -58,6 +57,8 @@ Notes:
 4. With compact (opt-in), retrieved context is TOON-encoded to save tokens (PR-C).
 5. swarm mode runs bounded rounds (max_rounds); the β gate may fall back to a
    single strong-agent pass when coordination would not help.
+6. Set background=true to start a non-blocking ALMAS run and receive an agent_id.
+   Use agent_control to inspect, steer, or stop it.
 ]]
 
 local schema = {
@@ -113,6 +114,10 @@ local schema = {
       type = "boolean",
       default = true,
       description = "Require validator quorum for autonomous validation and swarm acceptance.",
+    },
+    background = {
+      type = "boolean",
+      description = "Start ALMAS in a separate background session and return its agent_id immediately.",
     },
     compact = {
       type = "boolean",
@@ -305,6 +310,20 @@ end
 local finish_run
 
 local function handler(input, ctx)
+  if input.background then
+    local forwarded = {}
+    for key, value in pairs(input) do
+      forwarded[key] = value
+    end
+    forwarded.background = false
+    local prompt = "Use the almas tool now. Do not only describe this request.\n\n" .. n00n.json.encode(forwarded)
+    local id, err = n00n.session.new({ prompt = prompt, focus = false })
+    if not id then
+      return { llm_output = err, is_error = true }
+    end
+    return n00n.json.encode({ agent_id = id, status = "started" })
+  end
+
   input.mode = input.mode or "supervised"
   input.model_tier = input.model_tier or "strong"
   if input.auto_tier == nil then
@@ -313,7 +332,7 @@ local function handler(input, ctx)
   if input.thinking == nil then
     input.thinking = "max"
   end
-  local goal = refine.refine_goal(ctx, input.goal, input)
+  local goal = input.goal
 
   local slug = memory.slug(input.goal)
   local prior = memory.load(ctx, slug)

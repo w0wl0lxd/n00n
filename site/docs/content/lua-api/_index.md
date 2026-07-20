@@ -2619,6 +2619,22 @@ local state, err = n00n.session.prompt("run the tests", { session = id })
 
 ---
 
+### `n00n.session.cancel()` {#n00n-session-cancel}
+
+```lua
+n00n.session.cancel({id})
+```
+
+Cancels the current turn in a live session without deleting the session.
+
+**Parameters:**
+
+- `{id}` (`string`) Live session id.
+
+**Returns:** (`boolean|nil`, `string|nil`) true on success, or nil and an error.
+
+---
+
 ### `n00n.session.set_title()` {#n00n-session-set_title}
 
 ```lua

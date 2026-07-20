@@ -962,6 +962,10 @@ impl App {
         self.submit_or_queue(sub.into())
     }
 
+    pub(crate) fn cancel_current_run(&mut self) -> Vec<Action> {
+        self.handle_cancel()
+    }
+
     fn handle_cancel(&mut self) -> Vec<Action> {
         let cancelled_run = self.run_id;
         self.run_id += 1;

@@ -279,6 +279,10 @@ impl Chat {
         self.messages_panel.copy_at(row, col, area)
     }
 
+    pub fn tool_id_at(&self, row: u16, area: Rect) -> Option<&str> {
+        self.messages_panel.tool_id_at(row, area)
+    }
+
     pub fn handle_click(&mut self, row: u16, area: Rect) {
         self.messages_panel.handle_click(row, area);
     }
