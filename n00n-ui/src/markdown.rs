@@ -141,13 +141,13 @@ pub(crate) fn hr_line(width: u16, style: Style) -> Line<'static> {
     Line::from(Span::styled(render::hr_text(width), style))
 }
 
-fn prefix_span(prefix: &'static str, style: Style) -> Span<'static> {
+pub(crate) fn prefix_span(prefix: &'static str, style: Style) -> Span<'static> {
     Span::styled(prefix, style.add_modifier(Modifier::BOLD))
 }
 
 /// Returns `Line::default()` when the prefix is empty so callers can use it
 /// as a blank first line without an empty styled span sneaking in.
-fn prefix_line(prefix: &'static str, style: Style) -> Line<'static> {
+pub(crate) fn prefix_line(prefix: &'static str, style: Style) -> Line<'static> {
     if prefix.is_empty() {
         Line::default()
     } else {
