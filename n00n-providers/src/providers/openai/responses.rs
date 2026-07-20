@@ -370,7 +370,7 @@ impl ResponseAccumulator {
                                 .await?;
                         }
                         self.tool_accumulators.push(ToolAccumulator {
-                            output_index: self.tool_accumulators.len() as u64,
+                            output_index,
                             call_id,
                             name,
                             arguments,
