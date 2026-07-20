@@ -199,6 +199,25 @@ impl Provider for OpenAi {
                     .await;
             }
 
+            if super::websocket::is_websocket_model(&model.id) {
+                let stream_timeout = self.compat.stream_timeout();
+                return self
+                    .with_oauth_retry(|| async {
+                        let auth = self.current_auth();
+                        super::websocket::stream_message(
+                            model,
+                            messages,
+                            system,
+                            tools,
+                            event_tx,
+                            &auth,
+                            stream_timeout,
+                        )
+                        .await
+                    })
+                    .await;
+            }
+
             let mut body = self.compat.build_body(model, messages, system, tools);
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);

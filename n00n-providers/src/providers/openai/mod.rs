@@ -1,6 +1,7 @@
 pub mod auth;
 mod platform;
 pub(crate) mod responses;
+pub(crate) mod websocket;
 
 pub use platform::OpenAi;
 
