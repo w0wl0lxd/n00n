@@ -54,7 +54,7 @@ local function handler(input)
   end
 
   if input.action == "status" then
-    local agent, err = find_agent(input.agent_id)
+    local agent, err = n00n.session.status(input.agent_id)
     if not agent then
       return { llm_output = err, is_error = true }
     end
