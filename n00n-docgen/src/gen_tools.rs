@@ -76,6 +76,29 @@ fn first_paragraph(desc: &str) -> &str {
     desc.split("\n\n").next().unwrap_or(desc)
 }
 
+fn schema_type(schema: &Value) -> String {
+    match schema.get("type") {
+        Some(Value::String(ty)) => ty.clone(),
+        Some(Value::Array(types)) => types
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("/"),
+        _ => schema
+            .get("anyOf")
+            .and_then(Value::as_array)
+            .map(|variants| {
+                variants
+                    .iter()
+                    .map(schema_type)
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .filter(|types| !types.is_empty())
+            .unwrap_or_else(|| "string".to_string()),
+    }
+}
+
 fn extract_params(schema: &Value) -> Vec<Param> {
     let properties = match schema.get("properties").and_then(|p| p.as_object()) {
         Some(p) => p,
@@ -89,10 +112,7 @@ fn extract_params(schema: &Value) -> Vec<Param> {
 
     let mut params = Vec::new();
     for (name, prop) in properties {
-        let raw_type = prop
-            .get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("string");
+        let raw_type = schema_type(prop);
         let raw_desc = prop
             .get("description")
             .and_then(|d| d.as_str())
@@ -101,7 +121,7 @@ fn extract_params(schema: &Value) -> Vec<Param> {
         let (default, description) = extract_default(raw_desc);
         params.push(Param {
             name: name.clone(),
-            ty: raw_type.to_string(),
+            ty: raw_type,
             required: is_required,
             default,
             description,
@@ -381,6 +401,18 @@ mod tests {
         let (default, cleaned) = extract_default(input);
         assert_eq!(default, expected_default);
         assert!(cleaned.starts_with(remaining_prefix), "cleaned: {cleaned}");
+    }
+
+    #[test_case(serde_json::json!({ "type": "string" }), "string"; "single")]
+    #[test_case(serde_json::json!({ "type": ["string", "integer"] }), "string/integer"; "type union")]
+    #[test_case(
+        serde_json::json!({ "anyOf": [{ "type": "string" }, { "type": "integer" }] }),
+        "string/integer";
+        "any_of_union"
+    )]
+    #[test_case(serde_json::json!({}), "string"; "missing")]
+    fn formats_schema_type(input: Value, expected: &str) {
+        assert_eq!(schema_type(&input), expected);
     }
 
     #[test]

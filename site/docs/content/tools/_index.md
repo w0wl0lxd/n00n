@@ -172,7 +172,7 @@ Launch an ALMAS team. A supervisor decomposes an SDLC goal into role agents and 
 | `use_retrieval` | boolean | no |  | Ground steps with repo retrieval. |
 | `mode` | string | no |  | "supervised" (default, return the plan for review), "autonomous" (run the plan), or "swarm" (decentralized SwarmSys rounds). |
 | `auto_tier` | boolean | no |  | Route each subagent tier from its step prompt. Defaults to true unless an exact model is set. |
-| `thinking` | object | no |  | Thinking mode for ALMAS agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "max". |
+| `thinking` | string/integer | no |  | Thinking mode for ALMAS agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "max". |
 
 ### `task` *(lua plugin)*
 
@@ -186,7 +186,7 @@ Launch an autonomous subagent to perform tasks independently. Best combined with
 | `model` | string | no | Exact model spec (optional, e.g. openai/gpt-5.6-luna). Overrides model_tier. |
 | `model_tier` | string | no | Model tier (optional, omit to use current model, capped at current tier):<br>- "strong" (e.g. Opus): Deep reasoning, complex architecture, subtle bugs, most critical sections. ~5x cost of medium.<br>- "medium" (e.g. Sonnet): Balanced. Refactors, features, multi-file changes.<br>- "weak" (e.g. Haiku): Fast/cheap. Search, summarize, boilerplate, simple edits. |
 | `prompt` | string | yes | Detailed task prompt for the agent |
-| `thinking` | object | no | Thinking mode: "off", "adaptive", "minimal", "low", "medium", "high", "xhigh", "max", or a token budget. Omit to inherit the user setting. |
+| `thinking` | string/integer | no | Thinking mode: "off", "adaptive", "minimal", "low", "medium", "high", "xhigh", "max", or a token budget. Omit to inherit the user setting. |
 | `subagent_type` | string | no | Subagent type: "research" (read-only, default) or "general" (can modify files) |
 
 ### `todo_write` *(lua plugin)*
