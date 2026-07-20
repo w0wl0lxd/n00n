@@ -15,7 +15,7 @@ end
 
 case("noon_agent_has_expected_functions", function()
   assert(type(noon.agent) == "table", "noon.agent must be a table")
-  local expected = { "resolve_model", "system_prompt", "tools", "call_tool", "session" }
+  local expected = { "resolve_model", "system_prompt", "tools", "call_tool", "session", "usage_cost" }
   for _, fn_name in ipairs(expected) do
     eq(type(noon.agent[fn_name]), "function", "noon.agent." .. fn_name .. " must be a function")
   end

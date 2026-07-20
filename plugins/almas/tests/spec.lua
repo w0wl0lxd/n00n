@@ -16,17 +16,17 @@ local function assert(c, m)
 end
 
 case("refine_adds_acceptance", function()
-  local out = refine.refine_goal("add a retry helper")
+  local out = refine.refine_goal_lexical("add a retry helper")
   assert(out:find("Acceptance"), "refine must add an acceptance criterion")
 end)
 
 case("refine_keeps_existing_criterion", function()
-  local out = refine.refine_goal("add a retry helper and verify tests pass")
+  local out = refine.refine_goal_lexical("add a retry helper and verify tests pass")
   assert(not out:find("Acceptance:"), "refine must not double-add a criterion")
 end)
 
 case("refine_empty_goal", function()
-  assert(refine.refine_goal("") == "", "empty goal stays empty")
+  assert(refine.refine_goal_lexical("") == "", "empty goal stays empty")
 end)
 
 case("roles_catalogue_has_five", function()
@@ -45,7 +45,7 @@ end)
 
 case("retrieve_lexical_finds_context", function()
   local retrieve = require("retrieve")
-  
+
   -- Mock noon.agent.call_tool
   local old_call = noon.agent.call_tool
   local grep_pattern = nil
@@ -59,7 +59,7 @@ case("retrieve_lexical_finds_context", function()
 
   local dummy_ctx = {}
   local block = retrieve.retrieve(dummy_ctx, "add retry helper", "developer", 2)
-  
+
   -- Restore original
   noon.agent.call_tool = old_call
 
@@ -70,7 +70,7 @@ end)
 
 case("retrieve_vector_fallback", function()
   local retrieve = require("retrieve")
-  
+
   -- Mock noon.agent.call_tool to return empty for first call, then a match
   local old_call = noon.agent.call_tool
   local calls = 0
@@ -88,7 +88,7 @@ case("retrieve_vector_fallback", function()
 
   local dummy_ctx = {}
   local block = retrieve.retrieve(dummy_ctx, "add retry helper", "developer", 2)
-  
+
   -- Restore original
   noon.agent.call_tool = old_call
 
@@ -108,8 +108,10 @@ case("roles_run_with_custom_opts", function()
     resolved_tier = opts.tier
     return { spec = "mock-model" }, nil
   end
-  noon.agent.tools = function() return {}, nil end
-  
+  noon.agent.tools = function()
+    return {}, nil
+  end
+
   local session_name = nil
   noon.agent.session = function(ctx, opts)
     session_name = opts.name
@@ -117,10 +119,13 @@ case("roles_run_with_custom_opts", function()
       prompt = function()
         return { text = "implemented!", input_tokens = 10, output_tokens = 20 }
       end,
-      close = function() end
-    }, nil
+      close = function() end,
+    },
+      nil
   end
-  noon.agent.usage_cost = function() return 0.05, nil end
+  noon.agent.usage_cost = function()
+    return 0.05, nil
+  end
 
   local dummy_ctx = {}
   local res = roles.run(dummy_ctx, "developer", "implement helper", { model_tier = "medium" })

@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-Noon ships with 20 built-in tools. This is the full reference.
+Noon ships with 21 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -155,6 +155,19 @@ Use this tool when you need to ask the user questions during execution. This all
 
 ## Agent & Knowledge
 
+### `almas` *(lua plugin)*
+
+Launch an ALMAS team. A supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `goal` | string | yes | High-level SDLC goal, e.g. 'Add a retry helper and cover it with tests.' |
+| `compact` | boolean | no | Encode retrieved context as TOON (token-saving, opt-in). |
+| `model_tier` | string | no | Override the supervisor tier (weak/medium/strong). Defaults to strong. |
+| `mode` | string | no | "supervised" (default, review the plan) or "autonomous". |
+| `use_retrieval` | boolean | no | Ground steps with repo retrieval. |
+| `auto_tier` | boolean | no | Route each subagent tier from its step prompt (opt-in). |
+
 ### `task` *(lua plugin)*
 
 Launch an autonomous subagent to perform tasks independently. Best combined with batch.
@@ -162,9 +175,10 @@ Launch an autonomous subagent to perform tasks independently. Best combined with
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `description` | string | yes | Short (3-5 words) description of the task |
+| `output_schema` | object | no | JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string. |
 | `model_tier` | string | no | Model tier (optional, omit to use current model, capped at current tier):<br>- "strong" (e.g. Opus): Deep reasoning, complex architecture, subtle bugs, most critical sections. ~5x cost of medium.<br>- "medium" (e.g. Sonnet): Balanced. Refactors, features, multi-file changes.<br>- "weak" (e.g. Haiku): Fast/cheap. Search, summarize, boilerplate, simple edits. |
 | `prompt` | string | yes | Detailed task prompt for the agent |
-| `output_schema` | object | no | JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string. |
+| `auto_tier` | boolean | no | Pick model_tier from the prompt automatically (opt-in). Overrides model_tier when set. |
 | `subagent_type` | string | no | Subagent type: "research" (read-only, default) or "general" (can modify files) |
 
 ### `todo_write` *(lua plugin)*
