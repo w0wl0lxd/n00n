@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use noon_lua_macro::{lua_class, lua_fn};
 use mlua::{AnyUserData, Function, Lua, MultiValue, Result as LuaResult, Value};
+use noon_lua_macro::{lua_class, lua_fn};
 use tree_sitter::{Node, Point, Tree};
 
 use super::tree::LuaTree;

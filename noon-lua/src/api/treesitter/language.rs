@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{Lua, Table, Value as LuaValue};
+use noon_lua_macro::{lua_fn, lua_table};
 
 use crate::language::Language;
 

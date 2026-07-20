@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
 use crossterm::event::{KeyCode, KeyModifiers};
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{Lua, RegistryKey, Result as LuaResult, Table};
+use noon_lua_macro::{lua_fn, lua_table};
 
 static NEXT_KEYMAP_ID: AtomicU64 = AtomicU64::new(1);
 

@@ -7,13 +7,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use futures::future::join_all;
+use mlua::{Function, Lua, Result as LuaResult, Table};
 use noon_agent::cancel::CancelToken;
 use noon_agent::tools::interpreter_bridge::build_tool_input;
 use noon_interpreter::error::InterpreterError;
 use noon_interpreter::runner::{self, ToolFn};
 use noon_interpreter::{AsyncResolver, PendingCall};
 use noon_lua_macro::{lua_fn, lua_table};
-use mlua::{Function, Lua, Result as LuaResult, Table};
 use serde_json::Value;
 
 use crate::api::util::convert::{json_to_lua, lua_tool_result};
