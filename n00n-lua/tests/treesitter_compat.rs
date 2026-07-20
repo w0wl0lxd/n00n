@@ -341,6 +341,29 @@ assert(names["class_name:Greeter"], "should find Greeter class")
 }
 
 #[test]
+fn get_node_text_errors_when_source_is_truncated() {
+    let (_reg, host) = setup();
+    run_lua(
+        &host,
+        "node_text_error",
+        r#"
+local source = "fn helper() { return 1; }"
+local parser = n00n.treesitter.get_parser(source, "rust")
+local root = parser:parse()[1]:root()
+local child = root:named_child(0)
+assert(child ~= nil)
+
+local ok, err = pcall(n00n.treesitter.get_node_text, child, "short")
+assert(ok == false, "expected get_node_text to raise for a truncated source")
+assert(
+    tostring(err):find("node range exceeds source length"),
+    "unexpected error: " .. tostring(err)
+)
+"#,
+    );
+}
+
+#[test]
 fn typescript_parse_and_query() {
     let (_reg, host) = setup();
     run_lua(

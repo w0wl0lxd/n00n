@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use mlua::{Lua, MultiValue, Value as LuaValue};
 use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use regex::Regex;
-use tree_sitter::{Node, Query, QueryCursor, QueryPredicateArg, StreamingIterator, Tree};
+use tree_sitter::{Query, QueryCursor, QueryPredicateArg, StreamingIterator};
 
 use crate::docs::{FnDoc, ParamDoc};
 use crate::language::Language;
@@ -93,13 +93,13 @@ fn query_fields<F: mlua::UserDataFields<LuaQuery>>(fields: &mut F) {
 fn query_methods<M: mlua::UserDataMethods<LuaQuery>>(methods: &mut M) {
     methods.add_method("iter_captures", |lua, this, args: MultiValue| {
         let parsed = IterArgs::parse(args, "iter_captures")?;
-        let results = collect_captures(&this.inner, &parsed);
+        let results = collect_captures(&this.inner, &parsed)?;
         stateful_iter(lua, results)
     });
 
     methods.add_method("iter_matches", |lua, this, args: MultiValue| {
         let parsed = IterArgs::parse(args, "iter_matches")?;
-        let results = collect_matches(&this.inner, &parsed);
+        let results = collect_matches(&this.inner, &parsed)?;
         stateful_iter(lua, results)
     });
 }
@@ -163,8 +163,7 @@ lua_table! {
 }
 
 struct IterArgs {
-    node: Node<'static>,
-    tree: Arc<Tree>,
+    lua_node: LuaNode,
     source: String,
     start_row: Option<usize>,
     stop_row: Option<usize>,
@@ -192,8 +191,7 @@ impl IterArgs {
         let stop_row = args_iter.next().and_then(lua_to_usize);
 
         Ok(Self {
-            node: lua_node.node,
-            tree: Arc::clone(&lua_node.tree),
+            lua_node: (&*lua_node).clone(),
             source,
             start_row,
             stop_row,
@@ -277,13 +275,14 @@ fn new_cursor(start_row: Option<usize>, stop_row: Option<usize>) -> QueryCursor 
     cursor
 }
 
-fn collect_captures(query: &Query, args: &IterArgs) -> Vec<CaptureEntry> {
+fn collect_captures(query: &Query, args: &IterArgs) -> mlua::Result<Vec<CaptureEntry>> {
     let source_bytes = args.source.as_bytes();
     let mut cursor = new_cursor(args.start_row, args.stop_row);
     let mut regex_cache = HashMap::new();
     let mut results = Vec::new();
 
-    let mut captures = cursor.captures(query, args.node, source_bytes);
+    let node = args.lua_node.ts_node()?;
+    let mut captures = cursor.captures(query, node, source_bytes);
     while let Some((m, capture_idx)) = captures.next() {
         let mut metadata = HashMap::new();
         if !evaluate_predicates(
@@ -299,20 +298,21 @@ fn collect_captures(query: &Query, args: &IterArgs) -> Vec<CaptureEntry> {
         let capture = &m.captures[*capture_idx];
         results.push(CaptureEntry {
             capture_index: capture.index,
-            node: LuaNode::new(capture.node, Arc::clone(&args.tree)),
+            node: LuaNode::new(capture.node, Arc::clone(&args.lua_node.tree)),
             metadata,
         });
     }
-    results
+    Ok(results)
 }
 
-fn collect_matches(query: &Query, args: &IterArgs) -> Vec<MatchEntry> {
+fn collect_matches(query: &Query, args: &IterArgs) -> mlua::Result<Vec<MatchEntry>> {
     let source_bytes = args.source.as_bytes();
     let mut cursor = new_cursor(args.start_row, args.stop_row);
     let mut regex_cache = HashMap::new();
     let mut results = Vec::new();
 
-    let mut matches = cursor.matches(query, args.node, source_bytes);
+    let node = args.lua_node.ts_node()?;
+    let mut matches = cursor.matches(query, node, source_bytes);
     while let Some(m) = matches.next() {
         let mut metadata = HashMap::new();
         if !evaluate_predicates(
@@ -330,7 +330,7 @@ fn collect_matches(query: &Query, args: &IterArgs) -> Vec<MatchEntry> {
             captures_map
                 .entry(capture.index)
                 .or_default()
-                .push(LuaNode::new(capture.node, Arc::clone(&args.tree)));
+                .push(LuaNode::new(capture.node, Arc::clone(&args.lua_node.tree)));
         }
         results.push(MatchEntry {
             pattern_index: m.pattern_index,
@@ -338,7 +338,7 @@ fn collect_matches(query: &Query, args: &IterArgs) -> Vec<MatchEntry> {
             metadata,
         });
     }
-    results
+    Ok(results)
 }
 
 #[derive(Clone, Copy)]
@@ -564,5 +564,118 @@ fn lua_to_usize(v: LuaValue) -> Option<usize> {
         LuaValue::Integer(n) => Some(n as usize),
         LuaValue::Number(n) => Some(n as usize),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tree_sitter::Parser;
+
+    const SOURCE: &str = "fn foo() {}\nfn bar() {}\n";
+
+    fn parse_tree() -> Arc<tree_sitter::Tree> {
+        let mut parser = Parser::new();
+        parser.set_language(&Language::Rust.ts_language()).unwrap();
+        Arc::new(parser.parse(SOURCE.as_bytes(), None).unwrap())
+    }
+
+    fn root_node(tree: &Arc<tree_sitter::Tree>) -> LuaNode {
+        LuaNode::new(tree.root_node(), Arc::clone(tree))
+    }
+
+    fn iter_args(tree: &Arc<tree_sitter::Tree>) -> IterArgs {
+        IterArgs {
+            lua_node: root_node(tree),
+            source: SOURCE.to_owned(),
+            start_row: None,
+            stop_row: None,
+        }
+    }
+
+    fn capture_text(source: &str, node: &LuaNode) -> String {
+        let ts = node.ts_node().unwrap();
+        source[ts.start_byte()..ts.end_byte()].to_owned()
+    }
+
+    #[test]
+    fn collect_captures_finds_every_function_name() {
+        let tree = parse_tree();
+        let query = Query::new(
+            &Language::Rust.ts_language(),
+            "(function_item name: (identifier) @fn_name)",
+        )
+        .unwrap();
+        let args = iter_args(&tree);
+
+        let results = collect_captures(&query, &args).unwrap();
+        let names: Vec<String> = results
+            .iter()
+            .map(|c| capture_text(SOURCE, &c.node))
+            .collect();
+        assert_eq!(names, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn collect_matches_groups_captures_under_pattern_index() {
+        let tree = parse_tree();
+        let query = Query::new(
+            &Language::Rust.ts_language(),
+            "(function_item name: (identifier) @fn_name)",
+        )
+        .unwrap();
+        let args = iter_args(&tree);
+
+        let results = collect_matches(&query, &args).unwrap();
+        assert_eq!(results.len(), 2);
+        for entry in &results {
+            assert_eq!(entry.pattern_index, 0);
+            let nodes = entry.captures.get(&0).expect("capture index 0 present");
+            assert_eq!(nodes.len(), 1);
+        }
+        let names: Vec<String> = results
+            .iter()
+            .map(|m| capture_text(SOURCE, &m.captures[&0][0]))
+            .collect();
+        assert_eq!(names, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn collect_captures_errors_when_node_belongs_to_a_different_tree() {
+        let tree_a = parse_tree();
+        let tree_b = parse_tree();
+        let query = Query::new(&Language::Rust.ts_language(), "(function_item) @fn").unwrap();
+        // Pair a real node from tree_a with tree_b's Arc: the id lookup inside
+        // ts_node() must fail instead of silently walking the wrong tree.
+        let mismatched = LuaNode::new(tree_a.root_node(), Arc::clone(&tree_b));
+        let args = IterArgs {
+            lua_node: mismatched,
+            source: SOURCE.to_owned(),
+            start_row: None,
+            stop_row: None,
+        };
+
+        let err = collect_captures(&query, &args).unwrap_err();
+        assert!(err.to_string().contains("node not found in tree"));
+    }
+
+    #[test]
+    fn collect_captures_respects_row_range_filter() {
+        let tree = parse_tree();
+        let query = Query::new(
+            &Language::Rust.ts_language(),
+            "(function_item name: (identifier) @fn_name)",
+        )
+        .unwrap();
+        let args = IterArgs {
+            lua_node: root_node(&tree),
+            source: SOURCE.to_owned(),
+            start_row: Some(1),
+            stop_row: Some(2),
+        };
+
+        let results = collect_captures(&query, &args).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(capture_text(SOURCE, &results[0].node), "bar");
     }
 }

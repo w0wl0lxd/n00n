@@ -1,11 +1,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::ffi::c_int;
-use std::panic::catch_unwind;
 use std::path::PathBuf;
-use std::ptr;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -13,7 +10,7 @@ use std::time::{Duration, Instant};
 use event_listener::Event;
 
 use include_dir::Dir;
-use mlua::{Compiler, Function, Lua, RegistryKey, Value as LuaValue, ffi};
+use mlua::{Compiler, Function, Lua, RegistryKey, Value as LuaValue, VmState};
 use n00n_agent::cancel::CancelToken;
 use n00n_agent::prompt::{PromptId, ResolvedSlots, Slot, SlotEntry};
 use n00n_agent::tools::{
@@ -340,54 +337,31 @@ fn apply_jit(lua: &Lua, enabled: bool) {
     lua.set_compiler(compiler);
 }
 
-type InterruptFn = unsafe extern "C-unwind" fn(*mut ffi::lua_State, c_int);
-
-/// The poker thread and the VM thread race on this field, so the write
-/// must be atomic to stay defined behavior on the Rust side.
-fn store_interrupt(state: *mut ffi::lua_State, cb: Option<InterruptFn>) {
-    let raw = cb.map_or(ptr::null_mut(), |f| f as *mut ());
-    unsafe {
-        let slot = &raw mut (*ffi::lua_callbacks(state)).interrupt;
-        AtomicPtr::from_ptr(slot.cast::<*mut ()>()).store(raw, Ordering::Release);
-    }
-}
-
 /// Shutdown flag mirrored into app data so the watchdog interrupt can
 /// re-check it on the Lua thread.
 struct ShutdownFlag(Arc<AtomicBool>);
 
-/// Cancellation watchdog. A resident mlua interrupt fires at every
-/// safepoint and costs ~100ns a pop, which ate most of the codegen win
-/// (see `benches/luau_perf.rs`). So the VM runs with no interrupt at
-/// all, and this thread arms a one-shot native one every poll tick.
-/// Luau documents `lua_callbacks(L)->interrupt` as safe to assign from
-/// another thread, and the VM only pays a null check per safepoint.
-/// The callback re-checks shutdown/cancel/deadline on the Lua thread
-/// before raising, so a stale poke never kills the wrong task.
+/// Cancellation watchdog. The poker thread arms an atomic flag every
+/// poll tick; a resident `mlua` interrupt checks it at VM safepoints.
+/// When armed, the callback re-checks shutdown/cancel/deadline on the
+/// Lua thread before raising, so a stale poke never kills the wrong task.
 struct Watchdog {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Watchdog {
-    fn spawn(lua: &Lua, shutdown: Arc<AtomicBool>) -> Self {
-        lua.set_app_data(ShutdownFlag(shutdown));
-        let main_state =
-            lua.exec_raw_lua(|raw| unsafe { ffi::lua_mainthread(raw.state()) }) as usize;
+    fn spawn(armed: Arc<AtomicBool>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let thread = thread::spawn({
             let stop = Arc::clone(&stop);
-            // Keeps the VM alive while this thread can still write to it,
-            // even if a refactor reorders drops.
-            let keep_alive = lua.clone();
             move || {
-                let _keep_alive = keep_alive;
                 loop {
                     thread::park_timeout(WATCHDOG_POLL_INTERVAL);
                     if stop.load(Ordering::Relaxed) {
                         return;
                     }
-                    store_interrupt(main_state as *mut ffi::lua_State, Some(watchdog_interrupt));
+                    armed.store(true, Ordering::Release);
                 }
             }
         });
@@ -408,34 +382,24 @@ impl Drop for Watchdog {
     }
 }
 
-/// One-shot interrupt armed by [`Watchdog`]: disarms itself, re-checks the
-/// kill conditions, and raises a plain string error that unwinds like any
-/// Lua error. Must not raise during GC (`gc >= 0`), same rule mlua follows.
-unsafe extern "C-unwind" fn watchdog_interrupt(state: *mut ffi::lua_State, gc: c_int) {
-    if gc >= 0 {
-        return;
-    }
-    store_interrupt(state, None);
-    // A Rust panic must not unwind into the VM; treat it as "no kill".
-    let msg = catch_unwind(|| interrupt_reason(state)).unwrap_or(None);
-    if let Some(msg) = msg {
-        unsafe {
-            // A safepoint frame may have zero free slots; grow before pushing
-            // (raw pushes assert a free slot). On failure the next poke retries.
-            if ffi::lua_checkstack(state, 1) == 0 {
-                return;
-            }
-            ffi::lua_pushlstring(state, msg.as_ptr().cast(), msg.len());
-            ffi::lua_error(state);
+/// Install the one-shot interrupt that the watchdog arms every poll tick.
+fn install_interrupt(lua: &Lua, armed: Arc<AtomicBool>) {
+    lua.set_interrupt(move |lua| {
+        if !armed.swap(false, Ordering::AcqRel) {
+            return Ok(VmState::Continue);
         }
-    }
+        if let Some(msg) = interrupt_reason(lua) {
+            Err(mlua::Error::RuntimeError(msg.to_owned()))
+        } else {
+            Ok(VmState::Continue)
+        }
+    });
 }
 
-fn interrupt_reason(state: *mut ffi::lua_State) -> Option<&'static str> {
-    let lua = unsafe { Lua::get_or_init_from_ptr(state) };
+fn interrupt_reason(lua: &Lua) -> Option<&'static str> {
     if lua
         .app_data_ref::<ShutdownFlag>()
-        .is_some_and(|f| f.0.load(Ordering::Relaxed))
+        .is_some_and(|f| f.0.load(Ordering::Acquire))
     {
         return Some(INTERRUPT_SHUTDOWN_MSG);
     }
@@ -547,12 +511,15 @@ impl Drop for TaskScope {
     }
 }
 
-/// Re-publishes the task handle on every `poll` so concurrent tasks
-/// on the shared Lua each see their own `TaskCell`.
-pub(crate) struct ScopedFuture<F> {
-    lua: Lua,
-    handle: TaskHandle,
-    inner: F,
+pin_project_lite::pin_project! {
+    /// Re-publishes the task handle on every `poll` so concurrent tasks
+    /// on the shared Lua each see their own `TaskCell`.
+    pub(crate) struct ScopedFuture<F> {
+        lua: Lua,
+        handle: TaskHandle,
+        #[pin]
+        inner: F,
+    }
 }
 
 impl<F: std::future::Future> std::future::Future for ScopedFuture<F> {
@@ -561,13 +528,11 @@ impl<F: std::future::Future> std::future::Future for ScopedFuture<F> {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        // SAFETY: `inner` is structurally pinned; `lua`/`handle` are
-        // never moved out.
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.project();
         let prev = this
             .lua
-            .set_app_data::<TaskHandle>(Arc::clone(&this.handle));
-        let result = unsafe { std::pin::Pin::new_unchecked(&mut this.inner) }.poll(cx);
+            .set_app_data::<TaskHandle>(Arc::clone(&*this.handle));
+        let result = this.inner.poll(cx);
         match prev {
             Some(p) => {
                 this.lua.set_app_data(p);
@@ -947,8 +912,8 @@ struct ToolKeys {
 type PluginMap = Rc<RefCell<HashMap<Arc<str>, HashMap<Arc<str>, ToolKeys>>>>;
 
 struct LuaRuntime {
-    /// Held for its Drop (joins the poker thread). Field order doesn't
-    /// matter: the thread keeps its own `Lua` clone alive.
+    /// Held for its Drop (joins the poker thread). Field order matters:
+    /// the watchdog must join before the Lua VM is dropped.
     _watchdog: Watchdog,
     lua: Lua,
     pending: PendingTools,
@@ -984,7 +949,10 @@ impl LuaRuntime {
             })?;
         let pending: PendingTools = Arc::new(Mutex::new(Vec::new()));
 
-        let watchdog = Watchdog::spawn(&lua, Arc::clone(&shutdown));
+        lua.set_app_data(ShutdownFlag(Arc::clone(&shutdown)));
+        let armed = Arc::new(AtomicBool::new(false));
+        let watchdog = Watchdog::spawn(Arc::clone(&armed));
+        install_interrupt(&lua, armed);
 
         let globals = lua.globals();
         for name in &["require", "io", "package"] {
@@ -2581,6 +2549,80 @@ mod tests {
     }
 
     #[test]
+    fn scope_future_reinstalls_handle_across_polls_and_restores_after() {
+        use std::future::Future;
+        use std::task::Wake;
+
+        struct NoopWake;
+        impl Wake for NoopWake {
+            fn wake(self: Arc<Self>) {}
+        }
+
+        struct StepFuture {
+            lua: Lua,
+            expected: TaskHandle,
+            seen_before: Rc<Cell<bool>>,
+            seen_after: Rc<Cell<bool>>,
+            step: u8,
+        }
+
+        impl Future for StepFuture {
+            type Output = ();
+            fn poll(
+                mut self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<()> {
+                let matches = Arc::ptr_eq(&active_task(&self.lua), &self.expected);
+                if self.step == 0 {
+                    self.seen_before.set(matches);
+                    self.step = 1;
+                    std::task::Poll::Pending
+                } else {
+                    self.seen_after.set(matches);
+                    std::task::Poll::Ready(())
+                }
+            }
+        }
+
+        let lua = Lua::new();
+        let scope = TaskScope::new(&lua, task_cell(None));
+        let own_handle = Arc::clone(scope.handle());
+        let seen_before = Rc::new(Cell::new(false));
+        let seen_after = Rc::new(Cell::new(false));
+
+        let inner = StepFuture {
+            lua: lua.clone(),
+            expected: Arc::clone(&own_handle),
+            seen_before: Rc::clone(&seen_before),
+            seen_after: Rc::clone(&seen_after),
+            step: 0,
+        };
+        let mut fut = Box::pin(scope.scope_future(inner));
+
+        let waker = std::task::Waker::from(Arc::new(NoopWake));
+        let mut cx = std::task::Context::from_waker(&waker);
+
+        assert!(fut.as_mut().poll(&mut cx).is_pending());
+        assert!(seen_before.get(), "handle must be installed during first poll");
+
+        // Simulate a concurrent task claiming app_data between our two polls.
+        let intruder: TaskHandle = Arc::new(Mutex::new(task_cell(None)));
+        lua.set_app_data::<TaskHandle>(Arc::clone(&intruder));
+
+        assert!(fut.as_mut().poll(&mut cx).is_ready());
+        assert!(
+            seen_after.get(),
+            "handle must be re-installed on the second poll despite the intruder"
+        );
+
+        let restored = lua.app_data_ref::<TaskHandle>().unwrap();
+        assert!(
+            Arc::ptr_eq(&*restored, &intruder),
+            "poll must restore whatever app_data was active immediately before it ran"
+        );
+    }
+
+    #[test]
     fn with_live_ctx_follows_task_live_field() {
         let lua = Lua::new();
 
@@ -2891,7 +2933,10 @@ mod tests {
 
     fn watchdog_lua(shutdown: bool) -> (Lua, Watchdog) {
         let lua = Lua::new();
-        let watchdog = Watchdog::spawn(&lua, Arc::new(AtomicBool::new(shutdown)));
+        lua.set_app_data(ShutdownFlag(Arc::new(AtomicBool::new(shutdown))));
+        let armed = Arc::new(AtomicBool::new(false));
+        let watchdog = Watchdog::spawn(Arc::clone(&armed));
+        install_interrupt(&lua, armed);
         (lua, watchdog)
     }
 
