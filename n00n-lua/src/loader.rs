@@ -100,8 +100,8 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/workflow"),
     },
     BundledPlugin {
-        name: "almas",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/almas"),
+        name: "team",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/team"),
     },
     BundledPlugin {
         name: "code_execution",
@@ -665,12 +665,12 @@ mod tests {
     }
 
     #[test]
-    fn task_and_almas_builtins_coexist() {
+    fn task_and_team_builtins_coexist() {
         let reg = Arc::new(ToolRegistry::new());
         let _host = PluginHost::with_all_builtins(Arc::clone(&reg)).unwrap();
         assert!(reg.has("agent_control"));
         assert!(reg.has("task"));
-        assert!(reg.has("almas"));
+        assert!(reg.has("team"));
     }
 
     #[test]

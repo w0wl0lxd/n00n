@@ -823,7 +823,7 @@ n00n.agent.usage_cost({spec}, {input_tokens}, {output_tokens})
 
 Estimate the dollar cost of a completion from its model spec and token
 counts. Uses the provider's published pricing (input/output/cache write/
-read), so orchestrators like ALMAS can report cost without bundling a
+read), so orchestrators like Team can report cost without bundling a
 price table.
 
 **Parameters:**
@@ -4888,7 +4888,7 @@ return M
 -- Cost-aware model-tier router (OrchMAS-style adaptive role allocation).
 -- Pure lexical heuristic: no model call. Maps a subtask prompt to one of
 -- "weak" | "medium" | "strong" so cheap work stays cheap and hard work
--- gets a bigger model. Used by the `task` tool (opt-in auto_tier) and ALMAS.
+-- gets a bigger model. Used by the `task` tool (opt-in auto_tier) and Team.
 
 -- @param prompt string Subtask description.
 -- @return "weak" | "medium" | "strong"
