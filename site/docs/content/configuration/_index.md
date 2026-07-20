@@ -195,6 +195,7 @@ noon.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
+| `auto_tier` | boolean | `false` | - | Route each subagent's model tier from its prompt (opt-in, off by default). |
 | `max_concurrent` | integer | `8` | 1 | Max concurrently running subagents. |
 
 ### `plugins.webfetch`
