@@ -100,11 +100,7 @@ impl LocalEndpoint {
             None if api_key.is_some() && cfg.cloud_fallback_url.is_some() => {
                 cfg.cloud_fallback_url.unwrap().to_string()
             }
-            None => {
-                return Err(AgentError::Config {
-                    message: format!("{} not set", cfg.host_env),
-                });
-            }
+            None => format!("{}/v1", cfg.default_host.trim_end_matches('/')),
         };
         let headers = match api_key {
             Some(key) => vec![("authorization".into(), format!("Bearer {key}"))],
@@ -542,13 +538,12 @@ mod tests {
     };
 
     #[test]
-    fn from_env_without_host_or_api_key_errors() {
-        match LocalEndpoint::build(&OLLAMA, TEST_TIMEOUTS, None, None, None) {
-            Err(AgentError::Config { message }) => {
-                assert_eq!(message, "OLLAMA_HOST not set");
-            }
-            other => panic!("expected Config error, got {:?}", other.err()),
-        }
+    fn from_env_without_host_or_api_key_uses_default_host() {
+        let ep = LocalEndpoint::build(&OLLAMA, TEST_TIMEOUTS, None, None, None).unwrap();
+        assert_eq!(
+            ep.auth.lock().unwrap().base_url.as_deref(),
+            Some("http://localhost:11434/v1")
+        );
     }
 
     #[test]
@@ -594,13 +589,12 @@ mod tests {
     }
 
     #[test]
-    fn llamacpp_without_host_errors() {
-        match LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, None, None, None) {
-            Err(AgentError::Config { message }) => {
-                assert_eq!(message, "LLAMA_CPP_HOST not set");
-            }
-            other => panic!("expected Config error, got {:?}", other.err()),
-        }
+    fn llamacpp_without_host_uses_default_host() {
+        let ep = LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, None, None, None).unwrap();
+        assert_eq!(
+            ep.auth.lock().unwrap().base_url.as_deref(),
+            Some("http://localhost:8080/v1")
+        );
     }
 
     #[test]
@@ -619,14 +613,15 @@ mod tests {
     }
 
     #[test]
-    fn llamacpp_no_cloud_fallback() {
+    fn llamacpp_with_key_uses_default_host_without_cloud_fallback() {
         let pool = KeyPool::from_keys(vec!["key".into()]);
-        match LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, Some(pool), None, None) {
-            Err(AgentError::Config { message }) => {
-                assert_eq!(message, "LLAMA_CPP_HOST not set");
-            }
-            other => panic!("expected Config error, got {:?}", other.err()),
-        }
+        let ep = LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, Some(pool), None, None).unwrap();
+        let auth = ep.auth.lock().unwrap();
+        assert_eq!(auth.base_url.as_deref(), Some("http://localhost:8080/v1"));
+        assert_eq!(
+            auth.headers,
+            vec![("authorization".into(), "Bearer key".into())]
+        );
     }
 
     #[test]

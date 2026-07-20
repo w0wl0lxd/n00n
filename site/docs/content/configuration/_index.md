@@ -145,6 +145,7 @@ n00n.setup({
 | `max_memory_mb` | integer | `50` | 10 | Memory limit for the Python sandbox (MB). |
 | `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
+| `ruff_fix` | boolean | `true` | - | Run Ruff --fix --unsafe-fixes and formatting before execution when Ruff is available. |
 | `timeout_secs` | integer | `30` | 5 | Stop the script after this many seconds. A call's `timeout` param overrides it. |
 
 ### `plugins.edit`

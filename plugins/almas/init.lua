@@ -361,22 +361,22 @@ local function handler(input, ctx)
         return { llm_output = "swarm failed: " .. (out.error or "unknown"), is_error = true }
       end
       local results = { string.format("[swarm] β gate: %s\n\n%s", gate.reason, out.text or "") }
-      return finish_run(ctx, input, results, out.cost or 0, #steps, slug)
+      return finish_run(ctx, input, results, out.cost or 0, out.rounds or 0, "rounds", slug)
     end
 
     -- β gate says don't fan out: single strong-agent pass, log the reason.
     local results, total_cost = run_single_pass(ctx, goal, input, steps, relay_k)
     results[1] = "[swarm] β gate: " .. gate.reason .. "\n" .. (results[1] or "")
-    return finish_run(ctx, input, results, total_cost, #steps, slug)
+    return finish_run(ctx, input, results, total_cost, #steps, "steps", slug)
   end
 
   local results, total_cost = run_autonomous(ctx, goal, input, steps, relay_k)
-  return finish_run(ctx, input, results, total_cost, #steps, slug)
+  return finish_run(ctx, input, results, total_cost, #steps, "steps", slug)
 end
 
-finish_run = function(ctx, input, results, total_cost, n_steps, slug)
+finish_run = function(ctx, input, results, total_cost, completed, unit, slug)
   local report = table.concat(results, "\n\n")
-  local summary = string.format("\n\n---\nALMAS complete: %d steps, ~$%.4f estimated cost.", n_steps, total_cost)
+  local summary = string.format("\n\n---\nALMAS complete: %d %s, ~$%.4f estimated cost.", completed, unit, total_cost)
 
   local digest = generate_learnings_digest(ctx, input.goal, report, input)
   if digest then

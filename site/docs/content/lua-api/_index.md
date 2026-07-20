@@ -2055,6 +2055,7 @@ table is empty and the second return value is the error message.
 
   Optional fields:
 
+  - `ruff_fix` (`boolean?`) run Ruff fix/unsafe-fixes and formatting before execution.
   - `tools` (`table?`) map of `name -> function` for tools the sandbox may call.
     Each function receives the tool input table and must return `(string)` or
     `(nil, err)`. Tool calls are batched and dispatched concurrently.
