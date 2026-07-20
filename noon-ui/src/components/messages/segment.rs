@@ -124,6 +124,12 @@ impl Surface {
     pub fn is_framed(self) -> bool {
         matches!(self, Self::User | Self::Tool)
     }
+
+    pub fn content_width(self, width: u16) -> u16 {
+        width
+            .saturating_sub(if self.is_framed() { 4 } else { 0 })
+            .max(1)
+    }
 }
 
 impl Segment {
@@ -141,9 +147,7 @@ impl Segment {
     }
 
     fn content_width(&self, width: u16) -> u16 {
-        width
-            .saturating_sub(self.content_inset().saturating_mul(2))
-            .max(1)
+        self.surface.content_width(width)
     }
 
     pub fn set_lines(&mut self, lines: Vec<Line<'static>>) {

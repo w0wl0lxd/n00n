@@ -606,10 +606,48 @@ fn copy_hit_target_requires_exact_visible_label() {
     let area = Rect::new(0, 0, 48, 8);
 
     assert_eq!(
-        panel.copy_at(0, 41, area),
+        panel.copy_at(0, 42, area),
         Some(("answer".into(), "markdown"))
     );
-    assert_eq!(panel.copy_at(0, 40, area), None);
+    assert_eq!(panel.copy_at(0, 41, area), None);
+}
+
+#[test]
+fn copy_action_stays_within_narrow_offset_area() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.push(DisplayMessage::new(DisplayRole::Assistant, "answer".into()));
+    let area = Rect::new(10, 0, 5, 8);
+    render(&mut panel, 5, 8);
+
+    assert_eq!(panel.copy_at(0, 9, area), None);
+    assert_eq!(
+        panel.copy_at(0, 10, area),
+        Some(("answer".into(), "markdown"))
+    );
+}
+
+#[test]
+fn partially_scrolled_user_card_does_not_replace_content_with_top_border() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.push(DisplayMessage::new(
+        DisplayRole::User,
+        "first\nsecond\nthird".into(),
+    ));
+    render(&mut panel, 24, 3);
+    panel.set_scroll_top(1);
+    let text = buffer_text(&render(&mut panel, 24, 3));
+
+    assert!(text.contains("You   first"), "rendered buffer: {text}");
+    assert!(!text.contains('╭'), "rendered buffer: {text}");
+}
+
+#[test]
+fn user_markdown_uses_card_content_width() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.push(DisplayMessage::new(DisplayRole::User, "---".into()));
+    render(&mut panel, 12, 8);
+
+    assert_eq!(panel.cache.get(0).unwrap().lines()[0].width(), 6);
 }
 
 #[test]
@@ -952,7 +990,10 @@ fn expand_truncated_tool_does_not_auto_scroll() {
     let mut panel = panel_with_long_tool(200);
     let area = Rect::new(0, 0, 80, 24);
     let before_scroll = panel.scroll_top;
-    assert!(panel.auto_scroll, "auto_scroll should be on when content fits");
+    assert!(
+        panel.auto_scroll,
+        "auto_scroll should be on when content fits"
+    );
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
@@ -1248,7 +1289,10 @@ fn handle_click_on_running_tool_forwards_live_without_recording() {
     let area = Rect::new(0, 0, 80, 24);
     assert!(panel.handle_click(area.y, area));
     assert!(panel.lua_clicks.is_empty());
-    assert!(!panel.auto_scroll, "clicking a running tool should pause auto-scroll");
+    assert!(
+        !panel.auto_scroll,
+        "clicking a running tool should pause auto-scroll"
+    );
 }
 
 #[test]
@@ -1272,7 +1316,10 @@ fn handle_click_on_done_tool_pauses_auto_scroll() {
     let area = Rect::new(0, 0, 80, 24);
     assert!(panel.auto_scroll, "auto_scroll should be on before click");
     assert!(panel.handle_click(area.y, area));
-    assert!(!panel.auto_scroll, "clicking a finished tool should pause auto-scroll");
+    assert!(
+        !panel.auto_scroll,
+        "clicking a finished tool should pause auto-scroll"
+    );
 }
 
 #[test]

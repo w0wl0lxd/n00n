@@ -51,6 +51,7 @@ pub(crate) const JUMP_TO_BOTTOM_TEXT: &str = "↓ bottom";
 const JUMP_TO_BOTTOM_THRESHOLD: u16 = 1;
 const JUMP_TO_BOTTOM_POPUP_HEIGHT: u16 = 1;
 const JUMP_TO_BOTTOM_POPUP_BOTTOM_MARGIN: u16 = 1;
+const COPY_LABEL_WIDTH: u16 = 6;
 
 #[derive(Clone, Copy)]
 pub struct PromptProgress {
@@ -692,7 +693,8 @@ impl MessagesPanel {
         if area.height == 0 {
             return None;
         }
-        let copy_area = Rect::new(area.right().saturating_sub(7), row, 7.min(area.width), 1);
+        let copy_width = COPY_LABEL_WIDTH.min(area.width);
+        let copy_area = Rect::new(area.right().saturating_sub(copy_width), row, copy_width, 1);
         if !copy_area.contains(ratatui::layout::Position::new(col, row)) {
             return None;
         }
@@ -1491,13 +1493,19 @@ impl MessagesPanel {
         } else {
             style.prefix
         };
+        let surface = match msg.role {
+            DisplayRole::User => Surface::User,
+            DisplayRole::Assistant => Surface::Assistant,
+            _ => Surface::Plain,
+        };
+        let content_width = surface.content_width(self.viewport_width);
         let mut lines = if style.use_markdown {
             text_to_lines(
                 &msg.text,
                 prefix,
                 style.text_style,
                 style.prefix_style,
-                self.viewport_width,
+                content_width,
                 style.max_line_bytes,
             )
         } else {
@@ -1535,11 +1543,7 @@ impl MessagesPanel {
             prefix_width,
             Some(msg_index),
         );
-        match msg.role {
-            DisplayRole::User => segment.set_surface(Surface::User),
-            DisplayRole::Assistant => segment.set_surface(Surface::Assistant),
-            _ => {}
-        }
+        segment.set_surface(surface);
         vec![segment]
     }
 
@@ -1601,13 +1605,19 @@ impl MessagesPanel {
                 } else {
                     style.prefix
                 };
+                let surface = match msg.role {
+                    DisplayRole::User => Surface::User,
+                    DisplayRole::Assistant => Surface::Assistant,
+                    _ => Surface::Plain,
+                };
+                let content_width = surface.content_width(self.viewport_width);
                 let mut lines = if style.use_markdown {
                     text_to_lines(
                         &msg.text,
                         prefix,
                         style.text_style,
                         style.prefix_style,
-                        self.viewport_width,
+                        content_width,
                         style.max_line_bytes,
                     )
                 } else {
