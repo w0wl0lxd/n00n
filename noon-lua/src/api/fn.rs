@@ -151,10 +151,6 @@ impl JobStore {
         self.jobs.values().any(|j| j.alive)
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.jobs.is_empty()
-    }
-
     pub fn callback_key(&self, job_id: u32, event: &JobEvent) -> Option<&RegistryKey> {
         let meta = self.jobs.get(&job_id)?;
         match event {
