@@ -233,11 +233,9 @@ local function run_step(ctx, step, goal, input, relay_k, prior_results)
     local block = retrieve.retrieve(ctx, goal .. " " .. step.prompt, step.role, relay_k)
     if block and #block > 0 then
       if input.compact then
-        local ok, t = pcall(function()
-          return n00n.json.to_toon({ context = block })
-        end)
-        if ok and t then
-          step_prompt = step_prompt .. "\n\nRelevant context (TOON):\n" .. t
+        local encoded, fmt = n00n.json.tooned({ context = block })
+        if encoded then
+          step_prompt = step_prompt .. "\n\nRelevant context (" .. (fmt or "json") .. "):\n" .. encoded
         else
           step_prompt = step_prompt .. "\n\nRelevant context:\n" .. block
         end
@@ -410,6 +408,11 @@ end
 local function header(input)
   return "team: " .. (input.goal or ""):sub(1, 40)
 end
+
+n00n.api.register_prompt_hint({
+  slot = "tool_usage",
+  content = "- For multi-step research or implementation, use **team** with `compact=true` (lossless `n00n.json.tooned` passthrough) and `use_retrieval=true` to save tokens.",
+})
 
 n00n.api.register_tool({
   name = "team",
