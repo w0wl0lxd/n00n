@@ -38,6 +38,7 @@ const SCENARIO_NEVER_STRUCTURED: &str = "never_structured";
 const SCENARIO_INVALID_ONLY: &str = "invalid_only";
 const SCENARIO_PROMPT_ERROR: &str = "prompt_error";
 const SCENARIO_RAISE: &str = "raise";
+const SCENARIO_SLOW: &str = "slow";
 
 /// Stubs keyed by `opts.name` (the task's `description`). `n00n.json` and
 /// `n00n.async` stay real so schema validation and semaphore behavior are tested.
@@ -113,11 +114,27 @@ behaviors.raise = function(sess, msg)
   error("@RAISE_MSG@")
 end
 
-n00n.agent.session = function(ctx, opts)
+n00n.api.register_tool({
+  name = "slow_tool",
+  description = "simulated slow model",
+  schema = { type = "object", properties = {}, additionalProperties = false },
+  audiences = { "main" },
+  handler = function(input, ctx)
+    n00n.fn.jobstart("sleep 0.2", { on_exit = function() ctx:finish("ok") end })
+  end,
+})
+
+behaviors.slow = function(sess, msg)
+  local out, err = n00n.agent.call_tool(sess.ctx, "slow_tool", {})
+  if err then error(err) end
+  return { text = "@PLAIN_TEXT@" }
+end
+
+n00n.agent.session = function(ctx, opts):noon-lua/tests/task_policy.rs
   recorder.sessions = recorder.sessions + 1
   recorder.has_local_tools = opts.local_tools ~= nil
   recorder.structured_output_schema = opts.local_tools and opts.local_tools.structured_output and opts.local_tools.structured_output.input_schema
-  local sess = { opts = opts }
+  local sess = { opts = opts, ctx = ctx }
   function sess:prompt(msg)
     recorder.prompts[#recorder.prompts + 1] = msg
     return behaviors[opts.name](self, msg)
@@ -174,12 +191,13 @@ fn load_task_host() -> (Arc<ToolRegistry>, PluginHost) {
     (reg, host)
 }
 
-fn exec_tool(reg: &ToolRegistry, name: &str, input: Value) -> Result<String, String> {
+fn exec_tool(reg: &Arc<ToolRegistry>, name: &str, input: Value) -> Result<String, String> {
     let entry = reg
         .get(name)
         .unwrap_or_else(|| panic!("tool {name} not registered"));
     let inv = entry.tool.parse(&input).expect("parse failed");
-    let ctx = stub_ctx(&AgentMode::Build);
+    let mut ctx = stub_ctx(&AgentMode::Build);
+    ctx.registry = Arc::clone(reg);
     smol::block_on(async { inv.execute(&ctx).await })
         .output
         .map(|out| match out {
@@ -188,7 +206,7 @@ fn exec_tool(reg: &ToolRegistry, name: &str, input: Value) -> Result<String, Str
         })
 }
 
-fn probe(reg: &ToolRegistry) -> Value {
+fn probe(reg: &Arc<ToolRegistry>) -> Value {
     let out = exec_tool(reg, PROBE_TOOL, json!({})).expect("probe failed");
     serde_json::from_str(&out).expect("probe returned invalid json")
 }
@@ -375,4 +393,19 @@ fn raising_prompt_does_not_leak_semaphore_permit() {
     // Pool is full again (released == acquired), so this cannot block.
     let out = exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_PLAIN, None)).unwrap();
     assert_eq!(out, PLAIN_TEXT);
+}
+
+/// A task handler that uses `noon.async.run` with an `on_finish` callback must
+/// be able to finish after `DISPATCH_POLL_INTERVAL` even when no OS jobs are
+/// visible to the parent task.
+#[test]
+fn slow_async_callback_finishes() {
+    let (reg, _host) = load_task_host();
+    let out = exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_SLOW, None))
+        .expect("slow async callback should finish");
+    assert_eq!(out, PLAIN_TEXT);
+
+    let snap = probe(&reg);
+    assert_eq!(snap["prompt_count"], json!(1));
+    assert_eq!(snap["closed"], json!(1));
 }
