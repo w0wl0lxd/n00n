@@ -10,8 +10,8 @@ An AI coding agent optimized for minimal use of context tokens, while providing 
 * `tooned` - uses [tooned](https://github.com/w0wl0lxd/tooned) does lossless conversion to TOON for any compatible data format, lowering token usage on JSON shaped data/files.
 * `toon-lsp` - uses [toon-lsp](https://github.com/w0wl0lxd/toon-lsp) to interact with TOON compatible data at a symbol level.  
 * `task` tool - when delegating work to subagents, the AI chooses whether to run weak / medium / strong model of used provider. Think haiku / sonnet / opus.
+* `team` tool - [ALMAS](https://arxiv.org/abs/2510.03463) based team / workflow for sub-agent loop engineering.
 * System prompt, tool descriptions, and tool examples are all concise, I've made sure not to bloat your context.
-* `team` tool - ALMAS team / workflow for sub-agent loop engineering.
 * Uses [rtk](https://github.com/rtk-ai/rtk) if you have it installed, disable with `--no-rtk`. Saves ~50% of bash output tokens. Remember bash is just 12% of total token usage, so 6% is nice, but saving on reads (65% of total) by using `index` gave me more benefit. I think I'll do bash output filtering like this myself in a future release.
 
 ### User experience
