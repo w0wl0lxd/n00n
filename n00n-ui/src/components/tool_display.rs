@@ -17,8 +17,8 @@ use unicode_width::UnicodeWidthStr;
 
 use n00n_providers::{ModelPricing, TokenUsage};
 
-use jiff::tz::TimeZone;
 use jiff::Timestamp;
+use jiff::tz::TimeZone;
 
 use crate::markdown::{should_truncate, text_to_lines, truncate_output, truncation_notice};
 use n00n_agent::{
