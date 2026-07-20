@@ -5,7 +5,7 @@ mod selection;
 mod tests;
 
 use self::render::RenderCursor;
-use self::segment::{Segment, SegmentCache};
+use self::segment::{Segment, SegmentCache, Surface};
 
 pub(crate) use self::segment::wrapped_line_count;
 
@@ -47,7 +47,6 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
 
-const THINKING_HIDDEN_HEADER: &str = "thinking> ...";
 pub(crate) const JUMP_TO_BOTTOM_TEXT: &str = "↓ bottom";
 const JUMP_TO_BOTTOM_THRESHOLD: u16 = 1;
 const JUMP_TO_BOTTOM_POPUP_HEIGHT: u16 = 1;
@@ -90,6 +89,7 @@ pub struct MessagesPanel {
     restore_event_tx: Option<EventSender>,
     show_thinking: bool,
     thinking_collapsed: bool,
+    thinking_started: Option<Instant>,
     /// One re-bake per tool per generation; `snapshot_theme_gen`
     /// only bumps when colors actually land.
     rebake_requested: HashMap<String, u64>,
@@ -166,7 +166,8 @@ impl MessagesPanel {
             lua_event_handle: None,
             restore_event_tx: None,
             show_thinking: ui_config.show_thinking,
-            thinking_collapsed: !ui_config.show_thinking,
+            thinking_collapsed: false,
+            thinking_started: None,
             rebake_requested: HashMap::new(),
             prompt_progress: None,
             jump_to_bottom_popup: None,
@@ -204,7 +205,10 @@ impl MessagesPanel {
         self.watched_bufs.clear();
         self.rebake_requested.clear();
         self.highlight_segment = None;
-        self.thinking_collapsed = !self.show_thinking;
+        self.thinking_collapsed = false;
+        self.thinking_started = None;
+        self.streaming_thinking.clear();
+        self.streaming_text.clear();
         self.restore_backlog.clear();
         self.restore_batches.clear();
     }
@@ -271,6 +275,8 @@ impl MessagesPanel {
     }
 
     pub fn thinking_delta(&mut self, text: &str) {
+        self.thinking_started.get_or_insert_with(Instant::now);
+        self.thinking_collapsed = false;
         self.streaming_thinking.push(text);
     }
 
@@ -473,7 +479,8 @@ impl MessagesPanel {
     pub fn stream_reset(&mut self) {
         self.streaming_thinking.clear();
         self.streaming_text.clear();
-        self.thinking_collapsed = !self.show_thinking;
+        self.thinking_collapsed = false;
+        self.thinking_started = None;
         self.cancel_in_progress();
     }
 
@@ -679,6 +686,24 @@ impl MessagesPanel {
 
     pub fn set_accent(&mut self, color: ratatui::style::Color) {
         self.accent.set(color);
+    }
+
+    pub fn copy_at(&self, row: u16, col: u16, area: Rect) -> Option<(String, &'static str)> {
+        if area.height == 0 {
+            return None;
+        }
+        let copy_area = Rect::new(area.right().saturating_sub(7), row, 7.min(area.width), 1);
+        if !copy_area.contains(ratatui::layout::Position::new(col, row)) {
+            return None;
+        }
+        let doc_row = (row.saturating_sub(area.y)) as u32 + self.scroll_top as u32;
+        let (index, segment, segment_start) =
+            self.cache.segment_at_row(doc_row, self.viewport_width)?;
+        if doc_row != segment_start || segment.surface() != Surface::Assistant {
+            return None;
+        }
+        let (text, label) = self.cache.get(index)?.copy_payload()?;
+        Some((text.to_owned(), label))
     }
 
     pub fn handle_click(&mut self, row: u16, area: Rect) -> bool {
@@ -910,8 +935,7 @@ impl MessagesPanel {
             }
             let h = seg.height(width);
             let highlight = self.highlight_segment == Some(i);
-            let style = seg.tool_id.as_ref().map(|_| theme::current().tool_bg);
-            cursor.render(seg.lines(), h, style, highlight, frame);
+            cursor.render(seg.lines(), h, None, seg.surface(), highlight, frame);
         }
 
         let mut height_idx = 0usize;
@@ -926,15 +950,22 @@ impl MessagesPanel {
             if cached_count > 0 || height_idx > 0 {
                 let h = streaming_heights[height_idx];
                 height_idx += 1;
-                cursor.render(&spacer_lines, h, None, false, frame);
+                cursor.render(&spacer_lines, h, None, Surface::Plain, false, frame);
             }
             if height_idx < streaming_heights.len() {
                 let h = streaming_heights[height_idx];
                 height_idx += 1;
                 if collapsed {
-                    cursor.render(&collapsed_thinking_lines, h, None, false, frame);
+                    cursor.render(
+                        &collapsed_thinking_lines,
+                        h,
+                        None,
+                        Surface::Plain,
+                        false,
+                        frame,
+                    );
                 } else {
-                    cursor.render(sc.cached_lines(), h, None, false, frame);
+                    cursor.render(sc.cached_lines(), h, None, Surface::Plain, false, frame);
                 }
             }
         }
@@ -1257,17 +1288,25 @@ impl MessagesPanel {
         }
         let mut msg =
             DisplayMessage::new(DisplayRole::Thinking, self.streaming_thinking.take_all());
-        msg.thinking_collapsed = self.thinking_collapsed;
-        self.thinking_collapsed = !self.show_thinking;
+        msg.thinking_collapsed = true;
+        msg.annotation = self
+            .thinking_started
+            .take()
+            .map(|started| format_thinking_duration(started.elapsed()));
+        self.thinking_collapsed = false;
         self.messages.push(msg);
     }
 
     fn build_streaming_collapsed_lines(&self) -> Vec<Line<'static>> {
-        thinking_indicator(self.streaming_thinking.line_count())
+        thinking_indicator(self.streaming_thinking.line_count(), None)
     }
 
-    fn build_cached_thinking_indicator(&self, text: &str) -> Vec<Line<'static>> {
-        thinking_indicator(logical_line_count(text))
+    fn build_cached_thinking_indicator(
+        &self,
+        text: &str,
+        duration: Option<&str>,
+    ) -> Vec<Line<'static>> {
+        thinking_indicator(logical_line_count(text), duration)
     }
 
     fn try_toggle_collapsed_thinking(&mut self, doc_row: u32, width: u16) -> bool {
@@ -1287,9 +1326,6 @@ impl MessagesPanel {
     }
 
     fn try_toggle_cached_thinking(&mut self, msg_idx: Option<usize>, width: u16) -> bool {
-        if self.show_thinking {
-            return false;
-        }
         let Some(idx) = msg_idx else { return false };
         let Some(msg) = self.messages.get_mut(idx) else {
             return false;
@@ -1304,15 +1340,15 @@ impl MessagesPanel {
     }
 
     fn rebuild_thinking_segment(&mut self, msg_idx: usize, width: u16) {
-        let Some((text, collapsed)) = self
+        let Some((text, collapsed, duration)) = self
             .messages
             .get(msg_idx)
-            .map(|m| (m.text.clone(), m.thinking_collapsed))
+            .map(|m| (m.text.clone(), m.thinking_collapsed, m.annotation.clone()))
         else {
             return;
         };
         let lines = if collapsed {
-            self.build_cached_thinking_indicator(&text)
+            self.build_cached_thinking_indicator(&text, duration.as_deref())
         } else {
             let style = thinking_style();
             text_to_lines(
@@ -1432,7 +1468,7 @@ impl MessagesPanel {
         }
         if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
             let text = msg.text.clone();
-            let lines = self.build_cached_thinking_indicator(&text);
+            let lines = self.build_cached_thinking_indicator(&text, msg.annotation.as_deref());
             let search_text = format!("thinking> {text}");
             return vec![Segment::with_lines(
                 lines,
@@ -1491,14 +1527,20 @@ impl MessagesPanel {
             )));
         }
         let prefix_width = prefix.width() as u16;
-        let search_text = format!("{prefix}{}", msg.text);
-        vec![Segment::with_lines(
+        let search_text = format!("{}> {}", role_name(&msg.role), msg.text);
+        let mut segment = Segment::with_lines(
             lines,
             search_text,
             Some(msg.text.clone()),
             prefix_width,
             Some(msg_index),
-        )]
+        );
+        match msg.role {
+            DisplayRole::User => segment.set_surface(Surface::User),
+            DisplayRole::Assistant => segment.set_surface(Surface::Assistant),
+            _ => {}
+        }
+        vec![segment]
     }
 
     fn rebuild_line_cache(&mut self) {
@@ -1533,7 +1575,8 @@ impl MessagesPanel {
             } else {
                 if matches!(&msg.role, DisplayRole::Thinking) && msg.thinking_collapsed {
                     let text = msg.text.clone();
-                    let lines = self.build_cached_thinking_indicator(&text);
+                    let lines =
+                        self.build_cached_thinking_indicator(&text, msg.annotation.as_deref());
                     let search_text = format!("thinking> {text}");
                     self.cache.push_spacer_if_needed();
                     self.cache.push(Segment::with_lines(
@@ -1595,33 +1638,59 @@ impl MessagesPanel {
                 }
 
                 let prefix_width = prefix.width() as u16;
-                let search_text = format!("{prefix}{}", msg.text);
+                let search_text = format!("{}> {}", role_name(&msg.role), msg.text);
                 self.cache.push_spacer_if_needed();
-                self.cache.push(Segment::with_lines(
+                let mut segment = Segment::with_lines(
                     lines,
                     search_text,
                     Some(msg.text.clone()),
                     prefix_width,
                     Some(i),
-                ));
+                );
+                match msg.role {
+                    DisplayRole::User => segment.set_surface(Surface::User),
+                    DisplayRole::Assistant => segment.set_surface(Surface::Assistant),
+                    _ => {}
+                }
+                self.cache.push(segment);
             }
         }
         self.cache.mark_built(self.messages.len());
     }
 }
 
-/// Two-line thinking indicator: a header (`thinking> ...`) followed by a
-/// `(N lines) (click to expand)` footer. Shared by the streaming and cached
-/// views when `show_thinking` is off.
-fn thinking_indicator(line_count: usize) -> Vec<Line<'static>> {
+fn thinking_indicator(line_count: usize, duration: Option<&str>) -> Vec<Line<'static>> {
     let theme = theme::current();
-    vec![
-        Line::from(Span::styled(THINKING_HIDDEN_HEADER, theme.thinking)),
-        Line::from(vec![
-            Span::styled(format!("({line_count} lines) "), theme.tool_dim),
-            Span::styled("(click to expand)", theme.thinking),
-        ]),
-    ]
+    let label = duration.map_or_else(
+        || "Thinking".to_owned(),
+        |elapsed| format!("Thought for {elapsed}"),
+    );
+    vec![Line::from(vec![
+        Span::styled("  › ", theme.thinking),
+        Span::styled(label, theme.thinking),
+        Span::styled(format!(" · {line_count} lines"), theme.tool_dim),
+        Span::styled(" · click to expand", theme.tool_dim),
+    ])]
+}
+
+fn format_thinking_duration(duration: std::time::Duration) -> String {
+    let seconds = duration.as_secs().max(1);
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else {
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    }
+}
+
+fn role_name(role: &DisplayRole) -> &'static str {
+    match role {
+        DisplayRole::User => "you",
+        DisplayRole::Assistant => "noon",
+        DisplayRole::Thinking => "thinking",
+        DisplayRole::Error => "error",
+        DisplayRole::Done => "done",
+        DisplayRole::Tool(_) => "tool",
+    }
 }
 
 fn logical_line_count(text: &str) -> usize {
