@@ -52,7 +52,7 @@ local VEC_DIM = 256
 local function hash_token(tok)
   local h = 2166136261
   for i = 1, #tok do
-    h = (h ~ (string.byte(tok, i) * 16777619)) & 0xffffffff
+    h = bit32.band(bit32.bxor(h, string.byte(tok, i) * 16777619), 0xffffffff)
   end
   return h
 end

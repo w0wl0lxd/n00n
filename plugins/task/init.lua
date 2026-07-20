@@ -13,12 +13,15 @@ local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_PROMPT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
 local MAX_SCHEMA_ERRORS = 3
+local MAX_STRUCTURED_RETRIES = 2
 local SCHEMA_ROOT_ERROR = "output_schema must have type object"
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
 local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
 local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
 local INVALID_INPUT_PREFIX =
   "Input does not match the required schema. Fix the errors and call structured_output again:\n"
+local NUDGE_MISSING =
+  "You did not call the structured_output tool. Call it now with your final result matching its input schema."
 local BODY_INDENT_COLS = 4
 local MIN_MD_WIDTH = 20
 local DEFAULT_OUTPUT_LINES = 5
@@ -235,6 +238,11 @@ local function handler(input, ctx)
           message = message .. STRUCTURED_OUTPUT_PROMPT_SUFFIX
         end
         local result, err = sess:prompt(message)
+        local retries = 0
+        while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
+          retries = retries + 1
+          result, err = sess:prompt(NUDGE_MISSING)
+        end
         if err then
           return { llm_output = "sub-agent error: " .. err, is_error = true }
         end

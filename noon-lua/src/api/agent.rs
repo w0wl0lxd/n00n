@@ -1002,6 +1002,17 @@ mod tests {
     }
 
     #[test]
+    fn usage_cost_accepts_spec_without_context() {
+        let lua = Lua::new();
+        let usage_cost: Function = create_agent_table(&lua).unwrap().get("usage_cost").unwrap();
+        let (cost, err): Pair<f64> = usage_cost
+            .call(("anthropic/claude-haiku-4-5", 1_200_u32, 300_u32))
+            .unwrap();
+        assert!(cost.is_some());
+        assert_eq!(err, None);
+    }
+
+    #[test]
     fn local_tool_handler_result_conventions() {
         let input = json!({"x": "1"});
         assert_eq!(
