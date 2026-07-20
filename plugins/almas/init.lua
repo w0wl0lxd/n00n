@@ -168,7 +168,6 @@ local function generate_learnings_digest(ctx, goal, report, supervisor_tier)
   local sess, sess_err = noon.agent.session(ctx, {
     model_spec = model.spec,
     system = system,
-    tools = {},
     audience = "general_sub",
     name = "almas-learning-digest",
   })

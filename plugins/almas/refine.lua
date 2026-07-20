@@ -48,7 +48,6 @@ function M.refine_goal(ctx, goal, supervisor_tier)
   local sess, sess_err = noon.agent.session(resolved_ctx, {
     model_spec = model.spec,
     system = system,
-    tools = {},
     audience = "general_sub",
     name = "almas-halo-refiner",
   })
