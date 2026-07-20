@@ -135,7 +135,9 @@ pub struct SessionSummary {
     pub id: NoonId,
     pub title: String,
     pub updated_at: u64,
+    #[serde(default)]
     pub cwd: String,
+    #[serde(default)]
     pub model: String,
 }
 
@@ -963,9 +965,11 @@ enum ScanRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScannedHeader {
     id: NoonId,
+    #[serde(default)]
     cwd: String,
     title: String,
     updated_at: u64,
+    #[serde(default)]
     model: String,
 }
 
