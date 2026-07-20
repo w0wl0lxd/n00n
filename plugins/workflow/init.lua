@@ -54,7 +54,7 @@ local INVALID_RUN_ID_ERROR = "resume must be a run_id (hex letters/digits only, 
 local RUN_ID_PATTERN = "^[%x]+$"
 local DEFAULT_TIMEOUT_SECS = 600
 
-local description = [[Run a workflow script that orchestrates many subagents at scale.
+local description = [[Run a workflow: a team of agents led by a supervisor using the sandboxed runtime.
 
 A workflow moves the plan into code: the script holds the loop, branching, and intermediate results, so your context holds only the final answer. The script itself consumes zero tokens; only agent() calls cost tokens. Use it for codebase-wide audits, large migrations, cross-checked research, or any task needing more agents than one conversation can coordinate.
 
@@ -804,6 +804,11 @@ local function handler(input, ctx)
 
   return nil
 end
+
+n00n.api.register_prompt_hint({
+  slot = "tool_usage",
+  content = "- For complex, multi-stage orchestration of many agents, use **workflow** (a team of agents led by a supervisor inside the sandboxed runtime).",
+})
 
 local function header(input)
   if type(input.script) == "string" then

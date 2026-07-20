@@ -40,7 +40,7 @@ local PLANNER_OUTPUT = {
 }
 
 local description =
-  [[Launch an agent team. A supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
+  [[Launch a team of agents led by a supervisor (ALMAS). The supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
 
 - product_manager: scope & acceptance (weak)
 - planner: step breakdown (medium)
@@ -411,7 +411,7 @@ end
 
 n00n.api.register_prompt_hint({
   slot = "tool_usage",
-  content = "- For multi-step research or implementation, use **team** with `compact=true` (lossless `n00n.json.tooned` passthrough) and `use_retrieval=true` to save tokens.",
+  content = "- For multi-step work, use **team** (ALMAS-led agent team) with `compact=true` and `use_retrieval=true` to save tokens. Use **workflow** when you need a sandboxed supervisor script to orchestrate agents at scale.",
 })
 
 n00n.api.register_tool({
