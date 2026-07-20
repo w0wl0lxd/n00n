@@ -178,7 +178,8 @@ impl OpenAiCompatProvider {
                 && model.id.starts_with(GPT_5_6_BREAKPOINT_PREFIX)
                 && !model.id.contains(GPT_CODEX_MARKER)
                 && let Some(msg) = body["messages"].as_array_mut().and_then(|arr| {
-                    arr.iter_mut().find(|m| m.get("role").and_then(Value::as_str) == Some("system"))
+                    arr.iter_mut()
+                        .find(|m| m.get("role").and_then(Value::as_str) == Some("system"))
                 })
                 && let Some(content) = msg.get("content").and_then(Value::as_str)
             {
@@ -571,7 +572,10 @@ pub async fn parse_sse(
                 .map(|d| d.cache_write_tokens)
                 .unwrap_or(0);
             usage = TokenUsage {
-                input: u.prompt_tokens.saturating_sub(cached).saturating_sub(cache_write),
+                input: u
+                    .prompt_tokens
+                    .saturating_sub(cached)
+                    .saturating_sub(cache_write),
                 output: u.completion_tokens,
                 cache_read: cached,
                 cache_creation: cache_write,
@@ -1184,7 +1188,8 @@ data: [DONE]\n";
             supports_prompt_cache_key: true,
             supports_prompt_cache_breakpoint: false,
         };
-        let provider = OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default());
+        let provider =
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default());
         let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([]);
@@ -1211,7 +1216,8 @@ data: [DONE]\n";
             supports_prompt_cache_key: true,
             supports_prompt_cache_breakpoint: false,
         };
-        let provider = OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default());
+        let provider =
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default());
         let model = crate::model::Model::from_spec("openai/gpt-4o").unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([]);
@@ -1232,7 +1238,8 @@ data: [DONE]\n";
             supports_prompt_cache_key: false,
             supports_prompt_cache_breakpoint: true,
         };
-        let provider = OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default());
+        let provider =
+            OpenAiCompatProvider::new(&TEST_CONFIG, crate::providers::Timeouts::default());
         let model = crate::model::Model::from_spec("openai/gpt-5.6-luna").unwrap();
         let messages = vec![Message::user("hello".to_string())];
         let tools = json!([]);
