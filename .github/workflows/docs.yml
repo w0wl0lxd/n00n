@@ -1,0 +1,59 @@
+name: Docs
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "site/**"
+      - "n00n-docgen/**"
+      - "justfile"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+      - uses: extractions/setup-just@v2
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate docs
+        run: just gen-docs
+
+      - name: Install Zola
+        uses: getzola/setup-zola@v2
+        with:
+          version: 0.19.2
+
+      - name: Build site
+        run: cd site && ./build.sh
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/_build
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

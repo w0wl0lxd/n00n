@@ -65,6 +65,7 @@ use n00n_storage::model::persist_model;
 
 use crate::storage_writer::StorageWriter;
 use ratatui::layout::Position;
+use ratatui_image::picker::Picker;
 
 pub(crate) use crate::agent::QueuedMessage;
 pub(crate) use mode::{Mode, PlanState, PlanTrigger};
@@ -94,6 +95,7 @@ const IMPLEMENT_PARALLEL_HINT: &str = "Use batch+task to parallelize, assign eac
 const TASK_DONE_DETAIL: &str = "✓ done";
 const TASK_ERROR_DETAIL: &str = "✗ error";
 const TASK_RUNNING_DETAIL: &str = "◈ running";
+const STEERING_UNAVAILABLE_MSG: &str = "This agent is no longer accepting messages";
 const TASK_PANEL_FOOTER: &[(&str, &str)] =
     &[("enter", "open"), ("ctrl+x", "toggle"), ("esc", "close")];
 
@@ -162,6 +164,7 @@ pub struct App {
     pub(super) task_picker_original: Option<usize>,
     pub(super) theme_picker: ThemePicker,
     pub(super) model_picker: ModelPicker,
+    model_picker_reply: Option<flume::Sender<Option<String>>>,
     pub(super) login_picker: LoginPicker,
     pub(super) mcp_picker: McpPicker,
     pub(super) rewind_picker: RewindPicker,
@@ -193,6 +196,7 @@ pub struct App {
     pub(crate) storage: StateDir,
     pub(crate) usage_slot: Arc<ArcSwapOption<UsageFetchState>>,
     pub(crate) shared_history: Option<Arc<ArcSwap<Vec<Message>>>>,
+    pub(crate) shared_transcript: Option<n00n_agent::SharedTranscript>,
     pub(crate) btw_system: Option<Arc<ArcSwap<String>>>,
     pub(crate) shared_tool_outputs: Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
     pub(crate) image_paste_rx: Vec<flume::Receiver<Result<ImageSource, String>>>,
@@ -200,6 +204,7 @@ pub struct App {
     pub(crate) shell: shell::ShellState,
     pub(crate) ui_config: UiConfig,
     pub(crate) permissions: Arc<PermissionManager>,
+    pub(crate) picker: Arc<Picker>,
     pub(crate) lua_event_handle: Option<EventHandle>,
     pub(super) keymap_reader: KeymapReader,
     pub(super) hint_reader: HintReader,
@@ -226,13 +231,15 @@ impl App {
         input_history_size: usize,
         permissions: Arc<PermissionManager>,
         custom_commands: Arc<[n00n_agent::command::CustomCommand]>,
+        picker: Arc<Picker>,
     ) -> Self {
         scrollbar::set_enabled(ui_config.scrollbar);
         let state = SessionState::from_session(session, model, &storage);
         let mut input_box = InputBox::new(InputHistory::load(&storage, input_history_size));
         input_box.set_max_input_lines(ui_config.max_input_lines);
         let mut app = Self {
-            chats: vec![Chat::new("Main".into(), ui_config)],
+            chats: vec![Chat::new("Main".into(), ui_config, Arc::clone(&picker))],
+            picker,
             active_chat: 0,
             chat_index: HashMap::new(),
             input_box,
@@ -245,6 +252,7 @@ impl App {
             task_picker_original: None,
             theme_picker: ThemePicker::new(),
             model_picker: ModelPicker::new(available_models),
+            model_picker_reply: None,
             login_picker: LoginPicker::new(),
             mcp_picker: McpPicker::new(mcp_reader, mcp_config_errors),
             rewind_picker: RewindPicker::new(),
@@ -275,6 +283,7 @@ impl App {
             storage,
             usage_slot: Arc::new(ArcSwapOption::empty()),
             shared_history: None,
+            shared_transcript: None,
             btw_system: None,
             shared_tool_outputs: None,
             image_paste_rx: vec![],
@@ -315,6 +324,16 @@ impl App {
     pub(crate) fn record_recent_model(&mut self, spec: &str) {
         let recents = n00n_storage::model::push_recent(&self.storage, spec);
         self.model_picker.set_recents(recents);
+    }
+
+    pub(crate) fn pick_model_for_lua(
+        &mut self,
+        current: Option<String>,
+        reply: flume::Sender<Option<String>>,
+    ) {
+        self.model_picker_reply = Some(reply);
+        self.model_picker
+            .open(current.as_deref().unwrap_or_default());
     }
 
     pub(crate) fn flash(&mut self, msg: String) {
@@ -363,16 +382,20 @@ impl App {
                         self.start_image_paste();
                     }
                 } else {
-                    let mut any_image = false;
+                    let mut text_lines = Vec::new();
                     if self.is_main_chat() {
-                        for line in text.lines() {
+                        for line in text.split('\n') {
                             if let Some((path, mt)) = image::try_parse_image_path(line) {
                                 self.start_file_image_paste(path, mt);
-                                any_image = true;
+                            } else {
+                                text_lines.push(line);
                             }
                         }
+                    } else {
+                        text_lines.push(&text);
                     }
-                    if !any_image {
+                    let text = text_lines.join("\n");
+                    if !text.is_empty() {
                         self.route_text_paste(&text);
                     }
                 }
@@ -425,13 +448,15 @@ impl App {
         }
     }
 
-    fn send_subagent_prompt(&mut self, subagent_id: &str, message: String) {
-        if let Some(tx) = self.subagent_prompts.get(subagent_id) {
-            let _ = tx.try_send(message.clone());
-        }
-        if let Some(&idx) = self.chat_index.get(subagent_id) {
+    fn send_subagent_prompt(&mut self, subagent_id: &str, message: String) -> bool {
+        let sent = self
+            .subagent_prompts
+            .get(subagent_id)
+            .is_some_and(|tx| tx.try_send(message.clone()).is_ok());
+        if sent && let Some(&idx) = self.chat_index.get(subagent_id) {
             self.chats[idx].show_user_message(message);
         }
+        sent
     }
 
     fn handle_scroll(&mut self, column: u16, row: u16, delta: i32) {
@@ -448,8 +473,7 @@ impl App {
             return;
         }
         let pos = Position::new(column, row);
-        if self.float_mgr.is_open() && self.float_mgr.contains(pos) {
-            self.float_mgr.scroll(delta);
+        if self.float_mgr.scroll_at(pos, delta) {
             return;
         }
         macro_rules! try_picker {
@@ -673,8 +697,14 @@ impl App {
                 KeyCode::Up => self.queue.move_focus_up(),
                 KeyCode::Down => self.queue.move_focus_down(),
                 KeyCode::Enter => {
-                    self.queue.remove_focused();
+                    if let Some((_, msg, _)) = self.queue.take_focused_for_edit() {
+                        self.input_box.set_submission(Submission {
+                            text: msg.text,
+                            images: msg.images,
+                        });
+                    }
                 }
+                KeyCode::Delete | KeyCode::Backspace => self.queue.remove_focused(),
                 KeyCode::Esc => self.queue.unfocus(),
                 _ if key::QUIT.matches(key) => self.queue.unfocus(),
                 _ if key::POP_QUEUE.matches(key) => {
@@ -723,7 +753,12 @@ impl App {
             return Some(match self.model_picker.handle_key(key) {
                 ModelPickerAction::Consumed => vec![],
                 ModelPickerAction::Select(spec) => {
-                    vec![Action::ChangeModel(spec)]
+                    if let Some(reply) = self.model_picker_reply.take() {
+                        let _ = reply.send(Some(spec));
+                        vec![]
+                    } else {
+                        vec![Action::ChangeModel(spec)]
+                    }
                 }
                 ModelPickerAction::AssignTier(spec, tier) => {
                     vec![Action::AssignTier(spec, tier)]
@@ -731,7 +766,12 @@ impl App {
                 ModelPickerAction::UnassignTier(spec, tier) => {
                     vec![Action::UnassignTier(spec, tier)]
                 }
-                ModelPickerAction::Close => vec![],
+                ModelPickerAction::Close => {
+                    if let Some(reply) = self.model_picker_reply.take() {
+                        let _ = reply.send(None);
+                    }
+                    vec![]
+                }
             });
         }
 
@@ -786,26 +826,7 @@ impl App {
         }
 
         if !self.is_main_chat() {
-            let finished = self.chats[self.active_chat].is_finished();
-            return match key.code {
-                KeyCode::Esc if finished => {
-                    self.active_chat = 0;
-                    vec![]
-                }
-                KeyCode::Char('x') if !finished => self.handle_subagent_cancel(),
-                KeyCode::Esc if !finished => {
-                    if let Some(t) = self.last_esc.take()
-                        && t.elapsed() < self.status_bar.flash_duration
-                    {
-                        self.handle_subagent_cancel()
-                    } else {
-                        self.last_esc = Some(Instant::now());
-                        self.status_bar.flash(FLASH_CANCEL.into());
-                        vec![]
-                    }
-                }
-                _ => vec![],
-            };
+            return self.handle_subagent_chat_key(key);
         }
 
         self.handle_main_chat_key(key)
@@ -825,7 +846,53 @@ impl App {
         false
     }
 
+    fn handle_subagent_chat_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        let finished = self.chats[self.active_chat].is_finished();
+        if key.code == KeyCode::Left {
+            self.active_chat = 0;
+            self.last_esc = None;
+            return vec![];
+        }
+        if finished && key.code == KeyCode::Esc {
+            self.active_chat = 0;
+            return vec![];
+        }
+        if key.code != KeyCode::Esc {
+            self.last_esc = None;
+        }
+
+        match self.input_box.handle_key(key) {
+            InputAction::Submit(sub) => self.handle_submit(sub),
+            InputAction::Passthrough(key) if key.code == KeyCode::Esc => {
+                if let Some(t) = self.last_esc.take()
+                    && t.elapsed() < self.status_bar.flash_duration
+                {
+                    self.handle_subagent_cancel()
+                } else {
+                    self.last_esc = Some(Instant::now());
+                    self.status_bar.flash(FLASH_CANCEL.into());
+                    vec![]
+                }
+            }
+            InputAction::Passthrough(_) | InputAction::ContinueLine | InputAction::None => vec![],
+            InputAction::OpenFilePicker => vec![],
+            InputAction::PaletteSync(_) => vec![],
+        }
+    }
+
     fn handle_main_chat_key(&mut self, key: KeyEvent) -> Vec<Action> {
+        if key::TRANSCRIPT_DETAILS.matches(key) {
+            let visible = self.active_chat().toggle_transcript_details();
+            self.flash(
+                if visible {
+                    "Transcript details shown"
+                } else {
+                    "Transcript details hidden"
+                }
+                .into(),
+            );
+            return vec![];
+        }
         if key::EDIT_INPUT.matches(key) {
             return vec![Action::EditInputInEditor];
         }
@@ -893,6 +960,19 @@ impl App {
                         self.active_chat().scroll(-1);
                         vec![]
                     }
+                    KeyCode::Tab
+                        if streaming && !self.input_box.is_empty() && !self.is_bash_input() =>
+                    {
+                        if let Some(sub) = self.input_box.submit() {
+                            let msg = sub.into();
+                            if self.queue.editing().is_some() {
+                                self.replace_edited(msg);
+                            } else {
+                                self.queue_and_notify(msg);
+                            }
+                        }
+                        vec![]
+                    }
                     KeyCode::Tab if !self.is_bash_input() => self.toggle_mode(),
                     KeyCode::Esc => {
                         if let Some(t) = self.last_esc.take()
@@ -941,12 +1021,44 @@ impl App {
                 return vec![];
             }
             PendingInput::SubagentFollowUp { subagent_id } => {
-                self.send_subagent_prompt(&subagent_id, sub.text);
+                if !self.send_subagent_prompt(&subagent_id, sub.text) {
+                    self.flash(STEERING_UNAVAILABLE_MSG.into());
+                }
                 return vec![];
             }
             PendingInput::None => {}
         }
+        if !self.is_main_chat() {
+            if sub.is_empty() {
+                return vec![];
+            }
+            let Some(tool_use_id) = self.chats[self.active_chat].tool_use_id.clone() else {
+                return vec![];
+            };
+            if self.subagent_prompts.contains_key(&tool_use_id) {
+                self.send_subagent_prompt(&tool_use_id, sub.text);
+            } else {
+                self.flash("This agent cannot receive follow-up messages".into());
+            }
+            return vec![];
+        }
         if sub.is_empty() {
+            if self.status == Status::Streaming {
+                self.queue.promote_latest_steering();
+            }
+            return vec![];
+        }
+        if !self.is_main_chat() {
+            let subagent_id = self
+                .chat_index
+                .iter()
+                .find(|&(_, &idx)| idx == self.active_chat)
+                .map(|(id, _)| id.clone());
+            if let Some(subagent_id) = subagent_id {
+                if !self.send_subagent_prompt(&subagent_id, sub.text) {
+                    self.flash(STEERING_UNAVAILABLE_MSG.into());
+                }
+            }
             return vec![];
         }
         if sub.text.trim() == "exit" {
@@ -967,6 +1079,15 @@ impl App {
                 command: prefix.command,
                 visible: prefix.visible,
             }];
+        }
+        if self.status == Status::Streaming {
+            let msg = sub.into();
+            if self.queue.editing().is_some() {
+                self.replace_edited(msg);
+            } else {
+                self.queue_steering(msg);
+            }
+            return vec![];
         }
         self.submit_or_queue(sub.into())
     }
@@ -1013,6 +1134,13 @@ impl App {
         self.chats[self.active_chat].cancel_in_progress();
         self.chats[self.active_chat].mark_finished(DisplayRole::Error, CANCELLED_TEXT);
         self.subagent_answers.remove(&tool_use_id);
+        self.subagent_prompts.remove(&tool_use_id);
+        if matches!(
+            self.pending_input,
+            PendingInput::SubagentFollowUp { ref subagent_id } if subagent_id == &tool_use_id
+        ) {
+            self.pending_input = PendingInput::None;
+        }
 
         vec![Action::CancelSubagent { tool_use_id }]
     }
@@ -1044,11 +1172,20 @@ impl App {
         if envelope.run_id != self.run_id {
             // Stale run_id after cancel: agent updates shared_history before sending
             // Done/Error, so this is the first moment the full conversation is available.
-            if matches!(
-                envelope.event,
-                AgentEvent::Done { .. } | AgentEvent::Error { .. }
-            ) {
-                self.save_session();
+            match envelope.event {
+                AgentEvent::Done { .. } | AgentEvent::Error { .. } => self.save_session(),
+                AgentEvent::SubagentHistory {
+                    tool_use_id,
+                    messages,
+                    ..
+                } => {
+                    self.state
+                        .session
+                        .subagent_messages
+                        .insert(tool_use_id, messages);
+                    self.save_session();
+                }
+                _ => {}
             }
             return vec![];
         }
@@ -1056,17 +1193,24 @@ impl App {
         if let AgentEvent::SubagentHistory {
             tool_use_id,
             messages,
+            is_error,
         } = envelope.event
         {
-            // Workflow sessions use synthetic ids that no ToolDone will match,
-            // so we finish them here on SubagentHistory.
             if let Some(&sub_idx) = self.chat_index.get(tool_use_id.as_str()) {
-                self.chats[sub_idx].mark_finished(DisplayRole::Done, DONE_TEXT);
+                let (role, text) = if is_error {
+                    (DisplayRole::Error, ERROR_TEXT)
+                } else {
+                    (DisplayRole::Done, DONE_TEXT)
+                };
+                self.chats[sub_idx].mark_finished(role, text);
             }
+            self.subagent_answers.remove(&tool_use_id);
+            self.subagent_prompts.remove(&tool_use_id);
             self.state
                 .session
                 .subagent_messages
                 .insert(tool_use_id, messages);
+            self.save_session();
             return vec![];
         }
 
@@ -1171,9 +1315,14 @@ impl App {
 
         let result = self.chats[chat_idx].handle_event(envelope.event, plan_path);
 
-        if let ChatEventResult::QueueItemConsumed { text, image_count } = result {
+        if let ChatEventResult::QueueItemConsumed {
+            text,
+            image_count,
+            images,
+        } = result
+        {
             if chat_idx == 0 {
-                self.on_queue_item_consumed(&text, image_count);
+                self.on_queue_item_consumed(&text, image_count, images);
             }
             return vec![];
         }
@@ -1268,11 +1417,15 @@ impl App {
         if let Some(ref tx) = subagent.prompt_tx {
             self.subagent_prompts.insert(id.clone(), tx.clone());
         }
-        self.chats[0].update_tool_summary(id, &subagent.name);
+        self.chats[0].update_tool_summary(&subagent.parent_tool_use_id, &subagent.name);
         if let Some(ref model) = subagent.model {
-            self.chats[0].update_tool_model(id, model);
+            self.chats[0].update_tool_model(&subagent.parent_tool_use_id, model);
         }
-        let mut chat = Chat::new(subagent.name.clone(), self.ui_config);
+        let mut chat = Chat::new(
+            subagent.name.clone(),
+            self.ui_config,
+            Arc::clone(&self.picker),
+        );
         chat.set_restore_channel(self.lua_event_handle.clone(), self.restore_event_tx.clone());
         chat.tool_use_id = Some(id.clone());
         chat.model_id = subagent.model.clone();
@@ -1325,6 +1478,7 @@ impl App {
                 vec![]
             }
             "/model" => {
+                self.model_picker_reply = None;
                 self.model_picker.open(&self.state.model.spec());
                 vec![Action::RefreshModels]
             }
@@ -1596,6 +1750,8 @@ impl App {
             self.chats[sub_idx].mark_finished(role.clone(), text);
         }
         self.chat_index.clear();
+        self.subagent_answers.clear();
+        self.subagent_prompts.clear();
     }
 
     pub fn flush_all_chats(&mut self) {
@@ -1636,10 +1792,9 @@ impl App {
         try_picker!(self.model_picker);
         try_picker!(self.mcp_picker);
         try_picker!(self.login_picker);
-        if !self.is_main_chat() {
-            return;
-        }
-        if let InputAction::PaletteSync(val) = self.input_box.handle_paste(text) {
+        if let InputAction::PaletteSync(val) = self.input_box.handle_paste(text)
+            && self.is_main_chat()
+        {
             self.command_palette.sync(&val);
         }
     }
@@ -1714,12 +1869,4 @@ fn sync_search_highlight(modal: &SearchModal, chat: &mut Chat) {
         chat.scroll_to_segment(i);
     }
     chat.set_highlight_segment(idx);
-}
-
-fn format_with_images(text: &str, image_count: usize) -> String {
-    match image_count {
-        0 => text.to_string(),
-        1 => format!("{text} [1 image]"),
-        n => format!("{text} [{n} images]"),
-    }
 }

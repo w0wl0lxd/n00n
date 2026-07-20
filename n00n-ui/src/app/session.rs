@@ -21,6 +21,8 @@ use crate::agent::QueuedMessage;
 /// first (`save_session` does).
 pub(crate) fn session_has_content(session: &AppSession) -> bool {
     !session.messages.is_empty()
+        || !session.subagent_messages.is_empty()
+        || !session.meta.subagents.is_empty()
         || session.meta.input_draft.is_some()
         || !session.meta.queued_messages.is_empty()
         || session.meta.mode != Some(n00n_storage::sessions::StoredMode::Build)
@@ -34,6 +36,7 @@ impl App {
     pub(crate) fn save_session(&mut self) {
         self.state.sync_session(
             &self.shared_history,
+            &self.shared_transcript,
             &self.shared_tool_outputs,
             &self.permissions,
         );
@@ -54,12 +57,13 @@ impl App {
             .chats
             .iter()
             .skip(1)
-            .zip(self.chat_index.iter())
-            .map(|(chat, (tool_id, _))| StoredSubagent {
-                tool_use_id: tool_id.clone(),
-                name: chat.name.clone(),
-                prompt: None,
-                model: chat.model_id.clone(),
+            .filter_map(|chat| {
+                chat.tool_use_id.as_ref().map(|tool_use_id| StoredSubagent {
+                    tool_use_id: tool_use_id.clone(),
+                    name: chat.name.clone(),
+                    prompt: None,
+                    model: chat.model_id.clone(),
+                })
             })
             .collect();
     }
@@ -77,7 +81,7 @@ impl App {
 
     pub(super) fn reset_ui_chrome(&mut self) {
         self.chats.clear();
-        let mut main = Chat::new("Main".into(), self.ui_config);
+        let mut main = Chat::new("Main".into(), self.ui_config, Arc::clone(&self.picker));
         main.set_restore_channel(self.lua_event_handle.clone(), self.restore_event_tx.clone());
         self.chats.push(main);
         self.active_chat = 0;
@@ -124,7 +128,7 @@ impl App {
         for sa in std::mem::take(&mut self.state.session.meta.subagents) {
             let idx = self.chats.len();
             self.chat_index.insert(sa.tool_use_id.clone(), idx);
-            let mut chat = Chat::new(sa.name, self.ui_config);
+            let mut chat = Chat::new(sa.name, self.ui_config, Arc::clone(&self.picker));
             chat.set_restore_channel(self.lua_event_handle.clone(), self.restore_event_tx.clone());
             chat.tool_use_id = Some(sa.tool_use_id.clone());
             chat.model_id = sa.model;

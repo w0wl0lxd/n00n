@@ -258,7 +258,7 @@ impl Copilot {
         event_tx: &Sender<ProviderEvent>,
     ) -> Result<StreamResponse, AgentError> {
         let auth = self.auth().await?;
-        let body = responses::build_body(model, messages, system, tools);
+        let body = responses::build_body(model, messages, system, tools, None, None);
         let resolved = super::ResolvedAuth {
             base_url: Some(auth.endpoint.clone()),
             headers: copilot_headers(&auth, Some("conversation-agent")),
@@ -272,6 +272,7 @@ impl Copilot {
             self.stream_timeout,
         )
         .await
+        .map(|(_, response)| response)
     }
 
     async fn stream_messages(

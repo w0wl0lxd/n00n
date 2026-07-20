@@ -422,8 +422,6 @@ n00n.api.register_tool({
   header = header,
 })
 
-local TextInput = require("n00n.text_input")
-
 local TEAM_MODES = { "supervised", "autonomous", "swarm" }
 local MODEL_TIERS = { "weak", "medium", "strong" }
 local THINKING_LEVELS = { "off", "adaptive", "low", "medium", "high", "xhigh", "max" }
@@ -488,7 +486,7 @@ local function run_launcher(initial_goal)
     quorum = true,
     max_rounds = DEFAULT_SWARM_ROUNDS,
   }
-  local model = TextInput.new()
+  local TextInput = require("n00n.text_input")
   local goal = TextInput.new()
   goal:insert_text(initial_goal or "")
   local selected = trim(initial_goal) == "" and 10 or 1
@@ -501,14 +499,10 @@ local function run_launcher(initial_goal)
   local win
 
   local function render()
-    prefs.model = trim(model:value())
-    if prefs.model == "" then
-      prefs.model = nil
-    end
     local rows = {
       { "Mode", prefs.mode },
       { "Model tier", prefs.model_tier },
-      { "Exact model", prefs.model or "(use tier)" },
+      { "Model", prefs.model or "Default (tier routing)" },
       { "Thinking", prefs.thinking },
       { "Auto tier", tostring(prefs.auto_tier) },
       { "Retrieval", tostring(prefs.use_retrieval) },
@@ -531,7 +525,7 @@ local function run_launcher(initial_goal)
     end
     lines[#lines + 1] = { { "", "" } }
     lines[#lines + 1] = {
-      { selected == RUN_ROW and "❯ Run Team" or "  Run Team", selected == RUN_ROW and "selected" or "item" },
+      { selected == RUN_ROW and "❯ Start team" or "  Start team", selected == RUN_ROW and "selected" or "item" },
     }
     buf:set_lines(lines)
     if win then
@@ -587,9 +581,8 @@ local function run_launcher(initial_goal)
     elseif event.type == "resize" then
       width = event.width
       render()
-    elseif event.type == "paste" and editing then
-      local input = editing == "goal" and goal or model
-      input:insert_text(event.text)
+    elseif event.type == "paste" and editing == "goal" then
+      goal:insert_text(event.text)
       render()
     elseif event.type == "key" then
       local key = event.key
@@ -607,13 +600,11 @@ local function run_launcher(initial_goal)
         end
       elseif editing then
         if key == "enter" then
-          local finished = editing
           editing = nil
-          selected = finished == "model" and 4 or RUN_ROW
+          selected = RUN_ROW
           render()
         else
-          local input = editing == "goal" and goal or model
-          if input:handle_key(key) ~= TextInput.Result.IGNORED then
+          if goal:handle_key(key) ~= TextInput.Result.IGNORED then
             render()
           end
         end
@@ -629,7 +620,12 @@ local function run_launcher(initial_goal)
         elseif selected == 2 then
           prefs.model_tier = cycle(MODEL_TIERS, prefs.model_tier)
         elseif selected == 3 then
-          editing = "model"
+          win:hide()
+          local picked = n00n.ui.pick_model(prefs.model)
+          win:show()
+          if picked then
+            prefs.model = picked
+          end
         elseif selected == 4 then
           prefs.thinking = cycle(THINKING_LEVELS, prefs.thinking)
         elseif selected == 5 then

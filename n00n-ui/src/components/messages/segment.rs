@@ -1,12 +1,32 @@
+use crate::markdown::TRUNCATION_PREFIX;
 use crate::render_worker::RenderWorker;
+use crate::terminal_image::TerminalImage;
+use crate::theme;
 
 use super::super::code_view::SectionFlags;
 use super::super::tool_display::{HighlightRequest, ToolLines};
+use n00n_agent::{ImageMediaType, ImageSource};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
+use ratatui_image::picker::Picker;
 use std::cell::Cell;
 
 const INST_SUFFIX: &str = "__inst";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SegmentIdentity {
+    Tool(String),
+    Instructions(String),
+}
+
+fn media_type_label(media_type: ImageMediaType) -> &'static str {
+    match media_type {
+        ImageMediaType::Png => "png",
+        ImageMediaType::Jpeg => "jpeg",
+        ImageMediaType::Gif => "gif",
+        ImageMediaType::Webp => "webp",
+    }
+}
 
 pub fn is_instruction_segment(id: &str) -> bool {
     id.ends_with(INST_SUFFIX)
@@ -57,6 +77,7 @@ pub(super) struct Segment {
     /// Used when copying a selection back to the original source text.
     pub prefix_width: u16,
     pub tool_id: Option<String>,
+    pub identity: Option<SegmentIdentity>,
     /// Backlink to `self.messages`, set only by `with_lines`. A click on a
     /// collapsed thinking indicator has no tool_id to route by, so this is
     /// how the click finds its message. It looks unused; delete it and the
@@ -71,11 +92,23 @@ pub(super) struct Segment {
     snapshot_base: Option<usize>,
     pub content_indent: &'static str,
     surface: Surface,
+    image: Option<TerminalImage>,
 }
 
 impl Segment {
     pub fn with_tool(tool_id: String) -> Self {
         Self {
+            identity: Some(SegmentIdentity::Tool(tool_id.clone())),
+            tool_id: Some(tool_id),
+            surface: Surface::Tool,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_instructions(parent_id: String) -> Self {
+        let tool_id = format!("{parent_id}{INST_SUFFIX}");
+        Self {
+            identity: Some(SegmentIdentity::Instructions(parent_id)),
             tool_id: Some(tool_id),
             surface: Surface::Tool,
             ..Self::default()
@@ -106,8 +139,48 @@ impl Segment {
         }
     }
 
+    pub fn with_image(
+        source: &ImageSource,
+        picker: &Picker,
+        width: u16,
+        surface: Surface,
+        msg_index: Option<usize>,
+    ) -> Self {
+        let mut seg = match TerminalImage::from_source(source, picker, width) {
+            Ok(term_img) => {
+                let search_text = format!(
+                    "[image: {} {}x{}]",
+                    media_type_label(source.media_type),
+                    term_img.size.width,
+                    term_img.size.height
+                );
+                Self {
+                    search_text: search_text.clone(),
+                    raw_text: Some(search_text),
+                    msg_index,
+                    image: Some(term_img),
+                    ..Self::default()
+                }
+            }
+            Err(err) => {
+                let search_text = format!("[image: {}]", err);
+                let lines = vec![Line::from(vec![Span::styled(
+                    search_text.clone(),
+                    theme::current().error,
+                )])];
+                Self::with_lines(lines, search_text.clone(), Some(search_text), 0, msg_index)
+            }
+        };
+        seg.set_surface(surface);
+        seg
+    }
+
     pub fn lines(&self) -> &[Line<'static>] {
         &self.lines
+    }
+
+    pub fn image(&self) -> Option<&TerminalImage> {
+        self.image.as_ref()
     }
 
     pub fn set_surface(&mut self, surface: Surface) {
@@ -117,6 +190,14 @@ impl Segment {
 
     pub fn surface(&self) -> Surface {
         self.surface
+    }
+
+    pub fn has_copy_label_room(&self, width: u16, label_width: u16) -> bool {
+        width >= label_width
+            && self
+                .lines
+                .first()
+                .is_none_or(|line| line.width() <= usize::from(width - label_width))
     }
 }
 
@@ -156,6 +237,9 @@ impl Segment {
     }
 
     pub fn height(&self, width: u16) -> u16 {
+        if let Some(img) = &self.image {
+            return img.size.height;
+        }
         if let Some(c) = self.cached_height.get()
             && c.at_width == width
         {
@@ -171,6 +255,9 @@ impl Segment {
 
     /// Maps a display row (after wrapping) back to the source line index.
     pub fn source_line_at(&self, rel_row: u16, width: u16) -> Option<usize> {
+        if self.image.is_some() {
+            return None;
+        }
         let rel_row = rel_row.saturating_sub(self.content_inset() / 2);
         let width = self.content_width(width);
         let mut acc = 0u16;
@@ -192,6 +279,22 @@ impl Segment {
             Some(base) if source_line >= base => source_line - base + 1,
             _ => 0,
         }
+    }
+
+    pub fn is_snapshot_line(&self, source_line: usize) -> bool {
+        self.snapshot_base.is_some_and(|base| source_line >= base)
+    }
+
+    pub fn is_truncation_line(&self, source_line: usize) -> bool {
+        let Some(line) = self.lines.get(source_line) else {
+            return false;
+        };
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        text.contains(TRUNCATION_PREFIX) && text.contains('›')
     }
 
     fn invalidate_height(&self) {
@@ -397,9 +500,15 @@ impl SegmentCache {
     }
 
     pub fn find_by_tool_id(&self, id: &str) -> Option<usize> {
-        self.segments
-            .iter()
-            .rposition(|s| s.tool_id.as_deref() == Some(id))
+        self.segments.iter().rposition(
+            |s| matches!(&s.identity, Some(SegmentIdentity::Tool(tool_id)) if tool_id == id),
+        )
+    }
+
+    pub fn find_instructions(&self, parent_id: &str) -> Option<usize> {
+        self.segments.iter().rposition(
+            |s| matches!(&s.identity, Some(SegmentIdentity::Instructions(id)) if id == parent_id),
+        )
     }
 
     pub fn len(&self) -> usize {

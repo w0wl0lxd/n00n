@@ -1,5 +1,6 @@
-//! Anthropic allows 4 cache breakpoints per request. We place them on: the last tool
-//! definition, the system prompt, and the last block of the 2 most recent messages.
+//! Anthropic allows 4 cache breakpoints per request. We place them on: the system prompt,
+//! the last tool result block (if any), the penultimate user message's last content block,
+//! and the last user message's last content block.
 
 pub(crate) mod bedrock;
 pub(crate) mod shared;
@@ -762,11 +763,11 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
         let wire = build_wire_messages(&multi);
         let json: Value = serde_json::to_value(&wire).unwrap();
 
-        assert!(json[0]["content"][0].get("cache_control").is_none());
         assert_eq!(
-            json[1]["content"][0]["cache_control"],
+            json[0]["content"][0]["cache_control"],
             json!({"type": "ephemeral"})
         );
+        assert!(json[1]["content"][0].get("cache_control").is_none());
         assert!(json[2]["content"][0].get("cache_control").is_none());
         assert_eq!(
             json[2]["content"][1]["cache_control"],

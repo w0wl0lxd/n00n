@@ -418,6 +418,8 @@ static CATALOG_CHAT_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     max_tokens_field: "max_tokens",
     include_stream_usage: true,
     provider_name: "Opencode (Catalog)",
+    supports_prompt_cache_key: false,
+    supports_prompt_cache_breakpoint: false,
 };
 
 pub struct Opencode {
@@ -473,8 +475,15 @@ impl Opencode {
         event_tx: &Sender<ProviderEvent>,
         auth: &ResolvedAuth,
         opts: &RequestOptions,
+        session_id: Option<&SessionRef>,
     ) -> Result<StreamResponse, AgentError> {
-        let mut body = self.chat_compat.build_body(model, messages, system, tools);
+        let mut body = self.chat_compat.build_body_with_session(
+            model,
+            messages,
+            system,
+            tools,
+            session_id.map(|s| s.as_str()),
+        );
         opts.thinking
             .apply_reasoning_effort(&mut body, &dialect::PREFER_HIGH, model);
         self.chat_compat
@@ -570,7 +579,7 @@ impl Provider for Opencode {
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
-        _session_id: Option<&'a SessionRef>,
+        session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
             let model_for_stream = model.clone();
@@ -594,7 +603,7 @@ impl Provider for Opencode {
             match api_format {
                 EndpointType::ChatCompletions => {
                     self.handle_catalog_chat_completions(
-                        &model, messages, system, tools, event_tx, &auth, &opts,
+                        &model, messages, system, tools, event_tx, &auth, &opts, session_id,
                     )
                     .await
                 }

@@ -1,3 +1,6 @@
+// n00n-lua wraps the Luau C runtime; unsafe is isolated to this FFI boundary.
+#![allow(unsafe_code)]
+
 mod api;
 pub mod docs;
 pub mod docs_render;
@@ -52,6 +55,7 @@ pub mod test_support {
                 Request::ClickTool {
                     fallback: Some(fb), ..
                 } => ("click_fallback", fb.item.clicks),
+                Request::ClickBuf { row, .. } => ("buf_click", vec![row]),
                 Request::RestoreToolAsync { item, .. } => ("restore", item.clicks),
                 _ => ("other", Vec::new()),
             })

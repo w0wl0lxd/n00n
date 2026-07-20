@@ -1,0 +1,54 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "**/benches/**"
+      - ".github/workflows/benchmarks.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "**/benches/**"
+      - ".github/workflows/benchmarks.yml"
+  schedule:
+    - cron: "13 2 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bench:
+    name: Criterion
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Run benchmarks
+        run: cargo bench
+
+      - name: Store / report results
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Criterion
+          tool: criterion
+          output-file-path: dev/benchmark-data.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: ${{ github.event_name != 'pull_request' }}
+          save-data-file: ${{ github.event_name != 'pull_request' }}
+          comment-on-alert: true
+          alert-threshold: "200%"
+          comment-always: ${{ github.event_name == 'pull_request' }}
+          gh-pages-branch: benchmark-data

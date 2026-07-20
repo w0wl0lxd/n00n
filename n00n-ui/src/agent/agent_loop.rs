@@ -68,6 +68,7 @@ impl AgentLoop {
         tool_output_lines: ToolOutputLines,
         initial_history: Vec<Message>,
         shared_history: Arc<ArcSwap<Vec<Message>>>,
+        shared_transcript: n00n_agent::SharedTranscript,
         btw_system: Arc<ArcSwap<String>>,
         mcp_handle: Option<McpHandle>,
         permissions: Arc<PermissionManager>,
@@ -89,7 +90,9 @@ impl AgentLoop {
             instructions: Instructions::default(),
             tools: Value::Null,
             mcp_handle,
-            history: History::restored(initial_history).with_mirror(shared_history),
+            history: History::restored(initial_history)
+                .with_mirror(shared_history)
+                .with_transcript_mirror(shared_transcript),
             btw_system,
             cancel_map,
             init_cancel,
@@ -135,7 +138,11 @@ impl AgentLoop {
                 ..
             } => {
                 if !displayed {
-                    let _ = event_tx.send(AgentEvent::QueueItemConsumed { text, image_count });
+                    let _ = event_tx.send(AgentEvent::QueueItemConsumed {
+                        text,
+                        image_count,
+                        images: input.images.clone(),
+                    });
                 }
                 self.do_agent_run(input, event_tx, run_id).await
             }
