@@ -120,7 +120,9 @@ noon.api.register_tool({
   schema = { type = "object", properties = {}, additionalProperties = false },
   audiences = { "main" },
   handler = function(input, ctx)
-    noon.fn.jobstart("sleep 0.2", { on_exit = function() ctx:finish("ok") end })
+    local is_windows = package.config:sub(1, 1) == "\\"
+    local cmd = is_windows and "ping -n 2 127.0.0.1 > nul" or "sleep 0.2"
+    noon.fn.jobstart(cmd, { on_exit = function() ctx:finish("ok") end })
   end,
 })
 
