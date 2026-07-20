@@ -127,17 +127,52 @@ fn schema_validator(lua: &Lua, schema: Value) -> LuaResult<(Value, Value)> {
     }
 }
 
+/// Encode a Lua value as TOON (Token-Oriented Object Notation), a token-efficient
+/// alternative to JSON for LLM context (~30-60% fewer tokens on uniform arrays of
+/// objects). Opt-in: pair with `from_toon` only when the consumer is a model.
+///
+/// @param value any Lua value to encode.
+/// @return (string?, string?) TOON string, or nil plus an error.
+/// @example
+/// local s, err = noon.json.to_toon({ users = { { id = 1, name = "Alice" } } })
+#[lua_fn]
+fn to_toon(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
+    let serde_val: serde_json::Value = match lua.from_value(value) {
+        Ok(v) => v,
+        Err(e) => return err_pair(lua, e),
+    };
+    match toon_format::encode_default(&serde_val) {
+        Ok(s) => Ok((Value::String(lua.create_string(&s)?), Value::Nil)),
+        Err(e) => err_pair(lua, e),
+    }
+}
+
+/// Decode a TOON string back into a Lua value. Inverse of `to_toon`.
+///
+/// @param str string TOON string to decode.
+/// @return (any?, string?) Decoded value, or nil plus an error.
+/// @example
+/// local t, err = noon.json.from_toon(s)
+#[lua_fn]
+fn from_toon(lua: &Lua, str: String) -> LuaResult<(Value, Value)> {
+    match toon_format::decode_default::<serde_json::Value>(&str) {
+        Ok(v) => Ok((json_to_lua(lua, &v)?, Value::Nil)),
+        Err(e) => err_pair(lua, e),
+    }
+}
+
 lua_table! {
-    /// JSON encoding, decoding, and schema validation. Encode Lua
-    /// tables to JSON strings, decode JSON back into tables, and
-    /// optionally validate data against a JSON Schema.
+    /// JSON encoding, decoding, schema validation, and TOON round-trip.
+    /// Encode Lua tables to JSON strings, decode JSON back into tables,
+    /// validate against a JSON Schema, or convert to/from TOON for
+    /// token-efficient context blocks.
     ///
     /// ```lua
     /// local s = noon.json.encode({ ok = true })
     /// local t = noon.json.decode(s)
     /// ```
     "noon.json" => pub(crate) fn create_json_table(), DOCS [
-        encode, decode, schema_validator,
+        encode, decode, schema_validator, to_toon, from_toon,
     ]
 }
 
