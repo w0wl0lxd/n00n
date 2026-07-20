@@ -279,6 +279,7 @@ mod tests {
     #[test]
     fn discover_ignores_non_md_files() {
         let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
         let cmd_dir = dir.path().join(".noon/commands");
         fs::create_dir_all(&cmd_dir).unwrap();
         fs::write(cmd_dir.join("valid.md"), "Content").unwrap();
