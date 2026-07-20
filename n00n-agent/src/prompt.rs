@@ -296,10 +296,7 @@ mod tests {
     fn efficient_tools_extras_join_native_list() {
         let s = slots(
             PromptId::System,
-            &[
-                (Slot::EfficientTools, "foo"),
-                (Slot::EfficientTools, "bar"),
-            ],
+            &[(Slot::EfficientTools, "foo"), (Slot::EfficientTools, "bar")],
         );
         let out = assemble(PromptId::System, &s, "");
         assert!(out.contains(&format!("{NATIVE_EFFICIENT_LINE}, foo, bar.")));

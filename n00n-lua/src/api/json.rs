@@ -239,9 +239,15 @@ fn tooned(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
             .is_some_and(|decoded| decoded == serde_val);
     record_toon_stats(json.len(), toon.len(), use_toon);
     if use_toon {
-        Ok((Value::String(lua.create_string(&toon)?), Value::String(lua.create_string("toon")?)))
+        Ok((
+            Value::String(lua.create_string(&toon)?),
+            Value::String(lua.create_string("toon")?),
+        ))
     } else {
-        Ok((Value::String(lua.create_string(&json)?), Value::String(lua.create_string("json")?)))
+        Ok((
+            Value::String(lua.create_string(&json)?),
+            Value::String(lua.create_string("json")?),
+        ))
     }
 }
 
