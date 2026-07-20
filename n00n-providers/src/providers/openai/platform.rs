@@ -44,7 +44,7 @@ pub(crate) const PLAN_MODELS: &[&str] = &[
 
 const CODEX_PLAN_CONTEXT_WINDOW: u32 = 272_000;
 const GPT_5_6_PLAN_CONTEXT_WINDOW: u32 = 372_000;
-const SESSION_STATE_TTL: Duration = Duration::from_secs(3600); // 1 hour
+const SESSION_STATE_TTL: Duration = Duration::from_hours(1); // 1 hour
 
 #[derive(Debug)]
 struct OpenAiSessionState {
@@ -308,7 +308,7 @@ impl Provider for OpenAi {
             let tools_hash = serde_json::to_string(tools).unwrap_or_default();
             let (previous_response_id, incremental_messages) =
                 self.prepare_request(session_id, &tools_hash, messages);
-            let prompt_cache_key = session_id.map(|s| s.to_string());
+            let prompt_cache_key = session_id.map(std::string::ToString::to_string);
 
             if super::websocket::is_websocket_model(&model.id) {
                 let stream_timeout = self.compat.stream_timeout();
@@ -372,7 +372,7 @@ impl Provider for OpenAi {
                 messages,
                 system,
                 tools,
-                session_id.map(|s| s.as_str()),
+                session_id.map(n00n_storage::id::SessionRef::as_str),
             );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);

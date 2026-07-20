@@ -10,6 +10,7 @@ pub struct RetryState {
 }
 
 impl RetryState {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

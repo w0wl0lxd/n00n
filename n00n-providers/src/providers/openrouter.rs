@@ -72,10 +72,10 @@ impl OpenRouter {
     }
 }
 
-/// OpenRouter models come in three reasoning states, encoded here as a
+/// `OpenRouter` models come in three reasoning states, encoded here as a
 /// dialect so `effort_str` can resolve them like any other provider:
 /// 1. mandatory - always on; Off sends nothing (can't disable).
-/// 2. default_enabled - on by default; Off sends effort "none".
+/// 2. `default_enabled` - on by default; Off sends effort "none".
 /// 3. default off - Off sends nothing; any effort string turns it on.
 fn effort_dialect(info: Option<&OpenRouterModelInfo>) -> EffortDialect<'_> {
     let Some(info) = info else {
@@ -186,7 +186,7 @@ impl Provider for OpenRouter {
                 messages,
                 system,
                 tools,
-                session_id.map(|s| s.as_str()),
+                session_id.map(n00n_storage::id::SessionRef::as_str),
             );
 
             body["cache_control"] = json!({"type": "ephemeral"});

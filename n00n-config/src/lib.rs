@@ -91,6 +91,7 @@ pub enum ConfigValue {
 }
 
 impl ConfigValue {
+    #[must_use]
     pub fn format_default(&self) -> String {
         match self {
             Self::Bool(b) => if *b { "true" } else { "false" }.to_string(),
@@ -377,6 +378,7 @@ pub enum CompactionBuffer {
 }
 
 impl CompactionBuffer {
+    #[must_use]
     pub fn resolve(self, context_window: u32) -> u32 {
         match self {
             Self::Tokens(n) => n,
@@ -535,7 +537,7 @@ impl<'de> Deserialize<'de> for PermissionsFileConfig {
         let mut mcp_rules = Vec::new();
         let mut mcp_defaults = HashMap::new();
 
-        for (k, v) in table.iter() {
+        for (k, v) in &table {
             if k.is_empty() || k == "allow_all" || k == "default" {
                 continue;
             }
@@ -648,6 +650,7 @@ impl serde::Serialize for ToolKey {
 
 /// Check if a name matches the LLM wire format: `^[a-zA-Z0-9_-]{1,64}$`.
 /// Tool names with dots, over 64 chars, or special characters are rejected.
+#[must_use]
 pub fn is_valid_wire_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
@@ -670,7 +673,7 @@ impl ToolKey {
             return Ok(Self::Wildcard);
         }
         match name.split_once('.') {
-            Some(("", _)) | Some((_, "")) => {
+            Some(("", _) | (_, "")) => {
                 Err(ToolKeyParseError::MalformedParts(name.to_string()))
             }
             Some((server, "*")) => {
@@ -717,20 +720,19 @@ impl ToolKey {
     ///
     /// Panics if `name` is empty or contains dots. Use `ToolKey::parse` for
     /// untrusted input or MCP tool names.
+    #[must_use]
     pub fn native(name: &str) -> Self {
-        match name {
-            "*" => Self::Wildcard,
-            _ => {
-                assert!(!name.is_empty(), "native tool name must not be empty");
-                assert!(
-                    !name.contains('.'),
-                    "native tool name must not contain dots: {name:?} - use ToolKey::parse for MCP tools"
-                );
-                Self::Native(name.into())
-            }
+        if name == "*" { Self::Wildcard } else {
+            assert!(!name.is_empty(), "native tool name must not be empty");
+            assert!(
+                !name.contains('.'),
+                "native tool name must not contain dots: {name:?} - use ToolKey::parse for MCP tools"
+            );
+            Self::Native(name.into())
         }
     }
 
+    #[must_use]
     pub fn is_mcp(&self) -> bool {
         matches!(self, Self::McpServer { .. } | Self::McpTool { .. })
     }
@@ -833,6 +835,7 @@ pub struct UiConfig {
 }
 
 impl UiConfig {
+    #[must_use]
     pub fn flash_duration(&self) -> Duration {
         Duration::from_millis(self.flash_duration_ms)
     }
@@ -946,6 +949,7 @@ impl ToolOutputLines {
         Ok(())
     }
 
+    #[must_use]
     pub fn get(&self, name: &str) -> usize {
         match name {
             "bash" => self.bash,
@@ -1132,11 +1136,12 @@ pub struct PluginsConfig {
 }
 
 impl PluginsConfig {
+    #[must_use]
     pub fn from_plugins(plugins: HashMap<String, PluginFileConfig>) -> Self {
         let mut all: Vec<String> = DEFAULT_BUILTINS
             .iter()
             .filter(|name| plugins.get(**name).and_then(|t| t.enabled).unwrap_or(true))
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
 
         let mut extra: Vec<&String> = plugins
@@ -1206,6 +1211,7 @@ fn push_rules(
     }
 }
 
+#[must_use]
 pub fn is_valid_server_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
@@ -1526,6 +1532,7 @@ pub fn load_env_files(cwd: &Path) {
     load_env_files_with_global(cwd, global_dir().as_deref());
 }
 
+#[must_use]
 pub fn load_permissions(cwd: &Path) -> PermissionsConfig {
     let global_dirs = config_search_dirs(global_dir().as_deref());
     load_permissions_inner(cwd, &global_dirs)
@@ -1578,7 +1585,7 @@ fn migrate_mcp_entry(
     }
 
     if let Some(old_table) = item.as_table() {
-        for (key, value) in old_table.iter() {
+        for (key, value) in old_table {
             match key {
                 "allow" | "deny" => {
                     if value.as_bool() == Some(true) || value.as_array().is_some() {
@@ -1653,7 +1660,7 @@ fn migrate_permissions_file(path: &Path) -> Option<String> {
     let nested_old_entries: Vec<(String, String, toml_edit::Item)> = {
         let mut entries = Vec::new();
         if let Some(toml_edit::Item::Table(mcp_table)) = doc.get("mcp") {
-            for (key, _) in mcp_table.iter() {
+            for (key, _) in mcp_table {
                 if key.contains("__")
                     && let Some((server, tool)) = key.split_once("__")
                 {
@@ -1712,10 +1719,12 @@ fn read_permissions_file(path: &Path) -> Option<PermissionsFileConfig> {
     }
 }
 
+#[must_use]
 pub fn global_config_dir() -> Option<PathBuf> {
     global_dir()
 }
 
+#[must_use]
 pub fn global_config_dirs() -> Vec<PathBuf> {
     config_search_dirs(global_dir().as_deref())
 }

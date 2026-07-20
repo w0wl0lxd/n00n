@@ -125,7 +125,7 @@ impl OpenAiCompatProvider {
     }
 
     fn wire_tools(&self, tools: &Value) -> Value {
-        if tools.as_array().is_none_or(|a| a.is_empty()) {
+        if tools.as_array().is_none_or(std::vec::Vec::is_empty) {
             return json!([]);
         }
 
@@ -574,13 +574,11 @@ pub async fn parse_sse(
                 let cached = u
                     .prompt_tokens_details
                     .as_ref()
-                    .map(|d| d.cached_tokens)
-                    .unwrap_or(0);
+                    .map_or(0, |d| d.cached_tokens);
                 let cache_write = u
                     .prompt_tokens_details
                     .as_ref()
-                    .map(|d| d.cache_write_tokens)
-                    .unwrap_or(0);
+                    .map_or(0, |d| d.cache_write_tokens);
                 (
                     cached,
                     u.prompt_tokens
@@ -591,8 +589,7 @@ pub async fn parse_sse(
             let cache_write = u
                 .prompt_tokens_details
                 .as_ref()
-                .map(|d| d.cache_write_tokens)
-                .unwrap_or(0);
+                .map_or(0, |d| d.cache_write_tokens);
             usage = TokenUsage {
                 input,
                 output: u.completion_tokens,

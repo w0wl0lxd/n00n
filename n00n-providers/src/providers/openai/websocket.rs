@@ -125,7 +125,7 @@ pub(crate) async fn stream_message(
     }
 
     let _ = ws.close(None).await;
-    let response_id = acc.response_id().map(|s| s.to_string());
+    let response_id = acc.response_id().map(std::string::ToString::to_string);
     Ok((response_id, acc.into_stream_response()))
 }
 
@@ -136,9 +136,7 @@ fn ws_err(e: WsError) -> AgentError {
             let status = resp.status().as_u16();
             let message = resp
                 .body()
-                .as_ref()
-                .map(|b| String::from_utf8_lossy(b).into_owned())
-                .unwrap_or_else(|| "websocket handshake failed".into());
+                .as_ref().map_or_else(|| "websocket handshake failed".into(), |b| String::from_utf8_lossy(b).into_owned());
             AgentError::Api { status, message }
         }
         other => AgentError::Api {

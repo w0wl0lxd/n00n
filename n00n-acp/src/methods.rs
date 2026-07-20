@@ -12,6 +12,7 @@ const MODE_PLAN: &str = "plan";
 
 pub const MODEL_CONFIG_ID: &str = "model";
 
+#[must_use]
 pub fn initialize_response() -> InitializeResponse {
     InitializeResponse::new(ProtocolVersion::V1)
         .agent_capabilities(
@@ -24,6 +25,7 @@ pub fn initialize_response() -> InitializeResponse {
         .agent_info(Implementation::new("n00n", VERSION))
 }
 
+#[must_use]
 pub fn mode_state(current: &str) -> SessionModeState {
     SessionModeState::new(
         SessionModeId::from(current.to_string()),
@@ -34,14 +36,17 @@ pub fn mode_state(current: &str) -> SessionModeState {
     )
 }
 
+#[must_use]
 pub fn new_session_response(session_id: &str) -> NewSessionResponse {
     NewSessionResponse::new(session_id.to_string()).modes(mode_state(MODE_BUILD))
 }
 
+#[must_use]
 pub fn load_session_response() -> LoadSessionResponse {
     LoadSessionResponse::new().modes(mode_state(MODE_BUILD))
 }
 
+#[must_use]
 pub fn model_config_option(current: &str, specs: &[String]) -> SessionConfigOption {
     let mut options: Vec<SessionConfigSelectOption> = specs
         .iter()
@@ -57,6 +62,7 @@ pub fn model_config_option(current: &str, specs: &[String]) -> SessionConfigOpti
         .category(SessionConfigOptionCategory::Model)
 }
 
+#[must_use]
 pub fn mode_id_to_agent_mode(mode_id: &str) -> Option<n00n_agent::AgentMode> {
     match mode_id {
         MODE_BUILD => Some(n00n_agent::AgentMode::Build),

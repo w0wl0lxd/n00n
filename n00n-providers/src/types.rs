@@ -29,6 +29,7 @@ impl ImageMediaType {
 
     /// Single source of truth for media-type strings: serde, data URLs,
     /// wire formats, and the Lua bridge all go through here.
+    #[must_use]
     pub const fn mime(self) -> &'static str {
         match self {
             Self::Png => "image/png",
@@ -38,6 +39,7 @@ impl ImageMediaType {
         }
     }
 
+    #[must_use]
     pub fn from_mime(mime: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|m| m.mime() == mime)
     }
@@ -75,10 +77,12 @@ impl Serialize for ImageSource {
 }
 
 impl ImageSource {
+    #[must_use]
     pub fn new(media_type: ImageMediaType, data: Arc<str>) -> Self {
         Self { media_type, data }
     }
 
+    #[must_use]
     pub fn to_data_url(&self) -> String {
         format!("data:{};base64,{}", self.media_type.mime(), self.data)
     }
@@ -90,6 +94,7 @@ pub const IMAGE_OMITTED_NOTE: &str =
 /// For models without vision, image blocks become a text note instead of a
 /// wire block the API would reject. History keeps the pixels, so switching
 /// back to a vision-capable model restores them.
+#[must_use]
 pub fn adapt_images_for_model<'a>(model: &Model, messages: &'a [Message]) -> Cow<'a, [Message]> {
     let has_image = |m: &Message| {
         m.content
@@ -169,6 +174,7 @@ pub struct Message {
 }
 
 impl Message {
+    #[must_use]
     pub fn user(text: String) -> Self {
         Self {
             role: Role::User,
@@ -177,6 +183,7 @@ impl Message {
         }
     }
 
+    #[must_use]
     pub fn user_display(ai_text: String, display: String) -> Self {
         Self {
             role: Role::User,
@@ -185,6 +192,7 @@ impl Message {
         }
     }
 
+    #[must_use]
     pub fn user_with_images(text: String, images: Vec<ImageSource>) -> Self {
         let mut content: Vec<ContentBlock> = images
             .into_iter()
@@ -200,6 +208,7 @@ impl Message {
         }
     }
 
+    #[must_use]
     pub fn synthetic(text: String) -> Self {
         Self {
             role: Role::User,
@@ -208,6 +217,7 @@ impl Message {
         }
     }
 
+    #[must_use]
     pub fn user_text(&self) -> Option<&str> {
         match &self.display_text {
             Some(t) if t.is_empty() => None,
@@ -216,6 +226,7 @@ impl Message {
         }
     }
 
+    #[must_use]
     pub fn first_text_content(&self) -> Option<&str> {
         self.content.iter().find_map(|b| match b {
             ContentBlock::Text { text } if !text.is_empty() => Some(text.as_str()),
@@ -230,6 +241,7 @@ impl Message {
         })
     }
 
+    #[must_use]
     pub fn has_tool_calls(&self) -> bool {
         self.content
             .iter()
@@ -275,6 +287,7 @@ pub enum StopReason {
 }
 
 impl StopReason {
+    #[must_use]
     pub fn from_anthropic(s: &str) -> Self {
         match s {
             "end_turn" => Self::EndTurn,
@@ -284,6 +297,7 @@ impl StopReason {
         }
     }
 
+    #[must_use]
     pub fn from_openai(s: &str) -> Self {
         match s {
             "stop" => Self::EndTurn,
@@ -317,7 +331,7 @@ const FALLBACK_MAX_THINKING_BUDGET: u32 = 32_768;
 /// How a provider's effort knob speaks: which levels its API accepts, what
 /// `adaptive` means there, and whether "off" needs an explicit string.
 /// New providers add a const in [`dialect`]; providers with dynamic model
-/// listings build one from the model's declared levels (see OpenRouter).
+/// listings build one from the model's declared levels (see `OpenRouter`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffortDialect<'a> {
     /// Accepted levels, non-empty and ascending (checked by test).
@@ -337,7 +351,7 @@ pub mod dialect {
     /// opt-out.
     pub const OFF: &str = "none";
 
-    /// OpenAI platform, synthetic.
+    /// `OpenAI` platform, synthetic.
     pub const STANDARD: EffortDialect = EffortDialect {
         supported: &[Minimal, Low, Medium, High],
         adaptive: Some(Medium),
@@ -362,7 +376,7 @@ pub mod dialect {
         adaptive: Some(High),
         off: Some(OFF),
     };
-    /// DeepSeek accepts only "max"; Adaptive keeps the model's own default
+    /// `DeepSeek` accepts only "max"; Adaptive keeps the model's own default
     /// reasoning depth by sending no effort at all.
     pub const DEEPSEEK: EffortDialect = EffortDialect {
         supported: &[Max],
@@ -376,7 +390,7 @@ pub mod dialect {
         adaptive: None,
         off: None,
     };
-    /// TensorX routes models that may reason by default, so Off sends "none"
+    /// `TensorX` routes models that may reason by default, so Off sends "none"
     /// explicitly and Adaptive asks for full depth.
     pub const TENSORX: EffortDialect = EffortDialect {
         supported: &[Low, Medium, High],
@@ -403,6 +417,7 @@ enum Budgeted {
 }
 
 impl ThinkingConfig {
+    #[must_use]
     pub fn is_enabled(self) -> bool {
         !matches!(self, Self::Off)
     }
@@ -411,6 +426,7 @@ impl ThinkingConfig {
     /// here and nowhere else (never chain snaps). `None` means send nothing:
     /// `Off` without an explicit off string, or `Adaptive` on APIs with their
     /// own default behavior.
+    #[must_use]
     pub fn effort_str(self, dialect: &EffortDialect, model: &Model) -> Option<&'static str> {
         let level = match self {
             Self::Off => return dialect.off,
@@ -526,6 +542,7 @@ impl ThinkingConfig {
             .map_err(|_| THINKING_USAGE)
     }
 
+    #[must_use]
     pub fn status_label(self) -> Option<Cow<'static, str>> {
         match self {
             Self::Off => None,
@@ -580,6 +597,7 @@ impl RequestOptions {
     /// Strips options the model does not support. Called once before every
     /// request so UI state, restored sessions, and subagent flags all go
     /// through the same gate.
+    #[must_use]
     pub fn clamped(self, model: &crate::model::Model) -> Self {
         Self {
             thinking: if model.supports_thinking() {

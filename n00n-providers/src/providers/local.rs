@@ -161,7 +161,7 @@ impl Provider for LocalEndpoint {
                 messages,
                 system,
                 tools,
-                session_id.map(|s| s.as_str()),
+                session_id.map(n00n_storage::id::SessionRef::as_str),
             );
 
             if self.thinking_budget_field {
@@ -294,11 +294,9 @@ impl LocalEndpoint {
             .filter_map(|m| {
                 let arch = m.architecture.as_ref();
                 let has_text_input = arch
-                    .map(|a| a.input_modalities.iter().any(|m| m == "text"))
-                    .unwrap_or(true);
+                    .map_or(true, |a| a.input_modalities.iter().any(|m| m == "text"));
                 let has_text_output = arch
-                    .map(|a| a.output_modalities.iter().any(|m| m == "text"))
-                    .unwrap_or(true);
+                    .map_or(true, |a| a.output_modalities.iter().any(|m| m == "text"));
                 if !has_text_input || !has_text_output {
                     return None;
                 }

@@ -92,8 +92,7 @@ pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
     };
     let declared = def.models.iter().find(|m| m.id == model_id);
     let tier = declared
-        .map(|m| ModelTier::from(m.tier))
-        .unwrap_or(ModelTier::Medium);
+        .map_or(ModelTier::Medium, |m| ModelTier::from(m.tier));
     let max_output_tokens = declared
         .and_then(|m| m.max_output_tokens)
         .or_else(|| kind.fallback_max_output());
@@ -241,7 +240,7 @@ impl Provider for CustomOpenAiProvider {
                 messages,
                 system,
                 tools,
-                session_id.map(|s| s.as_str()),
+                session_id.map(n00n_storage::id::SessionRef::as_str),
             );
             if matches!(opts.thinking, ThinkingConfig::Off) {
                 body["thinking"] = serde_json::json!({"type": "disabled"});

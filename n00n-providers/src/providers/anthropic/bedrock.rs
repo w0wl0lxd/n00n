@@ -23,7 +23,7 @@ use super::shared;
 const BEDROCK_API_VERSION: &str = "bedrock-2023-05-31";
 const MIN_EVENTSTREAM_FRAME: usize = 16;
 const CONTAINER_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
-const REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
+const REFRESH_MARGIN: Duration = Duration::from_mins(5);
 
 fn io_error(
     kind: std::io::ErrorKind,
@@ -507,8 +507,7 @@ impl Bedrock {
             } => {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+                    .map_or(0, |d| d.as_secs());
                 now + REFRESH_MARGIN.as_secs() >= *exp
             }
             _ => false,

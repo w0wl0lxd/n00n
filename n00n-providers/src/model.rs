@@ -62,6 +62,7 @@ pub struct ModelInfo {
 }
 
 impl ModelInfo {
+    #[must_use]
     pub fn id_only(id: String) -> Self {
         Self {
             id,
@@ -93,6 +94,7 @@ impl ModelPricing {
         fast: None,
     };
 
+    #[must_use]
     pub fn is_zero(&self) -> bool {
         self.input == 0.0 && self.output == 0.0 && self.cache_write == 0.0 && self.cache_read == 0.0
     }
@@ -183,6 +185,7 @@ fn lookup_entry<'a>(
         .ok_or_else(|| ModelError::UnknownModel(model_id.to_string()))
 }
 
+#[must_use]
 pub fn models_for_provider(provider: ProviderKind) -> &'static [ModelEntry] {
     match provider {
         ProviderKind::Anthropic => anthropic::models(),
@@ -202,6 +205,7 @@ pub fn models_for_provider(provider: ProviderKind) -> &'static [ModelEntry] {
 }
 
 impl ModelFamily {
+    #[must_use]
     pub fn supports_tool_examples(self) -> bool {
         match self {
             ModelFamily::Claude | ModelFamily::Gpt | ModelFamily::Synthetic => true,
@@ -211,6 +215,7 @@ impl ModelFamily {
 
     /// Fallback for models missing from the static tables; per-model truth
     /// lives in `ModelEntry::vision`.
+    #[must_use]
     pub fn supports_vision(self) -> bool {
         matches!(self, Self::Claude | Self::Gpt | Self::Gemini)
     }
@@ -245,29 +250,26 @@ impl Model {
             .read()
             .unwrap()
             .tier_for(&spec, provider, static_entry.map(|e| e.tier));
-        let (family, pricing, max_output_tokens, context_window) = match static_entry {
-            Some(e) => (
-                e.family,
-                e.pricing.clone(),
-                Some(e.max_output_tokens),
-                anthropic::shared::long_context_window(model_id).unwrap_or(e.context_window),
-            ),
-            None => {
-                let guard = crate::model_registry::model_registry().read().unwrap();
-                let discovered = guard.discovered(provider, model_id);
-                (
-                    provider.family(),
-                    discovered
-                        .and_then(|d| d.pricing.clone())
-                        .unwrap_or_default(),
-                    discovered
-                        .and_then(|d| d.max_output_tokens)
-                        .or_else(|| provider.fallback_max_output()),
-                    discovered
-                        .and_then(|d| d.context_window)
-                        .unwrap_or_else(|| provider.fallback_context_window()),
-                )
-            }
+        let (family, pricing, max_output_tokens, context_window) = if let Some(e) = static_entry { (
+            e.family,
+            e.pricing.clone(),
+            Some(e.max_output_tokens),
+            anthropic::shared::long_context_window(model_id).unwrap_or(e.context_window),
+        ) } else {
+            let guard = crate::model_registry::model_registry().read().unwrap();
+            let discovered = guard.discovered(provider, model_id);
+            (
+                provider.family(),
+                discovered
+                    .and_then(|d| d.pricing.clone())
+                    .unwrap_or_default(),
+                discovered
+                    .and_then(|d| d.max_output_tokens)
+                    .or_else(|| provider.fallback_max_output()),
+                discovered
+                    .and_then(|d| d.context_window)
+                    .unwrap_or_else(|| provider.fallback_context_window()),
+            )
         };
         Self {
             id: model_id.to_string(),
@@ -284,6 +286,7 @@ impl Model {
         }
     }
 
+    #[must_use]
     pub fn supports_thinking(&self) -> bool {
         self.supports_thinking_override
             .or_else(|| {
@@ -295,6 +298,7 @@ impl Model {
             .unwrap_or_else(|| self.provider.supports_thinking())
     }
 
+    #[must_use]
     pub fn supports_vision(&self) -> bool {
         self.supports_vision_override
             .or_else(|| {
@@ -311,6 +315,7 @@ impl Model {
             .unwrap_or_else(|| self.family.supports_vision())
     }
 
+    #[must_use]
     pub fn supports_tool_examples(&self) -> bool {
         self.supports_tool_examples_override
             .unwrap_or_else(|| self.family.supports_tool_examples())
@@ -320,6 +325,7 @@ impl Model {
     /// thinking. `None` when the window is unknown: callers must then let
     /// budgets through unclamped. Providers cap further only where the API
     /// documents a hard limit (currently just Google).
+    #[must_use]
     pub fn max_thinking_budget(&self) -> Option<u32> {
         self.max_output_tokens
             .map(|n| (n / 2).max(MIN_THINKING_BUDGET))
@@ -329,10 +335,12 @@ impl Model {
     /// capability and billing can never disagree. Bedrock reuses
     /// `ProviderKind::Anthropic` and the same table, so we also gate on the
     /// provider here: fast mode only exists on the direct API.
+    #[must_use]
     pub fn supports_fast(&self) -> bool {
         self.pricing.fast.is_some() && self.provider == ProviderKind::Anthropic
     }
 
+    #[must_use]
     pub fn spec(&self) -> String {
         if let Some(slug) = &self.dynamic_slug {
             format!("{slug}/{}", self.id)
@@ -435,14 +443,17 @@ impl From<TokenUsage> for StoredTokenUsage {
 }
 
 impl TokenUsage {
+    #[must_use]
     pub fn total_input(&self) -> u32 {
         self.input + self.cache_read + self.cache_creation
     }
 
+    #[must_use]
     pub fn context_tokens(&self) -> u32 {
         self.input + self.output + self.cache_creation + self.cache_read
     }
 
+    #[must_use]
     pub fn cost(&self, pricing: &ModelPricing, fast: bool) -> f64 {
         let (input, output, cache_write, cache_read) = match &pricing.fast {
             Some(f) if fast => (
@@ -458,10 +469,10 @@ impl TokenUsage {
                 pricing.cache_read,
             ),
         };
-        self.input as f64 * input / PER_MILLION
-            + self.output as f64 * output / PER_MILLION
-            + self.cache_creation as f64 * cache_write / PER_MILLION
-            + self.cache_read as f64 * cache_read / PER_MILLION
+        f64::from(self.input) * input / PER_MILLION
+            + f64::from(self.output) * output / PER_MILLION
+            + f64::from(self.cache_creation) * cache_write / PER_MILLION
+            + f64::from(self.cache_read) * cache_read / PER_MILLION
     }
 }
 

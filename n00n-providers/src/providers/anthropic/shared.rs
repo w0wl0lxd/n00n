@@ -13,7 +13,7 @@ use crate::{
 
 pub(super) const BETA_TOOL_EXAMPLES_BEDROCK: &str = "tool-examples-2025-10-29";
 
-/// The messages API refuses requests without max_tokens. Anthropic-kind
+/// The messages API refuses requests without `max_tokens`. Anthropic-kind
 /// models always get a window from the fallback table, so this only fires if
 /// an unknown-window model is ever routed here; 32k is safe for every Claude.
 pub(crate) const FALLBACK_MAX_TOKENS: u32 = 32_000;
@@ -221,7 +221,7 @@ pub(super) fn build_wire_tools(tools: &Value) -> Value {
     let Some(arr) = tools.as_array() else {
         return tools.clone();
     };
-    let mut out: Vec<Value> = arr.to_vec();
+    let mut out: Vec<Value> = arr.clone();
     if let Some(last) = out.last_mut() {
         last["cache_control"] = json!({"type": "ephemeral"});
     }
