@@ -30,10 +30,10 @@ end
 
 local function update_hint()
   if #items == 0 then
-    maki.ui.set_status_hint(nil)
+    noon.ui.set_status_hint(nil)
     return
   end
-  maki.ui.set_status_hint({
+  noon.ui.set_status_hint({
     { string.format(" %d/%d ", count_done(), #items), "foreground" },
     { "Ctrl+T", "keybind_key" },
     { " ", "" },
@@ -44,8 +44,8 @@ local function ensure_win(visible)
   if buf and win and win:is_open() then
     return
   end
-  buf = maki.ui.buf()
-  win = maki.ui.open_win(buf, {
+  buf = noon.ui.buf()
+  win = noon.ui.open_win(buf, {
     split = "panel",
     height = 4,
     order = 10,
@@ -75,18 +75,18 @@ local function render_panel(visible)
   buf:set_lines(build_lines())
   win:set_config({ height = #items + 2 })
   if win:is_visible() then
-    maki.ui.set_status_hint(nil)
+    noon.ui.set_status_hint(nil)
   else
     update_hint()
   end
 end
 
-maki.api.register_prompt_hint({
+noon.api.register_prompt_hint({
   slot = "tool_usage",
   content = "- Use todo_write to plan and track multi-step tasks (must be 3+ steps). Update after EACH step, not only all at once.",
 })
 
-maki.api.register_tool({
+noon.api.register_tool({
   name = "todo_write",
   description = DESCRIPTION,
   schema = {
@@ -126,7 +126,7 @@ maki.api.register_tool({
       return nil
     end
     render_panel(false)
-    local body = maki.ui.buf()
+    local body = noon.ui.buf()
     body:set_lines(build_lines())
     return body
   end,
@@ -137,7 +137,7 @@ maki.api.register_tool({
       if win and win:is_open() then
         win:hide()
       end
-      maki.ui.set_status_hint(nil)
+      noon.ui.set_status_hint(nil)
       return "Todos cleared"
     end
     local first = not seen_first
@@ -156,13 +156,13 @@ local function toggle()
     update_hint()
   elseif win:is_open() then
     win:show()
-    maki.ui.set_status_hint(nil)
+    noon.ui.set_status_hint(nil)
   else
     render_panel(true)
   end
 end
 
-maki.keymap.set("n", "<C-t>", toggle, { desc = "Toggle todo panel" })
+noon.keymap.set("n", "<C-t>", toggle, { desc = "Toggle todo panel" })
 
 local function clear_todos()
   items = {}
@@ -170,7 +170,7 @@ local function clear_todos()
   if win and win:is_open() then
     win:hide()
   end
-  maki.ui.set_status_hint(nil)
+  noon.ui.set_status_hint(nil)
 end
 
-maki.api.create_autocmd({ "TurnEnd", "SessionReset" }, { callback = clear_todos })
+noon.api.create_autocmd({ "TurnEnd", "SessionReset" }, { callback = clear_todos })

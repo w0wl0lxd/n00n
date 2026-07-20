@@ -7,26 +7,26 @@ group = "Reference"
 
 # Lua API
 
-Maki plugins are plain Lua files. Everything a plugin can touch lives under
-one global table: `maki`. This reference documents every module, function,
-and method. It is generated straight from the source code by `maki-docgen`.
+Noon plugins are plain Lua files. Everything a plugin can touch lives under
+one global table: `noon`. This reference documents every module, function,
+and method. It is generated straight from the source code by `noon-docgen`.
 
-The API tries to mirror Neovim as much as possible (`maki.fs`, `maki.uv`,
-`maki.treesitter`, `maki.keymap`, `maki.base64`), signatures are kept identical
+The API tries to mirror Neovim as much as possible (`noon.fs`, `noon.uv`,
+`noon.treesitter`, `noon.keymap`, `noon.base64`), signatures are kept identical
 so code can be copy-pasted between the two without too many modifications.
 
 Plugins run compiled to native code (Luau JIT). If you are debugging a
-plugin and want full backtraces, start maki with `--no-jit`: it runs your
+plugin and want full backtraces, start noon with `--no-jit`: it runs your
 Lua on the interpreter with complete debug info instead.
 
 A small plugin looks like this:
 
 ```lua
-maki.api.register_command({
+noon.api.register_command({
   name = "greet",
   description = "Say hello from Lua",
   handler = function()
-    maki.ui.flash("hello from a plugin!")
+    noon.ui.flash("hello from a plugin!")
   end,
 })
 ```
@@ -40,9 +40,9 @@ One convention to remember: fallible runtime operations return a
 `(value, err)` pair instead of throwing. Check `err` before using `value`:
 
 ```lua
-local text, err = maki.fs.read("config.json")
+local text, err = noon.fs.read("config.json")
 if err then
-  maki.log.error("read failed: " .. err)
+  noon.log.error("read failed: " .. err)
   return
 end
 ```
@@ -54,50 +54,50 @@ a string belongs.
 
 | Module | What it is for |
 | --- | --- |
-| [`maki`](#maki) | The global entry point. |
-| [`maki.api`](#maki-api) | Plugin registration. |
-| [`maki.agent`](#maki-agent) | Subagent primitives for plugins that need to talk to an LLM. |
-| [`maki.agent.Session`](#maki-agent-Session) | A subagent session with its own conversation history. |
-| [`maki.async`](#maki-async) | Tools for running things concurrently in Lua plugins. |
-| [`maki.async.Semaphore`](#maki-async-Semaphore) | A counting semaphore for limiting how many tasks run at once. |
-| [`maki.async.Permit`](#maki-async-Permit) | One slot in a semaphore, obtained from `Semaphore:acquire()`. |
-| [`maki.base64`](#maki-base64) | Base64 encoding and decoding, modelled after `vim.base64`. |
-| [`maki.env`](#maki-env) | Paths to maki's own directories (config, state, logs, legacy). |
-| [`maki.fn`](#maki-fn) | Process and environment helpers, modeled after Neovim's `vim.fn` job |
-| [`maki.fs`](#maki-fs) | File-system utilities, modelled after `vim.fs` and `vim.uv`. |
-| [`maki.image`](#maki-image) | Small building blocks for working with images: probe metadata, decode |
-| [`maki.image.Image`](#maki-image-Image) | A decoded image you can inspect, resize, and re-encode. |
-| [`maki.interpreter`](#maki-interpreter) | Run Python code in a memory-safe, time-limited sandbox. |
-| [`maki.json`](#maki-json) | JSON encoding, decoding, and schema validation. |
-| [`maki.json.SchemaValidator`](#maki-json-SchemaValidator) | A compiled JSON Schema validator. |
-| [`maki.keymap`](#maki-keymap) | Key mappings, modeled after `vim.keymap`. |
-| [`maki.log`](#maki-log) | Structured logging for plugins. |
-| [`maki.net`](#maki-net) | HTTP client for fetching web content. |
-| [`maki.session`](#maki-session) | Host session primitives. |
-| [`maki.text`](#maki-text) | Text transformation utilities. |
-| [`maki.treesitter`](#maki-treesitter) | Tree-sitter parsing and query API. |
-| [`maki.treesitter.language`](#maki-treesitter-language) | Language registry for tree-sitter grammars. |
-| [`maki.treesitter.query`](#maki-treesitter-query) | Query compilation and lookup. |
-| [`maki.treesitter.Query`](#maki-treesitter-Query) | A compiled tree-sitter query. |
-| [`maki.treesitter.Tree`](#maki-treesitter-Tree) | A parsed syntax tree. |
-| [`maki.treesitter.Node`](#maki-treesitter-Node) | A single node in a parsed syntax tree. |
-| [`maki.treesitter.LanguageTree`](#maki-treesitter-LanguageTree) | Manages parsing of a source string for a single language. |
-| [`maki.ui`](#maki-ui) | Functions for building interactive UI. |
-| [`maki.ui.Win`](#maki-ui-Win) | Handle to a floating or split window. |
-| [`maki.ui.Buf`](#maki-ui-Buf) | A content buffer that holds styled lines of text. |
-| [`maki.uv`](#maki-uv) | System and environment utilities, modelled after `vim.uv`. |
-| [`maki.yaml`](#maki-yaml) | YAML encoding and decoding. |
+| [`noon`](#noon) | The global entry point. |
+| [`noon.api`](#noon-api) | Plugin registration. |
+| [`noon.agent`](#noon-agent) | Subagent primitives for plugins that need to talk to an LLM. |
+| [`noon.agent.Session`](#noon-agent-Session) | A subagent session with its own conversation history. |
+| [`noon.async`](#noon-async) | Tools for running things concurrently in Lua plugins. |
+| [`noon.async.Semaphore`](#noon-async-Semaphore) | A counting semaphore for limiting how many tasks run at once. |
+| [`noon.async.Permit`](#noon-async-Permit) | One slot in a semaphore, obtained from `Semaphore:acquire()`. |
+| [`noon.base64`](#noon-base64) | Base64 encoding and decoding, modelled after `vim.base64`. |
+| [`noon.env`](#noon-env) | Paths to noon's own directories (config, state, logs, legacy). |
+| [`noon.fn`](#noon-fn) | Process and environment helpers, modeled after Neovim's `vim.fn` job |
+| [`noon.fs`](#noon-fs) | File-system utilities, modelled after `vim.fs` and `vim.uv`. |
+| [`noon.image`](#noon-image) | Small building blocks for working with images: probe metadata, decode |
+| [`noon.image.Image`](#noon-image-Image) | A decoded image you can inspect, resize, and re-encode. |
+| [`noon.interpreter`](#noon-interpreter) | Run Python code in a memory-safe, time-limited sandbox. |
+| [`noon.json`](#noon-json) | JSON encoding, decoding, and schema validation. |
+| [`noon.json.SchemaValidator`](#noon-json-SchemaValidator) | A compiled JSON Schema validator. |
+| [`noon.keymap`](#noon-keymap) | Key mappings, modeled after `vim.keymap`. |
+| [`noon.log`](#noon-log) | Structured logging for plugins. |
+| [`noon.net`](#noon-net) | HTTP client for fetching web content. |
+| [`noon.session`](#noon-session) | Host session primitives. |
+| [`noon.text`](#noon-text) | Text transformation utilities. |
+| [`noon.treesitter`](#noon-treesitter) | Tree-sitter parsing and query API. |
+| [`noon.treesitter.language`](#noon-treesitter-language) | Language registry for tree-sitter grammars. |
+| [`noon.treesitter.query`](#noon-treesitter-query) | Query compilation and lookup. |
+| [`noon.treesitter.Query`](#noon-treesitter-Query) | A compiled tree-sitter query. |
+| [`noon.treesitter.Tree`](#noon-treesitter-Tree) | A parsed syntax tree. |
+| [`noon.treesitter.Node`](#noon-treesitter-Node) | A single node in a parsed syntax tree. |
+| [`noon.treesitter.LanguageTree`](#noon-treesitter-LanguageTree) | Manages parsing of a source string for a single language. |
+| [`noon.ui`](#noon-ui) | Functions for building interactive UI. |
+| [`noon.ui.Win`](#noon-ui-Win) | Handle to a floating or split window. |
+| [`noon.ui.Buf`](#noon-ui-Buf) | A content buffer that holds styled lines of text. |
+| [`noon.uv`](#noon-uv) | System and environment utilities, modelled after `vim.uv`. |
+| [`noon.yaml`](#noon-yaml) | YAML encoding and decoding. |
 
-## maki {#maki}
+## noon {#noon}
 
 The global entry point. Every API lives under this table.
 
 ---
 
-### `maki.setup()` {#maki-setup}
+### `noon.setup()` {#noon-setup}
 
 ```lua
-maki.setup({config})
+noon.setup({config})
 ```
 
 Apply your personal configuration. This is only available inside `init.lua` (not in plugins) and can be called at most once. The table accepts the same keys as the Configuration reference.
@@ -109,7 +109,7 @@ Apply your personal configuration. This is only available inside `init.lua` (not
 **Example:**
 
 ```lua
-maki.setup({
+noon.setup({
 model = "opus",
 keymaps = false,
 })
@@ -117,15 +117,15 @@ keymaps = false,
 
 ---
 
-### `maki.split()` {#maki-split}
+### `noon.split()` {#noon-split}
 
 ```lua
-maki.split({s}, {sep}, {opts?})
+noon.split({s}, {sep}, {opts?})
 ```
 
 Split {s} at each occurrence of {sep} and return the pieces as a
 list. Mirrors Neovim's `vim.split`, so code using it can be copied
-between Neovim and maki. {sep} is a Lua pattern unless `plain` is
+between Neovim and noon. {sep} is a Lua pattern unless `plain` is
 set; an empty {sep} splits into single characters.
 
 **Parameters:**
@@ -141,31 +141,31 @@ set; an empty {sep} splits into single characters.
 **Example:**
 
 ```lua
-maki.split("a,b,c", ",")                   -- { "a", "b", "c" }
-maki.split("x*y*z", "*", { plain = true }) -- { "x", "y", "z" }
-maki.split("\nhello\nworld\n", "\n", { trimempty = true }) -- { "hello", "world" }
+noon.split("a,b,c", ",")                   -- { "a", "b", "c" }
+noon.split("x*y*z", "*", { plain = true }) -- { "x", "y", "z" }
+noon.split("\nhello\nworld\n", "\n", { trimempty = true }) -- { "hello", "world" }
 ```
 
 
-## maki.api {#maki-api}
+## noon.api {#noon-api}
 
-Plugin registration. This is where you tell maki about your tools,
+Plugin registration. This is where you tell noon about your tools,
 slash commands, and prompt contributions.
 
 Most plugins only need `register_tool` and maybe `register_prompt_hint`.
 Call these at the top level of your plugin file (during load).
 
 ```lua
-maki.api.register_tool({ name = "greet", ... })
-maki.api.register_prompt_hint({ slot = "tool_usage", content = "..." })
+noon.api.register_tool({ name = "greet", ... })
+noon.api.register_prompt_hint({ slot = "tool_usage", content = "..." })
 ```
 
 ---
 
-### `maki.api.register_tool()` {#maki-api-register_tool}
+### `noon.api.register_tool()` {#noon-api-register_tool}
 
 ```lua
-maki.api.register_tool({spec})
+noon.api.register_tool({spec})
 ```
 
 Register a new tool the agent can call. This is the main way plugins add
@@ -214,7 +214,7 @@ string or a table with richer output fields.
 **Example:**
 
 ```lua
-maki.api.register_tool({
+noon.api.register_tool({
   name = "word_count",
   description = "Count words in a file.",
   kind = "read",
@@ -235,10 +235,10 @@ maki.api.register_tool({
 
 ---
 
-### `maki.api.register_command()` {#maki-api-register_command}
+### `noon.api.register_command()` {#noon-api-register_command}
 
 ```lua
-maki.api.register_command({spec})
+noon.api.register_command({spec})
 ```
 
 Register a slash-command that appears in the user input bar.
@@ -257,21 +257,21 @@ browsing memory files or toggling settings.
 **Example:**
 
 ```lua
-maki.api.register_command({
+noon.api.register_command({
   name = "/hello",
   description = "Say hello",
   handler = function()
-    maki.ui.flash("Hello from my plugin!")
+    noon.ui.flash("Hello from my plugin!")
   end,
 })
 ```
 
 ---
 
-### `maki.api.register_prompt_hint()` {#maki-api-register_prompt_hint}
+### `noon.api.register_prompt_hint()` {#noon-api-register_prompt_hint}
 
 ```lua
-maki.api.register_prompt_hint({spec})
+noon.api.register_prompt_hint({spec})
 ```
 
 Add a piece of text to an aggregate prompt slot. Multiple plugins can each
@@ -293,7 +293,7 @@ Throws if you pass a singleton slot name.
 **Example:**
 
 ```lua
-maki.api.register_prompt_hint({
+noon.api.register_prompt_hint({
   slot = "tool_usage",
   content = "- Prefer **grep** over reading entire files.",
 })
@@ -301,14 +301,14 @@ maki.api.register_prompt_hint({
 
 ---
 
-### `maki.api.register_options()` {#maki-api-register_options}
+### `noon.api.register_options()` {#noon-api-register_options}
 
 ```lua
-maki.api.register_options({spec})
+noon.api.register_options({spec})
 ```
 
 Declare the options your plugin accepts under `plugins.<name>` in
-`maki.setup`, and get back what the user set merged with your defaults.
+`noon.setup`, and get back what the user set merged with your defaults.
 Call it once, at the top level of your plugin file.
 
 An unknown key, a wrong type, or a value below `min` fails the plugin
@@ -328,7 +328,7 @@ fail the load too. The specs also feed the generated configuration docs.
 **Example:**
 
 ```lua
-local opts = maki.api.register_options({
+local opts = noon.api.register_options({
   timeout_secs = { default = 120, min = 5, desc = "Kill the command after this many seconds." },
   max_output_lines = { type = "integer", desc = "Override agent.max_output_lines for this tool." },
 })
@@ -336,10 +336,10 @@ local opts = maki.api.register_options({
 
 ---
 
-### `maki.api.set_prompt()` {#maki-api-set_prompt}
+### `noon.api.set_prompt()` {#noon-api-set_prompt}
 
 ```lua
-maki.api.set_prompt({spec})
+noon.api.set_prompt({spec})
 ```
 
 Set a singleton prompt slot. Only one plugin owns each singleton slot at a
@@ -361,7 +361,7 @@ Throws if you pass an aggregate slot name.
 **Example:**
 
 ```lua
-maki.api.set_prompt({
+noon.api.set_prompt({
   slot = "tone",
   content = "Be concise. No filler words.",
 })
@@ -369,10 +369,10 @@ maki.api.set_prompt({
 
 ---
 
-### `maki.api.get_tools()` {#maki-api-get_tools}
+### `noon.api.get_tools()` {#noon-api-get_tools}
 
 ```lua
-maki.api.get_tools({opts?})
+noon.api.get_tools({opts?})
 ```
 
 Return a list of all registered tools. Useful for building UI that shows
@@ -391,7 +391,7 @@ Describe callbacks are not invoked (the static description is used).
 **Example:**
 
 ```lua
-local tools = maki.api.get_tools()
+local tools = noon.api.get_tools()
 for _, t in ipairs(tools) do
   print(t.name, t.enabled)
 end
@@ -399,10 +399,10 @@ end
 
 ---
 
-### `maki.api.get_tool()` {#maki-api-get_tool}
+### `noon.api.get_tool()` {#noon-api-get_tool}
 
 ```lua
-maki.api.get_tool({name})
+noon.api.get_tool({name})
 ```
 
 Look up a single tool by name. Returns its metadata table or nil if the
@@ -419,7 +419,7 @@ throw).
 **Example:**
 
 ```lua
-local t = maki.api.get_tool("bash")
+local t = noon.api.get_tool("bash")
 if t then
   print("bash audiences:", table.concat(t.audiences, ", "))
 end
@@ -427,10 +427,10 @@ end
 
 ---
 
-### `maki.api.create_autocmd()` {#maki-api-create_autocmd}
+### `noon.api.create_autocmd()` {#noon-api-create_autocmd}
 
 ```lua
-maki.api.create_autocmd({event}, {opts})
+noon.api.create_autocmd({event}, {opts})
 ```
 
 Listen for one or more events. Returns an id you can pass to
@@ -453,7 +453,7 @@ events with `exec_autocmds`.
 **Example:**
 
 ```lua
-local id = maki.api.create_autocmd("TurnEnd", {
+local id = noon.api.create_autocmd("TurnEnd", {
   callback = function(ev)
     print("turn ended: " .. ev.event)
   end,
@@ -462,10 +462,10 @@ local id = maki.api.create_autocmd("TurnEnd", {
 
 ---
 
-### `maki.api.del_autocmd()` {#maki-api-del_autocmd}
+### `noon.api.del_autocmd()` {#noon-api-del_autocmd}
 
 ```lua
-maki.api.del_autocmd({id})
+noon.api.del_autocmd({id})
 ```
 
 Remove a previously registered autocmd. Does nothing if the {id}
@@ -478,15 +478,15 @@ does not exist.
 **Example:**
 
 ```lua
-maki.api.del_autocmd(id)
+noon.api.del_autocmd(id)
 ```
 
 ---
 
-### `maki.api.exec_autocmds()` {#maki-api-exec_autocmds}
+### `noon.api.exec_autocmds()` {#noon-api-exec_autocmds}
 
 ```lua
-maki.api.exec_autocmds({event}, {opts?})
+noon.api.exec_autocmds({event}, {opts?})
 ```
 
 Fire one or more events manually. Every matching autocmd callback
@@ -502,7 +502,7 @@ runs synchronously before this function returns.
 **Example:**
 
 ```lua
-maki.api.exec_autocmds("MyEvent", {
+noon.api.exec_autocmds("MyEvent", {
   pattern = "init",
   data = { msg = "hello" },
 })
@@ -510,10 +510,10 @@ maki.api.exec_autocmds("MyEvent", {
 
 ---
 
-### `maki.api.declare_slot()` {#maki-api-declare_slot}
+### `noon.api.declare_slot()` {#noon-api-declare_slot}
 
 ```lua
-maki.api.declare_slot({name}, {default})
+noon.api.declare_slot({name}, {default})
 ```
 
 Create a named extension point owned by your plugin. You provide a
@@ -533,7 +533,7 @@ Throws if another plugin already owns a slot with the same {name}.
 **Example:**
 
 ```lua
-local render = maki.api.declare_slot("myplugin.render", function(text)
+local render = noon.api.declare_slot("myplugin.render", function(text)
   return text:upper()
 end)
 print(render("hello")) -- HELLO
@@ -541,10 +541,10 @@ print(render("hello")) -- HELLO
 
 ---
 
-### `maki.api.set_slot()` {#maki-api-set_slot}
+### `noon.api.set_slot()` {#noon-api-set_slot}
 
 ```lua
-maki.api.set_slot({name}, {wrapper})
+noon.api.set_slot({name}, {wrapper})
 ```
 
 Add a layer around an existing (or future) slot. Layers wrap the
@@ -563,17 +563,17 @@ is queued and attached when the slot is declared.
 **Example:**
 
 ```lua
-maki.api.set_slot("myplugin.render", function(prev, text)
+noon.api.set_slot("myplugin.render", function(prev, text)
   return prev("[" .. text .. "]")
 end)
 ```
 
 ---
 
-### `maki.api.get_slots()` {#maki-api-get_slots}
+### `noon.api.get_slots()` {#noon-api-get_slots}
 
 ```lua
-maki.api.get_slots()
+noon.api.get_slots()
 ```
 
 List all known slots and their current state. Useful for debugging
@@ -584,13 +584,13 @@ which plugins own or wrap each slot.
 **Example:**
 
 ```lua
-for name, info in pairs(maki.api.get_slots()) do
+for name, info in pairs(noon.api.get_slots()) do
   print(name, info.owner, info.declared)
 end
 ```
 
 
-## maki.agent {#maki-agent}
+## noon.agent {#noon-agent}
 
 Subagent primitives for plugins that need to talk to an LLM.
 
@@ -602,8 +602,8 @@ Policy like retries, validation, and concurrency lives in the calling
 plugin, not here.
 
 ```lua
-local tools = maki.agent.tools(ctx, { audience = "general_sub" })
-local sess = maki.agent.session(ctx, {
+local tools = noon.agent.tools(ctx, { audience = "general_sub" })
+local sess = noon.agent.session(ctx, {
   system = "You are a helpful assistant.",
   tools = tools,
 })
@@ -614,10 +614,10 @@ sess:close()
 
 ---
 
-### `maki.agent.resolve_model()` {#maki-agent-resolve_model}
+### `noon.agent.resolve_model()` {#noon-agent-resolve_model}
 
 ```lua
-maki.agent.resolve_model({ctx}, {opts?})
+noon.agent.resolve_model({ctx}, {opts?})
 ```
 
 Look up the model that the current agent is using, or pick a cheaper one.
@@ -641,17 +641,17 @@ The returned table has fields: `id` (string), `tier` (string),
 **Example:**
 
 ```lua
-local model, err = maki.agent.resolve_model(ctx, { tier = "fast" })
+local model, err = noon.agent.resolve_model(ctx, { tier = "fast" })
 if err then error(err) end
 print(model.spec, model.tier)
 ```
 
 ---
 
-### `maki.agent.system_prompt()` {#maki-agent-system_prompt}
+### `noon.agent.system_prompt()` {#noon-agent-system_prompt}
 
 ```lua
-maki.agent.system_prompt({ctx}, {opts})
+noon.agent.system_prompt({ctx}, {opts})
 ```
 
 Build a system prompt from a built-in template. Environment variables like
@@ -667,7 +667,7 @@ prompt for a subagent session.
   Optional fields:
 
   - `instructions` (`string|boolean?`) extra text appended to the prompt.
-    `true` loads instructions from the project `.maki/instructions` file.
+    `true` loads instructions from the project `.noon/instructions` file.
     `false` or nil omits them.
 
 **Returns:** (`string?`, `string?`) The assembled prompt string, or `(nil, err)` on failure.
@@ -675,7 +675,7 @@ prompt for a subagent session.
 **Example:**
 
 ```lua
-local prompt, err = maki.agent.system_prompt(ctx, {
+local prompt, err = noon.agent.system_prompt(ctx, {
   prompt_id = "research",
   instructions = true,
 })
@@ -684,14 +684,14 @@ if err then error(err) end
 
 ---
 
-### `maki.agent.tools()` {#maki-agent-tools}
+### `noon.agent.tools()` {#noon-agent-tools}
 
 ```lua
-maki.agent.tools({ctx}, {opts})
+noon.agent.tools({ctx}, {opts})
 ```
 
 Get the list of tool definitions for a given audience. Pass the result
-straight into `maki.agent.session()` or use it to inspect what tools are
+straight into `noon.agent.session()` or use it to inspect what tools are
 available.
 
 **Parameters:**
@@ -714,7 +714,7 @@ available.
 **Example:**
 
 ```lua
-local defs, err = maki.agent.tools(ctx, {
+local defs, err = noon.agent.tools(ctx, {
   audience = "general_sub",
   except = { "bash", "write" },
 })
@@ -724,10 +724,10 @@ print(#defs .. " tools available")
 
 ---
 
-### `maki.agent.call_tool()` {#maki-agent-call_tool}
+### `noon.agent.call_tool()` {#noon-agent-call_tool}
 
 ```lua
-maki.agent.call_tool({ctx}, {name}, {input}, {opts?})
+noon.agent.call_tool({ctx}, {name}, {input}, {opts?})
 ```
 
 Run a tool by name and wait for the result. This is how you call built-in
@@ -753,7 +753,7 @@ callbacks while the tool runs.
 **Example:**
 
 ```lua
-local out, err = maki.agent.call_tool(ctx, "bash", {
+local out, err = noon.agent.call_tool(ctx, "bash", {
   command = "ls -la",
   timeout = 10,
 })
@@ -763,10 +763,10 @@ print(out)
 
 ---
 
-### `maki.agent.session()` {#maki-agent-session}
+### `noon.agent.session()` {#noon-agent-session}
 
 ```lua
-maki.agent.session({ctx}, {opts})
+noon.agent.session({ctx}, {opts})
 ```
 
 Create a new subagent session. The session inherits the parent model and
@@ -782,7 +782,7 @@ and tool set.
 - `{opts}` (`table`) Optional fields:
   - `model_spec` (`string?`) model spec string to use instead of the parent model.
   - `system` (`string?`) system prompt. Defaults to empty.
-  - `tools` (`table?`) tool definitions array (from `maki.agent.tools()`).
+  - `tools` (`table?`) tool definitions array (from `noon.agent.tools()`).
   - `local_tools` (`table?`) map of `name -> spec` for Lua-backed tools. Each spec
     requires `description` (string), `input_schema` (table), and
     `handler` (function). The handler receives the input table and must return
@@ -795,13 +795,13 @@ and tool set.
     if omitted.
   - `fast` (`boolean?`) use fast mode. Inherits parent setting if omitted.
 
-**Returns:** ([`Session?`](#maki-agent-Session), `string?`) Session handle, or `(nil, err)` on failure.
+**Returns:** ([`Session?`](#noon-agent-Session), `string?`) Session handle, or `(nil, err)` on failure.
 
 **Example:**
 
 ```lua
-local tools = maki.agent.tools(ctx, { audience = "general_sub" })
-local sess, err = maki.agent.session(ctx, {
+local tools = noon.agent.tools(ctx, { audience = "general_sub" })
+local sess, err = noon.agent.session(ctx, {
   system = "You are a research assistant.",
   tools = tools,
   name = "researcher",
@@ -812,11 +812,11 @@ sess:close()
 ```
 
 
-## maki.agent.Session {#maki-agent-Session}
+## noon.agent.Session {#noon-agent-Session}
 
 A subagent session with its own conversation history.
 
-Create one with `maki.agent.session()`, then send messages with
+Create one with `noon.agent.session()`, then send messages with
 `:prompt()`. The session remembers previous turns, so you can have
 a multi-step conversation. Call `:close()` when you are done, or let
 garbage collection handle it.
@@ -864,7 +864,7 @@ call this multiple times safely. If you forget, it runs automatically when
 the session is garbage collected.
 
 
-## maki.async {#maki-async}
+## noon.async {#noon-async}
 
 Tools for running things concurrently in Lua plugins.
 
@@ -874,7 +874,7 @@ The `await` and `wrap` helpers bridge callback-based APIs into
 coroutine-friendly calls.
 
 ```lua
-local results = maki.async.gather({
+local results = noon.async.gather({
   function() return fetch("a.txt") end,
   function() return fetch("b.txt") end,
 })
@@ -882,10 +882,10 @@ local results = maki.async.gather({
 
 ---
 
-### `maki.async.run()` {#maki-async-run}
+### `noon.async.run()` {#noon-async-run}
 
 ```lua
-maki.async.run({fn}, {on_finish?})
+noon.async.run({fn}, {on_finish?})
 ```
 
 Fire off a function as a new async task. It runs in the background and
@@ -900,7 +900,7 @@ callback.
 **Example:**
 
 ```lua
-maki.async.run(function()
+noon.async.run(function()
   local data = expensive_fetch()
   process(data)
 end)
@@ -908,10 +908,10 @@ end)
 
 ---
 
-### `maki.async.await()` {#maki-async-await}
+### `noon.async.await()` {#noon-async-await}
 
 ```lua
-maki.async.await({argc}, {fn}, {...})
+noon.async.await({argc}, {fn}, {...})
 ```
 
 Turn a callback-based function into a normal call you can use in a coroutine. It calls `fn(..., callback)`, inserting the callback at position {argc}, then suspends your coroutine until the callback fires. You get back whatever the callback was called with.
@@ -927,22 +927,22 @@ Turn a callback-based function into a normal call you can use in a coroutine. It
 **Example:**
 
 ```lua
-local result = maki.async.await(2, http.get, url)
+local result = noon.async.await(2, http.get, url)
 ```
 
 ---
 
-### `maki.async.wrap()` {#maki-async-wrap}
+### `noon.async.wrap()` {#noon-async-wrap}
 
 ```lua
-maki.async.wrap({argc}, {fn})
+noon.async.wrap({argc}, {fn})
 ```
 
-Create a coroutine-friendly wrapper around a callback-based function. The wrapper calls `maki.async.await` for you, so you can use the result like a normal function call.
+Create a coroutine-friendly wrapper around a callback-based function. The wrapper calls `noon.async.await` for you, so you can use the result like a normal function call.
 
 **Parameters:**
 
-- `{argc}` (`integer`) Callback position, forwarded to `maki.async.await`.
+- `{argc}` (`integer`) Callback position, forwarded to `noon.async.await`.
 - `{fn}` (`function`) Callback-based function to wrap.
 
 **Returns:** (`function`) Wrapped function you can call like a normal function.
@@ -950,16 +950,16 @@ Create a coroutine-friendly wrapper around a callback-based function. The wrappe
 **Example:**
 
 ```lua
-local get = maki.async.wrap(2, http.get)
+local get = noon.async.wrap(2, http.get)
 local body = get(url)
 ```
 
 ---
 
-### `maki.async.join()` {#maki-async-join}
+### `noon.async.join()` {#noon-async-join}
 
 ```lua
-maki.async.join({max_jobs}, {fns})
+noon.async.join({max_jobs}, {fns})
 ```
 
 Run all functions in {fns} with at most {max_jobs} going at once. Waits until every function has finished. Unlike `gather`, this does not return individual results.
@@ -972,7 +972,7 @@ Run all functions in {fns} with at most {max_jobs} going at once. Waits until ev
 **Example:**
 
 ```lua
-maki.async.join(4, {
+noon.async.join(4, {
   function() process(files[1]) end,
   function() process(files[2]) end,
   function() process(files[3]) end,
@@ -981,10 +981,10 @@ maki.async.join(4, {
 
 ---
 
-### `maki.async.gather()` {#maki-async-gather}
+### `noon.async.gather()` {#noon-async-gather}
 
 ```lua
-maki.async.gather({fns})
+noon.async.gather({fns})
 ```
 
 Run all functions in {fns} at the same time and collect their results.
@@ -1003,7 +1003,7 @@ Each entry in the result array has `ok` (boolean), and either `value`
 **Example:**
 
 ```lua
-local results = maki.async.gather({
+local results = noon.async.gather({
   function() return fetch("a.txt") end,
   function() return fetch("b.txt") end,
 })
@@ -1014,10 +1014,10 @@ end
 
 ---
 
-### `maki.async.semaphore()` {#maki-async-semaphore}
+### `noon.async.semaphore()` {#noon-async-semaphore}
 
 ```lua
-maki.async.semaphore({n})
+noon.async.semaphore({n})
 ```
 
 Create a counting semaphore that allows at most {n} concurrent permits.
@@ -1027,12 +1027,12 @@ Use this to limit how many tasks hit a resource at the same time.
 
 - `{n}` (`integer`) Maximum number of concurrent permits. Values below 1 are clamped to 1.
 
-**Returns:** ([`maki.async.Semaphore`](#maki-async-Semaphore)) A new semaphore.
+**Returns:** ([`noon.async.Semaphore`](#noon-async-Semaphore)) A new semaphore.
 
 **Example:**
 
 ```lua
-local sem = maki.async.semaphore(5)
+local sem = noon.async.semaphore(5)
 -- each task acquires a permit before doing work
 local permit = sem:acquire()
 do_work()
@@ -1040,11 +1040,11 @@ permit:release()
 ```
 
 
-## maki.async.Semaphore {#maki-async-Semaphore}
+## noon.async.Semaphore {#noon-async-Semaphore}
 
 A counting semaphore for limiting how many tasks run at once.
 
-Create one with `maki.async.semaphore(n)`, then call `:acquire()` to
+Create one with `noon.async.semaphore(n)`, then call `:acquire()` to
 get a permit before doing work. If the task is cancelled, the acquire
 is cancelled too.
 
@@ -1059,19 +1059,19 @@ Semaphore:acquire()
 Wait for a permit from the semaphore. Your coroutine suspends until a slot
 opens up. If the owning task is cancelled, the acquire is cancelled too.
 
-**Returns:** ([`maki.async.Permit`](#maki-async-Permit)) A permit handle. Call `:release()` when done, or let it be garbage collected.
+**Returns:** ([`noon.async.Permit`](#noon-async-Permit)) A permit handle. Call `:release()` when done, or let it be garbage collected.
 
 **Example:**
 
 ```lua
-local sem = maki.async.semaphore(3)
+local sem = noon.async.semaphore(3)
 local permit = sem:acquire()
 -- do work that needs the slot
 permit:release()
 ```
 
 
-## maki.async.Permit {#maki-async-Permit}
+## noon.async.Permit {#noon-async-Permit}
 
 One slot in a semaphore, obtained from `Semaphore:acquire()`.
 
@@ -1090,24 +1090,24 @@ Give the permit back to the semaphore so another task can acquire it.
 Throws if you already released this permit.
 
 
-## maki.base64 {#maki-base64}
+## noon.base64 {#noon-base64}
 
 Base64 encoding and decoding, modelled after `vim.base64`.
 
 Both functions accept strings and Luau buffers, so you can round-trip
-binary data read with `maki.fs.read_bytes`.
+binary data read with `noon.fs.read_bytes`.
 
 ```lua
-local encoded = maki.base64.encode("hello")
-local decoded = maki.base64.decode(encoded)
+local encoded = noon.base64.encode("hello")
+local decoded = noon.base64.decode(encoded)
 ```
 
 ---
 
-### `maki.base64.encode()` {#maki-base64-encode}
+### `noon.base64.encode()` {#noon-base64-encode}
 
 ```lua
-maki.base64.encode({data})
+noon.base64.encode({data})
 ```
 
 Encode {data} to standard Base64. Like `vim.base64.encode`.
@@ -1122,15 +1122,15 @@ Accepts both strings and Luau buffers.
 **Example:**
 
 ```lua
-maki.base64.encode("hello") -- "aGVsbG8="
+noon.base64.encode("hello") -- "aGVsbG8="
 ```
 
 ---
 
-### `maki.base64.decode()` {#maki-base64-decode}
+### `noon.base64.decode()` {#noon-base64-decode}
 
 ```lua
-maki.base64.decode({str})
+noon.base64.decode({str})
 ```
 
 Decode a Base64-encoded {str} back to its original bytes. Like `vim.base64.decode`.
@@ -1145,92 +1145,92 @@ Throws if {str} is not valid Base64.
 **Example:**
 
 ```lua
-maki.base64.decode("aGVsbG8=") -- "hello"
+noon.base64.decode("aGVsbG8=") -- "hello"
 ```
 
 
-## maki.env {#maki-env}
+## noon.env {#noon-env}
 
-Paths to maki's own directories (config, state, logs, legacy).
+Paths to noon's own directories (config, state, logs, legacy).
 
 Use these to locate config files or persistent state without hard-coding paths.
 
 ```lua
-local cfg = maki.env.config_dir()
+local cfg = noon.env.config_dir()
 ```
 
 ---
 
-### `maki.env.state_dir()` {#maki-env-state_dir}
+### `noon.env.state_dir()` {#noon-env-state_dir}
 
 ```lua
-maki.env.state_dir()
+noon.env.state_dir()
 ```
 
-Return the directory where maki stores runtime state (sessions, auth tokens, etc.).
-Typically something like `~/.local/state/maki`.
+Return the directory where noon stores runtime state (sessions, auth tokens, etc.).
+Typically something like `~/.local/state/noon`.
 
 **Returns:** (`string?`) State directory path, or nil if it cannot be determined.
 
 **Example:**
 
 ```lua
-local dir = maki.env.state_dir()
+local dir = noon.env.state_dir()
 ```
 
 ---
 
-### `maki.env.config_dir()` {#maki-env-config_dir}
+### `noon.env.config_dir()` {#noon-env-config_dir}
 
 ```lua
-maki.env.config_dir()
+noon.env.config_dir()
 ```
 
-Return the directory where maki looks for user configuration files.
-Typically something like `~/.config/maki`.
+Return the directory where noon looks for user configuration files.
+Typically something like `~/.config/noon`.
 
 **Returns:** (`string?`) Config directory path, or nil if it cannot be determined.
 
 **Example:**
 
 ```lua
-local dir = maki.env.config_dir()
+local dir = noon.env.config_dir()
 ```
 
 ---
 
-### `maki.env.logs_dir()` {#maki-env-logs_dir}
+### `noon.env.logs_dir()` {#noon-env-logs_dir}
 
 ```lua
-maki.env.logs_dir()
+noon.env.logs_dir()
 ```
 
-Return the directory where maki writes its log files (`maki.log`).
-Typically something like `~/.local/logs/maki`.
+Return the directory where noon writes its log files (`noon.log`).
+Typically something like `~/.local/logs/noon`.
 
 **Returns:** (`string?`) Logs directory path, or nil if it cannot be determined.
 
 **Example:**
 
 ```lua
-local dir = maki.env.logs_dir()
+local dir = noon.env.logs_dir()
 ```
 
 ---
 
-### `maki.env.legacy_dir()` {#maki-env-legacy_dir}
+### `noon.env.legacy_dir()` {#noon-env-legacy_dir}
 
 ```lua
-maki.env.legacy_dir()
+noon.env.legacy_dir()
 ```
 
-Return the legacy config path (`~/.maki`), if it exists on disk.
+Return the legacy config path (`~/.noon`), if it exists on disk.
 Useful for migration logic. Returns nil when there is no legacy directory.
 
 **Returns:** (`string?`) Legacy directory path, or nil if not present.
 
 
-## maki.fn {#maki-fn}
+## noon.fn {#noon-fn}
 
 Process and environment helpers, modeled after Neovim's `vim.fn` job
 control. Use these to run shell commands, wait for output, and check
@@ -1240,17 +1240,17 @@ Job functions need the `run` permission. `executable` needs the `env`
 permission.
 
 ```lua
-local id = maki.fn.jobstart("git status", {
+local id = noon.fn.jobstart("git status", {
   on_exit = function(code) print("done: " .. code) end,
 })
 ```
 
 ---
 
-### `maki.fn.jobstart()` {#maki-fn-jobstart}
+### `noon.fn.jobstart()` {#noon-fn-jobstart}
 
 ```lua
-maki.fn.jobstart({cmd}, {opts?})
+noon.fn.jobstart({cmd}, {opts?})
 ```
 
 Run a shell command in the background. The command runs through
@@ -1272,7 +1272,7 @@ that you can pass to `jobstop` or `jobwait` to control the process.
 **Example:**
 
 ```lua
-local id = maki.fn.jobstart("ls -la", {
+local id = noon.fn.jobstart("ls -la", {
   cwd = "~/projects",
   on_stdout = function(_, line) print(line) end,
   on_exit = function(_, code) print("exit: " .. code) end,
@@ -1281,10 +1281,10 @@ local id = maki.fn.jobstart("ls -la", {
 
 ---
 
-### `maki.fn.jobstop()` {#maki-fn-jobstop}
+### `noon.fn.jobstop()` {#noon-fn-jobstop}
 
 ```lua
-maki.fn.jobstop({job_id})
+noon.fn.jobstop({job_id})
 ```
 
 Kill a running job immediately (SIGKILL on Unix). Safe to call on
@@ -1297,15 +1297,15 @@ jobs that already exited or on unknown ids.
 **Example:**
 
 ```lua
-maki.fn.jobstop(id)
+noon.fn.jobstop(id)
 ```
 
 ---
 
-### `maki.fn.jobwait()` {#maki-fn-jobwait}
+### `noon.fn.jobwait()` {#noon-fn-jobwait}
 
 ```lua
-maki.fn.jobwait({job_id}, {timeout_ms?})
+noon.fn.jobwait({job_id}, {timeout_ms?})
 ```
 
 Wait for a job to finish and collect its output. Returns a result
@@ -1326,8 +1326,8 @@ output into a buffer while parked here.
 **Example:**
 
 ```lua
-local id = maki.fn.jobstart("echo hello")
-local result = maki.fn.jobwait(id, 5000)
+local id = noon.fn.jobstart("echo hello")
+local result = noon.fn.jobwait(id, 5000)
 if result then
   print(result.stdout)
 end
@@ -1335,10 +1335,10 @@ end
 
 ---
 
-### `maki.fn.executable()` {#maki-fn-executable}
+### `noon.fn.executable()` {#noon-fn-executable}
 
 ```lua
-maki.fn.executable({name})
+noon.fn.executable({name})
 ```
 
 Check whether {name} can be found on `$PATH` or is an absolute path
@@ -1354,13 +1354,13 @@ to a file. Returns 1 when found, 0 otherwise (matches Neovim's
 **Example:**
 
 ```lua
-if maki.fn.executable("rg") == 1 then
+if noon.fn.executable("rg") == 1 then
   -- use ripgrep
 end
 ```
 
 
-## maki.fs {#maki-fs}
+## noon.fs {#noon-fs}
 
 File-system utilities, modelled after `vim.fs` and `vim.uv`.
 
@@ -1368,16 +1368,16 @@ Fallible operations return `(value, err)` pairs and never throw.
 Paths support `~/` expansion. Relative paths resolve from the current working directory.
 
 ```lua
-local text, err = maki.fs.read("init.lua")
+local text, err = noon.fs.read("init.lua")
 if err then return end
 ```
 
 ---
 
-### `maki.fs.read()` {#maki-fs-read}
+### `noon.fs.read()` {#noon-fs-read}
 
 ```lua
-maki.fs.read({path})
+noon.fs.read({path})
 ```
 
 Read the entire file at {path} as a UTF-8 string.
@@ -1393,23 +1393,23 @@ Use `read_bytes` for binary files.
 **Example:**
 
 ```lua
-local text, err = maki.fs.read("config.toml")
+local text, err = noon.fs.read("config.toml")
 if err then
-  maki.log.warn("could not read config: " .. err)
+  noon.log.warn("could not read config: " .. err)
   return
 end
 ```
 
 ---
 
-### `maki.fs.read_bytes()` {#maki-fs-read_bytes}
+### `noon.fs.read_bytes()` {#noon-fs-read_bytes}
 
 ```lua
-maki.fs.read_bytes({path})
+noon.fs.read_bytes({path})
 ```
 
 Read the entire file at {path} as raw bytes, returned as a Luau buffer.
-Useful for binary files or when you need to pass the data to `maki.base64.encode`.
+Useful for binary files or when you need to pass the data to `noon.base64.encode`.
 
 **Parameters:**
 
@@ -1420,17 +1420,17 @@ Useful for binary files or when you need to pass the data to `maki.base64.encode
 **Example:**
 
 ```lua
-local buf, err = maki.fs.read_bytes("image.png")
+local buf, err = noon.fs.read_bytes("image.png")
 if err then return end
-local encoded = maki.base64.encode(buf)
+local encoded = noon.base64.encode(buf)
 ```
 
 ---
 
-### `maki.fs.metadata()` {#maki-fs-metadata}
+### `noon.fs.metadata()` {#noon-fs-metadata}
 
 ```lua
-maki.fs.metadata({path})
+noon.fs.metadata({path})
 ```
 
 Get metadata for the file or directory at {path}.
@@ -1446,7 +1446,7 @@ If {path} does not exist, returns nil with no error.
 **Example:**
 
 ```lua
-local meta = maki.fs.metadata("src/main.rs")
+local meta = noon.fs.metadata("src/main.rs")
 if meta and meta.is_file then
   print("size: " .. meta.size)
 end
@@ -1454,10 +1454,10 @@ end
 
 ---
 
-### `maki.fs.dirname()` {#maki-fs-dirname}
+### `noon.fs.dirname()` {#noon-fs-dirname}
 
 ```lua
-maki.fs.dirname({path})
+noon.fs.dirname({path})
 ```
 
 Return the parent directory of {path}. Like `vim.fs.dirname`.
@@ -1471,15 +1471,15 @@ Return the parent directory of {path}. Like `vim.fs.dirname`.
 **Example:**
 
 ```lua
-maki.fs.dirname("/home/user/init.lua") -- "/home/user"
+noon.fs.dirname("/home/user/init.lua") -- "/home/user"
 ```
 
 ---
 
-### `maki.fs.basename()` {#maki-fs-basename}
+### `noon.fs.basename()` {#noon-fs-basename}
 
 ```lua
-maki.fs.basename({path})
+noon.fs.basename({path})
 ```
 
 Return the final component (the file name) of {path}. Like `vim.fs.basename`.
@@ -1493,15 +1493,15 @@ Return the final component (the file name) of {path}. Like `vim.fs.basename`.
 **Example:**
 
 ```lua
-maki.fs.basename("/home/user/init.lua") -- "init.lua"
+noon.fs.basename("/home/user/init.lua") -- "init.lua"
 ```
 
 ---
 
-### `maki.fs.joinpath()` {#maki-fs-joinpath}
+### `noon.fs.joinpath()` {#noon-fs-joinpath}
 
 ```lua
-maki.fs.joinpath({...})
+noon.fs.joinpath({...})
 ```
 
 Join one or more path segments into a single path. Like `vim.fs.joinpath`.
@@ -1515,15 +1515,15 @@ Join one or more path segments into a single path. Like `vim.fs.joinpath`.
 **Example:**
 
 ```lua
-maki.fs.joinpath("src", "api", "fs.rs") -- "src/api/fs.rs"
+noon.fs.joinpath("src", "api", "fs.rs") -- "src/api/fs.rs"
 ```
 
 ---
 
-### `maki.fs.normalize()` {#maki-fs-normalize}
+### `noon.fs.normalize()` {#noon-fs-normalize}
 
 ```lua
-maki.fs.normalize({path})
+noon.fs.normalize({path})
 ```
 
 Clean up `.` and `..` segments and make {path} absolute. Like `vim.fs.normalize`.
@@ -1538,15 +1538,15 @@ This is purely string-based and does not touch the filesystem.
 **Example:**
 
 ```lua
-maki.fs.normalize("src/../src/api") -- "/home/user/project/src/api"
+noon.fs.normalize("src/../src/api") -- "/home/user/project/src/api"
 ```
 
 ---
 
-### `maki.fs.abspath()` {#maki-fs-abspath}
+### `noon.fs.abspath()` {#noon-fs-abspath}
 
 ```lua
-maki.fs.abspath({path})
+noon.fs.abspath({path})
 ```
 
 Make {path} absolute by prepending the current working directory when needed.
@@ -1561,15 +1561,15 @@ Unlike `normalize`, this does not resolve `.` or `..` segments.
 **Example:**
 
 ```lua
-maki.fs.abspath("src/main.rs") -- "/home/user/project/src/main.rs"
+noon.fs.abspath("src/main.rs") -- "/home/user/project/src/main.rs"
 ```
 
 ---
 
-### `maki.fs.parents()` {#maki-fs-parents}
+### `noon.fs.parents()` {#noon-fs-parents}
 
 ```lua
-maki.fs.parents({path})
+noon.fs.parents({path})
 ```
 
 Return all ancestor directories of {path}, from the immediate parent up to the root.
@@ -1584,16 +1584,16 @@ Handy for walking up a directory tree.
 **Example:**
 
 ```lua
-local dirs = maki.fs.parents("/home/user/project/src")
+local dirs = noon.fs.parents("/home/user/project/src")
 -- { "/home/user/project", "/home/user", "/home", "/" }
 ```
 
 ---
 
-### `maki.fs.root()` {#maki-fs-root}
+### `noon.fs.root()` {#noon-fs-root}
 
 ```lua
-maki.fs.root({source}, {marker})
+noon.fs.root({source}, {marker})
 ```
 
 Walk upward from {source} looking for a directory that contains one of the
@@ -1610,16 +1610,16 @@ project root.
 **Example:**
 
 ```lua
-local root = maki.fs.root("src/main.rs", { ".git", "Cargo.toml" })
+local root = noon.fs.root("src/main.rs", { ".git", "Cargo.toml" })
 if root then print("project root: " .. root) end
 ```
 
 ---
 
-### `maki.fs.relpath()` {#maki-fs-relpath}
+### `noon.fs.relpath()` {#noon-fs-relpath}
 
 ```lua
-maki.fs.relpath({base}, {target})
+noon.fs.relpath({base}, {target})
 ```
 
 Compute a relative path from {base} to {target}.
@@ -1634,15 +1634,15 @@ Compute a relative path from {base} to {target}.
 **Example:**
 
 ```lua
-maki.fs.relpath("/home/user", "/home/user/project/src") -- "project/src"
+noon.fs.relpath("/home/user", "/home/user/project/src") -- "project/src"
 ```
 
 ---
 
-### `maki.fs.ext()` {#maki-fs-ext}
+### `noon.fs.ext()` {#noon-fs-ext}
 
 ```lua
-maki.fs.ext({path})
+noon.fs.ext({path})
 ```
 
 Return the file extension of {path}, without the leading dot.
@@ -1656,16 +1656,16 @@ Return the file extension of {path}, without the leading dot.
 **Example:**
 
 ```lua
-maki.fs.ext("main.rs")   -- "rs"
-maki.fs.ext("Makefile")  -- nil
+noon.fs.ext("main.rs")   -- "rs"
+noon.fs.ext("Makefile")  -- nil
 ```
 
 ---
 
-### `maki.fs.dir()` {#maki-fs-dir}
+### `noon.fs.dir()` {#noon-fs-dir}
 
 ```lua
-maki.fs.dir({path}, {opts?})
+noon.fs.dir({path}, {opts?})
 ```
 
 List the contents of the directory at {path}.
@@ -1682,7 +1682,7 @@ Each entry is a two-element array `{name, type}` where type is one of
 **Example:**
 
 ```lua
-local entries, err = maki.fs.dir("src", { depth = 2 })
+local entries, err = noon.fs.dir("src", { depth = 2 })
 if err then return end
 for _, e in ipairs(entries) do
   print(e[1], e[2]) -- "main.rs"  "file"
@@ -1691,10 +1691,10 @@ end
 
 ---
 
-### `maki.fs.write()` {#maki-fs-write}
+### `noon.fs.write()` {#noon-fs-write}
 
 ```lua
-maki.fs.write({path}, {content})
+noon.fs.write({path}, {content})
 ```
 
 Write {content} to the file at {path}, creating it if it does not exist
@@ -1710,16 +1710,16 @@ or overwriting it if it does.
 **Example:**
 
 ```lua
-local ok, err = maki.fs.write("out.txt", "hello world")
+local ok, err = noon.fs.write("out.txt", "hello world")
 if err then print("write failed: " .. err) end
 ```
 
 ---
 
-### `maki.fs.rm()` {#maki-fs-rm}
+### `noon.fs.rm()` {#noon-fs-rm}
 
 ```lua
-maki.fs.rm({path})
+noon.fs.rm({path})
 ```
 
 Delete the file at {path}. Does not remove directories.
@@ -1733,16 +1733,16 @@ Delete the file at {path}. Does not remove directories.
 **Example:**
 
 ```lua
-local ok, err = maki.fs.rm("temp.txt")
+local ok, err = noon.fs.rm("temp.txt")
 if err then print("rm failed: " .. err) end
 ```
 
 ---
 
-### `maki.fs.mkdir()` {#maki-fs-mkdir}
+### `noon.fs.mkdir()` {#noon-fs-mkdir}
 
 ```lua
-maki.fs.mkdir({path}, {opts?})
+noon.fs.mkdir({path}, {opts?})
 ```
 
 Create the directory at {path}. Set `parents = true` to create
@@ -1758,15 +1758,15 @@ intermediate directories, like `mkdir -p`.
 **Example:**
 
 ```lua
-maki.fs.mkdir("a/b/c", { parents = true })
+noon.fs.mkdir("a/b/c", { parents = true })
 ```
 
 ---
 
-### `maki.fs.glob()` {#maki-fs-glob}
+### `noon.fs.glob()` {#noon-fs-glob}
 
 ```lua
-maki.fs.glob({pattern}, {opts?})
+noon.fs.glob({pattern}, {opts?})
 ```
 
 Find files matching one or more glob patterns.
@@ -1783,17 +1783,17 @@ recently modified files first.
 **Example:**
 
 ```lua
-local files, err = maki.fs.glob("**/*.lua", { path = "plugins", limit = 10 })
+local files, err = noon.fs.glob("**/*.lua", { path = "plugins", limit = 10 })
 if err then return end
 for _, f in ipairs(files) do print(f) end
 ```
 
 ---
 
-### `maki.fs.grep()` {#maki-fs-grep}
+### `noon.fs.grep()` {#noon-fs-grep}
 
 ```lua
-maki.fs.grep({pattern}, {opts?})
+noon.fs.grep({pattern}, {opts?})
 ```
 
 Search file contents for a regex {pattern}. Returns structured matches
@@ -1812,7 +1812,7 @@ Each result entry has a `path` and a list of `groups`. Each group contains
 **Example:**
 
 ```lua
-local hits, err = maki.fs.grep("TODO", { path = "src", include = "*.rs", limit = 5 })
+local hits, err = noon.fs.grep("TODO", { path = "src", include = "*.rs", limit = 5 })
 if err then return end
 for _, file in ipairs(hits) do
   for _, g in ipairs(file.groups) do
@@ -1824,7 +1824,7 @@ end
 ```
 
 
-## maki.image {#maki-image}
+## noon.image {#noon-image}
 
 Small building blocks for working with images: probe metadata, decode
 pixels, resize, and encode back to bytes. Plugins compose these freely.
@@ -1832,17 +1832,17 @@ pixels, resize, and encode back to bytes. Plugins compose these freely.
 Decoding is guarded against pixel-bomb attacks (50 MP limit).
 
 ```lua
-local img = maki.image.decode(raw_bytes)
+local img = noon.image.decode(raw_bytes)
 local small = img:resize(1024, 768)
 local png = small:encode("png")
 ```
 
 ---
 
-### `maki.image.probe()` {#maki-image-probe}
+### `noon.image.probe()` {#noon-image-probe}
 
 ```lua
-maki.image.probe({data})
+noon.image.probe({data})
 ```
 
 Read image metadata (format, dimensions) from raw bytes without fully
@@ -1861,17 +1861,17 @@ Returns a table with `format` (string), `width` (integer), `height`
 **Example:**
 
 ```lua
-local info, err = maki.image.probe(raw_bytes)
+local info, err = noon.image.probe(raw_bytes)
 if err then error(err) end
 print(info.format, info.width, info.height)
 ```
 
 ---
 
-### `maki.image.decode()` {#maki-image-decode}
+### `noon.image.decode()` {#noon-image-decode}
 
 ```lua
-maki.image.decode({data})
+noon.image.decode({data})
 ```
 
 Decode raw image bytes into an Image handle you can resize and re-encode.
@@ -1881,22 +1881,22 @@ Images larger than 50 megapixels are rejected to prevent memory bombs.
 
 - `{data}` (`string|buffer`) Raw image bytes.
 
-**Returns:** ([`maki.image.Image?`](#maki-image-Image), `string?`) Decoded image, or `(nil, err)` on failure.
+**Returns:** ([`noon.image.Image?`](#noon-image-Image), `string?`) Decoded image, or `(nil, err)` on failure.
 
 **Example:**
 
 ```lua
-local img, err = maki.image.decode(raw_bytes)
+local img, err = noon.image.decode(raw_bytes)
 if err then error(err) end
 print(img:width() .. "x" .. img:height())
 ```
 
 
-## maki.image.Image {#maki-image-Image}
+## noon.image.Image {#noon-image-Image}
 
 A decoded image you can inspect, resize, and re-encode.
 
-Get one from `maki.image.decode()`. The image data lives in memory
+Get one from `noon.image.decode()`. The image data lives in memory
 until the handle is garbage collected.
 
 ---
@@ -1939,12 +1939,12 @@ ratio. If the image already fits, it is returned as-is. Never upscales.
 - `{max_w}` (`integer`) Maximum width in pixels. Must be positive.
 - `{max_h}` (`integer`) Maximum height in pixels. Must be positive.
 
-**Returns:** ([`maki.image.Image`](#maki-image-Image)) A new image handle (or the same one if no resize was needed).
+**Returns:** ([`noon.image.Image`](#noon-image-Image)) A new image handle (or the same one if no resize was needed).
 
 **Example:**
 
 ```lua
-local img = maki.image.decode(raw_bytes)
+local img = noon.image.decode(raw_bytes)
 local small = img:resize(800, 600)
 local encoded = small:encode("jpeg")
 ```
@@ -1974,7 +1974,7 @@ local bytes = img:encode("png")
 ```
 
 
-## maki.interpreter {#maki-interpreter}
+## noon.interpreter {#noon-interpreter}
 
 Run Python code in a memory-safe, time-limited sandbox.
 
@@ -1983,7 +1983,7 @@ Lua-defined tools, and stdout is streamed line by line. Requires the
 `run` permission.
 
 ```lua
-local r, err = maki.interpreter.run("print('hello')", {
+local r, err = noon.interpreter.run("print('hello')", {
   timeout = 10,
   max_memory_mb = 128,
   on_output = function(line) print(line) end,
@@ -1992,10 +1992,10 @@ local r, err = maki.interpreter.run("print('hello')", {
 
 ---
 
-### `maki.interpreter.run()` {#maki-interpreter-run}
+### `noon.interpreter.run()` {#noon-interpreter-run}
 
 ```lua
-maki.interpreter.run({code}, {opts})
+noon.interpreter.run({code}, {opts})
 ```
 
 Run Python code in a sandboxed interpreter with memory and time limits.
@@ -2027,7 +2027,7 @@ table is empty and the second return value is the error message.
 **Example:**
 
 ```lua
-local result, err = maki.interpreter.run("print(2 + 2)", {
+local result, err = noon.interpreter.run("print(2 + 2)", {
   timeout = 30,
   max_memory_mb = 256,
   on_output = function(line) print("py: " .. line) end,
@@ -2037,23 +2037,23 @@ if result.stdout then print(result.stdout) end
 ```
 
 
-## maki.json {#maki-json}
+## noon.json {#noon-json}
 
 JSON encoding, decoding, and schema validation. Encode Lua
 tables to JSON strings, decode JSON back into tables, and
 optionally validate data against a JSON Schema.
 
 ```lua
-local s = maki.json.encode({ ok = true })
-local t = maki.json.decode(s)
+local s = noon.json.encode({ ok = true })
+local t = noon.json.decode(s)
 ```
 
 ---
 
-### `maki.json.encode()` {#maki-json-encode}
+### `noon.json.encode()` {#noon-json-encode}
 
 ```lua
-maki.json.encode({value})
+noon.json.encode({value})
 ```
 
 Turn a Lua value into a JSON string. Tables, strings, numbers,
@@ -2069,16 +2069,16 @@ serialized.
 **Example:**
 
 ```lua
-local s, err = maki.json.encode({ name = "maki", version = 1 })
-print(s) -- {"name":"maki","version":1}
+local s, err = noon.json.encode({ name = "noon", version = 1 })
+print(s) -- {"name":"noon","version":1}
 ```
 
 ---
 
-### `maki.json.decode()` {#maki-json-decode}
+### `noon.json.decode()` {#noon-json-decode}
 
 ```lua
-maki.json.decode({str})
+noon.json.decode({str})
 ```
 
 Parse a JSON string into a Lua value. Objects become tables and
@@ -2093,16 +2093,16 @@ arrays become 1-indexed sequences.
 **Example:**
 
 ```lua
-local t, err = maki.json.decode('{"x": 42}')
+local t, err = noon.json.decode('{"x": 42}')
 print(t.x) -- 42
 ```
 
 ---
 
-### `maki.json.schema_validator()` {#maki-json-schema_validator}
+### `noon.json.schema_validator()` {#noon-json-schema_validator}
 
 ```lua
-maki.json.schema_validator({schema})
+noon.json.schema_validator({schema})
 ```
 
 Compile a JSON Schema into a reusable validator object. Supports
@@ -2113,24 +2113,24 @@ you catch mistakes before doing any real work.
 
 - `{schema}` (`table`) JSON Schema as a Lua table.
 
-**Returns:** ([`maki.json.SchemaValidator?`](#maki-json-SchemaValidator), `string?`) Validator, or nil plus an error.
+**Returns:** ([`noon.json.SchemaValidator?`](#noon-json-SchemaValidator), `string?`) Validator, or nil plus an error.
 
 **Example:**
 
 ```lua
-local v, err = maki.json.schema_validator({
+local v, err = noon.json.schema_validator({
   type = "object",
   properties = { name = { type = "string" } },
   required = { "name" },
 })
-local errs = v:validate({ name = "maki" })
+local errs = v:validate({ name = "noon" })
 assert(errs == nil)
 ```
 
 
-## maki.json.SchemaValidator {#maki-json-SchemaValidator}
+## noon.json.SchemaValidator {#noon-json-SchemaValidator}
 
-A compiled JSON Schema validator. Create one with `maki.json.schema_validator()` and reuse it to validate many values without recompiling the schema each time.
+A compiled JSON Schema validator. Create one with `noon.json.schema_validator()` and reuse it to validate many values without recompiling the schema each time.
 
 ---
 
@@ -2158,23 +2158,23 @@ end
 ```
 
 
-## maki.keymap {#maki-keymap}
+## noon.keymap {#noon-keymap}
 
 Key mappings, modeled after `vim.keymap`. If you have written a
 Neovim keymap plugin before, this will feel familiar.
 
 ```lua
-maki.keymap.set("n", "<C-t>", function()
+noon.keymap.set("n", "<C-t>", function()
   print("hello")
 end, { desc = "Say hello" })
 ```
 
 ---
 
-### `maki.keymap.set()` {#maki-keymap-set}
+### `noon.keymap.set()` {#noon-keymap-set}
 
 ```lua
-maki.keymap.set({mode}, {lhs}, {rhs}, {opts?})
+noon.keymap.set({mode}, {lhs}, {rhs}, {opts?})
 ```
 
 Bind a key to a Lua function, just like `vim.keymap.set`. Only
@@ -2192,17 +2192,17 @@ mapped, the old binding is replaced and a warning is logged.
 **Example:**
 
 ```lua
-maki.keymap.set("n", "<C-t>", function()
+noon.keymap.set("n", "<C-t>", function()
   print("toggle!")
 end, { desc = "Toggle panel" })
 ```
 
 ---
 
-### `maki.keymap.del()` {#maki-keymap-del}
+### `noon.keymap.del()` {#noon-keymap-del}
 
 ```lua
-maki.keymap.del({mode}, {lhs})
+noon.keymap.del({mode}, {lhs})
 ```
 
 Remove the mapping for {lhs} in {mode}. Does nothing if no mapping
@@ -2216,28 +2216,28 @@ exists for that key.
 **Example:**
 
 ```lua
-maki.keymap.del("n", "<C-t>")
+noon.keymap.del("n", "<C-t>")
 ```
 
 
-## maki.log {#maki-log}
+## noon.log {#noon-log}
 
 Structured logging for plugins.
 
 Each call emits a tracing event tagged with the calling plugin's name.
-Messages show up in maki's log output, which you can view with `maki --log`.
+Messages show up in noon's log output, which you can view with `noon --log`.
 
 ```lua
-maki.log.info("ready")
-maki.log.warn("something looks off")
+noon.log.info("ready")
+noon.log.warn("something looks off")
 ```
 
 ---
 
-### `maki.log.debug()` {#maki-log-debug}
+### `noon.log.debug()` {#noon-log-debug}
 
 ```lua
-maki.log.debug({msg})
+noon.log.debug({msg})
 ```
 
 Emit a DEBUG-level log message. Useful for development and troubleshooting.
@@ -2250,15 +2250,15 @@ The message is tagged with the plugin name automatically.
 **Example:**
 
 ```lua
-maki.log.debug("loaded " .. #items .. " items")
+noon.log.debug("loaded " .. #items .. " items")
 ```
 
 ---
 
-### `maki.log.info()` {#maki-log-info}
+### `noon.log.info()` {#noon-log-info}
 
 ```lua
-maki.log.info({msg})
+noon.log.info({msg})
 ```
 
 Emit an INFO-level log message. Good for normal operational events.
@@ -2270,15 +2270,15 @@ Emit an INFO-level log message. Good for normal operational events.
 **Example:**
 
 ```lua
-maki.log.info("plugin initialized")
+noon.log.info("plugin initialized")
 ```
 
 ---
 
-### `maki.log.warn()` {#maki-log-warn}
+### `noon.log.warn()` {#noon-log-warn}
 
 ```lua
-maki.log.warn({msg})
+noon.log.warn({msg})
 ```
 
 Emit a WARN-level log message. Use for recoverable problems.
@@ -2290,15 +2290,15 @@ Emit a WARN-level log message. Use for recoverable problems.
 **Example:**
 
 ```lua
-maki.log.warn("config file missing, using defaults")
+noon.log.warn("config file missing, using defaults")
 ```
 
 ---
 
-### `maki.log.error()` {#maki-log-error}
+### `noon.log.error()` {#noon-log-error}
 
 ```lua
-maki.log.error({msg})
+noon.log.error({msg})
 ```
 
 Emit an ERROR-level log message. Use for failures that need attention.
@@ -2310,11 +2310,11 @@ Emit an ERROR-level log message. Use for failures that need attention.
 **Example:**
 
 ```lua
-maki.log.error("failed to connect to API")
+noon.log.error("failed to connect to API")
 ```
 
 
-## maki.net {#maki-net}
+## noon.net {#noon-net}
 
 HTTP client for fetching web content. All traffic goes over HTTPS
 (plain HTTP is upgraded). Private and metadata IP addresses are
@@ -2322,16 +2322,16 @@ blocked to prevent SSRF. Failed requests (5xx) are retried
 automatically.
 
 ```lua
-local res, err = maki.net.request("https://example.com")
+local res, err = noon.net.request("https://example.com")
 if res then print(res.body) end
 ```
 
 ---
 
-### `maki.net.request()` {#maki-net-request}
+### `noon.net.request()` {#noon-net-request}
 
 ```lua
-maki.net.request({url}, {opts?})
+noon.net.request({url}, {opts?})
 ```
 
 Make an HTTP request and return the response body. Plain `http://`
@@ -2359,7 +2359,7 @@ The response table has three fields: `body` (string), `status`
 **Example:**
 
 ```lua
-local res, err = maki.net.request("https://httpbin.org/get")
+local res, err = noon.net.request("https://httpbin.org/get")
 if err then
   print("failed: " .. err)
 else
@@ -2368,7 +2368,7 @@ end
 ```
 
 
-## maki.session {#maki-session}
+## noon.session {#noon-session}
 
 Host session primitives. The interactive UI can run several sessions
 at once; these functions let plugins list, create, focus, rename, and
@@ -2378,10 +2378,10 @@ call returns `nil, "no interactive UI attached"`.
 
 ---
 
-### `maki.session.list()` {#maki-session-list}
+### `noon.session.list()` {#noon-session-list}
 
 ```lua
-maki.session.list()
+noon.session.list()
 ```
 
 Lists sessions stored for the current project. Answered from a
@@ -2392,15 +2392,15 @@ background scan, so a slow disk never blocks the UI.
 **Example:**
 
 ```lua
-local stored, err = maki.session.list()
+local stored, err = noon.session.list()
 ```
 
 ---
 
-### `maki.session.live()` {#maki-session-live}
+### `noon.session.live()` {#noon-session-live}
 
 ```lua
-maki.session.live()
+noon.session.live()
 ```
 
 Lists the sessions currently running in this UI. Status is "working",
@@ -2411,15 +2411,15 @@ Lists the sessions currently running in this UI. Status is "working",
 **Example:**
 
 ```lua
-local live, err = maki.session.live()
+local live, err = noon.session.live()
 ```
 
 ---
 
-### `maki.session.current()` {#maki-session-current}
+### `noon.session.current()` {#noon-session-current}
 
 ```lua
-maki.session.current()
+noon.session.current()
 ```
 
 Returns the id of the currently focused session.
@@ -2429,15 +2429,15 @@ Returns the id of the currently focused session.
 **Example:**
 
 ```lua
-local id = maki.session.current()
+local id = noon.session.current()
 ```
 
 ---
 
-### `maki.session.focus()` {#maki-session-focus}
+### `noon.session.focus()` {#noon-session-focus}
 
 ```lua
-maki.session.focus({id})
+noon.session.focus({id})
 ```
 
 Switches the UI to the session with {id}. The session must be live.
@@ -2451,15 +2451,15 @@ Switches the UI to the session with {id}. The session must be live.
 **Example:**
 
 ```lua
-local _, err = maki.session.focus(id)
+local _, err = noon.session.focus(id)
 ```
 
 ---
 
-### `maki.session.delete()` {#maki-session-delete}
+### `noon.session.delete()` {#noon-session-delete}
 
 ```lua
-maki.session.delete({id})
+noon.session.delete({id})
 ```
 
 Deletes a session and its stored history, cancelling it first if it
@@ -2474,15 +2474,15 @@ is running. The focused session cannot be deleted.
 **Example:**
 
 ```lua
-local _, err = maki.session.delete(id)
+local _, err = noon.session.delete(id)
 ```
 
 ---
 
-### `maki.session.new()` {#maki-session-new}
+### `noon.session.new()` {#noon-session-new}
 
 ```lua
-maki.session.new({opts?})
+noon.session.new({opts?})
 ```
 
 Starts a new session in the current project.
@@ -2499,15 +2499,15 @@ Starts a new session in the current project.
 **Example:**
 
 ```lua
-local id, err = maki.session.new({ prompt = "fix the tests", focus = true })
+local id, err = noon.session.new({ prompt = "fix the tests", focus = true })
 ```
 
 ---
 
-### `maki.session.prompt()` {#maki-session-prompt}
+### `noon.session.prompt()` {#noon-session-prompt}
 
 ```lua
-maki.session.prompt({text}, {opts?})
+noon.session.prompt({text}, {opts?})
 ```
 
 Sends {text} as a regular user prompt to a live session. The text is
@@ -2528,15 +2528,15 @@ the prompt is queued and picked up when the agent reaches it.
 **Example:**
 
 ```lua
-local state, err = maki.session.prompt("run the tests", { session = id })
+local state, err = noon.session.prompt("run the tests", { session = id })
 ```
 
 ---
 
-### `maki.session.set_title()` {#maki-session-set_title}
+### `noon.session.set_title()` {#noon-session-set_title}
 
 ```lua
-maki.session.set_title({opts})
+noon.session.set_title({opts})
 ```
 
 Renames a session, live or stored.
@@ -2551,30 +2551,30 @@ Renames a session, live or stored.
 **Example:**
 
 ```lua
-local _, err = maki.session.set_title({ id = id, title = "refactor" })
+local _, err = noon.session.set_title({ id = id, title = "refactor" })
 ```
 
 
-## maki.text {#maki-text}
+## noon.text {#noon-text}
 
 Text transformation utilities.
 
 Helper functions for converting between text formats.
 
 ```lua
-local md = maki.text.html_to_markdown(html)
+local md = noon.text.html_to_markdown(html)
 ```
 
 ---
 
-### `maki.text.html_to_markdown()` {#maki-text-html_to_markdown}
+### `noon.text.html_to_markdown()` {#noon-text-html_to_markdown}
 
 ```lua
-maki.text.html_to_markdown({html})
+noon.text.html_to_markdown({html})
 ```
 
 Convert an HTML string to Markdown.
-Useful for cleaning up web content fetched with `maki.webfetch`.
+Useful for cleaning up web content fetched with `noon.webfetch`.
 
 **Parameters:**
 
@@ -2585,13 +2585,13 @@ Useful for cleaning up web content fetched with `maki.webfetch`.
 **Example:**
 
 ```lua
-local md, err = maki.text.html_to_markdown("<h1>Hello</h1><p>world</p>")
+local md, err = noon.text.html_to_markdown("<h1>Hello</h1><p>world</p>")
 if err then return end
 print(md) -- "# Hello\n\nworld"
 ```
 
 
-## maki.treesitter {#maki-treesitter}
+## noon.treesitter {#noon-treesitter}
 
 Tree-sitter parsing and query API.
 
@@ -2600,17 +2600,17 @@ Start with `get_parser()` to parse source code, then use `get_node_text()` and
 the `query` sub-module to extract information from the syntax tree.
 
 ```lua
-local parser, err = maki.treesitter.get_parser(source, "lua")
+local parser, err = noon.treesitter.get_parser(source, "lua")
 local trees = parser:parse()
 local root = trees[1]:root()
 ```
 
 ---
 
-### `maki.treesitter.get_parser()` {#maki-treesitter-get_parser}
+### `noon.treesitter.get_parser()` {#noon-treesitter-get_parser}
 
 ```lua
-maki.treesitter.get_parser({source}, {lang})
+noon.treesitter.get_parser({source}, {lang})
 ```
 
 Creates a `LanguageTree` for {source} using the grammar named {lang}.
@@ -2622,21 +2622,21 @@ Signature matches `vim.treesitter.get_parser()`, so Neovim plugins can be copy-p
 - `{source}` (`string`) Source text to parse.
 - `{lang}` (`string`) Language name, e.g. `"rust"` or `"lua"`.
 
-**Returns:** ([`LanguageTree|nil`](#maki-treesitter-LanguageTree), `string|nil`) Parser, or nil and an error message.
+**Returns:** ([`LanguageTree|nil`](#noon-treesitter-LanguageTree), `string|nil`) Parser, or nil and an error message.
 
 **Example:**
 
 ```lua
-local parser, err = maki.treesitter.get_parser(src, "lua")
+local parser, err = noon.treesitter.get_parser(src, "lua")
 if err then print("error: " .. err) end
 ```
 
 ---
 
-### `maki.treesitter.get_string_parser()` {#maki-treesitter-get_string_parser}
+### `noon.treesitter.get_string_parser()` {#noon-treesitter-get_string_parser}
 
 ```lua
-maki.treesitter.get_string_parser({source}, {lang})
+noon.treesitter.get_string_parser({source}, {lang})
 ```
 
 Alias for `get_parser`. Use whichever name you prefer.
@@ -2646,14 +2646,14 @@ Alias for `get_parser`. Use whichever name you prefer.
 - `{source}` (`string`) Source text to parse.
 - `{lang}` (`string`) Language name.
 
-**Returns:** ([`LanguageTree|nil`](#maki-treesitter-LanguageTree), `string|nil`) Parser, or nil and an error message.
+**Returns:** ([`LanguageTree|nil`](#noon-treesitter-LanguageTree), `string|nil`) Parser, or nil and an error message.
 
 ---
 
-### `maki.treesitter.get_node_text()` {#maki-treesitter-get_node_text}
+### `noon.treesitter.get_node_text()` {#noon-treesitter-get_node_text}
 
 ```lua
-maki.treesitter.get_node_text({node}, {source})
+noon.treesitter.get_node_text({node}, {source})
 ```
 
 Gets the text that {node} covers in {source}.
@@ -2661,7 +2661,7 @@ Useful when you have a captured node and need the actual source substring.
 
 **Parameters:**
 
-- `{node}` ([`Node`](#maki-treesitter-Node)) The node whose text you want.
+- `{node}` ([`Node`](#noon-treesitter-Node)) The node whose text you want.
 - `{source}` (`string`) Original source text the tree was parsed from.
 
 **Returns:** (`string`) Substring covered by the node.
@@ -2669,38 +2669,38 @@ Useful when you have a captured node and need the actual source substring.
 **Example:**
 
 ```lua
-local text = maki.treesitter.get_node_text(node, source)
+local text = noon.treesitter.get_node_text(node, source)
 print(text)
 ```
 
 ---
 
-### `maki.treesitter.get_node_range()` {#maki-treesitter-get_node_range}
+### `noon.treesitter.get_node_range()` {#noon-treesitter-get_node_range}
 
 ```lua
-maki.treesitter.get_node_range({node})
+noon.treesitter.get_node_range({node})
 ```
 
 Returns the range of {node} as four 0-based integers: start_row, start_col, end_row, end_col.
 
 **Parameters:**
 
-- `{node}` ([`Node`](#maki-treesitter-Node)) The node to query.
+- `{node}` ([`Node`](#noon-treesitter-Node)) The node to query.
 
 **Returns:** (`integer`, `integer`, `integer`, `integer`) start_row, start_col, end_row, end_col.
 
 **Example:**
 
 ```lua
-local sr, sc, er, ec = maki.treesitter.get_node_range(node)
+local sr, sc, er, ec = noon.treesitter.get_node_range(node)
 ```
 
 ---
 
-### `maki.treesitter.get_range()` {#maki-treesitter-get_range}
+### `noon.treesitter.get_range()` {#noon-treesitter-get_range}
 
 ```lua
-maki.treesitter.get_range({node})
+noon.treesitter.get_range({node})
 ```
 
 Returns a six-element table for {node}: `{start_row, start_col, start_byte, end_row, end_col, end_byte}`.
@@ -2708,23 +2708,23 @@ This gives you byte offsets in addition to row/column positions.
 
 **Parameters:**
 
-- `{node}` ([`Node`](#maki-treesitter-Node)) The node to query.
+- `{node}` ([`Node`](#noon-treesitter-Node)) The node to query.
 
 **Returns:** (`table`) Six-element array: start_row, start_col, start_byte, end_row, end_col, end_byte.
 
 **Example:**
 
 ```lua
-local r = maki.treesitter.get_range(node)
+local r = noon.treesitter.get_range(node)
 print("bytes: " .. r[3] .. "-" .. r[6])
 ```
 
 ---
 
-### `maki.treesitter.is_ancestor()` {#maki-treesitter-is_ancestor}
+### `noon.treesitter.is_ancestor()` {#noon-treesitter-is_ancestor}
 
 ```lua
-maki.treesitter.is_ancestor({dest}, {source})
+noon.treesitter.is_ancestor({dest}, {source})
 ```
 
 Checks whether {dest} is an ancestor of {source} (or the same node).
@@ -2732,17 +2732,17 @@ Walks up from {source} toward the root looking for {dest}.
 
 **Parameters:**
 
-- `{dest}` ([`Node`](#maki-treesitter-Node)) Potential ancestor node.
-- `{source}` ([`Node`](#maki-treesitter-Node)) Node to check ancestry for.
+- `{dest}` ([`Node`](#noon-treesitter-Node)) Potential ancestor node.
+- `{source}` ([`Node`](#noon-treesitter-Node)) Node to check ancestry for.
 
 **Returns:** (`boolean`)
 
 ---
 
-### `maki.treesitter.is_in_node_range()` {#maki-treesitter-is_in_node_range}
+### `noon.treesitter.is_in_node_range()` {#noon-treesitter-is_in_node_range}
 
 ```lua
-maki.treesitter.is_in_node_range({node}, {line}, {col})
+noon.treesitter.is_in_node_range({node}, {line}, {col})
 ```
 
 Checks whether the 0-based position ({line}, {col}) falls inside {node}.
@@ -2750,7 +2750,7 @@ Handy for cursor-position checks.
 
 **Parameters:**
 
-- `{node}` ([`Node`](#maki-treesitter-Node)) Node to test against.
+- `{node}` ([`Node`](#noon-treesitter-Node)) Node to test against.
 - `{line}` (`integer`) 0-based line number.
 - `{col}` (`integer`) 0-based column number.
 
@@ -2758,27 +2758,27 @@ Handy for cursor-position checks.
 
 ---
 
-### `maki.treesitter.node_contains()` {#maki-treesitter-node_contains}
+### `noon.treesitter.node_contains()` {#noon-treesitter-node_contains}
 
 ```lua
-maki.treesitter.node_contains({node}, {range})
+noon.treesitter.node_contains({node}, {range})
 ```
 
 Checks whether {node} fully contains the given {range}.
 
 **Parameters:**
 
-- `{node}` ([`Node`](#maki-treesitter-Node)) Node to test.
+- `{node}` ([`Node`](#noon-treesitter-Node)) Node to test.
 - `{range}` (`table`) Four-element array `{start_row, start_col, end_row, end_col}`.
 
 **Returns:** (`boolean`)
 
 ---
 
-### `maki.treesitter.get_node()` {#maki-treesitter-get_node}
+### `noon.treesitter.get_node()` {#noon-treesitter-get_node}
 
 ```lua
-maki.treesitter.get_node({opts?})
+noon.treesitter.get_node({opts?})
 ```
 
 Placeholder for cursor-based node lookup (not yet implemented, always returns nil).
@@ -2787,10 +2787,10 @@ Placeholder for cursor-based node lookup (not yet implemented, always returns ni
 
 - `{opts?}` (`table?`) Options (currently unused).
 
-**Returns:** ([`Node|nil`](#maki-treesitter-Node)) Always nil.
+**Returns:** ([`Node|nil`](#noon-treesitter-Node)) Always nil.
 
 
-## maki.treesitter.language {#maki-treesitter-language}
+## noon.treesitter.language {#noon-treesitter-language}
 
 Language registry for tree-sitter grammars.
 
@@ -2798,16 +2798,16 @@ Mirrors `vim.treesitter.language`. Use these functions to register grammars,
 map filetypes to languages, and inspect available node types.
 
 ```lua
-maki.treesitter.language.add("lua")
-maki.treesitter.language.register("lua", "luau")
+noon.treesitter.language.add("lua")
+noon.treesitter.language.register("lua", "luau")
 ```
 
 ---
 
-### `maki.treesitter.language.add()` {#maki-treesitter-language-add}
+### `noon.treesitter.language.add()` {#noon-treesitter-language-add}
 
 ```lua
-maki.treesitter.language.add({lang}, {opts?})
+noon.treesitter.language.add({lang}, {opts?})
 ```
 
 Registers {lang} for use with tree-sitter.
@@ -2822,15 +2822,15 @@ Custom grammar paths are not yet supported.
 **Example:**
 
 ```lua
-maki.treesitter.language.add("lua")
+noon.treesitter.language.add("lua")
 ```
 
 ---
 
-### `maki.treesitter.language.register()` {#maki-treesitter-language-register}
+### `noon.treesitter.language.register()` {#noon-treesitter-language-register}
 
 ```lua
-maki.treesitter.language.register({lang}, {filetype})
+noon.treesitter.language.register({lang}, {filetype})
 ```
 
 Associates {lang} with one or more filetypes, so you can look up the right
@@ -2844,15 +2844,15 @@ parser language for a given filetype later with `get_lang()`.
 **Example:**
 
 ```lua
-maki.treesitter.language.register("typescript", { "ts", "tsx" })
+noon.treesitter.language.register("typescript", { "ts", "tsx" })
 ```
 
 ---
 
-### `maki.treesitter.language.get_lang()` {#maki-treesitter-language-get_lang}
+### `noon.treesitter.language.get_lang()` {#noon-treesitter-language-get_lang}
 
 ```lua
-maki.treesitter.language.get_lang({filetype})
+noon.treesitter.language.get_lang({filetype})
 ```
 
 Looks up the tree-sitter language name for {filetype}.
@@ -2868,16 +2868,16 @@ a grammar with that name exists. Returns nil when nothing matches.
 **Example:**
 
 ```lua
-local lang = maki.treesitter.language.get_lang("tsx")
+local lang = noon.treesitter.language.get_lang("tsx")
 if lang then print(lang) end -- "typescript"
 ```
 
 ---
 
-### `maki.treesitter.language.get_filetypes()` {#maki-treesitter-language-get_filetypes}
+### `noon.treesitter.language.get_filetypes()` {#noon-treesitter-language-get_filetypes}
 
 ```lua
-maki.treesitter.language.get_filetypes({lang})
+noon.treesitter.language.get_filetypes({lang})
 ```
 
 Returns all filetypes that have been registered for {lang}.
@@ -2891,16 +2891,16 @@ Returns all filetypes that have been registered for {lang}.
 **Example:**
 
 ```lua
-local fts = maki.treesitter.language.get_filetypes("typescript")
+local fts = noon.treesitter.language.get_filetypes("typescript")
 -- { "ts", "tsx" }
 ```
 
 ---
 
-### `maki.treesitter.language.inspect()` {#maki-treesitter-language-inspect}
+### `noon.treesitter.language.inspect()` {#noon-treesitter-language-inspect}
 
 ```lua
-maki.treesitter.language.inspect({lang})
+noon.treesitter.language.inspect({lang})
 ```
 
 Returns metadata about the grammar for {lang}.
@@ -2915,13 +2915,13 @@ Useful for debugging or discovering which node types and fields a grammar define
 **Example:**
 
 ```lua
-local info = maki.treesitter.language.inspect("lua")
+local info = noon.treesitter.language.inspect("lua")
 print("ABI: " .. info.abi_version)
 for _, nt in ipairs(info.node_types) do print(nt) end
 ```
 
 
-## maki.treesitter.query {#maki-treesitter-query}
+## noon.treesitter.query {#noon-treesitter-query}
 
 Query compilation and lookup.
 
@@ -2929,15 +2929,15 @@ Mirrors `vim.treesitter.query`. Use `parse()` to compile a tree-sitter
 query string into a `Query` object you can run against parsed trees.
 
 ```lua
-local q = maki.treesitter.query.parse("lua", "(string) @str")
+local q = noon.treesitter.query.parse("lua", "(string) @str")
 ```
 
 ---
 
-### `maki.treesitter.query.parse()` {#maki-treesitter-query-parse}
+### `noon.treesitter.query.parse()` {#noon-treesitter-query-parse}
 
 ```lua
-maki.treesitter.query.parse({lang}, {query})
+noon.treesitter.query.parse({lang}, {query})
 ```
 
 Compiles a tree-sitter query string for {lang}.
@@ -2948,20 +2948,20 @@ Throws if the language is unknown or the query has a syntax error.
 - `{lang}` (`string`) Language name, e.g. `"lua"`.
 - `{query}` (`string`) Tree-sitter S-expression query.
 
-**Returns:** ([`Query`](#maki-treesitter-Query)) Compiled query object.
+**Returns:** ([`Query`](#noon-treesitter-Query)) Compiled query object.
 
 **Example:**
 
 ```lua
-local q = maki.treesitter.query.parse("lua", "(identifier) @id")
+local q = noon.treesitter.query.parse("lua", "(identifier) @id")
 ```
 
 ---
 
-### `maki.treesitter.query.get()` {#maki-treesitter-query-get}
+### `noon.treesitter.query.get()` {#noon-treesitter-query-get}
 
 ```lua
-maki.treesitter.query.get({lang}, {name})
+noon.treesitter.query.get({lang}, {name})
 ```
 
 Looks up a named built-in query for {lang} (not yet implemented, always returns nil).
@@ -2971,18 +2971,18 @@ Looks up a named built-in query for {lang} (not yet implemented, always returns 
 - `{lang}` (`string`) Language name.
 - `{name}` (`string`) Query name, e.g. `"highlights"`.
 
-**Returns:** ([`Query|nil`](#maki-treesitter-Query)) Query object, or nil if not found.
+**Returns:** ([`Query|nil`](#noon-treesitter-Query)) Query object, or nil if not found.
 
 
-## maki.treesitter.Query {#maki-treesitter-Query}
+## noon.treesitter.Query {#noon-treesitter-Query}
 
 A compiled tree-sitter query.
 
-Get one by calling `maki.treesitter.query.parse(lang, query_string)`.
+Get one by calling `noon.treesitter.query.parse(lang, query_string)`.
 Then use `:iter_captures()` or `:iter_matches()` to run it against a syntax tree.
 
 ```lua
-local q = maki.treesitter.query.parse("lua", "(identifier) @id")
+local q = noon.treesitter.query.parse("lua", "(identifier) @id")
 for idx, node, meta in q:iter_captures(root, source) do
   print(node:type())
 end
@@ -3000,7 +3000,7 @@ Iterates over every capture matched by this query. Each call to the returned ite
 
 **Parameters:**
 
-- `{node}` ([`Node`](#maki-treesitter-Node)) Root node to search within.
+- `{node}` ([`Node`](#noon-treesitter-Node)) Root node to search within.
 - `{source}` (`string`) Source text the tree was parsed from.
 - `{start_row?}` (`integer`) Only match rows >= this value (0-based).
 - `{stop_row?}` (`integer`) Only match rows < this value (0-based).
@@ -3010,7 +3010,7 @@ Iterates over every capture matched by this query. Each call to the returned ite
 **Example:**
 
 ```lua
-local q = maki.treesitter.query.parse("lua", "(identifier) @id")
+local q = noon.treesitter.query.parse("lua", "(identifier) @id")
 for idx, node, meta in q:iter_captures(root, source) do
   print(idx, node:type())
 end
@@ -3028,7 +3028,7 @@ Iterates over every full pattern match in this query. Each call to the returned 
 
 **Parameters:**
 
-- `{node}` ([`Node`](#maki-treesitter-Node)) Root node to search within.
+- `{node}` ([`Node`](#noon-treesitter-Node)) Root node to search within.
 - `{source}` (`string`) Source text the tree was parsed from.
 - `{start_row?}` (`integer`) Only match rows >= this value (0-based).
 - `{stop_row?}` (`integer`) Only match rows < this value (0-based).
@@ -3038,7 +3038,7 @@ Iterates over every full pattern match in this query. Each call to the returned 
 **Example:**
 
 ```lua
-local q = maki.treesitter.query.parse("lua", "(function_declaration name: (identifier) @name)"
+local q = noon.treesitter.query.parse("lua", "(function_declaration name: (identifier) @name)"
 )
 for pat, captures, meta in q:iter_matches(root, source) do
   for cap_idx, nodes in pairs(captures) do
@@ -3048,7 +3048,7 @@ end
 ```
 
 
-## maki.treesitter.Tree {#maki-treesitter-Tree}
+## noon.treesitter.Tree {#noon-treesitter-Tree}
 
 A parsed syntax tree.
 
@@ -3071,7 +3071,7 @@ Tree:root()
 Returns the root node of this tree. This is where you start walking
 the syntax tree or running queries.
 
-**Returns:** ([`Node`](#maki-treesitter-Node)) Root node.
+**Returns:** ([`Node`](#noon-treesitter-Node)) Root node.
 
 **Example:**
 
@@ -3091,10 +3091,10 @@ Tree:copy()
 Returns an independent copy of this tree.
 Edits to the copy will not affect the original.
 
-**Returns:** ([`Tree`](#maki-treesitter-Tree)) A new Tree with the same content.
+**Returns:** ([`Tree`](#noon-treesitter-Tree)) A new Tree with the same content.
 
 
-## maki.treesitter.Node {#maki-treesitter-Node}
+## noon.treesitter.Node {#noon-treesitter-Node}
 
 A single node in a parsed syntax tree.
 
@@ -3223,7 +3223,7 @@ Returns nil if {index} is out of bounds.
 
 - `{index}` (`integer`) 0-based child index.
 
-**Returns:** ([`Node|nil`](#maki-treesitter-Node)) Child node, or nil.
+**Returns:** ([`Node|nil`](#noon-treesitter-Node)) Child node, or nil.
 
 ---
 
@@ -3240,7 +3240,7 @@ Returns nil if {index} is out of bounds.
 
 - `{index}` (`integer`) 0-based named child index.
 
-**Returns:** ([`Node|nil`](#maki-treesitter-Node)) Named child node, or nil.
+**Returns:** ([`Node|nil`](#noon-treesitter-Node)) Named child node, or nil.
 
 ---
 
@@ -3352,7 +3352,7 @@ Node:parent()
 
 Returns the parent of this node, or nil if this is the root.
 
-**Returns:** ([`Node|nil`](#maki-treesitter-Node)) Parent node.
+**Returns:** ([`Node|nil`](#noon-treesitter-Node)) Parent node.
 
 ---
 
@@ -3364,7 +3364,7 @@ Node:next_sibling()
 
 Returns the next sibling (named or anonymous), or nil if this is the last child.
 
-**Returns:** ([`Node|nil`](#maki-treesitter-Node)) Next sibling.
+**Returns:** ([`Node|nil`](#noon-treesitter-Node)) Next sibling.
 
 ---
 
@@ -3376,7 +3376,7 @@ Node:prev_sibling()
 
 Returns the previous sibling (named or anonymous), or nil if this is the first child.
 
-**Returns:** ([`Node|nil`](#maki-treesitter-Node)) Previous sibling.
+**Returns:** ([`Node|nil`](#noon-treesitter-Node)) Previous sibling.
 
 ---
 
@@ -3388,7 +3388,7 @@ Node:next_named_sibling()
 
 Returns the next named sibling, skipping anonymous nodes. Returns nil at the end.
 
-**Returns:** ([`Node|nil`](#maki-treesitter-Node)) Next named sibling.
+**Returns:** ([`Node|nil`](#noon-treesitter-Node)) Next named sibling.
 
 ---
 
@@ -3400,7 +3400,7 @@ Node:prev_named_sibling()
 
 Returns the previous named sibling, skipping anonymous nodes. Returns nil at the start.
 
-**Returns:** ([`Node|nil`](#maki-treesitter-Node)) Previous named sibling.
+**Returns:** ([`Node|nil`](#noon-treesitter-Node)) Previous named sibling.
 
 ---
 
@@ -3415,9 +3415,9 @@ Returns nil if {descendant} is not actually inside this node.
 
 **Parameters:**
 
-- `{descendant}` ([`Node`](#maki-treesitter-Node)) A node that may be a descendant.
+- `{descendant}` ([`Node`](#noon-treesitter-Node)) A node that may be a descendant.
 
-**Returns:** ([`Node|nil`](#maki-treesitter-Node)) Direct child containing the descendant.
+**Returns:** ([`Node|nil`](#noon-treesitter-Node)) Direct child containing the descendant.
 
 ---
 
@@ -3437,7 +3437,7 @@ Includes both named and anonymous nodes.
 - `{end_row}` (`integer`) End row (0-based).
 - `{end_col}` (`integer`) End column (0-based).
 
-**Returns:** ([`Node|nil`](#maki-treesitter-Node)) Smallest node covering the range, or nil.
+**Returns:** ([`Node|nil`](#noon-treesitter-Node)) Smallest node covering the range, or nil.
 
 ---
 
@@ -3456,7 +3456,7 @@ Like `descendant_for_range`, but only considers named nodes.
 - `{end_row}` (`integer`) End row (0-based).
 - `{end_col}` (`integer`) End column (0-based).
 
-**Returns:** ([`Node|nil`](#maki-treesitter-Node)) Smallest named node covering the range, or nil.
+**Returns:** ([`Node|nil`](#noon-treesitter-Node)) Smallest named node covering the range, or nil.
 
 ---
 
@@ -3530,7 +3530,7 @@ Returns true if this node and {other} are the same node in the tree.
 
 **Parameters:**
 
-- `{other}` ([`Node`](#maki-treesitter-Node)) Node to compare against.
+- `{other}` ([`Node`](#noon-treesitter-Node)) Node to compare against.
 
 **Returns:** (`boolean`)
 
@@ -3563,18 +3563,18 @@ Node:tree()
 
 Returns the Tree that this node belongs to.
 
-**Returns:** ([`Tree`](#maki-treesitter-Tree)) The owning tree.
+**Returns:** ([`Tree`](#noon-treesitter-Tree)) The owning tree.
 
 
-## maki.treesitter.LanguageTree {#maki-treesitter-LanguageTree}
+## noon.treesitter.LanguageTree {#noon-treesitter-LanguageTree}
 
 Manages parsing of a source string for a single language.
 
-Obtained from `maki.treesitter.get_parser()` or `maki.treesitter.get_string_parser()`.
+Obtained from `noon.treesitter.get_parser()` or `noon.treesitter.get_string_parser()`.
 Call `:parse()` to get the syntax tree, then use `:root()` on the tree to start walking nodes.
 
 ```lua
-local parser, err = maki.treesitter.get_parser(source, "lua")
+local parser, err = noon.treesitter.get_parser(source, "lua")
 if not err then
   local trees = parser:parse()
   local root = trees[1]:root()
@@ -3738,24 +3738,24 @@ Drops the cached parse tree and frees its memory.
 After calling this, the next `parse()` will re-parse from scratch.
 
 
-## maki.ui {#maki-ui}
+## noon.ui {#noon-ui}
 
 Functions for building interactive UI. Create buffers to hold
 content, open floating or split windows to display them, highlight
 code, render markdown, and show status hints.
 
 ```lua
-local buf = maki.ui.buf()
+local buf = noon.ui.buf()
 buf:line("hello from my plugin!")
-local win = maki.ui.open_win(buf, { title = "Greeting", width = "50%", height = 5 })
+local win = noon.ui.open_win(buf, { title = "Greeting", width = "50%", height = 5 })
 ```
 
 ---
 
-### `maki.ui.buf()` {#maki-ui-buf}
+### `noon.ui.buf()` {#noon-ui-buf}
 
 ```lua
-maki.ui.buf()
+noon.ui.buf()
 ```
 
 Creates a new buffer for building UI content. The first buffer you
@@ -3763,21 +3763,21 @@ create in a task becomes the "live" buffer, streamed to the UI while
 your tool runs. Create more buffers for secondary content like
 floating windows.
 
-**Returns:** ([`Buf`](#maki-ui-Buf)) Buffer handle.
+**Returns:** ([`Buf`](#noon-ui-Buf)) Buffer handle.
 
 **Example:**
 
 ```lua
-local buf = maki.ui.buf()
+local buf = noon.ui.buf()
 buf:line("hello world")
 ```
 
 ---
 
-### `maki.ui.theme_color()` {#maki-ui-theme_color}
+### `noon.ui.theme_color()` {#noon-ui-theme_color}
 
 ```lua
-maki.ui.theme_color({name})
+noon.ui.theme_color({name})
 ```
 
 Looks up a semantic color from the current theme. Use this to keep
@@ -3792,7 +3792,7 @@ your plugin's colors consistent with the rest of the UI.
 **Example:**
 
 ```lua
-local accent = maki.ui.theme_color("accent")
+local accent = noon.ui.theme_color("accent")
 if accent then
   buf:line({ { "note", { fg = accent, bold = true } } })
 end
@@ -3800,10 +3800,10 @@ end
 
 ---
 
-### `maki.ui.highlight()` {#maki-ui-highlight}
+### `noon.ui.highlight()` {#noon-ui-highlight}
 
 ```lua
-maki.ui.highlight({code}, {lang}, {opts?})
+noon.ui.highlight({code}, {lang}, {opts?})
 ```
 
 Syntax-highlights a chunk of source code. Returns a table of styled
@@ -3823,7 +3823,7 @@ lines that you can feed into a buffer. Each line is a list of
 **Example:**
 
 ```lua
-local lines = maki.ui.highlight("fn main() {}", "rust")
+local lines = noon.ui.highlight("fn main() {}", "rust")
 for _, spans in ipairs(lines) do
   buf:line(spans)
 end
@@ -3831,10 +3831,10 @@ end
 
 ---
 
-### `maki.ui.markdown()` {#maki-ui-markdown}
+### `noon.ui.markdown()` {#noon-ui-markdown}
 
 ```lua
-maki.ui.markdown({text}, {width})
+noon.ui.markdown({text}, {width})
 ```
 
 Renders Markdown into styled lines ready to display in a buffer.
@@ -3852,8 +3852,8 @@ for syntax-highlighted code blocks.
 **Example:**
 
 ```lua
-local size = maki.ui.terminal_size()
-local lines = maki.ui.markdown("# Hello\n\nSome **bold** text.", size.cols)
+local size = noon.ui.terminal_size()
+local lines = noon.ui.markdown("# Hello\n\nSome **bold** text.", size.cols)
 for _, spans in ipairs(lines) do
   buf:line(spans)
 end
@@ -3861,10 +3861,10 @@ end
 
 ---
 
-### `maki.ui.humantime()` {#maki-ui-humantime}
+### `noon.ui.humantime()` {#noon-ui-humantime}
 
 ```lua
-maki.ui.humantime({secs})
+noon.ui.humantime({secs})
 ```
 
 Formats a number of seconds into a short, human-friendly string.
@@ -3879,16 +3879,16 @@ Useful for displaying elapsed time in status messages.
 **Example:**
 
 ```lua
-maki.ui.humantime(90)   -- "1m30s"
-maki.ui.humantime(3661) -- "1h1m1s"
+noon.ui.humantime(90)   -- "1m30s"
+noon.ui.humantime(3661) -- "1h1m1s"
 ```
 
 ---
 
-### `maki.ui.terminal_size()` {#maki-ui-terminal_size}
+### `noon.ui.terminal_size()` {#noon-ui-terminal_size}
 
 ```lua
-maki.ui.terminal_size()
+noon.ui.terminal_size()
 ```
 
 Returns the current terminal size. Handy for sizing floating windows
@@ -3899,16 +3899,16 @@ or wrapping text to fit the screen.
 **Example:**
 
 ```lua
-local size = maki.ui.terminal_size()
+local size = noon.ui.terminal_size()
 local half_width = math.floor(size.cols / 2)
 ```
 
 ---
 
-### `maki.ui.flash()` {#maki-ui-flash}
+### `noon.ui.flash()` {#noon-ui-flash}
 
 ```lua
-maki.ui.flash({msg})
+noon.ui.flash({msg})
 ```
 
 Shows a brief message in the status bar. The message disappears
@@ -3922,15 +3922,15 @@ or showing a transient warning.
 **Example:**
 
 ```lua
-maki.ui.flash("Copied to clipboard!")
+noon.ui.flash("Copied to clipboard!")
 ```
 
 ---
 
-### `maki.ui.open_editor()` {#maki-ui-open_editor}
+### `noon.ui.open_editor()` {#noon-ui-open_editor}
 
 ```lua
-maki.ui.open_editor({path})
+noon.ui.open_editor({path})
 ```
 
 Opens {path} in the user's `$EDITOR` (e.g. vim, nano) and waits for
@@ -3946,18 +3946,18 @@ Returns the editor's exit code so you can check if the user saved.
 **Example:**
 
 ```lua
-local code = maki.ui.open_editor("/tmp/scratch.lua")
+local code = noon.ui.open_editor("/tmp/scratch.lua")
 if code == 0 then
-  maki.ui.flash("File saved")
+  noon.ui.flash("File saved")
 end
 ```
 
 ---
 
-### `maki.ui.open_win()` {#maki-ui-open_win}
+### `noon.ui.open_win()` {#noon-ui-open_win}
 
 ```lua
-maki.ui.open_win({buf}, {opts})
+noon.ui.open_win({buf}, {opts})
 ```
 
 Opens a floating or split window that displays the contents of {buf}.
@@ -3966,7 +3966,7 @@ and close the window when you are done.
 
 **Parameters:**
 
-- `{buf}` ([`Buf`](#maki-ui-Buf)) Buffer to display.
+- `{buf}` ([`Buf`](#noon-ui-Buf)) Buffer to display.
 - `{opts}` (`table`) Float configuration. Fields:
   - `width` (`integer|string`) window width. Integer for absolute columns; "N%" for percent of terminal width. Default "60%".
   - `height` (`integer|string`) window height. Integer for absolute rows; "N%" for percent of terminal height. Default "70%".
@@ -3986,14 +3986,14 @@ and close the window when you are done.
   - `focus` (`boolean`) whether the window takes keyboard focus on open. Default true.
   - `visible` (`boolean`) whether the window is initially visible. Default true.
 
-**Returns:** ([`Win`](#maki-ui-Win)) Window handle.
+**Returns:** ([`Win`](#noon-ui-Win)) Window handle.
 
 **Example:**
 
 ```lua
-local buf = maki.ui.buf()
+local buf = noon.ui.buf()
 buf:line("Pick an option:")
-local win = maki.ui.open_win(buf, {
+local win = noon.ui.open_win(buf, {
   title = "Menu",
   width = "50%",
   height = 10,
@@ -4004,10 +4004,10 @@ local win = maki.ui.open_win(buf, {
 
 ---
 
-### `maki.ui.set_status_hint()` {#maki-ui-set_status_hint}
+### `noon.ui.set_status_hint()` {#noon-ui-set_status_hint}
 
 ```lua
-maki.ui.set_status_hint({spans})
+noon.ui.set_status_hint({spans})
 ```
 
 Shows key hints in the status bar for your plugin. Each hint is a {key, label} pair. Pass nil to clear your plugin's hints. Only your own hints are affected, other plugins keep theirs.
@@ -4019,23 +4019,23 @@ Shows key hints in the status bar for your plugin. Each hint is a {key, label} p
 **Example:**
 
 ```lua
-maki.ui.set_status_hint({ {"q", "quit"}, {"j", "down"} })
+noon.ui.set_status_hint({ {"q", "quit"}, {"j", "down"} })
 -- later, clear them:
-maki.ui.set_status_hint(nil)
+noon.ui.set_status_hint(nil)
 ```
 
 
-## maki.ui.Win {#maki-ui-Win}
+## noon.ui.Win {#noon-ui-Win}
 
 Handle to a floating or split window. You get one from
-`maki.ui.open_win()`. Use `recv()` in a loop to handle keyboard
+`noon.ui.open_win()`. Use `recv()` in a loop to handle keyboard
 input, and call `close()` when done.
 
 Fields: `width`, `height` (initial content dimensions in columns/rows),
 `visible` (current visibility).
 
 ```lua
-local win = maki.ui.open_win(buf, { title = "Demo" })
+local win = noon.ui.open_win(buf, { title = "Demo" })
 while true do
   local ev = win:recv()
   if not ev or ev.key == "q" then break end
@@ -4220,14 +4220,14 @@ Returns true if the window is both open and visible (not hidden).
 **Returns:** (`boolean`) true if visible.
 
 
-## maki.ui.Buf {#maki-ui-Buf}
+## noon.ui.Buf {#noon-ui-Buf}
 
 A content buffer that holds styled lines of text. Create one with
-`maki.ui.buf()` and pass it to `maki.ui.open_win()` to show it in
+`noon.ui.buf()` and pass it to `noon.ui.open_win()` to show it in
 a floating or split window.
 
 ```lua
-local buf = maki.ui.buf()
+local buf = noon.ui.buf()
 buf:line("hello")
 buf:line({ { "world", "bold" } })
 ```
@@ -4373,7 +4373,7 @@ Calling `on()` again for the same event replaces the previous handler.
 
 ```lua
 buf:on("click", function(ev)
-  maki.ui.flash("Clicked row " .. ev.row)
+  noon.ui.flash("Clicked row " .. ev.row)
 end)
 ```
 
@@ -4446,7 +4446,7 @@ buf:blit(fb32, 160, 100, { format = "bgra", char = "█" })
 ```
 
 
-## maki.uv {#maki-uv}
+## noon.uv {#noon-uv}
 
 System and environment utilities, modelled after `vim.uv`.
 
@@ -4454,15 +4454,15 @@ Provides access to the working directory, home directory, and environment
 variables. None of these functions throw.
 
 ```lua
-local home = maki.uv.os_homedir()
+local home = noon.uv.os_homedir()
 ```
 
 ---
 
-### `maki.uv.cwd()` {#maki-uv-cwd}
+### `noon.uv.cwd()` {#noon-uv-cwd}
 
 ```lua
-maki.uv.cwd()
+noon.uv.cwd()
 ```
 
 Return the current working directory as an absolute path. Like `vim.uv.cwd`.
@@ -4472,16 +4472,16 @@ Return the current working directory as an absolute path. Like `vim.uv.cwd`.
 **Example:**
 
 ```lua
-local cwd = maki.uv.cwd()
+local cwd = noon.uv.cwd()
 if cwd then print("working in: " .. cwd) end
 ```
 
 ---
 
-### `maki.uv.os_homedir()` {#maki-uv-os_homedir}
+### `noon.uv.os_homedir()` {#noon-uv-os_homedir}
 
 ```lua
-maki.uv.os_homedir()
+noon.uv.os_homedir()
 ```
 
 Return the current user's home directory. Like `vim.uv.os_homedir`.
@@ -4491,15 +4491,15 @@ Return the current user's home directory. Like `vim.uv.os_homedir`.
 **Example:**
 
 ```lua
-local home = maki.uv.os_homedir() -- e.g. "/home/user"
+local home = noon.uv.os_homedir() -- e.g. "/home/user"
 ```
 
 ---
 
-### `maki.uv.os_getenv()` {#maki-uv-os_getenv}
+### `noon.uv.os_getenv()` {#noon-uv-os_getenv}
 
 ```lua
-maki.uv.os_getenv({name})
+noon.uv.os_getenv({name})
 ```
 
 Look up the environment variable {name}. Like `vim.uv.os_getenv`.
@@ -4514,26 +4514,26 @@ Returns nil when the variable is not set.
 **Example:**
 
 ```lua
-local editor = maki.uv.os_getenv("EDITOR") or "vi"
+local editor = noon.uv.os_getenv("EDITOR") or "vi"
 ```
 
 
-## maki.yaml {#maki-yaml}
+## noon.yaml {#noon-yaml}
 
-YAML encoding and decoding. Works the same way as `maki.json`,
+YAML encoding and decoding. Works the same way as `noon.json`,
 but for YAML formatted strings.
 
 ```lua
-local t = maki.yaml.decode("greeting: hello")
+local t = noon.yaml.decode("greeting: hello")
 print(t.greeting)
 ```
 
 ---
 
-### `maki.yaml.encode()` {#maki-yaml-encode}
+### `noon.yaml.encode()` {#noon-yaml-encode}
 
 ```lua
-maki.yaml.encode({value})
+noon.yaml.encode({value})
 ```
 
 Turn a Lua value into a YAML string. Most Lua types work, but
@@ -4548,16 +4548,16 @@ circular references will return an error.
 **Example:**
 
 ```lua
-local s, err = maki.yaml.encode({ name = "maki", tags = { "ai", "agent" } })
+local s, err = noon.yaml.encode({ name = "noon", tags = { "ai", "agent" } })
 print(s)
 ```
 
 ---
 
-### `maki.yaml.decode()` {#maki-yaml-decode}
+### `noon.yaml.decode()` {#noon-yaml-decode}
 
 ```lua
-maki.yaml.decode({str})
+noon.yaml.decode({str})
 ```
 
 Parse a YAML string into a Lua value. Mappings become tables and
@@ -4572,17 +4572,17 @@ sequences become 1-indexed arrays.
 **Example:**
 
 ```lua
-local t, err = maki.yaml.decode("name: maki\nversion: 1")
-print(t.name) -- maki
+local t, err = noon.yaml.decode("name: noon\nversion: 1")
+print(t.name) -- noon
 ```
 
 
 ## Shared helper modules
 
-These ship inside maki; `require` them from any plugin. Small modules are
+These ship inside noon; `require` them from any plugin. Small modules are
 shown as full source, larger ones as their public interface.
 
-### `require("maki.color")`
+### `require("noon.color")`
 
 ```lua
 local M = {}
@@ -4602,14 +4602,14 @@ function M.lerp(from, to, t)
 end
 
 function M.dim(color, factor)
-  local bg = maki.ui.theme_color("background") or "#000000"
+  local bg = noon.ui.theme_color("background") or "#000000"
   return M.lerp(color, bg, factor)
 end
 
 return M
 ```
 
-### `require("maki.fuzzy_replace")`
+### `require("noon.fuzzy_replace")`
 
 ```lua
 M.NO_MATCH = "old_string not found in file"
@@ -4622,7 +4622,7 @@ M.EMPTY_OLD_STRING = "old_string must not be empty"
 function M.replace(content, old_string, new_string, replace_all)
 ```
 
-### `require("maki.list_picker")`
+### `require("noon.list_picker")`
 
 ```lua
 -- Open a fuzzy-filter picker in a floating window and block until the user
@@ -4636,7 +4636,7 @@ ListPicker.matches = matches
 ListPicker.highlight_spans = highlight_spans
 ```
 
-### `require("maki.output_limits")`
+### `require("noon.output_limits")`
 
 ```lua
 -- Shared per-tool output limit options, so the tools that support them
@@ -4668,7 +4668,7 @@ end
 return M
 ```
 
-### `require("maki.shorten_path")`
+### `require("noon.shorten_path")`
 
 ```lua
 local function normalize_sep(s)
@@ -4677,7 +4677,7 @@ end
 
 local function shorten_path(path)
   local p = normalize_sep(path)
-  local cwd = maki.uv.cwd()
+  local cwd = noon.uv.cwd()
   if cwd then
     cwd = normalize_sep(cwd)
     if p:sub(1, #cwd + 1) == cwd .. "/" then
@@ -4685,7 +4685,7 @@ local function shorten_path(path)
       return rel == "" and "." or rel
     end
   end
-  local home = maki.uv.os_homedir()
+  local home = noon.uv.os_homedir()
   if home then
     home = normalize_sep(home)
     if p:sub(1, #home + 1) == home .. "/" then
@@ -4699,7 +4699,7 @@ end
 return shorten_path
 ```
 
-### `require("maki.text_input")`
+### `require("noon.text_input")`
 
 ```lua
 -- TextInput: multi-line editable buffer with a byte-offset cursor.
@@ -4757,7 +4757,7 @@ function TextInput:handle_key(key)
 function TextInput:render(prefix, prefix_width, width)
 ```
 
-### `require("maki.tool_view")`
+### `require("noon.tool_view")`
 
 ```lua
 -- The shared truncate/expand body that tool plugins render through.
@@ -4768,7 +4768,7 @@ function TextInput:render(prefix, prefix_width, width)
 -- reaches the same toggle. Expansion is never stored: the UI records
 -- clicked rows and replays them through `restore` in order, so `toggle`
 -- stays a pure flag flip + re-render, deterministic across replays.
--- Async highlighting goes through `maki.async.run`; during restore the
+-- Async highlighting goes through `noon.async.run`; during restore the
 -- runtime runs those tasks inline before snapshotting.
 
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
@@ -4795,7 +4795,7 @@ function ToolView.restore_lines(lines, opts)
 function ToolView.restore(output, opts)
 ```
 
-### `require("maki.truncate")`
+### `require("noon.truncate")`
 
 ```lua
 local function truncate(text, max_lines, max_bytes)

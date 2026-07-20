@@ -1,4 +1,4 @@
-local fr = require("maki.fuzzy_replace")
+local fr = require("noon.fuzzy_replace")
 
 local failures = {}
 

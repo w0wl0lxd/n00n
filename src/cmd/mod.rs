@@ -6,7 +6,7 @@ mod tui;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 
-use maki_storage::StateDir;
+use noon_storage::StateDir;
 
 use crate::cli::{AuthAction, Cli, Command, McpAction, MigrateAction};
 use crate::update;

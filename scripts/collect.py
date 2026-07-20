@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Coding agent analytics collector - runs Maki, Claude Code, or OpenCode headless, appends to CSV."""
+"""Coding agent analytics collector - runs Noon, Claude Code, or OpenCode headless, appends to CSV."""
 
 import argparse
 import csv
@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-AGENTS = ("maki", "claude-code", "opencode")
+AGENTS = ("noon", "claude-code", "opencode")
 
 PER_MILLION = 1_000_000
 
@@ -58,7 +58,7 @@ def compute_cost(usage, pricing):
 RESET = "\033[0m"
 AGENT_COLORS = {
     "claude-code": "\033[38;5;172m",
-    "maki":        "\033[35m",
+    "noon":        "\033[35m",
     "opencode":    "\033[34m",
 }
 
@@ -84,7 +84,7 @@ def _log(msg):
 def parse_args():
     p = argparse.ArgumentParser(description="Run coding agent with analytics collection")
     p.add_argument("prompt", help="Prompt to send")
-    p.add_argument("--agent", choices=AGENTS, default="maki")
+    p.add_argument("--agent", choices=AGENTS, default="noon")
     p.add_argument("--model", default=None)
     p.add_argument("--max-turns", type=int, default=None)
     p.add_argument("--max-budget-usd", type=float, default=None)
@@ -94,9 +94,9 @@ def parse_args():
     return p.parse_args()
 
 
-def build_cmd_maki(args):
+def build_cmd_noon(args):
     cmd = [
-        "maki", "-p", "--verbose", "--output-format", "stream-json",
+        "noon", "-p", "--verbose", "--output-format", "stream-json",
         args.prompt,
     ]
     if args.model:
@@ -397,7 +397,7 @@ def process_claude_stream(proc, meta):
 
 
 STREAM_PROCESSORS = {
-    "maki": (build_cmd_maki, process_claude_stream),
+    "noon": (build_cmd_noon, process_claude_stream),
     "claude-code": (build_cmd_claude, process_claude_stream),
     "opencode": (build_cmd_opencode, process_opencode_stream),
 }

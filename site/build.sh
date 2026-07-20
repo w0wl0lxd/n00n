@@ -40,7 +40,7 @@ zola build -o "../_build/docs"
 cd ..
 
 # 3. Markdown mirrors + llms.txt / llms-full.txt for LLM consumption
-BASE_URL="https://maki.sh"
+BASE_URL="https://noon.sh"
 
 body() {
   awk '/^\+\+\+$/{c++; next} c>=2' "$1"
@@ -66,7 +66,7 @@ body docs/content/_index.md > "$OUT/docs/index.md"
 summary=$(first_paragraph docs/content/_index.md)
 
 {
-  echo "# Maki"
+  echo "# Noon"
   echo
   echo "> $summary"
   echo
@@ -74,7 +74,7 @@ summary=$(first_paragraph docs/content/_index.md)
   echo
   echo "## Docs"
   echo
-  echo "- [Maki Docs]($BASE_URL/docs/index.md): overview and map of the documentation"
+  echo "- [Noon Docs]($BASE_URL/docs/index.md): overview and map of the documentation"
   for f in $pages; do
     slug=$(basename "$(dirname "$f")")
     title=$(sed -n 's/^title = "\(.*\)"$/\1/p' "$f")

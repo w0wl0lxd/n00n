@@ -1,11 +1,11 @@
 -- Policy for the Python interpreter: which tools it may call, what the model
 -- sees (via the `describe(dctx)` callback), and the import preamble. The
 -- sandbox and dispatch live in Rust, which exposes primitives only
--- (`maki.api.get_tools`, `maki.agent.call_tool`); orchestration policy is here.
+-- (`noon.api.get_tools`, `noon.agent.call_tool`); orchestration policy is here.
 
-local truncate = require("maki.truncate")
-local ToolView = require("maki.tool_view")
-local output_limits = require("maki.output_limits")
+local truncate = require("noon.truncate")
+local ToolView = require("noon.tool_view")
+local output_limits = require("noon.output_limits")
 
 local DEFAULT_MAX_OUTPUT_LINES = 2000
 local DEFAULT_MAX_OUTPUT_BYTES = 50 * 1024
@@ -18,7 +18,7 @@ local WORKFLOW_TOOLS_NOTE =
   "\nWorkflow mode: orchestrate subagents from this script. Await every `task(...)` call and use `asyncio.gather` for parallel fan-out. Pass `output_schema` to task for machine-readable results (a JSON string, parse with `json.loads`). Raise this tool's `timeout` param: subagents outlive the default code_execution timeout.\n"
 local PY_TYPES = { string = "str", integer = "int", boolean = "bool", array = "list" }
 
-local opts = maki.api.register_options(output_limits.extend({
+local opts = noon.api.register_options(output_limits.extend({
   timeout_secs = {
     default = 30,
     min = 5,
@@ -40,9 +40,9 @@ end
 -- script renders the same no matter which lifecycle callbacks ran. The
 -- header is always rebuilt from scratch; nothing mutates existing lines.
 local function build_body(ctx, code)
-  local lines = maki.split(code:gsub("\n+$", ""), "\n")
+  local lines = noon.split(code:gsub("\n+$", ""), "\n")
   local hl
-  local buf = maki.ui.buf()
+  local buf = noon.ui.buf()
   local view = new_view(ctx, buf)
 
   local function header()
@@ -71,7 +71,7 @@ local function build_body(ctx, code)
   end)
 
   local function highlight()
-    local highlighted = maki.ui.highlight(table.concat(lines, "\n"), "py")
+    local highlighted = noon.ui.highlight(table.concat(lines, "\n"), "py")
     if highlighted then
       hl = highlighted
       view:set_header(header())
@@ -194,7 +194,7 @@ end
 local function describe(dctx)
   local parts = { description, TOOLS_HEADER }
   local has_workflow_only = false
-  for _, t in ipairs(interpreter_tools(maki.api.get_tools(), dctx.audience, dctx.workflow)) do
+  for _, t in ipairs(interpreter_tools(noon.api.get_tools(), dctx.audience, dctx.workflow)) do
     if matches_filter(t.name, dctx) then
       has_workflow_only = has_workflow_only or t.workflow_only
       parts[#parts + 1] = signature(t) .. "\n"
@@ -221,7 +221,7 @@ local function handler(input, ctx)
 
   local buf, view, highlight = build_body(ctx, input.code)
   ctx:live_buf(buf)
-  maki.async.run(highlight)
+  noon.async.run(highlight)
 
   ctx:set_deadline(timeout)
 
@@ -237,14 +237,14 @@ local function handler(input, ctx)
   end
 
   local tools = {}
-  for _, t in ipairs(interpreter_tools(maki.api.get_tools({ config = config }), ctx:audience(), ctx:workflow())) do
+  for _, t in ipairs(interpreter_tools(noon.api.get_tools({ config = config }), ctx:audience(), ctx:workflow())) do
     local name = t.name
     tools[name] = function(tool_input)
-      return maki.agent.call_tool(ctx, name, tool_input, { timeout = timeout })
+      return noon.agent.call_tool(ctx, name, tool_input, { timeout = timeout })
     end
   end
 
-  local result, err = maki.interpreter.run(PREAMBLE .. input.code, {
+  local result, err = noon.interpreter.run(PREAMBLE .. input.code, {
     timeout = timeout,
     max_memory_mb = opts.max_memory_mb,
     on_output = show,
@@ -297,7 +297,7 @@ local function restore(input, output, is_error, ctx)
   return buf
 end
 
-maki.api.register_tool({
+noon.api.register_tool({
   name = "code_execution",
   description = description,
   describe = describe,
@@ -312,7 +312,7 @@ maki.api.register_tool({
   restore = restore,
 })
 
-maki.api.register_prompt_hint({
+noon.api.register_prompt_hint({
   slot = "efficient_tools",
   content = "code_execution",
 })

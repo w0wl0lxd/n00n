@@ -1,29 +1,29 @@
 [package]
-name = "maki"
+name = "noon"
 version.workspace = true
 edition = "2024"
 authors = ["Tony Solomonik <tony.solomonik@gmail.com>"]
 description = "AI coding agent. Native Rust TUI. Immediate startup, 60 FPS, low memory."
-license = "MIT"
-repository = "https://github.com/tontinton/maki"
-homepage = "https://maki.sh"
+license = "AGPL-3.0"
+repository = "https://github.com/tontinton/noon"
+homepage = "https://noon.sh"
 readme = "README.md"
 keywords = ["ai", "agent", "cli", "tui", "coding"]
 categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.88"
 
 [[bin]]
-name = "maki"
+name = "noon"
 path = "src/main.rs"
 
 [dependencies]
-maki-ui = { workspace = true }
-maki-agent = { workspace = true }
-maki-acp = { workspace = true }
-maki-config = { workspace = true }
-maki-providers = { workspace = true }
-maki-storage = { workspace = true }
-maki-lua = { workspace = true }
+noon-ui = { workspace = true }
+noon-agent = { workspace = true }
+noon-acp = { workspace = true }
+noon-config = { workspace = true }
+noon-providers = { workspace = true }
+noon-storage = { workspace = true }
+noon-lua = { workspace = true }
 clap = { workspace = true }
 color-eyre = { workspace = true }
 serde = { workspace = true }
@@ -45,19 +45,19 @@ test-case = { workspace = true }
 
 [workspace]
 members = [
-  "maki-acp",
-  "maki-agent",
-  "maki-config",
-  "maki-docgen",
-  "maki-highlight",
-  "maki-interpreter",
-  "maki-lua",
-  "maki-markdown",
-  "maki-providers",
-  "maki-storage",
-  "maki-config-macro",
-  "maki-lua-macro",
-  "maki-ui",
+  "noon-acp",
+  "noon-agent",
+  "noon-config",
+  "noon-docgen",
+  "noon-highlight",
+  "noon-interpreter",
+  "noon-lua",
+  "noon-markdown",
+  "noon-providers",
+  "noon-storage",
+  "noon-config-macro",
+  "noon-lua-macro",
+  "noon-ui",
 ]
 resolver = "3"
 
@@ -65,23 +65,23 @@ resolver = "3"
 version = "0.4.1"
 edition = "2024"
 authors = ["Tony Solomonik <tony.solomonik@gmail.com>"]
-license = "MIT"
-repository = "https://github.com/tontinton/maki"
+license = "AGPL-3.0"
+repository = "https://github.com/tontinton/noon"
 rust-version = "1.88"
 
 [workspace.dependencies]
-maki-agent = { path = "maki-agent" }
-maki-acp = { path = "maki-acp" }
-maki-config = { path = "maki-config" }
-maki-interpreter = { path = "maki-interpreter" }
-maki-providers = { path = "maki-providers" }
-maki-storage = { path = "maki-storage" }
-maki-ui = { path = "maki-ui" }
-maki-lua = { path = "maki-lua" }
-maki-config-macro = { path = "maki-config-macro" }
-maki-lua-macro = { path = "maki-lua-macro" }
-maki-highlight = { path = "maki-highlight" }
-maki-markdown = { path = "maki-markdown" }
+noon-agent = { path = "noon-agent" }
+noon-acp = { path = "noon-acp" }
+noon-config = { path = "noon-config" }
+noon-interpreter = { path = "noon-interpreter" }
+noon-providers = { path = "noon-providers" }
+noon-storage = { path = "noon-storage" }
+noon-ui = { path = "noon-ui" }
+noon-lua = { path = "noon-lua" }
+noon-config-macro = { path = "noon-config-macro" }
+noon-lua-macro = { path = "noon-lua-macro" }
+noon-highlight = { path = "noon-highlight" }
+noon-markdown = { path = "noon-markdown" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 bs58 = "0.5"
@@ -89,10 +89,17 @@ uuid = { version = "1", default-features = false, features = ["std", "v7"] }
 zstd = { version = "0.13", default-features = false }
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = { version = "0.29", features = ["osc52"] }
-color-eyre = { version = "0.6", default-features = false, features = ["track-caller"] }
+color-eyre = { version = "0.6", default-features = false, features = [
+  "track-caller",
+] }
 thiserror = "2"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "json"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+  "std",
+  "fmt",
+  "env-filter",
+  "json",
+] }
 clap = { version = "4", features = ["derive"] }
 sha2 = { version = "0.10", default-features = false }
 hmac = { version = "0.12", default-features = false }
@@ -105,19 +112,36 @@ memchr = "2"
 strum = { version = "0.27", features = ["derive"] }
 htmd = "0.5"
 tempfile = "3"
-regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl"] }
+regex = { version = "1", default-features = false, features = [
+  "std",
+  "perf",
+  "unicode-perl",
+] }
 grep-regex = "0.1"
 grep-searcher = "0.1"
-syntect = { version = "5", default-features = false, features = ["default-fancy"] }
-two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
+syntect = { version = "5", default-features = false, features = [
+  "default-fancy",
+] }
+two-face = { version = "0.5", default-features = false, features = [
+  "syntect-default-fancy",
+] }
 unicode-width = "0.2"
 similar = { version = "2", features = ["inline", "unicode"] }
 jsonrepair = { version = "0.1", default-features = false, features = ["serde"] }
 jsonschema = { version = "0.33", default-features = false }
-jiff = { version = "0.2", default-features = false, features = ["std", "tz-system"] }
-arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
+jiff = { version = "0.2", default-features = false, features = [
+  "std",
+  "tz-system",
+] }
+arboard = { version = "3", default-features = false, features = [
+  "image-data",
+  "wayland-data-control",
+] }
 image = { version = "0.25", default-features = false, features = ["png"] }
-flume = { version = "0.11", default-features = false, features = ["async", "select"] }
+flume = { version = "0.11", default-features = false, features = [
+  "async",
+  "select",
+] }
 humantime = "2"
 toml = "0.8"
 toml_edit = "0.22"
@@ -130,7 +154,11 @@ async-io = "2"
 event-listener = "5"
 futures-lite = "2"
 futures = "0.3"
-isahc = { version = "1.7", default-features = false, features = ["text-decoding", "static-curl", "static-ssl"] }
+isahc = { version = "1.7", default-features = false, features = [
+  "text-decoding",
+  "static-curl",
+  "static-ssl",
+] }
 libc = "0.2"
 nucleo = "0.5"
 nucleo-matcher = "0.3"
@@ -140,7 +168,14 @@ etcetera = "0.11"
 dotenvy = "0.15"
 tree-sitter = "0.26"
 include_dir = "0.7"
-mlua = { version = "0.11", features = ["luau", "luau-jit", "async", "send", "serde", "macros"] }
+mlua = { version = "0.11", features = [
+  "luau",
+  "luau-jit",
+  "async",
+  "send",
+  "serde",
+  "macros",
+] }
 tree-sitter-bash = "0.25"
 tree-sitter-c = "0.24"
 tree-sitter-c-sharp = "0.23"
@@ -169,7 +204,10 @@ tree-sitter-zig = "1.1"
 tree-sitter-dart = "0.2.0"
 tree-sitter-yaml = "0.7.2"
 monty = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.18", package = "monty" }
-notify = { version = "9.0.0-rc.2", default-features = false, features = ["flume", "macos_fsevent"] }
+notify = { version = "9.0.0-rc.2", default-features = false, features = [
+  "flume",
+  "macos_fsevent",
+] }
 serde_yaml = "0.9"
 shell-words = "1"
 agent-client-protocol-schema = "0.13"

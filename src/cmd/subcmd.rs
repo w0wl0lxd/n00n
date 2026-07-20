@@ -6,23 +6,23 @@ use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre::{Context, bail};
 
-use maki_agent::mcp::{config as mcp_config, oauth as mcp_oauth};
-use maki_agent::tools::ToolRegistry;
-use maki_config::providers::{
+use noon_agent::mcp::{config as mcp_config, oauth as mcp_oauth};
+use noon_agent::tools::ToolRegistry;
+use noon_config::providers::{
     ProviderDef, ProvidersConfig, all_builtins, builtin_provider, resolve_api_key_env,
     resolve_base_url, resolve_default_model, resolve_display_name, resolve_login_url, slugify,
 };
-use maki_config::{load_env_files, load_permissions};
-use maki_lua::PluginHost;
-use maki_providers::provider::fetch_all_models;
-use maki_providers::{ProviderData, catalog_providers};
-use maki_providers::{copilot_auth, dynamic, openai_auth};
-use maki_storage::StateDir;
-use maki_storage::auth::ProviderCredentials;
-use maki_storage::auth::{
+use noon_config::{load_env_files, load_permissions};
+use noon_lua::PluginHost;
+use noon_providers::provider::fetch_all_models;
+use noon_providers::{ProviderData, catalog_providers};
+use noon_providers::{copilot_auth, dynamic, openai_auth};
+use noon_storage::StateDir;
+use noon_storage::auth::ProviderCredentials;
+use noon_storage::auth::{
     delete_provider_credentials, load_provider_credentials, save_provider_credentials,
 };
-use maki_storage::model::persist_model;
+use noon_storage::model::persist_model;
 
 pub fn auth_login(provider: Option<&str>, storage: &StateDir) -> Result<()> {
     match provider {
@@ -33,7 +33,7 @@ pub fn auth_login(provider: Option<&str>, storage: &StateDir) -> Result<()> {
             if builtin_provider(&slug).is_none()
                 && dynamic::display_name(&slug).is_none()
                 && ProvidersConfig::load().get(&slug).is_none()
-                && let Some(provider_data) = maki_providers::catalog_provider(&slug)
+                && let Some(provider_data) = noon_providers::catalog_provider(&slug)
             {
                 login_catalog_provider(&provider_data, storage)?;
             } else {
@@ -122,11 +122,11 @@ fn login_provider(slug: &str, storage: &StateDir) -> Result<()> {
         println!("  Default model: {}", model);
     }
     if has_key {
-        println!("  Credentials: ~/.local/state/maki/auth/{}.json", slug);
+        println!("  Credentials: ~/.local/state/noon/auth/{}.json", slug);
     } else {
         let env_var = resolve_api_key_env(slug, config.get(slug));
         println!(
-            "  Set API key via: {} or run: maki auth login {}",
+            "  Set API key via: {} or run: noon auth login {}",
             env_var, slug
         );
     }
@@ -238,7 +238,7 @@ fn login_catalog_provider(provider: &ProviderData, storage: &StateDir) -> Result
     save_provider_credentials(storage, &provider.slug, &creds).context("save credentials")?;
     println!("  \x1b[32m✓\x1b[0m Saved credentials for {}", provider.slug);
     println!(
-        "  Credentials: ~/.local/state/maki/auth/{}.json",
+        "  Credentials: ~/.local/state/noon/auth/{}.json",
         provider.slug
     );
     println!(
@@ -327,21 +327,21 @@ fn login_custom(storage: &StateDir) -> Result<()> {
     println!("  \x1b[32m✓\x1b[0m Configured: {}", slug);
     println!("  Endpoint: {}", base_url);
     if has_key {
-        println!("  Credentials: ~/.local/state/maki/auth/{}.json", slug);
+        println!("  Credentials: ~/.local/state/noon/auth/{}.json", slug);
     } else {
         println!(
-            "  Set API key via: {} or run: maki auth login {}",
+            "  Set API key via: {} or run: noon auth login {}",
             api_key_env, slug
         );
     }
-    println!("  Use with: maki -m {}/<model>", slug);
+    println!("  Use with: noon -m {}/<model>", slug);
 
     Ok(())
 }
 
 fn select_plan(
     slug: &str,
-    builtin: Option<&'static maki_config::providers::BuiltInProvider>,
+    builtin: Option<&'static noon_config::providers::BuiltInProvider>,
     def: Option<&ProviderDef>,
 ) -> Result<Option<String>> {
     let plans = builtin.and_then(|b| b.plans);
@@ -468,7 +468,7 @@ pub fn auth_status(storage: &StateDir) -> Result<()> {
             println!("  \x1b[34m●\x1b[0m {:<14} {} (configured)", b.slug, display);
         } else {
             println!(
-                "  \x1b[31m✗\x1b[0m {:<14} {} (run: maki auth login {})",
+                "  \x1b[31m✗\x1b[0m {:<14} {} (run: noon auth login {})",
                 b.slug, display, b.slug
             );
         }
@@ -499,7 +499,7 @@ pub fn auth_status(storage: &StateDir) -> Result<()> {
                 );
             } else {
                 println!(
-                    "  \x1b[31m✗\x1b[0m {:<14} {} (run: maki auth login {})",
+                    "  \x1b[31m✗\x1b[0m {:<14} {} (run: noon auth login {})",
                     slug, display, slug
                 );
             }
@@ -524,7 +524,7 @@ pub fn auth_status(storage: &StateDir) -> Result<()> {
                 );
             } else {
                 println!(
-                    "  \x1b[31m✗\x1b[0m {:<14} {} (run: maki auth login {})",
+                    "  \x1b[31m✗\x1b[0m {:<14} {} (run: noon auth login {})",
                     entry.slug, entry.display_name, entry.slug
                 );
             }
@@ -587,7 +587,7 @@ pub fn index(path: &str, no_plugins: bool, no_jit: bool) -> Result<()> {
         .tool
         .parse(&input)
         .map_err(|e| color_eyre::eyre::eyre!("parse index input: {e}"))?;
-    let ctx = maki_agent::tools::cli_tool_ctx();
+    let ctx = noon_agent::tools::cli_tool_ctx();
     let result = smol::block_on(async { inv.execute(&ctx).await });
     match result.output {
         Ok(output) => print!("{}", output.as_text()),
@@ -619,7 +619,7 @@ pub fn mcp_auth(server: &str, storage: &StateDir) -> Result<()> {
 }
 
 pub fn mcp_logout(server: &str, storage: &StateDir) -> Result<()> {
-    let deleted = maki_storage::auth::delete_mcp_auth(storage, server)?;
+    let deleted = noon_storage::auth::delete_mcp_auth(storage, server)?;
     if deleted {
         eprintln!("Removed OAuth credentials for MCP server '{server}'");
     } else {
@@ -636,11 +636,11 @@ pub fn prompt(
     no_jit: bool,
 ) -> Result<()> {
     use crate::cli::PromptVariant;
-    use maki_agent::agent::{build_system_prompt, load_instruction_text};
-    use maki_agent::prompt::{PromptId, assemble};
-    use maki_agent::template;
-    use maki_agent::tools::{DescriptionContext, ToolAudience, ToolFilter, ToolRegistry};
-    use maki_providers::Model;
+    use noon_agent::agent::{build_system_prompt, load_instruction_text};
+    use noon_agent::prompt::{PromptId, assemble};
+    use noon_agent::template;
+    use noon_agent::tools::{DescriptionContext, ToolAudience, ToolFilter, ToolRegistry};
+    use noon_providers::Model;
 
     if plan && !matches!(variant, PromptVariant::System) {
         bail!("--plan can only be used with the 'system' prompt variant");
@@ -698,9 +698,9 @@ pub fn prompt(
     let output = match variant {
         PromptVariant::System => {
             let mode = if plan {
-                maki_agent::AgentMode::Plan(std::path::PathBuf::from("plan.md"))
+                noon_agent::AgentMode::Plan(std::path::PathBuf::from("plan.md"))
             } else {
-                maki_agent::AgentMode::Build
+                noon_agent::AgentMode::Build
             };
             let model_spec = config
                 .provider

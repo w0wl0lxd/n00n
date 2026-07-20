@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-Maki ships with 20 built-in tools. This is the full reference.
+Noon ships with 20 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -56,7 +56,7 @@ Replace an exact string match in a file.
 ### `multiedit` *(lua plugin)*
 
 Make multiple find-and-replace edits to a single file atomically.
-Prefer this over edit when making multiple changes to the same file.
+Prefer this over edit when noonng multiple changes to the same file.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

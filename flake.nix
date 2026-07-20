@@ -1,5 +1,5 @@
 {
-  description = "Maki - AI coding agent";
+  description = "Noon - AI coding agent";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -24,7 +24,7 @@
       packages = forEachSystem (
         system: pkgs:
         let
-          maki = pkgs.rustPlatform.buildRustPackage {
+          noon = pkgs.rustPlatform.buildRustPackage {
             pname = packageName;
             inherit version;
             src = ./.;
@@ -69,7 +69,7 @@
           };
         in
         {
-          default = maki;
+          default = noon;
         }
       );
 

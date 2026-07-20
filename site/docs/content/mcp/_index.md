@@ -7,14 +7,14 @@ group = "Reference"
 
 # MCP (Model Context Protocol)
 
-Maki connects to external tool servers over MCP. Both **stdio** and **HTTP** transports are supported.
+Noon connects to external tool servers over MCP. Both **stdio** and **HTTP** transports are supported.
 
 ## Configuration
 
 Add servers under `[mcp.*]` in your MCP config:
 
-- **Global**: `~/.config/maki/mcp.toml`
-- **Project**: `.maki/mcp.toml` (project config wins when both set a value)
+- **Global**: `~/.config/noon/mcp.toml`
+- **Project**: `.noon/mcp.toml` (project config wins when both set a value)
 
 ### Stdio
 
@@ -72,20 +72,20 @@ If one server fails, the rest still work.
 
 ## OAuth
 
-Some HTTP servers need auth. When that happens, Maki opens your browser to log in. Other servers keep working while you authenticate. Tokens refresh on their own. If you change the server URL, you log in again.
+Some HTTP servers need auth. When that happens, Noon opens your browser to log in. Other servers keep working while you authenticate. Tokens refresh on their own. If you change the server URL, you log in again.
 
 ```bash
-maki mcp auth <server-name>     # manually trigger auth
-maki mcp logout <server-name>   # remove stored tokens
+noon mcp auth <server-name>     # manually trigger auth
+noon mcp logout <server-name>   # remove stored tokens
 ```
 
 ### Headless machines
 
-On a machine without a browser (say, a dev server over SSH), run `maki mcp auth <server-name>`. Maki prints the login URL. Open it on your laptop and log in. The browser lands on a `http://127.0.0.1:19876/...` page that fails to load. Copy that full URL from the address bar and paste it into the terminal to finish the login.
+On a machine without a browser (say, a dev server over SSH), run `noon mcp auth <server-name>`. Noon prints the login URL. Open it on your laptop and log in. The browser lands on a `http://127.0.0.1:19876/...` page that fails to load. Copy that full URL from the address bar and paste it into the terminal to finish the login.
 
 ## Prompts
 
-MCP servers can expose prompts (reusable message templates). Maki shows them as slash commands in the command palette: `/server:prompt-name`. Type `/` to filter.
+MCP servers can expose prompts (reusable message templates). Noon shows them as slash commands in the command palette: `/server:prompt-name`. Type `/` to filter.
 
 ```
 /github:create-pr           # no arguments
@@ -93,4 +93,4 @@ MCP servers can expose prompts (reusable message templates). Maki shows them as 
 /review:code src tests      # multiple, positional
 ```
 
-Skip a required argument and Maki shows a usage hint. Prompts are fetched at startup and on reconnect, so new ones need a restart. Only text content is supported.
+Skip a required argument and Noon shows a usage hint. Prompts are fetched at startup and on reconnect, so new ones need a restart. Only text content is supported.

@@ -7,19 +7,19 @@ group = "Getting Started"
 
 # Configuration
 
-Settings go in `init.lua`, a Lua script that calls `maki.setup()`. Same language as plugins.
+Settings go in `init.lua`, a Lua script that calls `noon.setup()`. Same language as plugins.
 
 Two places, both optional:
 
-- **Global**: `~/.config/maki/init.lua`
-- **Project**: `.maki/init.lua` (relative to your working directory)
+- **Global**: `~/.config/noon/init.lua`
+- **Project**: `.noon/init.lua` (relative to your working directory)
 
 When both exist, project settings override global ones. Neither file is required.
 
 ## Example
 
 ```lua
-maki.setup({
+noon.setup({
     ui = {
         splash_animation = true,
         mouse_scroll_lines = 5,
@@ -46,7 +46,7 @@ maki.setup({
 
 All fields are optional. Typos in field names cause an error right away.
 
-`maki.setup()` can only be called once per init.lua.
+`noon.setup()` can only be called once per init.lua.
 
 ## Full Reference
 
@@ -118,10 +118,10 @@ The `plugins` table turns plugins on or off and passes options to them. All bund
 
 Each plugin checks its own options at startup. A typo, a wrong type, or an unknown plugin name gives you a clear error right away.
 
-The edit plugin's extra tools are options too: `plugins.edit = { multiedit = false, edit_lines = true }`. The old `tools` table is gone. If your config still uses it, Maki stops at startup and shows you the new form.
+The edit plugin's extra tools are options too: `plugins.edit = { multiedit = false, edit_lines = true }`. The old `tools` table is gone. If your config still uses it, Noon stops at startup and shows you the new form.
 
 ```lua
-maki.setup({
+noon.setup({
     plugins = {
         bash = { timeout_secs = 180 },
         websearch = { enabled = false },
@@ -188,7 +188,7 @@ maki.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `plugin_dev` | boolean | `true` | - | Offer the builtin maki-plugin-dev skill for writing maki plugins. |
+| `plugin_dev` | boolean | `true` | - | Offer the builtin noon-plugin-dev skill for writing noon plugins. |
 
 ### `plugins.task`
 
@@ -214,28 +214,28 @@ maki.setup({
 
 ## Validation
 
-If a value is below its minimum, Maki shows a `ConfigError` with the field name, value, and minimum.
+If a value is below its minimum, Noon shows a `ConfigError` with the field name, value, and minimum.
 
 ## Directory layout
 
-Maki uses XDG directories on Linux and macOS:
+Noon uses XDG directories on Linux and macOS:
 
 | Purpose | Path |
 |---------|------|
-| Config | `~/.config/maki/` (init.lua, permissions.toml, mcp.toml) |
-| Data | `~/.local/share/maki/` |
-| Logs | `~/.local/logs/maki/` |
-| State | `~/.local/state/maki/` |
+| Config | `~/.config/noon/` (init.lua, permissions.toml, mcp.toml) |
+| Data | `~/.local/share/noon/` |
+| Logs | `~/.local/logs/noon/` |
+| State | `~/.local/state/noon/` |
 
-`~/.maki/` is checked as a legacy fallback.
+`~/.noon/` is checked as a legacy fallback.
 
-### Migrating from ~/.maki/
+### Migrating from ~/.noon/
 
-Older versions stored everything in `~/.maki/`. If that directory still exists, maki uses it
+Older versions stored everything in `~/.noon/`. If that directory still exists, noon uses it
 as a fallback. To move to XDG directories, run:
 
 ```
-maki migrate xdg
+noon migrate xdg
 ```
 
 This safely moves sessions, auth, plans, memories, logs, and preferences to XDG locations.
@@ -250,6 +250,6 @@ Safe to run more than once.
 On top of `AGENTS.md`, you can add your own instructions in two places:
 
 - `AGENTS.local.md` at project root for per-project preferences (gitignored)
-- `~/.config/maki/AGENTS.md` for preferences that apply to all projects
+- `~/.config/noon/AGENTS.md` for preferences that apply to all projects
 
 Both are added to the system prompt at the start of every session.
