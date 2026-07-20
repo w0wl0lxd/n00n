@@ -81,10 +81,6 @@ local schema = {
   },
 }
 
-local opts = noon.api.register_options({
-  max_concurrent = { default = 4, min = 1, desc = "Max concurrent ALMAS teams." },
-})
-
 local NUDGE = "You have not called structured_output. Call it now with the plan object."
 
 local function plan_prompt(goal)
@@ -107,7 +103,7 @@ local function run_supervisor(ctx, goal, supervisor_tier)
   if serr then
     return nil, serr
   end
-  local tools, terr = noon.agent.tools(ctx, { audience = "general_sub", include_mcp = true })
+  local tools, terr = noon.agent.tools(ctx, { spec = model.spec, audience = "general_sub", include_mcp = true })
   if terr then
     return nil, terr
   end
@@ -154,9 +150,49 @@ local function run_supervisor(ctx, goal, supervisor_tier)
   return captured.steps, nil
 end
 
+local function generate_learnings_digest(ctx, goal, report, supervisor_tier)
+  local model, merr = noon.agent.resolve_model(ctx, { tier = supervisor_tier or "strong" })
+  if merr then
+    return nil
+  end
+
+  local system = "You are a senior supervisor reviewing the execution of a multi-agent software engineering run. "
+    .. "Your task is to analyze the step-by-step reports and produce a concise, actionable summary of "
+    .. "'learnings' and 'context' for future runs. Focus on architectural facts discovered, what succeeded, "
+    .. "what failed and how it was resolved, and constraints to remember. Do not include raw CLI output or verbose logs. "
+    .. "Keep it under 250 words."
+
+  local sess, sess_err = noon.agent.session(ctx, {
+    model_spec = model.spec,
+    system = system,
+    tools = {},
+    audience = "general_sub",
+    name = "almas-learning-digest",
+  })
+  if sess_err then
+    return nil
+  end
+
+  local prompt = string.format("Original Goal:\n%s\n\nExecution Report:\n%s", goal, report)
+  local res, rerr = sess:prompt(prompt)
+  sess:close()
+
+  if rerr or not res or not res.text or res.text == "" then
+    return nil
+  end
+
+  return res.text
+end
+
 local function handler(input, ctx)
-  local goal = refine.refine_goal(input.goal)
   local supervisor_tier = input.model_tier or "strong"
+  local goal = refine.refine_goal(ctx, input.goal, supervisor_tier)
+
+  local slug = memory.slug(input.goal)
+  local prior = memory.load(ctx, slug)
+  if prior and #prior > 0 then
+    goal = goal .. "\n\nPrior learnings for this goal:\n" .. prior
+  end
 
   local steps, perr = run_supervisor(ctx, goal, supervisor_tier)
   if perr then
@@ -198,6 +234,14 @@ local function handler(input, ctx)
 
   local report = table.concat(results, "\n\n")
   local summary = string.format("\n\n---\nALMAS complete: %d steps, ~$%.4f estimated cost.", #steps, total_cost)
+
+  local digest = generate_learnings_digest(ctx, input.goal, report, supervisor_tier)
+  if digest then
+    memory.save(ctx, slug, digest)
+  else
+    memory.save(ctx, slug, report .. summary)
+  end
+
   return { llm_output = report .. summary, format = "markdown" }
 end
 
