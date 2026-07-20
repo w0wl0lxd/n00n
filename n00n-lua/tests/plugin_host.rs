@@ -725,6 +725,39 @@ fn handler_nil_without_jobs_is_error() {
 }
 
 #[test]
+fn handler_nil_waits_for_owned_async_run() {
+    let reg = fresh_registry();
+    let host = PluginHost::new(Arc::clone(&reg)).unwrap();
+    let src = r#"n00n.api.register_tool({
+        name = "async_finish",
+        description = "finishes after delayed async work",
+        schema = { type = "object", properties = {} },
+        audiences = { "main" },
+        handler = function(input, ctx)
+            n00n.async.run(function()
+                local id = n00n.fn.jobstart("sleep 0.2")
+                n00n.fn.jobwait(id)
+                return "finished"
+            end, function(err, result)
+                ctx:finish(result)
+            end)
+        end
+    })"#;
+    host.load_source("async_finish", src).unwrap();
+    let first_registry = Arc::clone(&reg);
+    let second_registry = Arc::clone(&reg);
+    let first = std::thread::spawn(move || {
+        exec_tool(&first_registry, "async_finish", serde_json::json!({}))
+    });
+    let second = std::thread::spawn(move || {
+        exec_tool(&second_registry, "async_finish", serde_json::json!({}))
+    });
+
+    assert_eq!(first.join().unwrap().unwrap(), "finished");
+    assert_eq!(second.join().unwrap().unwrap(), "finished");
+}
+
+#[test]
 fn handler_lua_error_surfaces_as_tool_error() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();

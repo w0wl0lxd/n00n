@@ -159,14 +159,16 @@ Use this tool when you need to ask the user questions during execution. This all
 
 Launch an ALMAS team. A supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `goal` | string | yes | High-level SDLC goal, e.g. 'Add a retry helper and cover it with tests.' |
-| `compact` | boolean | no | Encode retrieved context as TOON (token-saving, opt-in). |
-| `model_tier` | string | no | Override the supervisor tier (weak/medium/strong). Defaults to strong. |
-| `mode` | string | no | "supervised" (default, return the plan for review) or "autonomous". |
-| `use_retrieval` | boolean | no | Ground steps with repo retrieval. |
-| `auto_tier` | boolean | no | Route each subagent tier from its step prompt (opt-in). |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `use_retrieval` | boolean | no |  | Ground steps with repo retrieval. |
+| `max_rounds` | integer | no | 4 | Swarm mode only: max coordination rounds. |
+| `goal` | string | yes |  | High-level SDLC goal, e.g. 'Add a retry helper and cover it with tests.' |
+| `compact` | boolean | no |  | Encode retrieved context as TOON (token-saving, opt-in). |
+| `model_tier` | string | no |  | Override the supervisor tier (weak/medium/strong). Defaults to strong. |
+| `mode` | string | no |  | "supervised" (default, return the plan for review), "autonomous" (run the plan), or "swarm" (decentralized SwarmSys rounds). |
+| `auto_tier` | boolean | no |  | Route each subagent tier from its step prompt (opt-in). |
+| `max_concurrent` | integer | no | 8 | Swarm mode only: max concurrent subagents per round. |
 
 ### `task` *(lua plugin)*
 
