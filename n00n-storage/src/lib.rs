@@ -159,10 +159,10 @@ fn retry_rename(src: &Path, dest: &Path) -> std::io::Result<()> {
 /// guaranteed to be reachable after a crash. No-op on platforms where this is
 /// not meaningful or not supported.
 #[allow(clippy::unnecessary_wraps)]
-fn sync_dir(_path: &Path) -> std::io::Result<()> {
+fn sync_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        fs::File::open(_path)?.sync_all()?;
+        fs::File::open(path)?.sync_all()?;
     }
     Ok(())
 }
