@@ -12,6 +12,7 @@ pub fn persist_theme_name(dir: &StateDir, name: &str) {
     }
 }
 
+#[must_use]
 pub fn read_theme_name(dir: &StateDir) -> Option<String> {
     let name = fs::read_to_string(dir.path().join(THEME_FILE)).ok()?;
     let name = name.trim();

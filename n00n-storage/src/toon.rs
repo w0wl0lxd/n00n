@@ -19,6 +19,9 @@ const JSON_MARKER: u8 = 0x00;
 ///
 /// Returns the original bytes prefixed with [`JSON_MARKER`] when TOON does not
 /// shrink them, or the TOON text prefixed with [`TOON_MARKER`] when it does.
+///
+/// # Errors
+/// Returns an error if the JSON cannot be parsed or the TOON encoding fails.
 pub fn serialize_lossless(json: &[u8]) -> Result<Vec<u8>, StorageError> {
     let value: Value =
         serde_json::from_slice(json).map_err(|e| StorageError::Toon(format!("json parse: {e}")))?;
@@ -44,6 +47,10 @@ pub fn serialize_lossless(json: &[u8]) -> Result<Vec<u8>, StorageError> {
 /// Returns canonical JSON bytes for the TOON form, or the original bytes for
 /// the passthrough form; either way the result is value-equivalent to the
 /// input that was originally serialized.
+///
+/// # Errors
+/// Returns an error if the data is empty, has an unknown marker, or cannot be
+/// decoded.
 pub fn deserialize_lossless(data: &[u8]) -> Result<Vec<u8>, StorageError> {
     let (&marker, rest) = data
         .split_first()
@@ -129,7 +136,7 @@ mod tests {
         let cases: &[&str] = &[
             r#"{"big":9007199254740993,"neg":-0.0,"exp":1e10,"frac":1.5,"small":1}"#,
             r#"{"u":"héllo ⇢ 日本語","esc":"\u0041"}"#,
-            r#"[1,2.0,3e2,-4,-0.0,1.0]"#,
+            r"[1,2.0,3e2,-4,-0.0,1.0]",
             r#"{"nested":{"a":[1,2,{"b":3}]}}"#,
         ];
         for c in cases {
