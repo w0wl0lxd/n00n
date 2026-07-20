@@ -25,7 +25,8 @@ pub fn serialize_lossless(json: &[u8]) -> Result<Vec<u8>, StorageError> {
     let toon =
         encode_default(&value).map_err(|e| StorageError::Toon(format!("toon encode: {e}")))?;
     let toon_bytes = toon.as_bytes();
-    if toon_bytes.len() + 1 < json.len() {
+    let toon_smaller = toon_bytes.len() + 1 < json.len();
+    if toon_smaller && toon_roundtrips(&value, toon_bytes) {
         let mut out = Vec::with_capacity(toon_bytes.len() + 1);
         out.push(TOON_MARKER);
         out.extend_from_slice(toon_bytes);
@@ -38,7 +39,11 @@ pub fn serialize_lossless(json: &[u8]) -> Result<Vec<u8>, StorageError> {
     }
 }
 
-/// Inverse of [`serialize_lossless`]: returns canonical JSON bytes.
+/// Inverse of [`serialize_lossless`].
+///
+/// Returns canonical JSON bytes for the TOON form, or the original bytes for
+/// the passthrough form; either way the result is value-equivalent to the
+/// input that was originally serialized.
 pub fn deserialize_lossless(data: &[u8]) -> Result<Vec<u8>, StorageError> {
     let (&marker, rest) = data
         .split_first()
@@ -55,6 +60,18 @@ pub fn deserialize_lossless(data: &[u8]) -> Result<Vec<u8>, StorageError> {
         JSON_MARKER => Ok(rest.to_vec()),
         other => Err(StorageError::Toon(format!("unknown marker {other:#x}"))),
     }
+}
+
+/// Whether the TOON encoding of `value` decodes back to an equal `serde_json::Value`.
+///
+/// TOON normalizes some number forms (e.g. `1e10` -> `10000000000`, `-0.0` ->
+/// `0`), so we verify round-trip equality before trusting it as lossless.
+fn toon_roundtrips(value: &Value, toon_bytes: &[u8]) -> bool {
+    std::str::from_utf8(toon_bytes)
+        .ok()
+        .and_then(|s| decode_default::<Value>(s).ok())
+        .and_then(|decoded| serde_json::to_value(&decoded).ok())
+        .is_some_and(|decoded| decoded == *value)
 }
 
 #[cfg(test)]
@@ -105,5 +122,24 @@ mod tests {
     fn empty_input_errors() {
         assert!(serialize_lossless(b"").is_err());
         assert!(deserialize_lossless(b"").is_err());
+    }
+
+    #[test]
+    fn lossless_holds_for_number_and_unicode_edge_cases() {
+        let cases: &[&str] = &[
+            r#"{"big":9007199254740993,"neg":-0.0,"exp":1e10,"frac":1.5,"small":1}"#,
+            r#"{"u":"héllo ⇢ 日本語","esc":"\u0041"}"#,
+            r#"[1,2.0,3e2,-4,-0.0,1.0]"#,
+            r#"{"nested":{"a":[1,2,{"b":3}]}}"#,
+        ];
+        for c in cases {
+            let stored = serialize_lossless(c.as_bytes()).unwrap();
+            let back = deserialize_lossless(&stored).unwrap();
+            assert_eq!(
+                parse(&back),
+                parse(c.as_bytes()),
+                "lossless mismatch for {c}"
+            );
+        }
     }
 }
