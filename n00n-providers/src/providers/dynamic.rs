@@ -294,7 +294,9 @@ fn discover_in(dir: &Path) -> Vec<DynamicProviderMeta> {
             }
         };
 
-        let base = if let Ok(k) = ProviderKind::from_str(&info.base) { k } else {
+        let base = if let Ok(k) = ProviderKind::from_str(&info.base) {
+            k
+        } else {
             warn!(slug, base = info.base, "unknown base provider, skipping");
             continue;
         };

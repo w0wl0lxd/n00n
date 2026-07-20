@@ -250,12 +250,14 @@ impl Model {
             .read()
             .unwrap()
             .tier_for(&spec, provider, static_entry.map(|e| e.tier));
-        let (family, pricing, max_output_tokens, context_window) = if let Some(e) = static_entry { (
-            e.family,
-            e.pricing.clone(),
-            Some(e.max_output_tokens),
-            anthropic::shared::long_context_window(model_id).unwrap_or(e.context_window),
-        ) } else {
+        let (family, pricing, max_output_tokens, context_window) = if let Some(e) = static_entry {
+            (
+                e.family,
+                e.pricing.clone(),
+                Some(e.max_output_tokens),
+                anthropic::shared::long_context_window(model_id).unwrap_or(e.context_window),
+            )
+        } else {
             let guard = crate::model_registry::model_registry().read().unwrap();
             let discovered = guard.discovered(provider, model_id);
             (

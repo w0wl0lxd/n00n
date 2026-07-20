@@ -134,9 +134,10 @@ fn ws_err(e: WsError) -> AgentError {
         WsError::Io(io) => AgentError::Io(io),
         WsError::Http(resp) => {
             let status = resp.status().as_u16();
-            let message = resp
-                .body()
-                .as_ref().map_or_else(|| "websocket handshake failed".into(), |b| String::from_utf8_lossy(b).into_owned());
+            let message = resp.body().as_ref().map_or_else(
+                || "websocket handshake failed".into(),
+                |b| String::from_utf8_lossy(b).into_owned(),
+            );
             AgentError::Api { status, message }
         }
         other => AgentError::Api {

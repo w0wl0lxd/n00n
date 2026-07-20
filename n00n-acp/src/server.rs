@@ -296,7 +296,9 @@ fn handle_notification(srv: &Server, method: &str) {
         if let Some(session) = &srv.session {
             let _ = session.handle.cancel_tx.try_send(());
         }
-    } else { debug!(method, "unknown notification") }
+    } else {
+        debug!(method, "unknown notification")
+    }
 }
 
 fn handle_incoming_response(srv: &Server, raw: &Value) {

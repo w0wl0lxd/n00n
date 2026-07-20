@@ -293,10 +293,10 @@ impl LocalEndpoint {
             .into_iter()
             .filter_map(|m| {
                 let arch = m.architecture.as_ref();
-                let has_text_input = arch
-                    .map_or(true, |a| a.input_modalities.iter().any(|m| m == "text"));
-                let has_text_output = arch
-                    .map_or(true, |a| a.output_modalities.iter().any(|m| m == "text"));
+                let has_text_input =
+                    arch.map_or(true, |a| a.input_modalities.iter().any(|m| m == "text"));
+                let has_text_output =
+                    arch.map_or(true, |a| a.output_modalities.iter().any(|m| m == "text"));
                 if !has_text_input || !has_text_output {
                     return None;
                 }
