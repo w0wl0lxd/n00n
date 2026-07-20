@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#
+# Pre-commit secret scanner. Blocks commits that would introduce secrets by
+# scanning only the staged changes with gitleaks.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+CONFIG="$ROOT/.gitleaks.toml"
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "gitleaks not found on PATH; skipping secret scan." >&2
+  echo "Enable it with 'nix develop' or 'just setup-git-hooks', then install gitleaks." >&2
+  exit 0
+fi
+
+if ! gitleaks protect \
+  --staged \
+  --redact \
+  --no-banner \
+  --config "$CONFIG"; then
+  echo "" >&2
+  echo "gitleaks detected a secret in your staged changes; commit blocked." >&2
+  echo "Remove the secret, or run 'git commit --no-verify' to bypass (not recommended)." >&2
+  exit 1
+fi

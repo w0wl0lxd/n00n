@@ -117,6 +117,7 @@
               rustToolchain
               cargo-nextest
               git
+              gitleaks
               just
               openssl
               perl
@@ -139,6 +140,9 @@
             ];
 
             shellHook = ''
+              # Use the repo's shared git hooks (.githooks) so the gitleaks
+              # pre-commit secret blocker is enabled for every contributor.
+              git config core.hooksPath .githooks
               strip_fake_output_rpath() {
                 local name="$1"
                 local value="''${!name}"
