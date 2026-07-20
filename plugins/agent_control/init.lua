@@ -1,4 +1,4 @@
-local description = [[Control background agents started by task or ALMAS.
+local description = [[Control background agents started by task or team.
 
 Actions:
 - list: list every live agent and its status.

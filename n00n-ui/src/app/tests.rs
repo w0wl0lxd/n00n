@@ -818,6 +818,21 @@ fn open_tasks_picker(app: &mut App) {
 }
 
 #[test]
+fn agent_picker_exposes_names_models_and_status() {
+    let mut app = app_with_subagent();
+    app.chats[1].model_id = Some("openai/test-model".into());
+    open_tasks_picker(&mut app);
+
+    let main = app.task_picker.item(0).unwrap();
+    assert_eq!(main.label(), "Main chat");
+    assert_eq!(main.suffix(), Some("main session"));
+    let agent = app.task_picker.item(1).unwrap();
+    assert_eq!(agent.label(), "Agent: research");
+    assert_eq!(agent.suffix(), Some("openai/test-model"));
+    assert_eq!(agent.detail(), Some(TASK_RUNNING_DETAIL));
+}
+
+#[test]
 fn ctrl_x_toggles_tasks_picker() {
     let mut app = test_app();
     app.update(Msg::Key(kb::TASKS.to_key_event()));

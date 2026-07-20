@@ -50,7 +50,7 @@ Rust workspace, key crates in root dir:
 - n00n-lua: Lua plugin system (API mirrored from neovim for plugin compatibility), built-in plugins in ./plugins dir
 - n00n-acp: ACP ndjson stdio server
 
-Built-in lua plugins in ./plugins: index (return a compact skeleton of a source file using tree-sitter), bash, glob, question, skill, memory, webfetch, websearch, todo_write, read, write, edit, task, workflow (Lua script orchestration of subagents), code_execution (python sandbox), batch, almas.
+Built-in lua plugins in ./plugins: index (return a compact skeleton of a source file using tree-sitter), bash, glob, question, skill, memory, webfetch, websearch, todo_write, read, write, edit, task, workflow (Lua script orchestration of subagents), code_execution (python sandbox), batch, team.
 
 ## Docs
 
