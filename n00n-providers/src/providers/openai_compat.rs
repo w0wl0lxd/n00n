@@ -566,7 +566,9 @@ pub async fn parse_sse(
 
         if let Some(u) = chunk.usage {
             let (cache_read, input) = if let Some(hit_tokens) = u.prompt_cache_hit_tokens {
-                let miss_tokens = u.prompt_cache_miss_tokens.unwrap_or(u.prompt_tokens.saturating_sub(hit_tokens));
+                let miss_tokens = u
+                    .prompt_cache_miss_tokens
+                    .unwrap_or(u.prompt_tokens.saturating_sub(hit_tokens));
                 (hit_tokens, miss_tokens)
             } else {
                 let cached = u
@@ -579,7 +581,12 @@ pub async fn parse_sse(
                     .as_ref()
                     .map(|d| d.cache_write_tokens)
                     .unwrap_or(0);
-                (cached, u.prompt_tokens.saturating_sub(cached).saturating_sub(cache_write))
+                (
+                    cached,
+                    u.prompt_tokens
+                        .saturating_sub(cached)
+                        .saturating_sub(cache_write),
+                )
             };
             let cache_write = u
                 .prompt_tokens_details

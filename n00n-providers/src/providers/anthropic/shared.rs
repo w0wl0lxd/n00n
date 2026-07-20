@@ -179,7 +179,11 @@ pub(super) fn build_wire_messages(messages: &[Message]) -> Vec<WireMessage<'_>> 
 
     let mut last_tool_result_idx = None;
     for (msg_idx, msg) in messages.iter().enumerate().rev() {
-        if msg.content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. })) {
+        if msg
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+        {
             last_tool_result_idx = Some(msg_idx);
             break;
         }
@@ -194,23 +198,21 @@ pub(super) fn build_wire_messages(messages: &[Message]) -> Vec<WireMessage<'_>> 
     messages
         .iter()
         .enumerate()
-        .map(|(msg_idx, msg)| {
-            WireMessage {
-                role: &msg.role,
-                content: msg
-                    .content
-                    .iter()
-                    .enumerate()
-                    .map(|(block_idx, block)| WireContentBlock {
-                        inner: block,
-                        cache_control: if breakpoints.contains(&(msg_idx, block_idx)) {
-                            Some(EPHEMERAL)
-                        } else {
-                            None
-                        },
-                    })
-                    .collect(),
-            }
+        .map(|(msg_idx, msg)| WireMessage {
+            role: &msg.role,
+            content: msg
+                .content
+                .iter()
+                .enumerate()
+                .map(|(block_idx, block)| WireContentBlock {
+                    inner: block,
+                    cache_control: if breakpoints.contains(&(msg_idx, block_idx)) {
+                        Some(EPHEMERAL)
+                    } else {
+                        None
+                    },
+                })
+                .collect(),
         })
         .collect()
 }
