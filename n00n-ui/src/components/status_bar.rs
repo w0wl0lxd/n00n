@@ -110,7 +110,10 @@ impl StatusBar {
 
         if *ctx.status == Status::Streaming {
             let ch = spinner_frame(self.started_at.elapsed().as_millis());
-            left_spans.push(Span::styled(format!(" {ch}"), theme::current().spinner));
+            left_spans.push(Span::styled(
+                format!(" {ch} thinking..."),
+                theme::current().spinner,
+            ));
         }
 
         if ctx.restoring {
@@ -361,6 +364,56 @@ mod tests {
             detect_branch(&sub.to_string_lossy()),
             Some("main".to_string())
         );
+    }
+
+    #[test]
+    fn streaming_status_renders_thinking_at_bottom_left() {
+        use n00n_providers::{ModelPricing, TokenUsage};
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let bar = StatusBar::new(Duration::from_secs(1));
+        let usage = TokenUsage::default();
+        let pricing = ModelPricing::default();
+        terminal
+            .draw(|frame| {
+                bar.view(
+                    frame,
+                    frame.area(),
+                    &StatusBarContext {
+                        status: &Status::Streaming,
+                        mode_label: Cow::Borrowed("NORMAL"),
+                        mode_style: Style::default(),
+                        model_id: "test/model",
+                        stats: UsageStats {
+                            usage: &usage,
+                            global_usage: &usage,
+                            context_size: 0,
+                            pricing: &pricing,
+                            context_window: 1,
+                            show_global: false,
+                        },
+                        auto_scroll: true,
+                        chat_name: None,
+                        retry_info: None,
+                        thinking_label: None,
+                        fast: false,
+                        workflow: false,
+                        restoring: false,
+                    },
+                );
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(text.contains("thinking... NORMAL"), "status bar: {text:?}");
     }
 
     #[test]

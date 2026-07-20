@@ -1061,13 +1061,35 @@ impl App {
             .subagent
             .as_ref()
             .map(|s| s.parent_tool_use_id.clone());
+        let subagent_name = envelope.subagent.as_ref().map(|s| s.name.clone());
 
         let chat_idx = match envelope.subagent {
             Some(ref subagent) => self.resolve_or_create_chat(subagent),
             None => 0,
         };
 
+        if let AgentEvent::ToolStart(ref e) = envelope.event {
+            self.fire_session_autocmd(
+                "ToolStart",
+                serde_json::json!({
+                    "id": e.id,
+                    "tool": e.tool,
+                    "summary": e.summary,
+                    "subagent": subagent_name.as_deref(),
+                }),
+            );
+        }
+
         if let AgentEvent::ToolDone(ref e) = envelope.event {
+            self.fire_session_autocmd(
+                "ToolDone",
+                serde_json::json!({
+                    "id": e.id,
+                    "tool": e.tool,
+                    "is_error": e.is_error,
+                    "subagent": subagent_name.as_deref(),
+                }),
+            );
             if self.state.mode == Mode::Plan
                 && self.state.plan.path().is_some_and(|pp| e.wrote_to(pp))
             {

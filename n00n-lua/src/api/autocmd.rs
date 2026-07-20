@@ -128,7 +128,8 @@ fn parse_string_or_seq(value: Value, what: &str) -> LuaResult<Vec<String>> {
 /// `del_autocmd` later to remove the listener.
 ///
 /// Built-in events fired by the host: `"TurnStart"`, `"TurnEnd"`,
-/// `"TurnError"`, `"SessionReset"`. Plugins can also fire their own
+/// `"TurnError"`, `"ToolStart"`, `"ToolDone"`, `"SessionReset"`.
+/// Plugins can also fire their own
 /// events with `exec_autocmds`.
 ///
 /// @param event string|string[] Event name or list of names.

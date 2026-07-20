@@ -3345,6 +3345,141 @@ fn interpreter_bridge_flattens_image_with_visibility_note() {
     );
 }
 
+#[test]
+fn bundled_todo_panel_tracks_running_activity_in_hint() {
+    let (reg, host) = builtins_host();
+    let ui_rx = host.ui_action_rx().unwrap();
+    exec_tool(
+        &reg,
+        "todo_write",
+        serde_json::json!({
+            "todos": [
+                { "content": "Run tests", "status": "in_progress", "priority": "high" }
+            ]
+        }),
+    )
+    .unwrap();
+    let open = ui_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let n00n_lua::UiAction::OpenWin { .. } = open else {
+        panic!("todo tool did not open its panel");
+    };
+    let handle = host.event_handle().unwrap();
+    let toggle_id = host
+        .keymap_reader()
+        .load()
+        .entries
+        .iter()
+        .find(|entry| entry.desc == "Toggle todo panel")
+        .unwrap()
+        .id;
+    assert!(handle.run_keybind_callback(toggle_id));
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while host.hint_reader().load().entries.is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "todo panel did not collapse"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    handle.fire_autocmd(
+        "ToolStart",
+        serde_json::json!({
+            "id": "cmd-1",
+            "tool": "bash",
+            "summary": "cargo test --workspace",
+        }),
+    );
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let hints = host.hint_reader().load();
+        let text = hints
+            .entries
+            .iter()
+            .flat_map(|(_, spans)| spans.iter().map(|(text, _)| text.as_str()))
+            .collect::<String>();
+        if text.contains("cargo test --workspace") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "todo hint did not expose running activity: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    handle.fire_autocmd(
+        "ToolDone",
+        serde_json::json!({ "id": "cmd-1", "tool": "bash", "is_error": false }),
+    );
+}
+
+#[test]
+fn bundled_todo_ctrl_t_keybind_dispatches() {
+    let (_reg, host) = builtins_host();
+    let snap = host.keymap_reader().load();
+    let entry = snap
+        .entries
+        .iter()
+        .find(|entry| entry.desc == "Toggle todo panel")
+        .expect("todo plugin must publish its Ctrl+T keybind");
+    assert_eq!(entry.key, crossterm::event::KeyCode::Char('t'));
+    assert_eq!(entry.modifiers, crossterm::event::KeyModifiers::CONTROL);
+    assert!(
+        host.event_handle().unwrap().run_keybind_callback(entry.id),
+        "live plugin host must accept the Ctrl+T callback"
+    );
+}
+
+#[test]
+fn almas_launcher_collects_goal_and_submits_configured_prompt() {
+    let (_reg, host) = builtins_host();
+    let rx = host.ui_action_rx().unwrap();
+    let handle = host.event_handle().unwrap();
+    handle.run_command(Arc::from("almas"), Arc::from("/almas"), String::new());
+
+    let action = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("ALMAS launcher did not open");
+    let n00n_lua::UiAction::OpenWin { event_tx, .. } = action else {
+        panic!("expected ALMAS launcher window");
+    };
+    event_tx
+        .send(n00n_lua::WinEvent::Paste {
+            text: "fix the parser".into(),
+        })
+        .unwrap();
+    event_tx
+        .send(n00n_lua::WinEvent::Key {
+            key: "ctrl+enter".into(),
+        })
+        .unwrap();
+
+    let action = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("ALMAS launcher did not submit a session prompt");
+    let n00n_lua::UiAction::Session { req, reply_tx } = action else {
+        panic!("expected ALMAS session prompt");
+    };
+    let n00n_lua::SessionRequest::Prompt { id, text } = req else {
+        panic!("expected a prompt request");
+    };
+    assert!(id.is_none());
+    assert!(
+        text.contains("Goal:\nfix the parser"),
+        "submitted prompt: {text}"
+    );
+    assert!(
+        text.contains("mode: supervised"),
+        "submitted prompt: {text}"
+    );
+    assert!(
+        text.contains("Use the almas tool now"),
+        "submitted prompt: {text}"
+    );
+    reply_tx.send(Ok(serde_json::json!("started"))).unwrap();
+}
+
 /// The sessions picker parks its command handler in a `win:recv` loop while a
 /// `n00n.async.run` task fetches the stored-session list. Queued async tasks
 /// must run while the spawning handler is still parked, not wait for the next

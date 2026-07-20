@@ -96,8 +96,6 @@ pub struct MessagesPanel {
     /// only bumps when colors actually land.
     rebake_requested: HashMap<String, u64>,
     prompt_progress: Option<PromptProgress>,
-    working_start: Instant,
-    was_working: bool,
     jump_to_bottom_popup: Option<Rect>,
     /// Older display messages waiting to be prepended in batches so a long
     /// session resumes without blocking the first paint on full rendering.
@@ -174,8 +172,6 @@ impl MessagesPanel {
             thinking_started: None,
             rebake_requested: HashMap::new(),
             prompt_progress: None,
-            working_start: Instant::now(),
-            was_working: false,
             jump_to_bottom_popup: None,
             restore_backlog: Vec::new(),
             restore_batches: VecDeque::new(),
@@ -737,16 +733,25 @@ impl MessagesPanel {
             return self.try_toggle_cached_thinking(msg_idx, width);
         };
 
+        if self.tool_in_progress(tool_id) && self.live_bufs.contains_key(tool_id) {
+            self.auto_scroll = false;
+            let buf_row = if self.has_snapshot(tool_id) {
+                let rel = u16::try_from(doc_row - seg_start).unwrap_or(u16::MAX);
+                seg.source_line_at(rel, width)
+                    .map_or(0, |line| seg.buf_row(line))
+            } else {
+                0
+            };
+            if let Some(handle) = &self.lua_event_handle {
+                handle.request_click(tool_id.to_owned(), buf_row);
+            }
+            return true;
+        }
+
         if self.has_snapshot(tool_id) {
             self.auto_scroll = false;
             let rel = u16::try_from(doc_row - seg_start).unwrap_or(u16::MAX);
             let buf_row = seg.source_line_at(rel, width).map_or(0, |l| seg.buf_row(l));
-            if self.tool_in_progress(tool_id) {
-                if let Some(eh) = &self.lua_event_handle {
-                    eh.request_click(tool_id.to_owned(), buf_row);
-                }
-                return true;
-            }
             // Recorded even when the warm path serves the click: theme
             // rebake and session restore replay the full sequence.
             self.lua_clicks
@@ -846,12 +851,7 @@ impl MessagesPanel {
             && self.streaming_text.is_empty()
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool, is_working: bool) {
-        if is_working && !self.was_working {
-            self.working_start = Instant::now();
-        }
-        self.was_working = is_working;
-
+    pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool, _is_working: bool) {
         self.viewport_height = area.height;
         let width = area.width.saturating_sub(1);
         let theme_gen = theme::generation();
@@ -1030,10 +1030,6 @@ impl MessagesPanel {
         if show_popup {
             self.render_jump_to_bottom_popup(frame, viewport);
         }
-
-        if is_working {
-            self.render_working_indicator(frame, viewport);
-        }
     }
 
     fn render_jump_to_bottom_popup(&mut self, frame: &mut Frame, area: Rect) {
@@ -1071,29 +1067,6 @@ impl MessagesPanel {
         frame.render_widget(Clear, popup_area);
         frame.render_widget(block, popup_area);
         frame.render_widget(Paragraph::new(line), inner);
-    }
-
-    fn render_working_indicator(&self, frame: &mut Frame, area: Rect) {
-        use ratatui::layout::Alignment;
-        use ratatui::widgets::Widget;
-
-        let elapsed = self.working_start.elapsed().as_millis();
-        let spinner = spinner_str(elapsed);
-        let style = theme::current().spinner;
-        let line = Line::from(vec![
-            Span::styled(spinner, style),
-            Span::styled(" thinking...", style),
-        ]);
-        let width = line.width() as u16;
-        if width == 0 || width > area.width || area.height == 0 {
-            return;
-        }
-        let x = area.right().saturating_sub(width);
-        let y = area.bottom().saturating_sub(1);
-        let pill_area = Rect::new(x, y, width, 1);
-        Paragraph::new(line)
-            .alignment(Alignment::Right)
-            .render(pill_area, frame.buffer_mut());
     }
 
     fn max_scroll(&self) -> u16 {
