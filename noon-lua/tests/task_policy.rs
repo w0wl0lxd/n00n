@@ -122,6 +122,9 @@ noon.agent.session = function(ctx, opts)
     recorder.prompts[#recorder.prompts + 1] = msg
     return behaviors[opts.name](self, msg)
   end
+  function sess:get_progress()
+    return { completed_count = 0, recent_tools = {}, elapsed_ms = 0, done = true }
+  end
   function sess:close()
     recorder.closed = recorder.closed + 1
   end
@@ -292,7 +295,7 @@ fn invalid_then_valid_recovers_within_one_prompt() {
 }
 
 #[test]
-fn missing_structured_output_errors_without_nudging() {
+fn missing_structured_output_errors_after_bounded_nudges() {
     let (reg, _host) = load_task_host();
     let err = exec_tool(
         &reg,
@@ -303,7 +306,7 @@ fn missing_structured_output_errors_without_nudging() {
     assert_eq!(err, STRUCTURED_MISSING_ERROR);
 
     let snap = probe(&reg);
-    assert_eq!(snap["prompt_count"], json!(1));
+    assert_eq!(snap["prompt_count"], json!(3));
     assert_eq!(snap["closed"], json!(1));
 }
 
@@ -320,7 +323,7 @@ fn invalid_only_errors_with_bounded_schema_errors() {
     assert_eq!(err.lines().count(), 1 + MAX_SCHEMA_ERRORS, "got: {err}");
 
     let snap = probe(&reg);
-    assert_eq!(snap["prompt_count"], json!(1));
+    assert_eq!(snap["prompt_count"], json!(3));
     let first_err = snap["first_err"].as_str().expect("first_err missing");
     assert_eq!(
         first_err.lines().count(),
@@ -339,34 +342,17 @@ fn prompt_error_maps_to_sub_agent_error() {
 }
 
 #[test]
-fn plain_path_returns_text_with_done_local_tool() {
+fn plain_path_returns_text_without_local_tools() {
     let (reg, _host) = load_task_host();
     let out = exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_PLAIN, None)).unwrap();
     assert_eq!(out, PLAIN_TEXT);
 
     let snap = probe(&reg);
-    assert_eq!(snap["has_local_tools"], json!(true));
-    assert_eq!(
-        snap["done_schema"],
-        json!({
-            "additionalProperties": false,
-            "type": "object",
-            "required": ["answer"],
-            "properties": {
-                "answer": {
-                    "description": "Final answer to return to the parent agent.",
-                    "type": "string",
-                }
-            },
-        })
-    );
+    assert_eq!(snap["has_local_tools"], json!(false));
+    assert!(snap.get("done_schema").is_none_or(Value::is_null));
     assert_eq!(snap["prompt_count"], json!(1));
     let prompt = snap["prompts"][0].as_str().expect("prompt missing");
     assert!(prompt.starts_with(TASK_PROMPT), "got: {prompt}");
-    assert!(
-        prompt.contains("done"),
-        "prompt should mention done tool: {prompt}"
-    );
     assert_eq!(snap["closed"], json!(1));
 }
 

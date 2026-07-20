@@ -4,8 +4,8 @@ use std::fs::FileType;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{IntoLua, Lua, Result as LuaResult, Table, Value};
+use noon_lua_macro::{lua_fn, lua_table};
 
 use crate::api::util::convert::err_pair;
 use crate::plugin_permissions::PluginPermissions;

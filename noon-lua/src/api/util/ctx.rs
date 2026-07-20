@@ -3,13 +3,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use mlua::{LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value as LuaValue};
 use noon_agent::agent::LoadedInstructions;
 use noon_agent::cancel::CancelToken;
 use noon_agent::tools::{
     Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext, ToolLive,
 };
 use noon_config::{AgentConfig, ToolOutputLines};
-use mlua::{LuaSerdeExt, MultiValue, UserData, UserDataMethods, Value as LuaValue};
 
 use crate::api::tool::ToolCallReply;
 use crate::api::ui::buf::BufHandle;

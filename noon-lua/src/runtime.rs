@@ -13,13 +13,13 @@ use std::time::{Duration, Instant};
 use event_listener::Event;
 
 use include_dir::Dir;
+use mlua::{Compiler, Function, Lua, RegistryKey, Value as LuaValue, ffi};
 use noon_agent::cancel::CancelToken;
 use noon_agent::prompt::{PromptId, ResolvedSlots, Slot, SlotEntry};
 use noon_agent::tools::{
     HeaderResult, PermissionScopes, RegistryError, Tool, ToolLive, ToolRegistry, ToolSource,
 };
 use noon_agent::{BufferSnapshot, SharedBuf, SnapshotLine, SnapshotSpan, SpanStyle};
-use mlua::{Compiler, Function, Lua, RegistryKey, Value as LuaValue, ffi};
 use serde_json::Value;
 
 use noon_config::RawConfig;

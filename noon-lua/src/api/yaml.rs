@@ -1,5 +1,5 @@
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Value};
+use noon_lua_macro::{lua_fn, lua_table};
 
 use super::util::convert::err_pair;
 

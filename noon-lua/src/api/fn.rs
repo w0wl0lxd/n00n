@@ -6,8 +6,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{Function, Lua, RegistryKey, Result as LuaResult, Table, Value};
+use noon_lua_macro::{lua_fn, lua_table};
 
 use crate::api::fs::expand_tilde;
 use crate::plugin_permissions::PluginPermissions;

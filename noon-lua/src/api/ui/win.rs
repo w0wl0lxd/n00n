@@ -1,8 +1,8 @@
 use std::cell::Cell;
 use std::time::Duration;
 
-use noon_lua_macro::{lua_class, lua_fn};
 use mlua::{AnyUserData, Lua, Result as LuaResult, Table};
+use noon_lua_macro::{lua_class, lua_fn};
 
 use super::{parse_footer, try_parse_dimension};
 use crate::api::util::command::{

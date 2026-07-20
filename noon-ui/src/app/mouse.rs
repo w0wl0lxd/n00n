@@ -67,7 +67,13 @@ impl App {
                         self.selection_state = None;
                         if zone == SelectionZone::Messages {
                             let area = self.msg_area();
-                            self.chats[self.active_chat].handle_click(event.row, area);
+                            if let Some((text, label)) =
+                                self.chats[self.active_chat].copy_at(event.row, event.column, area)
+                            {
+                                self.copy_text(&text, format!("Copied {label}"));
+                            } else {
+                                self.chats[self.active_chat].handle_click(event.row, area);
+                            }
                         }
                     }
                 }
@@ -304,12 +310,16 @@ impl App {
             }
         };
 
-        match self.clipboard.copy_text(&text) {
+        self.copy_text(&text, "Copied selection".into());
+        self.selection_state = None;
+    }
+
+    fn copy_text(&mut self, text: &str, success: String) {
+        match self.clipboard.copy_text(text) {
             Ok(CopyResult::Noop) => {}
-            Ok(CopyResult::Copied) => self.status_bar.flash("Copied selection".into()),
+            Ok(CopyResult::Copied) => self.status_bar.flash(success),
             Err(e) => self.status_bar.flash(format!("Copy failed: {e}")),
         }
-        self.selection_state = None;
     }
 
     pub(super) fn zone_at(&self, row: u16, col: u16) -> Option<selection::SelectableZone> {
