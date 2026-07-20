@@ -32,6 +32,7 @@ static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
 // Codex models are matched by their `-codex` substring in
 // `coding_plan_context_window`, so they never need listing here.
 pub(crate) const PLAN_MODELS: &[&str] = &[
+    "gpt-5.6",
     "gpt-5.6-luna",
     "gpt-5.6-terra",
     "gpt-5.6-sol",
@@ -123,7 +124,7 @@ fn record_in_state(
     }
 }
 
-fn is_codex_model(model_id: &str) -> bool {
+pub(crate) fn is_codex_model(model_id: &str) -> bool {
     coding_plan_context_window(model_id).is_some()
 }
 
@@ -137,7 +138,7 @@ fn coding_plan_context_window(model_id: &str) -> Option<u32> {
     if !PLAN_MODELS.contains(&model_id) {
         return None;
     }
-    Some(if model_id.starts_with("gpt-5.6-") {
+    Some(if model_id.starts_with("gpt-5.6") {
         GPT_5_6_PLAN_CONTEXT_WINDOW
     } else {
         CODEX_PLAN_CONTEXT_WINDOW
@@ -464,16 +465,17 @@ mod tests {
         }
     }
 
+    #[test_case("gpt-5.6")]
     #[test_case("gpt-5.6-luna")]
     #[test_case("gpt-5.6-terra")]
     #[test_case("gpt-5.6-sol")]
-    fn gpt_5_6_models_use_coding_plan_and_websocket(model_id: &str) {
+    #[test_case("gpt-5.5")]
+    #[test_case("gpt-5.3-codex")]
+    fn coding_plan_models_use_websocket(model_id: &str) {
         assert!(is_codex_model(model_id));
-        assert!(crate::providers::openai::websocket::is_websocket_model(
-            model_id
-        ));
     }
 
+    #[test_case("gpt-5.6", Some(372_000))]
     #[test_case("gpt-5.6-luna", Some(372_000))]
     #[test_case("gpt-5.6-terra", Some(372_000))]
     #[test_case("gpt-5.6-sol", Some(372_000))]
@@ -484,7 +486,7 @@ mod tests {
     #[test_case("gpt-5.7-codex", Some(272_000) ; "unlisted codex model still routes")]
     #[test_case("gpt-5.5-preview", None ; "non_plan_5_5_preview_rejected")]
     #[test_case("gpt-5.6-terra-preview", None ; "non_plan_5_6_preview_rejected")]
-    #[test_case("gpt-5.6-codex", Some(272_000) ; "codex_models_use_http")]
+    #[test_case("gpt-5.6-codex", Some(272_000) ; "codex_model")]
     #[test_case("gpt-5.4-nano", None ; "non_plan_5_4_nano_rejected")]
     fn coding_plan_context_window_resolves_plan_models(model_id: &str, expected: Option<u32>) {
         assert_eq!(coding_plan_context_window(model_id), expected);

@@ -32,6 +32,7 @@ pub(crate) fn build_body(
         "input": input,
         "stream": true,
         "store": store,
+        "include": ["reasoning.encrypted_content"],
     });
 
     if let Some(prev_id) = previous_response_id {
@@ -88,38 +89,36 @@ pub(crate) fn convert_input(messages: &[Message]) -> Value {
                 }
             }
             Role::Assistant => {
-                let mut text_parts = Vec::new();
-                let mut tool_calls = Vec::new();
-
                 for block in &msg.content {
                     match block {
-                        ContentBlock::Text { text } => text_parts.push(text.as_str()),
-                        ContentBlock::ToolUse { id, name, input } => {
-                            tool_calls.push((id, name, input));
+                        ContentBlock::Text { text } => input.push(json!({
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": text}]
+                        })),
+                        ContentBlock::ToolUse {
+                            id,
+                            name,
+                            input: arguments,
+                        } => {
+                            input.push(json!({
+                                "type": "function_call",
+                                "call_id": id,
+                                "name": name,
+                                "arguments": arguments.to_string(),
+                            }));
+                        }
+                        ContentBlock::RedactedThinking { data } => {
+                            if let Ok(item) = serde_json::from_str::<Value>(data)
+                                && item["type"].as_str() == Some("reasoning")
+                            {
+                                input.push(item);
+                            }
                         }
                         ContentBlock::ToolResult { .. }
                         | ContentBlock::Image { .. }
-                        | ContentBlock::Thinking { .. }
-                        | ContentBlock::RedactedThinking { .. } => {}
+                        | ContentBlock::Thinking { .. } => {}
                     }
-                }
-
-                if !text_parts.is_empty() {
-                    let joined = text_parts.join("");
-                    input.push(json!({
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": joined}]
-                    }));
-                }
-
-                for (id, name, args) in tool_calls {
-                    input.push(json!({
-                        "type": "function_call",
-                        "call_id": id,
-                        "name": name,
-                        "arguments": args.to_string(),
-                    }));
                 }
             }
         }
@@ -203,6 +202,7 @@ struct ToolAccumulator {
 pub(crate) struct ResponseAccumulator {
     text: String,
     reasoning_text: String,
+    reasoning_items: Vec<(u64, Value)>,
     tool_accumulators: Vec<ToolAccumulator>,
     usage: TokenUsage,
     stop_reason: Option<StopReason>,
@@ -211,10 +211,18 @@ pub(crate) struct ResponseAccumulator {
 }
 
 impl ResponseAccumulator {
+    fn has_reasoning_item(&self, item: &Value) -> bool {
+        let id = item["id"].as_str();
+        self.reasoning_items.iter().any(|(_, stored)| {
+            id.is_some() && stored["id"].as_str() == id || id.is_none() && stored == item
+        })
+    }
+
     pub fn new() -> Self {
         Self {
             text: String::new(),
             reasoning_text: String::new(),
+            reasoning_items: Vec::new(),
             tool_accumulators: Vec::new(),
             usage: TokenUsage::default(),
             stop_reason: None,
@@ -323,7 +331,24 @@ impl ResponseAccumulator {
 
             "response.output_item.done" => {
                 let item = &data["item"];
-                if item["type"].as_str() == Some("function_call") {
+                let output_index = data["output_index"].as_u64().unwrap_or_else(|| {
+                    (self.reasoning_items.len() + self.tool_accumulators.len()) as u64
+                });
+                if item["type"].as_str() == Some("reasoning") {
+                    if !self.has_reasoning_item(item) {
+                        self.reasoning_items.push((output_index, item.clone()));
+                    }
+                } else if item["type"].as_str() == Some("message") && self.text.is_empty() {
+                    if let Some(content) = item["content"].as_array() {
+                        for part in content {
+                            if part["type"].as_str() == Some("output_text")
+                                && let Some(snapshot) = part["text"].as_str()
+                            {
+                                self.text.push_str(snapshot);
+                            }
+                        }
+                    }
+                } else if item["type"].as_str() == Some("function_call") {
                     let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
                     let name = item["name"].as_str().unwrap_or_default().to_string();
                     let arguments = if let Some(s) = item["arguments"].as_str() {
@@ -369,7 +394,7 @@ impl ResponseAccumulator {
                                 .await?;
                         }
                         self.tool_accumulators.push(ToolAccumulator {
-                            output_index: self.tool_accumulators.len() as u64,
+                            output_index,
                             call_id,
                             name,
                             arguments,
@@ -397,6 +422,27 @@ impl ResponseAccumulator {
 
             "response.completed" => {
                 let resp = &data["response"];
+
+                if let Some(output) = resp["output"].as_array() {
+                    for (index, item) in output.iter().enumerate() {
+                        if item["type"].as_str() == Some("reasoning")
+                            && !self.has_reasoning_item(item)
+                        {
+                            self.reasoning_items.push((index as u64, item.clone()));
+                        } else if item["type"].as_str() == Some("message")
+                            && self.text.is_empty()
+                            && let Some(content) = item["content"].as_array()
+                        {
+                            for part in content {
+                                if part["type"].as_str() == Some("output_text")
+                                    && let Some(snapshot) = part["text"].as_str()
+                                {
+                                    self.text.push_str(snapshot);
+                                }
+                            }
+                        }
+                    }
+                }
 
                 if let Some(u) = resp.get("usage") {
                     self.usage = parse_usage(u);
@@ -448,21 +494,19 @@ impl ResponseAccumulator {
         Ok(false)
     }
 
-    pub fn into_stream_response(self) -> StreamResponse {
-        let mut content_blocks: Vec<ContentBlock> = Vec::new();
+    pub fn into_stream_response(mut self) -> StreamResponse {
+        let mut ordered_blocks =
+            Vec::with_capacity(self.reasoning_items.len() + self.tool_accumulators.len());
+        ordered_blocks.extend(self.reasoning_items.drain(..).map(|(index, item)| {
+            (
+                index,
+                ContentBlock::RedactedThinking {
+                    data: item.to_string(),
+                },
+            )
+        }));
 
-        if !self.reasoning_text.is_empty() {
-            content_blocks.push(ContentBlock::Thinking {
-                thinking: self.reasoning_text,
-                signature: None,
-            });
-        }
-
-        if !self.text.is_empty() {
-            content_blocks.push(ContentBlock::Text { text: self.text });
-        }
-
-        for acc in self.tool_accumulators {
+        for acc in self.tool_accumulators.drain(..) {
             let input: Value = match serde_json::from_str(&acc.arguments) {
                 Ok(v) => {
                     debug!(tool = %acc.name, json = %acc.arguments, "tool input JSON");
@@ -473,11 +517,28 @@ impl ResponseAccumulator {
                     Value::Object(Default::default())
                 }
             };
-            content_blocks.push(ContentBlock::ToolUse {
-                id: acc.call_id,
-                name: acc.name,
-                input,
+            ordered_blocks.push((
+                acc.output_index,
+                ContentBlock::ToolUse {
+                    id: acc.call_id,
+                    name: acc.name,
+                    input,
+                },
+            ));
+        }
+        ordered_blocks.sort_by_key(|(index, _)| *index);
+        let mut content_blocks: Vec<ContentBlock> =
+            ordered_blocks.into_iter().map(|(_, block)| block).collect();
+
+        if !self.reasoning_text.is_empty() {
+            content_blocks.push(ContentBlock::Thinking {
+                thinking: self.reasoning_text,
+                signature: None,
             });
+        }
+
+        if !self.text.is_empty() {
+            content_blocks.push(ContentBlock::Text { text: self.text });
         }
 
         StreamResponse {
@@ -506,6 +567,11 @@ pub(crate) async fn parse_sse(
     while let Some(line) =
         crate::providers::next_sse_line(&mut lines, &mut deadline, stream_timeout).await?
     {
+        if line.is_empty() {
+            current_event.clear();
+            continue;
+        }
+
         if let Some(event_type) = line.strip_prefix("event:") {
             current_event = event_type.trim().to_string();
             continue;
@@ -548,6 +614,13 @@ pub(crate) async fn parse_sse(
         if acc.handle_event(&parsed_event, &parsed, event_tx).await? {
             break;
         }
+    }
+
+    if acc.stop_reason.is_none() {
+        return Err(AgentError::Api {
+            status: 422,
+            message: "Responses API stream ended without a terminal event".into(),
+        });
     }
 
     let response_id = acc.response_id().map(|s| s.to_string());
@@ -1156,6 +1229,76 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].2["old_string"], "a");
             assert_eq!(tools[0].2["new_string"], "b");
         })
+    }
+
+    #[test]
+    fn build_body_requests_encrypted_reasoning() {
+        let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+        let body = build_body(&model, &[], "system", &json!([]), None, None);
+        assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    }
+
+    #[test]
+    fn convert_input_preserves_response_item_order() {
+        let reasoning_one =
+            json!({"id":"rs_1","type":"reasoning","encrypted_content":"one","summary":[]});
+        let reasoning_two =
+            json!({"id":"rs_2","type":"reasoning","encrypted_content":"two","summary":[]});
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::RedactedThinking {
+                    data: reasoning_one.to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "read".into(),
+                    input: json!({"path":"one"}),
+                },
+                ContentBlock::RedactedThinking {
+                    data: reasoning_two.to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "c2".into(),
+                    name: "read".into(),
+                    input: json!({"path":"two"}),
+                },
+            ],
+            ..Default::default()
+        }];
+        let input = convert_input(&messages);
+        assert_eq!(input[0], reasoning_one);
+        assert_eq!(input[1]["call_id"], "c1");
+        assert_eq!(input[2], reasoning_two);
+        assert_eq!(input[3]["call_id"], "c2");
+    }
+
+    #[test]
+    fn parse_sse_preserves_reasoning_and_tool_order() {
+        smol::block_on(async {
+            let sse = "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"one\",\"summary\":[]}}\n\nevent: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"one\\\"}\"}}\n\nevent: response.output_item.done\ndata: {\"output_index\":2,\"item\":{\"id\":\"rs_2\",\"type\":\"reasoning\",\"encrypted_content\":\"two\",\"summary\":[]}}\n\nevent: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n";
+            let (resp, _) = run_sse(sse).await;
+            let (_, resp) = resp.unwrap();
+            assert!(
+                matches!(&resp.message.content[0], ContentBlock::RedactedThinking { data } if data.contains("one"))
+            );
+            assert!(
+                matches!(&resp.message.content[1], ContentBlock::ToolUse { id, .. } if id == "c1")
+            );
+            assert!(
+                matches!(&resp.message.content[2], ContentBlock::RedactedThinking { data } if data.contains("two"))
+            );
+        });
+    }
+
+    #[test]
+    fn parse_sse_rejects_missing_terminal_event() {
+        smol::block_on(async {
+            let (resp, _) =
+                run_sse("event: response.output_text.delta\ndata: {\"delta\":\"partial\"}\n\n")
+                    .await;
+            assert!(matches!(resp, Err(AgentError::Api { status: 422, .. })));
+        });
     }
 
     #[test]
