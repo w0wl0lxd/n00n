@@ -1,5 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::hash::Hasher;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -18,37 +18,24 @@ use crate::{
 const STREAM_DONE: &str = "[DONE]";
 
 fn value_hash(value: &Value) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    match value {
-        Value::Null => 0u8.hash(&mut hasher),
-        Value::Bool(b) => {
-            1u8.hash(&mut hasher);
-            b.hash(&mut hasher);
+    /// Writes bytes directly into the underlying `Hasher`, avoiding the
+    /// intermediate string allocations of the recursive implementation.
+    struct HashWriter<'a>(&'a mut DefaultHasher);
+
+    impl std::io::Write for HashWriter<'_> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.write(buf);
+            Ok(buf.len())
         }
-        Value::Number(n) => {
-            2u8.hash(&mut hasher);
-            n.to_string().hash(&mut hasher);
-        }
-        Value::String(s) => {
-            3u8.hash(&mut hasher);
-            s.hash(&mut hasher);
-        }
-        Value::Array(arr) => {
-            4u8.hash(&mut hasher);
-            arr.len().hash(&mut hasher);
-            for v in arr {
-                value_hash(v).hash(&mut hasher);
-            }
-        }
-        Value::Object(map) => {
-            5u8.hash(&mut hasher);
-            map.len().hash(&mut hasher);
-            for (k, v) in map {
-                k.hash(&mut hasher);
-                value_hash(v).hash(&mut hasher);
-            }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
         }
     }
+
+    let mut hasher = DefaultHasher::new();
+    serde_json::to_writer(HashWriter(&mut hasher), value)
+        .expect("serde_json serialization of a Value is infallible");
     hasher.finish()
 }
 

@@ -145,11 +145,11 @@ pub(crate) fn prefix_span(prefix: &'static str, style: Style) -> Span<'static> {
     Span::styled(prefix, style.add_modifier(Modifier::BOLD))
 }
 
-/// Returns `Line::default()` when the prefix is empty so callers can use it
-/// as a blank first line without an empty styled span sneaking in.
+/// Returns a blank line when the prefix is empty. Uses `Line::raw("")` so
+/// the line has a span vector that callers such as `PlainState` can mutate.
 pub(crate) fn prefix_line(prefix: &'static str, style: Style) -> Line<'static> {
     if prefix.is_empty() {
-        Line::default()
+        Line::raw("")
     } else {
         Line::from(prefix_span(prefix, style))
     }

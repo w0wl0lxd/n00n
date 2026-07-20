@@ -155,7 +155,7 @@ impl PlainState {
                 // Leading newline before any text; skip it (mirrors plain_lines trim).
                 return;
             }
-            self.snapshot.push(Line::default());
+            self.snapshot.push(Line::raw(""));
         }
         self.completed_count += 1;
     }
@@ -179,7 +179,7 @@ impl PlainState {
             self.snapshot
                 .push(prefix_line(self.prefix, self.prefix_style));
         } else if visible.ends_with('\n') && self.snapshot.len() == self.completed_count {
-            self.snapshot.push(Line::default());
+            self.snapshot.push(Line::raw(""));
         }
     }
 }

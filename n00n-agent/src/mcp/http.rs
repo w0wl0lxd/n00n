@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
+use async_lock::Mutex as AsyncMutex;
 use isahc::HttpClient;
 use isahc::config::{Configurable, RedirectPolicy};
 use isahc::http::header::{
@@ -37,6 +38,7 @@ pub struct HttpTransport {
     auth: ArcSwap<Option<Arc<str>>>,
     storage: Option<StateDir>,
     negotiated: ArcSwap<Negotiated>,
+    refresh_lock: AsyncMutex<()>,
     next_id: AtomicU64,
 }
 
@@ -97,6 +99,7 @@ impl HttpTransport {
             auth: ArcSwap::new(Arc::new(auth)),
             storage,
             negotiated: ArcSwap::new(Arc::new(Negotiated::default())),
+            refresh_lock: AsyncMutex::new(()),
             next_id: AtomicU64::new(1),
         })
     }
@@ -204,12 +207,13 @@ impl HttpTransport {
         Ok(resp.result.unwrap_or(Value::Null))
     }
 
-    /// Single-flight token refresh after a 401. Loads the current auth value,
-    /// and if it no longer matches the one the failed request used, another
-    /// caller already refreshed it and we reuse that. Otherwise perform a
-    /// silent OAuth refresh and store the new header atomically.
+    /// Single-flight token refresh after a 401. Holds a lock while refreshing
+    /// so concurrent 401s do not race; rechecks the current auth inside the
+    /// lock in case another caller already refreshed before we acquired it.
     async fn refreshed_auth(&self, used: Option<&str>) -> Option<Arc<str>> {
         let storage = self.storage.as_ref()?;
+        let _guard = self.refresh_lock.lock().await;
+
         let current = self.auth.load();
         let current_str = current.as_ref().as_ref().map(|s| s.as_ref());
 
