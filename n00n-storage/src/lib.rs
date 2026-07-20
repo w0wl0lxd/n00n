@@ -72,6 +72,8 @@ pub enum StorageError {
     SlugCollision,
     #[error("toon error: {0}")]
     Toon(String),
+    #[error("random generation failed: {0}")]
+    GetRandom(String),
 }
 
 /// # Errors
