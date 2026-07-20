@@ -61,7 +61,7 @@ const WATCHDOG_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const OPT_LEVEL_JIT: u8 = 2;
 const OPT_LEVEL_DEBUGGABLE: u8 = 1;
 const DEBUG_INFO_FULL: u8 = 2;
-const ASYNC_RUN_DEFAULT_DEADLINE: Duration = Duration::from_secs(60);
+const ASYNC_RUN_MIN_DEADLINE: Duration = Duration::from_secs(60);
 /// Async tasks spawned during restore may spawn further tasks; cap the rounds.
 const RESTORE_SPAWN_ROUNDS: usize = 8;
 /// Keeps a buggy plugin's restore task from freezing the lua loop.
@@ -602,19 +602,21 @@ pub(crate) fn with_live_ctx<R>(lua: &Lua, f: impl FnOnce(&LiveCtx) -> R) -> Opti
 
 pub(crate) fn enqueue_async_task(lua: &Lua, work_fn: RegistryKey) -> Result<(), mlua::Error> {
     let handle = lua.app_data_ref::<TaskHandle>();
-    let (cancel, live_ctx) = match &handle {
+    let (cancel, live_ctx, parent_deadline) = match &handle {
         Some(h) => {
             let cell = lock_cell(h);
-            (cell.cancel.clone(), cell.live.clone())
+            (cell.cancel.clone(), cell.live.clone(), cell.deadline.get())
         }
-        None => (CancelToken::none(), None),
+        None => (CancelToken::none(), None, None),
     };
 
+    let deadline =
+        parent_deadline.map(|deadline| deadline.max(Instant::now() + ASYNC_RUN_MIN_DEADLINE));
     let parent = handle.as_ref().map(|h| Arc::clone(h));
     let mut task = PendingAsyncTask {
         work_fn,
         cancel,
-        deadline: Some(Instant::now() + ASYNC_RUN_DEFAULT_DEADLINE),
+        deadline,
         live_ctx,
         owner: None,
         parent: None,
@@ -2773,7 +2775,7 @@ mod tests {
     }
 
     #[test]
-    fn enqueue_async_task_uses_fresh_deadline_regardless_of_parent() {
+    fn enqueue_async_task_extends_expired_parent_to_minimum_deadline() {
         let lua = enqueue_test_lua();
         let parent_deadline = Instant::now() - Duration::from_secs(10);
         let _h = set_active(
@@ -2788,8 +2790,34 @@ mod tests {
         let task_deadline = queue.rx.try_recv().unwrap().deadline.unwrap();
         assert!(
             task_deadline > before,
-            "async task should get a fresh deadline, not inherit expired parent"
+            "async task should not inherit an already-expired parent deadline"
         );
+    }
+
+    #[test]
+    fn enqueue_async_task_preserves_longer_parent_deadline() {
+        let lua = enqueue_test_lua();
+        let parent_deadline = Instant::now() + Duration::from_secs(600);
+        let _h = set_active(
+            &lua,
+            TaskCell::new(CancelToken::none(), Some(parent_deadline), None),
+        );
+
+        enqueue_async_task(&lua, enqueue_dummy(&lua)).unwrap();
+
+        let queue = lua.app_data_ref::<SpawnQueue>().unwrap();
+        assert_eq!(queue.rx.try_recv().unwrap().deadline, Some(parent_deadline));
+    }
+
+    #[test]
+    fn enqueue_async_task_without_parent_deadline_has_no_deadline() {
+        let lua = enqueue_test_lua();
+        let _h = set_active(&lua, TaskCell::new(CancelToken::none(), None, None));
+
+        enqueue_async_task(&lua, enqueue_dummy(&lua)).unwrap();
+
+        let queue = lua.app_data_ref::<SpawnQueue>().unwrap();
+        assert_eq!(queue.rx.try_recv().unwrap().deadline, None);
     }
 
     #[test]

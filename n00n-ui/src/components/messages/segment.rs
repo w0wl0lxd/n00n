@@ -143,7 +143,7 @@ impl Segment {
     }
 
     pub fn content_inset(&self) -> u16 {
-        if self.surface.is_framed() { 2 } else { 0 }
+        0
     }
 
     fn content_width(&self, width: u16) -> u16 {
@@ -162,7 +162,6 @@ impl Segment {
             return c.height;
         }
         let h = wrapped_line_count(&self.lines, self.content_width(width));
-        let h = h.saturating_add(self.content_inset());
         self.cached_height.set(Some(CachedHeight {
             at_width: width,
             height: h,

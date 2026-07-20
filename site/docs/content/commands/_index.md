@@ -31,6 +31,7 @@ Type `/` in the input box to open the command palette.
 | `/workflow` | Toggle workflow mode (task callable inside code_execution) |
 | `/exit` | Exit the application |
 | `/reload` | Reload plugins and config |
+| `/almas` | Configure and run an ALMAS team for a goal |
 | `/memory` | View, edit, and delete memory files |
 | `/rename` | Rename the current session |
 | `/sessions` | Browse and switch sessions |
