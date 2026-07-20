@@ -62,11 +62,14 @@ impl Typewriter {
             ms_per_char,
             char_count: 0,
             newline_count: 0,
-            generation: 0,
+            generation: 1,
         }
     }
 
     pub fn push(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
         self.char_count += text.chars().count();
         self.newline_count += text.bytes().filter(|&b| b == b'\n').count();
         self.generation = self.generation.wrapping_add(1);
@@ -135,14 +138,14 @@ impl Typewriter {
         self.buffer.clear();
         self.char_count = 0;
         self.newline_count = 0;
-        self.generation = self.generation.wrapping_add(1);
+        self.generation = 1;
         self.reset_anim();
     }
 
     pub fn take_all(&mut self) -> String {
         self.char_count = 0;
         self.newline_count = 0;
-        self.generation = self.generation.wrapping_add(1);
+        self.generation = 1;
         self.reset_anim();
         mem::take(&mut self.buffer)
     }
@@ -152,7 +155,7 @@ impl Typewriter {
         self.buffer = text.into();
         self.char_count = self.buffer.chars().count();
         self.newline_count = self.buffer.bytes().filter(|&b| b == b'\n').count();
-        self.generation = self.generation.wrapping_add(1);
+        self.generation = text.bytes().fold(1u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
         self.visible_len = self.char_count;
         self.visible_byte_offset = self.buffer.len();
         self.anim_start_visible = self.char_count;
