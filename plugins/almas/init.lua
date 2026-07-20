@@ -10,6 +10,13 @@ local ibn = require("ibn")
 local quorum = require("quorum")
 local swarm = require("swarm")
 
+local MAX_PLAN_STEPS = 8
+local DEFAULT_PLAN_STEPS = 6
+local DEFAULT_SWARM_ROUNDS = 2
+local MAX_SWARM_ROUNDS = 4
+local ALMAS_TIMEOUT_SECS = 1800
+local MAX_RELAY_BYTES = 12000
+
 local PLANNER_OUTPUT = {
   type = "object",
   required = { "steps" },
@@ -78,11 +85,21 @@ local schema = {
     },
     max_rounds = {
       type = "integer",
-      description = "Swarm mode only: max coordination rounds (default 4).",
+      minimum = 1,
+      maximum = MAX_SWARM_ROUNDS,
+      description = "Swarm mode only: max coordination rounds (default 2, maximum 4).",
     },
     max_concurrent = {
       type = "integer",
+      minimum = 1,
+      maximum = 8,
       description = "Swarm mode only: max concurrent subagents per round (default 8).",
+    },
+    max_steps = {
+      type = "integer",
+      minimum = 1,
+      maximum = MAX_PLAN_STEPS,
+      description = "Maximum supervisor plan steps to execute (default 6, maximum 8).",
     },
     model = {
       type = "string",
@@ -94,7 +111,7 @@ local schema = {
     },
     thinking = {
       type = { "string", "integer" },
-      description = 'Thinking mode for ALMAS agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "max".',
+      description = 'Thinking mode for ALMAS agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "adaptive".',
     },
     auto_tier = {
       type = "boolean",
@@ -195,46 +212,23 @@ local function run_supervisor(ctx, goal, opts)
   if not captured then
     return nil, "supervisor produced no plan"
   end
-  return captured.steps, nil
+  local max_steps = math.min(opts.max_steps or DEFAULT_PLAN_STEPS, MAX_PLAN_STEPS)
+  local steps = {}
+  for i = 1, math.min(#captured.steps, max_steps) do
+    steps[i] = captured.steps[i]
+  end
+  if #steps == 0 then
+    return nil, "supervisor produced an empty plan"
+  end
+  return steps, nil
 end
 
-local function generate_learnings_digest(ctx, goal, report, opts)
-  local model, merr =
-    n00n.agent.resolve_model(ctx, { spec = opts.model, tier = not opts.model and opts.model_tier or nil })
-  if merr then
-    return nil
-  end
-
-  local system = "You are a senior supervisor reviewing the execution of a multi-agent software engineering run. "
-    .. "Your task is to analyze the step-by-step reports and produce a concise, actionable summary of "
-    .. "'learnings' and 'context' for future runs. Focus on architectural facts discovered, what succeeded, "
-    .. "what failed and how it was resolved, and constraints to remember. Do not include raw CLI output or verbose logs. "
-    .. "Keep it under 250 words."
-
-  local sess, sess_err = n00n.agent.session(ctx, {
-    model_spec = model.spec,
-    system = system,
-    audience = "general_sub",
-    name = "almas-learning-digest",
-    thinking = opts.thinking,
-  })
-  if sess_err then
-    return nil
-  end
-
-  local prompt = string.format("Original Goal:\n%s\n\nExecution Report:\n%s", goal, report)
-  local res, rerr = sess:prompt(prompt)
-  sess:close()
-
-  if rerr or not res or not res.text or res.text == "" then
-    return nil
-  end
-
-  return res.text
-end
-
-local function run_step(ctx, step, goal, input, relay_k)
+local function run_step(ctx, step, goal, input, relay_k, prior_results)
   local step_prompt = step.prompt
+  if prior_results and #prior_results > 0 then
+    local prior = table.concat(prior_results, "\n\n"):sub(-MAX_RELAY_BYTES)
+    step_prompt = step_prompt .. "\n\nResults from earlier plan steps:\n" .. prior
+  end
   if input.use_retrieval ~= false then
     local block = retrieve.retrieve(ctx, goal .. " " .. step.prompt, step.role, relay_k)
     if block and #block > 0 then
@@ -261,16 +255,19 @@ end
 local function run_autonomous(ctx, goal, input, steps, relay_k)
   local results = {}
   local total_cost = 0.0
+  local failures = 0
   for i, step in ipairs(steps) do
-    local r = run_step(ctx, step, goal, input, relay_k)
+    local r = run_step(ctx, step, goal, input, relay_k, results)
     if not r.ok then
+      failures = failures + 1
       results[#results + 1] = string.format("[%d] %s: ERROR %s", i, step.role, r.error)
+      break
     else
       local cost_line = string.format(" (~$%.4f, %s)", r.cost or 0, r.model or "?")
       results[#results + 1] = string.format("[%d] %s%s:\n%s", i, step.role, cost_line, r.text or "")
       total_cost = total_cost + (r.cost or 0)
 
-      if input.quorum ~= false and (step.role == "tester" or step.role == "reviewer") then
+      if input.quorum ~= false and step.role == "reviewer" then
         local verdict =
           quorum.validate(ctx, table.concat(results, "\n\n"), { n = 3, model = input.model, thinking = input.thinking })
         if not verdict.accepted then
@@ -284,7 +281,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k)
       end
     end
   end
-  return results, total_cost
+  return results, total_cost, failures
 end
 
 -- Information-bottleneck fallback: a single strong-agent pass when fanning out
@@ -293,18 +290,21 @@ end
 local function run_single_pass(ctx, goal, input, steps, relay_k)
   local results = {}
   local total_cost = 0.0
+  local failures = 0
   for i, step in ipairs(steps) do
-    local r = run_step(ctx, step, goal, input, relay_k)
+    local r = run_step(ctx, step, goal, input, relay_k, results)
     r.model = r.model or "strong"
     if not r.ok then
+      failures = failures + 1
       results[#results + 1] = string.format("[%d] %s: ERROR %s", i, step.role, r.error)
+      break
     else
       local cost_line = string.format(" (~$%.4f, %s)", r.cost or 0, r.model or "?")
       results[#results + 1] = string.format("[%d] %s%s:\n%s", i, step.role, cost_line, r.text or "")
       total_cost = total_cost + (r.cost or 0)
     end
   end
-  return results, total_cost
+  return results, total_cost, failures
 end
 
 local finish_run
@@ -330,7 +330,7 @@ local function handler(input, ctx)
     input.auto_tier = input.model == nil
   end
   if input.thinking == nil then
-    input.thinking = "max"
+    input.thinking = "adaptive"
   end
   local goal = input.goal
 
@@ -370,8 +370,8 @@ local function handler(input, ctx)
     if gate.fan_out then
       local out = swarm.run(ctx, goal, {
         relay_k = relay_k,
-        max_rounds = input.max_rounds or 4,
-        max_concurrent = input.max_concurrent or 8,
+        max_rounds = math.min(input.max_rounds or DEFAULT_SWARM_ROUNDS, MAX_SWARM_ROUNDS),
+        max_concurrent = math.min(input.max_concurrent or 8, 8),
         model = input.model,
         thinking = input.thinking,
         quorum = input.quorum,
@@ -384,27 +384,26 @@ local function handler(input, ctx)
     end
 
     -- β gate says don't fan out: single strong-agent pass, log the reason.
-    local results, total_cost = run_single_pass(ctx, goal, input, steps, relay_k)
+    local results, total_cost, failures = run_single_pass(ctx, goal, input, steps, relay_k)
     results[1] = "[swarm] β gate: " .. gate.reason .. "\n" .. (results[1] or "")
-    return finish_run(ctx, input, results, total_cost, #steps, "steps", slug)
+    return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures)
   end
 
-  local results, total_cost = run_autonomous(ctx, goal, input, steps, relay_k)
-  return finish_run(ctx, input, results, total_cost, #steps, "steps", slug)
+  local results, total_cost, failures = run_autonomous(ctx, goal, input, steps, relay_k)
+  return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures)
 end
 
-finish_run = function(ctx, input, results, total_cost, completed, unit, slug)
+finish_run = function(ctx, input, results, total_cost, completed, unit, slug, failures)
   local report = table.concat(results, "\n\n")
   local summary = string.format("\n\n---\nALMAS complete: %d %s, ~$%.4f estimated cost.", completed, unit, total_cost)
 
-  local digest = generate_learnings_digest(ctx, input.goal, report, input)
-  if digest then
-    memory.save(ctx, slug, digest)
-  else
-    memory.save(ctx, slug, report .. summary)
-  end
+  memory.save(ctx, slug, report .. summary)
 
-  return { llm_output = report .. summary, format = "markdown" }
+  local failed = failures or 0
+  if failed > 0 then
+    summary = summary .. string.format(" %d step(s) failed; the run is incomplete.", failed)
+  end
+  return { llm_output = report .. summary, format = "markdown", is_error = failed > 0 }
 end
 
 local function header(input)
@@ -417,6 +416,7 @@ n00n.api.register_tool({
   kind = "execute",
   audiences = { "main", "workflow" },
   schema = schema,
+  timeout = ALMAS_TIMEOUT_SECS,
   handler = handler,
   header = header,
 })
