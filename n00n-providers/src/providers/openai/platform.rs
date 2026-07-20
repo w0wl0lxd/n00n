@@ -24,6 +24,8 @@ static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     max_tokens_field: "max_completion_tokens",
     include_stream_usage: true,
     provider_name: "OpenAI",
+    supports_prompt_cache_key: true,
+    supports_prompt_cache_breakpoint: true,
 };
 
 // Non-codex models OpenAI offers for subscription usage via the Coding Plan.
@@ -364,7 +366,13 @@ impl Provider for OpenAi {
                     .await;
             }
 
-            let mut body = self.compat.build_body(model, messages, system, tools);
+            let mut body = self.compat.build_body_with_session(
+                model,
+                messages,
+                system,
+                tools,
+                session_id.map(|s| s.as_str()),
+            );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
             self.with_oauth_retry(|| async {
