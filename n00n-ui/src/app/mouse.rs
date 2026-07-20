@@ -72,6 +72,17 @@ impl App {
                             {
                                 self.copy_text(&text, format!("Copied {label}"));
                             } else {
+                                let session = self.chats[self.active_chat]
+                                    .tool_id_at(event.row, area)
+                                    .and_then(|id| {
+                                        self.chats.iter().position(|chat| {
+                                            chat.tool_use_id.as_deref() == Some(id)
+                                        })
+                                    });
+                                if let Some(idx) = session {
+                                    self.active_chat = idx;
+                                    return;
+                                }
                                 self.chats[self.active_chat].handle_click(event.row, area);
                             }
                         }

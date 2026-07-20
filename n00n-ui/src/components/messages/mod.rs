@@ -716,6 +716,18 @@ impl MessagesPanel {
         Some((text.to_owned(), label))
     }
 
+    pub fn tool_id_at(&self, row: u16, area: Rect) -> Option<&str> {
+        if area.height == 0 {
+            return None;
+        }
+        let doc_row = (row.saturating_sub(area.y)) as u32 + self.scroll_top as u32;
+        self.cache
+            .segment_at_row(doc_row, self.viewport_width)?
+            .1
+            .tool_id
+            .as_deref()
+    }
+
     pub fn handle_click(&mut self, row: u16, area: Rect) -> bool {
         if area.height == 0 {
             return false;

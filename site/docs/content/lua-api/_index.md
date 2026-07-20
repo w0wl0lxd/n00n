@@ -823,7 +823,7 @@ n00n.agent.usage_cost({spec}, {input_tokens}, {output_tokens})
 
 Estimate the dollar cost of a completion from its model spec and token
 counts. Uses the provider's published pricing (input/output/cache write/
-read), so orchestrators like ALMAS can report cost without bundling a
+read), so orchestrators like Team can report cost without bundling a
 price table.
 
 **Parameters:**
@@ -2502,6 +2502,22 @@ local live, err = n00n.session.live()
 
 ---
 
+### `n00n.session.status()` {#n00n-session-status}
+
+```lua
+n00n.session.status({id})
+```
+
+Returns one live session with its status and latest assistant text output.
+
+**Parameters:**
+
+- `{id}` (`string`) Live session id.
+
+**Returns:** (`table|nil`, `string|nil`) `{id, title, status, updated_at, focused, output?}`, or nil and an error.
+
+---
+
 ### `n00n.session.current()` {#n00n-session-current}
 
 ```lua
@@ -2616,6 +2632,22 @@ the prompt is queued and picked up when the agent reaches it.
 ```lua
 local state, err = n00n.session.prompt("run the tests", { session = id })
 ```
+
+---
+
+### `n00n.session.cancel()` {#n00n-session-cancel}
+
+```lua
+n00n.session.cancel({id})
+```
+
+Cancels the current turn in a live session without deleting the session.
+
+**Parameters:**
+
+- `{id}` (`string`) Live session id.
+
+**Returns:** (`boolean|nil`, `string|nil`) true on success, or nil and an error.
 
 ---
 
@@ -4872,7 +4904,7 @@ return M
 -- Cost-aware model-tier router (OrchMAS-style adaptive role allocation).
 -- Pure lexical heuristic: no model call. Maps a subtask prompt to one of
 -- "weak" | "medium" | "strong" so cheap work stays cheap and hard work
--- gets a bigger model. Used by the `task` tool (opt-in auto_tier) and ALMAS.
+-- gets a bigger model. Used by the `task` tool (opt-in auto_tier) and Team.
 
 -- @param prompt string Subtask description.
 -- @return "weak" | "medium" | "strong"

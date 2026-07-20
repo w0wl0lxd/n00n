@@ -1,4 +1,4 @@
--- RAG-grounded retrieval seam (ALMAS Control Agent grounding).
+-- RAG-grounded retrieval seam (team control agent grounding).
 -- Lexical retrieval greps the repo for goal keywords. Vector retrieval ranks
 -- grep-gathered chunks by cosine similarity over hashing-trick embeddings
 -- (offline; n00n-providers exposes no embeddings API). usearch + real

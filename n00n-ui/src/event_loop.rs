@@ -704,6 +704,29 @@ impl<'t> EventLoop<'t> {
                     .collect();
                 let _ = reply_tx.send(Ok(json!(list)));
             }
+            SessionRequest::Status { id } => {
+                let reply = parse_session_id(&id).and_then(|id| {
+                    let idx = self
+                        .position(id)
+                        .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
+                    let rt = &self.sessions[idx];
+                    let history = rt.handles.history.load();
+                    let output = history.iter().rev().find_map(|message| {
+                        matches!(message.role, n00n_providers::Role::Assistant)
+                            .then(|| message.first_text_content())
+                            .flatten()
+                    });
+                    Ok(json!({
+                        "id": rt.id(),
+                        "title": rt.app.state.session.title,
+                        "status": SessionStatus::of(&rt.app).as_str(),
+                        "updated_at": rt.app.state.session.updated_at,
+                        "focused": idx == self.focused,
+                        "output": output,
+                    }))
+                });
+                let _ = reply_tx.send(reply);
+            }
             SessionRequest::Current => {
                 let _ = reply_tx.send(Ok(json!(self.sessions[self.focused].id())));
             }
@@ -732,6 +755,20 @@ impl<'t> EventLoop<'t> {
                     }),
                 };
                 let _ = reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text)));
+            }
+            SessionRequest::Cancel { id } => {
+                let reply = parse_session_id(&id).and_then(|id| {
+                    let idx = self
+                        .position(id)
+                        .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
+                    if SessionStatus::of(&self.sessions[idx].app) == SessionStatus::Idle {
+                        return Err(format!("session is idle: {id}"));
+                    }
+                    let actions = self.sessions[idx].app.cancel_current_run();
+                    self.dispatch(idx, actions);
+                    Ok(json!(true))
+                });
+                let _ = reply_tx.send(reply);
             }
             SessionRequest::Focus { id } => {
                 let reply = parse_session_id(&id)
