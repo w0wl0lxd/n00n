@@ -2,11 +2,11 @@
 name = "noon"
 version.workspace = true
 edition = "2024"
-authors = ["Tony Solomonik <tony.solomonik@gmail.com>"]
+authors = ["w0wl0lxd <w0wl0lxd@tuta.com>"]
 description = "AI coding agent. Native Rust TUI. Immediate startup, 60 FPS, low memory."
 license = "AGPL-3.0"
-repository = "https://github.com/tontinton/noon"
-homepage = "https://noon.sh"
+repository = "https://github.com/w0wl0lxd/noon"
+homepage = "https://github.com/w0wl0lxd/noon"
 readme = "README.md"
 keywords = ["ai", "agent", "cli", "tui", "coding"]
 categories = ["command-line-utilities", "development-tools"]
@@ -64,9 +64,9 @@ resolver = "3"
 [workspace.package]
 version = "0.4.1"
 edition = "2024"
-authors = ["Tony Solomonik <tony.solomonik@gmail.com>"]
+authors = ["w0wl0lxd <w0wl0lxd@tuta.com>"]
 license = "AGPL-3.0"
-repository = "https://github.com/tontinton/noon"
+repository = "https://github.com/w0wl0lxd/noon"
 rust-version = "1.88"
 
 [workspace.dependencies]
