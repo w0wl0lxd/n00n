@@ -283,8 +283,8 @@ local function run_autonomous(ctx, goal, input, steps, relay_k)
 end
 
 -- Information-bottleneck fallback: a single strong-agent pass when fanning out
--- would not help (strong model + single-step goal). Runs the plan in sequence
--- on the strong tier rather than paying coordination cost.
+-- would not help (strong model + single-step goal). Runs the plan in sequence,
+-- honoring each step's tier, rather than paying coordination cost.
 local function run_single_pass(ctx, goal, input, steps, relay_k)
   local results = {}
   local total_cost = 0.0
