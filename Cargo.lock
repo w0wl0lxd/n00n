@@ -3018,6 +3018,7 @@ dependencies = [
  "n00n-providers",
  "n00n-storage",
  "regex",
+ "serde",
  "serde_json",
  "serde_yaml",
  "sha2",
