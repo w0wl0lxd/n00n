@@ -704,6 +704,29 @@ impl<'t> EventLoop<'t> {
                     .collect();
                 let _ = reply_tx.send(Ok(json!(list)));
             }
+            SessionRequest::Status { id } => {
+                let reply = parse_session_id(&id).and_then(|id| {
+                    let idx = self
+                        .position(id)
+                        .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
+                    let rt = &self.sessions[idx];
+                    let history = rt.handles.history.load();
+                    let output = history.iter().rev().find_map(|message| {
+                        matches!(message.role, n00n_providers::Role::Assistant)
+                            .then(|| message.first_text_content())
+                            .flatten()
+                    });
+                    Ok(json!({
+                        "id": rt.id(),
+                        "title": rt.app.state.session.title,
+                        "status": SessionStatus::of(&rt.app).as_str(),
+                        "updated_at": rt.app.state.session.updated_at,
+                        "focused": idx == self.focused,
+                        "output": output,
+                    }))
+                });
+                let _ = reply_tx.send(reply);
+            }
             SessionRequest::Current => {
                 let _ = reply_tx.send(Ok(json!(self.sessions[self.focused].id())));
             }

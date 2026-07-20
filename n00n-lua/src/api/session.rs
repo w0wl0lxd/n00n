@@ -57,6 +57,19 @@ async fn live(lua: Lua, #[ctx] tx: Option<flume::Sender<UiAction>>) -> LuaResult
     roundtrip(lua, tx, SessionRequest::Live).await
 }
 
+/// Returns one live session with its status and latest assistant text output.
+///
+/// @param id string Live session id.
+/// @return (table|nil, string|nil) `{id, title, status, updated_at, focused, output?}`, or nil and an error.
+#[lua_fn]
+async fn status(
+    lua: Lua,
+    #[ctx] tx: Option<flume::Sender<UiAction>>,
+    id: String,
+) -> LuaResult<Pair> {
+    roundtrip(lua, tx, SessionRequest::Status { id }).await
+}
+
 /// Returns the id of the currently focused session.
 ///
 /// @return (string|nil, string|nil) Session id, or nil and an error.
@@ -183,7 +196,7 @@ lua_table! {
     /// the pair `(value, err)`. Without an interactive UI attached, every
     /// call returns `nil, "no interactive UI attached"`.
     "n00n.session" => pub(crate) fn create_session_table(tx: Option<flume::Sender<UiAction>>),
-    DOCS [list(tx), live(tx), current(tx), focus(tx), delete(tx), new(tx), prompt(tx), cancel(tx), set_title(tx)]
+    DOCS [list(tx), live(tx), status(tx), current(tx), focus(tx), delete(tx), new(tx), prompt(tx), cancel(tx), set_title(tx)]
 }
 
 #[cfg(test)]
@@ -226,6 +239,30 @@ mod tests {
             smol::block_on(lua.load("return session.focus('abc')").eval_async()).unwrap();
         assert_eq!(err, None);
         assert_eq!(val.get::<String>("focused").unwrap(), "abc");
+    }
+
+    #[test]
+    fn status_forwards_session_id() {
+        let (tx, rx) = flume::unbounded::<UiAction>();
+        let lua = lua_with_session(Some(tx));
+        let checker = std::thread::spawn(move || {
+            let Ok(UiAction::Session {
+                req: SessionRequest::Status { id },
+                reply_tx,
+            }) = rx.recv()
+            else {
+                panic!("expected status request");
+            };
+            assert_eq!(id, "abc");
+            reply_tx
+                .send(Ok(json!({ "id": id, "status": "idle", "output": "done" })))
+                .unwrap();
+        });
+        let (val, err): (Table, Option<String>) =
+            smol::block_on(lua.load("return session.status('abc')").eval_async()).unwrap();
+        checker.join().unwrap();
+        assert_eq!(err, None);
+        assert_eq!(val.get::<String>("output").unwrap(), "done");
     }
 
     #[test]

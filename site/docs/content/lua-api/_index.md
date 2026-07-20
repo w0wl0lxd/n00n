@@ -2502,6 +2502,22 @@ local live, err = n00n.session.live()
 
 ---
 
+### `n00n.session.status()` {#n00n-session-status}
+
+```lua
+n00n.session.status({id})
+```
+
+Returns one live session with its status and latest assistant text output.
+
+**Parameters:**
+
+- `{id}` (`string`) Live session id.
+
+**Returns:** (`table|nil`, `string|nil`) `{id, title, status, updated_at, focused, output?}`, or nil and an error.
+
+---
+
 ### `n00n.session.current()` {#n00n-session-current}
 
 ```lua
