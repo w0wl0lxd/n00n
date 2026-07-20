@@ -103,34 +103,39 @@ local function match_score(agent, event, matrix)
   return base + 0.15 * compat - 0.1 * agent.workload
 end
 
-local function run_agent(ctx, agent, event, relay_k)
+local function run_agent(ctx, agent, event, opts)
   agent.workload = agent.workload + 1
   local prompt = event.task
-  if relay_k and relay_k > 0 then
-    local block = retrieve.retrieve(ctx, event.task, agent.slot, relay_k)
+  if opts.relay_k and opts.relay_k > 0 then
+    local block = retrieve.retrieve(ctx, event.task, agent.slot, opts.relay_k)
     if block and #block > 0 then
       prompt = prompt .. "\n\nRelevant context:\n" .. block
     end
   end
-  return roles.run(ctx, agent.slot, prompt, { model_tier = ROLE_TIER[agent.slot] })
+  return roles.run(
+    ctx,
+    agent.slot,
+    prompt,
+    { model = opts.model, model_tier = ROLE_TIER[agent.slot], thinking = opts.thinking }
+  )
 end
 
 -- Validate a round's contributions with the EBFT quorum; return accepted issues.
-local function validate_round(ctx, workers_output)
+local function validate_round(ctx, workers_output, opts)
   if #workers_output == 0 then
     return { accepted = false, issues = { "no worker output" }, confidence = 0, diverse = false }
   end
   local artifact = table.concat(workers_output, "\n\n---\n\n")
-  return quorum.validate(ctx, artifact, { n = 3 })
+  return quorum.validate(ctx, artifact, { n = 3, model = opts.model, thinking = opts.thinking })
 end
 
 -- @param ctx AgentContext
 -- @param goal string Refined goal.
--- @param opts table { relay_k?, max_rounds?, max_concurrent? }
+-- @param opts table { relay_k?, max_rounds?, max_concurrent?, model?, thinking?, quorum? }
 -- @return { ok: boolean, text: string, cost: number, model: string }
 function M.run(ctx, goal, opts)
   opts = opts or {}
-  local relay_k = opts.relay_k or 6
+  opts.relay_k = opts.relay_k or 6
   local max_rounds = opts.max_rounds or 4
   local max_concurrent = opts.max_concurrent or 8
 
@@ -173,7 +178,7 @@ function M.run(ctx, goal, opts)
     for _, a in ipairs(explorer_workers) do
       tasks[#tasks + 1] = function()
         local permit = semaphore:acquire()
-        local r = run_agent(ctx, a, event, relay_k)
+        local r = run_agent(ctx, a, event, opts)
         permit:release()
         return { agent = a, result = r }
       end
@@ -203,7 +208,9 @@ function M.run(ctx, goal, opts)
     end
 
     -- Validation quorum gates acceptance of this round's worker output.
-    local verdict = validate_round(ctx, workers_output)
+    local verdict = opts.quorum == false
+        and { accepted = #workers_output > 0, issues = {}, confidence = 1, diverse = false }
+      or validate_round(ctx, workers_output, opts)
     if verdict.accepted then
       accepted_in_round = true
       for _, c in ipairs(contributions) do

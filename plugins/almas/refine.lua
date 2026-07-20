@@ -21,9 +21,10 @@ end
 
 -- @param ctx AgentContext? (optional, triggers model-based refinement when present)
 -- @param goal string Raw user goal.
--- @param supervisor_tier string? Optional model tier for refinement (defaults to "strong").
+-- @param opts table? Model selection and thinking options.
 -- @return string Refined brief.
-function M.refine_goal(ctx, goal, supervisor_tier)
+function M.refine_goal(ctx, goal, opts)
+  opts = opts or {}
   local resolved_ctx = ctx
   local resolved_goal = goal
 
@@ -36,7 +37,10 @@ function M.refine_goal(ctx, goal, supervisor_tier)
     return M.refine_goal_lexical(resolved_goal)
   end
 
-  local model, merr = n00n.agent.resolve_model(resolved_ctx, { tier = supervisor_tier or "strong" })
+  local model, merr = n00n.agent.resolve_model(
+    resolved_ctx,
+    { spec = opts.model, tier = not opts.model and (opts.model_tier or "strong") or nil }
+  )
   if merr then
     return M.refine_goal_lexical(resolved_goal)
   end
@@ -50,6 +54,7 @@ function M.refine_goal(ctx, goal, supervisor_tier)
     system = system,
     audience = "general_sub",
     name = "almas-halo-refiner",
+    thinking = opts.thinking,
   })
   if sess_err then
     return M.refine_goal_lexical(resolved_goal)

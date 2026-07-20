@@ -142,6 +142,49 @@ case("roles_run_with_custom_opts", function()
   assert(res.cost == 0.05, "cost should match mock")
 end)
 
+case("roles_run_with_exact_model_and_thinking", function()
+  local old_resolve = n00n.agent.resolve_model
+  local old_tools = n00n.agent.tools
+  local old_session = n00n.agent.session
+  local old_cost = n00n.agent.usage_cost
+  local resolved, session_opts
+  n00n.agent.resolve_model = function(_, opts)
+    resolved = opts
+    return { spec = opts.spec }, nil
+  end
+  n00n.agent.tools = function()
+    return {}, nil
+  end
+  n00n.agent.session = function(_, opts)
+    session_opts = opts
+    return {
+      prompt = function()
+        return { text = "done", input_tokens = 0, output_tokens = 0 }
+      end,
+      close = function() end,
+    },
+      nil
+  end
+  n00n.agent.usage_cost = function()
+    return 0, nil
+  end
+
+  local out = roles.run({}, "developer", "fix it", {
+    model = "openai/gpt-5.6-luna",
+    model_tier = "weak",
+    thinking = "max",
+  })
+
+  n00n.agent.resolve_model = old_resolve
+  n00n.agent.tools = old_tools
+  n00n.agent.session = old_session
+  n00n.agent.usage_cost = old_cost
+  assert(out.ok, "exact model role should succeed")
+  assert(resolved.spec == "openai/gpt-5.6-luna", "exact model must reach resolver")
+  assert(resolved.tier == nil, "exact model must override tier routing")
+  assert(session_opts.thinking == "max", "thinking tier must reach session")
+end)
+
 case("ibn_weak_fans_out", function()
   local ibn = require("ibn")
   local d = ibn.decide({}, "refactor the parser", "weak")
