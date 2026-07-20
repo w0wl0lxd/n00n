@@ -792,6 +792,18 @@ fn init_catalog_blocking() -> CatalogData {
 mod tests {
     use super::*;
 
+    #[allow(unsafe_code)]
+    fn set_env(var: &str, value: &str) {
+        // SAFETY: Tests run single-threaded; no concurrent access to env vars
+        unsafe { std::env::set_var(var, value) }
+    }
+
+    #[allow(unsafe_code)]
+    fn remove_env(var: &str) {
+        // SAFETY: Tests run single-threaded; no concurrent access to env vars
+        unsafe { std::env::remove_var(var) }
+    }
+
     fn temp_state_dir() -> (tempfile::TempDir, StateDir) {
         let tmp = tempfile::tempdir().unwrap();
         let state_dir = StateDir::from_path(tmp.path().to_path_buf());
@@ -1012,7 +1024,7 @@ mod tests {
     #[test]
     fn catalog_provider_build_auth_key_based() {
         let (_tmp, state_dir) = temp_state_dir();
-        unsafe { std::env::set_var("N00N_TEST_AUTH_KEY", "sk-real-key") };
+        set_env("N00N_TEST_AUTH_KEY", "sk-real-key");
         let provider = CatalogProvider {
             name: "Test".into(),
             env: vec!["N00N_TEST_AUTH_KEY"]
@@ -1037,13 +1049,13 @@ mod tests {
             }
             _ => panic!("expected KeyBased"),
         }
-        unsafe { std::env::remove_var("N00N_TEST_AUTH_KEY") };
+        remove_env("N00N_TEST_AUTH_KEY");
     }
 
     #[test]
     fn catalog_provider_build_auth_x_api_key() {
         let (_tmp, state_dir) = temp_state_dir();
-        unsafe { std::env::set_var("N00N_TEST_ANTHROPIC_KEY", "sk-ant-key") };
+        set_env("N00N_TEST_ANTHROPIC_KEY", "sk-ant-key");
         let provider = CatalogProvider {
             name: "Anthropic".into(),
             env: vec!["N00N_TEST_ANTHROPIC_KEY"]
@@ -1068,7 +1080,7 @@ mod tests {
             }
             _ => panic!("expected KeyBased"),
         }
-        unsafe { std::env::remove_var("N00N_TEST_ANTHROPIC_KEY") };
+        remove_env("N00N_TEST_ANTHROPIC_KEY");
     }
 
     #[test]
@@ -1217,7 +1229,7 @@ mod tests {
             },
         );
 
-        unsafe { std::env::set_var("N00N_TEST_OPENCODE_ALL_81274", "real-key") };
+        set_env("N00N_TEST_OPENCODE_ALL_81274", "real-key");
         let result = CatalogData::from_index(providers, true, &state_dir);
 
         // With key set, has_api_key is true, so all models pass
@@ -1228,7 +1240,7 @@ mod tests {
             opencode.build_auth(&state_dir),
             Authentication::KeyBased(_)
         ));
-        unsafe { std::env::remove_var("N00N_TEST_OPENCODE_ALL_81274") };
+        remove_env("N00N_TEST_OPENCODE_ALL_81274");
     }
 
     fn opencode_catalog_with_free_and_paid(_env_var: &str) -> CatalogIndex {
@@ -1354,9 +1366,9 @@ mod tests {
             },
         );
 
-        unsafe { std::env::set_var("N00N_TEST_VENDOR_KEY_81274", "test-key") };
+        set_env("N00N_TEST_VENDOR_KEY_81274", "test-key");
         let result = CatalogData::from_index(providers, true, &state_dir);
-        unsafe { std::env::remove_var("N00N_TEST_VENDOR_KEY_81274") };
+        remove_env("N00N_TEST_VENDOR_KEY_81274");
 
         assert!(
             result
@@ -1443,9 +1455,9 @@ mod tests {
             },
         );
 
-        unsafe { std::env::set_var("N00N_TEST_OTHER_KEY_COLLISION", "key") };
+        set_env("N00N_TEST_OTHER_KEY_COLLISION", "key");
         let result = CatalogData::from_index(providers, true, &state_dir);
-        unsafe { std::env::remove_var("N00N_TEST_OTHER_KEY_COLLISION") };
+        remove_env("N00N_TEST_OTHER_KEY_COLLISION");
 
         // Both providers' entries are preserved
         assert!(
@@ -1535,9 +1547,9 @@ mod tests {
             },
         );
 
-        unsafe { std::env::set_var("N00N_TEST_NVIDIA_KEY_LOOKUP", "key") };
+        set_env("N00N_TEST_NVIDIA_KEY_LOOKUP", "key");
         let data = CatalogData::from_index(providers, true, &state_dir);
-        unsafe { std::env::remove_var("N00N_TEST_NVIDIA_KEY_LOOKUP") };
+        remove_env("N00N_TEST_NVIDIA_KEY_LOOKUP");
 
         // Entry is stored as ("nvidia", "openai/gpt-oss-120b")
         let (_meta, provider_data) = data.lookup("nvidia", "openai/gpt-oss-120b").unwrap();
@@ -1576,9 +1588,9 @@ mod tests {
             },
         );
 
-        unsafe { std::env::set_var("N00N_TEST_NVIDIA_DIRECT", "key") };
+        set_env("N00N_TEST_NVIDIA_DIRECT", "key");
         let data = CatalogData::from_index(providers, true, &state_dir);
-        unsafe { std::env::remove_var("N00N_TEST_NVIDIA_DIRECT") };
+        remove_env("N00N_TEST_NVIDIA_DIRECT");
 
         // The lookup key constructed by stream_message:
         // format!("{}/{}", sub_provider, model.id)
@@ -1617,9 +1629,9 @@ mod tests {
             },
         );
 
-        unsafe { std::env::set_var("N00N_TEST_FIREWORKS_DEEP", "key") };
+        set_env("N00N_TEST_FIREWORKS_DEEP", "key");
         let data = CatalogData::from_index(providers, true, &state_dir);
-        unsafe { std::env::remove_var("N00N_TEST_FIREWORKS_DEEP") };
+        remove_env("N00N_TEST_FIREWORKS_DEEP");
 
         // stream_message constructs key as "{sub_provider}/{model.id}"
         // = "fireworks/deepseek-ai/DeepSeek-R1"
