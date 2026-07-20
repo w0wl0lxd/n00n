@@ -244,6 +244,14 @@ impl RawConfig {
         }
     }
 
+    /// Convert the raw config into the validated runtime config.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` for:
+    /// - Invalid plugin table names (removed edit sub-tools or unknown plugins)
+    /// - Invalid `always_thinking` value (cannot be parsed into `StoredThinking`)
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     pub fn into_config(self, no_rtk: bool) -> Result<Config, ConfigError> {
         validate_plugin_tables(&self.plugins)?;
 
@@ -254,19 +262,19 @@ impl RawConfig {
             .map(|(name, _)| name.clone())
             .collect();
         Ok(Config {
-            always_yolo: self.always_yolo.unwrap_or(false),
-            always_fast: self.always_fast.unwrap_or(false),
-            always_workflow: self.always_workflow.unwrap_or(false),
+            always_yolo: self.always_yolo.unwrap_or_else(|| false),
+            always_fast: self.always_fast.unwrap_or_else(|| false),
+            always_workflow: self.always_workflow.unwrap_or_else(|| false),
             always_thinking: self
                 .always_thinking
                 .map(AlwaysThinking::resolve)
                 .transpose()?,
-            ui: UiConfig::from_file(self.ui),
-            agent: AgentConfig::from_file(self.agent, no_rtk, disabled_tools),
-            provider: ProviderConfig::from_file(self.provider),
-            storage: StorageConfig::from_file(self.storage),
+            ui: UiConfig::from_file(&self.ui),
+            agent: AgentConfig::from_file(&self.agent, no_rtk, disabled_tools),
+            provider: ProviderConfig::from_file(&self.provider),
+            storage: StorageConfig::from_file(&self.storage),
             permissions: PermissionsConfig::default(),
-            plugins: PluginsConfig::from_plugins(self.plugins),
+            plugins: PluginsConfig::from_plugins(&self.plugins),
         })
     }
 }
@@ -337,7 +345,7 @@ impl UiFileConfig {
     }
 }
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct ToolOutputLinesFile {
     pub bash: Option<usize>,
@@ -353,6 +361,7 @@ pub struct ToolOutputLinesFile {
 }
 
 impl ToolOutputLinesFile {
+    #[allow(clippy::needless_pass_by_value)]
     fn merge(&mut self, overlay: ToolOutputLinesFile) {
         merge_option!(
             self,
@@ -382,7 +391,8 @@ impl CompactionBuffer {
     pub fn resolve(self, context_window: u32) -> u32 {
         match self {
             Self::Tokens(n) => n,
-            Self::Percent(p) => (u64::from(context_window) * u64::from(p) / 100) as u32,
+            Self::Percent(p) => u32::try_from(u64::from(context_window) * u64::from(p) / 100)
+                .map_or(u32::MAX, |v| v),
         }
     }
 }
@@ -420,7 +430,7 @@ impl<'de> Deserialize<'de> for CompactionBuffer {
             }
 
             fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
-                self.visit_u64(u64::try_from(v).unwrap_or(0))
+                self.visit_u64(u64::try_from(v).map_or(0, |v| v))
             }
 
             fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Self::Value, E> {
@@ -440,7 +450,7 @@ impl<'de> Deserialize<'de> for CompactionBuffer {
     }
 }
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentFileConfig {
     pub max_output_bytes: Option<usize>,
@@ -454,6 +464,7 @@ pub struct AgentFileConfig {
 }
 
 impl AgentFileConfig {
+    #[allow(clippy::needless_pass_by_value)]
     fn merge(&mut self, overlay: AgentFileConfig) {
         merge_option!(
             self,
@@ -470,7 +481,7 @@ impl AgentFileConfig {
     }
 }
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProviderFileConfig {
     pub default_model: Option<String>,
@@ -492,7 +503,7 @@ impl ProviderFileConfig {
     }
 }
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Debug, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct StorageFileConfig {
     pub max_log_bytes_mb: Option<u64>,
@@ -501,6 +512,7 @@ pub struct StorageFileConfig {
 }
 
 impl StorageFileConfig {
+    #[allow(clippy::needless_pass_by_value)]
     fn merge(&mut self, overlay: StorageFileConfig) {
         merge_option!(
             self,
@@ -665,6 +677,15 @@ impl ToolKey {
     /// Returns `Err` for malformed input (empty names, empty server/tool parts,
     /// tool names that don't match the wire format `^[a-zA-Z0-9_-]{1,64}$`).
     /// Use this at config/dispatch boundaries where input is untrusted.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ToolKeyParseError` for invalid tool key format, including:
+    /// - Empty names
+    /// - Empty server or tool parts in qualified names
+    /// - Invalid server names (must match `[a-zA-Z0-9-]{1,64}`)
+    /// - Invalid tool names (must match `[a-zA-Z0-9_-]{1,64}`)
+    /// - Wire names exceeding 64 characters
     pub fn parse(name: &str) -> Result<Self, ToolKeyParseError> {
         if name.is_empty() {
             return Err(ToolKeyParseError::EmptyName);
@@ -840,22 +861,33 @@ impl UiConfig {
         Duration::from_millis(self.flash_duration_ms)
     }
 
-    fn from_file(f: UiFileConfig) -> Self {
+    #[allow(clippy::unnecessary_lazy_evaluations)]
+    fn from_file(f: &UiFileConfig) -> Self {
         Self {
-            splash_animation: f.splash_animation.unwrap_or(true),
-            mascot: f.mascot.unwrap_or(true),
-            scrollbar: f.scrollbar.unwrap_or(true),
-            flash_duration_ms: f.flash_duration_ms.unwrap_or(DEFAULT_FLASH_DURATION_MS),
+            splash_animation: f.splash_animation.unwrap_or_else(|| true),
+            mascot: f.mascot.unwrap_or_else(|| true),
+            scrollbar: f.scrollbar.unwrap_or_else(|| true),
+            flash_duration_ms: f
+                .flash_duration_ms
+                .unwrap_or_else(|| DEFAULT_FLASH_DURATION_MS),
             typewriter_ms_per_char: f
                 .typewriter_ms_per_char
-                .unwrap_or(DEFAULT_TYPEWRITER_MS_PER_CHAR),
-            mouse_scroll_lines: f.mouse_scroll_lines.unwrap_or(DEFAULT_MOUSE_SCROLL_LINES),
-            max_input_lines: f.max_input_lines.unwrap_or(DEFAULT_MAX_INPUT_LINES),
-            show_thinking: f.show_thinking.unwrap_or(true),
-            tool_output_lines: ToolOutputLines::from_file(f.tool_output_lines),
+                .unwrap_or_else(|| DEFAULT_TYPEWRITER_MS_PER_CHAR),
+            mouse_scroll_lines: f
+                .mouse_scroll_lines
+                .unwrap_or_else(|| DEFAULT_MOUSE_SCROLL_LINES),
+            max_input_lines: f.max_input_lines.unwrap_or_else(|| DEFAULT_MAX_INPUT_LINES),
+            show_thinking: f.show_thinking.unwrap_or_else(|| true),
+            tool_output_lines: ToolOutputLines::from_file(f.tool_output_lines.clone()),
         }
     }
 
+    /// Validate all UI config values.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` if any field is below its minimum allowed value.
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     pub fn validate_all(&self) -> Result<(), ConfigError> {
         self.validate()?;
         self.tool_output_lines.validate()?;
@@ -905,20 +937,21 @@ impl ToolOutputLines {
         ("other", Self::DEFAULT.other),
     ];
 
+    #[allow(clippy::unnecessary_lazy_evaluations, clippy::unwrap_or_default)]
     fn from_file(f: Option<ToolOutputLinesFile>) -> Self {
         let d = Self::DEFAULT;
-        let f = f.unwrap_or_default();
+        let f = f.unwrap_or_else(ToolOutputLinesFile::default);
         Self {
-            bash: f.bash.unwrap_or(d.bash),
-            code_execution: f.code_execution.unwrap_or(d.code_execution),
-            task: f.task.unwrap_or(d.task),
-            workflow: f.workflow.unwrap_or(d.workflow),
-            index: f.index.unwrap_or(d.index),
-            grep: f.grep.unwrap_or(d.grep),
-            read: f.read.unwrap_or(d.read),
-            write: f.write.unwrap_or(d.write),
-            web: f.web.unwrap_or(d.web),
-            other: f.other.unwrap_or(d.other),
+            bash: f.bash.unwrap_or_else(|| d.bash),
+            code_execution: f.code_execution.unwrap_or_else(|| d.code_execution),
+            task: f.task.unwrap_or_else(|| d.task),
+            workflow: f.workflow.unwrap_or_else(|| d.workflow),
+            index: f.index.unwrap_or_else(|| d.index),
+            grep: f.grep.unwrap_or_else(|| d.grep),
+            read: f.read.unwrap_or_else(|| d.read),
+            write: f.write.unwrap_or_else(|| d.write),
+            web: f.web.unwrap_or_else(|| d.web),
+            other: f.other.unwrap_or_else(|| d.other),
         }
     }
 
@@ -937,6 +970,11 @@ impl ToolOutputLines {
         ]
     }
 
+    /// Validate tool output lines config values.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` if any field is below the minimum allowed value.
     pub fn validate(&self) -> Result<(), ConfigError> {
         for (name, value) in self.fields() {
             check(
@@ -1014,15 +1052,22 @@ pub struct AgentConfig {
 }
 
 impl AgentConfig {
-    fn from_file(file: AgentFileConfig, no_rtk: bool, disabled_tools: Vec<String>) -> Self {
+    #[allow(clippy::unnecessary_lazy_evaluations)]
+    fn from_file(file: &AgentFileConfig, no_rtk: bool, disabled_tools: Vec<String>) -> Self {
         Self {
             no_rtk,
-            max_output_bytes: file.max_output_bytes.unwrap_or(DEFAULT_MAX_OUTPUT_BYTES),
-            max_output_lines: file.max_output_lines.unwrap_or(DEFAULT_MAX_OUTPUT_LINES),
+            max_output_bytes: file
+                .max_output_bytes
+                .unwrap_or_else(|| DEFAULT_MAX_OUTPUT_BYTES),
+            max_output_lines: file
+                .max_output_lines
+                .unwrap_or_else(|| DEFAULT_MAX_OUTPUT_LINES),
             max_continuation_turns: file
                 .max_continuation_turns
-                .unwrap_or(DEFAULT_MAX_CONTINUATION_TURNS),
-            compaction_buffer: file.compaction_buffer.unwrap_or(DEFAULT_COMPACTION_BUFFER),
+                .unwrap_or_else(|| DEFAULT_MAX_CONTINUATION_TURNS),
+            compaction_buffer: file
+                .compaction_buffer
+                .unwrap_or_else(|| DEFAULT_COMPACTION_BUFFER),
             max_turns: None,
             allowed_tools: Vec::new(),
             disabled_tools,
@@ -1071,19 +1116,21 @@ impl Default for ProviderConfig {
 }
 
 impl ProviderConfig {
-    fn from_file(f: ProviderFileConfig) -> Self {
+    #[allow(clippy::unnecessary_lazy_evaluations)]
+    fn from_file(f: &ProviderFileConfig) -> Self {
         Self {
-            default_model: f.default_model,
+            default_model: f.default_model.clone(),
             connect_timeout: Duration::from_secs(
                 f.connect_timeout_secs
-                    .unwrap_or(DEFAULT_CONNECT_TIMEOUT_SECS),
+                    .unwrap_or_else(|| DEFAULT_CONNECT_TIMEOUT_SECS),
             ),
             low_speed_timeout: Duration::from_secs(
                 f.low_speed_timeout_secs
-                    .unwrap_or(DEFAULT_LOW_SPEED_TIMEOUT_SECS),
+                    .unwrap_or_else(|| DEFAULT_LOW_SPEED_TIMEOUT_SECS),
             ),
             stream_timeout: Duration::from_secs(
-                f.stream_timeout_secs.unwrap_or(DEFAULT_STREAM_TIMEOUT_SECS),
+                f.stream_timeout_secs
+                    .unwrap_or_else(|| DEFAULT_STREAM_TIMEOUT_SECS),
             ),
         }
     }
@@ -1117,11 +1164,18 @@ impl Default for StorageConfig {
 }
 
 impl StorageConfig {
-    fn from_file(f: StorageFileConfig) -> Self {
+    #[allow(clippy::unnecessary_lazy_evaluations)]
+    fn from_file(f: &StorageFileConfig) -> Self {
         Self {
-            max_log_bytes: f.max_log_bytes_mb.unwrap_or(DEFAULT_MAX_LOG_BYTES_MB) * 1024 * 1024,
-            max_log_files: f.max_log_files.unwrap_or(DEFAULT_MAX_LOG_FILES),
-            input_history_size: f.input_history_size.unwrap_or(DEFAULT_INPUT_HISTORY_SIZE),
+            max_log_bytes: f
+                .max_log_bytes_mb
+                .unwrap_or_else(|| DEFAULT_MAX_LOG_BYTES_MB)
+                * 1024
+                * 1024,
+            max_log_files: f.max_log_files.unwrap_or_else(|| DEFAULT_MAX_LOG_FILES),
+            input_history_size: f
+                .input_history_size
+                .unwrap_or_else(|| DEFAULT_INPUT_HISTORY_SIZE),
         }
     }
 }
@@ -1137,11 +1191,16 @@ pub struct PluginsConfig {
 
 impl PluginsConfig {
     #[must_use]
-    pub fn from_plugins(plugins: HashMap<String, PluginFileConfig>) -> Self {
+    #[allow(
+        clippy::unnecessary_lazy_evaluations,
+        clippy::unwrap_or_default,
+        clippy::disallowed_methods
+    )]
+    pub fn from_plugins(plugins: &HashMap<String, PluginFileConfig>) -> Self {
         let mut all: Vec<String> = DEFAULT_BUILTINS
             .iter()
             .filter(|name| plugins.get(**name).and_then(|t| t.enabled).unwrap_or(true))
-            .map(std::string::ToString::to_string)
+            .map(ToString::to_string)
             .collect();
 
         let mut extra: Vec<&String> = plugins
@@ -1169,6 +1228,11 @@ impl PluginsConfig {
 }
 
 impl Config {
+    /// Validate all config sections.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` if any section has a value below its minimum allowed.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.ui.validate_all()?;
         self.agent.validate()?;
@@ -1279,6 +1343,7 @@ fn push_unique(table: &mut toml_edit::Table, key: &str, value: &str) -> Result<(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn parse_mcp_server_table(
     server_name: &str,
     table: &toml::Table,
@@ -1403,15 +1468,15 @@ fn parse_mcp_server_table(
     }
 }
 
+#[allow(clippy::needless_pass_by_value, clippy::unnecessary_lazy_evaluations)]
 fn build_permissions(
     global: PermissionsFileConfig,
     project: PermissionsFileConfig,
 ) -> PermissionsConfig {
-    let global_default = global.default.unwrap_or(DefaultEffect::Prompt);
+    let global_default = global.default.unwrap_or_else(|| DefaultEffect::Prompt);
     let default = match project.default {
-        Some(DefaultEffect::Allow) => global_default,
+        Some(DefaultEffect::Allow) | None => global_default,
         Some(d) => d,
-        None => global_default,
     };
 
     let mut tool_defaults = HashMap::new();
@@ -1538,6 +1603,7 @@ pub fn load_permissions(cwd: &Path) -> PermissionsConfig {
     load_permissions_inner(cwd, &global_dirs)
 }
 
+#[allow(clippy::unwrap_or_default)]
 fn load_permissions_inner(cwd: &Path, global_dirs: &[PathBuf]) -> PermissionsConfig {
     let mut global_perms = PermissionsFileConfig::default();
     for dir in global_dirs {
@@ -1546,8 +1612,8 @@ fn load_permissions_inner(cwd: &Path, global_dirs: &[PathBuf]) -> PermissionsCon
         }
     }
 
-    let project_perms =
-        read_permissions_file(&cwd.join(PROJECT_DIR).join(PERMISSIONS_FILE)).unwrap_or_default();
+    let project_perms = read_permissions_file(&cwd.join(PROJECT_DIR).join(PERMISSIONS_FILE))
+        .unwrap_or_else(PermissionsFileConfig::default);
 
     build_permissions(global_perms, project_perms)
 }
@@ -1729,6 +1795,14 @@ pub fn global_config_dirs() -> Vec<PathBuf> {
     config_search_dirs(global_dir().as_deref())
 }
 
+/// Append a permission rule to the appropriate permissions file.
+///
+/// # Errors
+///
+/// Returns a `String` error if:
+/// - The config directory cannot be determined
+/// - The permissions file cannot be parsed
+/// - The permissions file cannot be written
 pub fn append_permission_rule(
     tool: &ToolKey,
     scope: Option<&str>,
@@ -1763,7 +1837,7 @@ fn append_global_permission(
     let path = global
         .ok_or_else(|| "cannot determine home directory".to_string())?
         .join(PERMISSIONS_FILE);
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|_| String::new());
     let mut doc: toml_edit::DocumentMut = content
         .parse()
         .map_err(|e| format!("failed to parse permissions: {e}"))?;
@@ -1785,7 +1859,7 @@ fn append_project_permission(
     cwd: &Path,
 ) -> Result<(), String> {
     let path = cwd.join(PROJECT_DIR).join(PERMISSIONS_FILE);
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|_| String::new());
     let mut doc: toml_edit::DocumentMut = content
         .parse()
         .map_err(|e| format!("failed to parse .n00n/{PERMISSIONS_FILE}: {e}"))?;
@@ -1842,9 +1916,50 @@ fn insert_permission_entry(
 mod tests {
     use super::*;
     use n00n_storage::sessions::Effort;
+    use std::ffi::OsString;
     use std::fs;
     use tempfile::TempDir;
     use test_case::test_case;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: tests run single-threaded; env is restored on drop.
+            #[allow(unsafe_code)]
+            unsafe {
+                std::env::set_var(key, value);
+            };
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: tests run single-threaded; env is restored on drop.
+            #[allow(unsafe_code)]
+            unsafe {
+                std::env::remove_var(key);
+            };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: same single-threaded assumption as above.
+            #[allow(unsafe_code)]
+            unsafe {
+                match self.previous.take() {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
 
     fn plugin_enabled(enabled: bool) -> PluginFileConfig {
         PluginFileConfig {
@@ -2084,11 +2199,17 @@ mod tests {
         };
         match (section, field) {
             ("provider", "connect_timeout_secs") => {
-                config.provider.connect_timeout = Duration::from_secs(value)
+                config.provider.connect_timeout = Duration::from_secs(value);
             }
-            ("storage", "max_log_files") => config.storage.max_log_files = value as u32,
-            ("ui", "mouse_scroll_lines") => config.ui.mouse_scroll_lines = value as u32,
-            ("agent", "max_output_lines") => config.agent.max_output_lines = value as usize,
+            ("storage", "max_log_files") => {
+                config.storage.max_log_files = u32::try_from(value).map_or(u32::MAX, |v| v);
+            }
+            ("ui", "mouse_scroll_lines") => {
+                config.ui.mouse_scroll_lines = u32::try_from(value).map_or(u32::MAX, |v| v);
+            }
+            ("agent", "max_output_lines") => {
+                config.agent.max_output_lines = usize::try_from(value).map_or(usize::MAX, |v| v);
+            }
             _ => unreachable!(),
         }
         let err = config.validate().unwrap_err();
@@ -2395,23 +2516,15 @@ mod tests {
         )
         .unwrap();
 
-        unsafe {
-            std::env::remove_var(GLOBAL_ONLY);
-            std::env::remove_var(PROJECT_SHADOWS);
-            std::env::set_var(PROCESS_WINS, "process");
-        }
+        let _guard1 = EnvVarGuard::remove(GLOBAL_ONLY);
+        let _guard2 = EnvVarGuard::remove(PROJECT_SHADOWS);
+        let _guard3 = EnvVarGuard::set(PROCESS_WINS, "process");
 
         load_env_files_with_global(dir.path(), Some(&global));
 
         assert_eq!(std::env::var(GLOBAL_ONLY).unwrap(), "global");
         assert_eq!(std::env::var(PROJECT_SHADOWS).unwrap(), "project");
         assert_eq!(std::env::var(PROCESS_WINS).unwrap(), "process");
-
-        unsafe {
-            std::env::remove_var(GLOBAL_ONLY);
-            std::env::remove_var(PROJECT_SHADOWS);
-            std::env::remove_var(PROCESS_WINS);
-        }
     }
 
     #[test]
@@ -2551,8 +2664,8 @@ mod tests {
 
     #[test]
     fn from_plugins_default() {
-        let plugins = PluginsConfig::from_plugins(HashMap::new());
-        let expected: Vec<String> = DEFAULT_BUILTINS.iter().map(|s| s.to_string()).collect();
+        let plugins = PluginsConfig::from_plugins(&HashMap::new());
+        let expected: Vec<String> = DEFAULT_BUILTINS.iter().map(ToString::to_string).collect();
         assert_eq!(plugins.names, expected);
         assert!(plugins.enabled);
     }
@@ -2565,7 +2678,7 @@ mod tests {
         entries.insert("alpha".to_string(), plugin_enabled(true));
         entries.insert("custom_tool".to_string(), PluginFileConfig::default());
 
-        let plugins = PluginsConfig::from_plugins(entries);
+        let plugins = PluginsConfig::from_plugins(&entries);
         assert!(
             !plugins.names.contains(&"websearch".to_string()),
             "disabled builtin removed"

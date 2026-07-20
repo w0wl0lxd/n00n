@@ -168,6 +168,7 @@ impl ProvidersConfig {
     /// Read and parse `providers.toml`. Hard-exits on parse errors so a typo
     /// in tier or pricing surfaces immediately instead of silently dropping
     /// every provider and starting n00n with an empty registry.
+    #[must_use]
     pub fn load() -> Self {
         let path = providers_file_path();
         if !path.exists() {
@@ -192,6 +193,14 @@ impl ProvidersConfig {
         }
     }
 
+    /// Save the providers config to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns `std::io::Error` if:
+    /// - The config directory cannot be created
+    /// - The config cannot be serialized to TOML
+    /// - The config file cannot be written
     pub fn save(&self) -> Result<(), std::io::Error> {
         let path = providers_file_path();
         if let Some(parent) = path.parent() {
@@ -213,6 +222,7 @@ impl ProvidersConfig {
         self.providers.insert(slug, def);
     }
 
+    #[must_use]
     pub fn remove(&mut self, slug: &str) -> bool {
         self.providers.remove(slug).is_some()
     }
@@ -325,7 +335,7 @@ pub fn resolve_login_url(slug: &str, plan: Option<&str>) -> Option<String> {
             }
         }
     }
-    builtin_provider(slug).and_then(|b| b.login_url.map(std::string::ToString::to_string))
+    builtin_provider(slug).and_then(|b| b.login_url.map(ToString::to_string))
 }
 
 #[cfg(test)]
