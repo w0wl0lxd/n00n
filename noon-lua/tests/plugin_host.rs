@@ -1813,7 +1813,7 @@ fn setup_migrates_moved_plugin_option() {
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     let raw = host
         .send_run_init_lua(
-            "noon.setup({ agent = { bash_timeout_secs = 120 } })".to_owned(),
+            "maki.setup({ agent = { bash_timeout_secs = 120 } })".to_owned(),
             "test_init.lua".to_owned(),
             None,
         )
