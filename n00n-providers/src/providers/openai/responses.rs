@@ -29,6 +29,7 @@ pub(crate) fn build_body(
         "input": input,
         "stream": true,
         "store": false,
+        "include": ["reasoning.encrypted_content"],
     });
     if wire_tools.as_array().is_some_and(|a| !a.is_empty()) {
         body["tools"] = wire_tools;
@@ -85,10 +86,16 @@ pub(crate) fn convert_input(messages: &[Message]) -> Value {
                         ContentBlock::ToolUse { id, name, input } => {
                             tool_calls.push((id, name, input));
                         }
+                        ContentBlock::RedactedThinking { data } => {
+                            if let Ok(item) = serde_json::from_str::<Value>(data)
+                                && item["type"].as_str() == Some("reasoning")
+                            {
+                                input.push(item);
+                            }
+                        }
                         ContentBlock::ToolResult { .. }
                         | ContentBlock::Image { .. }
-                        | ContentBlock::Thinking { .. }
-                        | ContentBlock::RedactedThinking { .. } => {}
+                        | ContentBlock::Thinking { .. } => {}
                     }
                 }
 
@@ -197,9 +204,11 @@ pub(crate) async fn parse_sse(
 
     let mut text = String::new();
     let mut reasoning_text = String::new();
+    let mut reasoning_items: Vec<Value> = Vec::new();
     let mut tool_accumulators: Vec<ToolAccumulator> = Vec::new();
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<StopReason> = None;
+    let mut terminal_event_received = false;
     let mut is_first_content = true;
     let mut deadline = Instant::now() + stream_timeout;
     let mut current_event = String::new();
@@ -207,6 +216,11 @@ pub(crate) async fn parse_sse(
     while let Some(line) =
         crate::providers::next_sse_line(&mut lines, &mut deadline, stream_timeout).await?
     {
+        if line.is_empty() {
+            current_event.clear();
+            continue;
+        }
+
         if let Some(event_type) = line.strip_prefix("event:") {
             current_event = event_type.trim().to_string();
             continue;
@@ -344,7 +358,19 @@ pub(crate) async fn parse_sse(
                     Err(_) => continue,
                 };
                 let item = &parsed["item"];
-                if item["type"].as_str() == Some("function_call") {
+                if item["type"].as_str() == Some("message") && text.is_empty() {
+                    if let Some(content) = item["content"].as_array() {
+                        for part in content {
+                            if part["type"].as_str() == Some("output_text")
+                                && let Some(snapshot) = part["text"].as_str()
+                            {
+                                text.push_str(snapshot);
+                            }
+                        }
+                    }
+                } else if item["type"].as_str() == Some("reasoning") {
+                    reasoning_items.push(item.clone());
+                } else if item["type"].as_str() == Some("function_call") {
                     let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
                     let name = item["name"].as_str().unwrap_or_default().to_string();
                     let arguments = if let Some(s) = item["arguments"].as_str() {
@@ -430,6 +456,44 @@ pub(crate) async fn parse_sse(
                 if let Some(u) = resp.get("usage") {
                     usage = parse_usage(u);
                 }
+                terminal_event_received = true;
+
+                if let Some(output) = resp["output"].as_array() {
+                    for item in output {
+                        match item["type"].as_str() {
+                            Some("message") if text.is_empty() => {
+                                if let Some(content) = item["content"].as_array() {
+                                    for part in content {
+                                        if part["type"].as_str() == Some("output_text")
+                                            && let Some(snapshot) = part["text"].as_str()
+                                        {
+                                            text.push_str(snapshot);
+                                        }
+                                    }
+                                }
+                            }
+                            Some("reasoning") if !reasoning_items.contains(item) => {
+                                reasoning_items.push(item.clone());
+                            }
+                            Some("function_call") => {
+                                let call_id =
+                                    item["call_id"].as_str().unwrap_or_default().to_string();
+                                if !tool_accumulators.iter().any(|acc| acc.call_id == call_id) {
+                                    tool_accumulators.push(ToolAccumulator {
+                                        output_index: tool_accumulators.len() as u64,
+                                        call_id,
+                                        name: item["name"].as_str().unwrap_or_default().to_string(),
+                                        arguments: item["arguments"]
+                                            .as_str()
+                                            .unwrap_or_default()
+                                            .to_string(),
+                                    });
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
 
                 let status = resp["status"].as_str().unwrap_or("completed");
                 stop_reason = Some(match status {
@@ -446,6 +510,7 @@ pub(crate) async fn parse_sse(
             }
 
             "response.incomplete" => {
+                terminal_event_received = true;
                 let parsed: Value = match serde_json::from_str(data) {
                     Ok(v) => v,
                     Err(_) => continue,
@@ -458,6 +523,7 @@ pub(crate) async fn parse_sse(
             }
 
             "response.failed" => {
+                terminal_event_received = true;
                 let parsed: Value = match serde_json::from_str(data) {
                     Ok(v) => v,
                     Err(_) => continue,
@@ -481,7 +547,19 @@ pub(crate) async fn parse_sse(
         }
     }
 
-    let mut content_blocks: Vec<ContentBlock> = Vec::new();
+    if !terminal_event_received {
+        return Err(AgentError::Api {
+            status: 422,
+            message: "Responses API stream ended without a terminal event".into(),
+        });
+    }
+
+    let mut content_blocks: Vec<ContentBlock> = reasoning_items
+        .into_iter()
+        .map(|item| ContentBlock::RedactedThinking {
+            data: item.to_string(),
+        })
+        .collect();
 
     if !reasoning_text.is_empty() {
         content_blocks.push(ContentBlock::Thinking {
@@ -1114,6 +1192,79 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].2["old_string"], "a");
             assert_eq!(tools[0].2["new_string"], "b");
         })
+    }
+
+    #[test]
+    fn build_body_requests_encrypted_reasoning() {
+        let body = build_body(
+            &crate::model::Model::from_spec("openai/gpt-5.6-sol").unwrap(),
+            &[],
+            "system",
+            &json!([]),
+        );
+        assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    }
+
+    #[test]
+    fn convert_input_replays_encrypted_reasoning() {
+        let reasoning = json!({
+            "id": "rs_1",
+            "type": "reasoning",
+            "encrypted_content": "opaque",
+            "summary": []
+        });
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::RedactedThinking {
+                data: reasoning.to_string(),
+            }],
+            ..Default::default()
+        }];
+
+        assert_eq!(convert_input(&messages), json!([reasoning]));
+    }
+
+    #[test]
+    fn parse_sse_recovers_completed_message_snapshot() {
+        smol::block_on(async {
+            let sse = "event: response.output_item.done\ndata: {\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Recovered\"}]}}\n\nevent: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n";
+            let (resp, _) = run_sse(sse).await;
+            let resp = resp.unwrap();
+            assert!(
+                matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "Recovered")
+            );
+        });
+    }
+
+    #[test]
+    fn parse_sse_rejects_stream_without_terminal_event() {
+        smol::block_on(async {
+            let sse = "event: response.output_text.delta\ndata: {\"delta\":\"partial\"}\n\n";
+            let (resp, _) = run_sse(sse).await;
+            assert!(matches!(resp, Err(AgentError::Api { status: 422, .. })));
+        });
+    }
+
+    #[test]
+    fn parse_sse_allows_completed_empty_response() {
+        smol::block_on(async {
+            let sse =
+                "event: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n";
+            let (resp, _) = run_sse(sse).await;
+            assert!(resp.unwrap().message.content.is_empty());
+        });
+    }
+
+    #[test]
+    fn parse_sse_replays_reasoning_item() {
+        smol::block_on(async {
+            let sse = "event: response.output_item.done\ndata: {\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"opaque\",\"summary\":[]}}\n\nevent: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n";
+            let (resp, _) = run_sse(sse).await;
+            let resp = resp.unwrap();
+            assert!(
+                matches!(&resp.message.content[0], ContentBlock::RedactedThinking { data } if data.contains("opaque"))
+            );
+        });
     }
 
     #[test]
