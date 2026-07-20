@@ -228,24 +228,6 @@ Noon uses XDG directories on Linux and macOS:
 | Logs | `~/.local/logs/noon/` |
 | State | `~/.local/state/noon/` |
 
-`~/.noon/` is checked as a legacy fallback.
-
-### Migrating from ~/.noon/
-
-Older versions stored everything in `~/.noon/`. If that directory still exists, noon uses it
-as a fallback. To move to XDG directories, run:
-
-```
-noon migrate xdg
-```
-
-This safely moves sessions, auth, plans, memories, logs, and preferences to XDG locations.
-Where both old and new files exist, they are merged (input history, model tiers, etc.).
-Nothing is deleted until it has been copied. At the end you get a summary of where everything
-lives now.
-
-Safe to run more than once.
-
 ## Personal Instructions
 
 On top of `AGENTS.md`, you can add your own instructions in two places:

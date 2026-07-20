@@ -1,5 +1,4 @@
 mod acp;
-mod migrate;
 mod subcmd;
 mod tui;
 
@@ -8,7 +7,7 @@ use color_eyre::eyre::Context;
 
 use noon_storage::StateDir;
 
-use crate::cli::{AuthAction, Cli, Command, McpAction, MigrateAction};
+use crate::cli::{AuthAction, Cli, Command, McpAction};
 use crate::update;
 
 pub fn dispatch(cli: Cli) -> Result<()> {
@@ -45,9 +44,6 @@ pub fn dispatch(cli: Cli) -> Result<()> {
         Some(Command::Acp { model, yolo }) => {
             acp::run(model, yolo, cli.no_jit)?;
         }
-        Some(Command::Migrate { action }) => match action {
-            MigrateAction::Xdg => migrate::xdg()?,
-        },
         Some(Command::Prompt {
             variant,
             plan,
