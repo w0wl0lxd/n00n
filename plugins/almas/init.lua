@@ -172,7 +172,7 @@ local function handler(input, ctx)
       if block and #block > 0 then
         if input.compact then
           local ok, t = pcall(function()
-            return noon.json.to_ton({ context = block })
+            return noon.json.to_toon({ context = block })
           end)
           if ok and t then
             step_prompt = step_prompt .. "\n\nRelevant context (TOON):\n" .. t

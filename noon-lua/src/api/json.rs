@@ -129,14 +129,14 @@ fn schema_validator(lua: &Lua, schema: Value) -> LuaResult<(Value, Value)> {
 
 /// Encode a Lua value as TOON (Token-Oriented Object Notation), a token-efficient
 /// alternative to JSON for LLM context (~30-60% fewer tokens on uniform arrays of
-/// objects). Opt-in: pair with `from_ton` only when the consumer is a model.
+/// objects). Opt-in: pair with `from_toon` only when the consumer is a model.
 ///
 /// @param value any Lua value to encode.
 /// @return (string?, string?) TOON string, or nil plus an error.
 /// @example
-/// local s, err = noon.json.to_ton({ users = { { id = 1, name = "Alice" } } })
+/// local s, err = noon.json.to_toon({ users = { { id = 1, name = "Alice" } } })
 #[lua_fn]
-fn to_ton(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
+fn to_toon(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
     let serde_val: serde_json::Value = match lua.from_value(value) {
         Ok(v) => v,
         Err(e) => return err_pair(lua, e),
@@ -147,14 +147,14 @@ fn to_ton(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
     }
 }
 
-/// Decode a TOON string back into a Lua value. Inverse of `to_ton`.
+/// Decode a TOON string back into a Lua value. Inverse of `to_toon`.
 ///
 /// @param str string TOON string to decode.
 /// @return (any?, string?) Decoded value, or nil plus an error.
 /// @example
-/// local t, err = noon.json.from_ton(s)
+/// local t, err = noon.json.from_toon(s)
 #[lua_fn]
-fn from_ton(lua: &Lua, str: String) -> LuaResult<(Value, Value)> {
+fn from_toon(lua: &Lua, str: String) -> LuaResult<(Value, Value)> {
     match toon_format::decode_default::<serde_json::Value>(&str) {
         Ok(v) => Ok((json_to_lua(lua, &v)?, Value::Nil)),
         Err(e) => err_pair(lua, e),
@@ -172,7 +172,7 @@ lua_table! {
     /// local t = noon.json.decode(s)
     /// ```
     "noon.json" => pub(crate) fn create_json_table(), DOCS [
-        encode, decode, schema_validator, to_ton, from_ton,
+        encode, decode, schema_validator, to_toon, from_toon,
     ]
 }
 

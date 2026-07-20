@@ -148,7 +148,6 @@ async fn resolve_model(
 /// read), so orchestrators like ALMAS can report cost without bundling a
 /// price table.
 ///
-/// @param _ctx Agent context (injected by the Lua runtime).
 /// @param spec string Model spec, e.g. `"anthropic/claude-3-5-haiku-20241022"`.
 /// @param input_tokens integer Prompt tokens.
 /// @param output_tokens integer Completion tokens.
@@ -160,7 +159,6 @@ async fn resolve_model(
 #[lua_fn]
 async fn usage_cost(
     _lua: Lua,
-    _ctx: mlua::UserDataRef<LuaCtx>,
     spec: String,
     input_tokens: u32,
     output_tokens: u32,

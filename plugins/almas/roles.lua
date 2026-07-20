@@ -44,7 +44,7 @@ function M.run(ctx, role, prompt, opts)
   if merr then
     return { ok = false, error = merr }
   end
-  local tools, terr = noon.agent.tools(ctx, { audience = "general_sub", include_mcp = true })
+  local tools, terr = noon.agent.tools(ctx, { spec = model.spec, audience = "general_sub", include_mcp = true })
   if terr then
     return { ok = false, error = terr }
   end
