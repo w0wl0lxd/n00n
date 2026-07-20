@@ -221,6 +221,7 @@ n00n.setup({
 |-------|------|---------|-----|-------------|
 | `max_concurrent_agents` | integer | `8` | 1 | Max subagents one parallel()/pipeline() call runs at once. |
 | `max_concurrent_workflows` | integer | `4` | 1 | Max concurrently running workflows. |
+| `timeout_secs` | integer | `600` | 1 | Hard deadline for one workflow run (cancels pure-Lua runaway loops via the VM watchdog). |
 
 ## Validation
 
