@@ -2,8 +2,8 @@
 //! event loop, which owns the live session runtimes and the session store;
 //! the loop answers `list` from a background task so slow scans never block.
 
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{Lua, Result as LuaResult, Table, Value};
+use noon_lua_macro::{lua_fn, lua_table};
 
 use crate::api::util::command::{SessionReply, SessionRequest, UiAction};
 use crate::api::util::convert::json_to_lua;

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use noon_lua_macro::{lua_class, lua_fn, lua_table};
 use mlua::{Lua, MultiValue, Value as LuaValue};
+use noon_lua_macro::{lua_class, lua_fn, lua_table};
 use regex::Regex;
 use tree_sitter::{Node, Query, QueryCursor, QueryPredicateArg, StreamingIterator, Tree};
 

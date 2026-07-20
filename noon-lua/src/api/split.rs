@@ -1,5 +1,5 @@
-use noon_lua_macro::lua_fn;
 use mlua::{Function, Lua, Result as LuaResult, Table, Value};
+use noon_lua_macro::lua_fn;
 
 const OPTS_TYPE_MSG: &str = "split: opts must be a table or boolean";
 const INFINITE_LOOP_MSG: &str = "split: separator matched an empty string (infinite loop)";

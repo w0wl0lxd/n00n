@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::mem;
 use std::sync::{Arc, Mutex};
 
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{Function, Lua, MultiValue, Result as LuaResult, Table, Value};
+use noon_lua_macro::{lua_fn, lua_table};
 
 use crate::api::util::dispatch::{DepthGuard, call_isolated};
 

@@ -1,5 +1,5 @@
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{Lua, Result as LuaResult, Value};
+use noon_lua_macro::{lua_fn, lua_table};
 
 /// Convert an HTML string to Markdown.
 /// Useful for cleaning up web content fetched with `noon.webfetch`.

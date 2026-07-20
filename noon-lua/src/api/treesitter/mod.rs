@@ -4,8 +4,8 @@ pub(crate) mod node;
 pub(crate) mod query;
 pub(crate) mod tree;
 
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{AnyUserData, Lua, Result as LuaResult, Table};
+use noon_lua_macro::{lua_fn, lua_table};
 
 use crate::language::Language;
 use language_tree::LuaLanguageTree;

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::Lua;
+use noon_lua_macro::{lua_fn, lua_table};
 
 use crate::plugin_permissions::PluginPermissions;
 

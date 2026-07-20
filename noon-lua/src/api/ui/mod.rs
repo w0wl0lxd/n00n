@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use humantime::format_duration;
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{Lua, Result as LuaResult, Table};
+use noon_lua_macro::{lua_fn, lua_table};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::api::util::command::{
@@ -627,8 +627,8 @@ fn markdown_lines_to_lua(lua: &Lua, lines: &[noon_markdown::render::Line]) -> Lu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use noon_highlight::StyledSegment;
     use mlua::Lua;
+    use noon_highlight::StyledSegment;
     use test_case::test_case;
 
     const MISSING_KEY: &str = "missing";
