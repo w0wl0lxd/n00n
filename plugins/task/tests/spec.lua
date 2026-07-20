@@ -13,16 +13,16 @@ local function eq(actual, expected, msg)
   end
 end
 
-case("noon_agent_has_expected_functions", function()
-  assert(type(noon.agent) == "table", "noon.agent must be a table")
+case("n00n_agent_has_expected_functions", function()
+  assert(type(n00n.agent) == "table", "n00n.agent must be a table")
   local expected = { "resolve_model", "system_prompt", "tools", "call_tool", "session", "usage_cost" }
   for _, fn_name in ipairs(expected) do
-    eq(type(noon.agent[fn_name]), "function", "noon.agent." .. fn_name .. " must be a function")
+    eq(type(n00n.agent[fn_name]), "function", "n00n.agent." .. fn_name .. " must be a function")
   end
 end)
 
 case("schema_validator_compiles_and_validates", function()
-  local validator, err = noon.json.schema_validator({
+  local validator, err = n00n.json.schema_validator({
     type = "object",
     properties = { answer = { type = "string" } },
     required = { "answer" },
@@ -34,7 +34,7 @@ case("schema_validator_compiles_and_validates", function()
 end)
 
 case("schema_validator_rejects_bad_schema", function()
-  local validator, err = noon.json.schema_validator({ type = 42 })
+  local validator, err = n00n.json.schema_validator({ type = 42 })
   eq(validator, nil, "bad schema must not compile")
   assert(err ~= nil, "bad schema must return an error")
 end)

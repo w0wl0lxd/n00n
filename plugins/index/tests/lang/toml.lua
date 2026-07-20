@@ -22,7 +22,7 @@ end)
 case("toml_table_with_pairs", function()
   local src = [==[
     [package]
-    name = "noon"
+    name = "n00n"
     version = "0.3.27"
   ]==]
   local out = idx(src, "toml")
@@ -30,7 +30,7 @@ case("toml_table_with_pairs", function()
     "consts:",
     "[package]",
     "name",
-    "noon",
+    "n00n",
     "version",
     "0.3.27",
   })
@@ -39,14 +39,14 @@ end)
 case("toml_table_array_element", function()
   local src = [==[
     [[bin]]
-    name = "noon"
+    name = "n00n"
     path = "src/main.rs"
   ]==]
   local out = idx(src, "toml")
   has(out, {
     "[[bin]]",
     "name",
-    "noon",
+    "n00n",
     "path",
     "src/main.rs",
   })

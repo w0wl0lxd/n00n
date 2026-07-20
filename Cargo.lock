@@ -2740,45 +2740,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "new_debug_unreachable"
-version = "1.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
-
-[[package]]
-name = "nix"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
-dependencies = [
- "bitflags 2.13.1",
- "cfg-if",
- "cfg_aliases",
- "libc",
- "memoffset",
-]
-
-[[package]]
-name = "nom"
-version = "7.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
-dependencies = [
- "memchr",
- "minimal-lexical",
-]
-
-[[package]]
-name = "nom"
-version = "8.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
-dependencies = [
- "memchr",
-]
-
-[[package]]
-name = "noon"
+name = "n00n"
 version = "0.4.1"
 dependencies = [
  "clap",
@@ -2787,13 +2749,13 @@ dependencies = [
  "futures-lite",
  "isahc",
  "libc",
- "noon-acp",
- "noon-agent",
- "noon-config",
- "noon-lua",
- "noon-providers",
- "noon-storage",
- "noon-ui",
+ "n00n-acp",
+ "n00n-agent",
+ "n00n-config",
+ "n00n-lua",
+ "n00n-providers",
+ "n00n-storage",
+ "n00n-ui",
  "open",
  "serde",
  "serde_json",
@@ -2807,15 +2769,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "noon-acp"
+name = "n00n-acp"
 version = "0.4.1"
 dependencies = [
  "agent-client-protocol-schema",
  "color-eyre",
  "flume 0.11.1",
- "noon-agent",
- "noon-providers",
- "noon-storage",
+ "n00n-agent",
+ "n00n-providers",
+ "n00n-storage",
  "serde",
  "serde_json",
  "smol",
@@ -2825,7 +2787,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "noon-agent"
+name = "n00n-agent"
 version = "0.4.1"
 dependencies = [
  "arc-swap",
@@ -2846,9 +2808,9 @@ dependencies = [
  "jiff",
  "jsonrepair",
  "libc",
- "noon-config",
- "noon-providers",
- "noon-storage",
+ "n00n-config",
+ "n00n-providers",
+ "n00n-storage",
  "open",
  "serde",
  "serde_json",
@@ -2866,13 +2828,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "noon-config"
+name = "n00n-config"
 version = "0.4.1"
 dependencies = [
  "dotenvy",
  "inventory",
- "noon-config-macro",
- "noon-storage",
+ "n00n-config-macro",
+ "n00n-storage",
  "serde",
  "serde_json",
  "tempfile",
@@ -2884,7 +2846,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "noon-config-macro"
+name = "n00n-config-macro"
 version = "0.4.1"
 dependencies = [
  "proc-macro2",
@@ -2893,14 +2855,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "noon-docgen"
+name = "n00n-docgen"
 version = "0.4.1"
 dependencies = [
- "noon-agent",
- "noon-config",
- "noon-lua",
- "noon-providers",
- "noon-ui",
+ "n00n-agent",
+ "n00n-config",
+ "n00n-lua",
+ "n00n-providers",
+ "n00n-ui",
  "regex",
  "serde_json",
  "smol",
@@ -2909,7 +2871,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "noon-highlight"
+name = "n00n-highlight"
 version = "0.4.1"
 dependencies = [
  "serde_json",
@@ -2919,7 +2881,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "noon-interpreter"
+name = "n00n-interpreter"
 version = "0.4.1"
 dependencies = [
  "monty",
@@ -2930,7 +2892,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "noon-lua"
+name = "n00n-lua"
 version = "0.4.1"
 dependencies = [
  "arc-swap",
@@ -2950,14 +2912,14 @@ dependencies = [
  "jsonschema",
  "libc",
  "mlua",
- "noon-agent",
- "noon-config",
- "noon-highlight",
- "noon-interpreter",
- "noon-lua-macro",
- "noon-markdown",
- "noon-providers",
- "noon-storage",
+ "n00n-agent",
+ "n00n-config",
+ "n00n-highlight",
+ "n00n-interpreter",
+ "n00n-lua-macro",
+ "n00n-markdown",
+ "n00n-providers",
+ "n00n-storage",
  "regex",
  "serde_json",
  "serde_yaml",
@@ -3000,7 +2962,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "noon-lua-macro"
+name = "n00n-lua-macro"
 version = "0.4.1"
 dependencies = [
  "proc-macro2",
@@ -3009,17 +2971,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "noon-markdown"
+name = "n00n-markdown"
 version = "0.4.1"
 dependencies = [
  "fastrand",
- "noon-highlight",
+ "n00n-highlight",
  "test-case",
  "unicode-width 0.2.0",
 ]
 
 [[package]]
-name = "noon-providers"
+name = "n00n-providers"
 version = "0.4.1"
 dependencies = [
  "base64",
@@ -3031,8 +2993,8 @@ dependencies = [
  "inventory",
  "isahc",
  "jiff",
- "noon-config",
- "noon-storage",
+ "n00n-config",
+ "n00n-storage",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3047,7 +3009,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "noon-storage"
+name = "n00n-storage"
 version = "0.4.1"
 dependencies = [
  "bs58",
@@ -3066,7 +3028,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "noon-ui"
+name = "n00n-ui"
 version = "0.4.1"
 dependencies = [
  "arboard",
@@ -3084,13 +3046,13 @@ dependencies = [
  "image",
  "jiff",
  "libc",
- "noon-agent",
- "noon-config",
- "noon-highlight",
- "noon-lua",
- "noon-markdown",
- "noon-providers",
- "noon-storage",
+ "n00n-agent",
+ "n00n-config",
+ "n00n-highlight",
+ "n00n-lua",
+ "n00n-markdown",
+ "n00n-providers",
+ "n00n-storage",
  "notify",
  "nucleo",
  "nucleo-matcher",
@@ -3107,6 +3069,44 @@ dependencies = [
  "toml",
  "tracing",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "new_debug_unreachable"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
+
+[[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags 2.13.1",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+ "memoffset",
+]
+
+[[package]]
+name = "nom"
+version = "7.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
+dependencies = [
+ "memchr",
+ "minimal-lexical",
+]
+
+[[package]]
+name = "nom"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

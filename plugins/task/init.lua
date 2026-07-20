@@ -2,11 +2,11 @@
 -- tool whose handler validates and captures the result as closure upvalues.
 -- Invalid input is an inline tool error the model can fix in the same run.
 -- This plugin owns structured output and subagent concurrency; Rust exposes
--- primitives only (`noon.agent.session`, `noon.json.schema_validator`,
--- `noon.async.semaphore`).
+-- primitives only (`n00n.agent.session`, `n00n.json.schema_validator`,
+-- `n00n.async.semaphore`).
 
-local ToolView = require("noon.tool_view")
-local route_tier = require("noon.route_tier").route_tier
+local ToolView = require("n00n.tool_view")
+local route_tier = require("n00n.route_tier").route_tier
 
 local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
@@ -81,13 +81,13 @@ local examples = {
   },
 }
 
-local opts = noon.api.register_options({
+local opts = n00n.api.register_options({
   max_concurrent = { default = 8, min = 1, desc = "Max concurrently running subagents." },
   auto_tier = { default = false, desc = "Route each subagent's model tier from its prompt (opt-in, off by default)." },
 })
 
 -- Process-wide cap on concurrent subagents.
-local semaphore = noon.async.semaphore(opts.max_concurrent)
+local semaphore = n00n.async.semaphore(opts.max_concurrent)
 
 local function bounded_errors(errors)
   local out = {}
@@ -100,7 +100,7 @@ end
 local function make_preview(ctx, description)
   local tol = ctx:tool_output_lines()
   local max_preview = (tol and tol.task) or DEFAULT_OUTPUT_LINES
-  local view = ToolView.new(noon.ui.buf(), { max_lines = max_preview, keep = "tail" })
+  local view = ToolView.new(n00n.ui.buf(), { max_lines = max_preview, keep = "tail" })
   local last_completed = 0
 
   local function update(progress)
@@ -115,7 +115,7 @@ local function make_preview(ctx, description)
     end
 
     local elapsed = math.floor(progress.elapsed_ms / 1000)
-    local elapsed_str = noon.ui.humantime(elapsed)
+    local elapsed_str = n00n.ui.humantime(elapsed)
     local header = { { description .. " · " .. elapsed_str, "bold" } }
     if progress.current_tool then
       header[#header + 1] = { { "▸ " .. progress.current_tool, "bold" } }
@@ -145,7 +145,7 @@ local function handler(input, ctx)
       return { llm_output = SCHEMA_ROOT_ERROR, is_error = true }
     end
     local compile_err
-    validator, compile_err = noon.json.schema_validator(input.output_schema)
+    validator, compile_err = n00n.json.schema_validator(input.output_schema)
     if compile_err then
       return { llm_output = SCHEMA_COMPILE_ERROR .. ": " .. compile_err, is_error = true }
     end
@@ -156,7 +156,7 @@ local function handler(input, ctx)
     model_tier = route_tier(input.prompt)
   end
 
-  local model, model_err = noon.agent.resolve_model(ctx, {
+  local model, model_err = n00n.agent.resolve_model(ctx, {
     tier = model_tier,
   })
   if model_err then
@@ -165,7 +165,7 @@ local function handler(input, ctx)
 
   local audience = subagent_type == "research" and "research_sub" or "general_sub"
   local prompt_id = subagent_type == "research" and "research" or "general"
-  local system, system_err = noon.agent.system_prompt(ctx, {
+  local system, system_err = n00n.agent.system_prompt(ctx, {
     prompt_id = prompt_id,
     instructions = true,
   })
@@ -173,7 +173,7 @@ local function handler(input, ctx)
     return { llm_output = system_err, is_error = true }
   end
 
-  local tool_defs, tools_err = noon.agent.tools(ctx, {
+  local tool_defs, tools_err = n00n.agent.tools(ctx, {
     audience = audience,
     spec = model.spec,
     include_mcp = true,
@@ -217,10 +217,10 @@ local function handler(input, ctx)
     end
   end
 
-  noon.async.run(function()
+  n00n.async.run(function()
     local permit = semaphore:acquire()
     local ok, out = pcall(function()
-      local sess, sess_err = noon.agent.session(ctx, {
+      local sess, sess_err = n00n.agent.session(ctx, {
         model_spec = model.spec,
         system = system,
         tools = tool_defs,
@@ -250,7 +250,7 @@ local function handler(input, ctx)
           local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
           return { llm_output = msg, is_error = true }
         end
-        return { llm_output = captured and noon.json.encode(captured) or result.text, format = "markdown" }
+        return { llm_output = captured and n00n.json.encode(captured) or result.text, format = "markdown" }
       end
 
       local function do_poll()
@@ -266,7 +266,7 @@ local function handler(input, ctx)
         end
       end
 
-      local results = noon.async.gather({ do_prompt, do_poll })
+      local results = n00n.async.gather({ do_prompt, do_poll })
       sess:close()
       local prompt_res = results[1]
       if not prompt_res.ok then
@@ -298,8 +298,8 @@ local function restore(_input, output, is_error, ctx)
     max_line_bytes = DEFAULT_MAX_LINE_BYTES,
   }
   if not is_error then
-    local width = math.max(noon.ui.terminal_size().cols - BODY_INDENT_COLS, MIN_MD_WIDTH)
-    local ok, md_lines = pcall(noon.ui.markdown, output, width)
+    local width = math.max(n00n.ui.terminal_size().cols - BODY_INDENT_COLS, MIN_MD_WIDTH)
+    local ok, md_lines = pcall(n00n.ui.markdown, output, width)
     if ok then
       return ToolView.restore_lines(md_lines, opts)
     end
@@ -307,7 +307,7 @@ local function restore(_input, output, is_error, ctx)
   return ToolView.restore(output, opts)
 end
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "task",
   description = description,
   kind = "execute",

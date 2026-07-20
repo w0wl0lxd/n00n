@@ -1,29 +1,29 @@
 [package]
-name = "noon"
+name = "n00n"
 version.workspace = true
 edition = "2024"
 authors = ["w0wl0lxd <w0wl0lxd@tuta.com>"]
 description = "AI coding agent. Native Rust TUI. Immediate startup, 60 FPS, low memory."
 license = "AGPL-3.0"
-repository = "https://github.com/w0wl0lxd/noon"
-homepage = "https://github.com/w0wl0lxd/noon"
+repository = "https://github.com/w0wl0lxd/n00n"
+homepage = "https://github.com/w0wl0lxd/n00n"
 readme = "README.md"
 keywords = ["ai", "agent", "cli", "tui", "coding"]
 categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.88"
 
 [[bin]]
-name = "noon"
+name = "n00n"
 path = "src/main.rs"
 
 [dependencies]
-noon-ui = { workspace = true }
-noon-agent = { workspace = true }
-noon-acp = { workspace = true }
-noon-config = { workspace = true }
-noon-providers = { workspace = true }
-noon-storage = { workspace = true }
-noon-lua = { workspace = true }
+n00n-ui = { workspace = true }
+n00n-agent = { workspace = true }
+n00n-acp = { workspace = true }
+n00n-config = { workspace = true }
+n00n-providers = { workspace = true }
+n00n-storage = { workspace = true }
+n00n-lua = { workspace = true }
 clap = { workspace = true }
 color-eyre = { workspace = true }
 serde = { workspace = true }
@@ -45,19 +45,19 @@ test-case = { workspace = true }
 
 [workspace]
 members = [
-  "noon-acp",
-  "noon-agent",
-  "noon-config",
-  "noon-docgen",
-  "noon-highlight",
-  "noon-interpreter",
-  "noon-lua",
-  "noon-markdown",
-  "noon-providers",
-  "noon-storage",
-  "noon-config-macro",
-  "noon-lua-macro",
-  "noon-ui",
+  "n00n-acp",
+  "n00n-agent",
+  "n00n-config",
+  "n00n-docgen",
+  "n00n-highlight",
+  "n00n-interpreter",
+  "n00n-lua",
+  "n00n-markdown",
+  "n00n-providers",
+  "n00n-storage",
+  "n00n-config-macro",
+  "n00n-lua-macro",
+  "n00n-ui",
 ]
 resolver = "3"
 
@@ -66,22 +66,22 @@ version = "0.4.1"
 edition = "2024"
 authors = ["w0wl0lxd <w0wl0lxd@tuta.com>"]
 license = "AGPL-3.0"
-repository = "https://github.com/w0wl0lxd/noon"
+repository = "https://github.com/w0wl0lxd/n00n"
 rust-version = "1.88"
 
 [workspace.dependencies]
-noon-agent = { path = "noon-agent" }
-noon-acp = { path = "noon-acp" }
-noon-config = { path = "noon-config" }
-noon-interpreter = { path = "noon-interpreter" }
-noon-providers = { path = "noon-providers" }
-noon-storage = { path = "noon-storage" }
-noon-ui = { path = "noon-ui" }
-noon-lua = { path = "noon-lua" }
-noon-config-macro = { path = "noon-config-macro" }
-noon-lua-macro = { path = "noon-lua-macro" }
-noon-highlight = { path = "noon-highlight" }
-noon-markdown = { path = "noon-markdown" }
+n00n-agent = { path = "n00n-agent" }
+n00n-acp = { path = "n00n-acp" }
+n00n-config = { path = "n00n-config" }
+n00n-interpreter = { path = "n00n-interpreter" }
+n00n-providers = { path = "n00n-providers" }
+n00n-storage = { path = "n00n-storage" }
+n00n-ui = { path = "n00n-ui" }
+n00n-lua = { path = "n00n-lua" }
+n00n-config-macro = { path = "n00n-config-macro" }
+n00n-lua-macro = { path = "n00n-lua-macro" }
+n00n-highlight = { path = "n00n-highlight" }
+n00n-markdown = { path = "n00n-markdown" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 toon-format = "0.5"

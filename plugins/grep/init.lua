@@ -1,14 +1,14 @@
-local truncate = require("noon.truncate")
-local ToolView = require("noon.tool_view")
-local shorten_path = require("noon.shorten_path")
-local color = require("noon.color")
-local output_limits = require("noon.output_limits")
+local truncate = require("n00n.truncate")
+local ToolView = require("n00n.tool_view")
+local shorten_path = require("n00n.shorten_path")
+local color = require("n00n.color")
+local output_limits = require("n00n.output_limits")
 
 local NO_MATCHES = "No files found"
 local MAX_PER_CALL_LIMIT = 1000
 local DIM_FACTOR = 0.3
 
-local opts = noon.api.register_options(output_limits.extend({
+local opts = n00n.api.register_options(output_limits.extend({
   search_result_limit = {
     default = 100,
     min = 10,
@@ -87,7 +87,7 @@ local function apply_grep_highlights(hl_tasks, view)
       texts[#texts + 1] = fl.text
     end
 
-    local highlighted = noon.ui.highlight(table.concat(texts, "\n"), task.ext, { independent = true })
+    local highlighted = n00n.ui.highlight(table.concat(texts, "\n"), task.ext, { independent = true })
     if highlighted then
       for i, fl in ipairs(task.lines) do
         local hl_spans = highlighted[i]
@@ -102,7 +102,7 @@ local function apply_grep_highlights(hl_tasks, view)
 end
 
 local function build_grep_view(entries, ctx)
-  local buf = noon.ui.buf()
+  local buf = n00n.ui.buf()
   local view = ToolView.new(buf, grep_view_opts(ctx))
 
   local max_nr = 0
@@ -161,7 +161,7 @@ end
 local function parse_llm_output(text)
   local entries = {}
   local current
-  for _, line in ipairs(noon.split(text, "\n")) do
+  for _, line in ipairs(n00n.split(text, "\n")) do
     local path = line:match("^(%S.+):$")
     if path then
       current = { path = path, groups = { { lines = {} } } }
@@ -188,12 +188,12 @@ local function parse_llm_output(text)
   return entries
 end
 
-noon.api.register_prompt_hint({
+n00n.api.register_prompt_hint({
   slot = "tool_usage",
   content = "- Use the **grep** tool when searching for specific content across files.",
 })
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "grep",
   kind = "search",
   description = [[Search file contents using regex.
@@ -221,7 +221,7 @@ noon.api.register_tool({
   },
 
   header = function(input)
-    local buf = noon.ui.buf()
+    local buf = n00n.ui.buf()
     local pattern = (input.pattern or ""):gsub('"$', "")
     local spans = { { pattern, "tool" } }
     if input.include then
@@ -255,7 +255,7 @@ noon.api.register_tool({
 
     local max_line_bytes = opts.max_line_bytes
 
-    local entries, err = noon.fs.grep(pattern, {
+    local entries, err = n00n.fs.grep(pattern, {
       path = input.path,
       include = input.include,
       context_before = input.context_before or 0,

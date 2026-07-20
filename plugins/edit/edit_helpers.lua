@@ -4,7 +4,7 @@ local function split_lines(s)
   if s:sub(-1) == "\n" then
     s = s:sub(1, -2)
   end
-  return noon.split(s, "\n")
+  return n00n.split(s, "\n")
 end
 
 function M.replace_lines(content, start_line, end_line, new_string)

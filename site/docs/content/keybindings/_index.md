@@ -97,14 +97,14 @@ Child contexts inherit their parent's bindings and add their own.
 
 ## Overriding Keybindings
 
-Plugins and `init.lua` can rebind keys at runtime with `noon.keymap.set` and `noon.keymap.del`. The tables above are the built-in defaults. An override on the same key wins, unless a modal or overlay is open (help, plan form, permission prompt).
+Plugins and `init.lua` can rebind keys at runtime with `n00n.keymap.set` and `n00n.keymap.del`. The tables above are the built-in defaults. An override on the same key wins, unless a modal or overlay is open (help, plan form, permission prompt).
 
 Precedence, high to low:
 
 1. **Suspend** (`Ctrl+Z`, Unix). Always wins, non-remappable.
 2. **Modal and overlay keys.** An open modal or picker consumes its keys first, so they cannot be shadowed while open.
-3. **Lua overrides** from `noon.keymap.set`. Last set wins; binding the same key twice warns.
-4. **Built-in defaults.** An override on the same key shadows them; `noon.keymap.del` lifts the override so the default returns. Suspend is the only binding outside this layer, so every key is remappable except `Ctrl+Z`.
+3. **Lua overrides** from `n00n.keymap.set`. Last set wins; binding the same key twice warns.
+4. **Built-in defaults.** An override on the same key shadows them; `n00n.keymap.del` lifts the override so the default returns. Suspend is the only binding outside this layer, so every key is remappable except `Ctrl+Z`.
 
 Only single-key bindings can be overridden. Multi-key combinations and non-key rows (like `Type` to filter) cannot.
 
@@ -112,10 +112,10 @@ The `/help` modal and the splash show default labels, not live overrides, but pr
 
 ### Recovering from a bad keymap
 
-If an override leaves Noon stuck (a rebound `Ctrl+C`, a modal that won't close, a plugin that throws on load), boot without plugins:
+If an override leaves N00n stuck (a rebound `Ctrl+C`, a modal that won't close, a plugin that throws on load), boot without plugins:
 
 ```bash
-noon --no-plugins
+n00n --no-plugins
 ```
 
 This skips the Lua host and runs the full default keymap from Rust, so quit, Esc, scroll, and suspend always work.

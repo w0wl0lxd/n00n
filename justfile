@@ -29,10 +29,10 @@ pylint:
     ty check scripts/
 
 gen-docs:
-    cargo run -p noon-docgen
+    cargo run -p n00n-docgen
 
 gen-docs-check:
-    cargo run -p noon-docgen -- --check
+    cargo run -p n00n-docgen -- --check
 
 machete:
     cargo machete

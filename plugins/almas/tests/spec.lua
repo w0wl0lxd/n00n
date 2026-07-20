@@ -1,6 +1,6 @@
 local refine = require("refine")
 local roles = require("roles")
-local route_tier = require("noon.route_tier")
+local route_tier = require("n00n.route_tier")
 
 local failures = {}
 local function case(name, fn)
@@ -46,10 +46,10 @@ end)
 case("retrieve_lexical_finds_context", function()
   local retrieve = require("retrieve")
 
-  -- Mock noon.agent.call_tool
-  local old_call = noon.agent.call_tool
+  -- Mock n00n.agent.call_tool
+  local old_call = n00n.agent.call_tool
   local grep_pattern = nil
-  noon.agent.call_tool = function(ctx, name, args)
+  n00n.agent.call_tool = function(ctx, name, args)
     if name == "grep" then
       grep_pattern = args.pattern
       return "class RetryHelper {\n  // some implementation\n}"
@@ -61,7 +61,7 @@ case("retrieve_lexical_finds_context", function()
   local block = retrieve.retrieve(dummy_ctx, "add retry helper", "developer", 2)
 
   -- Restore original
-  noon.agent.call_tool = old_call
+  n00n.agent.call_tool = old_call
 
   assert(block ~= nil, "retrieved block should not be nil")
   assert(block:find("RetryHelper") ~= nil, "retrieved block should contain mock results")
@@ -71,10 +71,10 @@ end)
 case("retrieve_vector_fallback", function()
   local retrieve = require("retrieve")
 
-  -- Mock noon.agent.call_tool to return empty for first call, then a match
-  local old_call = noon.agent.call_tool
+  -- Mock n00n.agent.call_tool to return empty for first call, then a match
+  local old_call = n00n.agent.call_tool
   local calls = 0
-  noon.agent.call_tool = function(ctx, name, args)
+  n00n.agent.call_tool = function(ctx, name, args)
     if name == "grep" then
       calls = calls + 1
       if calls == 1 then
@@ -90,30 +90,30 @@ case("retrieve_vector_fallback", function()
   local block = retrieve.retrieve(dummy_ctx, "add retry helper", "developer", 2)
 
   -- Restore original
-  noon.agent.call_tool = old_call
+  n00n.agent.call_tool = old_call
 
   assert(block ~= nil, "retrieved block should fallback to vector and not be nil")
   assert(block:find("vector similarity") ~= nil, "retrieved block should contain mock results")
 end)
 
 case("roles_run_with_custom_opts", function()
-  -- Mock noon.agent.resolve_model, noon.agent.tools, and noon.agent.session
-  local old_resolve = noon.agent.resolve_model
-  local old_tools = noon.agent.tools
-  local old_session = noon.agent.session
-  local old_cost = noon.agent.usage_cost
+  -- Mock n00n.agent.resolve_model, n00n.agent.tools, and n00n.agent.session
+  local old_resolve = n00n.agent.resolve_model
+  local old_tools = n00n.agent.tools
+  local old_session = n00n.agent.session
+  local old_cost = n00n.agent.usage_cost
 
   local resolved_tier = nil
-  noon.agent.resolve_model = function(ctx, opts)
+  n00n.agent.resolve_model = function(ctx, opts)
     resolved_tier = opts.tier
     return { spec = "mock-model" }, nil
   end
-  noon.agent.tools = function()
+  n00n.agent.tools = function()
     return {}, nil
   end
 
   local session_name = nil
-  noon.agent.session = function(ctx, opts)
+  n00n.agent.session = function(ctx, opts)
     session_name = opts.name
     return {
       prompt = function()
@@ -123,17 +123,17 @@ case("roles_run_with_custom_opts", function()
     },
       nil
   end
-  noon.agent.usage_cost = function()
+  n00n.agent.usage_cost = function()
     return 0.05, nil
   end
 
   local dummy_ctx = {}
   local res = roles.run(dummy_ctx, "developer", "implement helper", { model_tier = "medium" })
 
-  noon.agent.resolve_model = old_resolve
-  noon.agent.tools = old_tools
-  noon.agent.session = old_session
-  noon.agent.usage_cost = old_cost
+  n00n.agent.resolve_model = old_resolve
+  n00n.agent.tools = old_tools
+  n00n.agent.session = old_session
+  n00n.agent.usage_cost = old_cost
 
   assert(res.ok == true, "roles.run should succeed")
   assert(resolved_tier == "medium", "should use custom model tier")

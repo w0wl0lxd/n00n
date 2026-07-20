@@ -16,74 +16,74 @@ end
 local _tmpdir_counter = 0
 local function mktmpdir()
   _tmpdir_counter = _tmpdir_counter + 1
-  local name = "/tmp/noon_write_spec_" .. tostring(os.time()) .. "_" .. _tmpdir_counter
-  noon.fs.mkdir(name)
+  local name = "/tmp/n00n_write_spec_" .. tostring(os.time()) .. "_" .. _tmpdir_counter
+  n00n.fs.mkdir(name)
   return name
 end
 
 local function rmtree(dir)
-  local entries = noon.fs.dir(dir)
+  local entries = n00n.fs.dir(dir)
   if entries then
     for _, e in ipairs(entries) do
-      local p = noon.fs.joinpath(dir, e[1])
+      local p = n00n.fs.joinpath(dir, e[1])
       if e[2] == "directory" then
         rmtree(p)
       else
-        noon.fs.rm(p)
+        n00n.fs.rm(p)
       end
     end
   end
-  noon.fs.rm(dir)
+  n00n.fs.rm(dir)
 end
 
 case("write_new_file_succeeds", function()
   local tmpdir = mktmpdir()
-  local path = noon.fs.joinpath(tmpdir, "hello.txt")
-  noon.fs.write(path, "hello world")
-  local content = noon.fs.read(path)
+  local path = n00n.fs.joinpath(tmpdir, "hello.txt")
+  n00n.fs.write(path, "hello world")
+  local content = n00n.fs.read(path)
   eq(content, "hello world", "round-trip content mismatch")
   rmtree(tmpdir)
 end)
 
 case("write_creates_parent_directories", function()
   local tmpdir = mktmpdir()
-  local path = noon.fs.joinpath(tmpdir, "a/b/c/deep.txt")
-  local parent = noon.fs.dirname(path)
-  noon.fs.mkdir(parent, { parents = true })
-  noon.fs.write(path, "nested")
-  local content = noon.fs.read(path)
+  local path = n00n.fs.joinpath(tmpdir, "a/b/c/deep.txt")
+  local parent = n00n.fs.dirname(path)
+  n00n.fs.mkdir(parent, { parents = true })
+  n00n.fs.write(path, "nested")
+  local content = n00n.fs.read(path)
   eq(content, "nested", "nested file content mismatch")
   rmtree(tmpdir)
 end)
 
 case("write_overwrites_existing_file", function()
   local tmpdir = mktmpdir()
-  local path = noon.fs.joinpath(tmpdir, "overwrite.txt")
-  noon.fs.write(path, "first")
-  noon.fs.write(path, "second")
-  local content = noon.fs.read(path)
+  local path = n00n.fs.joinpath(tmpdir, "overwrite.txt")
+  n00n.fs.write(path, "first")
+  n00n.fs.write(path, "second")
+  local content = n00n.fs.read(path)
   eq(content, "second", "overwrite should replace content entirely")
   rmtree(tmpdir)
 end)
 
 case("write_empty_content", function()
   local tmpdir = mktmpdir()
-  local path = noon.fs.joinpath(tmpdir, "empty.txt")
-  noon.fs.write(path, "")
-  eq(noon.fs.read(path), "", "empty file should round-trip as empty string")
+  local path = n00n.fs.joinpath(tmpdir, "empty.txt")
+  n00n.fs.write(path, "")
+  eq(n00n.fs.read(path), "", "empty file should round-trip as empty string")
   rmtree(tmpdir)
 end)
 
 case("write_large_content", function()
   local tmpdir = mktmpdir()
-  local path = noon.fs.joinpath(tmpdir, "large.txt")
+  local path = n00n.fs.joinpath(tmpdir, "large.txt")
   local lines = {}
   for i = 1, 5000 do
     lines[i] = "line " .. i
   end
   local content = table.concat(lines, "\n") .. "\n"
-  noon.fs.write(path, content)
-  eq(noon.fs.read(path), content, "large file content mismatch")
+  n00n.fs.write(path, content)
+  eq(n00n.fs.read(path), content, "large file content mismatch")
   rmtree(tmpdir)
 end)
 
@@ -95,9 +95,9 @@ case("write_preserves_content_exactly", function()
     { "special", "tab\there\nnewline\n\\backslash\n" },
   }
   for _, v in ipairs(vectors) do
-    local path = noon.fs.joinpath(tmpdir, v[1] .. ".txt")
-    noon.fs.write(path, v[2])
-    eq(noon.fs.read(path), v[2], v[1] .. " content mismatch")
+    local path = n00n.fs.joinpath(tmpdir, v[1] .. ".txt")
+    n00n.fs.write(path, v[2])
+    eq(n00n.fs.read(path), v[2], v[1] .. " content mismatch")
   end
   rmtree(tmpdir)
 end)

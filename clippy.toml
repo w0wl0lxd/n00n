@@ -1,5 +1,5 @@
 disallowed-methods = [
-  { path = "uuid::Uuid::new_v4", reason = "use noon_storage::id::NoonId::generate (base58-encoded UUIDv7)", allow-invalid = true },
-  { path = "uuid::Uuid::new_v7", reason = "use noon_storage::id::NoonId::generate (base58-encoded UUIDv7)", allow-invalid = true },
-  { path = "uuid::Uuid::now_v7", reason = "use noon_storage::id::NoonId::generate (base58-encoded UUIDv7)", allow-invalid = true },
+  { path = "uuid::Uuid::new_v4", reason = "use n00n_storage::id::N00nId::generate (base58-encoded UUIDv7)", allow-invalid = true },
+  { path = "uuid::Uuid::new_v7", reason = "use n00n_storage::id::N00nId::generate (base58-encoded UUIDv7)", allow-invalid = true },
+  { path = "uuid::Uuid::now_v7", reason = "use n00n_storage::id::N00nId::generate (base58-encoded UUIDv7)", allow-invalid = true },
 ]

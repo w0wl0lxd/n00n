@@ -1,4 +1,4 @@
-local shorten_path = require("noon.shorten_path")
+local shorten_path = require("n00n.shorten_path")
 
 local DESCRIPTION =
   [[View an image file (png, jpeg, gif, webp) so you can actually see it; it is returned as vision input alongside the tool result. Use instead of `read` for images.
@@ -12,7 +12,7 @@ local MAX_RAW_BYTES = 3 * 1024 * 1024
 -- Anthropic downscales anything over 1568px on the long edge server-side
 -- anyway, so ship fewer bytes and do it here.
 local MAX_EDGE = 1568
--- Refuse absurdly large files up front; noon.image.decode also enforces a
+-- Refuse absurdly large files up front; n00n.image.decode also enforces a
 -- host-side pixel cap against decode bombs.
 local MAX_INPUT_BYTES = 50 * 1024 * 1024
 
@@ -41,7 +41,7 @@ local function fail(msg)
 end
 
 local function load_image(path)
-  local bytes, read_err = noon.fs.read_bytes(path)
+  local bytes, read_err = n00n.fs.read_bytes(path)
   if not bytes then
     return fail("cannot read " .. path .. ": " .. (read_err or "unknown error"))
   end
@@ -52,7 +52,7 @@ local function load_image(path)
     )
   end
 
-  local info, probe_err = noon.image.probe(bytes)
+  local info, probe_err = n00n.image.probe(bytes)
   if not info then
     return fail(path .. " is not an image (" .. (probe_err or "unrecognized format") .. ")")
   end
@@ -63,7 +63,7 @@ local function load_image(path)
 
   -- Decode fully even on the pass-through path: a corrupt file shipped
   -- undecoded poisons message history and fails every later request.
-  local img, decode_err = noon.image.decode(bytes)
+  local img, decode_err = n00n.image.decode(bytes)
   if not img then
     return fail("cannot decode " .. path .. ": " .. (decode_err or "unknown error"))
   end
@@ -71,7 +71,7 @@ local function load_image(path)
   if size <= MAX_RAW_BYTES and math.max(info.width, info.height) <= MAX_EDGE then
     return {
       llm_output = caption(path, size, info.width, info.height),
-      image = { media_type = media_type, data = noon.base64.encode(bytes) },
+      image = { media_type = media_type, data = n00n.base64.encode(bytes) },
     }
   end
 
@@ -110,11 +110,11 @@ local function load_image(path)
 
   return {
     llm_output = caption(path, #encoded, img:width(), img:height(), note),
-    image = { media_type = MEDIA_TYPES[out_format], data = noon.base64.encode(encoded) },
+    image = { media_type = MEDIA_TYPES[out_format], data = n00n.base64.encode(encoded) },
   }
 end
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "view_image",
   kind = "read",
   description = DESCRIPTION,
@@ -135,7 +135,7 @@ noon.api.register_tool({
   },
 
   header = function(input)
-    local buf = noon.ui.buf()
+    local buf = n00n.ui.buf()
     buf:line({ { shorten_path(input.path or ""), "path" } })
     return buf
   end,
@@ -145,8 +145,8 @@ noon.api.register_tool({
     if not raw then
       return fail("error: path is required")
     end
-    local path = noon.fs.abspath(raw)
-    local meta = noon.fs.metadata(path)
+    local path = n00n.fs.abspath(raw)
+    local meta = n00n.fs.metadata(path)
     if not meta then
       return fail("error: path not found: " .. path)
     end

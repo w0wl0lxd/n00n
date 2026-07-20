@@ -3,12 +3,12 @@ use std::ffi::CString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use noon_storage::version::{self, VersionError};
-use noon_storage::{StateDir, StorageError};
+use n00n_storage::version::{self, VersionError};
+use n00n_storage::{StateDir, StorageError};
 
-const INSTALL_SCRIPT_URL: &str = "https://raw.githubusercontent.com/w0wl0lxd/noon/main/install.sh";
-const BACKUP_FILENAME: &str = "noon_backup";
-const INSTALL_DIR_ENV: &str = "NOON_INSTALL_DIR";
+const INSTALL_SCRIPT_URL: &str = "https://raw.githubusercontent.com/w0wl0lxd/n00n/main/install.sh";
+const BACKUP_FILENAME: &str = "n00n_backup";
+const INSTALL_DIR_ENV: &str = "N00N_INSTALL_DIR";
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateError {
@@ -122,7 +122,7 @@ fn restore_backup(backup_path: &Path, exe_path: &Path) -> Result<(), UpdateError
         source: e,
     };
 
-    let tmp = exe_path.with_extension("noon_tmp");
+    let tmp = exe_path.with_extension("n00n_tmp");
     if needs_sudo(exe_path) {
         println!("Restoring to {} (requires sudo)...", exe_path.display());
         let status = std::process::Command::new("sudo")
@@ -190,7 +190,7 @@ pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
     if no_color {
         println!("{script}");
     } else {
-        println!("{}", noon_ui::highlight_ansi("bash", &script));
+        println!("{}", n00n_ui::highlight_ansi("bash", &script));
     }
 
     if !skip_confirm && !prompt_yes(&install_dir) {
@@ -205,7 +205,7 @@ pub fn update(skip_confirm: bool, no_color: bool) -> Result<(), UpdateError> {
     println!();
     println!("Updated successfully.");
     println!("Previous version saved to: {}", backup_path.display());
-    println!("To restore: noon rollback");
+    println!("To restore: n00n rollback");
 
     Ok(())
 }

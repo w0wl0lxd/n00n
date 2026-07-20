@@ -12,7 +12,7 @@ local function parse_sse_response(body)
   for line in body:gmatch("[^\n]+") do
     local data = line:match("^data: (.+)")
     if data then
-      local parsed, parse_err = noon.json.decode(data)
+      local parsed, parse_err = n00n.json.decode(data)
       if not parsed then
         return nil, "SSE JSON parse error: " .. parse_err
       end

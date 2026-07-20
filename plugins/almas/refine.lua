@@ -36,7 +36,7 @@ function M.refine_goal(ctx, goal, supervisor_tier)
     return M.refine_goal_lexical(resolved_goal)
   end
 
-  local model, merr = noon.agent.resolve_model(resolved_ctx, { tier = supervisor_tier or "strong" })
+  local model, merr = n00n.agent.resolve_model(resolved_ctx, { tier = supervisor_tier or "strong" })
   if merr then
     return M.refine_goal_lexical(resolved_goal)
   end
@@ -45,7 +45,7 @@ function M.refine_goal(ctx, goal, supervisor_tier)
     .. "into a detailed, clear, and actionable development brief. Identify any implicit requirements, "
     .. "edge cases, or potential technical risks, and define concrete acceptance criteria. Be concise and precise."
 
-  local sess, sess_err = noon.agent.session(resolved_ctx, {
+  local sess, sess_err = n00n.agent.session(resolved_ctx, {
     model_spec = model.spec,
     system = system,
     audience = "general_sub",
