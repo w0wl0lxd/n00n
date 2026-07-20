@@ -4,16 +4,16 @@ use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 
-use noon_agent::tools::ToolRegistry;
-use noon_config::{load_env_files, load_permissions};
-use noon_lua::PluginHost;
-use noon_storage::StateDir;
+use n00n_agent::tools::ToolRegistry;
+use n00n_config::{load_env_files, load_permissions};
+use n00n_lua::PluginHost;
+use n00n_storage::StateDir;
 
 use crate::setup;
 
 pub fn run(model_arg: Option<String>, yolo: bool, no_jit: bool) -> Result<()> {
     let storage = StateDir::resolve().context("resolve data directory")?;
-    noon_providers::model_registry::load_from_storage(&storage);
+    n00n_providers::model_registry::load_from_storage(&storage);
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
     load_env_files(&cwd);
@@ -42,7 +42,7 @@ pub fn run(model_arg: Option<String>, yolo: bool, no_jit: bool) -> Result<()> {
         .load_builtins(&config.plugins)
         .context("load builtin plugins")?;
 
-    let timeouts = noon_providers::Timeouts {
+    let timeouts = n00n_providers::Timeouts {
         connect: config.provider.connect_timeout,
         low_speed: config.provider.low_speed_timeout,
         stream: config.provider.stream_timeout,
@@ -51,14 +51,14 @@ pub fn run(model_arg: Option<String>, yolo: bool, no_jit: bool) -> Result<()> {
     let model = setup::resolve_model(model_arg.as_deref(), &config.provider, &storage)?;
     setup::install_panic_log_hook();
 
-    let (mcp_handle, _mcp_config_errors) = smol::block_on(noon_agent::mcp::start(&cwd));
+    let (mcp_handle, _mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(&cwd));
 
     let prompt_slots = plugin_host
         .event_handle()
         .map(|h| h.collect_prompt_slots())
         .unwrap_or_default();
 
-    noon_acp::run(noon_acp::AcpParams {
+    n00n_acp::run(n00n_acp::AcpParams {
         model,
         config: config.agent,
         permissions_config: config.permissions,

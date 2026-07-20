@@ -25,24 +25,24 @@ end
 local _tmpdir_counter = 0
 local function mktmpdir()
   _tmpdir_counter = _tmpdir_counter + 1
-  local name = "/tmp/noon_spec_" .. tostring(os.clock()):gsub("%.", "") .. "_" .. _tmpdir_counter
-  noon.fs.mkdir(name)
+  local name = "/tmp/n00n_spec_" .. tostring(os.clock()):gsub("%.", "") .. "_" .. _tmpdir_counter
+  n00n.fs.mkdir(name)
   return name
 end
 
 local function rmtree(dir)
-  local entries = noon.fs.dir(dir)
+  local entries = n00n.fs.dir(dir)
   if entries then
     for _, e in ipairs(entries) do
-      local p = noon.fs.joinpath(dir, e[1])
+      local p = n00n.fs.joinpath(dir, e[1])
       if e[2] == "directory" then
         rmtree(p)
       else
-        noon.fs.rm(p)
+        n00n.fs.rm(p)
       end
     end
   end
-  noon.fs.rm(dir)
+  n00n.fs.rm(dir)
 end
 
 case("fnv1a_known_vectors", function()
@@ -125,10 +125,10 @@ end)
 case("dir_total_bytes", function()
   local tmpdir = mktmpdir()
   eq(dir_total_bytes(tmpdir), 0, "empty dir")
-  eq(dir_total_bytes("/tmp/noon_test_surely_missing_" .. _tmpdir_counter), 0, "nonexistent dir")
+  eq(dir_total_bytes("/tmp/n00n_test_surely_missing_" .. _tmpdir_counter), 0, "nonexistent dir")
 
-  noon.fs.write(noon.fs.joinpath(tmpdir, "a"), "12345")
-  noon.fs.write(noon.fs.joinpath(tmpdir, "b"), "67890")
+  n00n.fs.write(n00n.fs.joinpath(tmpdir, "a"), "12345")
+  n00n.fs.write(n00n.fs.joinpath(tmpdir, "b"), "67890")
   eq(dir_total_bytes(tmpdir), 10, "sum of files")
   rmtree(tmpdir)
 end)
@@ -136,15 +136,15 @@ end)
 case("list_memories_empty_or_missing", function()
   local tmpdir = mktmpdir()
   eq(list_memories(tmpdir), "No memories yet.")
-  eq(list_memories("/tmp/noon_test_does_not_exist_" .. _tmpdir_counter), "No memories yet.")
+  eq(list_memories("/tmp/n00n_test_does_not_exist_" .. _tmpdir_counter), "No memories yet.")
   rmtree(tmpdir)
 end)
 
 case("list_memories_sorts_sums_and_ignores_subdirs", function()
   local tmpdir = mktmpdir()
-  noon.fs.write(noon.fs.joinpath(tmpdir, "zebra.md"), "zzz")
-  noon.fs.write(noon.fs.joinpath(tmpdir, "alpha.md"), "a")
-  noon.fs.mkdir(noon.fs.joinpath(tmpdir, "subdir"))
+  n00n.fs.write(n00n.fs.joinpath(tmpdir, "zebra.md"), "zzz")
+  n00n.fs.write(n00n.fs.joinpath(tmpdir, "alpha.md"), "a")
+  n00n.fs.mkdir(n00n.fs.joinpath(tmpdir, "subdir"))
 
   local result = list_memories(tmpdir)
   assert(result:find("alpha.md") < result:find("zebra.md"), "should be sorted")
@@ -156,17 +156,17 @@ end)
 
 case("write_read_delete_lifecycle", function()
   local tmpdir = mktmpdir()
-  assert(not noon.fs.metadata(noon.fs.joinpath(tmpdir, "nope.md")), "metadata should be nil for nonexistent")
+  assert(not n00n.fs.metadata(n00n.fs.joinpath(tmpdir, "nope.md")), "metadata should be nil for nonexistent")
 
   local file_path = safe_resolve(tmpdir, "arch.md")
-  noon.fs.write(file_path, "# Architecture\nMicroservices")
-  eq(noon.fs.read(file_path), "# Architecture\nMicroservices")
+  n00n.fs.write(file_path, "# Architecture\nMicroservices")
+  eq(n00n.fs.read(file_path), "# Architecture\nMicroservices")
 
-  noon.fs.write(file_path, "v2")
-  eq(noon.fs.read(file_path), "v2")
+  n00n.fs.write(file_path, "v2")
+  eq(n00n.fs.read(file_path), "v2")
 
-  noon.fs.rm(file_path)
-  assert(not noon.fs.metadata(file_path), "file should be deleted")
+  n00n.fs.rm(file_path)
+  assert(not n00n.fs.metadata(file_path), "file should be deleted")
   rmtree(tmpdir)
 end)
 

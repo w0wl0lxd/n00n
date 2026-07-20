@@ -1,6 +1,6 @@
 local QuestionForm = require("question_form")
 local QuestionHelpers = require("question_helpers")
-local ToolView = require("noon.tool_view")
+local ToolView = require("n00n.tool_view")
 
 local DESCRIPTION = [[Use this tool when you need to ask the user questions during execution. This allows you to:
 - Gather user preferences or requirements
@@ -14,7 +14,7 @@ Rules:
 - Put recommended option first with "(Recommended)" suffix.]]
 
 local function card_width()
-  local ok, size = pcall(noon.ui.terminal_size)
+  local ok, size = pcall(n00n.ui.terminal_size)
   if ok and type(size) == "table" and type(size.cols) == "number" then
     return math.max(40, size.cols - 8)
   end
@@ -29,7 +29,7 @@ local function normalize_questions(questions)
   end
 end
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "question",
   description = DESCRIPTION,
   schema = {

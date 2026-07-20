@@ -7,19 +7,19 @@ group = "Getting Started"
 
 # Configuration
 
-Settings go in `init.lua`, a Lua script that calls `noon.setup()`. Same language as plugins.
+Settings go in `init.lua`, a Lua script that calls `n00n.setup()`. Same language as plugins.
 
 Two places, both optional:
 
-- **Global**: `~/.config/noon/init.lua`
-- **Project**: `.noon/init.lua` (relative to your working directory)
+- **Global**: `~/.config/n00n/init.lua`
+- **Project**: `.n00n/init.lua` (relative to your working directory)
 
 When both exist, project settings override global ones. Neither file is required.
 
 ## Example
 
 ```lua
-noon.setup({
+n00n.setup({
     ui = {
         splash_animation = true,
         mouse_scroll_lines = 5,
@@ -46,7 +46,7 @@ noon.setup({
 
 All fields are optional. Typos in field names cause an error right away.
 
-`noon.setup()` can only be called once per init.lua.
+`n00n.setup()` can only be called once per init.lua.
 
 ## Full Reference
 
@@ -119,10 +119,10 @@ The `plugins` table turns plugins on or off and passes options to them. All bund
 
 Each plugin checks its own options at startup. A typo, a wrong type, or an unknown plugin name gives you a clear error right away.
 
-The edit plugin's extra tools are options too: `plugins.edit = { multiedit = false, edit_lines = true }`. The old `tools` table is gone. If your config still uses it, Noon stops at startup and shows you the new form.
+The edit plugin's extra tools are options too: `plugins.edit = { multiedit = false, edit_lines = true }`. The old `tools` table is gone. If your config still uses it, N00n stops at startup and shows you the new form.
 
 ```lua
-noon.setup({
+n00n.setup({
     plugins = {
         bash = { timeout_secs = 180 },
         websearch = { enabled = false },
@@ -189,7 +189,7 @@ noon.setup({
 
 | Field | Type | Default | Min | Description |
 |-------|------|---------|-----|-------------|
-| `plugin_dev` | boolean | `true` | - | Offer the builtin noon-plugin-dev skill for writing noon plugins. |
+| `plugin_dev` | boolean | `true` | - | Offer the builtin n00n-plugin-dev skill for writing n00n plugins. |
 
 ### `plugins.task`
 
@@ -216,24 +216,24 @@ noon.setup({
 
 ## Validation
 
-If a value is below its minimum, Noon shows a `ConfigError` with the field name, value, and minimum.
+If a value is below its minimum, N00n shows a `ConfigError` with the field name, value, and minimum.
 
 ## Directory layout
 
-Noon uses XDG directories on Linux and macOS:
+N00n uses XDG directories on Linux and macOS:
 
 | Purpose | Path |
 |---------|------|
-| Config | `~/.config/noon/` (init.lua, permissions.toml, mcp.toml) |
-| Data | `~/.local/share/noon/` |
-| Logs | `~/.local/logs/noon/` |
-| State | `~/.local/state/noon/` |
+| Config | `~/.config/n00n/` (init.lua, permissions.toml, mcp.toml) |
+| Data | `~/.local/share/n00n/` |
+| Logs | `~/.local/logs/n00n/` |
+| State | `~/.local/state/n00n/` |
 
 ## Personal Instructions
 
 On top of `AGENTS.md`, you can add your own instructions in two places:
 
 - `AGENTS.local.md` at project root for per-project preferences (gitignored)
-- `~/.config/noon/AGENTS.md` for preferences that apply to all projects
+- `~/.config/n00n/AGENTS.md` for preferences that apply to all projects
 
 Both are added to the system prompt at the start of every session.

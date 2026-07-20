@@ -1,11 +1,11 @@
 local indexer = require("indexer")
-local ToolView = require("noon.tool_view")
-local shorten_path = require("noon.shorten_path")
+local ToolView = require("n00n.tool_view")
+local shorten_path = require("n00n.shorten_path")
 
 local TRUNCATED_SUFFIX = indexer.TRUNCATED_SUFFIX
 local TRUNCATED_INFIX = " more truncated]"
 
-local opts = noon.api.register_options({
+local opts = n00n.api.register_options({
   max_file_size_mb = { default = 2, min = 1, desc = "Refuse to index files larger than this many MB." },
 })
 
@@ -55,7 +55,7 @@ end
 
 local function render_skeleton(view, text, meta)
   local hl_entries = {}
-  for line_nr, line in ipairs(noon.split(text:gsub("\n+$", ""), "\n")) do
+  for line_nr, line in ipairs(n00n.split(text:gsub("\n+$", ""), "\n")) do
     local m = (meta and meta[line_nr]) or infer_line_meta(line)
     if line == "" then
       view:append("")
@@ -86,7 +86,7 @@ local function apply_highlights(view, hl_entries, ext)
   for _, e in ipairs(hl_entries) do
     texts[#texts + 1] = e.text
   end
-  local highlighted = noon.ui.highlight(table.concat(texts, "\n"), ext, { independent = true })
+  local highlighted = n00n.ui.highlight(table.concat(texts, "\n"), ext, { independent = true })
   if not highlighted then
     return
   end
@@ -108,7 +108,7 @@ local function apply_highlights(view, hl_entries, ext)
 end
 
 local function render_header(path, line_count)
-  local buf = noon.ui.buf()
+  local buf = n00n.ui.buf()
   local spans = { { shorten_path(path), "path" } }
   if line_count then
     spans[#spans + 1] = { " (" .. line_count .. " lines)", "dim" }
@@ -119,7 +119,7 @@ end
 
 local function render_index(skeleton, path, ctx, ext, line_meta)
   local tol = ctx:tool_output_lines()
-  local buf = noon.ui.buf()
+  local buf = n00n.ui.buf()
   local view = ToolView.new(buf, {
     max_lines = (tol and tol.index) or 5,
     keep = "head",
@@ -131,7 +131,7 @@ local function render_index(skeleton, path, ctx, ext, line_meta)
   view:finish()
 
   if ext then
-    noon.async.run(function()
+    n00n.async.run(function()
       apply_highlights(view, hl_entries, ext)
     end)
   end
@@ -140,17 +140,17 @@ local function render_index(skeleton, path, ctx, ext, line_meta)
   return buf, render_header(path, line_count)
 end
 
-noon.api.register_prompt_hint({
+n00n.api.register_prompt_hint({
   slot = "tool_usage",
   content = "- Use the **index** tool first on individual files to get their skeleton, then use the **read** tool with offset/limit for the specific section you need.",
 })
 
-noon.api.register_prompt_hint({
+n00n.api.register_prompt_hint({
   slot = "efficient_tools",
   content = "index",
 })
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "index",
   kind = "read",
   description = [[
@@ -180,7 +180,7 @@ Return a compact overview of a source file: imports, type definitions, function 
       return { llm_output = "error: path is required", is_error = true }
     end
 
-    local meta = noon.fs.metadata(path)
+    local meta = n00n.fs.metadata(path)
     if meta and meta.is_dir then
       return {
         llm_output = "Path is a directory. Use index on files or use the read or glob tool to list directories.",
@@ -215,7 +215,7 @@ Return a compact overview of a source file: imports, type definitions, function 
       }
     end
 
-    local source, err = noon.fs.read(path)
+    local source, err = n00n.fs.read(path)
     if not source then
       return { llm_output = "error: " .. err, is_error = true }
     end

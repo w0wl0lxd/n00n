@@ -1,6 +1,6 @@
-local ToolView = require("noon.tool_view")
-local shorten_path = require("noon.shorten_path")
-local output_limits = require("noon.output_limits")
+local ToolView = require("n00n.tool_view")
+local shorten_path = require("n00n.shorten_path")
+local output_limits = require("n00n.output_limits")
 
 local DESCRIPTION = [[Read a file or directory. Returns contents with line numbers (1-indexed).
 
@@ -17,7 +17,7 @@ local DESCRIPTION = [[Read a file or directory. Returns contents with line numbe
 
 local DEFAULT_MAX_OUTPUT_LINES = 2000
 
-local opts = noon.api.register_options({
+local opts = n00n.api.register_options({
   max_line_bytes = { default = 500, min = 80, desc = "Truncate lines longer than this many bytes." },
   max_output_lines = output_limits.specs.max_output_lines,
 })
@@ -48,7 +48,7 @@ end
 
 local function apply_highlights(view, lines, ext, prefix)
   local opts = prefix and { prefix = prefix } or nil
-  local highlighted = noon.ui.highlight(table.concat(lines, "\n"), ext, opts)
+  local highlighted = n00n.ui.highlight(table.concat(lines, "\n"), ext, opts)
   if not highlighted then
     return
   end
@@ -63,7 +63,7 @@ local function apply_highlights(view, lines, ext, prefix)
 end
 
 local function build_file_view(lines, start_line, total_lines, path, ctx, prefix)
-  local buf = noon.ui.buf()
+  local buf = n00n.ui.buf()
   local view = ToolView.new(buf, read_view_opts(ctx))
   local nr_fmt = line_nr_fmt(total_lines)
 
@@ -88,7 +88,7 @@ local function build_file_view(lines, start_line, total_lines, path, ctx, prefix
   view:finish()
 
   local ext = path:match("%.([^%.]+)$") or ""
-  noon.async.run(function()
+  n00n.async.run(function()
     apply_highlights(view, lines, ext, prefix)
   end)
 
@@ -99,7 +99,7 @@ local function build_file_view(lines, start_line, total_lines, path, ctx, prefix
 end
 
 local function build_dir_view(text, ctx)
-  local buf = noon.ui.buf()
+  local buf = n00n.ui.buf()
   local view = ToolView.new(buf, read_view_opts(ctx))
   view:append_text(text)
   view:finish()
@@ -110,7 +110,7 @@ local function build_dir_view(text, ctx)
 end
 
 local function read_file(path, offset, limit, ctx)
-  local content, err = noon.fs.read(path)
+  local content, err = n00n.fs.read(path)
   if not content then
     return { llm_output = "read error: " .. tostring(err), is_error = true }
   end
@@ -161,7 +161,7 @@ local function read_file(path, offset, limit, ctx)
 
   local basename = path:match("([^/]+)$")
   if not ctx:is_instruction_file(basename) then
-    local parent = noon.fs.dirname(path)
+    local parent = n00n.fs.dirname(path)
     if parent then
       local instructions = ctx:find_instructions(parent)
       if #instructions > 0 then
@@ -183,7 +183,7 @@ local function read_file(path, offset, limit, ctx)
 end
 
 local function list_dir(path, ctx)
-  local entries, err = noon.fs.dir(path)
+  local entries, err = n00n.fs.dir(path)
   if not entries then
     return { llm_output = "read error: " .. tostring(err), is_error = true }
   end
@@ -222,14 +222,14 @@ local function list_dir(path, ctx)
   return result
 end
 
-noon.api.register_prompt_hint({
+n00n.api.register_prompt_hint({
   slot = "tool_usage",
   content = [[
 - When using the **read** tool, only read the sections you actually need.
 - Use `wc -l` to check total number of lines before reading to decide a reasonable **read** tool limit unless known already.]],
 })
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "read",
   kind = "read",
   description = DESCRIPTION,
@@ -252,7 +252,7 @@ noon.api.register_tool({
   },
 
   header = function(input)
-    local buf = noon.ui.buf()
+    local buf = n00n.ui.buf()
     local s = shorten_path(input.path or "")
     local start = input.offset or 1
     if input.limit then
@@ -266,7 +266,7 @@ noon.api.register_tool({
 
   restore = function(input, output, _is_error, ctx)
     local lines, start_line, total_lines = {}, nil, nil
-    for _, raw in ipairs(noon.split(output, "\n")) do
+    for _, raw in ipairs(n00n.split(output, "\n")) do
       local nr, text = raw:match("^%s*(%d+): (.*)$")
       if nr then
         start_line = start_line or tonumber(nr)
@@ -291,8 +291,8 @@ noon.api.register_tool({
     if not raw then
       return { llm_output = "error: path is required", is_error = true }
     end
-    local path = noon.fs.abspath(raw)
-    local meta = noon.fs.metadata(path)
+    local path = n00n.fs.abspath(raw)
+    local meta = n00n.fs.metadata(path)
     if not meta then
       return { llm_output = "error: path not found: " .. path, is_error = true }
     end

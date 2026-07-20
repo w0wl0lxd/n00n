@@ -1,7 +1,7 @@
 -- ALMAS: Autonomous LLM-based Multi-Agent Software Engineering (Tawosi et al.,
 -- ASE 2025). A supervisor decomposes an SDLC goal into role agents
 -- (product_manager, planner, developer, tester, reviewer); each runs as its own
--- subagent on a cost-aware model tier. Built entirely on noon.agent.* and the
+-- subagent on a cost-aware model tier. Built entirely on n00n.agent.* and the
 -- existing provider/model-tier machinery — no core changes.
 local memory = require("mem")
 local refine = require("refine")
@@ -92,19 +92,19 @@ local function plan_prompt(goal)
 end
 
 local function run_supervisor(ctx, goal, supervisor_tier)
-  local validator, verr = noon.json.schema_validator(PLANNER_OUTPUT)
+  local validator, verr = n00n.json.schema_validator(PLANNER_OUTPUT)
   if verr then
     return nil, "planner schema invalid: " .. verr
   end
-  local model, merr = noon.agent.resolve_model(ctx, { tier = supervisor_tier })
+  local model, merr = n00n.agent.resolve_model(ctx, { tier = supervisor_tier })
   if merr then
     return nil, merr
   end
-  local system, serr = noon.agent.system_prompt(ctx, { prompt_id = "general", instructions = true })
+  local system, serr = n00n.agent.system_prompt(ctx, { prompt_id = "general", instructions = true })
   if serr then
     return nil, serr
   end
-  local tools, terr = noon.agent.tools(ctx, { spec = model.spec, audience = "general_sub", include_mcp = true })
+  local tools, terr = n00n.agent.tools(ctx, { spec = model.spec, audience = "general_sub", include_mcp = true })
   if terr then
     return nil, terr
   end
@@ -125,7 +125,7 @@ local function run_supervisor(ctx, goal, supervisor_tier)
     },
   }
 
-  local sess, sess_err = noon.agent.session(ctx, {
+  local sess, sess_err = n00n.agent.session(ctx, {
     model_spec = model.spec,
     system = system,
     tools = tools,
@@ -152,7 +152,7 @@ local function run_supervisor(ctx, goal, supervisor_tier)
 end
 
 local function generate_learnings_digest(ctx, goal, report, supervisor_tier)
-  local model, merr = noon.agent.resolve_model(ctx, { tier = supervisor_tier or "strong" })
+  local model, merr = n00n.agent.resolve_model(ctx, { tier = supervisor_tier or "strong" })
   if merr then
     return nil
   end
@@ -163,7 +163,7 @@ local function generate_learnings_digest(ctx, goal, report, supervisor_tier)
     .. "what failed and how it was resolved, and constraints to remember. Do not include raw CLI output or verbose logs. "
     .. "Keep it under 250 words."
 
-  local sess, sess_err = noon.agent.session(ctx, {
+  local sess, sess_err = n00n.agent.session(ctx, {
     model_spec = model.spec,
     system = system,
     audience = "general_sub",
@@ -220,7 +220,7 @@ local function handler(input, ctx)
       if block and #block > 0 then
         if input.compact then
           local ok, t = pcall(function()
-            return noon.json.to_toon({ context = block })
+            return n00n.json.to_toon({ context = block })
           end)
           if ok and t then
             step_prompt = step_prompt .. "\n\nRelevant context (TOON):\n" .. t
@@ -261,7 +261,7 @@ local function header(input)
   return "almas: " .. (input.goal or ""):sub(1, 40)
 end
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "almas",
   description = description,
   kind = "execute",

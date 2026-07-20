@@ -1,22 +1,22 @@
-local ToolView = require("noon.tool_view")
+local ToolView = require("n00n.tool_view")
 local helpers = require("memory_helpers")
-local ListPicker = require("noon.list_picker")
+local ListPicker = require("n00n.list_picker")
 
 local function memories_path_suffix()
-  local cwd = noon.uv.cwd()
-  local root = noon.fs.root(cwd, ".git") or cwd
+  local cwd = n00n.uv.cwd()
+  local root = n00n.fs.root(cwd, ".git") or cwd
   return "projects/" .. helpers.project_id(root) .. "/memories"
 end
 
 local function resolve_dir()
-  local state = noon.env.state_dir()
+  local state = n00n.env.state_dir()
   if not state then
     return nil, "cannot resolve state dir"
   end
-  return noon.fs.joinpath(state, memories_path_suffix())
+  return n00n.fs.joinpath(state, memories_path_suffix())
 end
 
-noon.api.register_prompt_hint({
+n00n.api.register_prompt_hint({
   prompt = "system",
   slot = "after_instructions",
   content = function()
@@ -39,13 +39,13 @@ noon.api.register_prompt_hint({
   end,
 })
 
-noon.api.register_prompt_hint({
+n00n.api.register_prompt_hint({
   slot = "tool_usage",
   content = "- Proactively save non-obvious project gotchas and architecture decisions to **memory**.",
 })
 
 local function render_content(content, path, ctx)
-  local buf = noon.ui.buf()
+  local buf = n00n.ui.buf()
   local tol = ctx:tool_output_lines()
   local view = ToolView.new(buf, {
     max_lines = (tol and tol.other) or 20,
@@ -71,7 +71,7 @@ local function cmd_view(path, dir, ctx)
   if not file_path then
     return nil, err
   end
-  local content, err = noon.fs.read(file_path)
+  local content, err = n00n.fs.read(file_path)
   if not content then
     return nil, "read error: " .. err
   end
@@ -90,13 +90,13 @@ local function cmd_write(path, content, dir, ctx)
   if not file_path then
     return nil, err
   end
-  local meta = noon.fs.metadata(file_path)
+  local meta = n00n.fs.metadata(file_path)
   local existing_size = meta and meta.size or 0
   if helpers.dir_total_bytes(dir) - existing_size + #content > helpers.MAX_DIR_BYTES then
     return nil, "memory directory would exceed " .. helpers.MAX_DIR_BYTES .. " byte limit; delete stale entries first"
   end
-  noon.fs.mkdir(dir, { parents = true })
-  local ok, write_err = noon.fs.write(file_path, content)
+  n00n.fs.mkdir(dir, { parents = true })
+  local ok, write_err = n00n.fs.write(file_path, content)
   if not ok then
     return nil, "write error: " .. tostring(write_err)
   end
@@ -111,17 +111,17 @@ local function cmd_delete(path, dir)
   if not file_path then
     return nil, err
   end
-  if not noon.fs.metadata(file_path) then
+  if not n00n.fs.metadata(file_path) then
     return nil, "'" .. path .. "' does not exist"
   end
-  local ok, rm_err = noon.fs.rm(file_path)
+  local ok, rm_err = n00n.fs.rm(file_path)
   if not ok then
     return nil, "delete error: " .. tostring(rm_err)
   end
   return "deleted " .. path
 end
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "memory",
   description = "Persistent, project-scoped scratchpad for learnings, patterns, decisions, and gotchas across sessions.\n\n"
     .. "- Save important context before compaction or to build up project knowledge.\n"
@@ -184,19 +184,19 @@ noon.api.register_tool({
   end,
 })
 
-noon.api.register_command({
+n00n.api.register_command({
   name = "/memory",
   description = "View, edit, and delete memory files",
   handler = function()
     local dir = resolve_dir()
     if not dir then
-      noon.ui.flash("Cannot resolve memory directory")
+      n00n.ui.flash("Cannot resolve memory directory")
       return
     end
 
     local entries = helpers.collect_file_entries(dir)
     if #entries == 0 then
-      noon.ui.flash("No memory files yet")
+      n00n.ui.flash("No memory files yet")
       return
     end
     table.sort(entries, function(a, b)
@@ -232,10 +232,10 @@ noon.api.register_command({
       if event.type == "choice" then
         local item = entries[event.index]
         if item then
-          local path = noon.fs.joinpath(dir, item[1])
-          local code = noon.ui.open_editor(path)
+          local path = n00n.fs.joinpath(dir, item[1])
+          local code = n00n.ui.open_editor(path)
           if code == 0 then
-            local meta = noon.fs.metadata(path)
+            local meta = n00n.fs.metadata(path)
             if meta then
               item[2] = meta.size
             end
@@ -243,9 +243,9 @@ noon.api.register_command({
         end
       elseif event.type == "delete" then
         local item = entries[event.index]
-        local ok, err = noon.fs.rm(noon.fs.joinpath(dir, item[1]))
+        local ok, err = n00n.fs.rm(n00n.fs.joinpath(dir, item[1]))
         if ok then
-          noon.ui.flash("Deleted " .. item[1])
+          n00n.ui.flash("Deleted " .. item[1])
           table.remove(entries, event.index)
           if #entries == 0 then
             break
@@ -254,7 +254,7 @@ noon.api.register_command({
             last_cursor = #entries
           end
         else
-          noon.ui.flash("Delete failed: " .. tostring(err))
+          n00n.ui.flash("Delete failed: " .. tostring(err))
         end
       else
         break

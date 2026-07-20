@@ -1,11 +1,11 @@
-local truncate = require("noon.truncate")
-local ToolView = require("noon.tool_view")
-local shorten_path = require("noon.shorten_path")
-local output_limits = require("noon.output_limits")
+local truncate = require("n00n.truncate")
+local ToolView = require("n00n.tool_view")
+local shorten_path = require("n00n.shorten_path")
+local output_limits = require("n00n.output_limits")
 
 local NO_FILES_FOUND = "No files found"
 
-local opts = noon.api.register_options(output_limits.extend({
+local opts = n00n.api.register_options(output_limits.extend({
   search_result_limit = { default = 100, min = 10, desc = "Max files returned per search." },
 }))
 
@@ -14,7 +14,7 @@ local function glob_view_opts(ctx)
   return { max_lines = (tol and tol.other) or 3, keep = "head" }
 end
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "glob",
   kind = "search",
   description = [[Find files by glob pattern.
@@ -32,7 +32,7 @@ noon.api.register_tool({
   },
 
   header = function(input)
-    local buf = noon.ui.buf()
+    local buf = n00n.ui.buf()
     local spans = { { shorten_path(input.pattern or ""), "tool" } }
     if input.path then
       spans[#spans + 1] = { " in ", "dim" }
@@ -55,7 +55,7 @@ noon.api.register_tool({
     local limit = opts.search_result_limit
     local max_lines, max_bytes = output_limits.resolve(opts, ctx)
 
-    local files, err = noon.fs.glob(pattern, {
+    local files, err = n00n.fs.glob(pattern, {
       path = input.path,
       gitignore = true,
       sort = "mtime",
@@ -77,7 +77,7 @@ noon.api.register_tool({
     local text = table.concat(lines, "\n")
     local llm_output = truncate(text, max_lines, max_bytes)
 
-    local buf = noon.ui.buf()
+    local buf = n00n.ui.buf()
     local view = ToolView.new(buf, glob_view_opts(ctx))
     for _, line in ipairs(lines) do
       view:append(line)

@@ -1,5 +1,5 @@
-local shorten_path = require("noon.shorten_path")
-local ToolView = require("noon.tool_view")
+local shorten_path = require("n00n.shorten_path")
+local ToolView = require("n00n.tool_view")
 
 local DESCRIPTION = [[Write content to a file, replacing existing content.
 
@@ -14,7 +14,7 @@ local function write_view_opts(ctx)
 end
 
 local function build_view(content, path, ctx)
-  local buf = noon.ui.buf()
+  local buf = n00n.ui.buf()
   local view = ToolView.new(buf, write_view_opts(ctx))
   view:set_highlight(content, path:match("%.([^%.]+)$") or "")
   view:finish()
@@ -24,7 +24,7 @@ local function build_view(content, path, ctx)
   return buf
 end
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "write",
   kind = "edit",
   mutable_path = "path",
@@ -50,7 +50,7 @@ noon.api.register_tool({
   },
 
   header = function(input)
-    local buf = noon.ui.buf()
+    local buf = n00n.ui.buf()
     buf:line({ { shorten_path(input.path or ""), "path" } })
     return buf
   end,
@@ -73,19 +73,19 @@ noon.api.register_tool({
       return { llm_output = "error: content is required", is_error = true }
     end
 
-    local path = noon.fs.abspath(raw)
+    local path = n00n.fs.abspath(raw)
 
     local ok, err = ctx:check_before_edit(path)
     if not ok then
       return { llm_output = err, is_error = true }
     end
 
-    local parent = noon.fs.dirname(path)
+    local parent = n00n.fs.dirname(path)
     if parent then
-      noon.fs.mkdir(parent, { parents = true })
+      n00n.fs.mkdir(parent, { parents = true })
     end
 
-    local _, write_err = noon.fs.write(path, content)
+    local _, write_err = n00n.fs.write(path, content)
     if write_err then
       return { llm_output = "write error: " .. tostring(write_err), is_error = true }
     end
