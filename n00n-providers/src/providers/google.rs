@@ -1,5 +1,5 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -392,7 +392,11 @@ impl Provider for Google {
                         let mut cache_state = self.cache_state.lock().unwrap();
                         cache_state.insert(
                             sid.clone(),
-                            CachedContentState::new(name.clone(), current_tools_hash, current_message_count),
+                            CachedContentState::new(
+                                name.clone(),
+                                current_tools_hash,
+                                current_message_count,
+                            ),
                         );
                         name
                     }
