@@ -733,6 +733,20 @@ impl<'t> EventLoop<'t> {
                 };
                 let _ = reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text)));
             }
+            SessionRequest::Cancel { id } => {
+                let reply = parse_session_id(&id).and_then(|id| {
+                    let idx = self
+                        .position(id)
+                        .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
+                    if SessionStatus::of(&self.sessions[idx].app) != SessionStatus::Working {
+                        return Err(format!("session is not working: {id}"));
+                    }
+                    let actions = self.sessions[idx].app.cancel_current_run();
+                    self.dispatch(idx, actions);
+                    Ok(json!(true))
+                });
+                let _ = reply_tx.send(reply);
+            }
             SessionRequest::Focus { id } => {
                 let reply = parse_session_id(&id)
                     .and_then(|id| self.focus_session(id))

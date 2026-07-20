@@ -143,6 +143,19 @@ async fn prompt(
     roundtrip(lua, tx, SessionRequest::Prompt { id, text }).await
 }
 
+/// Cancels the current turn in a live session without deleting the session.
+///
+/// @param id string Live session id.
+/// @return (boolean|nil, string|nil) true on success, or nil and an error.
+#[lua_fn]
+async fn cancel(
+    lua: Lua,
+    #[ctx] tx: Option<flume::Sender<UiAction>>,
+    id: String,
+) -> LuaResult<Pair> {
+    roundtrip(lua, tx, SessionRequest::Cancel { id }).await
+}
+
 /// Renames a session, live or stored.
 ///
 /// @param opts table Required fields: id (string) session to rename;
@@ -170,7 +183,7 @@ lua_table! {
     /// the pair `(value, err)`. Without an interactive UI attached, every
     /// call returns `nil, "no interactive UI attached"`.
     "n00n.session" => pub(crate) fn create_session_table(tx: Option<flume::Sender<UiAction>>),
-    DOCS [list(tx), live(tx), current(tx), focus(tx), delete(tx), new(tx), prompt(tx), set_title(tx)]
+    DOCS [list(tx), live(tx), current(tx), focus(tx), delete(tx), new(tx), prompt(tx), cancel(tx), set_title(tx)]
 }
 
 #[cfg(test)]
