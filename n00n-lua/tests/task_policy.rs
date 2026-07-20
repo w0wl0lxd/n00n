@@ -130,7 +130,7 @@ behaviors.slow = function(sess, msg)
   return { text = "@PLAIN_TEXT@" }
 end
 
-n00n.agent.session = function(ctx, opts):noon-lua/tests/task_policy.rs
+n00n.agent.session = function(ctx, opts)
   recorder.sessions = recorder.sessions + 1
   recorder.has_local_tools = opts.local_tools ~= nil
   recorder.structured_output_schema = opts.local_tools and opts.local_tools.structured_output and opts.local_tools.structured_output.input_schema

@@ -232,8 +232,7 @@ function M.run(ctx, goal, opts)
 
   local text = #consolidated > 0 and table.concat(consolidated, "\n\n---\n\n") or nil
   if not text then
-    local err = #step_errors > 0 and table.concat(step_errors, "; ")
-      or "Swarm produced no accepted contribution."
+    local err = #step_errors > 0 and table.concat(step_errors, "; ") or "Swarm produced no accepted contribution."
     return { ok = false, error = err }
   end
 
