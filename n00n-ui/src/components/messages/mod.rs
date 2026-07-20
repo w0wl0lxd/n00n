@@ -47,6 +47,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
+use ratatui_image::picker::Picker;
 
 pub(crate) const JUMP_TO_BOTTOM_TEXT: &str = "↓ Bottom";
 const JUMP_TO_BOTTOM_KEY_GAP: &str = "  ";
@@ -104,6 +105,7 @@ pub struct MessagesPanel {
     restore_backlog: Vec<DisplayMessage>,
     /// Per-frame prepend sizes, drained front-to-back by `drain_restore_backlog`.
     restore_batches: VecDeque<usize>,
+    picker: Arc<Picker>,
 }
 
 /// Incremental restore plan: show the `initial` (most recent) messages first,
@@ -132,7 +134,7 @@ fn restore_plan(total: usize, batch_size: usize) -> RestorePlan {
 }
 
 impl MessagesPanel {
-    pub fn new(ui_config: UiConfig) -> Self {
+    pub fn new(ui_config: UiConfig, picker: Arc<Picker>) -> Self {
         let thinking = thinking_style();
         let assistant = assistant_style();
         let ms = ui_config.typewriter_ms_per_char;
@@ -178,6 +180,7 @@ impl MessagesPanel {
             jump_to_bottom_popup: None,
             restore_backlog: Vec::new(),
             restore_batches: VecDeque::new(),
+            picker,
         }
     }
 
@@ -997,7 +1000,11 @@ impl MessagesPanel {
             }
             let h = seg.height(width);
             let highlight = self.highlight_segment == Some(i);
-            cursor.render(seg.lines(), h, None, seg.surface(), highlight, frame);
+            if let Some(term_img) = seg.image() {
+                cursor.render_image(&term_img.protocol, h, seg.surface(), frame);
+            } else {
+                cursor.render(seg.lines(), h, None, seg.surface(), highlight, frame);
+            }
         }
 
         let mut height_idx = 0usize;
@@ -1560,6 +1567,8 @@ impl MessagesPanel {
             _ => Surface::Plain,
         };
         let content_width = surface.content_width(self.viewport_width);
+        let picker = self.picker.clone();
+        let picker_ref = &*picker;
         let mut lines = if style.use_markdown {
             text_to_lines(
                 &msg.text,
@@ -1605,7 +1614,23 @@ impl MessagesPanel {
             Some(msg_index),
         );
         segment.set_surface(surface);
-        vec![segment]
+        let mut out = Vec::new();
+        if !msg.text.is_empty() || msg.plan_path.is_some() {
+            out.push(segment);
+        }
+        for (idx, source) in msg.images.iter().enumerate() {
+            if idx > 0 || !out.is_empty() {
+                out.push(Segment::spacer());
+            }
+            out.push(Segment::with_image(
+                source,
+                picker_ref,
+                content_width,
+                surface,
+                Some(msg_index),
+            ));
+        }
+        out
     }
 
     fn rebuild_line_cache(&mut self) {
@@ -1672,6 +1697,8 @@ impl MessagesPanel {
                     _ => Surface::Plain,
                 };
                 let content_width = surface.content_width(self.viewport_width);
+                let picker = self.picker.clone();
+                let picker_ref = &*picker;
                 let mut lines = if style.use_markdown {
                     text_to_lines(
                         &msg.text,
@@ -1711,19 +1738,34 @@ impl MessagesPanel {
                 let prefix_width = prefix.width() as u16;
                 let search_text = format!("{}> {}", role_name(&msg.role), msg.text);
                 self.cache.push_spacer_if_needed();
-                let mut segment = Segment::with_lines(
-                    lines,
-                    search_text,
-                    Some(msg.text.clone()),
-                    prefix_width,
-                    Some(i),
-                );
-                match msg.role {
-                    DisplayRole::User => segment.set_surface(Surface::User),
-                    DisplayRole::Assistant => segment.set_surface(Surface::Assistant),
-                    _ => {}
+                if !msg.text.is_empty() || msg.plan_path.is_some() || msg.images.is_empty() {
+                    let mut segment = Segment::with_lines(
+                        lines,
+                        search_text,
+                        Some(msg.text.clone()),
+                        prefix_width,
+                        Some(i),
+                    );
+                    match msg.role {
+                        DisplayRole::User => segment.set_surface(Surface::User),
+                        DisplayRole::Assistant => segment.set_surface(Surface::Assistant),
+                        _ => {}
+                    }
+                    self.cache.push(segment);
                 }
-                self.cache.push(segment);
+                for (idx, source) in msg.images.iter().enumerate() {
+                    if idx > 0 || !msg.text.is_empty() {
+                        self.cache.push(Segment::spacer());
+                    }
+                    let mut seg =
+                        Segment::with_image(source, picker_ref, content_width, surface, Some(i));
+                    match msg.role {
+                        DisplayRole::User => seg.set_surface(Surface::User),
+                        DisplayRole::Assistant => seg.set_surface(Surface::Assistant),
+                        _ => {}
+                    }
+                    self.cache.push(seg);
+                }
             }
         }
         self.cache.mark_built(self.messages.len());
