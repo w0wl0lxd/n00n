@@ -3477,6 +3477,8 @@ fn almas_launcher_collects_goal_and_submits_configured_prompt() {
         text.contains("Use the almas tool now"),
         "submitted prompt: {text}"
     );
+    assert!(text.contains("thinking: max"), "submitted prompt: {text}");
+    assert!(text.contains("auto_tier: true"), "submitted prompt: {text}");
     reply_tx.send(Ok(serde_json::json!("started"))).unwrap();
 }
 

@@ -1,7 +1,7 @@
--- Information-bottleneck β gate (Yu et al., arXiv:2607.16133). A SAS keeps the
--- full trace in one context; a MAS uses isolated contexts joined by bounded
--- relay messages. Per the paper a MAS helps most when relays are near-sufficient,
--- especially for weaker models; for strong models the gain shrinks or reverses.
+-- Information-efficiency gate. A single agent keeps the full trace in one
+-- context; a multi-agent run uses isolated contexts joined by bounded relay
+-- messages. Under equal token budgets, strong single agents can outperform
+-- multi-agent systems, so simple strong-model tasks avoid coordination cost.
 -- This heuristic maps the paper's β into levers we already control (whether to
 -- fan out, and how much context to relay). It is a heuristic, not a trained
 -- estimator — offline, no model call.

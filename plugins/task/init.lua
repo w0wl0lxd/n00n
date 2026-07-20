@@ -59,9 +59,17 @@ local schema = {
       type = "string",
       description = 'Subagent type: "research" (read-only, default) or "general" (can modify files)',
     },
+    model = {
+      type = "string",
+      description = "Exact model spec (optional, e.g. openai/gpt-5.6-luna). Overrides model_tier.",
+    },
     model_tier = {
       type = "string",
       description = 'Model tier (optional, omit to use current model, capped at current tier):\n- "strong" (e.g. Opus): Deep reasoning, complex architecture, subtle bugs, most critical sections. ~5x cost of medium.\n- "medium" (e.g. Sonnet): Balanced. Refactors, features, multi-file changes.\n- "weak" (e.g. Haiku): Fast/cheap. Search, summarize, boilerplate, simple edits.',
+    },
+    thinking = {
+      type = { "string", "integer" },
+      description = 'Thinking mode: "off", "adaptive", "minimal", "low", "medium", "high", "xhigh", "max", or a token budget. Omit to inherit the user setting.',
     },
     auto_tier = {
       type = "boolean",
@@ -152,11 +160,12 @@ local function handler(input, ctx)
   end
 
   local model_tier = input.model_tier
-  if input.auto_tier == true or (input.auto_tier == nil and opts.auto_tier) then
+  if not input.model and (input.auto_tier == true or (input.auto_tier == nil and opts.auto_tier)) then
     model_tier = route_tier(input.prompt)
   end
 
   local model, model_err = n00n.agent.resolve_model(ctx, {
+    spec = input.model,
     tier = model_tier,
   })
   if model_err then
@@ -227,6 +236,7 @@ local function handler(input, ctx)
         local_tools = local_tools,
         audience = audience,
         name = input.description,
+        thinking = input.thinking,
       })
       if sess_err then
         return { llm_output = sess_err, is_error = true }

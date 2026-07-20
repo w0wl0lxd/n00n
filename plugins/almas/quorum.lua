@@ -1,9 +1,6 @@
--- EBFT honest quorum (He & Yu, arXiv:2607.16109). Agentic validators that share
--- weights/prompts/toolchains suffer correlated epistemic faults: a quorum can
--- agree yet endorse a semantically invalid transition. EBFT augments the
--- Byzantine bound with e_δ (coherent invalid endorsements) and u_ε (unusable
--- support hurting liveness). We bound e_δ by requiring validator diversity
--- (distinct tiers and distinct critique prompts), not N clones of one model.
+-- Diversity-aware validator quorum. Validators use distinct model tiers and
+-- critique prompts when tier routing is active. An exact model intentionally
+-- trades model diversity for reproducibility, so confidence is down-weighted.
 local M = {}
 
 local N_VALIDATORS = 3
@@ -24,7 +21,7 @@ local function pick_validators(ctx, opts)
   local n = opts.n or N_VALIDATORS
   local tiers = opts.tiers or { "weak", "medium", "strong" }
   local pairs = {}
-  local has_diversity = #tiers >= 2
+  local has_diversity = not opts.model and #tiers >= 2
   for i = 1, n do
     local tier = tiers[(i - 1) % #tiers + 1]
     local prompt = CRITIQUE_PROMPTS[(i - 1) % #CRITIQUE_PROMPTS + 1]
@@ -33,8 +30,8 @@ local function pick_validators(ctx, opts)
   return pairs, has_diversity
 end
 
-local function run_one(ctx, v, artifact)
-  local model, merr = n00n.agent.resolve_model(ctx, { tier = v.tier })
+local function run_one(ctx, v, artifact, opts)
+  local model, merr = n00n.agent.resolve_model(ctx, { spec = opts.model, tier = not opts.model and v.tier or nil })
   if merr then
     return { approved = false, issues = { merr }, model = v.tier }
   end
@@ -48,6 +45,7 @@ local function run_one(ctx, v, artifact)
     tools = tools,
     audience = "general_sub",
     name = "almas-quorum-" .. v.prompt,
+    thinking = opts.thinking,
   })
   if serr then
     return { approved = false, issues = { serr }, model = v.tier }
@@ -70,7 +68,7 @@ end
 
 -- @param ctx AgentContext
 -- @param artifact string Text to validate.
--- @param opts table { n?, tiers? }
+-- @param opts table { n?, tiers?, model?, thinking? }
 -- @return { accepted: boolean, issues: [string], confidence: number, diverse: boolean }
 function M.validate(ctx, artifact, opts)
   opts = opts or {}
@@ -78,7 +76,7 @@ function M.validate(ctx, artifact, opts)
   local approvals, issues = 0, {}
   local approved_tiers = {}
   for _, v in ipairs(validators) do
-    local r = run_one(ctx, v, artifact)
+    local r = run_one(ctx, v, artifact, opts)
     if r.approved then
       approvals = approvals + 1
       approved_tiers[r.model] = true

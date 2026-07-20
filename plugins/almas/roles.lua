@@ -34,13 +34,14 @@ M.ROLES = {
 -- @param ctx AgentContext
 -- @param role string Key into M.ROLES.
 -- @param prompt string Step prompt (already retrieval-augmented by caller).
--- @param opts table { model_tier?, auto_tier? }
+-- @param opts table { model?, model_tier?, auto_tier?, thinking? }
 function M.run(ctx, role, prompt, opts)
   opts = opts or {}
   local r = M.ROLES[role] or M.ROLES.developer
   local tier = (opts.auto_tier and route_tier(prompt)) or opts.model_tier or r.tier
+  local spec = opts.model
 
-  local model, merr = n00n.agent.resolve_model(ctx, { tier = tier })
+  local model, merr = n00n.agent.resolve_model(ctx, { spec = spec, tier = not spec and tier or nil })
   if merr then
     return { ok = false, error = merr }
   end
@@ -55,6 +56,7 @@ function M.run(ctx, role, prompt, opts)
     tools = tools,
     audience = "general_sub",
     name = role,
+    thinking = opts.thinking,
   })
   if serr then
     return { ok = false, error = serr }

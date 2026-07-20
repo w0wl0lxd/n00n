@@ -45,14 +45,15 @@ local description =
 Modes:
 - supervised (default): return the supervisor's plan for review.
 - autonomous: run the centralized ALMAS plan to completion; tester/reviewer
-  steps are gated by an EBFT diversity-aware quorum.
+  steps are gated by a diversity-aware validator quorum.
 - swarm: decentralized SwarmSys rounds (Explorers/Workers/Validators) with a
   pheromone reinforcement loop, gated by an information-bottleneck β check
   that decides whether fanning out helps (and how much context to relay).
 
 Notes:
 1. The supervisor returns a plan; each step runs independently.
-2. Tiers are cost-aware (OrchMAS-style). Override with model_tier, or set auto_tier.
+2. Agents are routed by cost-aware tiers by default. Set model for an exact model,
+   model_tier for a fixed tier, or auto_tier=false to disable adaptive routing.
 3. With use_retrieval, steps are grounded in repo context (PR-H).
 4. With compact (opt-in), retrieved context is TOON-encoded to save tokens (PR-C).
 5. swarm mode runs bounded rounds (max_rounds); the β gate may fall back to a
@@ -82,18 +83,36 @@ local schema = {
       type = "integer",
       description = "Swarm mode only: max concurrent subagents per round (default 8).",
     },
+    model = {
+      type = "string",
+      description = "Exact model spec for every ALMAS agent. Overrides model_tier and role tiers.",
+    },
     model_tier = {
       type = "string",
-      description = "Override the supervisor tier (weak/medium/strong). Defaults to strong.",
+      description = "Supervisor/model tier (weak/medium/strong). Defaults to strong when model is omitted.",
+    },
+    thinking = {
+      type = { "string", "integer" },
+      description = 'Thinking mode for ALMAS agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "max".',
     },
     auto_tier = {
       type = "boolean",
-      description = "Route each subagent tier from its step prompt (opt-in).",
+      description = "Route each subagent tier from its step prompt. Defaults to true unless an exact model is set.",
     },
     use_retrieval = {
       type = "boolean",
       default = true,
       description = "Ground steps with repo retrieval.",
+    },
+    ibn_gate = {
+      type = "boolean",
+      default = true,
+      description = "Use the information-bottleneck fan-out gate in swarm mode.",
+    },
+    quorum = {
+      type = "boolean",
+      default = true,
+      description = "Require validator quorum for autonomous validation and swarm acceptance.",
     },
     compact = {
       type = "boolean",
@@ -112,12 +131,13 @@ local function plan_prompt(goal)
     .. goal
 end
 
-local function run_supervisor(ctx, goal, supervisor_tier)
+local function run_supervisor(ctx, goal, opts)
   local validator, verr = n00n.json.schema_validator(PLANNER_OUTPUT)
   if verr then
     return nil, "planner schema invalid: " .. verr
   end
-  local model, merr = n00n.agent.resolve_model(ctx, { tier = supervisor_tier })
+  local model, merr =
+    n00n.agent.resolve_model(ctx, { spec = opts.model, tier = not opts.model and opts.model_tier or nil })
   if merr then
     return nil, merr
   end
@@ -153,6 +173,7 @@ local function run_supervisor(ctx, goal, supervisor_tier)
     local_tools = local_tools,
     audience = "general_sub",
     name = "almas-supervisor",
+    thinking = opts.thinking,
   })
   if sess_err then
     return nil, sess_err
@@ -172,8 +193,9 @@ local function run_supervisor(ctx, goal, supervisor_tier)
   return captured.steps, nil
 end
 
-local function generate_learnings_digest(ctx, goal, report, supervisor_tier)
-  local model, merr = n00n.agent.resolve_model(ctx, { tier = supervisor_tier or "strong" })
+local function generate_learnings_digest(ctx, goal, report, opts)
+  local model, merr =
+    n00n.agent.resolve_model(ctx, { spec = opts.model, tier = not opts.model and opts.model_tier or nil })
   if merr then
     return nil
   end
@@ -189,6 +211,7 @@ local function generate_learnings_digest(ctx, goal, report, supervisor_tier)
     system = system,
     audience = "general_sub",
     name = "almas-learning-digest",
+    thinking = opts.thinking,
   })
   if sess_err then
     return nil
@@ -225,7 +248,8 @@ local function run_step(ctx, step, goal, input, relay_k)
     end
   end
 
-  local role_opts = { model_tier = step.tier, auto_tier = input.auto_tier }
+  local role_opts =
+    { model = input.model, model_tier = step.tier, auto_tier = input.auto_tier, thinking = input.thinking }
   return roles.run(ctx, step.role, step_prompt, role_opts)
 end
 
@@ -241,8 +265,9 @@ local function run_autonomous(ctx, goal, input, steps, relay_k)
       results[#results + 1] = string.format("[%d] %s%s:\n%s", i, step.role, cost_line, r.text or "")
       total_cost = total_cost + (r.cost or 0)
 
-      if step.role == "tester" or step.role == "reviewer" then
-        local verdict = quorum.validate(ctx, table.concat(results, "\n\n"), { n = 3 })
+      if input.quorum ~= false and (step.role == "tester" or step.role == "reviewer") then
+        local verdict =
+          quorum.validate(ctx, table.concat(results, "\n\n"), { n = 3, model = input.model, thinking = input.thinking })
         if not verdict.accepted then
           results[#results + 1] = string.format(
             "[quorum] %s output not endorsed by diverse validators (confidence %.2f):\n%s",
@@ -280,8 +305,15 @@ end
 local finish_run
 
 local function handler(input, ctx)
-  local supervisor_tier = input.model_tier or "strong"
-  local goal = refine.refine_goal(ctx, input.goal, supervisor_tier)
+  input.mode = input.mode or "supervised"
+  input.model_tier = input.model_tier or "strong"
+  if input.auto_tier == nil then
+    input.auto_tier = input.model == nil
+  end
+  if input.thinking == nil then
+    input.thinking = "max"
+  end
+  local goal = refine.refine_goal(ctx, input.goal, input)
 
   local slug = memory.slug(input.goal)
   local prior = memory.load(ctx, slug)
@@ -289,7 +321,7 @@ local function handler(input, ctx)
     goal = goal .. "\n\nPrior learnings for this goal:\n" .. prior
   end
 
-  local steps, perr = run_supervisor(ctx, goal, supervisor_tier)
+  local steps, perr = run_supervisor(ctx, goal, input)
   if perr then
     return { llm_output = perr, is_error = true }
   end
@@ -307,7 +339,8 @@ local function handler(input, ctx)
   end
 
   -- Information-bottleneck β gate: decide fan-out + relay budget (offline).
-  local gate = ibn.decide(ctx, goal, supervisor_tier)
+  local gate = input.ibn_gate == false and { fan_out = true, relay_k = 6, reason = "IBN gate disabled" }
+    or ibn.decide(ctx, goal, input.model_tier)
   local relay_k = gate.relay_k
 
   if input.mode == "swarm" then
@@ -316,6 +349,9 @@ local function handler(input, ctx)
         relay_k = relay_k,
         max_rounds = input.max_rounds or 4,
         max_concurrent = input.max_concurrent or 8,
+        model = input.model,
+        thinking = input.thinking,
+        quorum = input.quorum,
       })
       if not out.ok then
         return { llm_output = "swarm failed: " .. (out.error or "unknown"), is_error = true }
@@ -338,7 +374,7 @@ finish_run = function(ctx, input, results, total_cost, n_steps, slug)
   local report = table.concat(results, "\n\n")
   local summary = string.format("\n\n---\nALMAS complete: %d steps, ~$%.4f estimated cost.", n_steps, total_cost)
 
-  local digest = generate_learnings_digest(ctx, input.goal, report, input.model_tier or "strong")
+  local digest = generate_learnings_digest(ctx, input.goal, report, input)
   if digest then
     memory.save(ctx, slug, digest)
   else
@@ -366,6 +402,9 @@ local TextInput = require("n00n.text_input")
 
 local ALMAS_MODES = { "supervised", "autonomous", "swarm" }
 local MODEL_TIERS = { "weak", "medium", "strong" }
+local THINKING_LEVELS = { "off", "adaptive", "low", "medium", "high", "xhigh", "max" }
+local MENU_ROWS = 10
+local RUN_ROW = 11
 
 local function cycle(list, current)
   local idx = 1
@@ -382,51 +421,72 @@ local function trim(value)
   return (value or ""):match("^%s*(.-)%s*$")
 end
 
+local function prompt_value(value)
+  return tostring(value)
+end
+
 local function agent_prompt(goal, prefs)
-  return string.format(
-    [[Use the almas tool now. Do not only describe ALMAS or restate this request.
-
-Goal:
-%s
-
-Configuration:
-- mode: %s
-- model_tier: %s
-- use_retrieval: %s
-- ibn_gate: %s
-- quorum: %s
-- max_rounds: %d]],
+  local config = {
+    { "mode", prefs.mode },
+    { "model_tier", prefs.model_tier },
+    { "thinking", prefs.thinking },
+    { "auto_tier", prefs.auto_tier },
+    { "use_retrieval", prefs.use_retrieval },
+    { "ibn_gate", prefs.ibn_gate },
+    { "quorum", prefs.quorum },
+    { "max_rounds", prefs.max_rounds },
+  }
+  if prefs.model then
+    table.insert(config, 2, { "model", prefs.model })
+  end
+  local lines = {
+    "Use the almas tool now. Do not only describe ALMAS or restate this request.",
+    "",
+    "Goal:",
     goal,
-    prefs.mode,
-    prefs.model_tier,
-    tostring(prefs.use_retrieval),
-    tostring(prefs.ibn_gate),
-    tostring(prefs.quorum),
-    prefs.max_rounds
-  )
+    "",
+    "Configuration:",
+  }
+  for _, item in ipairs(config) do
+    lines[#lines + 1] = "- " .. item[1] .. ": " .. prompt_value(item[2])
+  end
+  return table.concat(lines, "\n")
 end
 
 local function run_launcher(initial_goal)
   local prefs = {
     mode = "supervised",
     model_tier = "strong",
+    thinking = "max",
+    auto_tier = true,
     use_retrieval = true,
     ibn_gate = true,
     quorum = true,
     max_rounds = 4,
   }
+  local model = TextInput.new()
   local goal = TextInput.new()
   goal:insert_text(initial_goal or "")
-  local selected = 1
-  local editing_goal = trim(initial_goal) == ""
+  local selected = trim(initial_goal) == "" and 10 or 1
+  local editing
+  if trim(initial_goal) == "" then
+    editing = "goal"
+  end
   local width = 80
   local buf = n00n.ui.buf()
   local win
 
   local function render()
+    prefs.model = trim(model:value())
+    if prefs.model == "" then
+      prefs.model = nil
+    end
     local rows = {
       { "Mode", prefs.mode },
       { "Model tier", prefs.model_tier },
+      { "Exact model", prefs.model or "(use tier)" },
+      { "Thinking", prefs.thinking },
+      { "Auto tier", tostring(prefs.auto_tier) },
       { "Retrieval", tostring(prefs.use_retrieval) },
       { "IBN gate", tostring(prefs.ibn_gate) },
       { "Quorum", tostring(prefs.quorum) },
@@ -440,25 +500,23 @@ local function run_launcher(initial_goal)
         { row[2], selected == i and "selected" or "" },
       }
     end
-    lines[#lines + 1] = { { "", "" } }
-    local goal_style = selected == 7 and "selected" or "dim"
-    lines[#lines + 1] = { { (selected == 7 and "❯ " or "  ") .. "Goal", goal_style } }
+    lines[#lines + 1] = { { (selected == 10 and "❯ " or "  ") .. "Goal", selected == 10 and "selected" or "dim" } }
     local rendered = goal:render("  ", 2, width)
     for _, line in ipairs(rendered.lines) do
       lines[#lines + 1] = line
     end
     lines[#lines + 1] = { { "", "" } }
     lines[#lines + 1] = {
-      { selected == 8 and "❯ Run ALMAS" or "  Run ALMAS", selected == 8 and "selected" or "item" },
+      { selected == RUN_ROW and "❯ Run ALMAS" or "  Run ALMAS", selected == RUN_ROW and "selected" or "item" },
     }
     buf:set_lines(lines)
     if win then
-      if editing_goal then
-        win:set_cursor(8 + rendered.cursor_row)
-      elseif selected <= 6 then
+      if editing == "goal" then
+        win:set_cursor(10 + rendered.cursor_row)
+      elseif selected <= 9 then
         win:set_cursor(selected)
-      elseif selected == 7 then
-        win:set_cursor(8)
+      elseif selected == 10 then
+        win:set_cursor(10)
       else
         win:set_cursor(#lines)
       end
@@ -474,7 +532,7 @@ local function run_launcher(initial_goal)
       { "Esc", "cancel" },
     },
     width = "70%",
-    height = 16,
+    height = 18,
     cursor_line = true,
   })
   width = win.width
@@ -483,8 +541,8 @@ local function run_launcher(initial_goal)
   local function submit()
     local value = trim(goal:value())
     if value == "" then
-      selected = 7
-      editing_goal = true
+      selected = 10
+      editing = "goal"
       n00n.ui.flash("Enter an ALMAS goal first")
       render()
       return false
@@ -505,34 +563,41 @@ local function run_launcher(initial_goal)
     elseif event.type == "resize" then
       width = event.width
       render()
-    elseif event.type == "paste" and editing_goal then
-      goal:insert_text(event.text)
+    elseif event.type == "paste" and editing then
+      local input = editing == "goal" and goal or model
+      input:insert_text(event.text)
       render()
     elseif event.type == "key" then
       local key = event.key
       if key == "esc" or key == "ctrl+c" then
-        win:close()
-        return
+        if editing then
+          editing = nil
+          render()
+        else
+          win:close()
+          return
+        end
       elseif key == "ctrl+enter" then
         if submit() then
           return
         end
-      elseif editing_goal then
+      elseif editing then
         if key == "enter" then
-          editing_goal = false
-          selected = 8
+          local finished = editing
+          editing = nil
+          selected = finished == "model" and 4 or RUN_ROW
           render()
         else
-          local result = goal:handle_key(key)
-          if result ~= TextInput.Result.IGNORED then
+          local input = editing == "goal" and goal or model
+          if input:handle_key(key) ~= TextInput.Result.IGNORED then
             render()
           end
         end
-      elseif key == "up" then
-        selected = (selected - 2) % 8 + 1
+      elseif key == "up" or key == "shift+tab" then
+        selected = (selected - 2) % RUN_ROW + 1
         render()
       elseif key == "down" or key == "tab" then
-        selected = selected % 8 + 1
+        selected = selected % RUN_ROW + 1
         render()
       elseif key == "enter" then
         if selected == 1 then
@@ -540,15 +605,21 @@ local function run_launcher(initial_goal)
         elseif selected == 2 then
           prefs.model_tier = cycle(MODEL_TIERS, prefs.model_tier)
         elseif selected == 3 then
-          prefs.use_retrieval = not prefs.use_retrieval
+          editing = "model"
         elseif selected == 4 then
-          prefs.ibn_gate = not prefs.ibn_gate
+          prefs.thinking = cycle(THINKING_LEVELS, prefs.thinking)
         elseif selected == 5 then
-          prefs.quorum = not prefs.quorum
+          prefs.auto_tier = not prefs.auto_tier
         elseif selected == 6 then
-          prefs.max_rounds = prefs.max_rounds >= 8 and 2 or prefs.max_rounds + 1
+          prefs.use_retrieval = not prefs.use_retrieval
         elseif selected == 7 then
-          editing_goal = true
+          prefs.ibn_gate = not prefs.ibn_gate
+        elseif selected == 8 then
+          prefs.quorum = not prefs.quorum
+        elseif selected == 9 then
+          prefs.max_rounds = prefs.max_rounds >= 8 and 2 or prefs.max_rounds + 1
+        elseif selected == 10 then
+          editing = "goal"
         elseif submit() then
           return
         end
