@@ -95,7 +95,7 @@ fn style_for_token(
 
 /// Heading lines preserve heading colour through emphasis. Code lines start
 /// from `Style::default()` so highlighter colours stand alone.
-fn paint_line(line: &RLine, text_style: Style, t: &Theme) -> Line<'static> {
+fn paint_line(line: RLine, text_style: Style, t: &Theme) -> Line<'static> {
     let (base, preserve_color) = match line.kind {
         LineKind::Heading => (t.heading, true),
         LineKind::Code => (Style::default(), false),
@@ -103,7 +103,7 @@ fn paint_line(line: &RLine, text_style: Style, t: &Theme) -> Line<'static> {
     };
     let spans = line
         .spans
-        .iter()
+        .into_iter()
         .map(
             |RSpan {
                  text,
@@ -111,8 +111,8 @@ fn paint_line(line: &RLine, text_style: Style, t: &Theme) -> Line<'static> {
                  emphasis,
              }| {
                 Span::styled(
-                    text.clone(),
-                    style_for_token(style, *emphasis, base, preserve_color, t),
+                    text,
+                    style_for_token(&style, emphasis, base, preserve_color, t),
                 )
             },
         )
@@ -141,13 +141,13 @@ pub(crate) fn hr_line(width: u16, style: Style) -> Line<'static> {
     Line::from(Span::styled(render::hr_text(width), style))
 }
 
-fn prefix_span(prefix: &str, style: Style) -> Span<'static> {
-    Span::styled(prefix.to_owned(), style.add_modifier(Modifier::BOLD))
+fn prefix_span(prefix: &'static str, style: Style) -> Span<'static> {
+    Span::styled(prefix, style.add_modifier(Modifier::BOLD))
 }
 
 /// Returns `Line::default()` when the prefix is empty so callers can use it
 /// as a blank first line without an empty styled span sneaking in.
-fn prefix_line(prefix: &str, style: Style) -> Line<'static> {
+fn prefix_line(prefix: &'static str, style: Style) -> Line<'static> {
     if prefix.is_empty() {
         Line::default()
     } else {
@@ -166,8 +166,8 @@ fn shares_line_with_prefix(kind: &LineKind) -> bool {
 
 pub fn plain_lines(
     text: &str,
-    prefix: &str,
-    text_style: Style,
+    prefix: &'static str,
+    _text_style: Style,
     prefix_style: Style,
 ) -> Vec<Line<'static>> {
     let text = text.trim_start_matches('\n');
@@ -182,7 +182,7 @@ pub fn plain_lines(
             }
             first_line = false;
         }
-        spans.push(Span::styled(line.to_owned(), text_style));
+        spans.push(Span::raw(line.to_owned()));
         lines.push(Line::from(spans));
     }
 
@@ -196,14 +196,15 @@ pub fn plain_lines(
 /// Paint semantic lines into ratatui lines, splicing the prefix onto
 /// the first line (or as a standalone leader for non-inline blocks).
 pub(crate) fn paint_semantic(
-    semantic: &[RLine],
-    prefix: &str,
+    semantic: Vec<RLine>,
+    prefix: &'static str,
     text_style: Style,
     prefix_style: Style,
 ) -> Vec<Line<'static>> {
     let t = theme::current();
+    let first_kind = semantic.first().map(|l| l.kind.clone());
     let mut lines: Vec<Line<'static>> = semantic
-        .iter()
+        .into_iter()
         .map(|l| paint_line(l, text_style, &t))
         .collect();
 
@@ -212,7 +213,7 @@ pub(crate) fn paint_semantic(
         return lines;
     }
 
-    if shares_line_with_prefix(&semantic[0].kind) {
+    if first_kind.is_some_and(|k| shares_line_with_prefix(&k)) {
         if !prefix.is_empty() {
             lines[0].spans.insert(0, prefix_span(prefix, prefix_style));
         }
@@ -225,7 +226,7 @@ pub(crate) fn paint_semantic(
 
 pub fn text_to_lines(
     text: &str,
-    prefix: &str,
+    prefix: &'static str,
     text_style: Style,
     prefix_style: Style,
     width: u16,
@@ -240,7 +241,7 @@ pub fn text_to_lines(
         None => text,
     };
     let semantic = render::Renderer::unwrapped().render(text, width, 0);
-    paint_semantic(&semantic, prefix, text_style, prefix_style)
+    paint_semantic(semantic, prefix, text_style, prefix_style)
 }
 
 pub struct TruncatedOutput<'a> {
@@ -291,7 +292,7 @@ mod tests {
 
     fn text_to_lines(
         text: &str,
-        prefix: &str,
+        prefix: &'static str,
         text_style: Style,
         prefix_style: Style,
         width: u16,
