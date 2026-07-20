@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-N00n ships with 21 built-in tools. This is the full reference.
+N00n ships with 22 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -182,6 +182,16 @@ Launch an autonomous subagent to perform tasks independently. Best combined with
 | `prompt` | string | yes | Detailed task prompt for the agent |
 | `auto_tier` | boolean | no | Pick model_tier from the prompt automatically (opt-in). Overrides model_tier when set. |
 | `subagent_type` | string | no | Subagent type: "research" (read-only, default) or "general" (can modify files) |
+
+### `workflow` *(lua plugin)*
+
+Run a workflow script that orchestrates many subagents at scale.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `inputs` | object | no | Free-form object exposed to the script as the global `inputs`. |
+| `script` | string | yes | Lua workflow script. First statement: meta({...}). Then orchestrate with agent/parallel/pipeline/phase/log. Must return the final answer as a string. |
+| `resume` | string | no | Prior run_id. Replays journaled agent() results and only spends tokens on new calls. |
 
 ### `todo_write` *(lua plugin)*
 
