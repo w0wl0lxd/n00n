@@ -1,14 +1,13 @@
-use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use async_lock::Mutex;
+use arc_swap::ArcSwap;
 use isahc::HttpClient;
 use isahc::config::{Configurable, RedirectPolicy};
-use isahc::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
-use isahc::http::{Method, Request, StatusCode, header::HeaderMap};
+use isahc::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use isahc::http::{Method, Request, StatusCode};
 use n00n_storage::StateDir;
 use n00n_storage::auth::load_mcp_auth;
 use serde_json::Value;
@@ -32,15 +31,15 @@ pub struct HttpTransport {
     name: Arc<str>,
     url: String,
     client: HttpClient,
-    headers: HashMap<String, String>,
-    auth: Mutex<Option<String>>,
+    headers: HeaderMap,
+    auth: ArcSwap<Option<Arc<str>>>,
     storage: Option<StateDir>,
-    negotiated: Mutex<Negotiated>,
+    negotiated: ArcSwap<Negotiated>,
     next_id: AtomicU64,
 }
 
 /// The server picks both during initialize and the spec wants them echoed as
-/// headers on every later request, so one lock keeps them in sync.
+/// headers on every later request, so an atomic swap keeps them in sync.
 #[derive(Clone, Default)]
 struct Negotiated {
     session_id: Option<String>,
@@ -51,7 +50,7 @@ impl HttpTransport {
     pub fn new(
         name: &str,
         url: &str,
-        headers: &HashMap<String, String>,
+        headers: &std::collections::HashMap<String, String>,
         timeout: Duration,
         storage: Option<StateDir>,
     ) -> Result<Self, McpError> {
@@ -64,25 +63,38 @@ impl HttpTransport {
                 reason: e.to_string(),
             })?;
 
-        let mut headers = headers.clone();
-        let auth = headers
-            .keys()
-            .find(|k| k.eq_ignore_ascii_case(AUTHORIZATION.as_str()))
-            .cloned()
-            .and_then(|k| headers.remove(&k))
-            .or_else(|| {
-                let tokens = load_mcp_auth(storage.as_ref()?, name, url)?.tokens?;
-                Some(format!("Bearer {}", tokens.access))
-            });
+        let server = name.to_string();
+        let mut header_map = HeaderMap::new();
+        let mut auth = None;
+        for (k, v) in headers {
+            if k.eq_ignore_ascii_case(AUTHORIZATION.as_str()) {
+                auth = Some(Arc::from(v.as_str()));
+                continue;
+            }
+            let name = HeaderName::from_bytes(k.as_bytes()).map_err(|e| McpError::StartFailed {
+                server: server.clone(),
+                reason: e.to_string(),
+            })?;
+            let value = HeaderValue::from_str(v).map_err(|e| McpError::StartFailed {
+                server: server.clone(),
+                reason: e.to_string(),
+            })?;
+            header_map.insert(name, value);
+        }
+
+        let auth = auth.or_else(|| {
+            let tokens = load_mcp_auth(storage.as_ref()?, name, url)?.tokens?;
+            Some(Arc::from(format!("Bearer {}", tokens.access)))
+        });
 
         Ok(Self {
             name: Arc::from(name),
             url: url.to_string(),
             client,
-            headers,
-            auth: Mutex::new(auth),
+            headers: header_map,
+            auth: ArcSwap::new(Arc::new(auth)),
             storage,
-            negotiated: Mutex::new(Negotiated::default()),
+            negotiated: ArcSwap::new(Arc::new(Negotiated::default())),
             next_id: AtomicU64::new(1),
         })
     }
@@ -116,8 +128,8 @@ impl HttpTransport {
             builder = builder.header(AUTHORIZATION, auth);
         }
 
-        for (k, v) in &self.headers {
-            builder = builder.header(k.as_str(), v.as_str());
+        for (name, value) in &self.headers {
+            builder = builder.header(name.clone(), value.clone());
         }
 
         builder.body(body).map_err(|e| McpError::InvalidResponse {
@@ -190,22 +202,23 @@ impl HttpTransport {
         Ok(resp.result.unwrap_or(Value::Null))
     }
 
-    /// Single-flight token refresh after a 401. Holds the `auth` lock across the
-    /// refresh so concurrent callers park instead of racing the (rotating)
-    /// refresh token. If the stored value no longer matches the one the failed
-    /// request used, another caller already refreshed: reuse it.
-    async fn refreshed_auth(&self, used: Option<&str>) -> Option<String> {
+    /// Single-flight token refresh after a 401. Loads the current auth value,
+    /// and if it no longer matches the one the failed request used, another
+    /// caller already refreshed it and we reuse that. Otherwise perform a
+    /// silent OAuth refresh and store the new header atomically.
+    async fn refreshed_auth(&self, used: Option<&str>) -> Option<Arc<str>> {
         let storage = self.storage.as_ref()?;
-        let mut guard = self.auth.lock().await;
+        let current = self.auth.load();
+        let current_str = current.as_ref().as_ref().map(|s| s.as_ref());
 
-        if guard.as_deref() != used {
-            return guard.clone();
+        if current_str != used {
+            return current.as_ref().clone();
         }
 
         match oauth::silent_refresh(storage, &self.name, &self.url).await {
             Ok(Some(data)) => {
-                let header = format!("Bearer {}", data.tokens?.access);
-                *guard = Some(header.clone());
+                let header: Arc<str> = Arc::from(format!("Bearer {}", data.tokens?.access));
+                self.auth.store(Arc::new(Some(header.clone())));
 
                 info!(server = %self.name, "MCP OAuth token refreshed after 401");
 
@@ -238,11 +251,11 @@ impl McpTransport for HttpTransport {
                 })
             };
 
-            let mut auth = self.auth.lock().await.clone();
+            let mut auth: Option<Arc<str>> = self.auth.load().as_ref().clone();
             let mut refreshed = false;
 
             loop {
-                let negotiated = self.negotiated.lock().await.clone();
+                let negotiated = self.negotiated.load();
                 let http_req =
                     self.build_request(Method::POST, encode()?, &negotiated, auth.as_deref())?;
 
@@ -284,7 +297,7 @@ impl McpTransport for HttpTransport {
                 let result = self.parse_rpc_response(&body_str, is_sse, id);
 
                 {
-                    let mut negotiated = self.negotiated.lock().await;
+                    let mut negotiated = Negotiated::clone(&*self.negotiated.load());
                     if let Some(sid) = headers.get(SESSION_HEADER).and_then(|v| v.to_str().ok()) {
                         negotiated.session_id = Some(sid.to_string());
                     }
@@ -294,6 +307,7 @@ impl McpTransport for HttpTransport {
                     {
                         negotiated.protocol_version = Some(version.to_string());
                     }
+                    self.negotiated.store(Arc::new(negotiated));
                 }
 
                 info!(server = %self.server(), method, status = %status, refreshed, duration_ms = start.elapsed().as_millis() as u64, "MCP HTTP request");
@@ -315,8 +329,8 @@ impl McpTransport for HttpTransport {
                 reason: e.to_string(),
             })?;
 
-            let negotiated = self.negotiated.lock().await.clone();
-            let auth = self.auth.lock().await.clone();
+            let negotiated = self.negotiated.load();
+            let auth: Option<Arc<str>> = self.auth.load().as_ref().clone();
             let http_req = self.build_request(Method::POST, body, &negotiated, auth.as_deref())?;
 
             let (status, _, _) = self.send_http(http_req).await?;
@@ -335,12 +349,12 @@ impl McpTransport for HttpTransport {
 
     fn shutdown<'a>(&'a self) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            let negotiated = self.negotiated.lock().await.clone();
+            let negotiated = self.negotiated.load();
             if negotiated.session_id.is_none() {
                 return;
             }
 
-            let auth = self.auth.lock().await.clone();
+            let auth: Option<Arc<str>> = self.auth.load().as_ref().clone();
             let Ok(req) =
                 self.build_request(Method::DELETE, Vec::new(), &negotiated, auth.as_deref())
             else {
@@ -415,6 +429,7 @@ mod tests {
     use test_case::test_case;
 
     use n00n_storage::auth::{McpAuthData, OAuthTokens, save_mcp_auth};
+    use std::collections::HashMap;
     use std::io::{BufRead, BufReader, Write as IoWrite};
     use std::net::TcpListener;
     use std::sync::atomic::AtomicUsize;
