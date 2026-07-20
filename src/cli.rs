@@ -244,17 +244,6 @@ pub enum Command {
         #[arg(long, requires = "tools")]
         names: bool,
     },
-    /// Data migration utilities
-    Migrate {
-        #[command(subcommand)]
-        action: MigrateAction,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum MigrateAction {
-    /// Migrate files from ~/.noon/ to XDG directories
-    Xdg,
 }
 
 #[derive(Subcommand)]
