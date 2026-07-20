@@ -1,5 +1,5 @@
 
-An AI coding agent optimized for minimal use of context tokens, while providing a great user experience.
+**n00n** is an AI coding agent optimized for minimal use of context tokens, while providing a great user experience.
 
 ## Features
 
