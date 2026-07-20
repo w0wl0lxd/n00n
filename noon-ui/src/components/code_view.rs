@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use crate::highlight::{fallback_span, highlight_line};
 use crate::markdown::{should_truncate, truncation_notice};
 use crate::theme;
 
 use noon_agent::diff::{DiffLine, DiffSpan, compute_hunks};
 use noon_agent::{GrepFileEntry, InstructionBlock, ToolInput, ToolOutput};
+use noon_highlight::Theme;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use syntect::parsing::SyntaxReference;
@@ -98,11 +101,11 @@ struct FileWalker<'a> {
 }
 
 impl<'a> FileWalker<'a> {
-    fn new(content: &'a str, syntax: &'static SyntaxReference) -> Self {
+    fn new(content: &'a str, syntax: &'static SyntaxReference, theme: Arc<Theme>) -> Self {
         Self {
             lines: LinesWithEndings::from(content),
             pos: 1,
-            hl: noon_highlight::Highlighter::for_syntax(syntax),
+            hl: noon_highlight::Highlighter::new(syntax, theme),
         }
     }
 
@@ -153,6 +156,7 @@ fn render_diff(
     syntax: Option<&'static SyntaxReference>,
     before: &str,
     after: &str,
+    theme: Arc<Theme>,
 ) -> Vec<Line<'static>> {
     let hunks = compute_hunks(before, after);
     let Some(last) = hunks.last() else {
@@ -165,7 +169,12 @@ fn render_diff(
         .count();
     let w = nr_width(last.before_start + numbered.saturating_sub(1));
 
-    let mut walkers = syntax.map(|s| (FileWalker::new(before, s), FileWalker::new(after, s)));
+    let mut walkers = syntax.map(|s| {
+        (
+            FileWalker::new(before, s, Arc::clone(&theme)),
+            FileWalker::new(after, s, Arc::clone(&theme)),
+        )
+    });
 
     let mut lines = Vec::new();
     for (i, hunk) in hunks.iter().enumerate() {
@@ -501,6 +510,7 @@ pub fn render_tool_content(
                 highlight.then(|| noon_highlight::syntax_for_path(path)),
                 before,
                 after,
+                noon_highlight::theme(),
             ),
             false,
         ),
@@ -617,8 +627,14 @@ mod tests {
 
     /// Walk the file from scratch up to `prefix`, then highlight `text`
     /// and return the fg for `find`. This is our ground truth.
-    fn fg_in_context(path: &str, prefix: &str, text: &str, find: &str) -> ratatui::style::Color {
-        let mut hl = noon_highlight::Highlighter::for_path(path);
+    fn fg_in_context(
+        path: &str,
+        prefix: &str,
+        text: &str,
+        find: &str,
+        theme: Arc<Theme>,
+    ) -> ratatui::style::Color {
+        let mut hl = noon_highlight::Highlighter::new(noon_highlight::syntax_for_path(path), theme);
         for line in prefix.lines() {
             let with_nl = format!("{line}\n");
             let _ = highlight_line(&mut hl, &with_nl);
@@ -642,14 +658,22 @@ mod tests {
     fn diff_context_line_inside_block_comment_matches_full_file_state() {
         let before = "/*\nalpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\nOLD\ngolf\n*/\n";
         let after = "/*\nalpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\nNEW\ngolf\n*/\n";
+        let theme = noon_highlight::theme();
 
         let lines = render_diff(
             Some(noon_highlight::syntax_for_path("test.rs")),
             before,
             after,
+            Arc::clone(&theme),
         );
 
-        let expected = fg_in_context("test.rs", "/*\nalpha\nbravo\ncharlie\n", "delta", "delta");
+        let expected = fg_in_context(
+            "test.rs",
+            "/*\nalpha\nbravo\ncharlie\n",
+            "delta",
+            "delta",
+            theme,
+        );
         assert_eq!(diff_fg(&lines, "delta"), expected);
     }
 
@@ -659,14 +683,16 @@ mod tests {
     fn diff_unchanged_line_uses_after_state_when_close_tag_removed() {
         let before = "/*\ndoc\n*/\nfn x() {}\n";
         let after = "/*\ndoc\nfn x() {}\n";
+        let theme = noon_highlight::theme();
 
         let lines = render_diff(
             Some(noon_highlight::syntax_for_path("test.rs")),
             before,
             after,
+            Arc::clone(&theme),
         );
 
-        let expected = fg_in_context("test.rs", "/*\ndoc\n", "fn x() {}", "fn");
+        let expected = fg_in_context("test.rs", "/*\ndoc\n", "fn x() {}", "fn", theme);
         assert_eq!(diff_fg(&lines, "fn x() {}"), expected);
     }
 
