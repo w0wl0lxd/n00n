@@ -64,7 +64,10 @@
               fi
               done
             '';
-            buildInputs = with pkgs; [ openssl ];
+            buildInputs = with pkgs; [
+              openssl
+              stdenv.cc.cc.lib
+            ];
             doCheck = false;
           };
         in
