@@ -36,6 +36,7 @@ pub struct StdioTransport {
 }
 
 impl StdioTransport {
+    #[allow(unsafe_code)]
     pub fn spawn(
         name: &str,
         program: &str,

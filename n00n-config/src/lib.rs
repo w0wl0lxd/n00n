@@ -1497,6 +1497,7 @@ fn config_search_dirs(global: Option<&Path>) -> Vec<PathBuf> {
     dirs
 }
 
+#[allow(unsafe_code)]
 fn load_env_files_with_global(cwd: &Path, global: Option<&Path>) {
     let mut vars = HashMap::new();
     if let Some(path) = global {
