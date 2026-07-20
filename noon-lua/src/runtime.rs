@@ -269,6 +269,10 @@ pub(crate) struct TaskCell {
     /// Set by [`TaskScope::new`]; `enqueue_async_task` upgrades it so queued
     /// tasks share ownership of `bufs`. See [`BufsClaim`].
     bufs_claim: Weak<BufsClaim>,
+    /// Number of `noon.async.run` tasks spawned by this task that have not
+    /// completed yet. Lets `dispatch_async` wait for async callbacks even
+    /// when no OS jobs are in flight.
+    pub(crate) async_tasks: Cell<usize>,
 }
 
 impl TaskCell {
@@ -288,6 +292,7 @@ impl TaskCell {
             live_sink: None,
             inline_spawn: None,
             bufs_claim: Weak::new(),
+            async_tasks: Cell::new(0),
         }
     }
 }
@@ -605,29 +610,40 @@ pub(crate) fn enqueue_async_task(lua: &Lua, work_fn: RegistryKey) -> Result<(), 
         None => (CancelToken::none(), None),
     };
 
+    let parent = handle.as_ref().map(|h| Arc::clone(h));
     let mut task = PendingAsyncTask {
         work_fn,
         cancel,
         deadline: Some(Instant::now() + ASYNC_RUN_DEFAULT_DEADLINE),
         live_ctx,
         owner: None,
+        parent: None,
     };
 
     if let Some(h) = &handle {
         let mut cell = lock_cell(h);
-        // Inline tasks live inside the cell, so a claim there would be a
-        // strong Arc cycle; they run before the scope drops anyway.
+        // Inline tasks live inside the cell, so a parent pointer there would
+        // create a strong Arc cycle; they run before the scope drops anyway.
         if let Some(inline) = cell.inline_spawn.as_mut() {
             inline.push(task);
             return Ok(());
         }
         task.owner = cell.bufs_claim.upgrade();
+        task.parent = parent.clone();
     }
 
     let queue = lua
         .app_data_ref::<SpawnQueue>()
         .ok_or_else(|| mlua::Error::runtime("spawn queue not initialized"))?;
-    queue.tx.send(task).ok();
+    if queue.tx.send(task).is_err() {
+        return Err(mlua::Error::runtime("spawn queue closed"));
+    }
+
+    if let Some(h) = &parent {
+        let cell = lock_cell(h);
+        cell.async_tasks.set(cell.async_tasks.get() + 1);
+    }
+
     Ok(())
 }
 
@@ -765,6 +781,9 @@ pub(crate) struct PendingAsyncTask {
     pub deadline: Option<Instant>,
     pub live_ctx: Option<LiveCtx>,
     pub owner: Option<Arc<BufsClaim>>,
+    /// Parent task that spawned this `noon.async.run` task, if any.
+    /// Used to decrement the parent's `async_tasks` counter on completion.
+    pub parent: Option<TaskHandle>,
 }
 
 /// Shared ownership of a task's `bufs`: the scope holds one clone, each
@@ -820,6 +839,24 @@ async fn run_work_fn(
     }
 }
 
+struct AsyncTaskGuard(Option<TaskHandle>);
+
+impl AsyncTaskGuard {
+    fn new(handle: Option<TaskHandle>) -> Self {
+        Self(handle)
+    }
+}
+
+impl Drop for AsyncTaskGuard {
+    fn drop(&mut self) {
+        if let Some(h) = self.0.take() {
+            let cell = lock_cell(&h);
+            cell.async_tasks
+                .set(cell.async_tasks.get().saturating_sub(1));
+        }
+    }
+}
+
 fn spawn_async_task(
     lua: &Lua,
     ex: &Rc<smol::LocalExecutor<'_>>,
@@ -827,14 +864,21 @@ fn spawn_async_task(
     task: PendingAsyncTask,
 ) {
     if task.cancel.is_cancelled() {
+        if let Some(h) = &task.parent {
+            let cell = lock_cell(h);
+            cell.async_tasks
+                .set(cell.async_tasks.get().saturating_sub(1));
+        }
         lua.remove_registry_value(task.work_fn).ok();
         return;
     }
 
     let lua = lua.clone();
     let g = Rc::clone(gate);
+    let parent = task.parent.clone();
 
     ex.spawn(async move {
+        let _guard = AsyncTaskGuard::new(parent);
         let _gate_guard = g.acquire().await;
 
         let scope = TaskScope::new(
@@ -1784,8 +1828,9 @@ fn extract_restore_reply(ret: &LuaValue) -> Option<RestoreReply> {
     Some(RestoreReply { body, header })
 }
 
-/// Handler returned nil, meaning it went async. Polls job events
-/// until `ctx:finish()`, all jobs die, or the deadline expires.
+/// Handler returned nil, meaning it went async. Polls job events and
+/// pending `noon.async.run` tasks until `ctx:finish()`, all work dies, or
+/// the deadline expires.
 async fn dispatch_async(
     lua: &Lua,
     handle: TaskHandle,
@@ -1793,19 +1838,7 @@ async fn dispatch_async(
     tool: &str,
     finish_rx: flume::Receiver<ToolCallReply>,
 ) -> ToolCallReply {
-    let (cancel, has_jobs) = {
-        let cell = lock_cell(&handle);
-        (cell.cancel.clone(), !cell.jobs.is_empty())
-    };
-
-    if !has_jobs {
-        lua.gc_collect().ok();
-        smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
-        return match finish_rx.try_recv() {
-            Ok(reply) => reply,
-            _ => ToolCallReply::err(NIL_WITHOUT_FINISH_MSG),
-        };
-    }
+    let cancel = lock_cell(&handle).cancel.clone();
 
     let timed_out = || {
         lock_cell(&handle)
@@ -1834,8 +1867,11 @@ async fn dispatch_async(
         lock_cell(&handle).jobs.drain_events(&mut event_buf);
 
         if event_buf.is_empty() {
-            let has_alive = lock_cell(&handle).jobs.has_alive_jobs();
-            if !has_alive {
+            let has_work = {
+                let cell = lock_cell(&handle);
+                cell.jobs.has_alive_jobs() || cell.async_tasks.get() > 0
+            };
+            if !has_work {
                 smol::Timer::after(DISPATCH_POLL_INTERVAL).await;
                 return match finish_rx.try_recv() {
                     Ok(reply) => reply,
@@ -1961,6 +1997,7 @@ async fn run_tool_call(
     warm_tools: WarmTools,
     plugins: PluginMap,
     shutdown: Arc<AtomicBool>,
+    gate: Rc<InflightGate>,
 ) -> ToolCallReply {
     let handler: Function = {
         let plugins_ref = plugins.borrow();
@@ -2014,6 +2051,7 @@ async fn run_tool_call(
     }
 
     let call_future = scope.scope_future(async {
+        let gate_guard = gate.acquire().await;
         let handler_result = {
             let deadline = lock_cell(&handle).deadline.get();
             match deadline {
@@ -2029,6 +2067,7 @@ async fn run_tool_call(
         };
         match handler_result {
             Ok(LuaValue::Nil) => {
+                drop(gate_guard);
                 let (live, sink) = {
                     let cell = lock_cell(&handle);
                     (cell.live.clone(), cell.live_sink.clone())
@@ -2207,7 +2246,6 @@ pub fn spawn(
                             let shutdown_ref = Arc::clone(&rt.shutdown);
                             let g = Rc::clone(&gate);
                             ex.spawn(async move {
-                                let _gate_guard = g.acquire().await;
                                 let res = run_tool_call(
                                     lua.clone(),
                                     plugin,
@@ -2220,6 +2258,7 @@ pub fn spawn(
                                     warm_tools,
                                     plugins,
                                     shutdown_ref,
+                                    g,
                                 )
                                 .await;
                                 let _ = reply.send(res);
@@ -2803,6 +2842,7 @@ mod tests {
             deadline,
             live_ctx: None,
             owner: None,
+            parent: None,
         }
     }
 
