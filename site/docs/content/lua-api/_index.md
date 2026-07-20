@@ -86,6 +86,7 @@ a string belongs.
 | [`noon.ui.Win`](#noon-ui-Win) | Handle to a floating or split window. |
 | [`noon.ui.Buf`](#noon-ui-Buf) | A content buffer that holds styled lines of text. |
 | [`noon.uv`](#noon-uv) | System and environment utilities, modelled after `vim.uv`. |
+| [`noon.workflow`](#noon-workflow) | Sandboxed workflow script compilation. |
 | [`noon.yaml`](#noon-yaml) | YAML encoding and decoding. |
 
 ## noon {#noon}
@@ -4582,6 +4583,47 @@ Returns nil when the variable is not set.
 
 ```lua
 local editor = noon.uv.os_getenv("EDITOR") or "vi"
+```
+
+
+## noon.workflow {#noon-workflow}
+
+Sandboxed workflow script compilation.
+
+Plugins cannot reach Lua's `load`, so this compiles a workflow script
+with a caller-supplied environment table, keeping the script inside the
+primitives the plugin injects.
+
+```lua
+local fn, err = noon.workflow.compile("return 1 + 1", {})
+```
+
+---
+
+### `noon.workflow.compile()` {#noon-workflow-compile}
+
+```lua
+noon.workflow.compile({source}, {env})
+```
+
+Compile {source} into a function whose global environment is exactly {env}.
+The chunk sees only the keys you put in {env}: anything else (noon, os, io,
+require, print) reads as nil, so a workflow script stays inside the
+primitives the plugin injects. Returns (function, nil) on success, or
+(nil, error) when the source fails to compile.
+
+**Parameters:**
+
+- `{source}` (`string`) Lua source to compile.
+- `{env}` (`table`) The chunk's global environment.
+
+**Returns:** (`function|nil`, `string|nil`) The compiled chunk, or the compile error.
+
+**Example:**
+
+```lua
+local fn, err = noon.workflow.compile("return agent({ prompt = 'hi' })", { agent = agent })
+if fn then print(fn()) end
 ```
 
 

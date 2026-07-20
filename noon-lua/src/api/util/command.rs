@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
-use noon_agent::SharedBuf;
 use mlua::RegistryKey;
+use noon_agent::SharedBuf;
 
 #[derive(Clone)]
 pub struct LuaCommandInfo {

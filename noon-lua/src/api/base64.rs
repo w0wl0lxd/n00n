@@ -4,8 +4,8 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{Lua, Result as LuaResult, Value as LuaValue};
+use noon_lua_macro::{lua_fn, lua_table};
 
 pub(crate) fn bytes_arg(val: &LuaValue, what: &str) -> LuaResult<Vec<u8>> {
     match val {

@@ -1,6 +1,7 @@
 -- Structured-output story: the subagent gets a session-local structured_output
 -- tool whose handler validates and captures the result as closure upvalues.
 -- Invalid input is an inline tool error the model can fix in the same run.
+-- Plain tasks get a `done` tool so the model can report a final answer.
 -- This plugin owns structured output and subagent concurrency; Rust exposes
 -- primitives only (`noon.agent.session`, `noon.json.schema_validator`,
 -- `noon.async.semaphore`).
@@ -11,13 +12,15 @@ local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_PROMPT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
-local MAX_STRUCTURED_RETRIES = 2
+local DONE_TOOL_NAME = "done"
+local DONE_DESCRIPTION = "Report your final answer. Call it exactly once when your task is complete."
+local DONE_ACK = "Answer recorded."
+local DONE_PROMPT_SUFFIX = "\n\nWhen finished, call the done tool with your final answer."
 local MAX_SCHEMA_ERRORS = 3
+local SCHEMA_ROOT_ERROR = "output_schema must have type object"
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
 local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
 local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
-local NUDGE_MISSING =
-  "You did not call the structured_output tool. Call it now with your final result matching its input schema."
 local INVALID_INPUT_PREFIX =
   "Input does not match the required schema. Fix the errors and call structured_output again:\n"
 local BODY_INDENT_COLS = 4
@@ -122,6 +125,20 @@ local function make_preview(ctx, description)
   return { buf = view.buf, update = update }
 end
 
+local function done_tool_schema()
+  return {
+    type = "object",
+    required = { "answer" },
+    additionalProperties = false,
+    properties = {
+      answer = {
+        type = "string",
+        description = "Final answer to return to the parent agent.",
+      },
+    },
+  }
+end
+
 local function handler(input, ctx)
   local subagent_type = input.subagent_type or "research"
   if subagent_type ~= "research" and subagent_type ~= "general" then
@@ -130,12 +147,32 @@ local function handler(input, ctx)
 
   -- Compile early: a bad schema costs zero tokens.
   local validator
+  local captured, last_errors
+  local local_tools = {}
   if input.output_schema then
+    if input.output_schema.type ~= "object" then
+      return { llm_output = SCHEMA_ROOT_ERROR, is_error = true }
+    end
     local compile_err
     validator, compile_err = noon.json.schema_validator(input.output_schema)
     if compile_err then
       return { llm_output = SCHEMA_COMPILE_ERROR .. ": " .. compile_err, is_error = true }
     end
+    local_tools = {
+      [STRUCTURED_OUTPUT_NAME] = {
+        description = STRUCTURED_OUTPUT_DESCRIPTION,
+        input_schema = input.output_schema,
+        handler = function(value)
+          local errs = validator:validate(value)
+          if errs then
+            last_errors = bounded_errors(errs)
+            return nil, INVALID_INPUT_PREFIX .. last_errors
+          end
+          captured = value
+          return STRUCTURED_OUTPUT_ACK
+        end,
+      },
+    }
   end
 
   local model, model_err = noon.agent.resolve_model(ctx, {
@@ -164,21 +201,14 @@ local function handler(input, ctx)
     return { llm_output = tools_err, is_error = true }
   end
 
-  local captured, last_errors
-  local local_tools
-  if validator then
+  if not validator then
     local_tools = {
-      [STRUCTURED_OUTPUT_NAME] = {
-        description = STRUCTURED_OUTPUT_DESCRIPTION,
-        input_schema = input.output_schema,
+      [DONE_TOOL_NAME] = {
+        description = DONE_DESCRIPTION,
+        input_schema = done_tool_schema(),
         handler = function(value)
-          local errs = validator:validate(value)
-          if errs then
-            last_errors = bounded_errors(errs)
-            return nil, INVALID_INPUT_PREFIX .. last_errors
-          end
-          captured = value
-          return STRUCTURED_OUTPUT_ACK
+          captured = value.answer
+          return DONE_ACK
         end,
       },
     }
@@ -218,13 +248,10 @@ local function handler(input, ctx)
         local message = input.prompt
         if validator then
           message = message .. STRUCTURED_OUTPUT_PROMPT_SUFFIX
+        else
+          message = message .. DONE_PROMPT_SUFFIX
         end
         local result, err = sess:prompt(message)
-        local retries = 0
-        while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
-          retries = retries + 1
-          result, err = sess:prompt(NUDGE_MISSING)
-        end
         if err then
           return { llm_output = "sub-agent error: " .. err, is_error = true }
         end
@@ -232,7 +259,15 @@ local function handler(input, ctx)
           local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
           return { llm_output = msg, is_error = true }
         end
-        return { llm_output = captured and noon.json.encode(captured) or result.text, format = "markdown" }
+        local output
+        if validator then
+          output = noon.json.encode(captured)
+        elseif captured then
+          output = captured
+        else
+          output = result.text
+        end
+        return { llm_output = output, format = "markdown" }
       end
 
       local function do_poll()

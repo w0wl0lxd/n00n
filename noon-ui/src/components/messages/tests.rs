@@ -565,9 +565,9 @@ fn search_text_includes_role_prefix() {
     panel.push(DisplayMessage::new(DisplayRole::Thinking, "hmm".into()));
     rebuild(&mut panel);
     let texts = panel.segment_search_texts();
-    assert_eq!(texts[0], "you> hello");
-    assert_eq!(texts[2], format!("noon> {md}"));
-    assert_eq!(texts[4], "thinking> hmm");
+    assert_eq!(texts[0], "  you      │ hello");
+    assert_eq!(texts[2], format!("  noon     │ {md}"));
+    assert_eq!(texts[4], "  thinking │ hmm");
 }
 
 #[test_case(&["short", &"x".repeat(200)], 80, 4 ; "long_line_wraps")]
@@ -651,7 +651,7 @@ fn stream_reset_clears_streaming_and_fails_tools() {
     assert_eq!(msg_status(&panel, "t1"), ToolStatus::Error);
 }
 
-const NOON_PREFIX_LEN: u16 = 6;
+const NOON_PREFIX_LEN: u16 = 13;
 
 fn make_sel(area: Rect, anchor: (u32, u16), cursor: (u32, u16)) -> Selection {
     let mut sel = Selection::start(
@@ -878,7 +878,10 @@ fn expand_truncated_tool_does_not_auto_scroll() {
     let mut panel = panel_with_long_tool(200);
     let area = Rect::new(0, 0, 80, 24);
     let before_scroll = panel.scroll_top;
-    assert!(panel.auto_scroll, "auto_scroll should be on when content fits");
+    assert!(
+        panel.auto_scroll,
+        "auto_scroll should be on when content fits"
+    );
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
@@ -1174,7 +1177,10 @@ fn handle_click_on_running_tool_forwards_live_without_recording() {
     let area = Rect::new(0, 0, 80, 24);
     assert!(panel.handle_click(area.y, area));
     assert!(panel.lua_clicks.is_empty());
-    assert!(!panel.auto_scroll, "clicking a running tool should pause auto-scroll");
+    assert!(
+        !panel.auto_scroll,
+        "clicking a running tool should pause auto-scroll"
+    );
 }
 
 #[test]
@@ -1198,7 +1204,10 @@ fn handle_click_on_done_tool_pauses_auto_scroll() {
     let area = Rect::new(0, 0, 80, 24);
     assert!(panel.auto_scroll, "auto_scroll should be on before click");
     assert!(panel.handle_click(area.y, area));
-    assert!(!panel.auto_scroll, "clicking a finished tool should pause auto-scroll");
+    assert!(
+        !panel.auto_scroll,
+        "clicking a finished tool should pause auto-scroll"
+    );
 }
 
 #[test]

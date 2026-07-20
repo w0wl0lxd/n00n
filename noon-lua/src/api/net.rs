@@ -4,8 +4,8 @@ use std::time::Duration;
 use futures_lite::io::AsyncReadExt;
 use isahc::config::{Configurable, RedirectPolicy};
 use isahc::{AsyncBody, HttpClient, Request};
-use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{Lua, Result as LuaResult, Table, Value};
+use noon_lua_macro::{lua_fn, lua_table};
 
 use crate::plugin_permissions::PluginPermissions;
 

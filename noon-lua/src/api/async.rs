@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use async_lock::{Semaphore, SemaphoreGuardArc};
 use futures::future::join_all;
+use mlua::{Function, Lua, MultiValue, Result as LuaResult, Table, Value};
 use noon_agent::cancel::CancelToken;
 use noon_lua_macro::{lua_class, lua_fn, lua_table};
-use mlua::{Function, Lua, MultiValue, Result as LuaResult, Table, Value};
 
 use crate::docs::{FnDoc, ParamDoc};
 use crate::runtime::{TaskHandle, enqueue_async_task, lock_cell};

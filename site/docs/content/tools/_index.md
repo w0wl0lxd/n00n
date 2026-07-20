@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-Noon ships with 20 built-in tools. This is the full reference.
+Noon ships with 21 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -19,9 +19,9 @@ Commands run in <cwd> by default.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `command` | string | yes |  | The bash command to execute |
-| `description` | string | no |  | Short description (3-5 words) of what the command does |
-| `timeout` | integer | no | 120 | Timeout in seconds |
 | `workdir` | string | no | cwd | Working directory |
+| `timeout` | integer | no | 120 | Timeout in seconds |
+| `description` | string | no |  | Short description (3-5 words) of what the command does |
 
 ### `read` *(lua plugin)*
 
@@ -29,9 +29,9 @@ Read a file or directory. Returns contents with line numbers (1-indexed).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `limit` | integer | no | Max number of lines to read. Omitting the limit reads up to 2000 lines. |
 | `offset` | integer | no | Line number to start from (1-indexed) |
 | `path` | string | yes | Absolute path to the file or directory |
+| `limit` | integer | no | Max number of lines to read. Omitting the limit reads up to 2000 lines. |
 
 ### `write` *(lua plugin)*
 
@@ -48,10 +48,10 @@ Replace an exact string match in a file.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `new_string` | string | yes |  | Replacement string |
-| `old_string` | string | yes |  | Exact string to find (must match uniquely unless replace_all is true) |
-| `path` | string | yes |  | Absolute path to the file |
 | `replace_all` | boolean | no | false | Replace all occurrences |
+| `path` | string | yes |  | Absolute path to the file |
+| `old_string` | string | yes |  | Exact string to find (must match uniquely unless replace_all is true) |
+| `new_string` | string | yes |  | Replacement string |
 
 ### `multiedit` *(lua plugin)*
 
@@ -69,10 +69,10 @@ Edit lines by number. Replaces lines from `start` to `end` (inclusive) with `new
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `end` | integer | yes | Last line, inclusive |
-| `new_string` | string | yes | Replacement text |
-| `path` | string | yes | Absolute path to the file |
 | `start` | integer | yes | First line (1-indexed) |
+| `path` | string | yes | Absolute path to the file |
+| `new_string` | string | yes | Replacement text |
+| `end` | integer | yes | Last line, inclusive |
 
 ### `insert_lines` *(lua plugin, opt-in)*
 
@@ -80,9 +80,9 @@ Insert lines before a given line number. Lines at `line` and below shift down. E
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `path` | string | yes | Absolute path to the file |
 | `line` | integer | yes | Line number to insert before (1-indexed). Use 1 to insert at the top. |
 | `new_string` | string | yes | Text to insert |
-| `path` | string | yes | Absolute path to the file |
 
 ### `glob` *(lua plugin)*
 
@@ -90,8 +90,8 @@ Find files by glob pattern.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `path` | string | no | cwd | Directory to search in |
 | `pattern` | string | yes |  | Glob pattern (e.g. **/*.rs, src/**/*.ts) |
+| `path` | string | no | cwd | Directory to search in |
 
 ### `grep` *(lua plugin)*
 
@@ -99,12 +99,12 @@ Search file contents using regex.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `context_after` | integer | no |  | Context lines after match |
-| `context_before` | integer | no |  | Context lines before match |
 | `include` | string | no |  | File glob filter (e.g. *.c) |
-| `limit` | integer | no |  | Max match groups to return |
 | `path` | string | no | cwd | Directory to search in |
 | `pattern` | string | yes |  | Regex pattern |
+| `context_after` | integer | no |  | Context lines after match |
+| `limit` | integer | no |  | Max match groups to return |
+| `context_before` | integer | no |  | Context lines before match |
 
 ### `index` *(lua plugin)*
 
@@ -138,8 +138,8 @@ Execute Python code in a sandboxed interpreter with tools as callable functions.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `code` | string | yes |  | Python code to execute. Tools are async functions that return strings (not objects). You MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
 | `timeout` | integer | no | 30, max 300 | Timeout in seconds |
+| `code` | string | yes |  | Python code to execute. Tools are async functions that return strings (not objects). You MUST await every call: `result = await read(path='/file')`. Use `await asyncio.gather(...)` for concurrency. |
 
 ### `question` *(lua plugin)*
 
@@ -163,9 +163,18 @@ Launch an autonomous subagent to perform tasks independently. Best combined with
 |-----------|------|----------|-------------|
 | `description` | string | yes | Short (3-5 words) description of the task |
 | `model_tier` | string | no | Model tier (optional, omit to use current model, capped at current tier):<br>- "strong" (e.g. Opus): Deep reasoning, complex architecture, subtle bugs, most critical sections. ~5x cost of medium.<br>- "medium" (e.g. Sonnet): Balanced. Refactors, features, multi-file changes.<br>- "weak" (e.g. Haiku): Fast/cheap. Search, summarize, boilerplate, simple edits. |
-| `output_schema` | object | no | JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string. |
 | `prompt` | string | yes | Detailed task prompt for the agent |
+| `output_schema` | object | no | JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string. |
 | `subagent_type` | string | no | Subagent type: "research" (read-only, default) or "general" (can modify files) |
+
+### `workflow` *(lua plugin)*
+
+Run a workflow script that orchestrates many subagents at scale.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `script` | string | yes | Lua workflow script. First statement: meta({...}). Then orchestrate with agent/parallel/pipeline/phase/log. Must return the final answer as a string. |
+| `inputs` | object | no | Free-form object exposed to the script as the global `inputs`. |
 
 ### `todo_write` *(lua plugin)*
 
@@ -182,8 +191,8 @@ Persistent, project-scoped scratchpad for learnings, patterns, decisions, and go
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `command` | string | yes | Command: view, write, delete |
-| `content` | string | no | File content for 'write' |
 | `path` | string | no | Relative path (e.g. 'architecture.md'). Omit to list all. |
+| `content` | string | no | File content for 'write' |
 
 ### `skill` *(lua plugin)*
 
@@ -201,9 +210,9 @@ Fetch a URL and return its contents.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `format` | string | no |  | Output format: markdown (default), text, or html |
-| `timeout` | integer | no | 30, max 120 | Timeout in seconds |
 | `url` | string | yes |  | URL to fetch (http:// or https://) |
+| `timeout` | integer | no | 30, max 120 | Timeout in seconds |
+| `format` | string | no |  | Output format: markdown (default), text, or html |
 
 ### `websearch` *(lua plugin)*
 

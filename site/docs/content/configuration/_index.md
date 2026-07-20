@@ -80,6 +80,7 @@ How many lines of output to show per tool in the UI. All values are `usize` with
 | `bash` | 5 |
 | `code_execution` | 5 |
 | `task` | 5 |
+| `workflow` | 8 |
 | `index` | 3 |
 | `grep` | 3 |
 | `read` | 3 |
@@ -212,6 +213,13 @@ noon.setup({
 | `max_output_bytes` | integer | - | - | Override `agent.max_output_bytes` for this tool. |
 | `max_output_lines` | integer | - | - | Override `agent.max_output_lines` for this tool. |
 | `max_response_bytes` | integer | `5242880` | 1024 | Stop reading a response after this many bytes. |
+
+### `plugins.workflow`
+
+| Field | Type | Default | Min | Description |
+|-------|------|---------|-----|-------------|
+| `max_concurrent_agents` | integer | `8` | 1 | Max subagents one parallel() call runs at once. |
+| `max_concurrent_workflows` | integer | `4` | 1 | Max concurrently running workflows. |
 
 ## Validation
 

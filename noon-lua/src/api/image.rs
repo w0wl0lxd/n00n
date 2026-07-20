@@ -7,8 +7,8 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use image::{DynamicImage, ImageFormat, ImageReader};
-use noon_lua_macro::{lua_class, lua_fn, lua_table};
 use mlua::{Lua, Result as LuaResult, Value as LuaValue};
+use noon_lua_macro::{lua_class, lua_fn, lua_table};
 
 use super::base64::bytes_arg;
 
