@@ -198,6 +198,13 @@ pub(crate) struct ResponseAccumulator {
 }
 
 impl ResponseAccumulator {
+    fn has_reasoning_item(&self, item: &Value) -> bool {
+        let id = item["id"].as_str();
+        self.reasoning_items.iter().any(|(_, stored)| {
+            id.is_some() && stored["id"].as_str() == id || id.is_none() && stored == item
+        })
+    }
+
     pub fn new() -> Self {
         Self {
             text: String::new(),
@@ -304,11 +311,7 @@ impl ResponseAccumulator {
                     (self.reasoning_items.len() + self.tool_accumulators.len()) as u64
                 });
                 if item["type"].as_str() == Some("reasoning") {
-                    if !self
-                        .reasoning_items
-                        .iter()
-                        .any(|(_, stored)| stored == item)
-                    {
+                    if !self.has_reasoning_item(item) {
                         self.reasoning_items.push((output_index, item.clone()));
                     }
                 } else if item["type"].as_str() == Some("message") && self.text.is_empty() {
@@ -399,10 +402,7 @@ impl ResponseAccumulator {
                 if let Some(output) = resp["output"].as_array() {
                     for (index, item) in output.iter().enumerate() {
                         if item["type"].as_str() == Some("reasoning")
-                            && !self
-                                .reasoning_items
-                                .iter()
-                                .any(|(_, stored)| stored == item)
+                            && !self.has_reasoning_item(item)
                         {
                             self.reasoning_items.push((index as u64, item.clone()));
                         } else if item["type"].as_str() == Some("message")

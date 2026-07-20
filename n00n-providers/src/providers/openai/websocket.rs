@@ -1,7 +1,8 @@
 use std::time::{Duration, Instant};
 
 use async_tungstenite::WebSocketStream;
-use async_tungstenite::tungstenite::http::Request;
+use async_tungstenite::tungstenite::client::IntoClientRequest;
+use async_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
 use async_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
 use flume::Sender;
 use futures_lite::StreamExt;
@@ -67,13 +68,18 @@ pub(crate) async fn stream_message(
     stream_timeout: Duration,
 ) -> Result<StreamResponse, AgentError> {
     let url = responses_websocket_url(auth.base_url.as_deref());
-    let mut builder = Request::builder().uri(&url).method("GET");
+    let mut request = url.into_client_request().map_err(ws_err)?;
     for (key, value) in &auth.headers {
-        builder = builder.header(key.as_str(), value.as_str());
+        let name = key.parse::<HeaderName>().map_err(|e| AgentError::Config {
+            message: format!("invalid WebSocket header name {key}: {e}"),
+        })?;
+        let value = value
+            .parse::<HeaderValue>()
+            .map_err(|e| AgentError::Config {
+                message: format!("invalid WebSocket header value for {key}: {e}"),
+            })?;
+        request.headers_mut().insert(name, value);
     }
-    let request = builder.body(()).map_err(|e| AgentError::Config {
-        message: e.to_string(),
-    })?;
 
     let (mut ws, _) = async_tungstenite::smol::connect_async(request)
         .await
@@ -239,6 +245,23 @@ mod tests {
         assert!(event.get("reasoning_effort").is_none());
         assert_eq!(event["type"], "response.create");
         assert!(event.get("stream").is_none());
+    }
+
+    #[test]
+    fn websocket_request_includes_handshake_headers() {
+        let request =
+            responses_websocket_url(Some(crate::providers::openai::auth::CODING_PLAN_BASE_URL))
+                .into_client_request()
+                .unwrap();
+        for header in [
+            "host",
+            "upgrade",
+            "connection",
+            "sec-websocket-key",
+            "sec-websocket-version",
+        ] {
+            assert!(request.headers().contains_key(header), "missing {header}");
+        }
     }
 
     #[test]
