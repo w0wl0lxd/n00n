@@ -3,11 +3,10 @@
 -- (product_manager, planner, developer, tester, reviewer); each runs as its own
 -- subagent on a cost-aware model tier. Built entirely on noon.agent.* and the
 -- existing provider/model-tier machinery — no core changes.
-local ToolView = require("noon.tool_view")
+local memory = require("mem")
 local refine = require("refine")
 local retrieve = require("retrieve")
 local roles = require("roles")
-local route_tier = require("noon.route_tier").route_tier
 
 local PLANNER_OUTPUT = {
   type = "object",
@@ -58,7 +57,9 @@ local schema = {
     },
     mode = {
       type = "string",
-      description = '"supervised" (default, review the plan) or "autonomous".',
+      enum = { "supervised", "autonomous" },
+      default = "supervised",
+      description = '"supervised" (default, return the plan for review) or "autonomous".',
     },
     model_tier = {
       type = "string",
@@ -165,7 +166,6 @@ local function generate_learnings_digest(ctx, goal, report, supervisor_tier)
   local sess, sess_err = noon.agent.session(ctx, {
     model_spec = model.spec,
     system = system,
-    tools = {},
     audience = "general_sub",
     name = "almas-learning-digest",
   })
@@ -197,6 +197,18 @@ local function handler(input, ctx)
   local steps, perr = run_supervisor(ctx, goal, supervisor_tier)
   if perr then
     return { llm_output = perr, is_error = true }
+  end
+
+  if input.mode ~= "autonomous" then
+    local plan = {}
+    for i, step in ipairs(steps) do
+      plan[#plan + 1] = string.format("%d. **%s** (%s): %s", i, step.role, step.tier or "default tier", step.prompt)
+    end
+    return {
+      llm_output = table.concat(plan, "\n")
+        .. '\n\nReview the plan, then run ALMAS again with `mode = "autonomous"` to execute it.',
+      format = "markdown",
+    }
   end
 
   local results = {}
