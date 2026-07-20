@@ -1,5 +1,5 @@
-local truncate = require("maki.truncate")
-local ToolView = require("maki.tool_view")
+local truncate = require("noon.truncate")
+local ToolView = require("noon.tool_view")
 
 local failures = {}
 
@@ -291,7 +291,7 @@ case("tool_view_max_line_bytes_default_off", function()
   eq(buf.lines[1], long)
 end)
 
-local TextInput = require("maki.text_input")
+local TextInput = require("noon.text_input")
 
 case("text_input_insert_and_value", function()
   local input = TextInput.new()
@@ -1076,7 +1076,7 @@ case("text_input_trace_cases", function()
   end
 end)
 
-local ListPicker = require("maki.list_picker")
+local ListPicker = require("noon.list_picker")
 
 case("set_highlight_number_width_scales", function()
   local buf = mock_buf()

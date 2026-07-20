@@ -27,7 +27,7 @@ jobs:
               - "Cargo.toml"
               - "Cargo.lock"
               - "src/**"
-              - "maki-*/src/**"
+              - "noon-*/src/**"
               - "plugins/**"
               - "justfile"
               - ".github/workflows/rust.yml"

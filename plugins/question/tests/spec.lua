@@ -18,9 +18,9 @@ end
 
 local function with_mock_ui(fn)
   local original = {
-    buf = maki.ui.buf,
-    markdown = maki.ui.markdown,
-    terminal_size = maki.ui.terminal_size,
+    buf = noon.ui.buf,
+    markdown = noon.ui.markdown,
+    terminal_size = noon.ui.terminal_size,
   }
   local captured = { _lines = {} }
   local handlers = {}
@@ -44,19 +44,19 @@ local function with_mock_ui(fn)
       end
     end,
   }
-  maki.ui.buf = function()
+  noon.ui.buf = function()
     return buf
   end
-  maki.ui.markdown = function(text, _width)
+  noon.ui.markdown = function(text, _width)
     return { { { text, "" } } }
   end
-  maki.ui.terminal_size = function()
+  noon.ui.terminal_size = function()
     return { rows = 40, cols = 100 }
   end
   local ok, err = pcall(fn, buf)
-  maki.ui.buf = original.buf
-  maki.ui.markdown = original.markdown
-  maki.ui.terminal_size = original.terminal_size
+  noon.ui.buf = original.buf
+  noon.ui.markdown = original.markdown
+  noon.ui.terminal_size = original.terminal_size
   if not ok then
     error(err)
   end
@@ -340,7 +340,7 @@ case("render_card_shows_multiple_answer_hint_and_check_marker", function()
 end)
 
 case("question_md_falls_back_to_plain_text_on_invalid_markdown_return", function()
-  local original = maki.ui.markdown
+  local original = noon.ui.markdown
   local mocks = {
     {
       name = "error",
@@ -362,9 +362,9 @@ case("question_md_falls_back_to_plain_text_on_invalid_markdown_return", function
     },
   }
   for _, m in ipairs(mocks) do
-    maki.ui.markdown = m.fn
+    noon.ui.markdown = m.fn
     local ok, r = pcall(QuestionForm._render, selecting_single(), 80)
-    maki.ui.markdown = original
+    noon.ui.markdown = original
     assert(ok, m.name .. ": render must not propagate markdown errors")
     local span = find_span_with_text(r.lines, "Pick one")
     assert(span, m.name .. ": fallback must surface the question text")
@@ -373,22 +373,22 @@ case("question_md_falls_back_to_plain_text_on_invalid_markdown_return", function
 end)
 
 case("confirming_view_renders_all_question_lines_at_inline_width", function()
-  local original = maki.ui.markdown
-  maki.ui.markdown = function(_text, _width)
+  local original = noon.ui.markdown
+  noon.ui.markdown = function(_text, _width)
     return { { { "first", "" } }, { { "second", "" } } }
   end
   local s = confirming_multi()
   local r = QuestionForm._render(s, 80)
-  maki.ui.markdown = original
+  noon.ui.markdown = original
   eq(s.mode, MODE.CONFIRMING)
   assert(find_span_with_text(r.lines, "first"), "confirming row must include first markdown line")
   assert(find_span_with_text(r.lines, "second"), "confirming row must also include subsequent markdown lines")
 end)
 
 case("question_md_cache_invalidates_on_width_change", function()
-  local original = maki.ui.markdown
+  local original = noon.ui.markdown
   local calls = 0
-  maki.ui.markdown = function(_text, width)
+  noon.ui.markdown = function(_text, width)
     calls = calls + 1
     return { { { "w=" .. tostring(width), "" } } }
   end
@@ -398,7 +398,7 @@ case("question_md_cache_invalidates_on_width_change", function()
   QuestionForm._render(s, 80)
   eq(calls, calls_after_80, "same width must reuse cache")
   QuestionForm._render(s, 60)
-  maki.ui.markdown = original
+  noon.ui.markdown = original
   assert(calls > calls_after_80, "width change must invalidate cache and re-render")
 end)
 
@@ -607,11 +607,11 @@ case("render_selecting_long_label_and_desc_wrap_within_width", function()
 end)
 
 case("open_requests_bottom_split", function()
-  local original_open = maki.ui.open_win
-  local original_buf = maki.ui.buf
-  local original_size = maki.ui.terminal_size
+  local original_open = noon.ui.open_win
+  local original_buf = noon.ui.buf
+  local original_size = noon.ui.terminal_size
   local captured
-  maki.ui.open_win = function(_buf, opts)
+  noon.ui.open_win = function(_buf, opts)
     captured = opts
     return {
       width = 80,
@@ -622,16 +622,16 @@ case("open_requests_bottom_split", function()
       end,
     }
   end
-  maki.ui.buf = function()
+  noon.ui.buf = function()
     return { set_lines = function() end }
   end
-  maki.ui.terminal_size = function()
+  noon.ui.terminal_size = function()
     return { rows = 40, cols = 100 }
   end
   local ok, err = pcall(QuestionForm.open, single_question())
-  maki.ui.open_win = original_open
-  maki.ui.buf = original_buf
-  maki.ui.terminal_size = original_size
+  noon.ui.open_win = original_open
+  noon.ui.buf = original_buf
+  noon.ui.terminal_size = original_size
   assert(ok, "open must not error: " .. tostring(err))
   assert(captured, "open_win must be called")
   eq(captured.split, "below", "form must request a bottom split")

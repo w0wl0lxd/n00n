@@ -1,5 +1,5 @@
-local shorten_path = require("maki.shorten_path")
-local ToolView = require("maki.tool_view")
+local shorten_path = require("noon.shorten_path")
+local ToolView = require("noon.tool_view")
 
 local DESCRIPTION = [[Write content to a file, replacing existing content.
 
@@ -14,7 +14,7 @@ local function write_view_opts(ctx)
 end
 
 local function build_view(content, path, ctx)
-  local buf = maki.ui.buf()
+  local buf = noon.ui.buf()
   local view = ToolView.new(buf, write_view_opts(ctx))
   view:set_highlight(content, path:match("%.([^%.]+)$") or "")
   view:finish()
@@ -24,7 +24,7 @@ local function build_view(content, path, ctx)
   return buf
 end
 
-maki.api.register_tool({
+noon.api.register_tool({
   name = "write",
   kind = "edit",
   mutable_path = "path",
@@ -50,7 +50,7 @@ maki.api.register_tool({
   },
 
   header = function(input)
-    local buf = maki.ui.buf()
+    local buf = noon.ui.buf()
     buf:line({ { shorten_path(input.path or ""), "path" } })
     return buf
   end,
@@ -73,19 +73,19 @@ maki.api.register_tool({
       return { llm_output = "error: content is required", is_error = true }
     end
 
-    local path = maki.fs.abspath(raw)
+    local path = noon.fs.abspath(raw)
 
     local ok, err = ctx:check_before_edit(path)
     if not ok then
       return { llm_output = err, is_error = true }
     end
 
-    local parent = maki.fs.dirname(path)
+    local parent = noon.fs.dirname(path)
     if parent then
-      maki.fs.mkdir(parent, { parents = true })
+      noon.fs.mkdir(parent, { parents = true })
     end
 
-    local _, write_err = maki.fs.write(path, content)
+    local _, write_err = noon.fs.write(path, content)
     if write_err then
       return { llm_output = "write error: " .. tostring(write_err), is_error = true }
     end

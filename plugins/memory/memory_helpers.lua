@@ -36,7 +36,7 @@ function M.count_lines(s)
 end
 
 function M.project_id(path)
-  local base = maki.fs.basename(path) or "root"
+  local base = noon.fs.basename(path) or "root"
   return base .. "-" .. M.fnv1a_64(path)
 end
 
@@ -54,8 +54,8 @@ function M.safe_resolve(memories_dir, relative)
   if relative:match("^%a:") then
     return nil, "path must be relative"
   end
-  local resolved = maki.fs.normalize(maki.fs.joinpath(memories_dir, relative))
-  local norm_base = maki.fs.normalize(memories_dir)
+  local resolved = noon.fs.normalize(noon.fs.joinpath(memories_dir, relative))
+  local norm_base = noon.fs.normalize(memories_dir)
   local sep = norm_base:find("\\") and "\\" or "/"
   local prefix = norm_base .. sep
   if resolved:sub(1, #prefix) ~= prefix then
@@ -65,14 +65,14 @@ function M.safe_resolve(memories_dir, relative)
 end
 
 function M.collect_file_entries(dir)
-  local entries = maki.fs.dir(dir)
+  local entries = noon.fs.dir(dir)
   if not entries then
     return {}
   end
   local files = {}
   for _, entry in ipairs(entries) do
     if entry[2] == "file" then
-      local meta = maki.fs.metadata(maki.fs.joinpath(dir, entry[1]))
+      local meta = noon.fs.metadata(noon.fs.joinpath(dir, entry[1]))
       if meta then
         files[#files + 1] = { entry[1], meta.size }
       end

@@ -26,7 +26,7 @@ case("nix_bindings", function()
   local src = [==[
     rec {
       hello = "world";
-      name = "maki";
+      name = "noon";
       version = "0.1.0";
     }
   ]==]
@@ -58,7 +58,7 @@ case("nix_all_sections", function()
     { pkgs, lib ? import ./lib.nix, stdenv, ... }:
     let
       utils = import ./utils.nix;
-      name = "maki";
+      name = "noon";
       version = "0.1.0";
     in
     pkgs.stdenv.mkDerivation {

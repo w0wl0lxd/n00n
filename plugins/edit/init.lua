@@ -1,6 +1,6 @@
-local shorten_path = require("maki.shorten_path")
-local ToolView = require("maki.tool_view")
-local fuzzy_replace = require("maki.fuzzy_replace")
+local shorten_path = require("noon.shorten_path")
+local ToolView = require("noon.tool_view")
+local fuzzy_replace = require("noon.fuzzy_replace")
 local replace_lines = require("edit_helpers").replace_lines
 
 local SNIPPET_MAX_CHARS = 32
@@ -22,7 +22,7 @@ local EDIT_DESCRIPTION = [[Replace an exact string match in a file.
 ]]
 
 local MULTIEDIT_DESCRIPTION = [[Make multiple find-and-replace edits to a single file atomically.
-Prefer this over edit when making multiple changes to the same file.
+Prefer this over edit when noonng multiple changes to the same file.
 
 - Read the file first to get exact content.
 - old_string must match the file contents exactly, including all whitespace and indentation.
@@ -33,13 +33,13 @@ Prefer this over edit when making multiple changes to the same file.
 ]]
 
 local function edit_header(input)
-  local buf = maki.ui.buf()
+  local buf = noon.ui.buf()
   buf:line({ { shorten_path(input.path or ""), "path" } })
   return buf
 end
 
 local function split_lines(text)
-  local lines = maki.split(text, "\n")
+  local lines = noon.split(text, "\n")
   if lines[#lines] == "" then
     lines[#lines] = nil
   end
@@ -71,7 +71,7 @@ local function resolve_block_nrs(blocks, path)
   local content
   for _, b in ipairs(blocks) do
     if not b.nr and (b.new or "") ~= "" then
-      content = content or maki.fs.read(maki.fs.abspath(path))
+      content = content or noon.fs.read(noon.fs.abspath(path))
       if not content then
         return
       end
@@ -126,10 +126,10 @@ end
 -- Re-renders the block's lines with syntax colors on the diff backgrounds,
 -- keeping the gutter and prefix the plain render put there.
 local function apply_highlights(view, fmt, jobs, ext)
-  maki.async.run(function()
+  noon.async.run(function()
     for _, job in ipairs(jobs) do
-      local bg = maki.ui.theme_color(job.style)
-      local highlighted = bg and maki.ui.highlight(job.text, ext)
+      local bg = noon.ui.theme_color(job.style)
+      local highlighted = bg and noon.ui.highlight(job.text, ext)
       for i, hl_line in ipairs(highlighted or {}) do
         local idx = job.first + i - 1
         if not view.all_lines[idx] then
@@ -156,7 +156,7 @@ end
 -- on removed lines, blank gutter + `+` on added lines, and no truncation
 -- ever, a diff is exactly the change and hiding part of it lies.
 local function diff_view(blocks, path)
-  local buf = maki.ui.buf()
+  local buf = noon.ui.buf()
   local view = ToolView.new(buf, { max_lines = math.huge, keep = "head" })
   resolve_block_nrs(blocks, path)
   local w = gutter_width(blocks)
@@ -191,14 +191,14 @@ local function diff_restore(blocks_from)
 end
 
 local function apply_edit(path, ctx, transform)
-  path = maki.fs.abspath(path)
+  path = noon.fs.abspath(path)
 
   local ok, err = ctx:check_before_edit(path)
   if not ok then
     return nil, err
   end
 
-  local before, read_err = maki.fs.read(path)
+  local before, read_err = noon.fs.read(path)
   if read_err then
     return nil, "read error: " .. tostring(read_err)
   end
@@ -208,7 +208,7 @@ local function apply_edit(path, ctx, transform)
     return nil, transform_err
   end
 
-  local _, write_err = maki.fs.write(path, after)
+  local _, write_err = noon.fs.write(path, after)
   if write_err then
     return nil, "write error: " .. tostring(write_err)
   end
@@ -232,7 +232,7 @@ local function diff_result(edit_result, summary)
   }
 end
 
-local opts = maki.api.register_options({
+local opts = noon.api.register_options({
   multiedit = { default = true, desc = "Provide the `multiedit` tool." },
   edit_lines = { default = false, desc = "Provide the opt-in `edit_lines` tool." },
   insert_lines = { default = false, desc = "Provide the opt-in `insert_lines` tool." },
@@ -240,11 +240,11 @@ local opts = maki.api.register_options({
 
 local function register_tool_if(enabled, tool)
   if enabled then
-    maki.api.register_tool(tool)
+    noon.api.register_tool(tool)
   end
 end
 
-maki.api.register_tool({
+noon.api.register_tool({
   name = "edit",
   kind = "edit",
   mutable_path = "path",

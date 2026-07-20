@@ -4,16 +4,16 @@ use std::sync::Arc;
 use color_eyre::Result;
 use color_eyre::eyre::Context;
 
-use maki_agent::tools::ToolRegistry;
-use maki_config::{load_env_files, load_permissions};
-use maki_lua::PluginHost;
-use maki_storage::StateDir;
+use noon_agent::tools::ToolRegistry;
+use noon_config::{load_env_files, load_permissions};
+use noon_lua::PluginHost;
+use noon_storage::StateDir;
 
 use crate::setup;
 
 pub fn run(model_arg: Option<String>, yolo: bool, no_jit: bool) -> Result<()> {
     let storage = StateDir::resolve().context("resolve data directory")?;
-    maki_providers::model_registry::load_from_storage(&storage);
+    noon_providers::model_registry::load_from_storage(&storage);
 
     let cwd = env::current_dir().unwrap_or_else(|_| ".".into());
     load_env_files(&cwd);
@@ -45,7 +45,7 @@ pub fn run(model_arg: Option<String>, yolo: bool, no_jit: bool) -> Result<()> {
         .load_builtins(&config.plugins)
         .context("load builtin plugins")?;
 
-    let timeouts = maki_providers::Timeouts {
+    let timeouts = noon_providers::Timeouts {
         connect: config.provider.connect_timeout,
         low_speed: config.provider.low_speed_timeout,
         stream: config.provider.stream_timeout,
@@ -54,14 +54,14 @@ pub fn run(model_arg: Option<String>, yolo: bool, no_jit: bool) -> Result<()> {
     let model = setup::resolve_model(model_arg.as_deref(), &config.provider, &storage)?;
     setup::install_panic_log_hook();
 
-    let (mcp_handle, _mcp_config_errors) = smol::block_on(maki_agent::mcp::start(&cwd));
+    let (mcp_handle, _mcp_config_errors) = smol::block_on(noon_agent::mcp::start(&cwd));
 
     let prompt_slots = plugin_host
         .event_handle()
         .map(|h| h.collect_prompt_slots())
         .unwrap_or_default();
 
-    maki_acp::run(maki_acp::AcpParams {
+    noon_acp::run(noon_acp::AcpParams {
         model,
         config: config.agent,
         permissions_config: config.permissions,

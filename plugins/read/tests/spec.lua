@@ -76,24 +76,24 @@ end
 local _tmpdir_counter = 0
 local function mktmpdir()
   _tmpdir_counter = _tmpdir_counter + 1
-  local name = "/tmp/maki_read_spec_" .. tostring(os.clock()):gsub("%.", "") .. "_" .. _tmpdir_counter
-  maki.fs.mkdir(name)
+  local name = "/tmp/noon_read_spec_" .. tostring(os.clock()):gsub("%.", "") .. "_" .. _tmpdir_counter
+  noon.fs.mkdir(name)
   return name
 end
 
 local function rmtree(dir)
-  local entries = maki.fs.dir(dir)
+  local entries = noon.fs.dir(dir)
   if entries then
     for _, e in ipairs(entries) do
-      local p = maki.fs.joinpath(dir, e[1])
+      local p = noon.fs.joinpath(dir, e[1])
       if e[2] == "directory" then
         rmtree(p)
       else
-        maki.fs.rm(p)
+        noon.fs.rm(p)
       end
     end
   end
-  maki.fs.rm(dir)
+  noon.fs.rm(dir)
 end
 
 -- line_nr_fmt: table-driven across all boundaries + alignment
@@ -211,13 +211,13 @@ end)
 
 case("dir_listing_sort_and_filter", function()
   local tmpdir = mktmpdir()
-  maki.fs.write(maki.fs.joinpath(tmpdir, "c.txt"), "")
-  maki.fs.write(maki.fs.joinpath(tmpdir, "a.txt"), "")
-  maki.fs.write(maki.fs.joinpath(tmpdir, "AGENTS.md"), "instructions")
-  maki.fs.mkdir(maki.fs.joinpath(tmpdir, "zdir"))
-  maki.fs.mkdir(maki.fs.joinpath(tmpdir, "adir"))
+  noon.fs.write(noon.fs.joinpath(tmpdir, "c.txt"), "")
+  noon.fs.write(noon.fs.joinpath(tmpdir, "a.txt"), "")
+  noon.fs.write(noon.fs.joinpath(tmpdir, "AGENTS.md"), "instructions")
+  noon.fs.mkdir(noon.fs.joinpath(tmpdir, "zdir"))
+  noon.fs.mkdir(noon.fs.joinpath(tmpdir, "adir"))
 
-  local entries, err = maki.fs.dir(tmpdir)
+  local entries, err = noon.fs.dir(tmpdir)
   assert(err == nil, "dir listing should succeed: " .. tostring(err))
   local names = sort_dir_entries(entries, mock_is_instruction)
   eq(#names, 4)

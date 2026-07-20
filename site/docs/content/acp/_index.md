@@ -7,31 +7,31 @@ group = "Reference"
 
 # ACP (Agent Client Protocol)
 
-Run Maki inside your editor. `maki acp` starts an [ACP](https://agentclientprotocol.com/) server over stdio, so any ACP-capable editor (like [Zed](https://zed.dev/)) can drive Maki as its coding agent.
+Run Noon inside your editor. `noon acp` starts an [ACP](https://agentclientprotocol.com/) server over stdio, so any ACP-capable editor (like [Zed](https://zed.dev/)) can drive Noon as its coding agent.
 
 ```bash
-maki acp
+noon acp
 ```
 
 ## Zed setup
 
-Add Maki as a custom agent in Zed's `settings.json`:
+Add Noon as a custom agent in Zed's `settings.json`:
 
 ```json
 "agent_servers": {
-  "Maki": {
+  "Noon": {
     "default_config_options": {
       "model": "deepseek/deepseek-v4-flash"
     },
     "type": "custom",
-    "command": "maki",
+    "command": "noon",
     "args": ["acp"],
     "env": {}
   }
 }
 ```
 
-The `model` value is a `provider/model-id` spec, same format as `maki --model`.
+The `model` value is a `provider/model-id` spec, same format as `noon --model`.
 
 ## What works
 
@@ -42,4 +42,4 @@ The `model` value is a `provider/model-id` spec, same format as `maki --model`.
 - **Live tool calls.** Tool progress streams as it happens, including sub-agents and batched calls.
 - **Images and context.** Prompts can include images and editor-attached files.
 
-Authentication, providers, and permissions come from your normal Maki config. Set up [providers](/docs/providers/) first and ACP sessions just work.
+Authentication, providers, and permissions come from your normal Noon config. Set up [providers](/docs/providers/) first and ACP sessions just work.

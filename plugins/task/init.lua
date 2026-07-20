@@ -2,10 +2,10 @@
 -- tool whose handler validates and captures the result as closure upvalues.
 -- Invalid input is an inline tool error the model can fix in the same run.
 -- This plugin owns structured output and subagent concurrency; Rust exposes
--- primitives only (`maki.agent.session`, `maki.json.schema_validator`,
--- `maki.async.semaphore`).
+-- primitives only (`noon.agent.session`, `noon.json.schema_validator`,
+-- `noon.async.semaphore`).
 
-local ToolView = require("maki.tool_view")
+local ToolView = require("noon.tool_view")
 
 local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
@@ -74,12 +74,12 @@ local examples = {
   },
 }
 
-local opts = maki.api.register_options({
+local opts = noon.api.register_options({
   max_concurrent = { default = 8, min = 1, desc = "Max concurrently running subagents." },
 })
 
 -- Process-wide cap on concurrent subagents.
-local semaphore = maki.async.semaphore(opts.max_concurrent)
+local semaphore = noon.async.semaphore(opts.max_concurrent)
 
 local function bounded_errors(errors)
   local out = {}
@@ -102,13 +102,13 @@ local function handler(input, ctx)
       return { llm_output = SCHEMA_ROOT_ERROR, is_error = true }
     end
     local compile_err
-    validator, compile_err = maki.json.schema_validator(input.output_schema)
+    validator, compile_err = noon.json.schema_validator(input.output_schema)
     if compile_err then
       return { llm_output = SCHEMA_COMPILE_ERROR .. ": " .. compile_err, is_error = true }
     end
   end
 
-  local model, model_err = maki.agent.resolve_model(ctx, {
+  local model, model_err = noon.agent.resolve_model(ctx, {
     tier = input.model_tier,
   })
   if model_err then
@@ -117,7 +117,7 @@ local function handler(input, ctx)
 
   local audience = subagent_type == "research" and "research_sub" or "general_sub"
   local prompt_id = subagent_type == "research" and "research" or "general"
-  local system, system_err = maki.agent.system_prompt(ctx, {
+  local system, system_err = noon.agent.system_prompt(ctx, {
     prompt_id = prompt_id,
     instructions = true,
   })
@@ -125,7 +125,7 @@ local function handler(input, ctx)
     return { llm_output = system_err, is_error = true }
   end
 
-  local tool_defs, tools_err = maki.agent.tools(ctx, {
+  local tool_defs, tools_err = noon.agent.tools(ctx, {
     audience = audience,
     spec = model.spec,
     include_mcp = true,
@@ -149,7 +149,7 @@ local function handler(input, ctx)
             return nil, INVALID_INPUT_PREFIX .. last_errors
           end
           captured = value
-          sess:done(maki.json.encode(value))
+          sess:done(noon.json.encode(value))
           return STRUCTURED_OUTPUT_ACK
         end,
       },
@@ -179,7 +179,7 @@ local function handler(input, ctx)
   -- pcall so a raised error cannot leak the permit.
   local ok, out = pcall(function()
     local sess_err
-    sess, sess_err = maki.agent.session(ctx, {
+    sess, sess_err = noon.agent.session(ctx, {
       model_spec = model.spec,
       system = system,
       tools = tool_defs,
@@ -209,7 +209,7 @@ local function handler(input, ctx)
       local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
       return { llm_output = msg, is_error = true }
     end
-    return { llm_output = captured and maki.json.encode(captured) or result.text, format = "markdown" }
+    return { llm_output = captured and noon.json.encode(captured) or result.text, format = "markdown" }
   end)
 
   permit:release()
@@ -233,8 +233,8 @@ local function restore(_input, output, is_error, ctx)
     max_line_bytes = DEFAULT_MAX_LINE_BYTES,
   }
   if not is_error then
-    local width = math.max(maki.ui.terminal_size().cols - BODY_INDENT_COLS, MIN_MD_WIDTH)
-    local ok, md_lines = pcall(maki.ui.markdown, output, width)
+    local width = math.max(noon.ui.terminal_size().cols - BODY_INDENT_COLS, MIN_MD_WIDTH)
+    local ok, md_lines = pcall(noon.ui.markdown, output, width)
     if ok then
       return ToolView.restore_lines(md_lines, opts)
     end
@@ -242,7 +242,7 @@ local function restore(_input, output, is_error, ctx)
   return ToolView.restore(output, opts)
 end
 
-maki.api.register_tool({
+noon.api.register_tool({
   name = "task",
   description = description,
   kind = "execute",

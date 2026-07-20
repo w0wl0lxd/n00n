@@ -7,7 +7,7 @@ group = "Getting Started"
 
 # Quick Start
 
-Install Maki, connect a provider, and run your first session. Takes a few minutes.
+Install Noon, connect a provider, and run your first session. Takes a few minutes.
 
 ## Install
 
@@ -15,7 +15,7 @@ Install Maki, connect a provider, and run your first session. Takes a few minute
 
 ```sh
 # Download and read the script first (don't blindly trust shell scripts).
-curl -fsSL https://maki.sh/install.sh -o install.sh
+curl -fsSL https://noon.sh/install.sh -o install.sh
 cat install.sh
 
 # Then run.
@@ -25,14 +25,14 @@ chmod +x install.sh && sh install.sh
 One-liner:
 
 ```sh
-curl -fsSL https://maki.sh/install.sh | sh
+curl -fsSL https://noon.sh/install.sh | sh
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
 # Download and read the script first (don't blindly trust remote scripts).
-irm https://maki.sh/install.ps1 -OutFile install.ps1
+irm https://noon.sh/install.ps1 -OutFile install.ps1
 Get-Content install.ps1
 
 # Then run.
@@ -42,34 +42,34 @@ Get-Content install.ps1
 One-liner:
 
 ```powershell
-irm https://maki.sh/install.ps1 | iex
+irm https://noon.sh/install.ps1 | iex
 ```
 
 ### Windows (Git Bash)
 
 ```sh
-curl -fsSL https://maki.sh/install.sh | sh
+curl -fsSL https://noon.sh/install.sh | sh
 ```
 
-Both install to `%LOCALAPPDATA%\maki` and add it to your user PATH. Override with `MAKI_INSTALL_DIR` / `$env:MAKI_INSTALL_DIR`.
+Both install to `%LOCALAPPDATA%\noon` and add it to your user PATH. Override with `NOON_INSTALL_DIR` / `$env:NOON_INSTALL_DIR`.
 
 ### Living on the edge (main branch)
 
 ```sh
-cargo install --locked --git https://github.com/tontinton/maki.git maki
+cargo install --locked --git https://github.com/tontinton/noon.git noon
 ```
 
 ### With Nix
 
 ```sh
-nix run github:tontinton/maki
+nix run github:tontinton/noon
 ```
 
-Or download a pre-built binary from [GitHub Releases](https://github.com/tontinton/maki/releases/latest).
+Or download a pre-built binary from [GitHub Releases](https://github.com/tontinton/noon/releases/latest).
 
 ## API Keys
 
-Export a key for at least one provider (e.g. `ANTHROPIC_API_KEY`). Some providers support OAuth login instead via `maki auth login <provider>`.
+Export a key for at least one provider (e.g. `ANTHROPIC_API_KEY`). Some providers support OAuth login instead via `noon auth login <provider>`.
 
 See [Providers](/docs/providers/) for the full list of supported providers, environment variables, and setup instructions.
 
@@ -78,14 +78,14 @@ See [Providers](/docs/providers/) for the full list of supported providers, envi
 From your project directory:
 
 ```bash
-maki
+noon
 ```
 
 Type a prompt, press **Enter**, and the agent starts working.
 
 ## Keybindings
 
-These are the defaults. Plugins and `init.lua` can rebind most of them with `maki.keymap.set`; see [Keybindings](../keybindings/) for precedence and caveats.
+These are the defaults. Plugins and `init.lua` can rebind most of them with `noon.keymap.set`; see [Keybindings](../keybindings/) for precedence and caveats.
 
 - **Newline in input**: \\+Enter, Ctrl+J, or Alt+Enter
 - **Scroll output**: Ctrl+U / Ctrl+D (half page)
@@ -100,8 +100,8 @@ These are the defaults. Plugins and `init.lua` can rebind most of them with `mak
 Set a default in your config:
 
 ```lua
--- ~/.config/maki/init.lua
-maki.setup({
+-- ~/.config/noon/init.lua
+noon.setup({
     provider = {
         default_model = "anthropic/claude-sonnet-4-20250514",
     },
@@ -112,10 +112,10 @@ Switch models mid-session with the `/model` command.
 
 ## Project Configuration
 
-Add a `.maki/` directory to your project root for per-project settings:
+Add a `.noon/` directory to your project root for per-project settings:
 
 ```
-.maki/
+.noon/
 ├── init.lua           # Overrides global config
 ├── permissions.toml   # Permission rules
 ├── mcp.toml           # MCP server config
@@ -124,8 +124,8 @@ AGENTS.md              # Loaded into agent context automatically
 AGENTS.local.md        # Personal per-project instructions (gitignored)
 ```
 
-Maki also recognizes `CLAUDE.md`, `COPILOT.md`, `.cursorrules`, `CONVENTIONS.md`, `GEMINI.md`, and others as instruction files (first match wins).
+Noon also recognizes `CLAUDE.md`, `COPILOT.md`, `.cursorrules`, `CONVENTIONS.md`, `GEMINI.md`, and others as instruction files (first match wins).
 
-`AGENTS.md` is loaded at the start of every session. Put coding conventions, repo quirks & gotchas, or off-limits directories in here. Maki will automatically load instruction files inside subdirs when doing a `read` in the subdir.
+`AGENTS.md` is loaded at the start of every session. Put coding conventions, repo quirks & gotchas, or off-limits directories in here. Noon will automatically load instruction files inside subdirs when doing a `read` in the subdir.
 
 See [Configuration](/docs/configuration/) for all options.

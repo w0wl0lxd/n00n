@@ -73,7 +73,7 @@ local function parser_name(lang)
 end
 
 local function get_text(node, source)
-  return maki.treesitter.get_node_text(node, source)
+  return noon.treesitter.get_node_text(node, source)
 end
 
 local function line_start(node)
@@ -546,7 +546,7 @@ end
 local function emit_body_with_range(body, range, out, meta)
   if body:find("\n", 1, true) then
     local leading = body:match("^(%s*)") or ""
-    local lines = maki.split(body, "\n")
+    local lines = noon.split(body, "\n")
     for i, line in ipairs(lines) do
       if i == 1 then
         out[#out + 1] = line .. " " .. range
@@ -882,7 +882,7 @@ local function index_source(source, lang_name)
     return nil, "unsupported language: " .. tostring(lang_name)
   end
   local pname = parser_name(lang_name)
-  local parser = maki.treesitter.get_parser(source, pname)
+  local parser = noon.treesitter.get_parser(source, pname)
   local root = parser:parse()[1]:root()
   return extractor(source, root)
 end

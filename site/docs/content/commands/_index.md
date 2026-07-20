@@ -37,7 +37,7 @@ Type `/` in the input box to open the command palette.
 
 ## Sessions
 
-Sessions run concurrently. `/new` starts a fresh session while the old one keeps working in the background, and `/sessions` shows the live status of each (working, needs input, idle) so you can jump between them. When a background session finishes or needs input, Maki flashes a note in the status bar.
+Sessions run concurrently. `/new` starts a fresh session while the old one keeps working in the background, and `/sessions` shows the live status of each (working, needs input, idle) so you can jump between them. When a background session finishes or needs input, Noon flashes a note in the status bar.
 
 ## Custom commands
 
@@ -45,12 +45,12 @@ You can define your own slash commands as Markdown files.
 
 ### Project commands
 
-Place `.md` files in `.maki/commands/` in your project root.
+Place `.md` files in `.noon/commands/` in your project root.
 They appear in the palette as `/project:<filename>`.
 
 ### User commands
 
-Place `.md` files in `~/.config/maki/commands/`.
+Place `.md` files in `~/.config/noon/commands/`.
 They appear in the palette as `/user:<filename>`.
 
 Project commands override user commands with the same name.

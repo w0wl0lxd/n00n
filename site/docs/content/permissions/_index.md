@@ -7,7 +7,7 @@ group = "Reference"
 
 # Permissions
 
-Maki uses a permission system to decide what each tool is allowed to do and when to ask you first.
+Noon uses a permission system to decide what each tool is allowed to do and when to ask you first.
 
 Rules come from three layers, combined for resolution:
 
@@ -19,7 +19,7 @@ Any matching deny blocks the tool. No exceptions.
 
 ## Check Flow
 
-For every tool call, Maki resolves permission like this:
+For every tool call, Noon resolves permission like this:
 
 1. **Deny wins**: if any rule from any layer matches the tool and scope with a deny, the call is blocked immediately.
 2. If **YOLO** is active and no deny matched, allowed.
@@ -47,8 +47,8 @@ Container tools like `batch` and `code_execution` prompt for each inner tool ind
 
 There are two permission files:
 
-- **Global**: `~/.config/maki/permissions.toml`
-- **Project**: `.maki/permissions.toml` (takes precedence over global)
+- **Global**: `~/.config/noon/permissions.toml`
+- **Project**: `.noon/permissions.toml` (takes precedence over global)
 
 ```toml
 default = "deny"
@@ -122,14 +122,14 @@ Tool names must match `^[a-zA-Z0-9_-]{1,64}$` (no dots, max 64 chars). Server na
 
 ## Permission Prompts
 
-When a tool needs permission, Maki asks you. Here are the keys:
+When a tool needs permission, Noon asks you. Here are the keys:
 
 | Key | Action |
 |-----|--------|
 | `y` | Allow once |
 | `s` | Allow for this session |
-| `a` | Always allow (project, saved to `.maki/permissions.toml`) |
-| `A` | Always allow (global, saved to `~/.config/maki/permissions.toml`) |
+| `a` | Always allow (project, saved to `.noon/permissions.toml`) |
+| `A` | Always allow (global, saved to `~/.config/noon/permissions.toml`) |
 | `n` | Deny once |
 | `d` | Deny always (project) |
 | `D` | Deny always (global) |
@@ -152,8 +152,8 @@ To skip all prompts, toggle YOLO with the `/yolo` command, or run with `--yolo`.
 To start in YOLO mode every time:
 
 ```lua
--- ~/.config/maki/init.lua
-maki.setup({
+-- ~/.config/noon/init.lua
+noon.setup({
     always_yolo = true,
 })
 ```

@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use color_eyre::Result;
 use color_eyre::eyre::bail;
 
-use maki_agent::tools::{all_builtin_tool_names, is_builtin_tool};
+use noon_agent::tools::{all_builtin_tool_names, is_builtin_tool};
 
 use crate::print::OutputFormat;
 
@@ -24,7 +24,7 @@ pub enum InputFormat {
 }
 
 #[derive(Parser)]
-#[command(name = "maki", version, about = "AI coding agent for the terminal")]
+#[command(name = "noon", version, about = "AI coding agent for the terminal")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -61,7 +61,7 @@ pub struct Cli {
     #[arg(long, value_enum, default_value_t = InputFormat::Text)]
     pub input_format: InputFormat,
 
-    /// Skip loading custom commands from .maki/commands, .claude/commands, etc.
+    /// Skip loading custom commands from .noon/commands, .claude/commands, etc.
     #[arg(long)]
     pub no_commands: bool,
 
@@ -209,7 +209,7 @@ pub enum Command {
         #[command(subcommand)]
         action: McpAction,
     },
-    /// Update maki to the latest version
+    /// Update noon to the latest version
     Update {
         /// Skip confirmation prompt
         #[arg(short = 'y', long)]
@@ -253,7 +253,7 @@ pub enum Command {
 
 #[derive(Subcommand)]
 pub enum MigrateAction {
-    /// Migrate files from ~/.maki/ to XDG directories
+    /// Migrate files from ~/.noon/ to XDG directories
     Xdg,
 }
 

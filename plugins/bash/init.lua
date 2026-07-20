@@ -1,6 +1,6 @@
-local truncate = require("maki.truncate")
-local ToolView = require("maki.tool_view")
-local output_limits = require("maki.output_limits")
+local truncate = require("noon.truncate")
+local ToolView = require("noon.tool_view")
+local output_limits = require("noon.output_limits")
 
 local RTK_REWRITE_TIMEOUT_MS = 2000
 local RTK_UNSUPPORTED_FLAGS = {
@@ -53,7 +53,7 @@ end
 
 local function relative_path(p)
   local np = normalize_sep(p)
-  local cwd = maki.uv.cwd()
+  local cwd = noon.uv.cwd()
   if cwd then
     cwd = normalize_sep(cwd)
     if np:sub(1, #cwd + 1) == cwd .. "/" then
@@ -64,7 +64,7 @@ local function relative_path(p)
       return "."
     end
   end
-  local home = maki.uv.os_homedir()
+  local home = noon.uv.os_homedir()
   if home then
     home = normalize_sep(home)
     if np:sub(1, #home + 1) == home .. "/" then
@@ -77,7 +77,7 @@ end
 
 local function build_header_lines(command)
   local header = {}
-  local highlighted = maki.ui.highlight(command, "bash")
+  local highlighted = noon.ui.highlight(command, "bash")
   if highlighted then
     for _, line in ipairs(highlighted) do
       header[#header + 1] = line
@@ -108,12 +108,12 @@ local function rtk_rewrite(command, ctx)
   end
 
   if rtk_available == nil then
-    local id = maki.fn.jobstart("rtk --version")
-    local result = maki.fn.jobwait(id, RTK_REWRITE_TIMEOUT_MS)
+    local id = noon.fn.jobstart("rtk --version")
+    local result = noon.fn.jobwait(id, RTK_REWRITE_TIMEOUT_MS)
     if result then
       rtk_available = (result.exit_code == 0)
     else
-      maki.fn.jobstop(id)
+      noon.fn.jobstop(id)
       rtk_available = false
     end
   end
@@ -127,10 +127,10 @@ local function rtk_rewrite(command, ctx)
     return nil
   end
 
-  local id = maki.fn.jobstart("rtk rewrite " .. shell_quote(command))
-  local result = maki.fn.jobwait(id, RTK_REWRITE_TIMEOUT_MS)
+  local id = noon.fn.jobstart("rtk rewrite " .. shell_quote(command))
+  local result = noon.fn.jobwait(id, RTK_REWRITE_TIMEOUT_MS)
   if not result then
-    maki.fn.jobstop(id)
+    noon.fn.jobstop(id)
     return nil
   end
 
@@ -159,7 +159,7 @@ local DEFAULT_MAX_LINE_BYTES = 500
 
 local function create_bash_view(command, ctx)
   local tol = ctx:tool_output_lines()
-  local buf = maki.ui.buf()
+  local buf = noon.ui.buf()
   local view = ToolView.new(buf, {
     max_lines = (tol and tol.bash) or 5,
     keep = "tail",
@@ -172,7 +172,7 @@ local function create_bash_view(command, ctx)
   return buf, view
 end
 
-local cwd = maki.uv.cwd() or "."
+local cwd = noon.uv.cwd() or "."
 
 local COMPLEX_TYPES = {
   command_substitution = true,
@@ -220,14 +220,14 @@ local function collect_commands(node, source)
   elseif kind == "pipeline" then
     for child in node:iter_children() do
       if child:named() then
-        local text = maki.treesitter.get_node_text(child, source):match("^%s*(.-)%s*$")
+        local text = noon.treesitter.get_node_text(child, source):match("^%s*(.-)%s*$")
         if text ~= "" then
           out[#out + 1] = text
         end
       end
     end
   elseif LEAF_COMMAND_TYPES[kind] then
-    local text = maki.treesitter.get_node_text(node, source):match("^%s*(.-)%s*$")
+    local text = noon.treesitter.get_node_text(node, source):match("^%s*(.-)%s*$")
     if text ~= "" then
       out[#out + 1] = text
     end
@@ -246,12 +246,12 @@ Commands run in ]] .. cwd .. [[ by default.
 - Output truncated beyond 2000 lines or 50KB.
 - Interactive commands (sudo, ssh prompts) fail immediately.]]
 
-maki.api.register_prompt_hint({
+noon.api.register_prompt_hint({
   slot = "tool_usage",
   content = "- Reserve bash for system commands (git, builds, tests). Do NOT use bash for file operations, including on files outside the working dir.",
 })
 
-local opts = maki.api.register_options(output_limits.extend({
+local opts = noon.api.register_options(output_limits.extend({
   timeout_secs = {
     default = 120,
     min = 5,
@@ -259,7 +259,7 @@ local opts = maki.api.register_options(output_limits.extend({
   },
 }))
 
-maki.api.register_tool({
+noon.api.register_tool({
   name = "bash",
   kind = "execute",
   description = description,
@@ -278,7 +278,7 @@ maki.api.register_tool({
       return nil
     end
 
-    local parser = maki.treesitter.get_parser(command, "bash")
+    local parser = noon.treesitter.get_parser(command, "bash")
     if not parser then
       return { scopes = { command }, force_prompt = true }
     end
@@ -302,8 +302,8 @@ maki.api.register_tool({
       s = s .. " in " .. relative_path(workdir)
     end
     if input.timeout then
-      local buf = maki.ui.buf()
-      buf:line({ { s }, { " (" .. maki.ui.humantime(input.timeout) .. " timeout)", "dim" } })
+      local buf = noon.ui.buf()
+      buf:line({ { s }, { " (" .. noon.ui.humantime(input.timeout) .. " timeout)", "dim" } })
       return buf
     end
     return s
@@ -387,7 +387,7 @@ maki.api.register_tool({
 
     view:append({ { "Waiting for output...", "dim" } })
 
-    maki.fn.jobstart(command, {
+    noon.fn.jobstart(command, {
       cwd = workdir,
       env = { GIT_TERMINAL_PROMPT = "0" },
       on_stdout = function(_, line)

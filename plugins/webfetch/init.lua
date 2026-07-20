@@ -60,11 +60,11 @@ local function strip_html(html)
   return result:match("^%s*(.-)%s*$")
 end
 
-local truncate = require("maki.truncate")
-local ToolView = require("maki.tool_view")
-local output_limits = require("maki.output_limits")
+local truncate = require("noon.truncate")
+local ToolView = require("noon.tool_view")
+local output_limits = require("noon.output_limits")
 
-local opts = maki.api.register_options(output_limits.extend({
+local opts = noon.api.register_options(output_limits.extend({
   max_response_bytes = {
     default = 5 * 1024 * 1024,
     min = 1024,
@@ -77,7 +77,7 @@ local function web_view_opts(ctx)
   return { max_lines = (tol and tol.web) or 3, keep = "head" }
 end
 
-maki.api.register_tool({
+noon.api.register_tool({
   name = "webfetch",
   kind = "fetch",
   description = [[Fetch a URL and return its contents.
@@ -122,7 +122,7 @@ maki.api.register_tool({
 
     local max_lines, max_bytes = output_limits.resolve(opts, ctx)
 
-    local resp, err = maki.net.request(url, {
+    local resp, err = noon.net.request(url, {
       timeout = input.timeout or 30,
       max_bytes = opts.max_response_bytes,
       headers = {
@@ -146,7 +146,7 @@ maki.api.register_tool({
     local is_html = ct:find("text/html") ~= nil
 
     if fmt == "markdown" and is_html then
-      local converted = maki.text.html_to_markdown(body)
+      local converted = noon.text.html_to_markdown(body)
       body = converted or body
     elseif fmt == "text" and is_html then
       body = strip_html(body)
