@@ -292,14 +292,11 @@ fn handle_set_config(srv: &mut Server, raw: &Value) -> Result<AgentResponse, Acp
 }
 
 fn handle_notification(srv: &Server, method: &str) {
-    match method {
-        "session/cancel" => {
-            if let Some(session) = &srv.session {
-                let _ = session.handle.cancel_tx.try_send(());
-            }
+    if method == "session/cancel" {
+        if let Some(session) = &srv.session {
+            let _ = session.handle.cancel_tx.try_send(());
         }
-        _ => debug!(method, "unknown notification"),
-    }
+    } else { debug!(method, "unknown notification") }
 }
 
 fn handle_incoming_response(srv: &Server, raw: &Value) {

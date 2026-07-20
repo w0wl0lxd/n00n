@@ -87,6 +87,7 @@ impl ModelRegistry {
     }
 
     /// Lookup discovered metadata for a model by ID.
+    #[must_use]
     pub fn discovered(&self, provider: ProviderKind, model_id: &str) -> Option<&ModelInfo> {
         self.known_models
             .get(&provider)?
@@ -94,6 +95,7 @@ impl ModelRegistry {
             .find(|m| m.id == model_id)
     }
 
+    #[must_use]
     pub fn tier_for(
         &self,
         spec: &str,
@@ -126,6 +128,7 @@ impl ModelRegistry {
         ModelTier::Medium
     }
 
+    #[must_use]
     pub fn spec_for_tier(&self, provider: ProviderKind, tier: ModelTier) -> Option<String> {
         let prefix = format!("{provider}/");
         if let Some(spec) = self.overrides.get(&tier)
@@ -166,6 +169,7 @@ impl ModelRegistry {
         self.overrides.iter().any(|(&t, s)| s == spec && t != tier)
     }
 
+    #[must_use]
     pub fn spec_for_tier_any(&self, tier: ModelTier) -> Option<String> {
         if let Some(spec) = self.overrides.get(&tier) {
             return Some(spec.clone());
@@ -178,6 +182,7 @@ impl ModelRegistry {
         None
     }
 
+    #[must_use]
     pub fn override_tier_label(&self, spec: &str) -> Option<String> {
         let tiers: Vec<_> = self
             .overrides

@@ -129,7 +129,7 @@ impl Provider for DeepSeek {
                 messages,
                 system,
                 tools,
-                session_id.map(|s| s.as_str()),
+                session_id.map(n00n_storage::id::SessionRef::as_str),
             );
 
             if opts.thinking.is_enabled() {
@@ -167,7 +167,7 @@ impl Provider for DeepSeek {
     }
 }
 
-/// DeepSeek's two reasoning models disagree about `reasoning_content`: V4 in
+/// `DeepSeek`'s two reasoning models disagree about `reasoning_content`: V4 in
 /// thinking mode wants it on every assistant turn (missing = 400), R1 refuses
 /// it as input. So we gate on the V4 substring, same trick Vercel's AI SDK
 /// uses, and back-fill the turns that have none (plain replies, tool-only

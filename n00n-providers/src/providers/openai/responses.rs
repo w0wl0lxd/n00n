@@ -623,7 +623,7 @@ pub(crate) async fn parse_sse(
         });
     }
 
-    let response_id = acc.response_id().map(|s| s.to_string());
+    let response_id = acc.response_id().map(std::string::ToString::to_string);
     Ok((response_id, acc.into_stream_response()))
 }
 

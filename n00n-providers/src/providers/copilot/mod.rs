@@ -162,9 +162,7 @@ impl Copilot {
         guard.clear();
         guard.extend(models.into_iter().map(|model| (model.id.clone(), model)));
         Ok(guard
-            .get(model_id)
-            .map(CopilotModel::endpoint)
-            .unwrap_or_else(|| guess_endpoint(model_id)))
+            .get(model_id).map_or_else(|| guess_endpoint(model_id), CopilotModel::endpoint))
     }
 
     async fn fetch_models(&self) -> Result<Vec<CopilotModel>, AgentError> {

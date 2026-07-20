@@ -294,12 +294,9 @@ fn discover_in(dir: &Path) -> Vec<DynamicProviderMeta> {
             }
         };
 
-        let base = match ProviderKind::from_str(&info.base) {
-            Ok(k) => k,
-            Err(_) => {
-                warn!(slug, base = info.base, "unknown base provider, skipping");
-                continue;
-            }
+        let base = if let Ok(k) = ProviderKind::from_str(&info.base) { k } else {
+            warn!(slug, base = info.base, "unknown base provider, skipping");
+            continue;
         };
 
         let models = match run_script(&path, "models", INFO_TIMEOUT) {
@@ -340,7 +337,7 @@ pub fn login(slug: &str) -> Result<(), AgentError> {
     })?;
     if !meta.has_auth {
         return Err(AgentError::Config {
-            message: format!("provider '{}' does not support login (uses API key)", slug),
+            message: format!("provider '{slug}' does not support login (uses API key)"),
         });
     }
     run_script_interactive(&meta.script_path, "login")
@@ -352,12 +349,13 @@ pub fn logout(slug: &str) -> Result<(), AgentError> {
     })?;
     if !meta.has_auth {
         return Err(AgentError::Config {
-            message: format!("provider '{}' does not support logout (uses API key)", slug),
+            message: format!("provider '{slug}' does not support logout (uses API key)"),
         });
     }
     run_script_interactive(&meta.script_path, "logout")
 }
 
+#[must_use]
 pub fn auth_providers() -> Vec<(&'static str, &'static str)> {
     discover()
         .iter()
@@ -432,10 +430,12 @@ pub fn create(slug: &str, timeouts: super::Timeouts) -> Result<Box<dyn Provider>
     }))
 }
 
+#[must_use]
 pub fn display_name(slug: &str) -> Option<&'static str> {
     find_meta(slug).map(|m| m.display_name.as_str())
 }
 
+#[must_use]
 pub fn dynamic_model_specs_for(slug: &str) -> Vec<String> {
     let Some(meta) = find_meta(slug) else {
         return Vec::new();
@@ -454,14 +454,17 @@ pub fn dynamic_model_specs_for(slug: &str) -> Vec<String> {
     }
 }
 
+#[must_use]
 pub fn discovered_slugs() -> Vec<&'static str> {
     discover().iter().map(|m| m.slug.as_str()).collect()
 }
 
+#[must_use]
 pub fn base_for_slug(slug: &str) -> Option<ProviderKind> {
     find_meta(slug).map(|m| m.base)
 }
 
+#[must_use]
 pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
     let meta = find_meta(slug)?;
     let script_model = meta
@@ -472,6 +475,7 @@ pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
     Some(script_model.to_model(slug, meta.base, model_id.to_string(), script_model.tier))
 }
 
+#[must_use]
 pub fn find_model_for_tier(slug: &str, tier: ModelTier) -> Option<Model> {
     let meta = find_meta(slug)?;
     let script_model = meta.models.iter().find(|m| m.tier == tier)?;

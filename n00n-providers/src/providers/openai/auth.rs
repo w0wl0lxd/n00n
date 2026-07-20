@@ -21,7 +21,7 @@ const DEVICE_AUTH_URL: &str = "https://auth.openai.com/codex/device";
 const REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
 const POLL_SAFETY_MARGIN: Duration = Duration::from_secs(3);
 const TOKEN_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
-const POLL_TIMEOUT: Duration = Duration::from_secs(300);
+const POLL_TIMEOUT: Duration = Duration::from_mins(5);
 
 #[derive(Deserialize)]
 struct DeviceCodeResponse {

@@ -96,7 +96,7 @@ impl Provider for TensorX {
                 messages,
                 system,
                 tools,
-                session_id.map(|s| s.as_str()),
+                session_id.map(n00n_storage::id::SessionRef::as_str),
             );
 
             let (has_thinking, has_reasoning_effort) = {

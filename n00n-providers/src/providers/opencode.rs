@@ -28,7 +28,7 @@ const BLOCKED_PROVIDER_IN_CATALOG: &[&str] = &["zai", "zai-coding-plan", "github
 
 const CATALOG_URL: &str = "https://models.dev/api.json";
 const CATALOG_CACHE_FILE: &str = "models-dev-catalog.json";
-const CATALOG_CACHE_TTL: Duration = Duration::from_secs(86400);
+const CATALOG_CACHE_TTL: Duration = Duration::from_hours(24);
 
 const MESSAGES_PATH: &str = "/messages";
 
@@ -98,7 +98,7 @@ pub struct ProviderData {
     pub base_url: Option<String>,
     /// NPM package name
     pub npm: String,
-    /// API format (ChatCompletions or Messages)
+    /// API format (`ChatCompletions` or Messages)
     pub api_format: EndpointType,
     /// Models for this provider
     pub models: HashMap<String, CatalogMeta>,
@@ -123,6 +123,7 @@ impl ProviderData {
     }
 
     /// Load API key from storage
+    #[must_use]
     pub fn load_key_from_storage(&self, state_dir: &StateDir) -> Option<String> {
         let creds = load_provider_credentials(state_dir, &self.slug)?;
         Some(creds.api_key)
@@ -144,11 +145,12 @@ impl ProviderData {
     }
 
     /// Returns the name of the first API key environment variable that is set.
+    #[must_use]
     pub fn env_key_set(&self) -> Option<&str> {
         self.env_keys
             .iter()
             .find(|e| std::env::var(e).is_ok())
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
     }
 
     fn auth_headers(&self, api_key: &str) -> Vec<(String, String)> {
@@ -159,6 +161,7 @@ impl ProviderData {
     }
 
     /// Build authentication from available credentials
+    #[must_use]
     pub fn build_auth(&self, state_dir: &StateDir) -> Authentication {
         let api_key = match self.resolve_api_key(state_dir) {
             Some(key) => key,
@@ -177,6 +180,7 @@ impl ProviderData {
     }
 
     /// Get resolved auth for use in requests
+    #[must_use]
     pub fn resolve_auth(&self, state_dir: &StateDir) -> Option<ResolvedAuth> {
         match self.build_auth(state_dir) {
             Authentication::KeyBased(auth) | Authentication::OpenCodeFreeKey(auth) => Some(auth),
@@ -185,6 +189,7 @@ impl ProviderData {
     }
 
     /// Resolve auth with optional dynamic override (e.g. from Lua).
+    #[must_use]
     pub fn resolve_auth_with_override(
         &self,
         override_auth: Option<&Arc<Mutex<ResolvedAuth>>>,
@@ -199,6 +204,7 @@ impl ProviderData {
     }
 
     /// Get all available models for this provider based on auth state.
+    #[must_use]
     pub fn available_models(
         &self,
         state_dir: &StateDir,
@@ -482,7 +488,7 @@ impl Opencode {
             messages,
             system,
             tools,
-            session_id.map(|s| s.as_str()),
+            session_id.map(n00n_storage::id::SessionRef::as_str),
         );
         opts.thinking
             .apply_reasoning_effort(&mut body, &dialect::PREFER_HIGH, model);
@@ -631,6 +637,7 @@ fn config_error(message: String) -> AgentError {
 }
 
 /// Returns the list of all providers in alphabetical order.
+#[must_use]
 pub fn catalog_providers() -> Vec<ProviderData> {
     let guard = init_catalog_if_needed().lock().unwrap();
 
@@ -645,7 +652,8 @@ pub fn catalog_providers_if_available() -> Option<Vec<ProviderData>> {
     Some(guard.all_providers())
 }
 
-/// Returns the ProviderData for a specific catalog provider, if found.
+/// Returns the `ProviderData` for a specific catalog provider, if found.
+#[must_use]
 pub fn catalog_provider(provider_id: &str) -> Option<ProviderData> {
     let guard = init_catalog_if_needed().lock().ok()?;
     guard.providers.get(provider_id).cloned()

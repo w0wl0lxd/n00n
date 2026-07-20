@@ -304,7 +304,7 @@ impl Provider for Zai {
                 messages,
                 system,
                 tools,
-                session_id.map(|s| s.as_str()),
+                session_id.map(n00n_storage::id::SessionRef::as_str),
             );
             if model.supports_thinking() {
                 opts.thinking
