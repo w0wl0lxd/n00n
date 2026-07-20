@@ -6,6 +6,7 @@ use std::time::Duration;
 use humantime::format_duration;
 use noon_lua_macro::{lua_fn, lua_table};
 use mlua::{Lua, Result as LuaResult, Table};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::api::util::command::{
     Anchor, Border, Dimension, FloatConfig, HintEntries, HintWriter, Split, TitlePos, UiAction,
@@ -202,7 +203,6 @@ fn terminal_size(lua: &Lua) -> LuaResult<Table> {
 /// local w = noon.ui.display_width("hello")
 #[lua_fn]
 fn display_width(_lua: &Lua, text: String) -> LuaResult<usize> {
-    use unicode_width::UnicodeWidthStr;
     Ok(text.width())
 }
 
@@ -216,12 +216,14 @@ fn display_width(_lua: &Lua, text: String) -> LuaResult<usize> {
 /// -- t.head == "hello", t.tail == " world"
 #[lua_fn]
 fn truncate_text(lua: &Lua, text: String, max_width: usize) -> LuaResult<Table> {
-    use unicode_width::UnicodeWidthChar;
     let mut width = 0;
     let mut idx = 0;
     for (i, c) in text.char_indices() {
         let w = UnicodeWidthChar::width(c).unwrap_or(0);
         if width + w > max_width {
+            if idx == 0 {
+                idx = i + c.len_utf8();
+            }
             break;
         }
         width += w;
@@ -1274,5 +1276,54 @@ mod tests {
         store.set(Arc::from("plug"), vec![("a".into(), "b".into())]);
         store.set(Arc::from("plug"), vec![]);
         assert!(store.snapshot_entries().is_empty());
+    }
+
+    fn ui_table(lua: &Lua) -> Table {
+        let t = lua.create_table().unwrap();
+        super::add_ui_fns(&t, lua).unwrap();
+        t
+    }
+
+    #[test]
+    fn display_width_counts_terminal_cells() {
+        let lua = Lua::new();
+        let t = ui_table(&lua);
+        let f: mlua::Function = t.get("display_width").unwrap();
+
+        assert_eq!(f.call::<usize>("hello").unwrap(), 5);
+        assert_eq!(f.call::<usize>("").unwrap(), 0);
+        assert_eq!(f.call::<usize>("héllo").unwrap(), 5);
+        assert_eq!(f.call::<usize>("你好").unwrap(), 4);
+        assert_eq!(f.call::<usize>("a\u{0300}").unwrap(), 1);
+    }
+
+    #[test]
+    fn truncate_text_splits_at_display_cell_boundaries() {
+        let lua = Lua::new();
+        let t = ui_table(&lua);
+        let f: mlua::Function = t.get("truncate_text").unwrap();
+
+        let r: Table = f.call(("hello world", 5usize)).unwrap();
+        assert_eq!(r.get::<String>("head").unwrap(), "hello");
+        assert_eq!(r.get::<String>("tail").unwrap(), " world");
+
+        let r: Table = f.call(("", 0usize)).unwrap();
+        assert_eq!(r.get::<String>("head").unwrap(), "");
+        assert_eq!(r.get::<String>("tail").unwrap(), "");
+    }
+
+    #[test]
+    fn truncate_text_makes_progress_when_first_char_exceeds_max_width() {
+        let lua = Lua::new();
+        let t = ui_table(&lua);
+        let f: mlua::Function = t.get("truncate_text").unwrap();
+
+        let r: Table = f.call(("中", 1usize)).unwrap();
+        assert_eq!(r.get::<String>("head").unwrap(), "中");
+        assert_eq!(r.get::<String>("tail").unwrap(), "");
+
+        let r: Table = f.call(("中a", 1usize)).unwrap();
+        assert_eq!(r.get::<String>("head").unwrap(), "中");
+        assert_eq!(r.get::<String>("tail").unwrap(), "a");
     }
 }

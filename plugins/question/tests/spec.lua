@@ -240,7 +240,7 @@ end)
 local function line_width(line)
   local w = 0
   for _, span in ipairs(line) do
-    w = w + (utf8.len(span[1]) or #span[1])
+    w = w + noon.ui.display_width(span[1])
   end
   return w
 end
@@ -287,6 +287,32 @@ case("wrap_spans_hard_splits_oversize_word_on_valid_utf8_boundaries", function()
       end
     end
     eq(rebuilt, c.word, c.word .. ": reassembled output must equal input")
+  end
+end)
+
+case("wrap_spans_respects_cjk_display_width", function()
+  local lines = QuestionForm._wrap_spans({ { "中文测试文本", "" } }, 4)
+  local rebuilt = {}
+  for _, line in ipairs(lines) do
+    assert(line_width(line) <= 4, "line exceeds display width")
+    for _, span in ipairs(line) do
+      rebuilt[#rebuilt + 1] = span[1]
+    end
+  end
+  eq(table.concat(rebuilt), "中文测试文本", "reassembled output must equal input")
+end)
+
+case("wrap_spans_long_word_starts_on_fresh_line_after_short_word", function()
+  local lines = QuestionForm._wrap_spans({ { "ab cdefgh", "" } }, 5)
+  eq(#lines, 3, "expected three lines")
+  local expected = { "ab", "cdefg", "h" }
+  for i, line in ipairs(lines) do
+    local text = {}
+    for _, span in ipairs(line) do
+      text[#text + 1] = span[1]
+    end
+    eq(table.concat(text), expected[i], "line " .. i .. " mismatch")
+    assert(line_width(line) <= 5, "line " .. i .. " exceeds width")
   end
 end)
 
