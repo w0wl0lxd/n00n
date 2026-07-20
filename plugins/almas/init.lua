@@ -339,8 +339,12 @@ local function handler(input, ctx)
   end
 
   -- Information-bottleneck β gate: decide fan-out + relay budget (offline).
+  local ibn_tier, model_err = ibn.resolve_tier(ctx, input.model, input.model_tier)
+  if model_err then
+    return { llm_output = model_err, is_error = true }
+  end
   local gate = input.ibn_gate == false and { fan_out = true, relay_k = 6, reason = "IBN gate disabled" }
-    or ibn.decide(ctx, goal, input.model_tier)
+    or ibn.decide(ctx, goal, ibn_tier)
   local relay_k = gate.relay_k
 
   if input.mode == "swarm" then

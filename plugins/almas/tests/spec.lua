@@ -185,6 +185,21 @@ case("roles_run_with_exact_model_and_thinking", function()
   assert(session_opts.thinking == "max", "thinking tier must reach session")
 end)
 
+case("ibn_exact_model_uses_resolved_tier", function()
+  local ibn = require("ibn")
+  local old_resolve = n00n.agent.resolve_model
+  local resolved_opts
+  n00n.agent.resolve_model = function(_, opts)
+    resolved_opts = opts
+    return { tier = "weak" }, nil
+  end
+  local tier, err = ibn.resolve_tier({}, "openai/gpt-5.6-luna", "strong")
+  n00n.agent.resolve_model = old_resolve
+  assert(err == nil, "exact model tier resolution should succeed")
+  assert(tier == "weak", "IBN must use the exact model's resolved tier")
+  assert(resolved_opts.spec == "openai/gpt-5.6-luna", "IBN must resolve the exact model spec")
+end)
+
 case("ibn_weak_fans_out", function()
   local ibn = require("ibn")
   local d = ibn.decide({}, "refactor the parser", "weak")
