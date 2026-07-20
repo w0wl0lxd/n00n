@@ -166,7 +166,7 @@ local function handler(input, ctx)
 
   local model, model_err = n00n.agent.resolve_model(ctx, {
     spec = input.model,
-    tier = model_tier,
+    tier = not input.model and model_tier or nil,
   })
   if model_err then
     return { llm_output = model_err, is_error = true }

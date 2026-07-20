@@ -87,6 +87,10 @@ pub enum ParamSchema {
         properties: &'static [Property],
         description: &'static str,
     },
+    Union {
+        variants: &'static [&'static ParamSchema],
+        description: &'static str,
+    },
     Any {
         description: &'static str,
     },
@@ -137,6 +141,18 @@ pub fn to_json_schema(s: &ParamSchema) -> Value {
             }
             v
         }
+        ParamSchema::Union {
+            variants,
+            description,
+        } => {
+            let mut value = json!({
+                "anyOf": variants.iter().map(|variant| to_json_schema(variant)).collect::<Vec<_>>(),
+            });
+            if !description.is_empty() {
+                value["description"] = json!(description);
+            }
+            value
+        }
         ParamSchema::Any { description } => {
             if description.is_empty() {
                 json!({})
@@ -156,96 +172,123 @@ pub fn try_from_json(v: &Value) -> Result<&'static ParamSchema, String> {
         .map(|s| -> &'static str { Box::leak(s.to_owned().into_boxed_str()) })
         .unwrap_or("");
 
-    let type_str = v.get("type").and_then(|t| t.as_str());
+    let type_value = v.get("type");
+    let type_str = type_value.and_then(Value::as_str);
 
-    let schema = match type_str {
-        Some("string") if v.get("enum").is_some() => {
-            let variants: &'static [&'static str] = Box::leak(
-                v["enum"]
-                    .as_array()
-                    .ok_or("enum must be an array")?
-                    .iter()
-                    .map(|e| -> Result<&'static str, String> {
-                        let s = e.as_str().ok_or("enum variant must be a string")?;
-                        Ok(Box::leak(s.to_owned().into_boxed_str()))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into_boxed_slice(),
-            );
-            ParamSchema::Enum {
-                variants,
-                description,
+    let schema = if let Some(types) = type_value.and_then(Value::as_array) {
+        if types.is_empty() {
+            return Err("schema type variants must not be empty".to_string());
+        }
+        let variants = Box::leak(
+            types
+                .iter()
+                .map(|kind| {
+                    let kind = kind
+                        .as_str()
+                        .ok_or("schema type variants must be strings")?;
+                    let mut variant = v.clone();
+                    variant["type"] = json!(kind);
+                    try_from_json(&variant)
+                })
+                .collect::<Result<Vec<_>, String>>()?
+                .into_boxed_slice(),
+        );
+        ParamSchema::Union {
+            variants,
+            description,
+        }
+    } else {
+        match type_str {
+            Some("string") if v.get("enum").is_some() => {
+                let variants: &'static [&'static str] = Box::leak(
+                    v["enum"]
+                        .as_array()
+                        .ok_or("enum must be an array")?
+                        .iter()
+                        .map(|e| -> Result<&'static str, String> {
+                            let s = e.as_str().ok_or("enum variant must be a string")?;
+                            Ok(Box::leak(s.to_owned().into_boxed_str()))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_boxed_slice(),
+                );
+                ParamSchema::Enum {
+                    variants,
+                    description,
+                }
             }
-        }
-        Some("string") => ParamSchema::Primitive {
-            kind: ParamKind::String,
-            description,
-        },
-        Some("integer") => ParamSchema::Primitive {
-            kind: ParamKind::Integer,
-            description,
-        },
-        Some("number") => ParamSchema::Primitive {
-            kind: ParamKind::Number,
-            description,
-        },
-        Some("boolean") => ParamSchema::Primitive {
-            kind: ParamKind::Bool,
-            description,
-        },
-        Some("array") => {
-            let items_val = v.get("items").ok_or("array schema missing items")?;
-            let items: &'static ParamSchema = try_from_json(items_val)?;
-            ParamSchema::Array { items, description }
-        }
-        Some("object") => {
-            let props_map = v
-                .get("properties")
-                .and_then(|p| p.as_object())
-                .ok_or("object schema missing properties")?;
-            let required: Vec<&str> = v
-                .get("required")
-                .and_then(|r| r.as_array())
-                .map(|arr| arr.iter().filter_map(|x| x.as_str()).collect())
-                .unwrap_or_default();
-            let properties: &'static [Property] = Box::leak(
-                props_map
-                    .iter()
-                    .map(|(name, sub)| -> Result<Property, String> {
-                        let static_name: &'static str = Box::leak(name.clone().into_boxed_str());
-                        let inline_required = sub
-                            .get("required")
-                            .and_then(|r| r.as_bool())
-                            .unwrap_or(false);
-                        let static_schema: &'static ParamSchema = try_from_json(sub)?;
-                        let is_required = inline_required || required.contains(&name.as_str());
-                        let aliases: &'static [&'static str] = match sub.get("alias") {
-                            Some(Value::String(s)) => {
-                                let leaked: &'static str = Box::leak(s.clone().into_boxed_str());
-                                Box::leak(vec![leaked].into_boxed_slice())
-                            }
-                            Some(Value::Array(arr)) => Box::leak(
-                                arr.iter()
-                                    .filter_map(|v| v.as_str())
-                                    .map(|s| -> &'static str {
-                                        Box::leak(s.to_owned().into_boxed_str())
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .into_boxed_slice(),
-                            ),
-                            _ => &[],
-                        };
-                        Ok((static_name, static_schema, is_required, aliases))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into_boxed_slice(),
-            );
-            ParamSchema::Object {
-                properties,
+            Some("string") => ParamSchema::Primitive {
+                kind: ParamKind::String,
                 description,
+            },
+            Some("integer") => ParamSchema::Primitive {
+                kind: ParamKind::Integer,
+                description,
+            },
+            Some("number") => ParamSchema::Primitive {
+                kind: ParamKind::Number,
+                description,
+            },
+            Some("boolean") => ParamSchema::Primitive {
+                kind: ParamKind::Bool,
+                description,
+            },
+            Some("array") => {
+                let items_val = v.get("items").ok_or("array schema missing items")?;
+                let items: &'static ParamSchema = try_from_json(items_val)?;
+                ParamSchema::Array { items, description }
             }
+            Some("object") => {
+                let props_map = v
+                    .get("properties")
+                    .and_then(|p| p.as_object())
+                    .ok_or("object schema missing properties")?;
+                let required: Vec<&str> = v
+                    .get("required")
+                    .and_then(|r| r.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str()).collect())
+                    .unwrap_or_default();
+                let properties: &'static [Property] = Box::leak(
+                    props_map
+                        .iter()
+                        .map(|(name, sub)| -> Result<Property, String> {
+                            let static_name: &'static str =
+                                Box::leak(name.clone().into_boxed_str());
+                            let inline_required = sub
+                                .get("required")
+                                .and_then(|r| r.as_bool())
+                                .unwrap_or(false);
+                            let static_schema: &'static ParamSchema = try_from_json(sub)?;
+                            let is_required = inline_required || required.contains(&name.as_str());
+                            let aliases: &'static [&'static str] = match sub.get("alias") {
+                                Some(Value::String(s)) => {
+                                    let leaked: &'static str =
+                                        Box::leak(s.clone().into_boxed_str());
+                                    Box::leak(vec![leaked].into_boxed_slice())
+                                }
+                                Some(Value::Array(arr)) => Box::leak(
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str())
+                                        .map(|s| -> &'static str {
+                                            Box::leak(s.to_owned().into_boxed_str())
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .into_boxed_slice(),
+                                ),
+                                _ => &[],
+                            };
+                            Ok((static_name, static_schema, is_required, aliases))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_boxed_slice(),
+                );
+                ParamSchema::Object {
+                    properties,
+                    description,
+                }
+            }
+            _ => ParamSchema::Any { description },
         }
-        _ => ParamSchema::Any { description },
     };
 
     Ok(Box::leak(Box::new(schema)))
@@ -419,6 +462,36 @@ fn walk(schema: &ParamSchema, value: Value, path: &mut JsonPath) -> Result<Value
         ParamSchema::Enum { variants, .. } => validate_enum(variants, value, path),
         ParamSchema::Array { items, .. } => validate_array(items, value, path),
         ParamSchema::Object { properties, .. } => validate_object(properties, value, path),
+        ParamSchema::Union { variants, .. } => {
+            let kind = ParamKind::of(&value);
+            if let Some(variant) = variants.iter().find(|variant| accepts_kind(variant, kind)) {
+                return walk(variant, value, path);
+            }
+            let mut first_error = None;
+            for variant in *variants {
+                match walk(variant, value.clone(), path) {
+                    Ok(value) => return Ok(value),
+                    Err(error) if first_error.is_none() => first_error = Some(error),
+                    Err(_) => {}
+                }
+            }
+            Err(first_error.expect("union variants are checked as non-empty while parsing"))
+        }
+    }
+}
+
+fn accepts_kind(schema: &ParamSchema, kind: ParamKind) -> bool {
+    match schema {
+        ParamSchema::Primitive { kind: expected, .. } => {
+            *expected == kind || (*expected == ParamKind::Number && kind == ParamKind::Integer)
+        }
+        ParamSchema::Enum { .. } => kind == ParamKind::String,
+        ParamSchema::Array { .. } => kind == ParamKind::Array,
+        ParamSchema::Object { .. } => kind == ParamKind::Object,
+        ParamSchema::Union { variants, .. } => {
+            variants.iter().any(|variant| accepts_kind(variant, kind))
+        }
+        ParamSchema::Any { .. } => true,
     }
 }
 
@@ -499,6 +572,7 @@ fn schema_type_name(schema: &ParamSchema) -> &'static str {
         ParamSchema::Enum { .. } => "string (enum)",
         ParamSchema::Array { .. } => "array",
         ParamSchema::Object { .. } => "object",
+        ParamSchema::Union { .. } => "union",
         ParamSchema::Any { .. } => "any",
     }
 }
@@ -1058,6 +1132,28 @@ mod tests {
         assert!(validate(recovered, json!({"name": "x", "count": 3})).is_ok());
         assert!(validate(recovered, json!({"name": "x"})).is_ok());
         assert!(validate(recovered, json!({"count": 3})).is_err());
+    }
+
+    #[test]
+    fn union_schema_round_trips_and_validates_variants() {
+        let schema = try_from_json(&json!({
+            "type": ["string", "integer"],
+            "description": "string or integer",
+        }))
+        .unwrap();
+        assert_eq!(validate(schema, json!("max")).unwrap(), json!("max"));
+        assert_eq!(validate(schema, json!(4096)).unwrap(), json!(4096));
+        assert!(validate(schema, json!(true)).is_err());
+        assert_eq!(to_json_schema(schema)["anyOf"][0]["type"], "string");
+        assert_eq!(to_json_schema(schema)["anyOf"][1]["type"], "integer");
+    }
+
+    #[test]
+    fn empty_union_schema_is_rejected() {
+        assert_eq!(
+            try_from_json(&json!({ "type": [] })).unwrap_err(),
+            "schema type variants must not be empty"
+        );
     }
 
     #[test]
