@@ -8,17 +8,7 @@ local function memories_path_suffix()
   return "projects/" .. helpers.project_id(root) .. "/memories"
 end
 
-local function resolve_dir(check_legacy)
-  if check_legacy then
-    local legacy = noon.env.legacy_dir()
-    if legacy then
-      local dir = noon.fs.joinpath(legacy, memories_path_suffix())
-      local meta = noon.fs.metadata(dir)
-      if meta and meta.is_dir then
-        return dir
-      end
-    end
-  end
+local function resolve_dir()
   local state = noon.env.state_dir()
   if not state then
     return nil, "cannot resolve state dir"
@@ -30,7 +20,7 @@ noon.api.register_prompt_hint({
   prompt = "system",
   slot = "after_instructions",
   content = function()
-    local dir = resolve_dir(true)
+    local dir = resolve_dir()
     if not dir then
       return nil
     end
@@ -160,7 +150,7 @@ noon.api.register_tool({
 
   handler = function(input, ctx)
     local cmd = input.command
-    local dir, dir_err = resolve_dir(cmd == "view")
+    local dir, dir_err = resolve_dir()
     if not dir then
       return { llm_output = "error: " .. dir_err, is_error = true }
     end
@@ -198,7 +188,7 @@ noon.api.register_command({
   name = "/memory",
   description = "View, edit, and delete memory files",
   handler = function()
-    local dir = resolve_dir(true)
+    local dir = resolve_dir()
     if not dir then
       noon.ui.flash("Cannot resolve memory directory")
       return

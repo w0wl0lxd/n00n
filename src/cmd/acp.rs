@@ -32,9 +32,6 @@ pub fn run(model_arg: Option<String>, yolo: bool, no_jit: bool) -> Result<()> {
     config.permissions = load_permissions(&cwd);
 
     setup::init_logging(&config.storage);
-    for warning in &config.migration_warnings {
-        tracing::warn!(%warning, "deprecated config setting was migrated");
-    }
 
     if yolo || config.always_yolo {
         config.permissions.yolo = true;
