@@ -91,6 +91,9 @@ local function wrap_spans(spans, max_width)
           flush()
           push(word, style, word_w)
         else
+          if current_w > 0 then
+            flush()
+          end
           while word ~= "" do
             if current_w >= max_width then
               flush()
