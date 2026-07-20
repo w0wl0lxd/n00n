@@ -23,9 +23,6 @@ mkdir -p "$OUT"
 cp index.html "$OUT/"
 cp asciinema-player.css "$OUT/"
 cp asciinema-player.min.js "$OUT/"
-cp demo.cast "$OUT/"
-cp ../install.sh "$OUT/"
-cp ../install.ps1 "$OUT/"
 cp favicon.ico "$OUT/"
 cp favicon-16x16.png "$OUT/"
 cp favicon-32x32.png "$OUT/"
@@ -40,7 +37,7 @@ zola build -o "../_build/docs"
 cd ..
 
 # 3. Markdown mirrors + llms.txt / llms-full.txt for LLM consumption
-BASE_URL="https://noon.sh"
+BASE_URL="https://github.com/w0wl0lxd/noon"
 
 body() {
   awk '/^\+\+\+$/{c++; next} c>=2' "$1"
@@ -61,7 +58,7 @@ pages=$(for f in docs/content/*/_index.md; do
   echo "${w:-999} $f"
 done | sort -n | cut -d' ' -f2-)
 
-body docs/content/_index.md > "$OUT/docs/index.md"
+body docs/content/_index.md >"$OUT/docs/index.md"
 
 summary=$(first_paragraph docs/content/_index.md)
 
@@ -81,18 +78,18 @@ summary=$(first_paragraph docs/content/_index.md)
     desc=$(first_paragraph "$f")
     echo "- [$title]($BASE_URL/docs/$slug/index.md): $desc"
   done
-} > "$OUT/llms.txt"
+} >"$OUT/llms.txt"
 
 {
   body docs/content/_index.md
   for f in $pages; do
     slug=$(basename "$(dirname "$f")")
-    body "$f" > "$OUT/docs/$slug/index.md"
+    body "$f" >"$OUT/docs/$slug/index.md"
     echo
     echo "---"
     echo
     body "$f"
   done
-} > "$OUT/llms-full.txt"
+} >"$OUT/llms-full.txt"
 
 cp "$OUT/llms.txt" "$OUT/llms-full.txt" "$OUT/docs/"

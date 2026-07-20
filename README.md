@@ -1,4 +1,3 @@
-<img src="./banner.png">
 
 An AI coding agent optimized for minimal use of context tokens, while providing a great user experience.
 
@@ -15,7 +14,7 @@ An AI coding agent optimized for minimal use of context tokens, while providing 
 ### User experience
 
 * SUPER fast startup, 60 FPS, and light on memory. Not running any JavaScript, using [ratatui](https://ratatui.rs) for TUI. Even the splash screen animation uses SIMD.
-* Extend with Neovim-like Lua plugins - [Builtin plugins](https://github.com/tontinton/noon/tree/main/plugins), [User made plugins showcase](https://github.com/tontinton/noon/discussions/452), [Lua API reference](https://noon.sh/docs/lua-api/).
+* Extend with Neovim-like Lua plugins - [Builtin plugins](https://github.com/w0wl0lxd/noon/tree/main/plugins), [User made plugins showcase](https://github.com/w0wl0lxd/noon/discussions/452), [Lua API reference](https://github.com/w0wl0lxd/noon/docs/lua-api/).
 * Philosophy of not hiding anything - while other coding agents hide information as models improve (e.g. not showing number of lines read), noon leaves you in control.
 * UI fits everything well on my small screen laptop.
 * Full visibility of subagents - each subagent gets their own "chat window" you can easily navigate between using `/tasks` (Ctrl-X), or Ctrl-N/P.
@@ -48,65 +47,23 @@ An AI coding agent optimized for minimal use of context tokens, while providing 
 * OpenRouter - `OPENROUTER_API_KEY`.
 * Synthetic - `SYNTHETIC_API_KEY`.
 
-**Dynamic providers** - drop an executable script into `~/.config/noon/providers/` to add custom providers or proxies. See [docs](https://noon.sh/docs/providers/#dynamic-providers) for details.
+**Dynamic providers** - drop an executable script into `~/.config/noon/providers/` to add custom providers or proxies. See [docs](https://github.com/w0wl0lxd/noon/docs/providers/#dynamic-providers) for details.
 
 ## Installation
-
-### Linux / macOS
-
-```sh
-# Download and read the script first (don't blindly trust shell scripts).
-curl -fsSL https://noon.sh/install.sh -o install.sh
-cat install.sh
-
-# Then run.
-chmod +x install.sh && sh install.sh
-```
-
-One-liner:
-
-```sh
-curl -fsSL https://noon.sh/install.sh | sh
-```
-
-### Windows (PowerShell)
-
-```powershell
-# Download and read the script first (don't blindly trust remote scripts).
-irm https://noon.sh/install.ps1 -OutFile install.ps1
-Get-Content install.ps1
-
-# Then run.
-.\install.ps1
-```
-
-One-liner:
-
-```powershell
-irm https://noon.sh/install.ps1 | iex
-```
-
-### Windows (Git Bash)
-
-```sh
-curl -fsSL https://noon.sh/install.sh | sh
-```
-
-Both install to `%LOCALAPPDATA%\noon` and add it to your user PATH. Override with `NOON_INSTALL_DIR` / `$env:NOON_INSTALL_DIR`.
 
 ### Living on the edge (main branch)
 
 ```sh
-cargo install --locked --git https://github.com/tontinton/noon.git noon
+cargo install --locked --git https://github.com/w0wl0lxd/noon.git noon
 ```
 
 ### With Nix
 
 ```sh
-nix run github:tontinton/noon
+nix run github:w0wl0lxd/noon
 ```
 
-Or download a pre-built binary from [GitHub Releases](https://github.com/tontinton/noon/releases/latest).
+Or download a pre-built binary from [GitHub Releases](https://github.com/w0wl0lxd/noon/releases/latest).
 
 ## ACP
 
@@ -128,10 +85,8 @@ Run `noon acp` or configure your ACP supporting editor to use noon, e.g. in [Zed
 
 ## Documentation
 
-More info at the [official docs](http://noon.sh/docs).
+More info at the [official docs](https://github.com/w0wl0lxd/noon/docs).
 
 > DISCLAIMER: >90% of code in noon was written by noon, guided by humans. The code is not as good as what I would've made in the artisanal hand-made style. But it's also not slop / vibe coded. I just think people should be honest about their use of AI in projects in this era.
 
-## Example config
 
-[tontinton/noonconf](https://github.com/tontinton/noonconf) - includes a [semble](https://github.com/MinishLab/semble) tool (Lua code) for semantic code search, and an [ast-grep](https://ast-grep.github.io) MCP server for AST-based search and replace.

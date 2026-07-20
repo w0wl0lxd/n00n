@@ -4,7 +4,7 @@ use isahc::config::Configurable;
 use isahc::{AsyncReadResponseExt, ReadResponseExt, Request};
 
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
-const RELEASES_URL: &str = "https://api.github.com/repos/tontinton/noon/releases/latest";
+const RELEASES_URL: &str = "https://api.github.com/repos/w0wl0lxd/noon/releases/latest";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
