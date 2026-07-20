@@ -86,7 +86,7 @@ end
 behaviors.happy = function(sess, msg)
   local h = sess.opts.local_tools.structured_output.handler
   recorder.first_ack, recorder.first_err = h({ answer = "42" })
-  return { text = "raw text ignored" }
+  return { text = "" }
 end
 
 behaviors.invalid_then_valid = function(sess, msg)

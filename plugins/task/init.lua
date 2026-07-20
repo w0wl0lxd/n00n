@@ -268,7 +268,7 @@ local function handler(input, ctx)
         local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
         return { llm_output = msg, is_error = true }
       end
-      if not result or not result.text or result.text == "" then
+      if not captured and (not result or not result.text or result.text == "") then
         return { llm_output = "sub-agent returned no output", is_error = true }
       end
       return { llm_output = captured and n00n.json.encode(captured) or result.text, format = "markdown" }
