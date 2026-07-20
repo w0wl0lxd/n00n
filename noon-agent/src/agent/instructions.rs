@@ -313,12 +313,8 @@ mod tests {
         let xdg = tempfile::tempdir().unwrap();
         fs::write(xdg.path().join("AGENTS.md"), "global rules").unwrap();
 
-        let text = load_instructions_with_home(
-            cwd.path().to_str().unwrap(),
-            None,
-            Some(xdg.path()),
-        )
-        .text;
+        let text =
+            load_instructions_with_home(cwd.path().to_str().unwrap(), None, Some(xdg.path())).text;
         assert!(text.contains("global rules"));
     }
 
