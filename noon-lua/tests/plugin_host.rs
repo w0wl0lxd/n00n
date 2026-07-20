@@ -1808,7 +1808,7 @@ fn setup_rejects_bad_input(lua_src: &str, expected_substr: &str) {
 }
 
 #[test]
-fn setup_accepts_legacy_agent_field_for_migration() {
+fn setup_migrates_moved_plugin_option() {
     let reg = fresh_registry();
     let host = PluginHost::new(Arc::clone(&reg)).unwrap();
     let raw = host
@@ -1819,7 +1819,18 @@ fn setup_accepts_legacy_agent_field_for_migration() {
         )
         .unwrap()
         .expect("expected Some(RawConfig)");
-    assert_eq!(raw.agent.bash_timeout_secs, Some(120));
+    let config = raw.into_config(false).expect("config migration should succeed");
+    assert_eq!(
+        config
+            .plugins
+            .opts
+            .get("bash")
+            .expect("bash plugin config should exist")
+            .get("timeout_secs")
+            .expect("timeout_secs should be migrated")
+            .as_u64(),
+        Some(120)
+    );
 }
 
 #[test]
