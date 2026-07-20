@@ -27,7 +27,7 @@ use noon_agent::{
 use noon_lua_macro::{lua_class, lua_fn, lua_table};
 use noon_providers::model::ModelTier;
 use noon_providers::provider;
-use noon_providers::{ContentBlock, Model, ModelError, Role, ThinkingConfig};
+use noon_providers::{ContentBlock, Model, ModelError, Role, ThinkingConfig, model::TokenUsage};
 use noon_storage::id::NoonId;
 use noon_storage::sessions::StoredThinking;
 use serde_json::Value as JsonValue;
@@ -141,6 +141,39 @@ async fn resolve_model(
         None => try_pair!(resolve_model_from_ctx(agent, tier_str.as_deref())),
     };
     Ok((Some(model_to_lua_table(&lua, &model)?), None))
+}
+
+/// Estimate the dollar cost of a completion from its model spec and token
+/// counts. Uses the provider's published pricing (input/output/cache write/
+/// read), so orchestrators like ALMAS can report cost without bundling a
+/// price table.
+///
+/// @param _ctx Agent context (injected by the Lua runtime).
+/// @param spec string Model spec, e.g. `"anthropic/claude-3-5-haiku-20241022"`.
+/// @param input_tokens integer Prompt tokens.
+/// @param output_tokens integer Completion tokens.
+/// @return (number?, string?) Estimated USD cost, or `(nil, err)` on failure.
+/// @example
+/// local cost, err = noon.agent.usage_cost("anthropic/claude-3-5-haiku-20241022", 1200, 300)
+/// if err then error(err) end
+/// print(string.format("$%.4f", cost))
+#[lua_fn]
+async fn usage_cost(
+    _lua: Lua,
+    _ctx: mlua::UserDataRef<LuaCtx>,
+    spec: String,
+    input_tokens: u32,
+    output_tokens: u32,
+) -> LuaResult<Pair<f64>> {
+    let model = try_pair!(Model::from_spec(&spec));
+    let usage = TokenUsage {
+        input: input_tokens,
+        output: output_tokens,
+        cache_creation: 0,
+        cache_read: 0,
+    };
+    let cost = usage.cost(&model.pricing, model.supports_fast());
+    Ok((Some(cost), None))
 }
 
 /// Build a system prompt from a built-in template. Environment variables like
@@ -595,7 +628,7 @@ lua_table! {
     /// sess:close()
     /// ```
     "noon.agent" => pub(crate) fn create_agent_table(), DOCS [
-        resolve_model, system_prompt, tools, call_tool, session,
+        resolve_model, system_prompt, tools, call_tool, session, usage_cost,
     ]
 }
 

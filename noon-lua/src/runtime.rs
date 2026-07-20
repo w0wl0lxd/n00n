@@ -1201,7 +1201,8 @@ impl LuaRuntime {
         require_root: Option<PathBuf>,
     ) -> Result<mlua::Table, mlua::Error> {
         let env = self.lua.create_table()?;
-        env.set("noon", noon)?;
+        env.set("noon", noon.clone())?;
+        env.set("maki", noon)?;
 
         if require_root.is_some() || !self.bundled_dirs.is_empty() {
             let require_fn = self.create_require_fn(&env, require_root)?;

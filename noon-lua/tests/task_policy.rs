@@ -116,7 +116,7 @@ end
 noon.agent.session = function(ctx, opts)
   recorder.sessions = recorder.sessions + 1
   recorder.has_local_tools = opts.local_tools ~= nil
-  recorder.done_schema = opts.local_tools and opts.local_tools.done and opts.local_tools.done.input_schema
+  recorder.structured_output_schema = opts.local_tools and opts.local_tools.structured_output and opts.local_tools.structured_output.input_schema
   local sess = { opts = opts }
   function sess:prompt(msg)
     recorder.prompts[#recorder.prompts + 1] = msg
@@ -145,7 +145,7 @@ noon.api.register_tool({
       closed = recorder.closed,
       prompt_count = #recorder.prompts,
       has_local_tools = recorder.has_local_tools,
-      done_schema = recorder.done_schema,
+      structured_output_schema = recorder.structured_output_schema,
       first_ack = recorder.first_ack,
       first_err = recorder.first_err,
       second_ack = recorder.second_ack,
@@ -349,11 +349,10 @@ fn plain_path_returns_text_without_local_tools() {
 
     let snap = probe(&reg);
     assert_eq!(snap["has_local_tools"], json!(false));
-    assert!(snap.get("done_schema").is_none_or(Value::is_null));
+    assert_eq!(snap["structured_output_schema"], Value::Null);
     assert_eq!(snap["prompt_count"], json!(1));
     let prompt = snap["prompts"][0].as_str().expect("prompt missing");
-    assert!(prompt.starts_with(TASK_PROMPT), "got: {prompt}");
-    assert_eq!(prompt, TASK_PROMPT);
+    assert_eq!(prompt, TASK_PROMPT, "got: {prompt}");
     assert_eq!(snap["closed"], json!(1));
 }
 
