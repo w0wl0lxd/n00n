@@ -17,6 +17,8 @@ static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     max_tokens_field: "max_tokens",
     include_stream_usage: true,
     provider_name: "TensorX",
+    supports_prompt_cache_key: false,
+    supports_prompt_cache_breakpoint: false,
 };
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
@@ -83,13 +85,19 @@ impl Provider for TensorX {
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
-        _session_id: Option<&'a SessionRef>,
+        session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
             let auth = self.auth.lock().unwrap().clone();
             let mut buf = String::new();
             let system = super::with_prefix(&self.system_prefix, system, &mut buf);
-            let mut body = self.compat.build_body(model, messages, system, tools);
+            let mut body = self.compat.build_body_with_session(
+                model,
+                messages,
+                system,
+                tools,
+                session_id.map(|s| s.as_str()),
+            );
 
             let (has_thinking, has_reasoning_effort) = {
                 let guard = crate::model_registry::model_registry().read().unwrap();
