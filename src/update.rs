@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use noon_storage::version::{self, VersionError};
 use noon_storage::{StateDir, StorageError};
 
-const INSTALL_SCRIPT_URL: &str = "https://github.com/w0wl0lxd/noon/releases/latest";
+const INSTALL_SCRIPT_URL: &str = "https://raw.githubusercontent.com/w0wl0lxd/noon/main/install.sh";
 const BACKUP_FILENAME: &str = "noon_backup";
 const INSTALL_DIR_ENV: &str = "NOON_INSTALL_DIR";
 
