@@ -396,7 +396,7 @@ fn warn_stale_config_toml(cwd: &std::path::Path) {
         if path.is_file() {
             tracing::warn!(
                 path = %path.display(),
-                "config.toml found but no longer used. Migrate to init.lua. See https://noon.sh/docs/configuration/"
+                "config.toml found but no longer used. Migrate to init.lua. See https://github.com/w0wl0lxd/noon/docs/configuration/"
             );
         }
     }

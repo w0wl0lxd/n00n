@@ -39,7 +39,7 @@ pub fn resolve_model(
     }
     auto_detect_model().ok_or_else(|| {
         color_eyre::eyre::eyre!(
-            "no provider available - set an API key (e.g. ANTHROPIC_API_KEY), run `noon auth login`, or use -m to specify a model\n\nSee https://noon.sh/docs/providers/ for setup instructions"
+            "no provider available - set an API key (e.g. ANTHROPIC_API_KEY), run `noon auth login`, or use -m to specify a model\n\nSee https://github.com/w0wl0lxd/noon/docs/providers/ for setup instructions"
         )
     })
 }

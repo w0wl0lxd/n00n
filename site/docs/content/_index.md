@@ -36,4 +36,4 @@ Answers to the "how do I..." questions once Noon is running:
 - [Headless Mode](/docs/headless/): run Noon with `--print` in scripts and CI. Output is Claude Code compatible.
 - [ACP](/docs/acp/): drive Noon from your editor, like [Zed](https://zed.dev/), over the Agent Client Protocol.
 
-Something missing or wrong? Open an issue on [GitHub](https://github.com/tontinton/noon).
+Something missing or wrong? Open an issue on [GitHub](https://github.com/w0wl0lxd/noon).
