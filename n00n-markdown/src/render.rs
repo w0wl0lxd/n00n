@@ -89,6 +89,7 @@ pub struct Line {
 }
 
 impl Line {
+    #[must_use]
     pub fn blank() -> Self {
         Self {
             kind: LineKind::Blank,
@@ -96,15 +97,18 @@ impl Line {
         }
     }
 
+    #[must_use]
     pub fn width(&self) -> usize {
         self.spans.iter().map(|s| s.text.width()).sum()
     }
 
+    #[must_use]
     pub fn is_blank(&self) -> bool {
         self.spans.is_empty() || self.spans.iter().all(|s| s.text.is_empty())
     }
 }
 
+#[must_use]
 pub fn render(text: &str, width: u16) -> Vec<Line> {
     Renderer::new().render(text, width, 0)
 }
@@ -131,12 +135,14 @@ impl Default for Renderer {
 }
 
 impl Renderer {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Skip paragraph/heading/list wrapping (ratatui re-wraps those at
     /// paint time). Code blocks and tables still wrap.
+    #[must_use]
     pub fn unwrapped() -> Self {
         Self {
             wrap_paragraphs: false,
@@ -615,7 +621,7 @@ fn render_table(
     width: u16,
     persistent_widths: &mut Vec<usize>,
 ) -> Vec<Line> {
-    let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let col_count = rows.iter().map(std::vec::Vec::len).max().unwrap_or(0);
     if col_count == 0 {
         return Vec::new();
     }
@@ -667,12 +673,16 @@ fn render_table(
 
         let wrapped_cells: Vec<Vec<Vec<Span>>> = (0..col_count)
             .map(|c| {
-                let cell = row.get(c).map(String::as_str).unwrap_or("");
+                let cell = row.get(c).map_or("", String::as_str);
                 wrap_spans(cell_spans(cell, header), col_widths[c])
             })
             .collect();
 
-        let row_height = wrapped_cells.iter().map(|c| c.len()).max().unwrap_or(1);
+        let row_height = wrapped_cells
+            .iter()
+            .map(std::vec::Vec::len)
+            .max()
+            .unwrap_or(1);
         let row_emphasis = if header {
             Emphasis::BOLD
         } else {
@@ -717,14 +727,17 @@ fn render_table(
     lines
 }
 
+#[must_use]
 pub fn hr_text(width: u16) -> String {
     iter::repeat_n(HR_CHAR, width as usize).collect()
 }
 
+#[must_use]
 pub fn truncate_long_lines(text: &str) -> Cow<'_, str> {
     truncate_long_lines_at(text, TOOL_OUTPUT_MAX_LINE_BYTES)
 }
 
+#[must_use]
 pub fn truncate_long_lines_at(text: &str, max_bytes: usize) -> Cow<'_, str> {
     if !text.lines().any(|l| l.len() > max_bytes) {
         return Cow::Borrowed(text);
