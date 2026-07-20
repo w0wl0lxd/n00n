@@ -56,6 +56,7 @@ pub struct ModelDef {
 
 impl ModelDef {
     /// Any pricing field set means the user provided pricing (other fields default to 0).
+    #[must_use]
     pub fn has_pricing(&self) -> bool {
         self.pricing_input.is_some()
             || self.pricing_output.is_some()
@@ -63,6 +64,7 @@ impl ModelDef {
             || self.pricing_cache_read.is_some()
     }
 
+    #[must_use]
     pub fn has_fast_pricing(&self) -> bool {
         self.pricing_fast_input.is_some() || self.pricing_fast_output.is_some()
     }
@@ -70,6 +72,7 @@ impl ModelDef {
 
 /// Normalize a provider name into a lowercase, hyphen-separated slug.
 /// "My Cool Provider" -> "my-cool-provider"
+#[must_use]
 pub fn slugify(name: &str) -> String {
     name.trim()
         .to_lowercase()
@@ -189,6 +192,10 @@ impl ProvidersConfig {
         }
     }
 
+    /// Saves the providers config to disk.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the directory cannot be created or the file cannot be written.
     pub fn save(&self) -> Result<(), std::io::Error> {
         let path = providers_file_path();
         if let Some(parent) = path.parent() {
@@ -201,6 +208,7 @@ impl ProvidersConfig {
         Ok(())
     }
 
+    #[must_use]
     pub fn get(&self, slug: &str) -> Option<&ProviderDef> {
         self.providers.get(slug)
     }
@@ -220,16 +228,19 @@ fn providers_file_path() -> PathBuf {
         .join(PROVIDERS_FILE)
 }
 
+#[must_use]
 pub fn builtin_provider(slug: &str) -> Option<&'static BuiltInProvider> {
     inventory::iter::<BuiltInProvider>()
         .into_iter()
         .find(|p| p.slug == slug)
 }
 
+#[must_use]
 pub fn all_builtins() -> Vec<&'static BuiltInProvider> {
     inventory::iter::<BuiltInProvider>().collect()
 }
 
+#[must_use]
 pub fn resolve_api_key_env(slug: &str, def: Option<&ProviderDef>) -> String {
     if let Some(d) = def
         && let Some(env) = &d.api_key_env
@@ -242,6 +253,7 @@ pub fn resolve_api_key_env(slug: &str, def: Option<&ProviderDef>) -> String {
     format!("{}_API_KEY", slug.to_uppercase().replace('-', "_"))
 }
 
+#[must_use]
 pub fn resolve_base_url(slug: &str, def: Option<&ProviderDef>) -> Option<String> {
     if let Some(d) = def {
         if let Some(url) = &d.base_url {
@@ -261,6 +273,7 @@ pub fn resolve_base_url(slug: &str, def: Option<&ProviderDef>) -> Option<String>
     builtin_provider(slug).map(|b| b.default_base_url.to_string())
 }
 
+#[must_use]
 pub fn resolve_protocol(slug: &str, def: Option<&ProviderDef>) -> Option<Protocol> {
     if let Some(d) = def
         && let Some(p) = &d.protocol
@@ -270,17 +283,17 @@ pub fn resolve_protocol(slug: &str, def: Option<&ProviderDef>) -> Option<Protoco
     builtin_provider(slug).map(|b| b.protocol)
 }
 
+#[must_use]
 pub fn resolve_display_name(slug: &str, def: Option<&ProviderDef>) -> String {
     if let Some(d) = def
         && let Some(name) = &d.display_name
     {
         return name.clone();
     }
-    builtin_provider(slug)
-        .map(|b| b.display_name.to_string())
-        .unwrap_or_else(|| slug.to_string())
+    builtin_provider(slug).map_or_else(|| slug.to_string(), |b| b.display_name.to_string())
 }
 
+#[must_use]
 pub fn resolve_default_model(slug: &str, def: Option<&ProviderDef>) -> Option<String> {
     if let Some(d) = def {
         if let Some(m) = &d.default_model {
@@ -302,6 +315,7 @@ pub fn resolve_default_model(slug: &str, def: Option<&ProviderDef>) -> Option<St
     builtin_provider(slug).map(|b| b.default_model.to_string())
 }
 
+#[must_use]
 pub fn resolve_login_url(slug: &str, plan: Option<&str>) -> Option<String> {
     if let Some(plan_name) = plan
         && let Some(builtin) = builtin_provider(slug)
@@ -315,7 +329,7 @@ pub fn resolve_login_url(slug: &str, plan: Option<&str>) -> Option<String> {
             }
         }
     }
-    builtin_provider(slug).and_then(|b| b.login_url.map(|u| u.to_string()))
+    builtin_provider(slug).and_then(|b| b.login_url.map(std::string::ToString::to_string))
 }
 
 #[cfg(test)]
