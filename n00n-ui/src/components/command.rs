@@ -24,7 +24,7 @@ pub struct BuiltinCommand {
 pub const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
     BuiltinCommand {
         name: "/tasks",
-        description: "Browse and search tasks",
+        description: "Browse running and completed agents and teams",
         max_args: 0,
     },
     BuiltinCommand {

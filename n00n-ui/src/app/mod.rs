@@ -94,7 +94,8 @@ const IMPLEMENT_PARALLEL_HINT: &str = "Use batch+task to parallelize, assign eac
 const TASK_DONE_DETAIL: &str = "✓ done";
 const TASK_ERROR_DETAIL: &str = "✗ error";
 const TASK_RUNNING_DETAIL: &str = "◈ running";
-const TASK_PANEL_FOOTER: &[(&str, &str)] = &[("enter", "attach"), ("esc", "close")];
+const TASK_PANEL_FOOTER: &[(&str, &str)] =
+    &[("enter", "open"), ("ctrl+x", "toggle"), ("esc", "close")];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TaskStatus {
@@ -485,15 +486,23 @@ impl App {
                 } else {
                     TaskStatus::Running
                 };
-                let usage = (c.token_usage.total_input() + c.token_usage.output > 0).then(|| {
-                    format!(
-                        "{} in / {} out",
-                        c.token_usage.total_input(),
-                        c.token_usage.output
-                    )
-                });
+                let usage = if i == 0 {
+                    Some("main session".to_owned())
+                } else {
+                    let model = c.model_id.as_deref().unwrap_or("model pending");
+                    let tokens = c.token_usage.total_input() + c.token_usage.output;
+                    Some(if tokens > 0 {
+                        format!("{model} · {tokens} tokens")
+                    } else {
+                        model.to_owned()
+                    })
+                };
                 TaskEntry {
-                    name: c.name.clone(),
+                    name: if i == 0 {
+                        "Main chat".to_owned()
+                    } else {
+                        format!("Agent: {}", c.name)
+                    },
                     status,
                     usage,
                 }
@@ -501,7 +510,7 @@ impl App {
             .collect();
         self.task_picker_original = Some(self.active_chat);
         self.task_picker.set_footer(TASK_PANEL_FOOTER);
-        self.task_picker.open(entries, " Tasks ");
+        self.task_picker.open(entries, " Agents & Teams ");
         self.task_picker.select(self.active_chat);
     }
 

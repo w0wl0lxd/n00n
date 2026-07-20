@@ -3432,17 +3432,17 @@ fn bundled_todo_ctrl_t_keybind_dispatches() {
 }
 
 #[test]
-fn almas_launcher_collects_goal_and_submits_configured_prompt() {
+fn team_launcher_collects_goal_and_submits_configured_prompt() {
     let (_reg, host) = builtins_host();
     let rx = host.ui_action_rx().unwrap();
     let handle = host.event_handle().unwrap();
-    handle.run_command(Arc::from("almas"), Arc::from("/almas"), String::new());
+    handle.run_command(Arc::from("team"), Arc::from("/team"), String::new());
 
     let action = rx
         .recv_timeout(Duration::from_secs(5))
-        .expect("ALMAS launcher did not open");
+        .expect("Team launcher did not open");
     let n00n_lua::UiAction::OpenWin { event_tx, .. } = action else {
-        panic!("expected ALMAS launcher window");
+        panic!("expected Team launcher window");
     };
     event_tx
         .send(n00n_lua::WinEvent::Paste {
@@ -3457,9 +3457,9 @@ fn almas_launcher_collects_goal_and_submits_configured_prompt() {
 
     let action = rx
         .recv_timeout(Duration::from_secs(5))
-        .expect("ALMAS launcher did not submit a session prompt");
+        .expect("Team launcher did not submit a session prompt");
     let n00n_lua::UiAction::Session { req, reply_tx } = action else {
-        panic!("expected ALMAS session prompt");
+        panic!("expected Team session prompt");
     };
     let n00n_lua::SessionRequest::Prompt { id, text } = req else {
         panic!("expected a prompt request");
@@ -3474,7 +3474,7 @@ fn almas_launcher_collects_goal_and_submits_configured_prompt() {
         "submitted prompt: {text}"
     );
     assert!(
-        text.contains("Use the almas tool now"),
+        text.contains("Use the team tool now"),
         "submitted prompt: {text}"
     );
     assert!(text.contains("thinking: max"), "submitted prompt: {text}");

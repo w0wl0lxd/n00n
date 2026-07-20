@@ -1,11 +1,11 @@
--- SDLC role catalogue and execution (ALMAS roles + PR-I reviewer/tester).
+-- SDLC role catalogue and execution (team roles + PR-I reviewer/tester).
 -- Each role has a system framing and a default cost-aware tier. Steps run as
 -- their own subagent session so we get accurate token/cost telemetry (PR-B).
 local M = {}
 
 local route_tier = require("n00n.route_tier").route_tier
 
--- Role -> { tier, system }. Tiers follow the ALMAS "three Cs" cost-effectiveness:
+-- Role -> { tier, system }. Tiers follow the the three-Cs cost-effectiveness:
 -- routine clarifying work is cheap, implementation of hard parts is strong.
 M.ROLES = {
   product_manager = {

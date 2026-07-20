@@ -145,7 +145,7 @@ async fn resolve_model(
 
 /// Estimate the dollar cost of a completion from its model spec and token
 /// counts. Uses the provider's published pricing (input/output/cache write/
-/// read), so orchestrators like ALMAS can report cost without bundling a
+/// read), so orchestrators like Team can report cost without bundling a
 /// price table.
 ///
 /// @param spec string Model spec, e.g. `"anthropic/claude-haiku-4-5"`.
