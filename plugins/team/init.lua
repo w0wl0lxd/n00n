@@ -1,4 +1,4 @@
--- ALMAS: Autonomous LLM-based Multi-Agent Software Engineering (Tawosi et al.,
+-- Team: Autonomous LLM-based Multi-Agent Software Engineering (Tawosi et al.,
 -- ASE 2025). A supervisor decomposes an SDLC goal into role agents
 -- (product_manager, planner, developer, tester, reviewer); each runs as its own
 -- subagent on a cost-aware model tier. Built entirely on n00n.agent.* and the
@@ -14,7 +14,7 @@ local MAX_PLAN_STEPS = 8
 local DEFAULT_PLAN_STEPS = 6
 local DEFAULT_SWARM_ROUNDS = 2
 local MAX_SWARM_ROUNDS = 4
-local ALMAS_TIMEOUT_SECS = 1800
+local TEAM_TIMEOUT_SECS = 1800
 local MAX_RELAY_BYTES = 12000
 
 local PLANNER_OUTPUT = {
@@ -40,7 +40,7 @@ local PLANNER_OUTPUT = {
 }
 
 local description =
-  [[Launch an ALMAS team. A supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
+  [[Launch an agent team. A supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
 
 - product_manager: scope & acceptance (weak)
 - planner: step breakdown (medium)
@@ -50,7 +50,7 @@ local description =
 
 Modes:
 - supervised (default): return the supervisor's plan for review.
-- autonomous: run the centralized ALMAS plan to completion; tester/reviewer
+- autonomous: run the centralized team plan to completion; tester/reviewer
   steps are gated by a diversity-aware validator quorum.
 - swarm: decentralized SwarmSys rounds (Explorers/Workers/Validators) with a
   pheromone reinforcement loop, gated by an information-bottleneck β check
@@ -64,7 +64,7 @@ Notes:
 4. With compact (opt-in), retrieved context is TOON-encoded to save tokens (PR-C).
 5. swarm mode runs bounded rounds (max_rounds); the β gate may fall back to a
    single strong-agent pass when coordination would not help.
-6. Set background=true to start a non-blocking ALMAS run and receive an agent_id.
+6. Set background=true to start a non-blocking Team run and receive an agent_id.
    Use agent_control to inspect, steer, or stop it.
 ]]
 
@@ -103,7 +103,7 @@ local schema = {
     },
     model = {
       type = "string",
-      description = "Exact model spec for every ALMAS agent. Overrides model_tier and role tiers.",
+      description = "Exact model spec for every team agent. Overrides model_tier and role tiers.",
     },
     model_tier = {
       type = "string",
@@ -111,7 +111,7 @@ local schema = {
     },
     thinking = {
       type = { "string", "integer" },
-      description = 'Thinking mode for ALMAS agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "adaptive".',
+      description = 'Thinking mode for team agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "adaptive".',
     },
     auto_tier = {
       type = "boolean",
@@ -134,7 +134,7 @@ local schema = {
     },
     background = {
       type = "boolean",
-      description = "Start ALMAS in a separate background session and return its agent_id immediately.",
+      description = "Start the team in a separate background session and return its agent_id immediately.",
     },
     compact = {
       type = "boolean",
@@ -194,7 +194,7 @@ local function run_supervisor(ctx, goal, opts)
     tools = tools,
     local_tools = local_tools,
     audience = "general_sub",
-    name = "almas-supervisor",
+    name = "team-supervisor",
     thinking = opts.thinking,
   })
   if sess_err then
@@ -316,7 +316,7 @@ local function handler(input, ctx)
       forwarded[key] = value
     end
     forwarded.background = false
-    local prompt = "Use the almas tool now. Do not only describe this request.\n\n" .. n00n.json.encode(forwarded)
+    local prompt = "Use the team tool now. Do not only describe this request.\n\n" .. n00n.json.encode(forwarded)
     local id, err = n00n.session.new({ prompt = prompt, focus = false })
     if not id then
       return { llm_output = err, is_error = true }
@@ -352,7 +352,7 @@ local function handler(input, ctx)
     end
     return {
       llm_output = table.concat(plan, "\n")
-        .. '\n\nReview the plan, then run ALMAS again with `mode = "autonomous"` or `mode = "swarm"` to execute it.',
+        .. '\n\nReview the plan, then run `team` again with `mode = "autonomous"` or `mode = "swarm"` to execute it.',
       format = "markdown",
     }
   end
@@ -395,7 +395,7 @@ end
 
 finish_run = function(ctx, input, results, total_cost, completed, unit, slug, failures)
   local report = table.concat(results, "\n\n")
-  local summary = string.format("\n\n---\nALMAS complete: %d %s, ~$%.4f estimated cost.", completed, unit, total_cost)
+  local summary = string.format("\n\n---\nTeam complete: %d %s, ~$%.4f estimated cost.", completed, unit, total_cost)
 
   memory.save(ctx, slug, report .. summary)
 
@@ -407,23 +407,23 @@ finish_run = function(ctx, input, results, total_cost, completed, unit, slug, fa
 end
 
 local function header(input)
-  return "almas: " .. (input.goal or ""):sub(1, 40)
+  return "team: " .. (input.goal or ""):sub(1, 40)
 end
 
 n00n.api.register_tool({
-  name = "almas",
+  name = "team",
   description = description,
   kind = "execute",
   audiences = { "main", "workflow" },
   schema = schema,
-  timeout = ALMAS_TIMEOUT_SECS,
+  timeout = TEAM_TIMEOUT_SECS,
   handler = handler,
   header = header,
 })
 
 local TextInput = require("n00n.text_input")
 
-local ALMAS_MODES = { "supervised", "autonomous", "swarm" }
+local TEAM_MODES = { "supervised", "autonomous", "swarm" }
 local MODEL_TIERS = { "weak", "medium", "strong" }
 local THINKING_LEVELS = { "off", "adaptive", "low", "medium", "high", "xhigh", "max" }
 local MENU_ROWS = 10
@@ -463,7 +463,7 @@ local function agent_prompt(goal, prefs)
     table.insert(config, 2, { "model", prefs.model })
   end
   local lines = {
-    "Use the almas tool now. Do not only describe ALMAS or restate this request.",
+    "Use the team tool now. Do not only describe the team or restate this request.",
     "",
     "Goal:",
     goal,
@@ -530,7 +530,7 @@ local function run_launcher(initial_goal)
     end
     lines[#lines + 1] = { { "", "" } }
     lines[#lines + 1] = {
-      { selected == RUN_ROW and "❯ Run ALMAS" or "  Run ALMAS", selected == RUN_ROW and "selected" or "item" },
+      { selected == RUN_ROW and "❯ Run Team" or "  Run Team", selected == RUN_ROW and "selected" or "item" },
     }
     buf:set_lines(lines)
     if win then
@@ -547,7 +547,7 @@ local function run_launcher(initial_goal)
   end
 
   win = n00n.ui.open_win(buf, {
-    title = " ALMAS ",
+    title = " Team ",
     footer = {
       { "↑/↓", "navigate" },
       { "Enter", "change/edit/run" },
@@ -566,13 +566,13 @@ local function run_launcher(initial_goal)
     if value == "" then
       selected = 10
       editing = "goal"
-      n00n.ui.flash("Enter an ALMAS goal first")
+      n00n.ui.flash("Enter a team goal first")
       render()
       return false
     end
     local _, err = n00n.session.prompt(agent_prompt(value, prefs))
     if err then
-      n00n.ui.flash("ALMAS: " .. err)
+      n00n.ui.flash("Team: " .. err)
       return false
     end
     win:close()
@@ -624,7 +624,7 @@ local function run_launcher(initial_goal)
         render()
       elseif key == "enter" then
         if selected == 1 then
-          prefs.mode = cycle(ALMAS_MODES, prefs.mode)
+          prefs.mode = cycle(TEAM_MODES, prefs.mode)
         elseif selected == 2 then
           prefs.model_tier = cycle(MODEL_TIERS, prefs.model_tier)
         elseif selected == 3 then
@@ -653,8 +653,8 @@ local function run_launcher(initial_goal)
 end
 
 n00n.api.register_command({
-  name = "/almas",
-  description = "Configure and run an ALMAS team for a goal",
+  name = "/team",
+  description = "Configure and run an agent team for a goal",
   handler = function(args)
     run_launcher(trim(args))
   end,
