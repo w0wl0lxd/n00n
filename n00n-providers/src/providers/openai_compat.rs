@@ -504,6 +504,10 @@ struct ChunkUsage {
     prompt_tokens: u32,
     #[serde(default)]
     completion_tokens: u32,
+    #[serde(default)]
+    prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default)]
+    prompt_cache_miss_tokens: Option<u32>,
     prompt_tokens_details: Option<PromptTokensDetails>,
 }
 
@@ -561,23 +565,31 @@ pub async fn parse_sse(
         };
 
         if let Some(u) = chunk.usage {
-            let cached = u
-                .prompt_tokens_details
-                .as_ref()
-                .map(|d| d.cached_tokens)
-                .unwrap_or(0);
+            let (cache_read, input) = if let Some(hit_tokens) = u.prompt_cache_hit_tokens {
+                let miss_tokens = u.prompt_cache_miss_tokens.unwrap_or(u.prompt_tokens.saturating_sub(hit_tokens));
+                (hit_tokens, miss_tokens)
+            } else {
+                let cached = u
+                    .prompt_tokens_details
+                    .as_ref()
+                    .map(|d| d.cached_tokens)
+                    .unwrap_or(0);
+                let cache_write = u
+                    .prompt_tokens_details
+                    .as_ref()
+                    .map(|d| d.cache_write_tokens)
+                    .unwrap_or(0);
+                (cached, u.prompt_tokens.saturating_sub(cached).saturating_sub(cache_write))
+            };
             let cache_write = u
                 .prompt_tokens_details
                 .as_ref()
                 .map(|d| d.cache_write_tokens)
                 .unwrap_or(0);
             usage = TokenUsage {
-                input: u
-                    .prompt_tokens
-                    .saturating_sub(cached)
-                    .saturating_sub(cache_write),
+                input,
                 output: u.completion_tokens,
-                cache_read: cached,
+                cache_read,
                 cache_creation: cache_write,
             };
         }

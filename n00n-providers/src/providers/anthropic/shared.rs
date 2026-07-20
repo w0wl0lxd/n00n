@@ -38,8 +38,6 @@ pub(crate) fn long_context_window(model_id: &str) -> Option<u32> {
         .then_some(LONG_CONTEXT_WINDOW)
 }
 
-pub(super) const MESSAGE_CACHE_BREAKPOINTS: usize = 2;
-
 #[derive(Serialize)]
 pub(crate) struct CacheControl {
     pub r#type: &'static str,
@@ -155,13 +153,48 @@ pub(super) struct WireMessage<'a> {
 
 pub(super) fn build_wire_messages(messages: &[Message]) -> Vec<WireMessage<'_>> {
     let len = messages.len();
+    let mut breakpoints = std::collections::HashSet::new();
+
+    if len == 0 {
+        return Vec::new();
+    }
+
+    let mut user_message_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| matches!(m.role, Role::User))
+        .map(|(i, _)| i)
+        .collect();
+
+    let last_user_idx = user_message_indices.pop();
+    let penultimate_user_idx = user_message_indices.pop();
+
+    if let Some(idx) = last_user_idx {
+        breakpoints.insert((idx, messages[idx].content.len().saturating_sub(1)));
+    }
+
+    if let Some(idx) = penultimate_user_idx {
+        breakpoints.insert((idx, messages[idx].content.len().saturating_sub(1)));
+    }
+
+    let mut last_tool_result_idx = None;
+    for (msg_idx, msg) in messages.iter().enumerate().rev() {
+        if msg.content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. })) {
+            last_tool_result_idx = Some(msg_idx);
+            break;
+        }
+    }
+
+    if let Some(idx) = last_tool_result_idx
+        && let Some(last_block_idx) = messages[idx].content.len().checked_sub(1)
+    {
+        breakpoints.insert((idx, last_block_idx));
+    }
 
     messages
         .iter()
         .enumerate()
         .map(|(msg_idx, msg)| {
-            let cache_last_block = msg_idx + MESSAGE_CACHE_BREAKPOINTS >= len;
-
             WireMessage {
                 role: &msg.role,
                 content: msg
@@ -170,7 +203,7 @@ pub(super) fn build_wire_messages(messages: &[Message]) -> Vec<WireMessage<'_>> 
                     .enumerate()
                     .map(|(block_idx, block)| WireContentBlock {
                         inner: block,
-                        cache_control: if cache_last_block && block_idx + 1 == msg.content.len() {
+                        cache_control: if breakpoints.contains(&(msg_idx, block_idx)) {
                             Some(EPHEMERAL)
                         } else {
                             None
