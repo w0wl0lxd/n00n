@@ -20,6 +20,7 @@ use super::{
 use crate::animation::spinner_str;
 use crate::components::keybindings::key;
 use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
+use crate::mascot::Mascot;
 use crate::render_worker::RenderWorker;
 use crate::selection::Selection;
 use crate::splash::{ColorTransition, Splash};
@@ -76,6 +77,7 @@ pub struct MessagesPanel {
     theme_generation: u64,
     highlight_segment: Option<usize>,
     idle_splash: Splash,
+    mascot: Mascot,
     accent: ColorTransition,
     expanded_tools: HashMap<String, SectionFlags>,
     /// Per-tool log of post-completion click rows, replayed on restore.
@@ -159,6 +161,7 @@ impl MessagesPanel {
             theme_generation: theme::generation(),
             highlight_segment: None,
             idle_splash: Splash::new(ui_config.splash_animation),
+            mascot: Mascot::new(ui_config.mascot),
             accent: ColorTransition::new(theme::current().mode_build),
             expanded_tools: HashMap::new(),
             lua_clicks: HashMap::new(),
@@ -816,6 +819,10 @@ impl MessagesPanel {
         true
     }
 
+    pub fn on_mouse(&mut self, column: u16, row: u16) {
+        self.mascot.on_mouse(column, row);
+    }
+
     #[cfg(test)]
     pub fn toggle_expansion_at(&mut self, row: u16, area: Rect) -> bool {
         self.handle_click(row, area)
@@ -879,7 +886,10 @@ impl MessagesPanel {
 
         if self.show_idle_splash() {
             let accent = self.accent.resolve();
+            let theme = theme::current();
             self.idle_splash.render(area, frame.buffer_mut(), accent);
+            self.mascot.tick(area);
+            self.mascot.render(area, frame.buffer_mut(), &theme, accent);
             return;
         }
 
