@@ -528,6 +528,7 @@ impl<'h> Agent<'h> {
                 self.event_tx.send(AgentEvent::QueueItemConsumed {
                     text: input.message.clone(),
                     image_count: input.images.len(),
+                    images: input.images.clone(),
                 })?;
                 for msg in std::mem::take(&mut input.preamble) {
                     self.history.push(msg);
