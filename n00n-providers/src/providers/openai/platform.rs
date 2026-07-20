@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
 use std::sync::{Arc, Mutex};
 
 use flume::Sender;
@@ -44,6 +46,13 @@ struct OpenAiSessionState {
     last_response_id: Option<String>,
     last_message_count: usize,
     tools_hash: Option<String>,
+    messages_hash: Option<u64>,
+}
+
+fn hash_messages(messages: &[Message]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hasher.write(serde_json::to_string(messages).unwrap_or_default().as_bytes());
+    hasher.finish()
 }
 
 fn incremental_for_state<'a>(
@@ -56,6 +65,16 @@ fn incremental_for_state<'a>(
         state.last_response_id = None;
         state.last_message_count = 0;
         state.tools_hash = Some(tools_hash.to_string());
+        state.messages_hash = None;
+    }
+
+    if state.last_message_count > 0 {
+        let current_hash = hash_messages(&messages[..state.last_message_count]);
+        if state.messages_hash != Some(current_hash) {
+            state.last_response_id = None;
+            state.last_message_count = 0;
+            state.messages_hash = Some(current_hash);
+        }
     }
 
     if let Some(prev_id) = state.last_response_id.clone() {
@@ -79,6 +98,7 @@ fn record_in_state(
         state.last_response_id = Some(rid);
         state.last_message_count = messages.len();
         state.tools_hash = Some(tools_hash.to_string());
+        state.messages_hash = Some(hash_messages(messages));
     }
 }
 
@@ -531,6 +551,23 @@ mod tests {
 
         assert!(prev.is_none());
         assert_eq!(inc.len(), 1);
+    }
+
+    #[test]
+    fn incremental_prefix_change_resets_state() {
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        record_in_state(&mut state, Some("resp_1".into()), TOOLS_HASH, &first);
+
+        let second = vec![
+            Message::user("different".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+        let (prev, inc) = incremental_for_state(&mut state, TOOLS_HASH, &second);
+
+        assert!(prev.is_none());
+        assert_eq!(inc.len(), 3);
     }
 
     #[test]
