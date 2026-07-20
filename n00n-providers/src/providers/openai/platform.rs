@@ -180,6 +180,29 @@ impl Provider for OpenAi {
             let mut buf = String::new();
             let system = super::super::with_prefix(&self.system_prefix, system, &mut buf);
 
+            if super::websocket::is_websocket_model(&model.id) {
+                let stream_timeout = self.compat.stream_timeout();
+                return self
+                    .with_oauth_retry(|| async {
+                        let auth = if is_codex_model(&model.id) {
+                            self.codex_auth()?
+                        } else {
+                            self.current_auth()
+                        };
+                        super::websocket::stream_message(
+                            model,
+                            messages,
+                            system,
+                            tools,
+                            event_tx,
+                            &auth,
+                            stream_timeout,
+                        )
+                        .await
+                    })
+                    .await;
+            }
+
             if is_codex_model(&model.id) {
                 let body = super::responses::build_body(model, messages, system, tools);
                 let stream_timeout = self.compat.stream_timeout();
@@ -271,18 +294,25 @@ mod tests {
     #[test_case("gpt-5.6-luna")]
     #[test_case("gpt-5.6-terra")]
     #[test_case("gpt-5.6-sol")]
-    fn gpt_5_6_models_use_coding_plan(model_id: &str) {
+    fn gpt_5_6_models_use_coding_plan_and_websocket(model_id: &str) {
         assert!(is_codex_model(model_id));
+        assert!(crate::providers::openai::websocket::is_websocket_model(
+            model_id
+        ));
     }
 
     #[test_case("gpt-5.6-luna", Some(372_000))]
     #[test_case("gpt-5.6-terra", Some(372_000))]
     #[test_case("gpt-5.6-sol", Some(372_000))]
     #[test_case("gpt-5.5", Some(272_000))]
+    #[test_case("gpt-5.4", Some(272_000))]
+    #[test_case("gpt-5.2", Some(272_000))]
     #[test_case("gpt-5.3-codex", Some(272_000))]
     #[test_case("gpt-5.7-codex", Some(272_000) ; "unlisted codex model still routes")]
-    #[test_case("gpt-5.6-terra-preview", None ; "non-codex near-match is rejected")]
-    #[test_case("gpt-5.4-nano", None)]
+    #[test_case("gpt-5.5-preview", None ; "non_plan_5_5_preview_rejected")]
+    #[test_case("gpt-5.6-terra-preview", None ; "non_plan_5_6_preview_rejected")]
+    #[test_case("gpt-5.6-codex", Some(272_000) ; "codex_models_use_http")]
+    #[test_case("gpt-5.4-nano", None ; "non_plan_5_4_nano_rejected")]
     fn coding_plan_context_window_resolves_plan_models(model_id: &str, expected: Option<u32>) {
         assert_eq!(coding_plan_context_window(model_id), expected);
     }
