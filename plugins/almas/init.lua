@@ -277,6 +277,8 @@ local function run_single_pass(ctx, goal, input, steps, relay_k)
   return results, total_cost
 end
 
+local finish_run
+
 local function handler(input, ctx)
   local supervisor_tier = input.model_tier or "strong"
   local goal = refine.refine_goal(ctx, input.goal, supervisor_tier)
@@ -332,7 +334,7 @@ local function handler(input, ctx)
   return finish_run(ctx, input, results, total_cost, #steps, slug)
 end
 
-local function finish_run(ctx, input, results, total_cost, n_steps, slug)
+finish_run = function(ctx, input, results, total_cost, n_steps, slug)
   local report = table.concat(results, "\n\n")
   local summary = string.format("\n\n---\nALMAS complete: %d steps, ~$%.4f estimated cost.", n_steps, total_cost)
 
