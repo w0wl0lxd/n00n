@@ -14,10 +14,33 @@ use crate::model::Model;
 use crate::providers::ResolvedAuth;
 use crate::{AgentError, Message, ProviderEvent, StreamResponse};
 
-const RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
+const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
 
 pub(crate) fn is_websocket_model(model_id: &str) -> bool {
     model_id.starts_with("gpt-5.6")
+}
+
+fn responses_websocket_url(base_url: Option<&str>) -> String {
+    let Some(base) = base_url else {
+        return DEFAULT_RESPONSES_WS_URL.into();
+    };
+
+    let mut url = if let Some(rest) = base.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = base.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        format!("wss://{base}")
+    };
+
+    if !url.ends_with("/responses") {
+        if !url.ends_with('/') {
+            url.push('/');
+        }
+        url.push_str("responses");
+    }
+
+    url
 }
 
 pub(crate) async fn stream_message(
@@ -29,7 +52,8 @@ pub(crate) async fn stream_message(
     auth: &ResolvedAuth,
     stream_timeout: Duration,
 ) -> Result<StreamResponse, AgentError> {
-    let mut builder = Request::builder().uri(RESPONSES_WS_URL).method("GET");
+    let url = responses_websocket_url(auth.base_url.as_deref());
+    let mut builder = Request::builder().uri(&url).method("GET");
     for (key, value) in &auth.headers {
         builder = builder.header(key.as_str(), value.as_str());
     }
@@ -76,6 +100,15 @@ pub(crate) async fn stream_message(
 fn ws_err(e: WsError) -> AgentError {
     match e {
         WsError::Io(io) => AgentError::Io(io),
+        WsError::Http(resp) => {
+            let status = resp.status().as_u16();
+            let message = resp
+                .body()
+                .as_ref()
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_else(|| "websocket handshake failed".into());
+            AgentError::Api { status, message }
+        }
         other => AgentError::Api {
             status: 500,
             message: other.to_string(),
@@ -112,7 +145,7 @@ where
     )
     .await;
 
-    if matches!(result, Ok(Some(WsMessage::Text(_) | WsMessage::Binary(_)))) {
+    if matches!(result, Ok(Some(_))) {
         *deadline = Instant::now() + timeout;
     }
 
@@ -156,4 +189,76 @@ fn error_from_event(event: &Value) -> AgentError {
     };
 
     AgentError::Api { status, message }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use test_case::test_case;
+
+    #[test_case("gpt-5.6-luna", true)]
+    #[test_case("gpt-5.6-terra-preview", true)]
+    #[test_case("gpt-5.5", false)]
+    #[test_case("gpt-5.3-codex", false)]
+    fn is_websocket_model_recognizes_gpt_5_6(model_id: &str, expected: bool) {
+        assert_eq!(is_websocket_model(model_id), expected);
+    }
+
+    #[test_case(None, "wss://api.openai.com/v1/responses")]
+    #[test_case(Some("https://api.openai.com/v1"), "wss://api.openai.com/v1/responses")]
+    #[test_case(
+        Some("https://proxy.example.com/v1/"),
+        "wss://proxy.example.com/v1/responses"
+    )]
+    #[test_case(Some("http://local.dev"), "ws://local.dev/responses")]
+    fn responses_websocket_url_derives_from_base_url(base_url: Option<&str>, expected: &str) {
+        assert_eq!(super::responses_websocket_url(base_url), expected);
+    }
+
+    #[test]
+    fn ws_err_extracts_http_status_and_body() {
+        let resp = async_tungstenite::tungstenite::http::Response::builder()
+            .status(401)
+            .body(Some(b"bad key".to_vec()))
+            .unwrap();
+        match super::ws_err(WsError::Http(Box::new(resp))) {
+            AgentError::Api { status, message } => {
+                assert_eq!(status, 401);
+                assert_eq!(message, "bad key");
+            }
+            other => panic!("expected AgentError::Api, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_from_event_uses_status_field_and_error_type() {
+        let event = json!({
+            "type": "error",
+            "status": 429,
+            "error": { "type": "rate_limit_error", "message": "Rate limit hit" }
+        });
+        match error_from_event(&event) {
+            AgentError::Api { status, message } => {
+                assert_eq!(status, 429);
+                assert_eq!(message, "Rate limit hit");
+            }
+            other => panic!("expected AgentError::Api, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_from_event_maps_error_type_to_status_when_status_missing() {
+        let event = json!({
+            "type": "error",
+            "error": { "type": "authentication_error", "message": "bad key" }
+        });
+        match error_from_event(&event) {
+            AgentError::Api { status, message } => {
+                assert_eq!(status, 401);
+                assert_eq!(message, "bad key");
+            }
+            other => panic!("expected AgentError::Api, got {other:?}"),
+        }
+    }
 }
