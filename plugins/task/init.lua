@@ -132,7 +132,7 @@ local function handler(input, ctx)
   -- Compile early: a bad schema costs zero tokens.
   local validator
   if input.output_schema then
-    if input.output_schema.type ~= "object" then
+    if type(input.output_schema) ~= "table" or input.output_schema.type ~= "object" then
       return { llm_output = "output_schema must have type object", is_error = true }
     end
     local compile_err
