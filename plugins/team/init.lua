@@ -395,14 +395,15 @@ end
 
 finish_run = function(ctx, input, results, total_cost, completed, unit, slug, failures)
   local report = table.concat(results, "\n\n")
-  local summary = string.format("\n\n---\nTeam complete: %d %s, ~$%.4f estimated cost.", completed, unit, total_cost)
-
-  memory.save(ctx, slug, report .. summary)
-
   local failed = failures or 0
+  local successful = math.max(completed - failed, 0)
+  local summary = string.format("\n\n---\nTeam complete: %d %s, ~$%.4f estimated cost.", successful, unit, total_cost)
   if failed > 0 then
     summary = summary .. string.format(" %d step(s) failed; the run is incomplete.", failed)
   end
+
+  memory.save(ctx, slug, report .. summary)
+
   return { llm_output = report .. summary, format = "markdown", is_error = failed > 0 }
 end
 
