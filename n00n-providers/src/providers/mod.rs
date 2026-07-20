@@ -283,6 +283,18 @@ mod tests {
     use futures_lite::io::AsyncBufReadExt;
     use test_case::test_case;
 
+    #[allow(unsafe_code)]
+    fn set_env(var: &str, value: &str) {
+        // SAFETY: Tests run single-threaded; no concurrent access to env vars
+        unsafe { std::env::set_var(var, value) }
+    }
+
+    #[allow(unsafe_code)]
+    fn remove_env(var: &str) {
+        // SAFETY: Tests run single-threaded; no concurrent access to env vars
+        unsafe { std::env::remove_var(var) }
+    }
+
     #[test_case("a b", "a%20b" ; "space")]
     #[test_case("a:b", "a%3Ab" ; "colon")]
     #[test_case("abc", "abc"   ; "passthrough")]
@@ -361,18 +373,18 @@ mod tests {
     #[test]
     fn resolve_from_env() {
         let env_var = format!("N00N_TEST_KEY_{}", fastrand::u32(..));
-        unsafe { std::env::set_var(&env_var, "from-env") };
+        set_env(&env_var, "from-env");
         let pool = KeyPool::resolve("test_slug", &env_var).unwrap();
-        unsafe { std::env::remove_var(&env_var) };
+        remove_env(&env_var);
         assert_eq!(pool.current(), "from-env");
     }
 
     #[test]
     fn resolve_env_supports_comma_separated() {
         let env_var = format!("N00N_TEST_MULTI_{}", fastrand::u32(..));
-        unsafe { std::env::set_var(&env_var, "sk-1, sk-2, sk-3") };
+        set_env(&env_var, "sk-1, sk-2, sk-3");
         let pool = KeyPool::resolve("test_slug", &env_var).unwrap();
-        unsafe { std::env::remove_var(&env_var) };
+        remove_env(&env_var);
         assert_eq!(pool.current(), "sk-1");
         assert!(pool.rotate());
         assert_eq!(pool.current(), "sk-2");
