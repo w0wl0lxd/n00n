@@ -381,7 +381,7 @@ pub struct ModelBatch {
 /// and configured dynamic providers. See [`fetch_all_models`] for live lookups.
 pub fn available_model_specs() -> Vec<String> {
     let mut specs: Vec<String> = ProviderKind::iter()
-        .filter(|kind| kind.is_available())
+        .filter(|kind| should_discover(*kind) && kind.is_available())
         .flat_map(|kind| {
             models_for_provider(kind)
                 .iter()
@@ -400,6 +400,23 @@ pub fn available_model_specs() -> Vec<String> {
     specs
 }
 
+fn should_discover(kind: ProviderKind) -> bool {
+    if kind != ProviderKind::LlamaCpp {
+        return true;
+    }
+
+    let config = n00n_config::providers::ProvidersConfig::load();
+    llama_cpp_is_configured(
+        std::env::var_os("LLAMA_CPP_HOST").is_some(),
+        std::env::var_os("LLAMA_CPP_API_KEY").is_some(),
+        config.get("llama-cpp").is_some(),
+    )
+}
+
+fn llama_cpp_is_configured(has_host: bool, has_api_key: bool, has_provider_config: bool) -> bool {
+    has_host || has_api_key || has_provider_config
+}
+
 pub async fn fetch_all_models(
     mut on_ready: impl FnMut(ModelBatch),
     on_done: Option<Box<dyn FnOnce() + Send>>,
@@ -407,7 +424,7 @@ pub async fn fetch_all_models(
     let (tx, rx) = flume::unbounded();
     let timeouts = Timeouts::default();
 
-    for kind in ProviderKind::iter() {
+    for kind in ProviderKind::iter().filter(|kind| should_discover(*kind)) {
         let Ok(provider) = smol::unblock(move || kind.create(timeouts)).await else {
             warn!(provider = %kind, "failed to create provider, skipping");
             continue;
@@ -520,5 +537,29 @@ pub async fn fetch_all_models(
     }
     if let Some(done) = on_done {
         done();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProviderKind, llama_cpp_is_configured, should_discover};
+
+    #[test_case::test_case(false, false, false => false; "unconfigured")]
+    #[test_case::test_case(true, false, false => true; "host")]
+    #[test_case::test_case(false, true, false => true; "api_key")]
+    #[test_case::test_case(false, false, true => true; "provider_config")]
+    fn llama_cpp_configuration_sources(
+        has_host: bool,
+        has_api_key: bool,
+        has_provider_config: bool,
+    ) -> bool {
+        // Keep this pure rather than mutating process environment variables, whose values are
+        // shared with concurrently running tests.
+        llama_cpp_is_configured(has_host, has_api_key, has_provider_config)
+    }
+
+    #[test]
+    fn other_providers_are_always_discovered() {
+        assert!(should_discover(ProviderKind::Ollama));
     }
 }

@@ -1,0 +1,35 @@
+name: Typos
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/*.md"
+      - "**/*.lua"
+      - "**/*.py"
+      - "**/*.toml"
+      - ".github/workflows/**"
+      - "typos.toml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/*.md"
+      - "**/*.lua"
+      - "**/*.py"
+      - "**/*.toml"
+      - ".github/workflows/**"
+      - "typos.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  typos:
+    name: Spell check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crate-ci/typos@master

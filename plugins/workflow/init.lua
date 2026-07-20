@@ -25,6 +25,7 @@ local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
 local MAX_STRUCTURED_RETRIES = 2
 local MAX_SCHEMA_ERRORS = 3
+local SCHEMA_ROOT_ERROR = "output_schema must have type object"
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
 local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
 local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
@@ -37,6 +38,7 @@ local NO_META_ERROR = "workflow script must call meta({ name = ... }) before doi
 local SCRIPT_REQUIRED_ERROR = "script (string) is required"
 local NAME_LABEL_MAX = 40
 local DEFAULT_OUTPUT_LINES = 8
+local DEFAULT_MAX_LINE_BYTES = 500
 local MIN_BODY_WIDTH = 20
 local BODY_INDENT_COLS = 4
 local GENERAL_AUDIENCE = "general_sub"
@@ -308,7 +310,10 @@ local function parallel(fns, popts)
     error("parallel: fns must be an array of functions", 0)
   end
   popts = popts or {}
-  local concurrency = popts.concurrency or opts.max_concurrent_agents
+  local concurrency = opts.max_concurrent_agents
+  if type(popts.concurrency) == "number" then
+    concurrency = math.max(1, math.min(popts.concurrency, opts.max_concurrent_agents))
+  end
   local sem = n00n.async.semaphore(concurrency)
   local wrapped = {}
   for i, f in ipairs(fns) do
@@ -316,9 +321,14 @@ local function parallel(fns, popts)
       error("parallel: fns[" .. i .. "] must be a function", 0)
     end
     wrapped[i] = function()
-      local permit = sem:acquire()
-      local ok, result = pcall(f)
-      permit:release()
+      local permit
+      local ok, result = pcall(function()
+        permit = sem:acquire()
+        return f()
+      end)
+      if permit then
+        permit:release()
+      end
       if not ok then
         error(result, 0)
       end
@@ -374,11 +384,14 @@ local function make_agent(ctx, progress, journal)
       error(NO_META_ERROR, 0)
     end
 
+    if aopts.label and type(aopts.label) ~= "string" then
+      error("agent: opts.label must be a string", 0)
+    end
     local subagent_type = aopts.subagent_type or "general"
     if subagent_type ~= "general" and subagent_type ~= "research" then
       error("agent: unknown subagent_type: " .. tostring(subagent_type), 0)
     end
-    local label = aopts.label or aopts.prompt:sub(1, NAME_LABEL_MAX)
+    local label = aopts.label or n00n.ui.truncate_text(aopts.prompt, NAME_LABEL_MAX).head
     local key = journal_key(aopts)
 
     -- Per-key single-flight: concurrent agent() calls with the same key wait
@@ -421,6 +434,9 @@ local function make_agent(ctx, progress, journal)
 
       local validator
       if aopts.output_schema then
+        if type(aopts.output_schema) ~= "table" or aopts.output_schema.type ~= "object" then
+          error(SCHEMA_ROOT_ERROR, 0)
+        end
         local compile_err
         validator, compile_err = n00n.json.schema_validator(aopts.output_schema)
         if compile_err then
@@ -502,7 +518,14 @@ local function make_agent(ctx, progress, journal)
         local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
         error(msg, 0)
       end
-      local out = captured and n00n.json.encode(captured) or prompt_result.text
+      local out = prompt_result.text
+      if captured then
+        local encoded, encode_err = n00n.json.encode(captured)
+        if encode_err then
+          error("failed to encode structured output: " .. tostring(encode_err), 0)
+        end
+        out = encoded
+      end
 
       local gate = journal.lock:acquire()
       journal.cache[key] = out
@@ -590,28 +613,28 @@ local function make_progress(ctx)
     end,
     log = function(msg)
       with_lock(function()
-        view:append({ msg, "dim" })
+        view:append({ { msg, "dim" } })
       end)
     end,
     agent_started = function(label)
       with_lock(function()
         state.agents = state.agents + 1
         refresh_header()
-        view:append({ "> " .. label, "dim" })
+        view:append({ { "> " .. label, "dim" } })
       end)
     end,
     agent_done = function(label)
       with_lock(function()
         state.done = state.done + 1
         refresh_header()
-        view:append({ "+ " .. label, "dim" })
+        view:append({ { "+ " .. label, "dim" } })
       end)
     end,
     agent_cached = function(label)
       with_lock(function()
         state.cached = state.cached + 1
         refresh_header()
-        view:append({ "= " .. label, "dim" })
+        view:append({ { "= " .. label, "dim" } })
       end)
     end,
   }
@@ -748,8 +771,9 @@ local function handler(input, ctx)
   ctx:set_deadline(opts.timeout_secs)
 
   n00n.async.run(function()
-    local permit = workflow_semaphore:acquire()
+    local permit
     local ok, result = pcall(function()
+      permit = workflow_semaphore:acquire()
       local env = build_env(ctx, progress, input.inputs or {}, journal, captured)
       local run_fn, load_err = n00n.workflow.compile(input.script, env)
       if not run_fn then
@@ -769,7 +793,9 @@ local function handler(input, ctx)
       end
       return output .. "\n\n_run_id: `" .. run_id .. "` (pass as `resume` to continue)_"
     end)
-    permit:release()
+    if permit then
+      permit:release()
+    end
     if not ok then
       error(result, 0)
     end
@@ -781,7 +807,8 @@ end
 
 local function header(input)
   if type(input.script) == "string" then
-    local name = input.script:match('name%s*=%s*"([^"]+)"')
+    local name = input.script:match('meta%s*%(%s*[%s%S]-name%s*=%s*"([^"]+)"')
+      or input.script:match("meta%s*%(%s*[%s%S]-name%s*=%s*'([^']+)'")
     if name then
       return name
     end
@@ -791,7 +818,11 @@ end
 
 local function restore(_input, output, is_error, ctx)
   local tol = ctx:tool_output_lines()
-  local restore_opts = { max_lines = (tol and tol.workflow) or DEFAULT_OUTPUT_LINES, keep = "head" }
+  local restore_opts = {
+    max_lines = (tol and tol.workflow) or DEFAULT_OUTPUT_LINES,
+    keep = "head",
+    max_line_bytes = DEFAULT_MAX_LINE_BYTES,
+  }
   if not is_error then
     local width = math.max(n00n.ui.terminal_size().cols - BODY_INDENT_COLS, MIN_BODY_WIDTH)
     local ok, md_lines = pcall(n00n.ui.markdown, output, width)

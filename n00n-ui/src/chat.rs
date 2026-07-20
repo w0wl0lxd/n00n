@@ -12,12 +12,15 @@ use std::sync::Arc;
 
 use crate::selection::Selection;
 use n00n_agent::tools::{ToolInvocation, ToolRegistry, WRITE_TOOL_NAME};
-use n00n_agent::{AgentEvent, BufferSnapshot, ToolDoneEvent, ToolOutput, ToolStartEvent};
+use n00n_agent::{
+    AgentEvent, BufferSnapshot, ImageSource, ToolDoneEvent, ToolOutput, ToolStartEvent,
+};
 use n00n_config::{ToolKey, ToolOutputLines, UiConfig};
 use n00n_providers::{ContentBlock, Message, Role, TokenUsage};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui_image::picker::Picker;
 
 pub(crate) const DONE_TEXT: &str = "Done!";
 pub(crate) const ERROR_TEXT: &str = "Error";
@@ -31,6 +34,7 @@ pub enum ChatEventResult {
     QueueItemConsumed {
         text: String,
         image_count: usize,
+        images: Vec<ImageSource>,
     },
     Error(String),
     PermissionRequest {
@@ -55,7 +59,7 @@ pub struct Chat {
 }
 
 impl Chat {
-    pub fn new(name: String, ui_config: UiConfig) -> Self {
+    pub fn new(name: String, ui_config: UiConfig, picker: Arc<Picker>) -> Self {
         Self {
             name,
             token_usage: TokenUsage::default(),
@@ -64,7 +68,7 @@ impl Chat {
             tool_use_id: None,
             failed: false,
             pending_turn_usage: None,
-            messages_panel: MessagesPanel::new(ui_config),
+            messages_panel: MessagesPanel::new(ui_config, picker),
             finished: false,
         }
     }
@@ -127,8 +131,16 @@ impl Chat {
             AgentEvent::CompactionDone => {
                 self.messages_panel.flush();
             }
-            AgentEvent::QueueItemConsumed { text, image_count } => {
-                return ChatEventResult::QueueItemConsumed { text, image_count };
+            AgentEvent::QueueItemConsumed {
+                text,
+                image_count,
+                images,
+            } => {
+                return ChatEventResult::QueueItemConsumed {
+                    text,
+                    image_count,
+                    images,
+                };
             }
             AgentEvent::Retry { .. } => unreachable!("handled before handle_event"),
             AgentEvent::Done { .. } => {
@@ -315,6 +327,10 @@ impl Chat {
         self.messages_panel.flush();
     }
 
+    pub fn toggle_transcript_details(&mut self) -> bool {
+        self.messages_panel.toggle_transcript_details()
+    }
+
     pub fn cancel_in_progress(&mut self) {
         self.messages_panel.cancel_in_progress();
     }
@@ -367,11 +383,33 @@ impl Chat {
             .push(DisplayMessage::new(DisplayRole::User, text.into()));
     }
 
+    pub fn push_user_message_with_images(
+        &mut self,
+        text: impl Into<String>,
+        images: Vec<ImageSource>,
+    ) {
+        self.messages_panel.push(DisplayMessage::with_images(
+            DisplayRole::User,
+            text.into(),
+            images,
+        ));
+    }
+
     /// Flush, push, and re-pin scroll in one shot to avoid
     /// the one-frame hop where the bubble briefly lands in the wrong row.
     pub fn show_user_message(&mut self, text: impl Into<String>) {
         self.flush();
         self.push_user_message(text);
+        self.enable_auto_scroll();
+    }
+
+    pub fn show_user_message_with_images(
+        &mut self,
+        text: impl Into<String>,
+        images: Vec<ImageSource>,
+    ) {
+        self.flush();
+        self.push_user_message_with_images(text, images);
         self.enable_auto_scroll();
     }
 
@@ -434,8 +472,20 @@ pub fn history_to_display(
     for msg in messages {
         match msg.role {
             Role::User => {
-                if let Some(text) = msg.user_text() {
-                    display.push(DisplayMessage::new(DisplayRole::User, text.to_owned()));
+                let images: Vec<_> = msg
+                    .content
+                    .iter()
+                    .filter_map(|block| {
+                        if let ContentBlock::Image { source } = block {
+                            Some(source.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let text = msg.user_text().map_or_else(String::new, |t| t.to_owned());
+                if !text.is_empty() || !images.is_empty() {
+                    display.push(DisplayMessage::with_images(DisplayRole::User, text, images));
                 }
             }
             Role::Assistant => {
@@ -444,9 +494,18 @@ pub fn history_to_display(
                         ContentBlock::Text { text } if !text.is_empty() => {
                             display.push(DisplayMessage::new(DisplayRole::Assistant, text.clone()));
                         }
+                        ContentBlock::Image { source } => {
+                            display.push(DisplayMessage::with_images(
+                                DisplayRole::Assistant,
+                                String::new(),
+                                vec![source.clone()],
+                            ));
+                        }
                         ContentBlock::Thinking { thinking, .. } if !thinking.is_empty() => {
-                            display
-                                .push(DisplayMessage::new(DisplayRole::Thinking, thinking.clone()));
+                            let mut message =
+                                DisplayMessage::new(DisplayRole::Thinking, thinking.clone());
+                            message.thinking_collapsed = true;
+                            display.push(message);
                         }
                         ContentBlock::ToolUse { id, name, input } => {
                             let static_name = name.as_str();
@@ -510,6 +569,7 @@ pub fn history_to_display(
                                     name: static_name.into(),
                                 })),
                                 text,
+                                images: Vec::new(),
                                 tool_input: None,
                                 tool_raw_input: Some(Arc::new(input.clone())),
                                 tool_output,
@@ -682,7 +742,7 @@ mod tests {
 
     #[test]
     fn tool_lifecycle() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default());
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         chat.handle_event(tool_start("t1", "bash"), None);
         assert_eq!(chat.in_progress_count(), 1);
 
@@ -695,7 +755,7 @@ mod tests {
 
     #[test]
     fn plan_write_renders_file_content() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default());
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         let dir = tempfile::tempdir().unwrap();
         let plan_path = dir.path().join("plan.md");
         std::fs::write(&plan_path, "# My Plan\n\n- Step 1").unwrap();
@@ -715,7 +775,7 @@ mod tests {
 
     #[test]
     fn plan_write_ignores_different_path() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default());
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         let plan_path = Path::new("/plans/123.md");
         chat.handle_event(tool_start("w1", "write"), Some(plan_path));
         let (output, wp) = write_output("src/main.rs");
@@ -728,7 +788,7 @@ mod tests {
 
     #[test]
     fn plan_edit_shows_path_only() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default());
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         let dir = tempfile::tempdir().unwrap();
         let plan_path = dir.path().join("plan.md");
         std::fs::write(&plan_path, "# My Plan\n\n- Step 1").unwrap();
@@ -944,6 +1004,72 @@ mod tests {
     }
 
     #[test]
+    fn history_restores_thinking_segments_between_tools_independently() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "A".into(),
+                    signature: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "tool1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "true"}),
+                },
+                ContentBlock::Thinking {
+                    thinking: "B".into(),
+                    signature: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "tool2".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "true"}),
+                },
+                ContentBlock::RedactedThinking {
+                    data: "opaque".into(),
+                },
+            ],
+            ..Default::default()
+        }];
+
+        let (display, _) = history_to_display(&msgs, &HashMap::new(), &ToolOutputLines::default());
+        assert_eq!(display.len(), 4);
+        assert!(matches!(display[0].role, DisplayRole::Thinking));
+        assert_eq!(display[0].text, "A");
+        assert!(matches!(display[1].role, DisplayRole::Tool(_)));
+        assert!(matches!(display[2].role, DisplayRole::Thinking));
+        assert_eq!(display[2].text, "B");
+        assert!(matches!(display[3].role, DisplayRole::Tool(_)));
+
+        let mut chat = Chat::new(
+            "Main".into(),
+            UiConfig::default(),
+            Arc::new(Picker::halfblocks()),
+        );
+        chat.load_messages(display);
+        let thinking_indices: Vec<_> = chat
+            .messages_panel
+            .messages
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, msg)| matches!(msg.role, DisplayRole::Thinking).then_some(idx))
+            .collect();
+        assert_eq!(thinking_indices.len(), 2);
+        assert!(
+            thinking_indices
+                .iter()
+                .all(|&idx| chat.messages_panel.messages[idx].thinking_collapsed)
+        );
+        assert!(chat.messages_panel.toggle_transcript_details());
+        assert!(
+            thinking_indices
+                .iter()
+                .all(|&idx| !chat.messages_panel.messages[idx].thinking_collapsed)
+        );
+    }
+
+    #[test]
     fn history_to_display_thinking_blocks() {
         let msgs = vec![Message {
             role: Role::Assistant,
@@ -967,6 +1093,10 @@ mod tests {
     }
 
     const RESTORE_OUTPUT: &str = "rendered output";
+
+    fn test_picker() -> Arc<Picker> {
+        Arc::new(Picker::halfblocks())
+    }
 
     fn tool_msg_with_input(tool: &str) -> DisplayMessage {
         let mut msg = DisplayMessage::new(DisplayRole::User, String::new());
@@ -1036,7 +1166,7 @@ mod tests {
 
     #[test]
     fn compaction_done_flushes_streaming_buffers() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default());
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
 
         chat.handle_event(AgentEvent::AutoCompacting, None);
         assert_eq!(chat.message_count(), 1);

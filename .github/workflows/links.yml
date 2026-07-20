@@ -1,0 +1,43 @@
+name: Links
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/*.md"
+      - "**/*.html"
+      - ".github/workflows/links.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/*.md"
+      - "**/*.html"
+      - ".github/workflows/links.yml"
+  schedule:
+    - cron: "47 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lychee:
+    name: Check links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Link Checker
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --no-progress
+            --max-concurrency 4
+            --timeout 20
+            --retry-wait-time 2
+            --accept 200..=299,403,429
+            --exclude-mail
+            "README.md" "CONTRIBUTING.md" "site/index.html" "site/docs/content/**/*.md"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fail: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -87,3 +87,6 @@ harness = false
 [[bench]]
 name = "perf"
 harness = false
+
+[lints]
+workspace = true

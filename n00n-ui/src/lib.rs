@@ -26,6 +26,7 @@ mod agent;
 mod event_loop;
 mod input;
 mod terminal;
+mod terminal_image;
 
 use color_eyre::Result;
 use n00n_agent::ToolOutput;

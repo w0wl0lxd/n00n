@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, Message, Model, RequestOptions, Role, StopReason, StreamResponse, TokenUsage,
+    ContentBlock, Message, Model, RequestOptions, StopReason, StreamResponse, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -19,7 +19,7 @@ use crate::permissions::PermissionManager;
 use crate::tools::{Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext};
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
-    InterruptSource, TurnCompleteEvent,
+    InterruptPoint, InterruptSource, TurnCompleteEvent,
 };
 use n00n_config::ToolOutputLines;
 use n00n_storage::id::SessionRef;
@@ -70,6 +70,49 @@ pub struct AgentRunParams<'h> {
     pub system: String,
     pub event_tx: EventSender,
     pub tools: Value,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TokenBudget {
+    max_input: Option<u32>,
+    max_output: Option<u32>,
+    max_total: Option<u32>,
+    max_context: Option<u32>,
+}
+
+impl TokenBudget {
+    fn from_config(config: &AgentConfig) -> Self {
+        Self {
+            max_input: config.max_input_tokens,
+            max_output: config.max_output_tokens,
+            max_total: config.max_total_tokens,
+            max_context: config.max_context_tokens,
+        }
+    }
+
+    fn check(self, usage: &TokenUsage, context_size: u32) -> Option<&'static str> {
+        if let Some(max) = self.max_input
+            && usage.total_input() > max
+        {
+            return Some("input token budget exceeded");
+        }
+        if let Some(max) = self.max_output
+            && usage.output > max
+        {
+            return Some("output token budget exceeded");
+        }
+        if let Some(max) = self.max_total
+            && usage.context_tokens() > max
+        {
+            return Some("total token budget exceeded");
+        }
+        if let Some(max) = self.max_context
+            && context_size > max
+        {
+            return Some("context token budget exceeded");
+        }
+        None
+    }
 }
 
 pub struct Agent<'h> {
@@ -180,10 +223,15 @@ impl<'h> Agent<'h> {
         self
     }
 
+    fn check_token_budget(&self) -> Option<&'static str> {
+        TokenBudget::from_config(&self.config).check(&self.total_usage, self.context_size)
+    }
+
     pub async fn run(&mut self, input: AgentInput) -> Result<(), AgentError> {
         self.rollback_len = self.history.len();
         let msg = Message::user_with_images(input.message.clone(), input.images);
         self.history.push(msg);
+        self.context_size = estimate_message_tokens(self.history.as_slice());
         self.mode = input.mode;
         self.workflow = input.workflow;
         self.opts = RequestOptions {
@@ -228,6 +276,10 @@ impl<'h> Agent<'h> {
     async fn turn(&mut self) -> Result<TurnOutcome, AgentError> {
         if self.cancel.is_cancelled() {
             return Err(AgentError::Cancelled);
+        }
+        if let Some(reason) = self.check_token_budget() {
+            warn!(reason, "stopping before provider call");
+            return Ok(TurnOutcome::Done(None));
         }
         let response = match stream_with_retry(
             &*self.provider,
@@ -275,26 +327,28 @@ impl<'h> Agent<'h> {
         self.total_usage += usage;
         self.context_size = usage.total_input();
 
+        if let Some(reason) = self.check_token_budget() {
+            warn!(reason, "stopping after provider response");
+            return Ok(TurnOutcome::Done(None));
+        }
+
         if has_tools {
             let history_len_before = self.history.len();
             self.process_tool_calls(response).await?;
             self.context_size +=
                 estimate_message_tokens(&self.history.as_slice()[history_len_before..]);
-        } else {
-            let has_text = response.message.first_text_content().is_some();
 
-            if !has_text && !self.post_tool_empty_retried && self.history.has_recent_tool_results(5)
-            {
+            if let Some(reason) = self.check_token_budget() {
+                warn!(reason, "stopping after tool output");
+                return Ok(TurnOutcome::Done(None));
+            }
+        } else {
+            let is_empty = response.message.content.is_empty();
+
+            if is_empty && !self.post_tool_empty_retried && self.history.ends_with_tool_results() {
                 self.post_tool_empty_retried = true;
                 warn!("empty response after tool calls, nudging model to continue");
                 self.event_tx.send(AgentEvent::Nudge)?;
-                self.history.push(Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::Text {
-                        text: "(empty)".into(),
-                    }],
-                    ..Default::default()
-                });
                 self.history.push(Message::synthetic(NUDGE_PROMPT.into()));
                 return Ok(TurnOutcome::Continue);
             }
@@ -312,7 +366,15 @@ impl<'h> Agent<'h> {
             }
         }
 
-        if self.try_auto_compact().await? || self.handle_queued_command().await? {
+        if self.try_auto_compact().await?
+            || self
+                .handle_queued_commands(if has_tools {
+                    InterruptPoint::ToolComplete
+                } else {
+                    InterruptPoint::Safe
+                })
+                .await?
+        {
             return Ok(TurnOutcome::Continue);
         }
 
@@ -450,37 +512,40 @@ impl<'h> Agent<'h> {
         self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history
             .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
+        self.context_size = estimate_message_tokens(self.history.as_slice());
         Ok(())
     }
 
-    async fn handle_queued_command(&mut self) -> Result<bool, AgentError> {
-        let Some(ref source) = self.interrupt_source else {
+    async fn handle_queued_commands(&mut self, point: InterruptPoint) -> Result<bool, AgentError> {
+        let Some(source) = self.interrupt_source.clone() else {
             return Ok(false);
         };
-        let Some(cmd) = source.poll() else {
-            return Ok(false);
-        };
-        match cmd {
-            ExtractedCommand::Interrupt(mut input, _) => {
-                self.event_tx.send(AgentEvent::QueueItemConsumed {
-                    text: input.message.clone(),
-                    image_count: input.images.len(),
-                })?;
-                for msg in std::mem::take(&mut input.preamble) {
-                    self.history.push(msg);
+        let mut handled = false;
+        while let Some(cmd) = source.poll(point) {
+            handled = true;
+            match cmd {
+                ExtractedCommand::Interrupt(mut input, _) => {
+                    self.event_tx.send(AgentEvent::QueueItemConsumed {
+                        text: input.message.clone(),
+                        image_count: input.images.len(),
+                        images: input.images.clone(),
+                    })?;
+                    for msg in std::mem::take(&mut input.preamble) {
+                        self.history.push(msg);
+                    }
+                    self.mode = input.mode.clone();
+                    let display = input.message.clone();
+                    let wrapped = format!(
+                        "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{display}\n</user-interrupt>"
+                    );
+                    self.history.push(Message::user_display(wrapped, display));
                 }
-                self.mode = input.mode.clone();
-                let display = input.message.clone();
-                let wrapped = format!(
-                    "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{display}\n</user-interrupt>"
-                );
-                self.history.push(Message::user_display(wrapped, display));
-            }
-            ExtractedCommand::Compact(_) => {
-                self.do_compact().await?;
+                ExtractedCommand::Compact(_) => {
+                    self.do_compact().await?;
+                }
             }
         }
-        Ok(true)
+        Ok(handled)
     }
 }
 
@@ -533,7 +598,7 @@ mod tests {
     }
 
     impl InterruptSource for MockInterruptSource {
-        fn poll(&self) -> Option<ExtractedCommand> {
+        fn poll(&self, _: InterruptPoint) -> Option<ExtractedCommand> {
             self.commands.lock().unwrap().pop_front()
         }
     }
@@ -596,6 +661,21 @@ mod tests {
             message: Message {
                 role: Role::Assistant,
                 content: vec![],
+                ..Default::default()
+            },
+            usage: TokenUsage::default(),
+            stop_reason: Some(StopReason::EndTurn),
+        }
+    }
+
+    fn thinking_response() -> StreamResponse {
+        StreamResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Thinking {
+                    thinking: "done".into(),
+                    signature: None,
+                }],
                 ..Default::default()
             },
             usage: TokenUsage::default(),
@@ -959,6 +1039,14 @@ mod tests {
         1, false
         ; "no_nudge_without_recent_tools"
     )]
+    #[test_case(
+        vec![
+            tool_call_response("glob", "t1"),
+            thinking_response(),
+        ],
+        2, false
+        ; "no_nudge_on_reasoning_after_tools"
+    )]
     fn nudge_behavior(responses: Vec<StreamResponse>, expected_turns: u32, expect_nudge: bool) {
         smol::block_on(async {
             let mut history = History::new(Vec::new());
@@ -979,6 +1067,105 @@ mod tests {
                 })
                 .expect("expected Done event");
             assert_eq!(done, expected_turns);
+        });
+    }
+
+    #[test]
+    fn token_budget_check_detects_exceeded_limits() {
+        let input_budget = TokenBudget {
+            max_input: Some(100),
+            ..Default::default()
+        };
+        let usage = TokenUsage {
+            input: 80,
+            output: 30,
+            cache_creation: 0,
+            cache_read: 30,
+        };
+        assert_eq!(
+            input_budget.check(&usage, 140),
+            Some("input token budget exceeded")
+        );
+
+        let output_budget = TokenBudget {
+            max_output: Some(50),
+            ..Default::default()
+        };
+        let usage = TokenUsage {
+            input: 80,
+            output: 60,
+            cache_creation: 0,
+            cache_read: 0,
+        };
+        assert_eq!(
+            output_budget.check(&usage, 140),
+            Some("output token budget exceeded")
+        );
+
+        let total_budget = TokenBudget {
+            max_total: Some(200),
+            ..Default::default()
+        };
+        let usage = TokenUsage {
+            input: 80,
+            output: 130,
+            cache_creation: 0,
+            cache_read: 0,
+        };
+        assert_eq!(
+            total_budget.check(&usage, 140),
+            Some("total token budget exceeded")
+        );
+
+        let context_budget = TokenBudget {
+            max_context: Some(150),
+            ..Default::default()
+        };
+        let usage = TokenUsage {
+            input: 80,
+            output: 30,
+            cache_creation: 0,
+            cache_read: 0,
+        };
+        assert_eq!(
+            context_budget.check(&usage, 160),
+            Some("context token budget exceeded")
+        );
+    }
+
+    #[test]
+    fn agent_stops_when_input_budget_exceeded() {
+        smol::block_on(async {
+            let response = StreamResponse {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "response".into(),
+                    }],
+                    ..Default::default()
+                },
+                usage: TokenUsage {
+                    input: 2,
+                    output: 0,
+                    cache_creation: 0,
+                    cache_read: 0,
+                },
+                stop_reason: Some(StopReason::EndTurn),
+            };
+
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent(MockProvider::new(vec![response]), &mut history);
+            agent.config.max_input_tokens = Some(1);
+            let _ = agent.run(default_input()).await;
+            let events = drain_events(&event_rx);
+
+            assert!(events.iter().any(|e| matches!(
+                e.event,
+                AgentEvent::Done {
+                    stop_reason: None,
+                    ..
+                }
+            )));
         });
     }
 }

@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -22,6 +25,7 @@ const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const ENV_VAR: &str = "GEMINI_API_KEY";
 const FLASH_MAX_THINKING: u32 = 24_576;
 const PRO_MAX_THINKING: u32 = 32_768;
+const CACHE_PREFIX_LEN: usize = 3;
 
 /// The generic per-model max, capped by Google's documented `thinkingBudget`
 /// hard limits per family.
@@ -32,6 +36,34 @@ fn max_thinking(model: &Model) -> u32 {
         PRO_MAX_THINKING
     };
     model.max_thinking_budget().map_or(cap, |m| m.min(cap))
+}
+
+fn tools_hash(tools: &Value) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    let json_str = serde_json::to_string(tools).unwrap();
+    hasher.write(json_str.as_bytes());
+    hasher.finish()
+}
+
+#[derive(Clone, Debug)]
+struct CachedContentState {
+    name: String,
+    tools_hash: u64,
+    message_count: usize,
+}
+
+impl CachedContentState {
+    fn new(name: String, tools_hash: u64, message_count: usize) -> Self {
+        Self {
+            name,
+            tools_hash,
+            message_count,
+        }
+    }
+
+    fn is_valid(&self, tools_hash: u64, message_count: usize) -> bool {
+        self.tools_hash == tools_hash && message_count >= self.message_count
+    }
 }
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
@@ -111,6 +143,7 @@ pub struct Google {
     auth: Arc<Mutex<ResolvedAuth>>,
     key_pool: Option<KeyPool>,
     stream_timeout: Duration,
+    cache_state: Arc<Mutex<HashMap<SessionRef, CachedContentState>>>,
 }
 
 impl Google {
@@ -122,6 +155,7 @@ impl Google {
             auth: Arc::new(Mutex::new(resolved)),
             key_pool: Some(pool),
             stream_timeout: timeouts.stream,
+            cache_state: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -134,6 +168,7 @@ impl Google {
             auth,
             key_pool: None,
             stream_timeout: timeouts.stream,
+            cache_state: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -172,6 +207,73 @@ impl Google {
         };
         let key = self.api_key();
         format!("{base}/models?key={key}&pageSize=1000")
+    }
+
+    fn cached_contents_url(&self) -> String {
+        let base = {
+            let auth = self.auth.lock().unwrap();
+            auth.base_url.as_deref().unwrap_or(BASE_URL).to_string()
+        };
+        let key = self.api_key();
+        format!("{base}/cachedContents?key={key}")
+    }
+
+    async fn create_cached_content(
+        &self,
+        model_id: &str,
+        system: &str,
+        tools: &Value,
+        messages: &[Message],
+    ) -> Result<String, AgentError> {
+        let url = self.cached_contents_url();
+        let prefix_len = messages.len().min(CACHE_PREFIX_LEN);
+
+        let mut body = json!({
+            "model": format!("models/{}", model_id),
+            "contents": convert_messages(&messages[..prefix_len]),
+        });
+
+        if !system.is_empty() {
+            body["systemInstruction"] = json!({"parts": [{"text": system}]});
+        }
+
+        let tool_decls = convert_tools(tools);
+        if !tool_defs_empty(&tool_decls) {
+            body["tools"] = json!([{"functionDeclarations": tool_decls}]);
+        }
+
+        let json_body = serde_json::to_vec(&body)?;
+        let request = self
+            .build_request("POST", &url)
+            .header("content-type", "application/json")
+            .body(json_body)?;
+
+        let mut response = self.client.send_async(request).await?;
+        if response.status().as_u16() != 200 {
+            return Err(AgentError::from_response(response).await);
+        }
+
+        let response_text = response.text().await?;
+        let cached: serde_json::Value = serde_json::from_str(&response_text)?;
+        Ok(cached["name"].as_str().unwrap_or("").to_string())
+    }
+
+    async fn delete_cached_content(&self, name: &str) -> Result<(), AgentError> {
+        let base = {
+            let auth = self.auth.lock().unwrap();
+            auth.base_url.as_deref().unwrap_or(BASE_URL).to_string()
+        };
+        let key = self.api_key();
+        let url = format!("{base}/{}?key={key}", name.trim_start_matches('/'));
+
+        let request = self.build_request("DELETE", &url).body(())?;
+        let response = self.client.send_async(request).await?;
+
+        if response.status().as_u16() == 200 || response.status().as_u16() == 404 {
+            Ok(())
+        } else {
+            Err(AgentError::from_response(response).await)
+        }
     }
 
     fn build_body(
@@ -242,9 +344,105 @@ impl Provider for Google {
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
-        _session_id: Option<&'a SessionRef>,
+        session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
-        Box::pin(self.do_stream(model, messages, system, tools, event_tx, opts.thinking))
+        Box::pin(async move {
+            let current_tools_hash = tools_hash(tools);
+            let current_message_count = messages.len();
+
+            // Caching requires a stable session key and a prefix worth caching.
+            let Some(sid) = session_id else {
+                return self
+                    .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                    .await;
+            };
+            if current_message_count <= CACHE_PREFIX_LEN {
+                return self
+                    .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                    .await;
+            }
+
+            let (cached_content_name, old_name_to_delete) = {
+                let mut cache_state = self.cache_state.lock().unwrap();
+                if let Some(state) = cache_state.get(sid) {
+                    if state.is_valid(current_tools_hash, current_message_count) {
+                        (Some(state.name.clone()), None)
+                    } else {
+                        let old_name = state.name.clone();
+                        cache_state.remove(sid);
+                        (None, Some(old_name))
+                    }
+                } else {
+                    (None, None)
+                }
+            };
+
+            if let Some(name) = old_name_to_delete {
+                let _ = self.delete_cached_content(&name).await;
+            }
+
+            let cached_content_name = if let Some(name) = cached_content_name {
+                name
+            } else {
+                match self
+                    .create_cached_content(&model.id, system, tools, messages)
+                    .await
+                {
+                    Ok(name) => {
+                        let mut cache_state = self.cache_state.lock().unwrap();
+                        cache_state.insert(
+                            sid.clone(),
+                            CachedContentState::new(
+                                name.clone(),
+                                current_tools_hash,
+                                current_message_count,
+                            ),
+                        );
+                        name
+                    }
+                    Err(_) => {
+                        return self
+                            .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                            .await;
+                    }
+                }
+            };
+
+            if cached_content_name.is_empty() {
+                return self
+                    .do_stream(model, messages, system, tools, event_tx, opts.thinking)
+                    .await;
+            }
+
+            // The cached content already contains the system prompt and tool declarations;
+            // the generation request only carries the new messages.
+            let no_tools = json!([]);
+            let mut body = self.build_body(
+                model,
+                &messages[CACHE_PREFIX_LEN..],
+                "",
+                &no_tools,
+                opts.thinking,
+            );
+            body["cachedContent"] = json!(cached_content_name);
+
+            let url = self.stream_url(&model.id);
+            let json_body = serde_json::to_vec(&body)?;
+
+            let request = self
+                .build_request("POST", &url)
+                .header("content-type", "application/json")
+                .body(json_body)?;
+
+            let response = self.client.send_async(request).await?;
+            let status = response.status().as_u16();
+
+            if status == 200 {
+                parse_sse(response, event_tx, self.stream_timeout).await
+            } else {
+                Err(AgentError::from_response(response).await)
+            }
+        })
     }
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
@@ -970,5 +1168,29 @@ mod tests {
         assert_eq!(result.usage.input, 100);
         assert_eq!(result.usage.output, 10);
         assert_eq!(result.usage.cache_read, 50);
+    }
+
+    #[test]
+    fn cached_content_state_valid_when_tools_and_count_match() {
+        let state = CachedContentState::new("cache1".to_string(), 123, 5);
+        assert!(state.is_valid(123, 5));
+        assert!(state.is_valid(123, 6));
+        assert!(!state.is_valid(124, 5));
+        assert!(!state.is_valid(123, 4));
+    }
+
+    #[test]
+    fn tools_hash_is_deterministic() {
+        let tools = json!([{"name": "bash", "input_schema": {"type": "object"}}]);
+        let hash1 = tools_hash(&tools);
+        let hash2 = tools_hash(&tools);
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn tools_hash_differs_for_different_tools() {
+        let tools1 = json!([{"name": "bash", "input_schema": {"type": "object"}}]);
+        let tools2 = json!([{"name": "read", "input_schema": {"type": "object"}}]);
+        assert_ne!(tools_hash(&tools1), tools_hash(&tools2));
     }
 }

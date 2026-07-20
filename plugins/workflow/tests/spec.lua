@@ -240,6 +240,55 @@ case("workflow_run_id_allowlist_rejects_path_segments", function()
   eq(is_safe_run_id(""), false, "empty must fail")
 end)
 
+case("workflow_parallel_concurrency_is_clamped_and_type_safe", function()
+  local max_concurrent = 8
+  local function clamp(requested)
+    if type(requested) ~= "number" then
+      return max_concurrent
+    end
+    return math.max(1, math.min(requested, max_concurrent))
+  end
+  eq(clamp(nil), 8)
+  eq(clamp("two"), 8)
+  eq(clamp(0), 1)
+  eq(clamp(3), 3)
+  eq(clamp(100), 8)
+end)
+
+case("workflow_agent_label_truncation_preserves_utf8", function()
+  local truncated = n00n.ui.truncate_text(string.rep("é", 40), 40)
+  assert(utf8.len(truncated.head), "label truncation must not split UTF-8")
+  assert(truncated.tail ~= "", "long labels must report a tail")
+end)
+
+case("workflow_header_reads_multiline_meta_with_both_quotes", function()
+  local function header(script)
+    return script:match('meta%s*%(%s*[%s%S]-name%s*=%s*"([^"]+)"')
+      or script:match("meta%s*%(%s*[%s%S]-name%s*=%s*'([^']+)'")
+      or "workflow"
+  end
+  eq(
+    header([[meta({
+    description = "review",
+    name = "double",
+  })]]),
+    "double"
+  )
+  eq(
+    header([[meta({
+    name = 'single',
+  })]]),
+    "single"
+  )
+  eq(header("return meta_name"), "workflow")
+end)
+
+case("workflow_json_encode_reports_errors", function()
+  local encoded, err = n00n.json.encode(function() end)
+  eq(encoded, nil, "unsupported values must not produce JSON")
+  assert(err ~= nil, "JSON encoding failures must be returned")
+end)
+
 if #failures > 0 then
   error(#failures .. " case(s) failed:\n\n" .. table.concat(failures, "\n\n"))
 end

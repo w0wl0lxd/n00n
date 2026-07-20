@@ -24,6 +24,8 @@ static CUSTOM_OPENAI_CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     max_tokens_field: "max_tokens",
     include_stream_usage: true,
     provider_name: "custom",
+    supports_prompt_cache_key: false,
+    supports_prompt_cache_breakpoint: false,
 };
 
 fn resolve_provider_kind(slug: &str) -> Option<ProviderKind> {
@@ -214,13 +216,13 @@ impl Provider for CustomOpenAiProvider {
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
-        _session_id: Option<&'a SessionRef>,
+        session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
             let auth = self.auth.lock().unwrap().clone();
 
             if self.protocol == Protocol::OpenaiResponses {
-                let body = responses::build_body(model, messages, system, tools);
+                let body = responses::build_body(model, messages, system, tools, None, None);
                 // TODO: wire thinking budget into responses API when llama.cpp supports it
                 return responses::do_stream(
                     self.compat.client(),
@@ -230,10 +232,17 @@ impl Provider for CustomOpenAiProvider {
                     &auth,
                     self.compat.stream_timeout(),
                 )
-                .await;
+                .await
+                .map(|(_, response)| response);
             }
 
-            let mut body = self.compat.build_body(model, messages, system, tools);
+            let mut body = self.compat.build_body_with_session(
+                model,
+                messages,
+                system,
+                tools,
+                session_id.map(|s| s.as_str()),
+            );
             if matches!(opts.thinking, ThinkingConfig::Off) {
                 body["thinking"] = serde_json::json!({"type": "disabled"});
             }

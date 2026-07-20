@@ -6,3 +6,7 @@ runs.csv
 /site/.bin/
 /.antigravitycli/
 /.maki/
+/.cargo_home/
+/.cargo_target/
+/.kilo/
+/result
