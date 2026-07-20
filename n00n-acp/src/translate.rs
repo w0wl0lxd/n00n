@@ -125,11 +125,12 @@ pub fn tool_done(event: &ToolDoneEvent) -> SessionUpdate {
     };
 
     let content = if let ToolOutput::Diff {
-            path,
-            before,
-            after,
-            ..
-        } = &event.output {
+        path,
+        before,
+        after,
+        ..
+    } = &event.output
+    {
         let diff = if before.is_empty() {
             Diff::new(path.as_str(), after.clone())
         } else {

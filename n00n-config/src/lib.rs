@@ -673,9 +673,7 @@ impl ToolKey {
             return Ok(Self::Wildcard);
         }
         match name.split_once('.') {
-            Some(("", _) | (_, "")) => {
-                Err(ToolKeyParseError::MalformedParts(name.to_string()))
-            }
+            Some(("", _) | (_, "")) => Err(ToolKeyParseError::MalformedParts(name.to_string())),
             Some((server, "*")) => {
                 if !is_valid_server_name(server) {
                     return Err(ToolKeyParseError::InvalidServerName(server.to_string()));
@@ -722,7 +720,9 @@ impl ToolKey {
     /// untrusted input or MCP tool names.
     #[must_use]
     pub fn native(name: &str) -> Self {
-        if name == "*" { Self::Wildcard } else {
+        if name == "*" {
+            Self::Wildcard
+        } else {
             assert!(!name.is_empty(), "native tool name must not be empty");
             assert!(
                 !name.contains('.'),
