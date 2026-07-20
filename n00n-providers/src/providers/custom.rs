@@ -91,8 +91,7 @@ pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
         Protocol::Google => ProviderKind::Google,
     };
     let declared = def.models.iter().find(|m| m.id == model_id);
-    let tier = declared
-        .map_or(ModelTier::Medium, |m| ModelTier::from(m.tier));
+    let tier = declared.map_or(ModelTier::Medium, |m| ModelTier::from(m.tier));
     let max_output_tokens = declared
         .and_then(|m| m.max_output_tokens)
         .or_else(|| kind.fallback_max_output());
