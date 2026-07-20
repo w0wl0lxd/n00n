@@ -14,7 +14,7 @@ use crate::{
 use super::openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
 use super::{KeyPool, ResolvedAuth};
 
-const REFERER: &str = "https://noon.sh";
+const REFERER: &str = "https://github.com/w0wl0lxd/noon";
 const APP_TITLE: &str = "noon";
 const PER_MILLION: f64 = 1_000_000.0;
 

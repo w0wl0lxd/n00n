@@ -11,61 +11,19 @@ Install Noon, connect a provider, and run your first session. Takes a few minute
 
 ## Install
 
-### Linux / macOS
-
-```sh
-# Download and read the script first (don't blindly trust shell scripts).
-curl -fsSL https://noon.sh/install.sh -o install.sh
-cat install.sh
-
-# Then run.
-chmod +x install.sh && sh install.sh
-```
-
-One-liner:
-
-```sh
-curl -fsSL https://noon.sh/install.sh | sh
-```
-
-### Windows (PowerShell)
-
-```powershell
-# Download and read the script first (don't blindly trust remote scripts).
-irm https://noon.sh/install.ps1 -OutFile install.ps1
-Get-Content install.ps1
-
-# Then run.
-.\install.ps1
-```
-
-One-liner:
-
-```powershell
-irm https://noon.sh/install.ps1 | iex
-```
-
-### Windows (Git Bash)
-
-```sh
-curl -fsSL https://noon.sh/install.sh | sh
-```
-
-Both install to `%LOCALAPPDATA%\noon` and add it to your user PATH. Override with `NOON_INSTALL_DIR` / `$env:NOON_INSTALL_DIR`.
-
 ### Living on the edge (main branch)
 
 ```sh
-cargo install --locked --git https://github.com/tontinton/noon.git noon
+cargo install --locked --git https://github.com/w0wl0lxd/noon.git noon
 ```
 
 ### With Nix
 
 ```sh
-nix run github:tontinton/noon
+nix run github:w0wl0lxd/noon
 ```
 
-Or download a pre-built binary from [GitHub Releases](https://github.com/tontinton/noon/releases/latest).
+Or download a pre-built binary from [GitHub Releases](https://github.com/w0wl0lxd/noon/releases/latest).
 
 ## API Keys
 
