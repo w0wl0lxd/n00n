@@ -851,7 +851,8 @@ impl Drop for AsyncTaskGuard {
     fn drop(&mut self) {
         if let Some(h) = self.0.take() {
             let cell = lock_cell(&h);
-            cell.async_tasks.set(cell.async_tasks.get().saturating_sub(1));
+            cell.async_tasks
+                .set(cell.async_tasks.get().saturating_sub(1));
         }
     }
 }
@@ -865,7 +866,8 @@ fn spawn_async_task(
     if task.cancel.is_cancelled() {
         if let Some(h) = &task.parent {
             let cell = lock_cell(h);
-            cell.async_tasks.set(cell.async_tasks.get().saturating_sub(1));
+            cell.async_tasks
+                .set(cell.async_tasks.get().saturating_sub(1));
         }
         lua.remove_registry_value(task.work_fn).ok();
         return;
