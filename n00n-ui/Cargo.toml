@@ -50,3 +50,6 @@ criterion = { workspace = true }
 [[bench]]
 name = "splash"
 harness = false
+
+[lints]
+workspace = true
