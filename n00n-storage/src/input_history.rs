@@ -22,18 +22,22 @@ impl Default for InputHistory {
 }
 
 impl InputHistory {
+    #[must_use]
     pub fn load(dir: &StateDir, max_entries: usize) -> Self {
         let path = dir.path().join(HISTORY_FILE);
-        let data = match fs::read(&path) {
-            Ok(d) => d,
-            Err(_) => {
-                return Self {
-                    entries: VecDeque::new(),
-                    max_entries,
-                };
+        let Ok(data) = fs::read(&path) else {
+            return Self {
+                entries: VecDeque::new(),
+                max_entries,
+            };
+        };
+        let items: Vec<String> = match serde_json::from_slice(&data) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "ignoring corrupt input history");
+                Vec::new()
             }
         };
-        let items: Vec<String> = serde_json::from_slice(&data).unwrap_or_default();
         let mut history = Self {
             entries: VecDeque::with_capacity(max_entries),
             max_entries,
@@ -44,12 +48,14 @@ impl InputHistory {
         history
     }
 
+    /// # Errors
+    /// Returns an error if the history file cannot be written.
     pub fn save(&self, dir: &StateDir) -> Result<(), StorageError> {
         let data = serde_json::to_vec(&self.entries)?;
         atomic_write(&dir.path().join(HISTORY_FILE), &data)
     }
 
-    pub fn push(&mut self, entry: String) {
+    pub fn push(&mut self, entry: &str) {
         let trimmed = entry.trim().to_string();
         if trimmed.is_empty() {
             return;
@@ -67,10 +73,12 @@ impl InputHistory {
         self.entries.push_back(entry);
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -95,9 +103,9 @@ mod tests {
     fn roundtrip() {
         let (_tmp, dir) = tmp_dir();
         let mut history = InputHistory::load(&dir, MAX_ENTRIES);
-        history.push("a".into());
-        history.push("b".into());
-        history.push("c".into());
+        history.push("a");
+        history.push("b");
+        history.push("c");
         history.save(&dir).unwrap();
         let loaded = InputHistory::load(&dir, MAX_ENTRIES);
         assert_eq!(loaded.len(), 3);
@@ -109,7 +117,7 @@ mod tests {
     fn truncates_to_max_entries() {
         let mut history = InputHistory::default();
         for i in 0..150 {
-            history.push(format!("entry{i}"));
+            history.push(&format!("entry{i}"));
         }
         assert_eq!(history.len(), MAX_ENTRIES);
         assert_eq!(history.get(0), Some("entry50"));
@@ -119,11 +127,11 @@ mod tests {
     #[test]
     fn rejects_consecutive_duplicates() {
         let mut history = InputHistory::default();
-        history.push("a".into());
-        history.push("a".into());
-        history.push("b".into());
-        history.push("b".into());
-        history.push("a".into());
+        history.push("a");
+        history.push("a");
+        history.push("b");
+        history.push("b");
+        history.push("a");
         assert_eq!(history.len(), 3);
         assert_eq!(history.get(0), Some("a"));
         assert_eq!(history.get(1), Some("b"));
@@ -133,12 +141,12 @@ mod tests {
     #[test]
     fn push_trims_and_rejects_blank() {
         let mut history = InputHistory::default();
-        history.push("".into());
-        history.push("   ".into());
-        history.push("\n".into());
+        history.push("");
+        history.push("   ");
+        history.push("\n");
         assert!(history.is_empty());
 
-        history.push("  hello  ".into());
+        history.push("  hello  ");
         assert_eq!(history.get(0), Some("hello"));
     }
 
