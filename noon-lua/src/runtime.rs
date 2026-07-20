@@ -1201,7 +1201,8 @@ impl LuaRuntime {
         require_root: Option<PathBuf>,
     ) -> Result<mlua::Table, mlua::Error> {
         let env = self.lua.create_table()?;
-        env.set("noon", noon)?;
+        env.set("noon", noon.clone())?;
+        env.set("maki", noon)?;
 
         if require_root.is_some() || !self.bundled_dirs.is_empty() {
             let require_fn = self.create_require_fn(&env, require_root)?;
@@ -1233,6 +1234,12 @@ impl LuaRuntime {
                     "require: module name must be non-empty",
                 ));
             }
+
+            let modname = if let Some(suffix) = modname.strip_prefix("maki.") {
+                format!("noon.{suffix}")
+            } else {
+                modname
+            };
 
             if let Ok(cached) = loaded.get::<LuaValue>(modname.as_str())
                 && cached != LuaValue::Nil
