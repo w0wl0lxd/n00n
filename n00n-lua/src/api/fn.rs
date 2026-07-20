@@ -62,12 +62,7 @@ impl JobStore {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
-            unsafe {
-                command.pre_exec(|| {
-                    libc::setsid();
-                    Ok(())
-                });
-            }
+            command.process_group(0);
         }
 
         if let Some(dir) = cwd.as_deref().map(expand_tilde) {
@@ -228,24 +223,21 @@ fn shell_command(cmd: &str) -> Command {
 fn kill_job(meta: &mut JobMeta) {
     let pid = meta.pid;
     #[cfg(unix)]
-    unsafe {
-        libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+    {
+        use rustix::process::{Pid, Signal, kill_process_group};
+        let raw = match i32::try_from(pid) {
+            Ok(raw) => raw,
+            Err(_) => return,
+        };
+        if let Some(pid) = Pid::from_raw(raw) {
+            let _ = kill_process_group(pid, Signal::Kill);
+        }
     }
     #[cfg(windows)]
     {
-        const PROCESS_TERMINATE: u32 = 0x0001;
-        unsafe extern "system" {
-            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
-            fn TerminateProcess(handle: *mut std::ffi::c_void, exit_code: u32) -> i32;
-            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
-        }
-        unsafe {
-            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-            if !handle.is_null() {
-                TerminateProcess(handle, 1);
-                CloseHandle(handle);
-            }
-        }
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .status();
     }
 }
 
