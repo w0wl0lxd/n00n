@@ -127,4 +127,9 @@ function M.retrieve(ctx, goal, role, k)
   return retrieve_vector(ctx, goal, k)
 end
 
+-- Exported so swarm.lua reuses the exact same hashing-trick vectors (no dup).
+M.embed = embed
+M.cosine = cosine
+M.VEC_DIM = VEC_DIM
+
 return M
