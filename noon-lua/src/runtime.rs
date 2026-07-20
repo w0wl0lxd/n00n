@@ -622,14 +622,14 @@ pub(crate) fn enqueue_async_task(lua: &Lua, work_fn: RegistryKey) -> Result<(), 
 
     if let Some(h) = &handle {
         let mut cell = lock_cell(h);
-        task.parent = parent.clone();
-        // Inline tasks live inside the cell, so a claim there would be a
-        // strong Arc cycle; they run before the scope drops anyway.
+        // Inline tasks live inside the cell, so a parent pointer there would
+        // create a strong Arc cycle; they run before the scope drops anyway.
         if let Some(inline) = cell.inline_spawn.as_mut() {
             inline.push(task);
             return Ok(());
         }
         task.owner = cell.bufs_claim.upgrade();
+        task.parent = parent.clone();
     }
 
     let queue = lua
@@ -851,7 +851,8 @@ impl Drop for AsyncTaskGuard {
     fn drop(&mut self) {
         if let Some(h) = self.0.take() {
             let cell = lock_cell(&h);
-            cell.async_tasks.set(cell.async_tasks.get().saturating_sub(1));
+            cell.async_tasks
+                .set(cell.async_tasks.get().saturating_sub(1));
         }
     }
 }
@@ -865,7 +866,8 @@ fn spawn_async_task(
     if task.cancel.is_cancelled() {
         if let Some(h) = &task.parent {
             let cell = lock_cell(h);
-            cell.async_tasks.set(cell.async_tasks.get().saturating_sub(1));
+            cell.async_tasks
+                .set(cell.async_tasks.get().saturating_sub(1));
         }
         lua.remove_registry_value(task.work_fn).ok();
         return;
@@ -1995,6 +1997,7 @@ async fn run_tool_call(
     warm_tools: WarmTools,
     plugins: PluginMap,
     shutdown: Arc<AtomicBool>,
+    gate: Rc<InflightGate>,
 ) -> ToolCallReply {
     let handler: Function = {
         let plugins_ref = plugins.borrow();
@@ -2048,6 +2051,7 @@ async fn run_tool_call(
     }
 
     let call_future = scope.scope_future(async {
+        let gate_guard = gate.acquire().await;
         let handler_result = {
             let deadline = lock_cell(&handle).deadline.get();
             match deadline {
@@ -2063,6 +2067,7 @@ async fn run_tool_call(
         };
         match handler_result {
             Ok(LuaValue::Nil) => {
+                drop(gate_guard);
                 let (live, sink) = {
                     let cell = lock_cell(&handle);
                     (cell.live.clone(), cell.live_sink.clone())
@@ -2241,7 +2246,6 @@ pub fn spawn(
                             let shutdown_ref = Arc::clone(&rt.shutdown);
                             let g = Rc::clone(&gate);
                             ex.spawn(async move {
-                                let _gate_guard = g.acquire().await;
                                 let res = run_tool_call(
                                     lua.clone(),
                                     plugin,
@@ -2254,6 +2258,7 @@ pub fn spawn(
                                     warm_tools,
                                     plugins,
                                     shutdown_ref,
+                                    g,
                                 )
                                 .await;
                                 let _ = reply.send(res);
