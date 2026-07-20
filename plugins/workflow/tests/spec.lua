@@ -199,14 +199,22 @@ case("workflow_stable_keying_is_order_insensitive_for_object_keys", function()
     end
     local keys = {}
     for k in pairs(value) do
-      if type(k) == "string" then
-        keys[#keys + 1] = k
-      end
+      keys[#keys + 1] = k
     end
-    table.sort(keys)
+    table.sort(keys, function(a, b)
+      local ta, tb = type(a), type(b)
+      if ta == tb then
+        if ta == "number" then
+          return a < b
+        end
+        return tostring(a) < tostring(b)
+      end
+      return ta < tb
+    end)
     local parts = {}
     for i, k in ipairs(keys) do
-      parts[i] = n00n.json.encode(k) .. ":" .. stable_json(value[k])
+      local key_json = type(k) == "string" and n00n.json.encode(k) or n00n.json.encode(tostring(k))
+      parts[i] = key_json .. ":" .. stable_json(value[k])
     end
     return "{" .. table.concat(parts, ",") .. "}"
   end
@@ -214,6 +222,9 @@ case("workflow_stable_keying_is_order_insensitive_for_object_keys", function()
   local b = n00n.workflow.hash(stable_json({ a = 2, b = 1 }))
   eq(a, b, "object key order must not change the journal key")
   eq(#a, 64, "journal key is full sha256 hex")
+  local with_num = n00n.workflow.hash(stable_json({ [1] = "x", name = "y" }))
+  local with_num2 = n00n.workflow.hash(stable_json({ name = "y", [1] = "x" }))
+  eq(with_num, with_num2, "numeric keys must participate in the journal key")
 end)
 
 case("workflow_run_id_allowlist_rejects_path_segments", function()

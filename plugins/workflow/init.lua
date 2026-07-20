@@ -50,6 +50,7 @@ local MAX_AGENTS_PER_RUN = 1000
 local AGENT_LIMIT_ERROR = "workflow exceeded max agent() calls (" .. MAX_AGENTS_PER_RUN .. ")"
 local INVALID_RUN_ID_ERROR = "resume must be a run_id (hex letters/digits only, no path separators)"
 local RUN_ID_PATTERN = "^[%x]+$"
+local DEFAULT_TIMEOUT_SECS = 600
 
 local description = [[Run a workflow script that orchestrates many subagents at scale.
 
@@ -112,6 +113,11 @@ return "Reviews:\n" .. table.concat(reviews, "\n---\n") .. "\n\nVerified:\n" .. 
 local opts = n00n.api.register_options({
   max_concurrent_agents = { default = 8, min = 1, desc = "Max subagents one parallel()/pipeline() call runs at once." },
   max_concurrent_workflows = { default = 4, min = 1, desc = "Max concurrently running workflows." },
+  timeout_secs = {
+    default = DEFAULT_TIMEOUT_SECS,
+    min = 1,
+    desc = "Hard deadline for one workflow run (cancels pure-Lua runaway loops via the VM watchdog).",
+  },
 })
 
 local workflow_semaphore = n00n.async.semaphore(opts.max_concurrent_workflows)
@@ -204,14 +210,27 @@ local function stable_json(value)
 
   local keys = {}
   for k in pairs(value) do
-    if type(k) == "string" then
-      keys[#keys + 1] = k
-    end
+    keys[#keys + 1] = k
   end
-  table.sort(keys)
+  table.sort(keys, function(a, b)
+    local ta, tb = type(a), type(b)
+    if ta == tb then
+      if ta == "number" then
+        return a < b
+      end
+      return tostring(a) < tostring(b)
+    end
+    return ta < tb
+  end)
   local parts = {}
   for i, k in ipairs(keys) do
-    parts[i] = n00n.json.encode(k) .. ":" .. stable_json(value[k])
+    local key_json
+    if type(k) == "string" then
+      key_json = n00n.json.encode(k)
+    else
+      key_json = n00n.json.encode(tostring(k))
+    end
+    parts[i] = key_json .. ":" .. stable_json(value[k])
   end
   return "{" .. table.concat(parts, ",") .. "}"
 end
@@ -253,12 +272,12 @@ local function load_journal(run_id)
   local cache = {}
   local dir = run_dir(run_id)
   if not dir then
-    return cache, nil
+    return cache, nil, ""
   end
   local path = n00n.fs.joinpath(dir, JOURNAL_FILENAME)
   local text = n00n.fs.read(path)
   if type(text) ~= "string" or text == "" then
-    return cache, path
+    return cache, path, ""
   end
   for line in string.gmatch(text, "[^\n]+") do
     local ok, row = pcall(n00n.json.decode, line)
@@ -266,7 +285,7 @@ local function load_journal(run_id)
       cache[row.k] = row.v
     end
   end
-  return cache, path
+  return cache, path, text
 end
 
 local function write_run_meta(run_id, meta)
@@ -495,13 +514,9 @@ local function make_agent(ctx, progress, journal)
         if dir then
           n00n.fs.mkdir(dir, { parents = true })
         end
-        local prev = n00n.fs.read(journal.path)
         local line = n00n.json.encode({ k = key, v = out }) .. "\n"
-        if type(prev) == "string" then
-          n00n.fs.write(journal.path, prev .. line)
-        else
-          n00n.fs.write(journal.path, line)
-        end
+        journal.text = (journal.text or "") .. line
+        n00n.fs.write(journal.path, journal.text)
       end)
       journal.in_flight[key] = nil
       gate:release()
@@ -690,7 +705,7 @@ local function handler(input, ctx)
   else
     run_id = new_run_id(input.script)
   end
-  local cache, journal_path = load_journal(run_id)
+  local cache, journal_path, journal_text = load_journal(run_id)
   local journal = {
     cache = cache,
     path = journal_path or (function()
@@ -700,6 +715,7 @@ local function handler(input, ctx)
       end
       return n00n.fs.joinpath(dir, JOURNAL_FILENAME)
     end)(),
+    text = journal_text or "",
     lock = n00n.async.semaphore(1),
     in_flight = {},
     meta_ready = false,
@@ -727,6 +743,9 @@ local function handler(input, ctx)
       })
     end
   end
+
+  -- Bound pure-Lua runaway loops (while true) via the VM watchdog deadline.
+  ctx:set_deadline(opts.timeout_secs)
 
   n00n.async.run(function()
     local permit = workflow_semaphore:acquire()
