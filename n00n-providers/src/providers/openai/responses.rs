@@ -566,7 +566,9 @@ fn parse_usage(u: &Value) -> TokenUsage {
         .unwrap_or(0) as u32;
 
     TokenUsage {
-        input: input_tokens.saturating_sub(cached).saturating_sub(cache_write),
+        input: input_tokens
+            .saturating_sub(cached)
+            .saturating_sub(cache_write),
         output: output_tokens,
         cache_read: cached,
         cache_creation: cache_write,
@@ -581,7 +583,12 @@ mod tests {
 
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
 
-    async fn run_sse(sse: &str) -> (Result<(Option<String>, StreamResponse), AgentError>, Vec<ProviderEvent>) {
+    async fn run_sse(
+        sse: &str,
+    ) -> (
+        Result<(Option<String>, StreamResponse), AgentError>,
+        Vec<ProviderEvent>,
+    ) {
         let (tx, rx) = flume::unbounded();
         let result = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT).await;
         (result, rx.drain().collect())
