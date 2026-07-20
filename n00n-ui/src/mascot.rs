@@ -19,6 +19,44 @@ const BRAILLE_ROWS: usize = 4;
 const SAMPLES_PER_CELL: usize = BRAILLE_COLS * BRAILLE_ROWS;
 
 const BRAILLE_BASE: u32 = 0x2800;
+const SUBPX_DX: [f64; 2] = [0.25, 0.75];
+const SUBPX_DY: [f64; 4] = [0.125, 0.375, 0.625, 0.875];
+const BAYER_THRESHOLDS: [f64; 8] = [
+    0.0625, 0.5625, 0.3125, 0.8125, 0.1875, 0.6875, 0.4375, 0.9375,
+];
+
+const MASCOT_MIN_X: f64 = 10.0;
+const MASCOT_MAX_X: f64 = 70.0;
+const MASCOT_MIN_Y: f64 = 5.0;
+const MASCOT_MAX_Y: f64 = 55.0;
+
+const HAIR_LEFT: [(f64, f64, f64); 11] = [
+    (18.0, 20.0, 6.5),
+    (17.7212, 22.5, 6.25),
+    (17.5653, 25.0, 6.0),
+    (17.6359, 27.5, 5.75),
+    (18.0009, 30.0, 5.5),
+    (18.6814, 32.5, 5.25),
+    (19.6491, 35.0, 5.0),
+    (20.83, 37.5, 4.75),
+    (22.1167, 40.0, 4.5),
+    (23.385, 42.5, 4.25),
+    (24.5136, 45.0, 4.0),
+];
+const HAIR_RIGHT: [(f64, f64, f64); 11] = [
+    (62.0, 20.0, 6.5),
+    (62.2788, 22.5, 6.25),
+    (62.4347, 25.0, 6.0),
+    (62.3641, 27.5, 5.75),
+    (61.9991, 30.0, 5.5),
+    (61.3186, 32.5, 5.25),
+    (60.3509, 35.0, 5.0),
+    (59.17, 37.5, 4.75),
+    (57.8833, 40.0, 4.5),
+    (56.615, 42.5, 4.25),
+    (55.4864, 45.0, 4.0),
+];
+const BANG_CENTERS: [f64; 5] = [25.0, 33.0, 40.5, 47.0, 55.0];
 
 pub struct Mascot {
     enabled: bool,
@@ -48,32 +86,31 @@ enum Layer {
     HairRight,
     EarLeft,
     EarRight,
-    Face,
     InnerEarLeft,
     InnerEarRight,
-    Bangs,
-    SideHairLeft,
-    SideHairRight,
-    Collar,
+    Face,
     BlushLeft,
     BlushRight,
-    Ribbon,
-    BrowLeft,
-    BrowRight,
+    Collar,
     EyeWhiteLeft,
     EyeWhiteRight,
     IrisLeft,
     IrisRight,
     LashLeft,
     LashRight,
-    Nose,
-    Mouth,
-    EyelidLeft,
-    EyelidRight,
     PupilLeft,
     PupilRight,
     HighlightLeft,
     HighlightRight,
+    BrowLeft,
+    BrowRight,
+    Nose,
+    Mouth,
+    Teeth,
+    SideHairLeft,
+    SideHairRight,
+    Bangs,
+    Ribbon,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +123,7 @@ enum Role {
     Collar,
     Ribbon,
     Mouth,
+    Teeth,
     Nose,
     EyeWhite,
     Eye,
@@ -103,6 +141,7 @@ struct Palette {
     collar: Color,
     ribbon: Color,
     mouth: Color,
+    teeth: Color,
     nose: Color,
     eye_white: Color,
     eye: Color,
@@ -229,63 +268,60 @@ impl Mascot {
 
         for ty in area.y..area.y + area.height {
             for tx in area.x..area.x + area.width {
-                let mut counts = [(Layer::None, 0u8); SAMPLES_PER_CELL];
-                let mut n = 0;
-                for dy in 0..BRAILLE_ROWS {
-                    for dx in 0..BRAILLE_COLS {
-                        let bx =
-                            (f64::from(tx) - off_x + (dx as f64 + 0.5) / BRAILLE_COLS as f64) * inv;
-                        let by =
-                            (f64::from(ty) - off_y + (dy as f64 + 0.5) / BRAILLE_ROWS as f64) * inv;
-                        let layer =
-                            sample_layer(bx, by, self.gaze_x, self.gaze_y, self.is_blinking);
-                        if let Some(pos) = counts[..n].iter().position(|(l, _)| *l == layer) {
-                            counts[pos].1 += 1;
-                        } else {
-                            counts[n] = (layer, 1);
-                            n += 1;
-                        }
+                let mut layers = [Layer::None; SAMPLES_PER_CELL];
+                let mut shades = [0.0; SAMPLES_PER_CELL];
+
+                for i in 0..SAMPLES_PER_CELL {
+                    let dy = i / BRAILLE_COLS;
+                    let dx = i % BRAILLE_COLS;
+                    let bx = (f64::from(tx) - off_x + SUBPX_DX[dx]) * inv;
+                    let by = (f64::from(ty) - off_y + SUBPX_DY[dy]) * inv;
+                    let (layer, shade) = sample(bx, by, self.gaze_x, self.gaze_y, self.is_blinking);
+                    layers[i] = layer;
+                    shades[i] = shade;
+                }
+
+                let mut counts = [(Layer::None, 0.0, 1usize); SAMPLES_PER_CELL];
+                let mut distinct = 1;
+                counts[0] = (layers[0], shades[0], 1);
+                for i in 1..SAMPLES_PER_CELL {
+                    let layer = layers[i];
+                    let shade = shades[i];
+                    if let Some(pos) = counts[..distinct].iter().position(|(l, _, _)| *l == layer) {
+                        counts[pos].1 += shade;
+                        counts[pos].2 += 1;
+                    } else {
+                        counts[distinct] = (layer, shade, 1);
+                        distinct += 1;
                     }
                 }
 
-                counts[..n].sort_by(|(a, _), (b, _)| b.cmp(a));
-                let (fg_layer, _) = counts[0];
-                let bg_layer = if n >= 2 { counts[1].0 } else { fg_layer };
-
-                if fg_layer == Layer::None && bg_layer == Layer::None {
+                counts[..distinct].sort_by_key(|b| std::cmp::Reverse(b.0));
+                let fg = counts[0].0;
+                if fg == Layer::None {
                     continue;
                 }
+                let bg = if distinct >= 2 { counts[1].0 } else { fg };
 
-                let bg = palette.color(bg_layer.role());
-                if fg_layer == bg_layer {
-                    if let Some(cell) = buf.cell_mut((tx, ty)) {
-                        cell.set_char(' ').set_bg(bg);
-                    }
-                    continue;
-                }
-
-                let fg = palette.color(fg_layer.role());
-                let mut mask: u8 = 0;
-
-                let sample = |dy: usize, dx: usize| {
-                    let bx =
-                        (f64::from(tx) - off_x + (dx as f64 + 0.5) / BRAILLE_COLS as f64) * inv;
-                    let by =
-                        (f64::from(ty) - off_y + (dy as f64 + 0.5) / BRAILLE_ROWS as f64) * inv;
-                    sample_layer(bx, by, self.gaze_x, self.gaze_y, self.is_blinking)
+                let fg_color = palette.color(fg.role());
+                let bg_color = if bg == fg {
+                    palette.shadow(fg.role())
+                } else {
+                    palette.color(bg.role())
                 };
 
-                for dy in 0..BRAILLE_ROWS {
-                    for dx in 0..BRAILLE_COLS {
-                        if sample(dy, dx) == fg_layer {
-                            mask |= braille_bit(dy, dx);
-                        }
+                let mut mask: u8 = 0;
+                for i in 0..SAMPLES_PER_CELL {
+                    if layers[i] == fg && shades[i] > BAYER_THRESHOLDS[i] {
+                        let dy = i / BRAILLE_COLS;
+                        let dx = i % BRAILLE_COLS;
+                        mask |= braille_bit(dy, dx);
                     }
                 }
 
                 let ch = char::from_u32(BRAILLE_BASE + u32::from(mask)).unwrap_or(' ');
                 if let Some(cell) = buf.cell_mut((tx, ty)) {
-                    cell.set_char(ch).set_fg(fg).set_bg(bg);
+                    cell.set_char(ch).set_fg(fg_color).set_bg(bg_color);
                 }
             }
         }
@@ -335,7 +371,8 @@ impl Layer {
             Layer::IrisLeft | Layer::IrisRight => Role::Eye,
             Layer::LashLeft | Layer::LashRight => Role::Lash,
             Layer::Nose => Role::Nose,
-            Layer::Mouth | Layer::EyelidLeft | Layer::EyelidRight => Role::Mouth,
+            Layer::Mouth => Role::Mouth,
+            Layer::Teeth => Role::Teeth,
             Layer::PupilLeft | Layer::PupilRight => Role::Pupil,
             Layer::HighlightLeft | Layer::HighlightRight => Role::Highlight,
         }
@@ -412,6 +449,11 @@ impl Palette {
                 lerp_u8(bg_g, mouth_target.1, 0.8),
                 lerp_u8(bg_b, mouth_target.2, 0.8),
             ),
+            teeth: Color::Rgb(
+                lerp_u8(bg_r, 255, 0.98),
+                lerp_u8(bg_g, 255, 0.98),
+                lerp_u8(bg_b, 255, 0.98),
+            ),
             nose: Color::Rgb(
                 lerp_u8(bg_r, nose_target.0, 0.6),
                 lerp_u8(bg_g, nose_target.1, 0.6),
@@ -459,6 +501,7 @@ impl Palette {
             Role::Collar => self.collar,
             Role::Ribbon => self.ribbon,
             Role::Mouth => self.mouth,
+            Role::Teeth => self.teeth,
             Role::Nose => self.nose,
             Role::EyeWhite => self.eye_white,
             Role::Eye => self.eye,
@@ -468,215 +511,372 @@ impl Palette {
             Role::Highlight => self.highlight,
         }
     }
+
+    fn shadow(&self, role: Role) -> Color {
+        let color = self.color(role);
+        let (r, g, b) = extract_rgb(color, (0, 0, 0));
+        let f = 1.0 - shadow_factor(role);
+        Color::Rgb(
+            (f32::from(r) * f) as u8,
+            (f32::from(g) * f) as u8,
+            (f32::from(b) * f) as u8,
+        )
+    }
+}
+
+fn shadow_factor(role: Role) -> f32 {
+    match role {
+        Role::Background => 0.0,
+        Role::Highlight => 0.1,
+        Role::Teeth => 0.15,
+        Role::EyeWhite => 0.15,
+        Role::Lash => 0.2,
+        Role::Blush => 0.25,
+        Role::Nose => 0.25,
+        Role::Pupil => 0.25,
+        Role::Ribbon => 0.3,
+        Role::Skin => 0.35,
+        Role::Brow => 0.35,
+        Role::Mouth => 0.35,
+        Role::Collar => 0.4,
+        Role::Hair => 0.45,
+        Role::Eye => 0.45,
+    }
 }
 
 #[allow(clippy::too_many_lines)]
-fn sample_layer(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> Layer {
-    let mut layer = Layer::None;
-
-    // long wavy side hair
-    for t in 0..=10 {
-        let tt = f64::from(t) / 10.0;
-        let xx = 18.0 - 5.0 * tt + 2.0 * (tt * 4.0).sin();
-        let yy = 20.0 + 25.0 * tt;
-        let r = 6.5 - 0.25 * f64::from(t);
-        if circle_contains(x, y, xx, yy, r) {
-            layer = Layer::HairLeft;
-        }
+fn sample(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> (Layer, f64) {
+    if !(MASCOT_MIN_X..=MASCOT_MAX_X).contains(&x) || !(MASCOT_MIN_Y..=MASCOT_MAX_Y).contains(&y) {
+        return (Layer::None, 0.0);
     }
-    for t in 0..=10 {
-        let tt = f64::from(t) / 10.0;
-        let xx = 62.0 + 5.0 * tt - 2.0 * (tt * 4.0).sin();
-        let yy = 20.0 + 25.0 * tt;
-        let r = 6.5 - 0.25 * f64::from(t);
-        if circle_contains(x, y, xx, yy, r) {
-            layer = Layer::HairRight;
+
+    for &(cx, cy, rx, ry) in &[
+        (15.0, 24.0, 3.5, 2.5),
+        (21.0, 24.0, 3.5, 2.5),
+        (18.0, 24.0, 1.8, 1.8),
+        (36.0, 48.0, 3.0, 2.0),
+        (44.0, 48.0, 3.0, 2.0),
+        (40.0, 48.0, 1.6, 1.6),
+    ] {
+        let d = sd_ellipse(x, y, cx, cy, rx, ry);
+        if d <= 0.4 {
+            return (Layer::Ribbon, aa(d, 0.4));
         }
     }
 
-    if ellipse_contains(x, y, 40.0, 32.0, 23.0, 24.0) {
-        layer = Layer::HairBack;
-    }
-
-    if triangle_contains(x, y, 25.0, 7.0, 33.5, 19.0, 18.0, 19.0) {
-        layer = Layer::EarLeft;
-    }
-    if triangle_contains(x, y, 55.0, 7.0, 46.5, 19.0, 62.0, 19.0) {
-        layer = Layer::EarRight;
-    }
-
-    if triangle_contains(x, y, 26.0, 10.5, 32.0, 18.0, 20.5, 18.0) {
-        layer = Layer::InnerEarLeft;
-    }
-    if triangle_contains(x, y, 54.0, 10.5, 48.0, 18.0, 59.5, 18.0) {
-        layer = Layer::InnerEarRight;
-    }
-
-    if ellipse_contains(x, y, 40.0, 31.0, 15.0, 14.5) {
-        layer = Layer::Face;
-    }
-    if triangle_contains(x, y, 40.0, 44.0, 34.5, 36.0, 45.5, 36.0) {
-        layer = Layer::Face;
-    }
-
-    for cx in [25.0_f64, 33.0, 40.0, 47.0, 55.0] {
-        if ellipse_contains(x, y, cx, 19.0, 5.0, 4.0) {
-            layer = Layer::Bangs;
+    for &cx in &BANG_CENTERS {
+        let d = sd_ellipse(x, y, cx, 19.0, 5.0, 4.2);
+        if d <= 0.8 {
+            let grad = 1.0 - 0.35 * smoothstep(15.0, 35.0, y);
+            return (Layer::Bangs, aa(d, 0.8) * grad);
         }
     }
 
-    if ellipse_contains(x, y, 22.0, 30.0, 4.0, 12.0) {
-        layer = Layer::SideHairLeft;
-    }
-    if ellipse_contains(x, y, 58.0, 30.0, 4.0, 12.0) {
-        layer = Layer::SideHairRight;
-    }
-
-    if ellipse_contains(x, y, 40.0, 46.0, 13.0, 2.4) {
-        layer = Layer::Collar;
-    }
-
-    if ellipse_contains(x, y, 23.0, 34.5, 3.0, 1.8) {
-        layer = Layer::BlushLeft;
-    }
-    if ellipse_contains(x, y, 57.0, 34.5, 3.0, 1.8) {
-        layer = Layer::BlushRight;
-    }
-
-    if ellipse_contains(x, y, 15.0, 24.0, 3.5, 2.5)
-        || ellipse_contains(x, y, 21.0, 24.0, 3.5, 2.5)
-        || circle_contains(x, y, 18.0, 24.0, 1.8)
-        || ellipse_contains(x, y, 36.0, 48.0, 3.0, 2.0)
-        || ellipse_contains(x, y, 44.0, 48.0, 3.0, 2.0)
-        || circle_contains(x, y, 40.0, 48.0, 1.6)
-    {
-        layer = Layer::Ribbon;
-    }
-
-    if segment_contains(x, y, 25.0, 22.0, 34.0, 21.0, 0.45) {
-        layer = Layer::BrowLeft;
-    }
-    if segment_contains(x, y, 46.0, 21.0, 55.0, 22.0, 0.45) {
-        layer = Layer::BrowRight;
-    }
-
-    if blink {
-        if ellipse_contains(x, y, 30.0, 29.0, 5.5, 6.5) {
-            layer = Layer::EyeWhiteLeft;
+    for &(cx, cy, rx, ry, layer) in &[
+        (21.5, 30.0, 3.5, 13.0, Layer::SideHairLeft),
+        (58.5, 30.0, 3.5, 13.0, Layer::SideHairRight),
+    ] {
+        let d = sd_ellipse(x, y, cx, cy, rx, ry);
+        if d <= 1.0 {
+            let grad = 1.0 - 0.5 * smoothstep(15.0, 45.0, y);
+            return (layer, aa(d, 1.0) * grad);
         }
-        if ellipse_contains(x, y, 50.0, 29.0, 5.5, 6.5) {
-            layer = Layer::EyeWhiteRight;
+    }
+
+    let d_mouth = sd_ellipse(x, y, 40.0, 41.0, 3.5, 1.3);
+    if d_mouth <= 0.5 {
+        let mouth_shade = aa(d_mouth, 0.5);
+        if (y - 40.8).abs() <= 0.35 && (x - 40.0).abs() <= 1.6 {
+            let t = (y - 40.8).abs() / 0.35;
+            return (Layer::Teeth, mouth_shade * (1.0 - smoothstep(0.0, 1.0, t)));
         }
-        if ellipse_contains(x, y, 30.0, 29.0, 5.5, 6.5) && (y - 31.0).abs() <= 0.6 {
-            layer = Layer::EyelidLeft;
+        return (Layer::Mouth, mouth_shade);
+    }
+
+    let d_nose = sd_triangle(x, y, 40.0, 36.0, 38.5, 38.5, 41.5, 38.5);
+    if d_nose <= 0.35 {
+        return (Layer::Nose, aa(d_nose, 0.35));
+    }
+
+    for &(x1, y1, x2, y2) in &[(25.0, 22.0, 29.5, 21.0), (29.5, 21.0, 34.0, 20.5)] {
+        let d = sd_segment(x, y, x1, y1, x2, y2, 0.35);
+        if d <= 0.3 {
+            return (Layer::BrowLeft, aa(d, 0.3));
         }
-        if ellipse_contains(x, y, 50.0, 29.0, 5.5, 6.5) && (y - 31.0).abs() <= 0.6 {
-            layer = Layer::EyelidRight;
+    }
+    for &(x1, y1, x2, y2) in &[(46.0, 20.5, 50.5, 21.0), (50.5, 21.0, 55.0, 22.0)] {
+        let d = sd_segment(x, y, x1, y1, x2, y2, 0.35);
+        if d <= 0.3 {
+            return (Layer::BrowRight, aa(d, 0.3));
+        }
+    }
+
+    if !blink {
+        let mut eye_layer = Layer::None;
+        let mut eye_shade = 0.0;
+
+        for &(cx, cy, r) in &[
+            (28.0 + gaze_x * 0.3, 27.0 + gaze_y * 0.3, 1.3),
+            (48.0 + gaze_x * 0.3, 27.0 + gaze_y * 0.3, 1.3),
+        ] {
+            let d = sd_circle(x, y, cx, cy, r);
+            let layer = if cx < 40.0 {
+                Layer::HighlightLeft
+            } else {
+                Layer::HighlightRight
+            };
+            if d <= 0.4 && layer > eye_layer {
+                eye_layer = layer;
+                eye_shade = aa(d, 0.4);
+            }
+        }
+
+        for &(cx, cy, rx, ry, layer) in &[
+            (
+                30.0 + gaze_x * 1.2,
+                31.0 + gaze_y,
+                2.0,
+                3.4,
+                Layer::PupilLeft,
+            ),
+            (
+                50.0 + gaze_x * 1.2,
+                31.0 + gaze_y,
+                2.0,
+                3.4,
+                Layer::PupilRight,
+            ),
+        ] {
+            let d = sd_ellipse(x, y, cx, cy, rx, ry);
+            let s = aa(d, 0.5);
+            if d <= 0.5 && layer > eye_layer {
+                eye_layer = layer;
+                eye_shade = s;
+            }
+        }
+
+        for &(cx, cy, rx, ry, layer) in &[
+            (
+                30.0 + gaze_x * 1.1,
+                30.0 + gaze_y,
+                4.0,
+                5.2,
+                Layer::IrisLeft,
+            ),
+            (
+                50.0 + gaze_x * 1.1,
+                30.0 + gaze_y,
+                4.0,
+                5.2,
+                Layer::IrisRight,
+            ),
+        ] {
+            let d = sd_ellipse(x, y, cx, cy, rx, ry);
+            if d <= 0.6 {
+                let t = ((x - cx) / rx).hypot((y - cy) / ry);
+                let grad = 1.0 - 0.5 * smoothstep(0.0, 1.0, t);
+                let s = aa(d, 0.6) * grad;
+                if layer > eye_layer {
+                    eye_layer = layer;
+                    eye_shade = s;
+                }
+            }
+        }
+
+        for &(cx, cy, rx, ry, layer) in &[
+            (30.0 + gaze_x, 29.0 + gaze_y, 5.5, 6.5, Layer::EyeWhiteLeft),
+            (50.0 + gaze_x, 29.0 + gaze_y, 5.5, 6.5, Layer::EyeWhiteRight),
+        ] {
+            let d = sd_ellipse(x, y, cx, cy, rx, ry);
+            let s = aa(d, 0.6);
+            if d <= 0.6 && layer > eye_layer {
+                eye_layer = layer;
+                eye_shade = s;
+            }
+        }
+
+        for &(x1, y1, x2, y2, layer) in &[
+            (
+                24.5 + gaze_x,
+                24.5 + gaze_y,
+                35.5 + gaze_x,
+                24.5 + gaze_y,
+                Layer::LashLeft,
+            ),
+            (
+                44.5 + gaze_x,
+                24.5 + gaze_y,
+                55.5 + gaze_x,
+                24.5 + gaze_y,
+                Layer::LashRight,
+            ),
+        ] {
+            let d = sd_segment(x, y, x1, y1, x2, y2, 0.45);
+            if d <= 0.35 && layer > eye_layer {
+                eye_layer = layer;
+                eye_shade = aa(d, 0.35);
+            }
+        }
+
+        if eye_layer != Layer::None {
+            return (eye_layer, eye_shade);
         }
     } else {
-        if ellipse_contains(x, y, 30.0 + gaze_x, 29.0 + gaze_y, 5.5, 6.5) {
-            layer = Layer::EyeWhiteLeft;
-        }
-        if ellipse_contains(x, y, 50.0 + gaze_x, 29.0 + gaze_y, 5.5, 6.5) {
-            layer = Layer::EyeWhiteRight;
-        }
-        if ellipse_contains(x, y, 30.0 + gaze_x * 1.1, 30.0 + gaze_y, 4.2, 5.3) {
-            layer = Layer::IrisLeft;
-        }
-        if ellipse_contains(x, y, 50.0 + gaze_x * 1.1, 30.0 + gaze_y, 4.2, 5.3) {
-            layer = Layer::IrisRight;
-        }
-        if ellipse_contains(x, y, 30.0 + gaze_x * 1.2, 31.0 + gaze_y, 2.2, 3.6) {
-            layer = Layer::PupilLeft;
-        }
-        if ellipse_contains(x, y, 50.0 + gaze_x * 1.2, 31.0 + gaze_y, 2.2, 3.6) {
-            layer = Layer::PupilRight;
-        }
-        if circle_contains(x, y, 28.0 + gaze_x * 0.3, 27.0 + gaze_y * 0.3, 1.4) {
-            layer = Layer::HighlightLeft;
-        }
-        if circle_contains(x, y, 48.0 + gaze_x * 0.3, 27.0 + gaze_y * 0.3, 1.4) {
-            layer = Layer::HighlightRight;
-        }
-        if segment_contains(
-            x,
-            y,
-            24.5 + gaze_x,
-            25.0 + gaze_y,
-            35.5 + gaze_x,
-            25.0 + gaze_y,
-            0.5,
-        ) {
-            layer = Layer::LashLeft;
-        }
-        if segment_contains(
-            x,
-            y,
-            44.5 + gaze_x,
-            25.0 + gaze_y,
-            55.5 + gaze_x,
-            25.0 + gaze_y,
-            0.5,
-        ) {
-            layer = Layer::LashRight;
+        for &(cx, cy, rx, ry, layer) in &[
+            (30.0, 29.0, 5.5, 6.5, Layer::EyeWhiteLeft),
+            (50.0, 29.0, 5.5, 6.5, Layer::EyeWhiteRight),
+        ] {
+            let d = sd_ellipse(x, y, cx, cy, rx, ry);
+            if d <= 0.6 {
+                if (y - 31.0).abs() <= 0.5 {
+                    let t = (y - 31.0).abs() / 0.5;
+                    let s = aa(d, 0.6) * (1.0 - smoothstep(0.0, 1.0, t));
+                    let lash = if layer == Layer::EyeWhiteLeft {
+                        Layer::LashLeft
+                    } else {
+                        Layer::LashRight
+                    };
+                    return (lash, s);
+                }
+                return (layer, aa(d, 0.6));
+            }
         }
     }
 
-    if triangle_contains(x, y, 40.0, 36.0, 38.5, 38.5, 41.5, 38.5) {
-        layer = Layer::Nose;
-    }
-    if ellipse_contains(x, y, 40.0, 41.0, 3.5, 1.2) {
-        layer = Layer::Mouth;
+    for &(cx, cy, rx, ry, layer) in &[
+        (23.0, 34.5, 3.0, 1.8, Layer::BlushLeft),
+        (57.0, 34.5, 3.0, 1.8, Layer::BlushRight),
+    ] {
+        let d = sd_ellipse(x, y, cx, cy, rx, ry);
+        if d <= 0.5 {
+            return (layer, aa(d, 0.5));
+        }
     }
 
-    layer
+    let d_collar = sd_ellipse(x, y, 40.0, 46.0, 13.0, 2.4);
+    if d_collar <= 0.4 {
+        return (Layer::Collar, aa(d_collar, 0.4));
+    }
+
+    let d_face = sd_ellipse(x, y, 40.0, 31.0, 15.0, 14.5);
+    let d_chin = sd_triangle(x, y, 40.0, 44.0, 34.5, 36.0, 45.5, 36.0);
+    if d_face <= 0.6 || d_chin <= 0.6 {
+        let d = d_face.min(d_chin);
+        let edge = 1.0 - smoothstep(0.0, 9.0, -d);
+        let grad = 1.0 - 0.20 * edge;
+        return (Layer::Face, aa(d, 0.6) * grad);
+    }
+
+    for &(x1, y1, x2, y2, x3, y3, layer) in &[
+        (26.0, 10.5, 32.0, 18.0, 20.5, 18.0, Layer::InnerEarLeft),
+        (54.0, 10.5, 48.0, 18.0, 59.5, 18.0, Layer::InnerEarRight),
+    ] {
+        let d = sd_triangle(x, y, x1, y1, x2, y2, x3, y3);
+        if d <= 0.35 {
+            return (layer, aa(d, 0.35));
+        }
+    }
+
+    for &(x1, y1, x2, y2, x3, y3, layer) in &[
+        (25.0, 7.0, 33.5, 19.0, 18.0, 19.0, Layer::EarLeft),
+        (55.0, 7.0, 46.5, 19.0, 62.0, 19.0, Layer::EarRight),
+    ] {
+        let d = sd_triangle(x, y, x1, y1, x2, y2, x3, y3);
+        if d <= 0.8 {
+            let grad = 1.0 - 0.25 * smoothstep(15.0, 30.0, y);
+            return (layer, aa(d, 0.8) * grad);
+        }
+    }
+
+    for &(cx, cy, r) in &HAIR_LEFT {
+        let d = sd_circle(x, y, cx, cy, r);
+        if d <= 0.8 {
+            let grad = 1.0 - 0.5 * smoothstep(15.0, 45.0, y);
+            return (Layer::HairLeft, aa(d, 0.8) * grad);
+        }
+    }
+    for &(cx, cy, r) in &HAIR_RIGHT {
+        let d = sd_circle(x, y, cx, cy, r);
+        if d <= 0.8 {
+            let grad = 1.0 - 0.5 * smoothstep(15.0, 45.0, y);
+            return (Layer::HairRight, aa(d, 0.8) * grad);
+        }
+    }
+
+    let d_back = sd_ellipse(x, y, 40.0, 32.0, 23.0, 24.0);
+    if d_back <= 1.0 {
+        let grad = 1.0 - 0.5 * smoothstep(15.0, 45.0, y);
+        return (Layer::HairBack, aa(d_back, 1.0) * grad);
+    }
+
+    (Layer::None, 0.0)
 }
 
-fn ellipse_contains(x: f64, y: f64, cx: f64, cy: f64, rx: f64, ry: f64) -> bool {
-    ((x - cx) / rx).powi(2) + ((y - cy) / ry).powi(2) <= 1.0
+fn sd_ellipse(x: f64, y: f64, cx: f64, cy: f64, rx: f64, ry: f64) -> f64 {
+    ((x - cx) / rx).hypot((y - cy) / ry) - 1.0
 }
 
-fn circle_contains(x: f64, y: f64, cx: f64, cy: f64, r: f64) -> bool {
-    (x - cx).powi(2) + (y - cy).powi(2) <= r * r
+fn sd_circle(x: f64, y: f64, cx: f64, cy: f64, r: f64) -> f64 {
+    (x - cx).hypot(y - cy) - r
 }
 
 #[allow(clippy::too_many_arguments)]
-fn triangle_contains(
-    px: f64,
-    py: f64,
-    x1: f64,
-    y1: f64,
-    x2: f64,
-    y2: f64,
-    x3: f64,
-    y3: f64,
-) -> bool {
-    let denom = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3);
-    if denom.abs() < f64::EPSILON {
-        return false;
-    }
-    let a = ((y2 - y3) * (px - x3) + (x3 - x2) * (py - y3)) / denom;
-    let b = ((y3 - y1) * (px - x3) + (x1 - x3) * (py - y3)) / denom;
-    a >= 0.0 && b >= 0.0 && a + b <= 1.0
+fn sd_triangle(px: f64, py: f64, x1: f64, y1: f64, x2: f64, y2: f64, x3: f64, y3: f64) -> f64 {
+    let sign = |p1: (f64, f64), p2: (f64, f64), p3: (f64, f64)| {
+        (p1.0 - p3.0) * (p2.1 - p3.1) - (p2.0 - p3.0) * (p1.1 - p3.1)
+    };
+    let d1 = sign((px, py), (x1, y1), (x2, y2));
+    let d2 = sign((px, py), (x2, y2), (x3, y3));
+    let d3 = sign((px, py), (x3, y3), (x1, y1));
+    let inside = !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0));
+
+    let dseg = |p: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+        let vx = b.0 - a.0;
+        let vy = b.1 - a.1;
+        let wx = p.0 - a.0;
+        let wy = p.1 - a.1;
+        let c1 = wx * vx + wy * vy;
+        if c1 <= 0.0 {
+            return (p.0 - a.0).hypot(p.1 - a.1);
+        }
+        let c2 = vx * vx + vy * vy;
+        if c1 >= c2 {
+            return (p.0 - b.0).hypot(p.1 - b.1);
+        }
+        let t = c1 / c2;
+        (p.0 - (a.0 + t * vx)).hypot(p.1 - (a.1 + t * vy))
+    };
+
+    let d = dseg((px, py), (x1, y1), (x2, y2))
+        .min(dseg((px, py), (x2, y2), (x3, y3)))
+        .min(dseg((px, py), (x3, y3), (x1, y1)));
+    if inside { -d } else { d }
 }
 
-fn segment_contains(px: f64, py: f64, x1: f64, y1: f64, x2: f64, y2: f64, thickness: f64) -> bool {
+fn sd_segment(px: f64, py: f64, x1: f64, y1: f64, x2: f64, y2: f64, thickness: f64) -> f64 {
     let vx = x2 - x1;
     let vy = y2 - y1;
     let wx = px - x1;
     let wy = py - y1;
     let c1 = wx * vx + wy * vy;
     if c1 <= 0.0 {
-        return (px - x1).powi(2) + (py - y1).powi(2) <= thickness * thickness;
+        return (px - x1).hypot(py - y1) - thickness;
     }
     let c2 = vx * vx + vy * vy;
     if c1 >= c2 {
-        return (px - x2).powi(2) + (py - y2).powi(2) <= thickness * thickness;
+        return (px - x2).hypot(py - y2) - thickness;
     }
     let t = c1 / c2;
-    let dx = px - (x1 + t * vx);
-    let dy = py - (y1 + t * vy);
-    dx * dx + dy * dy <= thickness * thickness
+    (px - (x1 + t * vx)).hypot(py - (y1 + t * vy)) - thickness
+}
+
+fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn aa(d: f64, edge: f64) -> f64 {
+    1.0 - smoothstep(0.0, edge, d)
 }
 
 fn random_blink_interval() -> u64 {
