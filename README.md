@@ -7,7 +7,8 @@ An AI coding agent optimized for minimal use of context tokens, while providing 
 
 * `index` tool - uses [tree-sitter](https://tree-sitter.github.io/tree-sitter) to parse supported programming languages to produce a high level skeleton of a file, with exact start-end lines of each item (e.g. a function's implementation is in lines 150-165). Encouraged to be used before reads. For my usage it adds 59 tok/turn but saves 224 tok/turn on read calls, saving 165 tok/turn.
 * `code_execution` tool - uses [monty](https://github.com/pydantic/monty) to run an interpreter that has all other tools available as async functions. N00n uses it to filter / summarize / transform / pipe data to other tools as input, without it ever reaching and polluting the context window. Sandbox limited by time & memory.
-* `tooned` - tooned does lossless conversion to TOON for any compatible data format, lowering token usage on JSON shaped data/files. 
+* `tooned` - uses [tooned](https://github.com/w0wl0lxd/tooned) does lossless conversion to TOON for any compatible data format, lowering token usage on JSON shaped data/files.
+* `toon-lsp` - uses [toon-lsp](https://github.com/w0wl0lxd/toon-lsp) to interact with TOON compatible data at a symbol level.  
 * `task` tool - when delegating work to subagents, the AI chooses whether to run weak / medium / strong model of used provider. Think haiku / sonnet / opus.
 * System prompt, tool descriptions, and tool examples are all concise, I've made sure not to bloat your context.
 * Uses [rtk](https://github.com/rtk-ai/rtk) if you have it installed, disable with `--no-rtk`. Saves ~50% of bash output tokens. Remember bash is just 12% of total token usage, so 6% is nice, but saving on reads (65% of total) by using `index` gave me more benefit. I think I'll do bash output filtering like this myself in a future release.
@@ -15,7 +16,7 @@ An AI coding agent optimized for minimal use of context tokens, while providing 
 ### User experience
 
 * SUPER fast startup, 60 FPS, and light on memory. Not running any JavaScript, using [ratatui](https://ratatui.rs) for TUI. Even the splash screen animation uses SIMD.
-* Extend with Neovim-like Lua plugins - [Builtin plugins](https://github.com/w0wl0lxd/n00n/tree/main/plugins), [User made plugins showcase](https://github.com/w0wl0lxd/n00n/discussions/452), [Lua API reference](https://github.com/w0wl0lxd/n00n/docs/lua-api/).
+* Extend with Neovim-like Lua plugins - [Builtin plugins](https://github.com/w0wl0lxd/n00n/tree/main/plugins), [Lua API reference](https://github.com/w0wl0lxd/n00n/docs/lua-api/).
 * Philosophy of not hiding anything - while other coding agents hide information as models improve (e.g. not showing number of lines read), n00n leaves you in control.
 * UI fits everything well on my small screen laptop.
 * Full visibility of subagents - each subagent gets their own "chat window" you can easily navigate between using `/tasks` (Ctrl-X), or Ctrl-N/P.
