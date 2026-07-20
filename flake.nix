@@ -3,10 +3,15 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+    }:
     let
       lib = nixpkgs.lib;
       cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
@@ -18,13 +23,28 @@
         "x86_64-darwin"
         "aarch64-darwin"
       ];
-      forEachSystem = f: lib.genAttrs systems (system: f system (import nixpkgs { inherit system; }));
+      forEachSystem =
+        f:
+        lib.genAttrs systems (
+          system:
+          f system (
+            import nixpkgs {
+              inherit system;
+              overlays = [ rust-overlay.overlays.default ];
+            }
+          )
+        );
     in
     {
       packages = forEachSystem (
         system: pkgs:
         let
-          n00n = pkgs.rustPlatform.buildRustPackage {
+          rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+          rustPlatform = pkgs.makeRustPlatform {
+            cargo = rustToolchain;
+            rustc = rustToolchain;
+          };
+          n00n = rustPlatform.buildRustPackage {
             pname = packageName;
             inherit version;
             src = ./.;
@@ -80,13 +100,13 @@
         _: pkgs:
         let
           certs = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+          rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         in
         {
           default = pkgs.mkShell {
             packages = with pkgs; [
-              cargo
+              rustToolchain
               cargo-nextest
-              clippy
               git
               just
               openssl
@@ -95,13 +115,11 @@
               python3
               ripgrep
               ruff
-              rust-analyzer
-              rustc
-              rustfmt
               stylua
               ty
             ];
 
+            RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
             SSL_CERT_FILE = certs;
             NIX_SSL_CERT_FILE = certs;
             LD_LIBRARY_PATH = lib.makeLibraryPath [

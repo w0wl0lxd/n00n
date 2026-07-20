@@ -10,7 +10,7 @@ homepage = "https://github.com/w0wl0lxd/n00n"
 readme = "README.md"
 keywords = ["ai", "agent", "cli", "tui", "coding"]
 categories = ["command-line-utilities", "development-tools"]
-rust-version = "1.88"
+rust-version = "1.97"
 
 [[bin]]
 name = "n00n"
@@ -67,7 +67,7 @@ edition = "2024"
 authors = ["w0wl0lxd <w0wl0lxd@tuta.com>"]
 license = "AGPL-3.0"
 repository = "https://github.com/w0wl0lxd/n00n"
-rust-version = "1.88"
+rust-version = "1.97"
 
 [workspace.dependencies]
 n00n-agent = { path = "n00n-agent" }
