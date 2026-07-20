@@ -1052,7 +1052,7 @@ struct ScannedHeader {
 struct ScanCacheEntry {
     size: u64,
     mtime_ms: u64,
-    header: Option<SessionSummary>,
+    header: Option<ScannedHeader>,
 }
 
 type ScanCache = HashMap<String, ScanCacheEntry>;
@@ -1091,15 +1091,9 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
             _ => {
                 dirty = true;
                 let header = if is_jsonl(&path) {
-                    scan_jsonl_header(&path).and_then(|h| {
-                        (h.cwd == cwd).then_some(SessionSummary {
-                            id: h.id,
-                            title: h.title,
-                            updated_at: h.updated_at,
-                        })
-                    })
+                    scan_jsonl_header(&path)
                 } else {
-                    scan_legacy_header(cwd, &path)
+                    scan_legacy_header(&path)
                 };
                 ScanCacheEntry {
                     size,
@@ -1108,7 +1102,9 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
                 }
             }
         };
-        if let Some(h) = &entry.header {
+        if let Some(h) = &entry.header
+            && h.cwd == cwd
+        {
             out.push(SessionSummary {
                 id: h.id,
                 title: normalize_title(&h.title),
@@ -1211,14 +1207,15 @@ fn read_last_meta(file: &mut File) -> Option<(String, u64)> {
     }
 }
 
-fn scan_legacy_header(cwd: &str, path: &Path) -> Option<SessionSummary> {
+fn scan_legacy_header(path: &Path) -> Option<ScannedHeader> {
     let data = fs::read(path).ok()?;
     let h: LegacyHeader = serde_json::from_slice(&data).ok()?;
-    if h.version != SESSION_VERSION || h.cwd != cwd {
+    if h.version != SESSION_VERSION {
         return None;
     }
-    Some(SessionSummary {
+    Some(ScannedHeader {
         id: h.id,
+        cwd: h.cwd,
         title: h.title,
         updated_at: h.updated_at,
     })
@@ -1915,6 +1912,10 @@ mod tests {
         let list = TestSession::list_in("/project-a", dir).unwrap();
         assert_eq!(list.len(), 2);
         assert!(list.iter().all(|s| s.id != s2.id));
+
+        let list = TestSession::list_in("/project-b", dir).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, s2.id);
     }
 
     #[test]
