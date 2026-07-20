@@ -10,7 +10,7 @@ local function base_dir()
   local cwd = n00n.uv.cwd()
   local root = n00n.fs.root(cwd, ".git") or cwd
   local pid = helpers.project_id(root)
-  return n00n.fs.joinpath(state, "projects", pid, "almas")
+  return n00n.fs.joinpath(state, "projects", pid, "team")
 end
 
 function M.slug(goal)

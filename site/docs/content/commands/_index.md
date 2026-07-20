@@ -13,7 +13,7 @@ Type `/` in the input box to open the command palette.
 
 | Command | Description |
 |---------|-------------|
-| `/tasks` | Browse and search tasks |
+| `/tasks` | Browse running and completed agents and teams |
 | `/compact` | Summarize and compact conversation history |
 | `/new` | Start a new session |
 | `/help` | Show keybindings |
@@ -31,10 +31,10 @@ Type `/` in the input box to open the command palette.
 | `/workflow` | Toggle workflow mode (task callable inside code_execution) |
 | `/exit` | Exit the application |
 | `/reload` | Reload plugins and config |
-| `/almas` | Configure and run an ALMAS team for a goal |
 | `/memory` | View, edit, and delete memory files |
 | `/rename` | Rename the current session |
 | `/sessions` | Browse and switch sessions |
+| `/team` | Configure and run an agent team for a goal |
 
 ## Sessions
 

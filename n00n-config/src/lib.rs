@@ -53,7 +53,7 @@ pub const MIN_LOW_SPEED_TIMEOUT_SECS: u64 = 1;
 pub const MIN_STREAM_TIMEOUT_SECS: u64 = 10;
 
 pub const DEFAULT_BUILTINS: &[&str] = &[
-    "almas",
+    "agent_control",
     "bash",
     "batch",
     "code_execution",
@@ -67,6 +67,7 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
     "sessions",
     "skill",
     "task",
+    "team",
     "todo_write",
     "view_image",
     "webfetch",

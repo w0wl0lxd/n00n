@@ -797,11 +797,39 @@ fn batch_subagent_done_marker(is_error: bool, expected_text: &str, expected_role
     assert_eq!(app.chats[1].last_message_role(), Some(expected_role));
 }
 
+#[test]
+fn completed_subagent_chat_remains_discoverable_by_tool_id() {
+    let mut app = app_with_subagent();
+    finish_subagent_task(&mut app, false);
+    app.chat_index.clear();
+
+    let idx = app
+        .chats
+        .iter()
+        .position(|chat| chat.tool_use_id.as_deref() == Some("task1"));
+    assert_eq!(idx, Some(1));
+}
+
 fn open_tasks_picker(app: &mut App) {
     for c in "/tasks".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
     app.update(Msg::Key(key(KeyCode::Enter)));
+}
+
+#[test]
+fn agent_picker_exposes_names_models_and_status() {
+    let mut app = app_with_subagent();
+    app.chats[1].model_id = Some("openai/test-model".into());
+    open_tasks_picker(&mut app);
+
+    let main = app.task_picker.item(0).unwrap();
+    assert_eq!(main.label(), "Main chat");
+    assert_eq!(main.suffix(), Some("main session"));
+    let agent = app.task_picker.item(1).unwrap();
+    assert_eq!(agent.label(), "Agent: research");
+    assert_eq!(agent.suffix(), Some("openai/test-model"));
+    assert_eq!(agent.detail(), Some(TASK_RUNNING_DETAIL));
 }
 
 #[test]

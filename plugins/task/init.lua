@@ -13,6 +13,7 @@ local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_PROMPT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
 local MAX_SCHEMA_ERRORS = 3
+local TASK_TIMEOUT_SECS = 3600
 local MAX_STRUCTURED_RETRIES = 2
 local SCHEMA_ROOT_ERROR = "output_schema must have type object"
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
@@ -40,6 +41,8 @@ Notes:
 4. Tell it to return concise summaries with file:line refs, not full file contents.
 5. With `auto_tier`, the model tier is picked from the prompt (cheap work -> weak,
    hard work -> strong). This is opt-in and off by default.
+6. Set background=true to start a non-blocking agent and receive an agent_id.
+   Use agent_control to inspect, steer, or stop it.
 ]]
 
 local schema = {
@@ -74,6 +77,10 @@ local schema = {
     auto_tier = {
       type = "boolean",
       description = "Pick model_tier from the prompt automatically (opt-in). Overrides model_tier when set.",
+    },
+    background = {
+      type = "boolean",
+      description = "Start this task in a separate background session and return its agent_id immediately.",
     },
     output_schema = {
       description = "JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string.",
@@ -141,6 +148,21 @@ local function make_preview(ctx, description)
 end
 
 local function handler(input, ctx)
+  if input.background then
+    local forwarded = {}
+    for key, value in pairs(input) do
+      forwarded[key] = value
+    end
+    forwarded.background = false
+    local prompt = "Use the task tool now with background=false. Do not only describe this request.\n\n"
+      .. n00n.json.encode(forwarded)
+    local id, err = n00n.session.new({ prompt = prompt, focus = false })
+    if not id then
+      return { llm_output = err, is_error = true }
+    end
+    return n00n.json.encode({ agent_id = id, status = "started" })
+  end
+
   local subagent_type = input.subagent_type or "research"
   if subagent_type ~= "research" and subagent_type ~= "general" then
     return { llm_output = "unknown subagent type: " .. subagent_type, is_error = true }
@@ -213,85 +235,76 @@ local function handler(input, ctx)
 
   local preview = make_preview(ctx, input.description or "task")
 
-  local function on_finish(err, result)
-    if err then
-      ctx:finish({ llm_output = "task failed: " .. tostring(err), is_error = true, body = preview.buf })
-    else
-      ctx:finish({
-        llm_output = result.llm_output,
-        body = preview.buf,
-        is_error = result.is_error,
-        format = result.format,
-      })
+  local permit = semaphore:acquire()
+  local ok, out = pcall(function()
+    local sess, sess_err = n00n.agent.session(ctx, {
+      model_spec = model.spec,
+      system = system,
+      tools = tool_defs,
+      local_tools = local_tools,
+      audience = audience,
+      name = input.description,
+      thinking = input.thinking,
+    })
+    if sess_err then
+      return { llm_output = sess_err, is_error = true }
     end
+
+    local function do_prompt()
+      local message = input.prompt
+      if validator then
+        message = message .. STRUCTURED_OUTPUT_PROMPT_SUFFIX
+      end
+      local result, err = sess:prompt(message)
+      local retries = 0
+      while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
+        retries = retries + 1
+        result, err = sess:prompt(NUDGE_MISSING)
+      end
+      if err then
+        return { llm_output = "sub-agent error: " .. err, is_error = true }
+      end
+      if validator and not captured then
+        local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
+        return { llm_output = msg, is_error = true }
+      end
+      if not captured and (not result or not result.text or result.text == "") then
+        return { llm_output = "sub-agent returned no output", is_error = true }
+      end
+      return { llm_output = captured and n00n.json.encode(captured) or result.text, format = "markdown" }
+    end
+
+    local function do_poll()
+      while true do
+        local progress = sess:get_progress()
+        if not progress then
+          return
+        end
+        preview:update(progress)
+        if progress.done then
+          return
+        end
+      end
+    end
+
+    local results = n00n.async.gather({ do_prompt, do_poll })
+    sess:close()
+    local prompt_res = results[1]
+    if not prompt_res.ok then
+      error(prompt_res.err, 0)
+    end
+    return prompt_res.value
+  end)
+  permit:release()
+  if not ok then
+    return { llm_output = "task failed: " .. tostring(out), is_error = true, body = preview.buf }
   end
-
-  n00n.async.run(function()
-    local permit = semaphore:acquire()
-    local ok, out = pcall(function()
-      local sess, sess_err = n00n.agent.session(ctx, {
-        model_spec = model.spec,
-        system = system,
-        tools = tool_defs,
-        local_tools = local_tools,
-        audience = audience,
-        name = input.description,
-        thinking = input.thinking,
-      })
-      if sess_err then
-        return { llm_output = sess_err, is_error = true }
-      end
-
-      local function do_prompt()
-        local message = input.prompt
-        if validator then
-          message = message .. STRUCTURED_OUTPUT_PROMPT_SUFFIX
-        end
-        local result, err = sess:prompt(message)
-        local retries = 0
-        while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
-          retries = retries + 1
-          result, err = sess:prompt(NUDGE_MISSING)
-        end
-        if err then
-          return { llm_output = "sub-agent error: " .. err, is_error = true }
-        end
-        if validator and not captured then
-          local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
-          return { llm_output = msg, is_error = true }
-        end
-        return { llm_output = captured and n00n.json.encode(captured) or result.text, format = "markdown" }
-      end
-
-      local function do_poll()
-        while true do
-          local progress, err = sess:get_progress()
-          if not progress then
-            return
-          end
-          preview:update(progress)
-          if progress.done then
-            return
-          end
-        end
-      end
-
-      local results = n00n.async.gather({ do_prompt, do_poll })
-      sess:close()
-      local prompt_res = results[1]
-      if not prompt_res.ok then
-        error(prompt_res.err, 0)
-      end
-      return prompt_res.value
-    end)
-    permit:release()
-    if not ok then
-      error(out, 0)
-    end
-    return out
-  end, on_finish)
-
-  return nil
+  return {
+    llm_output = out.llm_output,
+    body = preview.buf,
+    is_error = out.is_error,
+    format = out.format,
+  }
 end
 
 local function header(input)
@@ -324,6 +337,7 @@ n00n.api.register_tool({
   audiences = { "main", "workflow" },
   examples = examples,
   schema = schema,
+  timeout = TASK_TIMEOUT_SECS,
   handler = handler,
   header = header,
   restore = restore,

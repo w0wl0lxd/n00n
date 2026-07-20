@@ -1,4 +1,3 @@
-local refine = require("refine")
 local roles = require("roles")
 local route_tier = require("n00n.route_tier")
 
@@ -14,20 +13,6 @@ local function assert(c, m)
     error(m or "assertion failed")
   end
 end
-
-case("refine_adds_acceptance", function()
-  local out = refine.refine_goal_lexical("add a retry helper")
-  assert(out:find("Acceptance"), "refine must add an acceptance criterion")
-end)
-
-case("refine_keeps_existing_criterion", function()
-  local out = refine.refine_goal_lexical("add a retry helper and verify tests pass")
-  assert(not out:find("Acceptance:"), "refine must not double-add a criterion")
-end)
-
-case("refine_empty_goal", function()
-  assert(refine.refine_goal_lexical("") == "", "empty goal stays empty")
-end)
 
 case("roles_catalogue_has_five", function()
   local n = 0

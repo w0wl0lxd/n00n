@@ -108,14 +108,6 @@ impl StatusBar {
     pub fn view(&self, frame: &mut Frame, area: Rect, ctx: &StatusBarContext) {
         let mut left_spans = Vec::new();
 
-        if *ctx.status == Status::Streaming {
-            let ch = spinner_frame(self.started_at.elapsed().as_millis());
-            left_spans.push(Span::styled(
-                format!(" {ch} thinking..."),
-                theme::current().spinner,
-            ));
-        }
-
         if ctx.restoring {
             let ch = spinner_frame(self.started_at.elapsed().as_millis());
             left_spans.push(Span::styled(
@@ -367,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_status_renders_thinking_at_bottom_left() {
+    fn streaming_status_does_not_render_thinking_in_status_bar() {
         use n00n_providers::{ModelPricing, TokenUsage};
         use ratatui::{Terminal, backend::TestBackend};
 
@@ -413,7 +405,8 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
 
-        assert!(text.contains("thinking... NORMAL"), "status bar: {text:?}");
+        assert!(!text.contains("thinking..."), "status bar: {text:?}");
+        assert!(text.contains("NORMAL"), "status bar: {text:?}");
     }
 
     #[test]

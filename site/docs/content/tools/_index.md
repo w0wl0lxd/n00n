@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-N00n ships with 21 built-in tools. This is the full reference.
+N00n ships with 23 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -155,24 +155,36 @@ Use this tool when you need to ask the user questions during execution. This all
 
 ## Agent & Knowledge
 
-### `almas` *(lua plugin)*
+### `agent_control` *(lua plugin)*
 
-Launch an ALMAS team. A supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
+Control background agents started by task or team.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `message` | string | no | Steering instructions. Required for message. |
+| `action` | string | yes | Control action. |
+| `agent_id` | string | no | Background agent id. Required for status, message, and stop. |
+
+### `team` *(lua plugin)*
+
+Launch an agent team. A supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
+| `background` | boolean | no |  | Start the team in a separate background session and return its agent_id immediately. |
 | `compact` | boolean | no |  | Encode retrieved context as TOON (token-saving, opt-in). |
 | `model_tier` | string | no |  | Supervisor/model tier (weak/medium/strong). Defaults to strong when model is omitted. |
 | `quorum` | boolean | no |  | Require validator quorum for autonomous validation and swarm acceptance. |
+| `max_steps` | integer | no | 6, maximum 8 | Maximum supervisor plan steps to execute. |
 | `max_concurrent` | integer | no | 8 | Swarm mode only: max concurrent subagents per round. |
 | `ibn_gate` | boolean | no |  | Use the information-bottleneck fan-out gate in swarm mode. |
-| `max_rounds` | integer | no | 4 | Swarm mode only: max coordination rounds. |
+| `max_rounds` | integer | no | 2, maximum 4 | Swarm mode only: max coordination rounds. |
 | `goal` | string | yes |  | High-level SDLC goal, e.g. 'Add a retry helper and cover it with tests.' |
-| `model` | string | no |  | Exact model spec for every ALMAS agent. Overrides model_tier and role tiers. |
+| `model` | string | no |  | Exact model spec for every team agent. Overrides model_tier and role tiers. |
 | `use_retrieval` | boolean | no |  | Ground steps with repo retrieval. |
 | `mode` | string | no |  | "supervised" (default, return the plan for review), "autonomous" (run the plan), or "swarm" (decentralized SwarmSys rounds). |
 | `auto_tier` | boolean | no |  | Route each subagent tier from its step prompt. Defaults to true unless an exact model is set. |
-| `thinking` | string/integer | no |  | Thinking mode for ALMAS agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "max". |
+| `thinking` | string/integer | no |  | Thinking mode for team agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "adaptive". |
 
 ### `task` *(lua plugin)*
 
@@ -180,14 +192,25 @@ Launch an autonomous subagent to perform tasks independently. Best combined with
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `output_schema` | object | no | JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string. |
-| `auto_tier` | boolean | no | Pick model_tier from the prompt automatically (opt-in). Overrides model_tier when set. |
 | `description` | string | yes | Short (3-5 words) description of the task |
-| `model` | string | no | Exact model spec (optional, e.g. openai/gpt-5.6-luna). Overrides model_tier. |
 | `model_tier` | string | no | Model tier (optional, omit to use current model, capped at current tier):<br>- "strong" (e.g. Opus): Deep reasoning, complex architecture, subtle bugs, most critical sections. ~5x cost of medium.<br>- "medium" (e.g. Sonnet): Balanced. Refactors, features, multi-file changes.<br>- "weak" (e.g. Haiku): Fast/cheap. Search, summarize, boilerplate, simple edits. |
+| `auto_tier` | boolean | no | Pick model_tier from the prompt automatically (opt-in). Overrides model_tier when set. |
+| `background` | boolean | no | Start this task in a separate background session and return its agent_id immediately. |
+| `model` | string | no | Exact model spec (optional, e.g. openai/gpt-5.6-luna). Overrides model_tier. |
+| `output_schema` | object | no | JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string. |
 | `prompt` | string | yes | Detailed task prompt for the agent |
 | `thinking` | string/integer | no | Thinking mode: "off", "adaptive", "minimal", "low", "medium", "high", "xhigh", "max", or a token budget. Omit to inherit the user setting. |
 | `subagent_type` | string | no | Subagent type: "research" (read-only, default) or "general" (can modify files) |
+
+### `workflow` *(lua plugin)*
+
+Run a workflow script that orchestrates many subagents at scale.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `inputs` | object | no | Free-form object exposed to the script as the global `inputs`. |
+| `script` | string | yes | Lua workflow script. First statement: meta({...}). Then orchestrate with agent/parallel/pipeline/phase/log. Must return the final answer as a string. |
+| `resume` | string | no | Prior run_id. Replays journaled agent() results and only spends tokens on new calls. |
 
 ### `todo_write` *(lua plugin)*
 

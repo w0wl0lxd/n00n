@@ -28,6 +28,10 @@ struct BundledPlugin {
 /// `require()` shared modules across boundaries.
 static BUNDLED_PLUGINS: &[BundledPlugin] = &[
     BundledPlugin {
+        name: "agent_control",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/agent_control"),
+    },
+    BundledPlugin {
         name: "sessions",
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/sessions"),
     },
@@ -96,8 +100,8 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/workflow"),
     },
     BundledPlugin {
-        name: "almas",
-        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/almas"),
+        name: "team",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/team"),
     },
     BundledPlugin {
         name: "code_execution",
@@ -658,6 +662,15 @@ mod tests {
         drop(host);
         let slots = handle.collect_prompt_slots();
         assert!(contents(&slots, PromptId::System, Slot::ToolUsage).is_empty());
+    }
+
+    #[test]
+    fn task_and_team_builtins_coexist() {
+        let reg = Arc::new(ToolRegistry::new());
+        let _host = PluginHost::with_all_builtins(Arc::clone(&reg)).unwrap();
+        assert!(reg.has("agent_control"));
+        assert!(reg.has("task"));
+        assert!(reg.has("team"));
     }
 
     #[test]

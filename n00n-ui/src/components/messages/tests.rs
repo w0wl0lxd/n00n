@@ -256,7 +256,7 @@ fn working_state_does_not_overlay_thinking_status_on_chat() {
     );
     assert!(
         !text.contains("thinking..."),
-        "working status belongs only in the bottom status bar: {text:?}"
+        "thinking status belongs in expandable chat lines: {text:?}"
     );
 }
 
@@ -1303,6 +1303,15 @@ fn handle_click_returns_nothing_when_no_segment_at_row() {
     render(&mut panel, 80, 24);
     let area = Rect::new(0, 0, 80, 24);
     assert!(!panel.handle_click(23, area));
+}
+
+#[test]
+fn tool_id_at_returns_clicked_tool() {
+    let mut panel = MessagesPanel::new(UiConfig::default());
+    panel.tool_start(start("task1", "task"));
+    render(&mut panel, 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    assert_eq!(panel.tool_id_at(area.y, area), Some("task1"));
 }
 
 #[test]

@@ -390,9 +390,11 @@ pub enum WinCommand {
 pub enum SessionRequest {
     List,
     Live,
+    Status { id: String },
     Current,
     New { prompt: Option<String>, focus: bool },
     Prompt { id: Option<String>, text: String },
+    Cancel { id: String },
     Focus { id: String },
     Delete { id: String },
     SetTitle { id: String, title: String },

@@ -44,7 +44,7 @@ local function run_one(ctx, v, artifact, opts)
     system = VALIDATOR_SYSTEM[v.prompt],
     tools = tools,
     audience = "general_sub",
-    name = "almas-quorum-" .. v.prompt,
+    name = "team-quorum-" .. v.prompt,
     thinking = opts.thinking,
   })
   if serr then
