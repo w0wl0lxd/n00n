@@ -91,16 +91,24 @@ impl TokenBudget {
     }
 
     fn check(self, usage: &TokenUsage, context_size: u32) -> Option<&'static str> {
-        if let Some(max) = self.max_input && usage.total_input() > max {
+        if let Some(max) = self.max_input
+            && usage.total_input() > max
+        {
             return Some("input token budget exceeded");
         }
-        if let Some(max) = self.max_output && usage.output > max {
+        if let Some(max) = self.max_output
+            && usage.output > max
+        {
             return Some("output token budget exceeded");
         }
-        if let Some(max) = self.max_total && usage.context_tokens() > max {
+        if let Some(max) = self.max_total
+            && usage.context_tokens() > max
+        {
             return Some("total token budget exceeded");
         }
-        if let Some(max) = self.max_context && context_size > max {
+        if let Some(max) = self.max_context
+            && context_size > max
+        {
             return Some("context token budget exceeded");
         }
         None
@@ -1121,15 +1129,17 @@ mod tests {
             };
 
             let mut history = History::new(Vec::new());
-            let (mut agent, event_rx) =
-                make_agent(MockProvider::new(vec![response]), &mut history);
+            let (mut agent, event_rx) = make_agent(MockProvider::new(vec![response]), &mut history);
             agent.config.max_input_tokens = Some(1);
             let _ = agent.run(default_input()).await;
             let events = drain_events(&event_rx);
 
             assert!(events.iter().any(|e| matches!(
                 e.event,
-                AgentEvent::Done { stop_reason: None, .. }
+                AgentEvent::Done {
+                    stop_reason: None,
+                    ..
+                }
             )));
         });
     }
