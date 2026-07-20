@@ -101,6 +101,7 @@ fn current_exe_resolved() -> Result<PathBuf, UpdateError> {
 }
 
 #[cfg(unix)]
+#[allow(unsafe_code)]
 fn needs_sudo(path: &Path) -> bool {
     let Some(dir) = path.parent() else {
         return false;
