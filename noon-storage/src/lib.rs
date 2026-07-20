@@ -11,6 +11,7 @@ pub mod paths;
 pub mod plans;
 pub mod sessions;
 pub mod theme;
+pub mod toon;
 pub mod version;
 
 use std::fs;
@@ -63,6 +64,8 @@ pub enum StorageError {
     NotFound(String),
     #[error("slug collision after max attempts")]
     SlugCollision,
+    #[error("toon error: {0}")]
+    Toon(String),
 }
 
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), StorageError> {
