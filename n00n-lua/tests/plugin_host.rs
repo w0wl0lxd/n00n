@@ -14,7 +14,7 @@ fn fresh_registry() -> Arc<ToolRegistry> {
 fn builtins_host() -> (Arc<ToolRegistry>, PluginHost) {
     let reg = fresh_registry();
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    host.load_builtins(&PluginsConfig::from_plugins(HashMap::new()))
+    host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))
         .unwrap();
     (reg, host)
 }
@@ -2060,7 +2060,7 @@ fn builtin_opts_flow_from_setup_plugins() {
         )
         .unwrap()
         .expect("expected Some(RawConfig)");
-    host.load_builtins(&PluginsConfig::from_plugins(raw.plugins))
+    host.load_builtins(&PluginsConfig::from_plugins(&raw.plugins))
         .unwrap();
 
     let options = host.plugin_options().unwrap();
@@ -2119,7 +2119,7 @@ fn undeclared_opts_fail_the_load() {
 fn opts_for_unknown_plugin_fail_load_builtins() {
     let reg = fresh_registry();
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    let mut config = PluginsConfig::from_plugins(HashMap::new());
+    let mut config = PluginsConfig::from_plugins(&HashMap::new());
     config.opts.insert(
         "bsah".to_owned(),
         json_obj(serde_json::json!({ "timeout_secs": 5 })),
@@ -2138,7 +2138,7 @@ fn opts_for_unknown_plugin_fail_load_builtins() {
 fn unknown_plugin_name_fails_load_builtins() {
     let reg = fresh_registry();
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    let mut config = PluginsConfig::from_plugins(HashMap::new());
+    let mut config = PluginsConfig::from_plugins(&HashMap::new());
     config.names.push("gerp".to_string());
     let err = host
         .load_builtins(&config)
