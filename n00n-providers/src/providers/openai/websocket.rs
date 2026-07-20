@@ -9,10 +9,9 @@ use serde_json::{Value, json};
 use smol::Timer;
 use tracing::debug;
 
-use super::responses::{ResponseAccumulator, build_body};
-use crate::model::Model;
+use super::responses::ResponseAccumulator;
 use crate::providers::ResolvedAuth;
-use crate::{AgentError, Message, ProviderEvent, StreamResponse};
+use crate::{AgentError, ProviderEvent, StreamResponse};
 
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
 
@@ -44,10 +43,7 @@ fn responses_websocket_url(base_url: Option<&str>) -> String {
 }
 
 pub(crate) async fn stream_message(
-    model: &Model,
-    messages: &[Message],
-    system: &str,
-    tools: &Value,
+    body: Value,
     event_tx: &Sender<ProviderEvent>,
     auth: &ResolvedAuth,
     stream_timeout: Duration,
@@ -65,10 +61,7 @@ pub(crate) async fn stream_message(
         .await
         .map_err(ws_err)?;
 
-    let mut create_event = build_body(model, messages, system, tools, None, None)
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
+    let mut create_event = body.as_object().cloned().unwrap_or_default();
     create_event.remove("stream");
     create_event.insert("type".into(), json!("response.create"));
     send_json(&mut ws, &Value::Object(create_event)).await?;
