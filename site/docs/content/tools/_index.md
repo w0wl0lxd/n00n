@@ -171,19 +171,20 @@ Launch an ALMAS team. A supervisor decomposes an SDLC goal into role agents and 
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
+| `background` | boolean | no |  | Start ALMAS in a separate background session and return its agent_id immediately. |
 | `compact` | boolean | no |  | Encode retrieved context as TOON (token-saving, opt-in). |
 | `model_tier` | string | no |  | Supervisor/model tier (weak/medium/strong). Defaults to strong when model is omitted. |
-| `background` | boolean | no |  | Start ALMAS in a separate background session and return its agent_id immediately. |
 | `quorum` | boolean | no |  | Require validator quorum for autonomous validation and swarm acceptance. |
+| `max_steps` | integer | no | 6, maximum 8 | Maximum supervisor plan steps to execute. |
 | `max_concurrent` | integer | no | 8 | Swarm mode only: max concurrent subagents per round. |
 | `ibn_gate` | boolean | no |  | Use the information-bottleneck fan-out gate in swarm mode. |
-| `max_rounds` | integer | no | 4 | Swarm mode only: max coordination rounds. |
+| `max_rounds` | integer | no | 2, maximum 4 | Swarm mode only: max coordination rounds. |
 | `goal` | string | yes |  | High-level SDLC goal, e.g. 'Add a retry helper and cover it with tests.' |
 | `model` | string | no |  | Exact model spec for every ALMAS agent. Overrides model_tier and role tiers. |
 | `use_retrieval` | boolean | no |  | Ground steps with repo retrieval. |
 | `mode` | string | no |  | "supervised" (default, return the plan for review), "autonomous" (run the plan), or "swarm" (decentralized SwarmSys rounds). |
 | `auto_tier` | boolean | no |  | Route each subagent tier from its step prompt. Defaults to true unless an exact model is set. |
-| `thinking` | string/integer | no |  | Thinking mode for ALMAS agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "max". |
+| `thinking` | string/integer | no |  | Thinking mode for ALMAS agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "adaptive". |
 
 ### `task` *(lua plugin)*
 

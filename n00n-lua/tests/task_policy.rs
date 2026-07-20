@@ -403,11 +403,8 @@ fn raising_prompt_does_not_leak_semaphore_permit() {
     assert_eq!(out, PLAIN_TEXT);
 }
 
-/// A task handler that uses `n00n.async.run` with an `on_finish` callback must
-/// be able to finish after `DISPATCH_POLL_INTERVAL` even when no OS jobs are
-/// visible to the parent task.
 #[test]
-fn slow_async_callback_finishes() {
+fn slow_nested_tool_finishes() {
     let (reg, _host) = load_task_host();
     let out = exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_SLOW, None))
         .expect("slow async callback should finish");
@@ -416,4 +413,27 @@ fn slow_async_callback_finishes() {
     let snap = probe(&reg);
     assert_eq!(snap["prompt_count"], json!(1));
     assert_eq!(snap["closed"], json!(1));
+}
+
+#[test]
+fn three_concurrent_tasks_return_results_without_nil_lifecycle_errors() {
+    let (reg, _host) = load_task_host();
+    let calls: Vec<_> = (0..3)
+        .map(|_| {
+            let reg = Arc::clone(&reg);
+            std::thread::spawn(move || exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_PLAIN, None)))
+        })
+        .collect();
+
+    for call in calls {
+        let out = call
+            .join()
+            .expect("task thread panicked")
+            .expect("concurrent task failed");
+        assert_eq!(out, PLAIN_TEXT);
+    }
+
+    let snap = probe(&reg);
+    assert_eq!(snap["sessions"], json!(3));
+    assert_eq!(snap["closed"], json!(3));
 }
