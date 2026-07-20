@@ -1,3 +1,6 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use flume::Sender;
@@ -14,6 +17,41 @@ use crate::{
 
 const STREAM_DONE: &str = "[DONE]";
 
+fn value_hash(value: &Value) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    match value {
+        Value::Null => 0u8.hash(&mut hasher),
+        Value::Bool(b) => {
+            1u8.hash(&mut hasher);
+            b.hash(&mut hasher);
+        }
+        Value::Number(n) => {
+            2u8.hash(&mut hasher);
+            n.to_string().hash(&mut hasher);
+        }
+        Value::String(s) => {
+            3u8.hash(&mut hasher);
+            s.hash(&mut hasher);
+        }
+        Value::Array(arr) => {
+            4u8.hash(&mut hasher);
+            arr.len().hash(&mut hasher);
+            for v in arr {
+                value_hash(v).hash(&mut hasher);
+            }
+        }
+        Value::Object(map) => {
+            5u8.hash(&mut hasher);
+            map.len().hash(&mut hasher);
+            for (k, v) in map {
+                k.hash(&mut hasher);
+                value_hash(v).hash(&mut hasher);
+            }
+        }
+    }
+    hasher.finish()
+}
+
 pub(crate) struct OpenAiCompatConfig {
     pub api_key_env: &'static str,
     pub base_url: &'static str,
@@ -26,6 +64,7 @@ pub(crate) struct OpenAiCompatProvider {
     client: HttpClient,
     config: &'static OpenAiCompatConfig,
     stream_timeout: Duration,
+    cached_tools: Mutex<Option<(u64, Value)>>,
 }
 
 impl OpenAiCompatProvider {
@@ -34,6 +73,7 @@ impl OpenAiCompatProvider {
             client: super::http_client(timeouts),
             config,
             stream_timeout: timeouts.stream,
+            cached_tools: Mutex::new(None),
         }
     }
 
@@ -93,6 +133,26 @@ impl OpenAiCompatProvider {
         Ok(response.text().await?)
     }
 
+    fn wire_tools(&self, tools: &Value) -> Value {
+        if tools.as_array().is_none_or(|a| a.is_empty()) {
+            return json!([]);
+        }
+
+        let key = value_hash(tools);
+        {
+            let guard = self.cached_tools.lock().unwrap();
+            if let Some((cached_key, cached_tools)) = guard.as_ref()
+                && *cached_key == key
+            {
+                return cached_tools.clone();
+            }
+        }
+
+        let converted = convert_tools(tools);
+        *self.cached_tools.lock().unwrap() = Some((key, converted.clone()));
+        converted
+    }
+
     pub fn build_body(
         &self,
         model: &crate::model::Model,
@@ -101,7 +161,7 @@ impl OpenAiCompatProvider {
         tools: &Value,
     ) -> Value {
         let wire_messages = convert_messages(messages, system);
-        let wire_tools = convert_tools(tools);
+        let wire_tools = self.wire_tools(tools);
 
         let mut body = json!({
             "model": model.id,
