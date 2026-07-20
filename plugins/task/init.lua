@@ -11,20 +11,18 @@ local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_PROMPT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
-local DONE_NAME = "done"
-local DONE_DESCRIPTION = "Call when the task is complete with your final answer."
-local DONE_PROMPT_SUFFIX = "\n\nWhen finished, call the done tool with your final answer."
+local MAX_STRUCTURED_RETRIES = 2
 local MAX_SCHEMA_ERRORS = 3
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
-local SCHEMA_ROOT_ERROR = "output_schema must have type object"
 local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
 local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
+local NUDGE_MISSING =
+  "You did not call the structured_output tool. Call it now with your final result matching its input schema."
 local INVALID_INPUT_PREFIX =
   "Input does not match the required schema. Fix the errors and call structured_output again:\n"
 local BODY_INDENT_COLS = 4
 local MIN_MD_WIDTH = 20
 local DEFAULT_OUTPUT_LINES = 5
-local DEFAULT_MAX_LINE_BYTES = 500
 
 local description = [[Launch an autonomous subagent to perform tasks independently. Best combined with batch.
 
@@ -89,6 +87,41 @@ local function bounded_errors(errors)
   return table.concat(out, "\n")
 end
 
+local function make_preview(ctx, description)
+  local tol = ctx:tool_output_lines()
+  local max_preview = (tol and tol.task) or DEFAULT_OUTPUT_LINES
+  local view = ToolView.new(noon.ui.buf(), { max_lines = max_preview, keep = "tail" })
+  local last_completed = 0
+
+  local function update(progress)
+    if progress.completed_count > last_completed then
+      local new_count = progress.completed_count - last_completed
+      local recent = progress.recent_tools
+      local start = new_count <= #recent and (#recent - new_count + 1) or 1
+      for i = start, #recent do
+        view:append({ { "✓ " .. recent[i], "dim" } })
+      end
+      last_completed = progress.completed_count
+    end
+
+    local elapsed = math.floor(progress.elapsed_ms / 1000)
+    local elapsed_str = noon.ui.humantime(elapsed)
+    local header = { { description .. " · " .. elapsed_str, "bold" } }
+    if progress.current_tool then
+      header[#header + 1] = { { "▸ " .. progress.current_tool, "bold" } }
+    elseif not progress.done then
+      header[#header + 1] = { { "Starting...", "dim" } }
+    end
+    view:set_header(header)
+  end
+
+  view.buf:on("click", function()
+    view:toggle()
+  end)
+
+  return { buf = view.buf, update = update }
+end
+
 local function handler(input, ctx)
   local subagent_type = input.subagent_type or "research"
   if subagent_type ~= "research" and subagent_type ~= "general" then
@@ -98,9 +131,6 @@ local function handler(input, ctx)
   -- Compile early: a bad schema costs zero tokens.
   local validator
   if input.output_schema then
-    if input.output_schema.type ~= "object" then
-      return { llm_output = SCHEMA_ROOT_ERROR, is_error = true }
-    end
     local compile_err
     validator, compile_err = noon.json.schema_validator(input.output_schema)
     if compile_err then
@@ -134,7 +164,6 @@ local function handler(input, ctx)
     return { llm_output = tools_err, is_error = true }
   end
 
-  local sess
   local captured, last_errors
   local local_tools
   if validator then
@@ -149,74 +178,92 @@ local function handler(input, ctx)
             return nil, INVALID_INPUT_PREFIX .. last_errors
           end
           captured = value
-          sess:done(noon.json.encode(value))
           return STRUCTURED_OUTPUT_ACK
         end,
       },
     }
-  else
-    local_tools = {
-      [DONE_NAME] = {
-        description = DONE_DESCRIPTION,
-        input_schema = {
-          type = "object",
-          properties = {
-            answer = { type = "string", description = "Final answer to return to the parent agent." },
-          },
-          required = { "answer" },
-          additionalProperties = false,
-        },
-        handler = function(value)
-          sess:done(value.answer)
-          return "Done."
-        end,
-      },
-    }
   end
 
-  local permit = semaphore:acquire()
+  local preview = make_preview(ctx, input.description or "task")
 
-  -- pcall so a raised error cannot leak the permit.
-  local ok, out = pcall(function()
-    local sess_err
-    sess, sess_err = noon.agent.session(ctx, {
-      model_spec = model.spec,
-      system = system,
-      tools = tool_defs,
-      local_tools = local_tools,
-      audience = audience,
-      name = input.description,
-    })
-    if sess_err then
-      return { llm_output = sess_err, is_error = true }
-    end
-
-    local message = input.prompt
-    if validator then
-      message = message .. STRUCTURED_OUTPUT_PROMPT_SUFFIX
-    else
-      message = message .. DONE_PROMPT_SUFFIX
-    end
-
-    local result, err = sess:prompt(message)
-
-    sess:close()
-
+  local function on_finish(err, result)
     if err then
-      return { llm_output = "sub-agent error: " .. err, is_error = true }
+      ctx:finish({ llm_output = "task failed: " .. tostring(err), is_error = true, body = preview.buf })
+    else
+      ctx:finish({
+        llm_output = result.llm_output,
+        body = preview.buf,
+        is_error = result.is_error,
+        format = result.format,
+      })
     end
-    if validator and not captured then
-      local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
-      return { llm_output = msg, is_error = true }
-    end
-    return { llm_output = captured and noon.json.encode(captured) or result.text, format = "markdown" }
-  end)
-
-  permit:release()
-  if not ok then
-    error(out, 0)
   end
-  return out
+
+  noon.async.run(function()
+    local permit = semaphore:acquire()
+    local ok, out = pcall(function()
+      local sess, sess_err = noon.agent.session(ctx, {
+        model_spec = model.spec,
+        system = system,
+        tools = tool_defs,
+        local_tools = local_tools,
+        audience = audience,
+        name = input.description,
+      })
+      if sess_err then
+        return { llm_output = sess_err, is_error = true }
+      end
+
+      local function do_prompt()
+        local message = input.prompt
+        if validator then
+          message = message .. STRUCTURED_OUTPUT_PROMPT_SUFFIX
+        end
+        local result, err = sess:prompt(message)
+        local retries = 0
+        while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
+          retries = retries + 1
+          result, err = sess:prompt(NUDGE_MISSING)
+        end
+        if err then
+          return { llm_output = "sub-agent error: " .. err, is_error = true }
+        end
+        if validator and not captured then
+          local msg = last_errors and (STRUCTURED_INVALID_ERROR .. ":\n" .. last_errors) or STRUCTURED_MISSING_ERROR
+          return { llm_output = msg, is_error = true }
+        end
+        return { llm_output = captured and noon.json.encode(captured) or result.text, format = "markdown" }
+      end
+
+      local function do_poll()
+        while true do
+          local progress, err = sess:get_progress()
+          if not progress then
+            return
+          end
+          preview:update(progress)
+          if progress.done then
+            return
+          end
+        end
+      end
+
+      local results = noon.async.gather({ do_prompt, do_poll })
+      sess:close()
+      local prompt_res = results[1]
+      if not prompt_res.ok then
+        error(prompt_res.err, 0)
+      end
+      return prompt_res.value
+    end)
+    permit:release()
+    if not ok then
+      error(out, 0)
+    end
+    return out
+  end, on_finish)
+
+  return nil
 end
 
 local function header(input)
@@ -227,11 +274,7 @@ end
 -- this mirrors that for restore and batch children, which build the body here.
 local function restore(_input, output, is_error, ctx)
   local tol = ctx:tool_output_lines()
-  local opts = {
-    max_lines = (tol and tol.task) or DEFAULT_OUTPUT_LINES,
-    keep = "head",
-    max_line_bytes = DEFAULT_MAX_LINE_BYTES,
-  }
+  local opts = { max_lines = (tol and tol.task) or DEFAULT_OUTPUT_LINES, keep = "head" }
   if not is_error then
     local width = math.max(noon.ui.terminal_size().cols - BODY_INDENT_COLS, MIN_MD_WIDTH)
     local ok, md_lines = pcall(noon.ui.markdown, output, width)

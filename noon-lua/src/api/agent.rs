@@ -1,7 +1,7 @@
 //! `noon.agent` exposes subagent primitives to Lua plugins. Policy (retries,
 //! validation, concurrency) lives in the task plugin, not here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -15,7 +15,6 @@ use noon_agent::agent::tool_dispatch::{self, Emit};
 use noon_agent::cancel::CancelMap;
 use noon_agent::tools::interpreter_bridge;
 use noon_agent::tools::registry::ToolRegistry;
-use noon_agent::tools::schema::sanitize_tool_input_schema;
 use noon_agent::tools::{
     Deadline, DescriptionContext, FileReadTracker, LocalToolFn, LocalTools, ToolAudience,
     ToolContext, ToolFilter, ToolLive,
@@ -40,6 +39,8 @@ use crate::api::util::ctx::{AgentContext, LuaCtx};
 
 const SESSION_CLOSED_ERR: &str = "session closed";
 const DEFAULT_SESSION_AUDIENCE: ToolAudience = ToolAudience::GENERAL_SUB;
+const PROGRESS_MAX_RECENT: usize = 5;
+const PROGRESS_TIMEOUT_MS: u64 = 500;
 
 fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Model, String> {
     let Some(tier_str) = tier else {
@@ -432,7 +433,6 @@ async fn session(
                     .map_err(|_| format!("local_tools.{name}: 'description' is required"))
             );
             let input_schema = lua_to_json(&lua, &spec.get::<LuaValue>("input_schema")?)?;
-            let sanitized_schema = sanitize_tool_input_schema(input_schema);
             let handler = try_pair!(
                 spec.get::<Function>("handler")
                     .map_err(|_| format!("local_tools.{name}: 'handler' is required"))
@@ -440,7 +440,7 @@ async fn session(
             defs.push(serde_json::json!({
                 "name": name,
                 "description": description,
-                "input_schema": sanitized_schema,
+                "input_schema": input_schema,
             }));
             let weak = lua.weak();
             local_map.insert(
@@ -471,11 +471,12 @@ async fn session(
     };
 
     let session_id = NoonId::generate();
+    let start = Instant::now();
     let (sub_tx, sub_rx) = flume::unbounded::<Envelope>();
     let sub_event_tx = EventSender::new(sub_tx, agent_ctx.event_tx.run_id());
     let parent_tx = agent_ctx.event_tx.clone();
     let (answer_tx, answer_rx) = flume::unbounded::<String>();
-    let (prompt_tx, prompt_rx) = flume::unbounded::<String>();
+    let progress = Arc::new(Progress::new(start));
 
     let subagent_info: Arc<OnceLock<SubagentInfo>> = Arc::new(OnceLock::new());
     let total_input = Arc::new(AtomicU32::new(0));
@@ -485,6 +486,7 @@ async fn session(
         let info = Arc::clone(&subagent_info);
         let ti = Arc::clone(&total_input);
         let to = Arc::clone(&total_output);
+        let progress = Arc::clone(&progress);
         let parent_tx = parent_tx.clone();
         smol::spawn(async move {
             while let Ok(mut envelope) = sub_rx.recv_async().await {
@@ -493,6 +495,12 @@ async fn session(
                         ti.fetch_add(usage.total_input(), Ordering::Relaxed);
                         to.fetch_add(usage.output, Ordering::Relaxed);
                         continue;
+                    }
+                    AgentEvent::ToolStart(e) => {
+                        progress.set_current(&e.tool);
+                    }
+                    AgentEvent::ToolDone(e) => {
+                        progress.add_recent(&e.tool);
                     }
                     AgentEvent::Error { .. }
                     | AgentEvent::ToolOutput { .. }
@@ -546,7 +554,6 @@ async fn session(
         child_cancel,
         answer_rx: Arc::new(AsyncMutex::new(answer_rx)),
         answer_tx: Some(answer_tx),
-        prompt_rx: Arc::new(AsyncMutex::new(prompt_rx)),
         parent_cancels: Arc::clone(&agent_ctx.subagent_cancels),
         ui_id,
         parent_event_tx: parent_tx,
@@ -555,19 +562,14 @@ async fn session(
         name,
         total_input,
         total_output,
-        start: Instant::now(),
+        start,
         closed: false,
+        progress: Arc::clone(&progress),
     };
 
-    let done_state = Arc::new(Mutex::new(DoneState {
-        done: false,
-        done_answer: None,
-    }));
-    let prompt_tx_for_lua = Some(prompt_tx.clone());
     let sess = lua.create_userdata(LuaSession {
         inner: Arc::new(AsyncMutex::new(state)),
-        prompt_tx: prompt_tx_for_lua,
-        done_state,
+        progress,
     })?;
     Ok((Some(sess), None))
 }
@@ -662,6 +664,68 @@ async fn dispatch_racing_live(
     }
 }
 
+struct ProgressState {
+    current: Option<String>,
+    recent: VecDeque<String>,
+    done: bool,
+    completed_count: u64,
+}
+
+struct Progress {
+    start: Instant,
+    state: Mutex<ProgressState>,
+    tx: flume::Sender<()>,
+    rx: flume::Receiver<()>,
+}
+
+impl Progress {
+    fn new(start: Instant) -> Self {
+        let (tx, rx) = flume::unbounded();
+        Self {
+            start,
+            state: Mutex::new(ProgressState {
+                current: None,
+                recent: VecDeque::new(),
+                done: false,
+                completed_count: 0,
+            }),
+            tx,
+            rx,
+        }
+    }
+
+    fn notify(&self) {
+        let _ = self.tx.send(());
+    }
+
+    fn set_current(&self, tool: &str) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.current = Some(tool.to_owned());
+        drop(state);
+        self.notify();
+    }
+
+    fn add_recent(&self, tool: &str) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.current = None;
+        state.completed_count += 1;
+        if state.recent.len() >= PROGRESS_MAX_RECENT {
+            state.recent.pop_front();
+        }
+        state.recent.push_back(tool.to_owned());
+        drop(state);
+        self.notify();
+    }
+
+    fn set_done(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.done = true;
+        state.current = None;
+        drop(state);
+        self.notify();
+    }
+}
+
 struct SessionState {
     params: AgentParams,
     system: String,
@@ -674,7 +738,6 @@ struct SessionState {
     child_cancel: noon_agent::cancel::CancelToken,
     answer_rx: Arc<AsyncMutex<flume::Receiver<String>>>,
     answer_tx: Option<flume::Sender<String>>,
-    prompt_rx: Arc<AsyncMutex<flume::Receiver<String>>>,
     parent_cancels: Arc<CancelMap<String>>,
     /// Stable identity for UI, cancel, and history. Falls back to a synthetic
     /// id for workflow-mode sessions (no model-issued tool call exists).
@@ -687,6 +750,7 @@ struct SessionState {
     total_output: Arc<AtomicU32>,
     start: Instant,
     closed: bool,
+    progress: Arc<Progress>,
 }
 
 impl SessionState {
@@ -695,6 +759,7 @@ impl SessionState {
             return;
         }
         self.closed = true;
+        self.progress.set_done();
         self.parent_cancels.remove(&self.ui_id);
         let messages = std::mem::replace(&mut self.history, History::new(Vec::new())).into_vec();
         let _ = self.parent_event_tx.send(AgentEvent::SubagentHistory {
@@ -711,15 +776,9 @@ impl SessionState {
     }
 }
 
-struct DoneState {
-    done: bool,
-    done_answer: Option<String>,
-}
-
 struct LuaSession {
     inner: Arc<AsyncMutex<SessionState>>,
-    prompt_tx: Option<flume::Sender<String>>,
-    done_state: Arc<std::sync::Mutex<DoneState>>,
+    progress: Arc<Progress>,
 }
 
 impl Drop for LuaSession {
@@ -736,25 +795,9 @@ impl Drop for LuaSession {
     }
 }
 
-fn last_assistant_text(history: &History) -> String {
-    history
-        .as_slice()
-        .iter()
-        .rev()
-        .filter(|m| matches!(m.role, Role::Assistant))
-        .flat_map(|m| m.content.iter())
-        .find_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .unwrap_or("(no response)")
-        .to_owned()
-}
-
 /// Send a message to the subagent and wait for its full response. The agent
 /// loop runs to completion, calling tools as needed. Conversation history is
-/// kept across calls, so you can have a multi-turn conversation. If the
-/// subagent calls `done()` or the user sends an empty reply, the loop ends.
+/// kept across calls, so you can have a multi-turn conversation.
 ///
 /// The returned table has fields: `text` (string), `duration_ms` (integer),
 /// `input_tokens` (integer), `output_tokens` (integer).
@@ -773,121 +816,110 @@ async fn prompt(
     message: String,
 ) -> LuaResult<Pair<Table>> {
     let inner = Arc::clone(&this.inner);
-    let done_state = Arc::clone(&this.done_state);
-    let prompt_tx = this.prompt_tx.clone();
     drop(this);
-
-    let mut current_message = message;
-    loop {
-        let mut guard = inner.lock().await;
-        let s = &mut *guard;
-        if s.closed {
-            return Ok((None, Some(SESSION_CLOSED_ERR.to_owned())));
-        }
-        if s.subagent_info.get().is_none() {
-            let _ = s.subagent_info.set(SubagentInfo {
-                parent_tool_use_id: s.ui_id.clone(),
-                name: s.name.clone(),
-                prompt: Some(current_message.clone()),
-                model: Some(s.params.model.spec()),
-                answer_tx: s.answer_tx.take(),
-                prompt_tx: prompt_tx.clone(),
-            });
-        }
-
-        let mut agent = Agent::new(
-            s.params.clone(),
-            AgentRunParams {
-                history: &mut s.history,
-                system: s.system.clone(),
-                event_tx: s.sub_event_tx.clone(),
-                tools: s.tools.clone(),
-            },
-        )
-        .with_user_response_rx(Arc::clone(&s.answer_rx))
-        .with_cancel(s.child_cancel.clone())
-        .with_mcp(s.mcp.clone())
-        .with_local_tools(Arc::clone(&s.local_tools));
-
-        let input = AgentInput {
-            message: current_message,
-            mode: AgentMode::Build,
-            images: Vec::new(),
-            preamble: Vec::new(),
-            thinking: s.thinking,
-            fast: s.fast,
-            workflow: false,
-            prompt: None,
-        };
-        let result = agent.run(input).await;
-        drop(agent);
-        if let Err(e) = result {
-            return Ok((None, Some(e.to_string())));
-        }
-
-        {
-            let done = done_state.lock().unwrap();
-            if done.done {
-                let text = done
-                    .done_answer
-                    .clone()
-                    .unwrap_or_else(|| last_assistant_text(&s.history));
-                let tbl = lua.create_table()?;
-                tbl.set("text", text)?;
-                tbl.set("duration_ms", s.start.elapsed().as_millis() as u64)?;
-                tbl.set("input_tokens", s.total_input.load(Ordering::Relaxed))?;
-                tbl.set("output_tokens", s.total_output.load(Ordering::Relaxed))?;
-                return Ok((Some(tbl), None));
-            }
-        }
-
-        let ui_id = s.ui_id.clone();
-        let prompt_rx = Arc::clone(&s.prompt_rx);
-        let event_tx = s.sub_event_tx.clone();
-        let child_cancel = s.child_cancel.clone();
-        drop(guard);
-
-        let _ = event_tx.send(AgentEvent::SubagentInputRequired { tool_use_id: ui_id });
-
-        let recv_future = async {
-            prompt_rx
-                .lock()
-                .await
-                .recv_async()
-                .await
-                .map_err(|_| "prompt channel closed")
-        };
-        let cancel_future = async {
-            child_cancel.cancelled().await;
-            Err::<String, _>("cancelled")
-        };
-
-        current_message = match select(pin!(recv_future), pin!(cancel_future)).await {
-            Either::Left((Ok(msg), _)) => msg,
-            Either::Left((Err(e), _)) => return Ok((None, Some(e.to_owned()))),
-            Either::Right((_, _)) => return Ok((None, Some("cancelled".to_owned()))),
-        };
+    let mut guard = inner.lock().await;
+    let s = &mut *guard;
+    if s.closed {
+        return Ok((None, Some(SESSION_CLOSED_ERR.to_owned())));
     }
+    if s.subagent_info.get().is_none() {
+        let _ = s.subagent_info.set(SubagentInfo {
+            parent_tool_use_id: s.ui_id.clone(),
+            name: s.name.clone(),
+            prompt: Some(message.clone()),
+            model: Some(s.params.model.spec()),
+            answer_tx: s.answer_tx.take(),
+            prompt_tx: None,
+        });
+    }
+
+    let mut agent = Agent::new(
+        s.params.clone(),
+        AgentRunParams {
+            history: &mut s.history,
+            system: s.system.clone(),
+            event_tx: s.sub_event_tx.clone(),
+            tools: s.tools.clone(),
+        },
+    )
+    .with_user_response_rx(Arc::clone(&s.answer_rx))
+    .with_cancel(s.child_cancel.clone())
+    .with_mcp(s.mcp.clone())
+    .with_local_tools(Arc::clone(&s.local_tools));
+
+    let input = AgentInput {
+        message,
+        mode: AgentMode::Build,
+        images: Vec::new(),
+        preamble: Vec::new(),
+        thinking: s.thinking,
+        fast: s.fast,
+        workflow: false,
+        prompt: None,
+    };
+    let result = agent.run(input).await;
+    drop(agent);
+    s.progress.set_done();
+    if let Err(e) = result {
+        return Ok((None, Some(e.to_string())));
+    }
+
+    let text = s
+        .history
+        .as_slice()
+        .iter()
+        .rev()
+        .filter(|m| matches!(m.role, Role::Assistant))
+        .flat_map(|m| m.content.iter())
+        .find_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .unwrap_or("(no response)")
+        .to_owned();
+
+    let tbl = lua.create_table()?;
+    tbl.set("text", text)?;
+    tbl.set("duration_ms", s.start.elapsed().as_millis() as u64)?;
+    tbl.set("input_tokens", s.total_input.load(Ordering::Relaxed))?;
+    tbl.set("output_tokens", s.total_output.load(Ordering::Relaxed))?;
+    Ok((Some(tbl), None))
 }
 
-/// Mark the subagent conversation as complete and provide the final answer.
-/// This stops the `prompt()` loop and returns `answer` as the result text.
+/// Poll the session for a progress snapshot while a prompt is running.
 ///
-/// @param answer string Final answer to return from the session.
-/// @return (nil?, string?) Error string on failure.
+/// Returns a table with:
+///   `elapsed_ms` (integer): time since the session was created.
+///   `current_tool` (string?): name of the tool currently running, if any.
+///   `recent_tools` (table): names of the last few finished tools, oldest first.
+///   `completed_count` (integer): total number of finished tools so far.
+///   `done` (bool): true once the prompt has completed.
+///
+/// The call returns at most every `PROGRESS_TIMEOUT_MS` milliseconds, or
+/// immediately when a tool starts or finishes.
 #[lua_fn]
-async fn done(_lua: Lua, this: mlua::UserDataRef<LuaSession>, answer: String) -> LuaResult<()> {
-    {
-        let mut done = this.done_state.lock().unwrap();
-        done.done = true;
-        done.done_answer = Some(answer);
-    }
+async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResult<Pair<Table>> {
+    let progress = Arc::clone(&this.progress);
+    let notify = pin!(progress.rx.recv_async());
+    let timeout = pin!(smol::Timer::after(Duration::from_millis(
+        PROGRESS_TIMEOUT_MS
+    )));
+    let _ = select(notify, timeout).await;
 
-    if let Some(tx) = &this.prompt_tx {
-        let _ = tx.try_send(String::new());
-    }
+    let state = progress.state.lock().unwrap_or_else(|e| e.into_inner());
+    let elapsed = progress.start.elapsed().as_millis() as u64;
+    let tbl = lua.create_table()?;
+    tbl.set("elapsed_ms", elapsed)?;
+    tbl.set("current_tool", state.current.as_deref())?;
+    tbl.set("done", state.done)?;
+    tbl.set("completed_count", state.completed_count)?;
 
-    Ok(())
+    let recent = lua.create_table()?;
+    for (i, tool) in state.recent.iter().enumerate() {
+        recent.set(i + 1, tool.as_str())?;
+    }
+    tbl.set("recent_tools", recent)?;
+    Ok((Some(tbl), None))
 }
 
 /// Close the session and flush its history back to the parent agent. You can
@@ -909,9 +941,9 @@ lua_class! {
     ///
     /// Create one with `noon.agent.session()`, then send messages with
     /// `:prompt()`. The session remembers previous turns, so you can have
-    /// a multi-step conversation. Call `:done(answer)` from inside the
-    /// subagent workflow to finish early, or `:close()` when you are done.
-    "noon.agent.Session" => LuaSession, SESSION_DOCS [prompt, done, close]
+    /// a multi-step conversation. Call `:close()` when you are done, or let
+    /// garbage collection handle it.
+    "noon.agent.Session" => LuaSession, SESSION_DOCS [prompt, close, get_progress]
 }
 
 /// Weak Lua ref avoids a reference cycle when the session is stored in userdata.
