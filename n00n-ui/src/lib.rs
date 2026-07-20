@@ -14,6 +14,7 @@ mod highlight;
 pub use highlight::highlight_ansi;
 pub mod image;
 mod markdown;
+pub mod mascot;
 mod render_worker;
 mod selection;
 pub mod splash;
