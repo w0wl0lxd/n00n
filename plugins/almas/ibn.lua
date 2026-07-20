@@ -24,6 +24,17 @@ local function is_multi_step(goal)
   return false
 end
 
+function M.resolve_tier(ctx, model, model_tier)
+  if not model then
+    return model_tier or "strong", nil
+  end
+  local resolved, err = n00n.agent.resolve_model(ctx, { spec = model })
+  if err then
+    return nil, err
+  end
+  return resolved.tier, nil
+end
+
 -- @param ctx AgentContext
 -- @param goal string Refined goal.
 -- @param supervisor_tier string "weak" | "medium" | "strong".
