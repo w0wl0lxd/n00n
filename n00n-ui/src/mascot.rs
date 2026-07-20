@@ -475,11 +475,13 @@ mod tests {
 
     #[test]
     fn enabled_flag() {
-        let enabled = Mascot::new(true);
-        assert!(
-            enabled.is_animating()
-                == (enabled.is_blinking || enabled.current_gaze != enabled.target_gaze)
-        );
+        let mut enabled = Mascot::new(true);
+        assert!(!enabled.is_animating());
+
+        enabled.next_blink_interval = 100;
+        enabled.last_blink = Instant::now() - Duration::from_millis(150);
+        enabled.tick(Rect::new(0, 0, 40, 20));
+        assert!(enabled.is_animating());
 
         let disabled = Mascot::new(false);
         assert!(!disabled.is_animating());
