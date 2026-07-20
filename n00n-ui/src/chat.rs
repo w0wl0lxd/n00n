@@ -287,6 +287,10 @@ impl Chat {
         self.messages_panel.handle_click(row, area);
     }
 
+    pub fn on_mouse(&mut self, column: u16, row: u16) {
+        self.messages_panel.on_mouse(column, row);
+    }
+
     pub fn tool_snapshot(
         &mut self,
         tool_id: &str,
