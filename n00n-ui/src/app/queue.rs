@@ -1,9 +1,10 @@
 //! Queue for messages typed while the agent is busy.
 
-use super::{Action, App, Status, format_with_images};
+use super::{Action, App, Status};
 
 use crate::agent::shared_queue::{QueueItem, QueueSender};
 use crate::components::queue_panel::QueueEntry;
+use n00n_agent::ImageSource;
 
 pub(crate) use crate::agent::shared_queue::QueuedMessage;
 
@@ -176,9 +177,14 @@ impl App {
 
     /// Agent reached a deferred message: time to draw the bubble.
     /// Immediate-dispatch items skip this event, so no dedup needed.
-    pub(super) fn on_queue_item_consumed(&mut self, text: &str, image_count: usize) {
-        self.main_chat()
-            .show_user_message(format_with_images(text, image_count));
+    pub(super) fn on_queue_item_consumed(
+        &mut self,
+        text: &str,
+        image_count: usize,
+        images: Vec<ImageSource>,
+    ) {
+        let _ = image_count;
+        self.main_chat().show_user_message_with_images(text, images);
     }
 
     /// Immediate path: kick off the agent and draw the bubble in the same
@@ -187,7 +193,7 @@ impl App {
         self.status = Status::Streaming;
         self.fire_session_autocmd("TurnStart", serde_json::json!({}));
         self.main_chat()
-            .show_user_message(format_with_images(&msg.text, msg.images.len()));
+            .show_user_message_with_images(msg.text.clone(), msg.images.clone());
         vec![Action::SendMessage(Box::new(self.build_agent_input(msg)))]
     }
 }

@@ -34,10 +34,6 @@ pub(super) fn extract_selection_text(
 
         let Some(seg) = cache.get(i) else { continue };
 
-        if seg.lines().is_empty() {
-            continue;
-        }
-
         let rel_start = doc_start.row.saturating_sub(seg_start) as usize;
         let rel_end = ((doc_end.row + 1).saturating_sub(seg_start) as usize).min(h as usize);
 
@@ -63,6 +59,10 @@ pub(super) fn extract_selection_text(
             && doc_end.col >= msg_area.x + width - 1;
         if seg_fully_selected && let Some(raw) = &seg.raw_text {
             out.push_str(raw);
+            continue;
+        }
+
+        if seg.lines().is_empty() {
             continue;
         }
 
