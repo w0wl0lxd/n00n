@@ -8,7 +8,7 @@ use noon_agent::permissions::PermissionManager;
 use noon_agent::template;
 use noon_agent::template::Vars;
 use noon_agent::tools::{
-    DescriptionContext, FileReadTracker, ToolAudience, ToolFilter, ToolRegistry,
+    DescriptionContext, FileReadTracker, RegisteredTool, ToolAudience, ToolFilter, ToolRegistry,
 };
 use noon_agent::{
     Agent, AgentConfig, AgentEvent, AgentInput, AgentParams, AgentRunParams, CancelMap,
@@ -47,23 +47,17 @@ pub(super) struct AgentLoop {
     timeouts: noon_providers::Timeouts,
     lua_handle: Option<EventHandle>,
     subagent_cancels: Arc<CancelMap<String>>,
-    /// Cache of the built tool definitions so we don't re-run every tool's
-    /// `description()` (which for Lua describe-fns is a cross-thread
-    /// round-trip) and re-serialize the JSON on every agent run. Invalidated
-    /// when anything that affects the definitions changes.
-    cached_tools: Value,
-    tools_key: Option<ToolsKey>,
+    tools_cache: Option<ToolsCache>,
 }
 
-/// Identifies a distinct set of tool definitions. Rebuilding is skipped when
-/// this matches the previous run.
-#[derive(Clone, PartialEq, Eq)]
-struct ToolsKey {
-    cwd: String,
+struct ToolsCache {
+    snap: Arc<Vec<RegisteredTool>>,
+    mcp_gen: Option<u64>,
+    model_id: String,
+    supports_tool_examples: bool,
+    supports_vision: bool,
     workflow: bool,
-    model: String,
-    mcp_count: usize,
-    registry_count: usize,
+    vars_hash: u64,
 }
 
 impl AgentLoop {
@@ -109,8 +103,7 @@ impl AgentLoop {
             timeouts,
             lua_handle,
             subagent_cancels,
-            cached_tools: Value::Null,
-            tools_key: None,
+            tools_cache: None,
         }
     }
 
@@ -163,9 +156,8 @@ impl AgentLoop {
         self.publish_btw_system(&noon_agent::prompt::ResolvedSlots::default());
 
         let slot = self.model_slot.load();
-        self.tools = self.build_tools(&slot.model, false);
+        self.rebuild_tools(&slot.model, false);
         if let Some(ref mcp) = self.mcp_handle {
-            mcp.extend_tools(&mut self.tools);
             spawn_oauth_for_needs_auth(mcp);
         }
         !self.init_cancel.is_cancelled()
@@ -283,36 +275,50 @@ impl AgentLoop {
     }
 
     fn rebuild_tools(&mut self, model: &Model, workflow: bool) {
+        let snap = ToolRegistry::global().snapshot_arc();
+        let mcp_gen = self
+            .mcp_handle
+            .as_ref()
+            .map(|m| m.reader().load().generation);
+        let vars_hash = self.vars.content_hash();
+        let supports_tool_examples = model.supports_tool_examples();
+        let supports_vision = model.supports_vision();
+        if let Some(ref cache) = self.tools_cache
+            && Arc::ptr_eq(&cache.snap, &snap)
+            && cache.mcp_gen == mcp_gen
+            && cache.model_id == model.id
+            && cache.supports_tool_examples == supports_tool_examples
+            && cache.supports_vision == supports_vision
+            && cache.workflow == workflow
+            && cache.vars_hash == vars_hash
+        {
+            return;
+        }
         let mut tools = self.build_tools(model, workflow);
         if let Some(ref mcp) = self.mcp_handle {
             mcp.extend_tools(&mut tools);
         }
         self.tools = tools;
+        self.tools_cache = Some(ToolsCache {
+            snap,
+            mcp_gen,
+            model_id: model.id.clone(),
+            supports_tool_examples,
+            supports_vision,
+            workflow,
+            vars_hash,
+        });
     }
 
-    fn build_tools(&mut self, model: &Model, workflow: bool) -> Value {
-        let cwd = self.vars.apply("{cwd}").into_owned();
-        let mcp_count = self.mcp_handle.as_ref().map_or(0, |m| m.tool_count());
-        let registry_count = ToolRegistry::global().names().len();
-        let key = ToolsKey {
-            cwd,
+    fn build_tools(&self, model: &Model, workflow: bool) -> Value {
+        let examples = model.supports_tool_examples();
+        let filter = ToolFilter::from_config(&self.config, model, &[]);
+        let ctx = DescriptionContext {
+            filter: &filter,
+            audience: ToolAudience::MAIN,
             workflow,
-            model: model.spec(),
-            mcp_count,
-            registry_count,
         };
-        if self.tools_key.as_ref() != Some(&key) {
-            let examples = model.supports_tool_examples();
-            let filter = ToolFilter::from_config(&self.config, model, &[]);
-            let ctx = DescriptionContext {
-                filter: &filter,
-                audience: ToolAudience::MAIN,
-                workflow,
-            };
-            self.cached_tools = ToolRegistry::global().definitions(&self.vars, &ctx, examples);
-            self.tools_key = Some(key);
-        }
-        self.cached_tools.clone()
+        ToolRegistry::global().definitions(&self.vars, &ctx, examples)
     }
 
     async fn reload_instructions(&mut self) {

@@ -68,7 +68,7 @@ a string belongs.
 | [`noon.image`](#noon-image) | Small building blocks for working with images: probe metadata, decode |
 | [`noon.image.Image`](#noon-image-Image) | A decoded image you can inspect, resize, and re-encode. |
 | [`noon.interpreter`](#noon-interpreter) | Run Python code in a memory-safe, time-limited sandbox. |
-| [`noon.json`](#noon-json) | JSON encoding, decoding, and schema validation. |
+| [`noon.json`](#noon-json) | JSON encoding, decoding, schema validation, and TOON round-trip. |
 | [`noon.json.SchemaValidator`](#noon-json-SchemaValidator) | A compiled JSON Schema validator. |
 | [`noon.keymap`](#noon-keymap) | Key mappings, modeled after `vim.keymap`. |
 | [`noon.log`](#noon-log) | Structured logging for plugins. |
@@ -809,6 +809,35 @@ local sess, err = noon.agent.session(ctx, {
 if err then error(err) end
 local result = sess:prompt("Summarize this file.")
 sess:close()
+```
+
+---
+
+### `noon.agent.usage_cost()` {#noon-agent-usage_cost}
+
+```lua
+noon.agent.usage_cost({spec}, {input_tokens}, {output_tokens})
+```
+
+Estimate the dollar cost of a completion from its model spec and token
+counts. Uses the provider's published pricing (input/output/cache write/
+read), so orchestrators like ALMAS can report cost without bundling a
+price table.
+
+**Parameters:**
+
+- `{spec}` (`string`) Model spec, e.g. `"anthropic/claude-haiku-4-5"`.
+- `{input_tokens}` (`integer`) Prompt tokens.
+- `{output_tokens}` (`integer`) Completion tokens.
+
+**Returns:** (`number?`, `string?`) Estimated USD cost, or `(nil, err)` on failure.
+
+**Example:**
+
+```lua
+local cost, err = noon.agent.usage_cost("anthropic/claude-haiku-4-5", 1200, 300)
+if err then error(err) end
+print(string.format("$%.4f", cost))
 ```
 
 
@@ -2046,9 +2075,10 @@ if result.stdout then print(result.stdout) end
 
 ## noon.json {#noon-json}
 
-JSON encoding, decoding, and schema validation. Encode Lua
-tables to JSON strings, decode JSON back into tables, and
-optionally validate data against a JSON Schema.
+JSON encoding, decoding, schema validation, and TOON round-trip.
+Encode Lua tables to JSON strings, decode JSON back into tables,
+validate against a JSON Schema, or convert to/from TOON for
+token-efficient context blocks.
 
 ```lua
 local s = noon.json.encode({ ok = true })
@@ -2132,6 +2162,52 @@ local v, err = noon.json.schema_validator({
 })
 local errs = v:validate({ name = "noon" })
 assert(errs == nil)
+```
+
+---
+
+### `noon.json.to_toon()` {#noon-json-to_toon}
+
+```lua
+noon.json.to_toon({value})
+```
+
+Encode a Lua value as TOON (Token-Oriented Object Notation), a token-efficient
+alternative to JSON for LLM context (~30-60% fewer tokens on uniform arrays of
+objects). Opt-in: pair with `from_toon` only when the consumer is a model.
+
+**Parameters:**
+
+- `{value}` (`any`) Lua value to encode.
+
+**Returns:** (`string?`, `string?`) TOON string, or nil plus an error.
+
+**Example:**
+
+```lua
+local s, err = noon.json.to_toon({ users = { { id = 1, name = "Alice" } } })
+```
+
+---
+
+### `noon.json.from_toon()` {#noon-json-from_toon}
+
+```lua
+noon.json.from_toon({str})
+```
+
+Decode a TOON string back into a Lua value. Inverse of `to_toon`.
+
+**Parameters:**
+
+- `{str}` (`string`) TOON string to decode.
+
+**Returns:** (`any?`, `string?`) Decoded value, or nil plus an error.
+
+**Example:**
+
+```lua
+local t, err = noon.json.from_toon(s)
 ```
 
 
@@ -4720,6 +4796,19 @@ function M.resolve(opts, ctx)
 end
 
 return M
+```
+
+### `require("noon.route_tier")`
+
+```lua
+-- Cost-aware model-tier router (OrchMAS-style adaptive role allocation).
+-- Pure lexical heuristic: no model call. Maps a subtask prompt to one of
+-- "weak" | "medium" | "strong" so cheap work stays cheap and hard work
+-- gets a bigger model. Used by the `task` tool (opt-in auto_tier) and ALMAS.
+
+-- @param prompt string Subtask description.
+-- @return "weak" | "medium" | "strong"
+function M.route_tier(prompt)
 ```
 
 ### `require("noon.shorten_path")`

@@ -6,20 +6,22 @@
 -- `noon.async.semaphore`).
 
 local ToolView = require("noon.tool_view")
+local route_tier = require("noon.route_tier").route_tier
 
 local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_PROMPT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
-local MAX_STRUCTURED_RETRIES = 2
 local MAX_SCHEMA_ERRORS = 3
+local MAX_STRUCTURED_RETRIES = 2
+local SCHEMA_ROOT_ERROR = "output_schema must have type object"
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
 local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
 local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
-local NUDGE_MISSING =
-  "You did not call the structured_output tool. Call it now with your final result matching its input schema."
 local INVALID_INPUT_PREFIX =
   "Input does not match the required schema. Fix the errors and call structured_output again:\n"
+local NUDGE_MISSING =
+  "You did not call the structured_output tool. Call it now with your final result matching its input schema."
 local BODY_INDENT_COLS = 4
 local MIN_MD_WIDTH = 20
 local DEFAULT_OUTPUT_LINES = 5
@@ -36,6 +38,8 @@ Notes:
 2. The agent's result is not visible to the user. Summarize it in your response.
 3. Each invocation starts fresh - inline any needed context into the prompt.
 4. Tell it to return concise summaries with file:line refs, not full file contents.
+5. With `auto_tier`, the model tier is picked from the prompt (cheap work -> weak,
+   hard work -> strong). This is opt-in and off by default.
 ]]
 
 local schema = {
@@ -59,6 +63,10 @@ local schema = {
       type = "string",
       description = 'Model tier (optional, omit to use current model, capped at current tier):\n- "strong" (e.g. Opus): Deep reasoning, complex architecture, subtle bugs, most critical sections. ~5x cost of medium.\n- "medium" (e.g. Sonnet): Balanced. Refactors, features, multi-file changes.\n- "weak" (e.g. Haiku): Fast/cheap. Search, summarize, boilerplate, simple edits.',
     },
+    auto_tier = {
+      type = "boolean",
+      description = "Pick model_tier from the prompt automatically (opt-in). Overrides model_tier when set.",
+    },
     output_schema = {
       description = "JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string.",
     },
@@ -75,6 +83,7 @@ local examples = {
 
 local opts = noon.api.register_options({
   max_concurrent = { default = 8, min = 1, desc = "Max concurrently running subagents." },
+  auto_tier = { default = false, desc = "Route each subagent's model tier from its prompt (opt-in, off by default)." },
 })
 
 -- Process-wide cap on concurrent subagents.
@@ -133,7 +142,7 @@ local function handler(input, ctx)
   local validator
   if input.output_schema then
     if type(input.output_schema) ~= "table" or input.output_schema.type ~= "object" then
-      return { llm_output = "output_schema must have type object", is_error = true }
+      return { llm_output = SCHEMA_ROOT_ERROR, is_error = true }
     end
     local compile_err
     validator, compile_err = noon.json.schema_validator(input.output_schema)
@@ -142,8 +151,13 @@ local function handler(input, ctx)
     end
   end
 
+  local model_tier = input.model_tier
+  if not model_tier and input.auto_tier then
+    model_tier = route_tier(input.prompt)
+  end
+
   local model, model_err = noon.agent.resolve_model(ctx, {
-    tier = input.model_tier,
+    tier = model_tier,
   })
   if model_err then
     return { llm_output = model_err, is_error = true }
