@@ -16,6 +16,8 @@ use crate::{
 };
 
 const STREAM_DONE: &str = "[DONE]";
+const GPT_5_6_BREAKPOINT_PREFIX: &str = "gpt-5.6-";
+const GPT_CODEX_MARKER: &str = "-codex";
 
 fn value_hash(value: &Value) -> u64 {
     /// Writes bytes directly into the underlying `Hasher`, avoiding the
@@ -173,9 +175,11 @@ impl OpenAiCompatProvider {
             }
             if self.config.supports_prompt_cache_breakpoint
                 && model.family == crate::model::ModelFamily::Gpt
-                && model.id.starts_with("gpt-5.6")
-                && let Some(msg) = body["messages"].as_array_mut().and_then(|arr| arr.first_mut())
-                && msg.get("role").and_then(Value::as_str) == Some("system")
+                && model.id.starts_with(GPT_5_6_BREAKPOINT_PREFIX)
+                && !model.id.contains(GPT_CODEX_MARKER)
+                && let Some(msg) = body["messages"].as_array_mut().and_then(|arr| {
+                    arr.iter_mut().find(|m| m.get("role").and_then(Value::as_str) == Some("system"))
+                })
                 && let Some(content) = msg.get("content").and_then(Value::as_str)
             {
                 msg["content"] = json!([{
