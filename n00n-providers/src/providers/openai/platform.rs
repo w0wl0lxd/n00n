@@ -43,6 +43,43 @@ const GPT_5_6_PLAN_CONTEXT_WINDOW: u32 = 372_000;
 struct OpenAiSessionState {
     last_response_id: Option<String>,
     last_message_count: usize,
+    tools_hash: Option<String>,
+}
+
+fn incremental_for_state<'a>(
+    state: &mut OpenAiSessionState,
+    tools_hash: &str,
+    messages: &'a [Message],
+) -> (Option<String>, &'a [Message]) {
+    if state.tools_hash.as_deref() != Some(tools_hash) || messages.len() < state.last_message_count
+    {
+        state.last_response_id = None;
+        state.last_message_count = 0;
+        state.tools_hash = Some(tools_hash.to_string());
+    }
+
+    if let Some(prev_id) = state.last_response_id.clone() {
+        if messages.len() > state.last_message_count + 1 {
+            return (Some(prev_id), &messages[state.last_message_count + 1..]);
+        }
+        state.last_response_id = None;
+        state.last_message_count = 0;
+    }
+
+    (None, &messages[state.last_message_count..])
+}
+
+fn record_in_state(
+    state: &mut OpenAiSessionState,
+    response_id: Option<String>,
+    tools_hash: &str,
+    messages: &[Message],
+) {
+    if let Some(rid) = response_id {
+        state.last_response_id = Some(rid);
+        state.last_message_count = messages.len();
+        state.tools_hash = Some(tools_hash.to_string());
+    }
 }
 
 fn is_codex_model(model_id: &str) -> bool {
@@ -173,6 +210,35 @@ impl OpenAi {
         }
         Ok(auth)
     }
+
+    fn prepare_request<'a>(
+        &self,
+        session_id: Option<&'a SessionRef>,
+        tools_hash: &str,
+        messages: &'a [Message],
+    ) -> (Option<String>, &'a [Message]) {
+        let mut state = self.session_state.lock().unwrap();
+        if let Some(sid) = session_id {
+            let session_state = state.entry(sid.clone()).or_default();
+            incremental_for_state(session_state, tools_hash, messages)
+        } else {
+            (None, messages)
+        }
+    }
+
+    fn record_response(
+        &self,
+        session_id: Option<&SessionRef>,
+        response_id: Option<String>,
+        tools_hash: &str,
+        messages: &[Message],
+    ) {
+        if let Some(sid) = session_id {
+            let mut state = self.session_state.lock().unwrap();
+            let session_state = state.entry(sid.clone()).or_default();
+            record_in_state(session_state, response_id, tools_hash, messages);
+        }
+    }
 }
 
 impl Provider for OpenAi {
@@ -190,6 +256,11 @@ impl Provider for OpenAi {
             let mut buf = String::new();
             let system = super::super::with_prefix(&self.system_prefix, system, &mut buf);
 
+            let tools_hash = serde_json::to_string(tools).unwrap_or_default();
+            let (previous_response_id, incremental_messages) =
+                self.prepare_request(session_id, &tools_hash, messages);
+            let prompt_cache_key = session_id.map(|s| s.to_string());
+
             if super::websocket::is_websocket_model(&model.id) {
                 let stream_timeout = self.compat.stream_timeout();
                 return self
@@ -199,16 +270,22 @@ impl Provider for OpenAi {
                         } else {
                             self.current_auth()
                         };
-                        let (_, resp) = super::websocket::stream_message(
+                        let body = super::responses::build_body(
                             model,
-                            messages,
+                            incremental_messages,
                             system,
                             tools,
+                            previous_response_id.as_deref(),
+                            prompt_cache_key.as_deref(),
+                        );
+                        let (response_id, resp) = super::websocket::stream_message(
+                            body,
                             event_tx,
                             &auth,
                             stream_timeout,
                         )
                         .await?;
+                        self.record_response(session_id, response_id, &tools_hash, messages);
                         Ok(resp)
                     })
                     .await;
@@ -219,25 +296,6 @@ impl Provider for OpenAi {
                 return self
                     .with_oauth_retry(|| async {
                         let codex_auth = self.codex_auth()?;
-
-                        let (previous_response_id, incremental_messages) = if let Some(sid) = session_id {
-                            let mut state = self.session_state.lock().unwrap();
-                            let session_state = state.entry(sid.clone()).or_default();
-                            if messages.len() >= session_state.last_message_count {
-                                let prev_id = session_state.last_response_id.clone();
-                                let last_count = session_state.last_message_count;
-                                let incremental = &messages[last_count..];
-                                (prev_id, incremental)
-                            } else {
-                                session_state.last_response_id = None;
-                                session_state.last_message_count = 0;
-                                (None, messages)
-                            }
-                        } else {
-                            (None, messages)
-                        };
-
-                        let prompt_cache_key = session_id.map(|s| s.to_string());
 
                         let body = super::responses::build_body(
                             model,
@@ -258,13 +316,7 @@ impl Provider for OpenAi {
                         )
                         .await?;
 
-                        if let Some(sid) = session_id {
-                            let mut state = self.session_state.lock().unwrap();
-                            let session_state = state.entry(sid.clone()).or_default();
-                            session_state.last_response_id = response_id;
-                            session_state.last_message_count = messages.len();
-                        }
-
+                        self.record_response(session_id, response_id, &tools_hash, messages);
                         Ok(resp)
                     })
                     .await;
@@ -338,6 +390,29 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
+    use crate::{ContentBlock, Role};
+
+    const TOOLS_HASH: &str = "[]";
+
+    fn assistant(text: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text { text: text.into() }],
+            ..Default::default()
+        }
+    }
+
+    fn tool_result(id: &str, output: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id.into(),
+                content: output.into(),
+                is_error: false,
+            }],
+            ..Default::default()
+        }
+    }
 
     #[test_case("gpt-5.6-luna")]
     #[test_case("gpt-5.6-terra")]
@@ -363,5 +438,111 @@ mod tests {
     #[test_case("gpt-5.4-nano", None ; "non_plan_5_4_nano_rejected")]
     fn coding_plan_context_window_resolves_plan_models(model_id: &str, expected: Option<u32>) {
         assert_eq!(coding_plan_context_window(model_id), expected);
+    }
+
+    #[test]
+    fn incremental_first_turn_sends_full_messages() {
+        let mut state = OpenAiSessionState::default();
+        let messages = vec![Message::user("hello".into())];
+        let (prev, inc) = incremental_for_state(&mut state, TOOLS_HASH, &messages);
+
+        assert!(prev.is_none());
+        assert_eq!(inc.len(), 1);
+        assert!(matches!(inc[0].role, Role::User));
+    }
+
+    #[test]
+    fn incremental_second_turn_skips_assistant_message() {
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        let (prev, _inc) = incremental_for_state(&mut state, TOOLS_HASH, &first);
+        assert!(prev.is_none());
+
+        record_in_state(&mut state, Some("resp_1".into()), TOOLS_HASH, &first);
+
+        let second = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+        let (prev, inc) = incremental_for_state(&mut state, TOOLS_HASH, &second);
+
+        assert_eq!(prev.as_deref(), Some("resp_1"));
+        assert_eq!(inc.len(), 1);
+        assert!(matches!(inc[0].role, Role::User));
+        assert!(matches!(
+            &inc[0].content[0],
+            ContentBlock::Text { text } if text == "again"
+        ));
+    }
+
+    #[test]
+    fn incremental_tool_loop_skips_assistant_tool_calls() {
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("run".into())];
+        let (prev, _inc) = incremental_for_state(&mut state, TOOLS_HASH, &first);
+        assert!(prev.is_none());
+        record_in_state(&mut state, Some("resp_1".into()), TOOLS_HASH, &first);
+
+        let second = vec![
+            Message::user("run".into()),
+            assistant("ok"),
+            tool_result("call_1", "result"),
+            Message::user("next".into()),
+        ];
+        let (prev, inc) = incremental_for_state(&mut state, TOOLS_HASH, &second);
+
+        assert_eq!(prev.as_deref(), Some("resp_1"));
+        assert_eq!(inc.len(), 2);
+        assert!(matches!(inc[0].role, Role::User));
+        assert!(matches!(inc[1].role, Role::User));
+        assert!(matches!(
+            &inc[1].content[0],
+            ContentBlock::Text { text } if text == "next"
+        ));
+    }
+
+    #[test]
+    fn incremental_tools_change_resets_state() {
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        record_in_state(&mut state, Some("resp_1".into()), TOOLS_HASH, &first);
+
+        let second = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+        let (prev, inc) = incremental_for_state(&mut state, "[\"new\"]", &second);
+
+        assert!(prev.is_none());
+        assert_eq!(inc.len(), 3);
+        assert_eq!(state.tools_hash, Some("[\"new\"]".to_string()));
+    }
+
+    #[test]
+    fn incremental_messages_shrink_resets_state() {
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("a".into()), Message::user("b".into())];
+        record_in_state(&mut state, Some("resp_1".into()), TOOLS_HASH, &first);
+
+        let second = vec![Message::user("a".into())];
+        let (prev, inc) = incremental_for_state(&mut state, TOOLS_HASH, &second);
+
+        assert!(prev.is_none());
+        assert_eq!(inc.len(), 1);
+    }
+
+    #[test]
+    fn record_response_without_id_leaves_state_unchanged() {
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        record_in_state(&mut state, Some("resp_1".into()), TOOLS_HASH, &first);
+
+        let second = vec![Message::user("again".into())];
+        record_in_state(&mut state, None, TOOLS_HASH, &second);
+
+        assert_eq!(state.last_response_id.as_deref(), Some("resp_1"));
+        assert_eq!(state.last_message_count, 1);
     }
 }
