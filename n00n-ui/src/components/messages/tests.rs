@@ -251,7 +251,7 @@ fn working_state_does_not_overlay_thinking_status_on_chat() {
     let terminal = render_working(&mut panel, 80, 10);
     let text = buffer_text(&terminal);
     assert!(
-        text.contains("N00n"),
+        text.contains("n00n"),
         "streamed response stays in chat: {text:?}"
     );
     assert!(
