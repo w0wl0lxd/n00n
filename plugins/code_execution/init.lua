@@ -25,6 +25,10 @@ local opts = n00n.api.register_options(output_limits.extend({
     desc = "Stop the script after this many seconds. A call's `timeout` param overrides it.",
   },
   max_memory_mb = { default = 50, min = 10, desc = "Memory limit for the Python sandbox (MB)." },
+  ruff_fix = {
+    default = true,
+    desc = "Run Ruff --fix --unsafe-fixes and formatting before execution when Ruff is available.",
+  },
 }))
 
 local function new_view(ctx, buf)
@@ -249,6 +253,7 @@ local function handler(input, ctx)
     max_memory_mb = opts.max_memory_mb,
     on_output = show,
     tools = tools,
+    ruff_fix = opts.ruff_fix,
   })
 
   if err then

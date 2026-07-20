@@ -147,8 +147,10 @@ function M.run(ctx, goal, opts)
   local consolidated = {}
   local total_cost = 0.0
   local accepted_in_round = false
+  local rounds = 0
 
   for round = 1, max_rounds do
+    rounds = round
     accepted_in_round = false
 
     -- Matching: pick top-1 agent per role slot by match score.
@@ -243,7 +245,7 @@ function M.run(ctx, goal, opts)
     return { ok = false, error = err }
   end
 
-  return { ok = true, text = text, cost = total_cost, model = "swarm" }
+  return { ok = true, text = text, cost = total_cost, model = "swarm", rounds = rounds }
 end
 
 return M

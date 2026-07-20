@@ -4,6 +4,8 @@
 //! the blocked thread unwind instead of leaking.
 
 use std::collections::HashMap;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use futures::future::join_all;
@@ -23,6 +25,47 @@ use crate::runtime::{TaskHandle, lock_cell};
 const BRIDGE_CLOSED: &str = "tool bridge closed (cancelled)";
 
 type CallResults = Vec<(u32, Result<Value, String>)>;
+
+fn run_ruff(args: &[&str], code: &str) -> Option<String> {
+    let mut child = Command::new("ruff")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child.stdin.take()?.write_all(code.as_bytes()).ok()?;
+    let output = child.wait_with_output().ok()?;
+    let fixed = String::from_utf8(output.stdout).ok()?;
+    (!fixed.is_empty()).then_some(fixed)
+}
+
+fn ruff_fix(code: String) -> String {
+    let fixed = run_ruff(
+        &[
+            "check",
+            "--fix",
+            "--unsafe-fixes",
+            "--isolated",
+            "--stdin-filename",
+            "code_execution.py",
+            "-",
+        ],
+        &code,
+    )
+    .unwrap_or(code);
+    run_ruff(
+        &[
+            "format",
+            "--isolated",
+            "--stdin-filename",
+            "code_execution.py",
+            "-",
+        ],
+        &fixed,
+    )
+    .unwrap_or(fixed)
+}
 
 enum BridgeMsg {
     Line(String),
@@ -77,6 +120,7 @@ async fn call_lua_tool(lua: Lua, f: Option<Function>, pc: &PendingCall) -> Resul
 ///   `on_output` (function) - called with each stdout line (string) as it is
 ///     produced. Must not yield.
 /// Optional fields:
+///   `ruff_fix` (boolean?) - run Ruff fix/unsafe-fixes and formatting before execution.
 ///   `tools` (table?) - map of `name -> function` for tools the sandbox may call.
 ///     Each function receives the tool input table and must return `(string)` or
 ///     `(nil, err)`. Tool calls are batched and dispatched concurrently.
@@ -99,6 +143,12 @@ async fn interpreter_run(
     let max_memory_mb: usize = required(&opts, "max_memory_mb")?;
     let on_output: Function = required(&opts, "on_output")?;
     let tools_tbl: Option<Table> = opts.get("tools")?;
+    let fix_with_ruff = opts.get::<Option<bool>>("ruff_fix")?.unwrap_or(false);
+    let code = if fix_with_ruff {
+        smol::unblock(move || ruff_fix(code)).await
+    } else {
+        code
+    };
 
     let mut fns: HashMap<String, Function> = HashMap::new();
     if let Some(t) = tools_tbl {
@@ -197,6 +247,41 @@ async fn interpreter_run(
             Ok((tbl, None))
         }
         Err(e) => Ok((tbl, Some(e))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ruff_fix;
+
+    #[test]
+    fn ruff_fix_removes_unused_import_and_formats() {
+        if std::process::Command::new("ruff")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        assert_eq!(
+            ruff_fix("import os\nx= 1\nprint(x)\n".into()),
+            "x = 1\nprint(x)\n"
+        );
+    }
+
+    #[test]
+    fn ruff_fix_preserves_top_level_await_despite_lint_errors() {
+        if std::process::Command::new("ruff")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let code = "result = await read(path='x')\nprint(result)\n";
+        let fixed = ruff_fix(code.into());
+        assert!(fixed.contains("await read"));
+        assert!(fixed.contains("print(result)"));
     }
 }
 

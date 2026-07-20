@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="w0wl0lxd/n00n"
-INSTALL_DIR="${N00N_INSTALL_DIR:-$HOME/.local/bin}"
+INSTALL_DIR="${N00N_INSTALL_DIR:-${NOON_INSTALL_DIR:-$HOME/.local/bin}}"
 
 os="$(uname -s)"
 arch="$(uname -m)"
