@@ -47,9 +47,10 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
 
-pub(crate) const JUMP_TO_BOTTOM_TEXT: &str = "↓ bottom";
+pub(crate) const JUMP_TO_BOTTOM_TEXT: &str = "↓ Bottom";
+const JUMP_TO_BOTTOM_KEY_GAP: &str = "  ";
 const JUMP_TO_BOTTOM_THRESHOLD: u16 = 1;
-const JUMP_TO_BOTTOM_POPUP_HEIGHT: u16 = 1;
+const JUMP_TO_BOTTOM_POPUP_HEIGHT: u16 = 3;
 const JUMP_TO_BOTTOM_POPUP_BOTTOM_MARGIN: u16 = 1;
 const COPY_LABEL_WIDTH: u16 = 6;
 
@@ -95,6 +96,8 @@ pub struct MessagesPanel {
     /// only bumps when colors actually land.
     rebake_requested: HashMap<String, u64>,
     prompt_progress: Option<PromptProgress>,
+    working_start: Instant,
+    was_working: bool,
     jump_to_bottom_popup: Option<Rect>,
     /// Older display messages waiting to be prepended in batches so a long
     /// session resumes without blocking the first paint on full rendering.
@@ -171,6 +174,8 @@ impl MessagesPanel {
             thinking_started: None,
             rebake_requested: HashMap::new(),
             prompt_progress: None,
+            working_start: Instant::now(),
+            was_working: false,
             jump_to_bottom_popup: None,
             restore_backlog: Vec::new(),
             restore_batches: VecDeque::new(),
@@ -545,6 +550,13 @@ impl MessagesPanel {
             .count()
     }
 
+    pub fn is_working(&self) -> bool {
+        self.in_progress_count() > 0
+            || self.streaming_thinking.is_animating()
+            || self.streaming_text.is_animating()
+            || !self.live_bufs.is_empty()
+    }
+
     #[cfg(test)]
     pub fn toggle_expansion(&mut self, tool_id: &str) -> bool {
         let Some(seg) = self
@@ -834,7 +846,12 @@ impl MessagesPanel {
             && self.streaming_text.is_empty()
     }
 
-    pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool) {
+    pub fn view(&mut self, frame: &mut Frame, area: Rect, has_selection: bool, is_working: bool) {
+        if is_working && !self.was_working {
+            self.working_start = Instant::now();
+        }
+        self.was_working = is_working;
+
         self.viewport_height = area.height;
         let width = area.width.saturating_sub(1);
         let theme_gen = theme::generation();
@@ -1013,6 +1030,10 @@ impl MessagesPanel {
         if show_popup {
             self.render_jump_to_bottom_popup(frame, viewport);
         }
+
+        if is_working {
+            self.render_working_indicator(frame, viewport);
+        }
     }
 
     fn render_jump_to_bottom_popup(&mut self, frame: &mut Frame, area: Rect) {
@@ -1020,12 +1041,13 @@ impl MessagesPanel {
         let keybind_style = theme::current().keybind_key;
         let line = Line::from(vec![
             Span::styled(JUMP_TO_BOTTOM_TEXT, text_style),
+            Span::raw(JUMP_TO_BOTTOM_KEY_GAP),
             Span::styled(key::SCROLL_BOTTOM.label, keybind_style),
         ]);
         let text_width = line.width() as u16;
 
         let block = Block::default()
-            .borders(Borders::LEFT | Borders::RIGHT)
+            .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(theme::current().panel_border)
             .padding(Padding::horizontal(1))
@@ -1049,6 +1071,29 @@ impl MessagesPanel {
         frame.render_widget(Clear, popup_area);
         frame.render_widget(block, popup_area);
         frame.render_widget(Paragraph::new(line), inner);
+    }
+
+    fn render_working_indicator(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::layout::Alignment;
+        use ratatui::widgets::Widget;
+
+        let elapsed = self.working_start.elapsed().as_millis();
+        let spinner = spinner_str(elapsed);
+        let style = theme::current().spinner;
+        let line = Line::from(vec![
+            Span::styled(spinner, style),
+            Span::styled(" thinking...", style),
+        ]);
+        let width = line.width() as u16;
+        if width == 0 || width > area.width || area.height == 0 {
+            return;
+        }
+        let x = area.right().saturating_sub(width);
+        let y = area.bottom().saturating_sub(1);
+        let pill_area = Rect::new(x, y, width, 1);
+        Paragraph::new(line)
+            .alignment(Alignment::Right)
+            .render(pill_area, frame.buffer_mut());
     }
 
     fn max_scroll(&self) -> u16 {
