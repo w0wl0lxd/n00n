@@ -6,6 +6,7 @@
 
 use mlua::{Function, Lua, Result as LuaResult, Table};
 use n00n_lua_macro::{lua_fn, lua_table};
+use sha2::{Digest, Sha256};
 
 type Pair = (Option<Function>, Option<String>);
 
@@ -29,6 +30,19 @@ fn compile(lua: &Lua, source: String, env: Table) -> LuaResult<Pair> {
     }
 }
 
+/// SHA-256 hex digest of {data}. Used by the workflow plugin for journal keys
+/// and run ids so identical agent opts collide only on a full 256-bit space.
+///
+/// @param data string Bytes to hash (Lua string, treated as UTF-8 bytes).
+/// @return (string) Lowercase hex SHA-256 digest.
+/// @example
+/// local k = n00n.workflow.hash("prompt=hi")
+#[lua_fn]
+fn hash(_lua: &Lua, data: String) -> LuaResult<String> {
+    let digest = Sha256::digest(data.as_bytes());
+    Ok(format!("{digest:x}"))
+}
+
 lua_table! {
     /// Sandboxed workflow script compilation.
     ///
@@ -38,9 +52,10 @@ lua_table! {
     ///
     /// ```lua
     /// local fn, err = n00n.workflow.compile("return 1 + 1", {})
+    /// local key = n00n.workflow.hash("stable payload")
     /// ```
     "n00n.workflow" => pub(crate) fn create_workflow_table(), DOCS [
-        compile,
+        compile, hash,
     ]
 }
 
@@ -95,5 +110,17 @@ mod tests {
             compile.call(("return (", env)).unwrap();
         assert!(func.is_none());
         assert!(err.is_some());
+    }
+
+    #[test]
+    fn hash_is_sha256_hex() {
+        let lua = Lua::new();
+        let t = create_workflow_table(&lua).unwrap();
+        let hash: Function = t.get("hash").unwrap();
+        let out: String = hash.call("abc").unwrap();
+        assert_eq!(
+            out,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }

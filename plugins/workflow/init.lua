@@ -48,6 +48,8 @@ local JOURNAL_FILENAME = "journal.jsonl"
 local META_FILENAME = "meta.json"
 local MAX_AGENTS_PER_RUN = 1000
 local AGENT_LIMIT_ERROR = "workflow exceeded max agent() calls (" .. MAX_AGENTS_PER_RUN .. ")"
+local INVALID_RUN_ID_ERROR = "resume must be a run_id (hex letters/digits only, no path separators)"
+local RUN_ID_PATTERN = "^[%x]+$"
 
 local description = [[Run a workflow script that orchestrates many subagents at scale.
 
@@ -122,13 +124,51 @@ local function bounded_errors(errors)
   return table.concat(out, "\n")
 end
 
-local function djb2(s)
-  local h = 5381
-  for i = 1, #s do
-    h = (h * 33 + string.byte(s, i)) % 4294967296
+local function freeze_fns(src, names)
+  local bare = {}
+  for _, name in ipairs(names) do
+    bare[name] = src[name]
   end
-  return string.format("%08x", h)
+  -- Read-only proxy: scripts see the whitelist, but writes (string.format = …)
+  -- cannot clobber the host tables or this copy.
+  return setmetatable({}, {
+    __index = bare,
+    __newindex = function()
+      error("workflow stdlib is read-only", 0)
+    end,
+    __metatable = false,
+  })
 end
+
+-- Own frozen copies of stdlib so a workflow script cannot clobber host
+-- string.*/table.* for every other plugin in the process.
+local SAFE_STRING = freeze_fns(string, {
+  "byte",
+  "char",
+  "find",
+  "format",
+  "gmatch",
+  "gsub",
+  "len",
+  "lower",
+  "match",
+  "rep",
+  "reverse",
+  "sub",
+  "upper",
+  "pack",
+  "packsize",
+  "unpack",
+})
+local SAFE_TABLE = freeze_fns(table, {
+  "concat",
+  "insert",
+  "move",
+  "pack",
+  "remove",
+  "sort",
+  "unpack",
+})
 
 local function stable_json(value)
   local t = type(value)
@@ -177,13 +217,17 @@ local function stable_json(value)
 end
 
 local function journal_key(aopts)
-  return djb2(stable_json({
+  return n00n.workflow.hash(stable_json({
     prompt = aopts.prompt,
     subagent_type = aopts.subagent_type or "general",
     model_tier = aopts.model_tier,
     label = aopts.label,
     output_schema = aopts.output_schema,
   }))
+end
+
+local function is_safe_run_id(run_id)
+  return type(run_id) == "string" and #run_id >= 8 and #run_id <= 128 and run_id:match(RUN_ID_PATTERN) ~= nil
 end
 
 local function workflows_root()
@@ -194,13 +238,24 @@ local function workflows_root()
   return n00n.fs.joinpath(state, JOURNAL_DIRNAME)
 end
 
+local function run_dir(run_id)
+  if not is_safe_run_id(run_id) then
+    return nil
+  end
+  local root = workflows_root()
+  if not root then
+    return nil
+  end
+  return n00n.fs.joinpath(root, run_id)
+end
+
 local function load_journal(run_id)
   local cache = {}
-  local root = workflows_root()
-  if not root or not run_id or run_id == "" then
+  local dir = run_dir(run_id)
+  if not dir then
     return cache, nil
   end
-  local path = n00n.fs.joinpath(root, run_id, JOURNAL_FILENAME)
+  local path = n00n.fs.joinpath(dir, JOURNAL_FILENAME)
   local text = n00n.fs.read(path)
   if type(text) ~= "string" or text == "" then
     return cache, path
@@ -215,11 +270,10 @@ local function load_journal(run_id)
 end
 
 local function write_run_meta(run_id, meta)
-  local root = workflows_root()
-  if not root then
+  local dir = run_dir(run_id)
+  if not dir then
     return
   end
-  local dir = n00n.fs.joinpath(root, run_id)
   n00n.fs.mkdir(dir, { parents = true })
   n00n.fs.write(n00n.fs.joinpath(dir, META_FILENAME), n00n.json.encode(meta))
 end
@@ -227,7 +281,7 @@ end
 local run_seq = 0
 local function new_run_id(script)
   run_seq = run_seq + 1
-  return djb2(script) .. string.format("%08x%04x", os.time() % 4294967296, run_seq % 65536)
+  return n00n.workflow.hash(script .. "\0" .. tostring(os.time()) .. "\0" .. tostring(run_seq))
 end
 
 local function parallel(fns, popts)
@@ -475,6 +529,7 @@ local function make_progress(ctx)
   local view = ToolView.new(n00n.ui.buf(), { max_lines = max_lines, keep = "tail" })
   local started_at = os.time()
   local state = { name = "workflow", phase = "starting", agents = 0, done = 0, cached = 0 }
+  local lock = n00n.async.semaphore(1)
 
   local function refresh_header()
     local elapsed = math.max(os.time() - started_at, 0)
@@ -490,6 +545,15 @@ local function make_progress(ctx)
     view:set_header(header)
   end
 
+  local function with_lock(fn)
+    local permit = lock:acquire()
+    local ok, err = pcall(fn)
+    permit:release()
+    if not ok then
+      error(err, 0)
+    end
+  end
+
   view.buf:on("click", function()
     view:toggle()
   end)
@@ -498,30 +562,42 @@ local function make_progress(ctx)
   return {
     buf = view.buf,
     set_name = function(name)
-      state.name = name
-      refresh_header()
+      with_lock(function()
+        state.name = name
+        refresh_header()
+      end)
     end,
     set_phase = function(name)
-      state.phase = name
-      refresh_header()
+      with_lock(function()
+        state.phase = name
+        refresh_header()
+      end)
     end,
     log = function(msg)
-      view:append({ msg, "dim" })
+      with_lock(function()
+        view:append({ msg, "dim" })
+      end)
     end,
     agent_started = function(label)
-      state.agents = state.agents + 1
-      refresh_header()
-      view:append({ "> " .. label, "dim" })
+      with_lock(function()
+        state.agents = state.agents + 1
+        refresh_header()
+        view:append({ "> " .. label, "dim" })
+      end)
     end,
     agent_done = function(label)
-      state.done = state.done + 1
-      refresh_header()
-      view:append({ "+ " .. label, "dim" })
+      with_lock(function()
+        state.done = state.done + 1
+        refresh_header()
+        view:append({ "+ " .. label, "dim" })
+      end)
     end,
     agent_cached = function(label)
-      state.cached = state.cached + 1
-      refresh_header()
-      view:append({ "= " .. label, "dim" })
+      with_lock(function()
+        state.cached = state.cached + 1
+        refresh_header()
+        view:append({ "= " .. label, "dim" })
+      end)
     end,
   }
 end
@@ -543,8 +619,8 @@ local function build_env(ctx, progress, inputs, journal, captured)
     ipairs = ipairs,
     pairs = pairs,
     unpack = unpack,
-    string = string,
-    table = table,
+    string = SAFE_STRING,
+    table = SAFE_TABLE,
     math = {
       floor = math.floor,
       ceil = math.ceil,
@@ -607,18 +683,22 @@ local function handler(input, ctx)
   end
 
   local run_id = input.resume
-  if type(run_id) ~= "string" or run_id == "" then
+  if type(run_id) == "string" and run_id ~= "" then
+    if not is_safe_run_id(run_id) then
+      return { llm_output = INVALID_RUN_ID_ERROR, is_error = true }
+    end
+  else
     run_id = new_run_id(input.script)
   end
   local cache, journal_path = load_journal(run_id)
   local journal = {
     cache = cache,
     path = journal_path or (function()
-      local root = workflows_root()
-      if not root then
+      local dir = run_dir(run_id)
+      if not dir then
         return nil
       end
-      return n00n.fs.joinpath(root, run_id, JOURNAL_FILENAME)
+      return n00n.fs.joinpath(dir, JOURNAL_FILENAME)
     end)(),
     lock = n00n.async.semaphore(1),
     in_flight = {},
