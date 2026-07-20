@@ -51,7 +51,7 @@ pub(crate) async fn stream_message(
     event_tx: &Sender<ProviderEvent>,
     auth: &ResolvedAuth,
     stream_timeout: Duration,
-) -> Result<StreamResponse, AgentError> {
+) -> Result<(Option<String>, StreamResponse), AgentError> {
     let url = responses_websocket_url(auth.base_url.as_deref());
     let mut builder = Request::builder().uri(&url).method("GET");
     for (key, value) in &auth.headers {
@@ -65,7 +65,7 @@ pub(crate) async fn stream_message(
         .await
         .map_err(ws_err)?;
 
-    let mut create_event = build_body(model, messages, system, tools)
+    let mut create_event = build_body(model, messages, system, tools, None, None)
         .as_object()
         .cloned()
         .unwrap_or_default();
@@ -94,7 +94,8 @@ pub(crate) async fn stream_message(
     }
 
     let _ = ws.close(None).await;
-    Ok(acc.into_stream_response())
+    let response_id = acc.response_id().map(|s| s.to_string());
+    Ok((response_id, acc.into_stream_response()))
 }
 
 fn ws_err(e: WsError) -> AgentError {
