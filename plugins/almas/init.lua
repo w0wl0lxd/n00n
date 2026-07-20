@@ -3,12 +3,10 @@
 -- (product_manager, planner, developer, tester, reviewer); each runs as its own
 -- subagent on a cost-aware model tier. Built entirely on noon.agent.* and the
 -- existing provider/model-tier machinery — no core changes.
-local ToolView = require("noon.tool_view")
 local memory = require("mem")
 local refine = require("refine")
 local retrieve = require("retrieve")
 local roles = require("roles")
-local route_tier = require("noon.route_tier").route_tier
 
 local PLANNER_OUTPUT = {
   type = "object",
