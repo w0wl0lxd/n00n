@@ -194,7 +194,7 @@ impl PluginHost {
     /// without building a config.
     pub fn with_all_builtins(registry: Arc<ToolRegistry>) -> Result<Self, PluginError> {
         let mut host = Self::new(registry)?;
-        host.load_builtins(&PluginsConfig::from_plugins(HashMap::new()))?;
+        host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))?;
         Ok(host)
     }
 
