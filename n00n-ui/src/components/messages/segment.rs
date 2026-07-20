@@ -127,7 +127,7 @@ impl Segment {
         surface: Surface,
         msg_index: Option<usize>,
     ) -> Self {
-        match TerminalImage::from_source(source, picker, width) {
+        let mut seg = match TerminalImage::from_source(source, picker, width) {
             Ok(term_img) => {
                 let search_text = format!(
                     "[image: {} {}x{}]",
@@ -135,15 +135,13 @@ impl Segment {
                     term_img.size.width,
                     term_img.size.height
                 );
-                let mut seg = Self {
+                Self {
                     search_text: search_text.clone(),
                     raw_text: Some(search_text),
                     msg_index,
                     image: Some(term_img),
                     ..Self::default()
-                };
-                seg.set_surface(surface);
-                seg
+                }
             }
             Err(err) => {
                 let search_text = format!("[image: {}]", err);
@@ -151,12 +149,11 @@ impl Segment {
                     search_text.clone(),
                     theme::current().error,
                 )])];
-                let mut seg =
-                    Self::with_lines(lines, search_text.clone(), Some(search_text), 0, msg_index);
-                seg.set_surface(surface);
-                seg
+                Self::with_lines(lines, search_text.clone(), Some(search_text), 0, msg_index)
             }
-        }
+        };
+        seg.set_surface(surface);
+        seg
     }
 
     pub fn lines(&self) -> &[Line<'static>] {

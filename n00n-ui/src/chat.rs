@@ -472,12 +472,17 @@ pub fn history_to_display(
     for msg in messages {
         match msg.role {
             Role::User => {
-                let mut images = Vec::new();
-                for block in &msg.content {
-                    if let ContentBlock::Image { source } = block {
-                        images.push(source.clone());
-                    }
-                }
+                let images: Vec<_> = msg
+                    .content
+                    .iter()
+                    .filter_map(|block| {
+                        if let ContentBlock::Image { source } = block {
+                            Some(source.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 let text = msg.user_text().map_or_else(String::new, |t| t.to_owned());
                 if !text.is_empty() || !images.is_empty() {
                     display.push(DisplayMessage::with_images(DisplayRole::User, text, images));

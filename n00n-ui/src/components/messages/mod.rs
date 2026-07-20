@@ -1746,25 +1746,20 @@ impl MessagesPanel {
                         prefix_width,
                         Some(i),
                     );
-                    match msg.role {
-                        DisplayRole::User => segment.set_surface(Surface::User),
-                        DisplayRole::Assistant => segment.set_surface(Surface::Assistant),
-                        _ => {}
-                    }
+                    segment.set_surface(surface);
                     self.cache.push(segment);
                 }
                 for (idx, source) in msg.images.iter().enumerate() {
                     if idx > 0 || !msg.text.is_empty() {
                         self.cache.push(Segment::spacer());
                     }
-                    let mut seg =
-                        Segment::with_image(source, picker_ref, content_width, surface, Some(i));
-                    match msg.role {
-                        DisplayRole::User => seg.set_surface(Surface::User),
-                        DisplayRole::Assistant => seg.set_surface(Surface::Assistant),
-                        _ => {}
-                    }
-                    self.cache.push(seg);
+                    self.cache.push(Segment::with_image(
+                        source,
+                        picker_ref,
+                        content_width,
+                        surface,
+                        Some(i),
+                    ));
                 }
             }
         }
