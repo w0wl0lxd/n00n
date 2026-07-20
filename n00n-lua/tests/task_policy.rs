@@ -1,13 +1,13 @@
 //! Tests the task plugin's structured-output policy end-to-end: real plugin
-//! source, real `noon.json` / `noon.async`, with model I/O replaced by
+//! source, real `n00n.json` / `n00n.async`, with model I/O replaced by
 //! scriptable Lua stubs.
 
 use std::sync::Arc;
 
-use noon_agent::tools::ToolRegistry;
-use noon_agent::tools::test_support::stub_ctx;
-use noon_agent::{AgentMode, ToolOutput};
-use noon_lua::PluginHost;
+use n00n_agent::tools::ToolRegistry;
+use n00n_agent::tools::test_support::stub_ctx;
+use n00n_agent::{AgentMode, ToolOutput};
+use n00n_lua::PluginHost;
 use serde_json::{Value, json};
 
 const TASK_PLUGIN_SRC: &str = include_str!("../../plugins/task/init.lua");
@@ -40,15 +40,15 @@ const SCENARIO_PROMPT_ERROR: &str = "prompt_error";
 const SCENARIO_RAISE: &str = "raise";
 const SCENARIO_SLOW: &str = "slow";
 
-/// Stubs keyed by `opts.name` (the task's `description`). `noon.json` and
-/// `noon.async` stay real so schema validation and semaphore behavior are tested.
+/// Stubs keyed by `opts.name` (the task's `description`). `n00n.json` and
+/// `n00n.async` stay real so schema validation and semaphore behavior are tested.
 const STUB_PRELUDE: &str = r#"
 recorder = { prompts = {}, closed = 0, sessions = 0, acquired = 0, released = 0 }
 
 -- Spy wrapper: the real semaphore does the work, counters track that every
 -- permit is explicitly released (gc would silently hide a leak).
-local real_semaphore = noon.async.semaphore
-noon.async.semaphore = function(n)
+local real_semaphore = n00n.async.semaphore
+n00n.async.semaphore = function(n)
   recorder.sem_size = n
   local sem = real_semaphore(n)
   return {
@@ -65,15 +65,15 @@ noon.async.semaphore = function(n)
   }
 end
 
-noon.agent.resolve_model = function(ctx, opts)
+n00n.agent.resolve_model = function(ctx, opts)
   return { spec = "test/model" }
 end
 
-noon.agent.system_prompt = function(ctx, opts)
+n00n.agent.system_prompt = function(ctx, opts)
   return "sys"
 end
 
-noon.agent.tools = function(ctx, opts)
+n00n.agent.tools = function(ctx, opts)
   return {}
 end
 
@@ -114,23 +114,23 @@ behaviors.raise = function(sess, msg)
   error("@RAISE_MSG@")
 end
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "slow_tool",
   description = "simulated slow model",
   schema = { type = "object", properties = {}, additionalProperties = false },
   audiences = { "main" },
   handler = function(input, ctx)
-    noon.fn.jobstart("@SLOW_CMD@", { on_exit = function() ctx:finish("ok") end })
+    n00n.fn.jobstart("@SLOW_CMD@", { on_exit = function() ctx:finish("ok") end })
   end,
 })
 
 behaviors.slow = function(sess, msg)
-  local out, err = noon.agent.call_tool(sess.ctx, "slow_tool", {})
+  local out, err = n00n.agent.call_tool(sess.ctx, "slow_tool", {})
   if err then error(err) end
   return { text = "@PLAIN_TEXT@" }
 end
 
-noon.agent.session = function(ctx, opts)
+n00n.agent.session = function(ctx, opts)
   recorder.sessions = recorder.sessions + 1
   recorder.has_local_tools = opts.local_tools ~= nil
   recorder.structured_output_schema = opts.local_tools and opts.local_tools.structured_output and opts.local_tools.structured_output.input_schema
@@ -151,7 +151,7 @@ noon.agent.session = function(ctx, opts)
   return sess
 end
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "probe",
   description = "recorder snapshot",
   schema = { type = "object", properties = {}, additionalProperties = false },
@@ -174,7 +174,7 @@ noon.api.register_tool({
     if #recorder.prompts > 0 then
       snap.prompts = recorder.prompts
     end
-    return (noon.json.encode(snap))
+    return (n00n.json.encode(snap))
   end,
 })
 "#;
@@ -403,7 +403,7 @@ fn raising_prompt_does_not_leak_semaphore_permit() {
     assert_eq!(out, PLAIN_TEXT);
 }
 
-/// A task handler that uses `noon.async.run` with an `on_finish` callback must
+/// A task handler that uses `n00n.async.run` with an `on_finish` callback must
 /// be able to finish after `DISPATCH_POLL_INTERVAL` even when no OS jobs are
 /// visible to the parent task.
 #[test]
