@@ -336,8 +336,6 @@ impl Provider for OpenAi {
 
             if is_codex_model(&model.id) {
                 let stream_timeout = self.compat.stream_timeout();
-                let body =
-                    super::websocket::build_request_body(model, messages, system, tools, opts);
                 return self
                     .with_oauth_retry(|| async {
                         let codex_auth = self.codex_auth()?;

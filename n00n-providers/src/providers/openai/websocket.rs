@@ -10,10 +10,16 @@ use serde_json::{Value, json};
 use smol::Timer;
 use tracing::debug;
 
-use super::responses::{ResponseAccumulator, build_body};
-use crate::model::Model;
+use super::responses::ResponseAccumulator;
 use crate::providers::ResolvedAuth;
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
+use crate::{AgentError, ProviderEvent, StreamResponse};
+
+#[cfg(test)]
+use super::responses::build_body;
+#[cfg(test)]
+use crate::model::Model;
+#[cfg(test)]
+use crate::{Message, RequestOptions, dialect};
 
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
 
@@ -21,6 +27,7 @@ pub(crate) fn is_websocket_model(model_id: &str) -> bool {
     model_id.starts_with("gpt-5.6") && !model_id.contains("-codex")
 }
 
+#[cfg(test)]
 pub(crate) fn build_request_body(
     model: &Model,
     messages: &[Message],
@@ -28,7 +35,7 @@ pub(crate) fn build_request_body(
     tools: &Value,
     opts: RequestOptions,
 ) -> Value {
-    let mut body = build_body(model, messages, system, tools);
+    let mut body = build_body(model, messages, system, tools, None, None);
     if let Some(effort) = opts.thinking.effort_str(&dialect::STANDARD, model) {
         body["reasoning"] = json!({"effort": effort});
     }

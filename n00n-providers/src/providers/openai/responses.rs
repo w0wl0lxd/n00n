@@ -616,7 +616,15 @@ pub(crate) async fn parse_sse(
         }
     }
 
-        "include": ["reasoning.encrypted_content"],
+    if acc.stop_reason.is_none() {
+        return Err(AgentError::Api {
+            status: 422,
+            message: "Responses API stream ended without a terminal event".into(),
+        });
+    }
+
+    let response_id = acc.response_id().map(|s| s.to_string());
+    Ok((response_id, acc.into_stream_response()))
 }
 
 fn parse_usage(u: &Value) -> TokenUsage {
@@ -1226,7 +1234,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     #[test]
     fn build_body_requests_encrypted_reasoning() {
         let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
-        let body = build_body(&model, &[], "system", &json!([]));
+        let body = build_body(&model, &[], "system", &json!([]), None, None);
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
     }
 
@@ -1270,7 +1278,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
         smol::block_on(async {
             let sse = "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"one\",\"summary\":[]}}\n\nevent: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"one\\\"}\"}}\n\nevent: response.output_item.done\ndata: {\"output_index\":2,\"item\":{\"id\":\"rs_2\",\"type\":\"reasoning\",\"encrypted_content\":\"two\",\"summary\":[]}}\n\nevent: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n";
             let (resp, _) = run_sse(sse).await;
-            let resp = resp.unwrap();
+            let (_, resp) = resp.unwrap();
             assert!(
                 matches!(&resp.message.content[0], ContentBlock::RedactedThinking { data } if data.contains("one"))
             );
