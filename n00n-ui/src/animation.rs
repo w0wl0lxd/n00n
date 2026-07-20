@@ -155,7 +155,9 @@ impl Typewriter {
         self.buffer = text.into();
         self.char_count = self.buffer.chars().count();
         self.newline_count = self.buffer.bytes().filter(|&b| b == b'\n').count();
-        self.generation = text.bytes().fold(1u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
+        self.generation = text
+            .bytes()
+            .fold(1u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
         self.visible_len = self.char_count;
         self.visible_byte_offset = self.buffer.len();
         self.anim_start_visible = self.char_count;

@@ -176,7 +176,8 @@ impl PlainState {
         self.rendered_byte_offset = new_end;
 
         if self.snapshot.is_empty() {
-            self.snapshot.push(prefix_line(self.prefix, self.prefix_style));
+            self.snapshot
+                .push(prefix_line(self.prefix, self.prefix_style));
         } else if visible.ends_with('\n') && self.snapshot.len() == self.completed_count {
             self.snapshot.push(Line::default());
         }
@@ -417,14 +418,7 @@ mod tests {
                 continue;
             }
             let tw = typewriter_for_text(&full_text[..end]);
-            cache.get_or_update(
-                &mut renderer,
-                &tw,
-                prefix,
-                style,
-                style,
-                width,
-            );
+            cache.get_or_update(&mut renderer, &tw, prefix, style, style, width);
             end += step;
         }
 

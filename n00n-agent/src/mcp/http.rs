@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use arc_swap::ArcSwap;
 use isahc::HttpClient;
 use isahc::config::{Configurable, RedirectPolicy};
-use isahc::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use isahc::http::header::{
+    ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue,
+};
 use isahc::http::{Method, Request, StatusCode};
 use n00n_storage::StateDir;
 use n00n_storage::auth::load_mcp_auth;
