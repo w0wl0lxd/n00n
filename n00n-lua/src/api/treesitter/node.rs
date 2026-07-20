@@ -66,7 +66,7 @@ fn r#type(_lua: &Lua, this: &LuaNode) -> LuaResult<String> {
 /// @return (integer) Symbol id.
 #[lua_fn]
 fn symbol(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
-    Ok(this.ts_node()?.kind_id() as i64)
+    Ok(i64::from(this.ts_node()?.kind_id()))
 }
 
 /// Returns a unique string identifier for this specific node in the tree.

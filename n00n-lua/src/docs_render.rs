@@ -106,7 +106,7 @@ Lua errors are reserved for programmer mistakes, like passing a number where
 a string belongs.
 "#;
 
-const COMPACT_HEADER: &str = r#"# Lua API
+const COMPACT_HEADER: &str = r"# Lua API
 
 Every module, function, and method, generated from source.
 
@@ -117,7 +117,7 @@ copy-pasted between the two.
 Signatures use Neovim notation: `{path}` is required, `{opts?}` is optional,
 `{...}` is variadic. Lua errors are reserved for programmer mistakes, like
 passing a number where a string belongs.
-"#;
+";
 
 const HELPERS_INTRO: &str = "## Shared helper modules\n\nThese ship inside n00n; `require` them from any plugin. Small modules are\nshown as full source, larger ones as their public interface.\n\n";
 

@@ -70,7 +70,7 @@ fn register(
     for ft in &filetypes {
         reg.filetype_to_lang.insert(ft.clone(), lang.clone());
     }
-    let existing = reg.lang_to_filetypes.entry(lang.clone()).or_default();
+    let existing = reg.lang_to_filetypes.entry(lang).or_default();
     for ft in filetypes {
         if !existing.contains(&ft) {
             existing.push(ft);

@@ -95,7 +95,7 @@ lua_class! {
 fn run(lua: &Lua, r#fn: Function, on_finish: Option<Function>) -> LuaResult<()> {
     let actual_work = if let Some(cb) = on_finish {
         lua.load(
-            r#"
+            r"
                 local work, finish = ...
                 return function()
                     local ok, result = pcall(work)
@@ -105,7 +105,7 @@ fn run(lua: &Lua, r#fn: Function, on_finish: Option<Function>) -> LuaResult<()> 
                         finish(result)
                     end
                 end
-            "#,
+            ",
         )
         .call::<Function>((r#fn, cb))?
     } else {
@@ -324,7 +324,7 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
     tbl.set(
         "join",
         lua.load(
-            r#"
+            r"
             local async_tbl = ...
             return function(max_jobs, funs)
                 if #funs == 0 then return end
@@ -348,7 +348,7 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
                     end
                 end)
             end
-        "#,
+        ",
         )
         .call::<Function>(&tbl)?,
     )?;
@@ -356,14 +356,14 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
     tbl.set(
         "wrap",
         lua.load(
-            r#"
+            r"
             local async_tbl = ...
             return function(argc, fun)
                 return function(...)
                     return async_tbl.await(argc, fun, ...)
                 end
             end
-        "#,
+        ",
         )
         .call::<Function>(&tbl)?,
     )?;
