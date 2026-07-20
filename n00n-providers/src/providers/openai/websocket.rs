@@ -16,6 +16,27 @@ use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, 
 
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
 
+pub(crate) fn build_request_body(
+    model: &Model,
+    messages: &[Message],
+    system: &str,
+    tools: &Value,
+    opts: RequestOptions,
+) -> Value {
+    let mut body = build_body(model, messages, system, tools);
+    if let Some(effort) = opts.thinking.effort_str(&dialect::STANDARD, model) {
+        body["reasoning"] = json!({"effort": effort});
+    }
+    body
+}
+
+fn build_create_event(body: &Value) -> Value {
+    let mut event = body.as_object().cloned().unwrap_or_default();
+    event.remove("stream");
+    event.insert("type".into(), json!("response.create"));
+    Value::Object(event)
+}
+
 fn responses_websocket_url(base_url: Option<&str>) -> String {
     let Some(base) = base_url else {
         return DEFAULT_RESPONSES_WS_URL.into();
@@ -40,14 +61,10 @@ fn responses_websocket_url(base_url: Option<&str>) -> String {
 }
 
 pub(crate) async fn stream_message(
-    model: &Model,
-    messages: &[Message],
-    system: &str,
-    tools: &Value,
+    body: &Value,
     event_tx: &Sender<ProviderEvent>,
     auth: &ResolvedAuth,
     stream_timeout: Duration,
-    opts: RequestOptions,
 ) -> Result<StreamResponse, AgentError> {
     let url = responses_websocket_url(auth.base_url.as_deref());
     let mut builder = Request::builder().uri(&url).method("GET");
@@ -62,13 +79,8 @@ pub(crate) async fn stream_message(
         .await
         .map_err(ws_err)?;
 
-    let mut body = build_body(model, messages, system, tools);
-    opts.thinking
-        .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
-    let mut create_event = body.as_object().cloned().unwrap_or_default();
-    create_event.remove("stream");
-    create_event.insert("type".into(), json!("response.create"));
-    send_json(&mut ws, &Value::Object(create_event)).await?;
+    let create_event = build_create_event(body);
+    send_json(&mut ws, &create_event).await?;
 
     let mut acc = ResponseAccumulator::new();
     let mut deadline = Instant::now() + stream_timeout;
@@ -212,6 +224,21 @@ mod tests {
     )]
     fn responses_websocket_url_derives_from_base_url(base_url: Option<&str>, expected: &str) {
         assert_eq!(super::responses_websocket_url(base_url), expected);
+    }
+
+    #[test]
+    fn create_event_uses_responses_reasoning_shape() {
+        let model = Model::from_spec("openai/gpt-5.6").unwrap();
+        let opts = RequestOptions {
+            thinking: crate::ThinkingConfig::Effort(crate::Effort::High),
+            ..Default::default()
+        };
+        let body = build_request_body(&model, &[], "system", &json!([]), opts);
+        let event = build_create_event(&body);
+        assert_eq!(event["reasoning"], json!({"effort":"high"}));
+        assert!(event.get("reasoning_effort").is_none());
+        assert_eq!(event["type"], "response.create");
+        assert!(event.get("stream").is_none());
     }
 
     #[test]
