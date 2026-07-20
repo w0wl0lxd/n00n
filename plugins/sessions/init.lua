@@ -3,8 +3,8 @@
 -- while the picker is open so rows never jump around under the cursor
 -- while background agents keep working.
 
-local TextInput = require("noon.text_input")
-local ListPicker = require("noon.list_picker")
+local TextInput = require("n00n.text_input")
+local ListPicker = require("n00n.list_picker")
 
 local FILTER_PREFIX = "❯ "
 local RENAME_PREFIX = "Rename: "
@@ -216,12 +216,12 @@ end
 -- board is still current.
 local function refresh()
   local this_board = board
-  local live, live_err = noon.session.live()
+  local live, live_err = n00n.session.live()
   if board ~= this_board then
     return
   end
   if live_err then
-    noon.ui.flash(live_err)
+    n00n.ui.flash(live_err)
     render()
     return
   end
@@ -310,9 +310,9 @@ local function open_selected()
     return
   end
   if not s.focused then
-    local _, err = noon.session.focus(s.id)
+    local _, err = n00n.session.focus(s.id)
     if err then
-      noon.ui.flash(err)
+      n00n.ui.flash(err)
       return
     end
   end
@@ -320,9 +320,9 @@ local function open_selected()
 end
 
 local function open_blank()
-  local _, err = noon.session.new({ focus = true })
+  local _, err = n00n.session.new({ focus = true })
   if err then
-    noon.ui.flash(err)
+    n00n.ui.flash(err)
     return
   end
   close()
@@ -334,7 +334,7 @@ local function delete_selected()
     return
   end
   if s.focused then
-    noon.ui.flash(DELETE_FOCUSED_HINT)
+    n00n.ui.flash(DELETE_FOCUSED_HINT)
     return
   end
   if board.confirm ~= s.id then
@@ -343,9 +343,9 @@ local function delete_selected()
     return
   end
   board.confirm = nil
-  local _, err = noon.session.delete(s.id)
+  local _, err = n00n.session.delete(s.id)
   if err then
-    noon.ui.flash(err)
+    n00n.ui.flash(err)
     return
   end
   board.deleted[s.id] = true
@@ -382,9 +382,9 @@ local function commit_rename()
   if title == "" then
     return
   end
-  local _, err = noon.session.set_title({ id = id, title = title })
+  local _, err = n00n.session.set_title({ id = id, title = title })
   if err then
-    noon.ui.flash(err)
+    n00n.ui.flash(err)
   else
     local si = find_stored(id)
     if si then
@@ -455,8 +455,8 @@ local function open()
   if board then
     return
   end
-  local buf = noon.ui.buf()
-  local win = noon.ui.open_win(buf, {
+  local buf = n00n.ui.buf()
+  local win = n00n.ui.open_win(buf, {
     title = " Sessions ",
     width = "70%",
     height = "70%",
@@ -487,13 +487,13 @@ local function open()
   -- in once it lands.
   refresh()
   local this_board = board
-  noon.async.run(function()
-    local stored, err = noon.session.list()
+  n00n.async.run(function()
+    local stored, err = n00n.session.list()
     if board ~= this_board then
       return
     end
     if err then
-      noon.ui.flash(err)
+      n00n.ui.flash(err)
       stored = {}
     end
     -- A delete may have landed while the scan was in flight; never let the
@@ -544,16 +544,16 @@ end
 -- synchronously while refresh needs an async roundtrip, so the dirty flag
 -- defers it to the next tick of the recv loop.
 local last_status = {}
-noon.api.create_autocmd("SessionStatusChanged", {
+n00n.api.create_autocmd("SessionStatusChanged", {
   callback = function(ev)
     local d = ev.data or {}
     local prev = last_status[d.session_id]
     last_status[d.session_id] = d.status
     if not d.focused then
       if d.status == "needs_input" then
-        noon.ui.flash("◆ " .. d.title .. " needs input · /sessions")
+        n00n.ui.flash("◆ " .. d.title .. " needs input · /sessions")
       elseif d.status == "idle" and prev == "working" then
-        noon.ui.flash("✓ " .. d.title .. " finished · /sessions")
+        n00n.ui.flash("✓ " .. d.title .. " finished · /sessions")
       end
     end
     if board then
@@ -562,27 +562,27 @@ noon.api.create_autocmd("SessionStatusChanged", {
   end,
 })
 
-noon.api.register_command({
+n00n.api.register_command({
   name = "/sessions",
   description = "Browse and switch sessions",
   handler = open,
 })
 
-noon.api.register_command({
+n00n.api.register_command({
   name = "/rename",
   description = "Rename the current session",
   handler = function(args)
     local title = (args or ""):match("^%s*(.-)%s*$")
     if title == "" then
-      noon.ui.flash(RENAME_USAGE)
+      n00n.ui.flash(RENAME_USAGE)
       return
     end
-    local id, err = noon.session.current()
+    local id, err = n00n.session.current()
     if err then
-      noon.ui.flash(err)
+      n00n.ui.flash(err)
       return
     end
-    local _, set_err = noon.session.set_title({ id = id, title = title })
-    noon.ui.flash(set_err or ('Renamed to "' .. title .. '"'))
+    local _, set_err = n00n.session.set_title({ id = id, title = title })
+    n00n.ui.flash(set_err or ('Renamed to "' .. title .. '"'))
   end,
 })

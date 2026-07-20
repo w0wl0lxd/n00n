@@ -1,9 +1,9 @@
 # CONTRIBUTING
 
 > [!NOTE]
-> Currently undergoing a heavy refactor in the code to support neovim style lua plugins, which means migrating existing functionality to lua from native rust code too. This means you should avoid adding large features, and focus on bug fixes, and small changes in general. https://github.com/w0wl0lxd/noon/issues/112.
+> Currently undergoing a heavy refactor in the code to support neovim style lua plugins, which means migrating existing functionality to lua from native rust code too. This means you should avoid adding large features, and focus on bug fixes, and small changes in general. https://github.com/w0wl0lxd/n00n/issues/112.
 
-Thanks for taking an interest in contributing to noon.
+Thanks for taking an interest in contributing to n00n.
 
 Just remember I'd like to keep the project minimal to not become bloat.
 

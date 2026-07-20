@@ -1,0 +1,1179 @@
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::app::shell::parse_shell_prefix;
+use crate::highlight;
+use crate::text_buffer::{EditResult, TextBuffer, is_newline_key};
+use crate::theme;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use n00n_storage::input_history::InputHistory;
+use std::mem;
+
+use n00n_providers::ImageSource;
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+
+use super::scrollbar::{ScrollInfo, render_vertical_scrollbar};
+use super::{apply_scroll_delta, visual_line_count};
+use crate::selection::LineBreaks;
+
+const MAX_INPUT_LINES: u16 = 20;
+const CHEVRON: &str = super::CHEVRON;
+const NEWLINE_PAD: &str = "  ";
+const PREFIX_WIDTH: u16 = 2;
+const PLACEHOLDER_SUGGESTIONS: &[&str] = &[
+    "research how something works",
+    "fix a bug",
+    "add a feature",
+    "add a database migration",
+    "create a helm chart",
+    "simplify some function",
+    "remove trivial comments",
+    "analyze data",
+    "profile and improve performance",
+    "add tests",
+    "add benchmarks",
+    "refactor a module",
+    "remove dead code",
+];
+
+pub enum InputAction {
+    Submit(Submission),
+    ContinueLine,
+    OpenFilePicker,
+    PaletteSync(String),
+    Passthrough(KeyEvent),
+    None,
+}
+
+pub struct Submission {
+    pub text: String,
+    pub images: Vec<ImageSource>,
+}
+
+impl Submission {
+    pub fn empty() -> Self {
+        Self {
+            text: String::new(),
+            images: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty() && self.images.is_empty()
+    }
+}
+
+pub struct InputBox {
+    pub(crate) buffer: TextBuffer,
+    history: InputHistory,
+    history_index: Option<usize>,
+    draft: String,
+    scroll_y: u16,
+    follow_cursor: bool,
+    placeholder_hint: &'static str,
+    placeholder_index: usize,
+    pending_images: Vec<ImageSource>,
+    max_input_lines: u16,
+    last_total_vl: u16,
+    last_content_height: u16,
+}
+
+impl InputBox {
+    pub fn handle_key(&mut self, key: KeyEvent) -> InputAction {
+        self.follow_cursor = true;
+
+        match key.code {
+            KeyCode::Up if self.is_at_first_line() => {
+                self.history_up();
+                return InputAction::None;
+            }
+            KeyCode::Down if self.is_at_last_line() => {
+                self.history_down();
+                return InputAction::None;
+            }
+            KeyCode::Tab | KeyCode::Esc => return InputAction::Passthrough(key),
+            KeyCode::Char('@')
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && self.char_before_cursor_is_whitespace_or_start() =>
+            {
+                return InputAction::OpenFilePicker;
+            }
+            _ if is_newline_key(&key) => {
+                self.buffer.add_line();
+                return InputAction::ContinueLine;
+            }
+            KeyCode::Enter if self.char_before_cursor_is_backslash() => {
+                self.continue_line();
+                return InputAction::ContinueLine;
+            }
+            KeyCode::Enter => {
+                return match self.submit() {
+                    Some(sub) => InputAction::Submit(sub),
+                    None => InputAction::Submit(Submission::empty()),
+                };
+            }
+            _ => {}
+        }
+
+        match self.buffer.handle_key(key) {
+            EditResult::Changed => InputAction::PaletteSync(self.buffer.value()),
+            EditResult::Moved | EditResult::Ignored => InputAction::None,
+        }
+    }
+
+    pub fn handle_paste(&mut self, text: &str) -> InputAction {
+        self.follow_cursor = true;
+        self.buffer.insert_text(text);
+        InputAction::PaletteSync(self.buffer.value())
+    }
+
+    /// Inserting a file path mid-word looks broken ("read/tmp/x" instead of
+    /// "read /tmp/x"). This adds spaces around the paste only when needed.
+    pub fn handle_paste_with_spaces(&mut self, text: &str) -> InputAction {
+        let line = &self.buffer.lines()[self.buffer.y()];
+        let bx = TextBuffer::char_to_byte(line, self.buffer.x());
+
+        let char_before = line[..bx].chars().next_back();
+        let char_after = line[bx..].chars().next();
+
+        let is_word_boundary =
+            |c: char| -> bool { c.is_alphanumeric() || c == '_' || ")]}>".contains(c) };
+
+        let needs_leading = char_before.is_some_and(&is_word_boundary) && !text.starts_with(' ');
+        let needs_trailing = char_after.is_some_and(&is_word_boundary) && !text.ends_with(' ');
+
+        if !needs_leading && !needs_trailing {
+            return self.handle_paste(text);
+        }
+
+        let mut spaced = String::with_capacity(
+            text.len() + usize::from(needs_leading) + usize::from(needs_trailing),
+        );
+
+        if needs_leading {
+            spaced.push(' ');
+        }
+        spaced.push_str(text);
+        if needs_trailing {
+            spaced.push(' ');
+        }
+
+        self.handle_paste(&spaced)
+    }
+
+    pub fn new(history: InputHistory) -> Self {
+        Self {
+            buffer: TextBuffer::new(String::new()),
+            history,
+            history_index: None,
+            draft: String::new(),
+            scroll_y: 0,
+            follow_cursor: true,
+            placeholder_hint: PLACEHOLDER_SUGGESTIONS[0],
+            placeholder_index: 0,
+            pending_images: Vec::new(),
+            max_input_lines: MAX_INPUT_LINES,
+            last_total_vl: 1,
+            last_content_height: 1,
+        }
+    }
+
+    pub fn set_max_input_lines(&mut self, max: u32) {
+        self.max_input_lines = max.clamp(1, u16::MAX as u32 - 2) as u16;
+    }
+
+    pub fn copy_text(&self) -> String {
+        self.buffer
+            .lines()
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let prefix = if i == 0 { CHEVRON } else { NEWLINE_PAD };
+                format!("{prefix}{l}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub fn line_breaks(&self, content_width: u16) -> LineBreaks {
+        let ew = effective_width(content_width.saturating_sub(2) as usize);
+        LineBreaks::from_heights(
+            self.buffer
+                .lines()
+                .iter()
+                .map(|line| visual_line_count(line.width(), ew) as u16),
+        )
+    }
+
+    pub fn height(&self, width: u16) -> u16 {
+        let ew = effective_width(width.saturating_sub(2) as usize);
+        let mut visual_lines = total_visual_lines(&self.buffer, ew, true);
+        if !self.pending_images.is_empty() {
+            visual_lines += 1;
+        }
+        let capped = visual_lines.min(self.max_input_lines as usize);
+        (capped + 2) as u16
+    }
+
+    pub fn is_at_first_line(&self) -> bool {
+        self.buffer.y() == 0
+    }
+
+    pub fn is_at_last_line(&self) -> bool {
+        self.buffer.y() == self.buffer.line_count().saturating_sub(1)
+    }
+
+    fn char_before_cursor(&self) -> Option<char> {
+        let x = self.buffer.x();
+        if x == 0 {
+            return None;
+        }
+        let line = &self.buffer.lines()[self.buffer.y()];
+        let byte_idx = TextBuffer::char_to_byte(line, x - 1);
+        line[byte_idx..].chars().next()
+    }
+
+    pub fn char_before_cursor_is_backslash(&self) -> bool {
+        self.char_before_cursor() == Some('\\')
+    }
+
+    fn char_before_cursor_is_whitespace_or_start(&self) -> bool {
+        match self.char_before_cursor() {
+            None => true,
+            Some(c) => c.is_whitespace(),
+        }
+    }
+
+    pub fn continue_line(&mut self) {
+        self.buffer.remove_char();
+        self.buffer.add_line();
+    }
+
+    pub fn submit(&mut self) -> Option<Submission> {
+        let text = self.buffer.value().trim().to_string();
+        let images = mem::take(&mut self.pending_images);
+        if text.is_empty() && images.is_empty() {
+            return None;
+        }
+        self.history.push(text.clone());
+        self.discard();
+        Some(Submission { text, images })
+    }
+
+    pub fn discard(&mut self) {
+        self.pending_images.clear();
+        self.history_index = None;
+        self.draft.clear();
+        self.buffer.clear();
+        self.scroll_y = 0;
+        self.placeholder_index = (self.placeholder_index + 1) % PLACEHOLDER_SUGGESTIONS.len();
+        self.placeholder_hint = PLACEHOLDER_SUGGESTIONS[self.placeholder_index];
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buffer.value().trim().is_empty() && self.pending_images.is_empty()
+    }
+
+    pub fn attach_image(&mut self, source: ImageSource) {
+        self.pending_images.push(source);
+    }
+
+    pub fn set_input(&mut self, s: String) {
+        self.buffer = TextBuffer::new(s);
+    }
+
+    pub fn history_up(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        let new_index = match self.history_index {
+            None => {
+                self.draft = self.buffer.value();
+                self.history.len() - 1
+            }
+            Some(0) => return,
+            Some(i) => i - 1,
+        };
+        self.history_index = Some(new_index);
+        let entry = self.history.get(new_index).unwrap().to_string();
+        self.set_input(entry);
+        self.buffer.move_to_end();
+    }
+
+    pub fn history_down(&mut self) {
+        let Some(i) = self.history_index else {
+            return;
+        };
+        if i + 1 < self.history.len() {
+            self.history_index = Some(i + 1);
+            let entry = self.history.get(i + 1).unwrap().to_string();
+            self.set_input(entry);
+        } else {
+            self.history_index = None;
+            let draft = mem::take(&mut self.draft);
+            self.set_input(draft);
+        }
+    }
+
+    fn visual_cursor_y(&self, ew: usize) -> u16 {
+        let lines_above: u16 = self
+            .buffer
+            .lines()
+            .iter()
+            .take(self.buffer.y())
+            .map(|line| visual_line_count(line.width(), ew) as u16)
+            .sum();
+
+        let wrap_row = {
+            let line = &self.buffer.lines()[self.buffer.y()];
+            let cursor_col: usize = line
+                .chars()
+                .take(self.buffer.x())
+                .map(|c| c.width().unwrap_or(1))
+                .sum();
+            cursor_col.checked_div(ew).unwrap_or(0) as u16
+        };
+
+        lines_above + wrap_row
+    }
+
+    pub fn view(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        streaming: bool,
+        border_style: Style,
+        focused: bool,
+        top_right_hint: Option<Line<'_>>,
+    ) {
+        let content_height = area.height.saturating_sub(2);
+        let ew = effective_width(area.width.saturating_sub(2) as usize);
+
+        if self.follow_cursor {
+            let visual_cursor_y = self.visual_cursor_y(ew);
+            if visual_cursor_y < self.scroll_y {
+                self.scroll_y = visual_cursor_y;
+            } else if visual_cursor_y >= self.scroll_y + content_height {
+                self.scroll_y = visual_cursor_y - content_height + 1;
+            }
+        }
+
+        let mut total_vl = total_visual_lines(&self.buffer, ew, focused) as u16;
+        if !self.pending_images.is_empty() {
+            total_vl += 1;
+        }
+        let max_scroll = total_vl.saturating_sub(content_height);
+        self.scroll_y = self.scroll_y.min(max_scroll);
+        self.last_total_vl = total_vl;
+        self.last_content_height = content_height.max(1);
+
+        let is_empty = self.buffer.value().is_empty();
+        let mut styled_lines: Vec<Line> = if is_empty && self.pending_images.is_empty() {
+            let placeholder_base = theme::current().input_placeholder;
+            if streaming {
+                vec![Line::from(vec![
+                    super::chevron_span(),
+                    if focused {
+                        Span::styled("Q", placeholder_base.reversed())
+                    } else {
+                        Span::styled("Q", placeholder_base)
+                    },
+                    Span::styled("ueue another prompt...", placeholder_base),
+                ])]
+            } else {
+                vec![Line::from(vec![
+                    super::chevron_span(),
+                    if focused {
+                        Span::styled("A", placeholder_base.reversed())
+                    } else {
+                        Span::styled("A", placeholder_base)
+                    },
+                    Span::styled("sk n00n to ", placeholder_base),
+                    Span::styled(
+                        self.placeholder_hint,
+                        placeholder_base.add_modifier(ratatui::style::Modifier::ITALIC),
+                    ),
+                    Span::styled("...", placeholder_base),
+                ])]
+            }
+        } else {
+            let cursor_y = self.buffer.y();
+            let cursor_x = self.buffer.x();
+            self.buffer
+                .lines()
+                .iter()
+                .enumerate()
+                .flat_map(|(i, line)| {
+                    let is_cursor_line = i == cursor_y && focused;
+                    let shell_spans = if i == 0 {
+                        shell_highlight_spans(line)
+                    } else {
+                        None
+                    };
+                    wrap_line(
+                        line,
+                        ew,
+                        is_cursor_line,
+                        cursor_x,
+                        i == 0,
+                        shell_spans.as_deref(),
+                    )
+                })
+                .collect()
+        };
+
+        if !self.pending_images.is_empty() {
+            let n = self.pending_images.len();
+            let label = match n {
+                1 => "1 image".to_string(),
+                _ => format!("{n} images"),
+            };
+            styled_lines.push(Line::from(Span::styled(
+                label,
+                theme::current().input_placeholder,
+            )));
+        }
+
+        let text = Text::from(styled_lines);
+        let mut block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(border_style);
+        if let Some(hint) = top_right_hint {
+            block = block.title_top(hint.right_aligned());
+        }
+        let paragraph = Paragraph::new(text)
+            .style(Style::new().fg(theme::current().foreground))
+            .scroll((self.scroll_y, 0))
+            .block(block);
+        frame.render_widget(paragraph, area);
+
+        if max_scroll > 0 {
+            let inner = area.inner(ratatui::layout::Margin::new(0, 1));
+            render_vertical_scrollbar(frame, inner, total_vl, self.scroll_y, None);
+        }
+    }
+
+    pub fn scroll_y(&self) -> u16 {
+        self.scroll_y
+    }
+
+    pub fn scroll_info(&self, area: Rect) -> Option<ScrollInfo> {
+        if self.last_total_vl > area.height {
+            let max_scroll = self.last_total_vl.saturating_sub(area.height);
+            Some(ScrollInfo {
+                content_len: self.last_total_vl,
+                position: self.scroll_y.min(max_scroll),
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn set_scroll_y(&mut self, y: u16) {
+        self.scroll_y = y;
+        self.follow_cursor = false;
+    }
+
+    pub fn history(&self) -> &InputHistory {
+        &self.history
+    }
+
+    pub fn scroll(&mut self, delta: i32) {
+        let max_scroll = self
+            .last_total_vl
+            .saturating_sub(self.last_content_height.max(1));
+        self.scroll_y = apply_scroll_delta(self.scroll_y, delta).min(max_scroll);
+        self.follow_cursor = false;
+    }
+}
+
+fn effective_width(content_width: usize) -> usize {
+    content_width.saturating_sub(PREFIX_WIDTH as usize)
+}
+
+fn wrap_line(
+    line: &str,
+    ew: usize,
+    is_cursor_line: bool,
+    cursor_x: usize,
+    is_first_line: bool,
+    shell_spans: Option<&[Span<'static>]>,
+) -> Vec<Line<'static>> {
+    let chars: Vec<char> = line.chars().collect();
+    let widths: Vec<usize> = chars.iter().map(|c| c.width().unwrap_or(1)).collect();
+    let row_width = ew.max(1);
+
+    let mut row_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut row_start = 0;
+    let mut row_col = 0;
+    for (i, &w) in widths.iter().enumerate() {
+        if row_col + w > row_width && row_col > 0 {
+            row_ranges.push((row_start, i));
+            row_start = i;
+            row_col = 0;
+        }
+        row_col += w;
+    }
+    if row_start < chars.len() || row_ranges.is_empty() {
+        row_ranges.push((row_start, chars.len()));
+    }
+    if is_cursor_line && row_col + 1 > row_width {
+        row_ranges.push((chars.len(), chars.len()));
+    }
+
+    row_ranges
+        .into_iter()
+        .enumerate()
+        .map(|(row, (start, end))| {
+            let prefix_span = if row == 0 && is_first_line {
+                super::chevron_span()
+            } else if row == 0 {
+                Span::raw(NEWLINE_PAD)
+            } else {
+                Span::raw("")
+            };
+            let mut spans = vec![prefix_span];
+
+            let chunk_spans = if let Some(styled) = &shell_spans {
+                slice_styled_spans(styled, start, end)
+            } else {
+                let chunk_text: String = chars[start..end].iter().collect();
+                vec![Span::raw(chunk_text)]
+            };
+
+            if is_cursor_line && cursor_x >= start && cursor_x <= end {
+                let local_cursor = cursor_x.saturating_sub(start);
+                spans.extend(overlay_cursor(chunk_spans, local_cursor));
+            } else {
+                spans.extend(chunk_spans);
+            }
+
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn shell_highlight_spans(line: &str) -> Option<Vec<Span<'static>>> {
+    if !highlight::is_ready() {
+        return None;
+    }
+    let parsed = parse_shell_prefix(line)?;
+    let prefix = &line[..parsed.prefix_len];
+    let command = &line[parsed.prefix_len..];
+    let shell_style = theme::current().shell_prefix;
+    let mut spans = vec![Span::styled(prefix.to_owned(), shell_style)];
+    let mut hl = n00n_highlight::Highlighter::for_token("bash");
+    for span in highlight::highlight_line(&mut hl, command) {
+        spans.push(span);
+    }
+    Some(spans)
+}
+
+fn slice_styled_spans(
+    spans: &[Span<'static>],
+    char_start: usize,
+    char_end: usize,
+) -> Vec<Span<'static>> {
+    let mut result = Vec::new();
+    let mut pos = 0;
+    for span in spans {
+        let span_len = span.content.chars().count();
+        let span_end = pos + span_len;
+        if span_end <= char_start || pos >= char_end {
+            pos = span_end;
+            continue;
+        }
+        let lo = char_start.saturating_sub(pos);
+        let hi = (char_end - pos).min(span_len);
+        let slice: String = span.content.chars().skip(lo).take(hi - lo).collect();
+        if !slice.is_empty() {
+            result.push(Span::styled(slice, span.style));
+        }
+        pos = span_end;
+    }
+    result
+}
+
+fn overlay_cursor(spans: Vec<Span<'static>>, cursor_char_pos: usize) -> Vec<Span<'static>> {
+    let mut result = Vec::new();
+    let mut pos = 0;
+    let mut cursor_placed = false;
+    for span in spans {
+        let span_len = span.content.chars().count();
+        if !cursor_placed && cursor_char_pos >= pos && cursor_char_pos < pos + span_len {
+            let local = cursor_char_pos - pos;
+            let byte_pos = TextBuffer::char_to_byte(&span.content, local);
+            let (before, after) = span.content.split_at(byte_pos);
+            if !before.is_empty() {
+                result.push(Span::styled(before.to_string(), span.style));
+            }
+            let mut cs = after.chars();
+            let Some(cursor_char) = cs.next() else {
+                break;
+            };
+            result.push(Span::styled(cursor_char.to_string(), span.style.reversed()));
+            let rest: String = cs.collect();
+            if !rest.is_empty() {
+                result.push(Span::styled(rest.to_string(), span.style));
+            }
+            cursor_placed = true;
+        } else {
+            result.push(span);
+        }
+        pos += span_len;
+    }
+    if !cursor_placed {
+        result.push(Span::styled(" ", Style::new().reversed()));
+    }
+    result
+}
+
+fn total_visual_lines(buffer: &TextBuffer, ew: usize, cursor_visible: bool) -> usize {
+    let cursor_y = buffer.y();
+    buffer
+        .lines()
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let mut text_len = line.width();
+            if cursor_visible && i == cursor_y {
+                text_len += 1;
+            }
+            visual_line_count(text_len, ew)
+        })
+        .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::scrollbar::SCROLLBAR_THUMB;
+    use test_case::test_case;
+
+    fn type_text(input: &mut InputBox, text: &str) {
+        for c in text.chars() {
+            input.buffer.push_char(c);
+        }
+    }
+
+    fn submit_text(input: &mut InputBox, text: &str) {
+        type_text(input, text);
+        input.submit();
+    }
+
+    #[test]
+    fn submit() {
+        let mut input = InputBox::new(InputHistory::default());
+        assert!(input.submit().is_none());
+
+        type_text(&mut input, " ");
+        assert!(input.submit().is_none());
+
+        type_text(&mut input, " x ");
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.text, "x");
+        assert!(sub.images.is_empty());
+        assert_eq!(input.buffer.value(), "");
+
+        type_text(&mut input, "line1");
+        input.buffer.add_line();
+        type_text(&mut input, "line2");
+        assert_eq!(input.submit().unwrap().text, "line1\nline2");
+    }
+
+    #[test]
+    fn backslash_continuation() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "hello\\");
+        assert!(input.char_before_cursor_is_backslash());
+        input.continue_line();
+        assert_eq!(input.buffer.lines(), &["hello", ""]);
+
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "asd\\asd");
+        for _ in 0..3 {
+            input.buffer.move_left();
+        }
+        assert!(input.char_before_cursor_is_backslash());
+        input.continue_line();
+        assert_eq!(input.buffer.lines(), &["asd", "asd"]);
+    }
+
+    const TEST_WIDTH: u16 = 80;
+
+    #[test]
+    fn height_capped_at_max() {
+        let mut input = InputBox::new(InputHistory::default());
+        let base = input.height(TEST_WIDTH);
+        for _ in 0..20 {
+            input.buffer.add_line();
+        }
+        assert!(input.height(TEST_WIDTH) > base);
+        assert!(input.height(TEST_WIDTH) <= MAX_INPUT_LINES + 2);
+    }
+
+    #[test]
+    fn height_respects_configured_max() {
+        let mut input = InputBox::new(InputHistory::default());
+        input.set_max_input_lines(3);
+        for _ in 0..10 {
+            input.buffer.add_line();
+        }
+        assert_eq!(input.height(TEST_WIDTH), 3 + 2);
+    }
+
+    #[test]
+    fn first_last_line() {
+        let mut input = InputBox::new(InputHistory::default());
+        assert!(input.is_at_first_line());
+        assert!(input.is_at_last_line());
+
+        input.buffer.add_line();
+        assert!(!input.is_at_first_line());
+        assert!(input.is_at_last_line());
+
+        input.buffer.move_up();
+        assert!(input.is_at_first_line());
+        assert!(!input.is_at_last_line());
+    }
+
+    #[test]
+    fn history() {
+        let mut input = InputBox::new(InputHistory::default());
+
+        input.history_up();
+        input.history_down();
+        assert_eq!(input.buffer.value(), "");
+
+        submit_text(&mut input, "a");
+        submit_text(&mut input, "b");
+        type_text(&mut input, "draft");
+
+        input.history_up();
+        assert_eq!(input.buffer.value(), "b");
+        input.history_up();
+        assert_eq!(input.buffer.value(), "a");
+        input.history_up();
+        assert_eq!(input.buffer.value(), "a");
+
+        input.history_down();
+        assert_eq!(input.buffer.value(), "b");
+        input.history_down();
+        assert_eq!(input.buffer.value(), "draft");
+
+        input.buffer.clear();
+        type_text(&mut input, "line1");
+        input.buffer.add_line();
+        type_text(&mut input, "line2");
+        assert!(input.is_at_last_line());
+        input.history_up();
+        input.history_down();
+        assert_eq!(input.buffer.value(), "line1\nline2");
+        assert!(input.is_at_first_line());
+
+        input.submit();
+        input.history_up();
+        assert_eq!(input.buffer.value(), "line1\nline2");
+        assert!(input.is_at_last_line());
+
+        input.history_down();
+        assert_eq!(input.buffer.value(), "");
+
+        input.set_input("alpha\nbeta".into());
+        input.submit();
+        input.set_input("gamma\ndelta".into());
+        input.submit();
+
+        input.history_up();
+        input.history_up();
+        assert_eq!(input.buffer.value(), "alpha\nbeta");
+        assert!(input.is_at_last_line());
+
+        input.history_down();
+        assert_eq!(input.buffer.value(), "gamma\ndelta");
+        assert!(input.is_at_first_line());
+
+        input.history_down();
+        assert_eq!(input.buffer.value(), "");
+    }
+
+    #[test]
+    fn cursor_adds_extra_wrap_row_at_boundary() {
+        let width: u16 = 12;
+        let ew = effective_width(width.saturating_sub(2) as usize);
+
+        let mut at_boundary = InputBox::new(InputHistory::default());
+        type_text(&mut at_boundary, &"x".repeat(ew));
+
+        let mut before_boundary = InputBox::new(InputHistory::default());
+        type_text(&mut before_boundary, &"x".repeat(ew - 1));
+
+        assert_eq!(
+            at_boundary.height(width),
+            before_boundary.height(width) + 1,
+            "cursor at boundary should cause one extra visual line"
+        );
+    }
+
+    fn render_input_with(
+        input: &mut InputBox,
+        width: u16,
+        height: u16,
+        streaming: bool,
+        border_style: Style,
+    ) -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = Rect::new(0, 0, width, height);
+                input.view(frame, area, streaming, border_style, true, None);
+            })
+            .unwrap();
+        terminal
+    }
+
+    fn render_input(
+        input: &mut InputBox,
+        width: u16,
+        height: u16,
+    ) -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        render_input_with(
+            input,
+            width,
+            height,
+            false,
+            Style::new().fg(theme::current().mode_build),
+        )
+    }
+
+    fn has_scrollbar_thumb(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> bool {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height).any(|y| {
+            buf.cell((buf.area.width - 1, y))
+                .is_some_and(|c| c.symbol() == SCROLLBAR_THUMB)
+        })
+    }
+
+    #[test_case(20, true  ; "visible_when_content_overflows")]
+    #[test_case(0,  false ; "hidden_when_content_fits")]
+    fn scrollbar_visibility(extra_lines: usize, expect_visible: bool) {
+        let mut input = InputBox::new(InputHistory::default());
+        for _ in 0..extra_lines {
+            input.buffer.add_line();
+        }
+        let terminal = render_input(&mut input, 40, MAX_INPUT_LINES + 2);
+        assert_eq!(has_scrollbar_thumb(&terminal), expect_visible);
+    }
+
+    #[test]
+    fn scroll_clamped_on_content_shrink() {
+        let mut input = InputBox::new(InputHistory::default());
+        for _ in 0..20 {
+            input.buffer.add_line();
+        }
+        let area_height = 5_u16;
+        let _ = render_input(&mut input, 40, area_height);
+        let scroll_before = input.scroll_y;
+        assert!(scroll_before > 0);
+
+        input.buffer = TextBuffer::new("short".into());
+        let _ = render_input(&mut input, 40, area_height);
+        assert_eq!(input.scroll_y, 0);
+    }
+
+    #[test]
+    fn multibyte_input_renders_without_panic() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "● grep> hello");
+        input.buffer.move_home();
+        input.buffer.move_right();
+        input.buffer.move_right();
+        let _ = render_input(&mut input, 40, 5);
+    }
+
+    #[test_case("●\\", true  ; "after_multibyte")]
+    #[test_case("●", false   ; "inside_multibyte_would_be_false")]
+    fn char_before_cursor_backslash(input: &str, expected: bool) {
+        let mut input_box = InputBox::new(InputHistory::default());
+        type_text(&mut input_box, input);
+        assert_eq!(input_box.char_before_cursor_is_backslash(), expected);
+    }
+
+    fn rendered_row(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+        row: u16,
+    ) -> String {
+        let buf = terminal.backend().buffer();
+        (0..buf.area.width)
+            .map(|col| buf.cell((col, row)).unwrap().symbol().to_string())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn composer_renders_complete_rounded_border() {
+        let mut input = InputBox::new(InputHistory::default());
+        let terminal = render_input(&mut input, 24, 3);
+
+        assert!(rendered_row(&terminal, 0).starts_with('╭'));
+        assert!(rendered_row(&terminal, 0).ends_with('╮'));
+        assert!(rendered_row(&terminal, 2).starts_with('╰'));
+        assert!(rendered_row(&terminal, 2).ends_with('╯'));
+    }
+
+    #[test]
+    fn prefix_on_single_line() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "hello");
+        let terminal = render_input(&mut input, 20, 4);
+        let row = rendered_row(&terminal, 1);
+        assert!(row.starts_with("│❯"), "row: {row:?}");
+        assert!(row.contains("hello"));
+    }
+
+    #[test]
+    fn prefix_on_multiline() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "aaa");
+        input.buffer.add_line();
+        type_text(&mut input, "bbb");
+        let terminal = render_input(&mut input, 20, 5);
+        let row0 = rendered_row(&terminal, 1);
+        let row1 = rendered_row(&terminal, 2);
+        assert!(row0.starts_with("│❯"), "row0: {row0:?}");
+        assert!(row1.starts_with("│  "), "row1: {row1:?}");
+    }
+
+    #[test]
+    fn wrapped_line_gets_no_padding() {
+        let mut input = InputBox::new(InputHistory::default());
+        let ew = effective_width(12);
+        type_text(&mut input, &"x".repeat(ew + 3));
+        let terminal = render_input(&mut input, 14, 5);
+        let row0 = rendered_row(&terminal, 1);
+        let row1 = rendered_row(&terminal, 2);
+        assert!(row0.starts_with("│❯"), "row0: {row0:?}");
+        assert!(
+            row1.starts_with("│x"),
+            "wrapped row should start at the card inset: {row1:?}"
+        );
+    }
+
+    #[test]
+    fn copy_text_includes_prefix() {
+        let input = InputBox::new(InputHistory::default());
+        assert_eq!(input.copy_text(), CHEVRON);
+
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "line1");
+        input.buffer.add_line();
+        type_text(&mut input, "line2");
+        assert_eq!(input.copy_text(), "❯ line1\n  line2");
+    }
+
+    #[test]
+    fn placeholder_has_prefix() {
+        let mut input = InputBox::new(InputHistory::default());
+        let terminal = render_input(&mut input, 40, 4);
+        let row = rendered_row(&terminal, 1);
+        assert!(row.starts_with("│❯"), "placeholder row: {row:?}");
+    }
+
+    #[test]
+    fn placeholder_rotates_on_discard() {
+        let mut input = InputBox::new(InputHistory::default());
+        let first = input.placeholder_hint;
+        for i in 1..=PLACEHOLDER_SUGGESTIONS.len() {
+            input.discard();
+            if i < PLACEHOLDER_SUGGESTIONS.len() {
+                assert_ne!(input.placeholder_hint, first);
+            }
+        }
+        assert_eq!(input.placeholder_hint, first);
+    }
+
+    fn test_image() -> ImageSource {
+        use n00n_providers::ImageMediaType;
+        use std::sync::Arc;
+        ImageSource::new(ImageMediaType::Png, Arc::from("dGVzdA=="))
+    }
+
+    #[test]
+    fn submit_with_images() {
+        let mut input = InputBox::new(InputHistory::default());
+
+        input.attach_image(test_image());
+        let sub = input.submit().unwrap();
+        assert!(sub.text.is_empty());
+        assert_eq!(sub.images.len(), 1);
+        assert!(input.submit().is_none(), "images cleared after submit");
+
+        type_text(&mut input, "describe this");
+        input.attach_image(test_image());
+        let sub = input.submit().unwrap();
+        assert_eq!(sub.text, "describe this");
+        assert_eq!(sub.images.len(), 1);
+    }
+
+    const IMAGE_LABEL: &str = "1 image";
+
+    #[test]
+    fn image_label_rendered() {
+        let mut input = InputBox::new(InputHistory::default());
+        input.attach_image(test_image());
+        let h = input.height(40);
+        let terminal = render_input(&mut input, 40, h);
+        let found = (0..h).any(|row| rendered_row(&terminal, row).contains(IMAGE_LABEL));
+        assert!(found, "image label not found in rendered output");
+    }
+
+    #[test]
+    fn height_accounts_for_pending_images() {
+        let mut input = InputBox::new(InputHistory::default());
+        let base_height = input.height(TEST_WIDTH);
+        input.attach_image(test_image());
+        assert_eq!(input.height(TEST_WIDTH), base_height + 1);
+    }
+
+    #[test_case("read", "src/main.rs", " src/main.rs" ; "leading_after_ascii")]
+    #[test_case("打开", "src/main.rs", " src/main.rs" ; "leading_after_unicode")]
+    #[test_case("", "src/main.rs", "src/main.rs" ; "no_leading_at_start")]
+    #[test_case("read ", "src/main.rs", "src/main.rs" ; "no_leading_after_space")]
+    #[test_case("--file=", "src/main.rs", "src/main.rs" ; "no_leading_after_equals")]
+    #[test_case("/", "src/main.rs", "src/main.rs" ; "no_leading_after_slash")]
+    #[test_case("\"", "src/main.rs", "src/main.rs" ; "no_leading_after_quote")]
+    #[test_case("'", "src/main.rs", "src/main.rs" ; "no_leading_after_squote")]
+    #[test_case("foo_", "src/main.rs", " src/main.rs" ; "leading_after_underscore")]
+    #[test_case("$(cmd)", "src/main.rs", " src/main.rs" ; "leading_after_closing_paren")]
+    #[test_case("arr[0]", "src/main.rs", " src/main.rs" ; "leading_after_closing_bracket")]
+    fn paste_with_spaces_leading(before: &str, paste: &str, expected_suffix: &str) {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, before);
+        input.handle_paste_with_spaces(paste);
+        assert_eq!(input.buffer.value(), format!("{before}{expected_suffix}"));
+    }
+
+    #[test_case("file", 0, "/tmp/foo", "/tmp/foo file" ; "trailing_before_ascii")]
+    #[test_case("を読む", 0, "/tmp/foo", "/tmp/foo を読む" ; "trailing_before_unicode")]
+    #[test_case("foobar", 3, "src/main.rs", "foo src/main.rs bar" ; "both_sides_mid_word")]
+    #[test_case("in  between", 3, "file.rs", "in file.rs between" ; "neither_side_between_spaces")]
+    #[test_case("read ''", 6, "src/main.rs", "read 'src/main.rs'" ; "neither_side_between_quotes")]
+    fn paste_with_spaces_at_cursor(before: &str, cursor_at: usize, paste: &str, expected: &str) {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, before);
+        let back = before.chars().count() - cursor_at;
+        for _ in 0..back {
+            input.buffer.move_left();
+        }
+        input.handle_paste_with_spaces(paste);
+        assert_eq!(input.buffer.value(), expected);
+    }
+
+    #[test]
+    fn paste_with_spaces_empty_line() {
+        let mut input = InputBox::new(InputHistory::default());
+        input.handle_paste_with_spaces("file.rs");
+        assert_eq!(input.buffer.value(), "file.rs");
+    }
+
+    #[test]
+    fn paste_with_spaces_text_has_leading_space() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "read");
+        input.handle_paste_with_spaces(" file.rs");
+        assert_eq!(input.buffer.value(), "read file.rs");
+    }
+
+    #[test]
+    fn paste_with_spaces_text_has_trailing_space() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "file");
+        for _ in 0..4 {
+            input.buffer.move_left();
+        }
+        input.handle_paste_with_spaces("src/main.rs ");
+        assert_eq!(input.buffer.value(), "src/main.rs file");
+    }
+
+    #[test]
+    fn paste_with_spaces_multiline_buffer_cursor_on_second_line() {
+        let mut input = InputBox::new(InputHistory::default());
+        input.handle_paste("first\nread");
+        input.handle_paste_with_spaces("file.rs");
+        assert_eq!(input.buffer.value(), "first\nread file.rs");
+    }
+
+    #[test]
+    fn paste_with_spaces_cursor_at_end_no_trailing() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "read");
+        input.handle_paste_with_spaces("file.rs");
+        assert_eq!(input.buffer.value(), "read file.rs");
+    }
+
+    fn key_char(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn at_mention_opens_picker_at_start() {
+        let mut input = InputBox::new(InputHistory::default());
+        let action = input.handle_key(key_char('@'));
+        assert!(matches!(action, InputAction::OpenFilePicker));
+        assert_eq!(input.buffer.value(), "");
+    }
+
+    #[test]
+    fn at_mention_opens_picker_after_whitespace() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "read ");
+        let action = input.handle_key(key_char('@'));
+        assert!(matches!(action, InputAction::OpenFilePicker));
+        assert_eq!(input.buffer.value(), "read ");
+    }
+
+    #[test]
+    fn at_mention_opens_picker_at_new_line_start() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "read");
+        input.buffer.add_line();
+        let action = input.handle_key(key_char('@'));
+        assert!(matches!(action, InputAction::OpenFilePicker));
+        assert_eq!(input.buffer.value(), "read\n");
+    }
+
+    #[test]
+    fn at_mention_is_literal_mid_word() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "em");
+        let action = input.handle_key(key_char('@'));
+        assert!(!matches!(action, InputAction::OpenFilePicker));
+        assert_eq!(input.buffer.value(), "em@");
+    }
+
+    #[test]
+    fn at_mention_is_literal_after_punctuation() {
+        let mut input = InputBox::new(InputHistory::default());
+        type_text(&mut input, "see(");
+        let action = input.handle_key(key_char('@'));
+        assert!(!matches!(action, InputAction::OpenFilePicker));
+        assert_eq!(input.buffer.value(), "see(@");
+    }
+
+    #[test]
+    fn at_mention_is_literal_with_ctrl_modifier() {
+        let mut input = InputBox::new(InputHistory::default());
+        let action = input.handle_key(KeyEvent::new(KeyCode::Char('@'), KeyModifiers::CONTROL));
+        assert!(!matches!(action, InputAction::OpenFilePicker));
+        assert_eq!(input.buffer.value(), "");
+    }
+}

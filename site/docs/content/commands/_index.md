@@ -31,13 +31,14 @@ Type `/` in the input box to open the command palette.
 | `/workflow` | Toggle workflow mode (task callable inside code_execution) |
 | `/exit` | Exit the application |
 | `/reload` | Reload plugins and config |
+| `/almas` | Configure and run an ALMAS team for a goal |
 | `/memory` | View, edit, and delete memory files |
 | `/rename` | Rename the current session |
 | `/sessions` | Browse and switch sessions |
 
 ## Sessions
 
-Sessions run concurrently. `/new` starts a fresh session while the old one keeps working in the background, and `/sessions` shows the live status of each (working, needs input, idle) so you can jump between them. When a background session finishes or needs input, Noon flashes a note in the status bar.
+Sessions run concurrently. `/new` starts a fresh session while the old one keeps working in the background, and `/sessions` shows the live status of each (working, needs input, idle) so you can jump between them. When a background session finishes or needs input, N00n flashes a note in the status bar.
 
 ## Custom commands
 
@@ -45,12 +46,12 @@ You can define your own slash commands as Markdown files.
 
 ### Project commands
 
-Place `.md` files in `.noon/commands/` in your project root.
+Place `.md` files in `.n00n/commands/` in your project root.
 They appear in the palette as `/project:<filename>`.
 
 ### User commands
 
-Place `.md` files in `~/.config/noon/commands/`.
+Place `.md` files in `~/.config/n00n/commands/`.
 They appear in the palette as `/user:<filename>`.
 
 Project commands override user commands with the same name.

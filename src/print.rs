@@ -1,4 +1,4 @@
-//! Non-interactive (headless) mode: `noon "prompt" --print`.
+//! Non-interactive (headless) mode: `n00n "prompt" --print`.
 //!
 //! Wire format intentionally matches Claude Code so existing scripts work
 //! unchanged. Keep `PrintResult` fields a strict subset of theirs. `StreamJson`
@@ -14,13 +14,13 @@ use std::time::{Duration, Instant};
 use clap::ValueEnum;
 use color_eyre::Result;
 use color_eyre::eyre::{Context, eyre};
-use noon_agent::headless::{HeadlessHandle, HeadlessParams};
-use noon_agent::tools::QUESTION_TOOL_NAME;
-use noon_agent::{AgentConfig, AgentEvent, Envelope, ImageSource, PermissionsConfig};
-use noon_lua::EventHandle;
-use noon_providers::model::Model;
-use noon_providers::{StopReason, TokenUsage};
-use noon_storage::id::SessionRef;
+use n00n_agent::headless::{HeadlessHandle, HeadlessParams};
+use n00n_agent::tools::QUESTION_TOOL_NAME;
+use n00n_agent::{AgentConfig, AgentEvent, Envelope, ImageSource, PermissionsConfig};
+use n00n_lua::EventHandle;
+use n00n_providers::model::Model;
+use n00n_providers::{StopReason, TokenUsage};
+use n00n_storage::id::SessionRef;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -32,9 +32,9 @@ fn load_images(paths: &[PathBuf]) -> Result<Vec<ImageSource>> {
     paths
         .iter()
         .map(|path| {
-            let media_type = noon_ui::image::media_type_for(path)
+            let media_type = n00n_ui::image::media_type_for(path)
                 .ok_or_else(|| eyre!("unsupported image type: {}", path.display()))?;
-            noon_ui::image::load_file_image(path, media_type)
+            n00n_ui::image::load_file_image(path, media_type)
                 .map_err(|e| eyre!("failed to load image: {e}"))
         })
         .collect()
@@ -142,7 +142,7 @@ pub fn run(
     verbose: bool,
     config: AgentConfig,
     permissions_config: PermissionsConfig,
-    timeouts: noon_providers::Timeouts,
+    timeouts: n00n_providers::Timeouts,
     lua_handle: Option<EventHandle>,
     fast: bool,
     workflow: bool,
@@ -164,12 +164,12 @@ pub fn run(
         .unwrap_or_default();
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-    let (mcp_handle, mcp_config_errors) = smol::block_on(noon_agent::mcp::start(&cwd));
+    let (mcp_handle, mcp_config_errors) = smol::block_on(n00n_agent::mcp::start(&cwd));
     if !mcp_config_errors.is_empty() {
         eprintln!("MCP config error: {mcp_config_errors}");
     }
 
-    let handle = noon_agent::headless::spawn(HeadlessParams {
+    let handle = n00n_agent::headless::spawn(HeadlessParams {
         model: model.clone(),
         config,
         permissions_config,
@@ -353,7 +353,7 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use noon_providers::TokenUsage;
+    use n00n_providers::TokenUsage;
 
     const PRINT_RESULT_FIELDS: &[&str] = &[
         "type",

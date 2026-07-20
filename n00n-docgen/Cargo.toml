@@ -1,0 +1,26 @@
+[package]
+name = "n00n-docgen"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "n00n-docgen"
+path = "src/main.rs"
+
+[dependencies]
+n00n-agent = { workspace = true }
+n00n-config = { workspace = true }
+n00n-lua = { workspace = true }
+n00n-providers = { workspace = true }
+n00n-ui = { workspace = true }
+regex = { workspace = true }
+serde_json = { workspace = true }
+smol = { workspace = true }
+strum = { workspace = true }
+
+[dev-dependencies]
+test-case = { workspace = true }

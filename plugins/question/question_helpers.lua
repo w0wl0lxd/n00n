@@ -51,7 +51,7 @@ local function find_custom(answers, options)
 end
 
 local function default_width()
-  local ok, size = pcall(noon.ui.terminal_size)
+  local ok, size = pcall(n00n.ui.terminal_size)
   if ok and type(size) == "table" and type(size.cols) == "number" then
     return math.max(40, size.cols - 8)
   end
@@ -59,7 +59,7 @@ local function default_width()
 end
 
 local function question_md(text, width)
-  local ok, lines = pcall(noon.ui.markdown, text, width)
+  local ok, lines = pcall(n00n.ui.markdown, text, width)
   if not ok or type(lines) ~= "table" or #lines == 0 then
     return { { { text, "" } } }
   end
@@ -67,7 +67,7 @@ local function question_md(text, width)
 end
 
 local function desc_md(text, width)
-  local ok, lines = pcall(noon.ui.markdown, text, width)
+  local ok, lines = pcall(n00n.ui.markdown, text, width)
   if not ok or type(lines) ~= "table" or #lines == 0 then
     return { { { text, "" } } }
   end
@@ -86,7 +86,7 @@ function QuestionHelpers.render_card(questions, answers, opts)
   opts = opts or {}
   local width = opts.width or default_width()
   local dismissed = opts.dismissed or false
-  local buf = noon.ui.buf()
+  local buf = n00n.ui.buf()
   local expanded = {}
   local line_map = {}
 

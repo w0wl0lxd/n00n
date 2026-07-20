@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-Noon ships with 21 built-in tools. This is the full reference.
+N00n ships with 21 built-in tools. This is the full reference.
 
 ## File Operations
 
@@ -56,7 +56,7 @@ Replace an exact string match in a file.
 ### `multiedit` *(lua plugin)*
 
 Make multiple find-and-replace edits to a single file atomically.
-Prefer this over edit when noonng multiple changes to the same file.
+Prefer this over edit when n00nng multiple changes to the same file.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -159,14 +159,20 @@ Use this tool when you need to ask the user questions during execution. This all
 
 Launch an ALMAS team. A supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `goal` | string | yes | High-level SDLC goal, e.g. 'Add a retry helper and cover it with tests.' |
-| `compact` | boolean | no | Encode retrieved context as TOON (token-saving, opt-in). |
-| `model_tier` | string | no | Override the supervisor tier (weak/medium/strong). Defaults to strong. |
-| `mode` | string | no | "supervised" (default, return the plan for review) or "autonomous". |
-| `use_retrieval` | boolean | no | Ground steps with repo retrieval. |
-| `auto_tier` | boolean | no | Route each subagent tier from its step prompt (opt-in). |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `compact` | boolean | no |  | Encode retrieved context as TOON (token-saving, opt-in). |
+| `model_tier` | string | no |  | Supervisor/model tier (weak/medium/strong). Defaults to strong when model is omitted. |
+| `quorum` | boolean | no |  | Require validator quorum for autonomous validation and swarm acceptance. |
+| `max_concurrent` | integer | no | 8 | Swarm mode only: max concurrent subagents per round. |
+| `ibn_gate` | boolean | no |  | Use the information-bottleneck fan-out gate in swarm mode. |
+| `max_rounds` | integer | no | 4 | Swarm mode only: max coordination rounds. |
+| `goal` | string | yes |  | High-level SDLC goal, e.g. 'Add a retry helper and cover it with tests.' |
+| `model` | string | no |  | Exact model spec for every ALMAS agent. Overrides model_tier and role tiers. |
+| `use_retrieval` | boolean | no |  | Ground steps with repo retrieval. |
+| `mode` | string | no |  | "supervised" (default, return the plan for review), "autonomous" (run the plan), or "swarm" (decentralized SwarmSys rounds). |
+| `auto_tier` | boolean | no |  | Route each subagent tier from its step prompt. Defaults to true unless an exact model is set. |
+| `thinking` | string/integer | no |  | Thinking mode for ALMAS agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "max". |
 
 ### `task` *(lua plugin)*
 
@@ -174,11 +180,13 @@ Launch an autonomous subagent to perform tasks independently. Best combined with
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `description` | string | yes | Short (3-5 words) description of the task |
 | `output_schema` | object | no | JSON Schema (object) the subagent's final result must match. When set, the result is returned as a validated JSON string. |
+| `auto_tier` | boolean | no | Pick model_tier from the prompt automatically (opt-in). Overrides model_tier when set. |
+| `description` | string | yes | Short (3-5 words) description of the task |
+| `model` | string | no | Exact model spec (optional, e.g. openai/gpt-5.6-luna). Overrides model_tier. |
 | `model_tier` | string | no | Model tier (optional, omit to use current model, capped at current tier):<br>- "strong" (e.g. Opus): Deep reasoning, complex architecture, subtle bugs, most critical sections. ~5x cost of medium.<br>- "medium" (e.g. Sonnet): Balanced. Refactors, features, multi-file changes.<br>- "weak" (e.g. Haiku): Fast/cheap. Search, summarize, boilerplate, simple edits. |
 | `prompt` | string | yes | Detailed task prompt for the agent |
-| `auto_tier` | boolean | no | Pick model_tier from the prompt automatically (opt-in). Overrides model_tier when set. |
+| `thinking` | string/integer | no | Thinking mode: "off", "adaptive", "minimal", "low", "medium", "high", "xhigh", "max", or a token budget. Omit to inherit the user setting. |
 | `subagent_type` | string | no | Subagent type: "research" (read-only, default) or "general" (can modify files) |
 
 ### `todo_write` *(lua plugin)*

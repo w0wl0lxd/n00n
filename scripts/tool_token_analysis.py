@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze tool token usage from ~/.noon/sessions to identify optimization targets."""
+"""Analyze tool token usage from ~/.n00n/sessions to identify optimization targets."""
 
 import json
 import sys
@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-SESSION_DIR = Path.home() / ".noon" / "sessions"
+SESSION_DIR = Path.home() / ".n00n" / "sessions"
 CHARS_PER_TOKEN = 4  # rough estimate for token counting from char length
 
 
@@ -374,7 +374,7 @@ def print_session_summary(sessions, all_calls):
             agg_usage[k] += v
 
     print("\n" + "═" * 70)
-    print("  NOON SESSION TOOL TOKEN ANALYSIS")
+    print("  N00N SESSION TOOL TOKEN ANALYSIS")
     print("═" * 70)
     print(f"  Sessions analyzed:     {total_sessions}")
     print(f"  Sessions with tools:   {sessions_with_tools}")

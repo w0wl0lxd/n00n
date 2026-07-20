@@ -11,7 +11,7 @@
 --      host: a broken child degrades to plain rendering, never sinks the
 --      batch.
 
-local ToolView = require("noon.tool_view")
+local ToolView = require("n00n.tool_view")
 
 local MAX_BATCH_SIZE = 25
 local SEPARATOR = "──────────────────"
@@ -134,7 +134,7 @@ end
 -- ones, for example) and a broken one comes back nil; either way the
 -- plain tool name is enough.
 local function header_spans(tool, params)
-  local t = noon.api.get_tool(tool)
+  local t = n00n.api.get_tool(tool)
   local spans = t and t.header and t.header(params)
   return spans or { { tool, "tool" } }
 end
@@ -145,7 +145,7 @@ end
 -- matches the standalone plain rendering too.
 local function child_body_buf(c, tol)
   local output = c.output or ""
-  local t = noon.api.get_tool(c.tool)
+  local t = n00n.api.get_tool(c.tool)
   local buf = t and t.restore and t.restore(c.params, output, c.status == STATUS.ERROR, { tool_output_lines = tol })
   return buf or ToolView.restore(output, { max_lines = tol[c.tool] or tol.other, keep = "head" })
 end
@@ -278,7 +278,7 @@ local function children_from_llm(children, output)
   end
   local sections = {}
   local body, prev
-  for _, line in ipairs(noon.split(output, "\n")) do
+  for _, line in ipairs(n00n.split(output, "\n")) do
     local tool = line:match(SECTION_PAT)
     local nxt = children[#sections + 1]
     -- render_llm puts a blank line before every header except the first;
@@ -326,7 +326,7 @@ Batch.__index = Batch
 
 function Batch.new(children, tol)
   local self = setmetatable({ children = children, tol = tol }, Batch)
-  self.buf = noon.ui.buf()
+  self.buf = n00n.ui.buf()
   -- A click fans out to child bufs, and every child change event would
   -- recompose the whole batch; mute them and recompose once at the end.
   -- pcall keeps a child handler error from leaking the mute, which would
@@ -416,7 +416,7 @@ end
 function Batch:run_child(c, ctx)
   c.status = STATUS.RUNNING
   self:rerender()
-  local text, err = noon.agent.call_tool(ctx, c.tool, c.params, {
+  local text, err = n00n.agent.call_tool(ctx, c.tool, c.params, {
     -- Clicks on a still-streaming child are a no-op: its click handler
     -- lives on the child's own handle, not on this wrapper buf.
     on_live_buf = function(b)
@@ -445,7 +445,7 @@ function Batch:run(ctx)
       end
     end
   end
-  noon.async.gather(funs)
+  n00n.async.gather(funs)
   for _, c in ipairs(self.children) do
     if not TERMINAL[c.status] then
       self:settle(c, STATUS.ERROR, CANCELLED_ERROR)
@@ -477,12 +477,12 @@ end
 
 -- Last resort: no state, output isn't section-formatted.
 local function legacy_restore(children, output, tol)
-  local buf = noon.ui.buf()
+  local buf = n00n.ui.buf()
   local view = ToolView.new(buf, { max_lines = tol.other, keep = "head" })
   local header = render_children(children)
   append_separator(header)
   view:set_header(header)
-  for _, line in ipairs(noon.split(output, "\n")) do
+  for _, line in ipairs(n00n.split(output, "\n")) do
     view:append(BODY_INDENT .. line)
   end
   view:finish()
@@ -514,7 +514,7 @@ local function restore(input, output, _is_error, rctx)
   return legacy_restore(children, output, tol)
 end
 
-noon.api.register_tool({
+n00n.api.register_tool({
   name = "batch",
   description = description,
   kind = "execute",
