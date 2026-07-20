@@ -1,0 +1,19 @@
+[mcp.ast-grep]
+command = ["ast-grep-mcp-host"]
+timeout = 300000
+
+[mcp.codegraph]
+command = ["codegraph-mcp-host"]
+timeout = 300000
+
+[mcp.context7]
+command = ["context7-mcp-host"]
+timeout = 300000
+
+[mcp.exa]
+command = ["exa-mcp-host"]
+timeout = 300000
+
+[mcp.thoughtbox]
+command = ["thoughtbox-mcp-wrapped"]
+timeout = 300000
