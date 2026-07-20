@@ -44,6 +44,11 @@
             cargo = rustToolchain;
             rustc = rustToolchain;
           };
+          runtimeLibs = with pkgs; [
+            openssl
+            python3
+            stdenv.cc.cc.lib
+          ];
           n00n = rustPlatform.buildRustPackage {
             pname = packageName;
             inherit version;
@@ -67,6 +72,7 @@
               packageName
             ];
             nativeBuildInputs = with pkgs; [
+              makeWrapper
               pkg-config
               perl
               python3
@@ -84,11 +90,13 @@
               fi
               done
             '';
-            buildInputs = with pkgs; [
-              openssl
-              stdenv.cc.cc.lib
-            ];
+            buildInputs = runtimeLibs;
             doCheck = false;
+
+            postInstall = ''
+              wrapProgram $out/bin/n00n \
+                --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath runtimeLibs}"
+            '';
           };
         in
         {
@@ -124,8 +132,25 @@
             NIX_SSL_CERT_FILE = certs;
             LD_LIBRARY_PATH = lib.makeLibraryPath [
               pkgs.openssl
+              pkgs.python3
               pkgs.stdenv.cc.cc.lib
             ];
+
+            # nix-shell/direnv injects -rpath $out/lib, but $out is a fake path
+            # that doesn't exist. Replace it with rpaths to the actual runtime libs
+            # so cargo-built binaries can be launched outside this shell.
+            shellHook = ''
+              strip_rpath() {
+                local var="$1"
+                eval "$var=\"\$$var\""
+                local value="\$$var"
+                value=$("${pkgs.gnused}/bin/sed" 's|-rpath [^ ]*outputs/out/lib||g' <<< "$value")
+                value="-rpath ${pkgs.openssl}/lib -rpath ${pkgs.python3}/lib -rpath ${pkgs.stdenv.cc.cc.lib}/lib $value"
+                eval "export $var=\"$value\""
+              }
+              strip_rpath NIX_LDFLAGS
+              strip_rpath NIX_LDFLAGS_FOR_BUILD
+            '';
           };
         }
       );
