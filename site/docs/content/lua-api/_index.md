@@ -818,8 +818,8 @@ A subagent session with its own conversation history.
 
 Create one with `noon.agent.session()`, then send messages with
 `:prompt()`. The session remembers previous turns, so you can have
-a multi-step conversation. Call `:close()` when you are done, or let
-garbage collection handle it.
+a multi-step conversation. Call `:done(answer)` from inside the
+subagent workflow to finish early, or `:close()` when you are done.
 
 ---
 
@@ -831,7 +831,8 @@ Session:prompt({message})
 
 Send a message to the subagent and wait for its full response. The agent
 loop runs to completion, calling tools as needed. Conversation history is
-kept across calls, so you can have a multi-turn conversation.
+kept across calls, so you can have a multi-turn conversation. If the
+subagent calls `done()` or the user sends an empty reply, the loop ends.
 
 The returned table has fields: `text` (string), `duration_ms` (integer),
 `input_tokens` (integer), `output_tokens` (integer).
@@ -850,6 +851,23 @@ if err then error(err) end
 print(r.text)
 print(r.input_tokens .. " input, " .. r.output_tokens .. " output tokens")
 ```
+
+---
+
+### `Session:done()` {#Session-done}
+
+```lua
+Session:done({answer})
+```
+
+Mark the subagent conversation as complete and provide the final answer.
+This stops the `prompt()` loop and returns `answer` as the result text.
+
+**Parameters:**
+
+- `{answer}` (`string`) Final answer to return from the session.
+
+**Returns:** (`nil?`, `string?`) Error string on failure.
 
 ---
 
@@ -3905,6 +3923,53 @@ local half_width = math.floor(size.cols / 2)
 
 ---
 
+### `noon.ui.display_width()` {#noon-ui-display_width}
+
+```lua
+noon.ui.display_width({text})
+```
+
+Returns the display width of a string in terminal cells, matching
+how `ratatui` measures text.
+
+**Parameters:**
+
+- `{text}` (`string`) The text to measure.
+
+**Returns:** (`integer`) Number of display cells the text occupies.
+
+**Example:**
+
+```lua
+local w = noon.ui.display_width("hello")
+```
+
+---
+
+### `noon.ui.truncate_text()` {#noon-ui-truncate_text}
+
+```lua
+noon.ui.truncate_text({text}, {max_width})
+```
+
+Splits a string at a display-cell boundary.
+
+**Parameters:**
+
+- `{text}` (`string`) The text to split.
+- `{max_width}` (`integer`) Maximum display cells for the head.
+
+**Returns:** (`table`) `{head = string, tail = string}`.
+
+**Example:**
+
+```lua
+local t = noon.ui.truncate_text("hello world", 5)
+-- t.head == "hello", t.tail == " world"
+```
+
+---
+
 ### `noon.ui.flash()` {#noon-ui-flash}
 
 ```lua
@@ -4772,7 +4837,8 @@ function TextInput:render(prefix, prefix_width, width)
 -- runtime runs those tasks inline before snapshotting.
 
 -- opts: max_lines (default 80) shown while collapsed, keep "head"|"tail"
--- (default "tail"), max_expand_lines (default 2000) kept for expansion.
+-- (default "tail"), max_expand_lines (default 2000) kept for expansion,
+-- max_line_bytes (optional) per-line byte cap applied at render time.
 function ToolView.new(buf, opts)
 function ToolView:set_header(lines)
 function ToolView:clear()
