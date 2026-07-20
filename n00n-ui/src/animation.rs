@@ -34,6 +34,9 @@ pub struct Typewriter {
     anim_start_at: Instant,
     anim_duration: Duration,
     ms_per_char: u64,
+    char_count: usize,
+    newline_count: usize,
+    generation: u64,
 }
 
 impl Default for Typewriter {
@@ -57,14 +60,23 @@ impl Typewriter {
             anim_start_at: Instant::now(),
             anim_duration: Duration::ZERO,
             ms_per_char,
+            char_count: 0,
+            newline_count: 0,
+            generation: 1,
         }
     }
 
     pub fn push(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.char_count += text.chars().count();
+        self.newline_count += text.bytes().filter(|&b| b == b'\n').count();
+        self.generation = self.generation.wrapping_add(1);
         self.buffer.push_str(text);
         self.tick();
         self.anim_start_visible = self.visible_len;
-        self.anim_target = self.buffer.chars().count();
+        self.anim_target = self.char_count;
         if self.ms_per_char == 0 {
             self.advance_visible(self.anim_target);
             return;
@@ -98,20 +110,42 @@ impl Typewriter {
         self.buffer.is_empty()
     }
 
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn visible_len(&self) -> usize {
+        self.visible_len
+    }
+
+    pub fn visible_byte_offset(&self) -> usize {
+        self.visible_byte_offset
+    }
+
+    pub fn char_count(&self) -> usize {
+        self.char_count
+    }
+
     pub fn buffer_line_count(&self) -> usize {
         if self.buffer.is_empty() {
             0
         } else {
-            self.buffer.bytes().filter(|&b| b == b'\n').count() + 1
+            self.newline_count + 1
         }
     }
 
     pub fn clear(&mut self) {
         self.buffer.clear();
+        self.char_count = 0;
+        self.newline_count = 0;
+        self.generation = 1;
         self.reset_anim();
     }
 
     pub fn take_all(&mut self) -> String {
+        self.char_count = 0;
+        self.newline_count = 0;
+        self.generation = 1;
         self.reset_anim();
         mem::take(&mut self.buffer)
     }
@@ -119,11 +153,15 @@ impl Typewriter {
     #[cfg(test)]
     pub(crate) fn set_buffer(&mut self, text: &str) {
         self.buffer = text.into();
-        let len = self.buffer.chars().count();
-        self.visible_len = len;
+        self.char_count = self.buffer.chars().count();
+        self.newline_count = self.buffer.bytes().filter(|&b| b == b'\n').count();
+        self.generation = text
+            .bytes()
+            .fold(1u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
+        self.visible_len = self.char_count;
         self.visible_byte_offset = self.buffer.len();
-        self.anim_start_visible = len;
-        self.anim_target = len;
+        self.anim_start_visible = self.char_count;
+        self.anim_target = self.char_count;
         self.anim_duration = Duration::ZERO;
     }
 
@@ -158,6 +196,7 @@ impl std::fmt::Debug for Typewriter {
             .field("buffer", &self.buffer)
             .field("visible_len", &self.visible_len)
             .field("anim_target", &self.anim_target)
+            .field("generation", &self.generation)
             .finish()
     }
 }
