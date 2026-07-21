@@ -563,8 +563,8 @@ mod tests {
 
     use n00n_providers::provider::{BoxFuture, Provider};
     use n00n_providers::{
-        ContentBlock, Message, Model, ProviderEvent, RequestOptions, Role, StopReason,
-        StreamResponse, TokenUsage,
+        ContentBlock, ImageMediaType, ImageSource, Message, Model, ProviderEvent, RequestOptions,
+        Role, StopReason, StreamResponse, TokenUsage,
     };
     use serde_json::Value;
     use test_case::test_case;
@@ -585,6 +585,60 @@ mod tests {
         let tools = serde_json::json!([{"name": "skill", "description": "A tool"}]);
         let tokens = estimate_tool_tokens(&tools);
         assert!(tokens > 0, "expected positive token count for tools");
+    }
+
+    #[test]
+    fn estimate_message_tokens_empty_is_zero() {
+        assert_eq!(estimate_message_tokens(&[]), 0);
+    }
+
+    #[test]
+    fn estimate_message_tokens_counts_each_content_block() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text { text: "hi".into() },
+                ContentBlock::Image {
+                    source: ImageSource {
+                        media_type: ImageMediaType::Png,
+                        data: Arc::from("data"),
+                    },
+                },
+            ],
+            ..Default::default()
+        }];
+        let tokens = estimate_message_tokens(&messages);
+        assert!(
+            tokens >= u32_from_usize(IMAGE_TOKEN_ESTIMATE),
+            "image blocks should add {IMAGE_TOKEN_ESTIMATE} tokens"
+        );
+    }
+
+    #[test]
+    fn estimate_message_tokens_counts_thinking_and_signature() {
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "thinking text".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::RedactedThinking {
+                    data: "redacted".into(),
+                },
+            ],
+            ..Default::default()
+        }];
+        let tokens = estimate_message_tokens(&messages);
+        assert!(
+            tokens > 0,
+            "thinking and redacted blocks should contribute tokens"
+        );
+    }
+
+    #[test]
+    fn estimate_tool_tokens_empty_array_costs_one() {
+        assert_eq!(estimate_tool_tokens(&serde_json::json!([])), 1);
     }
 
     struct MockInterruptSource {
