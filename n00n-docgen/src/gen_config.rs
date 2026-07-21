@@ -114,7 +114,7 @@ fn write_tool_output_section(out: &mut String) {
     writeln!(out, "| Field | Default |").unwrap();
     writeln!(out, "|-------|---------|").unwrap();
     for (name, default) in ToolOutputLines::FIELD_DEFAULTS {
-        writeln!(out, "| `{name}` | {default} |",).unwrap();
+        writeln!(out, "| `{name}` | {default} |").unwrap();
     }
     writeln!(out).unwrap();
 }

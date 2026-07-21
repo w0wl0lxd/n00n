@@ -12,6 +12,7 @@ pub struct ChildGuard {
 }
 
 impl ChildGuard {
+    #[must_use]
     pub fn new(child: Child) -> Self {
         Self {
             pid: child.id(),
@@ -19,10 +20,16 @@ impl ChildGuard {
         }
     }
 
+    #[must_use]
     pub fn id(&self) -> u32 {
         self.pid
     }
 
+    /// Return the exit status of the managed child process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the child has already been reaped or the underlying process fails.
     pub async fn status(&mut self) -> io::Result<ExitStatus> {
         match self.child.as_mut() {
             Some(child) => {
@@ -59,7 +66,10 @@ impl ChildGuard {
     fn signal_kill(&self) {
         if self.child.is_some() {
             unsafe {
-                libc::killpg(self.pid as i32, libc::SIGKILL);
+                libc::killpg(
+                    i32::try_from(self.pid).unwrap_or_else(|_| i32::MAX),
+                    libc::SIGKILL,
+                );
             }
         }
     }
@@ -80,7 +90,11 @@ impl ChildGuard {
     fn reap_nonblocking(&mut self) {
         if self.child.take().is_some() {
             unsafe {
-                libc::waitpid(self.pid as i32, std::ptr::null_mut(), libc::WNOHANG);
+                libc::waitpid(
+                    i32::try_from(self.pid).unwrap_or_else(|_| i32::MAX),
+                    std::ptr::null_mut(),
+                    libc::WNOHANG,
+                );
             }
         }
     }
@@ -111,7 +125,7 @@ mod tests {
 
     use super::ChildGuard;
 
-    #[allow(unsafe_code)]
+    #[allow(unsafe_code, clippy::expect_used)]
     fn spawn_sleep() -> Child {
         let mut std_cmd = std::process::Command::new("sleep");
         std_cmd.arg("60");
@@ -127,7 +141,7 @@ mod tests {
 
     #[allow(unsafe_code)]
     fn is_alive(pid: u32) -> bool {
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        unsafe { libc::kill(i32::try_from(pid).unwrap_or_else(|_| i32::MAX), 0) == 0 }
     }
 
     fn wait_for_death(pid: u32) {
@@ -138,7 +152,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        panic!("process {pid} still alive after 2s");
+        assert!(!is_alive(pid), "process {pid} still alive after 2s");
     }
 
     #[test]

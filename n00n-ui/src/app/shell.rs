@@ -15,7 +15,7 @@ use n00n_providers::Message;
 use super::App;
 
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
-const SHELL_TIMEOUT: Duration = Duration::from_secs(300);
+const SHELL_TIMEOUT: Duration = Duration::from_mins(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ShellPrefix {

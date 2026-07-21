@@ -54,9 +54,11 @@ pub const MIN_STREAM_TIMEOUT_SECS: u64 = 10;
 
 pub const DEFAULT_BUILTINS: &[&str] = &[
     "agent_control",
+    "arbor",
     "bash",
     "batch",
     "code_execution",
+    "codegraph",
     "edit",
     "glob",
     "grep",
@@ -232,9 +234,9 @@ impl RawConfig {
             always_thinking
         );
         self.ui.merge(overlay.ui);
-        self.agent.merge(overlay.agent);
+        self.agent.merge(&overlay.agent);
         self.provider.merge(overlay.provider);
-        self.storage.merge(overlay.storage);
+        self.storage.merge(&overlay.storage);
         for (name, plugin) in overlay.plugins {
             let entry = self.plugins.entry(name).or_default();
             if plugin.enabled.is_some() {
@@ -244,6 +246,12 @@ impl RawConfig {
         }
     }
 
+    /// Convert the parsed raw configuration into a validated `Config`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` if plugin tables are invalid or any thinking
+    /// setting cannot be parsed.
     pub fn into_config(self, no_rtk: bool) -> Result<Config, ConfigError> {
         validate_plugin_tables(&self.plugins)?;
 
@@ -254,17 +262,17 @@ impl RawConfig {
             .map(|(name, _)| name.clone())
             .collect();
         Ok(Config {
-            always_yolo: self.always_yolo.unwrap_or(false),
-            always_fast: self.always_fast.unwrap_or(false),
-            always_workflow: self.always_workflow.unwrap_or(false),
+            always_yolo: self.always_yolo.is_some_and(|v| v),
+            always_fast: self.always_fast.is_some_and(|v| v),
+            always_workflow: self.always_workflow.is_some_and(|v| v),
             always_thinking: self
                 .always_thinking
                 .map(AlwaysThinking::resolve)
                 .transpose()?,
             ui: UiConfig::from_file(self.ui),
-            agent: AgentConfig::from_file(self.agent, no_rtk, disabled_tools),
+            agent: AgentConfig::from_file(&self.agent, no_rtk, disabled_tools),
             provider: ProviderConfig::from_file(self.provider),
-            storage: StorageConfig::from_file(self.storage),
+            storage: StorageConfig::from_file(&self.storage),
             permissions: PermissionsConfig::default(),
             plugins: PluginsConfig::from_plugins(&self.plugins),
         })
@@ -330,7 +338,7 @@ impl UiFileConfig {
             max_input_lines
         );
         match (self.tool_output_lines.as_mut(), overlay.tool_output_lines) {
-            (Some(base), Some(over)) => base.merge(over),
+            (Some(base), Some(over)) => base.merge(&over),
             (None, Some(over)) => self.tool_output_lines = Some(over),
             _ => {}
         }
@@ -346,6 +354,7 @@ pub struct ToolOutputLinesFile {
     pub workflow: Option<usize>,
     pub index: Option<usize>,
     pub grep: Option<usize>,
+    pub explore: Option<usize>,
     pub read: Option<usize>,
     pub write: Option<usize>,
     pub web: Option<usize>,
@@ -353,7 +362,7 @@ pub struct ToolOutputLinesFile {
 }
 
 impl ToolOutputLinesFile {
-    fn merge(&mut self, overlay: ToolOutputLinesFile) {
+    fn merge(&mut self, overlay: &ToolOutputLinesFile) {
         merge_option!(
             self,
             overlay,
@@ -363,6 +372,7 @@ impl ToolOutputLinesFile {
             workflow,
             index,
             grep,
+            explore,
             read,
             write,
             web,
@@ -382,7 +392,8 @@ impl CompactionBuffer {
     pub fn resolve(self, context_window: u32) -> u32 {
         match self {
             Self::Tokens(n) => n,
-            Self::Percent(p) => (u64::from(context_window) * u64::from(p) / 100) as u32,
+            Self::Percent(p) => u32::try_from(u64::from(context_window) * u64::from(p) / 100)
+                .map_or(u32::MAX, |v| v),
         }
     }
 }
@@ -408,31 +419,34 @@ impl<'de> Deserialize<'de> for CompactionBuffer {
             }
 
             fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
-                u32::try_from(v)
-                    .ok()
-                    .filter(|n| *n >= MIN_COMPACTION_BUFFER)
-                    .map(CompactionBuffer::Tokens)
-                    .ok_or_else(|| {
-                        E::custom(format!(
-                            "compaction_buffer must be at least {MIN_COMPACTION_BUFFER} tokens"
-                        ))
-                    })
+                if let Ok(n) = u32::try_from(v)
+                    && n >= MIN_COMPACTION_BUFFER
+                {
+                    Ok(CompactionBuffer::Tokens(n))
+                } else {
+                    Err(E::custom(format!(
+                        "compaction_buffer must be at least {MIN_COMPACTION_BUFFER} tokens"
+                    )))
+                }
             }
 
             fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
-                self.visit_u64(u64::try_from(v).unwrap_or(0))
+                let u = u64::try_from(v)
+                    .map_err(|_| E::custom(format!("compaction_buffer value {v} is negative")))?;
+                self.visit_u64(u)
             }
 
             fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Self::Value, E> {
-                s.strip_suffix('%')
-                    .and_then(|n| n.trim().parse::<u8>().ok())
-                    .filter(|p| (1..=MAX_COMPACTION_PERCENT).contains(p))
-                    .map(CompactionBuffer::Percent)
-                    .ok_or_else(|| {
-                        E::custom(format!(
-                            "invalid compaction_buffer {s:?}: expected {COMPACTION_BUFFER_EXPECTED}"
-                        ))
-                    })
+                if let Some(n) = s.strip_suffix('%')
+                    && let Ok(p) = n.trim().parse::<u8>()
+                    && (1..=MAX_COMPACTION_PERCENT).contains(&p)
+                {
+                    Ok(CompactionBuffer::Percent(p))
+                } else {
+                    Err(E::custom(format!(
+                        "invalid compaction_buffer {s:?}: expected {COMPACTION_BUFFER_EXPECTED}"
+                    )))
+                }
             }
         }
 
@@ -454,7 +468,7 @@ pub struct AgentFileConfig {
 }
 
 impl AgentFileConfig {
-    fn merge(&mut self, overlay: AgentFileConfig) {
+    fn merge(&mut self, overlay: &AgentFileConfig) {
         merge_option!(
             self,
             overlay,
@@ -501,7 +515,7 @@ pub struct StorageFileConfig {
 }
 
 impl StorageFileConfig {
-    fn merge(&mut self, overlay: StorageFileConfig) {
+    fn merge(&mut self, overlay: &StorageFileConfig) {
         merge_option!(
             self,
             overlay,
@@ -662,9 +676,12 @@ pub fn is_valid_wire_name(name: &str) -> bool {
 impl ToolKey {
     /// Parse a qualified tool name into a `ToolKey`.
     ///
-    /// Returns `Err` for malformed input (empty names, empty server/tool parts,
-    /// tool names that don't match the wire format `^[a-zA-Z0-9_-]{1,64}$`).
     /// Use this at config/dispatch boundaries where input is untrusted.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ToolKeyParseError` for malformed input (empty names, empty
+    /// server/tool parts, or tool names that don't match the wire format).
     pub fn parse(name: &str) -> Result<Self, ToolKeyParseError> {
         if name.is_empty() {
             return Err(ToolKeyParseError::EmptyName);
@@ -842,20 +859,28 @@ impl UiConfig {
 
     fn from_file(f: UiFileConfig) -> Self {
         Self {
-            splash_animation: f.splash_animation.unwrap_or(true),
-            mascot: f.mascot.unwrap_or(true),
-            scrollbar: f.scrollbar.unwrap_or(true),
-            flash_duration_ms: f.flash_duration_ms.unwrap_or(DEFAULT_FLASH_DURATION_MS),
+            splash_animation: f.splash_animation.is_none_or(|v| v),
+            mascot: f.mascot.is_none_or(|v| v),
+            scrollbar: f.scrollbar.is_none_or(|v| v),
+            flash_duration_ms: f.flash_duration_ms.map_or(DEFAULT_FLASH_DURATION_MS, |v| v),
             typewriter_ms_per_char: f
                 .typewriter_ms_per_char
-                .unwrap_or(DEFAULT_TYPEWRITER_MS_PER_CHAR),
-            mouse_scroll_lines: f.mouse_scroll_lines.unwrap_or(DEFAULT_MOUSE_SCROLL_LINES),
-            max_input_lines: f.max_input_lines.unwrap_or(DEFAULT_MAX_INPUT_LINES),
-            show_thinking: f.show_thinking.unwrap_or(true),
+                .map_or(DEFAULT_TYPEWRITER_MS_PER_CHAR, |v| v),
+            mouse_scroll_lines: f
+                .mouse_scroll_lines
+                .map_or(DEFAULT_MOUSE_SCROLL_LINES, |v| v),
+            max_input_lines: f.max_input_lines.map_or(DEFAULT_MAX_INPUT_LINES, |v| v),
+            show_thinking: f.show_thinking.is_none_or(|v| v),
             tool_output_lines: ToolOutputLines::from_file(f.tool_output_lines),
         }
     }
 
+    /// Validate this UI config and its nested `ToolOutputLines`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::BelowMinimum` if any configured numeric value is
+    /// below its allowed minimum.
     pub fn validate_all(&self) -> Result<(), ConfigError> {
         self.validate()?;
         self.tool_output_lines.validate()?;
@@ -872,6 +897,7 @@ pub struct ToolOutputLines {
     pub workflow: usize,
     pub index: usize,
     pub grep: usize,
+    pub explore: usize,
     pub read: usize,
     pub write: usize,
     pub web: usize,
@@ -886,6 +912,7 @@ impl ToolOutputLines {
         workflow: 8,
         index: 3,
         grep: 3,
+        explore: 3,
         read: 3,
         write: 7,
         web: 3,
@@ -899,30 +926,33 @@ impl ToolOutputLines {
         ("workflow", Self::DEFAULT.workflow),
         ("index", Self::DEFAULT.index),
         ("grep", Self::DEFAULT.grep),
+        ("explore", Self::DEFAULT.explore),
         ("read", Self::DEFAULT.read),
         ("write", Self::DEFAULT.write),
         ("web", Self::DEFAULT.web),
         ("other", Self::DEFAULT.other),
     ];
 
+    #[allow(clippy::unwrap_or_default)]
     fn from_file(f: Option<ToolOutputLinesFile>) -> Self {
         let d = Self::DEFAULT;
-        let f = f.unwrap_or_default();
+        let f = f.unwrap_or_else(ToolOutputLinesFile::default);
         Self {
-            bash: f.bash.unwrap_or(d.bash),
-            code_execution: f.code_execution.unwrap_or(d.code_execution),
-            task: f.task.unwrap_or(d.task),
-            workflow: f.workflow.unwrap_or(d.workflow),
-            index: f.index.unwrap_or(d.index),
-            grep: f.grep.unwrap_or(d.grep),
-            read: f.read.unwrap_or(d.read),
-            write: f.write.unwrap_or(d.write),
-            web: f.web.unwrap_or(d.web),
-            other: f.other.unwrap_or(d.other),
+            bash: f.bash.map_or(d.bash, |v| v),
+            code_execution: f.code_execution.map_or(d.code_execution, |v| v),
+            task: f.task.map_or(d.task, |v| v),
+            workflow: f.workflow.map_or(d.workflow, |v| v),
+            index: f.index.map_or(d.index, |v| v),
+            grep: f.grep.map_or(d.grep, |v| v),
+            explore: f.explore.map_or(d.explore, |v| v),
+            read: f.read.map_or(d.read, |v| v),
+            write: f.write.map_or(d.write, |v| v),
+            web: f.web.map_or(d.web, |v| v),
+            other: f.other.map_or(d.other, |v| v),
         }
     }
 
-    fn fields(&self) -> [(&'static str, usize); 10] {
+    fn fields(&self) -> [(&'static str, usize); 11] {
         [
             ("bash", self.bash),
             ("code_execution", self.code_execution),
@@ -930,6 +960,7 @@ impl ToolOutputLines {
             ("workflow", self.workflow),
             ("index", self.index),
             ("grep", self.grep),
+            ("explore", self.explore),
             ("read", self.read),
             ("write", self.write),
             ("web", self.web),
@@ -937,6 +968,12 @@ impl ToolOutputLines {
         ]
     }
 
+    /// Validate all tool output line counts are above their minimum.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::BelowMinimum` if any configured line count is too
+    /// small.
     pub fn validate(&self) -> Result<(), ConfigError> {
         for (name, value) in self.fields() {
             check(
@@ -958,6 +995,7 @@ impl ToolOutputLines {
             "workflow" => self.workflow,
             "index" => self.index,
             "grep" | "glob" => self.grep,
+            "arbor" | "codegraph" | "explore" => self.explore,
             "read" => self.read,
             "memory" => self.write,
             name if FILE_WRITE_TOOLS.contains(&name) => self.write,
@@ -1014,15 +1052,21 @@ pub struct AgentConfig {
 }
 
 impl AgentConfig {
-    fn from_file(file: AgentFileConfig, no_rtk: bool, disabled_tools: Vec<String>) -> Self {
+    fn from_file(file: &AgentFileConfig, no_rtk: bool, disabled_tools: Vec<String>) -> Self {
         Self {
             no_rtk,
-            max_output_bytes: file.max_output_bytes.unwrap_or(DEFAULT_MAX_OUTPUT_BYTES),
-            max_output_lines: file.max_output_lines.unwrap_or(DEFAULT_MAX_OUTPUT_LINES),
+            max_output_bytes: file
+                .max_output_bytes
+                .map_or(DEFAULT_MAX_OUTPUT_BYTES, |v| v),
+            max_output_lines: file
+                .max_output_lines
+                .map_or(DEFAULT_MAX_OUTPUT_LINES, |v| v),
             max_continuation_turns: file
                 .max_continuation_turns
-                .unwrap_or(DEFAULT_MAX_CONTINUATION_TURNS),
-            compaction_buffer: file.compaction_buffer.unwrap_or(DEFAULT_COMPACTION_BUFFER),
+                .map_or(DEFAULT_MAX_CONTINUATION_TURNS, |v| v),
+            compaction_buffer: file
+                .compaction_buffer
+                .map_or(DEFAULT_COMPACTION_BUFFER, |v| v),
             max_turns: None,
             allowed_tools: Vec::new(),
             disabled_tools,
@@ -1076,14 +1120,15 @@ impl ProviderConfig {
             default_model: f.default_model,
             connect_timeout: Duration::from_secs(
                 f.connect_timeout_secs
-                    .unwrap_or(DEFAULT_CONNECT_TIMEOUT_SECS),
+                    .map_or(DEFAULT_CONNECT_TIMEOUT_SECS, |v| v),
             ),
             low_speed_timeout: Duration::from_secs(
                 f.low_speed_timeout_secs
-                    .unwrap_or(DEFAULT_LOW_SPEED_TIMEOUT_SECS),
+                    .map_or(DEFAULT_LOW_SPEED_TIMEOUT_SECS, |v| v),
             ),
             stream_timeout: Duration::from_secs(
-                f.stream_timeout_secs.unwrap_or(DEFAULT_STREAM_TIMEOUT_SECS),
+                f.stream_timeout_secs
+                    .map_or(DEFAULT_STREAM_TIMEOUT_SECS, |v| v),
             ),
         }
     }
@@ -1117,11 +1162,13 @@ impl Default for StorageConfig {
 }
 
 impl StorageConfig {
-    fn from_file(f: StorageFileConfig) -> Self {
+    fn from_file(f: &StorageFileConfig) -> Self {
         Self {
-            max_log_bytes: f.max_log_bytes_mb.unwrap_or(DEFAULT_MAX_LOG_BYTES_MB) * 1024 * 1024,
-            max_log_files: f.max_log_files.unwrap_or(DEFAULT_MAX_LOG_FILES),
-            input_history_size: f.input_history_size.unwrap_or(DEFAULT_INPUT_HISTORY_SIZE),
+            max_log_bytes: f.max_log_bytes_mb.map_or(DEFAULT_MAX_LOG_BYTES_MB, |v| v) * 1024 * 1024,
+            max_log_files: f.max_log_files.map_or(DEFAULT_MAX_LOG_FILES, |v| v),
+            input_history_size: f
+                .input_history_size
+                .map_or(DEFAULT_INPUT_HISTORY_SIZE, |v| v),
         }
     }
 }
@@ -1140,14 +1187,19 @@ impl PluginsConfig {
     pub fn from_plugins(plugins: &HashMap<String, PluginFileConfig>) -> Self {
         let mut all: Vec<String> = DEFAULT_BUILTINS
             .iter()
-            .filter(|name| plugins.get(**name).and_then(|t| t.enabled).unwrap_or(true))
+            .filter(|name| {
+                plugins
+                    .get(**name)
+                    .and_then(|t| t.enabled)
+                    .is_none_or(|v| v)
+            })
             .map(std::string::ToString::to_string)
             .collect();
 
         let mut extra: Vec<&String> = plugins
             .iter()
             .filter(|(name, cfg)| {
-                !DEFAULT_BUILTINS.contains(&name.as_str()) && cfg.enabled.unwrap_or(false)
+                !DEFAULT_BUILTINS.contains(&name.as_str()) && cfg.enabled.is_some_and(|v| v)
             })
             .map(|(name, _)| name)
             .collect();
@@ -1169,6 +1221,12 @@ impl PluginsConfig {
 }
 
 impl Config {
+    /// Validate the full configuration, including all nested subconfigs.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` if any subconfig value is below its allowed
+    /// minimum.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.ui.validate_all()?;
         self.agent.validate()?;
@@ -1251,6 +1309,83 @@ fn push_mcp_tool_rule(
     }
 }
 
+fn apply_mcp_effect(
+    server_name: &str,
+    key: &str,
+    value: &toml::Value,
+    rules: &mut Vec<PermissionRule>,
+) {
+    let effect = if key == "allow" {
+        Effect::Allow
+    } else {
+        Effect::Deny
+    };
+    match value {
+        toml::Value::Array(arr) => {
+            for item in arr {
+                if let Some(tool_name) = item.as_str() {
+                    if tool_name == "*" {
+                        // `allow = ["*"]` / `deny = ["*"]` means server-wide.
+                        // Create an McpServer rule so deny-wins logic applies:
+                        // McpServer deny blocks all tools on the server.
+                        // No allow can override a deny — any deny wins.
+                        rules.push(PermissionRule {
+                            tool: ToolKey::McpServer {
+                                server: server_name.into(),
+                            },
+                            scope: None,
+                            effect,
+                        });
+                        continue;
+                    }
+                    push_mcp_tool_rule(rules, server_name, tool_name, effect);
+                }
+            }
+        }
+        toml::Value::Boolean(true) => {
+            tracing::warn!(
+                server = server_name,
+                key,
+                "{key} = true is deprecated — use default = \"{key}\" instead; ignoring"
+            );
+        }
+        toml::Value::Boolean(false) => {
+            // No-op: explicitly disabled.
+        }
+        toml::Value::String(s) => {
+            let tool_name = s.as_str();
+            if tool_name == "*" {
+                // Treat `allow = "*"` the same as `allow = ["*"]` —
+                // create a hard McpServer rule, not a default.
+                rules.push(PermissionRule {
+                    tool: ToolKey::McpServer {
+                        server: server_name.into(),
+                    },
+                    scope: None,
+                    effect,
+                });
+            } else {
+                tracing::info!(
+                    server = server_name,
+                    tool = tool_name,
+                    "{key} = \"{tool_name}\" coerced to {key} = [\"{tool_name}\"] — \
+                     consider using array syntax"
+                );
+                push_mcp_tool_rule(rules, server_name, tool_name, effect);
+            }
+        }
+        other => {
+            tracing::warn!(
+                server = server_name,
+                key,
+                value = ?other,
+                "unexpected value for [mcp.{server_name}].{key} — \
+                 expected array of tool names or default = \"allow\"/\"deny\""
+            );
+        }
+    }
+}
+
 fn child_table<'a>(
     table: &'a mut toml_edit::Table,
     key: &str,
@@ -1297,75 +1432,7 @@ fn parse_mcp_server_table(
     for (key, value) in table {
         match key.as_str() {
             "allow" | "deny" => {
-                let effect = if key == "allow" {
-                    Effect::Allow
-                } else {
-                    Effect::Deny
-                };
-                match value {
-                    toml::Value::Array(arr) => {
-                        for item in arr {
-                            if let Some(tool_name) = item.as_str() {
-                                if tool_name == "*" {
-                                    // `allow = ["*"]` / `deny = ["*"]` means server-wide.
-                                    // Create an McpServer rule so deny-wins logic applies:
-                                    // McpServer deny blocks all tools on the server.
-                                    // No allow can override a deny — any deny wins.
-                                    rules.push(PermissionRule {
-                                        tool: ToolKey::McpServer {
-                                            server: server_name.into(),
-                                        },
-                                        scope: None,
-                                        effect,
-                                    });
-                                    continue;
-                                }
-                                push_mcp_tool_rule(rules, server_name, tool_name, effect);
-                            }
-                        }
-                    }
-                    toml::Value::Boolean(true) => {
-                        tracing::warn!(
-                            server = server_name,
-                            key = key.as_str(),
-                            "{key} = true is deprecated — use default = \"{key}\" instead; ignoring"
-                        );
-                    }
-                    toml::Value::Boolean(false) => {
-                        // No-op: explicitly disabled.
-                    }
-                    toml::Value::String(s) => {
-                        let tool_name = s.as_str();
-                        if tool_name == "*" {
-                            // Treat `allow = "*"` the same as `allow = ["*"]` —
-                            // create a hard McpServer rule, not a default.
-                            rules.push(PermissionRule {
-                                tool: ToolKey::McpServer {
-                                    server: server_name.into(),
-                                },
-                                scope: None,
-                                effect,
-                            });
-                        } else {
-                            tracing::info!(
-                                server = server_name,
-                                tool = tool_name,
-                                "{key} = \"{tool_name}\" coerced to {key} = [\"{tool_name}\"] — \
-                                 consider using array syntax"
-                            );
-                            push_mcp_tool_rule(rules, server_name, tool_name, effect);
-                        }
-                    }
-                    other => {
-                        tracing::warn!(
-                            server = server_name,
-                            key = key.as_str(),
-                            value = ?other,
-                            "unexpected value for [mcp.{server_name}].{key} — \
-                             expected array of tool names or default = \"allow\"/\"deny\""
-                        );
-                    }
-                }
+                apply_mcp_effect(server_name, key.as_str(), value, rules);
             }
             "default" => {
                 if let Ok(d) = value.clone().try_into::<DefaultEffect>() {
@@ -1404,14 +1471,16 @@ fn parse_mcp_server_table(
 }
 
 fn build_permissions(
-    global: PermissionsFileConfig,
-    project: PermissionsFileConfig,
+    global: &PermissionsFileConfig,
+    project: &PermissionsFileConfig,
 ) -> PermissionsConfig {
-    let global_default = global.default.unwrap_or(DefaultEffect::Prompt);
-    let default = match project.default {
-        Some(DefaultEffect::Allow) => global_default,
-        Some(d) => d,
-        None => global_default,
+    let global_default = global.default.map_or(DefaultEffect::Prompt, |v| v);
+    let default = if let Some(d) = project.default
+        && d != DefaultEffect::Allow
+    {
+        d
+    } else {
+        global_default
     };
 
     let mut tool_defaults = HashMap::new();
@@ -1546,10 +1615,11 @@ fn load_permissions_inner(cwd: &Path, global_dirs: &[PathBuf]) -> PermissionsCon
         }
     }
 
-    let project_perms =
-        read_permissions_file(&cwd.join(PROJECT_DIR).join(PERMISSIONS_FILE)).unwrap_or_default();
+    #[allow(clippy::unwrap_or_default)]
+    let project_perms = read_permissions_file(&cwd.join(PROJECT_DIR).join(PERMISSIONS_FILE))
+        .unwrap_or_else(PermissionsFileConfig::default);
 
-    build_permissions(global_perms, project_perms)
+    build_permissions(&global_perms, &project_perms)
 }
 
 fn migrate_mcp_entry(
@@ -1729,6 +1799,12 @@ pub fn global_config_dirs() -> Vec<PathBuf> {
     config_search_dirs(global_dir().as_deref())
 }
 
+/// Append a permission rule to the global or project permissions file.
+///
+/// # Errors
+///
+/// Returns a `String` error if the home directory cannot be determined or if
+/// the permissions file cannot be read, parsed, or written.
 pub fn append_permission_rule(
     tool: &ToolKey,
     scope: Option<&str>,
@@ -1763,7 +1839,7 @@ fn append_global_permission(
     let path = global
         .ok_or_else(|| "cannot determine home directory".to_string())?
         .join(PERMISSIONS_FILE);
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|_| String::new());
     let mut doc: toml_edit::DocumentMut = content
         .parse()
         .map_err(|e| format!("failed to parse permissions: {e}"))?;
@@ -1785,7 +1861,7 @@ fn append_project_permission(
     cwd: &Path,
 ) -> Result<(), String> {
     let path = cwd.join(PROJECT_DIR).join(PERMISSIONS_FILE);
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|_| String::new());
     let mut doc: toml_edit::DocumentMut = content
         .parse()
         .map_err(|e| format!("failed to parse .n00n/{PERMISSIONS_FILE}: {e}"))?;
@@ -2086,9 +2162,15 @@ mod tests {
             ("provider", "connect_timeout_secs") => {
                 config.provider.connect_timeout = Duration::from_secs(value);
             }
-            ("storage", "max_log_files") => config.storage.max_log_files = value as u32,
-            ("ui", "mouse_scroll_lines") => config.ui.mouse_scroll_lines = value as u32,
-            ("agent", "max_output_lines") => config.agent.max_output_lines = value as usize,
+            ("storage", "max_log_files") => {
+                config.storage.max_log_files = u32::try_from(value).unwrap();
+            }
+            ("ui", "mouse_scroll_lines") => {
+                config.ui.mouse_scroll_lines = u32::try_from(value).unwrap();
+            }
+            ("agent", "max_output_lines") => {
+                config.agent.max_output_lines = usize::try_from(value).unwrap();
+            }
             _ => unreachable!(),
         }
         let err = config.validate().unwrap_err();
@@ -2373,6 +2455,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn env_file_precedence() {
         const GLOBAL_ONLY: &str = "TEST_N00N_GLOBAL_ONLY";
         const PROJECT_SHADOWS: &str = "TEST_N00N_PROJECT_SHADOWS";
@@ -2395,6 +2478,8 @@ mod tests {
         )
         .unwrap();
 
+        // SAFETY: tests run single-threaded; temporarily mutating process
+        // environment is required to validate .env file precedence.
         unsafe {
             std::env::remove_var(GLOBAL_ONLY);
             std::env::remove_var(PROJECT_SHADOWS);
@@ -2407,6 +2492,8 @@ mod tests {
         assert_eq!(std::env::var(PROJECT_SHADOWS).unwrap(), "project");
         assert_eq!(std::env::var(PROCESS_WINS).unwrap(), "process");
 
+        // SAFETY: tests run single-threaded; cleanup of environment variables
+        // set earlier in this test.
         unsafe {
             std::env::remove_var(GLOBAL_ONLY);
             std::env::remove_var(PROJECT_SHADOWS);

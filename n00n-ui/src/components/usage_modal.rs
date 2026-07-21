@@ -294,7 +294,7 @@ impl crate::components::Overlay for UsageModal {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 

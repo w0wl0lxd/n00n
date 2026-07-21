@@ -28,6 +28,7 @@ pub struct CancelToken(Arc<Shared>);
 pub struct CancelTrigger(Arc<Shared>);
 
 impl CancelToken {
+    #[must_use]
     pub fn new() -> (CancelTrigger, Self) {
         let shared = Arc::new(Shared {
             cancelled: AtomicBool::new(false),
@@ -36,6 +37,7 @@ impl CancelToken {
         (CancelTrigger(Arc::clone(&shared)), Self(shared))
     }
 
+    #[must_use]
     pub fn none() -> Self {
         Self(Arc::new(Shared {
             cancelled: AtomicBool::new(false),
@@ -43,10 +45,16 @@ impl CancelToken {
         }))
     }
 
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.0.cancelled.load(Ordering::Acquire)
     }
 
+    /// Run `future` until it completes or the token is cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err("cancelled")` if the token is cancelled before `future` resolves.
     pub async fn race<T>(&self, future: impl Future<Output = T>) -> Result<T, String> {
         if self.is_cancelled() {
             return Err("cancelled".into());
@@ -71,6 +79,7 @@ impl CancelToken {
         }
     }
 
+    #[must_use]
     pub fn child(&self) -> (CancelTrigger, Self) {
         let (child_trigger, child_token) = Self::new();
         let parent = self.clone();
@@ -112,6 +121,7 @@ impl<K: Eq + std::hash::Hash> Default for CancelMap<K> {
 }
 
 impl<K: Eq + std::hash::Hash> CancelMap<K> {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
@@ -119,7 +129,10 @@ impl<K: Eq + std::hash::Hash> CancelMap<K> {
     }
 
     pub fn insert(&self, id: K, trigger: CancelTrigger) {
-        let mut map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match map.remove(&id) {
             Some(Entry::PreCancelled) => drop(trigger),
             _ => {
@@ -129,7 +142,10 @@ impl<K: Eq + std::hash::Hash> CancelMap<K> {
     }
 
     pub fn cancel_or_precancel(&self, id: K) {
-        let mut map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match map.remove(&id) {
             Some(Entry::Live(_)) => {} // trigger dropped, fires cancel
             _ => {
@@ -141,14 +157,14 @@ impl<K: Eq + std::hash::Hash> CancelMap<K> {
     pub fn remove(&self, id: &K) {
         self.entries
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(id);
     }
 
     pub fn cancel_all(&self) {
         self.entries
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain();
     }
 }

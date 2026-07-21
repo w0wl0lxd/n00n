@@ -12,6 +12,6 @@ fn main() {
                 None
             }
         })
-        .map_or("unknown".to_string(), |s| s.trim().to_string());
+        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string());
     println!("cargo:rustc-env=GIT_SHORT_HASH={hash}");
 }

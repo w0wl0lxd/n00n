@@ -31,6 +31,7 @@ pub struct AuthServerMetadata {
     pub code_challenge_methods_supported: Vec<String>,
 }
 
+#[must_use]
 pub fn parse_www_authenticate(header: &str) -> Option<WwwAuthenticateInfo> {
     if !header.contains("Bearer") {
         return None;
@@ -57,7 +58,7 @@ struct UrlParts<'a> {
 
 fn parse_url(url: &str) -> UrlParts<'_> {
     let base = url.trim_end_matches('/');
-    let scheme_end = base.find("://").map(|i| i + 3).unwrap_or(0);
+    let scheme_end = base.find("://").map_or(0, |i| i + 3);
     let after_scheme = &base[scheme_end..];
     let (authority, path) = match after_scheme.find('/') {
         Some(i) => (&after_scheme[..i], &after_scheme[i..]),
@@ -107,6 +108,10 @@ fn validate_endpoint_url(url: &str) -> Result<(), OAuthError> {
     }
 }
 
+/// Validates that all required endpoints in auth server metadata use HTTPS.
+///
+/// # Errors
+/// Returns `OAuthError` if any endpoint URL does not use HTTPS.
 pub fn validate_auth_server(meta: &AuthServerMetadata) -> Result<(), OAuthError> {
     validate_endpoint_url(&meta.authorization_endpoint)?;
     validate_endpoint_url(&meta.token_endpoint)?;
@@ -116,6 +121,10 @@ pub fn validate_auth_server(meta: &AuthServerMetadata) -> Result<(), OAuthError>
     Ok(())
 }
 
+/// Discovers OAuth resource metadata from a server.
+///
+/// # Errors
+/// Returns `OAuthError` if discovery fails or the metadata cannot be fetched.
 pub async fn discover_resource_metadata(
     client: &HttpClient,
     server_url: &str,
@@ -135,6 +144,10 @@ pub async fn discover_resource_metadata(
         .map_err(|e| OAuthError::Other(format!("resource metadata discovery failed: {e}")))
 }
 
+/// Discovers OAuth authorization server metadata from an issuer URL.
+///
+/// # Errors
+/// Returns `OAuthError` if discovery fails or the metadata cannot be fetched.
 pub async fn discover_auth_server(
     client: &HttpClient,
     issuer_url: &str,

@@ -9,6 +9,11 @@ pub struct PkceChallenge {
     pub challenge: String,
 }
 
+/// Generate a new PKCE challenge/verifier pair.
+///
+/// # Errors
+///
+/// Returns an error if the random number generator is unavailable.
 pub fn generate() -> Result<PkceChallenge, OAuthError> {
     let mut buf = [0u8; 32];
     getrandom::fill(&mut buf).map_err(|e| OAuthError::Other(format!("CSPRNG unavailable: {e}")))?;

@@ -305,12 +305,15 @@ async fn root(_lua: Lua, source: String, marker: Value) -> LuaResult<Option<Stri
     smol::unblock(move || {
         let start = Path::new(&source);
         let start = if start.is_file() || !start.exists() {
-            start.parent().unwrap_or(start)
+            start.parent().unwrap_or_else(|| start)
         } else {
             start
         };
 
-        let mut dir = make_absolute(start.to_str().unwrap_or_default())?;
+        let start_str = start
+            .to_str()
+            .ok_or_else(|| mlua::Error::runtime("path contains invalid UTF-8"))?;
+        let mut dir = make_absolute(start_str)?;
 
         loop {
             for m in &markers {
@@ -386,7 +389,7 @@ fn ext(_lua: &Lua, path: String) -> LuaResult<Option<String>> {
 async fn dir(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value, Value)> {
     let abs = make_absolute(&path)?;
     let max_depth: u32 = match &opts {
-        Some(t) => t.get::<u32>("depth").unwrap_or(1),
+        Some(t) => t.get::<u32>("depth").unwrap_or_else(|_| 1),
         None => 1,
     };
 
@@ -461,7 +464,7 @@ async fn mkdir(lua: Lua, path: String, opts: Option<Table>) -> LuaResult<(Value,
     let parents = opts
         .as_ref()
         .and_then(|t| t.get::<bool>("parents").ok())
-        .unwrap_or(false);
+        .unwrap_or_else(|| false);
     let result = if parents {
         smol::fs::create_dir_all(&abs).await
     } else {
@@ -504,7 +507,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
     let gitignore = opts
         .as_ref()
         .and_then(|t| t.get::<bool>("gitignore").ok())
-        .unwrap_or(true);
+        .unwrap_or_else(|| true);
     let sort = opts.as_ref().and_then(|t| t.get::<String>("sort").ok());
     let sort_mtime = sort.as_deref() == Some("mtime");
 
@@ -553,7 +556,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
             }
             Ok((Value::Table(tbl), Value::Nil))
         }
-        Err(e) => err_pair(&lua, format_args!("glob: {e}")),
+        Err(e) => err_pair(&lua, format!("glob: {e}")),
     }
 }
 
@@ -600,7 +603,7 @@ async fn grep(lua: Lua, pattern: String, opts: Option<Table>) -> LuaResult<(Valu
         }
     }
 
-    let result = smol::unblock(move || n00n_agent::tools::grep::grep_search(params)).await;
+    let result = smol::unblock(move || n00n_agent::tools::grep::grep_search(&params)).await;
 
     match result {
         Ok((base, entries)) => {
@@ -1128,7 +1131,7 @@ mod tests {
         std::fs::write(&old_path, "").unwrap();
         std::fs::write(&new_path, "").unwrap();
 
-        let old_time = SystemTime::now() - Duration::from_secs(60);
+        let old_time = SystemTime::now() - Duration::from_mins(1);
         let new_time = SystemTime::now();
         OpenOptions::new()
             .write(true)
@@ -1198,7 +1201,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut content = String::new();
         for i in 1..=20 {
-            content.push_str(&format!("line_{i}\n"));
+            let _ = std::fmt::Write::write_fmt(&mut content, format_args!("line_{i}\n"));
         }
         std::fs::write(tmp.path().join("data.txt"), &content).unwrap();
         std::fs::write(tmp.path().join("other.txt"), "no hits here\n").unwrap();

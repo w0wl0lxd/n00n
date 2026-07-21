@@ -1,3 +1,5 @@
+#![allow(clippy::cast_possible_truncation)]
+
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -32,10 +34,15 @@ pub struct StdioTransport {
     alive: Arc<AtomicBool>,
     _reader_task: smol::Task<()>,
     _stderr_task: smol::Task<()>,
-    _child: ChildGuard,
+    child: ChildGuard,
 }
 
 impl StdioTransport {
+    /// Spawn a new stdio MCP transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the child process cannot be spawned or initialized.
     #[allow(unsafe_code)]
     pub fn spawn(
         name: &str,
@@ -130,7 +137,7 @@ impl StdioTransport {
             alive,
             _reader_task: reader_task,
             _stderr_task: stderr_task,
-            _child: ChildGuard::new(child),
+            child: ChildGuard::new(child),
         })
     }
 
@@ -171,7 +178,8 @@ impl StdioTransport {
                                     message: err.message,
                                 })
                             } else {
-                                Ok(resp.result.unwrap_or(Value::Null))
+                                let result = resp.result.unwrap_or_else(|| Value::Null);
+                                Ok(result)
                             };
                             let _ = sender.send(result).await;
                         } else {
@@ -247,11 +255,12 @@ impl McpTransport for StdioTransport {
             }
 
             let result = futures_lite::future::race(
-                async { rx.recv().await.unwrap_or(Err(self.server_died())) },
+                async { rx.recv().await.unwrap_or_else(|_| Err(self.server_died())) },
                 async {
                     async_io::Timer::after(self.timeout).await;
                     Err(McpError::Timeout {
                         server: self.server(),
+                        #[allow(clippy::cast_possible_truncation)]
                         timeout_ms: self.timeout.as_millis() as u64,
                     })
                 },
@@ -261,7 +270,8 @@ impl McpTransport for StdioTransport {
             if result.is_err() {
                 self.pending.lock().await.remove(&id);
             } else {
-                info!(server = %self.server(), method, id, duration_ms = start.elapsed().as_millis() as u64, "MCP stdio response");
+                let duration_ms = start.elapsed().as_millis();
+                info!(server = %self.server(), method, id, duration_ms = duration_ms as u64, "MCP stdio response");
             }
 
             result
@@ -279,7 +289,7 @@ impl McpTransport for StdioTransport {
         })
     }
 
-    fn shutdown<'a>(&'a self) -> BoxFuture<'a, ()> {
+    fn shutdown(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             // Flip `alive` so any in-flight reader or writer gives up with a clean error.
             // We deliberately do not signal the child here: the transport lives behind an
@@ -297,8 +307,9 @@ impl McpTransport for StdioTransport {
         "stdio"
     }
 
+    #[allow(clippy::used_underscore_binding)]
     fn child_pids(&self) -> Vec<u32> {
-        vec![self._child.id()]
+        vec![self.child.id()]
     }
 }
 
@@ -318,9 +329,11 @@ mod tests {
         let mut reader = BufReader::new(Cursor::new(input.as_bytes().to_vec()));
         let _ = StdioTransport::reader_loop(&name, &mut reader, &pending).await;
 
-        rx.try_recv().unwrap_or(Err(McpError::ServerDied {
-            server: "no response received".into(),
-        }))
+        rx.try_recv().unwrap_or_else(|_| {
+            Err(McpError::ServerDied {
+                server: "no response received".into(),
+            })
+        })
     }
 
     #[test_case("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n" ; "lf_terminated")]

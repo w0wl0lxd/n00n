@@ -54,11 +54,18 @@ enum PrevState {
 type PrevCell = Arc<Mutex<PrevState>>;
 
 fn take_state(cell: &PrevCell, next: PrevState) -> PrevState {
-    mem::replace(&mut cell.lock().expect("prev state poisoned"), next)
+    mem::replace(
+        &mut cell
+            .lock()
+            .unwrap_or_else(|e| unreachable!("prev state poisoned: {e}")),
+        next,
+    )
 }
 
 fn set_state(cell: &PrevCell, state: PrevState) {
-    *cell.lock().expect("prev state poisoned") = state;
+    *cell
+        .lock()
+        .unwrap_or_else(|e| unreachable!("prev state poisoned: {e}")) = state;
 }
 
 fn slot_store_mut(lua: &Lua) -> LuaResult<mlua::AppDataRefMut<'_, SlotStore>> {
