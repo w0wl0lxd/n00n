@@ -373,6 +373,7 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_possible_wrap)]
 mod tests {
     use std::pin::pin;
     use std::sync::Mutex;

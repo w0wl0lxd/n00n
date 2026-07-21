@@ -470,7 +470,9 @@ async fn session(
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
     if let Some(tbl) = local_tools_tbl {
-        let defs = tools_json.as_array_mut().expect("checked above");
+        let defs = tools_json
+            .as_array_mut()
+            .unwrap_or_else(|| unreachable!("tools_json is always an array here"));
         for pair in tbl.pairs::<String, Table>() {
             let (name, spec) = pair?;
             let description = try_pair!(
@@ -506,8 +508,8 @@ async fn session(
             _ => return Ok(err_pair(format!("invalid thinking budget: {n}"))),
         },
         Some(LuaValue::Number(n)) if n >= 1.0 && n <= f64::from(u32::MAX) => {
-            let tokens = n as u32;
-            #[allow(clippy::cast_possible_truncation)]
+            let tokens = u32::try_from(n as i64)
+                .map_err(|_| mlua::Error::runtime(format!("invalid thinking budget: {n}")))?;
             ThinkingConfig::Budget(tokens)
         }
         Some(LuaValue::Number(n)) => {

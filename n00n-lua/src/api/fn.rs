@@ -330,7 +330,7 @@ async fn jobwait(lua: Lua, job_id: u32, timeout_ms: Option<u64>) -> LuaResult<Va
     let rx = with_task_jobs(&lua, |store| store.take_receiver(job_id))
         .ok_or_else(|| mlua::Error::runtime("unknown job id or already waited"))?;
 
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or_else(|| 30_000));
     let deadline = smol::Timer::after(timeout);
     futures_lite::pin!(deadline);
 
@@ -519,8 +519,7 @@ mod tests {
                     got_exit = true;
                     break;
                 }
-                Ok(_) => continue,
-                Err(flume::RecvTimeoutError::Timeout) => continue,
+                Ok(_) | Err(flume::RecvTimeoutError::Timeout) => {}
                 Err(flume::RecvTimeoutError::Disconnected) => break,
             }
         }

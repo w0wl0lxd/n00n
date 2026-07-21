@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::needless_pass_by_value
+)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

@@ -246,7 +246,10 @@ impl IterEntry for MatchEntry {
             meta_table.set(k.as_str(), v.as_str())?;
         }
         Ok(MultiValue::from_iter([
-            LuaValue::Integer((self.pattern_index + 1) as i64),
+            LuaValue::Integer(
+                i64::try_from(self.pattern_index + 1)
+                    .map_err(|e| mlua::Error::runtime(format!("pattern index overflow: {e}")))?,
+            ),
             LuaValue::Table(captures_table),
             LuaValue::Table(meta_table),
             LuaValue::Integer(1),
@@ -267,9 +270,10 @@ fn stateful_iter<E: IterEntry>(lua: &mlua::Lua, results: Vec<E>) -> mlua::Result
 }
 
 fn new_cursor(start_row: Option<usize>, stop_row: Option<usize>) -> QueryCursor {
+    const NO_LIMIT: usize = usize::MAX;
     let mut cursor = QueryCursor::new();
     if let Some(start) = start_row {
-        let end = stop_row.unwrap_or(usize::MAX);
+        let end = stop_row.unwrap_or_else(|| NO_LIMIT);
         cursor.set_point_range(tree_sitter::Point::new(start, 0)..tree_sitter::Point::new(end, 0));
     }
     cursor
@@ -555,10 +559,11 @@ fn eval_set(args: &[QueryPredicateArg], metadata: &mut HashMap<String, String>) 
     metadata.insert(key.to_string(), value.to_string());
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn lua_to_usize(v: LuaValue) -> Option<usize> {
     match v {
         LuaValue::Integer(n) => usize::try_from(n).ok(),
-        LuaValue::Number(n) => Some(n as usize),
+        LuaValue::Number(n) => usize::try_from(n as i64).ok(),
         _ => None,
     }
 }
