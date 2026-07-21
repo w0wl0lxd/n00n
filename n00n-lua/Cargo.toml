@@ -21,6 +21,7 @@ n00n-lua-macro = { workspace = true }
 n00n-markdown = { workspace = true }
 n00n-providers = { workspace = true }
 mlua = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 toon-format = { workspace = true }
@@ -31,6 +32,7 @@ event-listener = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
 futures-lite = { workspace = true }
+pin-project-lite = { workspace = true }
 tree-sitter = { workspace = true }
 unicode-width = { workspace = true }
 regex = { workspace = true }
@@ -70,7 +72,7 @@ tree-sitter-zig = { workspace = true }
 tree-sitter-dart = { workspace = true }
 tree-sitter-yaml = { workspace = true }
 [target.'cfg(unix)'.dependencies]
-libc = { workspace = true }
+rustix = { workspace = true }
 
 [dev-dependencies]
 base64 = { workspace = true }
@@ -87,3 +89,6 @@ harness = false
 [[bench]]
 name = "perf"
 harness = false
+
+[lints]
+workspace = true

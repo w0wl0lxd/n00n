@@ -12,6 +12,7 @@ pub fn persist_model(dir: &StateDir, spec: &str) {
     let _ = atomic_write(&dir.path().join(MODEL_FILE), spec.as_bytes());
 }
 
+#[must_use]
 pub fn read_model(dir: &StateDir) -> Option<String> {
     let raw = fs::read_to_string(dir.path().join(MODEL_FILE)).ok()?;
     let spec = raw.trim();
@@ -21,6 +22,7 @@ pub fn read_model(dir: &StateDir) -> Option<String> {
 #[derive(Serialize, Deserialize, Default)]
 struct RecentList(Vec<String>);
 
+#[must_use]
 pub fn push_recent(dir: &StateDir, spec: &str) -> Vec<String> {
     let mut recents = read_recents(dir);
     recents.retain(|s| s != spec);
@@ -30,6 +32,7 @@ pub fn push_recent(dir: &StateDir, spec: &str) -> Vec<String> {
     recents
 }
 
+#[must_use]
 pub fn read_recents(dir: &StateDir) -> Vec<String> {
     let Ok(raw) = fs::read_to_string(dir.path().join(RECENT_FILE)) else {
         return Vec::new();
@@ -45,9 +48,9 @@ pub fn read_recents(dir: &StateDir) -> Vec<String> {
 }
 
 fn write_recents(dir: &StateDir, recents: &[String]) {
-    let json = match serde_json::to_vec_pretty(&RecentList(recents.to_vec())) {
-        Ok(v) => v,
-        Err(_) => return,
+    let Ok(json) = serde_json::to_vec_pretty(&RecentList(recents.to_vec())) else {
+        tracing::warn!("failed to serialize recent models");
+        return;
     };
     let _ = atomic_write(&dir.path().join(RECENT_FILE), &json);
 }
@@ -91,14 +94,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = StateDir::from_path(tmp.path().to_path_buf());
 
-        push_recent(&dir, "anthropic/claude-sonnet-4");
-        push_recent(&dir, "openai/gpt-5.4-nano");
+        let _ = push_recent(&dir, "anthropic/claude-sonnet-4");
+        let _ = push_recent(&dir, "openai/gpt-5.4-nano");
         assert_eq!(
             read_recents(&dir),
             ["openai/gpt-5.4-nano", "anthropic/claude-sonnet-4"]
         );
 
-        push_recent(&dir, "anthropic/claude-sonnet-4");
+        let _ = push_recent(&dir, "anthropic/claude-sonnet-4");
         assert_eq!(
             read_recents(&dir),
             ["anthropic/claude-sonnet-4", "openai/gpt-5.4-nano"]
@@ -111,7 +114,7 @@ mod tests {
         let dir = StateDir::from_path(tmp.path().to_path_buf());
 
         for i in 0..(MAX_RECENTS + 3) {
-            push_recent(&dir, &format!("p/model-{i}"));
+            let _ = push_recent(&dir, &format!("p/model-{i}"));
         }
         let recents = read_recents(&dir);
         assert_eq!(recents.len(), MAX_RECENTS);

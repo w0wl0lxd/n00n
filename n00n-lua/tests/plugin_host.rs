@@ -2,10 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use n00n_agent::tools::{ToolRegistry, ToolSource, timeout_annotation};
+use n00n_agent::template::env_vars;
+use n00n_agent::tools::{
+    DescriptionContext, ToolAudience, ToolFilter, ToolRegistry, ToolSource, timeout_annotation,
+};
 use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
 use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
 use std::path::Path;
+
+const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 42_000;
 
 fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())
@@ -14,9 +19,35 @@ fn fresh_registry() -> Arc<ToolRegistry> {
 fn builtins_host() -> (Arc<ToolRegistry>, PluginHost) {
     let reg = fresh_registry();
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    host.load_builtins(&PluginsConfig::from_plugins(HashMap::new()))
+    host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))
         .unwrap();
     (reg, host)
+}
+
+#[test]
+fn builtin_main_tool_definitions_stay_within_prompt_budget() {
+    let (registry, _host) = builtins_host();
+    let definitions = registry.definitions(
+        &env_vars(),
+        &DescriptionContext {
+            filter: &ToolFilter::All,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        },
+        true,
+    );
+    let bytes = serde_json::to_vec_pretty(&definitions).unwrap().len() + 1;
+
+    for required in ["task", "team", "workflow", "agent_control"] {
+        assert!(
+            registry.has(required),
+            "required tool disappeared: {required}"
+        );
+    }
+    assert!(
+        bytes <= TOOL_DEFINITIONS_BYTE_BUDGET,
+        "builtin main tool definitions use {bytes} bytes; budget is {TOOL_DEFINITIONS_BYTE_BUDGET}"
+    );
 }
 
 fn exec_tool(reg: &ToolRegistry, name: &str, input: serde_json::Value) -> Result<String, String> {
@@ -2060,7 +2091,7 @@ fn builtin_opts_flow_from_setup_plugins() {
         )
         .unwrap()
         .expect("expected Some(RawConfig)");
-    host.load_builtins(&PluginsConfig::from_plugins(raw.plugins))
+    host.load_builtins(&PluginsConfig::from_plugins(&raw.plugins))
         .unwrap();
 
     let options = host.plugin_options().unwrap();
@@ -2119,7 +2150,7 @@ fn undeclared_opts_fail_the_load() {
 fn opts_for_unknown_plugin_fail_load_builtins() {
     let reg = fresh_registry();
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    let mut config = PluginsConfig::from_plugins(HashMap::new());
+    let mut config = PluginsConfig::from_plugins(&HashMap::new());
     config.opts.insert(
         "bsah".to_owned(),
         json_obj(serde_json::json!({ "timeout_secs": 5 })),
@@ -2138,7 +2169,7 @@ fn opts_for_unknown_plugin_fail_load_builtins() {
 fn unknown_plugin_name_fails_load_builtins() {
     let reg = fresh_registry();
     let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
-    let mut config = PluginsConfig::from_plugins(HashMap::new());
+    let mut config = PluginsConfig::from_plugins(&HashMap::new());
     config.names.push("gerp".to_string());
     let err = host
         .load_builtins(&config)
@@ -3346,7 +3377,7 @@ fn interpreter_bridge_flattens_image_with_visibility_note() {
 }
 
 #[test]
-fn bundled_todo_panel_tracks_running_activity_in_hint() {
+fn bundled_todo_panel_keeps_current_todo_stable_in_hint() {
     let (reg, host) = builtins_host();
     let ui_rx = host.ui_action_rx().unwrap();
     exec_tool(
@@ -3390,27 +3421,97 @@ fn bundled_todo_panel_tracks_running_activity_in_hint() {
         }),
     );
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        let hints = host.hint_reader().load();
-        let text = hints
-            .entries
-            .iter()
-            .flat_map(|(_, spans)| spans.iter().map(|(text, _)| text.as_str()))
-            .collect::<String>();
-        if text.contains("cargo test --workspace") {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "todo hint did not expose running activity: {text}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let hints = host.hint_reader().load();
+    let text = hints
+        .entries
+        .iter()
+        .flat_map(|(_, spans)| spans.iter().map(|(text, _)| text.as_str()))
+        .collect::<String>();
+    assert!(
+        text.contains("Run tests"),
+        "current todo disappeared: {text}"
+    );
+    assert!(
+        !text.contains("cargo test --workspace"),
+        "transient tool activity replaced the current todo: {text}"
+    );
 
     handle.fire_autocmd(
         "ToolDone",
         serde_json::json!({ "id": "cmd-1", "tool": "bash", "is_error": false }),
+    );
+}
+
+#[test]
+fn bundled_todo_running_click_toggles_and_final_done_resets_collapsed() {
+    let (reg, host) = builtins_host();
+    let ui_rx = host.ui_action_rx().unwrap();
+    let handle = host.event_handle().unwrap();
+    handle.fire_autocmd(
+        "ToolStart",
+        serde_json::json!({ "id": "cmd-1", "tool": "bash", "summary": "cargo test" }),
+    );
+    barrier(&host);
+    exec_tool(
+        &reg,
+        "todo_write",
+        serde_json::json!({
+            "todos": [
+                { "content": "Run tests", "status": "in_progress", "priority": "high" }
+            ]
+        }),
+    )
+    .unwrap();
+    let n00n_lua::UiAction::OpenWin { buf, cmd_rx, .. } =
+        ui_rx.recv_timeout(Duration::from_secs(2)).unwrap()
+    else {
+        panic!("todo tool did not open its panel");
+    };
+    let text = || {
+        buf.read()
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+            .collect::<String>()
+    };
+    let wait_for = |needle: &str| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let got = text();
+            if got.contains(needle) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "missing {needle:?}: {got}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+
+    wait_for("Running ▸");
+    assert!(
+        buf.click().is_some(),
+        "panel click handler must remain registered"
+    );
+    handle.request_buf_click(Arc::clone(&buf), 1);
+    assert!(
+        cmd_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+        "click handler did not reconfigure panel"
+    );
+    wait_for("Running ▾");
+    handle.fire_autocmd(
+        "ToolDone",
+        serde_json::json!({ "id": "cmd-1", "tool": "bash", "is_error": false }),
+    );
+    handle.fire_autocmd(
+        "ToolStart",
+        serde_json::json!({ "id": "cmd-2", "tool": "bash", "summary": "cargo clippy" }),
+    );
+    barrier(&host);
+    wait_for("Running ▸");
+    assert!(
+        !text().contains("Running ▾"),
+        "new activity must start collapsed"
     );
 }
 
@@ -3429,6 +3530,94 @@ fn bundled_todo_ctrl_t_keybind_dispatches() {
         host.event_handle().unwrap().run_keybind_callback(entry.id),
         "live plugin host must accept the Ctrl+T callback"
     );
+}
+
+#[test]
+fn team_launcher_uses_native_model_picker_and_amp_labels() {
+    let (_reg, host) = builtins_host();
+    let rx = host.ui_action_rx().unwrap();
+    let handle = host.event_handle().unwrap();
+    handle.run_command(
+        Arc::from("team"),
+        Arc::from("/team"),
+        "fix the parser".into(),
+    );
+
+    let action = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("Team launcher did not open");
+    let n00n_lua::UiAction::OpenWin { buf, event_tx, .. } = action else {
+        panic!("expected Team launcher window");
+    };
+    let rendered = || {
+        buf.read()
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+            .collect::<String>()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let initial = loop {
+        let text = rendered();
+        if text.contains("Model: Default (tier routing)") {
+            break text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "team launcher did not render: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(initial.contains("Start team"), "{initial}");
+    assert!(!initial.contains("Exact model"), "{initial}");
+
+    for key in ["down", "down", "enter"] {
+        event_tx
+            .send(n00n_lua::WinEvent::Key { key: key.into() })
+            .unwrap();
+    }
+    let action = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("Model picker did not open");
+    let n00n_lua::UiAction::PickModel { current, reply_tx } = action else {
+        panic!("expected native model picker request");
+    };
+    assert_eq!(current, None);
+    reply_tx
+        .send(Some("anthropic/claude-sonnet-4-6".into()))
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !rendered().contains("anthropic/claude-sonnet-4-6") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "selected model was not rendered: {}",
+            rendered()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    event_tx
+        .send(n00n_lua::WinEvent::Key {
+            key: "ctrl+enter".into(),
+        })
+        .unwrap();
+    let action = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("Team launcher did not submit a session prompt");
+    let n00n_lua::UiAction::Session { req, reply_tx } = action else {
+        panic!("expected Team session prompt");
+    };
+    let n00n_lua::SessionRequest::Prompt { text, .. } = req else {
+        panic!("expected a prompt request");
+    };
+    assert!(
+        text.contains("model: anthropic/claude-sonnet-4-6"),
+        "submitted prompt: {text}"
+    );
+    assert!(
+        text.contains("model_tier: strong"),
+        "tier routing default was not retained: {text}"
+    );
+    reply_tx.send(Ok(serde_json::json!("started"))).unwrap();
 }
 
 #[test]

@@ -65,6 +65,7 @@ struct FloatWindow {
     /// scroll math stays consistent between frames.
     viewport_h: u16,
     last_content: Rect,
+    last_rect: Rect,
     cursor: usize,
     visible: bool,
     event_tx: flume::Sender<WinEvent>,
@@ -114,6 +115,29 @@ impl FloatWindow {
     /// Pulls the cursor into the scrollable band and then slides the offset
     /// to follow it. Use this after the cursor moves or the buffer changes,
     /// never on a plain redraw.
+    fn content_row(&self, pos: ratatui::layout::Position) -> Option<usize> {
+        if !self.last_content.contains(pos) {
+            return None;
+        }
+        let layout = self.layout();
+        let relative = usize::from(pos.y - self.last_content.y);
+        let content_h = usize::from(self.last_content.height);
+        let chrome_fits = layout.reserved_top + layout.reserved_bot < content_h;
+        let source = if chrome_fits && relative < layout.reserved_top {
+            relative
+        } else if chrome_fits && relative >= content_h - layout.reserved_bot {
+            layout.reserved_top + layout.scrollable + relative - (content_h - layout.reserved_bot)
+        } else {
+            let scroll_row = if chrome_fits {
+                relative - layout.reserved_top
+            } else {
+                relative
+            };
+            layout.reserved_top + self.scroll_offset + scroll_row
+        };
+        (source < self.cached_lines.len()).then_some(source + 1)
+    }
+
     fn bring_cursor_into_view(&mut self) {
         let layout = self.layout();
         let effective_cursor = self.cursor.saturating_sub(layout.reserved_top);
@@ -161,6 +185,8 @@ impl FloatManager {
         self.windows.retain(|w| {
             let remove = should_remove(w);
             if remove {
+                w.buf.clear_click();
+                w.buf.clear_on_change();
                 let _ = w.event_tx.try_send(WinEvent::Close);
             }
             !remove
@@ -205,6 +231,7 @@ impl FloatManager {
             cached_lines,
             viewport_h: 1,
             last_content: Rect::default(),
+            last_rect: Rect::default(),
             cursor: 0,
             visible,
             event_tx,
@@ -351,6 +378,7 @@ impl FloatManager {
     fn render_window(&mut self, frame: &mut Frame, idx: usize, popup: Rect) {
         let t = theme::current();
         let win = &mut self.windows[idx];
+        win.last_rect = popup;
 
         frame.render_widget(Clear, popup);
 
@@ -483,18 +511,43 @@ impl FloatManager {
         }
     }
 
+    /// Routes a terminal click to the topmost visible Lua window. A hit on
+    /// window chrome is still consumed so it cannot activate the chat below.
+    pub fn handle_click(
+        &self,
+        pos: ratatui::layout::Position,
+        event_handle: Option<&n00n_lua::EventHandle>,
+    ) -> bool {
+        let Some(win) = self
+            .windows
+            .iter()
+            .rev()
+            .find(|win| win.visible && win.last_rect.contains(pos))
+        else {
+            return false;
+        };
+        if let (Some(handle), Some(row)) = (event_handle, win.content_row(pos)) {
+            handle.request_buf_click(Arc::clone(&win.buf), row);
+        }
+        true
+    }
+
+    #[cfg(test)]
     pub fn contains(&self, pos: ratatui::layout::Position) -> bool {
         self.focused_rect.is_some_and(|r| r.contains(pos))
     }
 
-    pub fn scroll(&mut self, delta: i32) {
-        let Some(fid) = self.focused_id else {
-            return;
-        };
-        let Some(win) = self.windows.iter_mut().find(|w| w.id == fid) else {
-            return;
+    pub fn scroll_at(&mut self, pos: ratatui::layout::Position, delta: i32) -> bool {
+        let Some(win) = self
+            .windows
+            .iter_mut()
+            .rev()
+            .find(|win| win.visible && win.last_rect.contains(pos))
+        else {
+            return false;
         };
         win.scroll_by(delta);
+        true
     }
 
     pub fn is_open(&self) -> bool {
@@ -1395,7 +1448,8 @@ mod tests {
         cfg.reserved_bottom = 3;
         mgr.open(buf, cfg, true, event_tx, cmd_rx);
 
-        mgr.scroll(-1000);
+        mgr.windows[0].last_rect = Rect::new(0, 0, 10, 10);
+        assert!(mgr.scroll_at(ratatui::layout::Position::new(0, 0), -1000));
 
         let win = &mgr.windows[0];
         let expected_max = win.layout().max_offset(win.viewport_h);
@@ -1504,6 +1558,7 @@ mod tests {
             cached_lines,
             viewport_h: 1,
             last_content: Rect::default(),
+            last_rect: Rect::default(),
             cursor: 0,
             visible: true,
             event_tx,
@@ -1598,6 +1653,48 @@ mod tests {
         win.scroll_offset = initial_offset;
         win.scroll_by(delta);
         win.scroll_offset
+    }
+
+    #[test]
+    fn content_row_maps_border_and_scroll_offset() {
+        let mut win = make_window_n(20);
+        win.last_rect = Rect::new(4, 6, 20, 7);
+        win.last_content = Rect::new(5, 7, 18, 5);
+        win.refresh_layout(5);
+        win.scroll_by(-4);
+
+        assert_eq!(
+            win.content_row(ratatui::layout::Position::new(5, 7)),
+            Some(5)
+        );
+        assert_eq!(
+            win.content_row(ratatui::layout::Position::new(5, 11)),
+            Some(9)
+        );
+        assert_eq!(win.content_row(ratatui::layout::Position::new(4, 7)), None);
+    }
+
+    #[test]
+    fn content_row_maps_pinned_bands() {
+        let mut win = make_window_n(12);
+        win.config.reserved_top = 2;
+        win.config.reserved_bottom = 1;
+        win.last_content = Rect::new(1, 1, 20, 6);
+        win.refresh_layout(3);
+        win.scroll_by(-3);
+
+        assert_eq!(
+            win.content_row(ratatui::layout::Position::new(1, 1)),
+            Some(1)
+        );
+        assert_eq!(
+            win.content_row(ratatui::layout::Position::new(1, 3)),
+            Some(6)
+        );
+        assert_eq!(
+            win.content_row(ratatui::layout::Position::new(1, 6)),
+            Some(12)
+        );
     }
 
     #[test]

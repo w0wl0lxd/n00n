@@ -26,9 +26,12 @@ pub enum AgentError {
     Cancelled,
     #[error("stream timed out after {secs}s of inactivity")]
     Timeout { secs: u64 },
+    #[error("request may have been accepted before the connection failed: {message}")]
+    RequestSent { message: String },
 }
 
 impl AgentError {
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         if self.is_context_overflow() {
             return false;
@@ -41,7 +44,8 @@ impl AgentError {
             | Self::Channel
             | Self::Json(_)
             | Self::Cancelled
-            | Self::HttpRequest(_) => false,
+            | Self::HttpRequest(_)
+            | Self::RequestSent { .. } => false,
         }
     }
 
@@ -49,15 +53,16 @@ impl AgentError {
     ///
     /// Provider error formats:
     /// - Anthropic:  413 "prompt is too long"  <https://docs.anthropic.com/en/docs/errors>
-    /// - OpenAI:     400 "maximum context length is X tokens"  <https://platform.openai.com/docs/guides/error-codes>
+    /// - `OpenAI`:     400 "maximum context length is X tokens"  <https://platform.openai.com/docs/guides/error-codes>
     /// - Gemini:     400 "input token count exceeds" / "too many tokens"  <https://ai.google.dev/gemini-api/docs/troubleshooting>
     /// - Ollama:     400 "context length exceeded"  <https://docs.ollama.com/api/errors>
     /// - llama.cpp:  400 "exceeds the available context size"  <https://github.com/ggml-org/llama.cpp/blob/master/tools/server/server-context.cpp>
-    /// - Bedrock:    400 ValidationException "Input is too long for requested model"  <https://repost.aws/knowledge-center/bedrock-validation-exception-errors>
-    /// - DeepSeek:   400 "maximum context length is X tokens"  <https://api-docs.deepseek.com/quick_start/pricing>
+    /// - Bedrock:    400 `ValidationException` "Input is too long for requested model"  <https://repost.aws/knowledge-center/bedrock-validation-exception-errors>
+    /// - `DeepSeek`:   400 "maximum context length is X tokens"  <https://api-docs.deepseek.com/quick_start/pricing>
     /// - Mistral:    400 "too large for model with X maximum context length"  <https://docs.mistral.ai/resources/known-limitations>
-    /// - OpenRouter: 400 "endpoint's maximum context length is X tokens"  <https://openrouter.ai/docs/api/reference/errors-and-debugging.mdx>
+    /// - `OpenRouter`: 400 "endpoint's maximum context length is X tokens"  <https://openrouter.ai/docs/api/reference/errors-and-debugging.mdx>
     /// - Synthetic:  400 pass-through from upstream models (OpenAI-compatible)  <https://synthetic.new>
+    #[must_use]
     pub fn is_context_overflow(&self) -> bool {
         match self {
             Self::Api { status: 413, .. } => true,
@@ -78,18 +83,31 @@ impl AgentError {
                     || m.contains("maximum");
                 is_scope && is_overflow
             }
-            _ => false,
+            Self::Api { .. }
+            | Self::Config { .. }
+            | Self::Tool { .. }
+            | Self::Io(_)
+            | Self::Http(_)
+            | Self::HttpRequest(_)
+            | Self::Json(_)
+            | Self::Channel
+            | Self::Cancelled
+            | Self::Timeout { .. }
+            | Self::RequestSent { .. } => false,
         }
     }
 
+    #[must_use]
     pub fn is_auth_error(&self) -> bool {
         matches!(self, Self::Api { status: 401, .. })
     }
 
+    #[must_use]
     pub fn should_rotate_key(&self) -> bool {
         matches!(self, Self::Api { status, .. } if *status == 429 || *status == 401 || *status == 403)
     }
 
+    #[must_use]
     pub fn user_message(&self) -> String {
         match self {
             Self::Config { message } => message.clone(),
@@ -108,6 +126,9 @@ impl AgentError {
             Self::Json(_) => "received an invalid response from the API".into(),
             Self::Channel => "internal error, try again".into(),
             Self::Cancelled => "cancelled".into(),
+            Self::RequestSent { .. } => {
+                "connection failed after the request was sent; not retrying to avoid duplicate output or charges".into()
+            }
         }
     }
 
@@ -120,6 +141,7 @@ impl AgentError {
         Self::Api { status, message }
     }
 
+    #[must_use]
     pub fn retry_message(&self) -> String {
         match self {
             Self::Api { status: 429, .. } => "Rate limited".into(),

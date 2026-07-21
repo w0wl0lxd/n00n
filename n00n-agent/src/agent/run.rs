@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, Message, Model, RequestOptions, Role, StopReason, StreamResponse, TokenUsage,
+    ContentBlock, Message, Model, RequestOptions, StopReason, StreamResponse, TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -19,13 +19,15 @@ use crate::permissions::PermissionManager;
 use crate::tools::{Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext};
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
-    InterruptSource, TurnCompleteEvent,
+    InterruptPoint, InterruptSource, TurnCompleteEvent,
 };
 use n00n_config::ToolOutputLines;
 use n00n_storage::id::SessionRef;
 
 const MAX_REAUTH_ATTEMPTS: u32 = 2;
 const NUDGE_PROMPT: &str = "You just executed tool calls but returned an empty response. Please process the tool results above and continue with the task.";
+const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
+const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 
 pub fn resolve_compaction_model(
     provider: &Arc<dyn Provider>,
@@ -184,6 +186,7 @@ impl<'h> Agent<'h> {
         self.rollback_len = self.history.len();
         let msg = Message::user_with_images(input.message.clone(), input.images);
         self.history.push(msg);
+        self.context_size = estimate_message_tokens(self.history.as_slice());
         self.mode = input.mode;
         self.workflow = input.workflow;
         self.opts = RequestOptions {
@@ -198,7 +201,11 @@ impl<'h> Agent<'h> {
             "agent run started"
         );
 
-        let result = self.run_loop().await;
+        let result = async {
+            self.try_auto_compact().await?;
+            self.run_loop().await
+        }
+        .await;
 
         if matches!(result, Err(AgentError::Cancelled)) {
             sanitize_cancelled_history(self.history, self.rollback_len);
@@ -273,28 +280,21 @@ impl<'h> Agent<'h> {
         self.emit_turn_complete(&response)?;
         let usage = response.usage;
         self.total_usage += usage;
-        self.context_size = usage.total_input();
+        self.context_size = usage.context_tokens();
 
         if has_tools {
             let history_len_before = self.history.len();
             self.process_tool_calls(response).await?;
+            let tool_results_start = history_len_before.saturating_add(1);
             self.context_size +=
-                estimate_message_tokens(&self.history.as_slice()[history_len_before..]);
+                estimate_message_tokens(&self.history.as_slice()[tool_results_start..]);
         } else {
-            let has_text = response.message.first_text_content().is_some();
+            let is_empty = response.message.content.is_empty();
 
-            if !has_text && !self.post_tool_empty_retried && self.history.has_recent_tool_results(5)
-            {
+            if is_empty && !self.post_tool_empty_retried && self.history.ends_with_tool_results() {
                 self.post_tool_empty_retried = true;
                 warn!("empty response after tool calls, nudging model to continue");
                 self.event_tx.send(AgentEvent::Nudge)?;
-                self.history.push(Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::Text {
-                        text: "(empty)".into(),
-                    }],
-                    ..Default::default()
-                });
                 self.history.push(Message::synthetic(NUDGE_PROMPT.into()));
                 return Ok(TurnOutcome::Continue);
             }
@@ -308,11 +308,25 @@ impl<'h> Agent<'h> {
                     self.num_turns,
                     "response truncated (max_tokens), re-prompting"
                 );
+                self.history
+                    .push(Message::synthetic(MAX_TOKENS_CONTINUE_PROMPT.into()));
+                self.context_size += estimate_message_tokens(
+                    &self.history.as_slice()[self.history.len().saturating_sub(1)..],
+                );
+                self.try_auto_compact().await?;
                 return Ok(TurnOutcome::Continue);
             }
         }
 
-        if self.try_auto_compact().await? || self.handle_queued_command().await? {
+        if self.try_auto_compact().await?
+            || self
+                .handle_queued_commands(if has_tools {
+                    InterruptPoint::ToolComplete
+                } else {
+                    InterruptPoint::Safe
+                })
+                .await?
+        {
             return Ok(TurnOutcome::Continue);
         }
 
@@ -450,37 +464,40 @@ impl<'h> Agent<'h> {
         self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history
             .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
+        self.context_size = estimate_message_tokens(self.history.as_slice());
         Ok(())
     }
 
-    async fn handle_queued_command(&mut self) -> Result<bool, AgentError> {
-        let Some(ref source) = self.interrupt_source else {
+    async fn handle_queued_commands(&mut self, point: InterruptPoint) -> Result<bool, AgentError> {
+        let Some(source) = self.interrupt_source.clone() else {
             return Ok(false);
         };
-        let Some(cmd) = source.poll() else {
-            return Ok(false);
-        };
-        match cmd {
-            ExtractedCommand::Interrupt(mut input, _) => {
-                self.event_tx.send(AgentEvent::QueueItemConsumed {
-                    text: input.message.clone(),
-                    image_count: input.images.len(),
-                })?;
-                for msg in std::mem::take(&mut input.preamble) {
-                    self.history.push(msg);
+        let mut handled = false;
+        while let Some(cmd) = source.poll(point) {
+            handled = true;
+            match cmd {
+                ExtractedCommand::Interrupt(mut input, _) => {
+                    self.event_tx.send(AgentEvent::QueueItemConsumed {
+                        text: input.message.clone(),
+                        image_count: input.images.len(),
+                        images: input.images.clone(),
+                    })?;
+                    for msg in std::mem::take(&mut input.preamble) {
+                        self.history.push(msg);
+                    }
+                    self.mode = input.mode.clone();
+                    let display = input.message.clone();
+                    let wrapped = format!(
+                        "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{display}\n</user-interrupt>"
+                    );
+                    self.history.push(Message::user_display(wrapped, display));
                 }
-                self.mode = input.mode.clone();
-                let display = input.message.clone();
-                let wrapped = format!(
-                    "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{display}\n</user-interrupt>"
-                );
-                self.history.push(Message::user_display(wrapped, display));
-            }
-            ExtractedCommand::Compact(_) => {
-                self.do_compact().await?;
+                ExtractedCommand::Compact(_) => {
+                    self.do_compact().await?;
+                }
             }
         }
-        Ok(true)
+        Ok(handled)
     }
 }
 
@@ -495,9 +512,14 @@ pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
         .flat_map(|m| &m.content)
         .filter_map(|b| match b {
             ContentBlock::Text { text } => Some(text.len()),
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => Some(thinking.len() + signature.as_ref().map_or(0, String::len)),
+            ContentBlock::RedactedThinking { data } => Some(data.len()),
             ContentBlock::ToolResult { content, .. } => Some(content.len()),
             ContentBlock::ToolUse { input, .. } => Some(input.to_string().len()),
-            _ => None,
+            ContentBlock::Image { .. } => Some(IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN),
         })
         .sum();
     (total_bytes.max(CHARS_PER_TOKEN) / CHARS_PER_TOKEN) as u32
@@ -533,20 +555,33 @@ mod tests {
     }
 
     impl InterruptSource for MockInterruptSource {
-        fn poll(&self) -> Option<ExtractedCommand> {
+        fn poll(&self, _: InterruptPoint) -> Option<ExtractedCommand> {
             self.commands.lock().unwrap().pop_front()
         }
     }
 
     struct MockProvider {
         responses: Mutex<Vec<StreamResponse>>,
+        requests: Arc<Mutex<Vec<Vec<Message>>>>,
     }
 
     impl MockProvider {
         fn new(responses: Vec<StreamResponse>) -> Self {
             Self {
                 responses: Mutex::new(responses),
+                requests: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn recording(responses: Vec<StreamResponse>) -> (Self, Arc<Mutex<Vec<Vec<Message>>>>) {
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    responses: Mutex::new(responses),
+                    requests: Arc::clone(&requests),
+                },
+                requests,
+            )
         }
     }
 
@@ -554,7 +589,7 @@ mod tests {
         fn stream_message<'a>(
             &'a self,
             _: &'a Model,
-            _: &'a [Message],
+            messages: &'a [Message],
             _: &'a str,
             _: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
@@ -562,6 +597,7 @@ mod tests {
             _: Option<&'a SessionRef>,
         ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
             Box::pin(async {
+                self.requests.lock().unwrap().push(messages.to_vec());
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
                 Ok(responses.remove(0))
@@ -596,6 +632,21 @@ mod tests {
             message: Message {
                 role: Role::Assistant,
                 content: vec![],
+                ..Default::default()
+            },
+            usage: TokenUsage::default(),
+            stop_reason: Some(StopReason::EndTurn),
+        }
+    }
+
+    fn thinking_response() -> StreamResponse {
+        StreamResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Thinking {
+                    thinking: "done".into(),
+                    signature: None,
+                }],
                 ..Default::default()
             },
             usage: TokenUsage::default(),
@@ -735,6 +786,47 @@ mod tests {
         });
     }
 
+    #[test]
+    fn max_tokens_continuation_adds_incremental_prompt() {
+        smol::block_on(async {
+            let (provider, requests) = MockProvider::recording(vec![
+                text_response(StopReason::MaxTokens),
+                text_response(StopReason::EndTurn),
+            ]);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) = make_agent(provider, &mut history);
+
+            agent.run(default_input()).await.unwrap();
+
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert!(matches!(
+                requests[1].last(),
+                Some(message)
+                    if message.first_text_content() == Some(MAX_TOKENS_CONTINUE_PROMPT)
+            ));
+        });
+    }
+
+    #[test]
+    fn response_context_includes_output_tokens() {
+        smol::block_on(async {
+            let mut response = text_response(StopReason::EndTurn);
+            response.usage = TokenUsage {
+                input: 100,
+                output: 50,
+                ..Default::default()
+            };
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) =
+                make_agent(MockProvider::new(vec![response]), &mut history);
+
+            agent.run(default_input()).await.unwrap();
+
+            assert_eq!(agent.context_size, 150);
+        });
+    }
+
     #[test_case(Some(true),  true,  true  ; "after_tool_use_turn")]
     #[test_case(Some(false), true,  true  ; "after_text_only_turn")]
     #[test_case(None,        false, false ; "channel_empty")]
@@ -806,6 +898,28 @@ mod tests {
                 .await;
 
             assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn oversized_initial_context_compacts_before_normal_request() {
+        smol::block_on(async {
+            let prior = vec![Message::user("x".repeat(680_000))];
+            let mut history = History::new(prior);
+            let (provider, requests) = MockProvider::recording(vec![
+                text_response(StopReason::EndTurn),
+                text_response(StopReason::EndTurn),
+            ]);
+            let (mut agent, event_rx) = make_agent(provider, &mut history);
+            agent.model = Arc::new(small_context_model(200_000, 8_192));
+
+            agent.run(default_input()).await.unwrap();
+
+            assert_eq!(requests.lock().unwrap().len(), 2);
+            assert!(has_event(&drain_events(&event_rx), |event| matches!(
+                event,
+                AgentEvent::AutoCompacting
+            )));
         });
     }
 
@@ -958,6 +1072,14 @@ mod tests {
         ],
         1, false
         ; "no_nudge_without_recent_tools"
+    )]
+    #[test_case(
+        vec![
+            tool_call_response("glob", "t1"),
+            thinking_response(),
+        ],
+        2, false
+        ; "no_nudge_on_reasoning_after_tools"
     )]
     fn nudge_behavior(responses: Vec<StreamResponse>, expected_turns: u32, expect_nudge: bool) {
         smol::block_on(async {

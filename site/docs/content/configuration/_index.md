@@ -121,7 +121,7 @@ The `plugins` table turns plugins on or off and passes options to them. All bund
 
 Each plugin checks its own options at startup. A typo, a wrong type, or an unknown plugin name gives you a clear error right away.
 
-The edit plugin's extra tools are options too: `plugins.edit = { multiedit = false, edit_lines = true }`. The old `tools` table is gone. If your config still uses it, N00n stops at startup and shows you the new form.
+The edit plugin's extra tools are options too: `plugins.edit = { multiedit = false, edit_lines = true }`. The old `tools` table is gone. If your config still uses it, n00n stops at startup and shows you the new form.
 
 ```lua
 n00n.setup({
@@ -227,11 +227,11 @@ n00n.setup({
 
 ## Validation
 
-If a value is below its minimum, N00n shows a `ConfigError` with the field name, value, and minimum.
+If a value is below its minimum, n00n shows a `ConfigError` with the field name, value, and minimum.
 
 ## Directory layout
 
-N00n uses XDG directories on Linux and macOS:
+n00n uses XDG directories on Linux and macOS:
 
 | Purpose | Path |
 |---------|------|

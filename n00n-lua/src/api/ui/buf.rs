@@ -28,6 +28,12 @@ pub(crate) enum HandlerSlot {
 }
 
 impl HandlerSlot {
+    fn owns(&self, target: &Arc<SharedBuf>) -> bool {
+        match self {
+            Self::Click(buf) | Self::Change(buf) => Arc::ptr_eq(buf, target),
+        }
+    }
+
     fn clear(&self) {
         match self {
             Self::Click(buf) => buf.clear_click(),
@@ -87,6 +93,10 @@ impl BufferStore {
 
     pub fn track(&mut self, slot: HandlerSlot) {
         self.slots.push(slot);
+    }
+
+    pub fn detach_handlers(&mut self, buf: &Arc<SharedBuf>) {
+        self.slots.retain(|slot| !slot.owns(buf));
     }
 
     pub fn clear(&mut self) {

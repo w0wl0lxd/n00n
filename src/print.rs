@@ -25,6 +25,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const LOCAL_TOKEN_USAGE_NOTE: &str = "usage.input is fresh input; usage.cache_read and usage.cache_creation are cached context. Local token counts are not ChatGPT subscription quota.";
 
 // Fails fast: silently dropping an image the caller explicitly attached
 // would be worse than erroring.
@@ -60,6 +61,7 @@ struct PrintResult {
     session_id: SessionRef,
     total_cost_usd: f64,
     usage: TokenUsage,
+    usage_note: &'static str,
 }
 
 #[derive(Serialize)]
@@ -211,6 +213,7 @@ pub fn run(
     }
 
     let mut result_text = String::new();
+    let mut result_checkpoint = 0;
     let mut is_error = false;
     let mut num_turns: u32 = 0;
     let mut usage = TokenUsage::default();
@@ -252,6 +255,9 @@ pub fn run(
                 message,
                 delay_ms,
             } => {
+                if parent_tool_use_id.is_none() {
+                    result_text.truncate(result_checkpoint);
+                }
                 if let Some(out) = &mut verbose_out {
                     out.emit(&RetryEvent {
                         event_type: "system",
@@ -264,6 +270,9 @@ pub fn run(
                 }
             }
             AgentEvent::TurnComplete(tc) => {
+                if parent_tool_use_id.is_none() {
+                    result_checkpoint = result_text.len();
+                }
                 if let Some(out) = &mut verbose_out {
                     let content_value = serde_json::to_value(&tc.message.content)?;
                     out.emit(&AssistantEvent {
@@ -336,6 +345,7 @@ pub fn run(
                 session_id,
                 total_cost_usd,
                 usage,
+                usage_note: LOCAL_TOKEN_USAGE_NOTE,
             };
             match verbose_out {
                 Some(VerboseOutput::Json(mut events)) => {
@@ -365,6 +375,7 @@ mod tests {
         "session_id",
         "total_cost_usd",
         "usage",
+        "usage_note",
         "duration_ms",
     ];
     const INIT_EVENT_FIELDS: &[&str] = &["type", "subtype", "cwd", "session_id", "tools", "model"];
@@ -390,6 +401,7 @@ mod tests {
             session_id: SessionRef::generate(),
             total_cost_usd: 0.003,
             usage: TokenUsage::default(),
+            usage_note: LOCAL_TOKEN_USAGE_NOTE,
         };
         let json: Value = serde_json::to_value(&result).unwrap();
         for field in PRINT_RESULT_FIELDS {

@@ -13,10 +13,13 @@ local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_PROMPT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
 local MAX_SCHEMA_ERRORS = 3
-local TASK_TIMEOUT_SECS = 3600
-local MAX_STRUCTURED_RETRIES = 2
+local MAX_SCHEMA_BYTES = 32 * 1024
+local MAX_SCHEMA_DEPTH = 16
+local MAX_STRUCTURED_RETRIES = 1
 local SCHEMA_ROOT_ERROR = "output_schema must have type object"
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
+local SCHEMA_SIZE_ERROR = "output_schema exceeds 32768-byte limit"
+local SCHEMA_DEPTH_ERROR = "output_schema exceeds maximum depth of 16"
 local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
 local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
 local INVALID_INPUT_PREFIX =
@@ -28,22 +31,23 @@ local MIN_MD_WIDTH = 20
 local DEFAULT_OUTPUT_LINES = 5
 local DEFAULT_MAX_LINE_BYTES = 500
 
-local description = [[Launch an autonomous subagent to perform tasks independently. Best combined with batch.
+local function schema_within_depth(value, depth)
+  if type(value) ~= "table" then
+    return true
+  end
+  if depth > MAX_SCHEMA_DEPTH then
+    return false
+  end
+  for _, child in pairs(value) do
+    if not schema_within_depth(child, depth + 1) then
+      return false
+    end
+  end
+  return true
+end
 
-Subagent types (set via `subagent_type`):
-- `research` (default): Read-only tools. For codebase exploration or gathering context.
-- `general`: Full tool access. For delegating implementation work.
-
-Notes:
-1. Launch multiple tasks concurrently when possible.
-2. The agent's result is not visible to the user. Summarize it in your response.
-3. Each invocation starts fresh - inline any needed context into the prompt.
-4. Tell it to return concise summaries with file:line refs, not full file contents.
-5. With `auto_tier`, the model tier is picked from the prompt (cheap work -> weak,
-   hard work -> strong). This is opt-in and off by default.
-6. Set background=true to start a non-blocking agent and receive an agent_id.
-   Use agent_control to inspect, steer, or stop it.
-]]
+local description = [[Launch one isolated agent; combine independent calls with batch.
+research (default) is read-only; general can edit. Each call starts fresh, so include context and ask for concise file:line results. Summarize returned results for the user. auto_tier is opt-in. background returns an agent_id for agent_control.]]
 
 local schema = {
   type = "object",
@@ -68,7 +72,7 @@ local schema = {
     },
     model_tier = {
       type = "string",
-      description = 'Model tier (optional, omit to use current model, capped at current tier):\n- "strong" (e.g. Opus): Deep reasoning, complex architecture, subtle bugs, most critical sections. ~5x cost of medium.\n- "medium" (e.g. Sonnet): Balanced. Refactors, features, multi-file changes.\n- "weak" (e.g. Haiku): Fast/cheap. Search, summarize, boilerplate, simple edits.',
+      description = 'Optional capped tier: "weak" for simple work, "medium" for normal changes, or "strong" for complex/critical work.',
     },
     thinking = {
       type = { "string", "integer" },
@@ -97,12 +101,12 @@ local examples = {
 }
 
 local opts = n00n.api.register_options({
-  max_concurrent = { default = 8, min = 1, desc = "Max concurrently running subagents." },
+  max_concurrent = { default = 4, min = 1, desc = "Concurrent subagents (hard max 8)." },
   auto_tier = { default = false, desc = "Route each subagent's model tier from its prompt (opt-in, off by default)." },
 })
 
 -- Process-wide cap on concurrent subagents.
-local semaphore = n00n.async.semaphore(opts.max_concurrent)
+local semaphore = n00n.async.semaphore(math.min(opts.max_concurrent, 8))
 
 local function bounded_errors(errors)
   local out = {}
@@ -154,13 +158,21 @@ local function handler(input, ctx)
       forwarded[key] = value
     end
     forwarded.background = false
+    local forwarded_json, encode_err = n00n.json.encode(forwarded)
+    if encode_err then
+      return { llm_output = "failed to encode task input: " .. tostring(encode_err), is_error = true }
+    end
     local prompt = "Use the task tool now with background=false. Do not only describe this request.\n\n"
-      .. n00n.json.encode(forwarded)
+      .. forwarded_json
     local id, err = n00n.session.new({ prompt = prompt, focus = false })
     if not id then
       return { llm_output = err, is_error = true }
     end
-    return n00n.json.encode({ agent_id = id, status = "started" })
+    local output, output_err = n00n.json.encode({ agent_id = id, status = "started" })
+    if output_err then
+      return { llm_output = "failed to encode task status: " .. tostring(output_err), is_error = true }
+    end
+    return output
   end
 
   local subagent_type = input.subagent_type or "research"
@@ -173,6 +185,16 @@ local function handler(input, ctx)
   if input.output_schema then
     if type(input.output_schema) ~= "table" or input.output_schema.type ~= "object" then
       return { llm_output = SCHEMA_ROOT_ERROR, is_error = true }
+    end
+    local encoded_schema, encode_err = n00n.json.encode(input.output_schema)
+    if encode_err then
+      return { llm_output = SCHEMA_COMPILE_ERROR .. ": " .. encode_err, is_error = true }
+    end
+    if #encoded_schema > MAX_SCHEMA_BYTES then
+      return { llm_output = SCHEMA_SIZE_ERROR, is_error = true }
+    end
+    if not schema_within_depth(input.output_schema, 1) then
+      return { llm_output = SCHEMA_DEPTH_ERROR, is_error = true }
     end
     local compile_err
     validator, compile_err = n00n.json.schema_validator(input.output_schema)
@@ -235,8 +257,9 @@ local function handler(input, ctx)
 
   local preview = make_preview(ctx, input.description or "task")
 
-  local permit = semaphore:acquire()
+  local permit
   local ok, out = pcall(function()
+    permit = semaphore:acquire()
     local sess, sess_err = n00n.agent.session(ctx, {
       model_spec = model.spec,
       system = system,
@@ -271,7 +294,15 @@ local function handler(input, ctx)
       if not captured and (not result or not result.text or result.text == "") then
         return { llm_output = "sub-agent returned no output", is_error = true }
       end
-      return { llm_output = captured and n00n.json.encode(captured) or result.text, format = "markdown" }
+      local output = result.text
+      if captured then
+        local encoded, encode_err = n00n.json.encode(captured)
+        if encode_err then
+          return { llm_output = "failed to encode structured output: " .. tostring(encode_err), is_error = true }
+        end
+        output = encoded
+      end
+      return { llm_output = output, format = "markdown" }
     end
 
     local function do_poll()
@@ -295,7 +326,9 @@ local function handler(input, ctx)
     end
     return prompt_res.value
   end)
-  permit:release()
+  if permit then
+    permit:release()
+  end
   if not ok then
     return { llm_output = "task failed: " .. tostring(out), is_error = true, body = preview.buf }
   end
@@ -337,7 +370,6 @@ n00n.api.register_tool({
   audiences = { "main", "workflow" },
   examples = examples,
   schema = schema,
-  timeout = TASK_TIMEOUT_SECS,
   handler = handler,
   header = header,
   restore = restore,

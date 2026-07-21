@@ -34,6 +34,14 @@ gen-docs:
 gen-docs-check:
     cargo run -p n00n-docgen -- --check
 
+docs: gen-docs
+docs-check: gen-docs-check
+
+# Aggregate changelog.d fragments into CHANGELOG.md (VERSION defaults to the
+# workspace version in Cargo.toml).
+changelog VERSION:
+    ./scripts/build-changelog.sh {{VERSION}}
+
 machete:
     cargo machete
 
@@ -42,5 +50,11 @@ machete:
 almas-demo *ARGS:
     ./scripts/almas_demo.sh {{ARGS}}
 
+setup-git-hooks:
+    git config core.hooksPath .githooks
+
+secrets:
+    gitleaks detect --source . --redact --no-banner --config .gitleaks.toml
+
 # Full CI check
-ci: fmt-check lint pylint test gen-docs-check machete
+ci: fmt-check lint pylint test gen-docs-check machete secrets

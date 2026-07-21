@@ -17,6 +17,8 @@ static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     max_tokens_field: "max_tokens",
     include_stream_usage: true,
     provider_name: "TensorX",
+    supports_prompt_cache_key: false,
+    supports_prompt_cache_breakpoint: false,
 };
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
@@ -52,20 +54,23 @@ impl TensorX {
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
         let pool = KeyPool::resolve("tensorx", CONFIG.api_key_env)?;
         Ok(Self {
-            compat: OpenAiCompatProvider::new(&CONFIG, timeouts),
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth: Arc::new(Mutex::new(ResolvedAuth::bearer(pool.current()))),
             key_pool: Some(pool),
             system_prefix: None,
         })
     }
 
-    pub(crate) fn with_auth(auth: Arc<Mutex<ResolvedAuth>>, timeouts: super::Timeouts) -> Self {
-        Self {
-            compat: OpenAiCompatProvider::new(&CONFIG, timeouts),
+    pub(crate) fn with_auth(
+        auth: Arc<Mutex<ResolvedAuth>>,
+        timeouts: super::Timeouts,
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth,
             key_pool: None,
             system_prefix: None,
-        }
+        })
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -75,6 +80,7 @@ impl TensorX {
 }
 
 impl Provider for TensorX {
+    #[allow(clippy::result_map_or_into_option)]
     fn stream_message<'a>(
         &'a self,
         model: &'a Model,
@@ -83,21 +89,33 @@ impl Provider for TensorX {
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
-        _session_id: Option<&'a SessionRef>,
+        session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let mut buf = String::new();
-            let system = super::with_prefix(&self.system_prefix, system, &mut buf);
-            let mut body = self.compat.build_body(model, messages, system, tools);
+            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
+            let mut body = self.compat.build_body_with_session(
+                model,
+                messages,
+                system,
+                tools,
+                session_id.map(n00n_storage::id::SessionRef::as_str),
+            );
 
             let (has_thinking, has_reasoning_effort) = {
-                let guard = crate::model_registry::model_registry().read().unwrap();
+                let guard = crate::model_registry::model_registry()
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let info = guard
                     .discovered(model.provider, &model.id)
                     .and_then(|d| d.provider_info.clone())
-                    .map(|arc| {
-                        Arc::downcast::<TensorXModelInfo>(arc).expect("wrong provider info type")
+                    .and_then(|arc| {
+                        Arc::downcast::<TensorXModelInfo>(arc).map_or_else(|_| None, Some)
                     });
                 if let Some(info) = info {
                     (info.has_thinking, info.has_reasoning_effort)
@@ -129,97 +147,102 @@ impl Provider for TensorX {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let url = format!("{}/model/info", CONFIG.base_url);
             let text = self.compat.get_text(&auth, &url).await?;
             let body: Value = serde_json::from_str(&text)?;
 
-            let mut models: Vec<ModelInfo> = body["data"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|entry| {
-                            let id = entry["model_name"].as_str()?;
-                            let info = entry.get("model_info")?;
+            let mut models: Vec<ModelInfo> =
+                body["data"]
+                    .as_array()
+                    .map_or_else(Default::default, |arr| {
+                        arr.iter()
+                            .filter_map(|entry| {
+                                let id = entry["model_name"].as_str()?;
+                                let info = entry.get("model_info")?;
 
-                            // Only include models with mode "chat" or mode null
-                            let mode_ok = info
-                                .get("mode")
-                                .and_then(|v| v.as_str())
-                                .is_none_or(|m| m == "chat");
-                            if !mode_ok {
-                                return None;
-                            }
+                                // Only include models with mode "chat" or mode null
+                                let mode_ok = info
+                                    .get("mode")
+                                    .and_then(|v| v.as_str())
+                                    .is_none_or(|m| m == "chat");
+                                if !mode_ok {
+                                    return None;
+                                }
 
-                            // Context window: prefer max_tokens, fall back to max_input_tokens
-                            let context_window = info["max_tokens"]
-                                .as_u64()
-                                .or_else(|| info["max_input_tokens"].as_u64())
-                                .and_then(|v| u32::try_from(v).ok());
+                                // Context window: prefer max_tokens, fall back to max_input_tokens
+                                let context_window = info["max_tokens"]
+                                    .as_u64()
+                                    .or_else(|| info["max_input_tokens"].as_u64())
+                                    .and_then(|v| u32::try_from(v).ok());
 
-                            // FIXME: API rejects requests if we request the maximum number of
-                            // output tokens. It checks input+max_output<=context_window
-                            // let max_output_tokens = info["max_output_tokens"]
-                            //     .as_u64()
-                            //     .and_then(|v| u32::try_from(v).ok());
-                            let max_output_tokens = None;
+                                // FIXME: API rejects requests if we request the maximum number of
+                                // output tokens. It checks input+max_output<=context_window
+                                // let max_output_tokens = info["max_output_tokens"]
+                                //     .as_u64()
+                                //     .and_then(|v| u32::try_from(v).ok());
+                                let max_output_tokens = None;
 
-                            // Convert per-token costs to per-million costs
-                            let input_cost = info["input_cost_per_token"].as_f64();
-                            let output_cost = info["output_cost_per_token"].as_f64();
-                            let pricing = if input_cost.is_some() || output_cost.is_some() {
-                                let per_million = 1_000_000.0;
-                                Some(ModelPricing {
-                                    input: input_cost.unwrap_or(0.0) * per_million,
-                                    output: output_cost.unwrap_or(0.0) * per_million,
-                                    cache_write: info["cache_creation_input_token_cost"]
-                                        .as_f64()
-                                        .unwrap_or(0.0)
-                                        * per_million,
-                                    cache_read: info["cache_read_input_token_cost"]
-                                        .as_f64()
-                                        .unwrap_or(0.0)
-                                        * per_million,
-                                    fast: None,
+                                // Convert per-token costs to per-million costs
+                                let input_cost = info["input_cost_per_token"].as_f64();
+                                let output_cost = info["output_cost_per_token"].as_f64();
+                                let pricing = if input_cost.is_some() || output_cost.is_some() {
+                                    let per_million = 1_000_000.0;
+                                    Some(ModelPricing {
+                                        input: input_cost.unwrap_or_else(|| 0.0) * per_million,
+                                        output: output_cost.unwrap_or_else(|| 0.0) * per_million,
+                                        cache_write: info["cache_creation_input_token_cost"]
+                                            .as_f64()
+                                            .unwrap_or_else(|| 0.0)
+                                            * per_million,
+                                        cache_read: info["cache_read_input_token_cost"]
+                                            .as_f64()
+                                            .unwrap_or_else(|| 0.0)
+                                            * per_million,
+                                        fast: None,
+                                    })
+                                } else {
+                                    None
+                                };
+
+                                let supports_vision = info
+                                    .get("supports_vision")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or_else(|| false);
+
+                                let supports_thinking =
+                                    info.get("supports_reasoning").and_then(Value::as_bool);
+
+                                let supported_params = info
+                                    .get("supported_openai_params")
+                                    .and_then(Value::as_array)
+                                    .map(|params| TensorXModelInfo {
+                                        has_thinking: params
+                                            .iter()
+                                            .any(|v| v.as_str() == Some("thinking")),
+                                        has_reasoning_effort: params
+                                            .iter()
+                                            .any(|v| v.as_str() == Some("reasoning_effort")),
+                                    });
+
+                                Some(ModelInfo {
+                                    id: id.to_string(),
+                                    context_window,
+                                    max_output_tokens,
+                                    pricing,
+                                    supports_thinking,
+                                    supports_vision: Some(supports_vision),
+                                    provider_info: supported_params.map(|p| {
+                                        Arc::new(p) as Arc<dyn std::any::Any + Send + Sync>
+                                    }),
                                 })
-                            } else {
-                                None
-                            };
-
-                            let supports_vision = info
-                                .get("supports_vision")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false);
-
-                            let supports_thinking =
-                                info.get("supports_reasoning").and_then(Value::as_bool);
-
-                            let supported_params = info
-                                .get("supported_openai_params")
-                                .and_then(Value::as_array)
-                                .map(|params| TensorXModelInfo {
-                                    has_thinking: params
-                                        .iter()
-                                        .any(|v| v.as_str() == Some("thinking")),
-                                    has_reasoning_effort: params
-                                        .iter()
-                                        .any(|v| v.as_str() == Some("reasoning_effort")),
-                                });
-
-                            Some(ModelInfo {
-                                id: id.to_string(),
-                                context_window,
-                                max_output_tokens,
-                                pricing,
-                                supports_thinking,
-                                supports_vision: Some(supports_vision),
-                                provider_info: supported_params
-                                    .map(|p| Arc::new(p) as Arc<dyn std::any::Any + Send + Sync>),
                             })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+                            .collect()
+                    });
             models.sort_by(|a, b| a.id.cmp(&b.id));
             Ok(models)
         })

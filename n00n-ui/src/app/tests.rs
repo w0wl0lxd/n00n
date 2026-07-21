@@ -15,8 +15,9 @@ use n00n_agent::{
 use n00n_config::{PermissionsConfig, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader};
 use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
-use n00n_storage::sessions::{StoredMode, StoredThinking};
-use ratatui::layout::Rect;
+use n00n_storage::sessions::{StoredMode, StoredThinking, TranscriptEntry};
+use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+use ratatui_image::picker::Picker;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -56,6 +57,7 @@ fn build_app(dir: StateDir, writer: Arc<StorageWriter>) -> App {
             PathBuf::from("/tmp"),
         )),
         Arc::from([]),
+        Arc::new(Picker::halfblocks()),
     )
 }
 
@@ -105,13 +107,23 @@ fn subagent_info_with_tx(
     name: &str,
     answer_tx: Option<flume::Sender<String>>,
 ) -> SubagentInfo {
+    subagent_info_with_channels(parent_id, parent_id, name, answer_tx, None)
+}
+
+fn subagent_info_with_channels(
+    session_id: &str,
+    _parent_id: &str,
+    name: &str,
+    answer_tx: Option<flume::Sender<String>>,
+    prompt_tx: Option<flume::Sender<String>>,
+) -> SubagentInfo {
     SubagentInfo {
-        parent_tool_use_id: parent_id.into(),
+        parent_tool_use_id: session_id.into(),
         name: name.into(),
         prompt: None,
         model: None,
         answer_tx,
-        prompt_tx: None,
+        prompt_tx,
     }
 }
 
@@ -318,17 +330,50 @@ fn paste_file_path_triggers_image_load() {
 }
 
 #[test]
-fn submit_during_streaming_queues_message() {
+fn mixed_text_and_image_path_paste_loads_images_and_keeps_text() {
     let mut app = test_app();
-    app.update(Msg::Key(key(KeyCode::Char('a'))));
-    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(matches!(&actions[0], Action::SendMessage(_)));
-    assert_eq!(app.status, Status::Streaming);
+    app.update(Msg::Paste(
+        "Please compare these:\nfile:///tmp/first.png\nfile:///tmp/second.jpg\nThanks".into(),
+    ));
 
-    app.update(Msg::Key(key(KeyCode::Char('b'))));
-    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(actions.is_empty());
-    assert_eq!(app.queue.len(), 1);
+    assert_eq!(app.image_paste_rx.len(), 2);
+    assert_eq!(
+        app.input_box.buffer.value(),
+        "Please compare these:\nThanks"
+    );
+}
+
+#[test]
+fn busy_enter_queues_steering_and_second_chord_promotes_latest() {
+    let mut app = test_app();
+    type_and_submit(&mut app, "first");
+
+    app.input_box.set_input("steer one".into());
+    assert!(app.update(Msg::Key(key(KeyCode::Enter))).is_empty());
+    app.input_box.set_input("steer two".into());
+    assert!(app.update(Msg::Key(key(KeyCode::Enter))).is_empty());
+    assert_eq!(app.queue.len(), 2);
+    assert_eq!(app.queue.panel_entries()[0].text, "↪ steer one");
+    assert_eq!(app.queue.panel_entries()[1].text, "↪ steer two");
+
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(app.queue.panel_entries()[0].text, "↪ steer one");
+    assert_eq!(app.queue.panel_entries()[1].text, "↯ steer two");
+}
+
+#[test]
+fn busy_tab_queues_multiple_turn_end_messages_without_toggling_mode() {
+    let mut app = test_app();
+    type_and_submit(&mut app, "first");
+    let mode = app.state.mode;
+
+    for text in ["later one", "later two"] {
+        app.input_box.set_input(text.into());
+        app.update(Msg::Key(key(KeyCode::Tab)));
+    }
+
+    assert_eq!(app.state.mode, mode);
+    assert_eq!(app.queue.text_messages(), ["later one", "later two"]);
 }
 
 #[test]
@@ -348,6 +393,7 @@ fn queue_item_consumed_pushes_deferred_user_message() {
         AgentEvent::QueueItemConsumed {
             text: "queued".into(),
             image_count: 0,
+            images: Vec::new(),
         },
         app.run_id,
     ));
@@ -551,6 +597,71 @@ fn load_session_clears_plan() {
 }
 
 #[test]
+fn picker_load_carries_recursive_transcript_through_recompact_and_save() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let summary = Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::Text {
+            text: "first summary".into(),
+        }],
+        ..Default::default()
+    };
+    app.state.session.messages = vec![Message::user("summary prompt".into()), summary.clone()];
+    app.state.session.transcript = vec![
+        TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
+                generated_summary: None,
+            }],
+            generated_summary: Some(summary.clone()),
+        },
+        TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
+        TranscriptEntry::GeneratedMessage(summary),
+    ];
+    app.state.session.save(&app.storage).unwrap();
+    let id = app.state.session.id;
+
+    let actions = app.load_session(id);
+    let Action::LoadSession(loaded) = actions.into_iter().next().expect("load action") else {
+        panic!("expected loaded session action");
+    };
+    assert!(matches!(
+        loaded.transcript.as_slice(),
+        [TranscriptEntry::Compaction { entries, .. }, ..]
+            if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }])
+    ));
+
+    let message_mirror = Arc::new(ArcSwap::from_pointee(loaded.messages.clone()));
+    let transcript_mirror = Arc::new(ArcSwap::from_pointee(loaded.transcript.clone()));
+    let mut history =
+        n00n_agent::agent::History::restored_with_transcript(loaded.messages, loaded.transcript)
+            .with_mirror(Arc::clone(&message_mirror))
+            .with_transcript_mirror(Arc::clone(&transcript_mirror));
+    history.push(Message::user("continued".into()));
+    history.compact_boundary(
+        Message::user("summary prompt".into()),
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "second summary".into(),
+            }],
+            ..Default::default()
+        },
+    );
+    app.shared_history = Some(message_mirror);
+    app.shared_transcript = Some(transcript_mirror);
+    app.save_session();
+    drain_writer(app, writer);
+
+    let saved = AppSession::load(id, &dir).unwrap();
+    assert!(matches!(
+        saved.transcript.as_slice(),
+        [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_)]
+            if matches!(entries.as_slice(), [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_)] if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }]))
+    ));
+}
+
+#[test]
 fn tab_in_palette_completes_command() {
     let mut app = test_app();
     type_slash(&mut app);
@@ -671,6 +782,87 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
     assert_eq!(app.chats[1].token_usage.input, 200);
     assert_eq!(app.chats[0].context_size, main_usage.context_tokens());
     assert_eq!(app.chats[1].context_size, sub_usage.context_tokens());
+}
+
+#[test]
+fn live_compaction_notice_becomes_typed_card() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.shared_transcript = Some(Arc::new(ArcSwap::from_pointee(vec![
+        TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
+            generated_summary: None,
+        },
+    ])));
+
+    app.update(agent_msg(AgentEvent::AutoCompacting));
+    assert!(app.main_chat().has_pending_compaction());
+
+    app.update(agent_msg(AgentEvent::CompactionDone));
+    assert!(!app.main_chat().has_pending_compaction());
+    assert_eq!(app.main_chat().compaction_card_count(), 1);
+}
+
+#[test]
+fn subagent_compaction_completion_uses_live_summary_without_touching_main_transcript() {
+    let mut app = app_with_subagent();
+    let main_transcript = Arc::new(ArcSwap::from_pointee(vec![TranscriptEntry::Message(
+        Message::user("main conversation".into()),
+    )]));
+    app.shared_transcript = Some(Arc::clone(&main_transcript));
+
+    app.update(subagent_msg(
+        AgentEvent::AutoCompacting,
+        "task1",
+        Some("research"),
+    ));
+    assert!(app.chats[1].has_pending_compaction());
+    app.update(subagent_msg(
+        AgentEvent::TextDelta {
+            text: "subagent summary".into(),
+        },
+        "task1",
+        Some("research"),
+    ));
+    app.update(subagent_msg(
+        AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "subagent summary".into(),
+                }],
+                ..Default::default()
+            },
+            usage: TokenUsage::default(),
+            model: "test".into(),
+            context_size: None,
+        })),
+        "task1",
+        Some("research"),
+    ));
+    app.update(subagent_msg(
+        AgentEvent::CompactionDone,
+        "task1",
+        Some("research"),
+    ));
+
+    assert!(!app.chats[1].has_pending_compaction());
+    assert_eq!(app.chats[1].compaction_card_count(), 1);
+    assert_eq!(
+        app.chats[1].message_count(),
+        2,
+        "the streamed summary must not remain beside its compaction card"
+    );
+    assert_eq!(
+        app.chats[1].last_compaction_summary(),
+        Some("subagent summary")
+    );
+    assert_eq!(app.main_chat().compaction_card_count(), 0);
+    assert!(matches!(
+        main_transcript.load().as_slice(),
+        [TranscriptEntry::Message(message)] if message.user_text() == Some("main conversation")
+    ));
 }
 
 #[test]
@@ -810,6 +1002,72 @@ fn completed_subagent_chat_remains_discoverable_by_tool_id() {
     assert_eq!(idx, Some(1));
 }
 
+#[test]
+fn completed_task_body_click_expands_while_header_navigates() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
+        id: "task1".into(),
+        tool: "task".into(),
+        summary: "research".into(),
+        annotation: None,
+        input: None,
+        raw_input: None,
+        output: None,
+        render_header: None,
+    }))));
+    app.update(subagent_msg(
+        AgentEvent::TextDelta {
+            text: "child".into(),
+        },
+        "task1",
+        Some("research"),
+    ));
+    app.update(agent_msg(AgentEvent::ToolDone(Box::new(ToolDoneEvent {
+        id: "task1".into(),
+        tool: "task".into(),
+        output: ToolOutput::Markdown("body line\n".repeat(100).into()),
+        is_error: false,
+        annotation: None,
+        written_path: None,
+    }))));
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 80)).unwrap();
+    terminal.draw(|frame| app.view(frame)).unwrap();
+    let area = app.msg_area();
+    let collapsed_lines = app.chats[0].total_lines();
+
+    app.update(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        10,
+        area.y + 1,
+    ));
+    app.update(mouse_event(
+        MouseEventKind::Up(MouseButton::Left),
+        10,
+        area.y + 1,
+    ));
+    assert_eq!(app.active_chat, 0, "task body must not navigate");
+    terminal.draw(|frame| app.view(frame)).unwrap();
+    assert!(
+        app.chats[0].total_lines() > collapsed_lines,
+        "task body click must expand the completed task"
+    );
+
+    app.update(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        10,
+        area.y,
+    ));
+    app.update(mouse_event(
+        MouseEventKind::Up(MouseButton::Left),
+        10,
+        area.y,
+    ));
+    assert_eq!(app.active_chat, 1, "task header navigates to child chat");
+}
+
 fn open_tasks_picker(app: &mut App) {
     for c in "/tasks".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
@@ -855,6 +1113,123 @@ fn app_with_subagent_id(id: &str) -> App {
 
 fn app_with_subagent() -> App {
     app_with_subagent_id("task1")
+}
+
+fn select_subagent_preview(app: &mut App) {
+    open_tasks_picker(app);
+    app.update(Msg::Key(key(KeyCode::Down)));
+    assert_eq!(app.resolve_render_chat(), 1);
+    assert_eq!(app.active_chat, 0);
+}
+
+fn render_chat(app: &mut App, chat: usize, area: Rect) {
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal
+        .draw(|frame| app.chats[chat].view(frame, area, false, false))
+        .unwrap();
+}
+
+#[test]
+fn task_picker_preview_selection_uses_rendered_chat_scroll() {
+    let mut app = app_with_subagent();
+    app.chats[0].restore_scroll(2, false);
+    app.chats[1].restore_scroll(9, false);
+    select_subagent_preview(&mut app);
+    set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
+
+    app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 5, 5));
+
+    let (start, _) = app.selection_state.as_ref().unwrap().sel().normalized();
+    assert_eq!(start.row, 14);
+}
+
+#[test]
+fn task_picker_preview_copy_uses_rendered_chat() {
+    let mut app = app_with_subagent();
+    app.chats[1].flush();
+    let area = Rect::new(0, 0, 79, 20);
+    render_chat(&mut app, 1, area);
+    select_subagent_preview(&mut app);
+    set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
+
+    app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 78, 0));
+    app.update(mouse_event(MouseEventKind::Up(MouseButton::Left), 78, 0));
+
+    assert!(app.status_bar.flash_text().is_some());
+    assert_eq!(app.active_chat, 0);
+}
+
+#[test]
+fn task_picker_preview_tool_click_uses_rendered_chat() {
+    let mut app = app_with_subagent();
+    app.update(subagent_msg(
+        AgentEvent::ToolStart(Box::new(ToolStartEvent {
+            id: "task2".into(),
+            tool: "task".into(),
+            summary: "nested".into(),
+            annotation: None,
+            input: None,
+            raw_input: None,
+            output: None,
+            render_header: None,
+        })),
+        "task1",
+        None,
+    ));
+    app.update(subagent_msg(
+        AgentEvent::TextDelta {
+            text: "nested".into(),
+        },
+        "task2",
+        Some("nested"),
+    ));
+    let area = Rect::new(0, 0, 79, 20);
+    render_chat(&mut app, 1, area);
+    let tool_row = (area.y..area.bottom())
+        .find(|&row| app.chats[1].tool_id_at(row, area) == Some("task2"))
+        .unwrap();
+    select_subagent_preview(&mut app);
+    set_zone(&mut app, SelectionZone::Messages, Rect::new(0, 0, 80, 20));
+
+    app.update(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        1,
+        tool_row,
+    ));
+    app.update(mouse_event(
+        MouseEventKind::Up(MouseButton::Left),
+        1,
+        tool_row,
+    ));
+
+    assert_eq!(app.active_chat, 2);
+}
+
+#[test]
+fn task_picker_preview_scrollbar_uses_rendered_chat() {
+    let mut app = app_with_subagent();
+    for i in 0..40 {
+        app.chats[1].push_user_message(format!("preview line {i}"));
+    }
+    let area = Rect::new(0, 0, 80, 10);
+    render_chat(&mut app, 1, area);
+    app.chats[1].scroll_to_top();
+    select_subagent_preview(&mut app);
+    let info = app.chats[1].scroll_info(area.height).unwrap();
+    app.zones.push(SelectableZone {
+        area,
+        zone: SelectionZone::Messages,
+        scroll_info: Some(info),
+    });
+
+    app.update(mouse_event(
+        MouseEventKind::Down(MouseButton::Left),
+        area.right() - 1,
+        area.bottom() - 1,
+    ));
+
+    assert_eq!(app.chats[0].scroll_top(), u16::MAX);
+    assert!(app.chats[1].scroll_top() > 0);
 }
 
 #[test]
@@ -1388,25 +1763,30 @@ fn queue_boundary_clamps() {
 }
 
 #[test]
-fn queue_enter_removes_selected() {
+fn queue_enter_edits_selected_in_place_without_duplication() {
     let mut app = app_with_queued_message();
     app.queue_and_notify(queued_msg("second"));
     app.queue.set_focus_at(0);
 
     app.update(Msg::Key(key(KeyCode::Enter)));
-    assert_eq!(app.queue.len(), 1);
-    assert_eq!(app.queue.panel_entries()[0].text, "second");
-    assert_eq!(app.queue.focus(), Some(0));
+    assert_eq!(app.queue.text_messages(), ["second"]);
+    assert_eq!(app.input_box.buffer.value(), "queued");
+    app.input_box.set_input("edited".into());
+    app.update(Msg::Key(key(KeyCode::Tab)));
+
+    assert_eq!(app.queue.text_messages(), ["edited", "second"]);
+    assert_eq!(app.queue.len(), 2);
 }
 
 #[test]
-fn queue_enter_deletes_last_unfocuses() {
+fn queue_delete_removes_selected_visible_item() {
     let mut app = app_with_queued_message();
-    app.queue.set_focus_at(0);
+    app.queue_and_notify(queued_msg("second"));
+    app.queue.set_focus_at(1);
 
-    app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(app.queue.is_empty());
-    assert!(app.queue.focus().is_none());
+    app.update(Msg::Key(key(KeyCode::Delete)));
+    assert_eq!(app.queue.text_messages(), ["queued"]);
+    assert_eq!(app.queue.focus(), Some(0));
 }
 
 #[test]
@@ -1643,6 +2023,10 @@ fn session_has_content_covers_each_branch() {
     assert!(session_has_content(&session));
     session.meta.mode = Some(StoredMode::Build);
 
+    session.subagent_messages.insert("child".into(), vec![]);
+    assert!(session_has_content(&session));
+    session.subagent_messages.clear();
+
     session.messages.push(Message::user("hello".into()));
     assert!(session_has_content(&session));
 }
@@ -1868,6 +2252,71 @@ fn rewind_to_middle_truncates_and_populates_input() {
 }
 
 #[test]
+fn rewind_truncates_active_tail_inside_recursive_transcript() {
+    let mut app = test_app();
+    let assistant = |text: &str| Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::Text { text: text.into() }],
+        ..Default::default()
+    };
+    let summary = assistant("summary");
+    let kept_reply = assistant("kept reply");
+    let removed_reply = assistant("removed reply");
+    app.state.session.messages = vec![
+        Message::user("summary prompt".into()),
+        summary.clone(),
+        Message::user("keep".into()),
+        kept_reply.clone(),
+        Message::user("remove".into()),
+        removed_reply.clone(),
+    ];
+    app.state.session.transcript = vec![
+        TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(Message::user("oldest".into()))],
+                generated_summary: None,
+            }],
+            generated_summary: Some(summary.clone()),
+        },
+        TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
+        TranscriptEntry::GeneratedMessage(summary),
+        TranscriptEntry::Message(Message::user("keep".into())),
+        TranscriptEntry::Message(kept_reply),
+        TranscriptEntry::Message(Message::user("remove".into())),
+        TranscriptEntry::Message(removed_reply),
+    ];
+
+    let actions = app.rewind_to(crate::components::rewind_picker::RewindEntry {
+        turn_index: 4,
+        prompt_preview: "remove".into(),
+        prompt_text: "remove".into(),
+    });
+
+    assert!(matches!(
+        app.state.session.transcript.as_slice(),
+        [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_), TranscriptEntry::Message(_)]
+            if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }])
+    ));
+    let Action::LoadSession(loaded) = &actions[0] else {
+        panic!("expected loaded session action");
+    };
+    let mut restored = n00n_agent::agent::History::restored_with_transcript(
+        loaded.messages.clone(),
+        loaded.transcript.clone(),
+    );
+    restored.compact_boundary(
+        Message::user("summary prompt".into()),
+        assistant("new summary"),
+    );
+    let TranscriptEntry::Compaction { entries, .. } = &restored.transcript()[0] else {
+        panic!("expected recursive compaction");
+    };
+    assert!(!entries.iter().any(|entry| {
+        matches!(entry, TranscriptEntry::Message(message) if message.user_text().is_some_and(|text| text.contains("remove")))
+    }));
+}
+
+#[test]
 fn rewind_to_first_turn_clears_everything() {
     let mut app = build_rewind_app();
     app.state.context_size = 100_000;
@@ -1979,6 +2428,35 @@ fn auth_retry_sends_empty_answer(submit: fn(&mut App) -> Vec<Action>) {
     assert_eq!(rx.try_recv().unwrap(), "");
 }
 
+#[test]
+fn typing_in_running_subagent_routes_prompt_to_that_agent() {
+    let (mut app, _answer_rx, _main_rx) = app_with_subagent_tx("task1");
+    let (prompt_tx, prompt_rx) = flume::unbounded();
+    app.subagent_prompts.insert("task1".into(), prompt_tx);
+    app.active_chat = 1;
+
+    app.update(Msg::Key(key(KeyCode::Char('h'))));
+    app.update(Msg::Key(key(KeyCode::Char('i'))));
+    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert!(actions.is_empty());
+    assert_eq!(prompt_rx.try_recv().unwrap(), "hi");
+    assert_eq!(app.chats[1].last_message_text(), "hi");
+    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
+}
+
+#[test]
+fn typing_in_read_only_subagent_flashes_explanation() {
+    let mut app = app_with_active_subagent();
+    app.update(Msg::Key(key(KeyCode::Char('h'))));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert_eq!(
+        app.status_bar.flash_text(),
+        Some("This agent cannot receive follow-up messages")
+    );
+}
+
 fn app_with_subagent_tx(id: &str) -> (App, flume::Receiver<String>, flume::Receiver<String>) {
     let (sub_tx, sub_rx) = flume::unbounded();
     let (main_tx, main_rx) = flume::unbounded();
@@ -1992,6 +2470,138 @@ fn app_with_subagent_tx(id: &str) -> (App, flume::Receiver<String>, flume::Recei
         run_id: 1,
     })));
     (app, sub_rx, main_rx)
+}
+
+fn app_with_steerable_subagent(id: &str) -> (App, flume::Receiver<String>) {
+    let (prompt_tx, prompt_rx) = flume::bounded(2);
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.update(Msg::Agent(Box::new(Envelope {
+        event: AgentEvent::TextDelta { text: "x".into() },
+        subagent: Some(subagent_info_with_channels(
+            id,
+            "task-group",
+            "research",
+            None,
+            Some(prompt_tx),
+        )),
+        run_id: 1,
+    })));
+    app.active_chat = *app.chat_index.get(id).unwrap();
+    (app, prompt_rx)
+}
+
+#[test]
+fn concurrent_children_with_one_parent_have_independent_chats_cancels_and_persistence() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    for (session_id, name) in [("child-a", "research"), ("child-b", "build")] {
+        app.update(Msg::Agent(Box::new(Envelope {
+            event: AgentEvent::TextDelta { text: name.into() },
+            subagent: Some(subagent_info_with_channels(
+                session_id,
+                "workflow-group",
+                name,
+                None,
+                None,
+            )),
+            run_id: 1,
+        })));
+    }
+
+    assert_eq!(app.chats.len(), 3);
+    assert_eq!(app.chat_index.get("child-a"), Some(&1));
+    assert_eq!(app.chat_index.get("child-b"), Some(&2));
+    app.save_session();
+    assert_eq!(
+        app.state
+            .session
+            .meta
+            .subagents
+            .iter()
+            .map(|agent| agent.tool_use_id.as_str())
+            .collect::<Vec<_>>(),
+        ["child-a", "child-b"]
+    );
+
+    app.active_chat = *app.chat_index.get("child-b").unwrap();
+    app.last_esc = Some(Instant::now());
+    let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert!(matches!(
+        &actions[..],
+        [Action::CancelSubagent { tool_use_id }] if tool_use_id == "child-b"
+    ));
+    assert!(!app.chats[*app.chat_index.get("child-a").unwrap()].is_finished());
+    assert!(app.chats[*app.chat_index.get("child-b").unwrap()].is_finished());
+}
+
+#[test]
+fn expanded_subagent_chat_sends_typed_steering() {
+    let (mut app, prompt_rx) = app_with_steerable_subagent("child-a");
+    for c in "expand".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+
+    let actions = app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert!(actions.is_empty());
+    assert_eq!(prompt_rx.try_recv().unwrap(), "expand");
+    assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
+    assert_eq!(app.chats[1].last_message_text(), "expand");
+}
+
+#[test]
+fn typing_steering_clears_pending_subagent_cancel() {
+    let (mut app, _prompt_rx) = app_with_steerable_subagent("child-a");
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    app.update(Msg::Key(key(KeyCode::Char('e'))));
+
+    let actions = app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert!(actions.is_empty());
+    assert!(!app.chats[1].is_finished());
+}
+
+#[test]
+fn expanded_subagent_chat_sends_pasted_steering() {
+    let (mut app, prompt_rx) = app_with_steerable_subagent("child-a");
+    app.update(Msg::Paste("pasted steering".into()));
+    assert_eq!(app.input_box.buffer.value(), "pasted steering");
+
+    app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert_eq!(prompt_rx.try_recv().unwrap(), "pasted steering");
+    assert_eq!(app.chats[1].last_message_text(), "pasted steering");
+}
+
+#[test]
+fn left_in_expanded_subagent_chat_returns_to_main_without_cancelling() {
+    let (mut app, prompt_rx) = app_with_steerable_subagent("child-a");
+
+    let actions = app.update(Msg::Key(key(KeyCode::Left)));
+
+    assert!(actions.is_empty());
+    assert_eq!(app.active_chat, 0);
+    assert!(!app.chats[1].is_finished());
+    assert!(prompt_rx.try_recv().is_err());
+}
+
+#[test]
+fn subagent_history_error_marks_chat_failed_and_closes_steering() {
+    let (mut app, prompt_rx) = app_with_steerable_subagent("child-a");
+    app.update(agent_msg(AgentEvent::SubagentHistory {
+        tool_use_id: "child-a".into(),
+        messages: vec![],
+        is_error: true,
+    }));
+
+    assert!(app.chats[1].is_failed());
+    assert_eq!(app.chats[1].last_message_text(), ERROR_TEXT);
+    assert!(!app.subagent_prompts.contains_key("child-a"));
+    assert!(prompt_rx.try_recv().is_err());
 }
 
 #[test]
@@ -2868,6 +3478,7 @@ fn subagent_history_finishes_workflow_chat() {
         AgentEvent::SubagentHistory {
             tool_use_id: "session-abc".into(),
             messages: vec![],
+            is_error: false,
         },
         1,
     ));
@@ -3007,6 +3618,30 @@ fn open_split_window(app: &mut App, dir: n00n_lua::Split) {
     let (event_tx, _event_rx) = flume::bounded::<n00n_lua::WinEvent>(8);
     let (_cmd_tx, cmd_rx) = flume::bounded::<n00n_lua::WinCommand>(8);
     app.float_mgr.open(buf, config, true, event_tx, cmd_rx);
+}
+
+#[test]
+fn lua_panel_click_is_consumed_before_underlying_chat_selection() {
+    let mut app = test_app();
+    set_zone(&mut app, SelectionZone::Messages, TEST_AREA);
+    let buf = Arc::new(n00n_agent::SharedBuf::new());
+    buf.append(n00n_agent::SnapshotLine { spans: vec![] });
+    let config = n00n_lua::FloatConfig {
+        height: n00n_lua::Dimension::Abs(3),
+        border: n00n_lua::Border::Rounded,
+        split: n00n_lua::Split::Panel,
+        ..n00n_lua::FloatConfig::default()
+    };
+    let (event_tx, _event_rx) = flume::bounded(8);
+    let (_cmd_tx, cmd_rx) = flume::bounded(8);
+    app.float_mgr.open(buf, config, false, event_tx, cmd_rx);
+    let backend = ratatui::backend::TestBackend::new(80, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.view(frame)).unwrap();
+
+    app.update(mouse_event(MouseEventKind::Down(MouseButton::Left), 1, 34));
+
+    assert!(app.selection_state.is_none());
 }
 
 #[test]

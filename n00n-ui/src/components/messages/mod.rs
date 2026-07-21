@@ -5,7 +5,7 @@ mod selection;
 mod tests;
 
 use self::render::RenderCursor;
-use self::segment::{Segment, SegmentCache, Surface};
+use self::segment::{MessageAction, Segment, SegmentCache, Surface};
 
 pub(crate) use self::segment::wrapped_line_count;
 
@@ -15,19 +15,19 @@ use super::tool_display::{
     thinking_style, truncate_to_header, user_style,
 };
 use super::{
-    DisplayMessage, DisplayRole, ToolRole, ToolStatus, apply_scroll_delta, code_view::SectionFlags,
+    CompactionDisplay, DisplayMessage, DisplayMetadata, DisplayRole, ToolRole, ToolStatus,
+    apply_scroll_delta, code_view::SectionFlags,
 };
 use crate::animation::spinner_str;
 use crate::components::keybindings::key;
 use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
-use crate::mascot::Mascot;
 use crate::render_worker::RenderWorker;
 use crate::selection::Selection;
 use crate::splash::{ColorTransition, Splash};
 use crate::theme;
 use n00n_config::{ToolOutputLines, UiConfig};
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -47,13 +47,14 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
+use ratatui_image::picker::Picker;
 
 pub(crate) const JUMP_TO_BOTTOM_TEXT: &str = "↓ Bottom";
 const JUMP_TO_BOTTOM_KEY_GAP: &str = "  ";
 const JUMP_TO_BOTTOM_THRESHOLD: u16 = 1;
 const JUMP_TO_BOTTOM_POPUP_HEIGHT: u16 = 3;
 const JUMP_TO_BOTTOM_POPUP_BOTTOM_MARGIN: u16 = 1;
-const COPY_LABEL_WIDTH: u16 = 6;
+pub(super) const COPY_LABEL_WIDTH: u16 = 6;
 
 #[derive(Clone, Copy)]
 pub struct PromptProgress {
@@ -63,7 +64,7 @@ pub struct PromptProgress {
 }
 
 pub struct MessagesPanel {
-    messages: Vec<DisplayMessage>,
+    pub(crate) messages: Vec<DisplayMessage>,
     streaming_thinking: StreamingContent,
     streaming_text: StreamingContent,
     started_at: Instant,
@@ -77,9 +78,9 @@ pub struct MessagesPanel {
     theme_generation: u64,
     highlight_segment: Option<usize>,
     idle_splash: Splash,
-    mascot: Mascot,
     accent: ColorTransition,
     expanded_tools: HashMap<String, SectionFlags>,
+    expanded_compactions: HashSet<String>,
     /// Per-tool log of post-completion click rows, replayed on restore.
     lua_clicks: HashMap<String, Vec<usize>>,
     live_bufs: HashMap<String, Arc<SharedBuf>>,
@@ -104,6 +105,7 @@ pub struct MessagesPanel {
     restore_backlog: Vec<DisplayMessage>,
     /// Per-frame prepend sizes, drained front-to-back by `drain_restore_backlog`.
     restore_batches: VecDeque<usize>,
+    picker: Arc<Picker>,
 }
 
 /// Incremental restore plan: show the `initial` (most recent) messages first,
@@ -132,7 +134,7 @@ fn restore_plan(total: usize, batch_size: usize) -> RestorePlan {
 }
 
 impl MessagesPanel {
-    pub fn new(ui_config: UiConfig) -> Self {
+    pub fn new(ui_config: UiConfig, picker: Arc<Picker>) -> Self {
         let thinking = thinking_style();
         let assistant = assistant_style();
         let ms = ui_config.typewriter_ms_per_char;
@@ -161,9 +163,9 @@ impl MessagesPanel {
             theme_generation: theme::generation(),
             highlight_segment: None,
             idle_splash: Splash::new(ui_config.splash_animation),
-            mascot: Mascot::new(ui_config.mascot),
             accent: ColorTransition::new(theme::current().mode_build),
             expanded_tools: HashMap::new(),
+            expanded_compactions: HashSet::new(),
             lua_clicks: HashMap::new(),
             live_bufs: HashMap::new(),
             watched_bufs: VecDeque::new(),
@@ -178,6 +180,7 @@ impl MessagesPanel {
             jump_to_bottom_popup: None,
             restore_backlog: Vec::new(),
             restore_batches: VecDeque::new(),
+            picker,
         }
     }
 
@@ -194,6 +197,45 @@ impl MessagesPanel {
         self.messages.push(msg);
     }
 
+    pub fn set_pending_compaction_summary(&mut self, summary: String) {
+        if let Some(message) = self.messages.iter_mut().rev().find(|message| {
+            matches!(
+                message.metadata.as_ref(),
+                Some(DisplayMetadata::CompactionPending)
+            )
+        }) {
+            message.annotation = Some(summary);
+        }
+    }
+
+    pub fn complete_pending_compaction(&mut self) -> bool {
+        let Some(message_index) = self.messages.iter().rposition(|message| {
+            matches!(
+                message.metadata.as_ref(),
+                Some(DisplayMetadata::CompactionPending)
+            )
+        }) else {
+            return false;
+        };
+        let streamed_summary = self.streaming_text.take_all();
+        self.streaming_thinking.clear();
+        self.thinking_collapsed = false;
+        self.thinking_started = None;
+        let summary = self.messages[message_index]
+            .annotation
+            .take()
+            .or_else(|| (!streamed_summary.is_empty()).then_some(streamed_summary));
+        self.messages[message_index] = DisplayMessage::compaction(CompactionDisplay {
+            id: format!("live-compaction:{message_index}"),
+            depth: 1,
+            message_count: 0,
+            summary,
+            entries: Vec::new(),
+        });
+        self.cache.invalidate_from_msg_count();
+        true
+    }
+
     pub fn load_messages(&mut self, mut msgs: Vec<DisplayMessage>) {
         if !self.show_thinking {
             for msg in &mut msgs {
@@ -205,6 +247,7 @@ impl MessagesPanel {
         self.messages = msgs;
         self.cache.clear();
         self.expanded_tools.clear();
+        self.expanded_compactions.clear();
         self.lua_clicks.clear();
         self.live_bufs.clear();
         self.watched_bufs.clear();
@@ -275,8 +318,17 @@ impl MessagesPanel {
         if !built.is_empty() && !self.cache.segments().is_empty() {
             built.push(Segment::spacer());
         }
+        let added_height = built
+            .iter()
+            .map(|seg| seg.height(self.viewport_width) as u32)
+            .sum::<u32>();
         self.cache.prepend(built, n);
         self.messages.splice(0..0, msgs);
+        if !self.auto_scroll {
+            self.scroll_top = self
+                .scroll_top
+                .saturating_add(added_height.min(u32::from(u16::MAX)) as u16);
+        }
     }
 
     pub fn thinking_delta(&mut self, text: &str) {
@@ -286,8 +338,30 @@ impl MessagesPanel {
     }
 
     pub fn text_delta(&mut self, text: &str) {
+        // Visible assistant text is a model-response boundary: preserve the
+        // preceding reasoning as its own disclosure before streaming it.
         self.flush_thinking();
         self.streaming_text.push(text);
+    }
+
+    /// Toggles all persisted reasoning disclosures in this transcript.
+    ///
+    /// This deliberately leaves live reasoning alone and only changes cached
+    /// `DisplayRole::Thinking` rows, so opaque provider reasoning—which never
+    /// reaches the display model—cannot be revealed.
+    pub fn toggle_transcript_details(&mut self) -> bool {
+        let expanded = self
+            .messages
+            .iter()
+            .any(|msg| matches!(msg.role, DisplayRole::Thinking) && msg.thinking_collapsed);
+        self.show_thinking = expanded;
+        for msg in &mut self.messages {
+            if matches!(msg.role, DisplayRole::Thinking) {
+                msg.thinking_collapsed = !expanded;
+            }
+        }
+        self.cache.invalidate_from_msg_count();
+        expanded
     }
 
     pub fn tool_pending(&mut self, id: String, name: &str) {
@@ -460,12 +534,12 @@ impl MessagesPanel {
             .unwrap_or_default();
         let tl = build_instructions_lines(blocks, self.viewport_width, exp.output);
 
-        if let Some(seg_idx) = self.cache.find_by_tool_id(&inst_id) {
+        if let Some(seg_idx) = self.cache.find_instructions(parent_id) {
             let seg = self.cache.get_mut(seg_idx).unwrap();
             seg.search_text = tl.search_text.clone();
             seg.update_with_reuse(tl, &self.hl_worker);
         } else {
-            let mut seg = Segment::with_tool(inst_id);
+            let mut seg = Segment::with_instructions(parent_id.to_owned());
             seg.search_text = tl.search_text.clone();
             seg.apply_highlight(tl, &self.hl_worker);
             self.cache.insert(parent_idx + 1, Segment::spacer());
@@ -581,6 +655,35 @@ impl MessagesPanel {
         self.rebuild_expanded_tool(&tool_id);
         self.auto_scroll = false;
         true
+    }
+
+    fn segment_position(&self, tool_id: &str) -> (Option<u32>, u16) {
+        let Some(index) = self.cache.find_by_tool_id(tool_id) else {
+            return (None, 0);
+        };
+        let start = self.cache.segments()[..index]
+            .iter()
+            .map(|seg| seg.height(self.viewport_width) as u32)
+            .sum();
+        (
+            Some(start),
+            self.cache.segments()[index].height(self.viewport_width),
+        )
+    }
+
+    fn preserve_anchor(&mut self, old_start: Option<u32>, old_height: u16, tool_id: &str) {
+        let Some(old_start) = old_start else {
+            return;
+        };
+        let (_, new_height) = self.segment_position(tool_id);
+        if old_start < u32::from(self.scroll_top) {
+            let delta = i32::from(new_height) - i32::from(old_height);
+            self.scroll_top = if delta >= 0 {
+                self.scroll_top.saturating_add(delta as u16)
+            } else {
+                self.scroll_top.saturating_sub(delta.unsigned_abs() as u16)
+            };
+        }
     }
 
     #[cfg(test)]
@@ -704,15 +807,18 @@ impl MessagesPanel {
         if area.height == 0 {
             return None;
         }
-        let copy_width = COPY_LABEL_WIDTH.min(area.width);
-        let copy_area = Rect::new(area.right().saturating_sub(copy_width), row, copy_width, 1);
-        if !copy_area.contains(ratatui::layout::Position::new(col, row)) {
-            return None;
-        }
         let doc_row = (row.saturating_sub(area.y)) as u32 + self.scroll_top as u32;
         let (index, segment, segment_start) =
             self.cache.segment_at_row(doc_row, self.viewport_width)?;
-        if doc_row != segment_start || segment.surface() != Surface::Assistant {
+        if doc_row != segment_start
+            || segment.surface() != Surface::Assistant
+            || !segment.has_copy_label_room(self.viewport_width, COPY_LABEL_WIDTH)
+        {
+            return None;
+        }
+        let copy_width = COPY_LABEL_WIDTH.min(area.width);
+        let copy_area = Rect::new(area.right().saturating_sub(copy_width), row, copy_width, 1);
+        if !copy_area.contains(ratatui::layout::Position::new(col, row)) {
             return None;
         }
         let (text, label) = self.cache.get(index)?.copy_payload()?;
@@ -724,11 +830,12 @@ impl MessagesPanel {
             return None;
         }
         let doc_row = (row.saturating_sub(area.y)) as u32 + self.scroll_top as u32;
-        self.cache
-            .segment_at_row(doc_row, self.viewport_width)?
-            .1
-            .tool_id
-            .as_deref()
+        let (_, segment, segment_start) =
+            self.cache.segment_at_row(doc_row, self.viewport_width)?;
+        let rel = u16::try_from(doc_row - segment_start).ok()?;
+        (segment.source_line_at(rel, self.viewport_width) == Some(0))
+            .then_some(segment.tool_id.as_deref())
+            .flatten()
     }
 
     pub fn handle_click(&mut self, row: u16, area: Rect) -> bool {
@@ -743,38 +850,47 @@ impl MessagesPanel {
         let Some((_, seg, seg_start)) = self.cache.segment_at_row(doc_row, width) else {
             return self.try_toggle_collapsed_thinking(doc_row, width);
         };
-        let Some(tool_id) = seg.tool_id.as_deref() else {
+        let rel = u16::try_from(doc_row - seg_start).unwrap_or(u16::MAX);
+        let source_line = seg.source_line_at(rel, width);
+        if let Some(MessageAction::ToggleCompaction(id)) = source_line
+            .and_then(|line| seg.message_action(line))
+            .cloned()
+        {
+            return self.toggle_compaction(&id);
+        }
+        let Some(tool_id) = seg.tool_id.clone() else {
             let msg_idx = seg.msg_index;
             return self.try_toggle_cached_thinking(msg_idx, width);
         };
+        let truncation = seg.truncation;
+        if let Some(action) = source_line.and_then(|line| seg.truncation_action(line)) {
+            return self.toggle_tool_section(&tool_id, action);
+        }
 
-        if self.tool_in_progress(tool_id) && self.live_bufs.contains_key(tool_id) {
+        if self.tool_in_progress(&tool_id) && self.live_bufs.contains_key(&tool_id) {
             self.auto_scroll = false;
-            let buf_row = if self.has_snapshot(tool_id) {
-                let rel = u16::try_from(doc_row - seg_start).unwrap_or(u16::MAX);
-                seg.source_line_at(rel, width)
-                    .map_or(0, |line| seg.buf_row(line))
+            let buf_row = if self.has_snapshot(&tool_id) {
+                source_line.map_or(0, |line| seg.buf_row(line))
             } else {
                 0
             };
             if let Some(handle) = &self.lua_event_handle {
-                handle.request_click(tool_id.to_owned(), buf_row);
+                handle.request_click(tool_id.clone(), buf_row);
             }
             return true;
         }
 
-        if self.has_snapshot(tool_id) {
+        if self.has_snapshot(&tool_id) {
             self.auto_scroll = false;
-            let rel = u16::try_from(doc_row - seg_start).unwrap_or(u16::MAX);
-            let buf_row = seg.source_line_at(rel, width).map_or(0, |l| seg.buf_row(l));
+            let buf_row = source_line.map_or(0, |line| seg.buf_row(line));
             // Recorded even when the warm path serves the click: theme
             // rebake and session restore replay the full sequence.
             self.lua_clicks
-                .entry(tool_id.to_owned())
+                .entry(tool_id.clone())
                 .or_default()
                 .push(buf_row);
-            let item = self.lua_restore_item(tool_id).map(|mut item| {
-                item.clicks = self.lua_clicks[tool_id].clone();
+            let item = self.lua_restore_item(&tool_id).map(|mut item| {
+                item.clicks = self.lua_clicks[&tool_id].clone();
                 item
             });
             let (Some(eh), Some(tx)) =
@@ -786,11 +902,11 @@ impl MessagesPanel {
             // visible here, so try the fast path; the fallback item lets
             // the runtime degrade to restore+replay if its cache is cold.
             // Without the buf only a fresh restore can show the result.
-            match (self.watching(tool_id), item) {
+            match (self.watching(&tool_id), item) {
                 (true, Some(item)) => {
-                    eh.request_click_with_fallback(tool_id.to_owned(), buf_row, item, tx);
+                    eh.request_click_with_fallback(tool_id.clone(), buf_row, item, tx);
                 }
-                (true, None) => eh.request_click(tool_id.to_owned(), buf_row),
+                (true, None) => eh.request_click(tool_id.clone(), buf_row),
                 (false, Some(item)) => eh.request_restore(item, tx),
                 (false, None) => {}
             }
@@ -799,28 +915,60 @@ impl MessagesPanel {
 
         let exp = self
             .expanded_tools
-            .get(tool_id)
+            .get(&tool_id)
             .copied()
             .unwrap_or_default();
-        if !seg.truncation.any() && !exp.any() {
+        if !truncation.any() && !exp.any() {
+            return false;
+        }
+        self.toggle_tool_expansion(&tool_id, truncation)
+    }
+
+    pub fn on_mouse(&mut self, _column: u16, _row: u16) {}
+
+    fn toggle_compaction(&mut self, id: &str) -> bool {
+        if !self.expanded_compactions.remove(id) {
+            self.expanded_compactions.insert(id.to_owned());
+        }
+        self.cache.invalidate_from_msg_count();
+        self.rebuild_line_cache();
+        self.auto_scroll = false;
+        true
+    }
+
+    fn toggle_tool_section(&mut self, tool_id: &str, section: SectionFlags) -> bool {
+        if section.script == section.output {
             return false;
         }
         let tool_id = tool_id.to_owned();
-        let truncation = seg.truncation;
+        let (old_start, old_height) = self.segment_position(&tool_id);
+        let entry = self.expanded_tools.entry(tool_id.clone()).or_default();
+        if section.script {
+            entry.script = !entry.script;
+        } else {
+            entry.output = !entry.output;
+        }
+        self.rebuild_expanded_tool(&tool_id);
+        self.preserve_anchor(old_start, old_height, &tool_id);
+        self.auto_scroll = false;
+        true
+    }
 
+    fn toggle_tool_expansion(&mut self, tool_id: &str, truncation: SectionFlags) -> bool {
+        let tool_id = tool_id.to_owned();
+        let (old_start, old_height) = self.segment_position(&tool_id);
         let entry = self.expanded_tools.entry(tool_id.clone()).or_default();
         if truncation.output || entry.output {
             entry.output = !entry.output;
         } else if truncation.script || entry.script {
             entry.script = !entry.script;
+        } else {
+            return false;
         }
         self.rebuild_expanded_tool(&tool_id);
+        self.preserve_anchor(old_start, old_height, &tool_id);
         self.auto_scroll = false;
         true
-    }
-
-    pub fn on_mouse(&mut self, column: u16, row: u16) {
-        self.mascot.on_mouse(column, row);
     }
 
     #[cfg(test)]
@@ -913,7 +1061,9 @@ impl MessagesPanel {
         }
         self.drain_highlights();
         self.poll_live_bufs();
-        self.drain_restore_backlog();
+        if !has_selection {
+            self.drain_restore_backlog();
+        }
         self.rebuild_line_cache();
         if self.in_progress_count() > 0 {
             self.update_spinners();
@@ -979,7 +1129,11 @@ impl MessagesPanel {
             }
             let h = seg.height(width);
             let highlight = self.highlight_segment == Some(i);
-            cursor.render(seg.lines(), h, None, seg.surface(), highlight, frame);
+            if let Some(term_img) = seg.image() {
+                cursor.render_image(&term_img.protocol, h, seg.surface(), frame);
+            } else {
+                cursor.render(seg.lines(), h, None, seg.surface(), highlight, frame);
+            }
         }
 
         let mut height_idx = 0usize;
@@ -1313,7 +1467,13 @@ impl MessagesPanel {
         rctx: &RenderCtx,
         exp: SectionFlags,
     ) -> ToolLines {
-        let mut tl = build_tool_lines(msg, status, rctx, exp);
+        let content_width = Surface::Tool.content_width(rctx.width);
+        let tool_ctx = RenderCtx {
+            started_at: rctx.started_at,
+            width: content_width,
+            tool_output_lines: rctx.tool_output_lines,
+        };
+        let mut tl = build_tool_lines(msg, status, &tool_ctx, exp);
         if let Some(ts) = &msg.timestamp
             && !tl.lines.is_empty()
         {
@@ -1321,7 +1481,7 @@ impl MessagesPanel {
                 &mut tl.lines[0],
                 msg.turn_usage.as_deref(),
                 Some(ts),
-                rctx.width,
+                content_width,
             );
         }
         tl
@@ -1480,6 +1640,14 @@ impl MessagesPanel {
     }
 
     fn build_segments_for_msg(&self, msg: &DisplayMessage, msg_index: usize) -> Vec<Segment> {
+        if let Some(DisplayMetadata::Compaction(compaction)) = &msg.metadata {
+            return vec![build_compaction_segment(
+                compaction,
+                msg_index,
+                &self.expanded_compactions,
+                &self.tool_output_lines,
+            )];
+        }
         if let DisplayRole::Tool(t) = &msg.role {
             let exp = self.expanded_tools.get(&t.id).copied().unwrap_or_default();
             let status = t.status;
@@ -1503,7 +1671,7 @@ impl MessagesPanel {
                     .copied()
                     .unwrap_or_default();
                 let tl = build_instructions_lines(&blocks, self.viewport_width, exp.output);
-                let mut inst_seg = Segment::with_tool(inst_id);
+                let mut inst_seg = Segment::with_instructions(id.clone());
                 inst_seg.search_text = tl.search_text.clone();
                 inst_seg.apply_highlight(tl, &self.hl_worker);
                 out.push(Segment::spacer());
@@ -1541,7 +1709,12 @@ impl MessagesPanel {
             DisplayRole::Assistant => Surface::Assistant,
             _ => Surface::Plain,
         };
-        let content_width = surface.content_width(self.viewport_width);
+        let content_width = surface
+            .content_width(self.viewport_width)
+            .saturating_sub(prefix.width() as u16)
+            .max(1);
+        let picker = self.picker.clone();
+        let picker_ref = &*picker;
         let mut lines = if style.use_markdown {
             text_to_lines(
                 &msg.text,
@@ -1587,7 +1760,23 @@ impl MessagesPanel {
             Some(msg_index),
         );
         segment.set_surface(surface);
-        vec![segment]
+        let mut out = Vec::new();
+        if !msg.text.is_empty() || msg.plan_path.is_some() {
+            out.push(segment);
+        }
+        for (idx, source) in msg.images.iter().enumerate() {
+            if idx > 0 || !out.is_empty() {
+                out.push(Segment::spacer());
+            }
+            out.push(Segment::with_image(
+                source,
+                picker_ref,
+                content_width,
+                surface,
+                Some(msg_index),
+            ));
+        }
+        out
     }
 
     fn rebuild_line_cache(&mut self) {
@@ -1598,7 +1787,15 @@ impl MessagesPanel {
         for i in self.cache.msg_count()..self.messages.len() {
             let msg = &self.messages[i];
 
-            if let DisplayRole::Tool(t) = &msg.role {
+            if let Some(DisplayMetadata::Compaction(compaction)) = &msg.metadata {
+                self.cache.push_spacer_if_needed();
+                self.cache.push(build_compaction_segment(
+                    compaction,
+                    i,
+                    &self.expanded_compactions,
+                    &self.tool_output_lines,
+                ));
+            } else if let DisplayRole::Tool(t) = &msg.role {
                 let exp = self.expanded_tools.get(&t.id).copied().unwrap_or_default();
                 let status = t.status;
                 let tl = Self::build_tool_segment_lines(msg, status, &self.rctx(), exp);
@@ -1653,7 +1850,12 @@ impl MessagesPanel {
                     DisplayRole::Assistant => Surface::Assistant,
                     _ => Surface::Plain,
                 };
-                let content_width = surface.content_width(self.viewport_width);
+                let content_width = surface
+                    .content_width(self.viewport_width)
+                    .saturating_sub(prefix.width() as u16)
+                    .max(1);
+                let picker = self.picker.clone();
+                let picker_ref = &*picker;
                 let mut lines = if style.use_markdown {
                     text_to_lines(
                         &msg.text,
@@ -1693,22 +1895,164 @@ impl MessagesPanel {
                 let prefix_width = prefix.width() as u16;
                 let search_text = format!("{}> {}", role_name(&msg.role), msg.text);
                 self.cache.push_spacer_if_needed();
-                let mut segment = Segment::with_lines(
-                    lines,
-                    search_text,
-                    Some(msg.text.clone()),
-                    prefix_width,
-                    Some(i),
-                );
-                match msg.role {
-                    DisplayRole::User => segment.set_surface(Surface::User),
-                    DisplayRole::Assistant => segment.set_surface(Surface::Assistant),
-                    _ => {}
+                if !msg.text.is_empty() || msg.plan_path.is_some() || msg.images.is_empty() {
+                    let mut segment = Segment::with_lines(
+                        lines,
+                        search_text,
+                        Some(msg.text.clone()),
+                        prefix_width,
+                        Some(i),
+                    );
+                    segment.set_surface(surface);
+                    self.cache.push(segment);
                 }
-                self.cache.push(segment);
+                for (idx, source) in msg.images.iter().enumerate() {
+                    if idx > 0 || !msg.text.is_empty() {
+                        self.cache.push(Segment::spacer());
+                    }
+                    self.cache.push(Segment::with_image(
+                        source,
+                        picker_ref,
+                        content_width,
+                        surface,
+                        Some(i),
+                    ));
+                }
             }
         }
         self.cache.mark_built(self.messages.len());
+    }
+}
+
+fn build_compaction_segment(
+    compaction: &CompactionDisplay,
+    msg_index: usize,
+    expanded: &HashSet<String>,
+    tool_output_lines: &ToolOutputLines,
+) -> Segment {
+    let mut lines = Vec::new();
+    let mut actions = Vec::new();
+    append_compaction_lines(
+        compaction,
+        expanded,
+        tool_output_lines,
+        0,
+        &mut lines,
+        &mut actions,
+    );
+    let search_text = format!(
+        "compaction> depth {} {} messages {}",
+        compaction.depth,
+        compaction.message_count,
+        compaction_summary_text(compaction)
+    );
+    Segment::with_compaction(lines, search_text, msg_index, actions)
+}
+
+fn compaction_summary_text(compaction: &CompactionDisplay) -> &str {
+    match compaction.summary.as_deref() {
+        Some(summary) => summary,
+        None => "Summary unavailable",
+    }
+}
+
+fn append_compaction_lines(
+    compaction: &CompactionDisplay,
+    expanded: &HashSet<String>,
+    tool_output_lines: &ToolOutputLines,
+    indent: usize,
+    lines: &mut Vec<Line<'static>>,
+    actions: &mut Vec<(usize, String)>,
+) {
+    let is_expanded = expanded.contains(&compaction.id);
+    actions.push((lines.len(), compaction.id.clone()));
+    let marker = if is_expanded { '▾' } else { '▸' };
+    let count_label = if compaction.message_count == 1 {
+        "message"
+    } else {
+        "messages"
+    };
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(indent)),
+        Span::styled(
+            format!(
+                "{marker} Compaction · depth {} · {} {count_label}",
+                compaction.depth, compaction.message_count
+            ),
+            theme::current().tool_dim,
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(indent + 2)),
+        Span::styled("Summary: ", theme::current().assistant_prefix),
+        Span::styled(
+            compaction_summary_text(compaction).to_owned(),
+            theme::current().assistant,
+        ),
+    ]));
+    if !is_expanded {
+        return;
+    }
+    for entry in &compaction.entries {
+        if let Some(DisplayMetadata::Compaction(child)) = &entry.metadata {
+            append_compaction_lines(
+                child,
+                expanded,
+                tool_output_lines,
+                indent + 2,
+                lines,
+                actions,
+            );
+        } else {
+            append_compaction_entry(entry, tool_output_lines, indent + 2, lines);
+        }
+    }
+}
+
+fn append_compaction_entry(
+    message: &DisplayMessage,
+    tool_output_lines: &ToolOutputLines,
+    indent: usize,
+    lines: &mut Vec<Line<'static>>,
+) {
+    let label = role_name(&message.role);
+    let mut text_lines = message.text.lines();
+    if let Some(first) = text_lines.next() {
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(indent)),
+            Span::styled(format!("{label}> "), theme::current().tool_dim),
+            Span::raw(first.to_owned()),
+        ]));
+        for line in text_lines {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(indent + label.len() + 2)),
+                Span::raw(line.to_owned()),
+            ]));
+        }
+    }
+    if let Some(output) = message.tool_output.as_deref() {
+        let output = output.as_display_text();
+        let truncated = truncate_output(
+            &output,
+            tool_output_lines.get(message.role.tool_name().unwrap_or("")),
+        );
+        if !truncated.kept.is_empty() && !message.text.contains(truncated.kept.as_ref()) {
+            for line in truncated.kept.lines() {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(indent + label.len() + 2)),
+                    Span::raw(line.to_owned()),
+                ]));
+            }
+        }
+    }
+    if !message.images.is_empty() {
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(indent)),
+            Span::styled(
+                format!("{label}> [{} image(s)]", message.images.len()),
+                theme::current().tool_dim,
+            ),
+        ]));
     }
 }
 
@@ -1722,7 +2066,7 @@ fn thinking_indicator(line_count: usize, duration: Option<&str>) -> Vec<Line<'st
         Span::styled("  › ", theme.thinking),
         Span::styled(label, theme.thinking),
         Span::styled(format!(" · {line_count} lines"), theme.tool_dim),
-        Span::styled(" · click to expand", theme.tool_dim),
+        Span::styled("  ›", theme.tool_dim),
     ])]
 }
 
