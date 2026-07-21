@@ -9,19 +9,24 @@ extend-exclude = [
   "flake.lock",
 ]
 
+[default]
+extend-ignore-re = [
+  'n00n\.workflow\.hash\("abd"\)',
+  'eq\(result, "ba"\)',
+  '"caf\\xC3\\xA9!?"',
+  '"caf\.\.\."',
+  '"hel\\nlo"',
+  '"summar",',
+  '#\[test_case\("systm", None ; "typo_prompt"\)\]',
+  'file\.write_all\(b"\{\\"t\\":\\"msg\\",\\"d\\":\{\\"trun"\)',
+  'fromat = "bgra"',
+  'splash_animaton = false',
+]
+
 [default.extend-identifiers]
 inh = "inh"
 
 [default.extend-words]
-abd = "abd"
-animaton = "animaton"
-ba = "ba"
-caf = "caf"
-fromat = "fromat"
-hel = "hel"
-summar = "summar"
-systm = "systm"
-trun = "trun"
 unparseable = "unparseable"
 n00n = "n00n"
 w0wl0lxd = "w0wl0lxd"
