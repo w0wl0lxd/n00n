@@ -178,6 +178,7 @@ async fn gather(lua: Lua, fns: Table) -> LuaResult<Table> {
 /// do_work()
 /// permit:release()
 #[lua_fn]
+#[allow(clippy::unnecessary_wraps)]
 fn semaphore(_lua: &Lua, n: usize) -> LuaResult<LuaSemaphore> {
     Ok(LuaSemaphore {
         sem: Arc::new(Semaphore::new(n.max(1))),
@@ -288,7 +289,9 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
                 ));
             }
             let argc = match &args_vec[0] {
-                Value::Integer(n) if *n >= 1 => *n as usize,
+                Value::Integer(n) if *n >= 1 => {
+                    usize::try_from(*n).map_err(|_| mlua::Error::runtime("argc overflow"))?
+                }
                 Value::Integer(_) => {
                     return Err(mlua::Error::runtime("argc must be >= 1"));
                 }
@@ -370,6 +373,7 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_possible_wrap)]
 mod tests {
     use std::pin::pin;
     use std::sync::Mutex;
@@ -445,6 +449,7 @@ mod tests {
             );
 
             let result = lua.load(&code).eval_async::<i64>().await.unwrap();
+            #[allow(clippy::cast_possible_wrap)]
             assert_eq!(result, expected_pos as i64);
         });
     }

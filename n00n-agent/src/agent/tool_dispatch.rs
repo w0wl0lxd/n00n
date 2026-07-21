@@ -60,6 +60,7 @@ impl RecentCalls {
 
 /// Parse errors and unknown tools skip the start event so the UI never
 /// shows a phantom spinner.
+#[allow(clippy::too_many_lines)]
 pub async fn run(
     registry: &ToolRegistry,
     mcp: Option<&McpHandle>,
@@ -70,7 +71,7 @@ pub async fn run(
     emit: Emit,
 ) -> ToolDoneEvent {
     // GPT-5.6 was likely trained on Codex sessions where tools are `functions.<name>`
-    let name = name.strip_prefix("functions.").unwrap_or(name);
+    let name = name.strip_prefix("functions.").map_or_else(|| name, |v| v);
     if let Some(local) = ctx.local_tools.get(name) {
         return run_local_tool(local, id, name, input, ctx, emit);
     }
@@ -169,7 +170,7 @@ pub async fn run(
                 debug!(
                     tool = %name,
                     source = %entry.source.as_log_field(),
-                    elapsed_ms = elapsed.as_millis() as u64,
+                    elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
                     "tool ok"
                 );
                 ToolDoneEvent {
@@ -185,7 +186,7 @@ pub async fn run(
                 warn!(
                     tool = %name,
                     source = %entry.source.as_log_field(),
-                    elapsed_ms = elapsed.as_millis() as u64,
+                    elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or_else(|_| u64::MAX),
                     error = %message,
                     "tool failed"
                 );
@@ -451,8 +452,7 @@ async fn dispatch_mcp(
     let tool_id = ctx
         .mcp
         .as_ref()
-        .map(|m| m.interned_name(tool_name))
-        .unwrap_or_else(|| Arc::from(UNKNOWN_MCP));
+        .map_or_else(|| Arc::from(UNKNOWN_MCP), |m| m.interned_name(tool_name));
     execute_mcp_tool(ctx, id, tool_id, tool_name, input).await
 }
 
@@ -649,14 +649,11 @@ mod tests {
             );
 
             let registry = ToolRegistry::new();
-            registry
-                .register(
-                    Arc::new(GuardedMock),
-                    ToolSource::Lua {
-                        plugin: "test".into(),
-                    },
-                )
-                .unwrap();
+            let tool = Arc::new(GuardedMock);
+            let source = ToolSource::Lua {
+                plugin: "test".into(),
+            };
+            registry.register(tool, source).unwrap();
 
             let done = run(
                 &registry,
@@ -711,7 +708,7 @@ mod tests {
                 "probe".into(),
             ))))
         }
-        fn execute<'a>(self: Box<Self>, _ctx: &'a ToolContext) -> ExecFuture<'a> {
+        fn execute(self: Box<Self>, _ctx: &ToolContext) -> ExecFuture<'_> {
             self.executed.store(true, Ordering::SeqCst);
             Box::pin(async {
                 ToolExecResult::from(Ok::<_, String>(ToolOutput::Plain("ok".into())))
@@ -796,14 +793,11 @@ mod tests {
             let probe = StartProbe::default();
             let (started, executed) = (Arc::clone(&probe.started), Arc::clone(&probe.executed));
             let registry = ToolRegistry::new();
-            registry
-                .register(
-                    Arc::new(probe),
-                    ToolSource::Lua {
-                        plugin: "test".into(),
-                    },
-                )
-                .unwrap();
+            let tool = Arc::new(probe);
+            let source = ToolSource::Lua {
+                plugin: "test".into(),
+            };
+            registry.register(tool, source).unwrap();
 
             let done = run(
                 &registry,

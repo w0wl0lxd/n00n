@@ -54,7 +54,7 @@ fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Mode
     }
     let map = n00n_providers::model_registry::model_registry()
         .read()
-        .unwrap();
+        .map_err(|e| format!("model registry lock poisoned: {e}"))?;
     ctx.model
         .dynamic_slug
         .is_none()
@@ -91,6 +91,7 @@ fn dispatch_ctx<'a>(ctx: &'a LuaCtx, method: &str) -> Result<&'a AgentContext, S
 
 type Pair<T> = (Option<T>, Option<String>);
 
+#[allow(clippy::needless_pass_by_value)]
 fn err_pair<T>(err: impl ToString) -> Pair<T> {
     (None, Some(err.to_string()))
 }
@@ -126,6 +127,7 @@ macro_rules! try_pair {
 /// if err then error(err) end
 /// print(model.spec, model.tier)
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
 fn resolve_model(
     lua: &Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
@@ -160,6 +162,7 @@ fn resolve_model(
 /// if err then error(err) end
 /// print(string.format("$%.4f", cost))
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
 fn usage_cost(
     _lua: &Lua,
     spec: String,
@@ -196,6 +199,7 @@ fn usage_cost(
 /// })
 /// if err then error(err) end
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
 async fn system_prompt(
     _lua: Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
@@ -249,6 +253,7 @@ async fn system_prompt(
 /// if err then error(err) end
 /// print(#defs .. " tools available")
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
 fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pair<LuaValue>> {
     let agent = try_pair!(dispatch_ctx(&ctx, "tools"));
     let audience_str: String = opts.get("audience")?;
@@ -259,14 +264,18 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
 
     let only: Option<Vec<String>> = opts.get("only")?;
     let except: Option<Vec<String>> = opts.get("except")?;
-    let include_mcp: bool = opts.get::<Option<bool>>("include_mcp")?.unwrap_or(true);
-    let workflow: bool = opts.get::<Option<bool>>("workflow")?.unwrap_or(false);
+    let include_mcp: bool = opts.get::<Option<bool>>("include_mcp")?.map_or(true, |v| v);
+    let workflow: bool = opts.get::<Option<bool>>("workflow")?.map_or(false, |v| v);
     let spec_str: Option<String> = opts.get("spec")?;
 
     let parsed = spec_str
         .as_deref()
         .and_then(|spec| Model::from_spec(spec).ok());
-    let model = parsed.as_ref().unwrap_or(&agent.model);
+    let model = if let Some(ref m) = parsed {
+        m
+    } else {
+        &agent.model
+    };
 
     let base = match (only, except) {
         (Some(o), _) => ToolFilter::Only(o),
@@ -406,6 +415,8 @@ async fn call_tool(
 /// local result = sess:prompt("Summarize this file.")
 /// sess:close()
 #[lua_fn]
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::cast_possible_truncation)]
 async fn session(
     lua: Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
@@ -427,7 +438,7 @@ async fn session(
     };
     let fast: bool = opts
         .get::<Option<bool>>("fast")?
-        .unwrap_or(agent_ctx.opts.fast);
+        .map_or(agent_ctx.opts.fast, |v| v);
 
     let (model, provider): (Model, Arc<dyn provider::Provider>) = if let Some(ref spec) = model_spec
     {
@@ -459,7 +470,9 @@ async fn session(
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
     if let Some(tbl) = local_tools_tbl {
-        let defs = tools_json.as_array_mut().expect("checked above");
+        let defs = tools_json
+            .as_array_mut()
+            .unwrap_or_else(|| unreachable!("tools_json is always an array here"));
         for pair in tbl.pairs::<String, Table>() {
             let (name, spec) = pair?;
             let description = try_pair!(
@@ -495,7 +508,9 @@ async fn session(
             _ => return Ok(err_pair(format!("invalid thinking budget: {n}"))),
         },
         Some(LuaValue::Number(n)) if n >= 1.0 && n <= f64::from(u32::MAX) => {
-            ThinkingConfig::Budget(n as u32)
+            let tokens = u32::try_from(n as i64)
+                .map_err(|_| mlua::Error::runtime(format!("invalid thinking budget: {n}")))?;
+            ThinkingConfig::Budget(tokens)
         }
         Some(LuaValue::Number(n)) => {
             return Ok(err_pair(format!("invalid thinking budget: {n}")));
@@ -560,7 +575,7 @@ async fn session(
         .subagent_cancels
         .insert(child_id.clone(), child_trigger);
 
-    let name = name.unwrap_or_default();
+    let name = name.unwrap_or_else(|| format!("session-{child_id}"));
     info!(name = %name, model = %model.id, "subagent session opened");
 
     let state = SessionState {
@@ -578,7 +593,7 @@ async fn session(
             registry: Arc::clone(n00n_agent::tools::ToolRegistry::global_arc()),
             audience,
         },
-        system: system.unwrap_or_default(),
+        system: system.unwrap_or_else(String::new),
         tools: tools_json,
         thinking,
         fast,
@@ -803,6 +818,7 @@ struct SessionState {
 }
 
 impl SessionState {
+    #[allow(clippy::cast_possible_truncation)]
     fn close(&mut self) {
         if self.closed {
             return;
@@ -816,9 +832,10 @@ impl SessionState {
             messages,
             is_error: self.failed,
         });
+        let duration_ms = self.start.elapsed().as_millis() as u64;
         info!(
             name = %self.name,
-            duration_ms = self.start.elapsed().as_millis() as u64,
+            duration_ms,
             input_tokens = self.total_input.load(Ordering::Relaxed),
             output_tokens = self.total_output.load(Ordering::Relaxed),
             "subagent session closed",
@@ -883,6 +900,7 @@ impl Drop for LuaSession {
 /// print(r.text)
 /// print(r.input_tokens .. " input, " .. r.output_tokens .. " output tokens")
 #[lua_fn]
+#[allow(clippy::cast_possible_truncation)]
 async fn prompt(
     lua: Lua,
     this: mlua::UserDataRef<LuaSession>,
@@ -957,12 +975,15 @@ async fn prompt(
             ContentBlock::Text { text } => Some(text.as_str()),
             _ => None,
         })
-        .unwrap_or("(no response)")
-        .to_owned();
+        .map_or_else(
+            || "(no response)".to_owned(),
+            std::borrow::ToOwned::to_owned,
+        );
 
+    let duration_ms = s.start.elapsed().as_millis() as u64;
     let tbl = lua.create_table()?;
     tbl.set("text", text)?;
-    tbl.set("duration_ms", s.start.elapsed().as_millis() as u64)?;
+    tbl.set("duration_ms", duration_ms)?;
     tbl.set("input_tokens", s.total_input.load(Ordering::Relaxed))?;
     tbl.set("output_tokens", s.total_output.load(Ordering::Relaxed))?;
     Ok((Some(tbl), None))
@@ -980,6 +1001,8 @@ async fn prompt(
 /// The call returns at most every `PROGRESS_TIMEOUT_MS` milliseconds, or
 /// immediately when a tool starts or finishes.
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::cast_possible_truncation)]
 async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResult<Pair<Table>> {
     let progress = Arc::clone(&this.progress);
     let notify = pin!(progress.rx.recv_async());
@@ -1062,10 +1085,10 @@ mod tests {
 
     use super::*;
 
-    fn call(src: &str, input: JsonValue) -> Result<String, String> {
+    fn call(src: &str, input: &JsonValue) -> Result<String, String> {
         let lua = Lua::new();
         let f: Function = lua.load(src).eval().unwrap();
-        call_local_tool(&lua.weak(), &f, &input)
+        call_local_tool(&lua.weak(), &f, input)
     }
 
     #[test]
@@ -1083,20 +1106,20 @@ mod tests {
     fn local_tool_handler_result_conventions() {
         let input = json!({"x": "1"});
         assert_eq!(
-            call("function(v) return 'ok:' .. v.x end", input.clone()),
+            call("function(v) return 'ok:' .. v.x end", &input),
             Ok("ok:1".into())
         );
         assert_eq!(
-            call("function() return nil, 'bad' end", input.clone()),
+            call("function() return nil, 'bad' end", &input),
             Err("bad".into())
         );
         assert_eq!(
-            call("function() end", input.clone()),
+            call("function() end", &input),
             Err(crate::api::util::convert::NIL_TOOL_RESULT_ERR.into())
         );
-        let raised = call("function() error('boom') end", input.clone()).unwrap_err();
+        let raised = call("function() error('boom') end", &input).unwrap_err();
         assert!(raised.contains("boom"), "got: {raised}");
-        let wrong = call("function() return 42 end", input).unwrap_err();
+        let wrong = call("function() return 42 end", &input).unwrap_err();
         assert!(wrong.contains("expected string"), "got: {wrong}");
     }
 }

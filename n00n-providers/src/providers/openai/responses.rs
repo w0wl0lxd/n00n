@@ -329,6 +329,7 @@ impl ResponseAccumulator {
         self.emitted_event
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn handle_event(
         &mut self,
         event_type: &str,
@@ -364,10 +365,14 @@ impl ResponseAccumulator {
                 let item = &data["item"];
                 let output_index = data["output_index"]
                     .as_u64()
-                    .unwrap_or(self.tool_accumulators.len() as u64);
+                    .unwrap_or_else(|| self.tool_accumulators.len() as u64);
                 if item["type"].as_str() == Some("function_call") {
-                    let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
-                    let name = item["name"].as_str().unwrap_or_default().to_string();
+                    let call_id = item["call_id"]
+                        .as_str()
+                        .map_or_else(String::new, ToString::to_string);
+                    let name = item["name"]
+                        .as_str()
+                        .map_or_else(String::new, ToString::to_string);
                     if !name.is_empty() {
                         self.emitted_event = true;
                         event_tx
@@ -390,7 +395,13 @@ impl ResponseAccumulator {
                 let delta: Cow<'_, str> = if let Some(s) = data["delta"].as_str() {
                     Cow::Borrowed(s)
                 } else if let Some(obj) = data["delta"].as_object() {
-                    Cow::Owned(serde_json::to_string(obj).unwrap_or_default())
+                    match serde_json::to_string(obj) {
+                        Ok(s) => Cow::Owned(s),
+                        Err(e) => {
+                            warn!(error = %e, "failed to serialize delta object, using empty string");
+                            Cow::Borrowed("")
+                        }
+                    }
                 } else {
                     Cow::Borrowed("")
                 };
@@ -416,9 +427,12 @@ impl ResponseAccumulator {
 
             "response.in_progress" => {
                 if let Some(pp) = data.get("prompt_progress") {
-                    let processed = pp["processed"].as_u64().unwrap_or(0) as u32;
-                    let total = pp["total"].as_u64().unwrap_or(0) as u32;
-                    let cache = pp["cache"].as_u64().unwrap_or(0) as u32;
+                    #[allow(clippy::cast_possible_truncation)]
+                    let processed = pp["processed"].as_u64().map_or(0, |v| v as u32);
+                    #[allow(clippy::cast_possible_truncation)]
+                    let total = pp["total"].as_u64().map_or(0, |v| v as u32);
+                    #[allow(clippy::cast_possible_truncation)]
+                    let cache = pp["cache"].as_u64().map_or(0, |v| v as u32);
                     self.emitted_event = true;
                     event_tx
                         .send_async(ProviderEvent::PromptProgress {
@@ -450,12 +464,22 @@ impl ResponseAccumulator {
                         }
                     }
                 } else if item["type"].as_str() == Some("function_call") {
-                    let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
-                    let name = item["name"].as_str().unwrap_or_default().to_string();
+                    let call_id = item["call_id"]
+                        .as_str()
+                        .map_or_else(String::new, ToString::to_string);
+                    let name = item["name"]
+                        .as_str()
+                        .map_or_else(String::new, ToString::to_string);
                     let arguments = if let Some(s) = item["arguments"].as_str() {
                         s.to_string()
                     } else if let Some(obj) = item["arguments"].as_object() {
-                        serde_json::to_string(obj).unwrap_or_default()
+                        match serde_json::to_string(obj) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!(error = %e, "failed to serialize arguments, using empty string");
+                                String::new()
+                            }
+                        }
                     } else {
                         String::new()
                     };
@@ -469,10 +493,10 @@ impl ResponseAccumulator {
                     if let Some(acc) = acc {
                         let should_emit_start = acc.name.is_empty() && !name.is_empty();
                         if acc.call_id.is_empty() {
-                            acc.call_id = call_id.clone();
+                            acc.call_id.clone_from(&call_id);
                         }
                         if acc.name.is_empty() {
-                            acc.name = name.clone();
+                            acc.name.clone_from(&name);
                         }
                         if !arguments.is_empty() {
                             acc.arguments = arguments;
@@ -552,7 +576,7 @@ impl ResponseAccumulator {
                     self.usage = parse_usage(u);
                 }
 
-                let status = resp["status"].as_str().unwrap_or("completed");
+                let status = resp["status"].as_str().unwrap_or_else(|| "completed");
                 self.stop_reason = Some(match status {
                     "completed" => {
                         if self.tool_accumulators.is_empty() {
@@ -579,14 +603,13 @@ impl ResponseAccumulator {
             "response.failed" => {
                 let resp = &data["response"];
                 let error = &resp["error"];
-                let message = error["message"]
-                    .as_str()
-                    .unwrap_or("response generation failed")
-                    .to_string();
-                let code = error["code"].as_str().unwrap_or("server_error");
+                let message = error["message"].as_str().map_or_else(
+                    || "response generation failed".to_string(),
+                    ToString::to_string,
+                );
+                let code = error["code"].as_str().unwrap_or_else(|| "server_error");
                 let status = match code {
                     "rate_limit_exceeded" => 429,
-                    "server_error" => 500,
                     _ => 500,
                 };
                 return Err(AgentError::Api { status, message });
@@ -700,11 +723,13 @@ pub(crate) async fn parse_sse(
                 warn!(error_type = %ev.error.r#type, "SSE error in stream");
                 return Err(ev.into_agent_error());
             }
-            let parsed: Value = serde_json::from_str(data).unwrap_or_default();
+            let parsed: Value = match serde_json::from_str(data) {
+                Ok(v) => v,
+                Err(_) => Value::Object(Default::default()),
+            };
             let message = parsed["message"]
                 .as_str()
-                .unwrap_or("unknown error")
-                .to_string();
+                .map_or_else(|| "unknown error".to_string(), ToString::to_string);
             return Err(AgentError::Api {
                 status: 500,
                 message,
@@ -715,7 +740,7 @@ pub(crate) async fn parse_sse(
             serde_json::from_str::<Value>(data)
                 .ok()
                 .and_then(|value| value["type"].as_str().map(ToOwned::to_owned))
-                .unwrap_or_default()
+                .unwrap_or_else(String::new)
         } else {
             current_event.clone()
         };
@@ -741,16 +766,41 @@ pub(crate) async fn parse_sse(
     Ok((response_id, acc.into_stream_response()))
 }
 
+#[allow(clippy::manual_unwrap_or)]
 fn parse_usage(u: &Value) -> TokenUsage {
-    let input_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
-    let output_tokens = u["output_tokens"].as_u64().unwrap_or(0) as u32;
+    let input_tokens = u["input_tokens"].as_u64().map_or_else(
+        || 0,
+        |v| match u32::try_from(v) {
+            Ok(v) => v,
+            Err(_) => u32::MAX,
+        },
+    );
+    let output_tokens = u["output_tokens"].as_u64().map_or_else(
+        || 0,
+        |v| match u32::try_from(v) {
+            Ok(v) => v,
+            Err(_) => u32::MAX,
+        },
+    );
 
     let cached = u["input_tokens_details"]["cached_tokens"]
         .as_u64()
-        .unwrap_or(0) as u32;
+        .map_or_else(
+            || 0,
+            |v| match u32::try_from(v) {
+                Ok(v) => v,
+                Err(_) => u32::MAX,
+            },
+        );
     let cache_write = u["input_tokens_details"]["cache_write_tokens"]
         .as_u64()
-        .unwrap_or(0) as u32;
+        .map_or_else(
+            || 0,
+            |v| match u32::try_from(v) {
+                Ok(v) => v,
+                Err(_) => u32::MAX,
+            },
+        );
 
     let fresh_input = input_tokens
         .saturating_sub(cached)

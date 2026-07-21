@@ -295,25 +295,16 @@ fn generate_field_entries(
         }
 
         let ident_string = ident.to_string();
-        #[allow(clippy::manual_unwrap_or, clippy::manual_unwrap_or_default)]
-        let field_name = if let Some(key) = attrs.key.as_deref() {
-            key
-        } else {
-            &ident_string
-        };
+        let field_name = attrs
+            .key
+            .as_deref()
+            .unwrap_or_else(|| ident_string.as_str());
         let ty_string = type_to_name(ty);
-        #[allow(clippy::manual_unwrap_or, clippy::manual_unwrap_or_default)]
-        let ty_name = if let Some(override_name) = attrs.ty_override.as_deref() {
-            override_name
-        } else {
-            &ty_string
-        };
-        #[allow(clippy::manual_unwrap_or, clippy::manual_unwrap_or_default)]
-        let desc = if let Some(d) = attrs.desc.as_deref() {
-            d
-        } else {
-            ""
-        };
+        let ty_name = attrs
+            .ty_override
+            .as_deref()
+            .unwrap_or_else(|| ty_string.as_str());
+        let desc = attrs.desc.as_deref().unwrap_or_else(|| "");
         let default_expr = match &attrs.default_doc {
             Some(doc) => quote! { ConfigValue::Str(#doc) },
             None => config_value_expr(ty_name, attrs.default.as_ref())?,
@@ -343,12 +334,7 @@ fn generate_field_entries(
                 quote! { self.#ident }
             };
             let ident_str = ident.to_string();
-            #[allow(clippy::manual_unwrap_or, clippy::manual_unwrap_or_default)]
-            let field_name_for_check = if let Some(key) = attrs.key.as_deref() {
-                key
-            } else {
-                &ident_str
-            };
+            let field_name_for_check = attrs.key.as_deref().unwrap_or_else(|| ident_str.as_str());
             validate_checks.push(quote! {
                 check(#section, #field_name_for_check, #val_expr as u64, #min as u64)?;
             });

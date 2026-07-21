@@ -1,3 +1,5 @@
+#![allow(clippy::cast_possible_wrap)]
+
 //! MCP client: manages transports and routes tool calls to servers.
 //!
 //! Tool names are namespaced as `server.tool` so two servers can both expose `search`
@@ -47,6 +49,7 @@ pub const UNKNOWN_MCP: &str = "unknown_mcp";
 ///
 /// Lossless: server names can't contain `__` (only alphanumeric + `-`),
 /// so the first `__` in the wire name is always the separator boundary.
+#[must_use]
 pub fn wire_tool_name(qualified: &str) -> String {
     qualified.replacen(SEPARATOR, WIRE_SEPARATOR, 1)
 }
@@ -54,6 +57,7 @@ pub fn wire_tool_name(qualified: &str) -> String {
 /// Convert wire format (`server__tool`) back to internal qualified name (`server.tool`).
 ///
 /// Only the first `__` is the separator — tool names may contain underscores.
+#[must_use]
 pub fn internal_tool_name(wire: &str) -> String {
     wire.replacen(WIRE_SEPARATOR, SEPARATOR, 1)
 }
@@ -78,7 +82,7 @@ impl McpPromptDef {
         Self {
             qualified_name: format!("{server_name}{SEPARATOR}{}", info.name),
             raw_name: info.name,
-            description: info.description.unwrap_or_default(),
+            description: info.description.unwrap_or_else(String::new),
             arguments: info.arguments,
         }
     }
@@ -93,7 +97,7 @@ impl McpPromptDef {
                 .iter()
                 .map(|a| McpPromptArg {
                     name: a.name.clone(),
-                    description: a.description.clone().unwrap_or_default(),
+                    description: a.description.clone().unwrap_or_else(String::new),
                     required: a.required,
                 })
                 .collect(),
@@ -217,14 +221,17 @@ pub struct McpSnapshot {
 pub struct McpSnapshotReader(Arc<ArcSwap<McpSnapshot>>);
 
 impl McpSnapshotReader {
+    #[must_use]
     pub fn empty() -> Self {
         Self::from_snapshot(McpSnapshot::default())
     }
 
+    #[must_use]
     pub fn from_snapshot(snapshot: McpSnapshot) -> Self {
         Self(Arc::new(ArcSwap::from_pointee(snapshot)))
     }
 
+    #[must_use]
     pub fn load(&self) -> Guard<Arc<McpSnapshot>> {
         self.0.load()
     }
@@ -259,23 +266,29 @@ impl McpHandle {
         }
     }
 
+    #[must_use]
     pub fn reader(&self) -> McpSnapshotReader {
         McpSnapshotReader(Arc::clone(&self.snapshot))
     }
 
+    #[must_use]
     pub fn has_tool(&self, name: &str) -> bool {
         self.index.load().tools.contains_key(name)
     }
 
+    #[must_use]
     pub fn interned_name(&self, name: &str) -> Arc<str> {
         self.index
             .load()
             .tools
             .get_key_value(name)
-            .map(|(k, _)| Arc::clone(k))
-            .unwrap_or_else(|| Arc::from(UNKNOWN_MCP))
+            .map_or_else(|| Arc::from(UNKNOWN_MCP), |(k, _)| Arc::clone(k))
     }
 
+    /// Call a tool on the MCP server.
+    ///
+    /// # Errors
+    /// Returns `McpError` if the tool is unknown or the call fails.
     pub async fn call_tool(&self, qualified_name: &str, args: &Value) -> Result<String, McpError> {
         let (raw_name, transport) = {
             let idx = self.index.load();
@@ -289,10 +302,14 @@ impl McpHandle {
         transport::call_tool(transport.as_ref(), &raw_name, args).await
     }
 
-    pub async fn get_prompt(
+    /// Get a prompt from the MCP server.
+    ///
+    /// # Errors
+    /// Returns `McpError` if the prompt is unknown or the call fails.
+    pub async fn get_prompt<S: std::hash::BuildHasher>(
         &self,
         qualified_name: &str,
-        arguments: &HashMap<String, String>,
+        arguments: &HashMap<String, String, S>,
     ) -> Result<Vec<protocol::PromptMessage>, McpError> {
         let (raw_name, transport) = {
             let idx = self.index.load();
@@ -315,6 +332,7 @@ impl McpHandle {
     /// Number of currently advertised MCP tool descriptors. Cheap to read and
     /// changes whenever an MCP server finishes its handshake, so it is a
     /// suitable cache-invalidation signal for derived tool lists.
+    #[must_use]
     pub fn tool_count(&self) -> usize {
         self.index.load().descriptors.len()
     }
@@ -444,10 +462,8 @@ async fn initialize_deferred(
                 InitializationWake::Complete
             },
             async {
-                let command = match cmd_rx.recv_async().await {
-                    Ok(command) => Some(command),
-                    Err(_) => None,
-                };
+                #[allow(clippy::result_map_or_into_option)]
+                let command = cmd_rx.recv_async().await.map_or(None, Some);
                 InitializationWake::Command(command)
             },
         )
@@ -661,7 +677,7 @@ fn parse_entries(config: McpConfig) -> McpManagerInner {
 
     for (name, raw) in config.mcp {
         let transport_kind = transport_kind(&raw.transport);
-        let origin = origins.get(&name).cloned().unwrap_or_default();
+        let origin = origins.get(&name).cloned().unwrap_or_else(PathBuf::new);
         let disabled = !raw.enabled;
         let (config, status) = match parse_server(name.clone(), raw) {
             Ok(sc) if disabled => (Some(sc), McpServerStatus::Disabled),
@@ -817,7 +833,10 @@ fn spawn_persist_enabled(path: PathBuf, name: String, enabled: bool) {
 #[allow(unsafe_code)]
 pub fn kill_process_groups(pids: &[u32]) {
     for &pid in pids {
-        unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
+        #[allow(clippy::cast_possible_wrap)]
+        unsafe {
+            libc::killpg(pid as i32, libc::SIGKILL)
+        };
     }
 }
 
@@ -831,7 +850,7 @@ fn intern(name: String) -> Arc<str> {
     let mut map = CACHE
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(existing) = map.get(&name) {
         return Arc::clone(existing);
     }
@@ -854,7 +873,7 @@ mod tests {
             enabled: true,
             timeout: DEFAULT_TIMEOUT_MS,
             transport: RawTransport::Stdio(RawStdioFields {
-                command: cmd.iter().map(|s| s.to_string()).collect(),
+                command: cmd.iter().map(std::string::ToString::to_string).collect(),
                 environment: HashMap::new(),
             }),
         }
@@ -924,7 +943,7 @@ mod tests {
         ) -> transport::BoxFuture<'a, Result<(), McpError>> {
             Box::pin(async move { Ok(()) })
         }
-        fn shutdown<'a>(&'a self) -> transport::BoxFuture<'a, ()> {
+        fn shutdown(&self) -> transport::BoxFuture<'_, ()> {
             self.shutdowns.fetch_add(1, Ordering::SeqCst);
             Box::pin(async {})
         }

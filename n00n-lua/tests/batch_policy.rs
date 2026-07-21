@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::needless_pass_by_value
+)]
+
 //! Tests the batch plugin's policy end-to-end: real plugin source, real
 //! `n00n.async.gather`, with tool dispatch replaced by a scriptable Lua stub.
 
@@ -153,7 +160,7 @@ fn run_batch_state(reg: &ToolRegistry, tool_calls: Value) -> Value {
 fn recorded_calls(reg: &ToolRegistry) -> Vec<Value> {
     let out = exec_tool(reg, PROBE_TOOL, json!({})).expect("probe failed");
     let snap: Value = serde_json::from_str(&out).expect("probe returned invalid json");
-    snap["calls"].as_array().cloned().unwrap_or_default()
+    snap["calls"].as_array().cloned().unwrap_or_else(Vec::new)
 }
 
 fn section(tool: &str, body: &str) -> String {
@@ -206,7 +213,7 @@ fn flat_nested_and_merged_params_normalize_identically() {
 
     let mut calls = recorded_calls(&reg);
     assert_eq!(calls.len(), 3);
-    calls.sort_by_key(|c| c["params"]["tag"].as_str().unwrap_or("").to_owned());
+    calls.sort_by_key(|c| c["params"]["tag"].as_str().unwrap_or_else(|| "").to_owned());
     assert_eq!(calls[0]["params"], json!({ "tag": "flat", "n": 1 }));
     assert_eq!(calls[1]["params"], json!({ "tag": "merged", "n": 1 }));
     assert_eq!(calls[2]["params"], json!({ "tag": "nested", "n": 1 }));

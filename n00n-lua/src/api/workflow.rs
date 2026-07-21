@@ -65,6 +65,7 @@ mod tests {
     use mlua::Value;
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn compile_sandbox_blocks_unlisted_globals() {
         let lua = Lua::new();
         let t = create_workflow_table(&lua).unwrap();

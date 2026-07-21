@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::needless_pass_by_value
+)]
+
 //! Tests the `code_execution` plugin's interpreter visibility: one predicate
 //! gates both `describe` text and the handler's fn-map, so what the model
 //! sees is exactly what the interpreter can call.

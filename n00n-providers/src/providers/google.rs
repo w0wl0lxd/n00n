@@ -26,6 +26,7 @@ const ENV_VAR: &str = "GEMINI_API_KEY";
 const FLASH_MAX_THINKING: u32 = 24_576;
 const PRO_MAX_THINKING: u32 = 32_768;
 const CACHE_PREFIX_LEN: usize = 3;
+const CACHE_TTL: Duration = Duration::from_mins(5);
 
 /// The generic per-model max, capped by Google's documented `thinkingBudget`
 /// hard limits per family.
@@ -49,20 +50,24 @@ fn tools_hash(tools: &Value) -> Result<u64, AgentError> {
 struct CachedContentState {
     name: String,
     tools_hash: u64,
-    message_count: usize,
+    cached_count: usize,
+    created_at: Instant,
 }
 
 impl CachedContentState {
-    fn new(name: String, tools_hash: u64, message_count: usize) -> Self {
+    fn new(name: String, tools_hash: u64, cached_count: usize) -> Self {
         Self {
             name,
             tools_hash,
-            message_count,
+            cached_count,
+            created_at: Instant::now(),
         }
     }
 
-    fn is_valid(&self, tools_hash: u64, message_count: usize) -> bool {
-        self.tools_hash == tools_hash && message_count >= self.message_count
+    fn is_valid(&self, tools_hash: u64, current_message_count: usize, now: Instant) -> bool {
+        self.tools_hash == tools_hash
+            && current_message_count >= self.cached_count
+            && now.saturating_duration_since(self.created_at) < CACHE_TTL
     }
 }
 
@@ -247,7 +252,7 @@ impl Google {
         system: &str,
         tools: &Value,
         messages: &[Message],
-    ) -> Result<String, AgentError> {
+    ) -> Result<(String, usize), AgentError> {
         let url = self.cached_contents_url();
         let prefix_len = messages.len().min(CACHE_PREFIX_LEN);
 
@@ -278,7 +283,10 @@ impl Google {
 
         let response_text = response.text().await?;
         let cached: serde_json::Value = serde_json::from_str(&response_text)?;
-        Ok(cached["name"].as_str().unwrap_or_else(|| "").to_string())
+        Ok((
+            cached["name"].as_str().unwrap_or_else(|| "").to_string(),
+            prefix_len,
+        ))
     }
 
     async fn delete_cached_content(&self, name: &str) -> Result<(), AgentError> {
@@ -390,14 +398,16 @@ impl Provider for Google {
                     .await;
             }
 
-            let (cached_content_name, old_name_to_delete) = {
+            let now = Instant::now();
+
+            let (cached, old_name_to_delete) = {
                 let mut cache_state = self
                     .cache_state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(state) = cache_state.get(sid) {
-                    if state.is_valid(current_tools_hash, current_message_count) {
-                        (Some(state.name.clone()), None)
+                    if state.is_valid(current_tools_hash, current_message_count, now) {
+                        (Some((state.name.clone(), state.cached_count)), None)
                     } else {
                         let old_name = state.name.clone();
                         cache_state.remove(sid);
@@ -412,27 +422,23 @@ impl Provider for Google {
                 let _ = self.delete_cached_content(&name).await;
             }
 
-            let cached_content_name = if let Some(name) = cached_content_name {
-                name
+            let (cached_content_name, cached_count) = if let Some(pair) = cached {
+                pair
             } else {
                 match self
                     .create_cached_content(&model.id, system, tools, messages)
                     .await
                 {
-                    Ok(name) => {
+                    Ok((name, prefix_len)) => {
                         let mut cache_state = self
                             .cache_state
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
                         cache_state.insert(
                             sid.clone(),
-                            CachedContentState::new(
-                                name.clone(),
-                                current_tools_hash,
-                                current_message_count,
-                            ),
+                            CachedContentState::new(name.clone(), current_tools_hash, prefix_len),
                         );
-                        name
+                        (name, prefix_len)
                     }
                     Err(_) => {
                         return self
@@ -453,7 +459,7 @@ impl Provider for Google {
             let no_tools = json!([]);
             let mut body = Self::build_body(
                 model,
-                &messages[CACHE_PREFIX_LEN..],
+                &messages[cached_count..],
                 "",
                 &no_tools,
                 opts.thinking,
@@ -1189,11 +1195,24 @@ mod tests {
 
     #[test]
     fn cached_content_state_valid_when_tools_and_count_match() {
+        let now = Instant::now();
         let state = CachedContentState::new("cache1".to_string(), 123, 5);
-        assert!(state.is_valid(123, 5));
-        assert!(state.is_valid(123, 6));
-        assert!(!state.is_valid(124, 5));
-        assert!(!state.is_valid(123, 4));
+        assert!(state.is_valid(123, 5, now));
+        assert!(state.is_valid(123, 6, now));
+        assert!(!state.is_valid(124, 5, now));
+        assert!(!state.is_valid(123, 4, now));
+    }
+
+    #[test]
+    fn cached_content_state_invalid_after_ttl() {
+        let now = Instant::now();
+        let mut state = CachedContentState::new("cache1".to_string(), 123, 5);
+        state.created_at = now
+            .checked_sub(CACHE_TTL)
+            .unwrap()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap();
+        assert!(!state.is_valid(123, 5, now));
     }
 
     #[test]

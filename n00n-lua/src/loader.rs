@@ -32,6 +32,10 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/agent_control"),
     },
     BundledPlugin {
+        name: "arbor",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/arbor"),
+    },
+    BundledPlugin {
         name: "sessions",
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/sessions"),
     },
@@ -108,6 +112,10 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/code_execution"),
     },
     BundledPlugin {
+        name: "codegraph",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/codegraph"),
+    },
+    BundledPlugin {
         name: "view_image",
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/view_image"),
     },
@@ -121,7 +129,7 @@ pub(crate) fn lib_dir() -> &'static Dir<'static> {
     &BUNDLED_PLUGINS
         .iter()
         .find(|p| p.name == "lib")
-        .expect("lib plugin bundled")
+        .unwrap_or_else(|| unreachable!("lib plugin bundled"))
         .dir
 }
 
@@ -157,6 +165,10 @@ impl Drop for PluginHost {
 }
 
 impl PluginHost {
+    /// Creates a new plugin host with JIT enabled.
+    ///
+    /// # Errors
+    /// Returns an error if the Lua runtime cannot be spawned.
     pub fn new(registry: Arc<ToolRegistry>) -> Result<Self, PluginError> {
         Self::with_jit(registry, true)
     }
@@ -164,6 +176,9 @@ impl PluginHost {
     /// `jit: false` (the `--no-jit` flag) runs plugin Lua on the O1
     /// interpreter with full debug info. Applied at VM creation, so
     /// every chunk gets it, init.lua files included.
+    ///
+    /// # Errors
+    /// Returns an error if the Lua runtime cannot be spawned.
     pub fn with_jit(registry: Arc<ToolRegistry>, jit: bool) -> Result<Self, PluginError> {
         let lua = runtime::spawn(registry, *BUNDLED_DIRS, jit)?;
         Ok(Self { inner: Some(lua) })
@@ -193,12 +208,19 @@ impl PluginHost {
     /// Boots the runtime and loads every default bundled plugin into `registry`.
     /// For callers like tests and docgen that want the full builtin set
     /// without building a config.
+    ///
+    /// # Errors
+    /// Returns an error if the runtime cannot be spawned or builtins cannot be loaded.
     pub fn with_all_builtins(registry: Arc<ToolRegistry>) -> Result<Self, PluginError> {
         let mut host = Self::new(registry)?;
         host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))?;
         Ok(host)
     }
 
+    /// Loads init.lua files from global config directories.
+    ///
+    /// # Errors
+    /// Returns an error if init files cannot be read or parsed.
     pub fn load_init_files(&self, cwd: &Path) -> Result<Option<RawConfig>, PluginError> {
         if self.inner.is_none() {
             return Ok(None);
@@ -239,6 +261,10 @@ impl PluginHost {
         Ok(())
     }
 
+    /// Loads bundled plugins specified in the config.
+    ///
+    /// # Errors
+    /// Returns an error if a plugin cannot be loaded or its init.lua is invalid.
     pub fn load_builtins(&mut self, config: &PluginsConfig) -> Result<(), PluginError> {
         if self.inner.is_none() {
             return Ok(());
@@ -282,8 +308,7 @@ impl PluginHost {
                 .opts
                 .get(builtin.as_str())
                 .cloned()
-                .map(Arc::new)
-                .unwrap_or_default();
+                .map_or_else(Arc::default, Arc::new);
             prepared.push((Arc::from(builtin.as_str()), init.to_owned(), opts));
         }
 
@@ -352,6 +377,9 @@ impl PluginHost {
 
     /// Option specs declared by loaded plugins via `n00n.api.register_options`,
     /// keyed by plugin name. Used by docgen.
+    ///
+    /// # Errors
+    /// Returns an error if the host is dead or cannot communicate.
     pub fn plugin_options(&self) -> Result<PluginOptionSpecs, PluginError> {
         let tx = self.tx()?;
         let (reply_tx, reply_rx) = flume::bounded(1);
@@ -360,6 +388,10 @@ impl PluginHost {
         reply_rx.recv().map_err(|_| PluginError::HostDead)
     }
 
+    /// Runs init.lua source and returns the merged config.
+    ///
+    /// # Errors
+    /// Returns an error if the host is dead or the source cannot be executed.
     pub fn send_run_init_lua(
         &self,
         source: String,
@@ -378,6 +410,10 @@ impl PluginHost {
         reply_rx.recv().map_err(|_| PluginError::HostDead)?
     }
 
+    /// Unloads a plugin by name.
+    ///
+    /// # Errors
+    /// Returns an error if the host is dead or cannot communicate.
     pub fn unload(&self, plugin: &str) -> Result<(), PluginError> {
         let tx = self.tx()?;
         let (reply_tx, reply_rx) = flume::bounded(1);
@@ -390,10 +426,18 @@ impl PluginHost {
         Ok(())
     }
 
+    /// Loads a plugin from source string.
+    ///
+    /// # Errors
+    /// Returns an error if the host is dead or the source cannot be loaded.
     pub fn load_source(&self, name: &str, source: &str) -> Result<(), PluginError> {
         self.load_source_with_opts(name, source, serde_json::Map::new())
     }
 
+    /// Loads a plugin from source string with options.
+    ///
+    /// # Errors
+    /// Returns an error if the host is dead or the source cannot be loaded.
     pub fn load_source_with_opts(
         &self,
         name: &str,
@@ -409,6 +453,10 @@ impl PluginHost {
         )
     }
 
+    /// Loads a plugin from source string with permissions.
+    ///
+    /// # Errors
+    /// Returns an error if the host is dead or the source cannot be loaded.
     pub fn load_source_with_permissions(
         &self,
         name: &str,
@@ -424,6 +472,10 @@ impl PluginHost {
         )
     }
 
+    /// Loads a plugin from a file path.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be read or the plugin cannot be loaded.
     pub fn load_plugin_file(&self, path: &Path) -> Result<(), PluginError> {
         let source = fs::read_to_string(path).map_err(|e| PluginError::Io {
             path: path.to_path_buf(),
@@ -520,13 +572,15 @@ impl EventHandle {
     pub fn collect_prompt_slots(&self) -> ResolvedSlots {
         let (tx, rx) = flume::bounded(1);
         let _ = self.tx.send(Request::CollectPromptSlots { reply: tx });
-        rx.recv().unwrap_or_default()
+        rx.recv().unwrap_or_else(|_| ResolvedSlots::default())
     }
 
     pub async fn collect_prompt_slots_async(&self) -> ResolvedSlots {
         let (tx, rx) = flume::bounded(1);
         let _ = self.tx.send(Request::CollectPromptSlots { reply: tx });
-        rx.recv_async().await.unwrap_or_default()
+        rx.recv_async()
+            .await
+            .unwrap_or_else(|_| ResolvedSlots::default())
     }
 
     pub fn request_restore(&self, item: RestoreItem, event_tx: n00n_agent::EventSender) {
@@ -838,7 +892,7 @@ mod tests {
         );
 
         let handle = host.event_handle().expect("host is live");
-        handle.run_keybind_callback(entry.id);
+        assert!(handle.run_keybind_callback(entry.id));
 
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {

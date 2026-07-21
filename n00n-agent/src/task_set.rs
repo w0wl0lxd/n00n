@@ -25,7 +25,7 @@ impl<T: Send + 'static> TaskSet<T> {
             AssertUnwindSafe(future)
                 .catch_unwind()
                 .await
-                .map_err(panic_to_string)
+                .map_err(|e| panic_to_string(&e))
         }));
     }
 
@@ -38,7 +38,7 @@ impl<T: Send + 'static> TaskSet<T> {
     }
 }
 
-fn panic_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+fn panic_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
     let msg = if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_owned()
     } else if let Some(s) = payload.downcast_ref::<String>() {
