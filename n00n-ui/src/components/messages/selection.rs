@@ -63,6 +63,9 @@ pub(super) fn extract_selection_text(
         }
 
         if seg.lines().is_empty() {
+            if let Some(raw) = &seg.raw_text {
+                out.push_str(raw);
+            }
             continue;
         }
 
