@@ -14,6 +14,9 @@ local MAX_PLAN_STEPS = 8
 local DEFAULT_PLAN_STEPS = 6
 local DEFAULT_SWARM_ROUNDS = 2
 local MAX_SWARM_ROUNDS = 4
+local DEFAULT_TEAM_AGENTS = 16
+local MAX_TEAM_AGENTS = 24
+local MAX_TEAM_CONCURRENT = 4
 local TEAM_TIMEOUT_SECS = 1800
 local MAX_RELAY_BYTES = 12000
 
@@ -40,33 +43,8 @@ local PLANNER_OUTPUT = {
 }
 
 local description =
-  [[Launch a team of agents led by a supervisor (ALMAS). The supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
-
-- product_manager: scope & acceptance (weak)
-- planner: step breakdown (medium)
-- developer: implementation (strong)
-- tester: validate (medium)
-- reviewer: critique the diff (medium)
-
-Modes:
-- supervised (default): return the supervisor's plan for review.
-- autonomous: run the centralized team plan to completion; tester/reviewer
-  steps are gated by a diversity-aware validator quorum.
-- swarm: decentralized SwarmSys rounds (Explorers/Workers/Validators) with a
-  pheromone reinforcement loop, gated by an information-bottleneck β check
-  that decides whether fanning out helps (and how much context to relay).
-
-Notes:
-1. The supervisor returns a plan; each step runs independently.
-2. Agents are routed by cost-aware tiers by default. Set model for an exact model,
-   model_tier for a fixed tier, or auto_tier=false to disable adaptive routing.
-3. With use_retrieval, steps are grounded in repo context (PR-H).
-4. With compact (opt-in), retrieved context is TOON-encoded to save tokens (PR-C).
-5. swarm mode runs bounded rounds (max_rounds); the β gate may fall back to a
-   single strong-agent pass when coordination would not help.
-6. Set background=true to start a non-blocking Team run and receive an agent_id.
-   Use agent_control to inspect, steer, or stop it.
-]]
+  [[Run a bounded ALMAS team for an SDLC goal. Roles cover scope, planning, implementation, testing, and review on cost-aware tiers.
+supervised returns a plan; autonomous executes it with optional validator quorum; swarm runs bounded explorer/worker/validator rounds with an information-bottleneck fan-out gate. model overrides tiers; auto_tier routes by task. use_retrieval grounds work, compact TOON-encodes that context, and background returns an agent_id for agent_control. Default/hard budgets are 16/24 agents and 4 concurrent.]]
 
 local schema = {
   type = "object",
@@ -92,8 +70,14 @@ local schema = {
     max_concurrent = {
       type = "integer",
       minimum = 1,
-      maximum = 8,
-      description = "Swarm mode only: max concurrent subagents per round (default 8).",
+      maximum = MAX_TEAM_CONCURRENT,
+      description = "Swarm concurrency (default and maximum 4).",
+    },
+    max_agents = {
+      type = "integer",
+      minimum = 1,
+      maximum = MAX_TEAM_AGENTS,
+      description = "Total team agent-call budget (default 16, hard maximum 24).",
     },
     max_steps = {
       type = "integer",
@@ -146,6 +130,21 @@ local schema = {
 
 local NUDGE = "You have not called structured_output. Call it now with the plan object."
 
+local function new_agent_budget(requested)
+  local limit = math.min(requested or DEFAULT_TEAM_AGENTS, MAX_TEAM_AGENTS)
+  return {
+    limit = limit,
+    used = 0,
+    consume = function(self)
+      if self.used >= self.limit then
+        return nil, "team agent-call budget exhausted (" .. self.limit .. "; hard maximum " .. MAX_TEAM_AGENTS .. ")"
+      end
+      self.used = self.used + 1
+      return true
+    end,
+  }
+end
+
 local function plan_prompt(goal)
   return "Decompose this goal into ordered SDLC steps. Assign each step exactly one role "
     .. "from: product_manager, planner, developer, tester, reviewer. "
@@ -154,6 +153,10 @@ local function plan_prompt(goal)
 end
 
 local function run_supervisor(ctx, goal, opts)
+  local budget_ok, budget_err = opts._agent_budget:consume()
+  if not budget_ok then
+    return nil, budget_err
+  end
   local validator, verr = n00n.json.schema_validator(PLANNER_OUTPUT)
   if verr then
     return nil, "planner schema invalid: " .. verr
@@ -245,8 +248,13 @@ local function run_step(ctx, step, goal, input, relay_k, prior_results)
     end
   end
 
-  local role_opts =
-    { model = input.model, model_tier = step.tier, auto_tier = input.auto_tier, thinking = input.thinking }
+  local role_opts = {
+    model = input.model,
+    model_tier = step.tier,
+    auto_tier = input.auto_tier,
+    thinking = input.thinking,
+    budget = input._agent_budget,
+  }
   return roles.run(ctx, step.role, step_prompt, role_opts)
 end
 
@@ -266,8 +274,12 @@ local function run_autonomous(ctx, goal, input, steps, relay_k)
       total_cost = total_cost + (r.cost or 0)
 
       if input.quorum ~= false and (step.role == "tester" or step.role == "reviewer") then
-        local verdict =
-          quorum.validate(ctx, table.concat(results, "\n\n"), { n = 3, model = input.model, thinking = input.thinking })
+        local verdict = quorum.validate(ctx, table.concat(results, "\n\n"), {
+          n = 3,
+          model = input.model,
+          thinking = input.thinking,
+          budget = input._agent_budget,
+        })
         if not verdict.accepted then
           results[#results + 1] = string.format(
             "[quorum] %s output not endorsed by diverse validators (confidence %.2f):\n%s",
@@ -330,6 +342,7 @@ local function handler(input, ctx)
   if input.thinking == nil then
     input.thinking = "adaptive"
   end
+  input._agent_budget = new_agent_budget(input.max_agents)
   local goal = input.goal
 
   local slug = memory.slug(input.goal)
@@ -369,8 +382,9 @@ local function handler(input, ctx)
       local out = swarm.run(ctx, goal, {
         relay_k = relay_k,
         max_rounds = math.min(input.max_rounds or DEFAULT_SWARM_ROUNDS, MAX_SWARM_ROUNDS),
-        max_concurrent = math.min(input.max_concurrent or 8, 8),
+        max_concurrent = math.min(input.max_concurrent or MAX_TEAM_CONCURRENT, MAX_TEAM_CONCURRENT),
         model = input.model,
+        budget = input._agent_budget,
         thinking = input.thinking,
         quorum = input.quorum,
       })

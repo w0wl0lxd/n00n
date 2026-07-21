@@ -31,6 +31,12 @@ local function pick_validators(ctx, opts)
 end
 
 local function run_one(ctx, v, artifact, opts)
+  if opts.budget then
+    local budget_ok, budget_err = opts.budget:consume()
+    if not budget_ok then
+      return { approved = false, issues = { budget_err }, model = v.tier }
+    end
+  end
   local model, merr = n00n.agent.resolve_model(ctx, { spec = opts.model, tier = not opts.model and v.tier or nil })
   if merr then
     return { approved = false, issues = { merr }, model = v.tier }

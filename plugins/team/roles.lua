@@ -37,6 +37,12 @@ M.ROLES = {
 -- @param opts table { model?, model_tier?, auto_tier?, thinking? }
 function M.run(ctx, role, prompt, opts)
   opts = opts or {}
+  if opts.budget then
+    local budget_ok, budget_err = opts.budget:consume()
+    if not budget_ok then
+      return { ok = false, error = budget_err }
+    end
+  end
   local r = M.ROLES[role] or M.ROLES.developer
   local tier = (opts.auto_tier and route_tier(prompt)) or opts.model_tier or r.tier
   local spec = opts.model

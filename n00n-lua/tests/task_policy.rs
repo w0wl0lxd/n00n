@@ -29,7 +29,7 @@ const PLAIN_TEXT: &str = "plain text result";
 const PROMPT_ERR_MSG: &str = "model exploded";
 const RAISE_MSG: &str = "stub prompt kaboom";
 /// Mirrors the task plugin's `max_concurrent` default.
-const TASK_DEFAULT_MAX_CONCURRENT: u64 = 8;
+const TASK_DEFAULT_MAX_CONCURRENT: u64 = 4;
 
 const SCENARIO_PLAIN: &str = "plain";
 const SCENARIO_HAPPY: &str = "happy";

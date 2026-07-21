@@ -432,6 +432,41 @@ mod tests {
         });
     }
     #[test]
+    fn fake_transport_close_after_send_is_not_synthetic_422() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                let _ = socket.next().await;
+                socket.close(None).await.unwrap();
+            });
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
+                .await
+                .unwrap();
+            let (event_tx, _) = flume::unbounded();
+            let error = connection
+                .stream_message(
+                    &json!({"model":"test","input":[]}),
+                    &event_tx,
+                    Duration::from_secs(2),
+                )
+                .await
+                .unwrap_err();
+            server.await;
+
+            assert!(error.request_sent);
+            assert!(error.transport_failure);
+            assert!(!matches!(error.error, AgentError::Api { status: 422, .. }));
+        });
+    }
+
+    #[test]
     fn websocket_request_includes_handshake_headers() {
         let request =
             responses_websocket_url(Some(crate::providers::openai::auth::CODING_PLAN_BASE_URL))

@@ -281,6 +281,19 @@ case("quorum_same_tier_downweights_confidence", function()
   assert(v.confidence < 1.0, "non-diverse approval confidence must be down-weighted")
 end)
 
+case("roles_stop_at_aggregate_team_budget", function()
+  local budget = {
+    consume = function()
+      return nil, "team agent-call budget exhausted (16; hard maximum 24)"
+    end,
+  }
+
+  local result = roles.run({}, "developer", "implement", { budget = budget })
+
+  assert(result.ok == false, "budget exhaustion must reject the agent call")
+  assert(result.error:match("budget exhausted"), "budget error must be clear")
+end)
+
 case("swarm_dry_run_terminates_within_max_rounds", function()
   local swarm = require("swarm")
 
