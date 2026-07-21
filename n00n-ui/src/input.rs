@@ -52,13 +52,18 @@ impl InputReader {
     /// Park the reader so another process (editor, suspended shell) can own
     /// the tty. Blocks until the reader acknowledges it is out of
     /// `event::read`; the guard resumes reading on drop.
-    pub(crate) fn pause(&self) -> PauseGuard<'_> {
+    pub(crate) fn pause(&self) -> Result<PauseGuard<'_>, String> {
         let (ack_tx, ack_rx) = flume::bounded::<()>(1);
-        let _ = self.ctl_tx.send(Ctl::Pause(ack_tx));
-        if ack_rx.recv_timeout(PAUSE_ACK_TIMEOUT).is_err() {
-            warn!("input reader did not acknowledge pause");
+        self.ctl_tx
+            .send(Ctl::Pause(ack_tx))
+            .map_err(|_| "input reader is unavailable".to_string())?;
+        match ack_rx.recv_timeout(PAUSE_ACK_TIMEOUT) {
+            Ok(()) => Ok(PauseGuard(self)),
+            Err(_) => {
+                let _ = self.ctl_tx.send(Ctl::Resume);
+                Err("input reader did not acknowledge pause".to_string())
+            }
         }
-        PauseGuard(self)
     }
 }
 
@@ -117,5 +122,27 @@ fn read_loop(tx: &flume::Sender<Event>, ctl_rx: &flume::Receiver<Ctl>) {
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pause_fails_when_the_reader_is_unavailable() {
+        let (ctl_tx, ctl_rx) = flume::unbounded();
+        drop(ctl_rx);
+        let (_, rx) = flume::unbounded();
+        let reader = InputReader {
+            rx,
+            ctl_tx,
+            join: None,
+        };
+
+        assert!(matches!(
+            reader.pause(),
+            Err(error) if error == "input reader is unavailable"
+        ));
     }
 }

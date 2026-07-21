@@ -17,6 +17,21 @@ use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, 
 
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
 
+/// Select a process-wide Rustls provider before its configuration builder
+/// attempts feature-based auto-detection.
+///
+/// A binary can enable both `ring` and `aws-lc-rs` through its dependency
+/// graph. Rustls intentionally refuses to choose between them.
+fn ensure_rustls_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none()
+        && rustls::crypto::ring::default_provider()
+            .install_default()
+            .is_err()
+    {
+        debug!("Rustls CryptoProvider was installed concurrently");
+    }
+}
+
 pub(crate) fn build_request_body(
     model: &Model,
     messages: &[Message],
@@ -76,6 +91,8 @@ pub(crate) async fn stream_message(
     auth: &ResolvedAuth,
     stream_timeout: Duration,
 ) -> Result<(Option<String>, StreamResponse), AgentError> {
+    ensure_rustls_crypto_provider();
+
     let url = responses_websocket_url(auth.base_url.as_deref());
     let mut request = url.into_client_request().map_err(ws_err)?;
     for (key, value) in &auth.headers {
@@ -296,7 +313,9 @@ mod tests {
     }
 
     #[test]
-    fn rustls_ring_provider_is_available() {
+    fn rustls_crypto_provider_is_selected_before_building_a_client_config() {
+        super::ensure_rustls_crypto_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
         let _ = rustls::ClientConfig::builder();
     }
 
