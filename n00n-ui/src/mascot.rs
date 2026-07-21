@@ -11,6 +11,7 @@ use ratatui::widgets::Widget;
 use ratatui_image::{
     Image, Resize,
     picker::{Picker, ProtocolType},
+    protocol::Protocol as ImageProtocol,
 };
 
 use crate::theme::{Theme, lerp_u8};
@@ -108,6 +109,10 @@ pub struct Mascot {
     last_area: Option<Rect>,
     last_font_size: Option<(u16, u16)>,
     breathe_down: bool,
+    protocol: Option<ImageProtocol>,
+    last_gaze_x: f64,
+    last_gaze_y: f64,
+    last_blinking: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -209,6 +214,10 @@ impl Mascot {
             last_area: None,
             last_font_size: None,
             breathe_down: false,
+            protocol: None,
+            last_gaze_x: 0.0,
+            last_gaze_y: 0.0,
+            last_blinking: false,
         }
     }
 
@@ -312,78 +321,100 @@ impl Mascot {
 
         let picker = self.picker.as_ref().unwrap();
         let font_size = picker.font_size();
+        if font_size.width == 0 || font_size.height == 0 {
+            self.render_braille(area, buf, &palette, off_x, off_y, inv);
+            return;
+        }
         let font_dims = (font_size.width, font_size.height);
         let px_width = u32::from(area.width) * u32::from(font_size.width);
         let px_height = u32::from(area.height) * u32::from(font_size.height);
 
-        let needs_regenerate = self.last_area != Some(area)
+        let base_changed = self.last_area != Some(area)
             || self.last_font_size != Some(font_dims)
             || self.breathe_down != current_breathe_down
             || self.base_image.is_none();
+        let eyes_changed = self.gaze_x != self.last_gaze_x
+            || self.gaze_y != self.last_gaze_y
+            || self.is_blinking != self.last_blinking;
 
-        if needs_regenerate {
-            let mut base = RgbaImage::new(px_width, px_height);
+        if base_changed || eyes_changed {
+            let mut image = if base_changed {
+                let mut base = RgbaImage::new(px_width, px_height);
 
-            for py in 0..px_height {
-                for px in 0..px_width {
-                    let tx = f64::from(area.x) + (f64::from(px) + 0.5) / f64::from(font_size.width);
-                    let ty =
-                        f64::from(area.y) + (f64::from(py) + 0.5) / f64::from(font_size.height);
-                    let bx = (tx - off_x) * inv;
-                    let by = (ty - off_y) * inv;
-                    let (layer, shade) = sample(bx, by, 0.0, 0.0, true);
-                    let pixel = mascot_pixel(layer, shade, &palette, true);
-                    base.put_pixel(px, py, pixel);
+                for py in 0..px_height {
+                    for px in 0..px_width {
+                        let tx =
+                            f64::from(area.x) + (f64::from(px) + 0.5) / f64::from(font_size.width);
+                        let ty =
+                            f64::from(area.y) + (f64::from(py) + 0.5) / f64::from(font_size.height);
+                        let bx = (tx - off_x) * inv;
+                        let by = (ty - off_y) * inv;
+                        let (layer, shade) = sample(bx, by, 0.0, 0.0, true);
+                        base.put_pixel(px, py, mascot_pixel(layer, shade, &palette, true));
+                    }
+                }
+
+                self.base_image = Some(base.clone());
+                self.last_area = Some(area);
+                self.last_font_size = Some(font_dims);
+                self.breathe_down = current_breathe_down;
+                base
+            } else {
+                self.base_image.as_ref().unwrap().clone()
+            };
+
+            for &(ecx, ecy) in &[(30.0, 27.5), (50.0, 27.5)] {
+                let tx = ecx * scale + off_x;
+                let ty = ecy * scale + off_y;
+                let px0 = (tx - f64::from(area.x)) * f64::from(font_size.width);
+                let py0 = (ty - f64::from(area.y)) * f64::from(font_size.height);
+                let half_w = 9.0 * scale * f64::from(font_size.width);
+                let half_h = 8.0 * scale * f64::from(font_size.height);
+
+                let px_start = (px0 - half_w).floor().max(0.0) as u32;
+                let px_end = (px0 + half_w).ceil().min(px_width as f64) as u32;
+                let py_start = (py0 - half_h).floor().max(0.0) as u32;
+                let py_end = (py0 + half_h).ceil().min(px_height as f64) as u32;
+
+                for py in py_start..py_end {
+                    for px in px_start..px_end {
+                        let tx =
+                            f64::from(area.x) + (f64::from(px) + 0.5) / f64::from(font_size.width);
+                        let ty =
+                            f64::from(area.y) + (f64::from(py) + 0.5) / f64::from(font_size.height);
+                        let bx = (tx - off_x) * inv;
+                        let by = (ty - off_y) * inv;
+                        let (layer, shade) =
+                            sample(bx, by, self.gaze_x, self.gaze_y, self.is_blinking);
+                        image.put_pixel(px, py, mascot_pixel(layer, shade, &palette, false));
+                    }
                 }
             }
 
-            self.base_image = Some(base);
-            self.last_area = Some(area);
-            self.last_font_size = Some(font_dims);
-            self.breathe_down = current_breathe_down;
-        }
+            let dyn_image = DynamicImage::ImageRgba8(image);
 
-        let mut image = self.base_image.as_ref().unwrap().clone();
-
-        for &(ecx, ecy) in &[(30.0, 27.5), (50.0, 27.5)] {
-            let tx = ecx * scale + off_x;
-            let ty = ecy * scale + off_y;
-            let px0 = (tx - f64::from(area.x)) * f64::from(font_size.width);
-            let py0 = (ty - f64::from(area.y)) * f64::from(font_size.height);
-            let half_w = 9.0 * scale * f64::from(font_size.width);
-            let half_h = 8.0 * scale * f64::from(font_size.height);
-
-            let px_start = (px0 - half_w).floor().max(0.0) as u32;
-            let px_end = (px0 + half_w).ceil().min(px_width as f64) as u32;
-            let py_start = (py0 - half_h).floor().max(0.0) as u32;
-            let py_end = (py0 + half_h).ceil().min(px_height as f64) as u32;
-
-            for py in py_start..py_end {
-                for px in px_start..px_end {
-                    let tx = f64::from(area.x) + (f64::from(px) + 0.5) / f64::from(font_size.width);
-                    let ty =
-                        f64::from(area.y) + (f64::from(py) + 0.5) / f64::from(font_size.height);
-                    let bx = (tx - off_x) * inv;
-                    let by = (ty - off_y) * inv;
-                    let (layer, shade) = sample(bx, by, self.gaze_x, self.gaze_y, self.is_blinking);
-                    let pixel = mascot_pixel(layer, shade, &palette, false);
-                    image.put_pixel(px, py, pixel);
+            match picker.new_protocol(
+                dyn_image,
+                Size::new(area.width, area.height),
+                Resize::Fit(None),
+            ) {
+                Ok(protocol) => self.protocol = Some(protocol),
+                Err(_) => {
+                    self.picker = None;
+                    self.render_braille(area, buf, &palette, off_x, off_y, inv);
+                    return;
                 }
             }
+
+            self.last_gaze_x = self.gaze_x;
+            self.last_gaze_y = self.gaze_y;
+            self.last_blinking = self.is_blinking;
         }
 
-        let dyn_image = DynamicImage::ImageRgba8(image);
-
-        match picker.new_protocol(
-            dyn_image,
-            Size::new(area.width, area.height),
-            Resize::Fit(None),
-        ) {
-            Ok(protocol) => {
-                let img = Image::new(&protocol);
-                img.render(area, buf);
-            }
-            Err(_) => self.render_braille(area, buf, &palette, off_x, off_y, inv),
+        if let Some(protocol) = self.protocol.as_ref() {
+            Image::new(protocol).render(area, buf);
+        } else {
+            self.render_braille(area, buf, &palette, off_x, off_y, inv);
         }
     }
 
