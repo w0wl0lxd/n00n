@@ -1582,7 +1582,7 @@ fn warm_map_cleared_by_load_source() {
     assert_eq!(body.read()[0].spans[0].text, WARM_INITIAL_LINE);
 }
 
-/// LoadSource's drain barrier spawns and awaits queued async jobs, so
+/// `LoadSource`'s drain barrier spawns and awaits queued async jobs, so
 /// jobs a warm click enqueues land before the barrier returns.
 #[test]
 fn warm_click_runs_async_jobs() {
@@ -1799,7 +1799,7 @@ fn setup_happy_path() {
 }
 
 #[test_case::test_case(
-    r#"n00n.setup({ agent = { compaction_buffer = 10000 } })"#,
+    r"n00n.setup({ agent = { compaction_buffer = 10000 } })",
     n00n_config::CompactionBuffer::Tokens(10_000)
     ; "compaction_buffer_tokens"
 )]
@@ -1997,7 +1997,7 @@ fn register_options_rejects_bad_user_opts(opts: serde_json::Value, expected: &st
 }
 
 #[test_case::test_case(
-    r#"n00n.api.register_options({ timeout_secs = { default = 120 } })"#,
+    r"n00n.api.register_options({ timeout_secs = { default = 120 } })",
     OPTION_DESC_ERR
     ; "missing_desc"
 )]
@@ -2400,7 +2400,7 @@ fn restore_tool_async_ordering_and_delivery() {
 
     handle.request_restore(unknown_item, event_tx.clone());
     handle.request_restore(bash_item("a"), event_tx.clone());
-    handle.request_restore(bash_item("b"), event_tx.clone());
+    handle.request_restore(bash_item("b"), event_tx);
 
     handle.wait_restore_complete_for_test();
 

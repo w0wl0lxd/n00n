@@ -236,7 +236,7 @@ fn answer_schema() -> Value {
     })
 }
 
-/// Four wrong-typed properties, one more than MAX_SCHEMA_ERRORS, so
+/// Four wrong-typed properties, one more than `MAX_SCHEMA_ERRORS`, so
 /// truncation in `bounded_errors` is observable.
 fn multi_error_schema() -> Value {
     json!({

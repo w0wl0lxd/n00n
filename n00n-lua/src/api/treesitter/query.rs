@@ -557,7 +557,7 @@ fn eval_set(args: &[QueryPredicateArg], metadata: &mut HashMap<String, String>) 
 
 fn lua_to_usize(v: LuaValue) -> Option<usize> {
     match v {
-        LuaValue::Integer(n) => Some(n as usize),
+        LuaValue::Integer(n) => usize::try_from(n).ok(),
         LuaValue::Number(n) => Some(n as usize),
         _ => None,
     }

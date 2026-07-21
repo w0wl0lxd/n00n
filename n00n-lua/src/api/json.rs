@@ -181,12 +181,11 @@ fn toon_stats_path() -> Option<PathBuf> {
 }
 
 fn load_toon_stats() -> ToonStats {
-    if let Some(path) = toon_stats_path() {
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Ok(stats) = serde_json::from_str::<ToonStats>(&text) {
-                return stats;
-            }
-        }
+    if let Some(path) = toon_stats_path()
+        && let Ok(text) = std::fs::read_to_string(&path)
+        && let Ok(stats) = serde_json::from_str::<ToonStats>(&text)
+    {
+        return stats;
     }
     ToonStats::default()
 }
@@ -202,10 +201,10 @@ fn record_toon_stats(json_len: usize, toon_len: usize, used_toon: bool) {
             stats.toon_wins += 1;
             stats.saved_bytes += json_len.saturating_sub(toon_len) as u64;
         }
-        if let Some(path) = toon_stats_path() {
-            if let Ok(bytes) = serde_json::to_vec(&*stats) {
-                let _ = n00n_storage::atomic_write(&path, &bytes);
-            }
+        if let Some(path) = toon_stats_path()
+            && let Ok(bytes) = serde_json::to_vec(&*stats)
+        {
+            let _ = n00n_storage::atomic_write(&path, &bytes);
         }
     }
 }
@@ -298,7 +297,7 @@ mod tests {
     fn encode_table() {
         let lua = lua_with_json();
         let result: String = lua
-            .load(r#"local s, err = json.encode({a = 1}); return s"#)
+            .load(r"local s, err = json.encode({a = 1}); return s")
             .eval()
             .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
@@ -319,7 +318,7 @@ mod tests {
     fn encode_error_returns_nil_and_message() {
         let lua = lua_with_json();
         let (is_nil, has_err): (bool, bool) = lua
-            .load(r#"local s, err = json.encode(json.encode); return s == nil, err ~= nil"#)
+            .load(r"local s, err = json.encode(json.encode); return s == nil, err ~= nil")
             .eval()
             .unwrap();
         assert!(is_nil);
@@ -358,7 +357,7 @@ mod tests {
     fn decode_array() {
         let lua = lua_with_json();
         let result: i64 = lua
-            .load(r#"local t = json.decode('[10,20,30]'); return #t"#)
+            .load(r"local t = json.decode('[10,20,30]'); return #t")
             .eval()
             .unwrap();
         assert_eq!(result, 3);
@@ -368,7 +367,7 @@ mod tests {
     fn encode_decode_empty_array_roundtrips() {
         let lua = lua_with_json();
         let result: String = lua
-            .load(r#"local s = json.encode(json.decode('[]')); return s"#)
+            .load(r"local s = json.encode(json.decode('[]')); return s")
             .eval()
             .unwrap();
         assert_eq!(result, "[]");

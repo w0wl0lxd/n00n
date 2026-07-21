@@ -553,7 +553,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
             }
             Ok((Value::Table(tbl), Value::Nil))
         }
-        Err(e) => err_pair(&lua, format_args!("glob: {e}")),
+        Err(e) => err_pair(&lua, format!("glob: {e}")),
     }
 }
 
@@ -600,7 +600,7 @@ async fn grep(lua: Lua, pattern: String, opts: Option<Table>) -> LuaResult<(Valu
         }
     }
 
-    let result = smol::unblock(move || n00n_agent::tools::grep::grep_search(params)).await;
+    let result = smol::unblock(move || n00n_agent::tools::grep::grep_search(&params)).await;
 
     match result {
         Ok((base, entries)) => {
@@ -1128,7 +1128,7 @@ mod tests {
         std::fs::write(&old_path, "").unwrap();
         std::fs::write(&new_path, "").unwrap();
 
-        let old_time = SystemTime::now() - Duration::from_secs(60);
+        let old_time = SystemTime::now() - Duration::from_mins(1);
         let new_time = SystemTime::now();
         OpenOptions::new()
             .write(true)

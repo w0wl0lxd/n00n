@@ -1,6 +1,7 @@
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Value};
 use serde_json::Value as JsonValue;
 
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn err_pair(lua: &Lua, e: impl std::fmt::Display) -> LuaResult<(Value, Value)> {
     Ok((Value::Nil, Value::String(lua.create_string(e.to_string())?)))
 }
@@ -270,7 +271,7 @@ mod tests {
         r#""hello""#,
         "[1,2,3]",
         "[]",
-        r#"{}"#,
+        r"{}",
         r#"{"a":1,"b":[true,"x"]}"#,
     ];
 

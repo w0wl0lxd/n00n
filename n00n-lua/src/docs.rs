@@ -45,6 +45,7 @@ pub struct ParamDoc {
     pub desc: &'static str,
 }
 
+#[must_use]
 pub fn api_docs() -> Vec<&'static ModuleDoc> {
     use crate::api;
     vec![
@@ -157,7 +158,10 @@ mod tests {
                 // Documented here, but injected later by the runtime.
                 expected.remove("setup");
             }
-            let expected: BTreeSet<String> = expected.iter().map(|s| s.to_string()).collect();
+            let expected: BTreeSet<String> = expected
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
             assert_eq!(
                 actual, expected,
                 "documented functions for `{name}` do not match registered keys"
