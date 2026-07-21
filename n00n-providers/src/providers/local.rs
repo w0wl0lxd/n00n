@@ -70,16 +70,16 @@ impl LocalEndpoint {
         cfg: &'static LocalEndpointConfig,
         auth: Arc<Mutex<ResolvedAuth>>,
         timeouts: super::Timeouts,
-    ) -> Self {
-        Self {
-            compat: OpenAiCompatProvider::new(&cfg.compat, timeouts),
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            compat: OpenAiCompatProvider::new(&cfg.compat, timeouts)?,
             auth,
             key_pool: None,
             system_prefix: None,
             thinking_budget_field: cfg.thinking_budget_field,
             discovery_mode: cfg.discovery_mode,
             protocol: resolve_protocol_for_local(cfg.slug),
-        }
+        })
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -97,9 +97,13 @@ impl LocalEndpoint {
         let api_key = key_pool.as_ref().map(|p| p.current().to_string());
         let base_url = match host {
             Some(h) => format!("{h}/v1"),
-            None if api_key.is_some() && cfg.cloud_fallback_url.is_some() => {
-                cfg.cloud_fallback_url.unwrap().to_string()
-            }
+            None if api_key.is_some() && cfg.cloud_fallback_url.is_some() => cfg
+                .cloud_fallback_url
+                .as_ref()
+                .ok_or_else(|| AgentError::Config {
+                    message: "missing cloud fallback url".into(),
+                })?
+                .to_string(),
             None => format!("{}/v1", cfg.default_host.trim_end_matches('/')),
         };
         let headers = match api_key {
@@ -108,7 +112,7 @@ impl LocalEndpoint {
         };
         let compat_config = &cfg.compat;
         Ok(Self {
-            compat: OpenAiCompatProvider::new(compat_config, timeouts),
+            compat: OpenAiCompatProvider::new(compat_config, timeouts)?,
             auth: Arc::new(Mutex::new(ResolvedAuth {
                 base_url: Some(base_url),
                 headers,
@@ -134,11 +138,15 @@ impl Provider for LocalEndpoint {
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
 
             if matches!(self.protocol, Some(Protocol::OpenaiResponses)) {
                 let mut buf = String::new();
-                let system = super::with_prefix(&self.system_prefix, system, &mut buf);
+                let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
                 let mut body = responses::build_body(model, messages, system, tools, None, None);
                 body["return_progress"] = serde_json::Value::Bool(true);
                 // TODO: wire thinking budget into responses API when llama.cpp supports it
@@ -155,13 +163,13 @@ impl Provider for LocalEndpoint {
             }
 
             let mut buf = String::new();
-            let system = super::with_prefix(&self.system_prefix, system, &mut buf);
+            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
                 system,
                 tools,
-                session_id.map(|s| s.as_str()),
+                session_id.map(n00n_storage::id::SessionRef::as_str),
             );
 
             if self.thinking_budget_field {
@@ -176,7 +184,11 @@ impl Provider for LocalEndpoint {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             match self.discovery_mode {
                 DiscoveryMode::None => self.compat.do_list_models(&auth).await,
                 DiscoveryMode::LlamaCpp => self.discover_llamacpp_models(&auth).await,
@@ -259,8 +271,8 @@ impl LocalEndpoint {
         let base = auth
             .base_url
             .as_deref()
-            .unwrap_or(self.compat.config().base_url);
-        let root = base.strip_suffix("/v1").unwrap_or(base);
+            .unwrap_or_else(|| self.compat.config().base_url);
+        let root = base.strip_suffix("/v1").unwrap_or_else(|| base);
 
         let props: serde_json::Value = serde_json::from_str(
             &self
@@ -286,19 +298,17 @@ impl LocalEndpoint {
         let props_n_ctx = props["n_ctx"]
             .as_u64()
             .and_then(|v| u32::try_from(v).ok())
-            .unwrap_or(0);
+            .unwrap_or_else(|| 0);
 
         let mut models: Vec<crate::model::ModelInfo> = body
             .data
             .into_iter()
             .filter_map(|m| {
                 let arch = m.architecture.as_ref();
-                let has_text_input = arch
-                    .map(|a| a.input_modalities.iter().any(|m| m == "text"))
-                    .unwrap_or(true);
-                let has_text_output = arch
-                    .map(|a| a.output_modalities.iter().any(|m| m == "text"))
-                    .unwrap_or(true);
+                let has_text_input =
+                    arch.is_none_or(|a| a.input_modalities.iter().any(|m| m == "text"));
+                let has_text_output =
+                    arch.is_none_or(|a| a.output_modalities.iter().any(|m| m == "text"));
                 if !has_text_input || !has_text_output {
                     return None;
                 }
@@ -348,12 +358,12 @@ fn llamacpp_extract_ctx_from_model(
             .meta
             .as_ref()
             .and_then(|m| (m.n_ctx > 0).then_some(m.n_ctx))
-            .unwrap_or(LLAMACPP_DEFAULT_CTX),
+            .unwrap_or_else(|| LLAMACPP_DEFAULT_CTX),
         ServerMode::Legacy => model
             .max_model_len
             .filter(|&v| v > 0)
             .or_else(|| (props_n_ctx > 0).then_some(props_n_ctx))
-            .unwrap_or(LLAMACPP_DEFAULT_CTX),
+            .unwrap_or_else(|| LLAMACPP_DEFAULT_CTX),
     }
 }
 
@@ -391,8 +401,8 @@ impl LocalEndpoint {
         let base = auth
             .base_url
             .as_deref()
-            .unwrap_or(self.compat.config().base_url);
-        let root = base.strip_suffix("/v1").unwrap_or(base);
+            .unwrap_or_else(|| self.compat.config().base_url);
+        let root = base.strip_suffix("/v1").unwrap_or_else(|| base);
 
         let models_text = self
             .compat
@@ -545,14 +555,18 @@ mod tests {
     const TEST_TIMEOUTS: super::super::Timeouts = super::super::Timeouts {
         connect: std::time::Duration::from_secs(10),
         low_speed: std::time::Duration::from_secs(30),
-        stream: std::time::Duration::from_secs(300),
+        stream: std::time::Duration::from_mins(5),
     };
 
     #[test]
     fn from_env_without_host_or_api_key_uses_default_host() {
         let ep = LocalEndpoint::build(&OLLAMA, TEST_TIMEOUTS, None, None, None).unwrap();
         assert_eq!(
-            ep.auth.lock().unwrap().base_url.as_deref(),
+            ep.auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .base_url
+                .as_deref(),
             Some("http://localhost:11434/v1")
         );
     }
@@ -567,7 +581,10 @@ mod tests {
             None,
         )
         .unwrap();
-        let auth = ep.auth.lock().unwrap();
+        let auth = ep
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://x:1234/v1"));
         assert!(auth.headers.is_empty());
     }
@@ -576,7 +593,10 @@ mod tests {
     fn from_env_with_api_key_uses_cloud_for_ollama() {
         let pool = KeyPool::from_keys(vec!["test-key".into()]);
         let ep = LocalEndpoint::build(&OLLAMA, TEST_TIMEOUTS, Some(pool), None, None).unwrap();
-        let auth = ep.auth.lock().unwrap();
+        let auth = ep
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("https://ollama.com/v1"));
         assert_eq!(auth.headers.len(), 1);
         assert_eq!(auth.headers[0].1, "Bearer test-key");
@@ -593,7 +613,10 @@ mod tests {
             None,
         )
         .unwrap();
-        let auth = ep.auth.lock().unwrap();
+        let auth = ep
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://local:1234/v1"));
         assert_eq!(auth.headers.len(), 1);
         assert_eq!(auth.headers[0].1, "Bearer test-key");
@@ -603,7 +626,11 @@ mod tests {
     fn llamacpp_without_host_uses_default_host() {
         let ep = LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, None, None, None).unwrap();
         assert_eq!(
-            ep.auth.lock().unwrap().base_url.as_deref(),
+            ep.auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .base_url
+                .as_deref(),
             Some("http://localhost:8080/v1")
         );
     }
@@ -618,7 +645,10 @@ mod tests {
             None,
         )
         .unwrap();
-        let auth = ep.auth.lock().unwrap();
+        let auth = ep
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://x:1234/v1"));
         assert!(auth.headers.is_empty());
     }
@@ -627,7 +657,10 @@ mod tests {
     fn llamacpp_with_key_uses_default_host_without_cloud_fallback() {
         let pool = KeyPool::from_keys(vec!["key".into()]);
         let ep = LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, Some(pool), None, None).unwrap();
-        let auth = ep.auth.lock().unwrap();
+        let auth = ep
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://localhost:8080/v1"));
         assert_eq!(
             auth.headers,
@@ -778,10 +811,10 @@ mod tests {
 
         #[test]
         fn single_mode_uses_meta_n_ctx() {
-            let model = model_with_meta(131072);
+            let model = model_with_meta(131_072);
             assert_eq!(
                 llamacpp_extract_ctx_from_model(&model, &ServerMode::Single, 0),
-                131072
+                131_072
             );
         }
 
@@ -909,8 +942,8 @@ mod tests {
 
         #[test]
         fn extracts_gemma_context_length() {
-            let info = make_model_info(&[("gemma3.context_length", 131072)]);
-            assert_eq!(ollama_extract_context_length(&info), Some(131072));
+            let info = make_model_info(&[("gemma3.context_length", 131_072)]);
+            assert_eq!(ollama_extract_context_length(&info), Some(131_072));
         }
 
         #[test]
@@ -995,7 +1028,7 @@ mod tests {
                 num_ctx 131072
                 seed 1234
                 ";
-            assert_eq!(ollama_extract_num_ctx(params), Some(131072));
+            assert_eq!(ollama_extract_num_ctx(params), Some(131_072));
         }
     }
 }

@@ -16,10 +16,13 @@ fn load_words(text: &'static str) -> Vec<&'static str> {
     words
 }
 
+/// # Errors
+/// Returns an error if the plans directory cannot be created, the random
+/// number generator fails, or all candidate slugs already exist.
 pub fn new_plan_path(dir: &StateDir) -> Result<PathBuf, StorageError> {
     let plans_dir = dir.ensure_subdir(PLANS_DIR)?;
     for _ in 0..SLUG_RETRIES {
-        let path = plans_dir.join(format!("{}.md", generate_slug()));
+        let path = plans_dir.join(format!("{}.md", generate_slug()?));
         if !path.exists() {
             return Ok(path);
         }
@@ -27,9 +30,9 @@ pub fn new_plan_path(dir: &StateDir) -> Result<PathBuf, StorageError> {
     Err(StorageError::SlugCollision)
 }
 
-fn generate_slug() -> String {
+fn generate_slug() -> Result<String, StorageError> {
     let mut buf = [0u8; 12];
-    getrandom::fill(&mut buf).expect("rng failed");
+    getrandom::fill(&mut buf).map_err(|e| StorageError::GetRandom(e.to_string()))?;
     let adj1_idx = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize % ADJECTIVES.len();
     let mut adj2_idx =
         u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize % ADJECTIVES.len();
@@ -37,10 +40,10 @@ fn generate_slug() -> String {
     if adj1_idx == adj2_idx {
         adj2_idx = (adj2_idx + 1) % ADJECTIVES.len();
     }
-    format!(
+    Ok(format!(
         "{}-{}-{}",
         ADJECTIVES[adj1_idx], ADJECTIVES[adj2_idx], NOUNS[noun_idx]
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -50,7 +53,7 @@ mod tests {
 
     #[test]
     fn slug_format_invariants() {
-        let slug = generate_slug();
+        let slug = generate_slug().unwrap();
         let parts: Vec<&str> = slug.split('-').collect();
         assert_eq!(parts.len(), 3, "expected 3 parts: {slug}");
         assert!(

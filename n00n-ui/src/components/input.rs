@@ -261,7 +261,7 @@ impl InputBox {
         if text.is_empty() && images.is_empty() {
             return None;
         }
-        self.history.push(text.clone());
+        self.history.push(text.as_str());
         self.discard();
         Some(Submission { text, images })
     }

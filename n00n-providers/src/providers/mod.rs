@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -51,7 +52,7 @@ impl Default for Timeouts {
     fn default() -> Self {
         Self {
             connect: Duration::from_secs(10),
-            stream: Duration::from_secs(300),
+            stream: Duration::from_mins(5),
             low_speed: Duration::from_secs(30),
         }
     }
@@ -80,7 +81,7 @@ impl ResolvedAuth {
 }
 
 pub(crate) fn with_prefix<'a>(
-    prefix: &Option<String>,
+    prefix: Option<&str>,
     system: &'a str,
     buf: &'a mut String,
 ) -> &'a str {
@@ -98,11 +99,11 @@ pub(crate) fn urlenc(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             _ => {
                 out.push('%');
-                out.push_str(&format!("{b:02X}"));
+                let _ = write!(out, "{b:02X}");
             }
         }
     }
@@ -163,12 +164,14 @@ pub(crate) async fn next_sse_line<R: AsyncBufRead + Unpin>(
     result
 }
 
-pub(crate) fn http_client(timeouts: Timeouts) -> isahc::HttpClient {
+pub(crate) fn http_client(timeouts: Timeouts) -> Result<isahc::HttpClient, AgentError> {
     isahc::HttpClient::builder()
         .connect_timeout(timeouts.connect)
         .low_speed_timeout(LOW_SPEED_BYTES_PER_SEC, timeouts.low_speed)
         .build()
-        .expect("failed to build HTTP client")
+        .map_err(|e| AgentError::Config {
+            message: format!("failed to build HTTP client: {e}"),
+        })
 }
 
 #[derive(Clone, Debug)]
@@ -256,7 +259,9 @@ impl KeyPool {
         if !self.rotate() {
             return false;
         }
-        *auth.lock().unwrap() = build(self.current());
+        *auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = build(self.current());
         true
     }
 
@@ -268,7 +273,9 @@ impl KeyPool {
         if !self.rotate() {
             return false;
         }
-        auth.lock().unwrap().headers = build(self.current());
+        auth.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .headers = build(self.current());
         true
     }
 
@@ -282,6 +289,18 @@ mod tests {
     use super::*;
     use futures_lite::io::AsyncBufReadExt;
     use test_case::test_case;
+
+    #[allow(unsafe_code)]
+    fn set_env(var: &str, value: &str) {
+        // SAFETY: Tests run single-threaded; no concurrent access to env vars
+        unsafe { std::env::set_var(var, value) }
+    }
+
+    #[allow(unsafe_code)]
+    fn remove_env(var: &str) {
+        // SAFETY: Tests run single-threaded; no concurrent access to env vars
+        unsafe { std::env::remove_var(var) }
+    }
 
     #[test_case("a b", "a%20b" ; "space")]
     #[test_case("a:b", "a%3Ab" ; "colon")]
@@ -317,13 +336,13 @@ mod tests {
     fn next_sse_line_expired_deadline_returns_timeout() {
         smol::block_on(async {
             let mut lines = NeverReader.lines();
-            let mut past = Instant::now() - Duration::from_secs(1);
-            let stream_timeout = Duration::from_secs(300);
+            let mut past = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+            let stream_timeout = Duration::from_mins(5);
             let err = next_sse_line(&mut lines, &mut past, stream_timeout)
                 .await
                 .unwrap_err();
             assert!(matches!(err, AgentError::Timeout { .. }));
-        })
+        });
     }
 
     #[test]
@@ -361,18 +380,18 @@ mod tests {
     #[test]
     fn resolve_from_env() {
         let env_var = format!("N00N_TEST_KEY_{}", fastrand::u32(..));
-        unsafe { std::env::set_var(&env_var, "from-env") };
+        set_env(&env_var, "from-env");
         let pool = KeyPool::resolve("test_slug", &env_var).unwrap();
-        unsafe { std::env::remove_var(&env_var) };
+        remove_env(&env_var);
         assert_eq!(pool.current(), "from-env");
     }
 
     #[test]
     fn resolve_env_supports_comma_separated() {
         let env_var = format!("N00N_TEST_MULTI_{}", fastrand::u32(..));
-        unsafe { std::env::set_var(&env_var, "sk-1, sk-2, sk-3") };
+        set_env(&env_var, "sk-1, sk-2, sk-3");
         let pool = KeyPool::resolve("test_slug", &env_var).unwrap();
-        unsafe { std::env::remove_var(&env_var) };
+        remove_env(&env_var);
         assert_eq!(pool.current(), "sk-1");
         assert!(pool.rotate());
         assert_eq!(pool.current(), "sk-2");

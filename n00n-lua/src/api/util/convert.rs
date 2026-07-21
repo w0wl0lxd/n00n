@@ -63,12 +63,11 @@ pub(crate) fn json_to_lua(lua: &Lua, value: &JsonValue) -> LuaResult<Value> {
 /// for the same `arbitrary_precision` reason documented above.
 pub(crate) fn lua_to_json(lua: &Lua, val: &Value) -> LuaResult<JsonValue> {
     Ok(match val {
-        Value::Nil => JsonValue::Null,
         Value::Boolean(b) => JsonValue::Bool(*b),
         Value::Integer(n) => JsonValue::Number((*n).into()),
-        Value::Number(n) => serde_json::Number::from_f64(*n)
-            .map(JsonValue::Number)
-            .unwrap_or(JsonValue::Null),
+        Value::Number(n) => {
+            serde_json::Number::from_f64(*n).map_or(JsonValue::Null, JsonValue::Number)
+        }
         Value::String(s) => JsonValue::String(s.to_str()?.to_owned()),
         Value::Table(tbl) => {
             let len = tbl.raw_len();

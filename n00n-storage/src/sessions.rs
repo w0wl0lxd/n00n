@@ -65,10 +65,12 @@ pub struct StoredTokenUsage {
 }
 
 impl StoredTokenUsage {
+    #[must_use]
     pub fn total_input(&self) -> u32 {
         self.input + self.cache_read + self.cache_creation
     }
 
+    #[must_use]
     pub fn total(&self) -> u32 {
         self.input + self.output + self.cache_creation + self.cache_read
     }
@@ -207,6 +209,7 @@ impl Effort {
         Self::Max,
     ];
 
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Minimal => "minimal",
@@ -219,6 +222,7 @@ impl Effort {
     }
 
     /// Percentage of the model's max thinking budget this level spends.
+    #[must_use]
     pub const fn percent(self) -> u32 {
         match self {
             Self::Minimal => 10,
@@ -232,14 +236,19 @@ impl Effort {
 
     /// `percent` of `max`, clamped to `[MIN_THINKING_BUDGET, max]`.
     /// A `max` below the floor is raised to it.
+    #[must_use]
+    #[allow(clippy::disallowed_methods)]
     pub fn budget(self, max: u32) -> u32 {
         let max = max.max(MIN_THINKING_BUDGET);
-        let tokens = (u64::from(max) * u64::from(self.percent()) / 100) as u32;
+        let tokens =
+            u32::try_from(u64::from(max) * u64::from(self.percent()) / 100).unwrap_or(u32::MAX);
         tokens.clamp(MIN_THINKING_BUDGET, max)
     }
 
     /// Inverse of [`Self::budget`]: the lowest level whose percentage covers
     /// `n` tokens out of `max`. Budgets at or above `max` map to `Max`.
+    #[must_use]
+    #[allow(clippy::disallowed_methods)]
     pub fn from_budget(n: u32, max: u32) -> Self {
         let pct = u64::from(n).saturating_mul(100) / u64::from(max.max(1));
         Self::ALL
@@ -252,6 +261,8 @@ impl Effort {
     /// the closest lower supported level, otherwise the lowest supported.
     /// An empty `supported` list returns `self` unchanged (dynamic model
     /// listings may not declare supported efforts).
+    #[must_use]
+    #[allow(clippy::disallowed_methods)]
     pub fn snap(self, supported: &[Self]) -> Self {
         if supported.is_empty() || supported.contains(&self) {
             return self;
@@ -294,6 +305,9 @@ pub enum StoredThinking {
 impl StoredThinking {
     /// The one string-to-thinking parser: `/thinking`, `always_thinking`
     /// config, and the Lua agent API all delegate here.
+    ///
+    /// # Errors
+    /// Returns `ThinkingParseError` if the input is not a valid thinking setting.
     pub fn parse_setting(input: &str) -> Result<Self, ThinkingParseError> {
         match input.trim() {
             "off" => Ok(Self::Off),
@@ -328,6 +342,7 @@ pub trait TitleSource {
 
 /// A pasted code block bakes `\n` into a title and skews width-based padding
 /// in single-line UI like the picker, so every title entry point calls this.
+#[must_use]
 pub fn normalize_title(title: &str) -> String {
     title.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -396,7 +411,7 @@ pub struct SessionLog {
     saved_tool_ids: HashSet<String>,
     saved_sub_msg_counts: HashMap<String, usize>,
     /// Serialized trailing meta record; lets `append` persist meta-only
-    /// changes (title, draft, updated_at) instead of dropping them.
+    /// changes (title, draft, `updated_at`) instead of dropping them.
     saved_meta: Vec<u8>,
     saved_title: String,
 }
@@ -406,6 +421,8 @@ fn sub_msg_snapshot<M>(map: &HashMap<String, Vec<M>>) -> HashMap<String, usize> 
 }
 
 impl SessionLog {
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be created or written.
     pub fn create<M, U, T>(dir: &Path, session: &Session<M, U, T>) -> Result<Self, SessionError>
     where
         M: Serialize + Clone,
@@ -417,6 +434,9 @@ impl SessionLog {
         Ok(Self::cursor_from(dir, session, file))
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be found, read, or parsed,
+    /// or if the session ID does not match.
     pub fn open<M, U, T>(
         dir: &Path,
         session_id: N00nId,
@@ -446,10 +466,14 @@ impl SessionLog {
         Ok((session, log))
     }
 
+    #[must_use]
     pub fn session_id(&self) -> N00nId {
         self.session_id
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session ID does not match, the cursor is ahead,
+    /// or the append operation fails.
     pub fn append<M, U, T>(&mut self, session: &Session<M, U, T>) -> Result<(), SessionError>
     where
         M: Serialize + Clone,
@@ -494,6 +518,7 @@ impl SessionLog {
 
         let mut new_sub_counts: Vec<(String, usize)> = Vec::new();
         for (sub_id, msgs) in &session.subagent_messages {
+            #[allow(clippy::disallowed_methods)]
             let saved = self.saved_sub_msg_counts.get(sub_id).copied().unwrap_or(0);
             for msg in &msgs[saved..] {
                 append_record(
@@ -539,11 +564,13 @@ impl SessionLog {
         if meta_changed {
             self.saved_meta = meta_bytes;
         }
-        self.saved_title = session.title.clone();
+        self.saved_title.clone_from(&session.title);
 
         Ok(())
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session ID does not match or the compact operation fails.
     pub fn compact<M, U, T>(
         &mut self,
         dir: &Path,
@@ -582,6 +609,7 @@ impl SessionLog {
             saved_msg_count: session.messages.len(),
             saved_tool_ids: session.tool_outputs.keys().cloned().collect(),
             saved_sub_msg_counts: sub_msg_snapshot(&session.subagent_messages),
+            #[allow(clippy::disallowed_methods)]
             saved_meta: meta_record_bytes(session).unwrap_or_default(),
             saved_title: session.title.clone(),
         }
@@ -729,6 +757,43 @@ enum RawTag {
     Other,
 }
 
+struct SessionBuilder<M, U, T> {
+    id: Option<N00nId>,
+    model: String,
+    cwd: String,
+    created_at: u64,
+    messages: Vec<M>,
+    tool_outputs: HashMap<String, T>,
+    subagent_messages: HashMap<String, Vec<M>>,
+    title: String,
+    token_usage: U,
+    updated_at: u64,
+    transcript: Vec<TranscriptEntry<M>>,
+    meta: SessionMeta,
+}
+
+impl<M, U, T> Default for SessionBuilder<M, U, T>
+where
+    U: Default,
+{
+    fn default() -> Self {
+        Self {
+            id: None,
+            model: String::new(),
+            cwd: String::new(),
+            created_at: 0,
+            messages: Vec::new(),
+            tool_outputs: HashMap::new(),
+            subagent_messages: HashMap::new(),
+            title: String::new(),
+            token_usage: U::default(),
+            updated_at: 0,
+            transcript: Vec::new(),
+            meta: SessionMeta::default(),
+        }
+    }
+}
+
 fn parse_records<M, U, T>(data: &[u8], path: &Path) -> Result<Session<M, U, T>, SessionError>
 where
     M: DeserializeOwned + Default,
@@ -737,19 +802,10 @@ where
 {
     let reader = BufReader::new(data);
     let mut line_count = 0usize;
-
-    let mut id: Option<N00nId> = None;
-    let mut model = String::new();
-    let mut cwd = String::new();
-    let mut created_at = 0u64;
-    let mut messages = Vec::new();
-    let mut tool_outputs = HashMap::new();
-    let mut subagent_messages: HashMap<String, Vec<M>> = HashMap::new();
-    let mut title = DEFAULT_TITLE.to_string();
-    let mut token_usage = U::default();
-    let mut updated_at = 0u64;
-    let mut transcript = Vec::new();
-    let mut meta = SessionMeta::default();
+    let mut builder = SessionBuilder {
+        title: DEFAULT_TITLE.to_string(),
+        ..Default::default()
+    };
     let mut got_header = false;
 
     for line_result in reader.lines() {
@@ -780,70 +836,86 @@ where
                 continue;
             }
         };
-        match record {
-            LogRecord::Header {
-                v,
-                id: h_id,
-                model: h_model,
-                cwd: h_cwd,
-                title: h_title,
-                created_at: h_created,
-            } => {
-                if v != LOG_FORMAT_VERSION {
-                    return Err(SessionError::VersionMismatch {
-                        found: v,
-                        expected: LOG_FORMAT_VERSION,
-                    });
-                }
-                id = Some(h_id);
-                model = h_model;
-                cwd = h_cwd;
-                created_at = h_created;
-                if let Some(t) = h_title {
-                    title = t;
-                }
-                got_header = true;
-            }
-            LogRecord::Msg { d } => messages.push(d),
-            LogRecord::Out { id: out_id, d } => {
-                tool_outputs.insert(out_id, d);
-            }
-            LogRecord::SubMsg { sub, d } => {
-                subagent_messages.entry(sub).or_default().push(d);
-            }
-            LogRecord::Meta {
-                title: m_title,
-                token_usage: m_usage,
-                updated_at: m_updated,
-                transcript: m_transcript,
-                meta: m_meta,
-            } => {
-                title = m_title;
-                token_usage = m_usage;
-                updated_at = m_updated;
-                transcript = m_transcript;
-                meta = m_meta;
-            }
-        }
+        apply_record(&mut builder, record, &mut got_header)?;
     }
 
-    let id = id.ok_or(StorageError::NotFound(path.display().to_string()))?;
+    let id = builder
+        .id
+        .ok_or(StorageError::NotFound(path.display().to_string()))?;
 
     Ok(Session {
         version: SESSION_VERSION,
         id,
-        title: normalize_title(&title),
-        cwd,
-        model,
-        messages,
-        transcript,
-        token_usage,
-        tool_outputs,
-        subagent_messages,
-        meta,
-        created_at,
-        updated_at,
+        title: normalize_title(&builder.title),
+        cwd: builder.cwd,
+        model: builder.model,
+        messages: builder.messages,
+        transcript: builder.transcript,
+        token_usage: builder.token_usage,
+        tool_outputs: builder.tool_outputs,
+        subagent_messages: builder.subagent_messages,
+        meta: builder.meta,
+        created_at: builder.created_at,
+        updated_at: builder.updated_at,
     })
+}
+
+fn apply_record<M, U, T>(
+    builder: &mut SessionBuilder<M, U, T>,
+    record: LogRecord<M, U, T>,
+    got_header: &mut bool,
+) -> Result<(), SessionError>
+where
+    M: DeserializeOwned + Default,
+    U: DeserializeOwned + Default,
+    T: DeserializeOwned,
+{
+    match record {
+        LogRecord::Header {
+            v,
+            id: h_id,
+            model: h_model,
+            cwd: h_cwd,
+            title: h_title,
+            created_at: h_created,
+        } => {
+            if v != LOG_FORMAT_VERSION {
+                return Err(SessionError::VersionMismatch {
+                    found: v,
+                    expected: LOG_FORMAT_VERSION,
+                });
+            }
+            builder.id = Some(h_id);
+            builder.model = h_model;
+            builder.cwd = h_cwd;
+            builder.created_at = h_created;
+            if let Some(t) = h_title {
+                builder.title = t;
+            }
+            *got_header = true;
+        }
+        LogRecord::Msg { d } => builder.messages.push(d),
+        LogRecord::Out { id: out_id, d } => {
+            builder.tool_outputs.insert(out_id, d);
+        }
+        LogRecord::SubMsg { sub, d } => {
+            builder.subagent_messages.entry(sub).or_default().push(d);
+        }
+        LogRecord::Meta {
+            title: m_title,
+            token_usage: m_usage,
+            updated_at: m_updated,
+            transcript: m_transcript,
+            meta: m_meta,
+        } => {
+            builder.title = m_title;
+            builder.token_usage = m_usage;
+            builder.updated_at = m_updated;
+            builder.transcript = m_transcript;
+            builder.meta = m_meta;
+        }
+    }
+    Ok(())
 }
 
 fn encode_frame<W: Write>(file: &mut W, bytes: &[u8]) -> Result<(), SessionError> {
@@ -904,11 +976,12 @@ fn zst_valid_len(data: &[u8]) -> usize {
 
 // -- CWD index --
 
+#[allow(clippy::disallowed_methods, clippy::unwrap_or_default)]
 fn load_cwd_index(dir: &Path) -> HashMap<String, String> {
     fs::read(dir.join(CWD_INDEX_FILE))
         .ok()
         .and_then(|data| serde_json::from_slice(&data).ok())
-        .unwrap_or_default()
+        .unwrap_or_else(HashMap::new)
 }
 
 fn update_cwd_index(dir: &Path, cwd: &str, session_id: N00nId) -> Result<(), StorageError> {
@@ -926,9 +999,8 @@ fn jsonl_path(dir: &Path, id: N00nId) -> PathBuf {
 }
 
 fn file_is_zst(path: &Path) -> bool {
-    let mut file = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
+    let Ok(mut file) = File::open(path) else {
+        return false;
     };
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic).is_ok() && is_zst_data(&magic)
@@ -1000,11 +1072,12 @@ struct ScanCacheEntry {
 
 type ScanCache = HashMap<String, ScanCacheEntry>;
 
+#[allow(clippy::disallowed_methods, clippy::unwrap_or_default)]
 fn load_scan_cache(dir: &Path) -> ScanCache {
     fs::read(dir.join(SCAN_CACHE_FILE))
         .ok()
         .and_then(|data| serde_json::from_slice(&data).ok())
-        .unwrap_or_default()
+        .unwrap_or_else(HashMap::new)
 }
 
 fn file_signature(path: &Path) -> Option<(u64, u64)> {
@@ -1013,7 +1086,7 @@ fn file_signature(path: &Path) -> Option<(u64, u64)> {
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64)?;
+        .and_then(|d| u64::try_from(d.as_millis()).ok())?;
     Some((meta.len(), mtime_ms))
 }
 
@@ -1064,6 +1137,7 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
     Ok(summaries)
 }
 
+#[allow(clippy::disallowed_methods)]
 fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
     let data = decode_all(&fs::read(path).ok()?).ok()?;
     let mut lines = data
@@ -1082,13 +1156,13 @@ fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
                 None
             }
         })
-        .unwrap_or_default();
+        .unwrap_or((String::new(), 0u64));
 
     Some(ScannedHeader {
         id: header.id,
         cwd: header.cwd,
         title: if meta_title.is_empty() {
-            header.title.unwrap_or_else(|| DEFAULT_TITLE.to_string())
+            header.title.unwrap_or(DEFAULT_TITLE.to_string())
         } else {
             meta_title
         },
@@ -1113,7 +1187,13 @@ fn is_session_file(path: &Path) -> bool {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .and_then(|stem| stem.parse::<N00nId>().ok())
-            .is_some_and(|id| jsonl_path(path.parent().unwrap_or(Path::new("")), id) == path)
+            .is_some_and(|id| {
+                let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+                match parent {
+                    Some(p) => jsonl_path(p, id) == path,
+                    None => false,
+                }
+            })
 }
 
 fn locate_session_file(dir: &Path, id: N00nId) -> Option<PathBuf> {
@@ -1138,6 +1218,7 @@ where
     U: Serialize + DeserializeOwned + Default,
     T: Serialize + DeserializeOwned,
 {
+    #[must_use]
     pub fn new(model: &str, cwd: &str) -> Self {
         let now = now_epoch();
         Self {
@@ -1160,12 +1241,12 @@ where
         }
     }
 
-    /// After `messages` is truncated (rewind), state keyed by tool_use_id can
+    /// After `messages` is truncated (rewind), state keyed by `tool_use_id` can
     /// point at calls that no longer exist. On restore that shows up as ghost
     /// subagent tabs and leaked tool outputs, so this drops everything not
     /// reachable from `messages`.
     ///
-    /// If you add another field keyed by tool_use_id, prune it here too.
+    /// If you add another field keyed by `tool_use_id`, prune it here too.
     pub fn prune_orphans(&mut self, tool_ids: impl Fn(&M) -> Vec<String>) {
         let main_ids: HashSet<String> = self.messages.iter().flat_map(&tool_ids).collect();
         self.subagent_messages.retain(|id, _| main_ids.contains(id));
@@ -1183,11 +1264,15 @@ where
         self.tool_outputs.retain(|id, _| live.contains(id));
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the sessions directory cannot be created or the save fails.
     pub fn save(&mut self, dir: &StateDir) -> Result<(), SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         self.save_to(&sessions_dir)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be written or the index cannot be updated.
     pub fn save_to(&mut self, dir: &Path) -> Result<(), SessionError> {
         self.updated_at = now_epoch();
         write_session_file(dir, self)?;
@@ -1195,11 +1280,16 @@ where
         Ok(())
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the sessions directory cannot be created or the session cannot be loaded.
     pub fn load(id: N00nId, dir: &StateDir) -> Result<Self, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::load_from(id, &sessions_dir)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be found, read, or parsed,
+    /// or if the session ID does not match.
     pub fn load_from(id: N00nId, dir: &Path) -> Result<Self, SessionError> {
         let Some(path) = locate_session_file(dir, id) else {
             return Err(StorageError::NotFound(id.to_string()).into());
@@ -1214,22 +1304,30 @@ where
         Ok(session)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the sessions directory cannot be created or the scan fails.
     pub fn list(cwd: &str, dir: &StateDir) -> Result<Vec<SessionSummary>, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::list_in(cwd, &sessions_dir)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the scan fails.
     pub fn list_in(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, SessionError> {
         let mut summaries = scan_headers(cwd, dir)?;
         summaries.sort_unstable_by_key(|s| Reverse(s.updated_at));
         Ok(summaries)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the sessions directory cannot be created or the latest session cannot be loaded.
     pub fn latest(cwd: &str, dir: &StateDir) -> Result<Option<Self>, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::latest_in(cwd, &sessions_dir)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the scan or load fails.
     pub fn latest_in(cwd: &str, dir: &Path) -> Result<Option<Self>, SessionError> {
         let cached = load_cwd_index(dir)
             .remove(cwd)
@@ -1250,8 +1348,7 @@ where
         scan_headers(cwd, dir)?
             .into_iter()
             .max_by_key(|s| s.updated_at)
-            .map(|s| Self::load_from(s.id, dir).map(Some))
-            .unwrap_or(Ok(None))
+            .map_or(Ok(None), |s| Self::load_from(s.id, dir).map(Some))
     }
 
     pub fn update_title_if_default(&mut self) {
@@ -1260,11 +1357,15 @@ where
         }
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the sessions directory cannot be created or the delete fails.
     pub fn delete(id: N00nId, dir: &StateDir) -> Result<(), SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::delete_from(id, &sessions_dir)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be found or removed.
     pub fn delete_from(id: N00nId, dir: &Path) -> Result<(), SessionError> {
         let Some(path) = locate_session_file(dir, id) else {
             return Err(StorageError::NotFound(id.to_string()).into());
@@ -1274,6 +1375,8 @@ where
         Ok(())
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be created or written.
     pub fn migrate_to_jsonl(dir: &Path, session: &Self) -> Result<SessionLog, SessionError> {
         SessionLog::create(dir, session)
     }
@@ -1848,6 +1951,7 @@ mod tests {
     #[test_case("1", Ok(StoredThinking::Budget { tokens: 1 }) ; "minimum_budget")]
     #[test_case("0", Err(ThinkingParseError::BudgetZero) ; "budget_zero")]
     #[test_case("fast", Err(ThinkingParseError::Unknown("fast".into())) ; "garbage")]
+    #[allow(clippy::needless_pass_by_value)]
     fn parse_setting(input: &str, expected: Result<StoredThinking, ThinkingParseError>) {
         assert_eq!(StoredThinking::parse_setting(input), expected);
     }

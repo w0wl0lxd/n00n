@@ -192,6 +192,10 @@ impl ProvidersConfig {
         }
     }
 
+    /// Saves the providers config to disk.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the directory cannot be created or the file cannot be written.
     pub fn save(&self) -> Result<(), std::io::Error> {
         let path = providers_file_path();
         if let Some(parent) = path.parent() {

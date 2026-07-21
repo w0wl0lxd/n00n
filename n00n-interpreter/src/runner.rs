@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::time::Duration;
 
 use monty::{
@@ -62,9 +63,17 @@ impl PrintWriterCallback for StreamingWriter<'_> {
     }
 }
 
-pub fn run(
+/// Runs Python code with the given tools and resource limits.
+///
+/// # Errors
+///
+/// Returns `InterpreterError::Parse` if the code fails to parse.
+/// Returns `InterpreterError::Runtime` if execution fails.
+/// Returns `InterpreterError::ToolCall` if a tool call fails.
+/// Returns `InterpreterError::Sandboxed` if OS calls or async operations are attempted without a resolver.
+pub fn run<S: BuildHasher>(
     code: &str,
-    tools: &HashMap<String, ToolFn>,
+    tools: &HashMap<String, ToolFn, S>,
     resolver: Option<&AsyncResolver>,
     limits: ResourceLimits,
 ) -> Result<InterpreterResult, InterpreterError> {
@@ -74,9 +83,17 @@ pub fn run(
     Ok(InterpreterResult { output, stdout })
 }
 
-pub fn run_streaming(
+/// Runs Python code with streaming stdout output via a callback.
+///
+/// # Errors
+///
+/// Returns `InterpreterError::Parse` if the code fails to parse.
+/// Returns `InterpreterError::Runtime` if execution fails.
+/// Returns `InterpreterError::ToolCall` if a tool call fails.
+/// Returns `InterpreterError::Sandboxed` if OS calls or async operations are attempted without a resolver.
+pub fn run_streaming<S: BuildHasher>(
     code: &str,
-    tools: &HashMap<String, ToolFn>,
+    tools: &HashMap<String, ToolFn, S>,
     resolver: Option<&AsyncResolver>,
     limits: ResourceLimits,
     on_output: &mut dyn FnMut(&str),
@@ -92,9 +109,10 @@ pub fn run_streaming(
     Ok(InterpreterResult { output, stdout })
 }
 
-fn run_inner(
+#[allow(clippy::too_many_lines)]
+fn run_inner<S: BuildHasher>(
     code: &str,
-    tools: &HashMap<String, ToolFn>,
+    tools: &HashMap<String, ToolFn, S>,
     resolver: Option<&AsyncResolver>,
     limits: ResourceLimits,
     print_writer: &mut PrintWriter<'_>,
@@ -198,9 +216,9 @@ fn run_inner(
                     .filter_map(|id| pending_calls.remove(id))
                     .collect();
 
-                let resolved = resolver(batch)?;
+                let result = resolver(batch)?;
 
-                let results: Vec<(u32, ExtFunctionResult)> = resolved
+                let results: Vec<(u32, ExtFunctionResult)> = result
                     .into_iter()
                     .map(|(id, result)| match result {
                         Ok(val) => (id, ExtFunctionResult::Return(json_to_monty(val))),
@@ -222,10 +240,12 @@ fn run_inner(
     }
 }
 
+#[must_use]
 pub fn default_limits() -> ResourceLimits {
     limits_with_timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
 }
 
+#[must_use]
 pub fn limits_with_timeout(timeout: Duration) -> ResourceLimits {
     ResourceLimits::new()
         .max_duration(timeout)
@@ -233,6 +253,7 @@ pub fn limits_with_timeout(timeout: Duration) -> ResourceLimits {
         .max_recursion_depth(Some(DEFAULT_MAX_RECURSION))
 }
 
+#[must_use]
 pub fn limits(timeout: Duration, max_memory: usize) -> ResourceLimits {
     ResourceLimits::new()
         .max_duration(timeout)
@@ -285,7 +306,11 @@ mod tests {
         let mut tools: HashMap<String, ToolFn> = HashMap::new();
         tools.insert(
             "echo".into(),
-            Box::new(|_, args, _| Ok(args.first().cloned().unwrap_or(json!(null)))),
+            Box::new(|_, args, _| {
+                args.first()
+                    .cloned()
+                    .ok_or_else(|| "no arguments provided".to_string())
+            }),
         );
         let result = run("echo(42)", &tools, None, default_limits()).unwrap();
         assert_eq!(result.output, Some(json!(42)));
@@ -300,8 +325,9 @@ mod tests {
                 let name = kwargs
                     .iter()
                     .find(|(k, _)| k == "name")
-                    .map(|(_, v)| v.as_str().unwrap_or("unknown").to_string())
-                    .unwrap_or_default();
+                    .and_then(|(_, v)| v.as_str())
+                    .unwrap()
+                    .to_string();
                 Ok(json!(format!("hello {name}")))
             }),
         );
@@ -354,13 +380,13 @@ mod tests {
 
     #[test]
     fn async_gather_resolves_concurrently() {
-        let code = r#"
+        let code = r"
 import asyncio
 async def main():
     a, b = await asyncio.gather(tool_a(), tool_b())
     return f'{a}|{b}'
 await main()
-"#;
+";
         let tools = stub_tools(&["tool_a", "tool_b"]);
 
         let resolver: AsyncResolver = Box::new(|pending: Vec<PendingCall>| {
@@ -384,18 +410,18 @@ await main()
 
     #[test]
     fn sequential_await_calls_resolver_per_batch() {
-        let code = r#"
+        let code = r"
 import asyncio
 async def main():
     a = await tool_a()
     b = await tool_b()
     return f'{a}|{b}'
 await main()
-"#;
+";
         let tools = stub_tools(&["tool_a", "tool_b"]);
 
         let call_count = Arc::new(AtomicUsize::new(0));
-        let count_clone = call_count.clone();
+        let count_clone = Arc::clone(&call_count);
         let resolver: AsyncResolver = Box::new(move |pending: Vec<PendingCall>| {
             count_clone.fetch_add(1, Ordering::SeqCst);
             Ok(pending
@@ -414,13 +440,13 @@ await main()
 
     #[test]
     fn async_tool_error_propagates_to_python() {
-        let code = r#"
+        let code = r"
 import asyncio
 async def main():
     a, b = await asyncio.gather(tool_ok(), tool_fail())
     return 'should not reach'
 await main()
-"#;
+";
         let tools = stub_tools(&["tool_ok", "tool_fail"]);
 
         let resolver: AsyncResolver = Box::new(|pending: Vec<PendingCall>| {

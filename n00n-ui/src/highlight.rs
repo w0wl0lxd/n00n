@@ -28,7 +28,7 @@ pub(crate) fn refresh_syntax_theme() {
             Some(Color::Rgb(r, g, b)) => Some((name.to_owned(), (r, g, b))),
             _ => None,
         })
-        .collect(),
+        .collect::<std::collections::HashMap<_, _>>(),
     );
 }
 

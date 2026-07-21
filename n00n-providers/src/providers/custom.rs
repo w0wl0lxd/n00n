@@ -45,7 +45,10 @@ fn resolve_custom_auth(slug: &str) -> Result<ResolvedAuth, AgentError> {
     })?;
 
     let resolved_env = resolve_api_key_env(slug, Some(def));
-    let env_var = def.api_key_env.as_deref().unwrap_or(&resolved_env);
+    let env_var = def
+        .api_key_env
+        .as_deref()
+        .unwrap_or_else(|| resolved_env.as_str());
     let pool = super::KeyPool::resolve(slug, env_var)?;
 
     let base_url = resolve_base_url(slug, Some(def));
@@ -62,18 +65,18 @@ pub fn create(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>, Agent
     let auth = Arc::new(Mutex::new(resolved));
 
     let config = ProvidersConfig::load();
-    let protocol = resolve_protocol(slug, config.get(slug)).unwrap_or(Protocol::Openai);
+    let protocol = resolve_protocol(slug, config.get(slug)).unwrap_or_else(|| Protocol::Openai);
 
     match kind {
         ProviderKind::Anthropic => Ok(Box::new(super::anthropic::Anthropic::with_auth(
             auth, timeouts,
-        ))),
+        )?)),
         ProviderKind::OpenAi => Ok(Box::new(CustomOpenAiProvider {
-            compat: OpenAiCompatProvider::new(&CUSTOM_OPENAI_CONFIG, timeouts),
+            compat: OpenAiCompatProvider::new(&CUSTOM_OPENAI_CONFIG, timeouts)?,
             auth,
             protocol,
         })),
-        ProviderKind::Google => Ok(Box::new(super::google::Google::with_auth(auth, timeouts))),
+        ProviderKind::Google => Ok(Box::new(super::google::Google::with_auth(auth, timeouts)?)),
         _ => Err(AgentError::Config {
             message: format!(
                 "unsupported protocol for custom provider '{slug}', only openai/anthropic/google are supported"
@@ -91,9 +94,7 @@ pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
         Protocol::Google => ProviderKind::Google,
     };
     let declared = def.models.iter().find(|m| m.id == model_id);
-    let tier = declared
-        .map(|m| ModelTier::from(m.tier))
-        .unwrap_or(ModelTier::Medium);
+    let tier = declared.map_or(ModelTier::Medium, |m| ModelTier::from(m.tier));
     let max_output_tokens = declared
         .and_then(|m| m.max_output_tokens)
         .or_else(|| kind.fallback_max_output());
@@ -105,19 +106,18 @@ pub fn lookup_model(slug: &str, model_id: &str) -> Option<Model> {
     let supports_vision_override = declared.and_then(|m| m.supports_vision);
     let pricing = declared
         .filter(|m| m.has_pricing())
-        .map(|m| ModelPricing {
-            input: m.pricing_input.unwrap_or(0.0),
-            output: m.pricing_output.unwrap_or(0.0),
-            cache_write: m.pricing_cache_write.unwrap_or(0.0),
-            cache_read: m.pricing_cache_read.unwrap_or(0.0),
+        .map_or_else(Default::default, |m| ModelPricing {
+            input: m.pricing_input.unwrap_or_else(|| 0.0),
+            output: m.pricing_output.unwrap_or_else(|| 0.0),
+            cache_write: m.pricing_cache_write.unwrap_or_else(|| 0.0),
+            cache_read: m.pricing_cache_read.unwrap_or_else(|| 0.0),
             fast: declared
                 .filter(|d| d.has_fast_pricing())
                 .map(|d| FastPricing {
-                    input: d.pricing_fast_input.unwrap_or(0.0),
-                    output: d.pricing_fast_output.unwrap_or(0.0),
+                    input: d.pricing_fast_input.unwrap_or_else(|| 0.0),
+                    output: d.pricing_fast_output.unwrap_or_else(|| 0.0),
                 }),
-        })
-        .unwrap_or_default();
+        });
     Some(Model {
         id: model_id.to_string(),
         provider: kind,
@@ -171,7 +171,9 @@ pub fn discover_models(timeouts: Timeouts) -> Vec<String> {
         if builtin_provider(slug).is_some() {
             continue;
         }
-        let def = config.get(slug).unwrap();
+        let Some(def) = config.get(slug) else {
+            continue;
+        };
         if !def.discover_models {
             continue;
         }
@@ -219,7 +221,11 @@ impl Provider for CustomOpenAiProvider {
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
 
             if self.protocol == Protocol::OpenaiResponses {
                 let body = responses::build_body(model, messages, system, tools, None, None);
@@ -241,7 +247,7 @@ impl Provider for CustomOpenAiProvider {
                 messages,
                 system,
                 tools,
-                session_id.map(|s| s.as_str()),
+                session_id.map(n00n_storage::id::SessionRef::as_str),
             );
             if matches!(opts.thinking, ThinkingConfig::Off) {
                 body["thinking"] = serde_json::json!({"type": "disabled"});
@@ -253,7 +259,11 @@ impl Provider for CustomOpenAiProvider {
     }
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
-        let auth = self.auth.lock().unwrap().clone();
+        let auth = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         Box::pin(async move { self.compat.do_list_models(&auth).await })
     }
 }

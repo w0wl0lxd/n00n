@@ -21,7 +21,7 @@ pub enum N00nIdParseError {
 
 /// The canonical unique id for anything in n00n (sessions, and message
 /// nodes once history is a tree): time-ordered, base58-encoded, backed by a
-/// UUIDv7.
+/// `UUIDv7`.
 ///
 /// Serializes as base58. Accepts legacy v4-hex-uuid strings on parse
 /// (either hyphenated 8-4-4-4-12 or the unhyphenated 32 hex variant)
@@ -38,10 +38,12 @@ pub struct N00nId([u8; UUID_BYTES]);
 
 impl N00nId {
     #[allow(clippy::disallowed_methods)]
+    #[must_use]
     pub fn generate() -> Self {
         Self(Uuid::now_v7().into_bytes())
     }
 
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8; UUID_BYTES] {
         &self.0
     }
@@ -112,6 +114,7 @@ pub struct SessionRef {
 }
 
 impl SessionRef {
+    #[must_use]
     pub fn from_id(id: N00nId) -> Self {
         Self {
             id,
@@ -119,14 +122,17 @@ impl SessionRef {
         }
     }
 
+    #[must_use]
     pub fn generate() -> Self {
         Self::from_id(N00nId::generate())
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.raw
     }
 
+    #[must_use]
     pub fn id(&self) -> N00nId {
         self.id
     }

@@ -1,6 +1,8 @@
 use std::time::Duration;
 use std::{env, thread};
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use isahc::ReadResponseExt;
 use isahc::config::Configurable;
 use n00n_storage::StateDir;
@@ -21,7 +23,7 @@ const DEVICE_AUTH_URL: &str = "https://auth.openai.com/codex/device";
 const REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
 const POLL_SAFETY_MARGIN: Duration = Duration::from_secs(3);
 const TOKEN_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
-const POLL_TIMEOUT: Duration = Duration::from_secs(300);
+const POLL_TIMEOUT: Duration = Duration::from_mins(5);
 
 #[derive(Deserialize)]
 struct DeviceCodeResponse {
@@ -60,8 +62,6 @@ fn extract_account_id(token: &str) -> Option<String> {
     if parts.len() != 3 {
         return None;
     }
-    use base64::Engine;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let payload = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
     let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
 
@@ -121,7 +121,7 @@ fn request_device_code() -> Result<DeviceCodeResponse, AgentError> {
 
 fn poll_device_token(device: &DeviceCodeResponse) -> Result<DeviceTokenResponse, AgentError> {
     let client = http_client(POLL_TIMEOUT)?;
-    let interval_secs = device.interval.parse::<u64>().unwrap_or(5).max(1);
+    let interval_secs = device.interval.parse::<u64>().unwrap_or_else(|_| 5).max(1);
     let poll_interval = Duration::from_secs(interval_secs) + POLL_SAFETY_MARGIN;
     let deadline = std::time::Instant::now() + POLL_TIMEOUT;
 
@@ -203,7 +203,7 @@ fn exchange_device_token(device_token: &DeviceTokenResponse) -> Result<TokenResp
 
 fn into_oauth_tokens(resp: TokenResponse) -> OAuthTokens {
     let account_id = extract_account_id_from_tokens(&resp);
-    let expires = now_millis() + resp.expires_in.unwrap_or(3600) * 1000;
+    let expires = now_millis() + resp.expires_in.unwrap_or_else(|| 3600) * 1000;
     OAuthTokens {
         access: resp.access_token,
         refresh: resp.refresh_token,
@@ -269,6 +269,11 @@ pub(crate) fn is_oauth(dir: &StateDir) -> bool {
     load_tokens(dir, PROVIDER).is_some()
 }
 
+/// Resolve `OpenAI` authentication for the current session.
+///
+/// # Errors
+///
+/// Returns an `AgentError` if no API key or valid OAuth tokens are available.
 pub fn resolve(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
     if let Some(tokens) = load_tokens(dir, PROVIDER) {
         if !tokens.is_expired() {
@@ -283,7 +288,9 @@ pub fn resolve(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
             }
             Err(e) => {
                 warn!(error = %e, "OpenAI OAuth refresh failed, clearing stale tokens");
-                delete_tokens(dir, PROVIDER).ok();
+                if let Err(err) = delete_tokens(dir, PROVIDER) {
+                    warn!(error = %err, "failed to clear stale OpenAI tokens");
+                }
             }
         }
     }
@@ -309,6 +316,11 @@ pub fn resolve(dir: &StateDir) -> Result<ResolvedAuth, AgentError> {
     })
 }
 
+/// Authenticate with `OpenAI` via OAuth device flow.
+///
+/// # Errors
+///
+/// Returns an `AgentError` if device code, polling, or token exchange fails.
 pub fn login(dir: &StateDir) -> Result<(), AgentError> {
     let device = request_device_code()?;
 
@@ -332,6 +344,11 @@ pub fn login(dir: &StateDir) -> Result<(), AgentError> {
     Ok(())
 }
 
+/// Clear `OpenAI` OAuth tokens.
+///
+/// # Errors
+///
+/// Returns an `AgentError` if token deletion fails.
 pub fn logout(dir: &StateDir) -> Result<(), AgentError> {
     if delete_tokens(dir, PROVIDER)? {
         println!("Logged out of OpenAI.");

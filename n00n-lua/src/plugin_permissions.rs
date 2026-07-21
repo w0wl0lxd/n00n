@@ -116,8 +116,7 @@ impl PluginPermissions {
 
 fn denied_error(perm: Permission) -> LuaError {
     LuaError::runtime(format!(
-        "permission denied: '{}' not granted for this plugin",
-        perm
+        "permission denied: '{perm}' not granted for this plugin"
     ))
 }
 
