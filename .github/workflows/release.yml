@@ -29,7 +29,9 @@ jobs:
       - name: Create draft release
         run: |
           .github/scripts/retry.sh bash -c \
-            'gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --generate-notes'
+            'gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+             gh release create "$GITHUB_REF_NAME" --draft \
+               --title "$GITHUB_REF_NAME" --generate-notes'
 
   build-linux:
     name: Build (${{ matrix.target }})
@@ -57,7 +59,9 @@ jobs:
             alpine:3.21 sh -c '
               apk add --no-cache gcc g++ musl-dev make perl linux-headers curl git ca-certificates pkgconf python3-dev
               git config --global --add safe.directory /workspace
-              curl --proto "=https" --tlsv1.2 --retry 5 --retry-delay 2 --retry-all-errors -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --target ${{ matrix.target }}
+              curl --proto "=https" --tlsv1.2 --retry 5 --retry-delay 2 \
+                --retry-all-errors -sSf https://sh.rustup.rs | \
+                sh -s -- -y --default-toolchain stable --target ${{ matrix.target }}
               source "$HOME/.cargo/env"
               cargo build --release --target ${{ matrix.target }}
             '
