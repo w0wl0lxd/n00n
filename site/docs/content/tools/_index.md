@@ -7,7 +7,7 @@ group = "Reference"
 
 # Tools
 
-N00n ships with 23 built-in tools. This is the full reference.
+n00n ships with 23 built-in tools. This is the full reference.
 
 ## File Operations
 

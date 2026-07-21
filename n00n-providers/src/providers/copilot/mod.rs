@@ -34,7 +34,7 @@ inventory::submit!(n00n_config::providers::BuiltInProvider {
 });
 const GRAPHQL_QUERY: &str = "query { viewer { copilotEndpoints { api } } }";
 const API_VERSION_HEADER: &str = "2025-10-01";
-const EDITOR_VERSION_HEADER: &str = concat!("N00n/", env!("CARGO_PKG_VERSION"));
+const EDITOR_VERSION_HEADER: &str = concat!("n00n/", env!("CARGO_PKG_VERSION"));
 const CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
 const RESPONSES_PATH: &str = "/responses";
 const MESSAGES_PATH: &str = "/v1/messages";

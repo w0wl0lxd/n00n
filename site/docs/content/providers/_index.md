@@ -7,13 +7,13 @@ group = "Reference"
 
 # Providers
 
-N00n talks to LLM providers over their HTTP APIs. Models are split into three tiers: **weak** (cheap and fast), **medium** (balanced), and **strong** (highest capability, highest cost). There is also a **compaction** tier for choosing a dedicated model to summarize context when the conversation grows long.
+n00n talks to LLM providers over their HTTP APIs. Models are split into three tiers: **weak** (cheap and fast), **medium** (balanced), and **strong** (highest capability, highest cost). There is also a **compaction** tier for choosing a dedicated model to summarize context when the conversation grows long.
 
 Open the model picker with `/model` and press `!`, `@`, `#`, or `$` on any row to assign it to strong, medium, weak, or compaction. Press the same key again to remove the assignment. Your overrides are saved to `~/.local/state/n00n/model-tiers` and apply across sessions.
 
 ## Auth Reloading
 
-N00n re-reads auth from storage and environment variables each time a new agent spawns (`/new`, retry, session load). If you run `n00n auth login` in another terminal or change an env var, the next session picks it up without a restart.
+n00n re-reads auth from storage and environment variables each time a new agent spawns (`/new`, retry, session load). If you run `n00n auth login` in another terminal or change an env var, the next session picks it up without a restart.
 
 You can set multiple API keys in one env var (`ANTHROPIC_API_KEY=sk-1,sk-2,sk-3`) and they rotate automatically on rate-limit or auth errors.
 
@@ -37,7 +37,7 @@ Add `-1m` to any Claude model, like `claude-sonnet-4-6-1m`, to use the 1M token 
 
 #### Amazon Bedrock
 
-If you already use Claude through AWS Bedrock, you can point N00n at it instead of the direct Anthropic API. Set `CLAUDE_CODE_USE_BEDROCK=1` and N00n will route all Anthropic requests through Bedrock. The same models, the same features, just a different door.
+If you already use Claude through AWS Bedrock, you can point n00n at it instead of the direct Anthropic API. Set `CLAUDE_CODE_USE_BEDROCK=1` and n00n will route all Anthropic requests through Bedrock. The same models, the same features, just a different door.
 
 You will need `AWS_REGION` and one of the following for auth:
 
@@ -186,7 +186,7 @@ No hardcoded model catalog. Use any model ID supported by this provider.
 
 No hardcoded model catalog. Use any model ID supported by this provider.
 
-By default N00n hides free models from the Opencode catalog. To list free models (they use a public fallback, no API key needed), add this to `~/.config/n00n/providers.toml`:
+By default n00n hides free models from the Opencode catalog. To list free models (they use a public fallback, no API key needed), add this to `~/.config/n00n/providers.toml`:
 
 ```toml
 [opencode]

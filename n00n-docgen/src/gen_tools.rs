@@ -324,7 +324,7 @@ pub fn generate() -> String {
     writeln!(out).unwrap();
     writeln!(
         out,
-        "N00n ships with {total} built-in tools. This is the full reference."
+        "n00n ships with {total} built-in tools. This is the full reference."
     )
     .unwrap();
 

@@ -7,7 +7,7 @@ group = "Getting Started"
 
 # Quick Start
 
-Install N00n, connect a provider, and run your first session. Takes a few minutes.
+Install n00n, connect a provider, and run your first session. Takes a few minutes.
 
 ## Install
 
@@ -82,8 +82,8 @@ AGENTS.md              # Loaded into agent context automatically
 AGENTS.local.md        # Personal per-project instructions (gitignored)
 ```
 
-N00n also recognizes `CLAUDE.md`, `COPILOT.md`, `.cursorrules`, `CONVENTIONS.md`, `GEMINI.md`, and others as instruction files (first match wins).
+n00n also recognizes `CLAUDE.md`, `COPILOT.md`, `.cursorrules`, `CONVENTIONS.md`, `GEMINI.md`, and others as instruction files (first match wins).
 
-`AGENTS.md` is loaded at the start of every session. Put coding conventions, repo quirks & gotchas, or off-limits directories in here. N00n will automatically load instruction files inside subdirs when doing a `read` in the subdir.
+`AGENTS.md` is loaded at the start of every session. Put coding conventions, repo quirks & gotchas, or off-limits directories in here. n00n will automatically load instruction files inside subdirs when doing a `read` in the subdir.
 
 See [Configuration](/docs/configuration/) for all options.
