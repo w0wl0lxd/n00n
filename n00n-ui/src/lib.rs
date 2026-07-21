@@ -55,6 +55,7 @@ pub enum RunOutcome {
 pub fn run(params: EventLoopParams, initial_prompt: Option<String>) -> Result<RunOutcome> {
     let report = {
         let (_guard, mut terminal) = terminal::TerminalGuard::init()?;
+        mascot::Mascot::init_picker();
         let el = event_loop::EventLoop::new(&mut terminal, params)?;
         el.run(initial_prompt)?
     };
