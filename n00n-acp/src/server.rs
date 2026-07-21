@@ -50,6 +50,10 @@ impl Server {
     }
 }
 
+/// Runs the ACP server.
+///
+/// # Errors
+/// Returns an error if stdin reading fails or JSON parsing fails.
 pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
     let (out_tx, out_rx) = flume::unbounded::<Value>();
 
@@ -115,7 +119,7 @@ pub async fn serve(params: AcpParams) -> color_eyre::Result<()> {
 }
 
 fn request_id(v: &Value) -> RequestId {
-    serde_json::from_value(v.clone()).unwrap_or(RequestId::Null)
+    serde_json::from_value(v.clone()).map_or(RequestId::Null, std::convert::identity)
 }
 
 fn handle_request(srv: &mut Server, method: &str, id: RequestId, raw: &Value, params: &AcpParams) {
@@ -229,7 +233,7 @@ fn handle_prompt(srv: &mut Server, raw: &Value, id: &RequestId) -> Result<(), Ac
         mode: session.current_mode.clone(),
         images,
         preamble: Vec::new(),
-        thinking: Default::default(),
+        thinking: n00n_providers::ThinkingConfig::default(),
         fast: false,
         workflow: false,
         prompt: None,
@@ -240,7 +244,11 @@ fn handle_prompt(srv: &mut Server, raw: &Value, id: &RequestId) -> Result<(), Ac
         .input_tx
         .send(input)
         .map_err(|_| AcpError::new(-32603, "session ended"))?;
-    *session.pending_prompt.lock().unwrap() = Some(id.clone());
+    let mut pending = session
+        .pending_prompt
+        .lock()
+        .map_err(|_| AcpError::internal_error().data(Value::String("lock poisoned".to_string())))?;
+    *pending = Some(id.clone());
     Ok(())
 }
 
@@ -281,7 +289,7 @@ fn handle_set_config(srv: &mut Server, raw: &Value) -> Result<AgentResponse, Acp
         .model_tx
         .send(model)
         .map_err(|_| AcpError::new(-32603, "session ended"))?;
-    session.current_model = spec.clone();
+    session.current_model.clone_from(&spec);
 
     Ok(AgentResponse::SetSessionConfigOptionResponse(
         SetSessionConfigOptionResponse::new(vec![methods::model_config_option(
@@ -297,7 +305,7 @@ fn handle_notification(srv: &Server, method: &str) {
             let _ = session.handle.cancel_tx.try_send(());
         }
     } else {
-        debug!(method, "unknown notification")
+        debug!(method, "unknown notification");
     }
 }
 
@@ -400,7 +408,9 @@ fn start_event_pump(
                     continue;
                 }
                 AgentEvent::Done { stop_reason, .. } => {
-                    if let Some(id) = pending.lock().unwrap().take() {
+                    if let Ok(mut guard) = pending.lock()
+                        && let Some(id) = guard.take()
+                    {
                         let resp = PromptResponse::new(translate::map_stop_reason(stop_reason));
                         send(
                             &out_tx,
@@ -410,7 +420,9 @@ fn start_event_pump(
                     continue;
                 }
                 AgentEvent::Error { message } => {
-                    if let Some(id) = pending.lock().unwrap().take() {
+                    if let Ok(mut guard) = pending.lock()
+                        && let Some(id) = guard.take()
+                    {
                         let error = AcpError::internal_error().data(Value::String(message));
                         send(&out_tx, Response::<AgentResponse>::new(id, Err(error)));
                     }
@@ -447,8 +459,12 @@ fn no_session() -> AcpError {
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(raw: &Value) -> Result<T, AcpError> {
-    serde_json::from_value(raw.get("params").cloned().unwrap_or(Value::Null))
-        .map_err(|e| AcpError::invalid_params().data(json_str(&e)))
+    serde_json::from_value(
+        raw.get("params")
+            .cloned()
+            .map_or(Value::Null, std::convert::identity),
+    )
+    .map_err(|e| AcpError::invalid_params().data(json_str(&e)))
 }
 
 fn json_str(e: &impl std::fmt::Display) -> Value {
