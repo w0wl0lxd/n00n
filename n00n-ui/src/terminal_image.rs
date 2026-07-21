@@ -96,35 +96,22 @@ fn detect_protocol(
 
     if let Some(t) = term {
         let t = t.to_lowercase();
-        if t.contains("kitty") || t.contains("ghostty") {
+        if t.starts_with("xterm-kitty") || t.starts_with("xterm-ghostty") {
             return Kitty;
         }
-        if t.starts_with("foot") || t.contains("mlterm") {
+        if t.starts_with("foot") || t.starts_with("mlterm") {
             return Sixel;
         }
-        if t.contains("wezterm")
-            || t.contains("iterm")
-            || t.starts_with("rio")
-            || t.contains("tabby")
-            || t.contains("hyper")
-            || t.contains("bobcat")
-            || t.contains("mintty")
-            || t.contains("vscode")
-        {
+        if t.starts_with("wezterm") || t.starts_with("rio") {
             return Iterm2;
         }
-        if t.contains("xterm")
+        if t.starts_with("xterm")
             && env_present("XTERM_VERSION")
             && (t.contains("340") || t.contains("sixel"))
         {
             return Sixel;
         }
-        if t.contains("konsole")
-            || t.contains("alacritty")
-            || t.contains("contour")
-            || t.contains("warp")
-            || t.contains("apple_terminal")
-        {
+        if t.starts_with("alacritty") || t.starts_with("contour") || t.starts_with("konsole") {
             return Halfblocks;
         }
     }
@@ -336,5 +323,26 @@ mod tests {
             ),
             ProtocolType::Halfblocks
         );
+        // Substring false positives must not be mistaken for supported terminals.
+        for term in ["skitty", "superiterm", "mywezterm", "bigfoot"] {
+            assert_eq!(
+                detect_protocol(Some(term), None, None, no_env),
+                ProtocolType::Halfblocks,
+                "expected {term} to fall back to halfblocks"
+            );
+        }
+    }
+
+    #[test]
+    fn env_markers_outrank_term_name_for_tmux_and_screen() {
+        // In tmux/screen the TERM is overridden, but terminal-specific markers
+        // are preserved and should still select the outer protocol.
+        for term in ["screen-256color", "tmux-256color"] {
+            assert_eq!(
+                detect_protocol(Some(term), None, None, env_with(&["KITTY_WINDOW_ID"])),
+                ProtocolType::Kitty,
+                "expected {term} with KITTY_WINDOW_ID to use Kitty"
+            );
+        }
     }
 }
