@@ -966,6 +966,7 @@ impl EventPump {
                 message,
                 delay_ms,
             } => {
+                self.synth.reset();
                 self.writer.emit_system(
                     "api_retry",
                     serde_json::json!({

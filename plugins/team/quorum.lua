@@ -31,18 +31,20 @@ local function pick_validators(ctx, opts)
 end
 
 local function run_one(ctx, v, artifact, opts)
+  if opts.budget then
+    local budget_ok, budget_err = opts.budget:consume()
+    if not budget_ok then
+      return { approved = false, issues = { budget_err }, model = v.tier }
+    end
+  end
   local model, merr = n00n.agent.resolve_model(ctx, { spec = opts.model, tier = not opts.model and v.tier or nil })
   if merr then
     return { approved = false, issues = { merr }, model = v.tier }
   end
-  local tools, terr = n00n.agent.tools(ctx, { spec = model.spec, audience = "general_sub", include_mcp = true })
-  if terr then
-    return { approved = false, issues = { terr }, model = v.tier }
-  end
   local sess, serr = n00n.agent.session(ctx, {
     model_spec = model.spec,
     system = VALIDATOR_SYSTEM[v.prompt],
-    tools = tools,
+    tools = {},
     audience = "general_sub",
     name = "team-quorum-" .. v.prompt,
     thinking = opts.thinking,

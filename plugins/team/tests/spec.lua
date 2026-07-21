@@ -257,6 +257,39 @@ case("quorum_diverse_approvers_accepted", function()
   assert(v.confidence == 1.0, "all approved -> confidence 1.0")
 end)
 
+case("quorum_validators_receive_no_tools", function()
+  local quorum = require("quorum")
+  local old_resolve = n00n.agent.resolve_model
+  local old_tools = n00n.agent.tools
+  local old_session = n00n.agent.session
+  n00n.agent.resolve_model = function()
+    return { spec = "mock-model" }, nil
+  end
+  n00n.agent.tools = function()
+    error("validator must not build tool definitions")
+  end
+  n00n.agent.session = function(_, opts)
+    assert(next(opts.tools) == nil, "validator tools must be empty")
+    return {
+      prompt = function()
+        return { text = "APPROVED" }
+      end,
+      close = function() end,
+    },
+      nil
+  end
+
+  local ok, result = pcall(function()
+    return quorum.validate({}, "artifact", { n = 1 })
+  end)
+  n00n.agent.resolve_model = old_resolve
+  n00n.agent.tools = old_tools
+  n00n.agent.session = old_session
+
+  assert(ok, "tool-less quorum should succeed: " .. tostring(result))
+  assert(result.accepted, "tool-less validator should approve")
+end)
+
 case("quorum_all_reject_rejected", function()
   local quorum = require("quorum")
   local restore = stub_agent(false)
@@ -279,6 +312,19 @@ case("quorum_same_tier_downweights_confidence", function()
   assert(v.accepted == true, "all approve -> accepted even on one tier")
   assert(v.diverse == false, "single tier -> not diverse")
   assert(v.confidence < 1.0, "non-diverse approval confidence must be down-weighted")
+end)
+
+case("roles_stop_at_aggregate_team_budget", function()
+  local budget = {
+    consume = function()
+      return nil, "team agent-call budget exhausted (16; hard maximum 24)"
+    end,
+  }
+
+  local result = roles.run({}, "developer", "implement", { budget = budget })
+
+  assert(result.ok == false, "budget exhaustion must reject the agent call")
+  assert(result.error:match("budget exhausted"), "budget error must be clear")
 end)
 
 case("swarm_dry_run_terminates_within_max_rounds", function()

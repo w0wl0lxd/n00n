@@ -51,7 +51,7 @@ pub(crate) const PLAN_MODELS: &[&str] = &[
 ];
 
 const CODEX_PLAN_CONTEXT_WINDOW: u32 = 272_000;
-const GPT_5_6_PLAN_CONTEXT_WINDOW: u32 = 372_000;
+const GPT_5_6_PLAN_CONTEXT_WINDOW: u32 = 272_000;
 const SESSION_STATE_TTL: Duration = Duration::from_hours(1);
 const OPENAI_AUTH_DIR: &str = "auth";
 const OPENAI_AUTH_LOCK_FILE: &str = "openai.refresh.lock";
@@ -188,6 +188,40 @@ fn canonical_prompt_cache_key(session_id: &SessionRef) -> String {
     canonical_session_key(session_id).to_string()
 }
 
+fn log_responses_request(
+    transport: &'static str,
+    body: &Value,
+    history_message_count: usize,
+    sent_message_count: usize,
+    chain_hit: bool,
+    full_history_fallback: bool,
+) {
+    let diagnostics = super::responses::request_diagnostics(body);
+    debug!(
+        transport,
+        request_kind = if chain_hit {
+            "incremental"
+        } else {
+            "full_history"
+        },
+        chain_hit,
+        full_history_fallback,
+        history_message_count,
+        message_count = sent_message_count,
+        input_item_count = diagnostics.input_items,
+        request_bytes = diagnostics.request_bytes,
+        text_item_count = diagnostics.text_items,
+        text_bytes = diagnostics.text_bytes,
+        tool_item_count = diagnostics.tool_items,
+        tool_bytes = diagnostics.tool_bytes,
+        image_item_count = diagnostics.image_items,
+        image_bytes = diagnostics.image_bytes,
+        reasoning_item_count = diagnostics.reasoning_items,
+        reasoning_bytes = diagnostics.reasoning_bytes,
+        "sending OpenAI Responses request"
+    );
+}
+
 fn lock_openai_auth(storage: &StateDir) -> Result<File, AgentError> {
     let auth_dir = storage.ensure_subdir(OPENAI_AUTH_DIR)?;
     let file = OpenOptions::new()
@@ -210,6 +244,13 @@ fn incremental_for_state<'a>(
         || state.auth_scope_hash.as_deref() != Some(auth_scope_hash)
         || messages.len() < state.last_message_count
     {
+        if state.last_response_id.is_some() {
+            debug!(
+                chain_reset = true,
+                chain_reset_reason = "request_prefix_scope_changed",
+                "resetting OpenAI response chain"
+            );
+        }
         *state = OpenAiSessionState {
             tools_hash: Some(tools_hash.to_owned()),
             auth_scope_hash: Some(auth_scope_hash.to_owned()),
@@ -220,6 +261,11 @@ fn incremental_for_state<'a>(
     if state.last_message_count > 0 {
         let current_hash = stable_json_hash(&messages[..state.last_message_count])?;
         if state.messages_hash.as_deref() != Some(current_hash.as_str()) {
+            debug!(
+                chain_reset = true,
+                chain_reset_reason = "message_prefix_changed",
+                "resetting OpenAI response chain"
+            );
             *state = OpenAiSessionState {
                 tools_hash: Some(tools_hash.to_owned()),
                 messages_hash: Some(current_hash),
@@ -236,6 +282,11 @@ fn incremental_for_state<'a>(
                 &messages[state.last_message_count + 1..],
             ));
         }
+        debug!(
+            chain_reset = true,
+            chain_reset_reason = "no_new_input_after_response",
+            "resetting OpenAI response chain"
+        );
         *state = OpenAiSessionState {
             tools_hash: Some(tools_hash.to_owned()),
             auth_scope_hash: Some(auth_scope_hash.to_owned()),
@@ -471,41 +522,65 @@ impl OpenAi {
             .await;
         };
 
-        let mut connection = slot.lock().await;
         let auth_generation = self.auth_generation.load(Ordering::Acquire);
-        if connection.as_ref().is_some_and(|connection| {
-            connection.socket.is_expired()
-                || connection.credential_hash != credential_hash
-                || connection.auth_generation != auth_generation
-        }) {
-            *connection = None;
-        }
-        if connection.is_none() {
+        let mut scoped = {
+            let mut connection = slot.lock().await;
+            if connection.as_ref().is_some_and(|connection| {
+                connection.socket.is_expired()
+                    || connection.credential_hash != credential_hash
+                    || connection.auth_generation != auth_generation
+            }) {
+                *connection = None;
+            }
+            match connection.take() {
+                Some(connection) => connection,
+                None => {
+                    let socket = super::websocket::ResponsesWebSocket::connect(
+                        auth,
+                        self.websocket_connect_timeout,
+                    )
+                    .await
+                    .map_err(|error| {
+                        super::websocket::WebSocketAttemptError::transport(error, false, false)
+                    })?;
+                    ScopedResponsesWebSocket {
+                        socket,
+                        credential_hash: credential_hash.to_owned(),
+                        auth_generation,
+                    }
+                }
+            }
+        };
+        let mut result = scoped
+            .socket
+            .stream_message(body, event_tx, stream_timeout)
+            .await;
+        if result
+            .as_ref()
+            .is_err_and(|error| error.reconnect_safe && !error.emitted_event)
+        {
             let socket =
                 super::websocket::ResponsesWebSocket::connect(auth, self.websocket_connect_timeout)
                     .await
                     .map_err(|error| {
                         super::websocket::WebSocketAttemptError::transport(error, false, false)
                     })?;
-            *connection = Some(ScopedResponsesWebSocket {
+            scoped = ScopedResponsesWebSocket {
                 socket,
                 credential_hash: credential_hash.to_owned(),
                 auth_generation,
-            });
+            };
+            result = scoped
+                .socket
+                .stream_message(body, event_tx, stream_timeout)
+                .await;
         }
-        let result = connection
-            .as_mut()
-            .ok_or_else(|| AgentError::Config {
-                message: "OpenAI WebSocket connection was not initialized".into(),
-            })
-            .map_err(|error| {
-                super::websocket::WebSocketAttemptError::transport(error, false, false)
-            })?
-            .socket
-            .stream_message(body, event_tx, stream_timeout)
-            .await;
-        if result.is_err() {
-            *connection = None;
+        if result.is_ok()
+            && scoped.auth_generation == self.auth_generation.load(Ordering::Acquire)
+            && scoped.credential_hash == credential_hash
+        {
+            let mut connection = slot.lock().await;
+            *connection = Some(scoped);
         }
         result
     }
@@ -552,6 +627,12 @@ impl OpenAi {
             } else {
                 None
             };
+            debug!(
+                chain_restore = loaded
+                    .as_ref()
+                    .is_some_and(|state| state.last_response_id.is_some()),
+                "loaded durable OpenAI response chain state"
+            );
             self.session_state
                 .lock()
                 .unwrap()
@@ -671,6 +752,11 @@ impl OpenAi {
                 .response_connection_is_reusable(session_id, &socket_credential_hash)
                 .await
         {
+            debug!(
+                chain_reset = true,
+                chain_reset_reason = "socket_not_reusable",
+                "resetting connection-local OpenAI response chain"
+            );
             self.clear_response_chain(session_id).await;
         }
         let (previous_response_id, incremental_messages) = match self
@@ -699,6 +785,14 @@ impl OpenAi {
             prompt_cache_key.as_deref(),
             store,
         );
+        log_responses_request(
+            "websocket",
+            &body,
+            messages.len(),
+            incremental_messages.len(),
+            previous_response_id.is_some(),
+            false,
+        );
         let connection_slot = self.response_connection_slot(session_id);
         let websocket_result = self
             .stream_websocket(
@@ -713,7 +807,7 @@ impl OpenAi {
         let (response_id, response, chainable) = match websocket_result {
             Ok((response_id, response)) => (response_id, response, true),
             Err(error) if should_fallback_to_http(&error) => {
-                warn!(error = %error.error, "OpenAI Responses WebSocket unavailable; falling back to HTTP");
+                warn!("OpenAI Responses WebSocket unavailable; falling back to HTTP");
                 let fallback_body = if store {
                     body
                 } else {
@@ -728,6 +822,18 @@ impl OpenAi {
                         false,
                     )
                 };
+                log_responses_request(
+                    "http_sse",
+                    &fallback_body,
+                    messages.len(),
+                    if store {
+                        incremental_messages.len()
+                    } else {
+                        messages.len()
+                    },
+                    store && previous_response_id.is_some(),
+                    !store,
+                );
                 match super::responses::do_stream(
                     self.compat.client(),
                     model,
@@ -921,7 +1027,11 @@ impl Provider for OpenAi {
                     return attempt.result;
                 }
 
-                warn!("OpenAI Responses chain was not found; retrying with full history");
+                warn!(
+                    chain_reset = true,
+                    full_history_fallback = true,
+                    "OpenAI Responses chain was not found; retrying with full history"
+                );
                 self.clear_response_chain(session_id).await;
                 return self
                     .run_codex_attempt_with_auth_retry(
@@ -1007,7 +1117,9 @@ impl Provider for OpenAi {
     }
 
     fn adjust_model(&self, model: &mut Model) {
-        if self.is_oauth()
+        let coding_plan_auth =
+            self.current_auth().base_url.as_deref() == Some(auth::CODING_PLAN_BASE_URL);
+        if (coding_plan_auth || self.is_oauth())
             && let Some(context_window) = coding_plan_context_window(&model.id)
         {
             model.context_window = model.context_window.min(context_window);
@@ -1035,6 +1147,7 @@ fn should_clear_response_chain<T>(result: &Result<T, AgentError>, store: bool) -
 mod tests {
     use std::path::Path;
 
+    use futures_lite::StreamExt;
     use tempfile::TempDir;
     use test_case::test_case;
 
@@ -1044,6 +1157,8 @@ mod tests {
     const TOOLS_HASH: &str = "[]";
     const AUTH_SCOPE_HASH: &str = "account";
     const LEGACY_SESSION_ID: &str = "01965087-4c71-7f00-8000-000000000000";
+    const TEST_CREDENTIAL_HASH: &str = "test-credential";
+    const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
     fn provider_with_response_storage(path: &Path) -> OpenAi {
         let auth = Arc::new(Mutex::new(ResolvedAuth::bearer("test-key")));
@@ -1183,10 +1298,10 @@ mod tests {
         assert!(is_codex_model(model_id));
     }
 
-    #[test_case("gpt-5.6", Some(372_000))]
-    #[test_case("gpt-5.6-luna", Some(372_000))]
-    #[test_case("gpt-5.6-terra", Some(372_000))]
-    #[test_case("gpt-5.6-sol", Some(372_000))]
+    #[test_case("gpt-5.6", Some(272_000))]
+    #[test_case("gpt-5.6-luna", Some(272_000))]
+    #[test_case("gpt-5.6-terra", Some(272_000))]
+    #[test_case("gpt-5.6-sol", Some(272_000))]
     #[test_case("gpt-5.5", Some(272_000))]
     #[test_case("gpt-5.4", Some(272_000))]
     #[test_case("gpt-5.2", Some(272_000))]
@@ -1198,6 +1313,22 @@ mod tests {
     #[test_case("gpt-5.4-nano", None ; "non_plan_5_4_nano_rejected")]
     fn coding_plan_context_window_resolves_plan_models(model_id: &str, expected: Option<u32>) {
         assert_eq!(coding_plan_context_window(model_id), expected);
+    }
+
+    #[test_case("gpt-5.6-luna")]
+    #[test_case("gpt-5.6-terra")]
+    #[test_case("gpt-5.6-sol")]
+    fn coding_plan_adjustment_caps_authenticated_gpt_5_6_at_272k(model_id: &str) {
+        let auth = Arc::new(Mutex::new(ResolvedAuth {
+            base_url: Some(auth::CODING_PLAN_BASE_URL.into()),
+            headers: Vec::new(),
+        }));
+        let provider = OpenAi::with_auth(auth, crate::providers::Timeouts::default()).unwrap();
+        let mut model = Model::from_spec(&format!("openai/{model_id}")).unwrap();
+
+        provider.adjust_model(&mut model);
+
+        assert_eq!(model.context_window, 272_000);
     }
 
     #[test]
@@ -1552,6 +1683,10 @@ mod tests {
 
         assert_ne!(legacy.as_str(), canonical.as_str());
         assert_eq!(canonical_prompt_cache_key(&legacy), canonical.as_str());
+        assert_ne!(
+            canonical_prompt_cache_key(&legacy),
+            canonical_prompt_cache_key(&SessionRef::generate())
+        );
 
         let legacy_connection = provider.response_connection_slot(Some(&legacy)).unwrap();
         let canonical_connection = provider.response_connection_slot(Some(&canonical)).unwrap();
@@ -1560,6 +1695,59 @@ mod tests {
         let legacy_operation = provider.response_operation_slot(Some(&legacy)).unwrap();
         let canonical_operation = provider.response_operation_slot(Some(&canonical)).unwrap();
         assert!(Arc::ptr_eq(&legacy_operation, &canonical_operation));
+    }
+
+    #[test]
+    fn cancelled_websocket_attempt_is_not_reused() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (request_tx, request_rx) = flume::bounded(1);
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                let _ = socket.next().await;
+                request_tx.send_async(()).await.unwrap();
+                let _ = socket.next().await;
+            });
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let provider = OpenAi::with_auth(
+                Arc::new(Mutex::new(auth.clone())),
+                crate::providers::Timeouts::default(),
+            )
+            .unwrap();
+            let session = SessionRef::generate();
+            let slot = provider.response_connection_slot(Some(&session)).unwrap();
+            let (event_tx, _event_rx) = flume::unbounded();
+            let body = serde_json::json!({"model":"test","input":[]});
+            let attempt = provider.stream_websocket(
+                Some(Arc::clone(&slot)),
+                &body,
+                &event_tx,
+                &auth,
+                TEST_CREDENTIAL_HASH,
+                TEST_STREAM_TIMEOUT,
+            );
+
+            let cancelled = futures_lite::future::race(
+                async {
+                    let _ = attempt.await;
+                    false
+                },
+                async {
+                    request_rx.recv_async().await.unwrap();
+                    true
+                },
+            )
+            .await;
+
+            assert!(cancelled);
+            assert!(slot.lock().await.is_none());
+            server.await;
+        });
     }
 
     #[test]
@@ -1592,6 +1780,7 @@ mod tests {
             emitted_event: false,
             transport_failure: true,
             request_sent: false,
+            reconnect_safe: false,
         };
         assert!(should_fallback_to_http(&transport));
 
@@ -1610,6 +1799,7 @@ mod tests {
             emitted_event: false,
             transport_failure: true,
             request_sent: false,
+            reconnect_safe: false,
         };
         assert!(!should_fallback_to_http(&auth));
 
@@ -1621,6 +1811,7 @@ mod tests {
             emitted_event: false,
             transport_failure: false,
             request_sent: true,
+            reconnect_safe: false,
         };
         assert!(!should_fallback_to_http(&response_error));
 
@@ -1629,6 +1820,7 @@ mod tests {
             emitted_event: false,
             transport_failure: true,
             request_sent: true,
+            reconnect_safe: false,
         };
         assert!(!should_fallback_to_http(&after_send));
     }

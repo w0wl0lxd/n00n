@@ -32,6 +32,7 @@ pub(crate) struct WebSocketAttemptError {
     pub(crate) emitted_event: bool,
     pub(crate) transport_failure: bool,
     pub(crate) request_sent: bool,
+    pub(crate) reconnect_safe: bool,
 }
 
 impl WebSocketAttemptError {
@@ -41,6 +42,7 @@ impl WebSocketAttemptError {
             emitted_event,
             transport_failure: true,
             request_sent,
+            reconnect_safe: false,
         }
     }
 
@@ -50,6 +52,17 @@ impl WebSocketAttemptError {
             emitted_event,
             transport_failure: false,
             request_sent: true,
+            reconnect_safe: false,
+        }
+    }
+
+    fn reconnect(error: AgentError) -> Self {
+        Self {
+            error,
+            emitted_event: false,
+            transport_failure: true,
+            request_sent: true,
+            reconnect_safe: true,
         }
     }
 }
@@ -216,6 +229,9 @@ impl ResponsesWebSocket {
                     match event.get("type").and_then(Value::as_str) {
                         Some("error") => {
                             let error = error_from_event(&event);
+                            if is_connection_limit_event(&event) && !acc.emitted_event() {
+                                return Err(WebSocketAttemptError::reconnect(error));
+                            }
                             let transport_failure = matches!(&error, AgentError::Io(_));
                             return Err(if transport_failure {
                                 WebSocketAttemptError::transport(error, acc.emitted_event(), true)
@@ -223,17 +239,25 @@ impl ResponsesWebSocket {
                                 WebSocketAttemptError::response(error, acc.emitted_event())
                             });
                         }
-                        Some(event_type)
-                            if acc
-                                .handle_event(event_type, &event, event_tx)
-                                .await
-                                .map_err(|error| {
-                                    WebSocketAttemptError::response(error, acc.emitted_event())
-                                })? =>
-                        {
-                            break;
+                        Some(event_type) => {
+                            match acc.handle_event(event_type, &event, event_tx).await {
+                                Ok(true) => break,
+                                Ok(false) => {}
+                                Err(error)
+                                    if is_connection_limit_event(&event)
+                                        && !acc.emitted_event() =>
+                                {
+                                    return Err(WebSocketAttemptError::reconnect(error));
+                                }
+                                Err(error) => {
+                                    return Err(WebSocketAttemptError::response(
+                                        error,
+                                        acc.emitted_event(),
+                                    ));
+                                }
+                            }
                         }
-                        _ => {}
+                        None => {}
                     }
                 }
                 WsMessage::Ping(payload) => {
@@ -330,6 +354,14 @@ where
         .into()),
         Err(e) => Err(e),
     }
+}
+
+fn is_connection_limit_event(event: &Value) -> bool {
+    event
+        .pointer("/error/code")
+        .or_else(|| event.pointer("/response/error/code"))
+        .and_then(Value::as_str)
+        == Some("websocket_connection_limit_reached")
 }
 
 fn error_from_event(event: &Value) -> AgentError {
@@ -432,6 +464,41 @@ mod tests {
         });
     }
     #[test]
+    fn fake_transport_close_after_send_is_not_synthetic_422() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                let _ = socket.next().await;
+                socket.close(None).await.unwrap();
+            });
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
+                .await
+                .unwrap();
+            let (event_tx, _) = flume::unbounded();
+            let error = connection
+                .stream_message(
+                    &json!({"model":"test","input":[]}),
+                    &event_tx,
+                    Duration::from_secs(2),
+                )
+                .await
+                .unwrap_err();
+            server.await;
+
+            assert!(error.request_sent);
+            assert!(error.transport_failure);
+            assert!(!matches!(error.error, AgentError::Api { status: 422, .. }));
+        });
+    }
+
+    #[test]
     fn websocket_request_includes_handshake_headers() {
         let request =
             responses_websocket_url(Some(crate::providers::openai::auth::CODING_PLAN_BASE_URL))
@@ -518,6 +585,23 @@ mod tests {
             }
             other => panic!("expected AgentError::Api, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn connection_limit_events_require_a_fresh_socket() {
+        let direct = json!({
+            "type": "error",
+            "error": { "code": "websocket_connection_limit_reached" }
+        });
+        let failed = json!({
+            "type": "response.failed",
+            "response": {
+                "error": { "code": "websocket_connection_limit_reached" }
+            }
+        });
+
+        assert!(is_connection_limit_event(&direct));
+        assert!(is_connection_limit_event(&failed));
     }
 
     #[test]

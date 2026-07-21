@@ -2,10 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use n00n_agent::tools::{ToolRegistry, ToolSource, timeout_annotation};
+use n00n_agent::template::env_vars;
+use n00n_agent::tools::{
+    DescriptionContext, ToolAudience, ToolFilter, ToolRegistry, ToolSource, timeout_annotation,
+};
 use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
 use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
 use std::path::Path;
+
+const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 42_000;
 
 fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())
@@ -17,6 +22,32 @@ fn builtins_host() -> (Arc<ToolRegistry>, PluginHost) {
     host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))
         .unwrap();
     (reg, host)
+}
+
+#[test]
+fn builtin_main_tool_definitions_stay_within_prompt_budget() {
+    let (registry, _host) = builtins_host();
+    let definitions = registry.definitions(
+        &env_vars(),
+        &DescriptionContext {
+            filter: &ToolFilter::All,
+            audience: ToolAudience::MAIN,
+            workflow: false,
+        },
+        true,
+    );
+    let bytes = serde_json::to_vec_pretty(&definitions).unwrap().len() + 1;
+
+    for required in ["task", "team", "workflow", "agent_control"] {
+        assert!(
+            registry.has(required),
+            "required tool disappeared: {required}"
+        );
+    }
+    assert!(
+        bytes <= TOOL_DEFINITIONS_BYTE_BUDGET,
+        "builtin main tool definitions use {bytes} bytes; budget is {TOOL_DEFINITIONS_BYTE_BUDGET}"
+    );
 }
 
 fn exec_tool(reg: &ToolRegistry, name: &str, input: serde_json::Value) -> Result<String, String> {

@@ -24,6 +24,7 @@ const DOOM_LOOP_THRESHOLD: usize = 3;
 const DOOM_LOOP_MESSAGE: &str = "You have called this tool with identical input 3 times in a row. You are stuck in a loop. Break out and try a different approach.";
 const MCP_BLOCKED_IN_PLAN: &str = "MCP tools are not available in plan mode";
 const UNKNOWN_TOOL_PREFIX: &str = "unknown tool";
+const TOOL_AUDIENCE_DENIED: &str = "tool is not available to this agent audience";
 
 pub(super) struct RecentCalls(VecDeque<(String, u64)>);
 
@@ -99,6 +100,13 @@ pub async fn run(
         annotation: None,
         written_path: None,
     };
+
+    if entry
+        .as_ref()
+        .is_some_and(|entry| !entry.tool.audience().contains(ctx.audience))
+    {
+        return done_error(TOOL_AUDIENCE_DENIED.into());
+    }
 
     if let Some(entry) = entry {
         let invocation = match entry.tool.parse(input) {
@@ -721,12 +729,49 @@ mod tests {
         fn schema(&self) -> Value {
             serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
         }
+        fn audience(&self) -> crate::tools::ToolAudience {
+            crate::tools::ToolAudience::MAIN
+        }
         fn parse(&self, _input: &Value) -> Result<Box<dyn ToolInvocation>, ParseError> {
             Ok(Box::new(StartProbeInvocation {
                 started: Arc::clone(&self.started),
                 executed: Arc::clone(&self.executed),
             }))
         }
+    }
+
+    #[test]
+    fn hidden_audience_tool_is_not_dispatched() {
+        smol::block_on(async {
+            let mut ctx = crate::tools::test_support::stub_ctx(&AgentMode::Build);
+            ctx.audience = crate::tools::ToolAudience::GENERAL_SUB;
+            let probe = StartProbe::default();
+            let started = Arc::clone(&probe.started);
+            let registry = ToolRegistry::new();
+            registry
+                .register(
+                    Arc::new(probe),
+                    ToolSource::Lua {
+                        plugin: "test".into(),
+                    },
+                )
+                .unwrap();
+
+            let done = run(
+                &registry,
+                None,
+                "t1".into(),
+                START_PROBE_NAME,
+                &serde_json::json!({}),
+                &ctx,
+                Emit::Silent,
+            )
+            .await;
+
+            assert!(done.is_error);
+            assert!(done.output.as_text().contains(TOOL_AUDIENCE_DENIED));
+            assert!(!started.load(Ordering::SeqCst));
+        });
     }
 
     /// A denied tool should still get its preview, but never its `execute`.
