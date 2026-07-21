@@ -4,7 +4,7 @@ Only exception is the UI API, neovim's has baggage.
 
 ## Design
 
-Our goal is to let plugin authors have as much freedom as possible, that's why desiging the APIs should be looked at as simple primitives you combine together.
+Our goal is to let plugin authors have as much freedom as possible, so API design should focus on simple primitives that can be combined.
 
 ## Error convention
 
