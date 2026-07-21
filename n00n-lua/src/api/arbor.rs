@@ -14,6 +14,7 @@ fn value_or_err<T: serde::Serialize>(
     lua.to_value(&json)
 }
 
+#[allow(clippy::similar_names)]
 pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
     let t = lua.create_table()?;
 

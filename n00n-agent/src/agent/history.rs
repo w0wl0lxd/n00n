@@ -32,6 +32,7 @@ impl History {
         }
     }
 
+    #[must_use]
     pub fn restored(messages: Vec<Message>) -> Self {
         Self::restored_with_transcript(messages, Vec::new())
     }
@@ -198,7 +199,7 @@ fn same_message_identity(left: &Message, right: &Message) -> bool {
     }
 }
 
-/// Restored sessions can have orphaned tool_results or unclosed tool_uses
+/// Restored sessions can have orphaned `tool_results` or unclosed `tool_uses`
 /// (e.g. the process was killed mid-turn). The API returns 400 if it sees those.
 fn sanitize_restored(messages: &mut Vec<Message>) {
     let len_before = messages.len();

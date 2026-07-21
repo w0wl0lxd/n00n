@@ -55,17 +55,14 @@ impl CallbackServer {
                 .await
                 .map_err(|e| format!("accept failed: {e}"))?;
 
-            let buf = match smol::future::race(read_headers(&mut stream), async {
+            let Ok(buf) = smol::future::race(read_headers(&mut stream), async {
                 smol::Timer::after(HEADER_READ_TIMEOUT).await;
                 Err("request header timed out".to_owned())
             })
             .await
-            {
-                Ok(buf) => buf,
-                Err(_) => {
-                    let _ = respond(&mut stream, 408, "Request Timeout").await;
-                    continue;
-                }
+            else {
+                let _ = respond(&mut stream, 408, "Request Timeout").await;
+                continue;
             };
             let request = String::from_utf8_lossy(&buf);
 

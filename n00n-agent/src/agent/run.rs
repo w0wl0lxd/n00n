@@ -525,16 +525,16 @@ pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
     let total_bytes: usize = messages
         .iter()
         .flat_map(|m| &m.content)
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.len()),
+        .map(|b| match b {
+            ContentBlock::Text { text } => text.len(),
             ContentBlock::Thinking {
                 thinking,
                 signature,
-            } => Some(thinking.len() + signature.as_ref().map_or(0, String::len)),
-            ContentBlock::RedactedThinking { data } => Some(data.len()),
-            ContentBlock::ToolResult { content, .. } => Some(content.len()),
-            ContentBlock::ToolUse { input, .. } => Some(input.to_string().len()),
-            ContentBlock::Image { .. } => Some(IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN),
+            } => thinking.len() + signature.as_ref().map_or(0, String::len),
+            ContentBlock::RedactedThinking { data } => data.len(),
+            ContentBlock::ToolResult { content, .. } => content.len(),
+            ContentBlock::ToolUse { input, .. } => input.to_string().len(),
+            ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN,
         })
         .sum();
     u32::try_from(total_bytes.max(CHARS_PER_TOKEN) / CHARS_PER_TOKEN).unwrap_or_else(|_| u32::MAX)
