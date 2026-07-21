@@ -108,7 +108,10 @@ pub(crate) fn build_request_body(
 }
 
 fn build_create_event(body: &Value) -> Value {
-    let mut event = body.as_object().cloned().unwrap_or_default();
+    let mut event = body
+        .as_object()
+        .cloned()
+        .unwrap_or_else(serde_json::Map::new);
     event.remove("stream");
     event.insert("type".into(), json!("response.create"));
     Value::Object(event)
@@ -298,11 +301,10 @@ fn ws_err(e: WsError) -> AgentError {
         WsError::Io(io) => AgentError::Io(io),
         WsError::Http(resp) => {
             let status = resp.status().as_u16();
-            let message = resp
-                .body()
-                .as_ref()
-                .map(|b| String::from_utf8_lossy(b).into_owned())
-                .unwrap_or_else(|| "websocket handshake failed".into());
+            let message = resp.body().as_ref().map_or_else(
+                || "websocket handshake failed".into(),
+                |b| String::from_utf8_lossy(b).into_owned(),
+            );
             AgentError::Api { status, message }
         }
         other => AgentError::Api {
@@ -317,7 +319,8 @@ where
     S: futures_lite::AsyncRead + futures_lite::AsyncWrite + Unpin + Send,
 {
     let text = value.to_string();
-    debug!(event = %value["type"].as_str().unwrap_or("unknown"), bytes = text.len(), "sending websocket event");
+    let event_type = value["type"].as_str().map_or_else(|| "unknown", |s| s);
+    debug!(event = %event_type, bytes = text.len(), "sending websocket event");
     ws.send(WsMessage::Text(text.into())).await.map_err(ws_err)
 }
 
@@ -369,13 +372,19 @@ fn error_from_event(event: &Value) -> AgentError {
         .get("error")
         .and_then(Value::as_object)
         .cloned()
-        .unwrap_or_default();
-    let error_type = err.get("type").and_then(Value::as_str).unwrap_or("");
-    let error_code = err.get("code").and_then(Value::as_str).unwrap_or("");
+        .unwrap_or_else(serde_json::Map::new);
+    let error_type = err
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| "");
+    let error_code = err
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| "");
     let raw_message = err
         .get("message")
         .and_then(Value::as_str)
-        .unwrap_or("websocket error");
+        .unwrap_or_else(|| "websocket error");
 
     if error_code == "websocket_connection_limit_reached" {
         return IoError::new(ErrorKind::ConnectionAborted, raw_message).into();
@@ -387,7 +396,11 @@ fn error_from_event(event: &Value) -> AgentError {
     };
 
     let status = if let Some(s) = event.get("status").and_then(Value::as_u64) {
-        s as u16
+        #[allow(clippy::manual_unwrap_or)]
+        match u16::try_from(s) {
+            Ok(v) => v,
+            Err(_) => 500,
+        }
     } else {
         match error_type {
             "overloaded_error" => 529,

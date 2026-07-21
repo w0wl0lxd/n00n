@@ -86,7 +86,7 @@ pub(crate) async fn stream_with_retry(
                 if attempt > MAX_RETRIES {
                     return Err(e);
                 }
-                let delay_ms = delay.as_millis() as u64;
+                let delay_ms = u64::try_from(delay.as_millis()).unwrap_or_else(|_| u64::MAX);
                 warn!(attempt, delay_ms, error = %e, "retryable, will retry");
                 event_tx.send(AgentEvent::Retry {
                     attempt,

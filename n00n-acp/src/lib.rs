@@ -22,6 +22,10 @@ pub struct AcpParams {
     pub yolo: bool,
 }
 
+/// Runs the ACP server with the given parameters.
+///
+/// # Errors
+/// Returns an error if the server fails to start or run.
 pub fn run(params: AcpParams) -> color_eyre::Result<()> {
     smol::block_on(server::serve(params))
 }

@@ -53,7 +53,7 @@ fn ruff_fix(code: String) -> String {
         ],
         &code,
     )
-    .unwrap_or(code);
+    .unwrap_or_else(|| code.clone());
     run_ruff(
         &[
             "format",
@@ -64,7 +64,7 @@ fn ruff_fix(code: String) -> String {
         ],
         &fixed,
     )
-    .unwrap_or(fixed)
+    .unwrap_or_else(|| fixed.clone())
 }
 
 enum BridgeMsg {
@@ -134,6 +134,7 @@ async fn call_lua_tool(lua: Lua, f: Option<Function>, pc: &PendingCall) -> Resul
 /// if err then error(err) end
 /// if result.stdout then print(result.stdout) end
 #[lua_fn(guard = Run, name = "run")]
+#[allow(clippy::too_many_lines)]
 async fn interpreter_run(
     lua: Lua,
     code: String,
@@ -143,7 +144,9 @@ async fn interpreter_run(
     let max_memory_mb: usize = required(&opts, "max_memory_mb")?;
     let on_output: Function = required(&opts, "on_output")?;
     let tools_tbl: Option<Table> = opts.get("tools")?;
-    let fix_with_ruff = opts.get::<Option<bool>>("ruff_fix")?.unwrap_or(false);
+    let fix_with_ruff = opts
+        .get::<Option<bool>>("ruff_fix")?
+        .unwrap_or_else(|| false);
     let code = if fix_with_ruff {
         smol::unblock(move || ruff_fix(code)).await
     } else {

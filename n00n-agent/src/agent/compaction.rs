@@ -69,7 +69,9 @@ pub(super) async fn compact_history(
         }
     }
 
-    Err(last_error.unwrap())
+    Err(last_error.unwrap_or_else(|| AgentError::Config {
+        message: "compaction failed after all attempts".to_string(),
+    }))
 }
 
 fn finish_compact(
@@ -90,15 +92,22 @@ fn finish_compact(
         Message::user("What did we do so far?".into()),
         response.message,
     );
+    #[allow(clippy::unnecessary_lazy_evaluations)]
+    let duration_ms =
+        u64::try_from(compact_start.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX);
     info!(
         model = %model.id,
-        duration_ms = compact_start.elapsed().as_millis() as u64,
+        duration_ms,
         "compaction completed"
     );
 
     response.usage
 }
 
+/// Compacts the conversation history using the provider.
+///
+/// # Errors
+/// Returns an error if the provider fails to stream the compaction response.
 pub async fn compact(
     provider: &dyn n00n_providers::provider::Provider,
     model: &Model,
@@ -213,9 +222,7 @@ fn truncate_oldest_round(messages: &mut Vec<Message>) {
 }
 
 pub(super) fn auto_compact_enabled() -> bool {
-    env::var("N00N_DISABLE_AUTOCOMPACT")
-        .map(|v| v != "1" && v != "true")
-        .unwrap_or(true)
+    env::var("N00N_DISABLE_AUTOCOMPACT").map_or(true, |v| v != "1" && v != "true")
 }
 
 #[cfg(test)]
@@ -265,7 +272,7 @@ mod tests {
         }
 
         fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
-            Box::pin(async { unimplemented!() })
+            Box::pin(async { Ok(vec![]) })
         }
     }
 

@@ -153,6 +153,7 @@ fn inspect(lua: &Lua, lang: String) -> mlua::Result<Table> {
     let node_types = lua.create_table()?;
     let count = language.node_kind_count();
     let mut idx = 1usize;
+    #[allow(clippy::cast_possible_truncation)]
     for id in 0..count as u16 {
         if let Some(name) = language.node_kind_for_id(id) {
             node_types.raw_set(idx, name)?;
@@ -164,6 +165,7 @@ fn inspect(lua: &Lua, lang: String) -> mlua::Result<Table> {
     let fields = lua.create_table()?;
     let field_count = language.field_count();
     let mut fidx = 1usize;
+    #[allow(clippy::cast_possible_truncation)]
     for id in 1..=field_count as u16 {
         if let Some(name) = language.field_name_for_id(id) {
             fields.raw_set(fidx, name)?;
