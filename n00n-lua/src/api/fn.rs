@@ -44,6 +44,7 @@ impl JobStore {
         }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub fn start(
         &mut self,
         cmd: &str,
@@ -116,7 +117,7 @@ impl JobStore {
         thread::Builder::new()
             .name("job-wait".into())
             .spawn(move || {
-                let code = child.wait().map_or(-1, |s| s.code().unwrap_or(-1));
+                let code = child.wait().map_or(-1, |s| s.code().map_or(-1, |c| c));
                 if let Some(h) = stdout_handle {
                     let _ = h.join();
                 }
@@ -259,6 +260,7 @@ fn kill_job(meta: &mut JobMeta) {
 ///   on_exit = function(_, code) print("exit: " .. code) end,
 /// })
 #[lua_fn(guard = Run)]
+#[allow(clippy::needless_pass_by_value)]
 fn jobstart(lua: &Lua, cmd: String, opts: Option<Table>) -> LuaResult<u32> {
     let (cwd, env, on_stdout, on_stderr, on_exit) = match opts {
         Some(ref opts) => {
@@ -540,9 +542,10 @@ mod tests {
             {
                 break;
             }
-            if std::time::Instant::now() > deadline {
-                panic!("should receive exit event for completed job");
-            }
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "should receive exit event for completed job"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }

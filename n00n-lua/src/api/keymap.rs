@@ -27,10 +27,12 @@ pub struct KeymapSnapshot {
 pub struct KeymapReader(Arc<ArcSwap<KeymapSnapshot>>);
 
 impl KeymapReader {
+    #[must_use]
     pub fn empty() -> Self {
         Self(Arc::new(ArcSwap::from_pointee(KeymapSnapshot::default())))
     }
 
+    #[must_use]
     pub fn load(&self) -> arc_swap::Guard<Arc<KeymapSnapshot>> {
         self.0.load()
     }

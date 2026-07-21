@@ -32,6 +32,7 @@ pub enum Language {
 }
 
 impl Language {
+    #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "rust" => Some(Self::Rust),
@@ -65,6 +66,7 @@ impl Language {
         }
     }
 
+    #[must_use]
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext {
             "rs" => Some(Self::Rust),
@@ -98,6 +100,7 @@ impl Language {
         }
     }
 
+    #[must_use]
     pub fn ts_language(&self) -> TsLanguage {
         match self {
             Self::Rust => tree_sitter_rust::LANGUAGE.into(),

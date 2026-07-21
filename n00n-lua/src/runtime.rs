@@ -1451,7 +1451,7 @@ impl LuaRuntime {
             })
             .collect();
 
-        if let Err(e) = self.registry.replace_plugin(&name, registry_entries) {
+        if let Err(e) = self.registry.replace_plugin(&name, &registry_entries) {
             self.discard_pending(pending);
             return Err(match e {
                 RegistryError::NameConflict { name: n, .. } => PluginError::NameConflict {
@@ -2548,7 +2548,7 @@ mod tests {
     fn task_scope_drop_clears_buf_handler_slots() {
         let lua = Lua::new();
         let scope = TaskScope::new(&lua, task_cell(None));
-        let handle = with_task_bufs(&lua, |store| store.create());
+        let handle = with_task_bufs(&lua, super::super::api::ui::buf::BufferStore::create);
         let shared = Arc::clone(&handle.buf);
         lua.globals()
             .set("buf", lua.create_userdata(handle.clone()).unwrap())
@@ -2637,7 +2637,7 @@ mod tests {
         smol::block_on(ex.run(async {
             let g = Rc::new(gate());
             let (release_tx, release_rx) = flume::unbounded::<()>();
-            let tasks: Vec<_> = (0..MAX_INFLIGHT_TOOLS + 1)
+            let tasks: Vec<_> = (0..=MAX_INFLIGHT_TOOLS)
                 .map(|_| {
                     let g = Rc::clone(&g);
                     let release_rx = release_rx.clone();
@@ -2693,7 +2693,7 @@ mod tests {
     }
 
     fn enqueue_dummy(lua: &Lua) -> RegistryKey {
-        let func = lua.create_function(|_, _: ()| Ok(())).unwrap();
+        let func = lua.create_function(|_, (): ()| Ok(())).unwrap();
         lua.create_registry_value(func).unwrap()
     }
 
@@ -2717,7 +2717,7 @@ mod tests {
     fn enqueue_async_task_missing_spawn_queue_errors() {
         let lua = Lua::new();
         let key = lua
-            .create_registry_value(lua.create_function(|_, _: ()| Ok(())).unwrap())
+            .create_registry_value(lua.create_function(|_, (): ()| Ok(())).unwrap())
             .unwrap();
         let err = enqueue_async_task(&lua, key).unwrap_err();
         assert!(err.to_string().contains(SPAWN_QUEUE_NOT_INIT));
@@ -2770,7 +2770,7 @@ mod tests {
     #[test]
     fn enqueue_async_task_extends_expired_parent_to_minimum_deadline() {
         let lua = enqueue_test_lua();
-        let parent_deadline = Instant::now() - Duration::from_secs(10);
+        let parent_deadline = Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
         let _h = set_active(
             &lua,
             TaskCell::new(CancelToken::none(), Some(parent_deadline), None),
@@ -2790,7 +2790,7 @@ mod tests {
     #[test]
     fn enqueue_async_task_preserves_longer_parent_deadline() {
         let lua = enqueue_test_lua();
-        let parent_deadline = Instant::now() + Duration::from_secs(600);
+        let parent_deadline = Instant::now() + Duration::from_mins(10);
         let _h = set_active(
             &lua,
             TaskCell::new(CancelToken::none(), Some(parent_deadline), None),

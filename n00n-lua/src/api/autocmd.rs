@@ -63,6 +63,7 @@ fn pattern_matches(patterns: Option<&[String]>, fired: Option<&str>) -> bool {
 /// `data` is shared across callbacks (nvim does the same), but each callback
 /// gets its own `ev` table, so one plugin's mutation cannot leak into the
 /// next.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn dispatch(lua: &Lua, event: &str, pattern: Option<&str>, data: Value) {
     let Ok(_guard) = DepthGuard::enter(lua, "autocmd", event) else {
         tracing::warn!(event, "autocmd dispatch exceeded max depth, skipping");
@@ -145,10 +146,11 @@ fn parse_string_or_seq(value: Value, what: &str) -> LuaResult<Vec<String>> {
 ///   end,
 /// })
 #[lua_fn]
+#[allow(clippy::needless_pass_by_value)]
 fn create_autocmd(lua: &Lua, #[ctx] plugin: Arc<str>, event: Value, opts: Table) -> LuaResult<u64> {
     let events = parse_string_or_seq(event, "event")?;
     let callback: Function = opts.get("callback")?;
-    let once: bool = opts.get("once").unwrap_or(false);
+    let once: bool = opts.get("once").map_or(false, |v| v);
     let patterns = match opts.get::<Value>("pattern")? {
         Value::Nil => None,
         v => Some(parse_string_or_seq(v, "pattern")?),
@@ -180,6 +182,7 @@ fn create_autocmd(lua: &Lua, #[ctx] plugin: Arc<str>, event: Value, opts: Table)
 /// @example
 /// n00n.api.del_autocmd(id)
 #[lua_fn]
+#[allow(clippy::unnecessary_wraps)]
 fn del_autocmd(lua: &Lua, id: u64) -> LuaResult<()> {
     if let Some(mut store) = lua.app_data_mut::<AutocmdStore>() {
         store.remove(id);
