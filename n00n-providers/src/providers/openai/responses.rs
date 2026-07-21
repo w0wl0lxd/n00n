@@ -21,6 +21,7 @@ pub(crate) fn build_body(
     tools: &Value,
     previous_response_id: Option<&str>,
     prompt_cache_key: Option<&str>,
+    store: bool,
 ) -> Value {
     let input = convert_input(messages);
     let wire_tools = convert_tools(tools);
@@ -30,7 +31,7 @@ pub(crate) fn build_body(
         "instructions": system,
         "input": input,
         "stream": true,
-        "store": false,
+        "store": store,
         "include": ["reasoning.encrypted_content"],
         "reasoning": {"summary": "auto"},
     });
@@ -205,6 +206,7 @@ pub(crate) struct ResponseAccumulator {
     usage: TokenUsage,
     stop_reason: Option<StopReason>,
     is_first_content: bool,
+    emitted_event: bool,
 }
 
 impl ResponseAccumulator {
@@ -225,11 +227,16 @@ impl ResponseAccumulator {
             usage: TokenUsage::default(),
             stop_reason: None,
             is_first_content: true,
+            emitted_event: false,
         }
     }
 
     pub fn response_id(&self) -> Option<&str> {
         self.response_id.as_deref()
+    }
+
+    pub fn emitted_event(&self) -> bool {
+        self.emitted_event
     }
 
     pub async fn handle_event(
@@ -255,6 +262,7 @@ impl ResponseAccumulator {
                     };
                     if !delta.is_empty() {
                         self.text.push_str(&delta);
+                        self.emitted_event = true;
                         event_tx
                             .send_async(ProviderEvent::TextDelta { text: delta })
                             .await?;
@@ -271,6 +279,7 @@ impl ResponseAccumulator {
                     let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
                     let name = item["name"].as_str().unwrap_or_default().to_string();
                     if !name.is_empty() {
+                        self.emitted_event = true;
                         event_tx
                             .send_async(ProviderEvent::ToolUseStart {
                                 id: call_id.clone(),
@@ -320,6 +329,7 @@ impl ResponseAccumulator {
                     let processed = pp["processed"].as_u64().unwrap_or(0) as u32;
                     let total = pp["total"].as_u64().unwrap_or(0) as u32;
                     let cache = pp["cache"].as_u64().unwrap_or(0) as u32;
+                    self.emitted_event = true;
                     event_tx
                         .send_async(ProviderEvent::PromptProgress {
                             processed,
@@ -378,6 +388,7 @@ impl ResponseAccumulator {
                             acc.arguments = arguments;
                         }
                         if should_emit_start {
+                            self.emitted_event = true;
                             event_tx
                                 .send_async(ProviderEvent::ToolUseStart {
                                     id: acc.call_id.clone(),
@@ -387,6 +398,7 @@ impl ResponseAccumulator {
                         }
                     } else {
                         if !name.is_empty() {
+                            self.emitted_event = true;
                             event_tx
                                 .send_async(ProviderEvent::ToolUseStart {
                                     id: call_id.clone(),
@@ -409,6 +421,7 @@ impl ResponseAccumulator {
                     && !delta.is_empty()
                 {
                     self.reasoning_summary_text.push_str(delta);
+                    self.emitted_event = true;
                     event_tx
                         .send_async(ProviderEvent::ThinkingDelta {
                             text: delta.to_string(),
@@ -1238,9 +1251,11 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             &json!([]),
             Some("resp_1"),
             Some("session_1"),
+            true,
         );
         assert_eq!(body["previous_response_id"], "resp_1");
         assert_eq!(body["prompt_cache_key"], "session_1");
+        assert_eq!(body["store"], true);
         assert_eq!(body["reasoning"], json!({"summary":"auto"}));
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
     }

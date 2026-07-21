@@ -45,6 +45,7 @@ use crate::input::InputReader;
 
 use crate::storage_writer::StorageWriter;
 use crate::terminal;
+use crate::terminal_image;
 use ratatui_image::picker::Picker;
 
 const ANIMATION_INTERVAL_MS: u64 = 16;
@@ -390,13 +391,7 @@ impl<'t> EventLoop<'t> {
         }));
         let bg = spawn_model_fetch(&model_slot, timeouts);
 
-        let picker = match Picker::from_query_stdio() {
-            Ok(p) => Arc::new(p),
-            Err(err) => {
-                warn!(%err, "terminal image detection failed; falling back to halfblocks");
-                Arc::new(Picker::halfblocks())
-            }
-        };
+        let picker = Arc::new(terminal_image::picker());
 
         let ctx = SpawnCtx {
             storage,
@@ -603,7 +598,7 @@ impl<'t> EventLoop<'t> {
             return;
         }
         let app = &mut self.sessions[self.focused].app;
-        if app.status != Status::Streaming || !app.has_content() {
+        if app.status != Status::Streaming {
             return;
         }
         app.save_session();
@@ -1060,6 +1055,21 @@ impl<'t> EventLoop<'t> {
         match action {
             Action::SendMessage(input) => {
                 let rt = &mut self.sessions[idx];
+                match n00n_storage::sessions::openai_response_chain_parent_exists(
+                    &rt.app.storage,
+                    rt.app.state.session.id,
+                ) {
+                    Ok(false) => {
+                        let mut initial_session = rt.app.state.session.clone();
+                        if let Err(error) = initial_session.save(&rt.app.storage) {
+                            warn!(%error, "failed to persist session before provider request");
+                        }
+                    }
+                    Err(error) => {
+                        warn!(%error, "failed to check session persistence before provider request");
+                    }
+                    Ok(true) => {}
+                }
                 let mut input = *input;
                 input.preamble = rt.app.shell.drain_results();
                 let run_id = rt.app.run_id;

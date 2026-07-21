@@ -8,8 +8,18 @@ use tracing::warn;
 use crate::cancel::CancelToken;
 use crate::{AgentError, AgentEvent, EventSender};
 
-async fn forward_provider_events(prx: flume::Receiver<ProviderEvent>, event_tx: &EventSender) {
+async fn forward_provider_events(
+    prx: flume::Receiver<ProviderEvent>,
+    event_tx: &EventSender,
+) -> bool {
+    let mut emitted_output = false;
     while let Ok(pe) = prx.recv_async().await {
+        emitted_output |= matches!(
+            pe,
+            ProviderEvent::TextDelta { .. }
+                | ProviderEvent::ThinkingDelta { .. }
+                | ProviderEvent::ToolUseStart { .. }
+        );
         let ae = match pe {
             ProviderEvent::TextDelta { text } => AgentEvent::TextDelta { text },
             ProviderEvent::ThinkingDelta { text } => AgentEvent::ThinkingDelta { text },
@@ -28,6 +38,7 @@ async fn forward_provider_events(prx: flume::Receiver<ProviderEvent>, event_tx: 
             break;
         }
     }
+    emitted_output
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -61,11 +72,11 @@ pub(crate) async fn stream_with_retry(
         )
         .await;
         drop(ptx);
-        let _ = forwarder.await;
+        let emitted_output = forwarder.await;
         match result {
             Ok(r) => return Ok(r),
             Err(AgentError::Cancelled) => return Err(AgentError::Cancelled),
-            Err(e) if e.is_retryable() => {
+            Err(e) if e.is_retryable() && !emitted_output => {
                 if e.should_rotate_key()
                     && let Ok(true) = provider.rotate_key().await
                 {
@@ -95,5 +106,52 @@ pub(crate) async fn stream_with_retry(
             }
             Err(e) => return Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Envelope;
+
+    #[test]
+    fn forwarded_content_marks_attempt_as_non_retryable() {
+        smol::block_on(async {
+            let (provider_tx, provider_rx) = flume::unbounded();
+            let (agent_tx, _agent_rx) = flume::unbounded::<Envelope>();
+            let event_tx = EventSender::new(agent_tx, 1);
+            provider_tx
+                .send(ProviderEvent::PromptProgress {
+                    processed: 1,
+                    total: 2,
+                    cache: 0,
+                })
+                .unwrap();
+            provider_tx
+                .send(ProviderEvent::TextDelta { text: "a".into() })
+                .unwrap();
+            drop(provider_tx);
+
+            assert!(forward_provider_events(provider_rx, &event_tx).await);
+        });
+    }
+
+    #[test]
+    fn prompt_progress_alone_allows_retry() {
+        smol::block_on(async {
+            let (provider_tx, provider_rx) = flume::unbounded();
+            let (agent_tx, _agent_rx) = flume::unbounded::<Envelope>();
+            let event_tx = EventSender::new(agent_tx, 1);
+            provider_tx
+                .send(ProviderEvent::PromptProgress {
+                    processed: 1,
+                    total: 2,
+                    cache: 0,
+                })
+                .unwrap();
+            drop(provider_tx);
+
+            assert!(!forward_provider_events(provider_rx, &event_tx).await);
+        });
     }
 }
