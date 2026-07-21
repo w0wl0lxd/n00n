@@ -21,6 +21,7 @@ use super::{
 use crate::animation::spinner_str;
 use crate::components::keybindings::key;
 use crate::markdown::{hr_line, plain_lines, text_to_lines, truncate_output};
+use crate::mascot::Mascot;
 use crate::render_worker::RenderWorker;
 use crate::selection::Selection;
 use crate::splash::{ColorTransition, Splash};
@@ -78,6 +79,7 @@ pub struct MessagesPanel {
     theme_generation: u64,
     highlight_segment: Option<usize>,
     idle_splash: Splash,
+    mascot: Mascot,
     accent: ColorTransition,
     expanded_tools: HashMap<String, SectionFlags>,
     expanded_compactions: HashSet<String>,
@@ -163,6 +165,7 @@ impl MessagesPanel {
             theme_generation: theme::generation(),
             highlight_segment: None,
             idle_splash: Splash::new(ui_config.splash_animation),
+            mascot: Mascot::new(ui_config.mascot),
             accent: ColorTransition::new(theme::current().mode_build),
             expanded_tools: HashMap::new(),
             expanded_compactions: HashSet::new(),
@@ -924,7 +927,9 @@ impl MessagesPanel {
         self.toggle_tool_expansion(&tool_id, truncation)
     }
 
-    pub fn on_mouse(&mut self, _column: u16, _row: u16) {}
+    pub fn on_mouse(&mut self, column: u16, row: u16) {
+        self.mascot.on_mouse(column, row);
+    }
 
     fn toggle_compaction(&mut self, id: &str) -> bool {
         if !self.expanded_compactions.remove(id) {
@@ -1034,7 +1039,13 @@ impl MessagesPanel {
 
         if self.show_idle_splash() {
             let accent = self.accent.resolve();
-            self.idle_splash.render(area, frame.buffer_mut(), accent);
+            let theme = theme::current();
+            if self.mascot.enabled() && area.height > 18 {
+                self.mascot.tick(area);
+                self.mascot.render(area, frame.buffer_mut(), &theme, accent);
+            } else {
+                self.idle_splash.render(area, frame.buffer_mut(), accent);
+            }
             return;
         }
 
