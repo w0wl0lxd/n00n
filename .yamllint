@@ -1,0 +1,9 @@
+extends: default
+
+rules:
+  # GitHub Actions uses `on:` and boolean values that yamllint's `truthy`
+  # rule mis-flags, and does not require the `---` document start.
+  document-start: disable
+  truthy: disable
+  line-length:
+    max: 120
