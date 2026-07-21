@@ -137,6 +137,7 @@ mod tests {
             Box::pin(async {
                 Err(AgentError::RequestSent {
                     message: "fake transport closed after send".into(),
+                    metadata: None,
                 })
             })
         }

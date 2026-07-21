@@ -10,7 +10,8 @@ use tracing::{debug, warn};
 
 use crate::providers::ResolvedAuth;
 use crate::{
-    AgentError, ContentBlock, Message, ProviderEvent, Role, StopReason, StreamResponse, TokenUsage,
+    AgentError, ContentBlock, Message, ProviderEvent, RequestDeliveryMetadata,
+    RequestDeliveryPhase, Role, StopReason, StreamResponse, TokenUsage,
 };
 
 const RESPONSES_PATH: &str = "/responses";
@@ -229,6 +230,7 @@ fn suppress_retry_after_response(error: AgentError) -> AgentError {
     if error.is_retryable() {
         AgentError::RequestSent {
             message: error.to_string(),
+            metadata: None,
         }
     } else {
         error
@@ -291,12 +293,36 @@ pub(crate) struct ResponseAccumulator {
     text: String,
     reasoning_summary_text: String,
     response_id: Option<String>,
+    accepted: bool,
     reasoning_items: Vec<(u64, Value)>,
     tool_accumulators: Vec<ToolAccumulator>,
     usage: TokenUsage,
     stop_reason: Option<StopReason>,
     is_first_content: bool,
     emitted_event: bool,
+}
+
+pub(crate) fn is_semantic_progress_event(event_type: &str, data: &Value) -> bool {
+    match event_type {
+        "response.created" => data.get("response").is_some_and(Value::is_object),
+        "response.in_progress" => {
+            data.get("response").is_some_and(Value::is_object)
+                || data.get("prompt_progress").is_some_and(Value::is_object)
+        }
+        "response.output_text.delta" | "response.reasoning_summary_text.delta" => data
+            .get("delta")
+            .and_then(Value::as_str)
+            .is_some_and(|delta| !delta.is_empty()),
+        "response.function_call_arguments.delta" => data.get("delta").is_some_and(|delta| {
+            delta.as_str().is_some_and(|delta| !delta.is_empty())
+                || delta.as_object().is_some_and(|delta| !delta.is_empty())
+        }),
+        "response.output_item.added" | "response.output_item.done" => {
+            data.get("item").is_some_and(Value::is_object)
+        }
+        "response.reasoning_summary_part.added" => data.get("part").is_some_and(Value::is_object),
+        _ => false,
+    }
 }
 
 impl ResponseAccumulator {
@@ -312,6 +338,7 @@ impl ResponseAccumulator {
             text: String::new(),
             reasoning_summary_text: String::new(),
             response_id: None,
+            accepted: false,
             reasoning_items: Vec::new(),
             tool_accumulators: Vec::new(),
             usage: TokenUsage::default(),
@@ -329,6 +356,17 @@ impl ResponseAccumulator {
         self.emitted_event
     }
 
+    pub fn delivery_metadata(&self) -> RequestDeliveryMetadata {
+        let phase = if self.accepted || self.response_id.is_some() {
+            RequestDeliveryPhase::Accepted
+        } else {
+            RequestDeliveryPhase::SentAwaitingAcceptance
+        };
+        let mut metadata = RequestDeliveryMetadata::new(phase);
+        metadata.response_id.clone_from(&self.response_id);
+        metadata
+    }
+
     #[allow(clippy::too_many_lines)]
     pub async fn handle_event(
         &mut self,
@@ -336,8 +374,12 @@ impl ResponseAccumulator {
         data: &Value,
         event_tx: &Sender<ProviderEvent>,
     ) -> Result<bool, AgentError> {
+        if event_type == "response.created" {
+            self.accepted = true;
+        }
         if let Some(response_id) = data["response"]["id"].as_str() {
             self.response_id = Some(response_id.to_owned());
+            self.accepted = true;
         }
 
         match event_type {
@@ -700,9 +742,19 @@ pub(crate) async fn parse_sse(
     let mut deadline = Instant::now() + stream_timeout;
     let mut current_event = String::new();
 
-    while let Some(line) =
-        crate::providers::next_sse_line(&mut lines, &mut deadline, stream_timeout).await?
-    {
+    loop {
+        let line = match crate::providers::next_sse_line(&mut lines, &mut deadline, stream_timeout)
+            .await
+        {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) => {
+                return Err(AgentError::RequestSent {
+                    message: error.to_string(),
+                    metadata: Some(acc.delivery_metadata()),
+                });
+            }
+        };
         if line.is_empty() {
             current_event.clear();
             continue;
@@ -755,11 +807,14 @@ pub(crate) async fn parse_sse(
     }
 
     if acc.stop_reason.is_none() {
-        return Err(IoError::new(
+        let error = IoError::new(
             ErrorKind::UnexpectedEof,
             "Responses API stream ended without a terminal event",
-        )
-        .into());
+        );
+        return Err(AgentError::RequestSent {
+            message: error.to_string(),
+            metadata: Some(acc.delivery_metadata()),
+        });
     }
 
     let response_id = acc.response_id().map(ToOwned::to_owned);
@@ -823,7 +878,7 @@ fn parse_usage(u: &Value) -> TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_lite::io::Cursor;
+    use futures_lite::io::{AsyncReadExt, AsyncWriteExt, Cursor};
     use serde_json::json;
 
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_mins(5);
@@ -1506,8 +1561,75 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
                     .await;
             assert!(matches!(
                 resp,
-                Err(AgentError::Io(error)) if error.kind() == ErrorKind::UnexpectedEof
+                Err(AgentError::RequestSent {
+                    metadata: Some(crate::RequestDeliveryMetadata {
+                        phase: crate::RequestDeliveryPhase::SentAwaitingAcceptance,
+                        ..
+                    }),
+                    ..
+                })
             ));
+        });
+    }
+
+    #[test]
+    #[allow(clippy::large_futures)]
+    fn partial_sse_eof_preserves_response_id_without_a_second_post() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = smol::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut chunk).await.unwrap();
+                    assert_ne!(read, 0);
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                assert!(request.starts_with(b"POST /responses HTTP/1.1\r\n"));
+
+                let sse = "event: response.created\ndata: {\"response\":{\"id\":\"resp_partial\"}}\n\nevent: response.output_text.delta\ndata: {\"delta\":\"partial\"}\n\n";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{sse}",
+                    sse.len() + 16
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.flush().await.unwrap();
+            });
+            let client = HttpClient::new().unwrap();
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}")),
+                headers: Vec::new(),
+            };
+            let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
+            let (event_tx, _event_rx) = flume::unbounded();
+            let error = do_stream(
+                &client,
+                &model,
+                &json!({"model":"gpt-5.6","input":[],"stream":true}),
+                &event_tx,
+                &auth,
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap_err();
+            server.await;
+
+            assert!(
+                matches!(
+                    &error,
+                    AgentError::RequestSent {
+                        metadata: Some(crate::RequestDeliveryMetadata {
+                            phase: crate::RequestDeliveryPhase::Accepted,
+                            response_id: Some(response_id),
+                            ..
+                        }),
+                        ..
+                    } if response_id == "resp_partial"
+                ),
+                "unexpected error: {error:?}"
+            );
         });
     }
 
