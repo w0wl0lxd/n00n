@@ -1,25 +1,84 @@
 #!/usr/bin/env bash
 #
-# Pre-commit secret scanner. Blocks commits that would introduce secrets by
-# scanning only the staged changes with gitleaks.
+# Pre-commit checks. Each check scans only the staged changes and blocks the
+# commit on problems. A check is skipped (with a warning) when its tool is not
+# installed, so the hook never hard-fails a contributor who lacks the
+# toolchain. Run `nix develop` or `just setup-git-hooks` to get the tools.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
-CONFIG="$ROOT/.gitleaks.toml"
+fail=0
 
-if ! command -v gitleaks >/dev/null 2>&1; then
-  echo "gitleaks not found on PATH; skipping secret scan." >&2
-  echo "Enable it with 'nix develop' or 'just setup-git-hooks', then install gitleaks." >&2
-  exit 0
+staged_names() {
+  git diff --cached --name-only --diff-filter=ACM -- "$@"
+}
+
+# --- Secrets (gitleaks) -------------------------------------------------
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect \
+    --staged \
+    --redact \
+    --no-banner \
+    --config "$ROOT/.gitleaks.toml"; then
+    echo "gitleaks detected a secret in your staged changes; commit blocked." >&2
+    echo "Remove the secret, or run 'git commit --no-verify' to bypass (not recommended)." >&2
+    fail=1
+  fi
+else
+  echo "skip: gitleaks not installed (run 'just setup-git-hooks')." >&2
 fi
 
-if ! gitleaks protect \
-  --staged \
-  --redact \
-  --no-banner \
-  --config "$CONFIG"; then
+# --- Rust formatting (rustfmt) -----------------------------------------
+mapfile -t rs_files < <(staged_names '*.rs')
+if [ ${#rs_files[@]} -gt 0 ]; then
+  if command -v rustfmt >/dev/null 2>&1; then
+    tmp="$(mktemp)"
+    for f in "${rs_files[@]}"; do
+      git show ":$f" > "$tmp"
+      if ! rustfmt --edition 2024 --check "$tmp" >/dev/null 2>&1; then
+        echo "rustfmt: $f is not formatted. Run 'cargo fmt' and stage again." >&2
+        fail=1
+      fi
+    done
+    rm -f "$tmp"
+  else
+    echo "skip: rustfmt not installed." >&2
+  fi
+fi
+
+# --- Lua formatting (stylua) -------------------------------------------
+mapfile -t lua_files < <(staged_names '*.lua')
+if [ ${#lua_files[@]} -gt 0 ]; then
+  if command -v stylua >/dev/null 2>&1; then
+    tmp="$(mktemp)"
+    for f in "${lua_files[@]}"; do
+      git show ":$f" > "$tmp"
+      if ! stylua --check "$tmp" >/dev/null 2>&1; then
+        echo "stylua: $f is not formatted. Run 'stylua plugins/' and stage again." >&2
+        fail=1
+      fi
+    done
+    rm -f "$tmp"
+  else
+    echo "skip: stylua not installed." >&2
+  fi
+fi
+
+# --- Hygiene: merge conflict markers -----------------------------------
+conflict=0
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  if git show ":$f" | grep -Eq '^(<<<<<<<|>>>>>>>)'; then
+    echo "conflict markers found in $f" >&2
+    conflict=1
+  fi
+done < <(staged_names)
+if [ "$conflict" -eq 1 ]; then fail=1; fi
+
+if [ "$fail" -ne 0 ]; then
   echo "" >&2
-  echo "gitleaks detected a secret in your staged changes; commit blocked." >&2
-  echo "Remove the secret, or run 'git commit --no-verify' to bypass (not recommended)." >&2
-  exit 1
+  echo "pre-commit checks failed; commit blocked." >&2
+  exit "$fail"
 fi
+
+exit 0

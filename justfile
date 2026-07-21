@@ -34,6 +34,14 @@ gen-docs:
 gen-docs-check:
     cargo run -p n00n-docgen -- --check
 
+docs: gen-docs
+docs-check: gen-docs-check
+
+# Aggregate changelog.d fragments into CHANGELOG.md (VERSION defaults to the
+# workspace version in Cargo.toml).
+changelog VERSION:
+    ./scripts/build-changelog.sh {{VERSION}}
+
 machete:
     cargo machete
 

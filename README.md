@@ -1,54 +1,52 @@
+# n00n
 
-**n00n** is an AI coding agent optimized for minimal use of context tokens, while providing a great user experience.
+An AI coding agent built for minimal context-token use and a fast, transparent terminal experience.
+
+n00n is a fork of [maki](https://github.com/tontinton/maki) with its own direction: a Neovim-style Lua plugin system, lossless [TOON](https://github.com/w0wl0lxd/tooned) re-encoding of tool-call data, and an ACP server for editor integrations.
+
+## Why n00n
+
+- Context efficiency first. n00n spends tokens on the work, not on repeating your codebase back to the model.
+- Native Rust TUI. No JavaScript runtime. Immediate startup, smooth at 60 FPS, light on memory.
+- You stay in control. Token counts, costs, and requested permissions are shown, not buried behind "the model got smarter."
 
 ## Features
 
 ### Context efficiency
 
-* `index` tool - uses [tree-sitter](https://tree-sitter.github.io/tree-sitter) to parse supported programming languages to produce a high level skeleton of a file, with exact start-end lines of each item (e.g. a function's implementation is in lines 150-165). Encouraged to be used before reads. For my usage it adds 59 tok/turn but saves 224 tok/turn on read calls, saving 165 tok/turn.
-* `code_execution` tool - uses [monty](https://github.com/pydantic/monty) to run an interpreter that has all other tools available as async functions. N00n uses it to filter / summarize / transform / pipe data to other tools as input, without it ever reaching and polluting the context window. Sandbox limited by time & memory.
-* `tooned` - uses [tooned](https://github.com/w0wl0lxd/tooned) does lossless conversion to TOON for any compatible data format, lowering token usage on JSON shaped data/files.
-* `toon-lsp` - uses [toon-lsp](https://github.com/w0wl0lxd/toon-lsp) to interact with TOON compatible data at a symbol level.  
-* `task` tool - when delegating work to subagents, the AI chooses whether to run weak / medium / strong model of used provider. Think haiku / sonnet / opus.
-* `team` tool - [ALMAS](https://arxiv.org/abs/2510.03463) based team / workflow for sub-agent loop engineering.
-* System prompt, tool descriptions, and tool examples are all concise, I've made sure not to bloat your context.
-* Uses [rtk](https://github.com/rtk-ai/rtk) if you have it installed, disable with `--no-rtk`. Saves ~50% of bash output tokens. Remember bash is just 12% of total token usage, so 6% is nice, but saving on reads (65% of total) by using `index` gave me more benefit. I think I'll do bash output filtering like this myself in a future release.
+- `index` tool - tree-sitter parses supported languages into a compact skeleton (imports, type defs, function signatures with exact line ranges), so the model reads structure first and only the lines it needs.
+- `code_execution` tool - a sandboxed interpreter (monty) that exposes every other tool as an async function. The model filters, summarizes, and pipes data inside the sandbox, so intermediate results never reach your context window. Bounded by time and memory.
+- `tooned` - lossless conversion of JSON-shaped tool data to TOON when it is smaller, cutting token usage on structured payloads (API responses, config files, db rows).
+- `task` tool - subagents pick a model tier (weak / medium / strong) per job, like haiku / sonnet / opus.
+- Concise system prompt, tool descriptions, and examples - tuned to avoid bloating context.
+- Optional [rtk](https://github.com/rtk-ai/rtk) integration to compress bash output. Disable with `--no-rtk`.
 
 ### User experience
 
-* SUPER fast startup, 60 FPS, and light on memory. Not running any JavaScript, using [ratatui](https://ratatui.rs) for TUI. Even the splash screen animation uses SIMD.
-* Extend with Neovim-like Lua plugins - [Builtin plugins](https://github.com/w0wl0lxd/n00n/tree/main/plugins), [Lua API reference](https://github.com/w0wl0lxd/n00n/docs/lua-api/).
-* Philosophy of not hiding anything - while other coding agents hide information as models improve (e.g. not showing number of lines read), n00n leaves you in control.
-* UI fits everything well on my small screen laptop.
-* Full visibility of subagents - each subagent gets their own "chat window" you can easily navigate between using `/tasks` (Ctrl-X), or Ctrl-N/P.
-* Sensible permission system - when the agent runs `git diff && rm -rf /`, what do you think will happen in your current coding agent? It will treat it as `git *`. N00n uses tree-sitter to parse the bash command and figure out the permissions requested are `git *` and `rm *`. Disable using `--yolo`.
-* SSRF protection on `webfetch` calls.
-* A `memory` tool to keep long term context, just tell n00n to remember something (sometimes it uses it automatically). Managed via `/memory` (view / edit / delete memories).
-* Fuzzy search with Ctrl-F.
-* `/btw` to run a command with the chat history without interfering with the current session.
-* Rewind on Escape-Escape (no code rewind yet, only chat history).
-* Attach images in prompts.
-* 26 of the most popular themes.
-* Resume sessions.
-* Skills & MCPs.
-* Plan mode.
-* Run bash commands using `!`, or `!!` if you want n00n to not know about it.
-* `/cd` to change dir.
-* Use `--print --output-format stream-json` to run UI-less. Output is compatible with Claude Code, so you can easily replace your existing solutions (although I wouldn't recommend that, n00n is very new).
+- Fast, native TUI with ratatui. No JS; even the splash animation uses SIMD.
+- Neovim-like Lua plugins - bring your own or use the [builtins](https://github.com/w0wl0lxd/n00n/tree/main/plugins). See the [Lua API reference](https://github.com/w0wl0lxd/n00n/docs/lua-api/).
+- Nothing hidden - token count, cost, and requested permissions are shown, not buried.
+- Sensible permissions - tree-sitter parses bash so `git diff && rm -rf /` is understood as `git *` and `rm *`, not `git *`. Disable with `--yolo`.
+- SSRF protection on `webfetch`.
+- `memory` tool for long-term context, managed via `/memory`.
+- Subagent visibility - each subagent has its own chat window, switch with `/tasks` (Ctrl-X) or Ctrl-N/P.
+- Fuzzy search (Ctrl-F), `/btw` to run a command with history, rewind on Escape-Escape, image attachments, 26 themes, session resume.
+- Skills & MCPs, plan mode, `!` / `!!` bash, `/cd`.
+- `--print --output-format stream-json` for headless use; output is Claude Code-compatible.
 
 ## Supported providers
 
-* Anthropic - `ANTHROPIC_API_KEY` only (using OAuth is against TOS). Bedrock supported via `CLAUDE_CODE_USE_BEDROCK=1`.
-* OpenAI - `OPENAI_API_KEY` and OAuth via `n00n auth login openai`.
-* Google - `GEMINI_API_KEY`.
-* Copilot - `GH_COPILOT_TOKEN` or an existing GitHub Copilot sign-in at `~/.config/github-copilot/`.
-* Ollama - `OLLAMA_HOST` for local (e.g. `http://localhost:11434`), or `OLLAMA_API_KEY` for cloud.
-* llama.cpp - `LLAMA_CPP_HOST` (e.g. `http://localhost:8080`), optionally `LLAMA_CPP_API_KEY`.
-* Mistral - `MISTRAL_API_KEY`.
-* Z.AI - `ZHIPU_API_KEY`.
-* DeepSeek - `DEEPSEEK_API_KEY`.
-* OpenRouter - `OPENROUTER_API_KEY`.
-* Synthetic - `SYNTHETIC_API_KEY`.
+- Anthropic - `ANTHROPIC_API_KEY` only (using OAuth is against TOS). Bedrock supported via `CLAUDE_CODE_USE_BEDROCK=1`.
+- OpenAI - `OPENAI_API_KEY` and OAuth via `n00n auth login openai`.
+- Google - `GEMINI_API_KEY`.
+- Copilot - `GH_COPILOT_TOKEN` or an existing GitHub Copilot sign-in at `~/.config/github-copilot/`.
+- Ollama - `OLLAMA_HOST` for local (e.g. `http://localhost:11434`), or `OLLAMA_API_KEY` for cloud.
+- llama.cpp - `LLAMA_CPP_HOST` (e.g. `http://localhost:8080`), optionally `LLAMA_CPP_API_KEY`.
+- Mistral - `MISTRAL_API_KEY`.
+- Z.AI - `ZHIPU_API_KEY`.
+- DeepSeek - `DEEPSEEK_API_KEY`.
+- OpenRouter - `OPENROUTER_API_KEY`.
+- Synthetic - `SYNTHETIC_API_KEY`.
 
 **Dynamic providers** - drop an executable script into `~/.config/n00n/providers/` to add custom providers or proxies. See [docs](https://github.com/w0wl0lxd/n00n/docs/providers/#dynamic-providers) for details.
 
@@ -90,6 +88,8 @@ Run `n00n acp` or configure your ACP supporting editor to use n00n, e.g. in [Zed
 
 More info at the [official docs](https://github.com/w0wl0lxd/n00n/docs).
 
-> DISCLAIMER: >90% of code in n00n was written by n00n, guided by humans. The code is not as good as what I would've made in the artisanal hand-made style. But it's also not slop / vibe coded. I just think people should be honest about their use of AI in projects in this era.
+## Contributing
 
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the workflow: pre-commit hooks, Conventional Commits, the PR template, and `changelog.d` fragments.
 
+> DISCLAIMER: a large share of n00n's code was written by n00n itself, guided by humans. It is not as polished as fully hand-crafted code, but it is not slop or vibe-coded either. I think projects should be honest about their use of AI in this era.
