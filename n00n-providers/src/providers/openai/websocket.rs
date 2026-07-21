@@ -4,65 +4,83 @@ use std::time::{Duration, Instant};
 use async_tungstenite::WebSocketStream;
 use async_tungstenite::tungstenite::client::IntoClientRequest;
 use async_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
+use async_tungstenite::tungstenite::protocol::CloseFrame;
 use async_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
 use flume::Sender;
+use futures::SinkExt;
 use futures_lite::StreamExt;
 use serde_json::{Value, json};
 use smol::Timer;
 use tracing::debug;
 
-use super::responses::{ResponseAccumulator, build_body};
+use super::responses::{ResponseAccumulator, build_body, is_semantic_progress_event};
 use crate::model::Model;
 use crate::providers::ResolvedAuth;
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
+use crate::{
+    AgentError, Message, ProviderEvent, RequestDeliveryMetadata, RequestDeliveryPhase,
+    RequestOptions, StreamResponse, dialect,
+};
 
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
 const RESPONSES_WEBSOCKET_BETA: &str = "responses_websockets=2026-02-06";
 const MAX_CONNECTION_AGE: Duration = Duration::from_mins(55);
+const MAX_POOL_IDLE: Duration = Duration::from_secs(30);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+const PREFLIGHT_PING_PAYLOAD: &[u8] = b"n00n-preflight";
+const MAX_SAFE_CLOSE_REASON_CHARS: usize = 120;
 
 type ResponsesSocket = WebSocketStream<async_tungstenite::smol::ConnectStream>;
 
 pub(crate) struct ResponsesWebSocket {
     socket: ResponsesSocket,
     opened_at: Instant,
+    available_since: Instant,
+    validated_for_send: bool,
 }
 
+#[derive(Debug)]
 pub(crate) struct WebSocketAttemptError {
     pub(crate) error: AgentError,
     pub(crate) emitted_event: bool,
     pub(crate) transport_failure: bool,
-    pub(crate) request_sent: bool,
-    pub(crate) reconnect_safe: bool,
+    pub(crate) delivery: RequestDeliveryMetadata,
 }
 
 impl WebSocketAttemptError {
-    pub(crate) fn transport(error: AgentError, emitted_event: bool, request_sent: bool) -> Self {
+    pub(crate) fn transport(
+        error: AgentError,
+        emitted_event: bool,
+        delivery: RequestDeliveryMetadata,
+    ) -> Self {
         Self {
             error,
             emitted_event,
             transport_failure: true,
-            request_sent,
-            reconnect_safe: false,
+            delivery,
         }
     }
 
-    fn response(error: AgentError, emitted_event: bool) -> Self {
+    fn response(error: AgentError, emitted_event: bool, delivery: RequestDeliveryMetadata) -> Self {
         Self {
             error,
             emitted_event,
             transport_failure: false,
-            request_sent: true,
-            reconnect_safe: false,
+            delivery,
         }
     }
 
-    fn reconnect(error: AgentError) -> Self {
-        Self {
-            error,
-            emitted_event: false,
-            transport_failure: true,
-            request_sent: true,
-            reconnect_safe: true,
+    pub(crate) fn request_sent(&self) -> bool {
+        self.delivery.phase != RequestDeliveryPhase::NotSent
+    }
+
+    pub(crate) fn into_agent_error(self) -> AgentError {
+        if self.request_sent() && self.transport_failure {
+            AgentError::RequestSent {
+                message: self.error.to_string(),
+                metadata: Some(self.delivery),
+            }
+        } else {
+            self.error
         }
     }
 }
@@ -113,6 +131,7 @@ fn build_create_event(body: &Value) -> Value {
         .cloned()
         .unwrap_or_else(serde_json::Map::new);
     event.remove("stream");
+    event.remove("background");
     event.insert("type".into(), json!("response.create"));
     Value::Object(event)
 }
@@ -150,7 +169,13 @@ pub(crate) async fn stream_message(
 ) -> Result<(Option<String>, StreamResponse), WebSocketAttemptError> {
     let mut connection = ResponsesWebSocket::connect(auth, connect_timeout)
         .await
-        .map_err(|error| WebSocketAttemptError::transport(error, false, false))?;
+        .map_err(|error| {
+            WebSocketAttemptError::transport(
+                error,
+                false,
+                RequestDeliveryMetadata::new(RequestDeliveryPhase::NotSent),
+            )
+        })?;
     let result = connection
         .stream_message(body, event_tx, stream_timeout)
         .await;
@@ -195,14 +220,75 @@ impl ResponsesWebSocket {
             })
             .await?
         };
+        let now = Instant::now();
         Ok(Self {
             socket,
-            opened_at: Instant::now(),
+            opened_at: now,
+            available_since: now,
+            validated_for_send: true,
         })
     }
 
     pub(crate) fn is_expired(&self) -> bool {
         self.opened_at.elapsed() >= MAX_CONNECTION_AGE
+    }
+
+    pub(crate) fn is_idle(&self) -> bool {
+        self.available_since.elapsed() >= MAX_POOL_IDLE
+    }
+
+    pub(crate) fn is_validated_for_send(&self) -> bool {
+        self.validated_for_send
+    }
+
+    pub(crate) async fn preflight(&mut self, timeout: Duration) -> Result<(), AgentError> {
+        let deadline = Instant::now() + timeout;
+        if !send_message_until(
+            &mut self.socket,
+            WsMessage::Ping(PREFLIGHT_PING_PAYLOAD.to_vec().into()),
+            deadline,
+        )
+        .await?
+        {
+            return Err(AgentError::Timeout {
+                secs: timeout.as_secs(),
+            });
+        }
+        loop {
+            let Some(message) = next_message_until(&mut self.socket, deadline).await? else {
+                return Err(AgentError::Timeout {
+                    secs: timeout.as_secs(),
+                });
+            };
+            match message {
+                WsMessage::Pong(payload) if payload.as_ref() == PREFLIGHT_PING_PAYLOAD => {
+                    self.validated_for_send = true;
+                    return Ok(());
+                }
+                WsMessage::Ping(_) => {
+                    if !flush_until(&mut self.socket, deadline).await? {
+                        return Err(AgentError::Timeout {
+                            secs: timeout.as_secs(),
+                        });
+                    }
+                }
+                WsMessage::Close(_) => {
+                    return Err(IoError::new(
+                        ErrorKind::ConnectionAborted,
+                        "pooled Responses WebSocket closed during liveness check",
+                    )
+                    .into());
+                }
+                WsMessage::Text(_) | WsMessage::Binary(_) => {
+                    return Err(IoError::new(
+                        ErrorKind::InvalidData,
+                        "pooled Responses WebSocket had unread application data",
+                    )
+                    .into());
+                }
+                _ => {}
+            }
+        }
     }
 
     pub(crate) async fn stream_message(
@@ -211,55 +297,138 @@ impl ResponsesWebSocket {
         event_tx: &Sender<ProviderEvent>,
         stream_timeout: Duration,
     ) -> Result<(Option<String>, StreamResponse), WebSocketAttemptError> {
-        let create_event = build_create_event(body);
-        send_json(&mut self.socket, &create_event)
+        self.stream_message_with_keepalive(body, event_tx, stream_timeout, KEEPALIVE_INTERVAL)
             .await
-            .map_err(|error| WebSocketAttemptError::transport(error, false, true))?;
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn stream_message_with_keepalive(
+        &mut self,
+        body: &Value,
+        event_tx: &Sender<ProviderEvent>,
+        stream_timeout: Duration,
+        keepalive_interval: Duration,
+    ) -> Result<(Option<String>, StreamResponse), WebSocketAttemptError> {
+        let create_event = build_create_event(body);
+        let mut delivery =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+        let total_deadline = self.opened_at + MAX_CONNECTION_AGE;
+        let mut progress_deadline = (Instant::now() + stream_timeout).min(total_deadline);
+        let create_sent = send_json_until(&mut self.socket, &create_event, progress_deadline)
+            .await
+            .map_err(|error| WebSocketAttemptError::transport(error, false, delivery.clone()))?;
+        if !create_sent {
+            return Err(WebSocketAttemptError::transport(
+                AgentError::Timeout {
+                    secs: stream_timeout.as_secs(),
+                },
+                false,
+                delivery,
+            ));
+        }
 
         let mut acc = ResponseAccumulator::new();
-        let mut deadline = Instant::now() + stream_timeout;
+        let mut keepalive_deadline = Instant::now() + keepalive_interval;
         loop {
-            let msg = next_message(&mut self.socket, &mut deadline, stream_timeout)
+            let now = Instant::now();
+            if now >= total_deadline {
+                return Err(WebSocketAttemptError::transport(
+                    IoError::new(
+                        ErrorKind::TimedOut,
+                        "Responses WebSocket exceeded the maximum connection lifetime",
+                    )
+                    .into(),
+                    acc.emitted_event(),
+                    delivery,
+                ));
+            }
+            if now >= progress_deadline {
+                return Err(WebSocketAttemptError::transport(
+                    AgentError::Timeout {
+                        secs: stream_timeout.as_secs(),
+                    },
+                    acc.emitted_event(),
+                    delivery,
+                ));
+            }
+            if now >= keepalive_deadline {
+                let ping_deadline = progress_deadline.min(total_deadline);
+                let ping_sent = send_message_until(
+                    &mut self.socket,
+                    WsMessage::Ping(Vec::new().into()),
+                    ping_deadline,
+                )
                 .await
                 .map_err(|error| {
-                    WebSocketAttemptError::transport(error, acc.emitted_event(), true)
+                    WebSocketAttemptError::transport(error, acc.emitted_event(), delivery.clone())
                 })?;
-            match msg {
+                if !ping_sent {
+                    return Err(WebSocketAttemptError::transport(
+                        AgentError::Timeout {
+                            secs: stream_timeout.as_secs(),
+                        },
+                        acc.emitted_event(),
+                        delivery,
+                    ));
+                }
+                keepalive_deadline = Instant::now() + keepalive_interval;
+                continue;
+            }
+
+            let wake_at = progress_deadline
+                .min(keepalive_deadline)
+                .min(total_deadline);
+            let Some(message) = next_message_until(&mut self.socket, wake_at)
+                .await
+                .map_err(|error| {
+                    WebSocketAttemptError::transport(error, acc.emitted_event(), delivery.clone())
+                })?
+            else {
+                continue;
+            };
+            match message {
                 WsMessage::Text(text) => {
                     let event: Value = serde_json::from_str(&text).map_err(|error| {
                         WebSocketAttemptError::transport(
                             AgentError::Json(error),
                             acc.emitted_event(),
-                            true,
+                            delivery.clone(),
                         )
                     })?;
-                    match event.get("type").and_then(Value::as_str) {
+                    let event_type = event.get("type").and_then(Value::as_str);
+                    update_delivery_metadata(&mut delivery, event_type, &event);
+                    match event_type {
                         Some("error") => {
                             let error = error_from_event(&event);
-                            if is_connection_limit_event(&event) && !acc.emitted_event() {
-                                return Err(WebSocketAttemptError::reconnect(error));
-                            }
                             let transport_failure = matches!(&error, AgentError::Io(_));
                             return Err(if transport_failure {
-                                WebSocketAttemptError::transport(error, acc.emitted_event(), true)
+                                WebSocketAttemptError::transport(
+                                    error,
+                                    acc.emitted_event(),
+                                    delivery,
+                                )
                             } else {
-                                WebSocketAttemptError::response(error, acc.emitted_event())
+                                WebSocketAttemptError::response(
+                                    error,
+                                    acc.emitted_event(),
+                                    delivery,
+                                )
                             });
                         }
                         Some(event_type) => {
+                            let semantic_progress = is_semantic_progress_event(event_type, &event);
                             match acc.handle_event(event_type, &event, event_tx).await {
                                 Ok(true) => break,
-                                Ok(false) => {}
-                                Err(error)
-                                    if is_connection_limit_event(&event)
-                                        && !acc.emitted_event() =>
-                                {
-                                    return Err(WebSocketAttemptError::reconnect(error));
+                                Ok(false) if semantic_progress => {
+                                    progress_deadline =
+                                        (Instant::now() + stream_timeout).min(total_deadline);
                                 }
+                                Ok(false) => {}
                                 Err(error) => {
                                     return Err(WebSocketAttemptError::response(
                                         error,
                                         acc.emitted_event(),
+                                        delivery,
                                     ));
                                 }
                             }
@@ -267,16 +436,29 @@ impl ResponsesWebSocket {
                         None => {}
                     }
                 }
-                WsMessage::Ping(payload) => {
-                    self.socket
-                        .send(WsMessage::Pong(payload))
+                WsMessage::Ping(_) => {
+                    let flush_deadline = progress_deadline.min(total_deadline);
+                    let flushed = flush_until(&mut self.socket, flush_deadline)
                         .await
-                        .map_err(ws_err)
                         .map_err(|error| {
-                            WebSocketAttemptError::transport(error, acc.emitted_event(), true)
+                            WebSocketAttemptError::transport(
+                                error,
+                                acc.emitted_event(),
+                                delivery.clone(),
+                            )
                         })?;
+                    if !flushed {
+                        return Err(WebSocketAttemptError::transport(
+                            AgentError::Timeout {
+                                secs: stream_timeout.as_secs(),
+                            },
+                            acc.emitted_event(),
+                            delivery,
+                        ));
+                    }
                 }
-                WsMessage::Close(_) => {
+                WsMessage::Close(frame) => {
+                    add_close_metadata(&mut delivery, frame.as_ref());
                     return Err(WebSocketAttemptError::transport(
                         IoError::new(
                             ErrorKind::ConnectionAborted,
@@ -284,13 +466,15 @@ impl ResponsesWebSocket {
                         )
                         .into(),
                         acc.emitted_event(),
-                        true,
+                        delivery,
                     ));
                 }
                 _ => {}
             }
         }
 
+        self.available_since = Instant::now();
+        self.validated_for_send = false;
         let response_id = acc.response_id().map(ToOwned::to_owned);
         Ok((response_id, acc.into_stream_response()))
     }
@@ -318,57 +502,135 @@ fn ws_err(e: WsError) -> AgentError {
     }
 }
 
-async fn send_json<S>(ws: &mut WebSocketStream<S>, value: &Value) -> Result<(), AgentError>
+async fn send_json_until<S>(
+    ws: &mut WebSocketStream<S>,
+    value: &Value,
+    deadline: Instant,
+) -> Result<bool, AgentError>
 where
     S: futures_lite::AsyncRead + futures_lite::AsyncWrite + Unpin + Send,
 {
     let text = value.to_string();
     let event_type = value["type"].as_str().map_or_else(|| "unknown", |s| s);
     debug!(event = %event_type, bytes = text.len(), "sending websocket event");
-    ws.send(WsMessage::Text(text.into())).await.map_err(ws_err)
+    send_message_until(ws, WsMessage::Text(text.into()), deadline).await
 }
 
-async fn next_message<S>(
+async fn send_message_until<S>(
     ws: &mut WebSocketStream<S>,
-    deadline: &mut Instant,
-    timeout: Duration,
-) -> Result<WsMessage, AgentError>
+    message: WsMessage,
+    deadline: Instant,
+) -> Result<bool, AgentError>
 where
     S: futures_lite::AsyncRead + futures_lite::AsyncWrite + Unpin + Send,
 {
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let result: Result<Option<WsMessage>, AgentError> = futures_lite::future::or(
-        async { ws.next().await.transpose().map_err(ws_err) },
+    let result = futures_lite::future::or(
+        async { Some(ws.send(message).await.map_err(ws_err)) },
         async {
             Timer::after(remaining).await;
-            Err(AgentError::Timeout {
-                secs: timeout.as_secs(),
-            })
+            None
         },
     )
     .await;
 
-    if matches!(result, Ok(Some(_))) {
-        *deadline = Instant::now() + timeout;
+    match result {
+        Some(Ok(())) => Ok(true),
+        Some(Err(error)) => Err(error),
+        None => Ok(false),
     }
+}
+
+async fn flush_until<S>(ws: &mut WebSocketStream<S>, deadline: Instant) -> Result<bool, AgentError>
+where
+    S: futures_lite::AsyncRead + futures_lite::AsyncWrite + Unpin + Send,
+{
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let result =
+        futures_lite::future::or(async { Some(ws.flush().await.map_err(ws_err)) }, async {
+            Timer::after(remaining).await;
+            None
+        })
+        .await;
 
     match result {
-        Ok(Some(msg)) => Ok(msg),
-        Ok(None) => Err(IoError::new(
+        Some(Ok(())) => Ok(true),
+        Some(Err(error)) => Err(error),
+        None => Ok(false),
+    }
+}
+
+async fn next_message_until<S>(
+    ws: &mut WebSocketStream<S>,
+    deadline: Instant,
+) -> Result<Option<WsMessage>, AgentError>
+where
+    S: futures_lite::AsyncRead + futures_lite::AsyncWrite + Unpin + Send,
+{
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let result = futures_lite::future::or(
+        async { Some(ws.next().await.transpose().map_err(ws_err)) },
+        async {
+            Timer::after(remaining).await;
+            None
+        },
+    )
+    .await;
+
+    match result {
+        Some(Ok(Some(message))) => Ok(Some(message)),
+        Some(Ok(None)) => Err(IoError::new(
             ErrorKind::UnexpectedEof,
             "Responses WebSocket closed unexpectedly",
         )
         .into()),
-        Err(e) => Err(e),
+        Some(Err(error)) => Err(error),
+        None => Ok(None),
     }
 }
 
-fn is_connection_limit_event(event: &Value) -> bool {
-    event
-        .pointer("/error/code")
-        .or_else(|| event.pointer("/response/error/code"))
-        .and_then(Value::as_str)
-        == Some("websocket_connection_limit_reached")
+fn update_delivery_metadata(
+    delivery: &mut RequestDeliveryMetadata,
+    event_type: Option<&str>,
+    event: &Value,
+) {
+    if event_type == Some("response.created") {
+        delivery.phase = RequestDeliveryPhase::Accepted;
+    }
+    if let Some(response_id) = event.pointer("/response/id").and_then(Value::as_str) {
+        delivery.phase = RequestDeliveryPhase::Accepted;
+        delivery.response_id = Some(response_id.to_owned());
+    }
+}
+
+fn add_close_metadata(delivery: &mut RequestDeliveryMetadata, frame: Option<&CloseFrame>) {
+    let Some(frame) = frame else {
+        return;
+    };
+    delivery.close_code = Some(u16::from(frame.code));
+    delivery.close_reason = sanitize_close_reason(frame.reason.as_ref());
+}
+
+fn sanitize_close_reason(reason: &str) -> Option<String> {
+    let mut sanitized = String::with_capacity(reason.len().min(MAX_SAFE_CLOSE_REASON_CHARS));
+    let mut character_count = 0;
+    for character in reason.chars() {
+        let character = if character.is_control() || character.is_whitespace() {
+            ' '
+        } else {
+            character
+        };
+        if character == ' ' && sanitized.ends_with(' ') {
+            continue;
+        }
+        if character_count == MAX_SAFE_CLOSE_REASON_CHARS {
+            break;
+        }
+        sanitized.push(character);
+        character_count += 1;
+    }
+    let trimmed = sanitized.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 fn error_from_event(event: &Value) -> AgentError {
@@ -424,9 +686,46 @@ fn error_from_event(event: &Value) -> AgentError {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Result as IoResult;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
     use super::*;
+    use async_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+    use async_tungstenite::tungstenite::protocol::{CloseFrame, Role};
+    use futures_lite::io::{AsyncRead, AsyncWrite};
     use serde_json::json;
     use test_case::test_case;
+
+    struct PendingIo;
+
+    impl AsyncRead for PendingIo {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &mut [u8],
+        ) -> Poll<IoResult<usize>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for PendingIo {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &[u8],
+        ) -> Poll<IoResult<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<IoResult<()>> {
+            Poll::Pending
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<IoResult<()>> {
+            Poll::Pending
+        }
+    }
 
     #[test_case(None, "wss://api.openai.com/v1/responses")]
     #[test_case(Some("https://api.openai.com/v1"), "wss://api.openai.com/v1/responses")]
@@ -441,6 +740,63 @@ mod tests {
     )]
     fn responses_websocket_url_derives_from_base_url(base_url: Option<&str>, expected: &str) {
         assert_eq!(super::responses_websocket_url(base_url), expected);
+    }
+
+    #[test]
+    fn websocket_writes_obey_deadline() {
+        smol::block_on(async {
+            let mut socket = WebSocketStream::from_raw_socket(PendingIo, Role::Client, None).await;
+            let sent = send_message_until(
+                &mut socket,
+                WsMessage::Ping(Vec::new().into()),
+                Instant::now(),
+            )
+            .await
+            .unwrap();
+            let mut socket = WebSocketStream::from_raw_socket(PendingIo, Role::Client, None).await;
+            let flushed = flush_until(&mut socket, Instant::now()).await.unwrap();
+
+            assert!(!sent);
+            assert!(!flushed);
+        });
+    }
+
+    #[test]
+    #[allow(clippy::large_futures)]
+    fn preflight_rejects_unread_application_data() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                socket
+                    .send(WsMessage::Text(
+                        json!({"type":"unknown.stale"}).to_string().into(),
+                    ))
+                    .await
+                    .unwrap();
+                let _ = socket.next().await;
+            });
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
+                .await
+                .unwrap();
+
+            let error = connection
+                .preflight(Duration::from_secs(2))
+                .await
+                .unwrap_err();
+            server.await;
+
+            assert!(matches!(
+                error,
+                AgentError::Io(error) if error.kind() == ErrorKind::InvalidData
+            ));
+        });
     }
 
     #[test]
@@ -460,6 +816,7 @@ mod tests {
         assert_eq!(event["type"], "response.create");
         assert_eq!(event["store"], true);
         assert!(event.get("stream").is_none());
+        assert!(event.get("background").is_none());
     }
 
     #[test]
@@ -480,6 +837,21 @@ mod tests {
             assert_eq!(accumulator.response_id(), Some("resp_1"));
         });
     }
+    #[test]
+    fn response_created_without_id_marks_request_accepted() {
+        let mut delivery =
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance);
+
+        update_delivery_metadata(
+            &mut delivery,
+            Some("response.created"),
+            &json!({"type":"response.created","response":{}}),
+        );
+
+        assert_eq!(delivery.phase, RequestDeliveryPhase::Accepted);
+        assert!(delivery.response_id.is_none());
+    }
+
     #[test]
     #[allow(clippy::large_futures)]
     fn fake_transport_close_after_send_is_not_synthetic_422() {
@@ -510,10 +882,289 @@ mod tests {
                 .unwrap_err();
             server.await;
 
-            assert!(error.request_sent);
+            assert!(error.request_sent());
+            assert_eq!(
+                error.delivery.phase,
+                RequestDeliveryPhase::SentAwaitingAcceptance
+            );
             assert!(error.transport_failure);
             assert!(!matches!(error.error, AgentError::Api { status: 422, .. }));
         });
+    }
+
+    #[test]
+    #[allow(clippy::large_futures)]
+    fn malformed_response_after_send_preserves_delivery_metadata() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                assert!(matches!(socket.next().await, Some(Ok(WsMessage::Text(_)))));
+                socket.send(WsMessage::Text("{".into())).await.unwrap();
+            });
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
+                .await
+                .unwrap();
+            let (event_tx, _) = flume::unbounded();
+            let error = connection
+                .stream_message(
+                    &json!({"model":"test","input":[]}),
+                    &event_tx,
+                    Duration::from_secs(2),
+                )
+                .await
+                .unwrap_err();
+            server.await;
+
+            assert!(matches!(
+                error.into_agent_error(),
+                AgentError::RequestSent {
+                    metadata: Some(RequestDeliveryMetadata {
+                        phase: RequestDeliveryPhase::SentAwaitingAcceptance,
+                        ..
+                    }),
+                    ..
+                }
+            ));
+        });
+    }
+    #[test]
+    #[allow(clippy::large_futures)]
+    fn close_after_response_created_preserves_delivery_metadata() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                assert!(matches!(socket.next().await, Some(Ok(WsMessage::Text(_)))));
+                socket
+                    .send(WsMessage::Text(
+                        json!({"type":"response.created","response":{"id":"resp_close"}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+                socket
+                    .close(Some(CloseFrame {
+                        code: CloseCode::Restart,
+                        reason: "proxy restart\nrequest details removed".into(),
+                    }))
+                    .await
+                    .unwrap();
+            });
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
+                .await
+                .unwrap();
+            let (event_tx, _) = flume::unbounded();
+            let error = connection
+                .stream_message(
+                    &json!({"model":"test","input":[]}),
+                    &event_tx,
+                    Duration::from_secs(2),
+                )
+                .await
+                .unwrap_err();
+            server.await;
+
+            assert_eq!(error.delivery.phase, crate::RequestDeliveryPhase::Accepted);
+            assert_eq!(error.delivery.response_id.as_deref(), Some("resp_close"));
+            assert_eq!(error.delivery.close_code, Some(1012));
+            assert_eq!(
+                error.delivery.close_reason.as_deref(),
+                Some("proxy restart request details removed")
+            );
+            assert!(matches!(
+                error.into_agent_error(),
+                AgentError::RequestSent { metadata: Some(metadata), .. }
+                    if metadata.close_code == Some(1012)
+                        && metadata.response_id.as_deref() == Some("resp_close")
+            ));
+        });
+    }
+
+    #[test]
+    #[allow(clippy::large_futures)]
+    fn idle_response_sends_client_keepalive() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                assert!(matches!(socket.next().await, Some(Ok(WsMessage::Text(_)))));
+                assert!(matches!(socket.next().await, Some(Ok(WsMessage::Ping(_)))));
+                socket
+                    .send(WsMessage::Text(
+                        json!({"type":"response.created","response":{"id":"resp_idle"}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+                socket
+                    .send(WsMessage::Text(
+                        json!({
+                            "type":"response.completed",
+                            "response":{"id":"resp_idle","status":"completed"}
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+                while let Some(Ok(message)) = socket.next().await {
+                    if matches!(message, WsMessage::Close(_)) {
+                        break;
+                    }
+                }
+            });
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
+                .await
+                .unwrap();
+            let (event_tx, _) = flume::unbounded();
+            let (response_id, _) = connection
+                .stream_message_with_keepalive(
+                    &json!({"model":"test","input":[]}),
+                    &event_tx,
+                    Duration::from_secs(2),
+                    Duration::from_millis(10),
+                )
+                .await
+                .unwrap();
+            connection.close().await;
+            server.await;
+
+            assert_eq!(response_id.as_deref(), Some("resp_idle"));
+        });
+    }
+
+    #[test]
+    #[allow(clippy::large_futures)]
+    fn pong_heartbeats_do_not_extend_response_progress_timeout() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                assert!(matches!(socket.next().await, Some(Ok(WsMessage::Text(_)))));
+                for _ in 0..6 {
+                    Timer::after(Duration::from_millis(15)).await;
+                    if socket
+                        .send(WsMessage::Pong(Vec::new().into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
+                .await
+                .unwrap();
+            let (event_tx, _) = flume::unbounded();
+            let error = connection
+                .stream_message_with_keepalive(
+                    &json!({"model":"test","input":[]}),
+                    &event_tx,
+                    Duration::from_millis(40),
+                    Duration::from_millis(10),
+                )
+                .await
+                .unwrap_err();
+            server.await;
+
+            assert!(matches!(error.error, AgentError::Timeout { .. }));
+            assert_eq!(
+                error.delivery.phase,
+                crate::RequestDeliveryPhase::SentAwaitingAcceptance
+            );
+        });
+    }
+
+    #[test]
+    #[allow(clippy::large_futures)]
+    fn unknown_json_events_do_not_extend_response_progress_timeout() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                assert!(matches!(socket.next().await, Some(Ok(WsMessage::Text(_)))));
+                for sequence in 0..10 {
+                    Timer::after(Duration::from_millis(20)).await;
+                    if socket
+                        .send(WsMessage::Text(
+                            json!({"type":"unknown.noop","sequence":sequence})
+                                .to_string()
+                                .into(),
+                        ))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let mut connection = ResponsesWebSocket::connect(&auth, Duration::from_secs(2))
+                .await
+                .unwrap();
+            let (event_tx, _) = flume::unbounded();
+            let error = connection
+                .stream_message_with_keepalive(
+                    &json!({"model":"test","input":[]}),
+                    &event_tx,
+                    Duration::from_millis(100),
+                    Duration::from_secs(1),
+                )
+                .await
+                .unwrap_err();
+            server.await;
+
+            assert!(matches!(error.error, AgentError::Timeout { .. }));
+            assert_eq!(
+                error.delivery.phase,
+                crate::RequestDeliveryPhase::SentAwaitingAcceptance
+            );
+        });
+    }
+
+    #[test]
+    fn close_reason_is_control_free_and_character_capped() {
+        let reason = format!(
+            "restart\n{}\u{7}",
+            "x".repeat(MAX_SAFE_CLOSE_REASON_CHARS * 2)
+        );
+        let sanitized = sanitize_close_reason(&reason).unwrap();
+
+        assert!(sanitized.chars().all(|character| !character.is_control()));
+        assert!(sanitized.chars().count() <= MAX_SAFE_CLOSE_REASON_CHARS);
+        assert!(sanitized.starts_with("restart "));
     }
 
     #[test]
@@ -603,23 +1254,6 @@ mod tests {
             }
             other => panic!("expected AgentError::Api, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn connection_limit_events_require_a_fresh_socket() {
-        let direct = json!({
-            "type": "error",
-            "error": { "code": "websocket_connection_limit_reached" }
-        });
-        let failed = json!({
-            "type": "response.failed",
-            "response": {
-                "error": { "code": "websocket_connection_limit_reached" }
-            }
-        });
-
-        assert!(is_connection_limit_event(&direct));
-        assert!(is_connection_limit_event(&failed));
     }
 
     #[test]
