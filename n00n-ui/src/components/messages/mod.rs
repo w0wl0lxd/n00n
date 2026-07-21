@@ -888,26 +888,8 @@ impl MessagesPanel {
             let accent = self.accent.resolve();
             let theme = theme::current();
             if self.mascot.enabled() && area.height > 18 {
-                const TEXT_HEIGHT: u16 = 5;
-                let mascot_area = Rect {
-                    x: area.x,
-                    y: area.y,
-                    width: area.width,
-                    height: area.height - TEXT_HEIGHT,
-                };
-                let text_area = Rect {
-                    x: area.x,
-                    y: area.y + area.height - TEXT_HEIGHT,
-                    width: area.width,
-                    height: TEXT_HEIGHT,
-                };
-                self.idle_splash
-                    .render_field_only(area, frame.buffer_mut(), accent);
-                self.mascot.tick(mascot_area);
-                self.mascot
-                    .render(mascot_area, frame.buffer_mut(), &theme, accent);
-                self.idle_splash
-                    .render_text(text_area, frame.buffer_mut(), accent, true);
+                self.mascot.tick(area);
+                self.mascot.render(area, frame.buffer_mut(), &theme, accent);
             } else {
                 self.idle_splash.render(area, frame.buffer_mut(), accent);
             }
