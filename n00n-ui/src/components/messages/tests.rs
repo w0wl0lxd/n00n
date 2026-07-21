@@ -725,6 +725,40 @@ fn expanded_compaction_card_renders_stored_tool_output_once() {
 }
 
 #[test]
+fn expanded_compaction_card_caps_stored_tool_output() {
+    let mut tool = DisplayMessage::new(
+        DisplayRole::Tool(Box::new(ToolRole {
+            id: "tool-1".into(),
+            status: ToolStatus::Success,
+            name: Arc::from("bash"),
+        })),
+        "Run command".into(),
+    );
+    tool.tool_output = Some(Arc::new(ToolOutput::Plain(
+        "line 0\nline 1\nline 2\nline 3\nline 4\nline 5".into(),
+    )));
+    let compaction_id = "compaction:0";
+    let mut ui_config = UiConfig::default();
+    ui_config.tool_output_lines.bash = 2;
+    let mut panel = test_panel_with_config(ui_config);
+    panel.push(DisplayMessage::compaction(CompactionDisplay {
+        id: compaction_id.into(),
+        depth: 1,
+        message_count: 1,
+        summary: Some("summary".into()),
+        entries: vec![tool],
+    }));
+    panel.expanded_compactions.insert(compaction_id.into());
+    rebuild(&mut panel);
+
+    let card = first_segment_text(&panel);
+    assert!(card.contains("line 0"), "card: {card}");
+    assert!(card.contains("line 1"), "card: {card}");
+    assert!(!card.contains("line 2"), "card: {card}");
+    assert!(!card.contains("line 5"), "card: {card}");
+}
+
+#[test]
 fn nested_compaction_cards_expand_collapse_at_narrow_width() {
     let inner = DisplayMessage::compaction(CompactionDisplay {
         id: "compaction:0.0".into(),
