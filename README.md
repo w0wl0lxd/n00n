@@ -1,7 +1,7 @@
 # n00n
 
 > n00n is an opinionated experimental fork of [maki](https://github.com/tontinton/maki): currently testing lossless [TOON](https://github.com/w0wl0lxd/tooned)
-re-encoding of tool-call data, and [ALMAS](https://arxiv.org/abs/2510.03463) agent orchestration
+re-encoding of tool-call data, and [ALMAS](https://arxiv.org/abs/2510.03463) agent orchestration, and a strict clippy re-write
 
 ## Quick start
 
