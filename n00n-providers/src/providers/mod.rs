@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -80,7 +81,7 @@ impl ResolvedAuth {
 }
 
 pub(crate) fn with_prefix<'a>(
-    prefix: &Option<String>,
+    prefix: Option<&str>,
     system: &'a str,
     buf: &'a mut String,
 ) -> &'a str {
@@ -102,7 +103,7 @@ pub(crate) fn urlenc(s: &str) -> String {
             }
             _ => {
                 out.push('%');
-                out.push_str(&format!("{b:02X}"));
+                let _ = write!(out, "{b:02X}");
             }
         }
     }
@@ -163,12 +164,14 @@ pub(crate) async fn next_sse_line<R: AsyncBufRead + Unpin>(
     result
 }
 
-pub(crate) fn http_client(timeouts: Timeouts) -> isahc::HttpClient {
+pub(crate) fn http_client(timeouts: Timeouts) -> Result<isahc::HttpClient, AgentError> {
     isahc::HttpClient::builder()
         .connect_timeout(timeouts.connect)
         .low_speed_timeout(LOW_SPEED_BYTES_PER_SEC, timeouts.low_speed)
         .build()
-        .expect("failed to build HTTP client")
+        .map_err(|e| AgentError::Config {
+            message: format!("failed to build HTTP client: {e}"),
+        })
 }
 
 #[derive(Clone, Debug)]

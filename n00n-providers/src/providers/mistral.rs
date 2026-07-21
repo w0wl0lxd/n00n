@@ -162,20 +162,23 @@ impl Mistral {
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
         let pool = KeyPool::resolve("mistral", CONFIG.api_key_env)?;
         Ok(Self {
-            compat: OpenAiCompatProvider::new(&CONFIG, timeouts),
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth: Arc::new(Mutex::new(ResolvedAuth::bearer(pool.current()))),
             key_pool: Some(pool),
             system_prefix: None,
         })
     }
 
-    pub(crate) fn with_auth(auth: Arc<Mutex<ResolvedAuth>>, timeouts: super::Timeouts) -> Self {
-        Self {
-            compat: OpenAiCompatProvider::new(&CONFIG, timeouts),
+    pub(crate) fn with_auth(
+        auth: Arc<Mutex<ResolvedAuth>>,
+        timeouts: super::Timeouts,
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth,
             key_pool: None,
             system_prefix: None,
-        }
+        })
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -202,7 +205,7 @@ impl Provider for Mistral {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             let mut buf = String::new();
-            let system = super::with_prefix(&self.system_prefix, system, &mut buf);
+            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
@@ -213,7 +216,10 @@ impl Provider for Mistral {
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::HIGH_ONLY, model);
             // Convert assistant messages to Mistral's expected format with thinking content
-            convert_assistant_messages_in_place(body.get_mut("messages").unwrap());
+            let messages = body.get_mut("messages").ok_or_else(|| AgentError::Config {
+                message: "missing messages in request body".into(),
+            })?;
+            convert_assistant_messages_in_place(messages);
 
             let mut extra_headers = vec![];
             if let Some(session_id) = session_id {
@@ -240,7 +246,7 @@ impl Provider for Mistral {
                         .and_then(Value::as_object)
                         .and_then(|c| c.get("completion_chat"))
                         .and_then(Value::as_bool)
-                        .unwrap_or(false);
+                        .unwrap_or_else(|| false);
                     if !has_completion_chat {
                         return None;
                     }
@@ -260,7 +266,7 @@ impl Provider for Mistral {
                         .and_then(Value::as_object)
                         .and_then(|c| c.get("vision"))
                         .and_then(Value::as_bool)
-                        .unwrap_or(false);
+                        .unwrap_or_else(|| false);
                     Some(crate::model::ModelInfo {
                         id: id.to_string(),
                         context_window,
@@ -346,6 +352,7 @@ mod tests {
         ])
         ; "assistant_no_content_with_thinking"
     )]
+    #[allow(clippy::needless_pass_by_value)]
     #[test_case(
         json!([
             {"role": "system", "content": "sys"},

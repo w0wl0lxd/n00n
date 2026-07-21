@@ -290,7 +290,6 @@ impl StopReason {
     #[must_use]
     pub fn from_anthropic(s: &str) -> Self {
         match s {
-            "end_turn" => Self::EndTurn,
             "tool_use" => Self::ToolUse,
             "max_tokens" => Self::MaxTokens,
             _ => Self::EndTurn,
@@ -300,7 +299,6 @@ impl StopReason {
     #[must_use]
     pub fn from_openai(s: &str) -> Self {
         match s {
-            "stop" => Self::EndTurn,
             "tool_calls" => Self::ToolUse,
             "length" => Self::MaxTokens,
             _ => Self::EndTurn,
@@ -309,7 +307,6 @@ impl StopReason {
 
     pub fn from_google(s: &str) -> Self {
         match s {
-            "STOP" => Self::EndTurn,
             "MAX_TOKENS" => Self::MaxTokens,
             "SAFETY" | "RECITATION" => {
                 warn!("Gemini stop reason: {s}, treating as end_turn");
@@ -436,7 +433,7 @@ impl ThinkingConfig {
                 n,
                 model
                     .max_thinking_budget()
-                    .unwrap_or(FALLBACK_MAX_THINKING_BUDGET),
+                    .unwrap_or_else(|| FALLBACK_MAX_THINKING_BUDGET),
             ),
         };
         Some(level.snap(dialect.supported).as_str())
@@ -450,7 +447,7 @@ impl ThinkingConfig {
             Self::Off => Budgeted::Off,
             Self::Adaptive => Budgeted::Adaptive,
             Self::Effort(e) => {
-                Budgeted::Tokens(e.budget(max.unwrap_or(FALLBACK_MAX_THINKING_BUDGET)))
+                Budgeted::Tokens(e.budget(max.unwrap_or_else(|| FALLBACK_MAX_THINKING_BUDGET)))
             }
             Self::Budget(n) => Budgeted::Tokens(match max {
                 Some(max) => n.clamp(MIN_THINKING_BUDGET, max.max(MIN_THINKING_BUDGET)),
@@ -529,6 +526,11 @@ impl ThinkingConfig {
         body["thinking_budget_tokens"] = json!(budget);
     }
 
+    /// Parse a `/thinking` command argument.
+    ///
+    /// # Errors
+    ///
+    /// Returns `THINKING_USAGE` when `input` is not a valid thinking setting.
     pub fn parse(input: &str, current: Self) -> Result<Self, &'static str> {
         if input.is_empty() {
             return Ok(if current.is_enabled() {
@@ -810,6 +812,7 @@ mod tests {
     #[test_case(ThinkingConfig::Budget(10000), "claude-opus-5-0", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_future_opus_5")]
     #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4.7", json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}) ; "budget_adaptive_copilot_dotted_id")]
     #[test_case(ThinkingConfig::Budget(10000), "claude-opus-4.6", json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}) ; "budget_legacy_copilot_dotted_4_6")]
+    #[allow(clippy::needless_pass_by_value)]
     fn thinking_apply_to_body(config: ThinkingConfig, model_id: &str, expected: Value) {
         let mut body = json!({});
         config.apply_to_body(&mut body, &thinking_model(model_id));
@@ -864,6 +867,7 @@ mod tests {
     #[test_case(ThinkingConfig::Adaptive,     json!({"generationConfig": {"thinkingConfig": {"includeThoughts": true}}}) ; "adaptive")]
     #[test_case(ThinkingConfig::Budget(4096), json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 4096}}}) ; "budget")]
     #[test_case(ThinkingConfig::Budget(10000), json!({"generationConfig": {"thinkingConfig": {"thinkingBudget": 8192}}}) ; "budget_clamped")]
+    #[allow(clippy::needless_pass_by_value)]
     fn thinking_apply_google_thinking(config: ThinkingConfig, expected: Value) {
         let mut body = json!({});
         config.apply_google_thinking(&mut body, 8192);

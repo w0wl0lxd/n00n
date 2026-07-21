@@ -235,6 +235,7 @@ impl ResponseAccumulator {
         self.response_id.as_deref()
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn handle_event(
         &mut self,
         event_type: &str,
@@ -265,10 +266,16 @@ impl ResponseAccumulator {
                 let item = &data["item"];
                 let output_index = data["output_index"]
                     .as_u64()
-                    .unwrap_or(self.tool_accumulators.len() as u64);
+                    .unwrap_or_else(|| self.tool_accumulators.len() as u64);
                 if item["type"].as_str() == Some("function_call") {
-                    let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
-                    let name = item["name"].as_str().unwrap_or_default().to_string();
+                    let call_id = item["call_id"]
+                        .as_str()
+                        .unwrap_or_else(Default::default)
+                        .to_string();
+                    let name = item["name"]
+                        .as_str()
+                        .unwrap_or_else(Default::default)
+                        .to_string();
                     if !name.is_empty() {
                         event_tx
                             .send_async(ProviderEvent::ToolUseStart {
@@ -290,7 +297,7 @@ impl ResponseAccumulator {
                 let delta: Cow<'_, str> = if let Some(s) = data["delta"].as_str() {
                     Cow::Borrowed(s)
                 } else if let Some(obj) = data["delta"].as_object() {
-                    Cow::Owned(serde_json::to_string(obj).unwrap_or_default())
+                    Cow::Owned(serde_json::to_string(obj).unwrap_or_else(|_| Default::default()))
                 } else {
                     Cow::Borrowed("")
                 };
@@ -316,9 +323,9 @@ impl ResponseAccumulator {
 
             "response.in_progress" => {
                 if let Some(pp) = data.get("prompt_progress") {
-                    let processed = pp["processed"].as_u64().unwrap_or(0) as u32;
-                    let total = pp["total"].as_u64().unwrap_or(0) as u32;
-                    let cache = pp["cache"].as_u64().unwrap_or(0) as u32;
+                    let processed = as_u32(&pp["processed"])?;
+                    let total = as_u32(&pp["total"])?;
+                    let cache = as_u32(&pp["cache"])?;
                     event_tx
                         .send_async(ProviderEvent::PromptProgress {
                             processed,
@@ -349,12 +356,18 @@ impl ResponseAccumulator {
                         }
                     }
                 } else if item["type"].as_str() == Some("function_call") {
-                    let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
-                    let name = item["name"].as_str().unwrap_or_default().to_string();
+                    let call_id = item["call_id"]
+                        .as_str()
+                        .unwrap_or_else(Default::default)
+                        .to_string();
+                    let name = item["name"]
+                        .as_str()
+                        .unwrap_or_else(Default::default)
+                        .to_string();
                     let arguments = if let Some(s) = item["arguments"].as_str() {
                         s.to_string()
                     } else if let Some(obj) = item["arguments"].as_object() {
-                        serde_json::to_string(obj).unwrap_or_default()
+                        serde_json::to_string(obj).unwrap_or_else(|_| Default::default())
                     } else {
                         String::new()
                     };
@@ -368,10 +381,10 @@ impl ResponseAccumulator {
                     if let Some(acc) = acc {
                         let should_emit_start = acc.name.is_empty() && !name.is_empty();
                         if acc.call_id.is_empty() {
-                            acc.call_id = call_id.clone();
+                            acc.call_id.clone_from(&call_id);
                         }
                         if acc.name.is_empty() {
-                            acc.name = name.clone();
+                            acc.name.clone_from(&name);
                         }
                         if !arguments.is_empty() {
                             acc.arguments = arguments;
@@ -428,7 +441,12 @@ impl ResponseAccumulator {
                         if item["type"].as_str() == Some("reasoning")
                             && !self.has_reasoning_item(item)
                         {
-                            self.reasoning_items.push((index as u64, item.clone()));
+                            self.reasoning_items.push((
+                                u64::try_from(index).map_err(|_| AgentError::Config {
+                                    message: "output index out of range".into(),
+                                })?,
+                                item.clone(),
+                            ));
                         } else if item["type"].as_str() == Some("message")
                             && self.text.is_empty()
                             && let Some(content) = item["content"].as_array()
@@ -445,10 +463,10 @@ impl ResponseAccumulator {
                 }
 
                 if let Some(u) = resp.get("usage") {
-                    self.usage = parse_usage(u);
+                    self.usage = parse_usage(u)?;
                 }
 
-                let status = resp["status"].as_str().unwrap_or("completed");
+                let status = resp["status"].as_str().unwrap_or_else(|| "completed");
                 self.stop_reason = Some(match status {
                     "completed" => {
                         if self.tool_accumulators.is_empty() {
@@ -466,7 +484,7 @@ impl ResponseAccumulator {
             "response.incomplete" => {
                 let resp = &data["response"];
                 if let Some(u) = resp.get("usage") {
-                    self.usage = parse_usage(u);
+                    self.usage = parse_usage(u)?;
                 }
                 self.stop_reason = Some(StopReason::MaxTokens);
                 return Ok(true);
@@ -477,12 +495,11 @@ impl ResponseAccumulator {
                 let error = &resp["error"];
                 let message = error["message"]
                     .as_str()
-                    .unwrap_or("response generation failed")
+                    .unwrap_or_else(|| "response generation failed")
                     .to_string();
-                let code = error["code"].as_str().unwrap_or("server_error");
+                let code = error["code"].as_str().unwrap_or_else(|| "server_error");
                 let status = match code {
                     "rate_limit_exceeded" => 429,
-                    "server_error" => 500,
                     _ => 500,
                 };
                 return Err(AgentError::Api { status, message });
@@ -514,7 +531,7 @@ impl ResponseAccumulator {
                 }
                 Err(e) => {
                     warn!(error = %e, tool = %acc.name, json = %acc.arguments, "malformed tool JSON, falling back to {{}}");
-                    Value::Object(Default::default())
+                    Value::Object(serde_json::Map::default())
                 }
             };
             ordered_blocks.push((
@@ -587,10 +604,10 @@ pub(crate) async fn parse_sse(
                 warn!(error_type = %ev.error.r#type, message = %ev.error.message, "SSE error in stream");
                 return Err(ev.into_agent_error());
             }
-            let parsed: Value = serde_json::from_str(data).unwrap_or_default();
+            let parsed: Value = serde_json::from_str(data).unwrap_or_else(|_| Default::default());
             let message = parsed["message"]
                 .as_str()
-                .unwrap_or("unknown error")
+                .unwrap_or_else(|| "unknown error")
                 .to_string();
             return Err(AgentError::Api {
                 status: 500,
@@ -602,7 +619,7 @@ pub(crate) async fn parse_sse(
             serde_json::from_str::<Value>(data)
                 .ok()
                 .and_then(|value| value["type"].as_str().map(ToOwned::to_owned))
-                .unwrap_or_default()
+                .unwrap_or_else(Default::default)
         } else {
             current_event.clone()
         };
@@ -627,26 +644,29 @@ pub(crate) async fn parse_sse(
     Ok((response_id, acc.into_stream_response()))
 }
 
-fn parse_usage(u: &Value) -> TokenUsage {
-    let input_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
-    let output_tokens = u["output_tokens"].as_u64().unwrap_or(0) as u32;
+fn as_u32(v: &Value) -> Result<u32, AgentError> {
+    v.as_u64()
+        .unwrap_or_else(|| 0)
+        .try_into()
+        .map_err(|_| AgentError::Config {
+            message: "token count out of range".into(),
+        })
+}
 
-    let cached = u["input_tokens_details"]["cached_tokens"]
-        .as_u64()
-        .unwrap_or(0) as u32;
+fn parse_usage(u: &Value) -> Result<TokenUsage, AgentError> {
+    let input_tokens = as_u32(&u["input_tokens"])?;
+    let output_tokens = as_u32(&u["output_tokens"])?;
+    let cached = as_u32(&u["input_tokens_details"]["cached_tokens"])?;
+    let cache_write = as_u32(&u["input_tokens_details"]["cache_write_tokens"])?;
 
-    let cache_write = u["input_tokens_details"]["cache_write_tokens"]
-        .as_u64()
-        .unwrap_or(0) as u32;
-
-    TokenUsage {
+    Ok(TokenUsage {
         input: input_tokens
             .saturating_sub(cached)
             .saturating_sub(cache_write),
         output: output_tokens,
         cache_read: cached,
         cache_creation: cache_write,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -1331,7 +1351,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
                 "cache_write_tokens": 50
             }
         });
-        let parsed = parse_usage(&usage);
+        let parsed = parse_usage(&usage).unwrap();
         assert_eq!(parsed.input, 60);
         assert_eq!(parsed.output, 20);
         assert_eq!(parsed.cache_read, 40);
@@ -1347,7 +1367,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
                 "cached_tokens": 30
             }
         });
-        let parsed = parse_usage(&usage);
+        let parsed = parse_usage(&usage).unwrap();
         assert_eq!(parsed.input, 70);
         assert_eq!(parsed.output, 10);
         assert_eq!(parsed.cache_read, 30);

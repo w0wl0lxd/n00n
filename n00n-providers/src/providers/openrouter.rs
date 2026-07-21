@@ -33,6 +33,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
 }
 
 #[derive(Debug)]
+#[allow(clippy::struct_field_names)]
 struct OpenRouterModelInfo {
     reasoning_mandatory: bool,
     reasoning_default_enabled: bool,
@@ -50,20 +51,23 @@ impl OpenRouter {
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
         let pool = KeyPool::from_env(CONFIG.api_key_env)?;
         Ok(Self {
-            compat: OpenAiCompatProvider::new(&CONFIG, timeouts),
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth: Arc::new(Mutex::new(ResolvedAuth::bearer(pool.current()))),
             key_pool: Some(pool),
             system_prefix: None,
         })
     }
 
-    pub(crate) fn with_auth(auth: Arc<Mutex<ResolvedAuth>>, timeouts: super::Timeouts) -> Self {
-        Self {
-            compat: OpenAiCompatProvider::new(&CONFIG, timeouts),
+    pub(crate) fn with_auth(
+        auth: Arc<Mutex<ResolvedAuth>>,
+        timeouts: super::Timeouts,
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth,
             key_pool: None,
             system_prefix: None,
-        }
+        })
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -122,12 +126,15 @@ fn parse_model(m: &Value) -> Option<ModelInfo> {
                 cache_write: p
                     .get("input_cache_write")
                     .and_then(per_token)
-                    .unwrap_or(0.0),
-                cache_read: p.get("input_cache_read").and_then(per_token).unwrap_or(0.0),
+                    .unwrap_or_else(|| 0.0),
+                cache_read: p
+                    .get("input_cache_read")
+                    .and_then(per_token)
+                    .unwrap_or_else(|| 0.0),
                 fast: None,
             })
         })
-        .unwrap_or_default();
+        .unwrap_or_else(Default::default);
 
     let reasoning = m
         .get("reasoning")
@@ -139,15 +146,14 @@ fn parse_model(m: &Value) -> Option<ModelInfo> {
             reasoning_efforts: v
                 .get("supported_efforts")
                 .and_then(Value::as_array)
-                .map(|arr| {
+                .map_or_else(Default::default, |arr| {
                     let mut efforts: Vec<Effort> = arr
                         .iter()
                         .filter_map(|v| v.as_str()?.parse().ok())
                         .collect();
                     efforts.sort_unstable();
                     efforts
-                })
-                .unwrap_or_default(),
+                }),
         });
 
     let supports_thinking = reasoning.is_some()
@@ -184,7 +190,7 @@ impl Provider for OpenRouter {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             let mut buf = String::new();
-            let system = super::with_prefix(&self.system_prefix, system, &mut buf);
+            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
@@ -195,7 +201,7 @@ impl Provider for OpenRouter {
 
             body["cache_control"] = json!({"type": "ephemeral"});
 
-            let reasoning_info: Option<Arc<OpenRouterModelInfo>> = {
+            let reasoning_info = {
                 let guard = crate::model_registry::model_registry()
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -203,8 +209,11 @@ impl Provider for OpenRouter {
                     .discovered(model.provider, &model.id)
                     .and_then(|d| d.provider_info.clone())
                     .map(|arc| {
-                        Arc::downcast::<OpenRouterModelInfo>(arc).expect("wrong provider info type")
+                        Arc::downcast::<OpenRouterModelInfo>(arc).map_err(|_| AgentError::Config {
+                            message: "wrong provider info type".into(),
+                        })
                     })
+                    .transpose()?
             };
 
             let effort_dialect = effort_dialect(reasoning_info.as_deref());
@@ -271,6 +280,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn parse_model_scales_pricing_to_per_million() {
         let info = parse_model(&kimi_k3_json()).expect("model should parse");
 
@@ -286,6 +296,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn parse_model_scales_cache_write() {
         let mut m = kimi_k3_json();
         m["pricing"]["input_cache_write"] = json!("0.00000375");

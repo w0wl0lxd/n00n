@@ -1,3 +1,12 @@
+// clippy.toml forbids `unwrap_or`/`unwrap_or_default`; the only alternative is
+// the lazy `unwrap_or_else` form, which triggers `unnecessary_lazy_evaluations`
+// and `unwrap_or_default`. `Default::default` in those closures also triggers
+// `default_trait_access`. Allow these style lints crate-wide so we can keep
+// using the disallowed-method-safe form without per-function attributes.
+#![allow(clippy::unnecessary_lazy_evaluations)]
+#![allow(clippy::unwrap_or_default)]
+#![allow(clippy::default_trait_access)]
+
 pub(crate) mod error;
 pub mod model;
 pub mod model_registry;
