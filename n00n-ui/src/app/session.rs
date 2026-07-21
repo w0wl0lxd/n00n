@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use crate::chat::{Chat, DONE_TEXT, RESTORE_BATCH_SIZE, history_to_display};
+use crate::chat::{Chat, DONE_TEXT, RESTORE_BATCH_SIZE, history_to_display, transcript_to_display};
 use crate::components::DisplayRole;
 use crate::components::rewind_picker::RewindEntry;
 use crate::components::{Action, LoadedSession};
@@ -101,11 +101,19 @@ impl App {
         let restoring = Arc::new(AtomicBool::new(true));
         self.restoring = restoring.clone();
 
-        let (display_msgs, restore_items) = history_to_display(
-            &self.state.session.messages,
-            &self.state.session.tool_outputs,
-            &self.ui_config.tool_output_lines,
-        );
+        let (display_msgs, restore_items) = if self.state.session.transcript.is_empty() {
+            history_to_display(
+                &self.state.session.messages,
+                &self.state.session.tool_outputs,
+                &self.ui_config.tool_output_lines,
+            )
+        } else {
+            transcript_to_display(
+                &self.state.session.transcript,
+                &self.state.session.tool_outputs,
+                &self.ui_config.tool_output_lines,
+            )
+        };
         self.main_chat()
             .begin_restore(display_msgs, RESTORE_BATCH_SIZE);
         self.main_chat().token_usage = self.state.token_usage;
@@ -167,6 +175,7 @@ impl App {
     fn loaded_session_snapshot(&self) -> LoadedSession {
         LoadedSession {
             messages: self.state.session.messages.clone(),
+            transcript: self.state.session.transcript.clone(),
             tool_outputs: self.state.session.tool_outputs.clone(),
             model_spec: self.state.session.model.clone(),
         }
@@ -200,6 +209,10 @@ impl App {
         self.run_id += 1;
 
         self.state.session.messages.truncate(entry.turn_index);
+        n00n_agent::agent::rebuild_transcript(
+            &mut self.state.session.transcript,
+            &self.state.session.messages,
+        );
         self.state
             .session
             .prune_orphans(|m| m.tool_uses().map(|(id, _, _)| id.to_owned()).collect());
