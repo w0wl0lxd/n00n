@@ -190,6 +190,10 @@ struct Palette {
 }
 
 impl Mascot {
+    pub(crate) fn init_picker() {
+        let _ = PICKER.get_or_init(detect_picker);
+    }
+
     pub fn new(enabled: bool) -> Self {
         let now = Instant::now();
         Self {
@@ -209,7 +213,7 @@ impl Mascot {
             blink_start: None,
             breathe_phase: 0.0,
             last_tick: now,
-            picker: PICKER.get_or_init(detect_picker).clone(),
+            picker: PICKER.get().cloned().unwrap_or(None),
             base_image: None,
             last_area: None,
             last_font_size: None,
