@@ -150,6 +150,11 @@ impl History {
 }
 
 pub fn rebuild_transcript(transcript: &mut Vec<TranscriptEntry<Message>>, messages: &[Message]) {
+    if messages.is_empty() {
+        transcript.clear();
+        return;
+    }
+
     let active_entries: Vec<_> = transcript
         .iter()
         .filter(|entry| !matches!(entry, TranscriptEntry::Compaction { .. }))
@@ -433,6 +438,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["summary prompt", "summary", "keep", "kept reply"]
         );
+    }
+
+    #[test]
+    fn truncate_to_empty_clears_compacted_transcript() {
+        let mut history = History::new(vec![Message::user("old".into())]);
+        compact(&mut history, "summary");
+
+        history.truncate(0);
+
+        assert!(history.as_slice().is_empty());
+        assert!(history.transcript().is_empty());
     }
 
     #[test]
