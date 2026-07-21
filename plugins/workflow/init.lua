@@ -23,16 +23,35 @@ local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
-local MAX_STRUCTURED_RETRIES = 2
+local MAX_STRUCTURED_RETRIES = 1
 local MAX_SCHEMA_ERRORS = 3
+local MAX_SCHEMA_BYTES = 32 * 1024
+local MAX_SCHEMA_DEPTH = 16
 local SCHEMA_ROOT_ERROR = "output_schema must have type object"
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
+local SCHEMA_SIZE_ERROR = "output_schema exceeds 32768-byte limit"
+local SCHEMA_DEPTH_ERROR = "output_schema exceeds maximum depth of 16"
 local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
 local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
 local NUDGE_MISSING =
   "You did not call the structured_output tool. Call it now with your final result matching its input schema."
 local INVALID_INPUT_PREFIX =
   "Input does not match the required schema. Fix the errors and call structured_output again:\n"
+local function schema_within_depth(value, depth)
+  if type(value) ~= "table" then
+    return true
+  end
+  if depth > MAX_SCHEMA_DEPTH then
+    return false
+  end
+  for _, child in pairs(value) do
+    if not schema_within_depth(child, depth + 1) then
+      return false
+    end
+  end
+  return true
+end
+
 local SCRIPT_ERROR_PREFIX = "workflow script error: "
 local NO_META_ERROR = "workflow script must call meta({ name = ... }) before doing any work"
 local SCRIPT_REQUIRED_ERROR = "script (string) is required"
@@ -432,6 +451,16 @@ local function make_agent(ctx, progress, journal)
       if aopts.output_schema then
         if type(aopts.output_schema) ~= "table" or aopts.output_schema.type ~= "object" then
           error(SCHEMA_ROOT_ERROR, 0)
+        end
+        local encoded_schema, encode_err = n00n.json.encode(aopts.output_schema)
+        if encode_err then
+          error(SCHEMA_COMPILE_ERROR .. ": " .. encode_err, 0)
+        end
+        if #encoded_schema > MAX_SCHEMA_BYTES then
+          error(SCHEMA_SIZE_ERROR, 0)
+        end
+        if not schema_within_depth(aopts.output_schema, 1) then
+          error(SCHEMA_DEPTH_ERROR, 0)
         end
         local compile_err
         validator, compile_err = n00n.json.schema_validator(aopts.output_schema)

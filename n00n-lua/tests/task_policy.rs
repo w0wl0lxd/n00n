@@ -15,8 +15,12 @@ const TASK_PLUGIN_SRC: &str = include_str!("../../plugins/task/init.lua");
 // Mirrors of the plugin's error contracts and policy numbers.
 const STRUCTURED_OUTPUT_TOOL: &str = "structured_output";
 const MAX_SCHEMA_ERRORS: usize = 3;
+const OVERSIZED_SCHEMA_DESCRIPTION_BYTES: usize = 33_000;
+const OVERDEEP_SCHEMA_LEVELS: usize = 20;
 const SCHEMA_COMPILE_ERROR: &str = "invalid output_schema";
 const SCHEMA_ROOT_ERROR: &str = "output_schema must have type object";
+const SCHEMA_SIZE_ERROR: &str = "output_schema exceeds 32768-byte limit";
+const SCHEMA_DEPTH_ERROR: &str = "output_schema exceeds maximum depth of 16";
 const STRUCTURED_MISSING_ERROR: &str = "subagent finished without calling structured_output";
 const STRUCTURED_INVALID_ERROR: &str = "subagent result does not match output_schema";
 const UNKNOWN_SUBAGENT_ERR: &str = "unknown subagent type: bogus";
@@ -269,6 +273,38 @@ fn bad_input_errors_before_any_session(extra: Value, expected_prefix: &str) {
 }
 
 #[test]
+fn oversized_schema_errors_before_any_session() {
+    let (reg, _host) = load_task_host();
+    let schema = json!({
+        "type": "object",
+        "description": "x".repeat(OVERSIZED_SCHEMA_DESCRIPTION_BYTES),
+    });
+    let err = exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_PLAIN, Some(schema))).unwrap_err();
+
+    assert_eq!(err, SCHEMA_SIZE_ERROR);
+    let snap = probe(&reg);
+    assert_eq!(snap["sessions"], json!(0));
+    assert_eq!(snap["prompt_count"], json!(0));
+}
+
+#[test]
+fn deeply_nested_schema_errors_before_any_session() {
+    let (reg, _host) = load_task_host();
+    let mut schema = json!({ "type": "string" });
+    for _ in 0..OVERDEEP_SCHEMA_LEVELS {
+        schema = json!({
+            "type": "object",
+            "properties": { "nested": schema },
+        });
+    }
+    let err = exec_tool(&reg, TASK_TOOL, task_input(SCENARIO_PLAIN, Some(schema))).unwrap_err();
+
+    assert_eq!(err, SCHEMA_DEPTH_ERROR);
+    let snap = probe(&reg);
+    assert_eq!(snap["sessions"], json!(0));
+}
+
+#[test]
 fn structured_happy_path_returns_validated_json() {
     let (reg, _host) = load_task_host();
     let out = exec_tool(
@@ -332,7 +368,7 @@ fn missing_structured_output_errors_after_bounded_nudges() {
     assert_eq!(err, STRUCTURED_MISSING_ERROR);
 
     let snap = probe(&reg);
-    assert_eq!(snap["prompt_count"], json!(3));
+    assert_eq!(snap["prompt_count"], json!(2));
     assert_eq!(snap["closed"], json!(1));
 }
 
@@ -349,7 +385,7 @@ fn invalid_only_errors_with_bounded_schema_errors() {
     assert_eq!(err.lines().count(), 1 + MAX_SCHEMA_ERRORS, "got: {err}");
 
     let snap = probe(&reg);
-    assert_eq!(snap["prompt_count"], json!(3));
+    assert_eq!(snap["prompt_count"], json!(2));
     let first_err = snap["first_err"].as_str().expect("first_err missing");
     assert_eq!(
         first_err.lines().count(),
