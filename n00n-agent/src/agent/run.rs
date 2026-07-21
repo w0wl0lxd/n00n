@@ -573,6 +573,20 @@ mod tests {
     use crate::Envelope;
     use crate::permissions::PermissionManager;
 
+    #[test]
+    fn estimate_message_tokens_counts_content_blocks() {
+        let messages = vec![Message::user("hello world".into())];
+        let tokens = estimate_message_tokens(&messages);
+        assert!(tokens > 0, "expected positive token count for messages");
+    }
+
+    #[test]
+    fn estimate_tool_tokens_counts_json() {
+        let tools = serde_json::json!([{"name": "skill", "description": "A tool"}]);
+        let tokens = estimate_tool_tokens(&tools);
+        assert!(tokens > 0, "expected positive token count for tools");
+    }
+
     struct MockInterruptSource {
         commands: Mutex<VecDeque<ExtractedCommand>>,
     }
