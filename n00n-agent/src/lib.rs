@@ -46,6 +46,7 @@ pub enum AgentMode {
 }
 
 impl AgentMode {
+    #[must_use]
     pub fn plan_path(&self) -> Option<&Path> {
         match self {
             Self::Plan(p) => Some(p),

@@ -61,7 +61,7 @@ pub(crate) async fn stream_with_retry(
         )
         .await;
         drop(ptx);
-        let _ = forwarder.await;
+        let () = forwarder.await;
         match result {
             Ok(r) => return Ok(r),
             Err(AgentError::Cancelled) => return Err(AgentError::Cancelled),
@@ -75,7 +75,7 @@ pub(crate) async fn stream_with_retry(
                 if matches!(e, AgentError::Timeout { .. }) && attempt > MAX_TIMEOUT_RETRIES {
                     return Err(e);
                 }
-                let delay_ms = delay.as_millis() as u64;
+                let delay_ms = u64::try_from(delay.as_millis()).unwrap_or_else(|_| u64::MAX);
                 warn!(attempt, delay_ms, error = %e, "retryable, will retry");
                 event_tx.send(AgentEvent::Retry {
                     attempt,

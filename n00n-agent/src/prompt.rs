@@ -4,6 +4,7 @@ use std::sync::Arc;
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 
 pub trait ValidNames: IntoEnumIterator + std::fmt::Display {
+    #[must_use]
     fn valid_names() -> String {
         Self::iter()
             .map(|v| v.to_string())
@@ -19,15 +20,15 @@ pub const GENERAL_PROMPT: &str = include_str!("prompts/general.md");
 pub const COMPACTION_SYSTEM: &str = include_str!("prompts/compaction.md");
 pub const COMPACTION_USER: &str = include_str!("prompts/compaction_user.md");
 
-pub const DEFAULT_IDENTITY: &str = r#"You are N00n, an interactive CLI coding agent. Use the tools available to assist the user with software engineering tasks. Complete tasks successfully while minimizing token usage and tool calls to avoid context bloat.
+pub const DEFAULT_IDENTITY: &str = r"You are N00n, an interactive CLI coding agent. Use the tools available to assist the user with software engineering tasks. Complete tasks successfully while minimizing token usage and tool calls to avoid context bloat.
 
-You must NEVER generate or guess URLs unless they are for helping the user with programming."#;
+You must NEVER generate or guess URLs unless they are for helping the user with programming.";
 
-pub const DEFAULT_TONE: &str = r#"- Be concise. Your output is displayed on a CLI rendered in monospace. Use GitHub-flavored markdown.
+pub const DEFAULT_TONE: &str = r"- Be concise. Your output is displayed on a CLI rendered in monospace. Use GitHub-flavored markdown.
 - Only use emojis if explicitly requested.
 - Do not add comments to code unless asked.
 - Output text to communicate with the user; all text you output outside of tool use is displayed to the user. Only use tools to complete tasks. NEVER use bash echo or other command-line tools to communicate thoughts, explanations, diagrams, or instructions to the user. Output all communication directly in your response text instead.
-- NEVER create files unless absolutely necessary. ALWAYS prefer editing existing files."#;
+- NEVER create files unless absolutely necessary. ALWAYS prefer editing existing files.";
 
 const NATIVE_EFFICIENT_TOOLS: &[&str] = &["batch", "code_execution", "index", "task"];
 const INSTRUCTIONS_MARKER: &str = "{{instructions}}";
@@ -69,6 +70,7 @@ impl Slot {
         }
     }
 
+    #[must_use]
     pub fn kind(self) -> SlotKind {
         match self {
             Slot::Identity | Slot::Tone => SlotKind::Singleton,
@@ -83,6 +85,7 @@ impl Slot {
     /// registers content for a singleton slot, the default is used.
     /// Aggregate slots have no default (the template carries the static
     /// text around the marker).
+    #[must_use]
     pub fn default_content(self) -> Option<&'static str> {
         match self {
             Slot::Identity => Some(DEFAULT_IDENTITY),
@@ -91,6 +94,7 @@ impl Slot {
         }
     }
 
+    #[must_use]
     pub fn names_for_kind(kind: SlotKind) -> String {
         Self::iter()
             .filter(|s| s.kind() == kind)
@@ -126,11 +130,11 @@ pub struct ResolvedSlots {
 }
 
 impl ResolvedSlots {
+    #[must_use]
     pub fn get(&self, prompt: PromptId, slot: Slot) -> &[SlotEntry] {
         self.entries
             .get(&(prompt, slot))
-            .map(|v| v.as_slice())
-            .unwrap_or_default()
+            .map_or(&[], std::vec::Vec::as_slice)
     }
 
     pub fn insert(&mut self, prompt: PromptId, slot: Slot, entry: SlotEntry) {
@@ -150,6 +154,7 @@ impl PromptId {
     /// A slot exists for this prompt iff its marker is present in the template.
     /// Markers that are absent get no content (and we warn at collection time
     /// when a plugin targets them explicitly).
+    #[must_use]
     pub fn has_slot(self, slot: Slot) -> bool {
         self.template().contains(slot.marker())
     }
@@ -194,6 +199,7 @@ fn render_efficient_tools(slots: &ResolvedSlots, prompt: PromptId) -> String {
 
 /// Fill each `{{slot}}` marker in the template with its rendered content and
 /// drop the project instructions (AGENTS.md and friends) into `{{instructions}}`.
+#[must_use]
 pub fn assemble(id: PromptId, slots: &ResolvedSlots, instructions: &str) -> String {
     let mut out = id.template().to_string();
     for slot in Slot::iter() {
@@ -312,7 +318,7 @@ mod tests {
         assert!(at(&out, "FIRST") < at(&out, "SECOND"));
     }
 
-    /// Only System carries AfterInstructions, so the same content shows up there
+    /// Only System carries `AfterInstructions`, so the same content shows up there
     /// but never leaks into the subagent prompts.
     #[test]
     fn after_instructions_only_reaches_system() {

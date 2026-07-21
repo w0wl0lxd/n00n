@@ -12,6 +12,11 @@ pub struct ClientRegistration {
     pub client_secret_expires_at: Option<u64>,
 }
 
+/// Register this client with the authorization server.
+///
+/// # Errors
+///
+/// Returns an error if the registration request fails or the response is invalid.
 pub async fn register_client(
     client: &HttpClient,
     registration_endpoint: &str,
