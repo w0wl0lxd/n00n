@@ -1,8 +1,15 @@
 use std::time::Instant;
 
+use image::{DynamicImage, Rgba, RgbaImage};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::layout::Size;
 use ratatui::style::Color;
+use ratatui::widgets::Widget;
+use ratatui_image::{
+    Image, Resize,
+    picker::{Picker, ProtocolType},
+};
 
 use crate::theme::{Theme, lerp_u8};
 
@@ -31,32 +38,39 @@ const MASCOT_MIN_Y: f64 = 5.0;
 const MASCOT_MAX_Y: f64 = 55.0;
 
 const HAIR_LEFT: [(f64, f64, f64); 11] = [
-    (18.0, 20.0, 6.5),
-    (17.7212, 22.5, 6.25),
-    (17.5653, 25.0, 6.0),
-    (17.6359, 27.5, 5.75),
-    (18.0009, 30.0, 5.5),
-    (18.6814, 32.5, 5.25),
-    (19.6491, 35.0, 5.0),
-    (20.83, 37.5, 4.75),
-    (22.1167, 40.0, 4.5),
-    (23.385, 42.5, 4.25),
-    (24.5136, 45.0, 4.0),
+    (18.0000, 18.0, 6.5000),
+    (18.0650, 20.5, 6.2500),
+    (18.2600, 23.0, 6.0000),
+    (18.5850, 25.5, 5.7500),
+    (19.0400, 28.0, 5.5000),
+    (19.6250, 30.5, 5.2500),
+    (20.3400, 33.0, 5.0000),
+    (21.1850, 35.5, 4.7500),
+    (22.1600, 38.0, 4.5000),
+    (23.2650, 40.5, 4.2500),
+    (24.5000, 43.0, 4.0000),
 ];
 const HAIR_RIGHT: [(f64, f64, f64); 11] = [
-    (62.0, 20.0, 6.5),
-    (62.2788, 22.5, 6.25),
-    (62.4347, 25.0, 6.0),
-    (62.3641, 27.5, 5.75),
-    (61.9991, 30.0, 5.5),
-    (61.3186, 32.5, 5.25),
-    (60.3509, 35.0, 5.0),
-    (59.17, 37.5, 4.75),
-    (57.8833, 40.0, 4.5),
-    (56.615, 42.5, 4.25),
-    (55.4864, 45.0, 4.0),
+    (62.0000, 18.0, 6.5000),
+    (61.9350, 20.5, 6.2500),
+    (61.7400, 23.0, 6.0000),
+    (61.4150, 25.5, 5.7500),
+    (60.9600, 28.0, 5.5000),
+    (60.3750, 30.5, 5.2500),
+    (59.6600, 33.0, 5.0000),
+    (58.8150, 35.5, 4.7500),
+    (57.8400, 38.0, 4.5000),
+    (56.7350, 40.5, 4.2500),
+    (55.5000, 43.0, 4.0000),
 ];
-const BANG_CENTERS: [f64; 5] = [25.0, 33.0, 40.5, 47.0, 55.0];
+const BANGS: [(f64, f64, f64, f64); 5] = [
+    (25.0, 18.2, 5.0, 4.0),
+    (33.0, 18.0, 4.5, 4.5),
+    (40.5, 18.3, 5.0, 4.2),
+    (48.0, 18.0, 4.5, 4.5),
+    (55.0, 18.2, 5.0, 4.0),
+];
+const SIDE_HAIR: [(f64, f64, f64, f64); 2] = [(23.0, 31.0, 5.0, 15.5), (57.0, 31.0, 5.0, 15.5)];
 
 pub struct Mascot {
     enabled: bool,
@@ -75,6 +89,12 @@ pub struct Mascot {
     blink_start: Option<Instant>,
     breathe_phase: f32,
     last_tick: Instant,
+    picker: Option<Picker>,
+    picker_initialized: bool,
+    base_image: Option<RgbaImage>,
+    last_area: Option<Rect>,
+    last_font_size: Option<(u16, u16)>,
+    breathe_down: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -96,10 +116,10 @@ enum Layer {
     EyeWhiteRight,
     IrisLeft,
     IrisRight,
-    LashLeft,
-    LashRight,
     PupilLeft,
     PupilRight,
+    LashLeft,
+    LashRight,
     HighlightLeft,
     HighlightRight,
     BrowLeft,
@@ -171,6 +191,12 @@ impl Mascot {
             blink_start: None,
             breathe_phase: 0.0,
             last_tick: now,
+            picker: None,
+            picker_initialized: false,
+            base_image: None,
+            last_area: None,
+            last_font_size: None,
+            breathe_down: false,
         }
     }
 
@@ -247,7 +273,7 @@ impl Mascot {
         (dx.clamp(-2.0, 2.0), dy.clamp(-2.0, 2.0))
     }
 
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme, _accent: Color) {
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme, _accent: Color) {
         if !self.enabled || area.width < 24 || area.height < 12 {
             return;
         }
@@ -265,7 +291,106 @@ impl Mascot {
             };
 
         let inv = 1.0 / scale;
+        let current_breathe_down = self.breathe_phase.sin() > BREATHE_THRESHOLD;
 
+        if !self.picker_initialized {
+            self.picker = Picker::from_query_stdio()
+                .ok()
+                .filter(|p| !matches!(p.protocol_type(), ProtocolType::Halfblocks));
+            self.picker_initialized = true;
+        }
+
+        if self.picker.is_none() {
+            self.render_braille(area, buf, &palette, off_x, off_y, inv);
+            return;
+        }
+
+        let picker = self.picker.as_ref().unwrap();
+        let font_size = picker.font_size();
+        let font_dims = (font_size.width, font_size.height);
+        let px_width = u32::from(area.width) * u32::from(font_size.width);
+        let px_height = u32::from(area.height) * u32::from(font_size.height);
+
+        let needs_regenerate = self.last_area != Some(area)
+            || self.last_font_size != Some(font_dims)
+            || self.breathe_down != current_breathe_down
+            || self.base_image.is_none();
+
+        if needs_regenerate {
+            let mut base = RgbaImage::new(px_width, px_height);
+
+            for py in 0..px_height {
+                for px in 0..px_width {
+                    let tx = f64::from(area.x) + (f64::from(px) + 0.5) / f64::from(font_size.width);
+                    let ty =
+                        f64::from(area.y) + (f64::from(py) + 0.5) / f64::from(font_size.height);
+                    let bx = (tx - off_x) * inv;
+                    let by = (ty - off_y) * inv;
+                    let (layer, shade) = sample(bx, by, 0.0, 0.0, true);
+                    let pixel = mascot_pixel(layer, shade, &palette, true);
+                    base.put_pixel(px, py, pixel);
+                }
+            }
+
+            self.base_image = Some(base);
+            self.last_area = Some(area);
+            self.last_font_size = Some(font_dims);
+            self.breathe_down = current_breathe_down;
+        }
+
+        let mut image = self.base_image.as_ref().unwrap().clone();
+
+        for &(ecx, ecy) in &[(30.0, 27.5), (50.0, 27.5)] {
+            let tx = ecx * scale + off_x;
+            let ty = ecy * scale + off_y;
+            let px0 = (tx - f64::from(area.x)) * f64::from(font_size.width);
+            let py0 = (ty - f64::from(area.y)) * f64::from(font_size.height);
+            let half_w = 9.0 * scale * f64::from(font_size.width);
+            let half_h = 8.0 * scale * f64::from(font_size.height);
+
+            let px_start = (px0 - half_w).floor().max(0.0) as u32;
+            let px_end = (px0 + half_w).ceil().min(px_width as f64) as u32;
+            let py_start = (py0 - half_h).floor().max(0.0) as u32;
+            let py_end = (py0 + half_h).ceil().min(px_height as f64) as u32;
+
+            for py in py_start..py_end {
+                for px in px_start..px_end {
+                    let tx = f64::from(area.x) + (f64::from(px) + 0.5) / f64::from(font_size.width);
+                    let ty =
+                        f64::from(area.y) + (f64::from(py) + 0.5) / f64::from(font_size.height);
+                    let bx = (tx - off_x) * inv;
+                    let by = (ty - off_y) * inv;
+                    let (layer, shade) = sample(bx, by, self.gaze_x, self.gaze_y, self.is_blinking);
+                    let pixel = mascot_pixel(layer, shade, &palette, false);
+                    image.put_pixel(px, py, pixel);
+                }
+            }
+        }
+
+        let dyn_image = DynamicImage::ImageRgba8(image);
+
+        match picker.new_protocol(
+            dyn_image,
+            Size::new(area.width, area.height),
+            Resize::Fit(None),
+        ) {
+            Ok(protocol) => {
+                let img = Image::new(&protocol);
+                img.render(area, buf);
+            }
+            Err(_) => self.render_braille(area, buf, &palette, off_x, off_y, inv),
+        }
+    }
+
+    fn render_braille(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        palette: &Palette,
+        off_x: f64,
+        off_y: f64,
+        inv: f64,
+    ) {
         for ty in area.y..area.y + area.height {
             for tx in area.x..area.x + area.width {
                 let mut layers = [Layer::None; SAMPLES_PER_CELL];
@@ -360,9 +485,8 @@ impl Layer {
             | Layer::EarRight
             | Layer::Bangs
             | Layer::SideHairLeft
-            | Layer::SideHairRight
-            | Layer::BrowLeft
-            | Layer::BrowRight => Role::Hair,
+            | Layer::SideHairRight => Role::Hair,
+            Layer::BrowLeft | Layer::BrowRight => Role::Brow,
             Layer::Face | Layer::InnerEarLeft | Layer::InnerEarRight => Role::Skin,
             Layer::BlushLeft | Layer::BlushRight => Role::Blush,
             Layer::Collar => Role::Collar,
@@ -522,6 +646,10 @@ impl Palette {
             (f32::from(b) * f) as u8,
         )
     }
+
+    fn background(&self) -> Color {
+        self.background
+    }
 }
 
 fn shadow_factor(role: Role) -> f32 {
@@ -551,12 +679,12 @@ fn sample(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> (Layer, f64)
     }
 
     for &(cx, cy, rx, ry) in &[
-        (15.0, 24.0, 3.5, 2.5),
-        (21.0, 24.0, 3.5, 2.5),
-        (18.0, 24.0, 1.8, 1.8),
-        (36.0, 48.0, 3.0, 2.0),
-        (44.0, 48.0, 3.0, 2.0),
-        (40.0, 48.0, 1.6, 1.6),
+        (14.5, 22.0, 3.2, 2.2),
+        (19.5, 22.0, 3.2, 2.2),
+        (17.0, 22.0, 1.6, 1.6),
+        (35.5, 47.5, 3.0, 2.0),
+        (44.5, 47.5, 3.0, 2.0),
+        (40.0, 47.5, 1.6, 1.6),
     ] {
         let d = sd_ellipse(x, y, cx, cy, rx, ry);
         if d <= 0.4 {
@@ -564,48 +692,50 @@ fn sample(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> (Layer, f64)
         }
     }
 
-    for &cx in &BANG_CENTERS {
-        let d = sd_ellipse(x, y, cx, 19.0, 5.0, 4.2);
+    for &(cx, cy, rx, ry) in &BANGS {
+        let d = sd_ellipse(x, y, cx, cy, rx, ry);
         if d <= 0.8 {
-            let grad = 1.0 - 0.35 * smoothstep(15.0, 35.0, y);
+            let grad = 1.0 - 0.4 * smoothstep(15.0, 28.0, y);
             return (Layer::Bangs, aa(d, 0.8) * grad);
         }
     }
 
-    for &(cx, cy, rx, ry, layer) in &[
-        (21.5, 30.0, 3.5, 13.0, Layer::SideHairLeft),
-        (58.5, 30.0, 3.5, 13.0, Layer::SideHairRight),
-    ] {
+    for &(cx, cy, rx, ry) in &SIDE_HAIR {
         let d = sd_ellipse(x, y, cx, cy, rx, ry);
-        if d <= 1.0 {
+        if d <= 0.8 {
             let grad = 1.0 - 0.5 * smoothstep(15.0, 45.0, y);
-            return (layer, aa(d, 1.0) * grad);
+            let layer = if cx < 40.0 {
+                Layer::SideHairLeft
+            } else {
+                Layer::SideHairRight
+            };
+            return (layer, aa(d, 0.8) * grad);
         }
     }
 
-    let d_mouth = sd_ellipse(x, y, 40.0, 41.0, 3.5, 1.3);
+    let d_mouth = sd_ellipse(x, y, 40.0, 39.5, 2.2, 0.8);
     if d_mouth <= 0.5 {
         let mouth_shade = aa(d_mouth, 0.5);
-        if (y - 40.8).abs() <= 0.35 && (x - 40.0).abs() <= 1.6 {
-            let t = (y - 40.8).abs() / 0.35;
+        if (y - 39.2).abs() <= 0.35 && (x - 40.0).abs() <= 1.3 {
+            let t = (y - 39.2).abs() / 0.35;
             return (Layer::Teeth, mouth_shade * (1.0 - smoothstep(0.0, 1.0, t)));
         }
         return (Layer::Mouth, mouth_shade);
     }
 
-    let d_nose = sd_triangle(x, y, 40.0, 36.0, 38.5, 38.5, 41.5, 38.5);
+    let d_nose = sd_triangle(x, y, 40.0, 34.5, 38.8, 36.2, 41.2, 36.2);
     if d_nose <= 0.35 {
         return (Layer::Nose, aa(d_nose, 0.35));
     }
 
-    for &(x1, y1, x2, y2) in &[(25.0, 22.0, 29.5, 21.0), (29.5, 21.0, 34.0, 20.5)] {
-        let d = sd_segment(x, y, x1, y1, x2, y2, 0.35);
+    for &(x1, y1, x2, y2) in &[(24.5, 21.0, 29.0, 19.5), (29.0, 19.5, 33.5, 20.5)] {
+        let d = sd_segment(x, y, x1, y1, x2, y2, 0.3);
         if d <= 0.3 {
             return (Layer::BrowLeft, aa(d, 0.3));
         }
     }
-    for &(x1, y1, x2, y2) in &[(46.0, 20.5, 50.5, 21.0), (50.5, 21.0, 55.0, 22.0)] {
-        let d = sd_segment(x, y, x1, y1, x2, y2, 0.35);
+    for &(x1, y1, x2, y2) in &[(46.5, 20.5, 51.0, 19.5), (51.0, 19.5, 55.5, 21.0)] {
+        let d = sd_segment(x, y, x1, y1, x2, y2, 0.3);
         if d <= 0.3 {
             return (Layer::BrowRight, aa(d, 0.3));
         }
@@ -615,106 +745,111 @@ fn sample(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> (Layer, f64)
         let mut eye_layer = Layer::None;
         let mut eye_shade = 0.0;
 
-        for &(cx, cy, r) in &[
-            (28.0 + gaze_x * 0.3, 27.0 + gaze_y * 0.3, 1.3),
-            (48.0 + gaze_x * 0.3, 27.0 + gaze_y * 0.3, 1.3),
-        ] {
-            let d = sd_circle(x, y, cx, cy, r);
-            let layer = if cx < 40.0 {
+        for &(cx_base, cy_base) in &[(30.0, 27.5), (50.0, 27.5)] {
+            let cx = cx_base + gaze_x;
+            let cy = cy_base + gaze_y;
+
+            let hx = cx + 2.0;
+            let hy = cy - 1.8;
+            let d_highlight = sd_circle(x, y, hx, hy, 1.1);
+            let layer_highlight = if cx < 40.0 {
                 Layer::HighlightLeft
             } else {
                 Layer::HighlightRight
             };
-            if d <= 0.4 && layer > eye_layer {
-                eye_layer = layer;
-                eye_shade = aa(d, 0.4);
+            if d_highlight <= 0.4 && layer_highlight > eye_layer {
+                eye_layer = layer_highlight;
+                eye_shade = aa(d_highlight, 0.4);
             }
-        }
 
-        for &(cx, cy, rx, ry, layer) in &[
-            (
-                30.0 + gaze_x * 1.2,
-                31.0 + gaze_y,
-                2.0,
-                3.4,
-                Layer::PupilLeft,
-            ),
-            (
-                50.0 + gaze_x * 1.2,
-                31.0 + gaze_y,
-                2.0,
-                3.4,
-                Layer::PupilRight,
-            ),
-        ] {
-            let d = sd_ellipse(x, y, cx, cy, rx, ry);
-            let s = aa(d, 0.5);
-            if d <= 0.5 && layer > eye_layer {
-                eye_layer = layer;
-                eye_shade = s;
+            let d_pupil = sd_ellipse(x, y, cx, cy - 0.2, 2.5, 3.0);
+            let layer_pupil = if cx < 40.0 {
+                Layer::PupilLeft
+            } else {
+                Layer::PupilRight
+            };
+            if d_pupil <= 0.5 && layer_pupil > eye_layer {
+                eye_layer = layer_pupil;
+                eye_shade = aa(d_pupil, 0.5);
             }
-        }
 
-        for &(cx, cy, rx, ry, layer) in &[
-            (
-                30.0 + gaze_x * 1.1,
-                30.0 + gaze_y,
-                4.0,
-                5.2,
-                Layer::IrisLeft,
-            ),
-            (
-                50.0 + gaze_x * 1.1,
-                30.0 + gaze_y,
-                4.0,
-                5.2,
-                Layer::IrisRight,
-            ),
-        ] {
-            let d = sd_ellipse(x, y, cx, cy, rx, ry);
-            if d <= 0.6 {
-                let t = ((x - cx) / rx).hypot((y - cy) / ry);
+            let d_iris = sd_ellipse(x, y, cx, cy, 5.0, 4.5);
+            if d_iris <= 0.6 {
+                let t = ((x - cx) / 5.0).hypot((y - cy) / 4.5);
                 let grad = 1.0 - 0.5 * smoothstep(0.0, 1.0, t);
-                let s = aa(d, 0.6) * grad;
-                if layer > eye_layer {
-                    eye_layer = layer;
+                let layer_iris = if cx < 40.0 {
+                    Layer::IrisLeft
+                } else {
+                    Layer::IrisRight
+                };
+                let s = aa(d_iris, 0.6) * grad;
+                if layer_iris > eye_layer {
+                    eye_layer = layer_iris;
                     eye_shade = s;
                 }
             }
-        }
 
-        for &(cx, cy, rx, ry, layer) in &[
-            (30.0 + gaze_x, 29.0 + gaze_y, 5.5, 6.5, Layer::EyeWhiteLeft),
-            (50.0 + gaze_x, 29.0 + gaze_y, 5.5, 6.5, Layer::EyeWhiteRight),
-        ] {
-            let d = sd_ellipse(x, y, cx, cy, rx, ry);
-            let s = aa(d, 0.6);
-            if d <= 0.6 && layer > eye_layer {
-                eye_layer = layer;
-                eye_shade = s;
+            let d_eyewhite = sd_ellipse(x, y, cx, cy, 7.0, 5.5);
+            let layer_eyewhite = if cx < 40.0 {
+                Layer::EyeWhiteLeft
+            } else {
+                Layer::EyeWhiteRight
+            };
+            if d_eyewhite <= 0.6 && layer_eyewhite > eye_layer {
+                eye_layer = layer_eyewhite;
+                eye_shade = aa(d_eyewhite, 0.6);
             }
         }
 
-        for &(x1, y1, x2, y2, layer) in &[
-            (
-                24.5 + gaze_x,
-                24.5 + gaze_y,
-                35.5 + gaze_x,
-                24.5 + gaze_y,
-                Layer::LashLeft,
-            ),
-            (
-                44.5 + gaze_x,
-                24.5 + gaze_y,
-                55.5 + gaze_x,
-                24.5 + gaze_y,
-                Layer::LashRight,
-            ),
+        for &(cx_base, cy_base, x1_off, y1_off, x2_off, y2_off, thick) in &[
+            (30.0, 27.5, -6.0, -4.5, 0.0, -5.5, 0.55),
+            (50.0, 27.5, -6.0, -5.5, 0.0, -4.5, 0.55),
         ] {
-            let d = sd_segment(x, y, x1, y1, x2, y2, 0.45);
-            if d <= 0.35 && layer > eye_layer {
-                eye_layer = layer;
-                eye_shade = aa(d, 0.35);
+            let cx = cx_base + gaze_x;
+            let cy = cy_base + gaze_y;
+            let d_lash = sd_segment(
+                x,
+                y,
+                cx + x1_off,
+                cy + y1_off,
+                cx + x2_off,
+                cy + y2_off,
+                thick,
+            );
+            let layer_lash = if cx < 40.0 {
+                Layer::LashLeft
+            } else {
+                Layer::LashRight
+            };
+            if d_lash <= 0.35 && layer_lash > eye_layer {
+                eye_layer = layer_lash;
+                eye_shade = aa(d_lash, 0.35);
+            }
+        }
+
+        for &(cx_base, cy_base, x1_off, y1_off, x2_off, y2_off, thick) in &[
+            (30.0, 27.5, -1.5, 4.5, 0.5, 4.0, 0.35),
+            (50.0, 27.5, -0.5, 4.0, 1.5, 4.5, 0.35),
+        ] {
+            let cx = cx_base + gaze_x;
+            let cy = cy_base + gaze_y;
+            let d_lash = sd_segment(
+                x,
+                y,
+                cx + x1_off,
+                cy + y1_off,
+                cx + x2_off,
+                cy + y2_off,
+                thick,
+            );
+            let layer_lash = if cx < 40.0 {
+                Layer::LashLeft
+            } else {
+                Layer::LashRight
+            };
+            if d_lash <= 0.35 && layer_lash > eye_layer {
+                eye_layer = layer_lash;
+                eye_shade = aa(d_lash, 0.35);
             }
         }
 
@@ -722,14 +857,14 @@ fn sample(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> (Layer, f64)
             return (eye_layer, eye_shade);
         }
     } else {
-        for &(cx, cy, rx, ry, layer) in &[
-            (30.0, 29.0, 5.5, 6.5, Layer::EyeWhiteLeft),
-            (50.0, 29.0, 5.5, 6.5, Layer::EyeWhiteRight),
+        for &(cx, cy, layer) in &[
+            (30.0, 27.5, Layer::EyeWhiteLeft),
+            (50.0, 27.5, Layer::EyeWhiteRight),
         ] {
-            let d = sd_ellipse(x, y, cx, cy, rx, ry);
+            let d = sd_ellipse(x, y, cx, cy, 7.0, 5.5);
             if d <= 0.6 {
-                if (y - 31.0).abs() <= 0.5 {
-                    let t = (y - 31.0).abs() / 0.5;
+                if (y - 27.5).abs() <= 0.5 {
+                    let t = (y - 27.5).abs() / 0.5;
                     let s = aa(d, 0.6) * (1.0 - smoothstep(0.0, 1.0, t));
                     let lash = if layer == Layer::EyeWhiteLeft {
                         Layer::LashLeft
@@ -744,8 +879,8 @@ fn sample(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> (Layer, f64)
     }
 
     for &(cx, cy, rx, ry, layer) in &[
-        (23.0, 34.5, 3.0, 1.8, Layer::BlushLeft),
-        (57.0, 34.5, 3.0, 1.8, Layer::BlushRight),
+        (24.0, 33.5, 3.0, 1.8, Layer::BlushLeft),
+        (56.0, 33.5, 3.0, 1.8, Layer::BlushRight),
     ] {
         let d = sd_ellipse(x, y, cx, cy, rx, ry);
         if d <= 0.5 {
@@ -753,23 +888,25 @@ fn sample(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> (Layer, f64)
         }
     }
 
-    let d_collar = sd_ellipse(x, y, 40.0, 46.0, 13.0, 2.4);
+    let d_collar = sd_ellipse(x, y, 40.0, 46.5, 13.0, 2.4);
     if d_collar <= 0.4 {
         return (Layer::Collar, aa(d_collar, 0.4));
     }
 
-    let d_face = sd_ellipse(x, y, 40.0, 31.0, 15.0, 14.5);
-    let d_chin = sd_triangle(x, y, 40.0, 44.0, 34.5, 36.0, 45.5, 36.0);
-    if d_face <= 0.6 || d_chin <= 0.6 {
-        let d = d_face.min(d_chin);
+    let d_top = sd_ellipse(x, y, 40.0, 28.0, 15.0, 10.5);
+    let d_jaw = sd_ellipse(x, y, 40.0, 34.5, 12.5, 8.5);
+    let d_neck = sd_ellipse(x, y, 40.0, 43.0, 6.5, 2.0);
+    let d = d_top.min(d_jaw).min(d_neck);
+    if d <= 0.6 {
         let edge = 1.0 - smoothstep(0.0, 9.0, -d);
-        let grad = 1.0 - 0.20 * edge;
+        let chin = 1.0 - 0.15 * smoothstep(22.0, 40.0, y);
+        let grad = (1.0 - 0.25 * edge) * chin;
         return (Layer::Face, aa(d, 0.6) * grad);
     }
 
     for &(x1, y1, x2, y2, x3, y3, layer) in &[
-        (26.0, 10.5, 32.0, 18.0, 20.5, 18.0, Layer::InnerEarLeft),
-        (54.0, 10.5, 48.0, 18.0, 59.5, 18.0, Layer::InnerEarRight),
+        (26.5, 11.0, 32.0, 18.0, 21.0, 18.0, Layer::InnerEarLeft),
+        (53.5, 11.0, 48.0, 18.0, 59.0, 18.0, Layer::InnerEarRight),
     ] {
         let d = sd_triangle(x, y, x1, y1, x2, y2, x3, y3);
         if d <= 0.35 {
@@ -778,12 +915,12 @@ fn sample(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> (Layer, f64)
     }
 
     for &(x1, y1, x2, y2, x3, y3, layer) in &[
-        (25.0, 7.0, 33.5, 19.0, 18.0, 19.0, Layer::EarLeft),
-        (55.0, 7.0, 46.5, 19.0, 62.0, 19.0, Layer::EarRight),
+        (25.5, 7.5, 33.0, 18.0, 18.5, 18.0, Layer::EarLeft),
+        (54.5, 7.5, 47.0, 18.0, 61.5, 18.0, Layer::EarRight),
     ] {
         let d = sd_triangle(x, y, x1, y1, x2, y2, x3, y3);
         if d <= 0.8 {
-            let grad = 1.0 - 0.25 * smoothstep(15.0, 30.0, y);
+            let grad = 1.0 - 0.3 * smoothstep(15.0, 30.0, y);
             return (layer, aa(d, 0.8) * grad);
         }
     }
@@ -803,10 +940,10 @@ fn sample(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> (Layer, f64)
         }
     }
 
-    let d_back = sd_ellipse(x, y, 40.0, 32.0, 23.0, 24.0);
-    if d_back <= 1.0 {
-        let grad = 1.0 - 0.5 * smoothstep(15.0, 45.0, y);
-        return (Layer::HairBack, aa(d_back, 1.0) * grad);
+    let d_back = sd_ellipse(x, y, 40.0, 31.0, 15.0, 20.0);
+    if d_back <= 0.5 {
+        let grad = 1.0 - 0.6 * smoothstep(15.0, 45.0, y);
+        return (Layer::HairBack, aa(d_back, 0.5) * grad);
     }
 
     (Layer::None, 0.0)
@@ -909,6 +1046,37 @@ fn extract_rgb(color: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
     }
 }
 
+fn extract_color(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0, 0, 0),
+    }
+}
+
+fn mascot_pixel(layer: Layer, shade: f64, palette: &Palette, opaque_background: bool) -> Rgba<u8> {
+    match layer {
+        Layer::None => {
+            if opaque_background {
+                let (r, g, b) = extract_color(palette.background());
+                Rgba([r, g, b, 255])
+            } else {
+                Rgba([0, 0, 0, 0])
+            }
+        }
+        _ => {
+            let role = layer.role();
+            let color = palette.color(role);
+            let shadow = palette.shadow(role);
+            let (color_r, color_g, color_b) = extract_color(color);
+            let (shadow_r, shadow_g, shadow_b) = extract_color(shadow);
+            let r = lerp_u8(shadow_r, color_r, shade as f32);
+            let g = lerp_u8(shadow_g, color_g, shade as f32);
+            let b = lerp_u8(shadow_b, color_b, shade as f32);
+            Rgba([r, g, b, 255])
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -922,7 +1090,7 @@ mod tests {
 
     #[test]
     fn render_does_not_panic_in_empty_area() {
-        let mascot = Mascot::new(true);
+        let mut mascot = Mascot::new(true);
         let area = Rect::new(0, 0, 0, 0);
         let mut buf = Buffer::empty(area);
         let theme = theme::current();
@@ -931,7 +1099,7 @@ mod tests {
 
     #[test]
     fn render_does_not_panic_in_small_area() {
-        let mascot = Mascot::new(true);
+        let mut mascot = Mascot::new(true);
         let area = Rect::new(0, 0, 5, 3);
         let mut buf = Buffer::empty(area);
         let theme = theme::current();
@@ -940,7 +1108,7 @@ mod tests {
 
     #[test]
     fn render_fills_large_area() {
-        let mascot = Mascot::new(true);
+        let mut mascot = Mascot::new(true);
         let area = Rect::new(0, 0, 80, 40);
         let mut buf = Buffer::empty(area);
         let theme = theme::current();
@@ -1000,7 +1168,7 @@ mod tests {
     #[test]
     #[ignore = "visual dump only"]
     fn visual_dump() {
-        let mascot = Mascot::new(true);
+        let mut mascot = Mascot::new(true);
         let area = Rect::new(0, 0, 80, 45);
         let mut buf = Buffer::empty(area);
         let theme = theme::current();
