@@ -2,9 +2,8 @@
 
 > AI coding agent. Native Rust TUI. Context-efficient, transparent, fast.
 
-n00n is a fork of [maki](https://github.com/tontinton/maki) with its own direction: a
-Neovim-style Lua plugin system, lossless [TOON](https://github.com/w0wl0lxd/tooned)
-re-encoding of tool-call data, and an ACP server for editor integrations.
+n00n is an opinionated experimental fork of [maki](https://github.com/tontinton/maki): currently testing lossless [TOON](https://github.com/w0wl0lxd/tooned)
+re-encoding of tool-call data
 
 ## Quick start
 
