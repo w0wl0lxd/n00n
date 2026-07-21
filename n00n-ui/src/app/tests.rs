@@ -1003,7 +1003,7 @@ fn completed_subagent_chat_remains_discoverable_by_tool_id() {
 }
 
 #[test]
-fn completed_task_body_click_expands_while_header_navigates() {
+fn completed_task_card_click_toggles_inline_without_navigating() {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
@@ -1041,18 +1041,18 @@ fn completed_task_body_click_expands_while_header_navigates() {
     app.update(mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         10,
-        area.y + 1,
+        area.y,
     ));
     app.update(mouse_event(
         MouseEventKind::Up(MouseButton::Left),
         10,
-        area.y + 1,
+        area.y,
     ));
-    assert_eq!(app.active_chat, 0, "task body must not navigate");
+    assert_eq!(app.active_chat, 0, "task card click must not navigate");
     terminal.draw(|frame| app.view(frame)).unwrap();
     assert!(
         app.chats[0].total_lines() > collapsed_lines,
-        "task body click must expand the completed task"
+        "task card click must expand inline"
     );
 
     app.update(mouse_event(
@@ -1065,7 +1065,12 @@ fn completed_task_body_click_expands_while_header_navigates() {
         10,
         area.y,
     ));
-    assert_eq!(app.active_chat, 1, "task header navigates to child chat");
+    assert_eq!(
+        app.active_chat, 0,
+        "repeated task card click must not navigate"
+    );
+    terminal.draw(|frame| app.view(frame)).unwrap();
+    assert_eq!(app.chats[0].total_lines(), collapsed_lines);
 }
 
 fn open_tasks_picker(app: &mut App) {
@@ -1160,7 +1165,7 @@ fn task_picker_preview_copy_uses_rendered_chat() {
 }
 
 #[test]
-fn task_picker_preview_tool_click_uses_rendered_chat() {
+fn nested_task_preview_click_stays_inline_and_picker_enter_navigates() {
     let mut app = app_with_subagent();
     app.update(subagent_msg(
         AgentEvent::ToolStart(Box::new(ToolStartEvent {
@@ -1202,7 +1207,21 @@ fn task_picker_preview_tool_click_uses_rendered_chat() {
         tool_row,
     ));
 
-    assert_eq!(app.active_chat, 2);
+    assert_eq!(
+        app.active_chat, 0,
+        "nested task card click must not navigate"
+    );
+
+    app.update(Msg::Key(kb::TASKS.to_key_event()));
+    assert!(!app.task_picker.is_open());
+    app.update(Msg::Key(kb::TASKS.to_key_event()));
+    app.update(Msg::Key(key(KeyCode::Down)));
+    app.update(Msg::Key(key(KeyCode::Down)));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(
+        app.active_chat, 2,
+        "Ctrl+X and Enter must navigate explicitly"
+    );
 }
 
 #[test]
