@@ -287,9 +287,11 @@ impl UserData for LuaCtx {
             if cell.deadline_secs.get().is_some() {
                 return Err(mlua::Error::runtime(DEADLINE_ALREADY_SET_MSG));
             }
+            let deadline = Instant::now()
+                .checked_add(Duration::from_secs(secs))
+                .ok_or_else(|| mlua::Error::runtime("deadline is out of range"))?;
             cell.deadline_secs.set(Some(secs));
-            cell.deadline
-                .set(Some(Instant::now() + Duration::from_secs(secs)));
+            cell.deadline.set(Some(deadline));
             Ok((LuaValue::Nil, None))
         });
 

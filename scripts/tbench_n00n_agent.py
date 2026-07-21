@@ -174,7 +174,7 @@ class N00nAgent(BaseInstalledAgent):
 
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
         if not log_text.strip():
-            print("N00n log is empty")
+            print("n00n log is empty")
             return
 
         result, turn_usage, tool_calls = parse_stream_json(log_text)
