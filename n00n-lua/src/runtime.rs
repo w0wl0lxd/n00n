@@ -164,6 +164,11 @@ pub enum Request {
         /// `row`) instead of dropping the click.
         fallback: Option<Box<ClickFallback>>,
     },
+    ClickBuf {
+        buf: Arc<SharedBuf>,
+        /// 1-based source line after window chrome and scrolling are applied.
+        row: usize,
+    },
     RunKeybindCallback {
         id: u64,
     },
@@ -2360,6 +2365,22 @@ pub fn spawn(
                                 }
                             })
                             .detach();
+                        }
+                        Request::ClickBuf { buf, row } => {
+                            let Some(func) = crate::api::ui::buf::click_fn(&buf) else {
+                                continue;
+                            };
+                            let arg = match rt.lua.create_table() {
+                                Ok(t) => {
+                                    let _ = t.set("row", row);
+                                    LuaValue::Table(t)
+                                }
+                                Err(_) => LuaValue::Nil,
+                            };
+                            let scope = TaskScope::detached(&rt.lua);
+                            if let Err(e) = scope.scope_future(func.call_async::<()>(arg)).await {
+                                tracing::warn!(error = %e, "window buffer click failed");
+                            }
                         }
                         Request::FireAutocmd { event, data } => {
                             let data = json_to_lua(&rt.lua, &data).unwrap_or(LuaValue::Nil);

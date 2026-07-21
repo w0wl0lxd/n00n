@@ -1,0 +1,22 @@
+# Tooling for n00n, managed by mise (https://mise.jdx.dev).
+#
+# Run `mise install` to provision these for local development. The nix
+# devShell provides an equivalent environment; mise is for contributors who
+# prefer it (or who are not using nix).
+#
+# Note: this system disables mise-managed python (see ~/.config/mise/config.toml),
+# so Python packages (pyyaml, yamllint) are installed through a uv-managed venv
+# via the `py-setup` task below, not as a mise python tool.
+
+[tools]
+gitleaks = "latest"
+actionlint = "latest"
+stylua = "latest"
+taplo = "latest"
+uv = "latest"
+
+# Create a uv venv with the Python tooling the repo's scripts need
+# (e.g. YAML validation). Run `mise run py-setup`, then use `.venv/bin/python`.
+[tasks.py-setup]
+run = "uv venv .venv && uv pip install pyyaml yamllint"
+sources = ["mise.toml"]

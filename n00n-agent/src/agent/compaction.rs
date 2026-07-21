@@ -90,7 +90,7 @@ fn finish_compact(
         Message::user("What did we do so far?".into()),
         response.message,
     ];
-    history.replace(new_history);
+    history.compact_boundary(new_history);
     info!(
         model = %model.id,
         duration_ms = compact_start.elapsed().as_millis() as u64,

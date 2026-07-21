@@ -150,7 +150,7 @@ impl Provider for LocalEndpoint {
                 let mut body = responses::build_body(model, messages, system, tools, None, None);
                 body["return_progress"] = serde_json::Value::Bool(true);
                 // TODO: wire thinking budget into responses API when llama.cpp supports it
-                let (_, resp) = responses::do_stream(
+                return responses::do_stream(
                     self.compat.client(),
                     model,
                     &body,
@@ -158,8 +158,8 @@ impl Provider for LocalEndpoint {
                     &auth,
                     self.compat.stream_timeout(),
                 )
-                .await?;
-                return Ok(resp);
+                .await
+                .map(|(_, response)| response);
             }
 
             let mut buf = String::new();

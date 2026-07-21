@@ -25,6 +25,7 @@ fastrand = { workspace = true }
 n00n-config = { workspace = true }
 inventory = { workspace = true }
 jiff = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [dev-dependencies]
 test-case = { workspace = true }

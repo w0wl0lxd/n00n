@@ -415,6 +415,10 @@ pub enum UiAction {
         path: PathBuf,
         reply_tx: flume::Sender<i32>,
     },
+    PickModel {
+        current: Option<String>,
+        reply_tx: flume::Sender<Option<String>>,
+    },
     Session {
         req: SessionRequest,
         reply_tx: flume::Sender<SessionReply>,

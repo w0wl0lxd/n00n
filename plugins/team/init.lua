@@ -40,7 +40,7 @@ local PLANNER_OUTPUT = {
 }
 
 local description =
-  [[Launch an agent team. A supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
+  [[Launch a team of agents led by a supervisor (ALMAS). The supervisor decomposes an SDLC goal into role agents and runs each as its own subagent on a cost-aware model tier:
 
 - product_manager: scope & acceptance (weak)
 - planner: step breakdown (medium)
@@ -233,11 +233,9 @@ local function run_step(ctx, step, goal, input, relay_k, prior_results)
     local block = retrieve.retrieve(ctx, goal .. " " .. step.prompt, step.role, relay_k)
     if block and #block > 0 then
       if input.compact then
-        local ok, t = pcall(function()
-          return n00n.json.to_toon({ context = block })
-        end)
-        if ok and t then
-          step_prompt = step_prompt .. "\n\nRelevant context (TOON):\n" .. t
+        local encoded, fmt = n00n.json.tooned({ context = block })
+        if encoded then
+          step_prompt = step_prompt .. "\n\nRelevant context (" .. (fmt or "json") .. "):\n" .. encoded
         else
           step_prompt = step_prompt .. "\n\nRelevant context:\n" .. block
         end
@@ -411,6 +409,11 @@ local function header(input)
   return "team: " .. (input.goal or ""):sub(1, 40)
 end
 
+n00n.api.register_prompt_hint({
+  slot = "tool_usage",
+  content = "- For multi-step work, use **team** (ALMAS-led agent team) with `compact=true` and `use_retrieval=true` to save tokens. Use **workflow** when you need a sandboxed supervisor script to orchestrate agents at scale.",
+})
+
 n00n.api.register_tool({
   name = "team",
   description = description,
@@ -421,8 +424,6 @@ n00n.api.register_tool({
   handler = handler,
   header = header,
 })
-
-local TextInput = require("n00n.text_input")
 
 local TEAM_MODES = { "supervised", "autonomous", "swarm" }
 local MODEL_TIERS = { "weak", "medium", "strong" }
@@ -488,7 +489,7 @@ local function run_launcher(initial_goal)
     quorum = true,
     max_rounds = DEFAULT_SWARM_ROUNDS,
   }
-  local model = TextInput.new()
+  local TextInput = require("n00n.text_input")
   local goal = TextInput.new()
   goal:insert_text(initial_goal or "")
   local selected = trim(initial_goal) == "" and 10 or 1
@@ -501,14 +502,10 @@ local function run_launcher(initial_goal)
   local win
 
   local function render()
-    prefs.model = trim(model:value())
-    if prefs.model == "" then
-      prefs.model = nil
-    end
     local rows = {
       { "Mode", prefs.mode },
       { "Model tier", prefs.model_tier },
-      { "Exact model", prefs.model or "(use tier)" },
+      { "Model", prefs.model or "Default (tier routing)" },
       { "Thinking", prefs.thinking },
       { "Auto tier", tostring(prefs.auto_tier) },
       { "Retrieval", tostring(prefs.use_retrieval) },
@@ -531,7 +528,7 @@ local function run_launcher(initial_goal)
     end
     lines[#lines + 1] = { { "", "" } }
     lines[#lines + 1] = {
-      { selected == RUN_ROW and "❯ Run Team" or "  Run Team", selected == RUN_ROW and "selected" or "item" },
+      { selected == RUN_ROW and "❯ Start team" or "  Start team", selected == RUN_ROW and "selected" or "item" },
     }
     buf:set_lines(lines)
     if win then
@@ -587,9 +584,8 @@ local function run_launcher(initial_goal)
     elseif event.type == "resize" then
       width = event.width
       render()
-    elseif event.type == "paste" and editing then
-      local input = editing == "goal" and goal or model
-      input:insert_text(event.text)
+    elseif event.type == "paste" and editing == "goal" then
+      goal:insert_text(event.text)
       render()
     elseif event.type == "key" then
       local key = event.key
@@ -607,13 +603,11 @@ local function run_launcher(initial_goal)
         end
       elseif editing then
         if key == "enter" then
-          local finished = editing
           editing = nil
-          selected = finished == "model" and 4 or RUN_ROW
+          selected = RUN_ROW
           render()
         else
-          local input = editing == "goal" and goal or model
-          if input:handle_key(key) ~= TextInput.Result.IGNORED then
+          if goal:handle_key(key) ~= TextInput.Result.IGNORED then
             render()
           end
         end
@@ -629,7 +623,12 @@ local function run_launcher(initial_goal)
         elseif selected == 2 then
           prefs.model_tier = cycle(MODEL_TIERS, prefs.model_tier)
         elseif selected == 3 then
-          editing = "model"
+          win:hide()
+          local picked = n00n.ui.pick_model(prefs.model)
+          win:show()
+          if picked then
+            prefs.model = picked
+          end
         elseif selected == 4 then
           prefs.thinking = cycle(THINKING_LEVELS, prefs.thinking)
         elseif selected == 5 then

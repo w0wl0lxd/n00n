@@ -44,7 +44,7 @@ pub(crate) const PLAN_MODELS: &[&str] = &[
 
 const CODEX_PLAN_CONTEXT_WINDOW: u32 = 272_000;
 const GPT_5_6_PLAN_CONTEXT_WINDOW: u32 = 372_000;
-const SESSION_STATE_TTL: Duration = Duration::from_hours(1); // 1 hour
+const SESSION_STATE_TTL: Duration = Duration::from_secs(3600);
 
 #[derive(Debug)]
 struct OpenAiSessionState {
@@ -71,7 +71,7 @@ fn hash_messages(messages: &[Message]) -> u64 {
     let mut hasher = DefaultHasher::new();
     hasher.write(
         serde_json::to_string(messages)
-            .unwrap_or_else(|_| String::new())
+            .unwrap_or_default()
             .as_bytes(),
     );
     hasher.finish()
@@ -84,30 +84,37 @@ fn incremental_for_state<'a>(
 ) -> (Option<String>, &'a [Message]) {
     if state.tools_hash.as_deref() != Some(tools_hash) || messages.len() < state.last_message_count
     {
-        state.last_response_id = None;
-        state.last_message_count = 0;
-        state.tools_hash = Some(tools_hash.to_string());
-        state.messages_hash = None;
+        *state = OpenAiSessionState {
+            tools_hash: Some(tools_hash.to_owned()),
+            ..Default::default()
+        };
     }
 
     if state.last_message_count > 0 {
         let current_hash = hash_messages(&messages[..state.last_message_count]);
         if state.messages_hash != Some(current_hash) {
-            state.last_response_id = None;
-            state.last_message_count = 0;
-            state.messages_hash = Some(current_hash);
+            *state = OpenAiSessionState {
+                tools_hash: Some(tools_hash.to_owned()),
+                messages_hash: Some(current_hash),
+                ..Default::default()
+            };
         }
     }
 
-    if let Some(prev_id) = state.last_response_id.clone() {
+    if let Some(previous_response_id) = state.last_response_id.clone() {
         if messages.len() > state.last_message_count + 1 {
-            return (Some(prev_id), &messages[state.last_message_count + 1..]);
+            return (
+                Some(previous_response_id),
+                &messages[state.last_message_count + 1..],
+            );
         }
-        state.last_response_id = None;
-        state.last_message_count = 0;
+        *state = OpenAiSessionState {
+            tools_hash: Some(tools_hash.to_owned()),
+            ..Default::default()
+        };
     }
 
-    (None, messages)
+    (None, &messages[state.last_message_count..])
 }
 
 fn record_in_state(
@@ -116,11 +123,14 @@ fn record_in_state(
     tools_hash: &str,
     messages: &[Message],
 ) {
-    if let Some(rid) = response_id {
-        state.last_response_id = Some(rid);
-        state.last_message_count = messages.len();
-        state.tools_hash = Some(tools_hash.to_string());
-        state.messages_hash = Some(hash_messages(messages));
+    if let Some(response_id) = response_id {
+        *state = OpenAiSessionState {
+            last_response_id: Some(response_id),
+            last_message_count: messages.len(),
+            tools_hash: Some(tools_hash.to_owned()),
+            messages_hash: Some(hash_messages(messages)),
+            last_used: Instant::now(),
+        };
     }
 }
 
@@ -157,7 +167,7 @@ impl OpenAi {
     pub fn new(timeouts: crate::providers::Timeouts) -> Result<Self, AgentError> {
         let storage = StateDir::resolve()?;
         let resolved = auth::resolve(&storage)?;
-        let compat = OpenAiCompatProvider::new(&CONFIG, timeouts)?;
+        let compat = OpenAiCompatProvider::new(&CONFIG, timeouts);
         Ok(Self {
             compat,
             auth: Arc::new(Mutex::new(resolved)),
@@ -170,14 +180,14 @@ impl OpenAi {
     pub(crate) fn with_auth(
         auth: Arc<Mutex<ResolvedAuth>>,
         timeouts: crate::providers::Timeouts,
-    ) -> Result<Self, AgentError> {
-        Ok(Self {
-            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
+    ) -> Self {
+        Self {
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts),
             auth,
             storage: None,
             system_prefix: None,
             session_state: Arc::new(Mutex::new(HashMap::new())),
-        })
+        }
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -186,10 +196,7 @@ impl OpenAi {
     }
 
     fn current_auth(&self) -> ResolvedAuth {
-        self.auth
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.auth.lock().unwrap().clone()
     }
 
     fn is_oauth(&self) -> bool {
@@ -221,10 +228,7 @@ impl OpenAi {
             }
         })
         .await?;
-        *self
-            .auth
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = resolved;
+        *self.auth.lock().unwrap() = resolved;
         debug!("refreshed OpenAI OAuth token");
         Ok(())
     }
@@ -244,43 +248,36 @@ impl OpenAi {
         result
     }
 
-    fn codex_auth(&self) -> ResolvedAuth {
+    fn codex_auth(&self) -> Result<ResolvedAuth, AgentError> {
         // Prefer OAuth tokens for the ChatGPT Coding Plan backend.
         if let Some(storage) = self.storage.as_ref()
             && let Some(tokens) = n00n_storage::auth::load_tokens(storage, auth::PROVIDER)
         {
-            return auth::build_coding_plan_resolved(&tokens);
+            return Ok(auth::build_coding_plan_resolved(&tokens));
         }
         // Fall back to standard API key via the Responses API.
         let mut auth = self.current_auth();
         if auth.base_url.is_none() {
             auth.base_url = Some(CONFIG.base_url.into());
         }
-        auth
+        Ok(auth)
     }
 
     fn prepare_request<'a>(
         &self,
-        session_id: Option<&'a SessionRef>,
+        session_id: Option<&SessionRef>,
         tools_hash: &str,
         messages: &'a [Message],
     ) -> (Option<String>, &'a [Message]) {
-        let mut state = self
-            .session_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        // Opportunistically evict stale sessions
+        let Some(session_id) = session_id else {
+            return (None, messages);
+        };
+        let mut states = self.session_state.lock().unwrap();
         let now = Instant::now();
-        state.retain(|_, s| now.saturating_duration_since(s.last_used) < SESSION_STATE_TTL);
-
-        if let Some(sid) = session_id {
-            let session_state = state.entry(sid.clone()).or_default();
-            session_state.last_used = now;
-            incremental_for_state(session_state, tools_hash, messages)
-        } else {
-            (None, messages)
-        }
+        states.retain(|_, state| now.duration_since(state.last_used) < SESSION_STATE_TTL);
+        let state = states.entry(session_id.clone()).or_default();
+        state.last_used = now;
+        incremental_for_state(state, tools_hash, messages)
     }
 
     fn record_response(
@@ -290,14 +287,11 @@ impl OpenAi {
         tools_hash: &str,
         messages: &[Message],
     ) {
-        if let Some(sid) = session_id {
-            let mut state = self
-                .session_state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let session_state = state.entry(sid.clone()).or_default();
-            session_state.last_used = Instant::now();
-            record_in_state(session_state, response_id, tools_hash, messages);
+        if let Some(session_id) = session_id {
+            let mut states = self.session_state.lock().unwrap();
+            let state = states.entry(session_id.clone()).or_default();
+            state.last_used = Instant::now();
+            record_in_state(state, response_id, tools_hash, messages);
         }
     }
 }
@@ -315,66 +309,35 @@ impl Provider for OpenAi {
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
             let mut buf = String::new();
-            let system = super::super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
-
-            let tools_hash = serde_json::to_string(tools)?;
-            let (previous_response_id, incremental_messages) =
-                self.prepare_request(session_id, &tools_hash, messages);
-            let prompt_cache_key = session_id.map(std::string::ToString::to_string);
-
-            if super::websocket::is_websocket_model(&model.id) {
-                let stream_timeout = self.compat.stream_timeout();
-                return self
-                    .with_oauth_retry(|| async {
-                        let auth = if is_codex_model(&model.id) {
-                            self.codex_auth()
-                        } else {
-                            self.current_auth()
-                        };
-                        let body = super::responses::build_body(
-                            model,
-                            incremental_messages,
-                            system,
-                            tools,
-                            previous_response_id.as_deref(),
-                            prompt_cache_key.as_deref(),
-                        );
-                        let (response_id, resp) =
-                            super::websocket::stream_message(body, event_tx, &auth, stream_timeout)
-                                .await?;
-                        self.record_response(session_id, response_id, &tools_hash, messages);
-                        Ok(resp)
-                    })
-                    .await;
-            }
+            let system = super::super::with_prefix(&self.system_prefix, system, &mut buf);
 
             if is_codex_model(&model.id) {
+                let tools_hash = serde_json::to_string(tools).unwrap_or_default();
+                let (previous_response_id, incremental_messages) =
+                    self.prepare_request(session_id, &tools_hash, messages);
+                let prompt_cache_key = session_id.map(ToString::to_string);
                 let stream_timeout = self.compat.stream_timeout();
+                let body = super::websocket::build_request_body(
+                    model,
+                    incremental_messages,
+                    system,
+                    tools,
+                    opts,
+                    previous_response_id.as_deref(),
+                    prompt_cache_key.as_deref(),
+                );
                 return self
                     .with_oauth_retry(|| async {
-                        let codex_auth = self.codex_auth();
-
-                        let body = super::responses::build_body(
-                            model,
-                            incremental_messages,
-                            system,
-                            tools,
-                            previous_response_id.as_deref(),
-                            prompt_cache_key.as_deref(),
-                        );
-
-                        let (response_id, resp) = super::responses::do_stream(
-                            self.compat.client(),
-                            model,
+                        let auth = self.codex_auth()?;
+                        let (response_id, response) = super::websocket::stream_message(
                             &body,
                             event_tx,
-                            &codex_auth,
+                            &auth,
                             stream_timeout,
                         )
                         .await?;
-
                         self.record_response(session_id, response_id, &tools_hash, messages);
-                        Ok(resp)
+                        Ok(response)
                     })
                     .await;
             }
@@ -384,7 +347,7 @@ impl Provider for OpenAi {
                 messages,
                 system,
                 tools,
-                session_id.map(n00n_storage::id::SessionRef::as_str),
+                session_id.map(|s| s.as_str()),
             );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
@@ -433,10 +396,7 @@ impl Provider for OpenAi {
                 return Ok(());
             };
             let resolved = smol::unblock(move || auth::resolve(&storage)).await?;
-            *self
-                .auth
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = resolved;
+            *self.auth.lock().unwrap() = resolved;
             debug!("reloaded OpenAI auth from storage");
             Ok(())
         })
@@ -468,16 +428,94 @@ mod tests {
         }
     }
 
-    fn tool_result(id: &str, output: &str) -> Message {
+    fn tool_result(tool_use_id: &str, content: &str) -> Message {
         Message {
             role: Role::User,
             content: vec![ContentBlock::ToolResult {
-                tool_use_id: id.into(),
-                content: output.into(),
+                tool_use_id: tool_use_id.into(),
+                content: content.into(),
                 is_error: false,
             }],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn incremental_request_uses_previous_response_and_new_messages() {
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        record_in_state(&mut state, Some("resp_1".into()), "[]", &first);
+        let second = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+
+        let (previous_response_id, incremental_messages) =
+            incremental_for_state(&mut state, "[]", &second);
+
+        assert_eq!(previous_response_id.as_deref(), Some("resp_1"));
+        assert_eq!(incremental_messages.len(), 1);
+        assert!(matches!(
+            &incremental_messages[0].content[0],
+            ContentBlock::Text { text } if text == "again"
+        ));
+    }
+
+    #[test]
+    fn incremental_request_keeps_only_tool_results_after_tool_calls() {
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("run".into())];
+        record_in_state(&mut state, Some("resp_1".into()), "[]", &first);
+        let second = vec![
+            Message::user("run".into()),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({"path": "one"}),
+                }],
+                ..Default::default()
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "result".into(),
+                    is_error: false,
+                }],
+                ..Default::default()
+            },
+        ];
+
+        let (previous_response_id, incremental_messages) =
+            incremental_for_state(&mut state, "[]", &second);
+
+        assert_eq!(previous_response_id.as_deref(), Some("resp_1"));
+        assert_eq!(incremental_messages.len(), 1);
+        assert!(matches!(
+            &incremental_messages[0].content[0],
+            ContentBlock::ToolResult { tool_use_id, content, .. }
+                if tool_use_id == "call_1" && content == "result"
+        ));
+    }
+    #[test]
+    fn incremental_request_resets_when_tools_change() {
+        let mut state = OpenAiSessionState::default();
+        let first = vec![Message::user("hello".into())];
+        record_in_state(&mut state, Some("resp_1".into()), "[]", &first);
+        let second = vec![
+            Message::user("hello".into()),
+            assistant("hi"),
+            Message::user("again".into()),
+        ];
+
+        let (previous_response_id, incremental_messages) =
+            incremental_for_state(&mut state, "[\"new\"]", &second);
+
+        assert!(previous_response_id.is_none());
+        assert_eq!(incremental_messages.len(), second.len());
     }
 
     #[test_case("gpt-5.6")]

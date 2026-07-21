@@ -584,6 +584,7 @@ pub enum AgentEvent {
     SubagentHistory {
         tool_use_id: String,
         messages: Vec<Message>,
+        is_error: bool,
     },
     ToolSnapshot {
         id: String,

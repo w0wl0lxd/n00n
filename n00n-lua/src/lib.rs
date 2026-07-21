@@ -1,3 +1,5 @@
+// n00n-lua wraps the Luau C runtime; unsafe is isolated to this FFI boundary.
+#![allow(unsafe_code)]
 #![allow(clippy::doc_markdown, clippy::doc_link_with_quotes)]
 
 mod api;
@@ -54,6 +56,7 @@ pub mod test_support {
                 Request::ClickTool {
                     fallback: Some(fb), ..
                 } => ("click_fallback", fb.item.clicks),
+                Request::ClickBuf { row, .. } => ("buf_click", vec![row]),
                 Request::RestoreToolAsync { item, .. } => ("restore", item.clicks),
                 _ => ("other", Vec::new()),
             })

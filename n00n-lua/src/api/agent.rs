@@ -41,6 +41,7 @@ const SESSION_CLOSED_ERR: &str = "session closed";
 const DEFAULT_SESSION_AUDIENCE: ToolAudience = ToolAudience::GENERAL_SUB;
 const PROGRESS_MAX_RECENT: usize = 5;
 const PROGRESS_TIMEOUT_MS: u64 = 500;
+const STEERING_QUEUE_CAPACITY: usize = 32;
 
 fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Model, String> {
     let Some(tier_str) = tier else {
@@ -500,11 +501,17 @@ async fn session(
     };
 
     let session_id = N00nId::generate();
+    let child_id = session_id.to_string();
+    let parent_tool_use_id = agent_ctx
+        .tool_use_id
+        .clone()
+        .unwrap_or_else(|| format!("session-{child_id}"));
     let start = Instant::now();
     let (sub_tx, sub_rx) = flume::unbounded::<Envelope>();
     let sub_event_tx = EventSender::new(sub_tx, agent_ctx.event_tx.run_id());
     let parent_tx = agent_ctx.event_tx.clone();
     let (answer_tx, answer_rx) = flume::unbounded::<String>();
+    let (prompt_tx, prompt_rx) = flume::bounded::<String>(STEERING_QUEUE_CAPACITY);
     let progress = Arc::new(Progress::new(start));
 
     let subagent_info: Arc<OnceLock<SubagentInfo>> = Arc::new(OnceLock::new());
@@ -544,16 +551,10 @@ async fn session(
         .detach();
     }
 
-    // Register a cancel trigger so the child token does not fire on drop
-    // and kill the subagent at birth.
-    let ui_id = agent_ctx
-        .tool_use_id
-        .clone()
-        .unwrap_or_else(|| format!("session-{session_id}"));
     let (child_trigger, child_cancel) = agent_ctx.cancel.child();
     agent_ctx
         .subagent_cancels
-        .insert(ui_id.clone(), child_trigger);
+        .insert(child_id.clone(), child_trigger);
 
     let name = name.unwrap_or_default();
     info!(name = %name, model = %model.id, "subagent session opened");
@@ -583,8 +584,11 @@ async fn session(
         child_cancel,
         answer_rx: Arc::new(AsyncMutex::new(answer_rx)),
         answer_tx: Some(answer_tx),
+        prompt_rx,
+        prompt_tx: Some(prompt_tx),
         parent_cancels: Arc::clone(&agent_ctx.subagent_cancels),
-        ui_id,
+        child_id,
+        parent_tool_use_id,
         parent_event_tx: parent_tx,
         subagent_info,
         local_tools: Arc::new(local_map),
@@ -593,6 +597,7 @@ async fn session(
         total_output,
         start,
         closed: false,
+        failed: false,
         progress: Arc::clone(&progress),
     };
 
@@ -767,10 +772,11 @@ struct SessionState {
     child_cancel: n00n_agent::cancel::CancelToken,
     answer_rx: Arc<AsyncMutex<flume::Receiver<String>>>,
     answer_tx: Option<flume::Sender<String>>,
+    prompt_rx: flume::Receiver<String>,
+    prompt_tx: Option<flume::Sender<String>>,
     parent_cancels: Arc<CancelMap<String>>,
-    /// Stable identity for UI, cancel, and history. Falls back to a synthetic
-    /// id for workflow-mode sessions (no model-issued tool call exists).
-    ui_id: String,
+    child_id: String,
+    parent_tool_use_id: String,
     parent_event_tx: EventSender,
     subagent_info: Arc<OnceLock<SubagentInfo>>,
     local_tools: LocalTools,
@@ -779,6 +785,7 @@ struct SessionState {
     total_output: Arc<AtomicU32>,
     start: Instant,
     closed: bool,
+    failed: bool,
     progress: Arc<Progress>,
 }
 
@@ -789,11 +796,12 @@ impl SessionState {
         }
         self.closed = true;
         self.progress.set_done();
-        self.parent_cancels.remove(&self.ui_id);
+        self.parent_cancels.remove(&self.child_id);
         let messages = std::mem::replace(&mut self.history, History::new(Vec::new())).into_vec();
         let _ = self.parent_event_tx.send(AgentEvent::SubagentHistory {
-            tool_use_id: self.ui_id.clone(),
+            tool_use_id: self.child_id.clone(),
             messages,
+            is_error: self.failed,
         });
         info!(
             name = %self.name,
@@ -802,6 +810,30 @@ impl SessionState {
             output_tokens = self.total_output.load(Ordering::Relaxed),
             "subagent session closed",
         );
+    }
+}
+
+struct PromptInterruptSource {
+    rx: flume::Receiver<String>,
+}
+
+impl n00n_agent::InterruptSource for PromptInterruptSource {
+    fn poll(&self, _: n00n_agent::InterruptPoint) -> Option<n00n_agent::ExtractedCommand> {
+        self.rx.try_recv().ok().map(|message| {
+            n00n_agent::ExtractedCommand::Interrupt(
+                AgentInput {
+                    message,
+                    mode: AgentMode::Build,
+                    images: Vec::new(),
+                    preamble: Vec::new(),
+                    thinking: ThinkingConfig::default(),
+                    fast: false,
+                    workflow: false,
+                    prompt: None,
+                },
+                0,
+            )
+        })
     }
 }
 
@@ -852,45 +884,54 @@ async fn prompt(
     }
     if s.subagent_info.get().is_none() {
         let _ = s.subagent_info.set(SubagentInfo {
-            parent_tool_use_id: s.ui_id.clone(),
+            parent_tool_use_id: s.parent_tool_use_id.clone(),
             name: s.name.clone(),
             prompt: Some(message.clone()),
             model: Some(s.params.model.spec()),
             answer_tx: s.answer_tx.take(),
-            prompt_tx: None,
+            prompt_tx: s.prompt_tx.take(),
         });
     }
 
-    let mut agent = Agent::new(
-        s.params.clone(),
-        AgentRunParams {
-            history: &mut s.history,
-            system: s.system.clone(),
-            event_tx: s.sub_event_tx.clone(),
-            tools: s.tools.clone(),
-        },
-    )
-    .with_user_response_rx(Arc::clone(&s.answer_rx))
-    .with_cancel(s.child_cancel.clone())
-    .with_mcp(s.mcp.clone())
-    .with_local_tools(Arc::clone(&s.local_tools));
+    let mut next_message = Some(message);
+    while let Some(message) = next_message.take() {
+        let mut agent = Agent::new(
+            s.params.clone(),
+            AgentRunParams {
+                history: &mut s.history,
+                system: s.system.clone(),
+                event_tx: s.sub_event_tx.clone(),
+                tools: s.tools.clone(),
+            },
+        )
+        .with_user_response_rx(Arc::clone(&s.answer_rx))
+        .with_interrupt_source(Arc::new(PromptInterruptSource {
+            rx: s.prompt_rx.clone(),
+        }))
+        .with_cancel(s.child_cancel.clone())
+        .with_mcp(s.mcp.clone())
+        .with_local_tools(Arc::clone(&s.local_tools));
 
-    let input = AgentInput {
-        message,
-        mode: AgentMode::Build,
-        images: Vec::new(),
-        preamble: Vec::new(),
-        thinking: s.thinking,
-        fast: s.fast,
-        workflow: false,
-        prompt: None,
-    };
-    let result = agent.run(input).await;
-    drop(agent);
-    s.progress.set_done();
-    if let Err(e) = result {
-        return Ok((None, Some(e.to_string())));
+        let input = AgentInput {
+            message,
+            mode: AgentMode::Build,
+            images: Vec::new(),
+            preamble: Vec::new(),
+            thinking: s.thinking,
+            fast: s.fast,
+            workflow: false,
+            prompt: None,
+        };
+        let result = agent.run(input).await;
+        drop(agent);
+        if let Err(e) = result {
+            s.failed = true;
+            s.progress.set_done();
+            return Ok((None, Some(e.to_string())));
+        }
+        next_message = s.prompt_rx.try_recv().ok();
     }
+    s.progress.set_done();
 
     let text = s
         .history
@@ -950,6 +991,19 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
     Ok((Some(tbl), None))
 }
 
+/// Cancel the current turn in this session without closing it. The agent will
+/// stop at the next cancellation point and return an error from `:prompt()`.
+///
+/// @return
+#[lua_fn]
+async fn cancel(_lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResult<()> {
+    let inner = Arc::clone(&this.inner);
+    drop(this);
+    let s = inner.lock().await;
+    s.parent_cancels.cancel_or_precancel(s.child_id.clone());
+    Ok(())
+}
+
 /// Close the session and flush its history back to the parent agent. You can
 /// call this multiple times safely. If you forget, it runs automatically when
 /// the session is garbage collected.
@@ -971,7 +1025,7 @@ lua_class! {
     /// `:prompt()`. The session remembers previous turns, so you can have
     /// a multi-step conversation. Call `:close()` when you are done, or let
     /// garbage collection handle it.
-    "n00n.agent.Session" => LuaSession, SESSION_DOCS [prompt, close, get_progress]
+    "n00n.agent.Session" => LuaSession, SESSION_DOCS [prompt, close, get_progress, cancel]
 }
 
 /// Weak Lua ref avoids a reference cycle when the session is stored in userdata.

@@ -77,6 +77,10 @@ impl Chat {
         self.pending_turn_usage = Some(usage);
     }
 
+    pub fn on_mouse(&mut self, column: u16, row: u16) {
+        self.messages_panel.on_mouse(column, row);
+    }
+
     pub(crate) fn set_restore_channel(
         &mut self,
         event_handle: Option<n00n_lua::EventHandle>,
@@ -299,10 +303,6 @@ impl Chat {
         self.messages_panel.handle_click(row, area);
     }
 
-    pub fn on_mouse(&mut self, column: u16, row: u16) {
-        self.messages_panel.on_mouse(column, row);
-    }
-
     pub fn tool_snapshot(
         &mut self,
         tool_id: &str,
@@ -329,6 +329,10 @@ impl Chat {
 
     pub fn flush(&mut self) {
         self.messages_panel.flush();
+    }
+
+    pub fn toggle_transcript_details(&mut self) -> bool {
+        self.messages_panel.toggle_transcript_details()
     }
 
     pub fn cancel_in_progress(&mut self) {
@@ -472,13 +476,6 @@ pub fn history_to_display(
     for msg in messages {
         match msg.role {
             Role::User => {
-                if msg
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
-                {
-                    continue;
-                }
                 let images: Vec<_> = msg
                     .content
                     .iter()
@@ -509,8 +506,10 @@ pub fn history_to_display(
                             ));
                         }
                         ContentBlock::Thinking { thinking, .. } if !thinking.is_empty() => {
-                            display
-                                .push(DisplayMessage::new(DisplayRole::Thinking, thinking.clone()));
+                            let mut message =
+                                DisplayMessage::new(DisplayRole::Thinking, thinking.clone());
+                            message.thinking_collapsed = true;
+                            display.push(message);
                         }
                         ContentBlock::ToolUse { id, name, input } => {
                             let static_name = name.as_str();
@@ -1006,6 +1005,72 @@ mod tests {
         let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
         assert!(display[0].tool_output.is_none());
         assert!(display[0].text.contains("fn main"));
+    }
+
+    #[test]
+    fn history_restores_thinking_segments_between_tools_independently() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "A".into(),
+                    signature: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "tool1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "true"}),
+                },
+                ContentBlock::Thinking {
+                    thinking: "B".into(),
+                    signature: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "tool2".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "true"}),
+                },
+                ContentBlock::RedactedThinking {
+                    data: "opaque".into(),
+                },
+            ],
+            ..Default::default()
+        }];
+
+        let (display, _) = history_to_display(&msgs, &HashMap::new(), &ToolOutputLines::default());
+        assert_eq!(display.len(), 4);
+        assert!(matches!(display[0].role, DisplayRole::Thinking));
+        assert_eq!(display[0].text, "A");
+        assert!(matches!(display[1].role, DisplayRole::Tool(_)));
+        assert!(matches!(display[2].role, DisplayRole::Thinking));
+        assert_eq!(display[2].text, "B");
+        assert!(matches!(display[3].role, DisplayRole::Tool(_)));
+
+        let mut chat = Chat::new(
+            "Main".into(),
+            UiConfig::default(),
+            Arc::new(Picker::halfblocks()),
+        );
+        chat.load_messages(display);
+        let thinking_indices: Vec<_> = chat
+            .messages_panel
+            .messages
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, msg)| matches!(msg.role, DisplayRole::Thinking).then_some(idx))
+            .collect();
+        assert_eq!(thinking_indices.len(), 2);
+        assert!(
+            thinking_indices
+                .iter()
+                .all(|&idx| chat.messages_panel.messages[idx].thinking_collapsed)
+        );
+        assert!(chat.messages_panel.toggle_transcript_details());
+        assert!(
+            thinking_indices
+                .iter()
+                .all(|&idx| !chat.messages_panel.messages[idx].thinking_collapsed)
+        );
     }
 
     #[test]
