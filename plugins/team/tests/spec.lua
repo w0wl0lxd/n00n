@@ -97,7 +97,7 @@ case("roles_run_with_custom_opts", function()
     return {}, nil
   end
 
-  local session_name = nil
+  local session_name, activity_label
   n00n.agent.session = function(ctx, opts)
     session_name = opts.name
     return {
@@ -112,8 +112,14 @@ case("roles_run_with_custom_opts", function()
     return 0.05, nil
   end
 
+  local preview = {
+    prompt = function(_, sess, prompt, label)
+      activity_label = label
+      return sess:prompt(prompt)
+    end,
+  }
   local dummy_ctx = {}
-  local res = roles.run(dummy_ctx, "developer", "implement helper", { model_tier = "medium" })
+  local res = roles.run(dummy_ctx, "developer", "implement helper", { model_tier = "medium", preview = preview })
 
   n00n.agent.resolve_model = old_resolve
   n00n.agent.tools = old_tools
@@ -123,6 +129,7 @@ case("roles_run_with_custom_opts", function()
   assert(res.ok == true, "roles.run should succeed")
   assert(resolved_tier == "medium", "should use custom model tier")
   assert(session_name == "developer", "session name should match role")
+  assert(activity_label == "developer", "role session must publish through the shared preview")
   assert(res.text == "implemented!", "returned text should match mock")
   assert(res.cost == 0.05, "cost should match mock")
 end)
@@ -288,6 +295,23 @@ case("quorum_validators_receive_no_tools", function()
 
   assert(ok, "tool-less quorum should succeed: " .. tostring(result))
   assert(result.accepted, "tool-less validator should approve")
+end)
+
+case("quorum_routes_each_validator_through_preview", function()
+  local quorum = require("quorum")
+  local restore = stub_agent(true)
+  local labels = {}
+  local preview = {
+    prompt = function(_, sess, prompt, label)
+      labels[#labels + 1] = label
+      return sess:prompt(prompt)
+    end,
+  }
+  local verdict = quorum.validate({}, "artifact", { n = 3, preview = preview })
+  restore()
+  assert(verdict.accepted, "preview must not change quorum result")
+  assert(#labels == 3, "every quorum session must reach the preview")
+  assert(labels[1] == "quorum-security", "validator label must identify quorum role")
 end)
 
 case("quorum_all_reject_rejected", function()

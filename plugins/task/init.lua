@@ -5,6 +5,7 @@
 -- primitives only (`n00n.agent.session`, `n00n.json.schema_validator`,
 -- `n00n.async.semaphore`).
 
+local ActivityPreview = require("n00n.activity_preview")
 local ToolView = require("n00n.tool_view")
 local route_tier = require("n00n.route_tier").route_tier
 
@@ -116,41 +117,6 @@ local function bounded_errors(errors)
   return table.concat(out, "\n")
 end
 
-local function make_preview(ctx, description)
-  local tol = ctx:tool_output_lines()
-  local max_preview = (tol and tol.task) or DEFAULT_OUTPUT_LINES
-  local view = ToolView.new(n00n.ui.buf(), { max_lines = max_preview, keep = "tail" })
-  local last_completed = 0
-
-  local function update(progress)
-    if progress.completed_count > last_completed then
-      local new_count = progress.completed_count - last_completed
-      local recent = progress.recent_tools
-      local start = new_count <= #recent and (#recent - new_count + 1) or 1
-      for i = start, #recent do
-        view:append({ { "✓ " .. recent[i], "dim" } })
-      end
-      last_completed = progress.completed_count
-    end
-
-    local elapsed = math.floor(progress.elapsed_ms / 1000)
-    local elapsed_str = n00n.ui.humantime(elapsed)
-    local header = { { description .. " · " .. elapsed_str, "bold" } }
-    if progress.current_tool then
-      header[#header + 1] = { { "▸ " .. progress.current_tool, "bold" } }
-    elseif not progress.done then
-      header[#header + 1] = { { "Starting...", "dim" } }
-    end
-    view:set_header(header)
-  end
-
-  view.buf:on("click", function()
-    view:toggle()
-  end)
-
-  return { buf = view.buf, update = update }
-end
-
 local function handler(input, ctx)
   if input.background then
     local forwarded = {}
@@ -255,7 +221,11 @@ local function handler(input, ctx)
     }
   end
 
-  local preview = make_preview(ctx, input.description or "task")
+  local description = input.description or "task"
+  local preview, preview_err = ActivityPreview.new(ctx, description)
+  if not preview then
+    return { llm_output = "failed to publish task preview: " .. tostring(preview_err), is_error = true }
+  end
 
   local permit
   local ok, out = pcall(function()
@@ -278,11 +248,11 @@ local function handler(input, ctx)
       if validator then
         message = message .. STRUCTURED_OUTPUT_PROMPT_SUFFIX
       end
-      local result, err = sess:prompt(message)
+      local result, err = preview:prompt(sess, message, description)
       local retries = 0
       while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
         retries = retries + 1
-        result, err = sess:prompt(NUDGE_MISSING)
+        result, err = preview:prompt(sess, NUDGE_MISSING, description)
       end
       if err then
         return { llm_output = "sub-agent error: " .. err, is_error = true }
@@ -305,36 +275,19 @@ local function handler(input, ctx)
       return { llm_output = output, format = "markdown" }
     end
 
-    local function do_poll()
-      while true do
-        local progress = sess:get_progress()
-        if not progress then
-          return
-        end
-        preview:update(progress)
-        if progress.done then
-          return
-        end
-      end
-    end
-
-    local results = n00n.async.gather({ do_prompt, do_poll })
+    local result = do_prompt()
     sess:close()
-    local prompt_res = results[1]
-    if not prompt_res.ok then
-      error(prompt_res.err, 0)
-    end
-    return prompt_res.value
+    return result
   end)
   if permit then
     permit:release()
   end
   if not ok then
-    return { llm_output = "task failed: " .. tostring(out), is_error = true, body = preview.buf }
+    return { llm_output = "task failed: " .. tostring(out), is_error = true, body = preview.view.buf }
   end
   return {
     llm_output = out.llm_output,
-    body = preview.buf,
+    body = preview.view.buf,
     is_error = out.is_error,
     format = out.format,
   }
