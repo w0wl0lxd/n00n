@@ -32,6 +32,10 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/agent_control"),
     },
     BundledPlugin {
+        name: "arbor",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/arbor"),
+    },
+    BundledPlugin {
         name: "sessions",
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/sessions"),
     },
@@ -106,6 +110,10 @@ static BUNDLED_PLUGINS: &[BundledPlugin] = &[
     BundledPlugin {
         name: "code_execution",
         dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/code_execution"),
+    },
+    BundledPlugin {
+        name: "codegraph",
+        dir: include_dir!("$CARGO_MANIFEST_DIR/../plugins/codegraph"),
     },
     BundledPlugin {
         name: "view_image",
