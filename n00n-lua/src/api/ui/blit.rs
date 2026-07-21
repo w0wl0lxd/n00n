@@ -69,6 +69,7 @@ pub(crate) fn parse_format(name: &str) -> Result<&'static FormatSpec, BlitError>
         })
 }
 
+#[allow(clippy::many_single_char_names)]
 pub(crate) fn render(
     bytes: &[u8],
     w: usize,

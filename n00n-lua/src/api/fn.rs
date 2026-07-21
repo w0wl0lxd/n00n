@@ -62,12 +62,7 @@ impl JobStore {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
-            unsafe {
-                command.pre_exec(|| {
-                    libc::setsid();
-                    Ok(())
-                });
-            }
+            command.process_group(0);
         }
 
         if let Some(dir) = cwd.as_deref().map(expand_tilde) {
@@ -121,7 +116,7 @@ impl JobStore {
         thread::Builder::new()
             .name("job-wait".into())
             .spawn(move || {
-                let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+                let code = child.wait().map_or(-1, |s| s.code().unwrap_or(-1));
                 if let Some(h) = stdout_handle {
                     let _ = h.join();
                 }
@@ -228,24 +223,20 @@ fn shell_command(cmd: &str) -> Command {
 fn kill_job(meta: &mut JobMeta) {
     let pid = meta.pid;
     #[cfg(unix)]
-    unsafe {
-        libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+    {
+        use rustix::process::{Pid, Signal, kill_process_group};
+        let Ok(raw) = i32::try_from(pid) else {
+            return;
+        };
+        if let Some(pid) = Pid::from_raw(raw) {
+            let _ = kill_process_group(pid, Signal::Kill);
+        }
     }
     #[cfg(windows)]
     {
-        const PROCESS_TERMINATE: u32 = 0x0001;
-        unsafe extern "system" {
-            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
-            fn TerminateProcess(handle: *mut std::ffi::c_void, exit_code: u32) -> i32;
-            fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
-        }
-        unsafe {
-            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-            if !handle.is_null() {
-                TerminateProcess(handle, 1);
-                CloseHandle(handle);
-            }
-        }
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .status();
     }
 }
 
@@ -383,7 +374,7 @@ pub(crate) fn deliver_job_event(lua: &Lua, job_id: u32, event: &JobEvent) -> Lua
             JobEvent::Stdout(line) | JobEvent::Stderr(line) => {
                 Value::String(lua.create_string(line)?)
             }
-            JobEvent::Exit(code) => Value::Integer(*code as i64),
+            JobEvent::Exit(code) => Value::Integer(i64::from(*code)),
         };
         callback.call::<()>((job_id, arg))?;
     }
@@ -406,10 +397,9 @@ pub(crate) fn deliver_job_event(lua: &Lua, job_id: u32, event: &JobEvent) -> Lua
 #[lua_fn(guard = Env)]
 fn executable(_lua: &Lua, name: String) -> LuaResult<i32> {
     let found = env::var_os("PATH")
-        .map(|paths| env::split_paths(&paths).any(|dir| dir.join(&name).is_file()))
-        .unwrap_or(false)
+        .is_some_and(|paths| env::split_paths(&paths).any(|dir| dir.join(&name).is_file()))
         || Path::new(&name).is_file();
-    Ok(if found { 1 } else { 0 })
+    Ok(i32::from(found))
 }
 
 lua_table! {

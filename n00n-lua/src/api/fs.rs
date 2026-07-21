@@ -36,11 +36,11 @@ fn make_absolute(path: &str) -> LuaResult<PathBuf> {
 
 fn path_to_string(p: &Path) -> LuaResult<String> {
     p.to_str()
-        .map(|s| s.to_owned())
+        .map(std::borrow::ToOwned::to_owned)
         .ok_or_else(|| mlua::Error::runtime("non-utf8 path"))
 }
 
-fn filetype_str(ft: &FileType) -> &'static str {
+fn filetype_str(ft: FileType) -> &'static str {
     if ft.is_file() {
         "file"
     } else if ft.is_dir() {
@@ -60,9 +60,8 @@ fn collect_dir_entries(
     visited: &mut HashSet<PathBuf>,
     out: &mut Vec<(String, &'static str)>,
 ) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -72,17 +71,16 @@ fn collect_dir_entries(
         };
         let (type_str, is_dir) = match entry.file_type() {
             Ok(ft) if ft.is_symlink() => match std::fs::metadata(&path) {
-                Ok(meta) => (filetype_str(&meta.file_type()), meta.is_dir()),
+                Ok(meta) => (filetype_str(meta.file_type()), meta.is_dir()),
                 Err(_) => ("link", false),
             },
-            Ok(ft) => (filetype_str(&ft), ft.is_dir()),
+            Ok(ft) => (filetype_str(ft), ft.is_dir()),
             Err(_) => ("unknown", false),
         };
         out.push((name, type_str));
         if is_dir && depth < max_depth {
-            let canonical = match path.canonicalize() {
-                Ok(c) => c,
-                Err(_) => continue,
+            let Ok(canonical) = path.canonicalize() else {
+                continue;
             };
             if visited.insert(canonical) {
                 collect_dir_entries(base, &path, depth + 1, max_depth, visited, out);
@@ -184,7 +182,7 @@ fn dirname(_lua: &Lua, path: String) -> LuaResult<Option<String>> {
     Ok(Path::new(&path)
         .parent()
         .and_then(|p| p.to_str())
-        .map(|s| s.to_owned()))
+        .map(std::borrow::ToOwned::to_owned))
 }
 
 /// Return the final component (the file name) of {path}. Like `vim.fs.basename`.
@@ -198,7 +196,7 @@ fn basename(_lua: &Lua, path: String) -> LuaResult<Option<String>> {
     Ok(Path::new(&path)
         .file_name()
         .and_then(|n| n.to_str())
-        .map(|s| s.to_owned()))
+        .map(std::borrow::ToOwned::to_owned))
 }
 
 /// Join one or more path segments into a single path. Like `vim.fs.joinpath`.
@@ -368,7 +366,7 @@ fn ext(_lua: &Lua, path: String) -> LuaResult<Option<String>> {
     Ok(Path::new(&path)
         .extension()
         .and_then(|e| e.to_str())
-        .map(|s| s.to_owned()))
+        .map(std::borrow::ToOwned::to_owned))
 }
 
 /// List the contents of the directory at {path}.
@@ -512,7 +510,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
 
     let result: Result<Vec<String>, String> = smol::unblock(move || {
         let root = n00n_agent::tools::resolve_search_path(path.as_deref())?;
-        let pattern_refs: Vec<&str> = patterns.iter().map(|s| s.as_str()).collect();
+        let pattern_refs: Vec<&str> = patterns.iter().map(std::string::String::as_str).collect();
 
         let walker = n00n_agent::tools::walk_builder_opts(&root, &pattern_refs, gitignore)?.build();
 
@@ -539,7 +537,7 @@ async fn glob(lua: Lua, pattern: Value, opts: Option<Table>) -> LuaResult<(Value
                 None => Box::new(iter),
             };
             bounded
-                .filter_map(|e| e.into_path().to_str().map(|s| s.to_owned()))
+                .filter_map(|e| e.into_path().to_str().map(std::borrow::ToOwned::to_owned))
                 .collect()
         };
 

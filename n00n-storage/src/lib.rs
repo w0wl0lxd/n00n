@@ -33,19 +33,25 @@ use paths::state_dir;
 pub struct StateDir(PathBuf);
 
 impl StateDir {
+    /// # Errors
+    /// Returns an error if the state directory cannot be determined or created.
     pub fn resolve() -> Result<Self, StorageError> {
         let dir = state_dir()?;
         Ok(Self(dir))
     }
 
+    #[must_use]
     pub fn from_path(path: PathBuf) -> Self {
         Self(path)
     }
 
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.0
     }
 
+    /// # Errors
+    /// Returns an error if the subdirectory cannot be created.
     pub fn ensure_subdir(&self, name: &str) -> Result<PathBuf, StorageError> {
         let dir = self.0.join(name);
         fs::create_dir_all(&dir)?;
@@ -67,8 +73,13 @@ pub enum StorageError {
     SlugCollision,
     #[error("toon error: {0}")]
     Toon(String),
+    #[error("random generation failed: {0}")]
+    GetRandom(String),
 }
 
+/// # Errors
+/// Returns an error if the parent directory does not exist, the temporary
+/// file cannot be created or written, or the atomic rename fails.
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), StorageError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut tmp = NamedTempFile::new_in(parent)?;
@@ -148,17 +159,25 @@ fn retry_rename(src: &Path, dest: &Path) -> std::io::Result<()> {
 /// Flush a directory's metadata so a file created/renamed inside it is
 /// guaranteed to be reachable after a crash. No-op on platforms where this is
 /// not meaningful or not supported.
-fn sync_dir(_path: &Path) -> std::io::Result<()> {
+#[allow(clippy::unnecessary_wraps)]
+fn sync_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        fs::File::open(_path)?.sync_all()?;
+        fs::File::open(path)?.sync_all()?;
     }
     Ok(())
 }
 
+/// Returns the current time in seconds since the UNIX epoch.
+///
+/// # Panics
+/// Panics if the system time is before the UNIX epoch. This condition indicates
+/// a system clock misconfiguration that should not occur in normal operation.
+#[must_use]
 pub fn now_epoch() -> u64 {
+    #[allow(clippy::expect_used)]
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+        .expect("system time before UNIX epoch is not supported")
         .as_secs()
 }

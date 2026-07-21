@@ -1,6 +1,6 @@
 //! Bidirectional JSON <-> `MontyObject` conversion.
 //! Lossy corners: NaN floats become `null` (JSON can't represent NaN),
-//! BigInts that overflow `i64` become strings, and tuples become arrays.
+//! `BigInt`s that overflow `i64` become strings, and tuples become arrays.
 
 use monty::MontyObject;
 use serde_json::Value;
@@ -12,8 +12,12 @@ pub fn json_to_monty(value: Value) -> MontyObject {
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 MontyObject::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                MontyObject::Float(f)
             } else {
-                MontyObject::Float(n.as_f64().unwrap_or(0.0))
+                // JSON numbers that are NaN or infinity cannot be represented in Monty.
+                // Fall back to None to avoid silent default values.
+                MontyObject::None
             }
         }
         Value::String(s) => MontyObject::String(s),
@@ -35,9 +39,10 @@ pub fn monty_to_json(obj: &MontyObject) -> Value {
         MontyObject::Float(f) => {
             serde_json::Number::from_f64(*f).map_or(Value::Null, Value::Number)
         }
-        MontyObject::String(s) => Value::String(s.clone()),
-        MontyObject::List(items) => Value::Array(items.iter().map(monty_to_json).collect()),
-        MontyObject::Tuple(items) => Value::Array(items.iter().map(monty_to_json).collect()),
+        MontyObject::String(s) | MontyObject::Repr(s) => Value::String(s.clone()),
+        MontyObject::List(items) | MontyObject::Tuple(items) => {
+            Value::Array(items.iter().map(monty_to_json).collect())
+        }
         MontyObject::Dict(pairs) => {
             let map: serde_json::Map<String, Value> = pairs
                 .into_iter()
@@ -61,7 +66,6 @@ pub fn monty_to_json(obj: &MontyObject) -> Value {
                 Value::String(bi.to_string())
             }
         }
-        MontyObject::Repr(s) => Value::String(s.clone()),
         _ => Value::String(obj.py_repr()),
     }
 }
@@ -79,6 +83,7 @@ mod tests {
     #[test_case(json!(-1),      MontyObject::Int(-1)         ; "negative_int")]
     #[test_case(json!(2.5),     MontyObject::Float(2.5)      ; "float")]
     #[test_case(json!("hello"), MontyObject::String("hello".into()) ; "string")]
+    #[allow(clippy::needless_pass_by_value)]
     fn json_to_monty_scalars(input: Value, expected: MontyObject) {
         assert_eq!(json_to_monty(input), expected);
     }
@@ -94,6 +99,7 @@ mod tests {
     #[test_case(json!({})                         ; "empty_object")]
     #[test_case(json!({"key": [1, "two", null]})  ; "mixed_nested")]
     #[test_case(json!(i64::MAX)                   ; "large_i64")]
+    #[allow(clippy::needless_pass_by_value)]
     fn roundtrip_preserves_value(input: Value) {
         let back = monty_to_json(&json_to_monty(input.clone()));
         assert_eq!(back, input);

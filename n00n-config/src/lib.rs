@@ -266,7 +266,7 @@ impl RawConfig {
             provider: ProviderConfig::from_file(self.provider),
             storage: StorageConfig::from_file(self.storage),
             permissions: PermissionsConfig::default(),
-            plugins: PluginsConfig::from_plugins(self.plugins),
+            plugins: PluginsConfig::from_plugins(&self.plugins),
         })
     }
 }
@@ -1137,7 +1137,7 @@ pub struct PluginsConfig {
 
 impl PluginsConfig {
     #[must_use]
-    pub fn from_plugins(plugins: HashMap<String, PluginFileConfig>) -> Self {
+    pub fn from_plugins(plugins: &HashMap<String, PluginFileConfig>) -> Self {
         let mut all: Vec<String> = DEFAULT_BUILTINS
             .iter()
             .filter(|name| plugins.get(**name).and_then(|t| t.enabled).unwrap_or(true))
@@ -2551,7 +2551,7 @@ mod tests {
 
     #[test]
     fn from_plugins_default() {
-        let plugins = PluginsConfig::from_plugins(HashMap::new());
+        let plugins = PluginsConfig::from_plugins(&HashMap::new());
         let expected: Vec<String> = DEFAULT_BUILTINS
             .iter()
             .map(std::string::ToString::to_string)
@@ -2568,7 +2568,7 @@ mod tests {
         entries.insert("alpha".to_string(), plugin_enabled(true));
         entries.insert("custom_tool".to_string(), PluginFileConfig::default());
 
-        let plugins = PluginsConfig::from_plugins(entries);
+        let plugins = PluginsConfig::from_plugins(&entries);
         assert!(
             !plugins.names.contains(&"websearch".to_string()),
             "disabled builtin removed"

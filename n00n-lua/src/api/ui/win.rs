@@ -146,17 +146,14 @@ fn win_extra<M: mlua::UserDataMethods<WinHandle>>(methods: &mut M) {
                 }
                 None => rx.recv_async().await,
             };
-            match event {
-                Ok(event) => {
-                    if matches!(event, WinEvent::Close) {
-                        ud.borrow::<WinHandle>()?.closed.set(true);
-                    }
-                    Ok(mlua::Value::Table(event_table(&lua, event)?))
-                }
-                Err(_) => {
+            if let Ok(event) = event {
+                if matches!(event, WinEvent::Close) {
                     ud.borrow::<WinHandle>()?.closed.set(true);
-                    Ok(mlua::Value::Nil)
                 }
+                Ok(mlua::Value::Table(event_table(&lua, event)?))
+            } else {
+                ud.borrow::<WinHandle>()?.closed.set(true);
+                Ok(mlua::Value::Nil)
             }
         },
     );

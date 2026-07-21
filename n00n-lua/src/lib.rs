@@ -1,5 +1,6 @@
 // n00n-lua wraps the Luau C runtime; unsafe is isolated to this FFI boundary.
 #![allow(unsafe_code)]
+#![allow(clippy::doc_markdown, clippy::doc_link_with_quotes)]
 
 mod api;
 pub mod docs;

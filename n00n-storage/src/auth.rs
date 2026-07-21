@@ -22,10 +22,12 @@ pub struct OAuthTokens {
 }
 
 impl OAuthTokens {
+    #[must_use]
     pub fn is_expired(&self) -> bool {
         now_millis() + REFRESH_BUFFER_SECS * 1000 >= self.expires
     }
 
+    #[must_use]
     pub fn is_hard_expired(&self) -> bool {
         now_millis() >= self.expires
     }
@@ -50,6 +52,7 @@ pub struct ProviderCredentials {
 }
 
 impl ProviderCredentials {
+    #[must_use]
     pub fn masked_api_key(&self) -> String {
         if self.api_key.len() > 8 {
             format!(
@@ -63,11 +66,11 @@ impl ProviderCredentials {
     }
 }
 
+#[must_use]
 pub fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+        .map_or(0, |d| u64::try_from(d.as_millis()).map_or(u64::MAX, |v| v))
 }
 
 fn auth_path(dir: &StateDir, filename: &str) -> PathBuf {
@@ -98,10 +101,13 @@ fn delete_auth(path: &Path) -> Result<bool, StorageError> {
     Ok(false)
 }
 
+#[must_use]
 pub fn load_tokens(dir: &StateDir, provider: &str) -> Option<OAuthTokens> {
     load_auth(&auth_path(dir, provider))
 }
 
+/// # Errors
+/// Returns an error if the file cannot be written or its permissions cannot be set.
 pub fn save_tokens(
     dir: &StateDir,
     provider: &str,
@@ -110,10 +116,13 @@ pub fn save_tokens(
     save_auth(&auth_path(dir, provider), tokens)
 }
 
+/// # Errors
+/// Returns an error if the file cannot be removed.
 pub fn delete_tokens(dir: &StateDir, provider: &str) -> Result<bool, StorageError> {
     delete_auth(&auth_path(dir, provider))
 }
 
+#[must_use]
 pub fn load_mcp_auth(dir: &StateDir, server_name: &str, expected_url: &str) -> Option<McpAuthData> {
     let data: McpAuthData = load_auth(&auth_path(dir, &format!("mcp-{server_name}")))?;
     if data.server_url != expected_url {
@@ -127,6 +136,8 @@ pub fn load_mcp_auth(dir: &StateDir, server_name: &str, expected_url: &str) -> O
     Some(data)
 }
 
+/// # Errors
+/// Returns an error if the file cannot be written or its permissions cannot be set.
 pub fn save_mcp_auth(
     dir: &StateDir,
     server_name: &str,
@@ -135,14 +146,19 @@ pub fn save_mcp_auth(
     save_auth(&auth_path(dir, &format!("mcp-{server_name}")), data)
 }
 
+/// # Errors
+/// Returns an error if the file cannot be removed.
 pub fn delete_mcp_auth(dir: &StateDir, server_name: &str) -> Result<bool, StorageError> {
     delete_auth(&auth_path(dir, &format!("mcp-{server_name}")))
 }
 
+#[must_use]
 pub fn load_provider_credentials(dir: &StateDir, slug: &str) -> Option<ProviderCredentials> {
     load_auth(&auth_path(dir, slug))
 }
 
+/// # Errors
+/// Returns an error if the file cannot be written or its permissions cannot be set.
 pub fn save_provider_credentials(
     dir: &StateDir,
     slug: &str,
@@ -151,6 +167,8 @@ pub fn save_provider_credentials(
     save_auth(&auth_path(dir, slug), creds)
 }
 
+/// # Errors
+/// Returns an error if the file cannot be removed.
 pub fn delete_provider_credentials(dir: &StateDir, slug: &str) -> Result<bool, StorageError> {
     delete_auth(&auth_path(dir, slug))
 }
@@ -195,7 +213,7 @@ mod tests {
         let tokens = OAuthTokens {
             access: "access_tok".into(),
             refresh: "refresh_tok".into(),
-            expires: 9999999999,
+            expires: 9_999_999_999,
             account_id: None,
         };
         save_tokens(&dir, "anthropic", &tokens).unwrap();
@@ -203,7 +221,7 @@ mod tests {
         let loaded = load_tokens(&dir, "anthropic").unwrap();
         assert_eq!(loaded.access, "access_tok");
         assert_eq!(loaded.refresh, "refresh_tok");
-        assert_eq!(loaded.expires, 9999999999);
+        assert_eq!(loaded.expires, 9_999_999_999);
 
         #[cfg(unix)]
         {
@@ -224,7 +242,7 @@ mod tests {
             tokens: Some(OAuthTokens {
                 access: "acc".into(),
                 refresh: "ref".into(),
-                expires: 9999999999,
+                expires: 9_999_999_999,
                 account_id: None,
             }),
             ..test_mcp_data()
@@ -236,12 +254,12 @@ mod tests {
     }
 
     #[test_case(
-        test_mcp_data(),
+        &test_mcp_data(),
         "https://other.example.com"
         ; "url_mismatch"
     )]
     #[test_case(
-        McpAuthData {
+        &McpAuthData {
             client_secret: Some("s".into()),
             client_secret_expires_at: Some(1),
             ..test_mcp_data()
@@ -249,10 +267,10 @@ mod tests {
         TEST_URL
         ; "expired_client_secret"
     )]
-    fn mcp_auth_load_returns_none(data: McpAuthData, lookup_url: &str) {
+    fn mcp_auth_load_returns_none(data: &McpAuthData, lookup_url: &str) {
         let tmp = TempDir::new().unwrap();
         let dir = StateDir::from_path(tmp.path().to_path_buf());
-        save_mcp_auth(&dir, "srv", &data).unwrap();
+        save_mcp_auth(&dir, "srv", data).unwrap();
         assert!(load_mcp_auth(&dir, "srv", lookup_url).is_none());
     }
 }

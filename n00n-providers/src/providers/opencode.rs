@@ -28,7 +28,7 @@ const BLOCKED_PROVIDER_IN_CATALOG: &[&str] = &["zai", "zai-coding-plan", "github
 
 const CATALOG_URL: &str = "https://models.dev/api.json";
 const CATALOG_CACHE_FILE: &str = "models-dev-catalog.json";
-const CATALOG_CACHE_TTL: Duration = Duration::from_secs(86400);
+const CATALOG_CACHE_TTL: Duration = Duration::from_hours(24);
 
 const MESSAGES_PATH: &str = "/messages";
 
@@ -98,7 +98,7 @@ pub struct ProviderData {
     pub base_url: Option<String>,
     /// NPM package name
     pub npm: String,
-    /// API format (ChatCompletions or Messages)
+    /// API format (`ChatCompletions` or Messages)
     pub api_format: EndpointType,
     /// Models for this provider
     pub models: HashMap<String, CatalogMeta>,
@@ -123,6 +123,7 @@ impl ProviderData {
     }
 
     /// Load API key from storage
+    #[must_use]
     pub fn load_key_from_storage(&self, state_dir: &StateDir) -> Option<String> {
         let creds = load_provider_credentials(state_dir, &self.slug)?;
         Some(creds.api_key)
@@ -144,11 +145,12 @@ impl ProviderData {
     }
 
     /// Returns the name of the first API key environment variable that is set.
+    #[must_use]
     pub fn env_key_set(&self) -> Option<&str> {
         self.env_keys
             .iter()
             .find(|e| std::env::var(e).is_ok())
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
     }
 
     fn auth_headers(&self, api_key: &str) -> Vec<(String, String)> {
@@ -159,6 +161,7 @@ impl ProviderData {
     }
 
     /// Build authentication from available credentials
+    #[must_use]
     pub fn build_auth(&self, state_dir: &StateDir) -> Authentication {
         let api_key = match self.resolve_api_key(state_dir) {
             Some(key) => key,
@@ -177,6 +180,7 @@ impl ProviderData {
     }
 
     /// Get resolved auth for use in requests
+    #[must_use]
     pub fn resolve_auth(&self, state_dir: &StateDir) -> Option<ResolvedAuth> {
         match self.build_auth(state_dir) {
             Authentication::KeyBased(auth) | Authentication::OpenCodeFreeKey(auth) => Some(auth),
@@ -185,6 +189,7 @@ impl ProviderData {
     }
 
     /// Resolve auth with optional dynamic override (e.g. from Lua).
+    #[must_use]
     pub fn resolve_auth_with_override(
         &self,
         override_auth: Option<&Arc<Mutex<ResolvedAuth>>>,
@@ -193,12 +198,17 @@ impl ProviderData {
         if self.slug == "opencode"
             && let Some(auth) = override_auth
         {
-            return Some(auth.lock().unwrap().clone());
+            return Some(
+                auth.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+            );
         }
         self.resolve_auth(state_dir)
     }
 
     /// Get all available models for this provider based on auth state.
+    #[must_use]
     pub fn available_models(
         &self,
         state_dir: &StateDir,
@@ -273,7 +283,7 @@ fn enable_free_models_config() -> bool {
     n00n_config::providers::ProvidersConfig::load()
         .get("opencode")
         .and_then(|d| d.enable_free_models)
-        .unwrap_or(false)
+        .unwrap_or_else(|| false)
 }
 
 impl CatalogData {
@@ -314,34 +324,34 @@ impl CatalogData {
                     .cost
                     .as_ref()
                     .and_then(|c| c.input)
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| 0.0);
                 let output_price = model_data
                     .cost
                     .as_ref()
                     .and_then(|c| c.output)
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| 0.0);
 
                 let context = model_data
                     .limit
                     .as_ref()
                     .and_then(|l| l.context)
-                    .unwrap_or(128_000);
+                    .unwrap_or_else(|| 128_000);
                 let output = model_data
                     .limit
                     .as_ref()
                     .and_then(|l| l.output)
-                    .unwrap_or(64_000);
+                    .unwrap_or_else(|| 64_000);
 
                 let cache_read = model_data
                     .cost
                     .as_ref()
                     .and_then(|c| c.cache_read)
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| 0.0);
                 let cache_write = model_data
                     .cost
                     .as_ref()
                     .and_then(|c| c.cache_write)
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| 0.0);
 
                 models.insert(
                     model_id.clone(),
@@ -437,21 +447,27 @@ fn init_catalog_if_needed() -> &'static Mutex<CatalogData> {
 }
 
 impl Opencode {
-    fn new_impl(timeouts: super::Timeouts, auth: Option<Arc<Mutex<ResolvedAuth>>>) -> Self {
-        Self {
-            client: http_client(timeouts),
-            chat_compat: OpenAiCompatProvider::new(&CATALOG_CHAT_CONFIG, timeouts),
+    fn new_impl(
+        timeouts: super::Timeouts,
+        auth: Option<Arc<Mutex<ResolvedAuth>>>,
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            client: http_client(timeouts)?,
+            chat_compat: OpenAiCompatProvider::new(&CATALOG_CHAT_CONFIG, timeouts)?,
             auth,
             system_prefix: None,
             stream_timeout: timeouts.stream,
-        }
+        })
     }
 
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
-        Ok(Self::new_impl(timeouts, None))
+        Self::new_impl(timeouts, None)
     }
 
-    pub(crate) fn with_auth(auth: Arc<Mutex<ResolvedAuth>>, timeouts: super::Timeouts) -> Self {
+    pub(crate) fn with_auth(
+        auth: Arc<Mutex<ResolvedAuth>>,
+        timeouts: super::Timeouts,
+    ) -> Result<Self, AgentError> {
         Self::new_impl(timeouts, Some(auth))
     }
 
@@ -462,7 +478,13 @@ impl Opencode {
 
     async fn do_list_models(&self) -> Result<Vec<ModelInfo>, AgentError> {
         // Delegate to a background thread
-        Ok(smol::unblock(|| init_catalog_if_needed().lock().unwrap().all_models()).await)
+        Ok(smol::unblock(|| {
+            init_catalog_if_needed()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .all_models()
+        })
+        .await)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -482,7 +504,7 @@ impl Opencode {
             messages,
             system,
             tools,
-            session_id.map(|s| s.as_str()),
+            session_id.map(n00n_storage::id::SessionRef::as_str),
         );
         opts.thinking
             .apply_reasoning_effort(&mut body, &dialect::PREFER_HIGH, model);
@@ -523,7 +545,7 @@ impl Opencode {
                     .method("POST")
                     .uri(format!(
                         "{}{}",
-                        auth.base_url.as_deref().unwrap_or(""),
+                        auth.base_url.as_deref().unwrap_or_else(|| ""),
                         MESSAGES_PATH
                     ))
                     .header("user-agent", super::user_agent())
@@ -553,7 +575,7 @@ impl Opencode {
         let actual_id = actual_id.to_string();
         let auth_override = self.auth.clone();
         smol::unblock(move || {
-            let guard = init_catalog_if_needed().lock().unwrap();
+            let guard = init_catalog_if_needed().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let (meta, provider_data) = guard.lookup(&sub_provider, &actual_id)?;
             let state_dir = &guard.state_dir;
             // Dynamic provider auth (e.g. from Lua) overrides the opencode route
@@ -585,13 +607,14 @@ impl Provider for Opencode {
             let model_for_stream = model.clone();
 
             let model_id = &model_for_stream.id;
-            let (sub_provider, actual_id) =
-                model_id.split_once('/').unwrap_or(("opencode", model_id));
+            let (sub_provider, actual_id) = model_id
+                .split_once('/')
+                .unwrap_or_else(|| ("opencode", model_id));
 
             let (meta, api_format, auth) = self.lookup(sub_provider, actual_id).await?;
 
             let mut buf = String::new();
-            let system = super::with_prefix(&self.system_prefix, system, &mut buf);
+            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
 
             let model = Model {
                 id: actual_id.to_string(),
@@ -631,8 +654,11 @@ fn config_error(message: String) -> AgentError {
 }
 
 /// Returns the list of all providers in alphabetical order.
+#[must_use]
 pub fn catalog_providers() -> Vec<ProviderData> {
-    let guard = init_catalog_if_needed().lock().unwrap();
+    let guard = init_catalog_if_needed()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     guard.all_providers()
 }
@@ -645,7 +671,8 @@ pub fn catalog_providers_if_available() -> Option<Vec<ProviderData>> {
     Some(guard.all_providers())
 }
 
-/// Returns the ProviderData for a specific catalog provider, if found.
+/// Returns the `ProviderData` for a specific catalog provider, if found.
+#[must_use]
 pub fn catalog_provider(provider_id: &str) -> Option<ProviderData> {
     let guard = init_catalog_if_needed().lock().ok()?;
     guard.providers.get(provider_id).cloned()
@@ -683,9 +710,8 @@ async fn load_cached_catalog_async() -> Option<CatalogIndex> {
 }
 
 async fn save_cached_catalog_async(index: &CatalogIndex) {
-    let path = match catalog_cache_path() {
-        Some(p) => p,
-        None => return,
+    let Some(path) = catalog_cache_path() else {
+        return;
     };
     if let Some(dir) = path.parent() {
         let dir = dir.to_path_buf();
@@ -766,11 +792,21 @@ fn init_catalog_blocking() -> CatalogData {
         return CatalogData::from_index(index, enable_free_models, &state_dir);
     }
 
-    let client = isahc::HttpClient::builder()
+    let client = match isahc::HttpClient::builder()
         .connect_timeout(Duration::from_secs(10))
         .low_speed_timeout(1, Duration::from_secs(30))
         .build()
-        .expect("failed to build catalog HTTP client");
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "failed to build catalog HTTP client");
+            return CatalogData {
+                providers: HashMap::new(),
+                enable_free_models,
+                state_dir,
+            };
+        }
+    };
 
     match smol::block_on(fetch_remote_catalog_async(&client)) {
         Ok(index) => {
@@ -791,6 +827,18 @@ fn init_catalog_blocking() -> CatalogData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[allow(unsafe_code)]
+    fn set_env(var: &str, value: &str) {
+        // SAFETY: Tests run single-threaded; no concurrent access to env vars
+        unsafe { std::env::set_var(var, value) }
+    }
+
+    #[allow(unsafe_code)]
+    fn remove_env(var: &str) {
+        // SAFETY: Tests run single-threaded; no concurrent access to env vars
+        unsafe { std::env::remove_var(var) }
+    }
 
     fn temp_state_dir() -> (tempfile::TempDir, StateDir) {
         let tmp = tempfile::tempdir().unwrap();
@@ -918,7 +966,7 @@ mod tests {
             name: "Test".into(),
             env: vec!["N00N_TEST_UNUSED_VAR_1"]
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
             npm: "@ai-sdk/openai".into(),
             api: None,
@@ -941,7 +989,7 @@ mod tests {
             name: "Anthropic".into(),
             env: vec!["ANTHROPIC_SECRET_KEY"]
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
             npm: "@ai-sdk/anthropic".into(),
             api: None,
@@ -987,7 +1035,7 @@ mod tests {
             name: "Test".into(),
             env: vec!["OPENCODE_API_KEY"]
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
             npm: "@ai-sdk/openai-compatible".into(),
             api: None,
@@ -1012,12 +1060,12 @@ mod tests {
     #[test]
     fn catalog_provider_build_auth_key_based() {
         let (_tmp, state_dir) = temp_state_dir();
-        unsafe { std::env::set_var("N00N_TEST_AUTH_KEY", "sk-real-key") };
+        set_env("N00N_TEST_AUTH_KEY", "sk-real-key");
         let provider = CatalogProvider {
             name: "Test".into(),
             env: vec!["N00N_TEST_AUTH_KEY"]
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
             npm: "@ai-sdk/openai-compatible".into(),
             api: None,
@@ -1037,18 +1085,18 @@ mod tests {
             }
             _ => panic!("expected KeyBased"),
         }
-        unsafe { std::env::remove_var("N00N_TEST_AUTH_KEY") };
+        remove_env("N00N_TEST_AUTH_KEY");
     }
 
     #[test]
     fn catalog_provider_build_auth_x_api_key() {
         let (_tmp, state_dir) = temp_state_dir();
-        unsafe { std::env::set_var("N00N_TEST_ANTHROPIC_KEY", "sk-ant-key") };
+        set_env("N00N_TEST_ANTHROPIC_KEY", "sk-ant-key");
         let provider = CatalogProvider {
             name: "Anthropic".into(),
             env: vec!["N00N_TEST_ANTHROPIC_KEY"]
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
             npm: "@ai-sdk/anthropic".into(),
             api: None,
@@ -1068,7 +1116,7 @@ mod tests {
             }
             _ => panic!("expected KeyBased"),
         }
-        unsafe { std::env::remove_var("N00N_TEST_ANTHROPIC_KEY") };
+        remove_env("N00N_TEST_ANTHROPIC_KEY");
     }
 
     #[test]
@@ -1116,7 +1164,7 @@ mod tests {
 
         let result = CatalogData::from_index(providers, true, &state_dir);
         // No key filter — all models pass regardless of key status
-        let vendor = result.providers.get("some-vendor").unwrap();
+        let vendor = &result.providers["some-vendor"];
         assert_eq!(vendor.models.len(), 2, "all models included");
     }
 
@@ -1165,7 +1213,7 @@ mod tests {
 
         let result = CatalogData::from_index(providers, true, &state_dir);
         // No key filter — all models pass regardless of key status
-        let opencode = result.providers.get("opencode").unwrap();
+        let opencode = &result.providers["opencode"];
         assert_eq!(opencode.models.len(), 2, "all models included");
         // Public fallback auth registered
         assert!(matches!(
@@ -1217,18 +1265,18 @@ mod tests {
             },
         );
 
-        unsafe { std::env::set_var("N00N_TEST_OPENCODE_ALL_81274", "real-key") };
+        set_env("N00N_TEST_OPENCODE_ALL_81274", "real-key");
         let result = CatalogData::from_index(providers, true, &state_dir);
 
         // With key set, has_api_key is true, so all models pass
-        let opencode = result.providers.get("opencode").unwrap();
+        let opencode = &result.providers["opencode"];
         assert!(opencode.models.contains_key("free-model"));
         assert!(opencode.models.contains_key("paid-model"));
         assert!(matches!(
             opencode.build_auth(&state_dir),
             Authentication::KeyBased(_)
         ));
-        unsafe { std::env::remove_var("N00N_TEST_OPENCODE_ALL_81274") };
+        remove_env("N00N_TEST_OPENCODE_ALL_81274");
     }
 
     fn opencode_catalog_with_free_and_paid(_env_var: &str) -> CatalogIndex {
@@ -1280,7 +1328,7 @@ mod tests {
         let result = CatalogData::from_index(index, false, &state_dir);
 
         // All models are in entries (filtering happens in all_models)
-        let opencode = result.providers.get("opencode").unwrap();
+        let opencode = &result.providers["opencode"];
         assert!(opencode.models.contains_key("free-model"));
         assert!(opencode.models.contains_key("paid-model"));
         // Provider ID is "opencode" so slug becomes "opencode" -> OpenCodeFreeKey fallback
@@ -1299,7 +1347,7 @@ mod tests {
         let result = CatalogData::from_index(index, false, &state_dir);
 
         // All models are in entries (filtering happens in all_models)
-        let opencode = result.providers.get("opencode").unwrap();
+        let opencode = &result.providers["opencode"];
         assert!(opencode.models.contains_key("free-model"));
         assert!(opencode.models.contains_key("paid-model"));
         // Provider ID is "opencode" so slug becomes "opencode" -> OpenCodeFreeKey fallback
@@ -1354,23 +1402,13 @@ mod tests {
             },
         );
 
-        unsafe { std::env::set_var("N00N_TEST_VENDOR_KEY_81274", "test-key") };
+        set_env("N00N_TEST_VENDOR_KEY_81274", "test-key");
         let result = CatalogData::from_index(providers, true, &state_dir);
-        unsafe { std::env::remove_var("N00N_TEST_VENDOR_KEY_81274") };
+        remove_env("N00N_TEST_VENDOR_KEY_81274");
 
+        assert!(result.providers["some-vendor"].models.contains_key("cheap"));
         assert!(
-            result
-                .providers
-                .get("some-vendor")
-                .unwrap()
-                .models
-                .contains_key("cheap")
-        );
-        assert!(
-            result
-                .providers
-                .get("some-vendor")
-                .unwrap()
+            result.providers["some-vendor"]
                 .models
                 .contains_key("freebie")
         );
@@ -1443,24 +1481,18 @@ mod tests {
             },
         );
 
-        unsafe { std::env::set_var("N00N_TEST_OTHER_KEY_COLLISION", "key") };
+        set_env("N00N_TEST_OTHER_KEY_COLLISION", "key");
         let result = CatalogData::from_index(providers, true, &state_dir);
-        unsafe { std::env::remove_var("N00N_TEST_OTHER_KEY_COLLISION") };
+        remove_env("N00N_TEST_OTHER_KEY_COLLISION");
 
         // Both providers' entries are preserved
         assert!(
-            result
-                .providers
-                .get("opencode")
-                .unwrap()
+            result.providers["opencode"]
                 .models
                 .contains_key("shared-model")
         );
         assert!(
-            result
-                .providers
-                .get("other-vendor")
-                .unwrap()
+            result.providers["other-vendor"]
                 .models
                 .contains_key("shared-model")
         );
@@ -1535,9 +1567,9 @@ mod tests {
             },
         );
 
-        unsafe { std::env::set_var("N00N_TEST_NVIDIA_KEY_LOOKUP", "key") };
+        set_env("N00N_TEST_NVIDIA_KEY_LOOKUP", "key");
         let data = CatalogData::from_index(providers, true, &state_dir);
-        unsafe { std::env::remove_var("N00N_TEST_NVIDIA_KEY_LOOKUP") };
+        remove_env("N00N_TEST_NVIDIA_KEY_LOOKUP");
 
         // Entry is stored as ("nvidia", "openai/gpt-oss-120b")
         let (_meta, provider_data) = data.lookup("nvidia", "openai/gpt-oss-120b").unwrap();
@@ -1576,9 +1608,9 @@ mod tests {
             },
         );
 
-        unsafe { std::env::set_var("N00N_TEST_NVIDIA_DIRECT", "key") };
+        set_env("N00N_TEST_NVIDIA_DIRECT", "key");
         let data = CatalogData::from_index(providers, true, &state_dir);
-        unsafe { std::env::remove_var("N00N_TEST_NVIDIA_DIRECT") };
+        remove_env("N00N_TEST_NVIDIA_DIRECT");
 
         // The lookup key constructed by stream_message:
         // format!("{}/{}", sub_provider, model.id)
@@ -1617,9 +1649,9 @@ mod tests {
             },
         );
 
-        unsafe { std::env::set_var("N00N_TEST_FIREWORKS_DEEP", "key") };
+        set_env("N00N_TEST_FIREWORKS_DEEP", "key");
         let data = CatalogData::from_index(providers, true, &state_dir);
-        unsafe { std::env::remove_var("N00N_TEST_FIREWORKS_DEEP") };
+        remove_env("N00N_TEST_FIREWORKS_DEEP");
 
         // stream_message constructs key as "{sub_provider}/{model.id}"
         // = "fireworks/deepseek-ai/DeepSeek-R1"
@@ -1692,6 +1724,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn catalog_all_models_public_fallback_shows_only_free() {
         let (_tmp, state_dir) = temp_state_dir();
         // Provider with OPENCODE_API_KEY in env but no key set gets "public" fallback.
@@ -1740,7 +1773,7 @@ mod tests {
         let data = CatalogData::from_index(providers, true, &state_dir);
 
         // Both models are in providers
-        let opencode = data.providers.get("opencode").unwrap();
+        let opencode = &data.providers["opencode"];
         assert_eq!(opencode.models.len(), 2);
         // But all_models only returns the free one
         let result = data.all_models();

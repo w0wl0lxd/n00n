@@ -167,7 +167,7 @@ impl OpenAi {
     pub fn new(timeouts: crate::providers::Timeouts) -> Result<Self, AgentError> {
         let storage = StateDir::resolve()?;
         let resolved = auth::resolve(&storage)?;
-        let compat = OpenAiCompatProvider::new(&CONFIG, timeouts);
+        let compat = OpenAiCompatProvider::new(&CONFIG, timeouts)?;
         Ok(Self {
             compat,
             auth: Arc::new(Mutex::new(resolved)),
@@ -180,14 +180,14 @@ impl OpenAi {
     pub(crate) fn with_auth(
         auth: Arc<Mutex<ResolvedAuth>>,
         timeouts: crate::providers::Timeouts,
-    ) -> Self {
-        Self {
-            compat: OpenAiCompatProvider::new(&CONFIG, timeouts),
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth,
             storage: None,
             system_prefix: None,
             session_state: Arc::new(Mutex::new(HashMap::new())),
-        }
+        })
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -309,7 +309,7 @@ impl Provider for OpenAi {
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
             let mut buf = String::new();
-            let system = super::super::with_prefix(&self.system_prefix, system, &mut buf);
+            let system = super::super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
 
             if is_codex_model(&model.id) {
                 let tools_hash = serde_json::to_string(tools).unwrap_or_default();

@@ -8,6 +8,7 @@ const ALLOW_ALWAYS_ID: &str = "allow_always";
 const REJECT_ONCE_ID: &str = "reject_once";
 const REJECT_ALWAYS_ID: &str = "reject_always";
 
+#[must_use]
 pub fn permission_options() -> Vec<PermissionOption> {
     vec![
         PermissionOption::new(
@@ -33,6 +34,7 @@ pub fn permission_options() -> Vec<PermissionOption> {
     ]
 }
 
+#[must_use]
 pub fn outcome_to_answer(outcome: &RequestPermissionOutcome) -> PermissionAnswer {
     match outcome {
         RequestPermissionOutcome::Cancelled => PermissionAnswer::Deny,

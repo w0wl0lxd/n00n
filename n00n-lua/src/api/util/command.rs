@@ -146,7 +146,7 @@ impl Dimension {
     pub fn resolve(self, total: u16) -> u16 {
         match self {
             Self::Abs(n) => n,
-            Self::Percent(p) => (total as u32 * p as u32 / 100) as u16,
+            Self::Percent(p) => (u32::from(total) * u32::from(p) / 100) as u16,
         }
     }
 }

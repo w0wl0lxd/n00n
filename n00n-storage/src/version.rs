@@ -24,6 +24,7 @@ pub enum VersionError {
     Json(#[from] serde_json::Error),
 }
 
+#[must_use]
 pub fn is_newer(latest: &str, current: &str) -> bool {
     let parse = |s: &str| -> Option<(u32, u32, u32)> {
         let mut it = s.split('.');
@@ -56,9 +57,13 @@ fn parse_tag(bytes: &[u8]) -> Result<String, VersionError> {
         .get("tag_name")
         .and_then(|t| t.as_str())
         .ok_or(VersionError::InvalidResponse("missing tag_name"))?;
+    #[allow(clippy::disallowed_methods)]
     Ok(tag.strip_prefix('v').unwrap_or(tag).to_owned())
 }
 
+/// # Errors
+/// Returns an error if the HTTP request fails, the server returns a non-success
+/// status, or the response cannot be parsed.
 pub fn fetch_latest() -> Result<String, VersionError> {
     let mut resp = client()?.send(request()?)?;
     if !resp.status().is_success() {
@@ -67,6 +72,9 @@ pub fn fetch_latest() -> Result<String, VersionError> {
     parse_tag(&resp.bytes()?)
 }
 
+/// # Errors
+/// Returns an error if the HTTP request fails, the server returns a non-success
+/// status, or the response cannot be parsed.
 pub async fn fetch_latest_async() -> Result<String, VersionError> {
     let mut resp = client()?.send_async(request()?).await?;
     if !resp.status().is_success() {
