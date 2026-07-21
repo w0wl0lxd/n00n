@@ -19,6 +19,7 @@ n00n-highlight = { workspace = true }
 n00n-interpreter = { workspace = true }
 n00n-lua-macro = { workspace = true }
 n00n-markdown = { workspace = true }
+n00n-arbor = { workspace = true }
 n00n-providers = { workspace = true }
 mlua = { workspace = true }
 serde = { workspace = true }

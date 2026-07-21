@@ -54,6 +54,7 @@ pub const MIN_STREAM_TIMEOUT_SECS: u64 = 10;
 
 pub const DEFAULT_BUILTINS: &[&str] = &[
     "agent_control",
+    "arbor",
     "bash",
     "batch",
     "code_execution",
