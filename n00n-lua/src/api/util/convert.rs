@@ -1,3 +1,5 @@
+#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Value};
 use serde_json::Value as JsonValue;
 
