@@ -35,6 +35,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use n00n_agent::AgentInput;
 use n00n_agent::{BufferSnapshot, ImageSource, ToolInput, ToolOutput};
 use n00n_providers::{Message, ModelTier};
+use n00n_storage::sessions::TranscriptEntry;
 use ratatui::text::{Line, Span};
 
 pub(crate) const CHEVRON: &str = "❯ ";
@@ -173,6 +174,7 @@ impl ModalScroll {
 
 pub struct LoadedSession {
     pub messages: Vec<Message>,
+    pub transcript: Vec<TranscriptEntry<Message>>,
     pub tool_outputs: HashMap<String, ToolOutput>,
     pub model_spec: String,
 }
@@ -275,9 +277,25 @@ pub enum ToolStatus {
 }
 
 #[derive(Debug, Clone)]
+pub struct CompactionDisplay {
+    pub id: String,
+    pub depth: usize,
+    pub message_count: usize,
+    pub summary: Option<String>,
+    pub entries: Vec<DisplayMessage>,
+}
+
+#[derive(Debug, Clone)]
+pub enum DisplayMetadata {
+    Compaction(CompactionDisplay),
+    CompactionPending,
+}
+
+#[derive(Debug, Clone)]
 pub struct DisplayMessage {
     pub role: DisplayRole,
     pub text: String,
+    pub metadata: Option<DisplayMetadata>,
     pub images: Vec<ImageSource>,
     pub tool_input: Option<Arc<ToolInput>>,
     pub tool_raw_input: Option<Arc<serde_json::Value>>,
@@ -299,6 +317,7 @@ impl DisplayMessage {
         Self {
             role,
             text,
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -320,6 +339,7 @@ impl DisplayMessage {
         Self {
             role,
             text,
+            metadata: None,
             images,
             tool_input: None,
             tool_raw_input: None,
@@ -341,6 +361,7 @@ impl DisplayMessage {
         Self {
             role: DisplayRole::Assistant,
             text,
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -356,6 +377,21 @@ impl DisplayMessage {
             snapshot_theme_gen: 0,
             thinking_collapsed: false,
         }
+    }
+
+    pub fn compaction(compaction: CompactionDisplay) -> Self {
+        let mut message = Self::new(DisplayRole::Assistant, String::new());
+        message.metadata = Some(DisplayMetadata::Compaction(compaction));
+        message
+    }
+
+    pub fn compaction_pending() -> Self {
+        let mut message = Self::new(
+            DisplayRole::Assistant,
+            "Auto-compacting conversation...".into(),
+        );
+        message.metadata = Some(DisplayMetadata::CompactionPending);
+        message
     }
 
     pub fn snapshot_is_stale(&self, current_gen: u64) -> bool {
