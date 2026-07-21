@@ -116,7 +116,7 @@ local function run_agent(ctx, agent, event, opts)
     ctx,
     agent.slot,
     prompt,
-    { model = opts.model, model_tier = ROLE_TIER[agent.slot], thinking = opts.thinking }
+    { model = opts.model, model_tier = ROLE_TIER[agent.slot], thinking = opts.thinking, budget = opts.budget }
   )
 end
 
@@ -126,7 +126,12 @@ local function validate_round(ctx, workers_output, opts)
     return { accepted = false, issues = { "no worker output" }, confidence = 0, diverse = false }
   end
   local artifact = table.concat(workers_output, "\n\n---\n\n")
-  return quorum.validate(ctx, artifact, { n = 3, model = opts.model, thinking = opts.thinking })
+  return quorum.validate(ctx, artifact, {
+    n = 3,
+    model = opts.model,
+    thinking = opts.thinking,
+    budget = opts.budget,
+  })
 end
 
 -- @param ctx AgentContext

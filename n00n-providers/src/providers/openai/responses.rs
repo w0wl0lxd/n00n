@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::io::{Error as IoError, ErrorKind};
 use std::time::{Duration, Instant};
 
 use flume::Sender;
@@ -123,6 +124,84 @@ pub(crate) fn convert_input(messages: &[Message]) -> Value {
     }
 
     Value::Array(input)
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct RequestDiagnostics {
+    pub(crate) input_items: usize,
+    pub(crate) request_bytes: usize,
+    pub(crate) text_items: usize,
+    pub(crate) text_bytes: usize,
+    pub(crate) tool_items: usize,
+    pub(crate) tool_bytes: usize,
+    pub(crate) image_items: usize,
+    pub(crate) image_bytes: usize,
+    pub(crate) reasoning_items: usize,
+    pub(crate) reasoning_bytes: usize,
+}
+
+impl RequestDiagnostics {
+    fn add_text(&mut self, value: &Value) {
+        self.text_items += 1;
+        self.text_bytes += serialized_len(value);
+    }
+
+    fn add_tool(&mut self, value: &Value) {
+        self.tool_items += 1;
+        self.tool_bytes += serialized_len(value);
+    }
+
+    fn add_image(&mut self, value: &Value) {
+        self.image_items += 1;
+        self.image_bytes += serialized_len(value);
+    }
+
+    fn add_reasoning(&mut self, value: &Value) {
+        self.reasoning_items += 1;
+        self.reasoning_bytes += serialized_len(value);
+    }
+}
+
+fn serialized_len(value: &Value) -> usize {
+    serde_json::to_vec(value).map_or(0, |bytes| bytes.len())
+}
+
+pub(crate) fn request_diagnostics(body: &Value) -> RequestDiagnostics {
+    let mut diagnostics = RequestDiagnostics {
+        request_bytes: serialized_len(body),
+        ..Default::default()
+    };
+    if let Some(instructions) = body.get("instructions") {
+        diagnostics.add_text(instructions);
+    }
+    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+        for tool in tools {
+            diagnostics.add_tool(tool);
+        }
+    }
+    let Some(input) = body.get("input").and_then(Value::as_array) else {
+        return diagnostics;
+    };
+    diagnostics.input_items = input.len();
+    for item in input {
+        match item.get("type").and_then(Value::as_str) {
+            Some("function_call" | "function_call_output") => diagnostics.add_tool(item),
+            Some("reasoning") => diagnostics.add_reasoning(item),
+            Some("message") => {
+                if let Some(content) = item.get("content").and_then(Value::as_array) {
+                    for block in content {
+                        if block.get("type").and_then(Value::as_str) == Some("input_image") {
+                            diagnostics.add_image(block);
+                        } else {
+                            diagnostics.add_text(block);
+                        }
+                    }
+                }
+            }
+            _ => diagnostics.add_text(item),
+        }
+    }
+    diagnostics
 }
 
 pub(crate) fn convert_tools(anthropic_tools: &Value) -> Value {
@@ -523,11 +602,20 @@ impl ResponseAccumulator {
         for acc in self.tool_accumulators.drain(..) {
             let input: Value = match serde_json::from_str(&acc.arguments) {
                 Ok(v) => {
-                    debug!(tool = %acc.name, json = %acc.arguments, "tool input JSON");
+                    debug!(
+                        tool = %acc.name,
+                        argument_bytes = acc.arguments.len(),
+                        "parsed tool input JSON"
+                    );
                     v
                 }
                 Err(e) => {
-                    warn!(error = %e, tool = %acc.name, json = %acc.arguments, "malformed tool JSON, falling back to {{}}");
+                    warn!(
+                        error = %e,
+                        tool = %acc.name,
+                        argument_bytes = acc.arguments.len(),
+                        "malformed tool JSON, falling back to {{}}"
+                    );
                     Value::Object(Default::default())
                 }
             };
@@ -598,7 +686,7 @@ pub(crate) async fn parse_sse(
 
         if current_event == "error" {
             if let Ok(ev) = serde_json::from_str::<crate::providers::SseErrorPayload>(data) {
-                warn!(error_type = %ev.error.r#type, message = %ev.error.message, "SSE error in stream");
+                warn!(error_type = %ev.error.r#type, "SSE error in stream");
                 return Err(ev.into_agent_error());
             }
             let parsed: Value = serde_json::from_str(data).unwrap_or_default();
@@ -631,10 +719,11 @@ pub(crate) async fn parse_sse(
     }
 
     if acc.stop_reason.is_none() {
-        return Err(AgentError::Api {
-            status: 422,
-            message: "Responses API stream ended without a terminal event".into(),
-        });
+        return Err(IoError::new(
+            ErrorKind::UnexpectedEof,
+            "Responses API stream ended without a terminal event",
+        )
+        .into());
     }
 
     let response_id = acc.response_id().map(ToOwned::to_owned);
@@ -652,10 +741,18 @@ fn parse_usage(u: &Value) -> TokenUsage {
         .as_u64()
         .unwrap_or(0) as u32;
 
+    let fresh_input = input_tokens
+        .saturating_sub(cached)
+        .saturating_sub(cache_write);
+    debug!(
+        fresh_input_tokens = fresh_input,
+        cache_read_tokens = cached,
+        cache_write_tokens = cache_write,
+        output_tokens,
+        "OpenAI Responses token usage"
+    );
     TokenUsage {
-        input: input_tokens
-            .saturating_sub(cached)
-            .saturating_sub(cache_write),
+        input: fresh_input,
         output: output_tokens,
         cache_read: cached,
         cache_creation: cache_write,
@@ -1319,7 +1416,10 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             let (resp, _) =
                 run_sse("event: response.output_text.delta\ndata: {\"delta\":\"partial\"}\n\n")
                     .await;
-            assert!(matches!(resp, Err(AgentError::Api { status: 422, .. })));
+            assert!(matches!(
+                resp,
+                Err(AgentError::Io(error)) if error.kind() == ErrorKind::UnexpectedEof
+            ));
         });
     }
 
@@ -1351,6 +1451,32 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
             assert_eq!(resp.usage.output, 10);
             assert_eq!(resp.usage.cache_read, 40);
         })
+    }
+
+    #[test]
+    fn request_diagnostics_count_categories_without_contents() {
+        let body = json!({
+            "instructions": "system",
+            "input": [
+                {"type":"message","content":[{"type":"input_text","text":"hello"}]},
+                {"type":"message","content":[{"type":"input_image","image_url":"data:image/png;base64,secret"}]},
+                {"type":"function_call_output","call_id":"call","output":"tool result"},
+                {"type":"reasoning","encrypted_content":"secret reasoning"}
+            ],
+            "tools": [{"type":"function","name":"read","parameters":{}}]
+        });
+
+        let diagnostics = request_diagnostics(&body);
+
+        assert_eq!(diagnostics.input_items, 4);
+        assert_eq!(diagnostics.text_items, 2);
+        assert_eq!(diagnostics.image_items, 1);
+        assert_eq!(diagnostics.tool_items, 2);
+        assert_eq!(diagnostics.reasoning_items, 1);
+        assert!(diagnostics.request_bytes > diagnostics.text_bytes);
+        assert!(diagnostics.image_bytes > 0);
+        assert!(diagnostics.tool_bytes > 0);
+        assert!(diagnostics.reasoning_bytes > 0);
     }
 
     #[test]

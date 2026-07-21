@@ -27,22 +27,8 @@ local MIN_MD_WIDTH = 20
 local DEFAULT_OUTPUT_LINES = 5
 local DEFAULT_MAX_LINE_BYTES = 500
 
-local description = [[Launch a single agent to perform tasks independently. Best combined with batch.
-
-Subagent types (set via `subagent_type`):
-- `research` (default): Read-only tools. For codebase exploration or gathering context.
-- `general`: Full tool access. For delegating implementation work.
-
-Notes:
-1. Launch multiple tasks concurrently when possible.
-2. The agent's result is not visible to the user. Summarize it in your response.
-3. Each invocation starts fresh - inline any needed context into the prompt.
-4. Tell it to return concise summaries with file:line refs, not full file contents.
-5. With `auto_tier`, the model tier is picked from the prompt (cheap work -> weak,
-   hard work -> strong). This is opt-in and off by default.
-6. Set background=true to start a non-blocking agent and receive an agent_id.
-   Use agent_control to inspect, steer, or stop it.
-]]
+local description = [[Launch one isolated agent; combine independent calls with batch.
+research (default) is read-only; general can edit. Each call starts fresh, so include context and ask for concise file:line results. Summarize returned results for the user. auto_tier is opt-in. background returns an agent_id for agent_control.]]
 
 local schema = {
   type = "object",
@@ -67,7 +53,7 @@ local schema = {
     },
     model_tier = {
       type = "string",
-      description = 'Model tier (optional, omit to use current model, capped at current tier):\n- "strong" (e.g. Opus): Deep reasoning, complex architecture, subtle bugs, most critical sections. ~5x cost of medium.\n- "medium" (e.g. Sonnet): Balanced. Refactors, features, multi-file changes.\n- "weak" (e.g. Haiku): Fast/cheap. Search, summarize, boilerplate, simple edits.',
+      description = 'Optional capped tier: "weak" for simple work, "medium" for normal changes, or "strong" for complex/critical work.',
     },
     thinking = {
       type = { "string", "integer" },
@@ -96,12 +82,12 @@ local examples = {
 }
 
 local opts = n00n.api.register_options({
-  max_concurrent = { default = 8, min = 1, desc = "Max concurrently running subagents." },
+  max_concurrent = { default = 4, min = 1, desc = "Concurrent subagents (hard max 8)." },
   auto_tier = { default = false, desc = "Route each subagent's model tier from its prompt (opt-in, off by default)." },
 })
 
 -- Process-wide cap on concurrent subagents.
-local semaphore = n00n.async.semaphore(opts.max_concurrent)
+local semaphore = n00n.async.semaphore(math.min(opts.max_concurrent, 8))
 
 local function bounded_errors(errors)
   local out = {}
