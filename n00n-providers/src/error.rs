@@ -26,6 +26,8 @@ pub enum AgentError {
     Cancelled,
     #[error("stream timed out after {secs}s of inactivity")]
     Timeout { secs: u64 },
+    #[error("request may have been accepted before the connection failed: {message}")]
+    RequestSent { message: String },
 }
 
 impl AgentError {
@@ -42,7 +44,8 @@ impl AgentError {
             | Self::Channel
             | Self::Json(_)
             | Self::Cancelled
-            | Self::HttpRequest(_) => false,
+            | Self::HttpRequest(_)
+            | Self::RequestSent { .. } => false,
         }
     }
 
@@ -80,7 +83,17 @@ impl AgentError {
                     || m.contains("maximum");
                 is_scope && is_overflow
             }
-            _ => false,
+            Self::Api { .. }
+            | Self::Config { .. }
+            | Self::Tool { .. }
+            | Self::Io(_)
+            | Self::Http(_)
+            | Self::HttpRequest(_)
+            | Self::Json(_)
+            | Self::Channel
+            | Self::Cancelled
+            | Self::Timeout { .. }
+            | Self::RequestSent { .. } => false,
         }
     }
 
@@ -113,6 +126,9 @@ impl AgentError {
             Self::Json(_) => "received an invalid response from the API".into(),
             Self::Channel => "internal error, try again".into(),
             Self::Cancelled => "cancelled".into(),
+            Self::RequestSent { .. } => {
+                "connection failed after the request was sent; not retrying to avoid duplicate output or charges".into()
+            }
         }
     }
 

@@ -4,7 +4,6 @@ use flume::Sender;
 use futures_lite::future;
 use n00n_providers::provider::Provider;
 use n00n_providers::{Message, Model, ProviderEvent, RequestOptions};
-use n00n_storage::id::SessionRef;
 use serde_json::Value;
 
 use crate::components::btw_modal::BtwEvent;
@@ -48,16 +47,7 @@ impl App {
         let (tx, rx) = flume::bounded(64);
         self.btw_modal.open(&question, rx);
 
-        let session_id = SessionRef::from(self.state.session.id);
-        smol::spawn(run_btw(
-            provider,
-            model,
-            system,
-            messages,
-            tx,
-            Some(session_id),
-        ))
-        .detach();
+        smol::spawn(run_btw(provider, model, system, messages, tx)).detach();
     }
 }
 
@@ -67,7 +57,6 @@ async fn run_btw(
     system: String,
     messages: Vec<Message>,
     btw_tx: Sender<BtwEvent>,
-    session_id: Option<SessionRef>,
 ) {
     let (event_tx, event_rx) = flume::unbounded();
     let tools = Value::Array(vec![]);
@@ -80,7 +69,7 @@ async fn run_btw(
         &tools,
         &event_tx,
         RequestOptions::default(),
-        session_id.as_ref(),
+        None,
     );
 
     let forward_fut = async {

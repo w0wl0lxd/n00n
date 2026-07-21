@@ -1,3 +1,4 @@
+use std::io::{Error as IoError, ErrorKind};
 use std::time::{Duration, Instant};
 
 use async_tungstenite::WebSocketStream;
@@ -16,6 +17,42 @@ use crate::providers::ResolvedAuth;
 use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
 
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
+const RESPONSES_WEBSOCKET_BETA: &str = "responses_websockets=2026-02-06";
+const MAX_CONNECTION_AGE: Duration = Duration::from_mins(55);
+
+type ResponsesSocket = WebSocketStream<async_tungstenite::smol::ConnectStream>;
+
+pub(crate) struct ResponsesWebSocket {
+    socket: ResponsesSocket,
+    opened_at: Instant,
+}
+
+pub(crate) struct WebSocketAttemptError {
+    pub(crate) error: AgentError,
+    pub(crate) emitted_event: bool,
+    pub(crate) transport_failure: bool,
+    pub(crate) request_sent: bool,
+}
+
+impl WebSocketAttemptError {
+    pub(crate) fn transport(error: AgentError, emitted_event: bool, request_sent: bool) -> Self {
+        Self {
+            error,
+            emitted_event,
+            transport_failure: true,
+            request_sent,
+        }
+    }
+
+    fn response(error: AgentError, emitted_event: bool) -> Self {
+        Self {
+            error,
+            emitted_event,
+            transport_failure: false,
+            request_sent: true,
+        }
+    }
+}
 
 /// Select a process-wide Rustls provider before its configuration builder
 /// attempts feature-based auto-detection.
@@ -40,6 +77,7 @@ pub(crate) fn build_request_body(
     opts: RequestOptions,
     previous_response_id: Option<&str>,
     prompt_cache_key: Option<&str>,
+    store: bool,
 ) -> Value {
     let mut body = build_body(
         model,
@@ -48,6 +86,7 @@ pub(crate) fn build_request_body(
         tools,
         previous_response_id,
         prompt_cache_key,
+        store,
     );
     if let Some(effort) = opts.thinking.effort_str(&dialect::STANDARD, model) {
         body["reasoning"]["effort"] = json!(effort);
@@ -89,59 +128,145 @@ pub(crate) async fn stream_message(
     body: &Value,
     event_tx: &Sender<ProviderEvent>,
     auth: &ResolvedAuth,
+    connect_timeout: Duration,
     stream_timeout: Duration,
-) -> Result<(Option<String>, StreamResponse), AgentError> {
-    ensure_rustls_crypto_provider();
-
-    let url = responses_websocket_url(auth.base_url.as_deref());
-    let mut request = url.into_client_request().map_err(ws_err)?;
-    for (key, value) in &auth.headers {
-        let name = key.parse::<HeaderName>().map_err(|e| AgentError::Config {
-            message: format!("invalid WebSocket header name {key}: {e}"),
-        })?;
-        let value = value
-            .parse::<HeaderValue>()
-            .map_err(|e| AgentError::Config {
-                message: format!("invalid WebSocket header value for {key}: {e}"),
-            })?;
-        request.headers_mut().insert(name, value);
-    }
-
-    let (mut ws, _) = async_tungstenite::smol::connect_async(request)
+) -> Result<(Option<String>, StreamResponse), WebSocketAttemptError> {
+    let mut connection = ResponsesWebSocket::connect(auth, connect_timeout)
         .await
-        .map_err(ws_err)?;
+        .map_err(|error| WebSocketAttemptError::transport(error, false, false))?;
+    let result = connection
+        .stream_message(body, event_tx, stream_timeout)
+        .await;
+    connection.close().await;
+    result
+}
 
-    let create_event = build_create_event(body);
-    send_json(&mut ws, &create_event).await?;
+impl ResponsesWebSocket {
+    pub(crate) async fn connect(
+        auth: &ResolvedAuth,
+        connect_timeout: Duration,
+    ) -> Result<Self, AgentError> {
+        ensure_rustls_crypto_provider();
 
-    let mut acc = ResponseAccumulator::new();
-    let mut deadline = Instant::now() + stream_timeout;
-    loop {
-        let msg = next_message(&mut ws, &mut deadline, stream_timeout).await?;
-        match msg {
-            WsMessage::Text(text) => {
-                let event: Value = serde_json::from_str(&text).map_err(AgentError::Json)?;
-                match event.get("type").and_then(Value::as_str) {
-                    Some("error") => return Err(error_from_event(&event)),
-                    Some(event_type) if acc.handle_event(event_type, &event, event_tx).await? => {
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            WsMessage::Close(_) => {
-                return Err(AgentError::Api {
-                    status: 422,
-                    message: "Responses WebSocket closed without a terminal event".into(),
-                });
-            }
-            _ => {}
+        let url = responses_websocket_url(auth.base_url.as_deref());
+        let mut request = url.into_client_request().map_err(ws_err)?;
+        request.headers_mut().insert(
+            HeaderName::from_static("openai-beta"),
+            HeaderValue::from_static(RESPONSES_WEBSOCKET_BETA),
+        );
+        for (key, value) in &auth.headers {
+            let name = key.parse::<HeaderName>().map_err(|e| AgentError::Config {
+                message: format!("invalid WebSocket header name {key}: {e}"),
+            })?;
+            let value = value
+                .parse::<HeaderValue>()
+                .map_err(|e| AgentError::Config {
+                    message: format!("invalid WebSocket header value for {key}: {e}"),
+                })?;
+            request.headers_mut().insert(name, value);
         }
+
+        let connect = async_tungstenite::smol::connect_async(request);
+        let (socket, _) =
+            futures_lite::future::or(async { connect.await.map_err(ws_err) }, async {
+                Timer::after(connect_timeout).await;
+                Err(AgentError::Timeout {
+                    secs: connect_timeout.as_secs(),
+                })
+            })
+            .await?;
+        Ok(Self {
+            socket,
+            opened_at: Instant::now(),
+        })
     }
 
-    let _ = ws.close(None).await;
-    let response_id = acc.response_id().map(ToOwned::to_owned);
-    Ok((response_id, acc.into_stream_response()))
+    pub(crate) fn is_expired(&self) -> bool {
+        self.opened_at.elapsed() >= MAX_CONNECTION_AGE
+    }
+
+    pub(crate) async fn stream_message(
+        &mut self,
+        body: &Value,
+        event_tx: &Sender<ProviderEvent>,
+        stream_timeout: Duration,
+    ) -> Result<(Option<String>, StreamResponse), WebSocketAttemptError> {
+        let create_event = build_create_event(body);
+        send_json(&mut self.socket, &create_event)
+            .await
+            .map_err(|error| WebSocketAttemptError::transport(error, false, true))?;
+
+        let mut acc = ResponseAccumulator::new();
+        let mut deadline = Instant::now() + stream_timeout;
+        loop {
+            let msg = next_message(&mut self.socket, &mut deadline, stream_timeout)
+                .await
+                .map_err(|error| {
+                    WebSocketAttemptError::transport(error, acc.emitted_event(), true)
+                })?;
+            match msg {
+                WsMessage::Text(text) => {
+                    let event: Value = serde_json::from_str(&text).map_err(|error| {
+                        WebSocketAttemptError::transport(
+                            AgentError::Json(error),
+                            acc.emitted_event(),
+                            true,
+                        )
+                    })?;
+                    match event.get("type").and_then(Value::as_str) {
+                        Some("error") => {
+                            let error = error_from_event(&event);
+                            let transport_failure = matches!(&error, AgentError::Io(_));
+                            return Err(if transport_failure {
+                                WebSocketAttemptError::transport(error, acc.emitted_event(), true)
+                            } else {
+                                WebSocketAttemptError::response(error, acc.emitted_event())
+                            });
+                        }
+                        Some(event_type)
+                            if acc
+                                .handle_event(event_type, &event, event_tx)
+                                .await
+                                .map_err(|error| {
+                                    WebSocketAttemptError::response(error, acc.emitted_event())
+                                })? =>
+                        {
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                WsMessage::Ping(payload) => {
+                    self.socket
+                        .send(WsMessage::Pong(payload))
+                        .await
+                        .map_err(ws_err)
+                        .map_err(|error| {
+                            WebSocketAttemptError::transport(error, acc.emitted_event(), true)
+                        })?;
+                }
+                WsMessage::Close(_) => {
+                    return Err(WebSocketAttemptError::transport(
+                        IoError::new(
+                            ErrorKind::ConnectionAborted,
+                            "Responses WebSocket closed without a terminal event",
+                        )
+                        .into(),
+                        acc.emitted_event(),
+                        true,
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        let response_id = acc.response_id().map(ToOwned::to_owned);
+        Ok((response_id, acc.into_stream_response()))
+    }
+
+    async fn close(&mut self) {
+        let _ = self.socket.close(None).await;
+    }
 }
 
 fn ws_err(e: WsError) -> AgentError {
@@ -198,10 +323,11 @@ where
 
     match result {
         Ok(Some(msg)) => Ok(msg),
-        Ok(None) => Err(AgentError::Api {
-            status: 500,
-            message: "websocket closed unexpectedly".into(),
-        }),
+        Ok(None) => Err(IoError::new(
+            ErrorKind::UnexpectedEof,
+            "Responses WebSocket closed unexpectedly",
+        )
+        .into()),
         Err(e) => Err(e),
     }
 }
@@ -213,11 +339,20 @@ fn error_from_event(event: &Value) -> AgentError {
         .cloned()
         .unwrap_or_default();
     let error_type = err.get("type").and_then(Value::as_str).unwrap_or("");
-    let message = err
+    let error_code = err.get("code").and_then(Value::as_str).unwrap_or("");
+    let raw_message = err
         .get("message")
         .and_then(Value::as_str)
-        .unwrap_or("websocket error")
-        .to_string();
+        .unwrap_or("websocket error");
+
+    if error_code == "websocket_connection_limit_reached" {
+        return IoError::new(ErrorKind::ConnectionAborted, raw_message).into();
+    }
+    let message = if error_code.is_empty() {
+        raw_message.to_owned()
+    } else {
+        format!("{error_code}: {raw_message}")
+    };
 
     let status = if let Some(s) = event.get("status").and_then(Value::as_u64) {
         s as u16
@@ -266,7 +401,7 @@ mod tests {
             thinking: crate::ThinkingConfig::Effort(crate::Effort::High),
             ..Default::default()
         };
-        let body = build_request_body(&model, &[], "system", &json!([]), opts, None, None);
+        let body = build_request_body(&model, &[], "system", &json!([]), opts, None, None, true);
         let event = build_create_event(&body);
         assert_eq!(
             event["reasoning"],
@@ -274,6 +409,7 @@ mod tests {
         );
         assert!(event.get("reasoning_effort").is_none());
         assert_eq!(event["type"], "response.create");
+        assert_eq!(event["store"], true);
         assert!(event.get("stream").is_none());
     }
 
@@ -363,5 +499,37 @@ mod tests {
             }
             other => panic!("expected AgentError::Api, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn error_from_event_preserves_previous_response_not_found_code() {
+        let event = json!({
+            "type": "error",
+            "status": 400,
+            "error": {
+                "code": "previous_response_not_found",
+                "message": "Previous response not found"
+            }
+        });
+        match error_from_event(&event) {
+            AgentError::Api { status, message } => {
+                assert_eq!(status, 400);
+                assert!(message.starts_with("previous_response_not_found:"));
+            }
+            other => panic!("expected AgentError::Api, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn connection_limit_error_is_retryable() {
+        let event = json!({
+            "type": "error",
+            "status": 400,
+            "error": {
+                "code": "websocket_connection_limit_reached",
+                "message": "Create a new websocket connection"
+            }
+        });
+        assert!(error_from_event(&event).is_retryable());
     }
 }
