@@ -842,7 +842,7 @@ pub struct UiConfig {
     pub show_thinking: bool,
 
     #[config(
-        default = true,
+        default = false,
         desc = "Show the n00n mascot on the idle splash screen"
     )]
     pub mascot: bool,
