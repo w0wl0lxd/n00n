@@ -2,7 +2,7 @@
 
 An AI coding agent built for minimal context-token use and a fast, transparent terminal experience.
 
-n00n is a fork of [maki](https://github.com/tontinton/maki) with its own direction: lossless [TOON](https://github.com/w0wl0lxd/tooned) re-encoding of tool-call data
+n00n is a memory safe, clippy strict rewritten fork of [maki](https://github.com/tontinton/maki) with its own direction: lossless [TOON](https://github.com/w0wl0lxd/tooned) re-encoding of tool-call data
 
 ## Why n00n
 
