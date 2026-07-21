@@ -23,7 +23,7 @@ Type a prompt and press **Enter** — the agent reads, edits, searches, and runs
 **Context efficiency first.** n00n spends tokens on the work, not on repeating your codebase back
 to the model. The `index` tool uses tree-sitter to produce a compact skeleton (imports, type defs,
 function signatures with exact line ranges) — the model reads structure first and only the lines it
-needs. For me this adds ~59 tok/turn but saves ~224 tok/turn on read calls, netting ~165 tok/turn.
+needs. 
 
 **Native Rust TUI.** No JavaScript runtime, no Electron, no 500 MB install. Immediate startup,
 smooth at 60 FPS, light on memory. Even the splash animation uses SIMD.
