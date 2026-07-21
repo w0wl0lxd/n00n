@@ -55,6 +55,7 @@ const DRAIN_BUDGET: usize = 256;
 const AGENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const DELETE_FOCUSED_ERR: &str = "cannot delete the focused session";
 const NOT_LIVE_ERR: &str = "session not live";
+static PROCESS_WARMUP: std::sync::Once = std::sync::Once::new();
 
 /// Tabs carry their in-memory sessions so `/reload` reopens them without a
 /// disk round-trip; `session_has_content` tells which ones were saved.
@@ -186,7 +187,7 @@ impl SpawnCtx {
             Arc::clone(&self.custom_commands),
             Arc::clone(&self.picker),
         );
-        app.lua_event_handle = self.lua_event_handle.clone();
+        app.lua_event_handle.clone_from(&self.lua_event_handle);
         handles.apply_to_app(&mut app);
         if resumed {
             restore_session(&mut app, &handles);
@@ -335,11 +336,11 @@ fn restore_session(app: &mut App, handles: &AgentHandles) {
         .load_session_rules(crate::app::session_state::stored_to_rules(
             &app.state.session.meta.session_rules,
         ));
-    *handles
+    (*handles
         .tool_outputs
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-        app.state.session.tool_outputs.clone();
+        .unwrap_or_else(std::sync::PoisonError::into_inner))
+    .clone_from(&app.state.session.tool_outputs);
     app.restore_display();
     for w in app.state.warnings.drain(..) {
         app.status_bar.flash(w);
@@ -371,8 +372,6 @@ impl<'t> EventLoop<'t> {
             ui_action_rx,
             lua_event_handle,
         } = params;
-
-        static PROCESS_WARMUP: std::sync::Once = std::sync::Once::new();
         PROCESS_WARMUP.call_once(|| {
             std::thread::spawn(crate::highlight::warmup);
             crate::update::spawn_check();
@@ -735,7 +734,8 @@ impl<'t> EventLoop<'t> {
             SessionRequest::List => {
                 let storage = self.ctx.storage.clone();
                 smol::unblock(move || {
-                    let cwd = std::env::current_dir().unwrap_or_else(|_| Default::default());
+                    let cwd =
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::default());
                     let reply = AppSession::list(&cwd.to_string_lossy(), &storage)
                         .map_err(|e| e.to_string())
                         .and_then(|list| serde_json::to_value(list).map_err(|e| e.to_string()));
@@ -969,7 +969,6 @@ impl<'t> EventLoop<'t> {
                 (None, None)
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => (Some(Msg::Key(key)), None),
-            Event::Key(_) => (None, None),
             Event::Paste(text) => (Some(Msg::Paste(text)), None),
             Event::Mouse(mouse) => self.translate_mouse(mouse),
             _ => (None, None),
@@ -1111,8 +1110,8 @@ impl<'t> EventLoop<'t> {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = loaded.tool_outputs;
             }
-            Action::ChangeModel(spec) => self.change_model(spec),
-            Action::RefreshProvider { slug } => self.refresh_provider(slug),
+            Action::ChangeModel(spec) => self.change_model(&spec),
+            Action::RefreshProvider { slug } => self.refresh_provider(&slug),
             Action::AssignTier(spec, tier) => {
                 n00n_providers::model_registry::set_and_persist(spec, tier, &self.ctx.storage);
             }
@@ -1178,7 +1177,7 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn change_model(&mut self, spec: String) {
+    fn change_model(&mut self, spec: &str) {
         match Model::from_spec(&spec) {
             Ok(mut new_model) => match from_model(&mut new_model, self.ctx.timeouts) {
                 Ok(new_provider) => {
@@ -1234,7 +1233,7 @@ impl<'t> EventLoop<'t> {
         .detach();
     }
 
-    fn refresh_provider(&mut self, slug: String) {
+    fn refresh_provider(&mut self, slug: &str) {
         let mut model = self.ctx.model_slot.load().model.clone();
         if model.provider.to_string() == slug {
             if let Ok(provider) =
@@ -1247,7 +1246,7 @@ impl<'t> EventLoop<'t> {
                 }));
             }
         } else if let Some(builtin) = n00n_config::providers::builtin_provider(&slug) {
-            self.change_model(builtin.default_model.to_string());
+            self.change_model(&builtin.default_model);
         }
     }
 

@@ -50,6 +50,7 @@ const MENU: &[MenuItem] = &[
 
 // 2 borders + 1 empty line + 1 hint bar
 const CHROME_LINES: u16 = 4;
+#[allow(clippy::cast_possible_truncation)]
 const FORM_HEIGHT: u16 = MENU.len() as u16 + CHROME_LINES;
 
 #[derive(Debug, PartialEq)]
@@ -287,14 +288,14 @@ mod tests {
         assert_eq!(form.selected, expected);
     }
 
-    #[test_case(0, PlanFormAction::Hide              ; "enter_at_0_refine")]
-    #[test_case(1, PlanFormAction::ClearAndImplement ; "enter_at_1")]
-    #[test_case(2, PlanFormAction::Implement          ; "enter_at_2")]
-    fn enter_dispatches(selected: usize, expected: PlanFormAction) {
+    #[test_case(0, &PlanFormAction::Hide              ; "enter_at_0_refine")]
+    #[test_case(1, &PlanFormAction::ClearAndImplement ; "enter_at_1")]
+    #[test_case(2, &PlanFormAction::Implement          ; "enter_at_2")]
+    fn enter_dispatches(selected: usize, expected: &PlanFormAction) {
         let mut form = PlanForm::new();
         form.on_plan_ready();
         form.selected = selected;
-        assert_eq!(form.handle_key(key(KeyCode::Enter)), expected);
+        assert_eq!(form.handle_key(key(KeyCode::Enter)), *expected);
     }
 
     #[test]

@@ -95,10 +95,9 @@ impl RewindPicker {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> RewindPickerAction {
         match self.picker.handle_key(key) {
-            PickerAction::Consumed => RewindPickerAction::Consumed,
             PickerAction::Select(_, entry) => RewindPickerAction::Select(entry),
             PickerAction::Close => RewindPickerAction::Close,
-            PickerAction::Toggle(..) => RewindPickerAction::Consumed,
+            PickerAction::Consumed | PickerAction::Toggle(..) => RewindPickerAction::Consumed,
         }
     }
 

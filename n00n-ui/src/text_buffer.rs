@@ -26,6 +26,7 @@ pub struct TextBuffer {
 }
 
 impl TextBuffer {
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new(input: String) -> Self {
         let lines: Vec<String> = input.split('\n').map(str::to_string).collect();
         Self {

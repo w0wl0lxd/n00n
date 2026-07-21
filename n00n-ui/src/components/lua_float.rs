@@ -577,43 +577,45 @@ fn hint_footer<K: AsRef<str>, V: AsRef<str>>(pairs: &[(K, V)]) -> Line<'static> 
 }
 
 fn resolve_rect(config: &FloatConfig, area: Rect) -> Rect {
-    let w = config.width.resolve(area.width).min(area.width);
-    let h = config.height.resolve(area.height).min(area.height);
+    let width = config.width.resolve(area.width).min(area.width);
+    let height = config.height.resolve(area.height).min(area.height);
 
-    let (x, y) = match (config.col, config.row) {
+    let (left, top) = match (config.col, config.row) {
         (None, None) => {
-            let cx = area.x + (area.width.saturating_sub(w)) / 2;
-            let cy = area.y + (area.height.saturating_sub(h)) / 2;
+            let cx = area.x + (area.width.saturating_sub(width)) / 2;
+            let cy = area.y + (area.height.saturating_sub(height)) / 2;
             (cx, cy)
         }
         (col, row) => {
-            let c = col.unwrap_or_else(|| 0);
-            let r = row.unwrap_or_else(|| 0);
+            let col_off = col.unwrap_or_else(|| 0);
+            let row_off = row.unwrap_or_else(|| 0);
 
-            let x = match config.anchor {
-                Anchor::NW | Anchor::SW => {
-                    (area.x as i16 + c).clamp(area.x as i16, (area.x + area.width) as i16) as u16
-                }
-                Anchor::NE | Anchor::SE => ((area.x + area.width) as i16 - w as i16 + c)
+            let left = match config.anchor {
+                Anchor::NW | Anchor::SW => (area.x as i16 + col_off)
+                    .clamp(area.x as i16, (area.x + area.width) as i16)
+                    as u16,
+                Anchor::NE | Anchor::SE => ((area.x + area.width) as i16 - width as i16 + col_off)
                     .clamp(area.x as i16, (area.x + area.width) as i16)
                     as u16,
             };
-            let y = match config.anchor {
-                Anchor::NW | Anchor::NE => {
-                    (area.y as i16 + r).clamp(area.y as i16, (area.y + area.height) as i16) as u16
-                }
-                Anchor::SW | Anchor::SE => ((area.y + area.height) as i16 - h as i16 + r)
+            let top = match config.anchor {
+                Anchor::NW | Anchor::NE => (area.y as i16 + row_off)
                     .clamp(area.y as i16, (area.y + area.height) as i16)
                     as u16,
+                Anchor::SW | Anchor::SE => {
+                    ((area.y + area.height) as i16 - height as i16 + row_off)
+                        .clamp(area.y as i16, (area.y + area.height) as i16)
+                        as u16
+                }
             };
-            (x, y)
+            (left, top)
         }
     };
 
-    let clamped_w = w.min(area.x + area.width - x);
-    let clamped_h = h.min(area.y + area.height - y);
+    let clamped_w = width.min(area.x + area.width - left);
+    let clamped_h = height.min(area.y + area.height - top);
 
-    Rect::new(x, y, clamped_w, clamped_h)
+    Rect::new(left, top, clamped_w, clamped_h)
 }
 
 fn adjust_scroll(
