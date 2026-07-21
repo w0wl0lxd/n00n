@@ -211,7 +211,7 @@ impl FloatManager {
         event_tx: flume::Sender<WinEvent>,
         cmd_rx: flume::Receiver<WinCommand>,
     ) {
-        let cached_lines = buf.read_if_dirty().unwrap_or_default();
+        let cached_lines = buf.read_if_dirty().unwrap_or_else(Default::default);
         let id = self.next_id;
         self.next_id += 1;
 
@@ -344,7 +344,7 @@ impl FloatManager {
     }
 
     /// The layout owns the geometry; we only fill the rect it carved.
-    /// render_window records focused_rect for the focused window alone, so a
+    /// `render_window` records `focused_rect` for the focused window alone, so a
     /// mouse click never lands on an unfocused split.
     pub fn view_split(&mut self, frame: &mut Frame, dir: Split, rect: Rect) {
         let Some(idx) = self.split_window_idx(dir) else {
@@ -587,8 +587,8 @@ fn resolve_rect(config: &FloatConfig, area: Rect) -> Rect {
             (cx, cy)
         }
         (col, row) => {
-            let c = col.unwrap_or(0);
-            let r = row.unwrap_or(0);
+            let c = col.unwrap_or_else(|| 0);
+            let r = row.unwrap_or_else(|| 0);
 
             let x = match config.anchor {
                 Anchor::NW | Anchor::SW => {
@@ -651,7 +651,9 @@ fn snapshot_to_line(sline: &SnapshotLine) -> Line<'_> {
                 {
                     Span::styled(
                         spinner_str(animation_elapsed_ms()),
-                        theme::style_by_name(n.strip_prefix(SPINNER_STYLE_PREFIX).unwrap_or(n)),
+                        theme::style_by_name(
+                            n.strip_prefix(SPINNER_STYLE_PREFIX).unwrap_or_else(|| n),
+                        ),
                     )
                 }
                 style => Span::styled(span.text.clone(), resolve_span_style(style)),
@@ -1021,7 +1023,7 @@ mod tests {
 
         cmd_tx.send(WinCommand::SetCursor(3)).unwrap();
         mgr.tick();
-        assert_eq!(mgr.windows[0].cursor, 3, "{}", EXPECT_CURSOR);
+        assert_eq!(mgr.windows[0].cursor, 3, "{EXPECT_CURSOR}");
     }
 
     #[test]
@@ -1109,7 +1111,7 @@ mod tests {
 
         buf.set_lines(vec![make_line("only")]);
         mgr.tick();
-        assert_eq!(mgr.windows[0].cursor, 0, "{}", EXPECT_CURSOR);
+        assert_eq!(mgr.windows[0].cursor, 0, "{EXPECT_CURSOR}");
     }
 
     #[test]
@@ -1229,7 +1231,7 @@ mod tests {
         mgr.tick();
 
         assert_eq!(mgr.windows[0].config.title, "Updated");
-        assert_eq!(mgr.windows[0].cursor, 3, "{}", EXPECT_CURSOR);
+        assert_eq!(mgr.windows[0].cursor, 3, "{EXPECT_CURSOR}");
     }
 
     #[test]
@@ -1549,7 +1551,7 @@ mod tests {
         let lines: Vec<String> = (0..line_count).map(|i| format!("l{i}")).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let buf = make_buf(&refs);
-        let cached_lines = buf.read_if_dirty().unwrap_or_default();
+        let cached_lines = buf.read_if_dirty().unwrap_or_else(Default::default);
         FloatWindow {
             id: 0,
             buf,

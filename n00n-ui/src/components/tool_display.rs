@@ -425,7 +425,7 @@ impl ToolLineBuilder {
         if let Some(ToolInput::Code { code, .. } | ToolInput::Script { code, .. }) = input {
             self.push_search_text(code.trim_end());
         }
-        if let Some(text) = output.and_then(|o| o.structured_display_text()) {
+        if let Some(text) = output.and_then(n00n_agent::ToolOutput::structured_display_text) {
             self.push_search_text(&text);
         }
     }
@@ -618,7 +618,7 @@ pub fn build_tool_lines(
     rctx: &RenderCtx,
     expanded: SectionFlags,
 ) -> ToolLines {
-    let tool_name = msg.role.tool_name().unwrap_or("?");
+    let tool_name = msg.role.tool_name().unwrap_or_else(|| "?");
     let (header, body) = match msg.text.split_once('\n') {
         Some((h, b)) => (h, Some(b)),
         None => (msg.text.as_str(), None),
@@ -658,7 +658,10 @@ pub fn build_tool_lines(
         // while only the script snapshot is on screen. Show the error below
         // it, unless the handler already drew it into the body.
         if matches!(status, ToolStatus::Error) {
-            let err_text = msg.tool_output.as_deref().map(|o| o.as_text());
+            let err_text = msg
+                .tool_output
+                .as_deref()
+                .map(n00n_agent::ToolOutput::as_text);
             let shown = err_text.as_deref().or(body).map_or("", str::trim);
             if !shown.is_empty() && !snapshot.text().contains(shown) {
                 let resolved = resolve_output(
@@ -689,7 +692,7 @@ pub fn build_tool_lines(
 }
 
 pub fn truncate_to_header(text: &mut String) {
-    let end = text.find('\n').unwrap_or(text.len());
+    let end = text.find('\n').unwrap_or_else(|| text.len());
     text.truncate(end);
 }
 
@@ -1681,7 +1684,7 @@ mod tests {
     fn default_span_resolves_to_theme_tool() {
         let _guard = crate::theme::THEME_TEST_LOCK
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         theme::set(theme::load_by_name("dracula").expect("dracula theme"));
         assert_eq!(
             resolve_span_style(&SpanStyle::Default),

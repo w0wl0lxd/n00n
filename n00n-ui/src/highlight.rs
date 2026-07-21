@@ -49,6 +49,7 @@ pub fn fallback_span(text: &str) -> Span<'static> {
     )
 }
 
+#[must_use]
 pub fn highlight_ansi(lang: &str, code: &str) -> String {
     let theme = theme::current();
     n00n_highlight::set_theme(theme.syntax.clone());

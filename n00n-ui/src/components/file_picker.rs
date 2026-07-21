@@ -129,12 +129,15 @@ impl FilePickerModal {
                             {
                                 return ignore::WalkState::Continue;
                             }
-                            let path = entry.path().strip_prefix(&root).unwrap_or(entry.path());
+                            let path = entry
+                                .path()
+                                .strip_prefix(&root)
+                                .unwrap_or_else(|_| entry.path());
                             let mut name = path.to_string_lossy().into_owned();
                             if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                                 name.push(std::path::MAIN_SEPARATOR);
                             }
-                            injector.push((), |_, cols| {
+                            injector.push((), |(), cols| {
                                 cols[0] = Utf32String::from(name.as_str());
                             });
                             ignore::WalkState::Continue
@@ -245,10 +248,10 @@ impl FilePickerModal {
                 reparse_pattern(s);
             }
             _ if key::SCROLL_HALF_UP.matches(key) => {
-                move_selection(s, -((s.viewport_height / 2).max(1) as isize))
+                move_selection(s, -((s.viewport_height / 2).max(1) as isize));
             }
             _ if key::SCROLL_HALF_DOWN.matches(key) => {
-                move_selection(s, (s.viewport_height / 2).max(1) as isize)
+                move_selection(s, (s.viewport_height / 2).max(1) as isize);
             }
             _ if key::SCROLL_LINE_UP.matches(key) => move_selection(s, -1),
             _ if key::SCROLL_LINE_DOWN.matches(key) => move_selection(s, 1),
@@ -471,7 +474,7 @@ fn render_search(frame: &mut Frame, area: Rect, s: &Session) {
     let cursor_byte = TextBuffer::char_to_byte(&query, s.search.x());
     let (before, rest) = query.split_at(cursor_byte);
     let mut chars = rest.chars();
-    let cursor_char = chars.next().unwrap_or(' ');
+    let cursor_char = chars.next().unwrap_or_else(|| ' ');
     let after = chars.as_str();
 
     let mut spans = vec![super::chevron_span()];
@@ -499,7 +502,7 @@ fn build_highlighted_line<'a>(
 ) -> Line<'a> {
     let base = if selected { t.item_selected } else { t.item };
     let highlight = base
-        .fg(t.accent.fg.unwrap_or_default())
+        .fg(t.accent.fg.unwrap_or_else(Default::default))
         .add_modifier(Modifier::BOLD);
 
     let mut spans = vec![Span::styled(LABEL_INDENT, base)];
@@ -508,20 +511,20 @@ fn build_highlighted_line<'a>(
     let mut width = 0usize;
 
     for (i, ch) in text.chars().enumerate() {
-        let cw = ch.width().unwrap_or(0);
+        let cw = ch.width().unwrap_or_else(|| 0);
         if width + cw > max_width {
             break;
         }
         width += cw;
 
-        let is_match = indices.binary_search(&(i as u32)).is_ok();
-        if is_match != in_match && !run.is_empty() {
+        let matched = indices.binary_search(&(i as u32)).is_ok();
+        if matched != in_match && !run.is_empty() {
             spans.push(Span::styled(
                 mem::take(&mut run),
                 if in_match { highlight } else { base },
             ));
         }
-        in_match = is_match;
+        in_match = matched;
         run.push(ch);
     }
 
@@ -574,7 +577,7 @@ mod tests {
 
     fn inject_file(picker: &FilePickerModal, path: &str) {
         let s = picker.session.as_ref().unwrap();
-        s.nucleo.injector().push((), |_, cols| {
+        s.nucleo.injector().push((), |(), cols| {
             cols[0] = Utf32String::from(path);
         });
     }
@@ -605,8 +608,9 @@ mod tests {
             "should stay hidden before debounce"
         );
 
-        picker.session.as_mut().unwrap().started_at =
-            Instant::now() - std::time::Duration::from_millis(200);
+        picker.session.as_mut().unwrap().started_at = Instant::now()
+            .checked_sub(std::time::Duration::from_millis(200))
+            .unwrap();
         picker.tick();
         assert!(
             picker.session.as_ref().unwrap().visible,

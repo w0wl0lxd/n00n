@@ -139,7 +139,7 @@ fn subagent_msg_with_run_id(
 ) -> Msg {
     Msg::Agent(Box::new(Envelope {
         event,
-        subagent: Some(subagent_info(parent_id, name.unwrap_or("Agent"))),
+        subagent: Some(subagent_info(parent_id, name.unwrap_or_else(|| "Agent"))),
         run_id,
     }))
 }
@@ -150,7 +150,7 @@ fn subagent_msg_with_prompt(
     name: Option<&str>,
     prompt: Option<&str>,
 ) -> Msg {
-    let mut info = subagent_info(parent_id, name.unwrap_or("Agent"));
+    let mut info = subagent_info(parent_id, name.unwrap_or_else(|| "Agent"));
     info.prompt = prompt.map(String::from);
     Msg::Agent(Box::new(Envelope {
         event,
@@ -421,7 +421,7 @@ fn submit_prompt_never_interprets_text(text: &str) {
     let mut app = test_app();
     match app.submit_prompt(queued_msg(text)) {
         SubmitOutcome::Started(actions) => {
-            assert!(matches!(&actions[0], Action::SendMessage(_)))
+            assert!(matches!(&actions[0], Action::SendMessage(_)));
         }
         _ => panic!("raw prompt must start the agent"),
     }
@@ -1946,9 +1946,7 @@ fn reload_leaves_empty_session_unpersisted_on_disk() {
     drain_writer(app, writer);
 
     let sessions_dir = tmp.path().join(n00n_storage::sessions::SESSIONS_DIR);
-    let entries = std::fs::read_dir(&sessions_dir)
-        .map(|d| d.count())
-        .unwrap_or(0);
+    let entries = std::fs::read_dir(&sessions_dir).map_or_else(|_| 0, std::iter::Iterator::count);
     assert_eq!(entries, 0);
 }
 
@@ -2128,12 +2126,12 @@ fn rewind_to_first_turn_clears_everything() {
 }
 
 #[test_case(Duration::ZERO,          true  ; "keeps_fresh_error")]
-#[test_case(Duration::from_secs(60), false ; "clears_stale_error")]
+#[test_case(Duration::from_mins(1), false ; "clears_stale_error")]
 fn tick_error_expiry(age: Duration, expect_error: bool) {
     let mut app = test_app();
     app.status = Status::Error {
         message: "fail".into(),
-        since: Instant::now() - age,
+        since: Instant::now().checked_sub(age).unwrap(),
     };
     app.tick_error_expiry();
     assert_eq!(matches!(app.status, Status::Error { .. }), expect_error);
@@ -2277,7 +2275,7 @@ fn app_with_steerable_subagent(id: &str) -> (App, flume::Receiver<String>) {
         )),
         run_id: 1,
     })));
-    app.active_chat = *app.chat_index.get(id).unwrap();
+    app.active_chat = app.chat_index[id];
     (app, prompt_rx)
 }
 
@@ -2315,7 +2313,7 @@ fn concurrent_children_with_one_parent_have_independent_chats_cancels_and_persis
         ["child-a", "child-b"]
     );
 
-    app.active_chat = *app.chat_index.get("child-b").unwrap();
+    app.active_chat = app.chat_index["child-b"];
     app.last_esc = Some(Instant::now());
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
@@ -2323,8 +2321,8 @@ fn concurrent_children_with_one_parent_have_independent_chats_cancels_and_persis
         &actions[..],
         [Action::CancelSubagent { tool_use_id }] if tool_use_id == "child-b"
     ));
-    assert!(!app.chats[*app.chat_index.get("child-a").unwrap()].is_finished());
-    assert!(app.chats[*app.chat_index.get("child-b").unwrap()].is_finished());
+    assert!(!app.chats[app.chat_index["child-a"]].is_finished());
+    assert!(app.chats[app.chat_index["child-b"]].is_finished());
 }
 
 #[test]
@@ -3248,8 +3246,8 @@ fn workflow_toggle_flows_into_agent_input() {
     assert_eq!(app.status_bar.flash_text(), Some(WORKFLOW_OFF_MSG));
 }
 
-/// Workflow sessions have synthetic ids that no ToolDone matches, so
-/// SubagentHistory is what finishes their chat.
+/// Workflow sessions have synthetic ids that no `ToolDone` matches, so
+/// `SubagentHistory` is what finishes their chat.
 #[test]
 fn subagent_history_finishes_workflow_chat() {
     let mut app = test_app();
@@ -3593,7 +3591,7 @@ fn multiple_subagents_cancel_one_other_unaffected() {
     ));
     assert_eq!(app.chats.len(), 3);
 
-    app.active_chat = *app.chat_index.get("task2").unwrap();
+    app.active_chat = app.chat_index["task2"];
     app.last_esc = Some(Instant::now());
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
@@ -3602,7 +3600,7 @@ fn multiple_subagents_cancel_one_other_unaffected() {
         &actions[0],
         Action::CancelSubagent { tool_use_id } if tool_use_id == "task2"
     ));
-    let task1_idx = *app.chat_index.get("task1").unwrap();
+    let task1_idx = app.chat_index["task1"];
     assert!(!app.chats[task1_idx].is_finished());
     assert!(app.chats[app.active_chat].is_finished());
 }

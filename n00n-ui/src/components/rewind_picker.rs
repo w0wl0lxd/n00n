@@ -50,7 +50,7 @@ impl RewindPicker {
                 continue;
             };
             turn_num += 1;
-            let first_line = full_text.lines().next().unwrap_or("");
+            let first_line = full_text.lines().next().unwrap_or_else(|| "");
             let preview = if first_line.len() > PREVIEW_MAX_LEN {
                 format!(
                     "{turn_num}: {}...",
@@ -113,7 +113,7 @@ impl Overlay for RewindPicker {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 

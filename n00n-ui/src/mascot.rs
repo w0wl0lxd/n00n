@@ -152,6 +152,7 @@ struct Palette {
 }
 
 impl Mascot {
+    #[must_use]
     pub fn new(enabled: bool) -> Self {
         let now = Instant::now();
         Self {
@@ -174,6 +175,7 @@ impl Mascot {
         }
     }
 
+    #[must_use]
     pub fn enabled(&self) -> bool {
         self.enabled
     }
@@ -230,7 +232,7 @@ impl Mascot {
                 self.next_blink_interval = random_blink_interval();
             }
         } else if now.saturating_duration_since(self.last_blink).as_millis()
-            >= self.next_blink_interval as u128
+            >= u128::from(self.next_blink_interval)
         {
             self.is_blinking = true;
             self.blink_start = Some(now);
@@ -319,7 +321,7 @@ impl Mascot {
                     }
                 }
 
-                let ch = char::from_u32(BRAILLE_BASE + u32::from(mask)).unwrap_or(' ');
+                let ch = char::from_u32(BRAILLE_BASE + u32::from(mask)).unwrap_or_else(|| ' ');
                 if let Some(cell) = buf.cell_mut((tx, ty)) {
                     cell.set_char(ch).set_fg(fg_color).set_bg(bg_color);
                 }
@@ -327,6 +329,7 @@ impl Mascot {
         }
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         if !self.enabled {
             return false;
@@ -611,7 +614,27 @@ fn sample(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> (Layer, f64)
         }
     }
 
-    if !blink {
+    if blink {
+        for &(cx, cy, rx, ry, layer) in &[
+            (30.0, 29.0, 5.5, 6.5, Layer::EyeWhiteLeft),
+            (50.0, 29.0, 5.5, 6.5, Layer::EyeWhiteRight),
+        ] {
+            let d = sd_ellipse(x, y, cx, cy, rx, ry);
+            if d <= 0.6 {
+                if (y - 31.0).abs() <= 0.5 {
+                    let t = (y - 31.0).abs() / 0.5;
+                    let s = aa(d, 0.6) * (1.0 - smoothstep(0.0, 1.0, t));
+                    let lash = if layer == Layer::EyeWhiteLeft {
+                        Layer::LashLeft
+                    } else {
+                        Layer::LashRight
+                    };
+                    return (lash, s);
+                }
+                return (layer, aa(d, 0.6));
+            }
+        }
+    } else {
         let mut eye_layer = Layer::None;
         let mut eye_shade = 0.0;
 
@@ -720,26 +743,6 @@ fn sample(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> (Layer, f64)
 
         if eye_layer != Layer::None {
             return (eye_layer, eye_shade);
-        }
-    } else {
-        for &(cx, cy, rx, ry, layer) in &[
-            (30.0, 29.0, 5.5, 6.5, Layer::EyeWhiteLeft),
-            (50.0, 29.0, 5.5, 6.5, Layer::EyeWhiteRight),
-        ] {
-            let d = sd_ellipse(x, y, cx, cy, rx, ry);
-            if d <= 0.6 {
-                if (y - 31.0).abs() <= 0.5 {
-                    let t = (y - 31.0).abs() / 0.5;
-                    let s = aa(d, 0.6) * (1.0 - smoothstep(0.0, 1.0, t));
-                    let lash = if layer == Layer::EyeWhiteLeft {
-                        Layer::LashLeft
-                    } else {
-                        Layer::LashRight
-                    };
-                    return (lash, s);
-                }
-                return (layer, aa(d, 0.6));
-            }
         }
     }
 
@@ -883,7 +886,7 @@ fn random_blink_interval() -> u64 {
     let mut rng = [0u8; 4];
     getrandom::fill(&mut rng).ok();
     let range = (BLINK_INTERVAL_MAX_MS - BLINK_INTERVAL_MIN_MS) as u32;
-    BLINK_INTERVAL_MIN_MS + (u32::from_le_bytes(rng) % range) as u64
+    BLINK_INTERVAL_MIN_MS + u64::from(u32::from_le_bytes(rng) % range)
 }
 
 fn extract_rgb(color: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
@@ -970,11 +973,17 @@ mod tests {
     fn blink_timing_progression() {
         let mut mascot = Mascot::new(true);
         mascot.next_blink_interval = 100;
-        mascot.last_blink = Instant::now() - Duration::from_millis(150);
+        mascot.last_blink = Instant::now()
+            .checked_sub(Duration::from_millis(150))
+            .unwrap();
         mascot.tick(Rect::new(0, 0, 80, 40));
         assert!(mascot.is_blinking);
 
-        mascot.blink_start = Some(Instant::now() - Duration::from_millis(200));
+        mascot.blink_start = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(200))
+                .unwrap(),
+        );
         mascot.tick(Rect::new(0, 0, 80, 40));
         assert!(!mascot.is_blinking);
     }
@@ -1009,7 +1018,7 @@ mod tests {
         for y in area.y..area.y + area.height {
             let mut line = String::with_capacity(area.width as usize);
             for x in area.x..area.x + area.width {
-                line.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
+                line.push(buf[(x, y)].symbol().chars().next().unwrap_or_else(|| ' '));
             }
             println!("{line}");
         }

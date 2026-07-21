@@ -211,7 +211,7 @@ impl AgentLoop {
                     message: e.to_string(),
                 })?;
             for pm in messages {
-                let text = pm.content.text.unwrap_or_default();
+                let text = pm.content.text.unwrap_or_else(Default::default);
                 let msg = match pm.role {
                     PromptRole::Assistant => Message {
                         role: n00n_providers::Role::Assistant,
@@ -377,7 +377,7 @@ impl AgentLoop {
 
 fn spawn_oauth_for_needs_auth(handle: &McpHandle) {
     let snapshot = handle.reader().load().clone();
-    for info in snapshot.infos.iter() {
+    for info in &snapshot.infos {
         let McpServerStatus::NeedsAuth { ref url } = info.status else {
             continue;
         };

@@ -77,7 +77,7 @@ impl SessionState {
                 .thinking
                 .map(Into::into)
                 .filter(|_| model.supports_thinking())
-                .unwrap_or_default(),
+                .unwrap_or_else(Default::default),
             fast: session.meta.fast && model.supports_fast(),
             workflow: session.meta.workflow,
             session,
@@ -104,7 +104,10 @@ impl SessionState {
             self.session.transcript = Vec::clone(&transcript.load());
         }
         if let Some(outputs) = shared_tool_outputs {
-            self.session.tool_outputs = outputs.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            self.session.tool_outputs = outputs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
         }
         self.session.token_usage = self.token_usage;
         self.session.meta.context_size = self.context_size;
@@ -185,18 +188,17 @@ pub(crate) fn stored_to_rules(stored: &[StoredRule]) -> Vec<n00n_config::Permiss
     stored
         .iter()
         .filter_map(|r| {
-            let tool = match migrate_stored_tool_key(&r.tool) {
-                Some(t) => t,
-                None => {
-                    if matches!(r.effect, StoredEffect::Deny) {
-                        tracing::error!(
-                            key = %r.tool,
-                            "SECURITY: stored DENY rule dropped — tool may now be accessible. \
-                             Re-add this rule manually in permissions.toml"
-                        );
-                    }
-                    return None;
+            let tool = if let Some(t) = migrate_stored_tool_key(&r.tool) {
+                t
+            } else {
+                if matches!(r.effect, StoredEffect::Deny) {
+                    tracing::error!(
+                        key = %r.tool,
+                        "SECURITY: stored DENY rule dropped — tool may now be accessible. \
+                         Re-add this rule manually in permissions.toml"
+                    );
                 }
+                return None;
             };
             let effect = match r.effect {
                 StoredEffect::Allow => Effect::Allow,

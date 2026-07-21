@@ -185,7 +185,7 @@ impl InputBox {
     }
 
     pub fn set_max_input_lines(&mut self, max: u32) {
-        self.max_input_lines = max.clamp(1, u16::MAX as u32 - 2) as u16;
+        self.max_input_lines = max.clamp(1, u32::from(u16::MAX) - 2) as u16;
     }
 
     pub fn copy_text(&self) -> String {
@@ -340,9 +340,9 @@ impl InputBox {
             let cursor_col: usize = line
                 .chars()
                 .take(self.buffer.x())
-                .map(|c| c.width().unwrap_or(1))
+                .map(|c| c.width().unwrap_or_else(|| 1))
                 .sum();
-            cursor_col.checked_div(ew).unwrap_or(0) as u16
+            cursor_col.checked_div(ew).unwrap_or_else(|| 0) as u16
         };
 
         lines_above + wrap_row
@@ -512,7 +512,10 @@ fn wrap_line(
     shell_spans: Option<&[Span<'static>]>,
 ) -> Vec<Line<'static>> {
     let chars: Vec<char> = line.chars().collect();
-    let widths: Vec<usize> = chars.iter().map(|c| c.width().unwrap_or(1)).collect();
+    let widths: Vec<usize> = chars
+        .iter()
+        .map(|c| c.width().unwrap_or_else(|| 1))
+        .collect();
     let row_width = ew.max(1);
 
     let mut row_ranges: Vec<(usize, usize)> = Vec::new();
@@ -626,7 +629,7 @@ fn overlay_cursor(spans: Vec<Span<'static>>, cursor_char_pos: usize) -> Vec<Span
             result.push(Span::styled(cursor_char.to_string(), span.style.reversed()));
             let rest: String = cs.collect();
             if !rest.is_empty() {
-                result.push(Span::styled(rest.to_string(), span.style));
+                result.push(Span::styled(rest.clone(), span.style));
             }
             cursor_placed = true;
         } else {

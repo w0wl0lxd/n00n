@@ -134,7 +134,7 @@ impl App {
         if self.task_picker.is_open() {
             self.task_picker
                 .selected_index()
-                .unwrap_or(self.active_chat)
+                .unwrap_or_else(|| self.active_chat)
         } else {
             self.active_chat
         }
@@ -302,7 +302,7 @@ impl App {
             model_id: chat
                 .model_id
                 .as_deref()
-                .unwrap_or(&self.state.session.model),
+                .unwrap_or_else(|| &self.state.session.model),
             stats: UsageStats {
                 usage: &chat.token_usage,
                 global_usage: &self.state.token_usage,

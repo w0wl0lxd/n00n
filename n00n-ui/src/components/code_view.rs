@@ -265,15 +265,14 @@ fn diff_change_spans(
         prefix,
         base.patch(theme::current().code_block),
     )];
-    match syntax {
-        Some(syn) => spans.extend(merge_syntax_with_diff(&syn, ds, base, emph)),
-        None => {
-            let full: String = ds.iter().map(|s| s.text.as_str()).collect();
-            spans.push(Span::styled(
-                n00n_highlight::normalize_text(&full),
-                base.patch(theme::current().code_block),
-            ));
-        }
+    if let Some(syn) = syntax {
+        spans.extend(merge_syntax_with_diff(&syn, ds, base, emph))
+    } else {
+        let full: String = ds.iter().map(|s| s.text.as_str()).collect();
+        spans.push(Span::styled(
+            n00n_highlight::normalize_text(&full),
+            base.patch(theme::current().code_block),
+        ));
     }
     spans
 }
@@ -285,7 +284,10 @@ fn render_grep_results(
 ) -> (Vec<Line<'static>>, bool) {
     let mut out = Vec::new();
     let mut budget = max_lines;
-    let total_matches: usize = entries.iter().map(|e| e.match_count()).sum();
+    let total_matches: usize = entries
+        .iter()
+        .map(n00n_agent::GrepFileEntry::match_count)
+        .sum();
     let mut rendered_matches: usize = 0;
 
     let global_max_nr = entries
@@ -296,7 +298,7 @@ fn render_grep_results(
                 .flat_map(|g| g.lines.iter().map(|l| l.line_nr))
         })
         .max()
-        .unwrap_or(1);
+        .unwrap_or_else(|| 1);
     let w = nr_width(global_max_nr);
     let multi = entries.len() > 1;
     let dim = theme::current().tool_dim;
@@ -555,7 +557,7 @@ fn merge_syntax_with_diff(
     let mut current_style: Option<Style> = None;
 
     for (syn_char, syn_style) in syn_iter {
-        let bg = diff_iter.next().unwrap_or(base);
+        let bg = diff_iter.next().unwrap_or_else(|| base);
         let combined = syn_style.patch(bg);
 
         if current_style == Some(combined) {
@@ -768,8 +770,10 @@ mod tests {
         assert!(texts.iter().any(|t| t.contains("a.rs")));
         assert!(texts.iter().any(|t| t.contains("b.rs")));
 
-        let gutter_width =
-            |line: &str| line.find(|c: char| c.is_alphabetic()).unwrap_or(usize::MAX);
+        let gutter_width = |line: &str| {
+            line.find(|c: char| c.is_alphabetic())
+                .unwrap_or_else(|| usize::MAX)
+        };
         let content_gutters: Vec<usize> = texts
             .iter()
             .filter(|t| !t.contains(".rs"))

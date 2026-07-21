@@ -277,7 +277,7 @@ impl MessagesPanel {
         }
         let added_height = built
             .iter()
-            .map(|seg| seg.height(self.viewport_width) as u32)
+            .map(|seg| u32::from(seg.height(self.viewport_width)))
             .sum::<u32>();
         self.cache.prepend(built, n);
         self.messages.splice(0..0, msgs);
@@ -373,7 +373,7 @@ impl MessagesPanel {
         else {
             return;
         };
-        let tool_name = msg.role.tool_name().unwrap_or("");
+        let tool_name = msg.role.tool_name().unwrap_or_else(|| "");
         truncate_to_header(&mut msg.text);
         let truncated = truncate_output(content, self.tool_output_lines.get(tool_name));
         msg.truncated_lines = truncated.skipped;
@@ -488,7 +488,7 @@ impl MessagesPanel {
             .expanded_tools
             .get(&inst_id)
             .copied()
-            .unwrap_or_default();
+            .unwrap_or_else(Default::default);
         let tl = build_instructions_lines(blocks, self.viewport_width, exp.output);
 
         if let Some(seg_idx) = self.cache.find_instructions(parent_id) {
@@ -601,7 +601,7 @@ impl MessagesPanel {
             .expanded_tools
             .get(tool_id)
             .copied()
-            .unwrap_or_default();
+            .unwrap_or_else(Default::default);
         if !seg.truncation.any() && !exp.any() {
             return false;
         }
@@ -620,7 +620,7 @@ impl MessagesPanel {
         };
         let start = self.cache.segments()[..index]
             .iter()
-            .map(|seg| seg.height(self.viewport_width) as u32)
+            .map(|seg| u32::from(seg.height(self.viewport_width)))
             .sum();
         (
             Some(start),
@@ -650,7 +650,7 @@ impl MessagesPanel {
 
     #[cfg(test)]
     pub fn last_message_text(&self) -> &str {
-        self.messages.last().map(|m| m.text.as_str()).unwrap_or("")
+        self.messages.last().map_or_else(|| "", |m| m.text.as_str())
     }
 
     #[cfg(test)]
@@ -736,9 +736,9 @@ impl MessagesPanel {
             .segments()
             .iter()
             .take(segment_index)
-            .map(|s| s.height(width) as u32)
+            .map(|s| u32::from(s.height(width)))
             .sum::<u32>()
-            .min(u16::MAX as u32) as u16;
+            .min(u32::from(u16::MAX)) as u16;
         self.scroll_top = offset.min(self.max_scroll());
         self.auto_scroll = false;
     }
@@ -753,7 +753,7 @@ impl MessagesPanel {
     }
 
     pub fn half_page(&self) -> i32 {
-        self.viewport_height as i32 / 2
+        i32::from(self.viewport_height) / 2
     }
 
     pub fn set_accent(&mut self, color: ratatui::style::Color) {
@@ -764,7 +764,7 @@ impl MessagesPanel {
         if area.height == 0 {
             return None;
         }
-        let doc_row = (row.saturating_sub(area.y)) as u32 + self.scroll_top as u32;
+        let doc_row = u32::from(row.saturating_sub(area.y)) + u32::from(self.scroll_top);
         let (index, segment, segment_start) =
             self.cache.segment_at_row(doc_row, self.viewport_width)?;
         if doc_row != segment_start
@@ -786,7 +786,7 @@ impl MessagesPanel {
         if area.height == 0 {
             return None;
         }
-        let doc_row = (row.saturating_sub(area.y)) as u32 + self.scroll_top as u32;
+        let doc_row = u32::from(row.saturating_sub(area.y)) + u32::from(self.scroll_top);
         let (_, segment, segment_start) =
             self.cache.segment_at_row(doc_row, self.viewport_width)?;
         let rel = u16::try_from(doc_row - segment_start).ok()?;
@@ -799,7 +799,7 @@ impl MessagesPanel {
         if area.height == 0 {
             return false;
         }
-        let doc_row = (row.saturating_sub(area.y)) as u32 + self.scroll_top as u32;
+        let doc_row = u32::from(row.saturating_sub(area.y)) + u32::from(self.scroll_top);
         let width = self.viewport_width;
         // Both fallbacks toggle thinking: a row past the cached segments
         // belongs to the still-streaming indicator, and a segment without a
@@ -816,7 +816,7 @@ impl MessagesPanel {
         if self.tool_in_progress(&tool_id) && self.live_bufs.contains_key(&tool_id) {
             self.auto_scroll = false;
             let buf_row = if self.has_snapshot(&tool_id) {
-                let rel = u16::try_from(doc_row - seg_start).unwrap_or(u16::MAX);
+                let rel = u16::try_from(doc_row - seg_start).unwrap_or_else(|_| u16::MAX);
                 seg.source_line_at(rel, width)
                     .map_or(0, |line| seg.buf_row(line))
             } else {
@@ -829,7 +829,7 @@ impl MessagesPanel {
         }
 
         if self.has_snapshot(&tool_id) {
-            let rel = u16::try_from(doc_row - seg_start).unwrap_or(u16::MAX);
+            let rel = u16::try_from(doc_row - seg_start).unwrap_or_else(|_| u16::MAX);
             let source_line = seg.source_line_at(rel, width);
             if source_line
                 .is_some_and(|line| !seg.is_snapshot_line(line) && seg.is_truncation_line(line))
@@ -872,7 +872,7 @@ impl MessagesPanel {
             .expanded_tools
             .get(&tool_id)
             .copied()
-            .unwrap_or_default();
+            .unwrap_or_else(Default::default);
         if !truncation.any() && !exp.any() {
             return false;
         }
@@ -1023,8 +1023,8 @@ impl MessagesPanel {
         }
 
         let cached_height = self.cache.total_height(width);
-        let streaming_sum: u32 = streaming_heights.iter().map(|&h| h as u32).sum();
-        let total_lines: u16 = (cached_height + streaming_sum).min(u16::MAX as u32) as u16;
+        let streaming_sum: u32 = streaming_heights.iter().map(|&h| u32::from(h)).sum();
+        let total_lines: u16 = (cached_height + streaming_sum).min(u32::from(u16::MAX)) as u16;
         self.last_total_lines = total_lines;
         let max_scroll = total_lines.saturating_sub(self.viewport_height);
         self.scroll_top = self.scroll_top.min(max_scroll);
@@ -1092,8 +1092,8 @@ impl MessagesPanel {
         if let Some(pp) = self.prompt_progress
             && pp.total > 0
         {
-            let ratio = pp.processed as f64 / pp.total as f64;
-            let bar_width = (width as f64 * 0.1).round() as u16;
+            let ratio = f64::from(pp.processed) / f64::from(pp.total);
+            let bar_width = (f64::from(width) * 0.1).round() as u16;
             let label = " Processing ";
             let label_width = label.len() as u16;
             let total_width = label_width + bar_width;
@@ -1106,7 +1106,7 @@ impl MessagesPanel {
                 &crate::components::progress_bar::ProgressBarConfig {
                     ratio,
                     style: theme::current().progress_bar,
-                    cache_ratio: pp.cache as f64 / pp.total as f64,
+                    cache_ratio: f64::from(pp.cache) / f64::from(pp.total),
                     cache_style: Style::new().fg(Color::Green),
                     label: Some(label),
                     label_style: Some(theme::current().tool_dim),
@@ -1288,7 +1288,11 @@ impl MessagesPanel {
                 continue;
             }
             if let Some(mut item) = crate::chat::restore_item_for(msg, tol, current_gen) {
-                item.clicks = self.lua_clicks.get(&role.id).cloned().unwrap_or_default();
+                item.clicks = self
+                    .lua_clicks
+                    .get(&role.id)
+                    .cloned()
+                    .unwrap_or_else(Default::default);
                 eh.request_restore(item, tx.clone());
                 requested.push(role.id.clone());
             }
@@ -1440,7 +1444,7 @@ impl MessagesPanel {
             return false;
         }
         let cached_height = self.cache.total_height(width);
-        let spacer = if self.cache.len() > 0 { 1 } else { 0 };
+        let spacer = u32::from(self.cache.len() > 0);
         let thinking_start = cached_height + spacer;
         let height = self.build_streaming_collapsed_lines().len() as u32;
         if doc_row >= thinking_start && doc_row < thinking_start + height {
@@ -1542,14 +1546,14 @@ impl MessagesPanel {
             .expanded_tools
             .get(tool_id)
             .copied()
-            .unwrap_or_default();
+            .unwrap_or_else(Default::default);
         let rctx = self.rctx();
         let tl = Self::build_tool_segment_lines(msg, status, &rctx, exp);
 
         let instructions = msg
             .tool_output
             .as_deref()
-            .and_then(|o| o.owned_instructions());
+            .and_then(n00n_agent::ToolOutput::owned_instructions);
 
         let seg = self.cache.get_mut(seg_idx).unwrap();
         seg.search_text = tl.search_text.clone();
@@ -1562,7 +1566,11 @@ impl MessagesPanel {
 
     fn build_segments_for_msg(&self, msg: &DisplayMessage, msg_index: usize) -> Vec<Segment> {
         if let DisplayRole::Tool(t) = &msg.role {
-            let exp = self.expanded_tools.get(&t.id).copied().unwrap_or_default();
+            let exp = self
+                .expanded_tools
+                .get(&t.id)
+                .copied()
+                .unwrap_or_else(Default::default);
             let status = t.status;
             let tl = Self::build_tool_segment_lines(msg, status, &self.rctx(), exp);
             let id = t.id.clone();
@@ -1573,7 +1581,7 @@ impl MessagesPanel {
             let blocks = msg
                 .tool_output
                 .as_deref()
-                .and_then(|o| o.owned_instructions());
+                .and_then(n00n_agent::ToolOutput::owned_instructions);
             if let Some(blocks) = blocks
                 && !blocks.is_empty()
             {
@@ -1582,9 +1590,9 @@ impl MessagesPanel {
                     .expanded_tools
                     .get(&inst_id)
                     .copied()
-                    .unwrap_or_default();
+                    .unwrap_or_else(Default::default);
                 let tl = build_instructions_lines(&blocks, self.viewport_width, exp.output);
-                let mut inst_seg = Segment::with_instructions(id.clone());
+                let mut inst_seg = Segment::with_instructions(id);
                 inst_seg.search_text = tl.search_text.clone();
                 inst_seg.apply_highlight(tl, &self.hl_worker);
                 out.push(Segment::spacer());
@@ -1641,12 +1649,12 @@ impl MessagesPanel {
             plain_lines(&msg.text, prefix, style.text_style, style.prefix_style)
         };
         if let Some(pp) = &msg.plan_path {
-            if !msg.text.is_empty() {
+            if msg.text.is_empty() {
+                lines.clear();
+            } else {
                 let rule = hr_line(self.viewport_width, theme::current().plan_rule);
                 lines.insert(0, rule.clone());
                 lines.push(rule);
-            } else {
-                lines.clear();
             }
             if !msg.text.is_empty() {
                 lines.push(Line::from(""));
@@ -1701,7 +1709,11 @@ impl MessagesPanel {
             let msg = &self.messages[i];
 
             if let DisplayRole::Tool(t) = &msg.role {
-                let exp = self.expanded_tools.get(&t.id).copied().unwrap_or_default();
+                let exp = self
+                    .expanded_tools
+                    .get(&t.id)
+                    .copied()
+                    .unwrap_or_else(Default::default);
                 let status = t.status;
                 let tl = Self::build_tool_segment_lines(msg, status, &self.rctx(), exp);
                 let id = t.id.clone();
@@ -1716,7 +1728,7 @@ impl MessagesPanel {
                 let blocks = msg
                     .tool_output
                     .as_deref()
-                    .and_then(|o| o.owned_instructions());
+                    .and_then(n00n_agent::ToolOutput::owned_instructions);
                 if let Some(blocks) = blocks {
                     let last_idx = self.cache.len().saturating_sub(1);
                     self.upsert_instruction_segment(&id, &blocks, last_idx);
@@ -1774,12 +1786,12 @@ impl MessagesPanel {
                     plain_lines(&msg.text, prefix, style.text_style, style.prefix_style)
                 };
                 if let Some(pp) = &msg.plan_path {
-                    if !msg.text.is_empty() {
+                    if msg.text.is_empty() {
+                        lines.clear();
+                    } else {
                         let rule = hr_line(self.viewport_width, theme::current().plan_rule);
                         lines.insert(0, rule.clone());
                         lines.push(rule);
-                    } else {
-                        lines.clear();
                     }
                     if !msg.text.is_empty() {
                         lines.push(Line::from(""));
