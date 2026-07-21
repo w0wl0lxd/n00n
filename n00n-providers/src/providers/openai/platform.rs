@@ -44,7 +44,7 @@ pub(crate) const PLAN_MODELS: &[&str] = &[
 
 const CODEX_PLAN_CONTEXT_WINDOW: u32 = 272_000;
 const GPT_5_6_PLAN_CONTEXT_WINDOW: u32 = 372_000;
-const SESSION_STATE_TTL: Duration = Duration::from_secs(3600);
+const SESSION_STATE_TTL: Duration = Duration::from_hours(1);
 
 #[derive(Debug)]
 struct OpenAiSessionState {
@@ -69,11 +69,14 @@ impl Default for OpenAiSessionState {
 
 fn hash_messages(messages: &[Message]) -> u64 {
     let mut hasher = DefaultHasher::new();
-    hasher.write(
-        serde_json::to_string(messages)
-            .unwrap_or_default()
-            .as_bytes(),
-    );
+    let json_str = match serde_json::to_string(messages) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "failed to hash messages, using empty string");
+            String::new()
+        }
+    };
+    hasher.write(json_str.as_bytes());
     hasher.finish()
 }
 
@@ -196,7 +199,10 @@ impl OpenAi {
     }
 
     fn current_auth(&self) -> ResolvedAuth {
-        self.auth.lock().unwrap().clone()
+        self.auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn is_oauth(&self) -> bool {
@@ -228,7 +234,10 @@ impl OpenAi {
             }
         })
         .await?;
-        *self.auth.lock().unwrap() = resolved;
+        *self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = resolved;
         debug!("refreshed OpenAI OAuth token");
         Ok(())
     }
@@ -248,19 +257,19 @@ impl OpenAi {
         result
     }
 
-    fn codex_auth(&self) -> Result<ResolvedAuth, AgentError> {
+    fn codex_auth(&self) -> ResolvedAuth {
         // Prefer OAuth tokens for the ChatGPT Coding Plan backend.
         if let Some(storage) = self.storage.as_ref()
             && let Some(tokens) = n00n_storage::auth::load_tokens(storage, auth::PROVIDER)
         {
-            return Ok(auth::build_coding_plan_resolved(&tokens));
+            return auth::build_coding_plan_resolved(&tokens);
         }
         // Fall back to standard API key via the Responses API.
         let mut auth = self.current_auth();
         if auth.base_url.is_none() {
             auth.base_url = Some(CONFIG.base_url.into());
         }
-        Ok(auth)
+        auth
     }
 
     fn prepare_request<'a>(
@@ -272,9 +281,13 @@ impl OpenAi {
         let Some(session_id) = session_id else {
             return (None, messages);
         };
-        let mut states = self.session_state.lock().unwrap();
+        let mut states = self
+            .session_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = Instant::now();
-        states.retain(|_, state| now.duration_since(state.last_used) < SESSION_STATE_TTL);
+        states
+            .retain(|_, state| now.saturating_duration_since(state.last_used) < SESSION_STATE_TTL);
         let state = states.entry(session_id.clone()).or_default();
         state.last_used = now;
         incremental_for_state(state, tools_hash, messages)
@@ -288,7 +301,10 @@ impl OpenAi {
         messages: &[Message],
     ) {
         if let Some(session_id) = session_id {
-            let mut states = self.session_state.lock().unwrap();
+            let mut states = self
+                .session_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let state = states.entry(session_id.clone()).or_default();
             state.last_used = Instant::now();
             record_in_state(state, response_id, tools_hash, messages);
@@ -312,7 +328,13 @@ impl Provider for OpenAi {
             let system = super::super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
 
             if is_codex_model(&model.id) {
-                let tools_hash = serde_json::to_string(tools).unwrap_or_default();
+                let tools_hash = match serde_json::to_string(tools) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!(error = %e, "failed to serialize tools, using empty hash");
+                        String::new()
+                    }
+                };
                 let (previous_response_id, incremental_messages) =
                     self.prepare_request(session_id, &tools_hash, messages);
                 let prompt_cache_key = session_id.map(ToString::to_string);
@@ -328,7 +350,7 @@ impl Provider for OpenAi {
                 );
                 return self
                     .with_oauth_retry(|| async {
-                        let auth = self.codex_auth()?;
+                        let auth = self.codex_auth();
                         let (response_id, response) = super::websocket::stream_message(
                             &body,
                             event_tx,
@@ -347,7 +369,7 @@ impl Provider for OpenAi {
                 messages,
                 system,
                 tools,
-                session_id.map(|s| s.as_str()),
+                session_id.map(n00n_storage::id::SessionRef::as_str),
             );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
@@ -396,7 +418,10 @@ impl Provider for OpenAi {
                 return Ok(());
             };
             let resolved = smol::unblock(move || auth::resolve(&storage)).await?;
-            *self.auth.lock().unwrap() = resolved;
+            *self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = resolved;
             debug!("reloaded OpenAI auth from storage");
             Ok(())
         })

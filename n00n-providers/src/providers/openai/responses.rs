@@ -232,6 +232,7 @@ impl ResponseAccumulator {
         self.response_id.as_deref()
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn handle_event(
         &mut self,
         event_type: &str,
@@ -266,10 +267,14 @@ impl ResponseAccumulator {
                 let item = &data["item"];
                 let output_index = data["output_index"]
                     .as_u64()
-                    .unwrap_or(self.tool_accumulators.len() as u64);
+                    .unwrap_or_else(|| self.tool_accumulators.len() as u64);
                 if item["type"].as_str() == Some("function_call") {
-                    let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
-                    let name = item["name"].as_str().unwrap_or_default().to_string();
+                    let call_id = item["call_id"]
+                        .as_str()
+                        .map_or_else(String::new, ToString::to_string);
+                    let name = item["name"]
+                        .as_str()
+                        .map_or_else(String::new, ToString::to_string);
                     if !name.is_empty() {
                         event_tx
                             .send_async(ProviderEvent::ToolUseStart {
@@ -291,7 +296,13 @@ impl ResponseAccumulator {
                 let delta: Cow<'_, str> = if let Some(s) = data["delta"].as_str() {
                     Cow::Borrowed(s)
                 } else if let Some(obj) = data["delta"].as_object() {
-                    Cow::Owned(serde_json::to_string(obj).unwrap_or_default())
+                    match serde_json::to_string(obj) {
+                        Ok(s) => Cow::Owned(s),
+                        Err(e) => {
+                            warn!(error = %e, "failed to serialize delta object, using empty string");
+                            Cow::Borrowed("")
+                        }
+                    }
                 } else {
                     Cow::Borrowed("")
                 };
@@ -317,9 +328,30 @@ impl ResponseAccumulator {
 
             "response.in_progress" => {
                 if let Some(pp) = data.get("prompt_progress") {
-                    let processed = pp["processed"].as_u64().unwrap_or(0) as u32;
-                    let total = pp["total"].as_u64().unwrap_or(0) as u32;
-                    let cache = pp["cache"].as_u64().unwrap_or(0) as u32;
+                    #[allow(clippy::manual_unwrap_or)]
+                    let processed = pp["processed"].as_u64().map_or_else(
+                        || 0,
+                        |v| match u32::try_from(v) {
+                            Ok(v) => v,
+                            Err(_) => u32::MAX,
+                        },
+                    );
+                    #[allow(clippy::manual_unwrap_or)]
+                    let total = pp["total"].as_u64().map_or_else(
+                        || 0,
+                        |v| match u32::try_from(v) {
+                            Ok(v) => v,
+                            Err(_) => u32::MAX,
+                        },
+                    );
+                    #[allow(clippy::manual_unwrap_or)]
+                    let cache = pp["cache"].as_u64().map_or_else(
+                        || 0,
+                        |v| match u32::try_from(v) {
+                            Ok(v) => v,
+                            Err(_) => u32::MAX,
+                        },
+                    );
                     event_tx
                         .send_async(ProviderEvent::PromptProgress {
                             processed,
@@ -350,12 +382,22 @@ impl ResponseAccumulator {
                         }
                     }
                 } else if item["type"].as_str() == Some("function_call") {
-                    let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
-                    let name = item["name"].as_str().unwrap_or_default().to_string();
+                    let call_id = item["call_id"]
+                        .as_str()
+                        .map_or_else(String::new, ToString::to_string);
+                    let name = item["name"]
+                        .as_str()
+                        .map_or_else(String::new, ToString::to_string);
                     let arguments = if let Some(s) = item["arguments"].as_str() {
                         s.to_string()
                     } else if let Some(obj) = item["arguments"].as_object() {
-                        serde_json::to_string(obj).unwrap_or_default()
+                        match serde_json::to_string(obj) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                warn!(error = %e, "failed to serialize arguments, using empty string");
+                                String::new()
+                            }
+                        }
                     } else {
                         String::new()
                     };
@@ -369,10 +411,10 @@ impl ResponseAccumulator {
                     if let Some(acc) = acc {
                         let should_emit_start = acc.name.is_empty() && !name.is_empty();
                         if acc.call_id.is_empty() {
-                            acc.call_id = call_id.clone();
+                            acc.call_id.clone_from(&call_id);
                         }
                         if acc.name.is_empty() {
-                            acc.name = name.clone();
+                            acc.name.clone_from(&name);
                         }
                         if !arguments.is_empty() {
                             acc.arguments = arguments;
@@ -449,7 +491,7 @@ impl ResponseAccumulator {
                     self.usage = parse_usage(u);
                 }
 
-                let status = resp["status"].as_str().unwrap_or("completed");
+                let status = resp["status"].as_str().unwrap_or_else(|| "completed");
                 self.stop_reason = Some(match status {
                     "completed" => {
                         if self.tool_accumulators.is_empty() {
@@ -476,14 +518,13 @@ impl ResponseAccumulator {
             "response.failed" => {
                 let resp = &data["response"];
                 let error = &resp["error"];
-                let message = error["message"]
-                    .as_str()
-                    .unwrap_or("response generation failed")
-                    .to_string();
-                let code = error["code"].as_str().unwrap_or("server_error");
+                let message = error["message"].as_str().map_or_else(
+                    || "response generation failed".to_string(),
+                    ToString::to_string,
+                );
+                let code = error["code"].as_str().unwrap_or_else(|| "server_error");
                 let status = match code {
                     "rate_limit_exceeded" => 429,
-                    "server_error" => 500,
                     _ => 500,
                 };
                 return Err(AgentError::Api { status, message });
@@ -588,11 +629,13 @@ pub(crate) async fn parse_sse(
                 warn!(error_type = %ev.error.r#type, message = %ev.error.message, "SSE error in stream");
                 return Err(ev.into_agent_error());
             }
-            let parsed: Value = serde_json::from_str(data).unwrap_or_default();
+            let parsed: Value = match serde_json::from_str(data) {
+                Ok(v) => v,
+                Err(_) => Value::Object(Default::default()),
+            };
             let message = parsed["message"]
                 .as_str()
-                .unwrap_or("unknown error")
-                .to_string();
+                .map_or_else(|| "unknown error".to_string(), ToString::to_string);
             return Err(AgentError::Api {
                 status: 500,
                 message,
@@ -603,7 +646,7 @@ pub(crate) async fn parse_sse(
             serde_json::from_str::<Value>(data)
                 .ok()
                 .and_then(|value| value["type"].as_str().map(ToOwned::to_owned))
-                .unwrap_or_default()
+                .unwrap_or_else(String::new)
         } else {
             current_event.clone()
         };
@@ -628,16 +671,41 @@ pub(crate) async fn parse_sse(
     Ok((response_id, acc.into_stream_response()))
 }
 
+#[allow(clippy::manual_unwrap_or)]
 fn parse_usage(u: &Value) -> TokenUsage {
-    let input_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
-    let output_tokens = u["output_tokens"].as_u64().unwrap_or(0) as u32;
+    let input_tokens = u["input_tokens"].as_u64().map_or_else(
+        || 0,
+        |v| match u32::try_from(v) {
+            Ok(v) => v,
+            Err(_) => u32::MAX,
+        },
+    );
+    let output_tokens = u["output_tokens"].as_u64().map_or_else(
+        || 0,
+        |v| match u32::try_from(v) {
+            Ok(v) => v,
+            Err(_) => u32::MAX,
+        },
+    );
 
     let cached = u["input_tokens_details"]["cached_tokens"]
         .as_u64()
-        .unwrap_or(0) as u32;
+        .map_or_else(
+            || 0,
+            |v| match u32::try_from(v) {
+                Ok(v) => v,
+                Err(_) => u32::MAX,
+            },
+        );
     let cache_write = u["input_tokens_details"]["cache_write_tokens"]
         .as_u64()
-        .unwrap_or(0) as u32;
+        .map_or_else(
+            || 0,
+            |v| match u32::try_from(v) {
+                Ok(v) => v,
+                Err(_) => u32::MAX,
+            },
+        );
 
     TokenUsage {
         input: input_tokens
@@ -655,7 +723,7 @@ mod tests {
     use futures_lite::io::Cursor;
     use serde_json::json;
 
-    const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
+    const TEST_STREAM_TIMEOUT: Duration = Duration::from_mins(5);
 
     async fn run_sse(
         sse: &str,
@@ -701,7 +769,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
                 })
                 .collect();
             assert_eq!(deltas, vec!["Hello", " world"]);
-        })
+        });
     }
 
     #[test]
@@ -743,7 +811,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
                 })
                 .collect();
             assert_eq!(starts, vec![("c1", "bash"), ("c2", "read")]);
-        })
+        });
     }
 
     #[test]
@@ -762,7 +830,7 @@ data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\
                 }
                 other => panic!("expected Api error, got: {other:?}"),
             }
-        })
+        });
     }
 
     #[test]
@@ -781,7 +849,7 @@ data: {\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"R
                 }
                 other => panic!("expected Api error, got: {other:?}"),
             }
-        })
+        });
     }
 
     #[test]
@@ -801,7 +869,7 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
             assert!(
                 matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "partial")
             );
-        })
+        });
     }
 
     #[test]
@@ -910,7 +978,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
                 })
                 .collect();
             assert_eq!(text_deltas, vec!["Hello world"]);
-        })
+        });
     }
 
     #[test]
@@ -942,7 +1010,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
                 })
                 .collect();
             assert_eq!(thinking_deltas, vec!["Summary part"]);
-        })
+        });
     }
 
     #[test]
@@ -961,7 +1029,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
 
             assert!(resp.message.content.is_empty());
             assert_eq!(resp.usage.output, 5);
-        })
+        });
     }
 
     #[test]
@@ -984,7 +1052,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"ou
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].1, "bash");
             assert_eq!(*tools[0].2, Value::Object(Default::default()));
-        })
+        });
     }
 
     // llama.cpp's /v1/responses endpoint omits output_index in SSE events
@@ -1013,7 +1081,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].1, "bash");
             assert_eq!(tools[0].2["command"], "ls");
             assert_eq!(resp.stop_reason, Some(StopReason::ToolUse));
-        })
+        });
     }
 
     #[test]
@@ -1052,7 +1120,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].2["command"], "ls");
             assert_eq!((tools[1].0, tools[1].1), ("c2", "read"));
             assert_eq!(tools[1].2["path"], "/tmp");
-        })
+        });
     }
 
     #[test]
@@ -1081,7 +1149,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].1, "glob");
             assert_eq!(tools[0].2["pattern"], "*.rs");
             assert_eq!(tools[0].2["path"], "src");
-        })
+        });
     }
 
     #[test]
@@ -1115,7 +1183,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
                 })
                 .collect();
             assert_eq!(progress, vec![(100, 1000, 50), (500, 1000, 50)]);
-        })
+        });
     }
 
     #[test]
@@ -1140,7 +1208,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].1, "read");
             assert_eq!(tools[0].2["path"], "/tmp/file.txt");
-        })
+        });
     }
 
     #[test]
@@ -1172,7 +1240,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
             assert!(
                 matches!(&resp.message.content[0], ContentBlock::Thinking { thinking, .. } if thinking == "First part\n\nSecond part")
             );
-        })
+        });
     }
 
     #[test]
@@ -1198,7 +1266,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].1, "grep");
             assert_eq!(tools[0].2["pattern"], "TODO");
             assert_eq!(tools[0].2["path"], "src");
-        })
+        });
     }
 
     #[test]
@@ -1225,7 +1293,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].2["path"], "foo.rs");
             assert_eq!(tools[0].2["old_string"], "a");
             assert_eq!(tools[0].2["new_string"], "b");
-        })
+        });
     }
 
     #[test]
@@ -1283,7 +1351,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     #[test]
     fn parse_sse_preserves_reasoning_and_tool_order() {
         smol::block_on(async {
-            let sse = "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"one\",\"summary\":[]}}\n\nevent: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"one\\\"}\"}}\n\nevent: response.output_item.done\ndata: {\"output_index\":2,\"item\":{\"id\":\"rs_2\",\"type\":\"reasoning\",\"encrypted_content\":\"two\",\"summary\":[]}}\n\n";
+            let sse = "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"one\",\"summary\":[]}}\n\nevent: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"one\\\"}\"}}\n\nevent: response.output_item.done\ndata: {\"output_index\":2,\"item\":{\"id\":\"rs_2\",\"type\":\"reasoning\",\"encrypted_content\":\"two\",\"summary\":[]}}\n\nevent: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n";
             let (resp, _) = run_sse(sse).await;
             let (_, resp) = resp.unwrap();
             assert!(
@@ -1315,7 +1383,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             let (result, _) = run_sse(sse).await;
             let (response_id, _) = result.unwrap();
             assert_eq!(response_id.as_deref(), Some("resp_1"));
-        })
+        });
     }
 
     #[test]
@@ -1335,7 +1403,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
             assert_eq!(resp.usage.input, 60);
             assert_eq!(resp.usage.output, 10);
             assert_eq!(resp.usage.cache_read, 40);
-        })
+        });
     }
 
     #[test]
