@@ -42,4 +42,24 @@ mod tests {
         let tokens = count_json(&value);
         assert!(tokens > 0, "expected positive token count for json");
     }
+
+    #[test]
+    fn counts_long_text_uses_byte_fallback() {
+        let text = "x".repeat(10_000);
+        let tokens = count_tokens(&text);
+        assert_eq!(
+            tokens, 2_500,
+            "long repeated text should use bytes/4 fallback"
+        );
+    }
+
+    #[test]
+    fn counts_large_json_uses_byte_fallback() {
+        let value = json!({"data": "x".repeat(10_000)});
+        let tokens = count_json(&value);
+        assert!(
+            tokens > 2_000,
+            "large json should produce positive token count"
+        );
+    }
 }
