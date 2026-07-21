@@ -553,9 +553,10 @@ impl<F: std::future::Future> std::future::Future for ScopedFuture<F> {
 }
 
 pub(crate) fn active_task(lua: &Lua) -> TaskHandle {
-    lua.app_data_ref::<TaskHandle>()
-        .map(|r| Arc::clone(&*r))
-        .expect("task accessor called outside a task scope")
+    lua.app_data_ref::<TaskHandle>().map_or_else(
+        || unreachable!("task accessor called outside a task scope"),
+        |r| Arc::clone(&*r),
+    )
 }
 
 pub(crate) fn with_task_jobs<R>(lua: &Lua, f: impl FnOnce(&mut JobStore) -> R) -> R {
@@ -1160,7 +1161,7 @@ impl LuaRuntime {
             };
             let Some(content) = content else { continue };
             let explicit = item.prompts.is_some();
-            for &pid in item.prompts.as_deref().unwrap_or(PromptId::ALL) {
+            for &pid in item.prompts.as_deref().unwrap_or_else(|| PromptId::ALL) {
                 if !pid.has_slot(item.slot) {
                     if explicit {
                         tracing::warn!(
@@ -1243,7 +1244,8 @@ impl LuaRuntime {
         env: &mlua::Table,
         require_root: Option<PathBuf>,
     ) -> Result<Function, mlua::Error> {
-        let lua_dir = require_root.map(|r| r.canonicalize().unwrap_or(r));
+        const NOT_LOADING: bool = false;
+        let lua_dir = require_root.map(|r| r.canonicalize().unwrap_or_else(|_| r));
         let loaded = self.lua.create_table()?;
         let loading = self.lua.create_table()?;
         let env_clone = env.clone();
@@ -1262,7 +1264,10 @@ impl LuaRuntime {
                 return Ok(cached);
             }
 
-            if loading.get::<bool>(modname.as_str()).unwrap_or(false) {
+            if loading
+                .get::<bool>(modname.as_str())
+                .unwrap_or_else(|_| NOT_LOADING)
+            {
                 return Ok(LuaValue::Boolean(true));
             }
 
@@ -1359,6 +1364,7 @@ impl LuaRuntime {
         )))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn load_source(
         &mut self,
         name: Arc<str>,
@@ -1451,7 +1457,7 @@ impl LuaRuntime {
             })
             .collect();
 
-        if let Err(e) = self.registry.replace_plugin(&name, registry_entries) {
+        if let Err(e) = self.registry.replace_plugin(&name, &registry_entries) {
             self.discard_pending(pending);
             return Err(match e {
                 RegistryError::NameConflict { name: n, .. } => PluginError::NameConflict {
@@ -1546,7 +1552,7 @@ impl LuaRuntime {
         if scopes.is_empty() {
             return None;
         }
-        let force_prompt: bool = table.get("force_prompt").unwrap_or(false);
+        let force_prompt: bool = table.get("force_prompt").unwrap_or_else(|_| false);
         Some(PermissionScopes {
             scopes,
             force_prompt,
@@ -1570,7 +1576,13 @@ impl LuaRuntime {
             Some(&config_store),
         )
         .await?;
-        Ok(config_store.lock().unwrap().take())
+        Ok(config_store
+            .lock()
+            .map_err(|e| PluginError::Lua {
+                plugin: source_name.to_string(),
+                source: mlua::Error::runtime(format!("config store poisoned: {e}")),
+            })?
+            .take())
     }
 }
 
@@ -1650,7 +1662,7 @@ async fn restore_item(lua: &Lua, plugins: &PluginMap, item: RestoreItem) -> Opti
         let plugins = plugins.borrow();
         let (pname, tk) = plugins
             .iter()
-            .find_map(|(pname, tools)| tools.get(&*item.tool).map(|tk| (pname.clone(), tk)))?;
+            .find_map(|(pname, tools)| tools.get(&*item.tool).map(|tk| (Arc::clone(pname), tk)))?;
         let key = tk.restore.as_ref()?;
         (lua.registry_value::<Function>(key).ok()?, pname)
     };
@@ -1882,7 +1894,7 @@ fn strip_traceback(err: &mlua::Error) -> String {
 /// The error message format is load-bearing: the bash plugin's `restore`
 /// parses it to re-render the timeout sentinel on session reload.
 fn timeout_reply(handle: &TaskHandle, plugin: &str, tool: &str) -> ToolCallReply {
-    let secs = lock_cell(handle).deadline_secs.get().unwrap_or(0);
+    let secs = lock_cell(handle).deadline_secs.get().unwrap_or_else(|| 0);
     let live_buf = resolve_root_buf(handle);
     let qualified = if plugin == tool || plugin.is_empty() {
         tool.to_owned()
@@ -1961,6 +1973,7 @@ async fn run_tool_start(
 /// Two layers of deadline enforcement: the watchdog interrupt catches
 /// tight CPU loops, the dispatch loop catches I/O waits.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn run_tool_call(
     lua: Lua,
     plugin: Arc<str>,
@@ -2113,6 +2126,7 @@ pub(crate) struct LuaThread {
 
 /// Lua lives on its own OS thread (no Send needed). `smol::block_on`
 /// drives async, load/clear requests wait for in-flight tools.
+#[allow(clippy::too_many_lines)]
 pub fn spawn(
     registry: Arc<ToolRegistry>,
     bundled_dirs: &'static [&'static Dir<'static>],
@@ -2159,7 +2173,7 @@ pub fn spawn(
             let spawn_rx = rt
                 .lua
                 .app_data_ref::<SpawnQueue>()
-                .expect("spawn queue installed at init")
+                .unwrap_or_else(|| unreachable!("spawn queue installed at init"))
                 .rx
                 .clone();
 
@@ -2385,7 +2399,7 @@ pub fn spawn(
                             }
                         }
                         Request::FireAutocmd { event, data } => {
-                            let data = json_to_lua(&rt.lua, &data).unwrap_or(LuaValue::Nil);
+                            let data = json_to_lua(&rt.lua, &data).unwrap_or_else(|_| LuaValue::Nil);
                             crate::api::autocmd::dispatch(&rt.lua, &event, None, data);
                             if event == TURN_END_EVENT {
                                 rt.lua.gc_collect().ok();
@@ -2548,7 +2562,7 @@ mod tests {
     fn task_scope_drop_clears_buf_handler_slots() {
         let lua = Lua::new();
         let scope = TaskScope::new(&lua, task_cell(None));
-        let handle = with_task_bufs(&lua, |store| store.create());
+        let handle = with_task_bufs(&lua, super::super::api::ui::buf::BufferStore::create);
         let shared = Arc::clone(&handle.buf);
         lua.globals()
             .set("buf", lua.create_userdata(handle.clone()).unwrap())
@@ -2637,7 +2651,7 @@ mod tests {
         smol::block_on(ex.run(async {
             let g = Rc::new(gate());
             let (release_tx, release_rx) = flume::unbounded::<()>();
-            let tasks: Vec<_> = (0..MAX_INFLIGHT_TOOLS + 1)
+            let tasks: Vec<_> = (0..=MAX_INFLIGHT_TOOLS)
                 .map(|_| {
                     let g = Rc::clone(&g);
                     let release_rx = release_rx.clone();
@@ -2693,7 +2707,7 @@ mod tests {
     }
 
     fn enqueue_dummy(lua: &Lua) -> RegistryKey {
-        let func = lua.create_function(|_, _: ()| Ok(())).unwrap();
+        let func = lua.create_function(|_, (): ()| Ok(())).unwrap();
         lua.create_registry_value(func).unwrap()
     }
 
@@ -2717,7 +2731,7 @@ mod tests {
     fn enqueue_async_task_missing_spawn_queue_errors() {
         let lua = Lua::new();
         let key = lua
-            .create_registry_value(lua.create_function(|_, _: ()| Ok(())).unwrap())
+            .create_registry_value(lua.create_function(|_, (): ()| Ok(())).unwrap())
             .unwrap();
         let err = enqueue_async_task(&lua, key).unwrap_err();
         assert!(err.to_string().contains(SPAWN_QUEUE_NOT_INIT));
@@ -2770,7 +2784,7 @@ mod tests {
     #[test]
     fn enqueue_async_task_extends_expired_parent_to_minimum_deadline() {
         let lua = enqueue_test_lua();
-        let parent_deadline = Instant::now() - Duration::from_secs(10);
+        let parent_deadline = Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
         let _h = set_active(
             &lua,
             TaskCell::new(CancelToken::none(), Some(parent_deadline), None),
@@ -2790,7 +2804,7 @@ mod tests {
     #[test]
     fn enqueue_async_task_preserves_longer_parent_deadline() {
         let lua = enqueue_test_lua();
-        let parent_deadline = Instant::now() + Duration::from_secs(600);
+        let parent_deadline = Instant::now() + Duration::from_mins(10);
         let _h = set_active(
             &lua,
             TaskCell::new(CancelToken::none(), Some(parent_deadline), None),

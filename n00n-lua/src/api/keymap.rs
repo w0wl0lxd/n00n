@@ -27,10 +27,12 @@ pub struct KeymapSnapshot {
 pub struct KeymapReader(Arc<ArcSwap<KeymapSnapshot>>);
 
 impl KeymapReader {
+    #[must_use]
     pub fn empty() -> Self {
         Self(Arc::new(ArcSwap::from_pointee(KeymapSnapshot::default())))
     }
 
+    #[must_use]
     pub fn load(&self) -> arc_swap::Guard<Arc<KeymapSnapshot>> {
         self.0.load()
     }
@@ -160,7 +162,7 @@ pub fn parse_key_notation(input: &str) -> Result<(KeyCode, KeyModifiers), String
     }
 
     if s.len() == 1 {
-        let c = s.chars().next().unwrap();
+        let c = s.chars().next().ok_or_else(|| "empty string".to_string())?;
         return Ok((KeyCode::Char(c), KeyModifiers::NONE));
     }
 
@@ -236,7 +238,11 @@ fn parse_key_name(name: &str) -> Result<KeyCode, String> {
         }
         _ => {
             if name.len() == 1 {
-                Ok(KeyCode::Char(name.chars().next().unwrap()))
+                Ok(KeyCode::Char(
+                    name.chars()
+                        .next()
+                        .ok_or_else(|| "empty string".to_string())?,
+                ))
             } else {
                 Err(format!("unknown key: {name}"))
             }
@@ -284,7 +290,7 @@ fn set(
     let desc = opts
         .as_ref()
         .and_then(|o| o.get::<String>("desc").ok())
-        .unwrap_or_default();
+        .unwrap_or_else(String::new);
     let registry_key = lua.create_registry_value(rhs)?;
     let (_, old) = lua
         .app_data_mut::<KeymapStore>()

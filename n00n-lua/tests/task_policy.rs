@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::needless_pass_by_value
+)]
+
 //! Tests the task plugin's structured-output policy end-to-end: real plugin
 //! source, real `n00n.json` / `n00n.async`, with model I/O replaced by
 //! scriptable Lua stubs.
@@ -240,7 +247,7 @@ fn answer_schema() -> Value {
     })
 }
 
-/// Four wrong-typed properties, one more than MAX_SCHEMA_ERRORS, so
+/// Four wrong-typed properties, one more than `MAX_SCHEMA_ERRORS`, so
 /// truncation in `bounded_errors` is observable.
 fn multi_error_schema() -> Value {
     json!({

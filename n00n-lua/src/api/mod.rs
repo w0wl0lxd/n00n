@@ -1,3 +1,9 @@
+// mlua-bound API functions take owned values (String/Arc<str>) and return
+// mlua::Result because the #[lua_fn] macro/from-Lua conversion requires it.
+// These two pedantic lints fire on that generated boundary, so silence them
+// for the whole API surface.
+#![allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
+
 pub(crate) mod agent;
 pub(crate) mod arbor;
 pub(crate) mod r#async;

@@ -26,13 +26,13 @@ fn compact_path(path: &Path, base_path: &Path) -> String {
 
     if let Ok(stripped) = path.strip_prefix(base_path) {
         path_string = format!(".{}{}", std::path::MAIN_SEPARATOR, stripped.display());
-    };
+    }
     if !path_string.starts_with('.')
         && let Some(home) = n00n_storage::paths::home()
         && let Ok(stripped) = path.strip_prefix(&home)
     {
         path_string = format!("~{}{}", std::path::MAIN_SEPARATOR, stripped.display());
-    };
+    }
 
     path_string
 }
@@ -45,6 +45,7 @@ pub struct McpConfigErrors {
 }
 
 impl McpConfigErrors {
+    #[must_use]
     pub fn new(working_directory: PathBuf) -> Self {
         McpConfigErrors {
             errors: Vec::new(),
@@ -56,6 +57,7 @@ impl McpConfigErrors {
         self.errors.push(e);
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.errors.is_empty()
     }
@@ -76,14 +78,14 @@ impl std::fmt::Display for McpConfigErrors {
                 }
             });
         if let Some(first) = shown.next() {
-            write!(f, "{}", first)?;
+            write!(f, "{first}")?;
             for rest in shown {
-                write!(f, "; {}", rest)?;
+                write!(f, "; {rest}")?;
             }
         }
         let hidden = self.errors.len().saturating_sub(2);
         if hidden > 0 {
-            write!(f, "; ... ({} more)", hidden)?;
+            write!(f, "; ... ({hidden} more)")?;
         }
         Ok(())
     }
@@ -107,6 +109,7 @@ pub enum McpServerStatus {
 }
 
 impl McpServerStatus {
+    #[must_use]
     pub fn is_active(&self) -> bool {
         matches!(self, Self::Running | Self::Connecting)
     }
@@ -185,10 +188,12 @@ pub enum Transport {
 pub(super) use n00n_config::is_valid_wire_name as is_valid_tool_name;
 
 impl McpConfig {
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.mcp.is_empty()
     }
 
+    #[must_use]
     pub fn preliminary_infos(&self, disabled: &[String]) -> Vec<McpServerInfo> {
         self.mcp
             .iter()
@@ -204,10 +209,10 @@ impl McpConfig {
                     tool_count: 0,
                     prompt_count: 0,
                     status,
-                    config_path: self.origins.get(name).cloned().unwrap_or_default(),
+                    config_path: self.origins.get(name).cloned().unwrap_or_else(PathBuf::new),
                     url: match &raw.transport {
                         RawTransport::Http(h) => Some(h.url.clone()),
-                        _ => None,
+                        RawTransport::Stdio(_) => None,
                     },
                 }
             })
@@ -215,6 +220,11 @@ impl McpConfig {
     }
 }
 
+/// Parses a raw server configuration into a validated server config.
+///
+/// # Errors
+/// Returns an error if the server name is invalid, conflicts with built-in tools,
+/// has an invalid timeout, or has an invalid transport configuration.
 pub fn parse_server(name: String, server: RawServerConfig) -> Result<ServerConfig, McpError> {
     if !is_valid_server_name(&name) {
         return Err(McpError::Config(format!(
@@ -262,6 +272,7 @@ pub fn parse_server(name: String, server: RawServerConfig) -> Result<ServerConfi
     })
 }
 
+#[must_use]
 pub fn transport_kind(raw: &RawTransport) -> &'static str {
     match raw {
         RawTransport::Stdio(_) => "stdio",
@@ -313,12 +324,16 @@ pub fn load_config(cwd: &Path) -> (McpConfig, McpConfigErrors) {
     (merged, errors)
 }
 
+/// Persists the enabled/disabled state of an MCP server to the config file.
+///
+/// # Errors
+/// Returns an error if the config file cannot be read, parsed, or written.
 pub fn persist_enabled(
     config_path: &Path,
     server_name: &str,
     enabled: bool,
 ) -> Result<(), McpError> {
-    let content = fs::read_to_string(config_path).unwrap_or_default();
+    let content = fs::read_to_string(config_path).unwrap_or_else(|_| String::new());
     let mut doc: DocumentMut = content
         .parse()
         .map_err(|e| McpError::Config(format!("failed to parse {}: {e}", config_path.display())))?;
@@ -372,7 +387,7 @@ fn read_config(path: &Path) -> Result<Option<McpConfig>, McpConfigError> {
             tracing::warn!(
                 path = %path.display(),
                 error = %e,
-                "failed to parse mcp config")
+                "failed to parse mcp config");
         })
         .map_err(|e| McpConfigError::Parse {
             path: path.into(),
@@ -391,7 +406,7 @@ mod tests {
             enabled: true,
             timeout: DEFAULT_TIMEOUT_MS,
             transport: RawTransport::Stdio(RawStdioFields {
-                command: cmd.iter().map(|s| s.to_string()).collect(),
+                command: cmd.iter().map(std::string::ToString::to_string).collect(),
                 environment: HashMap::new(),
             }),
         }
@@ -434,7 +449,7 @@ mod tests {
                 assert_eq!(program, "npx");
                 assert_eq!(args, &["-y", "server"]);
             }
-            _ => panic!("expected Stdio"),
+            Transport::Http { .. } => panic!("expected Stdio"),
         }
     }
 
@@ -467,7 +482,7 @@ headers = { Authorization = "Bearer tok123" }
         assert_eq!(gh_cfg.timeout, 10000);
         match &gh_cfg.transport {
             RawTransport::Stdio(s) => assert_eq!(s.environment["GITHUB_TOKEN"], "tok"),
-            _ => panic!("expected Stdio"),
+            RawTransport::Http(_) => panic!("expected Stdio"),
         }
 
         match &config.mcp["remote"].transport {
@@ -475,7 +490,7 @@ headers = { Authorization = "Bearer tok123" }
                 assert_eq!(h.url, "https://mcp.example.com/mcp");
                 assert_eq!(h.headers["Authorization"], "Bearer tok123");
             }
-            _ => panic!("expected Http"),
+            RawTransport::Stdio(_) => panic!("expected Http"),
         }
     }
 
@@ -524,7 +539,7 @@ command = ["project"]
         assert_eq!(all.len(), 1);
         match &all[0].transport {
             Transport::Stdio { program, .. } => assert_eq!(program, "project"),
-            _ => panic!("expected Stdio"),
+            Transport::Http { .. } => panic!("expected Stdio"),
         }
     }
 

@@ -93,8 +93,7 @@ pub struct OptionSpec {
 
 pub(crate) fn collect_plugin_options(lua: &Lua) -> PluginOptionSpecs {
     lua.app_data_ref::<PluginOptionSpecs>()
-        .map(|store| store.clone())
-        .unwrap_or_default()
+        .map_or_else(PluginOptionSpecs::default, |store| store.clone())
 }
 
 fn spec_error(name: &str, msg: &str) -> mlua::Error {
@@ -151,7 +150,8 @@ fn parse_spec(name: &str, spec: &Table) -> LuaResult<OptionSpec> {
             )
         })?,
         None => match &default {
-            Some(d) => OptionType::of_json(d).expect("default_to_json only keeps scalar types"),
+            Some(d) => OptionType::of_json(d)
+                .ok_or_else(|| spec_error(name, "default value does not map to a valid type"))?,
             None => {
                 return Err(spec_error(
                     name,

@@ -113,22 +113,21 @@ fn extract_request_params(url: &str, opts: Option<&Table>) -> Result<RequestPara
 
     let body = opts
         .and_then(|o| o.get::<String>("body").ok())
-        .map(std::string::String::into_bytes)
-        .unwrap_or_default();
+        .map_or_else(Vec::new, std::string::String::into_bytes);
 
     let timeout = Duration::from_secs(
         opts.and_then(|o| o.get::<u64>("timeout").ok())
-            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .unwrap_or_else(|| DEFAULT_TIMEOUT_SECS)
             .min(MAX_TIMEOUT_SECS),
     );
 
     let max_bytes = opts
         .and_then(|o| o.get::<usize>("max_bytes").ok())
-        .unwrap_or(DEFAULT_MAX_BYTES);
+        .unwrap_or_else(|| DEFAULT_MAX_BYTES);
 
     let retries = opts
         .and_then(|o| o.get::<u32>("retry").ok())
-        .unwrap_or(MAX_RETRIES);
+        .unwrap_or_else(|| MAX_RETRIES);
 
     Ok(RequestParams {
         url,
@@ -221,7 +220,7 @@ async fn do_request(params: RequestParams) -> Result<ResponseData, String> {
         .headers()
         .get("content-type")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
+        .unwrap_or_else(|| "")
         .to_string();
 
     if let Some(len) = response
@@ -365,7 +364,7 @@ mod tests {
         }
     }
 
-    #[test_case(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), true ; "v4_unspecified")]
+    #[test_case(IpAddr::V4(Ipv4Addr::UNSPECIFIED), true ; "v4_unspecified")]
     #[test_case(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)), true ; "v4_rfc1918_class_b")]
     #[test_case(IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255)), true ; "v4_rfc1918_class_b_upper")]
     #[test_case(IpAddr::V4(Ipv4Addr::new(172, 32, 0, 1)), false ; "v4_172_32_is_public")]
