@@ -10,7 +10,7 @@ re-encoding of tool-call data, and an ACP server for editor integrations.
 
 ```sh
 cargo install --locked --git https://github.com/w0wl0lxd/n00n.git n00n
-export ANTHROPIC_API_KEY=sk-...
+
 cd your-project && n00n
 ```
 
