@@ -206,8 +206,10 @@ fn humantime(_lua: &Lua, secs: u64) -> LuaResult<String> {
 /// local half_width = math.floor(size.cols / 2)
 #[lua_fn]
 fn terminal_size(lua: &Lua) -> LuaResult<Table> {
-    let (cols, rows) = crossterm::terminal::size()
-        .map_err(|e| mlua::Error::runtime(format!("failed to get terminal size: {e}")))?;
+    let (cols, rows) = crossterm::terminal::size().unwrap_or_else(|error| {
+        tracing::debug!(%error, "terminal size unavailable; returning default");
+        DEFAULT_TERM_SIZE
+    });
     let tbl = lua.create_table()?;
     tbl.set("cols", cols)?;
     tbl.set("rows", rows)?;

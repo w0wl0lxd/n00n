@@ -113,7 +113,7 @@ impl Overlay for RewindPicker {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 

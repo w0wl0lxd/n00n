@@ -55,11 +55,11 @@ Requires the codegraph CLI and a .codegraph/ index in the project root.]],
 
   schema = {
     type = "object",
+    required = { "query" },
     properties = {
       query = {
         type = "string",
         description = "Natural language question or symbol/file names to explore (e.g. 'AuthService login', 'GraphTraverser BFS impact')",
-        required = true,
       },
       projectPath = { type = "string", description = "Absolute path to the project (defaults to current workspace)" },
     },
@@ -101,7 +101,7 @@ Requires the codegraph CLI and a .codegraph/ index in the project root.]],
 
     local max_lines, max_bytes = output_limits.resolve(opts, ctx)
 
-    local id = n00n.fn.jobstart("codegraph explore " .. shell_quote(input.query) .. " " .. shell_quote(project_path))
+    local id = n00n.fn.jobstart("codegraph explore -- " .. shell_quote(input.query) .. " " .. shell_quote(project_path))
     local result = n00n.fn.jobwait(id, CG_TIMEOUT_SECS * 1000)
 
     if not result then

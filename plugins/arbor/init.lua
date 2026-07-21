@@ -9,7 +9,7 @@ local function format_list(items)
   return table.concat(lines, "\n")
 end
 
-local function dispatch(input, ctx)
+local function dispatch(input)
   local command = input.command
   local project = input.project or "."
   local symbol = input.symbol
@@ -31,7 +31,8 @@ local function dispatch(input, ctx)
   end
 
   if command == "map" then
-    local entries = n00n_arbor.map(project, input.token_budget)
+    local token_budget = input.token_budget or 1024
+    local entries = n00n_arbor.map(project, token_budget)
     local lines = {}
     for _, entry in ipairs(entries) do
       table.insert(lines, entry.file)
@@ -101,11 +102,14 @@ two symbols.]],
       token_budget = { type = "integer", default = 1024 },
     },
   },
-  handler = function(input, ctx)
+  handler = function(input, _ctx)
     local ok, err = pcall(n00n_arbor.check_binary)
-    if not ok or not err then
-      return { llm_output = "Arbor CLI not found. Install it with: cargo install arbor-graph-cli", is_error = true }
+    if not ok then
+      return {
+        llm_output = "Arbor CLI not found. Install it with: cargo install arbor-graph-cli: " .. tostring(err),
+        is_error = true,
+      }
     end
-    return dispatch(input, ctx)
+    return dispatch(input)
   end,
 })

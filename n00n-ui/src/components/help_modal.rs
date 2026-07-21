@@ -228,7 +228,7 @@ impl Overlay for HelpModal {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 

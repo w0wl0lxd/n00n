@@ -995,7 +995,7 @@ impl ToolOutputLines {
             "workflow" => self.workflow,
             "index" => self.index,
             "grep" | "glob" => self.grep,
-            "codegraph" | "explore" => self.explore,
+            "arbor" | "codegraph" | "explore" => self.explore,
             "read" => self.read,
             "memory" => self.write,
             name if FILE_WRITE_TOOLS.contains(&name) => self.write,
