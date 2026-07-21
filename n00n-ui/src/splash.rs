@@ -55,7 +55,7 @@ const PI: f32 = std::f32::consts::PI;
 const FRAC_PI_2: f32 = std::f32::consts::FRAC_PI_2;
 const BHASKARA_B: f32 = 4.0 / (PI * PI);
 
-#[inline(always)]
+#[inline]
 fn fast_sin(x: f32) -> f32 {
     let x = x - (x * INV_TAU).floor() * TAU;
     let (x, sign) = if x > PI { (x - PI, -1.0_f32) } else { (x, 1.0) };
@@ -63,7 +63,7 @@ fn fast_sin(x: f32) -> f32 {
     sign * (4.0 * raw) / (5.0 - raw)
 }
 
-#[inline(always)]
+#[inline]
 fn fast_sincos(x: f32) -> (f32, f32) {
     (fast_sin(x), fast_sin(x + FRAC_PI_2))
 }
@@ -194,6 +194,7 @@ impl Splash {
         render_version(area, buf, fade, version_y, new_version);
     }
 
+    #[allow(clippy::many_single_char_names)]
     fn render_field(&self, area: Rect, buf: &mut Buffer, t: f32, fade: f32, accent: Color) {
         let theme = theme::current();
         let (ac_r, ac_g, ac_b) = extract_rgb(accent, (100, 140, 255));

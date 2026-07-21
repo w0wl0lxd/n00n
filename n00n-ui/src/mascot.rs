@@ -202,7 +202,7 @@ impl Mascot {
             % std::f32::consts::TAU;
 
         if let (Some(col), Some(row)) = (self.mouse_col, self.mouse_row) {
-            let (tx, ty) = self.compute_target_gaze(col, row, area);
+            let (tx, ty) = Self::compute_target_gaze(col, row, area);
             if (tx - self.target_gaze_x).abs() > 1e-3 || (ty - self.target_gaze_y).abs() > 1e-3 {
                 self.target_gaze_x = tx;
                 self.target_gaze_y = ty;
@@ -239,7 +239,7 @@ impl Mascot {
         }
     }
 
-    fn compute_target_gaze(&self, col: u16, row: u16, area: Rect) -> (f64, f64) {
+    fn compute_target_gaze(col: u16, row: u16, area: Rect) -> (f64, f64) {
         let scale = (f64::from(area.width) / BASE_WIDTH).min(f64::from(area.height) / BASE_HEIGHT);
         let center_x = f64::from(area.x) + f64::from(area.width) / 2.0;
         let center_y = f64::from(area.y) + f64::from(area.height) / 2.0;
@@ -531,23 +531,17 @@ fn shadow_factor(role: Role) -> f32 {
     match role {
         Role::Background => 0.0,
         Role::Highlight => 0.1,
-        Role::Teeth => 0.15,
-        Role::EyeWhite => 0.15,
+        Role::Teeth | Role::EyeWhite => 0.15,
         Role::Lash => 0.2,
-        Role::Blush => 0.25,
-        Role::Nose => 0.25,
-        Role::Pupil => 0.25,
+        Role::Blush | Role::Nose | Role::Pupil => 0.25,
         Role::Ribbon => 0.3,
-        Role::Skin => 0.35,
-        Role::Brow => 0.35,
-        Role::Mouth => 0.35,
+        Role::Skin | Role::Brow | Role::Mouth => 0.35,
         Role::Collar => 0.4,
-        Role::Hair => 0.45,
-        Role::Eye => 0.45,
+        Role::Hair | Role::Eye => 0.45,
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)]
 fn sample(x: f64, y: f64, gaze_x: f64, gaze_y: f64, blink: bool) -> (Layer, f64) {
     if !(MASCOT_MIN_X..=MASCOT_MAX_X).contains(&x) || !(MASCOT_MIN_Y..=MASCOT_MAX_Y).contains(&y) {
         return (Layer::None, 0.0);

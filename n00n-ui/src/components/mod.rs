@@ -222,7 +222,7 @@ pub enum ExitRequest {
 }
 
 impl ExitRequest {
-    pub fn code(&self) -> i32 {
+    pub fn code(self) -> i32 {
         match self {
             Self::None | Self::Success | Self::Reload => 0,
             Self::Error => 1,
