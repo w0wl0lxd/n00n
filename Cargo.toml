@@ -139,6 +139,7 @@ arboard = { version = "3", default-features = false, features = [
   "wayland-data-control",
 ] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 flume = { version = "0.11", default-features = false, features = [
   "async",
   "select",

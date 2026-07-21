@@ -1,8 +1,15 @@
 use std::time::Instant;
 
+use image::{DynamicImage, Rgba, RgbaImage};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::layout::Size;
 use ratatui::style::Color;
+use ratatui::widgets::Widget;
+use ratatui_image::{
+    Image, Resize,
+    picker::{Picker, ProtocolType},
+};
 
 use crate::theme::{Theme, lerp_u8};
 
@@ -82,6 +89,12 @@ pub struct Mascot {
     blink_start: Option<Instant>,
     breathe_phase: f32,
     last_tick: Instant,
+    picker: Option<Picker>,
+    picker_initialized: bool,
+    base_image: Option<RgbaImage>,
+    last_area: Option<Rect>,
+    last_font_size: Option<(u16, u16)>,
+    breathe_down: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -178,6 +191,12 @@ impl Mascot {
             blink_start: None,
             breathe_phase: 0.0,
             last_tick: now,
+            picker: None,
+            picker_initialized: false,
+            base_image: None,
+            last_area: None,
+            last_font_size: None,
+            breathe_down: false,
         }
     }
 
@@ -254,7 +273,7 @@ impl Mascot {
         (dx.clamp(-2.0, 2.0), dy.clamp(-2.0, 2.0))
     }
 
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme, _accent: Color) {
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer, theme: &Theme, _accent: Color) {
         if !self.enabled || area.width < 24 || area.height < 12 {
             return;
         }
@@ -272,7 +291,106 @@ impl Mascot {
             };
 
         let inv = 1.0 / scale;
+        let current_breathe_down = self.breathe_phase.sin() > BREATHE_THRESHOLD;
 
+        if !self.picker_initialized {
+            self.picker = Picker::from_query_stdio()
+                .ok()
+                .filter(|p| !matches!(p.protocol_type(), ProtocolType::Halfblocks));
+            self.picker_initialized = true;
+        }
+
+        if self.picker.is_none() {
+            self.render_braille(area, buf, &palette, off_x, off_y, inv);
+            return;
+        }
+
+        let picker = self.picker.as_ref().unwrap();
+        let font_size = picker.font_size();
+        let font_dims = (font_size.width, font_size.height);
+        let px_width = u32::from(area.width) * u32::from(font_size.width);
+        let px_height = u32::from(area.height) * u32::from(font_size.height);
+
+        let needs_regenerate = self.last_area != Some(area)
+            || self.last_font_size != Some(font_dims)
+            || self.breathe_down != current_breathe_down
+            || self.base_image.is_none();
+
+        if needs_regenerate {
+            let mut base = RgbaImage::new(px_width, px_height);
+
+            for py in 0..px_height {
+                for px in 0..px_width {
+                    let tx = f64::from(area.x) + (f64::from(px) + 0.5) / f64::from(font_size.width);
+                    let ty =
+                        f64::from(area.y) + (f64::from(py) + 0.5) / f64::from(font_size.height);
+                    let bx = (tx - off_x) * inv;
+                    let by = (ty - off_y) * inv;
+                    let (layer, shade) = sample(bx, by, 0.0, 0.0, true);
+                    let pixel = mascot_pixel(layer, shade, &palette, true);
+                    base.put_pixel(px, py, pixel);
+                }
+            }
+
+            self.base_image = Some(base);
+            self.last_area = Some(area);
+            self.last_font_size = Some(font_dims);
+            self.breathe_down = current_breathe_down;
+        }
+
+        let mut image = self.base_image.as_ref().unwrap().clone();
+
+        for &(ecx, ecy) in &[(30.0, 27.5), (50.0, 27.5)] {
+            let tx = ecx * scale + off_x;
+            let ty = ecy * scale + off_y;
+            let px0 = (tx - f64::from(area.x)) * f64::from(font_size.width);
+            let py0 = (ty - f64::from(area.y)) * f64::from(font_size.height);
+            let half_w = 9.0 * scale * f64::from(font_size.width);
+            let half_h = 8.0 * scale * f64::from(font_size.height);
+
+            let px_start = (px0 - half_w).floor().max(0.0) as u32;
+            let px_end = (px0 + half_w).ceil().min(px_width as f64) as u32;
+            let py_start = (py0 - half_h).floor().max(0.0) as u32;
+            let py_end = (py0 + half_h).ceil().min(px_height as f64) as u32;
+
+            for py in py_start..py_end {
+                for px in px_start..px_end {
+                    let tx = f64::from(area.x) + (f64::from(px) + 0.5) / f64::from(font_size.width);
+                    let ty =
+                        f64::from(area.y) + (f64::from(py) + 0.5) / f64::from(font_size.height);
+                    let bx = (tx - off_x) * inv;
+                    let by = (ty - off_y) * inv;
+                    let (layer, shade) = sample(bx, by, self.gaze_x, self.gaze_y, self.is_blinking);
+                    let pixel = mascot_pixel(layer, shade, &palette, false);
+                    image.put_pixel(px, py, pixel);
+                }
+            }
+        }
+
+        let dyn_image = DynamicImage::ImageRgba8(image);
+
+        match picker.new_protocol(
+            dyn_image,
+            Size::new(area.width, area.height),
+            Resize::Fit(None),
+        ) {
+            Ok(protocol) => {
+                let img = Image::new(&protocol);
+                img.render(area, buf);
+            }
+            Err(_) => self.render_braille(area, buf, &palette, off_x, off_y, inv),
+        }
+    }
+
+    fn render_braille(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        palette: &Palette,
+        off_x: f64,
+        off_y: f64,
+        inv: f64,
+    ) {
         for ty in area.y..area.y + area.height {
             for tx in area.x..area.x + area.width {
                 let mut layers = [Layer::None; SAMPLES_PER_CELL];
@@ -527,6 +645,10 @@ impl Palette {
             (f32::from(g) * f) as u8,
             (f32::from(b) * f) as u8,
         )
+    }
+
+    fn background(&self) -> Color {
+        self.background
     }
 }
 
@@ -924,6 +1046,37 @@ fn extract_rgb(color: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
     }
 }
 
+fn extract_color(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0, 0, 0),
+    }
+}
+
+fn mascot_pixel(layer: Layer, shade: f64, palette: &Palette, opaque_background: bool) -> Rgba<u8> {
+    match layer {
+        Layer::None => {
+            if opaque_background {
+                let (r, g, b) = extract_color(palette.background());
+                Rgba([r, g, b, 255])
+            } else {
+                Rgba([0, 0, 0, 0])
+            }
+        }
+        _ => {
+            let role = layer.role();
+            let color = palette.color(role);
+            let shadow = palette.shadow(role);
+            let (color_r, color_g, color_b) = extract_color(color);
+            let (shadow_r, shadow_g, shadow_b) = extract_color(shadow);
+            let r = lerp_u8(shadow_r, color_r, shade as f32);
+            let g = lerp_u8(shadow_g, color_g, shade as f32);
+            let b = lerp_u8(shadow_b, color_b, shade as f32);
+            Rgba([r, g, b, 255])
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -937,7 +1090,7 @@ mod tests {
 
     #[test]
     fn render_does_not_panic_in_empty_area() {
-        let mascot = Mascot::new(true);
+        let mut mascot = Mascot::new(true);
         let area = Rect::new(0, 0, 0, 0);
         let mut buf = Buffer::empty(area);
         let theme = theme::current();
@@ -946,7 +1099,7 @@ mod tests {
 
     #[test]
     fn render_does_not_panic_in_small_area() {
-        let mascot = Mascot::new(true);
+        let mut mascot = Mascot::new(true);
         let area = Rect::new(0, 0, 5, 3);
         let mut buf = Buffer::empty(area);
         let theme = theme::current();
@@ -955,7 +1108,7 @@ mod tests {
 
     #[test]
     fn render_fills_large_area() {
-        let mascot = Mascot::new(true);
+        let mut mascot = Mascot::new(true);
         let area = Rect::new(0, 0, 80, 40);
         let mut buf = Buffer::empty(area);
         let theme = theme::current();
@@ -1015,7 +1168,7 @@ mod tests {
     #[test]
     #[ignore = "visual dump only"]
     fn visual_dump() {
-        let mascot = Mascot::new(true);
+        let mut mascot = Mascot::new(true);
         let area = Rect::new(0, 0, 80, 45);
         let mut buf = Buffer::empty(area);
         let theme = theme::current();
