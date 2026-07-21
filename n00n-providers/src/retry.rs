@@ -2,7 +2,7 @@ use std::time::Duration;
 
 const DELAY: Duration = Duration::from_secs(2);
 const MAX_DELAY: Duration = Duration::from_secs(8);
-pub const MAX_TIMEOUT_RETRIES: u32 = 10;
+pub const MAX_RETRIES: u32 = 3;
 
 #[derive(Default)]
 pub struct RetryState {

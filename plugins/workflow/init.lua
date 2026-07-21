@@ -23,16 +23,35 @@ local STRUCTURED_OUTPUT_NAME = "structured_output"
 local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly once when your task is complete."
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
-local MAX_STRUCTURED_RETRIES = 2
+local MAX_STRUCTURED_RETRIES = 1
 local MAX_SCHEMA_ERRORS = 3
+local MAX_SCHEMA_BYTES = 32 * 1024
+local MAX_SCHEMA_DEPTH = 16
 local SCHEMA_ROOT_ERROR = "output_schema must have type object"
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
+local SCHEMA_SIZE_ERROR = "output_schema exceeds 32768-byte limit"
+local SCHEMA_DEPTH_ERROR = "output_schema exceeds maximum depth of 16"
 local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
 local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
 local NUDGE_MISSING =
   "You did not call the structured_output tool. Call it now with your final result matching its input schema."
 local INVALID_INPUT_PREFIX =
   "Input does not match the required schema. Fix the errors and call structured_output again:\n"
+local function schema_within_depth(value, depth)
+  if type(value) ~= "table" then
+    return true
+  end
+  if depth > MAX_SCHEMA_DEPTH then
+    return false
+  end
+  for _, child in pairs(value) do
+    if not schema_within_depth(child, depth + 1) then
+      return false
+    end
+  end
+  return true
+end
+
 local SCRIPT_ERROR_PREFIX = "workflow script error: "
 local NO_META_ERROR = "workflow script must call meta({ name = ... }) before doing any work"
 local SCRIPT_REQUIRED_ERROR = "script (string) is required"
@@ -48,31 +67,24 @@ local RESEARCH_PROMPT = "research"
 local JOURNAL_DIRNAME = "workflows"
 local JOURNAL_FILENAME = "journal.jsonl"
 local META_FILENAME = "meta.json"
-local MAX_AGENTS_PER_RUN = 1000
-local AGENT_LIMIT_ERROR = "workflow exceeded max agent() calls (" .. MAX_AGENTS_PER_RUN .. ")"
+local DEFAULT_AGENTS_PER_RUN = 24
+local HARD_MAX_AGENTS_PER_RUN = 32
+local HARD_MAX_CONCURRENT_AGENTS = 8
+local HARD_MAX_CONCURRENT_WORKFLOWS = 4
+local HARD_MAX_AGGREGATE_AGENTS = 12
 local INVALID_RUN_ID_ERROR = "resume must be a run_id (hex letters/digits only, no path separators)"
 local RUN_ID_PATTERN = "^[%x]+$"
 local DEFAULT_TIMEOUT_SECS = 600
 
-local description = [[Run a workflow: a team of agents led by a supervisor using the sandboxed runtime.
+local description = [[Run a bounded, sandboxed Lua workflow for multi-stage agent orchestration.
 
-A workflow moves the plan into code: the script holds the loop, branching, and intermediate results, so your context holds only the final answer. The script itself consumes zero tokens; only agent() calls cost tokens. Use it for codebase-wide audits, large migrations, cross-checked research, or any task needing more agents than one conversation can coordinate.
+Start with meta({ name = ..., description = ..., phases = {...} }). Available globals only:
+- agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns one isolated agent result. research is read-only; general is the default. Tiers are weak/medium/strong and capped at the current model. output_schema returns validated JSON.
+- parallel(fns, { concurrency? }) runs zero-argument branches in order; any failure fails the call.
+- pipeline(items, stages, { concurrency? }) runs each item through all stages.
+- phase(name, fn), log(...), and inputs.
 
-The script is Lua. Its first statement declares metadata:
-
-  meta({ name = "audit", description = "Review changed files, then verify", phases = { { title = "Review" }, { title = "Verify" } } })
-
-The runtime injects these globals into the script (nothing else is available - no n00n, os, io, require, print, or load):
-
-- agent(opts) -> string | validated JSON string. Spawns an isolated subagent and returns its final result. opts: { prompt (required), subagent_type? ("general" default, or "research" for read-only), model_tier? ("strong"/"medium"/"weak", capped at your model), label?, output_schema? (JSON Schema; result returned as a validated JSON string) }
-- parallel(fns, opts?) -> array. Runs zero-arg fns concurrently, returns results in input order. A branch failure fails the whole parallel. opts: { concurrency = 8 }
-- pipeline(items, stages, opts?) -> array. Each item flows independently through every stage (no cross-item barrier between stages). Items run concurrently under the same concurrency cap as parallel.
-- phase(name, fn) -> fn's result. Labels work for the progress UI.
-- log(...) -> records a message in the workflow log.
-
-Reach for a workflow when a task has multiple stages that feed into each other, some stages can run in parallel, or you want reproducible orchestration. For a single subagent doing one thing, use the task tool instead.
-
-The script must be deterministic: do not rely on wall-clock time or randomness, so a resumed run reproduces the same orchestration path. Pass resume = <run_id> to replay journaled agent() results from a prior run.]]
+No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are limited to 24 agent calls by default (32 hard maximum). Use task for one agent.]]
 
 local schema = {
   type = "object",
@@ -95,26 +107,24 @@ local schema = {
 
 local examples = {
   {
-    description = "Review two files in parallel, then verify each finding",
-    script = [[meta({ name = "audit", description = "Review then verify", phases = { { title = "Review" }, { title = "Verify" } } })
-local reviews = phase("Review", function()
-  return parallel({
-    function() return agent({ prompt = "Review src/a.rs for real bugs.", output_schema = { type = "object", properties = { findings = { type = "array", items = { type = "string" } } }, required = { "findings" } } }) end,
-    function() return agent({ prompt = "Review src/b.rs for real bugs.", output_schema = { type = "object", properties = { findings = { type = "array", items = { type = "string" } } }, required = { "findings" } } }) end,
-  })
-end)
-local verified = phase("Verify", function()
-  return pipeline(reviews, {
-    function(review) return agent({ prompt = "Confirm or reject each finding: " .. review, subagent_type = "research" }) end,
-  })
-end)
-return "Reviews:\n" .. table.concat(reviews, "\n---\n") .. "\n\nVerified:\n" .. table.concat(verified, "\n---\n")]],
+    description = "Review two files in parallel",
+    script = [[meta({ name = "review" })
+local out = parallel({
+  function() return agent({ prompt = "Review src/a.rs." }) end,
+  function() return agent({ prompt = "Review src/b.rs." }) end,
+})
+return table.concat(out, "\n")]],
   },
 }
 
 local opts = n00n.api.register_options({
-  max_concurrent_agents = { default = 8, min = 1, desc = "Max subagents one parallel()/pipeline() call runs at once." },
-  max_concurrent_workflows = { default = 4, min = 1, desc = "Max concurrently running workflows." },
+  max_agents_per_run = {
+    default = DEFAULT_AGENTS_PER_RUN,
+    min = 1,
+    desc = "Agent-call budget per workflow (hard max 32).",
+  },
+  max_concurrent_agents = { default = 4, min = 1, desc = "Concurrency per parallel()/pipeline() (hard max 8)." },
+  max_concurrent_workflows = { default = 2, min = 1, desc = "Concurrent workflows (hard max 4)." },
   timeout_secs = {
     default = DEFAULT_TIMEOUT_SECS,
     min = 1,
@@ -122,7 +132,11 @@ local opts = n00n.api.register_options({
   },
 })
 
-local workflow_semaphore = n00n.async.semaphore(opts.max_concurrent_workflows)
+local max_agents_per_run = math.min(opts.max_agents_per_run, HARD_MAX_AGENTS_PER_RUN)
+local max_concurrent_agents = math.min(opts.max_concurrent_agents, HARD_MAX_CONCURRENT_AGENTS)
+local max_concurrent_workflows = math.min(opts.max_concurrent_workflows, HARD_MAX_CONCURRENT_WORKFLOWS)
+local workflow_semaphore = n00n.async.semaphore(max_concurrent_workflows)
+local aggregate_agent_semaphore = n00n.async.semaphore(HARD_MAX_AGGREGATE_AGENTS)
 
 local function bounded_errors(errors)
   local out = {}
@@ -310,9 +324,9 @@ local function parallel(fns, popts)
     error("parallel: fns must be an array of functions", 0)
   end
   popts = popts or {}
-  local concurrency = opts.max_concurrent_agents
+  local concurrency = max_concurrent_agents
   if type(popts.concurrency) == "number" then
-    concurrency = math.max(1, math.min(popts.concurrency, opts.max_concurrent_agents))
+    concurrency = math.max(1, math.min(popts.concurrency, max_concurrent_agents))
   end
   local sem = n00n.async.semaphore(concurrency)
   local wrapped = {}
@@ -415,6 +429,7 @@ local function make_agent(ctx, progress, journal)
     end
 
     local key_permit = key_lock:acquire()
+    local aggregate_permit
     local ok, result = pcall(function()
       do
         local gate = journal.lock:acquire()
@@ -425,9 +440,9 @@ local function make_agent(ctx, progress, journal)
           return hit
         end
         journal.agent_count = journal.agent_count + 1
-        if journal.agent_count > MAX_AGENTS_PER_RUN then
+        if journal.agent_count > max_agents_per_run then
           gate:release()
-          error(AGENT_LIMIT_ERROR, 0)
+          error("workflow exceeded agent-call budget (" .. max_agents_per_run .. ", hard max 32)", 0)
         end
         gate:release()
       end
@@ -436,6 +451,16 @@ local function make_agent(ctx, progress, journal)
       if aopts.output_schema then
         if type(aopts.output_schema) ~= "table" or aopts.output_schema.type ~= "object" then
           error(SCHEMA_ROOT_ERROR, 0)
+        end
+        local encoded_schema, encode_err = n00n.json.encode(aopts.output_schema)
+        if encode_err then
+          error(SCHEMA_COMPILE_ERROR .. ": " .. encode_err, 0)
+        end
+        if #encoded_schema > MAX_SCHEMA_BYTES then
+          error(SCHEMA_SIZE_ERROR, 0)
+        end
+        if not schema_within_depth(aopts.output_schema, 1) then
+          error(SCHEMA_DEPTH_ERROR, 0)
         end
         local compile_err
         validator, compile_err = n00n.json.schema_validator(aopts.output_schema)
@@ -485,6 +510,7 @@ local function make_agent(ctx, progress, journal)
         }
       end
 
+      aggregate_permit = aggregate_agent_semaphore:acquire()
       progress.agent_started(label)
       local sess, sess_err = n00n.agent.session(ctx, {
         model_spec = model.spec,
@@ -509,6 +535,8 @@ local function make_agent(ctx, progress, journal)
         prompt_result, prompt_err = sess:prompt(NUDGE_MISSING)
       end
       sess:close()
+      aggregate_permit:release()
+      aggregate_permit = nil
       progress.agent_done(label)
 
       if prompt_err then
@@ -548,6 +576,9 @@ local function make_agent(ctx, progress, journal)
       end
       return out
     end)
+    if aggregate_permit then
+      aggregate_permit:release()
+    end
     key_permit:release()
     if not ok then
       local gate = journal.lock:acquire()
