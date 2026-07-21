@@ -226,13 +226,12 @@ pub(crate) fn convert_tools(anthropic_tools: &Value) -> Value {
 }
 
 fn suppress_retry_after_response(error: AgentError) -> AgentError {
-    match error {
-        error @ (AgentError::Io(_) | AgentError::Http(_) | AgentError::Timeout { .. }) => {
-            AgentError::RequestSent {
-                message: error.to_string(),
-            }
+    if error.is_retryable() {
+        AgentError::RequestSent {
+            message: error.to_string(),
         }
-        error => error,
+    } else {
+        error
     }
 }
 
@@ -1423,7 +1422,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     }
 
     #[test]
-    fn post_response_api_error_remains_retryable() {
+    fn post_response_api_error_is_not_retried() {
         let error = AgentError::Api {
             status: 500,
             message: "provider rejected request".into(),
@@ -1431,7 +1430,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
 
         assert!(matches!(
             suppress_retry_after_response(error),
-            AgentError::Api { status: 500, .. }
+            AgentError::RequestSent { .. }
         ));
     }
 

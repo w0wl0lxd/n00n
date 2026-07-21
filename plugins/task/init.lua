@@ -13,9 +13,13 @@ local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_PROMPT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
 local MAX_SCHEMA_ERRORS = 3
-local MAX_STRUCTURED_RETRIES = 2
+local MAX_SCHEMA_BYTES = 32 * 1024
+local MAX_SCHEMA_DEPTH = 16
+local MAX_STRUCTURED_RETRIES = 1
 local SCHEMA_ROOT_ERROR = "output_schema must have type object"
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
+local SCHEMA_SIZE_ERROR = "output_schema exceeds 32768-byte limit"
+local SCHEMA_DEPTH_ERROR = "output_schema exceeds maximum depth of 16"
 local STRUCTURED_MISSING_ERROR = "subagent finished without calling structured_output"
 local STRUCTURED_INVALID_ERROR = "subagent result does not match output_schema"
 local INVALID_INPUT_PREFIX =
@@ -26,6 +30,21 @@ local BODY_INDENT_COLS = 4
 local MIN_MD_WIDTH = 20
 local DEFAULT_OUTPUT_LINES = 5
 local DEFAULT_MAX_LINE_BYTES = 500
+
+local function schema_within_depth(value, depth)
+  if type(value) ~= "table" then
+    return true
+  end
+  if depth > MAX_SCHEMA_DEPTH then
+    return false
+  end
+  for _, child in pairs(value) do
+    if not schema_within_depth(child, depth + 1) then
+      return false
+    end
+  end
+  return true
+end
 
 local description = [[Launch one isolated agent; combine independent calls with batch.
 research (default) is read-only; general can edit. Each call starts fresh, so include context and ask for concise file:line results. Summarize returned results for the user. auto_tier is opt-in. background returns an agent_id for agent_control.]]
@@ -166,6 +185,16 @@ local function handler(input, ctx)
   if input.output_schema then
     if type(input.output_schema) ~= "table" or input.output_schema.type ~= "object" then
       return { llm_output = SCHEMA_ROOT_ERROR, is_error = true }
+    end
+    local encoded_schema, encode_err = n00n.json.encode(input.output_schema)
+    if encode_err then
+      return { llm_output = SCHEMA_COMPILE_ERROR .. ": " .. encode_err, is_error = true }
+    end
+    if #encoded_schema > MAX_SCHEMA_BYTES then
+      return { llm_output = SCHEMA_SIZE_ERROR, is_error = true }
+    end
+    if not schema_within_depth(input.output_schema, 1) then
+      return { llm_output = SCHEMA_DEPTH_ERROR, is_error = true }
     end
     local compile_err
     validator, compile_err = n00n.json.schema_validator(input.output_schema)

@@ -522,41 +522,65 @@ impl OpenAi {
             .await;
         };
 
-        let mut connection = slot.lock().await;
         let auth_generation = self.auth_generation.load(Ordering::Acquire);
-        if connection.as_ref().is_some_and(|connection| {
-            connection.socket.is_expired()
-                || connection.credential_hash != credential_hash
-                || connection.auth_generation != auth_generation
-        }) {
-            *connection = None;
-        }
-        if connection.is_none() {
+        let mut scoped = {
+            let mut connection = slot.lock().await;
+            if connection.as_ref().is_some_and(|connection| {
+                connection.socket.is_expired()
+                    || connection.credential_hash != credential_hash
+                    || connection.auth_generation != auth_generation
+            }) {
+                *connection = None;
+            }
+            match connection.take() {
+                Some(connection) => connection,
+                None => {
+                    let socket = super::websocket::ResponsesWebSocket::connect(
+                        auth,
+                        self.websocket_connect_timeout,
+                    )
+                    .await
+                    .map_err(|error| {
+                        super::websocket::WebSocketAttemptError::transport(error, false, false)
+                    })?;
+                    ScopedResponsesWebSocket {
+                        socket,
+                        credential_hash: credential_hash.to_owned(),
+                        auth_generation,
+                    }
+                }
+            }
+        };
+        let mut result = scoped
+            .socket
+            .stream_message(body, event_tx, stream_timeout)
+            .await;
+        if result
+            .as_ref()
+            .is_err_and(|error| error.reconnect_safe && !error.emitted_event)
+        {
             let socket =
                 super::websocket::ResponsesWebSocket::connect(auth, self.websocket_connect_timeout)
                     .await
                     .map_err(|error| {
                         super::websocket::WebSocketAttemptError::transport(error, false, false)
                     })?;
-            *connection = Some(ScopedResponsesWebSocket {
+            scoped = ScopedResponsesWebSocket {
                 socket,
                 credential_hash: credential_hash.to_owned(),
                 auth_generation,
-            });
+            };
+            result = scoped
+                .socket
+                .stream_message(body, event_tx, stream_timeout)
+                .await;
         }
-        let result = connection
-            .as_mut()
-            .ok_or_else(|| AgentError::Config {
-                message: "OpenAI WebSocket connection was not initialized".into(),
-            })
-            .map_err(|error| {
-                super::websocket::WebSocketAttemptError::transport(error, false, false)
-            })?
-            .socket
-            .stream_message(body, event_tx, stream_timeout)
-            .await;
-        if result.is_err() {
-            *connection = None;
+        if result.is_ok()
+            && scoped.auth_generation == self.auth_generation.load(Ordering::Acquire)
+            && scoped.credential_hash == credential_hash
+        {
+            let mut connection = slot.lock().await;
+            *connection = Some(scoped);
         }
         result
     }
@@ -1123,6 +1147,7 @@ fn should_clear_response_chain<T>(result: &Result<T, AgentError>, store: bool) -
 mod tests {
     use std::path::Path;
 
+    use futures_lite::StreamExt;
     use tempfile::TempDir;
     use test_case::test_case;
 
@@ -1132,6 +1157,8 @@ mod tests {
     const TOOLS_HASH: &str = "[]";
     const AUTH_SCOPE_HASH: &str = "account";
     const LEGACY_SESSION_ID: &str = "01965087-4c71-7f00-8000-000000000000";
+    const TEST_CREDENTIAL_HASH: &str = "test-credential";
+    const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
     fn provider_with_response_storage(path: &Path) -> OpenAi {
         let auth = Arc::new(Mutex::new(ResolvedAuth::bearer("test-key")));
@@ -1671,6 +1698,59 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_websocket_attempt_is_not_reused() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (request_tx, request_rx) = flume::bounded(1);
+            let server = smol::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = async_tungstenite::accept_async(stream).await.unwrap();
+                let _ = socket.next().await;
+                request_tx.send_async(()).await.unwrap();
+                let _ = socket.next().await;
+            });
+            let auth = ResolvedAuth {
+                base_url: Some(format!("http://{address}/v1")),
+                headers: Vec::new(),
+            };
+            let provider = OpenAi::with_auth(
+                Arc::new(Mutex::new(auth.clone())),
+                crate::providers::Timeouts::default(),
+            )
+            .unwrap();
+            let session = SessionRef::generate();
+            let slot = provider.response_connection_slot(Some(&session)).unwrap();
+            let (event_tx, _event_rx) = flume::unbounded();
+            let body = serde_json::json!({"model":"test","input":[]});
+            let attempt = provider.stream_websocket(
+                Some(Arc::clone(&slot)),
+                &body,
+                &event_tx,
+                &auth,
+                TEST_CREDENTIAL_HASH,
+                TEST_STREAM_TIMEOUT,
+            );
+
+            let cancelled = futures_lite::future::race(
+                async {
+                    let _ = attempt.await;
+                    false
+                },
+                async {
+                    request_rx.recv_async().await.unwrap();
+                    true
+                },
+            )
+            .await;
+
+            assert!(cancelled);
+            assert!(slot.lock().await.is_none());
+            server.await;
+        });
+    }
+
+    #[test]
     fn successful_socket_local_continuation_keeps_response_chain() {
         let success: Result<(), AgentError> = Ok(());
         assert!(!should_clear_response_chain(&success, false));
@@ -1700,6 +1780,7 @@ mod tests {
             emitted_event: false,
             transport_failure: true,
             request_sent: false,
+            reconnect_safe: false,
         };
         assert!(should_fallback_to_http(&transport));
 
@@ -1718,6 +1799,7 @@ mod tests {
             emitted_event: false,
             transport_failure: true,
             request_sent: false,
+            reconnect_safe: false,
         };
         assert!(!should_fallback_to_http(&auth));
 
@@ -1729,6 +1811,7 @@ mod tests {
             emitted_event: false,
             transport_failure: false,
             request_sent: true,
+            reconnect_safe: false,
         };
         assert!(!should_fallback_to_http(&response_error));
 
@@ -1737,6 +1820,7 @@ mod tests {
             emitted_event: false,
             transport_failure: true,
             request_sent: true,
+            reconnect_safe: false,
         };
         assert!(!should_fallback_to_http(&after_send));
     }

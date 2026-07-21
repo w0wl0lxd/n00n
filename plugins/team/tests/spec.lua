@@ -257,6 +257,39 @@ case("quorum_diverse_approvers_accepted", function()
   assert(v.confidence == 1.0, "all approved -> confidence 1.0")
 end)
 
+case("quorum_validators_receive_no_tools", function()
+  local quorum = require("quorum")
+  local old_resolve = n00n.agent.resolve_model
+  local old_tools = n00n.agent.tools
+  local old_session = n00n.agent.session
+  n00n.agent.resolve_model = function()
+    return { spec = "mock-model" }, nil
+  end
+  n00n.agent.tools = function()
+    error("validator must not build tool definitions")
+  end
+  n00n.agent.session = function(_, opts)
+    assert(next(opts.tools) == nil, "validator tools must be empty")
+    return {
+      prompt = function()
+        return { text = "APPROVED" }
+      end,
+      close = function() end,
+    },
+      nil
+  end
+
+  local ok, result = pcall(function()
+    return quorum.validate({}, "artifact", { n = 1 })
+  end)
+  n00n.agent.resolve_model = old_resolve
+  n00n.agent.tools = old_tools
+  n00n.agent.session = old_session
+
+  assert(ok, "tool-less quorum should succeed: " .. tostring(result))
+  assert(result.accepted, "tool-less validator should approve")
+end)
+
 case("quorum_all_reject_rejected", function()
   local quorum = require("quorum")
   local restore = stub_agent(false)
