@@ -26,6 +26,8 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "grep",
             "index",
             "view_image",
+            "codegraph",
+            "arbor",
         ],
     ),
     (
@@ -310,7 +312,7 @@ pub fn generate() -> String {
 
     let snapshot = registry.iter();
     let mut tools: HashMap<&str, ToolInfo> = HashMap::new();
-    for entry in snapshot.iter() {
+    for entry in &snapshot {
         if let Some(info) = collect_tool_info(&def_map, entry) {
             tools.insert(entry.name(), info);
         }

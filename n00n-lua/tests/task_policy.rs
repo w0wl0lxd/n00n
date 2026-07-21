@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::needless_pass_by_value
+)]
+
 //! Tests the task plugin's structured-output policy end-to-end: real plugin
 //! source, real `n00n.json` / `n00n.async`, with model I/O replaced by
 //! scriptable Lua stubs.

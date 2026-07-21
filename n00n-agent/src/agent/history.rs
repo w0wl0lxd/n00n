@@ -32,6 +32,7 @@ impl History {
         }
     }
 
+    #[must_use]
     pub fn restored(messages: Vec<Message>) -> Self {
         Self::restored_with_transcript(messages, Vec::new())
     }
@@ -55,18 +56,21 @@ impl History {
         }
     }
 
+    #[must_use]
     pub fn with_mirror(mut self, mirror: SharedMessages) -> Self {
         self.mirror = Some(mirror);
         self.publish();
         self
     }
 
+    #[must_use]
     pub fn with_transcript_mirror(mut self, mirror: SharedTranscript) -> Self {
         self.transcript_mirror = Some(mirror);
         self.publish();
         self
     }
 
+    #[must_use]
     pub fn transcript(&self) -> &[TranscriptEntry<Message>] {
         &self.transcript
     }
@@ -85,6 +89,7 @@ impl History {
         self.publish();
     }
 
+    #[must_use]
     pub fn as_slice(&self) -> &[Message] {
         &self.messages
     }
@@ -95,14 +100,17 @@ impl History {
         self.publish();
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.messages.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }
 
+    #[must_use]
     pub fn ends_with_tool_results(&self) -> bool {
         self.messages.last().is_some_and(|message| {
             message
@@ -124,6 +132,7 @@ impl History {
         self.publish();
     }
 
+    #[must_use]
     pub fn into_vec(self) -> Vec<Message> {
         self.messages
     }
@@ -190,7 +199,7 @@ fn same_message_identity(left: &Message, right: &Message) -> bool {
     }
 }
 
-/// Restored sessions can have orphaned tool_results or unclosed tool_uses
+/// Restored sessions can have orphaned `tool_results` or unclosed `tool_uses`
 /// (e.g. the process was killed mid-turn). The API returns 400 if it sees those.
 fn sanitize_restored(messages: &mut Vec<Message>) {
     let len_before = messages.len();

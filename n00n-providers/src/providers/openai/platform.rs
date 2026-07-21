@@ -403,7 +403,10 @@ impl OpenAi {
     }
 
     fn current_auth(&self) -> ResolvedAuth {
-        self.auth.lock().unwrap().clone()
+        self.auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn is_oauth(&self) -> bool {
@@ -455,7 +458,10 @@ impl OpenAi {
             }
         })
         .await?;
-        *self.auth.lock().unwrap() = resolved;
+        *self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = resolved;
         self.auth_generation.fetch_add(1, Ordering::Release);
         debug!("refreshed OpenAI OAuth token");
         Ok(())
@@ -481,19 +487,19 @@ impl OpenAi {
         result
     }
 
-    fn codex_auth(&self) -> Result<ResolvedAuth, AgentError> {
+    fn codex_auth(&self) -> ResolvedAuth {
         // Prefer OAuth tokens for the ChatGPT Coding Plan backend.
         if let Some(storage) = self.storage.as_ref()
             && let Some(tokens) = n00n_storage::auth::load_tokens(storage, auth::PROVIDER)
         {
-            return Ok(auth::build_coding_plan_resolved(&tokens));
+            return auth::build_coding_plan_resolved(&tokens);
         }
         // Fall back to standard API key via the Responses API.
         let mut auth = self.current_auth();
         if auth.base_url.is_none() {
             auth.base_url = Some(CONFIG.base_url.into());
         }
-        Ok(auth)
+        auth
     }
 
     fn stores_responses(&self, auth: &ResolvedAuth) -> bool {
@@ -502,6 +508,7 @@ impl OpenAi {
             && auth.base_url.as_deref() == Some(CONFIG.base_url)
     }
 
+    #[allow(clippy::large_futures)]
     async fn stream_websocket(
         &self,
         slot: Option<ResponseConnectionSlot>,
@@ -598,16 +605,19 @@ impl OpenAi {
         let session_id = canonical_session_key(session_id);
 
         let needs_load = {
-            let mut states = self.session_state.lock().unwrap();
+            let mut states = self
+                .session_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let now = Instant::now();
             let now_epoch = now_epoch();
             states.retain(|_, state| {
-                now.duration_since(state.last_used) < SESSION_STATE_TTL
+                now.saturating_duration_since(state.last_used) < SESSION_STATE_TTL
                     && (state.last_response_id.is_none() || state.expires_at > now_epoch)
             });
             self.response_connections
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .retain(|session_id, _| states.contains_key(session_id));
             !states.contains_key(&session_id)
         };
@@ -634,12 +644,15 @@ impl OpenAi {
             );
             self.session_state
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .entry(session_id)
-                .or_insert_with(|| loaded.unwrap_or_default());
+                .or_insert_with(|| loaded.unwrap_or_else(OpenAiSessionState::default));
         }
 
-        let mut states = self.session_state.lock().unwrap();
+        let mut states = self
+            .session_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = Instant::now();
         let state = states.entry(session_id).or_default();
         state.last_used = now;
@@ -661,7 +674,10 @@ impl OpenAi {
         };
         let session_id = canonical_session_key(session_id);
         let stored = {
-            let mut states = self.session_state.lock().unwrap();
+            let mut states = self
+                .session_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let state = states.entry(session_id).or_default();
             state.last_used = Instant::now();
             if let Err(error) =
@@ -690,10 +706,13 @@ impl OpenAi {
     }
 
     fn clear_local_response_chain(&self, session_id: N00nId) {
-        self.session_state.lock().unwrap().remove(&session_id);
+        self.session_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_id);
         self.response_connections
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
     }
 
@@ -704,11 +723,11 @@ impl OpenAi {
         let session_id = canonical_session_key(session_id);
         self.session_state
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(session_id, OpenAiSessionState::default());
         self.response_connections
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
         let Some(storage) = self.response_state_storage.clone() else {
             return;
@@ -721,6 +740,8 @@ impl OpenAi {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::large_futures)]
     async fn run_codex_attempt(
         &self,
         model: &Model,
@@ -732,17 +753,7 @@ impl OpenAi {
         opts: RequestOptions,
         session_id: Option<&SessionRef>,
     ) -> CodexAttempt {
-        let auth = match self.codex_auth() {
-            Ok(auth) => auth,
-            Err(error) => {
-                return CodexAttempt {
-                    previous_response_id: None,
-                    store: false,
-                    emitted_event: false,
-                    result: Err(error),
-                };
-            }
-        };
+        let auth = self.codex_auth();
         let state_scope_hash = response_state_scope_hash(&auth);
         let socket_credential_hash = credential_hash(&auth);
         let store = self.stores_responses(&auth);
@@ -887,6 +898,7 @@ impl OpenAi {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::large_futures)]
     async fn run_codex_attempt_with_auth_retry(
         &self,
         model: &Model,
@@ -930,7 +942,10 @@ impl OpenAi {
     ) -> Option<ResponseConnectionSlot> {
         let session_id = session_id?;
         let session_id = canonical_session_key(session_id);
-        let mut connections = self.response_connections.lock().unwrap();
+        let mut connections = self
+            .response_connections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let slot = connections
             .entry(session_id)
             .or_insert_with(|| Arc::new(AsyncMutex::new(None)));
@@ -949,7 +964,7 @@ impl OpenAi {
         let slot = self
             .response_connections
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&session_id)
             .map(Arc::clone);
         let Some(slot) = slot else {
@@ -970,7 +985,10 @@ impl OpenAi {
     ) -> Option<ResponseOperationSlot> {
         let session_id = session_id?;
         let session_id = canonical_session_key(session_id);
-        let mut operations = self.response_operations.lock().unwrap();
+        let mut operations = self
+            .response_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         operations.retain(|_, operation| operation.strong_count() > 0);
         if let Some(operation) = operations.get(&session_id).and_then(Weak::upgrade) {
             return Some(operation);
@@ -982,6 +1000,7 @@ impl OpenAi {
 }
 
 impl Provider for OpenAi {
+    #[allow(clippy::large_futures)]
     fn stream_message<'a>(
         &'a self,
         model: &'a Model,
@@ -1106,7 +1125,10 @@ impl Provider for OpenAi {
             let resolved = smol::unblock(move || auth::resolve_cached(&storage)).await?;
             let previous_scope = credential_hash(&self.current_auth());
             let resolved_scope = credential_hash(&resolved);
-            *self.auth.lock().unwrap() = resolved;
+            *self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = resolved;
             if previous_scope != resolved_scope {
                 self.auth_generation.fetch_add(1, Ordering::Release);
             }
@@ -1697,6 +1719,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::large_futures)]
     fn cancelled_websocket_attempt_is_not_reused() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

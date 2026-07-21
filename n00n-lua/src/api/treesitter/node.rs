@@ -88,10 +88,11 @@ fn id(_lua: &Lua, this: &LuaNode) -> LuaResult<String> {
 /// local sr, sc, er, ec = node:range()
 /// local sr, sc, sb, er, ec, eb = node:range(true)
 #[lua_fn]
+#[allow(clippy::cast_possible_wrap)]
 fn range(_lua: &Lua, this: &LuaNode, include_bytes: Option<bool>) -> LuaResult<MultiValue> {
     let sp = this.ts_node()?.start_position();
     let ep = this.ts_node()?.end_position();
-    if include_bytes.unwrap_or(false) {
+    if include_bytes.unwrap_or_else(|| false) {
         Ok(MultiValue::from_iter([
             Value::Integer(sp.row as i64),
             Value::Integer(sp.column as i64),
@@ -114,6 +115,7 @@ fn range(_lua: &Lua, this: &LuaNode, include_bytes: Option<bool>) -> LuaResult<M
 ///
 /// @return (integer, integer, integer) start_row, start_col, start_byte.
 #[lua_fn]
+#[allow(clippy::cast_possible_wrap)]
 fn start(_lua: &Lua, this: &LuaNode) -> LuaResult<(i64, i64, i64)> {
     let sp = this.ts_node()?.start_position();
     Ok((
@@ -127,6 +129,7 @@ fn start(_lua: &Lua, this: &LuaNode) -> LuaResult<(i64, i64, i64)> {
 ///
 /// @return (integer, integer, integer) end_row, end_col, end_byte.
 #[lua_fn]
+#[allow(clippy::cast_possible_wrap)]
 fn end_(_lua: &Lua, this: &LuaNode) -> LuaResult<(i64, i64, i64)> {
     let ep = this.ts_node()?.end_position();
     Ok((
@@ -140,6 +143,7 @@ fn end_(_lua: &Lua, this: &LuaNode) -> LuaResult<(i64, i64, i64)> {
 ///
 /// @return (integer) Byte length.
 #[lua_fn]
+#[allow(clippy::cast_possible_wrap)]
 fn byte_length(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
     Ok((this.ts_node()?.end_byte() - this.ts_node()?.start_byte()) as i64)
 }
@@ -168,6 +172,7 @@ fn named_child(_lua: &Lua, this: &LuaNode, index: u32) -> LuaResult<Option<LuaNo
 ///
 /// @return (integer) Child count.
 #[lua_fn]
+#[allow(clippy::cast_possible_wrap)]
 fn child_count(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
     Ok(this.ts_node()?.child_count() as i64)
 }
@@ -176,6 +181,7 @@ fn child_count(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
 ///
 /// @return (integer) Named child count.
 #[lua_fn]
+#[allow(clippy::cast_possible_wrap)]
 fn named_child_count(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
     Ok(this.ts_node()?.named_child_count() as i64)
 }
@@ -221,6 +227,7 @@ fn named_children(lua: &Lua, this: &LuaNode) -> LuaResult<mlua::Table> {
 ///   if field then print(field .. ": " .. child:type()) end
 /// end
 #[lua_fn]
+#[allow(clippy::cast_possible_truncation)]
 fn iter_children(lua: &Lua, this: &LuaNode) -> LuaResult<Function> {
     let node = this.ts_node()?;
     let count = node.child_count() as u32;

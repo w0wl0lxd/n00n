@@ -1,3 +1,9 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
+
 //! Each tool has one `ParamSchema` that drives both the JSON Schema sent to the
 //! LLM and the validator that checks its response. If those two ever disagree
 //! the model gets a schema that lies about what we accept, so one source of
@@ -96,6 +102,7 @@ pub enum ParamSchema {
     },
 }
 
+#[must_use]
 pub fn to_json_schema(s: &ParamSchema) -> Value {
     match s {
         ParamSchema::Primitive { kind, description } => {
@@ -165,12 +172,17 @@ pub fn to_json_schema(s: &ParamSchema) -> Value {
 
 /// Leaks everything to get `&'static` lifetimes for `ParamSchema`.
 /// The leaked set is small and fixed per session, so this is fine.
+///
+/// # Errors
+///
+/// Returns a `String` error if the JSON value does not represent a valid parameter schema.
 pub fn try_from_json(v: &Value) -> Result<&'static ParamSchema, String> {
     let description: &'static str = v
         .get("description")
         .and_then(|d| d.as_str())
-        .map(|s| -> &'static str { Box::leak(s.to_owned().into_boxed_str()) })
-        .unwrap_or("");
+        .map_or("", |s| -> &'static str {
+            Box::leak(s.to_owned().into_boxed_str())
+        });
 
     let type_value = v.get("type");
     let type_str = type_value.and_then(Value::as_str);
@@ -246,8 +258,9 @@ pub fn try_from_json(v: &Value) -> Result<&'static ParamSchema, String> {
                 let required: Vec<&str> = v
                     .get("required")
                     .and_then(|r| r.as_array())
-                    .map(|arr| arr.iter().filter_map(|x| x.as_str()).collect())
-                    .unwrap_or_default();
+                    .map_or_else(Vec::new, |arr| {
+                        arr.iter().filter_map(|x| x.as_str()).collect()
+                    });
                 let properties: &'static [Property] = Box::leak(
                     props_map
                         .iter()
@@ -256,8 +269,8 @@ pub fn try_from_json(v: &Value) -> Result<&'static ParamSchema, String> {
                                 Box::leak(name.clone().into_boxed_str());
                             let inline_required = sub
                                 .get("required")
-                                .and_then(|r| r.as_bool())
-                                .unwrap_or(false);
+                                .and_then(serde_json::Value::as_bool)
+                                .is_some_and(|v| v);
                             let static_schema: &'static ParamSchema = try_from_json(sub)?;
                             let is_required = inline_required || required.contains(&name.as_str());
                             let aliases: &'static [&'static str] = match sub.get("alias") {
@@ -451,6 +464,11 @@ pub(crate) fn preview(s: &str) -> String {
     out
 }
 
+/// Validates an input value against a parameter schema.
+///
+/// # Errors
+///
+/// Returns `ToolInputError` if the input does not match the schema.
 pub fn validate(schema: &ParamSchema, input: Value) -> Result<Value, ToolInputError> {
     walk(schema, input, &mut JsonPath::default())
 }
@@ -475,6 +493,7 @@ fn walk(schema: &ParamSchema, value: Value, path: &mut JsonPath) -> Result<Value
                     Err(_) => {}
                 }
             }
+            #[allow(clippy::expect_used)]
             Err(first_error.expect("union variants are checked as non-empty while parsing"))
         }
     }
@@ -735,12 +754,13 @@ fn log_coercion(
     );
 }
 
-/// Sanitize a tool input schema to comply with OpenAI function-calling requirements.
+/// Sanitize a tool input schema to comply with `OpenAI` function-calling requirements.
 ///
-/// OpenAI requires the top-level `parameters` of every function to be an object
+/// `OpenAI` requires the top-level `parameters` of every function to be an object
 /// schema with `properties` and `required` as an array. MCP servers and plugins
 /// can return schemas that break these rules, so this function repairs them
 /// before they are sent to a provider.
+#[must_use]
 pub fn sanitize_tool_input_schema(mut schema: Value) -> Value {
     if let Value::Object(map) = &mut schema
         && is_object_schema(map)
@@ -868,8 +888,7 @@ fn sanitize_required(map: &mut serde_json::Map<String, Value>) {
     let prop_keys: HashSet<String> = map
         .get("properties")
         .and_then(|p| p.as_object())
-        .map(|p| p.keys().cloned().collect())
-        .unwrap_or_default();
+        .map_or_else(HashSet::new, |p| p.keys().cloned().collect());
 
     match map.get_mut("required") {
         Some(req_val) if req_val.is_object() => {
@@ -1033,6 +1052,7 @@ mod tests {
     #[test_case(json!("1.25"),                   ParamKind::Number,  Some(json!(1.25)) ; "string_to_float")]
     #[test_case(json!("true"),                   ParamKind::Bool,    Some(json!(true)) ; "string_to_bool")]
     #[test_case(json!(30),                       ParamKind::Integer, None              ; "already_correct_type_no_coercion")]
+    #[allow(clippy::needless_pass_by_value)]
     fn coerce_primitive_cases(value: Value, expected: ParamKind, wanted: Option<Value>) {
         assert_eq!(coerce_primitive(&value, expected), wanted);
     }
@@ -1228,6 +1248,7 @@ mod tests {
 
     #[test_case(json!({"alias": "file_path"}), json!({"file_path": "/x"}) ; "single_string_alias")]
     #[test_case(json!({"alias": ["file_path", "fp"]}), json!({"fp": "/x"}) ; "array_alias")]
+    #[allow(clippy::needless_pass_by_value)]
     fn try_from_json_alias_parsing(alias_field: Value, input: Value) {
         let mut schema_json = json!({
             "type": "object",
@@ -1246,6 +1267,7 @@ mod tests {
     #[test_case(json!({"type": "string"}), json!({"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]}) ; "type_string_root")]
     #[test_case(json!({"type": "integer"}), json!({"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"]}) ; "type_integer_root")]
     #[test_case(json!({"type": "boolean"}), json!({"type": "object", "properties": {"value": {"type": "boolean"}}, "required": ["value"]}) ; "type_boolean_root")]
+    #[allow(clippy::needless_pass_by_value)]
     fn sanitize_primitive_root_wraps_as_object(input: Value, expected: Value) {
         let result = sanitize_tool_input_schema(input);
         assert_eq!(result, expected);
@@ -1253,6 +1275,7 @@ mod tests {
 
     #[test_case(json!({"type": "object", "required": {}}), json!({"type": "object", "properties": {}, "required": []}) ; "required_object")]
     #[test_case(json!({"type": "object", "required": {"foo": true}}), json!({"type": "object", "properties": {}, "required": []}) ; "required_object_with_content")]
+    #[allow(clippy::needless_pass_by_value)]
     fn sanitize_required_object_to_array(input: Value, expected: Value) {
         let result = sanitize_tool_input_schema(input);
         assert_eq!(result, expected);
@@ -1260,24 +1283,28 @@ mod tests {
 
     #[test_case(json!({"type": "object"}), json!({"type": "object", "properties": {}}) ; "missing_properties")]
     #[test_case(json!({}), json!({"type": "object", "properties": {}}) ; "empty_schema")]
+    #[allow(clippy::needless_pass_by_value)]
     fn sanitize_missing_properties(input: Value, expected: Value) {
         let result = sanitize_tool_input_schema(input);
         assert_eq!(result, expected);
     }
 
     #[test_case(json!({"type": "array", "prefixItems": [{"type": "string"}]}), json!({"type": "object", "properties": {"value": {"type": "array", "items": {"type": "string"}}}, "required": ["value"]}) ; "prefixitems_to_items")]
+    #[allow(clippy::needless_pass_by_value)]
     fn sanitize_prefixitems_to_items(input: Value, expected: Value) {
         let result = sanitize_tool_input_schema(input);
         assert_eq!(result, expected);
     }
 
     #[test_case(json!({"type": "object", "properties": {"foo": {"type": "string"}}, "required": ["foo", "bar"]}), json!({"type": "object", "properties": {"foo": {"type": "string"}}, "required": ["foo"]}) ; "required_filters_missing_props")]
+    #[allow(clippy::needless_pass_by_value)]
     fn sanitize_required_filters_missing_properties(input: Value, expected: Value) {
         let result = sanitize_tool_input_schema(input);
         assert_eq!(result, expected);
     }
 
     #[test_case(json!({"type": "object", "properties": {"foo": {"type": "string", "prefixItems": [{"type": "integer"}]}}}), json!({"type": "object", "properties": {"foo": {"type": "array", "items": {"type": "integer"}}}}) ; "nested_prefixitems")]
+    #[allow(clippy::needless_pass_by_value)]
     fn sanitize_nested_prefixitems(input: Value, expected: Value) {
         let result = sanitize_tool_input_schema(input);
         assert_eq!(result, expected);
