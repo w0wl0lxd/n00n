@@ -1,0 +1,49 @@
+name: Changelog
+
+on:
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fragment:
+    name: Fragment required
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check for changelog fragment
+        env:
+          BASE: ${{ github.base_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          git fetch -q origin "$BASE" || true
+          changed="$(git diff --name-only "origin/$BASE...HEAD" 2>/dev/null || git diff --name-only HEAD~1)"
+          echo "Changed files:"
+          echo "$changed"
+
+          if ! printf '%s\n' "$changed" | grep -qE '^(src/|n00n-[^/]+/src/|plugins/)'; then
+            echo "no source changes detected; changelog fragment not required."
+            exit 0
+          fi
+
+          labels="${{ join(github.event.pull_request.labels.*.name, ' ') }}"
+          for l in $labels; do
+            case "$l" in
+              no-changelog|dependencies|ci) echo "label '$l' set; skipping."; exit 0 ;;
+            esac
+          done
+
+          if printf '%s\n' "$changed" | grep -qE '^changelog\.d/[^/]+\.md$'; then
+            echo "changelog fragment present; good."
+            exit 0
+          fi
+
+          echo "::error::Source changes require a changelog.d fragment. See changelog.d/README.md." >&2
+          echo "Add a file like 'changelog.d/<pr>.<type>.md'." >&2
+          echo "(types: added, changed, fixed, removed, deprecated, security, performance, docs)" >&2
+          exit 1

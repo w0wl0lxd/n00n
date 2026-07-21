@@ -19,7 +19,7 @@ pub const GENERAL_PROMPT: &str = include_str!("prompts/general.md");
 pub const COMPACTION_SYSTEM: &str = include_str!("prompts/compaction.md");
 pub const COMPACTION_USER: &str = include_str!("prompts/compaction_user.md");
 
-pub const DEFAULT_IDENTITY: &str = r#"You are N00n, an interactive CLI coding agent. Use the tools available to assist the user with software engineering tasks. Complete tasks successfully while minimizing token usage and tool calls to avoid context bloat.
+pub const DEFAULT_IDENTITY: &str = r#"You are n00n, an interactive CLI coding agent. Use the tools available to assist the user with software engineering tasks. Complete tasks successfully while minimizing token usage and tool calls to avoid context bloat.
 
 You must NEVER generate or guess URLs unless they are for helping the user with programming."#;
 
@@ -29,7 +29,7 @@ pub const DEFAULT_TONE: &str = r#"- Be concise. Your output is displayed on a CL
 - Output text to communicate with the user; all text you output outside of tool use is displayed to the user. Only use tools to complete tasks. NEVER use bash echo or other command-line tools to communicate thoughts, explanations, diagrams, or instructions to the user. Output all communication directly in your response text instead.
 - NEVER create files unless absolutely necessary. ALWAYS prefer editing existing files."#;
 
-const NATIVE_EFFICIENT_TOOLS: &[&str] = &["batch", "code_execution", "task"];
+const NATIVE_EFFICIENT_TOOLS: &[&str] = &["batch", "code_execution", "index", "task"];
 const INSTRUCTIONS_MARKER: &str = "{{instructions}}";
 
 /// Singleton: alphabetically last plugin wins, discarding all prior content
@@ -219,7 +219,7 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: batch, code_execution, task";
+    const NATIVE_EFFICIENT_LINE: &str = "Most efficient tools: batch, code_execution, index, task";
 
     fn slots(prompt: PromptId, entries: &[(Slot, &str)]) -> ResolvedSlots {
         let mut slots = ResolvedSlots::default();
@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn empty_slots_emit_template_and_native_efficient_line() {
         let out = assemble(PromptId::System, &ResolvedSlots::default(), "");
-        assert!(out.starts_with("You are N00n"));
+        assert!(out.starts_with("You are n00n"));
         assert!(
             !out.contains("{{"),
             "unfilled marker left in output:\n{out}"
@@ -296,13 +296,10 @@ mod tests {
     fn efficient_tools_extras_join_native_list() {
         let s = slots(
             PromptId::System,
-            &[
-                (Slot::EfficientTools, "index"),
-                (Slot::EfficientTools, "foo"),
-            ],
+            &[(Slot::EfficientTools, "foo"), (Slot::EfficientTools, "bar")],
         );
         let out = assemble(PromptId::System, &s, "");
-        assert!(out.contains(&format!("{NATIVE_EFFICIENT_LINE}, index, foo.")));
+        assert!(out.contains(&format!("{NATIVE_EFFICIENT_LINE}, foo, bar.")));
     }
 
     #[test]
@@ -393,7 +390,7 @@ mod tests {
     #[test]
     fn singleton_default_used_when_empty() {
         let out = assemble(PromptId::System, &ResolvedSlots::default(), "");
-        assert!(out.starts_with("You are N00n"));
+        assert!(out.starts_with("You are n00n"));
     }
 
     #[test]
@@ -409,7 +406,7 @@ mod tests {
         );
         let out = assemble(PromptId::System, &s, "");
         assert!(out.contains("Custom identity"));
-        assert!(!out.contains("You are N00n"));
+        assert!(!out.contains("You are n00n"));
     }
 
     #[test]
@@ -434,7 +431,7 @@ mod tests {
         let out = assemble(PromptId::System, &s, "");
         assert!(out.contains("SECOND"));
         assert!(!out.contains("FIRST"));
-        assert!(!out.contains("You are N00n"));
+        assert!(!out.contains("You are n00n"));
     }
 
     #[test]

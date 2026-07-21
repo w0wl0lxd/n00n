@@ -44,7 +44,11 @@ fn migrate_stale_logs(old_dir: &Path, new_dir: &Path) {
             fs::remove_file(entry.path()).ok();
             continue;
         }
-        if !name.starts_with("n00n.") || !name.ends_with(".log") {
+        if !name.starts_with("n00n.")
+            || !std::path::Path::new(name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("log"))
+        {
             continue;
         }
         let dst = new_dir.join(name);
@@ -63,6 +67,9 @@ pub struct RotatingFileWriter {
 }
 
 impl RotatingFileWriter {
+    /// # Errors
+    /// Returns an error if the logs directory cannot be determined or created,
+    /// or the log file cannot be opened.
     pub fn new(max_bytes: u64, max_files: u32) -> io::Result<Self> {
         let logs = paths::logs_dir()?;
         if let Ok(state) = paths::state_dir() {
@@ -88,12 +95,12 @@ impl RotatingFileWriter {
     fn rotate(&mut self) -> io::Result<()> {
         self.file.flush()?;
 
-        let _lock = OpenOptions::new()
+        let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .open(self.dir.join(LOCK_FILE_NAME))?;
-        flock_exclusive(&_lock)?;
+        flock_exclusive(&lock)?;
 
         let primary = file_path(&self.dir, 0);
         #[cfg(unix)]
@@ -120,7 +127,11 @@ impl RotatingFileWriter {
                 if src.exists() {
                     let dst = file_path(&self.dir, i + 1);
                     if let Err(e) = fs::rename(&src, &dst) {
-                        eprintln!("n00n: log rotate rename {src:?} -> {dst:?}: {e}");
+                        eprintln!(
+                            "n00n: log rotate rename {} -> {}: {e}",
+                            src.display(),
+                            dst.display()
+                        );
                     }
                 }
             }
@@ -180,7 +191,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut w = test_writer(tmp.path());
 
-        let filler = "x".repeat(TEST_MAX_BYTES as usize);
+        let filler = "x".repeat(usize::try_from(TEST_MAX_BYTES).unwrap());
         w.write_all(filler.as_bytes()).unwrap();
         w.flush().unwrap();
 
@@ -199,7 +210,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut w = test_writer(tmp.path());
 
-        let chunk = "x".repeat(TEST_MAX_BYTES as usize);
+        let chunk = "x".repeat(usize::try_from(TEST_MAX_BYTES).unwrap());
         for _ in 0..TEST_MAX_FILES + 2 {
             w.write_all(chunk.as_bytes()).unwrap();
             w.flush().unwrap();
@@ -292,7 +303,7 @@ mod tests {
         let mut w1 = test_writer(tmp.path());
         let mut w2 = test_writer(tmp.path());
 
-        let filler = "x".repeat(TEST_MAX_BYTES as usize);
+        let filler = "x".repeat(usize::try_from(TEST_MAX_BYTES).unwrap());
         w1.write_all(filler.as_bytes()).unwrap();
         w1.flush().unwrap();
 

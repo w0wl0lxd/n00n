@@ -17,6 +17,8 @@ static CONFIG: OpenAiCompatConfig = OpenAiCompatConfig {
     max_tokens_field: "max_completion_tokens",
     include_stream_usage: false,
     provider_name: "Synthetic",
+    supports_prompt_cache_key: false,
+    supports_prompt_cache_breakpoint: false,
 };
 
 inventory::submit!(n00n_config::providers::BuiltInProvider {
@@ -46,7 +48,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                 cache_read: 0.00,
                 fast: None,
             },
-            max_output_tokens: 131072,
+            max_output_tokens: 131_072,
             context_window: 200_000,
         },
         ModelEntry {
@@ -62,7 +64,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                 cache_read: 0.00,
                 fast: None,
             },
-            max_output_tokens: 131072,
+            max_output_tokens: 131_072,
             context_window: 200_000,
         },
         ModelEntry {
@@ -78,7 +80,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                 cache_read: 0.00,
                 fast: None,
             },
-            max_output_tokens: 131072,
+            max_output_tokens: 131_072,
             context_window: 200_000,
         },
     ]
@@ -95,20 +97,23 @@ impl Synthetic {
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
         let pool = KeyPool::resolve("synthetic", CONFIG.api_key_env)?;
         Ok(Self {
-            compat: OpenAiCompatProvider::new(&CONFIG, timeouts),
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth: Arc::new(Mutex::new(ResolvedAuth::bearer(pool.current()))),
             key_pool: Some(pool),
             system_prefix: None,
         })
     }
 
-    pub(crate) fn with_auth(auth: Arc<Mutex<ResolvedAuth>>, timeouts: super::Timeouts) -> Self {
-        Self {
-            compat: OpenAiCompatProvider::new(&CONFIG, timeouts),
+    pub(crate) fn with_auth(
+        auth: Arc<Mutex<ResolvedAuth>>,
+        timeouts: super::Timeouts,
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth,
             key_pool: None,
             system_prefix: None,
-        }
+        })
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -126,13 +131,23 @@ impl Provider for Synthetic {
         tools: &'a Value,
         event_tx: &'a Sender<ProviderEvent>,
         opts: RequestOptions,
-        _session_id: Option<&'a SessionRef>,
+        session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let mut buf = String::new();
-            let system = super::with_prefix(&self.system_prefix, system, &mut buf);
-            let mut body = self.compat.build_body(model, messages, system, tools);
+            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
+            let mut body = self.compat.build_body_with_session(
+                model,
+                messages,
+                system,
+                tools,
+                session_id.map(n00n_storage::id::SessionRef::as_str),
+            );
             opts.thinking
                 .apply_reasoning_effort(&mut body, &dialect::STANDARD, model);
             self.compat
@@ -143,7 +158,11 @@ impl Provider for Synthetic {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             self.compat.do_list_models(&auth).await
         })
     }

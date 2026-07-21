@@ -36,8 +36,7 @@ async fn acquire(lua: Lua, this: mlua::UserDataRef<LuaSemaphore>) -> LuaResult<L
     drop(this);
     let cancel = lua
         .app_data_ref::<TaskHandle>()
-        .map(|h| lock_cell(&h).cancel.clone())
-        .unwrap_or_else(CancelToken::none);
+        .map_or_else(CancelToken::none, |h| lock_cell(&h).cancel.clone());
     let guard = cancel
         .race(sem.acquire_arc())
         .await
@@ -63,7 +62,7 @@ fn release(_lua: &Lua, this: &LuaPermit) -> LuaResult<()> {
     let released = this
         .guard
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take()
         .is_some();
     if !released {
@@ -95,7 +94,7 @@ lua_class! {
 fn run(lua: &Lua, r#fn: Function, on_finish: Option<Function>) -> LuaResult<()> {
     let actual_work = if let Some(cb) = on_finish {
         lua.load(
-            r#"
+            r"
                 local work, finish = ...
                 return function()
                     local ok, result = pcall(work)
@@ -105,7 +104,7 @@ fn run(lua: &Lua, r#fn: Function, on_finish: Option<Function>) -> LuaResult<()> 
                         finish(result)
                     end
                 end
-            "#,
+            ",
         )
         .call::<Function>((r#fn, cb))?
     } else {
@@ -296,9 +295,8 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
                 _ => return Err(mlua::Error::runtime("argc must be an integer")),
             };
             args_vec.remove(0);
-            let fun = match args_vec.remove(0) {
-                Value::Function(f) => f,
-                _ => return Err(mlua::Error::runtime("second argument must be a function")),
+            let Value::Function(fun) = args_vec.remove(0) else {
+                return Err(mlua::Error::runtime("second argument must be a function"));
             };
 
             let (tx, rx) = flume::bounded(1);
@@ -324,7 +322,7 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
     tbl.set(
         "join",
         lua.load(
-            r#"
+            r"
             local async_tbl = ...
             return function(max_jobs, funs)
                 if #funs == 0 then return end
@@ -348,7 +346,7 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
                     end
                 end)
             end
-        "#,
+        ",
         )
         .call::<Function>(&tbl)?,
     )?;
@@ -356,14 +354,14 @@ pub(crate) fn create_async_table(lua: &Lua) -> LuaResult<Table> {
     tbl.set(
         "wrap",
         lua.load(
-            r#"
+            r"
             local async_tbl = ...
             return function(argc, fun)
                 return function(...)
                     return async_tbl.await(argc, fun, ...)
                 end
             end
-        "#,
+        ",
         )
         .call::<Function>(&tbl)?,
     )?;

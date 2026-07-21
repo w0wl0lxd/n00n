@@ -194,7 +194,7 @@ impl PluginHost {
     /// without building a config.
     pub fn with_all_builtins(registry: Arc<ToolRegistry>) -> Result<Self, PluginError> {
         let mut host = Self::new(registry)?;
-        host.load_builtins(&PluginsConfig::from_plugins(HashMap::new()))?;
+        host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))?;
         Ok(host)
     }
 
@@ -453,22 +453,19 @@ impl PluginHost {
     pub fn command_reader(&self) -> LuaCommandReader {
         self.inner
             .as_ref()
-            .map(|t| t.command_reader.clone())
-            .unwrap_or_else(LuaCommandReader::empty)
+            .map_or_else(LuaCommandReader::empty, |t| t.command_reader.clone())
     }
 
     pub fn keymap_reader(&self) -> KeymapReader {
         self.inner
             .as_ref()
-            .map(|t| t.keymap_reader.clone())
-            .unwrap_or_else(KeymapReader::empty)
+            .map_or_else(KeymapReader::empty, |t| t.keymap_reader.clone())
     }
 
     pub fn hint_reader(&self) -> HintReader {
         self.inner
             .as_ref()
-            .map(|t| t.hint_reader.clone())
-            .unwrap_or_else(HintReader::empty)
+            .map_or_else(HintReader::empty, |t| t.hint_reader.clone())
     }
 
     pub fn ui_action_rx(&self) -> Option<flume::Receiver<UiAction>> {
@@ -541,6 +538,11 @@ impl EventHandle {
         });
     }
 
+    /// Dispatches a click to a standalone UI buffer's registered handler.
+    pub fn request_buf_click(&self, buf: Arc<n00n_agent::SharedBuf>, row: usize) {
+        let _ = self.tx.send(Request::ClickBuf { buf, row });
+    }
+
     /// Like [`Self::request_click`], but when the runtime no longer holds
     /// a live or warm handle for the tool it restores from `item` (whose
     /// `clicks` must already include `row`) and emits fresh snapshots on
@@ -608,7 +610,7 @@ mod tests {
     fn with_jit_off_loads_builtins_and_registers_tools() {
         let reg = Arc::new(ToolRegistry::new());
         let mut host = PluginHost::with_jit(Arc::clone(&reg), false).unwrap();
-        host.load_builtins(&PluginsConfig::from_plugins(HashMap::new()))
+        host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))
             .unwrap();
         assert!(reg.has("glob"));
     }
@@ -616,7 +618,7 @@ mod tests {
     #[test]
     fn load_builtins_on_disabled_host_is_noop() {
         let mut host = PluginHost::disabled();
-        host.load_builtins(&PluginsConfig::from_plugins(HashMap::new()))
+        host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))
             .unwrap();
     }
 
@@ -677,7 +679,7 @@ mod tests {
     fn pipelined_load_registers_every_builtin() {
         let reg = Arc::new(ToolRegistry::new());
         let mut host = PluginHost::new(Arc::clone(&reg)).unwrap();
-        host.load_builtins(&PluginsConfig::from_plugins(HashMap::new()))
+        host.load_builtins(&PluginsConfig::from_plugins(&HashMap::new()))
             .unwrap();
         for tool in ["read", "grep", "glob", "bash"] {
             assert!(reg.has(tool), "pipelined load must register {tool}");
@@ -873,7 +875,7 @@ mod tests {
     #[test]
     fn disabled_host_skips_load_builtins() {
         let mut host = PluginHost::disabled();
-        let config = PluginsConfig::from_plugins(HashMap::new());
+        let config = PluginsConfig::from_plugins(&HashMap::new());
         assert!(
             !config.names.is_empty(),
             "default config enables builtin plugins"

@@ -30,7 +30,7 @@ use n00n_providers::{Message, Model};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{N00nId, N00nIdParseError, SessionRef};
-use n00n_storage::sessions::{SessionError, normalize_title};
+use n00n_storage::sessions::{SessionError, TranscriptEntry, normalize_title};
 use serde_json::json;
 use tracing::warn;
 
@@ -45,6 +45,8 @@ use crate::input::InputReader;
 
 use crate::storage_writer::StorageWriter;
 use crate::terminal;
+use crate::terminal_image;
+use ratatui_image::picker::Picker;
 
 const ANIMATION_INTERVAL_MS: u64 = 16;
 const IDLE_POLL_INTERVAL_MS: u64 = 100;
@@ -149,6 +151,7 @@ struct SpawnCtx {
     model_slot: Arc<ArcSwap<ModelSlot>>,
     available_models: Arc<ArcSwapOption<Vec<String>>>,
     storage_writer: Arc<StorageWriter>,
+    picker: Arc<Picker>,
 }
 
 impl SpawnCtx {
@@ -158,6 +161,7 @@ impl SpawnCtx {
         let handles = AgentHandles::spawn(
             &self.model_slot,
             session.messages.clone(),
+            session.transcript.clone(),
             self.config.clone(),
             self.ui_config.tool_output_lines,
             &permissions,
@@ -182,6 +186,7 @@ impl SpawnCtx {
             self.input_history_size,
             permissions,
             Arc::clone(&self.custom_commands),
+            Arc::clone(&self.picker),
         );
         app.lua_event_handle = self.lua_event_handle.clone();
         handles.apply_to_app(&mut app);
@@ -225,6 +230,36 @@ enum Wake {
     Agent(usize, Box<n00n_agent::Envelope>),
     Shell(usize, ShellEvent),
     Warn(String),
+}
+
+struct DrainScheduler {
+    prefer_input: bool,
+}
+
+impl Default for DrainScheduler {
+    fn default() -> Self {
+        Self { prefer_input: true }
+    }
+}
+
+impl DrainScheduler {
+    fn next<T>(
+        &mut self,
+        mut input: impl FnMut() -> Option<T>,
+        mut other: impl FnMut() -> Option<T>,
+    ) -> Option<T> {
+        let (is_input, item) = if self.prefer_input {
+            input()
+                .map(|item| (true, item))
+                .or_else(|| other().map(|item| (false, item)))
+        } else {
+            other()
+                .map(|item| (false, item))
+                .or_else(|| input().map(|item| (true, item)))
+        }?;
+        self.prefer_input = !is_input;
+        Some(item)
+    }
 }
 
 struct BackgroundModels {
@@ -357,6 +392,8 @@ impl<'t> EventLoop<'t> {
         }));
         let bg = spawn_model_fetch(&model_slot, timeouts);
 
+        let picker = Arc::new(terminal_image::picker());
+
         let ctx = SpawnCtx {
             storage,
             config,
@@ -374,6 +411,7 @@ impl<'t> EventLoop<'t> {
             model_slot,
             available_models: bg.available,
             storage_writer,
+            picker,
         };
 
         let mut runtimes: Vec<SessionRuntime> = sessions
@@ -468,9 +506,17 @@ impl<'t> EventLoop<'t> {
     }
 
     /// Wait for the next event from any source, or time out so animations
-    /// and periodic polls keep running. `Duration::ZERO` drains whatever is
-    /// already pending.
+    /// and periodic polls keep running. Already-pending input wins before
+    /// joining the fair selector.
     fn next_wake(&self, timeout: Duration) -> Option<Wake> {
+        self.try_input_wake().or_else(|| self.select_wake(timeout))
+    }
+
+    fn try_input_wake(&self) -> Option<Wake> {
+        self.input.receiver().try_recv().ok().map(Wake::Input)
+    }
+
+    fn select_wake(&self, timeout: Duration) -> Option<Wake> {
         let mut sel = flume::Selector::new().recv(self.input.receiver(), |res| match res {
             Ok(ev) => Some(Wake::Input(ev)),
             Err(_) => Some(Wake::InputGone),
@@ -494,6 +540,29 @@ impl<'t> EventLoop<'t> {
             });
         }
         sel.wait_timeout(timeout).ok().flatten()
+    }
+
+    fn next_non_input_wake(&self) -> Option<Wake> {
+        let mut sel = flume::Selector::new();
+        if let Some(rx) = self
+            .ui_action_rx
+            .as_ref()
+            .filter(|rx| !rx.is_disconnected())
+        {
+            sel = sel.recv(rx, |res| res.ok().map(Wake::Ui));
+        }
+        sel = sel.recv(&self.warn_rx, |res| res.ok().map(Wake::Warn));
+        for (i, rt) in self.sessions.iter().enumerate() {
+            if !rt.handles.agent_rx.is_disconnected() {
+                sel = sel.recv(&rt.handles.agent_rx, move |res| {
+                    res.ok().map(|env| Wake::Agent(i, Box::new(env)))
+                });
+            }
+            sel = sel.recv(&rt.shell_rx, move |res| {
+                res.ok().map(|ev| Wake::Shell(i, ev))
+            });
+        }
+        sel.wait_timeout(Duration::ZERO).ok().flatten()
     }
 
     fn handle_wake(&mut self, wake: Wake) -> Result<()> {
@@ -530,7 +599,7 @@ impl<'t> EventLoop<'t> {
             return;
         }
         let app = &mut self.sessions[self.focused].app;
-        if app.status != Status::Streaming || !app.has_content() {
+        if app.status != Status::Streaming {
             return;
         }
         app.save_session();
@@ -544,11 +613,14 @@ impl<'t> EventLoop<'t> {
 
     fn drain_channels(&mut self) -> Result<()> {
         // Leftovers beyond the budget are picked up right after the next draw.
+        let mut scheduler = DrainScheduler::default();
         for _ in 0..DRAIN_BUDGET {
-            match self.next_wake(Duration::ZERO) {
-                Some(wake) => self.handle_wake(wake)?,
-                None => break,
-            }
+            let Some(wake) =
+                scheduler.next(|| self.try_input_wake(), || self.next_non_input_wake())
+            else {
+                break;
+            };
+            self.handle_wake(wake)?;
         }
 
         for rt in &mut self.sessions {
@@ -594,6 +666,10 @@ impl<'t> EventLoop<'t> {
                     app.transition_plan(crate::app::mode::PlanTrigger::InteractivePrompt);
                 }
             }
+            UiAction::PickModel { current, reply_tx } => {
+                self.focused_app().pick_model_for_lua(current, reply_tx);
+                self.handle_action(self.focused, Action::RefreshModels);
+            }
             UiAction::Session { req, reply_tx } => {
                 self.handle_session_request(req, reply_tx);
             }
@@ -603,9 +679,9 @@ impl<'t> EventLoop<'t> {
     /// Exits with the editor's status code; `-1` (flashed on the session's
     /// app) when the editor could not be launched.
     fn open_editor(&mut self, idx: usize, path: &std::path::Path) -> i32 {
-        let result = {
-            let _pause = self.input.pause();
-            terminal::open_in_editor(path, self.terminal)
+        let result = match self.input.pause() {
+            Ok(_pause) => terminal::open_in_editor(path, self.terminal),
+            Err(e) => Err(e),
         };
         match result {
             Ok(code) => code,
@@ -961,12 +1037,18 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn respawn_agent(&mut self, idx: usize, history: Vec<Message>) {
+    fn respawn_agent(
+        &mut self,
+        idx: usize,
+        history: Vec<Message>,
+        transcript: Vec<TranscriptEntry<Message>>,
+    ) {
         let rt = &mut self.sessions[idx];
         let lua_handle = rt.app.lua_event_handle.clone();
         let permissions = Arc::clone(&rt.app.permissions);
         rt.handles.respawn(
             history,
+            transcript,
             &self.ctx.model_slot,
             self.ctx.config.clone(),
             self.ctx.ui_config.tool_output_lines,
@@ -980,6 +1062,21 @@ impl<'t> EventLoop<'t> {
         match action {
             Action::SendMessage(input) => {
                 let rt = &mut self.sessions[idx];
+                match n00n_storage::sessions::openai_response_chain_parent_exists(
+                    &rt.app.storage,
+                    rt.app.state.session.id,
+                ) {
+                    Ok(false) => {
+                        let mut initial_session = rt.app.state.session.clone();
+                        if let Err(error) = initial_session.save(&rt.app.storage) {
+                            warn!(%error, "failed to persist session before provider request");
+                        }
+                    }
+                    Err(error) => {
+                        warn!(%error, "failed to check session persistence before provider request");
+                    }
+                    Ok(true) => {}
+                }
                 let mut input = *input;
                 input.preamble = rt.app.shell.drain_results();
                 let run_id = rt.app.run_id;
@@ -989,6 +1086,7 @@ impl<'t> EventLoop<'t> {
                     input,
                     run_id,
                     displayed: true,
+                    delivery: crate::agent::shared_queue::Delivery::TurnEnd,
                 });
             }
             Action::CancelAgent { run_id } => {
@@ -1004,7 +1102,7 @@ impl<'t> EventLoop<'t> {
                     .try_send(AgentCommand::CancelSubagent { tool_use_id });
             }
             Action::NewSession => {
-                self.respawn_agent(idx, Vec::new());
+                self.respawn_agent(idx, Vec::new(), Vec::new());
             }
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
@@ -1018,7 +1116,7 @@ impl<'t> EventLoop<'t> {
                         provider: Arc::from(new_provider),
                     }));
                 }
-                self.respawn_agent(idx, loaded.messages);
+                self.respawn_agent(idx, loaded.messages, loaded.transcript);
                 *self.sessions[idx]
                     .handles
                     .tool_outputs
@@ -1066,9 +1164,9 @@ impl<'t> EventLoop<'t> {
             }
             Action::EditInputInEditor => {
                 let current_text = self.sessions[idx].app.input_box.buffer.value();
-                let result = {
-                    let _pause = self.input.pause();
-                    terminal::edit_temp_content(&current_text, self.terminal)
+                let result = match self.input.pause() {
+                    Ok(_pause) => terminal::edit_temp_content(&current_text, self.terminal),
+                    Err(e) => Err(e),
                 };
                 match result {
                     Ok(edited) => self.sessions[idx].app.input_box.set_input(edited),
@@ -1083,10 +1181,10 @@ impl<'t> EventLoop<'t> {
                     slot.model.clone(),
                 );
             }
-            Action::Suspend => {
-                let _pause = self.input.pause();
-                terminal::suspend(self.terminal);
-            }
+            Action::Suspend => match self.input.pause() {
+                Ok(_pause) => terminal::suspend(self.terminal),
+                Err(e) => self.sessions[idx].app.flash(e),
+            },
             Action::RefreshModels => self.refresh_models(),
             Action::RefreshUsage => self.refresh_usage(),
         }
@@ -1208,5 +1306,53 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
         lines as i32
     } else {
         -(lines as i32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DRAIN_BUDGET, DrainScheduler};
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Source {
+        Input(usize),
+        Agent(usize),
+    }
+
+    #[test]
+    fn drain_prioritizes_input_and_preserves_fair_bounded_progress() {
+        let (input_tx, input_rx) = flume::unbounded();
+        let (agent_tx, agent_rx) = flume::unbounded();
+        for i in 0..DRAIN_BUDGET {
+            input_tx.send(i).expect("input receiver remains connected");
+            agent_tx.send(i).expect("agent receiver remains connected");
+        }
+
+        let mut scheduler = DrainScheduler::default();
+        let drained: Vec<_> = (0..DRAIN_BUDGET)
+            .filter_map(|_| {
+                scheduler.next(
+                    || input_rx.try_recv().ok().map(Source::Input),
+                    || agent_rx.try_recv().ok().map(Source::Agent),
+                )
+            })
+            .collect();
+
+        assert_eq!(drained.first(), Some(&Source::Input(0)));
+        assert_eq!(
+            drained
+                .iter()
+                .filter(|source| matches!(source, Source::Input(_)))
+                .count(),
+            DRAIN_BUDGET / 2
+        );
+        assert_eq!(
+            drained
+                .iter()
+                .filter(|source| matches!(source, Source::Agent(_)))
+                .count(),
+            DRAIN_BUDGET / 2
+        );
+        assert_eq!(input_rx.len() + agent_rx.len(), DRAIN_BUDGET);
     }
 }

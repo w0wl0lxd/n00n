@@ -108,6 +108,8 @@ local schema = {
     },
     timeout = {
       type = "integer",
+      minimum = 5,
+      maximum = 300,
       description = "Timeout in seconds (default 30, max 300)",
     },
   },
@@ -222,6 +224,9 @@ end
 local function handler(input, ctx)
   local config = ctx:config()
   local timeout = input.timeout or opts.timeout_secs
+  if timeout < 5 or timeout > 300 then
+    error("timeout must be between 5 and 300 seconds")
+  end
 
   local buf, view, highlight = build_body(ctx, input.code)
   ctx:live_buf(buf)

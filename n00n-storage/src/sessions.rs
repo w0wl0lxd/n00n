@@ -20,7 +20,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use zstd::stream::{Decoder, Encoder};
 
-use crate::{StateDir, StorageError, atomic_write, now_epoch};
+use crate::{StateDir, StorageError, atomic_write, atomic_write_permissions, now_epoch};
 
 const SESSION_VERSION: u32 = 1;
 const LOG_FORMAT_VERSION: u32 = 3;
@@ -30,6 +30,10 @@ const CWD_INDEX_FILE: &str = "cwd_latest.json";
 const SCAN_CACHE_FILE: &str = "scan_cache_v2.json";
 const DEFAULT_TITLE: &str = "New session";
 const MAX_TITLE_LEN: usize = 60;
+const OPENAI_RESPONSE_CHAIN_SUFFIX: &str = "openai-response.json";
+const OPENAI_RESPONSE_CHAIN_LOCK_SUFFIX: &str = "openai-response.lock";
+const OPENAI_RESPONSE_CHAIN_FILE_MODE: u32 = 0o600;
+pub const OPENAI_RESPONSE_CHAIN_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -65,10 +69,12 @@ pub struct StoredTokenUsage {
 }
 
 impl StoredTokenUsage {
+    #[must_use]
     pub fn total_input(&self) -> u32 {
         self.input + self.cache_read + self.cache_creation
     }
 
+    #[must_use]
     pub fn total(&self) -> u32 {
         self.input + self.output + self.cache_creation + self.cache_read
     }
@@ -111,6 +117,31 @@ pub struct SessionMeta {
     pub usage_by_model: HashMap<String, StoredTokenUsage>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredOpenAiResponseChain {
+    pub response_id: String,
+    pub message_count: usize,
+    pub tools_hash: String,
+    pub messages_hash: String,
+    pub auth_scope_hash: String,
+    pub expires_at: u64,
+}
+
+pub struct OpenAiResponseChainLock {
+    _file: File,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TranscriptEntry<M> {
+    Message(M),
+    GeneratedMessage(M),
+    Compaction {
+        entries: Vec<TranscriptEntry<M>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generated_summary: Option<M>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session<M, U, T> {
     pub version: u32,
@@ -119,6 +150,8 @@ pub struct Session<M, U, T> {
     pub cwd: String,
     pub model: String,
     pub messages: Vec<M>,
+    #[serde(default)]
+    pub transcript: Vec<TranscriptEntry<M>>,
     pub token_usage: U,
     #[serde(default = "HashMap::new")]
     pub tool_outputs: HashMap<String, T>,
@@ -199,6 +232,7 @@ impl Effort {
         Self::Max,
     ];
 
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Minimal => "minimal",
@@ -211,6 +245,7 @@ impl Effort {
     }
 
     /// Percentage of the model's max thinking budget this level spends.
+    #[must_use]
     pub const fn percent(self) -> u32 {
         match self {
             Self::Minimal => 10,
@@ -224,14 +259,19 @@ impl Effort {
 
     /// `percent` of `max`, clamped to `[MIN_THINKING_BUDGET, max]`.
     /// A `max` below the floor is raised to it.
+    #[must_use]
+    #[allow(clippy::disallowed_methods)]
     pub fn budget(self, max: u32) -> u32 {
         let max = max.max(MIN_THINKING_BUDGET);
-        let tokens = (u64::from(max) * u64::from(self.percent()) / 100) as u32;
+        let tokens =
+            u32::try_from(u64::from(max) * u64::from(self.percent()) / 100).unwrap_or(u32::MAX);
         tokens.clamp(MIN_THINKING_BUDGET, max)
     }
 
     /// Inverse of [`Self::budget`]: the lowest level whose percentage covers
     /// `n` tokens out of `max`. Budgets at or above `max` map to `Max`.
+    #[must_use]
+    #[allow(clippy::disallowed_methods)]
     pub fn from_budget(n: u32, max: u32) -> Self {
         let pct = u64::from(n).saturating_mul(100) / u64::from(max.max(1));
         Self::ALL
@@ -244,6 +284,8 @@ impl Effort {
     /// the closest lower supported level, otherwise the lowest supported.
     /// An empty `supported` list returns `self` unchanged (dynamic model
     /// listings may not declare supported efforts).
+    #[must_use]
+    #[allow(clippy::disallowed_methods)]
     pub fn snap(self, supported: &[Self]) -> Self {
         if supported.is_empty() || supported.contains(&self) {
             return self;
@@ -286,6 +328,9 @@ pub enum StoredThinking {
 impl StoredThinking {
     /// The one string-to-thinking parser: `/thinking`, `always_thinking`
     /// config, and the Lua agent API all delegate here.
+    ///
+    /// # Errors
+    /// Returns `ThinkingParseError` if the input is not a valid thinking setting.
     pub fn parse_setting(input: &str) -> Result<Self, ThinkingParseError> {
         match input.trim() {
             "off" => Ok(Self::Off),
@@ -320,6 +365,7 @@ pub trait TitleSource {
 
 /// A pasted code block bakes `\n` into a title and skews width-based padding
 /// in single-line UI like the picker, so every title entry point calls this.
+#[must_use]
 pub fn normalize_title(title: &str) -> String {
     title.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -371,6 +417,8 @@ enum LogRecord<M, U, T> {
         title: String,
         token_usage: U,
         updated_at: u64,
+        #[serde(default)]
+        transcript: Vec<TranscriptEntry<M>>,
         #[serde(flatten)]
         meta: SessionMeta,
     },
@@ -382,13 +430,35 @@ pub struct SessionLog {
     session_id: N00nId,
     dir: PathBuf,
     file: File,
-    saved_msg_count: usize,
+    saved_messages: MessageCursor,
     saved_tool_ids: HashSet<String>,
     saved_sub_msg_counts: HashMap<String, usize>,
     /// Serialized trailing meta record; lets `append` persist meta-only
-    /// changes (title, draft, updated_at) instead of dropping them.
+    /// changes (title, draft, `updated_at`) instead of dropping them.
     saved_meta: Vec<u8>,
     saved_title: String,
+}
+
+struct MessageCursor {
+    identities: Vec<Vec<u8>>,
+}
+
+impl MessageCursor {
+    fn capture<M: Serialize>(messages: &[M]) -> Result<Self, SessionError> {
+        let identities = messages
+            .iter()
+            .map(|message| serde_json::to_vec(message).map_err(StorageError::from))
+            .collect::<Result<_, _>>()?;
+        Ok(Self { identities })
+    }
+
+    fn len(&self) -> usize {
+        self.identities.len()
+    }
+
+    fn is_prefix_of(&self, current: &Self) -> bool {
+        current.identities.starts_with(&self.identities)
+    }
 }
 
 fn sub_msg_snapshot<M>(map: &HashMap<String, Vec<M>>) -> HashMap<String, usize> {
@@ -396,23 +466,28 @@ fn sub_msg_snapshot<M>(map: &HashMap<String, Vec<M>>) -> HashMap<String, usize> 
 }
 
 impl SessionLog {
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be created or written.
     pub fn create<M, U, T>(dir: &Path, session: &Session<M, U, T>) -> Result<Self, SessionError>
     where
-        M: Serialize,
+        M: Serialize + Clone,
         U: Serialize,
         T: Serialize,
     {
         let file = write_session_file(dir, session)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
-        Ok(Self::cursor_from(dir, session, file))
+        Self::cursor_from(dir, session, file)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be found, read, or parsed,
+    /// or if the session ID does not match.
     pub fn open<M, U, T>(
         dir: &Path,
         session_id: N00nId,
     ) -> Result<(Session<M, U, T>, Self), SessionError>
     where
-        M: Serialize + DeserializeOwned,
+        M: Serialize + DeserializeOwned + Clone + Default,
         U: Serialize + DeserializeOwned + Default,
         T: Serialize + DeserializeOwned,
     {
@@ -432,17 +507,21 @@ impl SessionLog {
             .append(true)
             .open(&path)
             .map_err(StorageError::from)?;
-        let log = Self::cursor_from(dir, &session, file);
+        let log = Self::cursor_from(dir, &session, file)?;
         Ok((session, log))
     }
 
+    #[must_use]
     pub fn session_id(&self) -> N00nId {
         self.session_id
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session ID does not match, the cursor is ahead,
+    /// or the append operation fails.
     pub fn append<M, U, T>(&mut self, session: &Session<M, U, T>) -> Result<(), SessionError>
     where
-        M: Serialize,
+        M: Serialize + Clone,
         U: Serialize,
         T: Serialize,
     {
@@ -453,20 +532,24 @@ impl SessionLog {
             return self.compact(&dir, session);
         }
 
+        let current_messages = MessageCursor::capture(&session.messages)?;
+        if !self.saved_messages.is_prefix_of(&current_messages) {
+            let dir = self.dir.clone();
+            return self.compact(&dir, session);
+        }
+
         if self.cursor_ahead(session) {
             return Err(SessionError::CursorAhead {
-                saved: self.saved_msg_count,
+                saved: self.saved_messages.len(),
                 actual: session.messages.len(),
             });
         }
 
         let mut buf = Vec::new();
-        let mut new_msg_count = self.saved_msg_count;
         let mut new_tool_ids = Vec::new();
 
-        for msg in &session.messages[self.saved_msg_count..] {
+        for msg in &session.messages[self.saved_messages.len()..] {
             append_record(&mut buf, &LogRecord::<&M, &U, &T>::Msg { d: msg })?;
-            new_msg_count += 1;
         }
 
         for (id, output) in &session.tool_outputs {
@@ -484,6 +567,7 @@ impl SessionLog {
 
         let mut new_sub_counts: Vec<(String, usize)> = Vec::new();
         for (sub_id, msgs) in &session.subagent_messages {
+            #[allow(clippy::disallowed_methods)]
             let saved = self.saved_sub_msg_counts.get(sub_id).copied().unwrap_or(0);
             for msg in &msgs[saved..] {
                 append_record(
@@ -521,7 +605,7 @@ impl SessionLog {
             return Err(e.into());
         }
 
-        self.saved_msg_count = new_msg_count;
+        self.saved_messages = current_messages;
         self.saved_tool_ids.extend(new_tool_ids);
         for (sub_id, count) in new_sub_counts {
             self.saved_sub_msg_counts.insert(sub_id, count);
@@ -529,18 +613,20 @@ impl SessionLog {
         if meta_changed {
             self.saved_meta = meta_bytes;
         }
-        self.saved_title = session.title.clone();
+        self.saved_title.clone_from(&session.title);
 
         Ok(())
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session ID does not match or the compact operation fails.
     pub fn compact<M, U, T>(
         &mut self,
         dir: &Path,
         session: &Session<M, U, T>,
     ) -> Result<(), SessionError>
     where
-        M: Serialize,
+        M: Serialize + Clone,
         U: Serialize,
         T: Serialize,
     {
@@ -554,27 +640,31 @@ impl SessionLog {
             .append(true)
             .open(&path)
             .map_err(StorageError::from)?;
-        *self = Self::cursor_from(dir, session, file);
+        *self = Self::cursor_from(dir, session, file)?;
 
         Ok(())
     }
 
-    fn cursor_from<M, U, T>(dir: &Path, session: &Session<M, U, T>, file: File) -> Self
+    fn cursor_from<M, U, T>(
+        dir: &Path,
+        session: &Session<M, U, T>,
+        file: File,
+    ) -> Result<Self, SessionError>
     where
-        M: Serialize,
+        M: Serialize + Clone,
         U: Serialize,
         T: Serialize,
     {
-        Self {
+        Ok(Self {
             session_id: session.id,
             dir: dir.to_path_buf(),
             file,
-            saved_msg_count: session.messages.len(),
+            saved_messages: MessageCursor::capture(&session.messages)?,
             saved_tool_ids: session.tool_outputs.keys().cloned().collect(),
             saved_sub_msg_counts: sub_msg_snapshot(&session.subagent_messages),
-            saved_meta: meta_record_bytes(session).unwrap_or_default(),
+            saved_meta: meta_record_bytes(session)?,
             saved_title: session.title.clone(),
-        }
+        })
     }
 
     fn require_same_id<M, U, T>(&self, session: &Session<M, U, T>) -> Result<(), SessionError> {
@@ -588,7 +678,7 @@ impl SessionLog {
     }
 
     fn cursor_ahead<M, U, T>(&self, session: &Session<M, U, T>) -> bool {
-        self.saved_msg_count > session.messages.len()
+        self.saved_messages.len() > session.messages.len()
             || self
                 .saved_tool_ids
                 .iter()
@@ -604,17 +694,18 @@ impl SessionLog {
 
 fn meta_record_bytes<M, U, T>(session: &Session<M, U, T>) -> Result<Vec<u8>, SessionError>
 where
-    M: Serialize,
+    M: Serialize + Clone,
     U: Serialize,
     T: Serialize,
 {
     let mut buf = Vec::new();
     append_record(
         &mut buf,
-        &LogRecord::<&M, &U, &T>::Meta {
+        &LogRecord::<M, &U, &T>::Meta {
             title: session.title.clone(),
             token_usage: &session.token_usage,
             updated_at: session.updated_at,
+            transcript: session.transcript.clone(),
             meta: session.meta.clone(),
         },
     )?;
@@ -623,7 +714,7 @@ where
 
 fn write_session_file<M, U, T>(dir: &Path, session: &Session<M, U, T>) -> Result<File, SessionError>
 where
-    M: Serialize,
+    M: Serialize + Clone,
     U: Serialize,
     T: Serialize,
 {
@@ -646,7 +737,7 @@ fn write_full_session<M, U, T, W: Write>(
     session: &Session<M, U, T>,
 ) -> Result<(), SessionError>
 where
-    M: Serialize,
+    M: Serialize + Clone,
     U: Serialize,
     T: Serialize,
 {
@@ -691,7 +782,7 @@ where
 
 fn full_session_bytes<M, U, T>(session: &Session<M, U, T>) -> Result<Vec<u8>, SessionError>
 where
-    M: Serialize,
+    M: Serialize + Clone,
     U: Serialize,
     T: Serialize,
 {
@@ -718,26 +809,55 @@ enum RawTag {
     Other,
 }
 
+struct SessionBuilder<M, U, T> {
+    id: Option<N00nId>,
+    model: String,
+    cwd: String,
+    created_at: u64,
+    messages: Vec<M>,
+    tool_outputs: HashMap<String, T>,
+    subagent_messages: HashMap<String, Vec<M>>,
+    title: String,
+    token_usage: U,
+    updated_at: u64,
+    transcript: Vec<TranscriptEntry<M>>,
+    meta: SessionMeta,
+}
+
+impl<M, U, T> Default for SessionBuilder<M, U, T>
+where
+    U: Default,
+{
+    fn default() -> Self {
+        Self {
+            id: None,
+            model: String::new(),
+            cwd: String::new(),
+            created_at: 0,
+            messages: Vec::new(),
+            tool_outputs: HashMap::new(),
+            subagent_messages: HashMap::new(),
+            title: String::new(),
+            token_usage: U::default(),
+            updated_at: 0,
+            transcript: Vec::new(),
+            meta: SessionMeta::default(),
+        }
+    }
+}
+
 fn parse_records<M, U, T>(data: &[u8], path: &Path) -> Result<Session<M, U, T>, SessionError>
 where
-    M: DeserializeOwned,
+    M: DeserializeOwned + Default,
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
     let reader = BufReader::new(data);
     let mut line_count = 0usize;
-
-    let mut id: Option<N00nId> = None;
-    let mut model = String::new();
-    let mut cwd = String::new();
-    let mut created_at = 0u64;
-    let mut messages = Vec::new();
-    let mut tool_outputs = HashMap::new();
-    let mut subagent_messages: HashMap<String, Vec<M>> = HashMap::new();
-    let mut title = DEFAULT_TITLE.to_string();
-    let mut token_usage = U::default();
-    let mut updated_at = 0u64;
-    let mut meta = SessionMeta::default();
+    let mut builder = SessionBuilder {
+        title: DEFAULT_TITLE.to_string(),
+        ..Default::default()
+    };
     let mut got_header = false;
 
     for line_result in reader.lines() {
@@ -768,67 +888,86 @@ where
                 continue;
             }
         };
-        match record {
-            LogRecord::Header {
-                v,
-                id: h_id,
-                model: h_model,
-                cwd: h_cwd,
-                title: h_title,
-                created_at: h_created,
-            } => {
-                if v != LOG_FORMAT_VERSION {
-                    return Err(SessionError::VersionMismatch {
-                        found: v,
-                        expected: LOG_FORMAT_VERSION,
-                    });
-                }
-                id = Some(h_id);
-                model = h_model;
-                cwd = h_cwd;
-                created_at = h_created;
-                if let Some(t) = h_title {
-                    title = t;
-                }
-                got_header = true;
-            }
-            LogRecord::Msg { d } => messages.push(d),
-            LogRecord::Out { id: out_id, d } => {
-                tool_outputs.insert(out_id, d);
-            }
-            LogRecord::SubMsg { sub, d } => {
-                subagent_messages.entry(sub).or_default().push(d);
-            }
-            LogRecord::Meta {
-                title: m_title,
-                token_usage: m_usage,
-                updated_at: m_updated,
-                meta: m_meta,
-            } => {
-                title = m_title;
-                token_usage = m_usage;
-                updated_at = m_updated;
-                meta = m_meta;
-            }
-        }
+        apply_record(&mut builder, record, &mut got_header)?;
     }
 
-    let id = id.ok_or(StorageError::NotFound(path.display().to_string()))?;
+    let id = builder
+        .id
+        .ok_or(StorageError::NotFound(path.display().to_string()))?;
 
     Ok(Session {
         version: SESSION_VERSION,
         id,
-        title: normalize_title(&title),
-        cwd,
-        model,
-        messages,
-        token_usage,
-        tool_outputs,
-        subagent_messages,
-        meta,
-        created_at,
-        updated_at,
+        title: normalize_title(&builder.title),
+        cwd: builder.cwd,
+        model: builder.model,
+        messages: builder.messages,
+        transcript: builder.transcript,
+        token_usage: builder.token_usage,
+        tool_outputs: builder.tool_outputs,
+        subagent_messages: builder.subagent_messages,
+        meta: builder.meta,
+        created_at: builder.created_at,
+        updated_at: builder.updated_at,
     })
+}
+
+fn apply_record<M, U, T>(
+    builder: &mut SessionBuilder<M, U, T>,
+    record: LogRecord<M, U, T>,
+    got_header: &mut bool,
+) -> Result<(), SessionError>
+where
+    M: DeserializeOwned + Default,
+    U: DeserializeOwned + Default,
+    T: DeserializeOwned,
+{
+    match record {
+        LogRecord::Header {
+            v,
+            id: h_id,
+            model: h_model,
+            cwd: h_cwd,
+            title: h_title,
+            created_at: h_created,
+        } => {
+            if v != LOG_FORMAT_VERSION {
+                return Err(SessionError::VersionMismatch {
+                    found: v,
+                    expected: LOG_FORMAT_VERSION,
+                });
+            }
+            builder.id = Some(h_id);
+            builder.model = h_model;
+            builder.cwd = h_cwd;
+            builder.created_at = h_created;
+            if let Some(t) = h_title {
+                builder.title = t;
+            }
+            *got_header = true;
+        }
+        LogRecord::Msg { d } => builder.messages.push(d),
+        LogRecord::Out { id: out_id, d } => {
+            builder.tool_outputs.insert(out_id, d);
+        }
+        LogRecord::SubMsg { sub, d } => {
+            builder.subagent_messages.entry(sub).or_default().push(d);
+        }
+        LogRecord::Meta {
+            title: m_title,
+            token_usage: m_usage,
+            updated_at: m_updated,
+            transcript: m_transcript,
+            meta: m_meta,
+        } => {
+            builder.title = m_title;
+            builder.token_usage = m_usage;
+            builder.updated_at = m_updated;
+            builder.transcript = m_transcript;
+            builder.meta = m_meta;
+        }
+    }
+    Ok(())
 }
 
 fn encode_frame<W: Write>(file: &mut W, bytes: &[u8]) -> Result<(), SessionError> {
@@ -889,11 +1028,12 @@ fn zst_valid_len(data: &[u8]) -> usize {
 
 // -- CWD index --
 
+#[allow(clippy::disallowed_methods, clippy::unwrap_or_default)]
 fn load_cwd_index(dir: &Path) -> HashMap<String, String> {
     fs::read(dir.join(CWD_INDEX_FILE))
         .ok()
         .and_then(|data| serde_json::from_slice(&data).ok())
-        .unwrap_or_default()
+        .unwrap_or_else(HashMap::new)
 }
 
 fn update_cwd_index(dir: &Path, cwd: &str, session_id: N00nId) -> Result<(), StorageError> {
@@ -910,10 +1050,118 @@ fn jsonl_path(dir: &Path, id: N00nId) -> PathBuf {
     dir.join(format!("{id}.jsonl"))
 }
 
+fn openai_response_chain_path(dir: &Path, id: N00nId) -> PathBuf {
+    dir.join(format!("{id}.{OPENAI_RESPONSE_CHAIN_SUFFIX}"))
+}
+
+fn openai_response_chain_lock_path(dir: &Path, id: N00nId) -> PathBuf {
+    dir.join(format!("{id}.{OPENAI_RESPONSE_CHAIN_LOCK_SUFFIX}"))
+}
+
+/// Acquire the cross-process lock for one session's `OpenAI` continuation state.
+///
+/// # Errors
+/// Returns an error when the sessions directory or lock file cannot be opened or locked.
+pub fn lock_openai_response_chain(
+    state_dir: &StateDir,
+    session_id: N00nId,
+) -> Result<OpenAiResponseChainLock, StorageError> {
+    let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(openai_response_chain_lock_path(&sessions_dir, session_id))?;
+    file.lock()?;
+    Ok(OpenAiResponseChainLock { _file: file })
+}
+
+/// Return whether the parent session log still exists.
+///
+/// # Errors
+/// Returns an error when the sessions directory cannot be opened.
+pub fn openai_response_chain_parent_exists(
+    state_dir: &StateDir,
+    session_id: N00nId,
+) -> Result<bool, StorageError> {
+    let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
+    Ok(locate_session_file(&sessions_dir, session_id).is_some())
+}
+
+/// Load the durable `OpenAI` Responses continuation state for a session.
+///
+/// Expired state is removed instead of being returned to the provider.
+///
+/// # Errors
+/// Returns an error when the sessions directory cannot be opened, the state is invalid,
+/// or an expired state file cannot be removed.
+pub fn load_openai_response_chain(
+    state_dir: &StateDir,
+    session_id: N00nId,
+) -> Result<Option<StoredOpenAiResponseChain>, StorageError> {
+    load_openai_response_chain_at(state_dir, session_id, now_epoch())
+}
+
+fn load_openai_response_chain_at(
+    state_dir: &StateDir,
+    session_id: N00nId,
+    now: u64,
+) -> Result<Option<StoredOpenAiResponseChain>, StorageError> {
+    let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
+    let path = openai_response_chain_path(&sessions_dir, session_id);
+    let data = match fs::read(&path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let chain: StoredOpenAiResponseChain = serde_json::from_slice(&data)?;
+    if chain.expires_at <= now {
+        try_remove(&path)?;
+        return Ok(None);
+    }
+    Ok(Some(chain))
+}
+
+/// Persist the `OpenAI` Responses continuation state for a session atomically.
+///
+/// # Errors
+/// Returns an error when the sessions directory cannot be created or the state cannot be written.
+pub fn save_openai_response_chain(
+    state_dir: &StateDir,
+    session_id: N00nId,
+    chain: &StoredOpenAiResponseChain,
+) -> Result<(), StorageError> {
+    let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
+    let path = openai_response_chain_path(&sessions_dir, session_id);
+    atomic_write_permissions(
+        &path,
+        &serde_json::to_vec(chain)?,
+        OPENAI_RESPONSE_CHAIN_FILE_MODE,
+    )?;
+    if locate_session_file(&sessions_dir, session_id).is_none() {
+        try_remove(&path)?;
+        return Err(StorageError::NotFound(session_id.to_string()));
+    }
+    Ok(())
+}
+
+/// Remove any `OpenAI` Responses continuation state for a session.
+///
+/// # Errors
+/// Returns an error when the sessions directory cannot be opened or the file cannot be removed.
+pub fn delete_openai_response_chain(
+    state_dir: &StateDir,
+    session_id: N00nId,
+) -> Result<(), StorageError> {
+    let sessions_dir = state_dir.ensure_subdir(SESSIONS_DIR)?;
+    try_remove(&openai_response_chain_path(&sessions_dir, session_id))?;
+    Ok(())
+}
+
 fn file_is_zst(path: &Path) -> bool {
-    let mut file = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
+    let Ok(mut file) = File::open(path) else {
+        return false;
     };
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic).is_ok() && is_zst_data(&magic)
@@ -985,11 +1233,12 @@ struct ScanCacheEntry {
 
 type ScanCache = HashMap<String, ScanCacheEntry>;
 
+#[allow(clippy::disallowed_methods, clippy::unwrap_or_default)]
 fn load_scan_cache(dir: &Path) -> ScanCache {
     fs::read(dir.join(SCAN_CACHE_FILE))
         .ok()
         .and_then(|data| serde_json::from_slice(&data).ok())
-        .unwrap_or_default()
+        .unwrap_or_else(HashMap::new)
 }
 
 fn file_signature(path: &Path) -> Option<(u64, u64)> {
@@ -998,7 +1247,7 @@ fn file_signature(path: &Path) -> Option<(u64, u64)> {
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64)?;
+        .and_then(|d| u64::try_from(d.as_millis()).ok())?;
     Some((meta.len(), mtime_ms))
 }
 
@@ -1049,6 +1298,7 @@ fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageErr
     Ok(summaries)
 }
 
+#[allow(clippy::disallowed_methods)]
 fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
     let data = decode_all(&fs::read(path).ok()?).ok()?;
     let mut lines = data
@@ -1067,13 +1317,13 @@ fn scan_zst_header(path: &Path) -> Option<ScannedHeader> {
                 None
             }
         })
-        .unwrap_or_default();
+        .unwrap_or((String::new(), 0u64));
 
     Some(ScannedHeader {
         id: header.id,
         cwd: header.cwd,
         title: if meta_title.is_empty() {
-            header.title.unwrap_or_else(|| DEFAULT_TITLE.to_string())
+            header.title.unwrap_or(DEFAULT_TITLE.to_string())
         } else {
             meta_title
         },
@@ -1098,7 +1348,13 @@ fn is_session_file(path: &Path) -> bool {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .and_then(|stem| stem.parse::<N00nId>().ok())
-            .is_some_and(|id| jsonl_path(path.parent().unwrap_or(Path::new("")), id) == path)
+            .is_some_and(|id| {
+                let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+                match parent {
+                    Some(p) => jsonl_path(p, id) == path,
+                    None => false,
+                }
+            })
 }
 
 fn locate_session_file(dir: &Path, id: N00nId) -> Option<PathBuf> {
@@ -1108,7 +1364,7 @@ fn locate_session_file(dir: &Path, id: N00nId) -> Option<PathBuf> {
 
 fn load_session_at<M, U, T>(path: &Path) -> Result<Session<M, U, T>, SessionError>
 where
-    M: DeserializeOwned,
+    M: DeserializeOwned + Default + Clone,
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
@@ -1119,10 +1375,11 @@ where
 
 impl<M, U, T> Session<M, U, T>
 where
-    M: Serialize + DeserializeOwned + TitleSource,
+    M: Serialize + DeserializeOwned + TitleSource + Clone + Default,
     U: Serialize + DeserializeOwned + Default,
     T: Serialize + DeserializeOwned,
 {
+    #[must_use]
     pub fn new(model: &str, cwd: &str) -> Self {
         let now = now_epoch();
         Self {
@@ -1132,6 +1389,7 @@ where
             cwd: cwd.into(),
             model: model.into(),
             messages: Vec::new(),
+            transcript: Vec::new(),
             token_usage: U::default(),
             tool_outputs: HashMap::new(),
             subagent_messages: HashMap::new(),
@@ -1144,12 +1402,12 @@ where
         }
     }
 
-    /// After `messages` is truncated (rewind), state keyed by tool_use_id can
+    /// After `messages` is truncated (rewind), state keyed by `tool_use_id` can
     /// point at calls that no longer exist. On restore that shows up as ghost
     /// subagent tabs and leaked tool outputs, so this drops everything not
     /// reachable from `messages`.
     ///
-    /// If you add another field keyed by tool_use_id, prune it here too.
+    /// If you add another field keyed by `tool_use_id`, prune it here too.
     pub fn prune_orphans(&mut self, tool_ids: impl Fn(&M) -> Vec<String>) {
         let main_ids: HashSet<String> = self.messages.iter().flat_map(&tool_ids).collect();
         self.subagent_messages.retain(|id, _| main_ids.contains(id));
@@ -1167,11 +1425,15 @@ where
         self.tool_outputs.retain(|id, _| live.contains(id));
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the sessions directory cannot be created or the save fails.
     pub fn save(&mut self, dir: &StateDir) -> Result<(), SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         self.save_to(&sessions_dir)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be written or the index cannot be updated.
     pub fn save_to(&mut self, dir: &Path) -> Result<(), SessionError> {
         self.updated_at = now_epoch();
         write_session_file(dir, self)?;
@@ -1179,11 +1441,16 @@ where
         Ok(())
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the sessions directory cannot be created or the session cannot be loaded.
     pub fn load(id: N00nId, dir: &StateDir) -> Result<Self, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::load_from(id, &sessions_dir)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be found, read, or parsed,
+    /// or if the session ID does not match.
     pub fn load_from(id: N00nId, dir: &Path) -> Result<Self, SessionError> {
         let Some(path) = locate_session_file(dir, id) else {
             return Err(StorageError::NotFound(id.to_string()).into());
@@ -1198,22 +1465,30 @@ where
         Ok(session)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the sessions directory cannot be created or the scan fails.
     pub fn list(cwd: &str, dir: &StateDir) -> Result<Vec<SessionSummary>, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::list_in(cwd, &sessions_dir)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the scan fails.
     pub fn list_in(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, SessionError> {
         let mut summaries = scan_headers(cwd, dir)?;
         summaries.sort_unstable_by_key(|s| Reverse(s.updated_at));
         Ok(summaries)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the sessions directory cannot be created or the latest session cannot be loaded.
     pub fn latest(cwd: &str, dir: &StateDir) -> Result<Option<Self>, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::latest_in(cwd, &sessions_dir)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the scan or load fails.
     pub fn latest_in(cwd: &str, dir: &Path) -> Result<Option<Self>, SessionError> {
         let cached = load_cwd_index(dir)
             .remove(cwd)
@@ -1234,8 +1509,7 @@ where
         scan_headers(cwd, dir)?
             .into_iter()
             .max_by_key(|s| s.updated_at)
-            .map(|s| Self::load_from(s.id, dir).map(Some))
-            .unwrap_or(Ok(None))
+            .map_or(Ok(None), |s| Self::load_from(s.id, dir).map(Some))
     }
 
     pub fn update_title_if_default(&mut self) {
@@ -1244,20 +1518,35 @@ where
         }
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the sessions directory cannot be created or the delete fails.
     pub fn delete(id: N00nId, dir: &StateDir) -> Result<(), SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::delete_from(id, &sessions_dir)
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be found or removed.
     pub fn delete_from(id: N00nId, dir: &Path) -> Result<(), SessionError> {
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(openai_response_chain_lock_path(dir, id))
+            .map_err(StorageError::from)?;
+        lock_file.lock().map_err(StorageError::from)?;
         let Some(path) = locate_session_file(dir, id) else {
             return Err(StorageError::NotFound(id.to_string()).into());
         };
         try_remove(&path)?;
+        try_remove(&openai_response_chain_path(dir, id))?;
         remove_from_cwd_index(dir, id)?;
         Ok(())
     }
 
+    /// # Errors
+    /// Returns `SessionError` if the session file cannot be created or written.
     pub fn migrate_to_jsonl(dir: &Path, session: &Self) -> Result<SessionLog, SessionError> {
         SessionLog::create(dir, session)
     }
@@ -1272,7 +1561,16 @@ mod tests {
         SESSION_VERSION, StoredSubagent, append_record, encode_frame, generate_title, jsonl_path,
         load_cwd_index, now_epoch, update_cwd_index,
     };
-    use super::{SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource};
+    use super::{
+        OPENAI_RESPONSE_CHAIN_TTL_SECONDS, SESSIONS_DIR, StoredOpenAiResponseChain,
+        delete_openai_response_chain, load_openai_response_chain_at, lock_openai_response_chain,
+        openai_response_chain_path, save_openai_response_chain,
+    };
+    use super::{
+        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource,
+        TranscriptEntry,
+    };
+    use crate::StateDir;
     use crate::id::N00nId;
     use serde_json::Value;
     use std::collections::HashMap;
@@ -1367,6 +1665,14 @@ mod tests {
         let mut session: TestSession =
             Session::new("anthropic/claude-sonnet-4", "/home/test/project");
         session.messages.push(user_message("hello"));
+        session.transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(user_message("before compaction"))],
+                generated_summary: Some(assistant_message("generated summary")),
+            },
+            TranscriptEntry::GeneratedMessage(user_message("summary prompt")),
+            TranscriptEntry::GeneratedMessage(assistant_message("generated summary")),
+        ];
         session.subagent_messages.insert(
             "tool-1".into(),
             vec![user_message("sub-prompt"), assistant_message("sub-reply")],
@@ -1380,6 +1686,33 @@ mod tests {
         assert_eq!(loaded.messages.len(), 1);
         assert_eq!(loaded.version, SESSION_VERSION);
         assert_eq!(loaded.subagent_messages["tool-1"].len(), 2);
+        assert!(matches!(
+            loaded.transcript.as_slice(),
+            [
+                TranscriptEntry::Compaction {
+                    generated_summary: Some(summary),
+                    ..
+                },
+                TranscriptEntry::GeneratedMessage(_),
+                TranscriptEntry::GeneratedMessage(_),
+            ] if summary == &assistant_message("generated summary")
+        ));
+    }
+
+    #[test]
+    fn legacy_compaction_without_summary_metadata_deserializes() {
+        let entry: TranscriptEntry<Value> = serde_json::from_value(serde_json::json!({
+            "Compaction": { "entries": [] }
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            entry,
+            TranscriptEntry::Compaction {
+                generated_summary: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1450,6 +1783,78 @@ mod tests {
         assert!(loaded.tool_outputs.contains_key("tool-1"));
         assert_eq!(loaded.subagent_messages["sub-1"].len(), 2);
         assert_eq!(loaded.subagent_messages["sub-2"].len(), 1);
+    }
+
+    #[test]
+    fn append_rewrites_equal_length_replacement() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages = vec![user_message("old prompt"), assistant_message("old reply")];
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        session.messages = vec![user_message("new prompt"), assistant_message("new reply")];
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages, session.messages);
+    }
+
+    #[test]
+    fn append_rewrites_longer_replacement() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages = vec![user_message("old prompt"), assistant_message("old reply")];
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        session.messages = vec![
+            user_message("replacement prompt"),
+            assistant_message("replacement reply"),
+            user_message("new tail"),
+        ];
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages, session.messages);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_only_messages_keep_append_fast_path() {
+        use std::os::unix::fs::MetadataExt;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages.push(user_message("first"));
+        let mut log = SessionLog::create(dir, &session).unwrap();
+        let path = jsonl_path(dir, session.id);
+        let inode = fs::metadata(&path).unwrap().ino();
+
+        session.messages.push(assistant_message("reply"));
+        log.append(&session).unwrap();
+
+        assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages, session.messages);
+    }
+
+    #[test]
+    fn reopened_log_rewrites_mutated_saved_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages.push(user_message("old"));
+        let log = SessionLog::create(dir, &session).unwrap();
+        drop(log);
+
+        let (_loaded, mut log) = SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+        session.messages = vec![user_message("replacement"), assistant_message("new tail")];
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages, session.messages);
     }
 
     #[test]
@@ -1624,6 +2029,118 @@ mod tests {
             SessionError::Storage(StorageError::NotFound(_))
         ));
         assert!(jsonl.exists());
+    }
+
+    #[test]
+    fn openai_response_chain_round_trips_and_expires_after_thirty_days() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut session: TestSession = Session::new("model", "/project");
+        session.save(&state_dir).unwrap();
+        let session_id = session.id;
+        let now = 1_000;
+        let chain = StoredOpenAiResponseChain {
+            response_id: "resp_1".into(),
+            message_count: 3,
+            tools_hash: "tools".into(),
+            messages_hash: "messages".into(),
+            auth_scope_hash: "account".into(),
+            expires_at: now + OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
+        };
+
+        save_openai_response_chain(&state_dir, session_id, &chain).unwrap();
+        assert_eq!(
+            load_openai_response_chain_at(&state_dir, session_id, now).unwrap(),
+            Some(chain)
+        );
+        assert!(
+            load_openai_response_chain_at(
+                &state_dir,
+                session_id,
+                now + OPENAI_RESPONSE_CHAIN_TTL_SECONDS
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(!openai_response_chain_path(&tmp.path().join(SESSIONS_DIR), session_id).exists());
+    }
+
+    #[test]
+    fn deleting_openai_response_chain_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        let session_id = N00nId::generate();
+
+        delete_openai_response_chain(&state_dir, session_id).unwrap();
+        delete_openai_response_chain(&state_dir, session_id).unwrap();
+    }
+
+    #[test]
+    fn response_chain_write_cannot_recreate_a_deleted_session_sidecar() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        let session_id = N00nId::generate();
+        let chain = StoredOpenAiResponseChain {
+            response_id: "resp_1".into(),
+            message_count: 1,
+            tools_hash: "tools".into(),
+            messages_hash: "messages".into(),
+            auth_scope_hash: "account".into(),
+            expires_at: now_epoch() + OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
+        };
+
+        assert!(save_openai_response_chain(&state_dir, session_id, &chain).is_err());
+        assert!(!openai_response_chain_path(&tmp.path().join(SESSIONS_DIR), session_id).exists());
+    }
+
+    #[test]
+    fn response_chain_lock_serializes_same_session_across_file_handles() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        let session_id = N00nId::generate();
+        let first = lock_openai_response_chain(&state_dir, session_id).unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let second_dir = state_dir;
+        let join = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let second = lock_openai_response_chain(&second_dir, session_id).unwrap();
+            acquired_tx.send(()).unwrap();
+            second
+        });
+
+        ready_rx.recv().unwrap();
+        assert!(matches!(
+            acquired_rx.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(first);
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        drop(join.join().unwrap());
+    }
+
+    #[test]
+    fn deleting_session_removes_openai_response_chain() {
+        let tmp = TempDir::new().unwrap();
+        let state_dir = StateDir::from_path(tmp.path().to_path_buf());
+        let mut session: TestSession = Session::new("model", "/project");
+        session.save(&state_dir).unwrap();
+        let chain = StoredOpenAiResponseChain {
+            response_id: "resp_1".into(),
+            message_count: 1,
+            tools_hash: "tools".into(),
+            messages_hash: "messages".into(),
+            auth_scope_hash: "account".into(),
+            expires_at: now_epoch() + OPENAI_RESPONSE_CHAIN_TTL_SECONDS,
+        };
+        save_openai_response_chain(&state_dir, session.id, &chain).unwrap();
+
+        TestSession::delete(session.id, &state_dir).unwrap();
+
+        let sessions_dir = tmp.path().join(SESSIONS_DIR);
+        assert!(!openai_response_chain_path(&sessions_dir, session.id).exists());
     }
 
     #[test]
@@ -1832,6 +2349,7 @@ mod tests {
     #[test_case("1", Ok(StoredThinking::Budget { tokens: 1 }) ; "minimum_budget")]
     #[test_case("0", Err(ThinkingParseError::BudgetZero) ; "budget_zero")]
     #[test_case("fast", Err(ThinkingParseError::Unknown("fast".into())) ; "garbage")]
+    #[allow(clippy::needless_pass_by_value)]
     fn parse_setting(input: &str, expected: Result<StoredThinking, ThinkingParseError>) {
         assert_eq!(StoredThinking::parse_setting(input), expected);
     }

@@ -1,9 +1,11 @@
-//! Anthropic allows 4 cache breakpoints per request. We place them on: the last tool
-//! definition, the system prompt, and the last block of the 2 most recent messages.
+//! Anthropic allows 4 cache breakpoints per request. We place them on: the system prompt,
+//! the last tool result block (if any), the penultimate user message's last content block,
+//! and the last user message's last content block.
 
 pub(crate) mod bedrock;
 pub(crate) mod shared;
 
+use std::fmt::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -122,8 +124,11 @@ fn parse_reset(rfc3339: &str) -> Option<u64> {
     u64::try_from(ts.as_millisecond()).ok()
 }
 
+#[allow(clippy::cast_possible_wrap)]
 fn spent(minor_units: f64, exponent: Option<u32>, currency: Option<&str>) -> String {
-    let amount = minor_units / 10f64.powi(exponent.unwrap_or(MONEY_EXPONENT) as i32);
+    let exp = i32::try_from(exponent.unwrap_or_else(|| MONEY_EXPONENT))
+        .unwrap_or_else(|_| MONEY_EXPONENT as i32);
+    let amount = minor_units / 10f64.powi(exp);
     match currency {
         None | Some("USD") => format!("${amount:.2} spent"),
         Some(c) => format!("{amount:.2} {c} spent"),
@@ -146,10 +151,16 @@ fn limit_label(l: &ApiLimit) -> String {
     }
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn percentage(value: f64) -> u32 {
+    value.clamp(0.0, 100.0).round() as u32
+}
+
+#[allow(clippy::cast_precision_loss)]
 fn credits_limit(u: &OauthUsage) -> Option<UsageLimit> {
     let (percent, detail) = match (&u.spend, &u.extra_usage) {
         (Some(s), _) if s.enabled => (
-            s.percent.unwrap_or_default(),
+            s.percent.unwrap_or_else(Default::default),
             s.used
                 .as_ref()
                 .map(|m| spent(m.amount_minor as f64, m.exponent, m.currency.as_deref())),
@@ -163,7 +174,7 @@ fn credits_limit(u: &OauthUsage) -> Option<UsageLimit> {
     };
     Some(UsageLimit {
         label: "Usage credits".into(),
-        percentage: percent.round() as u32,
+        percentage: percentage(percent),
         reset_at: None,
         detail,
     })
@@ -177,7 +188,7 @@ impl From<OauthUsage> for ProviderUsage {
             .filter_map(|l| {
                 Some(UsageLimit {
                     label: limit_label(l),
-                    percentage: l.percent?.round() as u32,
+                    percentage: l.percent.map(percentage)?,
                     reset_at: l.resets_at.as_deref().and_then(parse_reset),
                     detail: None,
                 })
@@ -194,7 +205,7 @@ impl From<OauthUsage> for ProviderUsage {
                 let w = w.as_ref()?;
                 Some(UsageLimit {
                     label: label.into(),
-                    percentage: w.utilization?.round() as u32,
+                    percentage: w.utilization.map(percentage)?,
                     reset_at: w.resets_at.as_deref().and_then(parse_reset),
                     detail: None,
                 })
@@ -238,7 +249,7 @@ impl Anthropic {
         let resolved = resolve_auth_from_key(pool.current());
         debug!(keys = pool.len(), "using API key authentication");
         Ok(Self {
-            client: super::http_client(timeouts),
+            client: super::http_client(timeouts)?,
             auth: Arc::new(Mutex::new(resolved)),
             key_pool: Some(pool),
             system_prefix: None,
@@ -249,14 +260,14 @@ impl Anthropic {
     pub(crate) fn with_auth(
         auth: Arc<Mutex<super::ResolvedAuth>>,
         timeouts: super::Timeouts,
-    ) -> Self {
-        Self {
-            client: super::http_client(timeouts),
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            client: super::http_client(timeouts)?,
             auth,
             key_pool: None,
             system_prefix: None,
             stream_timeout: timeouts.stream,
-        }
+        })
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -265,8 +276,11 @@ impl Anthropic {
     }
 
     fn build_request(&self, method: &str, url: Option<&str>) -> isahc::http::request::Builder {
-        let auth = self.auth.lock().unwrap();
-        let url = url.unwrap_or_else(|| auth.base_url.as_deref().unwrap_or(MESSAGES_URL));
+        let auth = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let url = url.unwrap_or_else(|| auth.base_url.as_deref().unwrap_or_else(|| MESSAGES_URL));
         auth.configure_request(
             Request::builder()
                 .method(method)
@@ -315,7 +329,7 @@ impl Anthropic {
         loop {
             let mut url = MODELS_URL.to_string();
             if let Some(cursor) = &after_id {
-                url.push_str(&format!("&after_id={cursor}"));
+                let _ = write!(url, "&after_id={cursor}");
             }
 
             let request = self.build_request("GET", Some(&url)).body(())?;
@@ -406,7 +420,11 @@ impl Provider for Anthropic {
     fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async {
             let pool = KeyPool::resolve("anthropic", ENV_VAR)?;
-            *self.auth.lock().unwrap() = resolve_auth_from_key(pool.current());
+            *self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                resolve_auth_from_key(pool.current());
             debug!("reloaded Anthropic auth from env");
             Ok(())
         })
@@ -423,7 +441,12 @@ impl Provider for Anthropic {
 
     fn fetch_usage(&self) -> BoxFuture<'_, Result<Option<ProviderUsage>, AgentError>> {
         Box::pin(async move {
-            if !usage_eligible(&self.auth.lock().unwrap()) {
+            if !usage_eligible(
+                &self
+                    .auth
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ) {
                 return Ok(None);
             }
             let request = self
@@ -467,12 +490,12 @@ pub(crate) async fn parse_sse(
 
     while let Some(line) = super::next_sse_line(&mut lines, &mut deadline, stream_timeout).await? {
         if let Some(rest) = line.strip_prefix("event:") {
-            current_event = rest.strip_prefix(' ').unwrap_or(rest).to_string();
+            current_event = rest.strip_prefix(' ').unwrap_or_else(|| rest).to_string();
             continue;
         }
 
         let data = match line.strip_prefix("data:") {
-            Some(d) => d.strip_prefix(' ').unwrap_or(d),
+            Some(d) => d.strip_prefix(' ').unwrap_or_else(|| d),
             None => continue,
         };
 
@@ -497,7 +520,7 @@ mod tests {
     use std::time::Duration;
     use test_case::test_case;
 
-    const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
+    const TEST_STREAM_TIMEOUT: Duration = Duration::from_mins(5);
 
     const USAGE_BODY: &str = r#"{
         "five_hour": {"utilization": 14.0, "resets_at": "2026-02-06T22:00:00+00:00"},
@@ -529,7 +552,7 @@ mod tests {
         assert_eq!(usage.limits.len(), 4);
         assert_eq!(usage.limits[0].label, "Current session");
         assert_eq!(usage.limits[0].percentage, 14);
-        assert_eq!(usage.limits[0].reset_at, Some(1770415200000));
+        assert_eq!(usage.limits[0].reset_at, Some(1_770_415_200_000));
         assert_eq!(usage.limits[1].label, "Current week (all models)");
         assert_eq!(usage.limits[1].percentage, 2);
         assert_eq!(usage.limits[2].label, "Current week (Fable)");
@@ -554,7 +577,7 @@ mod tests {
         assert_eq!(usage.limits.len(), 5);
         assert_eq!(usage.limits[0].label, "Current session");
         assert_eq!(usage.limits[0].percentage, 35);
-        assert_eq!(usage.limits[0].reset_at, Some(1770415200000));
+        assert_eq!(usage.limits[0].reset_at, Some(1_770_415_200_000));
         assert_eq!(usage.limits[1].label, "Current week (all models)");
         assert_eq!(usage.limits[2].label, "Current week (Sonnet)");
         assert_eq!(usage.limits[3].label, "Current week (Opus)");
@@ -646,7 +669,7 @@ data: {\"type\":\"message_stop\"}\n";
                 }
             }
             assert_eq!(deltas, vec!["Hello", " world"]);
-        })
+        });
     }
 
     #[test]
@@ -679,7 +702,7 @@ data:{\"type\":\"message_stop\"}\n";
             assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
             assert_eq!(resp.usage.input, 7);
             assert_eq!(resp.usage.output, 1);
-        })
+        });
     }
 
     #[test]
@@ -722,7 +745,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
                 })
                 .collect();
             assert_eq!(starts, vec![("tu_1".to_string(), "bash".to_string())]);
-        })
+        });
     }
 
     #[test]
@@ -762,11 +785,11 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
         let wire = build_wire_messages(&multi);
         let json: Value = serde_json::to_value(&wire).unwrap();
 
-        assert!(json[0]["content"][0].get("cache_control").is_none());
         assert_eq!(
-            json[1]["content"][0]["cache_control"],
+            json[0]["content"][0]["cache_control"],
             json!({"type": "ephemeral"})
         );
+        assert!(json[1]["content"][0].get("cache_control").is_none());
         assert!(json[2]["content"][0].get("cache_control").is_none());
         assert_eq!(
             json[2]["content"][1]["cache_control"],
@@ -913,7 +936,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
                 }
                 other => panic!("expected Api error, got: {other:?}"),
             }
-        })
+        });
     }
 
     #[test]
@@ -931,7 +954,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
                 }
                 other => panic!("expected Api error, got: {other:?}"),
             }
-        })
+        });
     }
 
     #[test]
@@ -962,7 +985,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n";
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].1, "read");
             assert_eq!(*tools[0].2, Value::Object(Default::default()));
-        })
+        });
     }
 
     #[test]
@@ -1020,7 +1043,7 @@ data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usa
                 })
                 .collect();
             assert_eq!(thinking_deltas, vec!["Let me", " think"]);
-        })
+        });
     }
 
     #[test]
@@ -1059,6 +1082,6 @@ data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usa
             assert!(
                 matches!(&resp.message.content[1], ContentBlock::Text { text } if text == "Hi")
             );
-        })
+        });
     }
 }

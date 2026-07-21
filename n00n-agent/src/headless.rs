@@ -176,6 +176,7 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
     let session_id = N00nId::generate();
     let session_ref = SessionRef::from(session_id);
     let session_ref_clone = session_ref.clone();
+    let session_cwd = working_dir.clone();
     let fast = params.fast;
     let workflow = params.workflow;
     let task = smol::spawn({
@@ -197,6 +198,9 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                 };
             let error_tx = event_tx.clone();
             let mut history = History::new(Vec::new());
+            let model_spec = model.spec();
+            let mut session_store =
+                SessionStore::open(session_ref_clone.id(), &session_cwd, &model_spec);
             let mut agent = Agent::new(
                 AgentParams {
                     provider,
@@ -238,6 +242,10 @@ pub fn spawn(params: HeadlessParams) -> HeadlessHandle {
                 })
                 .await;
             drop(agent);
+
+            if let Some(store) = &mut session_store {
+                store.record_turn(history.as_slice(), model_spec);
+            }
 
             if let Err(e) = result {
                 error!(error = %e, "agent error");

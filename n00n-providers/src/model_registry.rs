@@ -31,12 +31,17 @@ pub fn model_registry() -> &'static RwLock<ModelRegistry> {
 
 pub fn load_from_storage(dir: &StateDir) {
     let overrides = read_overrides(dir.path().join(TIERS_FILE).as_path());
-    model_registry().write().unwrap().set_overrides(overrides);
+    model_registry()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .set_overrides(overrides);
 }
 
 pub fn set_and_persist(spec: String, tier: ModelTier, dir: &StateDir) {
     let snapshot = {
-        let mut reg = model_registry().write().unwrap();
+        let mut reg = model_registry()
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reg.set(spec, tier);
         reg.overrides.clone()
     };
@@ -45,7 +50,9 @@ pub fn set_and_persist(spec: String, tier: ModelTier, dir: &StateDir) {
 
 pub fn unset_and_persist(spec: &str, tier: ModelTier, dir: &StateDir) {
     let snapshot = {
-        let mut reg = model_registry().write().unwrap();
+        let mut reg = model_registry()
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reg.unset(spec, tier);
         reg.overrides.clone()
     };
@@ -87,6 +94,7 @@ impl ModelRegistry {
     }
 
     /// Lookup discovered metadata for a model by ID.
+    #[must_use]
     pub fn discovered(&self, provider: ProviderKind, model_id: &str) -> Option<&ModelInfo> {
         self.known_models
             .get(&provider)?
@@ -94,6 +102,7 @@ impl ModelRegistry {
             .find(|m| m.id == model_id)
     }
 
+    #[must_use]
     pub fn tier_for(
         &self,
         spec: &str,
@@ -110,7 +119,7 @@ impl ModelRegistry {
             .map(|(&t, _)| t);
         if let Some(first) = tiers.next() {
             return match first {
-                ModelTier::Compaction => tiers.next().unwrap_or(first),
+                ModelTier::Compaction => tiers.next().unwrap_or_else(|| first),
                 t => t,
             };
         }
@@ -126,6 +135,7 @@ impl ModelRegistry {
         ModelTier::Medium
     }
 
+    #[must_use]
     pub fn spec_for_tier(&self, provider: ProviderKind, tier: ModelTier) -> Option<String> {
         let prefix = format!("{provider}/");
         if let Some(spec) = self.overrides.get(&tier)
@@ -134,14 +144,13 @@ impl ModelRegistry {
             return Some(spec.clone());
         }
 
-        let candidate = self
-            .static_candidate(provider, tier)
+        let candidate = Self::static_candidate(provider, tier)
             .or_else(|| self.positional_candidate(provider, tier))?;
 
         (!self.claimed_elsewhere(&candidate, tier)).then_some(candidate)
     }
 
-    fn static_candidate(&self, provider: ProviderKind, tier: ModelTier) -> Option<String> {
+    fn static_candidate(provider: ProviderKind, tier: ModelTier) -> Option<String> {
         models_for_provider(provider)
             .iter()
             .find(|e| e.default && e.tier == tier)
@@ -166,6 +175,7 @@ impl ModelRegistry {
         self.overrides.iter().any(|(&t, s)| s == spec && t != tier)
     }
 
+    #[must_use]
     pub fn spec_for_tier_any(&self, tier: ModelTier) -> Option<String> {
         if let Some(spec) = self.overrides.get(&tier) {
             return Some(spec.clone());
@@ -178,6 +188,7 @@ impl ModelRegistry {
         None
     }
 
+    #[must_use]
     pub fn override_tier_label(&self, spec: &str) -> Option<String> {
         let tiers: Vec<_> = self
             .overrides
@@ -375,8 +386,8 @@ mod tests {
         write_overrides(&path, &m);
 
         let loaded = read_overrides(&path);
-        assert_eq!(loaded.get(&ModelTier::Strong).unwrap(), "ollama/qwen3");
-        assert_eq!(loaded.get(&ModelTier::Medium).unwrap(), "ollama/qwen3:8b");
+        assert_eq!(&loaded[&ModelTier::Strong], "ollama/qwen3");
+        assert_eq!(&loaded[&ModelTier::Medium], "ollama/qwen3:8b");
     }
 
     #[test]
@@ -431,8 +442,8 @@ mod tests {
         std::fs::write(&path, legacy).unwrap();
 
         let loaded = read_overrides(&path);
-        assert_eq!(loaded.get(&ModelTier::Strong).unwrap(), "ollama/b");
-        assert_eq!(loaded.get(&ModelTier::Weak).unwrap(), "ollama/c");
+        assert_eq!(&loaded[&ModelTier::Strong], "ollama/b");
+        assert_eq!(&loaded[&ModelTier::Weak], "ollama/c");
     }
 
     #[test]
@@ -447,8 +458,8 @@ mod tests {
         write_overrides(&path, &m);
 
         let loaded = read_overrides(&path);
-        assert_eq!(loaded.get(&ModelTier::Strong).unwrap(), "ollama/qwen3");
-        assert_eq!(loaded.get(&ModelTier::Medium).unwrap(), "ollama/qwen3");
-        assert_eq!(loaded.get(&ModelTier::Weak).unwrap(), "ollama/qwen3:8b");
+        assert_eq!(&loaded[&ModelTier::Strong], "ollama/qwen3");
+        assert_eq!(&loaded[&ModelTier::Medium], "ollama/qwen3");
+        assert_eq!(&loaded[&ModelTier::Weak], "ollama/qwen3:8b");
     }
 }

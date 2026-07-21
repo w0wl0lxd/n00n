@@ -1,10 +1,12 @@
 //! Rebuilds display messages from stored sessions. Tool outputs get syntax
 //! highlighted, missing outputs fall back to plain text from `ToolResult`.
 
+#[cfg(test)]
+use crate::components::DisplayMetadata;
 use crate::components::messages::{MessagesPanel, PromptProgress};
 use crate::components::scrollbar::ScrollInfo;
 use crate::components::tool_display::append_annotation;
-use crate::components::{DisplayMessage, DisplayRole, ToolRole, ToolStatus};
+use crate::components::{CompactionDisplay, DisplayMessage, DisplayRole, ToolRole, ToolStatus};
 use crate::markdown::truncate_output;
 use std::collections::HashMap;
 use std::path::Path;
@@ -12,12 +14,16 @@ use std::sync::Arc;
 
 use crate::selection::Selection;
 use n00n_agent::tools::{ToolInvocation, ToolRegistry, WRITE_TOOL_NAME};
-use n00n_agent::{AgentEvent, BufferSnapshot, ToolDoneEvent, ToolOutput, ToolStartEvent};
+use n00n_agent::{
+    AgentEvent, BufferSnapshot, ImageSource, ToolDoneEvent, ToolOutput, ToolStartEvent,
+};
 use n00n_config::{ToolKey, ToolOutputLines, UiConfig};
 use n00n_providers::{ContentBlock, Message, Role, TokenUsage};
+use n00n_storage::sessions::TranscriptEntry;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui_image::picker::Picker;
 
 pub(crate) const DONE_TEXT: &str = "Done!";
 pub(crate) const ERROR_TEXT: &str = "Error";
@@ -31,6 +37,7 @@ pub enum ChatEventResult {
     QueueItemConsumed {
         text: String,
         image_count: usize,
+        images: Vec<ImageSource>,
     },
     Error(String),
     PermissionRequest {
@@ -55,7 +62,7 @@ pub struct Chat {
 }
 
 impl Chat {
-    pub fn new(name: String, ui_config: UiConfig) -> Self {
+    pub fn new(name: String, ui_config: UiConfig, picker: Arc<Picker>) -> Self {
         Self {
             name,
             token_usage: TokenUsage::default(),
@@ -64,13 +71,17 @@ impl Chat {
             tool_use_id: None,
             failed: false,
             pending_turn_usage: None,
-            messages_panel: MessagesPanel::new(ui_config),
+            messages_panel: MessagesPanel::new(ui_config, picker),
             finished: false,
         }
     }
 
     pub fn set_pending_turn_usage(&mut self, usage: String) {
         self.pending_turn_usage = Some(usage);
+    }
+
+    pub fn on_mouse(&mut self, column: u16, row: u16) {
+        self.messages_panel.on_mouse(column, row);
     }
 
     pub(crate) fn set_restore_channel(
@@ -111,7 +122,17 @@ impl Chat {
                         .push(DisplayMessage::plan(content, pp.display().to_string()));
                 }
             }
-            AgentEvent::TurnComplete(_) => {}
+            AgentEvent::TurnComplete(event) => {
+                if matches!(event.message.role, Role::Assistant)
+                    && let Some(summary) =
+                        event.message.content.iter().find_map(|block| match block {
+                            ContentBlock::Text { text } if !text.is_empty() => Some(text.clone()),
+                            _ => None,
+                        })
+                {
+                    self.messages_panel.set_pending_compaction_summary(summary);
+                }
+            }
             AgentEvent::ToolResultsSubmitted { .. } => {
                 if let Some(usage) = self.pending_turn_usage.take() {
                     self.messages_panel.set_turn_usage_on_last_tool(usage);
@@ -119,16 +140,24 @@ impl Chat {
             }
             AgentEvent::AutoCompacting => {
                 self.messages_panel.flush();
-                self.messages_panel.push(DisplayMessage::new(
-                    DisplayRole::Assistant,
-                    "Auto-compacting conversation...".into(),
-                ));
+                self.messages_panel
+                    .push(DisplayMessage::compaction_pending());
             }
             AgentEvent::CompactionDone => {
-                self.messages_panel.flush();
+                if !self.messages_panel.complete_pending_compaction() {
+                    self.messages_panel.flush();
+                }
             }
-            AgentEvent::QueueItemConsumed { text, image_count } => {
-                return ChatEventResult::QueueItemConsumed { text, image_count };
+            AgentEvent::QueueItemConsumed {
+                text,
+                image_count,
+                images,
+            } => {
+                return ChatEventResult::QueueItemConsumed {
+                    text,
+                    image_count,
+                    images,
+                };
             }
             AgentEvent::Retry { .. } => unreachable!("handled before handle_event"),
             AgentEvent::Done { .. } => {
@@ -287,10 +316,6 @@ impl Chat {
         self.messages_panel.handle_click(row, area);
     }
 
-    pub fn on_mouse(&mut self, column: u16, row: u16) {
-        self.messages_panel.on_mouse(column, row);
-    }
-
     pub fn tool_snapshot(
         &mut self,
         tool_id: &str,
@@ -317,6 +342,10 @@ impl Chat {
 
     pub fn flush(&mut self) {
         self.messages_panel.flush();
+    }
+
+    pub fn toggle_transcript_details(&mut self) -> bool {
+        self.messages_panel.toggle_transcript_details()
     }
 
     pub fn cancel_in_progress(&mut self) {
@@ -371,11 +400,33 @@ impl Chat {
             .push(DisplayMessage::new(DisplayRole::User, text.into()));
     }
 
+    pub fn push_user_message_with_images(
+        &mut self,
+        text: impl Into<String>,
+        images: Vec<ImageSource>,
+    ) {
+        self.messages_panel.push(DisplayMessage::with_images(
+            DisplayRole::User,
+            text.into(),
+            images,
+        ));
+    }
+
     /// Flush, push, and re-pin scroll in one shot to avoid
     /// the one-frame hop where the bubble briefly lands in the wrong row.
     pub fn show_user_message(&mut self, text: impl Into<String>) {
         self.flush();
         self.push_user_message(text);
+        self.enable_auto_scroll();
+    }
+
+    pub fn show_user_message_with_images(
+        &mut self,
+        text: impl Into<String>,
+        images: Vec<ImageSource>,
+    ) {
+        self.flush();
+        self.push_user_message_with_images(text, images);
         self.enable_auto_scroll();
     }
 
@@ -425,6 +476,129 @@ impl Chat {
     pub fn streaming_thinking_is_empty(&self) -> bool {
         self.messages_panel.streaming_thinking_is_empty()
     }
+
+    #[cfg(test)]
+    pub fn compaction_card_count(&self) -> usize {
+        self.messages_panel
+            .messages
+            .iter()
+            .filter(|message| {
+                matches!(
+                    message.metadata.as_ref(),
+                    Some(DisplayMetadata::Compaction(_))
+                )
+            })
+            .count()
+    }
+
+    #[cfg(test)]
+    pub fn has_pending_compaction(&self) -> bool {
+        self.messages_panel.messages.iter().any(|message| {
+            matches!(
+                message.metadata.as_ref(),
+                Some(DisplayMetadata::CompactionPending)
+            )
+        })
+    }
+
+    #[cfg(test)]
+    pub fn last_compaction_summary(&self) -> Option<&str> {
+        self.messages_panel
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| match message.metadata.as_ref() {
+                Some(DisplayMetadata::Compaction(compaction)) => compaction.summary.as_deref(),
+                Some(DisplayMetadata::CompactionPending) | None => None,
+            })
+    }
+}
+
+pub fn transcript_to_display(
+    entries: &[TranscriptEntry<Message>],
+    tool_outputs: &HashMap<String, ToolOutput>,
+    tool_output_lines: &ToolOutputLines,
+) -> (Vec<DisplayMessage>, Vec<n00n_lua::RestoreItem>) {
+    transcript_to_display_at(entries, tool_outputs, tool_output_lines, 1, "compaction")
+}
+
+fn transcript_to_display_at(
+    entries: &[TranscriptEntry<Message>],
+    tool_outputs: &HashMap<String, ToolOutput>,
+    tool_output_lines: &ToolOutputLines,
+    depth: usize,
+    parent_id: &str,
+) -> (Vec<DisplayMessage>, Vec<n00n_lua::RestoreItem>) {
+    let mut display = Vec::new();
+    let mut restore_items = Vec::new();
+    let mut index = 0;
+    let mut compaction_index = 0;
+    while index < entries.len() {
+        match &entries[index] {
+            TranscriptEntry::Message(_) => {
+                let run_start = index;
+                while matches!(entries.get(index), Some(TranscriptEntry::Message(_))) {
+                    index += 1;
+                }
+                let messages: Vec<_> = entries[run_start..index]
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        TranscriptEntry::Message(message) => Some(message.clone()),
+                        TranscriptEntry::GeneratedMessage(_)
+                        | TranscriptEntry::Compaction { .. } => None,
+                    })
+                    .collect();
+                let (mut run_display, mut run_items) =
+                    history_to_display(&messages, tool_outputs, tool_output_lines);
+                display.append(&mut run_display);
+                restore_items.append(&mut run_items);
+            }
+            TranscriptEntry::GeneratedMessage(_) => {
+                index += 1;
+            }
+            TranscriptEntry::Compaction {
+                entries: children,
+                generated_summary,
+            } => {
+                let id = if parent_id == "compaction" {
+                    format!("{parent_id}:{compaction_index}")
+                } else {
+                    format!("{parent_id}.{compaction_index}")
+                };
+                let (child_display, _) = transcript_to_display_at(
+                    children,
+                    tool_outputs,
+                    tool_output_lines,
+                    depth + 1,
+                    &id,
+                );
+                let summary = generated_summary
+                    .as_ref()
+                    .and_then(Message::first_text_content)
+                    .map(str::to_owned);
+                display.push(DisplayMessage::compaction(CompactionDisplay {
+                    id,
+                    depth,
+                    message_count: transcript_message_count(children),
+                    summary,
+                    entries: child_display,
+                }));
+                compaction_index += 1;
+                index += 1;
+            }
+        }
+    }
+    (display, restore_items)
+}
+
+fn transcript_message_count(entries: &[TranscriptEntry<Message>]) -> usize {
+    entries
+        .iter()
+        .map(|entry| match entry {
+            TranscriptEntry::Message(_) | TranscriptEntry::GeneratedMessage(_) => 1,
+            TranscriptEntry::Compaction { entries, .. } => transcript_message_count(entries),
+        })
+        .sum()
 }
 
 pub fn history_to_display(
@@ -438,8 +612,20 @@ pub fn history_to_display(
     for msg in messages {
         match msg.role {
             Role::User => {
-                if let Some(text) = msg.user_text() {
-                    display.push(DisplayMessage::new(DisplayRole::User, text.to_owned()));
+                let images: Vec<_> = msg
+                    .content
+                    .iter()
+                    .filter_map(|block| {
+                        if let ContentBlock::Image { source } = block {
+                            Some(source.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let text = msg.user_text().map_or_else(String::new, |t| t.to_owned());
+                if !text.is_empty() || !images.is_empty() {
+                    display.push(DisplayMessage::with_images(DisplayRole::User, text, images));
                 }
             }
             Role::Assistant => {
@@ -448,9 +634,18 @@ pub fn history_to_display(
                         ContentBlock::Text { text } if !text.is_empty() => {
                             display.push(DisplayMessage::new(DisplayRole::Assistant, text.clone()));
                         }
+                        ContentBlock::Image { source } => {
+                            display.push(DisplayMessage::with_images(
+                                DisplayRole::Assistant,
+                                String::new(),
+                                vec![source.clone()],
+                            ));
+                        }
                         ContentBlock::Thinking { thinking, .. } if !thinking.is_empty() => {
-                            display
-                                .push(DisplayMessage::new(DisplayRole::Thinking, thinking.clone()));
+                            let mut message =
+                                DisplayMessage::new(DisplayRole::Thinking, thinking.clone());
+                            message.thinking_collapsed = true;
+                            display.push(message);
                         }
                         ContentBlock::ToolUse { id, name, input } => {
                             let static_name = name.as_str();
@@ -514,6 +709,8 @@ pub fn history_to_display(
                                     name: static_name.into(),
                                 })),
                                 text,
+                                metadata: None,
+                                images: Vec::new(),
                                 tool_input: None,
                                 tool_raw_input: Some(Arc::new(input.clone())),
                                 tool_output,
@@ -686,7 +883,7 @@ mod tests {
 
     #[test]
     fn tool_lifecycle() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default());
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         chat.handle_event(tool_start("t1", "bash"), None);
         assert_eq!(chat.in_progress_count(), 1);
 
@@ -699,7 +896,7 @@ mod tests {
 
     #[test]
     fn plan_write_renders_file_content() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default());
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         let dir = tempfile::tempdir().unwrap();
         let plan_path = dir.path().join("plan.md");
         std::fs::write(&plan_path, "# My Plan\n\n- Step 1").unwrap();
@@ -719,7 +916,7 @@ mod tests {
 
     #[test]
     fn plan_write_ignores_different_path() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default());
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         let plan_path = Path::new("/plans/123.md");
         chat.handle_event(tool_start("w1", "write"), Some(plan_path));
         let (output, wp) = write_output("src/main.rs");
@@ -732,7 +929,7 @@ mod tests {
 
     #[test]
     fn plan_edit_shows_path_only() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default());
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
         let dir = tempfile::tempdir().unwrap();
         let plan_path = dir.path().join("plan.md");
         std::fs::write(&plan_path, "# My Plan\n\n- Step 1").unwrap();
@@ -762,6 +959,143 @@ mod tests {
                 .0
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn recursive_transcript_becomes_two_level_compaction_cards() {
+        let transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![
+                    TranscriptEntry::Compaction {
+                        entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
+                        generated_summary: Some(Message {
+                            role: Role::Assistant,
+                            content: vec![ContentBlock::Text {
+                                text: "first summary".into(),
+                            }],
+                            ..Default::default()
+                        }),
+                    },
+                    TranscriptEntry::GeneratedMessage(Message::user(
+                        "What did we do so far?".into(),
+                    )),
+                    TranscriptEntry::GeneratedMessage(Message {
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::Text {
+                            text: "first summary".into(),
+                        }],
+                        ..Default::default()
+                    }),
+                ],
+                generated_summary: Some(Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "second summary".into(),
+                    }],
+                    ..Default::default()
+                }),
+            },
+            TranscriptEntry::GeneratedMessage(Message::user("What did we do so far?".into())),
+            TranscriptEntry::GeneratedMessage(Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "second summary".into(),
+                }],
+                ..Default::default()
+            }),
+        ];
+
+        let (display, _) =
+            transcript_to_display(&transcript, &empty_outputs(), &ToolOutputLines::default());
+        assert_eq!(
+            display.len(),
+            1,
+            "compaction preamble must stay inside its card"
+        );
+        let Some(DisplayMetadata::Compaction(outer)) = display[0].metadata.as_ref() else {
+            panic!("first display message should be a compaction card");
+        };
+        assert_eq!(outer.entries.len(), 1);
+        let Some(DisplayMetadata::Compaction(inner)) = outer.entries[0].metadata.as_ref() else {
+            panic!("outer card should contain the nested compaction card");
+        };
+
+        assert_eq!((outer.depth, outer.message_count), (1, 3));
+        assert_eq!(outer.summary.as_deref(), Some("second summary"));
+        assert_eq!((inner.depth, inner.message_count), (2, 1));
+        assert_eq!(inner.summary.as_deref(), Some("first summary"));
+    }
+
+    #[test]
+    fn legacy_compaction_keeps_following_user_assistant_pair_visible() {
+        let transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
+                generated_summary: None,
+            },
+            TranscriptEntry::Message(Message::user("legitimate follow-up".into())),
+            TranscriptEntry::Message(Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "legitimate answer".into(),
+                }],
+                ..Default::default()
+            }),
+        ];
+
+        let (display, _) =
+            transcript_to_display(&transcript, &empty_outputs(), &ToolOutputLines::default());
+
+        assert_eq!(display.len(), 3);
+        assert!(matches!(display[1].role, DisplayRole::User));
+        assert_eq!(display[1].text, "legitimate follow-up");
+        assert!(matches!(display[2].role, DisplayRole::Assistant));
+        assert_eq!(display[2].text, "legitimate answer");
+    }
+
+    #[test]
+    fn summary_metadata_does_not_hide_following_ordinary_pair() {
+        let transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
+                generated_summary: Some(Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "card summary".into(),
+                    }],
+                    ..Default::default()
+                }),
+            },
+            TranscriptEntry::Message(Message::user("ordinary follow-up".into())),
+            TranscriptEntry::Message(Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "ordinary answer".into(),
+                }],
+                ..Default::default()
+            }),
+        ];
+
+        let (display, _) =
+            transcript_to_display(&transcript, &empty_outputs(), &ToolOutputLines::default());
+
+        assert_eq!(display.len(), 3);
+        assert_eq!(display[1].text, "ordinary follow-up");
+        assert_eq!(display[2].text, "ordinary answer");
+    }
+
+    #[test]
+    fn standalone_user_text_equal_to_compaction_prompt_remains_visible() {
+        let transcript = vec![TranscriptEntry::Message(Message::user(
+            "What did we do so far?".into(),
+        ))];
+
+        let (display, _) =
+            transcript_to_display(&transcript, &empty_outputs(), &ToolOutputLines::default());
+
+        assert_eq!(display.len(), 1);
+        assert!(matches!(display[0].role, DisplayRole::User));
+        assert_eq!(display[0].text, "What did we do so far?");
     }
 
     fn tool_use_pair(
@@ -948,6 +1282,72 @@ mod tests {
     }
 
     #[test]
+    fn history_restores_thinking_segments_between_tools_independently() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "A".into(),
+                    signature: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "tool1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "true"}),
+                },
+                ContentBlock::Thinking {
+                    thinking: "B".into(),
+                    signature: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "tool2".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({"command": "true"}),
+                },
+                ContentBlock::RedactedThinking {
+                    data: "opaque".into(),
+                },
+            ],
+            ..Default::default()
+        }];
+
+        let (display, _) = history_to_display(&msgs, &HashMap::new(), &ToolOutputLines::default());
+        assert_eq!(display.len(), 4);
+        assert!(matches!(display[0].role, DisplayRole::Thinking));
+        assert_eq!(display[0].text, "A");
+        assert!(matches!(display[1].role, DisplayRole::Tool(_)));
+        assert!(matches!(display[2].role, DisplayRole::Thinking));
+        assert_eq!(display[2].text, "B");
+        assert!(matches!(display[3].role, DisplayRole::Tool(_)));
+
+        let mut chat = Chat::new(
+            "Main".into(),
+            UiConfig::default(),
+            Arc::new(Picker::halfblocks()),
+        );
+        chat.load_messages(display);
+        let thinking_indices: Vec<_> = chat
+            .messages_panel
+            .messages
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, msg)| matches!(msg.role, DisplayRole::Thinking).then_some(idx))
+            .collect();
+        assert_eq!(thinking_indices.len(), 2);
+        assert!(
+            thinking_indices
+                .iter()
+                .all(|&idx| chat.messages_panel.messages[idx].thinking_collapsed)
+        );
+        assert!(chat.messages_panel.toggle_transcript_details());
+        assert!(
+            thinking_indices
+                .iter()
+                .all(|&idx| !chat.messages_panel.messages[idx].thinking_collapsed)
+        );
+    }
+
+    #[test]
     fn history_to_display_thinking_blocks() {
         let msgs = vec![Message {
             role: Role::Assistant,
@@ -971,6 +1371,10 @@ mod tests {
     }
 
     const RESTORE_OUTPUT: &str = "rendered output";
+
+    fn test_picker() -> Arc<Picker> {
+        Arc::new(Picker::halfblocks())
+    }
 
     fn tool_msg_with_input(tool: &str) -> DisplayMessage {
         let mut msg = DisplayMessage::new(DisplayRole::User, String::new());
@@ -1039,8 +1443,8 @@ mod tests {
     }
 
     #[test]
-    fn compaction_done_flushes_streaming_buffers() {
-        let mut chat = Chat::new("Main".into(), UiConfig::default());
+    fn compaction_done_absorbs_streaming_summary_into_card() {
+        let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
 
         chat.handle_event(AgentEvent::AutoCompacting, None);
         assert_eq!(chat.message_count(), 1);
@@ -1063,11 +1467,12 @@ mod tests {
         chat.handle_event(AgentEvent::CompactionDone, None);
         assert!(chat.streaming_text_is_empty());
         assert!(chat.streaming_thinking_is_empty());
-        assert_eq!(chat.message_count(), 3);
+        assert_eq!(chat.message_count(), 1);
+        assert_eq!(chat.last_compaction_summary(), Some("summary"));
 
         chat.handle_event(AgentEvent::TextDelta { text: "new".into() }, None);
         chat.flush();
-        assert_eq!(chat.message_count(), 4);
+        assert_eq!(chat.message_count(), 2);
         assert_eq!(chat.last_message_text(), "new");
     }
 }

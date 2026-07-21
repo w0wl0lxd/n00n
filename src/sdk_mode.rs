@@ -575,10 +575,15 @@ pub fn run(params: SdkParams) -> Result<()> {
                 let content = user.message.content;
                 let prompt = content_text(&content).unwrap_or_else(|| content.to_string());
                 let images = content_images(&content);
-                let mode = {
-                    let mut shared = shared.lock().unwrap();
-                    shared.turn_start = Instant::now();
-                    shared.permission_mode
+                let mode = match shared.lock() {
+                    Ok(mut shared) => {
+                        shared.turn_start = Instant::now();
+                        shared.permission_mode
+                    }
+                    Err(e) => {
+                        eprintln!("error: mutex poisoned: {e}");
+                        break;
+                    }
                 };
                 let input = AgentInput {
                     message: prompt,
@@ -609,12 +614,14 @@ pub fn run(params: SdkParams) -> Result<()> {
                     continue;
                 };
                 let data = cr.response;
-                if let Some(req_id) = data.get("request_id").and_then(Value::as_str)
-                    && shared.lock().unwrap().pending.remove(req_id)
-                {
-                    let _ = handle
-                        .answer_tx
-                        .send(decode_permission_response(&data).encode());
+                if let Some(req_id) = data.get("request_id").and_then(Value::as_str) {
+                    if let Ok(mut shared) = shared.lock() {
+                        if shared.pending.remove(req_id) {
+                            let _ = handle
+                                .answer_tx
+                                .send(decode_permission_response(&data).encode());
+                        }
+                    }
                 }
             }
             "control_cancel_request" => {
@@ -624,8 +631,10 @@ pub fn run(params: SdkParams) -> Result<()> {
                 ) else {
                     continue;
                 };
-                if shared.lock().unwrap().pending.remove(&ccr.request_id) {
-                    let _ = handle.answer_tx.send(PermissionAnswer::Deny.encode());
+                if let Ok(mut shared) = shared.lock() {
+                    if shared.pending.remove(&ccr.request_id) {
+                        let _ = handle.answer_tx.send(PermissionAnswer::Deny.encode());
+                    }
                 }
             }
             other => warn!("unknown inbound message type: {other}"),
@@ -748,7 +757,9 @@ fn handle_control_request(
             let mode_str = cr.request.extra.get("mode").and_then(Value::as_str);
             match mode_str.and_then(PermissionMode::parse) {
                 Some(mode) => {
-                    shared.lock().unwrap().permission_mode = mode;
+                    if let Ok(mut shared) = shared.lock() {
+                        shared.permission_mode = mode;
+                    }
                     writer.emit_control_response(&cr.request_id, ok, None)
                 }
                 None => writer.emit_control_response(
@@ -764,7 +775,9 @@ fn handle_control_request(
         "set_model" => {
             if let Some(model) = resolve_set_model(cr.request.extra.get("model"), startup_model) {
                 let _ = handle.model_tx.send(model.clone());
-                shared.lock().unwrap().model = model;
+                if let Ok(mut shared) = shared.lock() {
+                    shared.model = model;
+                }
             }
             writer.emit_control_response(&cr.request_id, ok, None)
         }
@@ -839,7 +852,10 @@ impl EventPump {
     }
 
     fn model_id(&self) -> String {
-        self.shared.lock().unwrap().model.id.clone()
+        self.shared
+            .lock()
+            .map(|shared| shared.model.id.clone())
+            .unwrap_or_else(|_| "unknown".to_string())
     }
 
     fn emit_stream(&self, events: Vec<Value>) -> Result<()> {
@@ -853,7 +869,9 @@ impl EventPump {
         self.synth.reset();
         self.tool_inputs.clear();
         self.result_text.clear();
-        self.shared.lock().unwrap().pending.clear();
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.pending.clear();
+        }
     }
 
     fn emit_turn_result(
@@ -864,7 +882,10 @@ impl EventPump {
         usage: TokenUsage,
     ) -> Result<()> {
         let (duration_ms, total_cost_usd) = {
-            let shared = self.shared.lock().unwrap();
+            let shared = self
+                .shared
+                .lock()
+                .map_err(|e| eyre!("mutex poisoned: {e}"))?;
             (
                 shared.turn_start.elapsed().as_millis(),
                 usage.cost(&shared.model.pricing, self.fast),
@@ -945,6 +966,7 @@ impl EventPump {
                 message,
                 delay_ms,
             } => {
+                self.synth.reset();
                 self.writer.emit_system(
                     "api_retry",
                     serde_json::json!({
@@ -986,8 +1008,12 @@ impl EventPump {
                 }))?;
             }
             AgentEvent::PermissionRequest { id, tool, .. } => {
-                if self.shared.lock().unwrap().permission_mode == PermissionMode::BypassPermissions
-                {
+                let bypass = self
+                    .shared
+                    .lock()
+                    .map(|shared| shared.permission_mode == PermissionMode::BypassPermissions)
+                    .unwrap_or(false);
+                if bypass {
                     let _ = self.answer_tx.send(PermissionAnswer::AllowSession.encode());
                     return Ok(());
                 }
@@ -1000,7 +1026,9 @@ impl EventPump {
 
                 self.request_counter += 1;
                 let req_id = format!("req_{}", self.request_counter);
-                self.shared.lock().unwrap().pending.insert(req_id.clone());
+                if let Ok(mut shared) = self.shared.lock() {
+                    shared.pending.insert(req_id.clone());
+                }
 
                 self.writer
                     .emit(WireInner::ControlRequest(ControlRequestPayload {
@@ -1093,7 +1121,10 @@ mod tests {
     const MODEL: &str = "test-model";
 
     fn types(events: &[Value]) -> Vec<&str> {
-        events.iter().map(|e| e["type"].as_str().unwrap()).collect()
+        events
+            .iter()
+            .map(|e| e["type"].as_str().expect("event has type field"))
+            .collect()
     }
 
     #[test]

@@ -13,7 +13,7 @@ use crate::{
 
 pub(super) const BETA_TOOL_EXAMPLES_BEDROCK: &str = "tool-examples-2025-10-29";
 
-/// The messages API refuses requests without max_tokens. Anthropic-kind
+/// The messages API refuses requests without `max_tokens`. Anthropic-kind
 /// models always get a window from the fallback table, so this only fires if
 /// an unknown-window model is ever routed here; 32k is safe for every Claude.
 pub(crate) const FALLBACK_MAX_TOKENS: u32 = 32_000;
@@ -28,7 +28,7 @@ pub(crate) const LONG_CONTEXT_WINDOW: u32 = 1_000_000;
 pub(crate) fn strip_long_context(model_id: &str) -> &str {
     model_id
         .strip_suffix(LONG_CONTEXT_SUFFIX)
-        .unwrap_or(model_id)
+        .unwrap_or_else(|| model_id)
 }
 
 /// A `-1m` model is just its base entry with a wider window.
@@ -37,8 +37,6 @@ pub(crate) fn long_context_window(model_id: &str) -> Option<u32> {
         .ends_with(LONG_CONTEXT_SUFFIX)
         .then_some(LONG_CONTEXT_WINDOW)
 }
-
-pub(super) const MESSAGE_CACHE_BREAKPOINTS: usize = 2;
 
 #[derive(Serialize)]
 pub(crate) struct CacheControl {
@@ -50,6 +48,7 @@ pub(crate) const EPHEMERAL: CacheControl = CacheControl {
 };
 
 #[derive(Deserialize)]
+#[allow(clippy::struct_field_names)]
 struct Usage {
     #[serde(default)]
     input_tokens: u32,
@@ -155,29 +154,66 @@ pub(super) struct WireMessage<'a> {
 
 pub(super) fn build_wire_messages(messages: &[Message]) -> Vec<WireMessage<'_>> {
     let len = messages.len();
+    let mut breakpoints = std::collections::HashSet::new();
+
+    if len == 0 {
+        return Vec::new();
+    }
+
+    let mut user_message_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| matches!(m.role, Role::User))
+        .map(|(i, _)| i)
+        .collect();
+
+    let last_user_idx = user_message_indices.pop();
+    let penultimate_user_idx = user_message_indices.pop();
+
+    if let Some(idx) = last_user_idx {
+        breakpoints.insert((idx, messages[idx].content.len().saturating_sub(1)));
+    }
+
+    if let Some(idx) = penultimate_user_idx {
+        breakpoints.insert((idx, messages[idx].content.len().saturating_sub(1)));
+    }
+
+    let mut last_tool_result_idx = None;
+    for (msg_idx, msg) in messages.iter().enumerate().rev() {
+        if msg
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+        {
+            last_tool_result_idx = Some(msg_idx);
+            break;
+        }
+    }
+
+    if let Some(idx) = last_tool_result_idx
+        && let Some(last_block_idx) = messages[idx].content.len().checked_sub(1)
+    {
+        breakpoints.insert((idx, last_block_idx));
+    }
 
     messages
         .iter()
         .enumerate()
-        .map(|(msg_idx, msg)| {
-            let cache_last_block = msg_idx + MESSAGE_CACHE_BREAKPOINTS >= len;
-
-            WireMessage {
-                role: &msg.role,
-                content: msg
-                    .content
-                    .iter()
-                    .enumerate()
-                    .map(|(block_idx, block)| WireContentBlock {
-                        inner: block,
-                        cache_control: if cache_last_block && block_idx + 1 == msg.content.len() {
-                            Some(EPHEMERAL)
-                        } else {
-                            None
-                        },
-                    })
-                    .collect(),
-            }
+        .map(|(msg_idx, msg)| WireMessage {
+            role: &msg.role,
+            content: msg
+                .content
+                .iter()
+                .enumerate()
+                .map(|(block_idx, block)| WireContentBlock {
+                    inner: block,
+                    cache_control: if breakpoints.contains(&(msg_idx, block_idx)) {
+                        Some(EPHEMERAL)
+                    } else {
+                        None
+                    },
+                })
+                .collect(),
         })
         .collect()
 }
@@ -186,7 +222,7 @@ pub(super) fn build_wire_tools(tools: &Value) -> Value {
     let Some(arr) = tools.as_array() else {
         return tools.clone();
     };
-    let mut out: Vec<Value> = arr.to_vec();
+    let mut out: Vec<Value> = arr.clone();
     if let Some(last) = out.last_mut() {
         last["cache_control"] = json!({"type": "ephemeral"});
     }
@@ -204,7 +240,7 @@ pub(crate) fn build_request_body_with_system(
     let wire_tools = build_wire_tools(tools);
 
     let mut body = json!({
-        "max_tokens": model.max_output_tokens.unwrap_or(FALLBACK_MAX_TOKENS),
+        "max_tokens": model.max_output_tokens.unwrap_or_else(|| FALLBACK_MAX_TOKENS),
         "system": system_blocks,
         "messages": wire_messages,
         "tools": wire_tools,
@@ -233,6 +269,7 @@ impl EventParser {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn process(
         &mut self,
         event_type: &str,
@@ -332,7 +369,7 @@ impl EventParser {
                         }
                         Err(e) => {
                             warn!(error = %e, json = %self.current_tool_json, "malformed tool JSON, falling back to {{}}");
-                            Value::Object(Default::default())
+                            Value::Object(serde_json::Map::default())
                         }
                     };
                     self.current_tool_json.clear();
@@ -382,6 +419,7 @@ impl EventParser {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn models() -> &'static [ModelEntry] {
     const MODELS: &[ModelEntry] = &[
         ModelEntry {
@@ -480,7 +518,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                     output: 150.00,
                 }),
             },
-            max_output_tokens: 128000,
+            max_output_tokens: 128_000,
             context_window: 200_000,
         },
         ModelEntry {
@@ -499,7 +537,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                     output: 150.00,
                 }),
             },
-            max_output_tokens: 128000,
+            max_output_tokens: 128_000,
             context_window: 200_000,
         },
         ModelEntry {
@@ -518,7 +556,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                     output: 50.00,
                 }),
             },
-            max_output_tokens: 128000,
+            max_output_tokens: 128_000,
             context_window: 200_000,
         },
         ModelEntry {
@@ -534,7 +572,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                 cache_read: 1.00,
                 fast: None,
             },
-            max_output_tokens: 128000,
+            max_output_tokens: 128_000,
             context_window: 200_000,
         },
         ModelEntry {

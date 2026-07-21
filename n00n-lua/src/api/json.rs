@@ -1,5 +1,9 @@
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, UserData, UserDataMethods, Value};
 use n00n_lua_macro::{lua_fn, lua_table};
+use serde::{Deserialize, Serialize};
 
 use super::util::convert::{err_pair, json_to_lua, lua_to_json};
 
@@ -161,6 +165,109 @@ fn from_toon(lua: &Lua, str: String) -> LuaResult<(Value, Value)> {
     }
 }
 
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
+struct ToonStats {
+    calls: u64,
+    json_bytes: u64,
+    toon_bytes: u64,
+    toon_wins: u64,
+    saved_bytes: u64,
+}
+
+fn toon_stats_path() -> Option<PathBuf> {
+    n00n_storage::paths::data_dir()
+        .ok()
+        .map(|dir| dir.join("toon_stats.json"))
+}
+
+fn load_toon_stats() -> ToonStats {
+    if let Some(path) = toon_stats_path() {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(stats) = serde_json::from_str::<ToonStats>(&text) {
+                return stats;
+            }
+        }
+    }
+    ToonStats::default()
+}
+
+fn record_toon_stats(json_len: usize, toon_len: usize, used_toon: bool) {
+    static STATS: OnceLock<Mutex<ToonStats>> = OnceLock::new();
+    let guard = STATS.get_or_init(|| Mutex::new(load_toon_stats()));
+    if let Ok(mut stats) = guard.lock() {
+        stats.calls += 1;
+        stats.json_bytes += json_len as u64;
+        stats.toon_bytes += toon_len as u64;
+        if used_toon {
+            stats.toon_wins += 1;
+            stats.saved_bytes += json_len.saturating_sub(toon_len) as u64;
+        }
+        if let Some(path) = toon_stats_path() {
+            if let Ok(bytes) = serde_json::to_vec(&*stats) {
+                let _ = n00n_storage::atomic_write(&path, &bytes);
+            }
+        }
+    }
+}
+
+/// Lossless JSON/TOON passthrough. Encodes the value as JSON and TOON and
+/// returns whichever representation is smaller. If TOON does not shrink the
+/// payload, the original JSON string is returned unchanged.
+///
+/// @param value any Lua value to encode.
+/// @return (string?, string?) Encoded string (JSON or TOON) and its format ("json" or "toon"), or nil plus an error.
+/// @example
+/// local s, fmt = n00n.json.tooned({ users = { { id = 1, name = "Alice" } } })
+#[lua_fn]
+fn tooned(lua: &Lua, value: Value) -> LuaResult<(Value, Value)> {
+    let serde_val: serde_json::Value = match lua.from_value(value) {
+        Ok(v) => v,
+        Err(e) => return err_pair(lua, e),
+    };
+    let json = match serde_json::to_string(&serde_val) {
+        Ok(s) => s,
+        Err(e) => return err_pair(lua, e),
+    };
+    let toon = match toon_format::encode_default(&serde_val) {
+        Ok(s) => s,
+        Err(e) => return err_pair(lua, e),
+    };
+    let use_toon = toon.len() < json.len()
+        && toon_format::decode_default::<serde_json::Value>(&toon)
+            .ok()
+            .and_then(|decoded| serde_json::to_value(&decoded).ok())
+            .is_some_and(|decoded| decoded == serde_val);
+    record_toon_stats(json.len(), toon.len(), use_toon);
+    if use_toon {
+        Ok((
+            Value::String(lua.create_string(&toon)?),
+            Value::String(lua.create_string("toon")?),
+        ))
+    } else {
+        Ok((
+            Value::String(lua.create_string(&json)?),
+            Value::String(lua.create_string("json")?),
+        ))
+    }
+}
+
+/// Return historical TOON passthrough statistics.
+///
+/// @return (table?, string?) Stats table with calls, json_bytes, toon_bytes, toon_wins, saved_bytes, or nil plus an error.
+/// @example
+/// local stats, err = n00n.json.toon_stats()
+#[lua_fn]
+fn toon_stats(lua: &Lua) -> LuaResult<(Value, Value)> {
+    let stats = load_toon_stats();
+    let tbl = lua.create_table()?;
+    tbl.set("calls", stats.calls)?;
+    tbl.set("json_bytes", stats.json_bytes)?;
+    tbl.set("toon_bytes", stats.toon_bytes)?;
+    tbl.set("toon_wins", stats.toon_wins)?;
+    tbl.set("saved_bytes", stats.saved_bytes)?;
+    Ok((Value::Table(tbl), Value::Nil))
+}
+
 lua_table! {
     /// JSON encoding, decoding, schema validation, and TOON round-trip.
     /// Encode Lua tables to JSON strings, decode JSON back into tables,
@@ -172,7 +279,7 @@ lua_table! {
     /// local t = n00n.json.decode(s)
     /// ```
     "n00n.json" => pub(crate) fn create_json_table(), DOCS [
-        encode, decode, schema_validator, to_toon, from_toon,
+        encode, decode, schema_validator, to_toon, from_toon, tooned, toon_stats,
     ]
 }
 

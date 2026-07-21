@@ -7,7 +7,7 @@ group = "Reference"
 
 # Permissions
 
-N00n uses a permission system to decide what each tool is allowed to do and when to ask you first.
+n00n uses a permission system to decide what each tool is allowed to do and when to ask you first.
 
 Rules come from three layers, combined for resolution:
 
@@ -19,7 +19,7 @@ Any matching deny blocks the tool. No exceptions.
 
 ## Check Flow
 
-For every tool call, N00n resolves permission like this:
+For every tool call, n00n resolves permission like this:
 
 1. **Deny wins**: if any rule from any layer matches the tool and scope with a deny, the call is blocked immediately.
 2. If **YOLO** is active and no deny matched, allowed.
@@ -122,7 +122,7 @@ Tool names must match `^[a-zA-Z0-9_-]{1,64}$` (no dots, max 64 chars). Server na
 
 ## Permission Prompts
 
-When a tool needs permission, N00n asks you. Here are the keys:
+When a tool needs permission, n00n asks you. Here are the keys:
 
 | Key | Action |
 |-----|--------|

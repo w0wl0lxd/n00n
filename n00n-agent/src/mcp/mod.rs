@@ -343,43 +343,146 @@ pub async fn start(cwd: &Path) -> (Option<McpHandle>, McpConfigErrors) {
     tracing::info!(cwd = %cwd.display(), "starting MCP");
     let cwd = cwd.to_owned();
     let (config, config_errors) = smol::unblock(move || load_config(&cwd)).await;
-    let handle = start_with_config(config).await;
+    let handle = start_with_config_deferred(config);
     (handle, config_errors)
 }
 
 pub async fn start_with_config(config: McpConfig) -> Option<McpHandle> {
+    let PreparedManager {
+        mut inner,
+        index,
+        snapshot,
+        cmd_rx,
+        handle,
+    } = prepare_manager(config)?;
+    start_enabled(&mut inner).await;
+    inner.generation += 1;
+    publish(&inner, &index, &snapshot);
+    log_initialized(&inner);
+    smol::spawn(run(inner, index, snapshot, cmd_rx)).detach();
+    Some(handle)
+}
+
+fn start_with_config_deferred(config: McpConfig) -> Option<McpHandle> {
+    let PreparedManager {
+        mut inner,
+        index,
+        snapshot,
+        cmd_rx,
+        handle,
+    } = prepare_manager(config)?;
+    smol::spawn(async move {
+        if initialize_deferred(&mut inner, &index, &snapshot, &cmd_rx).await {
+            run(inner, index, snapshot, cmd_rx).await;
+        }
+    })
+    .detach();
+    Some(handle)
+}
+
+struct PreparedManager {
+    inner: McpManagerInner,
+    index: Arc<ArcSwap<ToolIndex>>,
+    snapshot: Arc<ArcSwap<McpSnapshot>>,
+    cmd_rx: flume::Receiver<McpCommand>,
+    handle: McpHandle,
+}
+
+fn prepare_manager(config: McpConfig) -> Option<PreparedManager> {
     if config.is_empty() {
         tracing::info!("no MCP servers configured, skipping");
         return None;
     }
 
-    let mut inner = parse_entries(config);
-    start_enabled(&mut inner).await;
-    inner.generation += 1;
-
+    let inner = parse_entries(config);
     let snapshot = Arc::new(ArcSwap::from_pointee(McpSnapshot::default()));
     let index: Arc<ArcSwap<ToolIndex>> = Arc::new(ArcSwap::from_pointee(ToolIndex::default()));
     publish(&inner, &index, &snapshot);
-
     let (cmd_tx, cmd_rx) = flume::unbounded();
     let handle = McpHandle {
         cmd_tx,
         index: Arc::clone(&index),
         snapshot: Arc::clone(&snapshot),
     };
+    Some(PreparedManager {
+        inner,
+        index,
+        snapshot,
+        cmd_rx,
+        handle,
+    })
+}
 
+fn log_initialized(inner: &McpManagerInner) {
     info!(
         running = inner
             .entries
             .iter()
-            .filter(|e| e.transport.is_some())
+            .filter(|entry| entry.transport.is_some())
             .count(),
         total = inner.entries.len(),
         "MCP servers initialized"
     );
+}
 
-    smol::spawn(run(inner, index, snapshot, cmd_rx)).detach();
-    Some(handle)
+enum InitializationWake {
+    Complete,
+    Command(Option<McpCommand>),
+}
+
+async fn initialize_deferred(
+    inner: &mut McpManagerInner,
+    index: &Arc<ArcSwap<ToolIndex>>,
+    snapshot: &Arc<ArcSwap<McpSnapshot>>,
+    cmd_rx: &flume::Receiver<McpCommand>,
+) -> bool {
+    let mut shutdown_ack = None;
+    loop {
+        let wake = futures_lite::future::or(
+            async {
+                start_enabled(inner).await;
+                InitializationWake::Complete
+            },
+            async {
+                let command = match cmd_rx.recv_async().await {
+                    Ok(command) => Some(command),
+                    Err(_) => None,
+                };
+                InitializationWake::Command(command)
+            },
+        )
+        .await;
+
+        match wake {
+            InitializationWake::Complete => {
+                inner.generation += 1;
+                publish(inner, index, snapshot);
+                log_initialized(inner);
+                return true;
+            }
+            InitializationWake::Command(Some(McpCommand::Toggle { server, enabled })) => {
+                handle_toggle(inner, &server, enabled).await;
+            }
+            InitializationWake::Command(Some(McpCommand::Reconnect { server })) => {
+                handle_reconnect(inner, &server).await;
+            }
+            InitializationWake::Command(Some(McpCommand::Shutdown { ack })) => {
+                shutdown_ack = Some(ack);
+                break;
+            }
+            InitializationWake::Command(None) => break,
+        }
+        inner.generation += 1;
+        publish(inner, index, snapshot);
+    }
+
+    shutdown_all(inner).await;
+    inner.generation += 1;
+    publish(inner, index, snapshot);
+    if let Some(ack) = shutdown_ack {
+        let _ = ack.try_send(());
+    }
+    false
 }
 
 async fn run(
@@ -711,6 +814,7 @@ fn spawn_persist_enabled(path: PathBuf, name: String, enabled: bool) {
 }
 
 #[cfg(unix)]
+#[allow(unsafe_code)]
 pub fn kill_process_groups(pids: &[u32]) {
     for &pid in pids {
         unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
@@ -903,6 +1007,47 @@ mod tests {
 
             let disabled = infos.iter().find(|i| i.name == "disabled-srv").unwrap();
             assert_eq!(disabled.status, McpServerStatus::Disabled);
+        });
+    }
+
+    #[test]
+    fn prepared_manager_exposes_connecting_state_before_startup() {
+        let config = make_config(vec![(
+            "slow-srv",
+            stdio_raw(&["server-that-is-not-started-by-this-test"]),
+        )]);
+
+        let prepared = prepare_manager(config).unwrap();
+        let infos = prepared.handle.reader().load().infos.clone();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].name, "slow-srv");
+        assert_eq!(infos[0].status, McpServerStatus::Connecting);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deferred_initialization_honors_shutdown_before_handshake() {
+        smol::block_on(async {
+            let config = make_config(vec![(
+                "slow-srv",
+                stdio_raw(&["/bin/sh", "-c", "sleep 30"]),
+            )]);
+            let PreparedManager {
+                mut inner,
+                index,
+                snapshot,
+                cmd_rx,
+                handle,
+            } = prepare_manager(config).unwrap();
+            let (ack_tx, ack_rx) = flume::bounded(1);
+            handle.send(McpCommand::Shutdown { ack: ack_tx });
+
+            assert!(!initialize_deferred(&mut inner, &index, &snapshot, &cmd_rx).await);
+            assert_eq!(ack_rx.recv_async().await, Ok(()));
+            assert!(matches!(
+                inner.entries[0].status,
+                McpServerStatus::Failed(ref reason) if reason == "shutdown"
+            ));
         });
     }
 

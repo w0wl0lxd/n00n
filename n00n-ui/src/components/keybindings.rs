@@ -143,6 +143,11 @@ pub mod key {
     pub const FILE_PICKER: Bind = ctrl_bind!('s');
     pub const OPEN_EDITOR: Bind = ctrl_bind!('o');
     pub const PLAN_TOGGLE: Bind = ctrl_bind!('t');
+    pub const TRANSCRIPT_DETAILS: Bind = Bind {
+        code: KeyCode::Char('t'),
+        modifiers: KeyModifiers::ALT,
+        label: "Alt+T",
+    };
     pub const TASKS: Bind = ctrl_bind!('x');
     pub const REFRESH: Bind = ctrl_bind!('r');
     pub const SUSPEND: Bind = ctrl_bind!('z');
@@ -342,6 +347,12 @@ pub const KEYBINDS: &[Keybind] = &[
     Keybind {
         label: KeyLabel::Single(key::PLAN_TOGGLE.label),
         description: "Toggle plan panel",
+        context: KeybindContext::General,
+        platform: Platform::All,
+    },
+    Keybind {
+        label: KeyLabel::Single(key::TRANSCRIPT_DETAILS.label),
+        description: "Toggle transcript details",
         context: KeybindContext::General,
         platform: Platform::All,
     },

@@ -2,31 +2,56 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use n00n_providers::{ContentBlock, Message, Role};
+use n00n_storage::sessions::TranscriptEntry;
 use tracing::warn;
 
 const CANCEL_MARKER: &str = "[Cancelled by user]";
 const UNAVAILABLE_RESULT: &str = "[Tool result not available]";
 
 pub type SharedMessages = Arc<ArcSwap<Vec<Message>>>;
+pub type SharedTranscript = Arc<ArcSwap<Vec<TranscriptEntry<Message>>>>;
 
 pub struct History {
     messages: Vec<Message>,
+    transcript: Vec<TranscriptEntry<Message>>,
     mirror: Option<SharedMessages>,
+    transcript_mirror: Option<SharedTranscript>,
 }
 
 impl History {
     pub fn new(messages: Vec<Message>) -> Self {
         Self {
+            transcript: messages
+                .iter()
+                .cloned()
+                .map(TranscriptEntry::Message)
+                .collect(),
             messages,
             mirror: None,
+            transcript_mirror: None,
         }
     }
 
-    pub fn restored(mut messages: Vec<Message>) -> Self {
+    pub fn restored(messages: Vec<Message>) -> Self {
+        Self::restored_with_transcript(messages, Vec::new())
+    }
+
+    pub fn restored_with_transcript(
+        mut messages: Vec<Message>,
+        transcript: Vec<TranscriptEntry<Message>>,
+    ) -> Self {
         sanitize_restored(&mut messages);
+        let mut transcript = transcript;
+        if transcript.is_empty() {
+            transcript.extend(messages.iter().cloned().map(TranscriptEntry::Message));
+        } else {
+            rebuild_transcript(&mut transcript, &messages);
+        }
         Self {
+            transcript,
             messages,
             mirror: None,
+            transcript_mirror: None,
         }
     }
 
@@ -36,12 +61,38 @@ impl History {
         self
     }
 
+    pub fn with_transcript_mirror(mut self, mirror: SharedTranscript) -> Self {
+        self.transcript_mirror = Some(mirror);
+        self.publish();
+        self
+    }
+
+    pub fn transcript(&self) -> &[TranscriptEntry<Message>] {
+        &self.transcript
+    }
+
+    pub fn compact_boundary(&mut self, prompt: Message, summary: Message) {
+        let previous = std::mem::take(&mut self.transcript);
+        self.transcript = vec![TranscriptEntry::Compaction {
+            entries: previous,
+            generated_summary: Some(summary.clone()),
+        }];
+        self.messages = vec![prompt.clone(), summary.clone()];
+        self.transcript.extend([
+            TranscriptEntry::GeneratedMessage(prompt),
+            TranscriptEntry::GeneratedMessage(summary),
+        ]);
+        self.publish();
+    }
+
     pub fn as_slice(&self) -> &[Message] {
         &self.messages
     }
 
     pub fn push(&mut self, msg: Message) {
-        self.edit(|msgs| msgs.push(msg));
+        self.messages.push(msg.clone());
+        self.transcript.push(TranscriptEntry::Message(msg));
+        self.publish();
     }
 
     pub fn len(&self) -> usize {
@@ -52,22 +103,25 @@ impl History {
         self.messages.is_empty()
     }
 
-    pub fn has_recent_tool_results(&self, depth: usize) -> bool {
-        let msgs = self.as_slice();
-        let start = msgs.len().saturating_sub(depth);
-        msgs[start..].iter().any(|m| {
-            m.content
+    pub fn ends_with_tool_results(&self) -> bool {
+        self.messages.last().is_some_and(|message| {
+            message
+                .content
                 .iter()
-                .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
         })
     }
 
     pub fn replace(&mut self, messages: Vec<Message>) {
-        self.edit(|msgs| *msgs = messages);
+        rebuild_transcript(&mut self.transcript, &messages);
+        self.messages = messages;
+        self.publish();
     }
 
     pub fn truncate(&mut self, len: usize) {
-        self.edit(|msgs| msgs.truncate(len));
+        self.messages.truncate(len);
+        rebuild_transcript(&mut self.transcript, &self.messages);
+        self.publish();
     }
 
     pub fn into_vec(self) -> Vec<Message> {
@@ -75,7 +129,12 @@ impl History {
     }
 
     fn edit(&mut self, f: impl FnOnce(&mut Vec<Message>)) {
+        let before = self.messages.len();
         f(&mut self.messages);
+        for message in self.messages.iter().skip(before) {
+            self.transcript
+                .push(TranscriptEntry::Message(message.clone()));
+        }
         self.publish();
     }
 
@@ -84,6 +143,50 @@ impl History {
         let mut snapshot = self.messages.clone();
         close_dangling_tool_calls(&mut snapshot, UNAVAILABLE_RESULT);
         mirror.store(Arc::new(snapshot));
+        if let Some(transcript) = &self.transcript_mirror {
+            transcript.store(Arc::new(self.transcript.clone()));
+        }
+    }
+}
+
+pub fn rebuild_transcript(transcript: &mut Vec<TranscriptEntry<Message>>, messages: &[Message]) {
+    if messages.is_empty() {
+        transcript.clear();
+        return;
+    }
+
+    let active_entries: Vec<_> = transcript
+        .iter()
+        .filter(|entry| !matches!(entry, TranscriptEntry::Compaction { .. }))
+        .cloned()
+        .collect();
+    transcript.retain(|entry| matches!(entry, TranscriptEntry::Compaction { .. }));
+    transcript.extend(messages.iter().enumerate().map(|(index, message)| {
+        match active_entries.get(index) {
+            Some(TranscriptEntry::GeneratedMessage(saved))
+                if same_message_identity(saved, message) =>
+            {
+                TranscriptEntry::GeneratedMessage(message.clone())
+            }
+            _ => TranscriptEntry::Message(message.clone()),
+        }
+    }));
+}
+
+fn same_message_identity(left: &Message, right: &Message) -> bool {
+    let left = match serde_json::to_vec(left) {
+        Ok(identity) => identity,
+        Err(error) => {
+            warn!(%error, "failed to serialize saved transcript message identity");
+            return false;
+        }
+    };
+    match serde_json::to_vec(right) {
+        Ok(identity) => left == identity,
+        Err(error) => {
+            warn!(%error, "failed to serialize active transcript message identity");
+            false
+        }
     }
 }
 
@@ -177,15 +280,216 @@ pub(crate) fn sanitize_cancelled_history(history: &mut History, rollback_len: us
 #[cfg(test)]
 mod tests {
     use n00n_providers::{ContentBlock, Message, Role};
+    use n00n_storage::sessions::TranscriptEntry;
     use test_case::test_case;
 
     use super::*;
+
+    fn assistant(text: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text { text: text.into() }],
+            ..Default::default()
+        }
+    }
+
+    fn compact(history: &mut History, summary: &str) {
+        history.compact_boundary(Message::user("summary prompt".into()), assistant(summary));
+    }
 
     #[track_caller]
     fn assert_ends_with_cancel_marker(history: &History) {
         let last = history.as_slice().last().unwrap();
         assert!(matches!(last.role, Role::User));
         assert!(matches!(&last.content[0], ContentBlock::Text { text } if text == CANCEL_MARKER));
+    }
+
+    #[test]
+    fn compaction_boundary_preserves_prior_transcript_and_summary() {
+        let mut history = History::new(vec![Message::user("old".into())]);
+        history.push(Message::synthetic("reply".into()));
+        compact(&mut history, "summary");
+
+        assert_eq!(history.as_slice().len(), 2);
+        assert!(matches!(
+            history.transcript(),
+            [
+                TranscriptEntry::Compaction {
+                    entries,
+                    generated_summary: Some(_),
+                },
+                TranscriptEntry::GeneratedMessage(_),
+                TranscriptEntry::GeneratedMessage(_),
+            ] if entries.len() == 2
+        ));
+    }
+
+    #[test]
+    fn later_compactions_nest_independently() {
+        let mut history = History::new(vec![Message::user("one".into())]);
+        compact(&mut history, "summary one");
+        history.push(Message::user("two".into()));
+        compact(&mut history, "summary two");
+
+        assert!(matches!(
+            history.transcript(),
+            [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_)]
+                if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_)])
+        ));
+    }
+
+    #[test]
+    fn restored_transcript_survives_another_compaction() {
+        let prior = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
+                generated_summary: Some(assistant("first summary")),
+            },
+            TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
+            TranscriptEntry::GeneratedMessage(assistant("first summary")),
+        ];
+        let message_mirror = make_mirror();
+        let transcript_mirror: SharedTranscript = Arc::new(ArcSwap::from_pointee(Vec::new()));
+        let mut history = History::restored_with_transcript(
+            vec![
+                Message::user("summary prompt".into()),
+                assistant("first summary"),
+            ],
+            prior,
+        )
+        .with_mirror(message_mirror)
+        .with_transcript_mirror(Arc::clone(&transcript_mirror));
+
+        history.push(Message::synthetic("continued".into()));
+        compact(&mut history, "second summary");
+
+        assert!(matches!(
+            history.transcript(),
+            [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_)]
+                if matches!(entries.as_slice(), [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_)] if matches!(entries.as_slice(), [TranscriptEntry::Message(_)]))
+        ));
+        let snapshot = transcript_mirror.load();
+        assert!(matches!(
+            snapshot.as_slice(),
+            [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_)]
+                if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_)])
+        ));
+    }
+
+    #[test]
+    fn restored_empty_transcript_falls_back_to_flat_messages() {
+        let messages = vec![Message::user("legacy".into())];
+        let history = History::restored_with_transcript(messages, Vec::new());
+
+        assert!(matches!(
+            history.transcript(),
+            [TranscriptEntry::Message(message)] if message.user_text() == Some("legacy")
+        ));
+    }
+
+    #[test]
+    fn truncate_preserves_nested_compactions_and_removes_active_tail() {
+        let nested = TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(Message::user("oldest".into()))],
+                generated_summary: None,
+            }],
+            generated_summary: Some(assistant("summary")),
+        };
+        let active = vec![
+            Message::user("summary prompt".into()),
+            Message::user("summary".into()),
+            Message::user("keep".into()),
+            Message::user("kept reply".into()),
+            Message::user("remove".into()),
+            Message::user("removed reply".into()),
+        ];
+        let mut transcript = vec![nested];
+        transcript.extend([
+            TranscriptEntry::GeneratedMessage(active[0].clone()),
+            TranscriptEntry::GeneratedMessage(active[1].clone()),
+        ]);
+        transcript.extend(active.iter().skip(2).cloned().map(TranscriptEntry::Message));
+        let mut history = History::restored_with_transcript(active, transcript);
+
+        history.truncate(4);
+        compact(&mut history, "new summary");
+
+        let [
+            TranscriptEntry::Compaction { entries, .. },
+            TranscriptEntry::GeneratedMessage(_),
+            TranscriptEntry::GeneratedMessage(_),
+        ] = history.transcript()
+        else {
+            panic!("truncated history should remain recursively compactable");
+        };
+        assert!(matches!(
+            entries.first(),
+            Some(TranscriptEntry::Compaction { .. })
+        ));
+        assert_eq!(
+            entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    TranscriptEntry::Message(message)
+                    | TranscriptEntry::GeneratedMessage(message) => message.user_text(),
+                    TranscriptEntry::Compaction { .. } => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["summary prompt", "summary", "keep", "kept reply"]
+        );
+    }
+
+    #[test]
+    fn truncate_to_empty_clears_compacted_transcript() {
+        let mut history = History::new(vec![Message::user("old".into())]);
+        compact(&mut history, "summary");
+
+        history.truncate(0);
+
+        assert!(history.as_slice().is_empty());
+        assert!(history.transcript().is_empty());
+    }
+
+    #[test]
+    fn rebuild_preserves_generated_prefix_without_tagging_ordinary_tail() {
+        let mut history = History::new(vec![Message::user("old".into())]);
+        compact(&mut history, "summary");
+        history.push(Message::user("ordinary follow-up".into()));
+        history.push(assistant("ordinary answer"));
+
+        history.truncate(4);
+
+        assert!(matches!(
+            history.transcript(),
+            [
+                TranscriptEntry::Compaction { .. },
+                TranscriptEntry::GeneratedMessage(_),
+                TranscriptEntry::GeneratedMessage(_),
+                TranscriptEntry::Message(_),
+                TranscriptEntry::Message(_),
+            ]
+        ));
+    }
+
+    #[test]
+    fn rebuild_does_not_transfer_generated_tags_to_replacements() {
+        let mut history = History::new(vec![Message::user("old".into())]);
+        compact(&mut history, "summary");
+
+        history.replace(vec![
+            Message::user("ordinary replacement".into()),
+            assistant("ordinary answer"),
+        ]);
+
+        assert!(matches!(
+            history.transcript(),
+            [
+                TranscriptEntry::Compaction { .. },
+                TranscriptEntry::Message(_),
+                TranscriptEntry::Message(_),
+            ]
+        ));
     }
 
     fn make_tool_use_msg(ids: &[&str]) -> Message {
@@ -491,38 +795,18 @@ mod tests {
         assert_eq!(results, ["t1"]);
     }
 
+    #[test_case(vec![Message::user("go".into())], false ; "no_tool_results")]
     #[test_case(
-        vec![Message::user("go".into())],
-        0
-        ; "no_tool_results"
+        vec![Message::user("go".into()), make_tool_result_msg(&["t1"])],
+        true
+        ; "ends_with_tool_result"
     )]
     #[test_case(
-        vec![
-            Message::user("go".into()),
-            make_tool_result_msg(&["t1"]),
-        ],
-        1
-        ; "recent_tool_result"
+        vec![make_tool_result_msg(&["t1"]), Message::user("continue".into())],
+        false
+        ; "tool_result_is_not_last"
     )]
-    #[test_case(
-        vec![
-            Message::user("old1".into()),
-            Message::user("old2".into()),
-            Message::user("old3".into()),
-            Message::user("old4".into()),
-            Message::user("old5".into()),
-            make_tool_result_msg(&["t1"]),
-        ],
-        1
-        ; "at_depth_boundary"
-    )]
-    fn has_recent_tool_results(messages: Vec<Message>, depth: usize) {
-        let history = History::new(messages);
-        let result = if depth == 0 {
-            history.has_recent_tool_results(0)
-        } else {
-            history.has_recent_tool_results(depth)
-        };
-        assert_eq!(result, depth > 0);
+    fn ends_with_tool_results(messages: Vec<Message>, expected: bool) {
+        assert_eq!(History::new(messages).ends_with_tool_results(), expected);
     }
 }

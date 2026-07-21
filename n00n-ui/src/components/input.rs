@@ -261,7 +261,7 @@ impl InputBox {
         if text.is_empty() && images.is_empty() {
             return None;
         }
-        self.history.push(text.clone());
+        self.history.push(text.as_str());
         self.discard();
         Some(Submission { text, images })
     }
@@ -286,6 +286,11 @@ impl InputBox {
 
     pub fn set_input(&mut self, s: String) {
         self.buffer = TextBuffer::new(s);
+    }
+
+    pub fn set_submission(&mut self, sub: Submission) {
+        self.buffer = TextBuffer::new(sub.text);
+        self.pending_images = sub.images;
     }
 
     pub fn history_up(&mut self) {

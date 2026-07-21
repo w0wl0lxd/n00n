@@ -7,7 +7,7 @@ group = "Reference"
 
 # Lua API
 
-N00n plugins are plain Lua files. Everything a plugin can touch lives under
+n00n plugins are plain Lua files. Everything a plugin can touch lives under
 one global table: `n00n`. This reference documents every module, function,
 and method. It is generated straight from the source code by `n00n-docgen`.
 

@@ -30,8 +30,7 @@ pub fn tool_kind(name: &str) -> ToolKind {
     entry
         .tool
         .tool_kind()
-        .map(parse_tool_kind)
-        .unwrap_or(ToolKind::Other)
+        .map_or(ToolKind::Other, parse_tool_kind)
 }
 
 fn parse_tool_kind(s: &str) -> ToolKind {
@@ -49,18 +48,21 @@ fn parse_tool_kind(s: &str) -> ToolKind {
     }
 }
 
+#[must_use]
 pub fn text_delta(text: &str) -> SessionUpdate {
     SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
         text.to_string(),
     ))))
 }
 
+#[must_use]
 pub fn thinking_delta(text: &str) -> SessionUpdate {
     SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
         text.to_string(),
     ))))
 }
 
+#[must_use]
 pub fn tool_pending(id: &str, name: &str) -> SessionUpdate {
     let kind = tool_kind(name);
     SessionUpdate::ToolCall(
@@ -70,6 +72,7 @@ pub fn tool_pending(id: &str, name: &str) -> SessionUpdate {
     )
 }
 
+#[must_use]
 pub fn tool_start(event: &ToolStartEvent) -> SessionUpdate {
     let mut fields = ToolCallUpdateFields::new()
         .status(ToolCallStatus::InProgress)
@@ -102,6 +105,7 @@ fn input_path(raw_input: Option<&serde_json::Value>) -> Option<std::path::PathBu
         .map(std::path::PathBuf::from)
 }
 
+#[must_use]
 pub fn tool_output(id: &str, content: &str) -> SessionUpdate {
     let fields = ToolCallUpdateFields::new().content(vec![ToolCallContent::Content(Content::new(
         ContentBlock::Text(TextContent::new(fenced(content))),
@@ -112,6 +116,7 @@ pub fn tool_output(id: &str, content: &str) -> SessionUpdate {
     ))
 }
 
+#[must_use]
 pub fn tool_done(event: &ToolDoneEvent) -> SessionUpdate {
     let status = if event.is_error {
         ToolCallStatus::Failed
@@ -119,29 +124,27 @@ pub fn tool_done(event: &ToolDoneEvent) -> SessionUpdate {
         ToolCallStatus::Completed
     };
 
-    let content = match &event.output {
-        ToolOutput::Diff {
-            path,
-            before,
-            after,
-            ..
-        } => {
-            let diff = if before.is_empty() {
-                Diff::new(path.as_str(), after.clone())
-            } else {
-                Diff::new(path.as_str(), after.clone()).old_text(before.clone())
-            };
-            vec![ToolCallContent::Diff(diff)]
-        }
-        _ => {
-            let text = event.output.as_text();
-            if text.is_empty() {
-                vec![]
-            } else {
-                vec![ToolCallContent::Content(Content::new(ContentBlock::Text(
-                    TextContent::new(fenced(&text)),
-                )))]
-            }
+    let content = if let ToolOutput::Diff {
+        path,
+        before,
+        after,
+        ..
+    } = &event.output
+    {
+        let diff = if before.is_empty() {
+            Diff::new(path.as_str(), after.clone())
+        } else {
+            Diff::new(path.as_str(), after.clone()).old_text(before.clone())
+        };
+        vec![ToolCallContent::Diff(diff)]
+    } else {
+        let text = event.output.as_text();
+        if text.is_empty() {
+            vec![]
+        } else {
+            vec![ToolCallContent::Content(Content::new(ContentBlock::Text(
+                TextContent::new(fenced(&text)),
+            )))]
         }
     };
 
@@ -157,6 +160,7 @@ pub fn tool_done(event: &ToolDoneEvent) -> SessionUpdate {
     ))
 }
 
+#[must_use]
 pub fn map_stop_reason(
     sr: Option<n00n_providers::StopReason>,
 ) -> agent_client_protocol_schema::StopReason {
@@ -173,6 +177,7 @@ pub fn map_stop_reason(
     }
 }
 
+#[must_use]
 pub fn replay_history(messages: &[Message]) -> Vec<SessionUpdate> {
     let mut updates = Vec::new();
     for msg in messages {

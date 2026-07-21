@@ -12,6 +12,7 @@ n00n-providers = { workspace = true }
 n00n-lua = { workspace = true }
 n00n-storage = { workspace = true }
 ratatui = { workspace = true }
+ratatui-image = { workspace = true }
 crossterm = { workspace = true }
 color-eyre = { workspace = true }
 tracing = { workspace = true }
@@ -51,3 +52,6 @@ criterion = { workspace = true }
 [[bench]]
 name = "splash"
 harness = false
+
+[lints]
+workspace = true

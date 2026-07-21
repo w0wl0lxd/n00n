@@ -1,4 +1,3 @@
-use super::segment;
 use super::*;
 use crate::components::keybindings::key;
 use crate::components::scrollbar::SCROLLBAR_THUMB;
@@ -8,7 +7,18 @@ use n00n_agent::{
     GrepFileEntry, GrepMatchGroup, SnapshotLine, SnapshotSpan, SpanStyle, ToolInput, ToolOutput,
 };
 use ratatui::backend::TestBackend;
+use ratatui::text::Line;
+use ratatui_image::picker::Picker;
+use std::sync::Arc;
 use test_case::test_case;
+
+fn test_panel() -> MessagesPanel {
+    test_panel_with_config(UiConfig::default())
+}
+
+fn test_panel_with_config(ui_config: UiConfig) -> MessagesPanel {
+    MessagesPanel::new(ui_config, Arc::new(Picker::halfblocks()))
+}
 
 fn snap_line(text: &str) -> SnapshotLine {
     SnapshotLine {
@@ -33,7 +43,7 @@ fn start(id: &str, tool: &str) -> ToolStartEvent {
 }
 
 fn panel_with_tools(ids: &[(&str, &'static str)]) -> MessagesPanel {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     for &(id, tool) in ids {
         panel.tool_start(start(id, tool));
     }
@@ -73,7 +83,7 @@ fn finish_with_live_buf(
 #[test_case(false, ToolStatus::Success ; "success_updates_start_to_success")]
 #[test_case(true,  ToolStatus::Error   ; "error_updates_start_to_error")]
 fn tool_done_updates_start_status(is_error: bool, expected: ToolStatus) {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", "bash"));
     panel.tool_done(ToolDoneEvent {
         id: "t1".into(),
@@ -102,7 +112,7 @@ fn tool_done_updates_start_status(is_error: bool, expected: ToolStatus) {
     ; "grep_files"
 )]
 fn tool_done_sets_annotation(tool: &'static str, output: ToolOutput, expected: Option<&str>) {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", tool));
     panel.tool_done(ToolDoneEvent {
         id: "t1".into(),
@@ -118,7 +128,7 @@ fn tool_done_sets_annotation(tool: &'static str, output: ToolOutput, expected: O
 #[test_case("line\n".repeat(200).as_str(), Some("2m timeout · 200 lines") ; "merges_start_and_output_annotations")]
 #[test_case("ok",                           Some("2m timeout · 1 lines") ; "merges_start_and_short_output")]
 fn tool_done_annotation_merge(output: &str, expected: Option<&str>) {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     let mut event = start("t1", BASH_TOOL_NAME);
     event.annotation = Some("2m timeout".into());
     panel.tool_start(event);
@@ -146,7 +156,7 @@ fn grep_output(n_files: usize) -> ToolOutput {
 
 #[test]
 fn tool_done_grep_shows_matches() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", GREP_TOOL_NAME));
     panel.tool_done(ToolDoneEvent {
         id: "t1".into(),
@@ -163,7 +173,7 @@ fn tool_done_grep_shows_matches() {
 
 #[test]
 fn tool_start_flushes_streaming_text() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.streaming_text.set_buffer("partial response");
 
     panel.tool_start(start("t1", "read"));
@@ -175,7 +185,7 @@ fn tool_start_flushes_streaming_text() {
 
 #[test]
 fn thinking_delta_separate_from_text() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.thinking_delta("reasoning");
     assert_eq!(panel.streaming_thinking, "reasoning");
     assert!(panel.streaming_text.is_empty());
@@ -188,8 +198,53 @@ fn thinking_delta_separate_from_text() {
 }
 
 #[test]
+fn tool_boundaries_preserve_independently_expandable_thinking_rows() {
+    let mut panel = test_panel();
+    panel.thinking_delta("A");
+    panel.tool_pending("tool1".into(), "bash");
+    panel.thinking_delta("B");
+    panel.tool_pending("tool2".into(), "bash");
+    rebuild(&mut panel);
+
+    let thinking: Vec<_> = panel
+        .messages
+        .iter()
+        .enumerate()
+        .filter(|(_, msg)| matches!(msg.role, DisplayRole::Thinking))
+        .collect();
+    assert_eq!(thinking.len(), 2);
+    assert_eq!(thinking[0].1.text, "A");
+    assert_eq!(thinking[1].1.text, "B");
+    assert!(thinking.iter().all(|(_, msg)| msg.thinking_collapsed));
+
+    let first_idx = thinking[0].0;
+    let second_idx = thinking[1].0;
+    assert!(panel.try_toggle_cached_thinking(Some(first_idx), 80));
+    assert!(!panel.messages[first_idx].thinking_collapsed);
+    assert!(panel.messages[second_idx].thinking_collapsed);
+    assert!(panel.try_toggle_cached_thinking(Some(second_idx), 80));
+    assert!(!panel.messages[first_idx].thinking_collapsed);
+    assert!(!panel.messages[second_idx].thinking_collapsed);
+}
+
+#[test]
+fn transcript_details_toggle_only_changes_persisted_thinking() {
+    let mut panel = test_panel();
+    panel.thinking_delta("persisted");
+    panel.flush();
+    panel.thinking_delta("live");
+
+    assert!(panel.toggle_transcript_details());
+    assert!(!panel.messages[0].thinking_collapsed);
+    assert_eq!(panel.streaming_thinking, "live");
+    assert!(!panel.toggle_transcript_details());
+    assert!(panel.messages[0].thinking_collapsed);
+    assert_eq!(panel.streaming_thinking, "live");
+}
+
+#[test]
 fn scroll_up_pins_viewport_during_streaming() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.streaming_text.set_buffer(&"a\n".repeat(30));
     render(&mut panel, 80, 10);
 
@@ -246,7 +301,7 @@ fn render_working(
 
 #[test]
 fn working_state_does_not_overlay_thinking_status_on_chat() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.text_delta("hello");
     let terminal = render_working(&mut panel, 80, 10);
     let text = buffer_text(&terminal);
@@ -262,7 +317,7 @@ fn working_state_does_not_overlay_thinking_status_on_chat() {
 
 #[test]
 fn ctrl_d_to_bottom_re_enables_auto_scroll() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.streaming_text.set_buffer(&"a\n".repeat(30));
     render(&mut panel, 80, 10);
     assert!(panel.auto_scroll);
@@ -279,7 +334,7 @@ fn ctrl_d_to_bottom_re_enables_auto_scroll() {
 
 #[test]
 fn jump_to_bottom_popup_appears_when_scrolled_up() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.streaming_text.set_buffer(&"a\n".repeat(30));
     render(&mut panel, 80, 10);
     assert!(panel.jump_to_bottom_popup().is_none());
@@ -317,7 +372,7 @@ fn jump_to_bottom_popup_appears_when_scrolled_up() {
 
 #[test]
 fn unknown_tool_id_is_noop() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_output("ghost", "data");
     panel.tool_done(ToolDoneEvent {
         id: "orphan".into(),
@@ -367,12 +422,20 @@ fn has_scrollbar_thumb(terminal: &ratatui::Terminal<TestBackend>) -> bool {
 #[test_case(40, true  ; "rendered_when_content_overflows")]
 #[test_case(1,  false ; "hidden_when_content_fits")]
 fn scrollbar_visibility(line_count: usize, expected: bool) {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel
         .streaming_text
         .set_buffer(&"line\n".repeat(line_count));
     let terminal = render(&mut panel, 80, 10);
     assert_eq!(has_scrollbar_thumb(&terminal), expected);
+}
+
+fn first_segment_text(panel: &MessagesPanel) -> String {
+    panel.cache.segments()[0]
+        .lines()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+        .collect()
 }
 
 fn seg_text(panel: &MessagesPanel, tool_id: &str) -> String {
@@ -386,6 +449,34 @@ fn seg_text(panel: &MessagesPanel, tool_id: &str) -> String {
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
         .collect()
+}
+
+fn truncation_source_line(panel: &MessagesPanel, tool_id: &str) -> usize {
+    let segment = panel
+        .cache
+        .segments()
+        .iter()
+        .find(|segment| segment.tool_id.as_deref() == Some(tool_id))
+        .unwrap();
+    (0..segment.lines().len())
+        .find(|&line| segment.truncation_action(line).is_some())
+        .unwrap()
+}
+
+fn section_truncation_source_line(
+    panel: &MessagesPanel,
+    tool_id: &str,
+    section: SectionFlags,
+) -> usize {
+    let segment = panel
+        .cache
+        .segments()
+        .iter()
+        .find(|segment| segment.tool_id.as_deref() == Some(tool_id))
+        .unwrap();
+    (0..segment.lines().len())
+        .find(|&line| segment.truncation_action(line) == Some(section))
+        .unwrap()
 }
 
 fn msg_status(panel: &MessagesPanel, tool_id: &str) -> ToolStatus {
@@ -444,7 +535,7 @@ fn bash_code_start(panel: &mut MessagesPanel, id: &str, code: &str) {
 
 #[test]
 fn bash_live_output_with_code_input() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     bash_code_start(&mut panel, "t1", "echo hello");
     rebuild(&mut panel);
 
@@ -521,7 +612,7 @@ fn tool_done_after_cancel_in_progress_does_not_underflow() {
 
 #[test]
 fn selection_freezes_viewport_during_auto_scroll() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.streaming_text.set_buffer(&"a\n".repeat(30));
     render(&mut panel, 80, 10);
     assert!(panel.auto_scroll);
@@ -551,7 +642,7 @@ fn seg_search(panel: &MessagesPanel, tool_id: &str) -> String {
 
 #[test]
 fn search_text_grep_result_includes_structured_output() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", "grep"));
     panel.tool_done(ToolDoneEvent {
         id: "t1".into(),
@@ -568,7 +659,7 @@ fn search_text_grep_result_includes_structured_output() {
 
 #[test]
 fn search_text_diff_output_includes_hunks() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", "edit"));
     panel.tool_done(ToolDoneEvent {
         id: "t1".into(),
@@ -590,7 +681,7 @@ fn search_text_diff_output_includes_hunks() {
 
 #[test]
 fn search_text_bash_with_code_input() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     bash_code_start(&mut panel, "t1", "echo hello");
     panel.tool_done(ToolDoneEvent {
         id: "t1".into(),
@@ -606,9 +697,155 @@ fn search_text_bash_with_code_input() {
 }
 
 #[test]
+fn expanded_compaction_card_renders_stored_tool_output_once() {
+    let mut tool = DisplayMessage::new(
+        DisplayRole::Tool(Box::new(ToolRole {
+            id: "tool-1".into(),
+            status: ToolStatus::Success,
+            name: Arc::from("bash"),
+        })),
+        "Run command".into(),
+    );
+    tool.tool_output = Some(Arc::new(ToolOutput::Plain("reviewer output body".into())));
+    let compaction_id = "compaction:0";
+    let mut panel = test_panel();
+    panel.push(DisplayMessage::compaction(CompactionDisplay {
+        id: compaction_id.into(),
+        depth: 1,
+        message_count: 1,
+        summary: Some("summary".into()),
+        entries: vec![tool],
+    }));
+    panel.expanded_compactions.insert(compaction_id.into());
+    rebuild(&mut panel);
+
+    let card = first_segment_text(&panel);
+    assert!(card.contains("reviewer output body"), "card: {card}");
+    assert_eq!(card.matches("reviewer output body").count(), 1);
+}
+
+#[test]
+fn expanded_compaction_card_caps_stored_tool_output() {
+    let mut tool = DisplayMessage::new(
+        DisplayRole::Tool(Box::new(ToolRole {
+            id: "tool-1".into(),
+            status: ToolStatus::Success,
+            name: Arc::from("bash"),
+        })),
+        "Run command".into(),
+    );
+    tool.tool_output = Some(Arc::new(ToolOutput::Plain(
+        "line 0\nline 1\nline 2\nline 3\nline 4\nline 5".into(),
+    )));
+    let compaction_id = "compaction:0";
+    let mut ui_config = UiConfig::default();
+    ui_config.tool_output_lines.bash = 2;
+    let mut panel = test_panel_with_config(ui_config);
+    panel.push(DisplayMessage::compaction(CompactionDisplay {
+        id: compaction_id.into(),
+        depth: 1,
+        message_count: 1,
+        summary: Some("summary".into()),
+        entries: vec![tool],
+    }));
+    panel.expanded_compactions.insert(compaction_id.into());
+    rebuild(&mut panel);
+
+    let card = first_segment_text(&panel);
+    assert!(card.contains("line 0"), "card: {card}");
+    assert!(card.contains("line 1"), "card: {card}");
+    assert!(!card.contains("line 2"), "card: {card}");
+    assert!(!card.contains("line 5"), "card: {card}");
+}
+
+#[test]
+fn nested_compaction_cards_expand_collapse_at_narrow_width() {
+    let inner = DisplayMessage::compaction(CompactionDisplay {
+        id: "compaction:0.0".into(),
+        depth: 2,
+        message_count: 1,
+        summary: Some("inner summary".into()),
+        entries: vec![DisplayMessage::new(
+            DisplayRole::User,
+            "original request".into(),
+        )],
+    });
+    let outer = DisplayMessage::compaction(CompactionDisplay {
+        id: "compaction:0".into(),
+        depth: 1,
+        message_count: 2,
+        summary: Some("outer summary with narrow wrapping".into()),
+        entries: vec![
+            inner,
+            DisplayMessage::new(DisplayRole::Assistant, "inner summary".into()),
+        ],
+    });
+    let mut panel = test_panel();
+    panel.push(outer);
+    let area = Rect::new(0, 0, 24, 20);
+
+    let collapsed = buffer_text(&render(&mut panel, area.width, area.height));
+    let collapsed_card = first_segment_text(&panel);
+    assert!(collapsed_card.contains("depth 1"), "card: {collapsed_card}");
+    assert!(
+        collapsed_card.contains("2 messages"),
+        "card: {collapsed_card}"
+    );
+    assert!(
+        collapsed_card.contains("outer summary"),
+        "card: {collapsed_card}"
+    );
+    assert!(
+        !collapsed_card.contains("depth 2"),
+        "card: {collapsed_card}"
+    );
+    assert!(
+        collapsed.contains("wrapping"),
+        "rendered buffer: {collapsed}"
+    );
+
+    let outer_row = panel.cache.segments()[0]
+        .compaction_action_row("compaction:0", panel.viewport_width)
+        .unwrap();
+    assert!(panel.toggle_expansion_at(outer_row, area));
+    let expanded = buffer_text(&render(&mut panel, area.width, area.height));
+    let expanded_card = first_segment_text(&panel);
+    assert!(expanded_card.contains("depth 2"), "card: {expanded_card}");
+    assert!(
+        !expanded_card.contains("original request"),
+        "card: {expanded_card}"
+    );
+    assert!(expanded.contains("inner"), "rendered buffer: {expanded}");
+
+    let inner_row = panel.cache.segments()[0]
+        .compaction_action_row("compaction:0.0", panel.viewport_width)
+        .unwrap();
+    assert!(
+        panel.toggle_expansion_at(inner_row, area),
+        "inner_row={inner_row} scroll_top={} width={}",
+        panel.scroll_top,
+        panel.viewport_width
+    );
+    render(&mut panel, area.width, area.height);
+    let nested_card = first_segment_text(&panel);
+    assert!(
+        nested_card.contains("original request"),
+        "card: {nested_card}"
+    );
+
+    assert!(panel.toggle_expansion_at(outer_row, area));
+    render(&mut panel, area.width, area.height);
+    let recollapsed_card = first_segment_text(&panel);
+    assert!(
+        !recollapsed_card.contains("depth 2"),
+        "card: {recollapsed_card}"
+    );
+}
+
+#[test]
 fn assistant_markdown_renders_copy_action_and_raw_payload() {
     let markdown = "# Result\n\n- one\n- two";
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.push(DisplayMessage::new(DisplayRole::Assistant, markdown.into()));
     let terminal = render(&mut panel, 48, 10);
     let text = buffer_text(&terminal);
@@ -624,7 +861,7 @@ fn assistant_markdown_renders_copy_action_and_raw_payload() {
 #[test]
 fn fenced_code_copy_action_returns_code_without_fence() {
     let markdown = "```rust\nfn main() {}\n```";
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.push(DisplayMessage::new(DisplayRole::Assistant, markdown.into()));
     render(&mut panel, 48, 10);
 
@@ -637,7 +874,7 @@ fn fenced_code_copy_action_returns_code_without_fence() {
 
 #[test]
 fn user_message_renders_as_compact_card() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.push(DisplayMessage::new(DisplayRole::User, "hello".into()));
     let terminal = render(&mut panel, 32, 8);
     let text = buffer_text(&terminal);
@@ -650,7 +887,7 @@ fn user_message_renders_as_compact_card() {
 
 #[test]
 fn copy_hit_target_requires_exact_visible_label() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.push(DisplayMessage::new(DisplayRole::Assistant, "answer".into()));
     render(&mut panel, 48, 8);
     let area = Rect::new(0, 0, 48, 8);
@@ -663,22 +900,35 @@ fn copy_hit_target_requires_exact_visible_label() {
 }
 
 #[test]
-fn copy_action_stays_within_narrow_offset_area() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+fn copy_label_does_not_replace_narrow_assistant_text() {
+    let mut panel = test_panel();
     panel.push(DisplayMessage::new(DisplayRole::Assistant, "answer".into()));
-    let area = Rect::new(10, 0, 5, 8);
-    render(&mut panel, 5, 8);
+    let area = Rect::new(0, 0, 5, 8);
+    let text = buffer_text(&render(&mut panel, area.width, area.height));
 
-    assert_eq!(panel.copy_at(0, 9, area), None);
-    assert_eq!(
-        panel.copy_at(0, 10, area),
-        Some(("answer".into(), "markdown"))
-    );
+    assert!(text.contains("ans"), "rendered buffer: {text}");
+    assert!(text.contains("wer"), "rendered buffer: {text}");
+    assert!(!text.contains("[copy]"), "rendered buffer: {text}");
+    assert_eq!(panel.copy_at(0, 0, area), None);
+}
+
+#[test]
+fn copy_label_does_not_replace_full_width_assistant_text() {
+    let mut panel = test_panel();
+    panel.push(DisplayMessage::new(
+        DisplayRole::Assistant,
+        "abcdefghijkl".into(),
+    ));
+    let text = buffer_text(&render(&mut panel, 12, 8));
+
+    assert!(text.contains("abcdefghijk"), "rendered buffer: {text}");
+    assert!(text.contains("l "), "rendered buffer: {text}");
+    assert!(!text.contains("[copy]"), "rendered buffer: {text}");
 }
 
 #[test]
 fn partially_scrolled_user_card_does_not_replace_content_with_top_border() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.push(DisplayMessage::new(
         DisplayRole::User,
         "first\nsecond\nthird".into(),
@@ -693,7 +943,7 @@ fn partially_scrolled_user_card_does_not_replace_content_with_top_border() {
 
 #[test]
 fn user_markdown_uses_card_content_width() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.push(DisplayMessage::new(DisplayRole::User, "---".into()));
     render(&mut panel, 12, 8);
 
@@ -707,7 +957,7 @@ fn restored_timed_and_legacy_thinking_use_distinct_labels() {
     timed.annotation = Some("4s".into());
     let mut legacy = DisplayMessage::new(DisplayRole::Thinking, "legacy".into());
     legacy.thinking_collapsed = true;
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.load_messages(vec![timed, legacy]);
     let text = buffer_text(&render(&mut panel, 80, 10));
 
@@ -721,7 +971,7 @@ fn restored_timed_and_legacy_thinking_use_distinct_labels() {
 #[test]
 fn search_text_includes_role_prefix() {
     let md = "# Heading\n\nSome **bold** text";
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.push(DisplayMessage::new(DisplayRole::User, "hello".into()));
     panel.push(DisplayMessage::new(DisplayRole::Assistant, md.into()));
     panel.push(DisplayMessage::new(DisplayRole::Thinking, "hmm".into()));
@@ -763,7 +1013,7 @@ fn update_tool_model_sets_annotation() {
 
 #[test]
 fn scroll_clamps_to_max_scroll() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.streaming_text.set_buffer(&"a\n".repeat(15));
     render(&mut panel, 80, 10);
     let max = panel.max_scroll();
@@ -775,7 +1025,7 @@ fn scroll_clamps_to_max_scroll() {
 #[test_case("bash", 1, 1 ; "known_tool_creates_message")]
 #[test_case("nonexistent_tool", 1, 1 ; "unknown_tool_accepted")]
 fn tool_pending(tool: &str, expected_msgs: usize, expected_in_progress: usize) {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_pending("t1".into(), tool);
     assert_eq!(panel.messages.len(), expected_msgs);
     assert_eq!(panel.in_progress_count(), expected_in_progress);
@@ -783,7 +1033,7 @@ fn tool_pending(tool: &str, expected_msgs: usize, expected_in_progress: usize) {
 
 #[test]
 fn tool_start_upgrades_pending_in_place() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_pending("t1".into(), "bash");
     assert_eq!(panel.messages.len(), 1);
     assert_eq!(panel.in_progress_count(), 1);
@@ -828,7 +1078,7 @@ fn make_sel(area: Rect, anchor: (u32, u16), cursor: (u32, u16)) -> Selection {
 }
 
 fn panel_with_msgs(texts: &[&str], width: u16, height: u16) -> MessagesPanel {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     for &text in texts {
         panel.push(DisplayMessage::new(DisplayRole::Assistant, text.into()));
     }
@@ -862,7 +1112,7 @@ fn extract_skips_out_of_range_segments() {
 
 #[test]
 fn extract_off_screen_rows_via_temp_buffer() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     let text = (0..20)
         .map(|i| format!("line {i}"))
         .collect::<Vec<_>>()
@@ -895,7 +1145,7 @@ fn extract_mixed_fully_enclosed_and_partial() {
 #[test_case(&["line-0\nline-1\nline-2\nline-3"], "line-0", "line-3" ; "single_segment")]
 #[test_case(&["seg-A-text", "seg-B-text"],      "seg-A-text", "seg-B-text" ; "across_segments")]
 fn extract_partial_col_symmetric(msgs: &[&str], expect_start: &str, expect_end: &str) {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     for &text in msgs {
         panel.push(DisplayMessage::new(DisplayRole::Assistant, text.into()));
     }
@@ -916,7 +1166,7 @@ fn extract_partial_col_symmetric(msgs: &[&str], expect_start: &str, expect_end: 
 fn extract_wrapped_no_soft_breaks(template: &str, anchor: (u32, u16)) {
     let long = "x".repeat(200);
     let msg = template.replace("{L}", &long);
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.push(DisplayMessage::new(DisplayRole::Assistant, msg));
     render(&mut panel, 40, 30);
     let total: u16 = panel.segment_heights().iter().sum();
@@ -931,7 +1181,7 @@ fn extract_wrapped_no_soft_breaks(template: &str, anchor: (u32, u16)) {
 
 #[test]
 fn extract_fully_selected_message_copies_raw_text() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.push(DisplayMessage::new(
         DisplayRole::Assistant,
         "some **markdown** text".into(),
@@ -948,7 +1198,7 @@ fn extract_fully_selected_message_copies_raw_text() {
 
 #[test]
 fn extract_fully_selected_tool_copies_raw_output() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     let table = "| a | b |\n|---|---|\n| 1 | 2 |";
     panel.tool_start(start("t1", BASH_TOOL_NAME));
     panel.tool_done(ToolDoneEvent {
@@ -978,7 +1228,7 @@ fn extract_fully_selected_tool_copies_raw_output() {
 
 #[test]
 fn extract_partial_last_line_truncated() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.push(DisplayMessage::new(
         DisplayRole::Assistant,
         "first\nABCDEFGHIJKLMNOP".into(),
@@ -997,7 +1247,7 @@ fn panel_with_long_tool(line_count: usize) -> MessagesPanel {
         .map(|i| format!("line {i}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(ToolStartEvent {
         id: "t1".into(),
         tool: BASH_TOOL_NAME.into(),
@@ -1024,15 +1274,28 @@ fn panel_with_long_tool(line_count: usize) -> MessagesPanel {
 fn toggle_expand_collapse_truncated_tool() {
     let mut panel = panel_with_long_tool(200);
     let area = Rect::new(0, 0, 80, 24);
-    assert!(seg_text(&panel, "t1").contains("click to expand"));
+    assert!(seg_text(&panel, "t1").contains("›"));
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
-    assert!(!seg_text(&panel, "t1").contains("click to expand"));
+    assert!(!seg_text(&panel, "t1").contains("›"));
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
-    assert!(seg_text(&panel, "t1").contains("click to expand"));
+    assert!(seg_text(&panel, "t1").contains("›"));
+}
+
+#[test]
+fn narrow_truncated_tool_keeps_chevron_click_target() {
+    let mut panel = panel_with_long_tool(200);
+    let area = Rect::new(0, 0, 24, 12);
+    render(&mut panel, area.width, area.height);
+
+    assert!(seg_text(&panel, "t1").contains('›'));
+    assert!(panel.handle_click(area.y, area));
+
+    render(&mut panel, area.width, area.height);
+    assert!(!seg_text(&panel, "t1").contains('›'));
 }
 
 #[test]
@@ -1078,7 +1341,7 @@ fn panel_with_grep_tool(match_count: usize) -> MessagesPanel {
             .map(|i| GrepMatchGroup::single(i, format!("match_{i}")))
             .collect(),
     }];
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(ToolStartEvent {
         id: "t1".into(),
         tool: GREP_TOOL_NAME.into(),
@@ -1105,15 +1368,15 @@ fn panel_with_grep_tool(match_count: usize) -> MessagesPanel {
 fn toggle_expand_collapse_grep_tool() {
     let mut panel = panel_with_grep_tool(8);
     let area = Rect::new(0, 0, 80, 24);
-    assert!(seg_text(&panel, "t1").contains("click to expand"));
+    assert!(seg_text(&panel, "t1").contains("›"));
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
-    assert!(!seg_text(&panel, "t1").contains("click to expand"));
+    assert!(!seg_text(&panel, "t1").contains("›"));
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
-    assert!(seg_text(&panel, "t1").contains("click to expand"));
+    assert!(seg_text(&panel, "t1").contains("›"));
 }
 
 fn buffer_text(terminal: &ratatui::Terminal<TestBackend>) -> String {
@@ -1132,7 +1395,7 @@ fn buffer_text(terminal: &ratatui::Terminal<TestBackend>) -> String {
 
 #[test]
 fn streaming_with_cached_segments_shows_end_on_auto_scroll() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.push(DisplayMessage::new(
         DisplayRole::User,
         "a\n".repeat(20).trim().into(),
@@ -1154,7 +1417,7 @@ fn streaming_with_cached_segments_shows_end_on_auto_scroll() {
 
 #[test]
 fn auto_scroll_approaches_bottom_smoothly() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.streaming_text.set_buffer(
         &(0..50)
             .map(|i| format!("stream_{i}"))
@@ -1204,7 +1467,7 @@ fn search_text_includes_truncated_bash_output() {
         .map(|i| format!("line {i}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     bash_code_start(&mut panel, "t1", "echo lines");
     panel.tool_done(ToolDoneEvent {
         id: "t1".into(),
@@ -1235,14 +1498,14 @@ fn read_code_with_instructions(blocks: Vec<InstructionBlock>) -> ToolOutput {
     }
 }
 
-fn prev_segment_is_spacer(panel: &MessagesPanel, tool_id: &str) -> bool {
-    let idx = panel.cache.find_by_tool_id(tool_id).unwrap();
+fn prev_segment_is_spacer(panel: &MessagesPanel, _tool_id: &str) -> bool {
+    let idx = panel.cache.find_instructions("t1").unwrap();
     panel.cache.get(idx - 1).unwrap().tool_id.is_none()
 }
 
 #[test]
 fn instruction_segment_has_spacer_before_it() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", "read"));
     panel.tool_done(ToolDoneEvent {
         id: "t1".into(),
@@ -1254,24 +1517,17 @@ fn instruction_segment_has_spacer_before_it() {
     });
     rebuild(&mut panel);
 
-    let inst_id = segment::instruction_id("t1");
-    assert!(prev_segment_is_spacer(&panel, &inst_id));
+    assert!(prev_segment_is_spacer(&panel, "t1__inst"));
 }
 
-fn seg_line_count(panel: &MessagesPanel, tool_id: &str) -> usize {
-    panel
-        .cache
-        .segments()
-        .iter()
-        .find(|s| s.tool_id.as_deref() == Some(tool_id))
-        .unwrap()
-        .lines()
-        .len()
+fn seg_line_count(panel: &MessagesPanel, _tool_id: &str) -> usize {
+    let idx = panel.cache.find_instructions("t1").unwrap();
+    panel.cache.get(idx).unwrap().lines().len()
 }
 
 #[test]
 fn toggle_instruction_segment_expands_and_collapses() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     let blocks = vec![InstructionBlock {
         path: "agents.md".into(),
         content: "x\n".repeat(100),
@@ -1287,19 +1543,19 @@ fn toggle_instruction_segment_expands_and_collapses() {
     });
     rebuild(&mut panel);
 
-    let inst_id = segment::instruction_id("t1");
-    let collapsed = seg_line_count(&panel, &inst_id);
+    let inst_id = "t1__inst";
+    let collapsed = seg_line_count(&panel, inst_id);
 
-    panel.toggle_expansion(&inst_id);
+    panel.toggle_expansion(inst_id);
     assert!(seg_line_count(&panel, &inst_id) > collapsed);
 
-    panel.toggle_expansion(&inst_id);
-    assert_eq!(seg_line_count(&panel, &inst_id), collapsed);
+    panel.toggle_expansion(inst_id);
+    assert_eq!(seg_line_count(&panel, inst_id), collapsed);
 }
 
 #[test]
 fn handle_click_returns_nothing_when_no_segment_at_row() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     render(&mut panel, 80, 24);
     let area = Rect::new(0, 0, 80, 24);
     assert!(!panel.handle_click(23, area));
@@ -1307,7 +1563,7 @@ fn handle_click_returns_nothing_when_no_segment_at_row() {
 
 #[test]
 fn tool_id_at_returns_clicked_tool() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("task1", "task"));
     render(&mut panel, 80, 24);
     let area = Rect::new(0, 0, 80, 24);
@@ -1315,8 +1571,148 @@ fn tool_id_at_returns_clicked_tool() {
 }
 
 #[test]
+fn task_tool_id_at_only_routes_header() {
+    let mut panel = test_panel();
+    panel.tool_start(start("task1", "task"));
+    panel.tool_done(ToolDoneEvent {
+        id: "task1".into(),
+        tool: "task".into(),
+        output: ToolOutput::Markdown(
+            "body line
+"
+            .repeat(100)
+            .into(),
+        ),
+        is_error: false,
+        annotation: None,
+        written_path: None,
+    });
+    render(&mut panel, 80, 80);
+    let area = Rect::new(0, 0, 80, 80);
+
+    assert_eq!(panel.tool_id_at(0, area), Some("task1"));
+    assert_eq!(panel.tool_id_at(1, area), None);
+    let truncation_row = truncation_source_line(&panel, "task1") as u16;
+    assert_eq!(panel.tool_id_at(truncation_row, area), None);
+    assert!(panel.handle_click(truncation_row, area));
+    assert!(!seg_text(&panel, "task1").contains("›"));
+}
+
+#[test]
+fn row_truncation_actions_expand_only_their_section_in_mixed_states() {
+    const SCRIPT: SectionFlags = SectionFlags {
+        script: true,
+        output: false,
+    };
+    const OUTPUT: SectionFlags = SectionFlags {
+        script: false,
+        output: true,
+    };
+
+    fn panel_with_truncated_script_and_output() -> MessagesPanel {
+        let mut panel = test_panel();
+        bash_code_start(&mut panel, "t1", &"script line\n".repeat(200));
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: BASH_TOOL_NAME.into(),
+            output: ToolOutput::ReadCode {
+                path: "output.rs".into(),
+                start_line: 1,
+                lines: vec!["output line".into(); 200],
+                total_lines: 200,
+                instructions: None,
+            },
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        });
+        render(&mut panel, 120, 240);
+        panel
+    }
+
+    let area = Rect::new(0, 0, 120, 240);
+    let mut output_first = panel_with_truncated_script_and_output();
+    let output_row = section_truncation_source_line(&output_first, "t1", OUTPUT) as u16;
+    assert!(output_first.handle_click(output_row, area));
+    assert_eq!(output_first.expanded_tools.get("t1"), Some(&OUTPUT));
+    let script_row = section_truncation_source_line(&output_first, "t1", SCRIPT) as u16;
+    assert!(output_first.handle_click(script_row, area));
+    assert_eq!(
+        output_first.expanded_tools.get("t1"),
+        Some(&SectionFlags {
+            script: true,
+            output: true,
+        })
+    );
+
+    let mut script_first = panel_with_truncated_script_and_output();
+    let script_row = section_truncation_source_line(&script_first, "t1", SCRIPT) as u16;
+    assert!(script_first.handle_click(script_row, area));
+    assert_eq!(script_first.expanded_tools.get("t1"), Some(&SCRIPT));
+    let output_row = section_truncation_source_line(&script_first, "t1", OUTPUT) as u16;
+    assert!(script_first.handle_click(output_row, area));
+    assert_eq!(
+        script_first.expanded_tools.get("t1"),
+        Some(&SectionFlags {
+            script: true,
+            output: true,
+        })
+    );
+}
+
+#[test]
+fn snapshot_tool_native_truncation_expands_but_snapshot_row_routes_lua() {
+    let mut panel = test_panel();
+    panel.tool_start(ToolStartEvent {
+        input: Some(ToolInput::Code {
+            language: "bash".into(),
+            code: "echo line
+"
+            .repeat(200),
+        }),
+        ..start("t1", BASH_TOOL_NAME)
+    });
+    panel.tool_snapshot(
+        "t1",
+        BufferSnapshot::from_arc(Arc::new(vec![snap_line("lua snapshot row")])),
+        None,
+    );
+    panel.tool_done(done("t1"));
+    render(&mut panel, 80, 80);
+    let area = Rect::new(0, 0, 80, 80);
+    let truncation_line = truncation_source_line(&panel, "t1");
+    assert!(
+        panel.cache.segments()[0].lines()[truncation_line]
+            .spans
+            .iter()
+            .any(|span| span.content.contains('›'))
+    );
+
+    let mut renamed_lines = panel.cache.segments()[0].lines().to_vec();
+    renamed_lines[truncation_line] = Line::from("  wording changed");
+    panel.cache.segments_mut()[0].set_lines(renamed_lines);
+
+    assert!(panel.handle_click(truncation_line as u16, area));
+    assert!(panel.lua_clicks.is_empty());
+    assert!(!seg_text(&panel, "t1").contains("›"));
+
+    render(&mut panel, 80, 240);
+    let snapshot_row = panel.cache.segments()[0]
+        .lines()
+        .iter()
+        .position(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.contains("lua snapshot row"))
+        })
+        .unwrap() as u16;
+    assert!(panel.handle_click(snapshot_row, Rect::new(0, 0, 80, 240)));
+    assert_eq!(panel.lua_clicks.get("t1"), Some(&vec![1]));
+}
+
+#[test]
 fn handle_click_on_done_tool_records_click_row() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", BASH_TOOL_NAME));
     panel.tool_done(ToolDoneEvent {
         id: "t1".into(),
@@ -1338,8 +1734,39 @@ fn handle_click_on_done_tool_records_click_row() {
 }
 
 #[test]
+fn running_live_tool_native_truncation_expands_but_header_routes_lua() {
+    const SCRIPT: SectionFlags = SectionFlags {
+        script: true,
+        output: false,
+    };
+
+    let mut panel = test_panel();
+    bash_code_start(&mut panel, "t1", &"echo line\n".repeat(200));
+    let live = Arc::new(n00n_agent::SharedBuf::new());
+    live.set_lines(vec![snap_line("streaming")]);
+    panel.register_live_buf("t1".into(), live);
+    panel.tool_snapshot(
+        "t1",
+        BufferSnapshot::from_arc(Arc::new(vec![snap_line("streaming")])),
+        None,
+    );
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    panel.lua_event_handle = Some(handle);
+    render(&mut panel, 80, 240);
+    let area = Rect::new(0, 0, 80, 240);
+    let truncation_row = section_truncation_source_line(&panel, "t1", SCRIPT) as u16;
+
+    assert!(panel.handle_click(truncation_row, area));
+    assert_eq!(panel.expanded_tools.get("t1"), Some(&SCRIPT));
+    assert_eq!(probe.try_recv(), None);
+
+    assert!(panel.handle_click(area.y, area));
+    assert_eq!(probe.try_recv(), Some(("click", vec![])));
+}
+
+#[test]
 fn handle_click_on_running_tool_forwards_live_without_recording() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", BASH_TOOL_NAME));
     let live = Arc::new(n00n_agent::SharedBuf::new());
     live.set_lines(vec![snap_line("streaming")]);
@@ -1361,7 +1788,7 @@ fn handle_click_on_running_tool_forwards_live_without_recording() {
 
 #[test]
 fn handle_click_on_running_live_tool_before_first_snapshot_forwards_header_click() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", "task"));
     panel.register_live_buf("t1".into(), Arc::new(n00n_agent::SharedBuf::new()));
     let (handle, probe) = n00n_lua::test_support::probed_event_handle();
@@ -1375,7 +1802,7 @@ fn handle_click_on_running_live_tool_before_first_snapshot_forwards_header_click
 
 #[test]
 fn running_tool_without_live_buffer_does_not_swallow_click() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", "task"));
     render(&mut panel, 80, 24);
 
@@ -1384,7 +1811,7 @@ fn running_tool_without_live_buffer_does_not_swallow_click() {
 
 #[test]
 fn handle_click_on_done_tool_pauses_auto_scroll() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", BASH_TOOL_NAME));
     panel.tool_done(ToolDoneEvent {
         id: "t1".into(),
@@ -1418,7 +1845,7 @@ fn handle_click_returns_toggled_for_truncated_tool_without_snapshot() {
 
 #[test]
 fn handle_click_non_tool_segment_returns_nothing() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.push(DisplayMessage::new(
         DisplayRole::User,
         "user message".into(),
@@ -1433,7 +1860,7 @@ fn tool_done_removes_live_buf_and_snapshots_dirty() {
     let buf = Arc::new(n00n_agent::SharedBuf::new());
     buf.set_lines(vec![snap_line("dirty content")]);
 
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.register_live_buf("t1".into(), Arc::clone(&buf));
     panel.tool_start(start("t1", BASH_TOOL_NAME));
     panel.tool_done(ToolDoneEvent {
@@ -1461,7 +1888,7 @@ fn second_register_live_buf_replaces_first() {
     let handler = Arc::new(n00n_agent::SharedBuf::new());
     handler.set_lines(vec![snap_line("handler")]);
 
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", BASH_TOOL_NAME));
     panel.register_live_buf("t1".into(), Arc::clone(&preview));
     panel.register_live_buf("t1".into(), Arc::clone(&handler));
@@ -1482,7 +1909,7 @@ fn second_register_live_buf_replaces_first() {
 fn handle_click_on_watched_tool_sends_click_with_fallback(is_error: bool) {
     let (eh, probe) = n00n_lua::test_support::probed_event_handle();
     let (tx, _rx) = flume::unbounded();
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.set_restore_channel(Some(eh), Some(EventSender::new(tx, 0)));
     finish_with_live_buf(&mut panel, "t1", "body", is_error);
     assert!(panel.watching("t1"));
@@ -1498,7 +1925,7 @@ fn handle_click_on_watched_tool_sends_click_with_fallback(is_error: bool) {
 
 #[test]
 fn tool_done_moves_live_buf_to_watched_polled_but_not_animating() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     let buf = finish_with_live_buf(&mut panel, "t1", "before", false);
     assert!(panel.watching("t1"));
     assert!(
@@ -1519,7 +1946,7 @@ fn tool_done_moves_live_buf_to_watched_polled_but_not_animating() {
 fn watched_fifo_evicts_oldest_which_stops_polling_and_restores_with_recorded_clicks() {
     let (eh, probe) = n00n_lua::test_support::probed_event_handle();
     let (tx, _rx) = flume::unbounded();
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.set_restore_channel(Some(eh), Some(EventSender::new(tx, 0)));
     let buf = finish_with_live_buf(&mut panel, "t0", "before", false);
 
@@ -1560,7 +1987,7 @@ fn watched_fifo_evicts_oldest_which_stops_polling_and_restores_with_recorded_cli
 fn tool_done_without_live_buf_is_not_watched_and_click_restores() {
     let (eh, probe) = n00n_lua::test_support::probed_event_handle();
     let (tx, _rx) = flume::unbounded();
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.set_restore_channel(Some(eh), Some(EventSender::new(tx, 0)));
     let mut ev = start("t1", BASH_TOOL_NAME);
     ev.raw_input = Some(serde_json::json!({ "command": "true" }));
@@ -1590,7 +2017,7 @@ fn tool_done_without_live_buf_is_not_watched_and_click_restores() {
 fn cancel_in_progress_retires_live_buf_to_watched() {
     let (eh, probe) = n00n_lua::test_support::probed_event_handle();
     let (tx, _rx) = flume::unbounded();
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.set_restore_channel(Some(eh), Some(EventSender::new(tx, 0)));
     let buf = Arc::new(n00n_agent::SharedBuf::new());
     buf.set_lines(vec![snap_line("body")]);
@@ -1628,7 +2055,7 @@ fn cancel_in_progress_retires_live_buf_to_watched() {
 fn restore_reply_stops_watching_buf() {
     let (eh, probe) = n00n_lua::test_support::probed_event_handle();
     let (tx, _rx) = flume::unbounded();
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.set_restore_channel(Some(eh), Some(EventSender::new(tx, 0)));
     let buf = finish_with_live_buf(&mut panel, "t1", "old-theme", false);
     assert!(panel.watching("t1"));
@@ -1667,7 +2094,7 @@ fn restore_reply_stops_watching_buf() {
 fn rebake_request_stops_watching_buf() {
     let (eh, probe) = n00n_lua::test_support::probed_event_handle();
     let (tx, _rx) = flume::unbounded();
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.set_restore_channel(Some(eh), Some(EventSender::new(tx, 0)));
     finish_with_live_buf(&mut panel, "t1", "old-theme", false);
     assert!(panel.watching("t1"));
@@ -1682,7 +2109,7 @@ fn rebake_request_stops_watching_buf() {
 #[test]
 fn live_buf_streams_across_clean_polls() {
     let buf = Arc::new(n00n_agent::SharedBuf::new());
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", BASH_TOOL_NAME));
     panel.register_live_buf("t1".into(), Arc::clone(&buf));
 
@@ -1700,7 +2127,7 @@ fn live_buf_streams_across_clean_polls() {
 
 #[test]
 fn tool_done_without_live_buf_preserves_existing_snapshot() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", BASH_TOOL_NAME));
     panel.tool_snapshot(
         "t1",
@@ -1727,7 +2154,7 @@ fn tool_done_without_live_buf_preserves_existing_snapshot() {
 fn tool_done_clean_live_buf_does_not_snapshot() {
     let buf = Arc::new(n00n_agent::SharedBuf::new());
 
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.register_live_buf("t1".into(), Arc::clone(&buf));
     panel.tool_start(start("t1", BASH_TOOL_NAME));
     panel.tool_done(ToolDoneEvent {
@@ -1754,7 +2181,7 @@ const SUPERSEDED_DROP_MSG: &str =
     "a re-bake reply older than the applied generation must be dropped (monotonic)";
 
 fn bash_tool_with_snapshot(id: &str) -> MessagesPanel {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start(id, BASH_TOOL_NAME));
     panel.tool_done(ToolDoneEvent {
         id: id.into(),
@@ -1831,7 +2258,7 @@ const REBAKE_NOOP_MSG: &str = "rebake without channel must be a no-op (no reques
 #[test_case(false ; "fresh_start")]
 #[test_case(true  ; "upgrade_from_pending")]
 fn tool_start_propagates_raw_input(pre_pending: bool) {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     if pre_pending {
         panel.tool_pending("t1".into(), BASH_TOOL_NAME);
     }
@@ -1854,7 +2281,7 @@ fn tool_start_propagates_raw_input(pre_pending: bool) {
 
 #[test]
 fn header_snapshot_stamps_gen_on_top_level() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", BASH_TOOL_NAME));
     panel.tool_header_snapshot("t1", rendered_snapshot(), Some(5));
 
@@ -1865,7 +2292,7 @@ fn header_snapshot_stamps_gen_on_top_level() {
 
 #[test]
 fn live_snapshot_uses_panel_generation() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.tool_start(start("t1", BASH_TOOL_NAME));
     panel.tool_snapshot("t1", rendered_snapshot(), None);
 
@@ -1889,7 +2316,7 @@ fn rebake_without_channel_is_noop() {
 
 #[test]
 fn hidden_config_still_streams_thinking_live() {
-    let mut panel = MessagesPanel::new(UiConfig {
+    let mut panel = test_panel_with_config(UiConfig {
         show_thinking: false,
         ..UiConfig::default()
     });
@@ -1900,12 +2327,12 @@ fn hidden_config_still_streams_thinking_live() {
     let text = buffer_text(&terminal);
     assert!(text.contains("line one"), "live reasoning: {text}");
     assert!(text.contains("line three"), "live reasoning: {text}");
-    assert!(!text.contains("click to expand"), "live reasoning: {text}");
+    assert!(!text.contains("›"), "live reasoning: {text}");
 }
 
 #[test]
 fn live_streaming_thinking_does_not_toggle_on_click() {
-    let mut panel = MessagesPanel::new(UiConfig {
+    let mut panel = test_panel_with_config(UiConfig {
         show_thinking: false,
         ..UiConfig::default()
     });
@@ -1919,12 +2346,12 @@ fn live_streaming_thinking_does_not_toggle_on_click() {
         text.contains("secret reasoning"),
         "expanded view should show reasoning; got: {text}"
     );
-    assert!(!text.contains("click to expand"), "live reasoning: {text}");
+    assert!(!text.contains("›"), "live reasoning: {text}");
 }
 
 #[test]
 fn hide_keeps_cached_thinking_as_indicator() {
-    let mut panel = MessagesPanel::new(UiConfig {
+    let mut panel = test_panel_with_config(UiConfig {
         show_thinking: false,
         ..UiConfig::default()
     });
@@ -1945,7 +2372,7 @@ fn hide_keeps_cached_thinking_as_indicator() {
         "footer always shows the line count; got: {text}"
     );
     assert!(
-        text.contains("click to expand"),
+        text.contains("›"),
         "footer should hint click-to-expand; got: {text}"
     );
     assert!(
@@ -1956,7 +2383,7 @@ fn hide_keeps_cached_thinking_as_indicator() {
 
 #[test]
 fn streaming_thinking_is_expanded_then_collapses_on_completion() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.thinking_delta("visible reasoning");
     panel.streaming_thinking.set_buffer("visible reasoning");
     let terminal = render(&mut panel, 80, 10);
@@ -1978,7 +2405,7 @@ fn streaming_thinking_is_expanded_then_collapses_on_completion() {
 
 #[test]
 fn hide_cached_thinking_persists_as_indicator() {
-    let mut panel = MessagesPanel::new(UiConfig {
+    let mut panel = test_panel_with_config(UiConfig {
         show_thinking: false,
         ..UiConfig::default()
     });
@@ -1997,7 +2424,7 @@ fn hide_cached_thinking_persists_as_indicator() {
     );
     assert!(text.contains("7 lines"), "footer line count; got: {text}");
     assert!(
-        text.contains("click to expand"),
+        text.contains("›"),
         "footer should hint click-to-expand; got: {text}"
     );
     assert!(
@@ -2012,7 +2439,7 @@ fn hide_cached_thinking_persists_as_indicator() {
 
 #[test]
 fn hide_cached_thinking_click_expands() {
-    let mut panel = MessagesPanel::new(UiConfig {
+    let mut panel = test_panel_with_config(UiConfig {
         show_thinking: false,
         ..UiConfig::default()
     });
@@ -2031,14 +2458,14 @@ fn hide_cached_thinking_click_expands() {
         "expanded view shows full reasoning; got: {text}"
     );
     assert!(
-        !text.contains("click to expand"),
+        !text.contains("›"),
         "footer should disappear when expanded; got: {text}"
     );
 }
 
 #[test]
 fn stream_reset_keeps_new_thinking_expanded() {
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.thinking_delta("stale reasoning");
     panel.stream_reset();
     panel.thinking_delta("fresh reasoning");
@@ -2140,11 +2567,11 @@ fn incremental_restore_matches_full_load() {
     let msgs = mixed_messages(40);
     let batch = 7;
 
-    let mut full = MessagesPanel::new(UiConfig::default());
+    let mut full = test_panel();
     full.load_messages(msgs.clone());
     render(&mut full, 80, 24);
 
-    let mut incr = MessagesPanel::new(UiConfig::default());
+    let mut incr = test_panel();
     incr.begin_restore(msgs, batch);
     render(&mut incr, 80, 24);
     while incr.is_restoring() {
@@ -2157,7 +2584,7 @@ fn incremental_restore_matches_full_load() {
 #[test]
 fn incremental_restore_first_frame_shows_only_recent() {
     let msgs = mixed_messages(21);
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.begin_restore(msgs, 7);
     render(&mut panel, 80, 24);
     assert_eq!(
@@ -2180,7 +2607,7 @@ fn incremental_restore_first_frame_shows_only_recent() {
 #[test]
 fn incremental_restore_below_batch_loads_all_at_once() {
     let msgs = mixed_messages(3);
-    let mut panel = MessagesPanel::new(UiConfig::default());
+    let mut panel = test_panel();
     panel.begin_restore(msgs, 7);
     render(&mut panel, 80, 24);
     assert_eq!(panel.message_count(), 3);

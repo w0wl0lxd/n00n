@@ -16,6 +16,7 @@ use n00n_agent::{
 };
 use n00n_lua::EventHandle;
 use n00n_storage::id::SessionRef;
+use n00n_storage::sessions::TranscriptEntry;
 
 use self::cancel_map::new_run_cancel_map;
 use n00n_providers::provider::Provider;
@@ -45,6 +46,7 @@ pub(crate) struct AgentHandles {
     pub(crate) agent_tx: flume::Sender<Envelope>,
     pub(crate) answer_tx: flume::Sender<String>,
     pub(crate) history: Arc<ArcSwap<Vec<Message>>>,
+    pub(crate) transcript: n00n_agent::SharedTranscript,
     pub(crate) btw_system: Arc<ArcSwap<String>>,
     pub(crate) tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>>,
     pub(crate) mcp_handle: Option<McpHandle>,
@@ -61,6 +63,7 @@ impl AgentHandles {
     pub(crate) fn spawn(
         model_slot: &Arc<ArcSwap<ModelSlot>>,
         initial_history: Vec<Message>,
+        initial_transcript: Vec<TranscriptEntry<Message>>,
         config: AgentConfig,
         tool_output_lines: ToolOutputLines,
         permissions: &Arc<PermissionManager>,
@@ -73,6 +76,7 @@ impl AgentHandles {
         spawn_agent_internal(
             model_slot,
             initial_history,
+            initial_transcript,
             config,
             tool_output_lines,
             permissions,
@@ -95,6 +99,7 @@ impl AgentHandles {
         app.answer_tx = Some(self.answer_tx.clone());
         app.cmd_tx = Some(self.cmd_tx.clone());
         app.shared_history = Some(Arc::clone(&self.history));
+        app.shared_transcript = Some(Arc::clone(&self.transcript));
         app.btw_system = Some(Arc::clone(&self.btw_system));
         app.shared_tool_outputs = Some(Arc::clone(&self.tool_outputs));
         app.queue.set_shared(self.queue.clone());
@@ -120,6 +125,7 @@ impl AgentHandles {
     pub(crate) fn respawn(
         &mut self,
         history: Vec<Message>,
+        transcript: Vec<TranscriptEntry<Message>>,
         model_slot: &Arc<ArcSwap<ModelSlot>>,
         config: AgentConfig,
         tool_output_lines: ToolOutputLines,
@@ -134,6 +140,7 @@ impl AgentHandles {
         let new = spawn_agent_internal(
             model_slot,
             history,
+            transcript,
             config,
             tool_output_lines,
             permissions,
@@ -189,6 +196,7 @@ pub(crate) fn join_all(tasks: Vec<smol::Task<()>>, timeout: Duration) {
 fn spawn_agent_internal(
     model_slot: &Arc<ArcSwap<ModelSlot>>,
     initial_history: Vec<Message>,
+    initial_transcript: Vec<TranscriptEntry<Message>>,
     config: AgentConfig,
     tool_output_lines: ToolOutputLines,
     permissions: &Arc<PermissionManager>,
@@ -206,6 +214,17 @@ fn spawn_agent_internal(
     let queue_rx = Arc::new(queue_rx);
     let shared_history: Arc<ArcSwap<Vec<Message>>> =
         Arc::new(ArcSwap::from_pointee(initial_history.clone()));
+    let transcript_snapshot = if initial_transcript.is_empty() {
+        initial_history
+            .iter()
+            .cloned()
+            .map(TranscriptEntry::Message)
+            .collect()
+    } else {
+        initial_transcript.clone()
+    };
+    let shared_transcript: n00n_agent::SharedTranscript =
+        Arc::new(ArcSwap::from_pointee(transcript_snapshot));
     let btw_system: Arc<ArcSwap<String>> = Arc::new(ArcSwap::from_pointee(String::new()));
     let shared_tool_outputs: Arc<Mutex<HashMap<String, ToolOutput>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -224,7 +243,9 @@ fn spawn_agent_internal(
         config,
         tool_output_lines,
         initial_history,
+        initial_transcript,
         Arc::clone(&shared_history),
+        Arc::clone(&shared_transcript),
         Arc::clone(&btw_system),
         mcp_handle.clone(),
         Arc::clone(permissions),
@@ -247,6 +268,7 @@ fn spawn_agent_internal(
         agent_tx: agent_tx_clone,
         answer_tx,
         history: shared_history,
+        transcript: shared_transcript,
         btw_system,
         tool_outputs: shared_tool_outputs,
         mcp_handle,

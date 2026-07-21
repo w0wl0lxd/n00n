@@ -113,7 +113,7 @@ fn extract_request_params(url: &str, opts: Option<&Table>) -> Result<RequestPara
 
     let body = opts
         .and_then(|o| o.get::<String>("body").ok())
-        .map(|s| s.into_bytes())
+        .map(std::string::String::into_bytes)
         .unwrap_or_default();
 
     let timeout = Duration::from_secs(
@@ -205,7 +205,6 @@ async fn do_request(params: RequestParams) -> Result<ResponseData, String> {
                         }
                     } else if status >= 500 && attempt < params.retries {
                         last_err = format!("HTTP {status}");
-                        continue;
                     } else {
                         break 'retry resp;
                     }
