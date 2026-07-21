@@ -683,9 +683,9 @@ impl<'t> EventLoop<'t> {
     /// Exits with the editor's status code; `-1` (flashed on the session's
     /// app) when the editor could not be launched.
     fn open_editor(&mut self, idx: usize, path: &std::path::Path) -> i32 {
-        let result = {
-            let _pause = self.input.pause();
-            terminal::open_in_editor(path, self.terminal)
+        let result = match self.input.pause() {
+            Ok(_pause) => terminal::open_in_editor(path, self.terminal),
+            Err(e) => Err(e),
         };
         match result {
             Ok(code) => code,
@@ -1147,9 +1147,9 @@ impl<'t> EventLoop<'t> {
             }
             Action::EditInputInEditor => {
                 let current_text = self.sessions[idx].app.input_box.buffer.value();
-                let result = {
-                    let _pause = self.input.pause();
-                    terminal::edit_temp_content(&current_text, self.terminal)
+                let result = match self.input.pause() {
+                    Ok(_pause) => terminal::edit_temp_content(&current_text, self.terminal),
+                    Err(e) => Err(e),
                 };
                 match result {
                     Ok(edited) => self.sessions[idx].app.input_box.set_input(edited),
@@ -1164,10 +1164,10 @@ impl<'t> EventLoop<'t> {
                     slot.model.clone(),
                 );
             }
-            Action::Suspend => {
-                let _pause = self.input.pause();
-                terminal::suspend(self.terminal);
-            }
+            Action::Suspend => match self.input.pause() {
+                Ok(_pause) => terminal::suspend(self.terminal),
+                Err(e) => self.sessions[idx].app.flash(e),
+            },
             Action::RefreshModels => self.refresh_models(),
             Action::RefreshUsage => self.refresh_usage(),
         }
