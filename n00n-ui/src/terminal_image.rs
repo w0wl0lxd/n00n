@@ -1,9 +1,25 @@
 use base64::Engine;
 use n00n_agent::ImageSource;
 use ratatui::layout::Size;
+use ratatui_image::errors::Errors as ProtocolErrors;
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::sliced::SlicedProtocol;
 use ratatui_image::{FontSize, Resize};
+use thiserror::Error;
+
+const UNBOUNDED_HEIGHT: u16 = u16::MAX;
+const MAX_IMAGE_DIMENSION: u32 = 16_384;
+const MAX_IMAGE_ALLOC_BYTES: u64 = 128 * 1024 * 1024;
+
+#[derive(Debug, Error)]
+pub(crate) enum TerminalImageError {
+    #[error("invalid base64 image data")]
+    Base64(#[from] base64::DecodeError),
+    #[error("could not decode image")]
+    Image(#[from] image::ImageError),
+    #[error("could not resize image for terminal")]
+    Protocol(#[from] ProtocolErrors),
+}
 
 pub(crate) fn picker() -> Picker {
     let mut picker = match crossterm::terminal::window_size() {
@@ -31,9 +47,21 @@ fn cell_size(width: u16, height: u16, columns: u16, rows: u16) -> Option<FontSiz
     if width == 0 || height == 0 || columns == 0 || rows == 0 {
         return None;
     }
-    let width = width / columns;
-    let height = height / rows;
-    (width > 0 && height > 0).then_some(FontSize::new(width, height))
+    let width = rounded_cell_dimension(width, columns)?;
+    let height = rounded_cell_dimension(height, rows)?;
+    Some(FontSize::new(width, height))
+}
+
+fn rounded_cell_dimension(size: u16, cells: u16) -> Option<u16> {
+    let size = u32::from(size);
+    let cells = u32::from(cells);
+    // Round to the nearest pixel dimension.
+    let dim = (size * 2 / cells).div_ceil(2);
+    let dim = match u16::try_from(dim) {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+    (dim > 0).then_some(dim)
 }
 
 #[allow(
@@ -129,14 +157,19 @@ impl TerminalImage {
         source: &ImageSource,
         picker: &Picker,
         max_width: u16,
-    ) -> Result<Self, String> {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(source.data.as_bytes())
-            .map_err(|e| e.to_string())?;
-        let dyn_img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
-        let target = Size::new(max_width, u16::MAX);
-        let protocol = SlicedProtocol::new_with_resize(picker, dyn_img, target, Resize::Fit(None))
-            .map_err(|e| e.to_string())?;
+    ) -> Result<Self, TerminalImageError> {
+        let bytes = base64::engine::general_purpose::STANDARD.decode(source.data.as_bytes())?;
+        let mut reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+            .with_guessed_format()
+            .map_err(image::ImageError::from)?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+        limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+        limits.max_alloc = Some(MAX_IMAGE_ALLOC_BYTES);
+        reader.limits(limits);
+        let dyn_img = reader.decode()?;
+        let target = Size::new(max_width, UNBOUNDED_HEIGHT);
+        let protocol = SlicedProtocol::new_with_resize(picker, dyn_img, target, Resize::Fit(None))?;
         let size = protocol.size();
         Ok(Self { protocol, size })
     }
@@ -148,6 +181,18 @@ mod tests {
     use base64::Engine;
     use image::ImageBuffer;
     use n00n_agent::{ImageMediaType, ImageSource};
+    use test_case::test_case;
+
+    const TEST_IMAGE_SIZE: u32 = 8;
+    const TEST_IMAGE_MAX_WIDTH: u16 = 4;
+    const TEST_PIXEL_WIDTH: u16 = 1200;
+    const TEST_PIXEL_HEIGHT: u16 = 800;
+    const TEST_TERM_COLUMNS: u16 = 120;
+    const TEST_TERM_ROWS: u16 = 40;
+    const EXPECTED_CELL_WIDTH: u16 = 10;
+    const EXPECTED_CELL_HEIGHT: u16 = 20;
+    const ROUNDED_PIXEL_WIDTH: u16 = 1199;
+    const ROUNDED_EXPECTED_CELL_WIDTH: u16 = 10;
 
     fn env_with<'a>(present: &'a [&str]) -> impl Fn(&str) -> bool + 'a {
         |name| present.contains(&name)
@@ -159,7 +204,7 @@ mod tests {
 
     #[test]
     fn from_source_decodes_png_and_fits_width() {
-        let img = ImageBuffer::from_fn(8, 8, |x, y| {
+        let img = ImageBuffer::from_fn(TEST_IMAGE_SIZE, TEST_IMAGE_SIZE, |x, y| {
             image::Rgb([
                 u8::try_from(x * 32).unwrap(),
                 u8::try_from(y * 32).unwrap(),
@@ -176,17 +221,38 @@ mod tests {
                 .into(),
         };
         let picker = Picker::halfblocks();
-        let term_img = TerminalImage::from_source(&source, &picker, 4).unwrap();
-        assert!(term_img.size.width > 0 && term_img.size.width <= 4);
+        let term_img = TerminalImage::from_source(&source, &picker, TEST_IMAGE_MAX_WIDTH).unwrap();
+        assert!(term_img.size.width > 0 && term_img.size.width <= TEST_IMAGE_MAX_WIDTH);
         assert!(term_img.size.height > 0);
     }
 
     #[test]
     fn cell_size_requires_pixel_and_cell_dimensions() {
-        let size = cell_size(1200, 800, 120, 40).unwrap();
-        assert_eq!((size.width, size.height), (10, 20));
-        assert!(cell_size(0, 800, 120, 40).is_none());
-        assert!(cell_size(1200, 800, 0, 40).is_none());
+        let size = cell_size(
+            TEST_PIXEL_WIDTH,
+            TEST_PIXEL_HEIGHT,
+            TEST_TERM_COLUMNS,
+            TEST_TERM_ROWS,
+        )
+        .unwrap();
+        assert_eq!(
+            (size.width, size.height),
+            (EXPECTED_CELL_WIDTH, EXPECTED_CELL_HEIGHT)
+        );
+        assert!(cell_size(0, TEST_PIXEL_HEIGHT, TEST_TERM_COLUMNS, TEST_TERM_ROWS).is_none());
+        assert!(cell_size(TEST_PIXEL_WIDTH, TEST_PIXEL_HEIGHT, 0, TEST_TERM_ROWS).is_none());
+    }
+
+    #[test]
+    fn cell_size_rounds_to_nearest_pixel_dimension() {
+        let size = cell_size(
+            ROUNDED_PIXEL_WIDTH,
+            TEST_PIXEL_HEIGHT,
+            TEST_TERM_COLUMNS,
+            TEST_TERM_ROWS,
+        )
+        .unwrap();
+        assert_eq!(size.width, ROUNDED_EXPECTED_CELL_WIDTH);
     }
 
     #[test]
@@ -218,24 +284,24 @@ mod tests {
         );
     }
 
+    #[test_case("WezTerm")]
+    #[test_case("iTerm.app")]
+    #[test_case("Rio")]
+    #[test_case("Tabby")]
+    #[test_case("Hyper")]
+    #[test_case("Bobcat")]
+    #[test_case("mintty")]
+    #[test_case("vscode")]
+    fn iterm2_is_detected_from_term_program(term_program: &str) {
+        assert_eq!(
+            detect_protocol(Some("xterm-256color"), Some(term_program), None, no_env),
+            ProtocolType::Iterm2,
+            "expected {term_program} to use iTerm2"
+        );
+    }
+
     #[test]
-    fn iterm2_is_detected_from_term_program_and_env() {
-        for tp in [
-            "WezTerm",
-            "iTerm.app",
-            "Rio",
-            "Tabby",
-            "Hyper",
-            "Bobcat",
-            "mintty",
-            "vscode",
-        ] {
-            assert_eq!(
-                detect_protocol(Some("xterm-256color"), Some(tp), None, no_env),
-                ProtocolType::Iterm2,
-                "expected {tp} to use iTerm2"
-            );
-        }
+    fn iterm2_is_detected_from_term_and_env() {
         assert_eq!(
             detect_protocol(Some("wezterm"), None, None, no_env),
             ProtocolType::Iterm2
@@ -281,22 +347,22 @@ mod tests {
         );
     }
 
+    #[test_case("WarpTerminal")]
+    #[test_case("Apple_Terminal")]
+    #[test_case("Alacritty")]
+    #[test_case("Contour")]
+    #[test_case("ctx")]
+    #[test_case("Black Box")]
+    fn broken_term_programs_fall_back_to_halfblocks(term_program: &str) {
+        assert_eq!(
+            detect_protocol(Some("xterm-256color"), Some(term_program), None, no_env),
+            ProtocolType::Halfblocks,
+            "expected {term_program} to fall back to halfblocks"
+        );
+    }
+
     #[test]
-    fn broken_or_unknown_terminals_fall_back_to_halfblocks() {
-        for tp in [
-            "WarpTerminal",
-            "Apple_Terminal",
-            "Alacritty",
-            "Contour",
-            "ctx",
-            "Black Box",
-        ] {
-            assert_eq!(
-                detect_protocol(Some("xterm-256color"), Some(tp), None, no_env),
-                ProtocolType::Halfblocks,
-                "expected {tp} to fall back to halfblocks"
-            );
-        }
+    fn unknown_terminals_fall_back_to_halfblocks() {
         assert_eq!(
             detect_protocol(Some("xterm-256color"), None, None, no_env),
             ProtocolType::Halfblocks
@@ -323,26 +389,27 @@ mod tests {
             ),
             ProtocolType::Halfblocks
         );
-        // Substring false positives must not be mistaken for supported terminals.
-        for term in ["skitty", "superiterm", "mywezterm", "bigfoot"] {
-            assert_eq!(
-                detect_protocol(Some(term), None, None, no_env),
-                ProtocolType::Halfblocks,
-                "expected {term} to fall back to halfblocks"
-            );
-        }
     }
 
-    #[test]
-    fn env_markers_outrank_term_name_for_tmux_and_screen() {
-        // In tmux/screen the TERM is overridden, but terminal-specific markers
-        // are preserved and should still select the outer protocol.
-        for term in ["screen-256color", "tmux-256color"] {
-            assert_eq!(
-                detect_protocol(Some(term), None, None, env_with(&["KITTY_WINDOW_ID"])),
-                ProtocolType::Kitty,
-                "expected {term} with KITTY_WINDOW_ID to use Kitty"
-            );
-        }
+    #[test_case("skitty")]
+    #[test_case("superiterm")]
+    #[test_case("mywezterm")]
+    #[test_case("bigfoot")]
+    fn false_positive_term_name_falls_back(term: &str) {
+        assert_eq!(
+            detect_protocol(Some(term), None, None, no_env),
+            ProtocolType::Halfblocks,
+            "expected {term} to fall back to halfblocks"
+        );
+    }
+
+    #[test_case("screen-256color")]
+    #[test_case("tmux-256color")]
+    fn outer_terminal_env_marker_outranks_tmux_screen(term: &str) {
+        assert_eq!(
+            detect_protocol(Some(term), None, None, env_with(&["KITTY_WINDOW_ID"])),
+            ProtocolType::Kitty,
+            "expected {term} with KITTY_WINDOW_ID to use Kitty"
+        );
     }
 }
