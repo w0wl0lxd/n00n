@@ -462,10 +462,8 @@ async fn initialize_deferred(
                 InitializationWake::Complete
             },
             async {
-                let command = match cmd_rx.recv_async().await {
-                    Ok(command) => Some(command),
-                    Err(_) => None,
-                };
+                #[allow(clippy::result_map_or_into_option)]
+                let command = cmd_rx.recv_async().await.map_or(None, Some);
                 InitializationWake::Command(command)
             },
         )
