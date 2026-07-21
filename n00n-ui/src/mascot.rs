@@ -78,7 +78,7 @@ const SIDE_HAIR: [(f64, f64, f64, f64); 2] = [(23.0, 31.0, 5.0, 15.5), (57.0, 31
 static PICKER: OnceLock<Option<Arc<Picker>>> = OnceLock::new();
 
 fn detect_picker() -> Option<Arc<Picker>> {
-    if !std::io::stdout().is_terminal() {
+    if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
         return None;
     }
     Picker::from_query_stdio()
