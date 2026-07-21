@@ -70,7 +70,7 @@ All fields are optional. Typos in field names cause an error right away.
 | `mouse_scroll_lines` | u32 | `3` | 1 | Lines per mouse wheel scroll |
 | `max_input_lines` | u32 | `20` | 1 | Maximum visible input lines |
 | `show_thinking` | bool | `true` | - | When true (default), show full model reasoning live and persisted. When false, hide reasoning behind an indicator (thinking> ...) with a click-to-expand hint, both while thinking and after it completes |
-| `mascot` | bool | `true` | - | Show the n00n mascot on the idle splash screen |
+| `mascot` | bool | `false` | - | Show the n00n mascot on the idle splash screen (opt-in) |
 
 ### `ui.tool_output_lines`
 

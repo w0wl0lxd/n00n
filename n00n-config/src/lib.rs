@@ -815,7 +815,7 @@ pub struct UiConfig {
     pub show_thinking: bool,
 
     #[config(
-        default = true,
+        default = false,
         desc = "Show the n00n mascot on the idle splash screen"
     )]
     pub mascot: bool,
@@ -832,7 +832,7 @@ impl UiConfig {
     fn from_file(f: UiFileConfig) -> Self {
         Self {
             splash_animation: f.splash_animation.unwrap_or(true),
-            mascot: f.mascot.unwrap_or(true),
+            mascot: f.mascot.unwrap_or(false),
             scrollbar: f.scrollbar.unwrap_or(true),
             flash_duration_ms: f.flash_duration_ms.unwrap_or(DEFAULT_FLASH_DURATION_MS),
             typewriter_ms_per_char: f
