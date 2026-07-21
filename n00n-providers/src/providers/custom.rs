@@ -217,7 +217,11 @@ impl Provider for CustomOpenAiProvider {
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
 
             if self.protocol == Protocol::OpenaiResponses {
                 let body = responses::build_body(model, messages, system, tools, None, None);

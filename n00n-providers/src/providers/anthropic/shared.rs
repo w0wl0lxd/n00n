@@ -515,7 +515,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                     output: 150.00,
                 }),
             },
-            max_output_tokens: 128000,
+            max_output_tokens: 128_000,
             context_window: 200_000,
         },
         ModelEntry {
@@ -534,7 +534,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                     output: 150.00,
                 }),
             },
-            max_output_tokens: 128000,
+            max_output_tokens: 128_000,
             context_window: 200_000,
         },
         ModelEntry {
@@ -553,7 +553,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                     output: 50.00,
                 }),
             },
-            max_output_tokens: 128000,
+            max_output_tokens: 128_000,
             context_window: 200_000,
         },
         ModelEntry {
@@ -569,7 +569,7 @@ pub(crate) fn models() -> &'static [ModelEntry] {
                 cache_read: 1.00,
                 fast: None,
             },
-            max_output_tokens: 128000,
+            max_output_tokens: 128_000,
             context_window: 200_000,
         },
         ModelEntry {

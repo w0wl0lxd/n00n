@@ -250,7 +250,7 @@ fn ymdhms_to_epoch(year: u64, month: u64, day: u64, hour: u64, minute: u64, seco
     let m = month as i64;
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day as i64 - 1;
     let doe = yoe as i64 * 365 + (yoe / 4) as i64 - (yoe / 100) as i64 + doy;
-    let days_since_epoch = (era as i64 * 146097 + doe - 719468) as u64;
+    let days_since_epoch = (era as i64 * 146_097 + doe - 719_468) as u64;
     days_since_epoch * 86400 + hour * 3600 + minute * 60 + second
 }
 
@@ -499,7 +499,10 @@ impl Bedrock {
     }
 
     fn needs_refresh(&self) -> bool {
-        let auth = self.auth.lock().unwrap();
+        let auth = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &auth.kind {
             AuthKind::SigV4 {
                 expires_at: Some(exp),
@@ -531,7 +534,11 @@ impl Provider for Bedrock {
                 debug!("Bedrock creds near expiry, refreshing before request");
                 self.reload_auth().await?;
             }
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let requested_id = env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| model.id.clone());
             let long_context = requested_id.ends_with(shared::LONG_CONTEXT_SUFFIX);
             let model_id = shared::strip_long_context(&requested_id).to_string();
@@ -686,7 +693,10 @@ impl Provider for Bedrock {
     fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async {
             let new_auth = resolve_bedrock_auth()?;
-            *self.auth.lock().unwrap() = new_auth;
+            *self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = new_auth;
             debug!("reloaded Bedrock auth from env");
             Ok(())
         })
@@ -736,10 +746,10 @@ fn now_timestamp() -> String {
 
 fn days_to_ymd(days_since_epoch: u64) -> (u64, u64, u64) {
     // Howard Hinnant's date algorithm: http://howardhinnant.github.io/date_algorithms.html
-    let z = days_since_epoch + 719468;
-    let era = z / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let z = days_since_epoch + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
@@ -922,7 +932,7 @@ aws_session_token = MYTOKEN\n";
         assert_eq!(ak, "ASIA123");
         assert_eq!(sk, "secret456");
         assert_eq!(tok.as_deref(), Some("session789"));
-        assert_eq!(exp, Some(1778522400));
+        assert_eq!(exp, Some(1_778_522_400));
     }
 
     #[test]
@@ -941,13 +951,13 @@ aws_session_token = MYTOKEN\n";
         assert!(parse_container_credentials_response(body).is_err());
     }
 
-    #[test_case("2026-05-11T18:00:00Z",      Some(1778522400) ; "plain_seconds")]
-    #[test_case("2026-05-11T18:00:00.123Z",  Some(1778522400) ; "fractional_dropped")]
-    #[test_case("2024-01-01T00:00:00Z",      Some(1704067200) ; "epoch_2024")]
-    #[test_case("1970-01-01T00:00:00Z",      Some(0)          ; "unix_epoch")]
-    #[test_case("2000-02-29T23:59:59Z",      Some(951868799)  ; "leap_day")]
-    #[test_case("2024-12-31T23:59:59Z",      Some(1735689599) ; "year_end")]
-    #[test_case("2100-03-01T00:00:00Z",      Some(4107542400) ; "century_non_leap")]
+    #[test_case("2026-05-11T18:00:00Z",      Some(1_778_522_400) ; "plain_seconds")]
+    #[test_case("2026-05-11T18:00:00.123Z",  Some(1_778_522_400) ; "fractional_dropped")]
+    #[test_case("2024-01-01T00:00:00Z",      Some(1_704_067_200) ; "epoch_2024")]
+    #[test_case("1970-01-01T00:00:00Z",      Some(0)             ; "unix_epoch")]
+    #[test_case("2000-02-29T23:59:59Z",      Some(951_868_799)  ; "leap_day")]
+    #[test_case("2024-12-31T23:59:59Z",      Some(1_735_689_599) ; "year_end")]
+    #[test_case("2100-03-01T00:00:00Z",      Some(4_107_542_400) ; "century_non_leap")]
     #[test_case("not a date",                None              ; "garbage")]
     #[test_case("2026-05-11T18:00:00",       None              ; "missing_z")]
     fn iso8601_parse(input: &str, expected: Option<u64>) {
@@ -1000,7 +1010,7 @@ aws_session_token = MYTOKEN\n";
                 rx.drain()
                     .any(|e| matches!(e, ProviderEvent::TextDelta { text } if text == "Hello"))
             );
-        })
+        });
     }
 
     #[test_case("https://host.com/path?q=1", "host.com", "/path", "q=1" ; "with_query")]
