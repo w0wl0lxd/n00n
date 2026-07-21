@@ -251,6 +251,9 @@ impl ProviderKind {
 
     #[must_use]
     pub fn is_available(self) -> bool {
+        if !should_discover(self) {
+            return false;
+        }
         self.create(Timeouts::default()).is_ok()
     }
 }
@@ -415,16 +418,24 @@ pub fn available_model_specs() -> Vec<String> {
 }
 
 fn should_discover(kind: ProviderKind) -> bool {
-    if kind != ProviderKind::LlamaCpp {
-        return true;
-    }
-
     let config = n00n_config::providers::ProvidersConfig::load();
-    llama_cpp_is_configured(
-        std::env::var_os("LLAMA_CPP_HOST").is_some(),
-        std::env::var_os("LLAMA_CPP_API_KEY").is_some(),
-        config.get("llama-cpp").is_some(),
-    )
+    match kind {
+        ProviderKind::Ollama => ollama_is_configured(
+            std::env::var_os("OLLAMA_HOST").is_some(),
+            std::env::var_os("OLLAMA_API_KEY").is_some(),
+            config.get("ollama").is_some(),
+        ),
+        ProviderKind::LlamaCpp => llama_cpp_is_configured(
+            std::env::var_os("LLAMA_CPP_HOST").is_some(),
+            std::env::var_os("LLAMA_CPP_API_KEY").is_some(),
+            config.get("llama-cpp").is_some(),
+        ),
+        _ => true,
+    }
+}
+
+fn ollama_is_configured(has_host: bool, has_api_key: bool, has_provider_config: bool) -> bool {
+    has_host || has_api_key || has_provider_config
 }
 
 fn llama_cpp_is_configured(has_host: bool, has_api_key: bool, has_provider_config: bool) -> bool {
@@ -561,7 +572,7 @@ pub async fn fetch_all_models(
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderKind, llama_cpp_is_configured, should_discover};
+    use super::{llama_cpp_is_configured, ollama_is_configured};
 
     #[test_case::test_case(false, false, false => false; "unconfigured")]
     #[test_case::test_case(true, false, false => true; "host")]
@@ -577,8 +588,15 @@ mod tests {
         llama_cpp_is_configured(has_host, has_api_key, has_provider_config)
     }
 
-    #[test]
-    fn other_providers_are_always_discovered() {
-        assert!(should_discover(ProviderKind::Ollama));
+    #[test_case::test_case(false, false, false => false; "unconfigured")]
+    #[test_case::test_case(true, false, false => true; "host")]
+    #[test_case::test_case(false, true, false => true; "api_key")]
+    #[test_case::test_case(false, false, true => true; "provider_config")]
+    fn ollama_configuration_sources(
+        has_host: bool,
+        has_api_key: bool,
+        has_provider_config: bool,
+    ) -> bool {
+        ollama_is_configured(has_host, has_api_key, has_provider_config)
     }
 }
