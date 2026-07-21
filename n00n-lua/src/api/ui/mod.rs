@@ -85,7 +85,7 @@ pub(crate) fn parse_footer(tbl: &Table) -> LuaResult<Vec<(String, String)>> {
 /// buf:line("hello world")
 #[lua_fn]
 fn buf(lua: &Lua) -> LuaResult<buf::BufHandle> {
-    Ok(with_task_bufs(lua, |store| store.create_live()))
+    Ok(with_task_bufs(lua, buf::BufferStore::create_live))
 }
 
 /// Looks up a semantic color from the current theme. Use this to keep

@@ -350,12 +350,10 @@ struct PredicateModifiers {
 fn parse_predicate_op(op: &str) -> (PredicateModifiers, &str) {
     let (negated, rest) = op
         .strip_prefix("not-")
-        .map(|r| (true, r))
-        .unwrap_or((false, op));
+        .map_or((false, op), |r| (true, r));
     let (any, base) = rest
         .strip_prefix("any-")
-        .map(|r| (true, r))
-        .unwrap_or((false, rest));
+        .map_or((false, rest), |r| (true, r));
     (PredicateModifiers { negated, any }, base)
 }
 

@@ -160,9 +160,7 @@ async fn interpreter_run(
     let names: Vec<String> = fns.keys().cloned().collect();
 
     let cancel = lua
-        .app_data_ref::<TaskHandle>()
-        .map(|h| lock_cell(&h).cancel.clone())
-        .unwrap_or_else(CancelToken::none);
+        .app_data_ref::<TaskHandle>().map_or_else(CancelToken::none, |h| lock_cell(&h).cancel.clone());
 
     let timeout = Duration::from_secs(timeout_secs);
     let limits = runner::limits(timeout, max_memory_mb * 1024 * 1024);
@@ -183,9 +181,7 @@ async fn interpreter_run(
                         };
                         forward_calls(&tx, vec![call])
                             .map_err(|e| e.to_string())?
-                            .pop()
-                            .map(|(_, r)| r)
-                            .unwrap_or_else(|| Err(BRIDGE_CLOSED.into()))
+                            .pop().map_or_else(|| Err(BRIDGE_CLOSED.into()), |(_, r)| r)
                     },
                 );
                 (name, f)

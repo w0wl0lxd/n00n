@@ -116,7 +116,7 @@ impl JobStore {
         thread::Builder::new()
             .name("job-wait".into())
             .spawn(move || {
-                let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+                let code = child.wait().map_or(-1, |s| s.code().unwrap_or(-1));
                 if let Some(h) = stdout_handle {
                     let _ = h.join();
                 }
@@ -225,9 +225,8 @@ fn kill_job(meta: &mut JobMeta) {
     #[cfg(unix)]
     {
         use rustix::process::{Pid, Signal, kill_process_group};
-        let raw = match i32::try_from(pid) {
-            Ok(raw) => raw,
-            Err(_) => return,
+        let Ok(raw) = i32::try_from(pid) else {
+            return;
         };
         if let Some(pid) = Pid::from_raw(raw) {
             let _ = kill_process_group(pid, Signal::Kill);
@@ -398,8 +397,7 @@ pub(crate) fn deliver_job_event(lua: &Lua, job_id: u32, event: &JobEvent) -> Lua
 #[lua_fn(guard = Env)]
 fn executable(_lua: &Lua, name: String) -> LuaResult<i32> {
     let found = env::var_os("PATH")
-        .map(|paths| env::split_paths(&paths).any(|dir| dir.join(&name).is_file()))
-        .unwrap_or(false)
+        .is_some_and(|paths| env::split_paths(&paths).any(|dir| dir.join(&name).is_file()))
         || Path::new(&name).is_file();
     Ok(i32::from(found))
 }

@@ -57,6 +57,7 @@ pub(crate) fn set_local_describe(f: impl Fn(&str, &str, &Value) -> Option<String
     LOCAL_DESCRIBE.with(|c| *c.borrow_mut() = Some(Box::new(f)));
 }
 
+#[allow(clippy::option_option)]
 fn local_describe(plugin: &str, tool: &str, dctx: &Value) -> Option<Option<String>> {
     LOCAL_DESCRIBE.with(|c| c.borrow().as_ref().map(|f| f(plugin, tool, dctx)))
 }
@@ -532,7 +533,7 @@ fn parse_prompt_field(spec: &Table) -> LuaResult<Option<Vec<PromptId>>> {
 
 fn validate_slot_prompt_compatibility(
     slot: Slot,
-    prompts: &Option<Vec<PromptId>>,
+    prompts: Option<&Vec<PromptId>>,
 ) -> LuaResult<()> {
     if let Some(prompts) = prompts {
         for &pid in prompts {
@@ -691,7 +692,7 @@ fn register_prompt_hint(lua: &Lua, #[ctx] plugin: Arc<str>, spec: Table) -> LuaR
         )));
     }
     let prompts = parse_prompt_field(&spec)?;
-    validate_slot_prompt_compatibility(slot, &prompts)?;
+    validate_slot_prompt_compatibility(slot, prompts.as_ref())?;
     let content = parse_hint_content(lua, &spec)?;
     let reg = PromptHintRegistration {
         prompts,
@@ -736,7 +737,7 @@ fn set_prompt(lua: &Lua, #[ctx] plugin: Arc<str>, spec: Table) -> LuaResult<()> 
         )));
     }
     let prompts = parse_prompt_field(&spec)?;
-    validate_slot_prompt_compatibility(slot, &prompts)?;
+    validate_slot_prompt_compatibility(slot, prompts.as_ref())?;
     let content = parse_hint_content(lua, &spec)?;
     let reg = PromptHintRegistration {
         prompts,
@@ -937,9 +938,8 @@ fn wrap_restore(lua: &Lua, tool: String, f: Function) -> LuaResult<Function> {
             LuaValue::Table(t) => t
                 .get::<mlua::AnyUserData>("body")
                 .ok()
-                .filter(|ud| ud.is::<BufHandle>())
-                .map(LuaValue::UserData)
-                .unwrap_or(LuaValue::Nil),
+                .filter(mlua::AnyUserData::is::<BufHandle>)
+                .map_or(LuaValue::Nil, LuaValue::UserData),
             _ => LuaValue::Nil,
         })
     })
@@ -1006,11 +1006,11 @@ fn parse_audience(audiences: Option<mlua::Table>) -> LuaResult<ToolAudience> {
 fn parse_timeout(spec: &Table) -> LuaResult<Option<Duration>> {
     let value: LuaValue = spec.get("timeout").unwrap_or(LuaValue::Nil);
     match value {
-        LuaValue::Nil | LuaValue::Boolean(false) => Ok(None),
-        LuaValue::Integer(0) => Ok(None),
         LuaValue::Integer(n) if n > 0 => Ok(Some(Duration::from_secs(n as u64))),
         LuaValue::Number(n) if n > 0.0 && n.is_finite() => Ok(Some(Duration::from_secs(n as u64))),
-        LuaValue::Number(0.0) => Ok(None),
+        LuaValue::Nil | LuaValue::Boolean(false) | LuaValue::Integer(0) | LuaValue::Number(0.0) => {
+            Ok(None)
+        }
         _ => Err(mlua::Error::runtime(TIMEOUT_PARSE_ERR)),
     }
 }
@@ -1152,7 +1152,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
 
     pending
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push(PendingTool {
             name,
             description,

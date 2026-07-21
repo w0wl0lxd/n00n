@@ -1,3 +1,5 @@
+#![allow(clippy::doc_markdown, clippy::doc_link_with_quotes)]
+
 mod api;
 pub mod docs;
 pub mod docs_render;
