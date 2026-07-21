@@ -48,6 +48,7 @@
             openssl
             python3
             stdenv.cc.cc.lib
+            zlib
           ];
           n00n = rustPlatform.buildRustPackage {
             pname = packageName;
@@ -116,6 +117,7 @@
               rustToolchain
               cargo-nextest
               git
+              gitleaks
               just
               openssl
               perl
@@ -134,22 +136,22 @@
               pkgs.openssl
               pkgs.python3
               pkgs.stdenv.cc.cc.lib
+              pkgs.zlib
             ];
 
-            # nix-shell/direnv injects -rpath $out/lib, but $out is a fake path
-            # that doesn't exist. Replace it with rpaths to the actual runtime libs
-            # so cargo-built binaries can be launched outside this shell.
             shellHook = ''
-              strip_rpath() {
-                local var="$1"
-                eval "$var=\"\$$var\""
-                local value="\$$var"
-                value=$("${pkgs.gnused}/bin/sed" 's|-rpath [^ ]*outputs/out/lib||g' <<< "$value")
-                value="-rpath ${pkgs.openssl}/lib -rpath ${pkgs.python3}/lib -rpath ${pkgs.stdenv.cc.cc.lib}/lib $value"
-                eval "export $var=\"$value\""
+              # Use the repo's shared git hooks (.githooks) so the gitleaks
+              # pre-commit secret blocker is enabled for every contributor.
+              git config core.hooksPath .githooks
+              strip_fake_output_rpath() {
+                local name="$1"
+                local value="''${!name}"
+                value=$(${pkgs.gnused}/bin/sed 's|-rpath [^ ]*outputs/out/lib||g' <<< "$value")
+                value="-rpath ${pkgs.openssl}/lib -rpath ${pkgs.python3}/lib -rpath ${pkgs.stdenv.cc.cc.lib}/lib -rpath ${pkgs.zlib}/lib $value"
+                export "$name=$value"
               }
-              strip_rpath NIX_LDFLAGS
-              strip_rpath NIX_LDFLAGS_FOR_BUILD
+              strip_fake_output_rpath NIX_LDFLAGS
+              strip_fake_output_rpath NIX_LDFLAGS_FOR_BUILD
             '';
           };
         }
