@@ -344,7 +344,7 @@ impl FloatManager {
     }
 
     /// The layout owns the geometry; we only fill the rect it carved.
-    /// render_window records focused_rect for the focused window alone, so a
+    /// `render_window` records `focused_rect` for the focused window alone, so a
     /// mouse click never lands on an unfocused split.
     pub fn view_split(&mut self, frame: &mut Frame, dir: Split, rect: Rect) {
         let Some(idx) = self.split_window_idx(dir) else {
@@ -1021,7 +1021,7 @@ mod tests {
 
         cmd_tx.send(WinCommand::SetCursor(3)).unwrap();
         mgr.tick();
-        assert_eq!(mgr.windows[0].cursor, 3, "{}", EXPECT_CURSOR);
+        assert_eq!(mgr.windows[0].cursor, 3, "{EXPECT_CURSOR}");
     }
 
     #[test]
@@ -1109,7 +1109,7 @@ mod tests {
 
         buf.set_lines(vec![make_line("only")]);
         mgr.tick();
-        assert_eq!(mgr.windows[0].cursor, 0, "{}", EXPECT_CURSOR);
+        assert_eq!(mgr.windows[0].cursor, 0, "{EXPECT_CURSOR}");
     }
 
     #[test]
@@ -1229,7 +1229,7 @@ mod tests {
         mgr.tick();
 
         assert_eq!(mgr.windows[0].config.title, "Updated");
-        assert_eq!(mgr.windows[0].cursor, 3, "{}", EXPECT_CURSOR);
+        assert_eq!(mgr.windows[0].cursor, 3, "{EXPECT_CURSOR}");
     }
 
     #[test]

@@ -185,7 +185,7 @@ impl InputBox {
     }
 
     pub fn set_max_input_lines(&mut self, max: u32) {
-        self.max_input_lines = max.clamp(1, u16::MAX as u32 - 2) as u16;
+        self.max_input_lines = max.clamp(1, u32::from(u16::MAX) - 2) as u16;
     }
 
     pub fn copy_text(&self) -> String {
@@ -626,7 +626,7 @@ fn overlay_cursor(spans: Vec<Span<'static>>, cursor_char_pos: usize) -> Vec<Span
             result.push(Span::styled(cursor_char.to_string(), span.style.reversed()));
             let rest: String = cs.collect();
             if !rest.is_empty() {
-                result.push(Span::styled(rest.to_string(), span.style));
+                result.push(Span::styled(rest.clone(), span.style));
             }
             cursor_placed = true;
         } else {

@@ -366,7 +366,7 @@ impl App {
         if !self
             .selection_state
             .as_ref()
-            .is_some_and(|s| s.is_pending_copy())
+            .is_some_and(super::selection::SelectionState::is_pending_copy)
         {
             self.selection_state = None;
         }
@@ -900,12 +900,11 @@ impl App {
             if key::POP_QUEUE.matches(key) {
                 self.queue.remove(0);
             } else if key::OPEN_EDITOR.matches(key) {
-                return match self.state.plan.path() {
-                    Some(p) => vec![Action::OpenEditor(p.to_path_buf())],
-                    None => {
-                        self.flash(FLASH_NO_PLAN.into());
-                        vec![]
-                    }
+                return if let Some(p) = self.state.plan.path() {
+                    vec![Action::OpenEditor(p.to_path_buf())]
+                } else {
+                    self.flash(FLASH_NO_PLAN.into());
+                    vec![]
                 };
             } else if key::SEARCH.matches(key) {
                 let top = self.chats[self.active_chat].scroll_top();
@@ -1054,10 +1053,10 @@ impl App {
                 .iter()
                 .find(|&(_, &idx)| idx == self.active_chat)
                 .map(|(id, _)| id.clone());
-            if let Some(subagent_id) = subagent_id {
-                if !self.send_subagent_prompt(&subagent_id, sub.text) {
-                    self.flash(STEERING_UNAVAILABLE_MSG.into());
-                }
+            if let Some(subagent_id) = subagent_id
+                && !self.send_subagent_prompt(&subagent_id, sub.text)
+            {
+                self.flash(STEERING_UNAVAILABLE_MSG.into());
             }
             return vec![];
         }
@@ -1231,7 +1230,12 @@ impl App {
                 let transcript = shared_transcript.load();
                 let tool_outputs = self.shared_tool_outputs.as_ref().map_or_else(
                     || self.state.session.tool_outputs.clone(),
-                    |outputs| outputs.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+                    |outputs| {
+                        outputs
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone()
+                    },
                 );
                 let (display, _) = transcript_to_display(
                     &transcript,
@@ -1606,7 +1610,7 @@ impl App {
         }
 
         let prompt_ref = n00n_agent::McpPromptRef {
-            qualified_name: prompt.qualified_name.clone(),
+            qualified_name: prompt.qualified_name,
             arguments,
         };
         let display_text = if args.trim().is_empty() {
@@ -1688,7 +1692,7 @@ impl App {
                     self.state.session.cwd = canonical.to_string_lossy().into_owned();
                 }
                 self.status_bar.refresh_cwd();
-                self.flash(format!("cd {}", path.display()))
+                self.flash(format!("cd {}", path.display()));
             }
             Err(e) => self.flash(format!("cd: {e}")),
         }
@@ -1731,6 +1735,7 @@ impl App {
         ]
     }
 
+    #[must_use]
     pub fn any_overlay_open(&self) -> bool {
         self.overlays().iter().any(|o| o.is_open())
     }
@@ -1741,6 +1746,7 @@ impl App {
         self.permission_prompt.is_open() || self.pending_input != PendingInput::None
     }
 
+    #[must_use]
     pub fn has_modal_overlay(&self) -> bool {
         self.overlays().iter().any(|o| o.is_open() && o.is_modal())
     }
@@ -1749,6 +1755,7 @@ impl App {
         self.overlays_mut().iter_mut().for_each(|o| o.close());
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         !self.image_paste_rx.is_empty()
             || self.btw_modal.is_animating()
@@ -1757,9 +1764,9 @@ impl App {
             || self
                 .selection_state
                 .as_ref()
-                .is_some_and(|s| s.is_edge_scrolling())
+                .is_some_and(super::selection::SelectionState::is_edge_scrolling)
             || self.restoring.load(Ordering::Relaxed)
-            || self.chats.iter().any(|c| c.is_animating())
+            || self.chats.iter().any(super::chat::Chat::is_animating)
     }
 
     fn finish_subagents(&mut self, role: DisplayRole, text: &str) {
@@ -1823,13 +1830,14 @@ impl App {
                 self.plan_form.hide();
                 vec![]
             }
-            PlanFormAction::OpenEditor => match self.state.plan.path() {
-                Some(p) => vec![Action::OpenEditor(p.to_path_buf())],
-                None => {
+            PlanFormAction::OpenEditor => {
+                if let Some(p) = self.state.plan.path() {
+                    vec![Action::OpenEditor(p.to_path_buf())]
+                } else {
                     self.flash(FLASH_NO_PLAN.into());
                     vec![]
                 }
-            },
+            }
             PlanFormAction::Implement => self.implement_plan(false),
             PlanFormAction::ClearAndImplement => self.implement_plan(true),
         }
@@ -1864,7 +1872,7 @@ impl App {
                 .push(DisplayMessage::plan(content, path_str));
             text
         } else {
-            format!("{}.", IMPLEMENT_MSG_PREFIX)
+            format!("{IMPLEMENT_MSG_PREFIX}.")
         };
         self.run_id += 1;
         let msg = QueuedMessage {

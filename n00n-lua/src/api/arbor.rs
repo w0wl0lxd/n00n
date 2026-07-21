@@ -1,6 +1,8 @@
 use mlua::{Lua, LuaSerdeExt, Result as LuaResult, Table};
 use n00n_arbor::{ArborError, Client};
 
+use crate::docs::{DocKind, FnDoc, ModuleDoc, ParamDoc};
+
 fn map_err(e: ArborError) -> mlua::Error {
     mlua::Error::external(format!("{e:#}"))
 }
@@ -27,8 +29,8 @@ pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
     })?;
     t.set("check_binary", check)?;
 
-    let avaiable = lua.create_function(|_, ()| Ok(Client::check_binary().is_ok()))?;
-    t.set("avaiable", avaiable)?;
+    let available = lua.create_function(|_, ()| Ok(Client::check_binary().is_ok()))?;
+    t.set("available", available)?;
 
     let callers = lua.create_function(|lua, (symbol, project): (String, String)| {
         value_or_err(
@@ -78,12 +80,12 @@ pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
     Ok(t)
 }
 
-pub(crate) const DOCS: crate::docs::ModuleDoc = crate::docs::ModuleDoc {
+pub(crate) const DOCS: ModuleDoc = ModuleDoc {
     name: "n00n.arbor",
-    kind: crate::docs::DocKind::Table,
+    kind: DocKind::Table,
     desc: "Graph-based code analysis via Arbor CLI. Wraps `arbor callers`, `arbor callees`, `arbor map`, `arbor diff`, `arbor query`, and `arbor status`. Each method shells out to the `arbor` binary (Anandb71/arbor, `cargo install arbor-graph-cli`) and parses its JSON output into Lua tables.",
     fns: &[
-        crate::docs::FnDoc {
+        FnDoc {
             name: "check_binary",
             args: "",
             desc: "Check that the `arbor` CLI is installed and working.",
@@ -91,25 +93,25 @@ pub(crate) const DOCS: crate::docs::ModuleDoc = crate::docs::ModuleDoc {
             returns: "(nil|string) nil on success, or an error message string.",
             example: "",
         },
-        crate::docs::FnDoc {
-            name: "avaiable",
+        FnDoc {
+            name: "available",
             args: "",
             desc: "Returns true if the `arbor` CLI is on PATH.",
             params: &[],
             returns: "(boolean) true when arbor is available.",
             example: "",
         },
-        crate::docs::FnDoc {
+        FnDoc {
             name: "callers",
             args: "{symbol}, {project}",
             desc: "Show who calls a symbol.",
             params: &[
-                crate::docs::ParamDoc {
+                ParamDoc {
                     name: "{symbol}",
                     ty: "string",
                     desc: "Symbol name (function, class, etc.)",
                 },
-                crate::docs::ParamDoc {
+                ParamDoc {
                     name: "{project}",
                     ty: "string",
                     desc: "Path to the project root.",
@@ -118,17 +120,17 @@ pub(crate) const DOCS: crate::docs::ModuleDoc = crate::docs::ModuleDoc {
             returns: "(table) Array of caller objects with `name`, `path`, `kind`, `line` fields.",
             example: "",
         },
-        crate::docs::FnDoc {
+        FnDoc {
             name: "callees",
             args: "{symbol}, {project}",
             desc: "Show what a symbol calls.",
             params: &[
-                crate::docs::ParamDoc {
+                ParamDoc {
                     name: "{symbol}",
                     ty: "string",
                     desc: "Symbol name.",
                 },
-                crate::docs::ParamDoc {
+                ParamDoc {
                     name: "{project}",
                     ty: "string",
                     desc: "Path to the project root.",
@@ -137,17 +139,17 @@ pub(crate) const DOCS: crate::docs::ModuleDoc = crate::docs::ModuleDoc {
             returns: "(table) Array of callee objects with `name`, `path`, `kind`, `line` fields.",
             example: "",
         },
-        crate::docs::FnDoc {
+        FnDoc {
             name: "map",
             args: "{project}, {token_budget?}",
             desc: "Ranked project skeleton with symbols.",
             params: &[
-                crate::docs::ParamDoc {
+                ParamDoc {
                     name: "{project}",
                     ty: "string",
                     desc: "Path to the project root.",
                 },
-                crate::docs::ParamDoc {
+                ParamDoc {
                     name: "{token_budget}",
                     ty: "integer",
                     desc: "Optional token budget (default 1024).",
@@ -156,11 +158,11 @@ pub(crate) const DOCS: crate::docs::ModuleDoc = crate::docs::ModuleDoc {
             returns: "(table) Array of map entries with `file`, `symbols` (each with `name`, `kind`, `line`, `centrality`, `callers`).",
             example: "",
         },
-        crate::docs::FnDoc {
+        FnDoc {
             name: "diff",
             args: "{project}",
             desc: "Blast radius of unpushed git changes.",
-            params: &[crate::docs::ParamDoc {
+            params: &[ParamDoc {
                 name: "{project}",
                 ty: "string",
                 desc: "Path to the project root.",
@@ -168,17 +170,17 @@ pub(crate) const DOCS: crate::docs::ModuleDoc = crate::docs::ModuleDoc {
             returns: "(table) Impact object with `direct_callers`, `indirect_callers`, `blast_radius_nodes`, `api_entrypoints_affected`, `files_likely_require_updates`.",
             example: "",
         },
-        crate::docs::FnDoc {
+        FnDoc {
             name: "query",
             args: "{query}, {project}",
             desc: "Free-text search of the code graph.",
             params: &[
-                crate::docs::ParamDoc {
+                ParamDoc {
                     name: "{query}",
                     ty: "string",
                     desc: "Search query text.",
                 },
-                crate::docs::ParamDoc {
+                ParamDoc {
                     name: "{project}",
                     ty: "string",
                     desc: "Path to the project root.",
@@ -187,11 +189,11 @@ pub(crate) const DOCS: crate::docs::ModuleDoc = crate::docs::ModuleDoc {
             returns: "(string) Raw query results as text.",
             example: "",
         },
-        crate::docs::FnDoc {
+        FnDoc {
             name: "status",
             args: "{project}",
             desc: "Show Arbor index status for a project.",
-            params: &[crate::docs::ParamDoc {
+            params: &[ParamDoc {
                 name: "{project}",
                 ty: "string",
                 desc: "Path to the project root.",
@@ -199,11 +201,11 @@ pub(crate) const DOCS: crate::docs::ModuleDoc = crate::docs::ModuleDoc {
             returns: "(string) Status text.",
             example: "",
         },
-        crate::docs::FnDoc {
+        FnDoc {
             name: "ensure_indexed",
             args: "{project}",
             desc: "Run `arbor index` if the project is not yet indexed.",
-            params: &[crate::docs::ParamDoc {
+            params: &[ParamDoc {
                 name: "{project}",
                 ty: "string",
                 desc: "Path to the project root.",

@@ -84,7 +84,7 @@ async fn run_btw(
         }
     };
 
-    let (result, _) = future::zip(stream_fut, forward_fut).await;
+    let (result, ()) = future::zip(stream_fut, forward_fut).await;
 
     match result {
         Ok(_) => {

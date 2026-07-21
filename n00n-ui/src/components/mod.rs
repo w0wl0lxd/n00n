@@ -164,7 +164,7 @@ impl ModalScroll {
     }
 
     fn half_page(&self) -> i32 {
-        (self.viewport_h / 2).max(1) as i32
+        i32::from((self.viewport_h / 2).max(1))
     }
 
     fn clamp(&mut self) {

@@ -258,7 +258,7 @@ pub fn truncate_output(text: &str, max: usize) -> TruncatedOutput<'_> {
 }
 
 /// Keeps the head. Tools that want tail truncation do it in Lua instead
-/// (ToolView `keep = "tail"`).
+/// (`ToolView` `keep = "tail"`).
 pub fn truncate_lines(s: &str, max: usize) -> Truncated<'_> {
     let Some((i, _)) = s.match_indices('\n').nth(max.saturating_sub(1)) else {
         return Truncated {

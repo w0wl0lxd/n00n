@@ -187,8 +187,8 @@ impl GrepSink<'_> {
     }
 
     fn push_line(&mut self, bytes: &[u8], line_nr: u64, is_match: bool) {
-        let text = String::from_utf8_lossy(bytes).to_string();
-        let text = text.strip_suffix('\n').unwrap_or_else(|| text.as_str());
+        let text = String::from_utf8_lossy(bytes);
+        let text = text.strip_suffix('\n').unwrap_or_else(|| &*text);
         let text = text.strip_suffix('\r').unwrap_or_else(|| text);
         #[allow(clippy::expect_used)]
         self.current_group.push(GrepLine {
