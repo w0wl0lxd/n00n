@@ -1,7 +1,28 @@
 [files]
-extend-exclude = ["site/_build/**", "Cargo.lock", "*.svg", "*.png", "*.ico", "flake.lock"]
+extend-exclude = [
+  "site/_build/**",
+  "site/asciinema-player.min.js",
+  "Cargo.lock",
+  "*.svg",
+  "*.png",
+  "*.ico",
+  "flake.lock",
+]
+
+[default.extend-identifiers]
+inh = "inh"
 
 [default.extend-words]
+abd = "abd"
+animaton = "animaton"
+ba = "ba"
+caf = "caf"
+fromat = "fromat"
+hel = "hel"
+summar = "summar"
+systm = "systm"
+trun = "trun"
+unparseable = "unparseable"
 n00n = "n00n"
 w0wl0lxd = "w0wl0lxd"
 luau = "luau"
