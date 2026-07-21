@@ -140,6 +140,7 @@ fn responses_websocket_url(base_url: Option<&str>) -> String {
     url
 }
 
+#[allow(clippy::large_futures)]
 pub(crate) async fn stream_message(
     body: &Value,
     event_tx: &Sender<ProviderEvent>,
@@ -158,6 +159,7 @@ pub(crate) async fn stream_message(
 }
 
 impl ResponsesWebSocket {
+    #[allow(clippy::large_futures)]
     pub(crate) async fn connect(
         auth: &ResolvedAuth,
         connect_timeout: Duration,
@@ -183,14 +185,16 @@ impl ResponsesWebSocket {
         }
 
         let connect = async_tungstenite::smol::connect_async(request);
-        let (socket, _) =
+        let (socket, _) = {
+            #[allow(clippy::large_futures)]
             futures_lite::future::or(async { connect.await.map_err(ws_err) }, async {
                 Timer::after(connect_timeout).await;
                 Err(AgentError::Timeout {
                     secs: connect_timeout.as_secs(),
                 })
             })
-            .await?;
+            .await?
+        };
         Ok(Self {
             socket,
             opened_at: Instant::now(),
@@ -477,6 +481,7 @@ mod tests {
         });
     }
     #[test]
+    #[allow(clippy::large_futures)]
     fn fake_transport_close_after_send_is_not_synthetic_422() {
         smol::block_on(async {
             let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

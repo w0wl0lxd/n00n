@@ -1,3 +1,7 @@
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::new_without_default)]
+#![allow(clippy::must_use_candidate)]
+
 use std::path::Path;
 use std::process::Command;
 
