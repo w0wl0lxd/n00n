@@ -53,7 +53,12 @@ local function run_one(ctx, v, artifact, opts)
     return { approved = false, issues = { serr }, model = v.tier }
   end
   local prompt = "Review this artifact for " .. v.prompt .. ". " .. artifact
-  local res, rerr = sess:prompt(prompt)
+  local res, rerr
+  if opts.preview then
+    res, rerr = opts.preview:prompt(sess, prompt, "quorum-" .. v.prompt)
+  else
+    res, rerr = sess:prompt(prompt)
+  end
   sess:close()
   if rerr or not res or not res.text then
     return { approved = false, issues = { rerr or "no output" }, model = v.tier }

@@ -112,12 +112,14 @@ local function run_agent(ctx, agent, event, opts)
       prompt = prompt .. "\n\nRelevant context:\n" .. block
     end
   end
-  return roles.run(
-    ctx,
-    agent.slot,
-    prompt,
-    { model = opts.model, model_tier = ROLE_TIER[agent.slot], thinking = opts.thinking, budget = opts.budget }
-  )
+  return roles.run(ctx, agent.slot, prompt, {
+    model = opts.model,
+    model_tier = ROLE_TIER[agent.slot],
+    thinking = opts.thinking,
+    budget = opts.budget,
+    preview = opts.preview,
+    activity_label = "swarm-" .. agent.id,
+  })
 end
 
 -- Validate a round's contributions with the EBFT quorum; return accepted issues.
@@ -131,6 +133,7 @@ local function validate_round(ctx, workers_output, opts)
     model = opts.model,
     thinking = opts.thinking,
     budget = opts.budget,
+    preview = opts.preview,
   })
 end
 

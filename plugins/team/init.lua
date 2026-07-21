@@ -3,6 +3,7 @@
 -- (product_manager, planner, developer, tester, reviewer); each runs as its own
 -- subagent on a cost-aware model tier. Built entirely on n00n.agent.* and the
 -- existing provider/model-tier machinery — no core changes.
+local ActivityPreview = require("n00n.activity_preview")
 local memory = require("mem")
 local retrieve = require("retrieve")
 local roles = require("roles")
@@ -204,9 +205,9 @@ local function run_supervisor(ctx, goal, opts)
     return nil, sess_err
   end
 
-  local res, rerr = sess:prompt(plan_prompt(goal))
+  local res, rerr = opts._preview:prompt(sess, plan_prompt(goal), "supervisor")
   if not rerr and not captured then
-    res, rerr = sess:prompt(NUDGE)
+    res, rerr = opts._preview:prompt(sess, NUDGE, "supervisor")
   end
   sess:close()
   if rerr then
@@ -254,6 +255,7 @@ local function run_step(ctx, step, goal, input, relay_k, prior_results)
     auto_tier = input.auto_tier,
     thinking = input.thinking,
     budget = input._agent_budget,
+    preview = input._preview,
   }
   return roles.run(ctx, step.role, step_prompt, role_opts)
 end
@@ -279,6 +281,7 @@ local function run_autonomous(ctx, goal, input, steps, relay_k)
           model = input.model,
           thinking = input.thinking,
           budget = input._agent_budget,
+          preview = input._preview,
         })
         if not verdict.accepted then
           results[#results + 1] = string.format(
@@ -319,7 +322,7 @@ end
 
 local finish_run
 
-local function handler(input, ctx)
+local function run_team(input, ctx)
   if input.background then
     local forwarded = {}
     for key, value in pairs(input) do
@@ -387,6 +390,7 @@ local function handler(input, ctx)
         budget = input._agent_budget,
         thinking = input.thinking,
         quorum = input.quorum,
+        preview = input._preview,
       })
       if not out.ok then
         return { llm_output = "swarm failed: " .. (out.error or "unknown"), is_error = true }
@@ -403,6 +407,20 @@ local function handler(input, ctx)
 
   local results, total_cost, failures = run_autonomous(ctx, goal, input, steps, relay_k)
   return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures)
+end
+
+local function handler(input, ctx)
+  if input.background then
+    return run_team(input, ctx)
+  end
+  local preview, preview_err = ActivityPreview.new(ctx, "team: " .. (input.goal or "team"), { session_rows = true })
+  if not preview then
+    return { llm_output = "failed to publish team preview: " .. tostring(preview_err), is_error = true }
+  end
+  input._preview = preview
+  local result = run_team(input, ctx)
+  result.body = preview.view.buf
+  return result
 end
 
 finish_run = function(ctx, input, results, total_cost, completed, unit, slug, failures)
