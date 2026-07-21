@@ -10,6 +10,8 @@ use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
 use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
 use std::path::Path;
 
+const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 42_000;
+
 fn fresh_registry() -> Arc<ToolRegistry> {
     Arc::new(ToolRegistry::new())
 }
@@ -24,8 +26,6 @@ fn builtins_host() -> (Arc<ToolRegistry>, PluginHost) {
 
 #[test]
 fn builtin_main_tool_definitions_stay_within_prompt_budget() {
-    const TOOL_DEFINITIONS_BYTE_BUDGET: usize = 42_000;
-
     let (registry, _host) = builtins_host();
     let definitions = registry.definitions(
         &env_vars(),
