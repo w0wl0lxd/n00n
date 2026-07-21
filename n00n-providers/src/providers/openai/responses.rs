@@ -25,24 +25,21 @@ pub(crate) fn build_body(
     let input = convert_input(messages);
     let wire_tools = convert_tools(tools);
 
-    let store = previous_response_id.is_some();
     let mut body = json!({
         "model": model.id,
         "instructions": system,
         "input": input,
         "stream": true,
-        "store": store,
+        "store": false,
         "include": ["reasoning.encrypted_content"],
+        "reasoning": {"summary": "auto"},
     });
-
-    if let Some(prev_id) = previous_response_id {
-        body["previous_response_id"] = json!(prev_id);
+    if let Some(previous_response_id) = previous_response_id {
+        body["previous_response_id"] = json!(previous_response_id);
     }
-
-    if let Some(cache_key) = prompt_cache_key {
-        body["prompt_cache_key"] = json!(cache_key);
+    if let Some(prompt_cache_key) = prompt_cache_key {
+        body["prompt_cache_key"] = json!(prompt_cache_key);
     }
-
     if wire_tools.as_array().is_some_and(|a| !a.is_empty()) {
         body["tools"] = wire_tools;
     }
@@ -201,13 +198,13 @@ struct ToolAccumulator {
 
 pub(crate) struct ResponseAccumulator {
     text: String,
-    reasoning_text: String,
+    reasoning_summary_text: String,
+    response_id: Option<String>,
     reasoning_items: Vec<(u64, Value)>,
     tool_accumulators: Vec<ToolAccumulator>,
     usage: TokenUsage,
     stop_reason: Option<StopReason>,
     is_first_content: bool,
-    response_id: Option<String>,
 }
 
 impl ResponseAccumulator {
@@ -221,13 +218,13 @@ impl ResponseAccumulator {
     pub fn new() -> Self {
         Self {
             text: String::new(),
-            reasoning_text: String::new(),
+            reasoning_summary_text: String::new(),
+            response_id: None,
             reasoning_items: Vec::new(),
             tool_accumulators: Vec::new(),
             usage: TokenUsage::default(),
             stop_reason: None,
             is_first_content: true,
-            response_id: None,
         }
     }
 
@@ -241,6 +238,10 @@ impl ResponseAccumulator {
         data: &Value,
         event_tx: &Sender<ProviderEvent>,
     ) -> Result<bool, AgentError> {
+        if let Some(response_id) = data["response"]["id"].as_str() {
+            self.response_id = Some(response_id.to_owned());
+        }
+
         match event_type {
             "response.output_text.delta" => {
                 if let Some(delta) = data["delta"].as_str()
@@ -394,7 +395,7 @@ impl ResponseAccumulator {
                                 .await?;
                         }
                         self.tool_accumulators.push(ToolAccumulator {
-                            output_index,
+                            output_index: self.tool_accumulators.len() as u64,
                             call_id,
                             name,
                             arguments,
@@ -403,11 +404,11 @@ impl ResponseAccumulator {
                 }
             }
 
-            "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
+            "response.reasoning_summary_text.delta" => {
                 if let Some(delta) = data["delta"].as_str()
                     && !delta.is_empty()
                 {
-                    self.reasoning_text.push_str(delta);
+                    self.reasoning_summary_text.push_str(delta);
                     event_tx
                         .send_async(ProviderEvent::ThinkingDelta {
                             text: delta.to_string(),
@@ -416,8 +417,8 @@ impl ResponseAccumulator {
                 }
             }
 
-            "response.reasoning_summary_part.added" if !self.reasoning_text.is_empty() => {
-                self.reasoning_text.push_str("\n\n");
+            "response.reasoning_summary_part.added" if !self.reasoning_summary_text.is_empty() => {
+                self.reasoning_summary_text.push_str("\n\n");
             }
 
             "response.completed" => {
@@ -530,9 +531,9 @@ impl ResponseAccumulator {
         let mut content_blocks: Vec<ContentBlock> =
             ordered_blocks.into_iter().map(|(_, block)| block).collect();
 
-        if !self.reasoning_text.is_empty() {
+        if !self.reasoning_summary_text.is_empty() {
             content_blocks.push(ContentBlock::Thinking {
-                thinking: self.reasoning_text,
+                thinking: self.reasoning_summary_text,
                 signature: None,
             });
         }
@@ -623,7 +624,7 @@ pub(crate) async fn parse_sse(
         });
     }
 
-    let response_id = acc.response_id().map(|s| s.to_string());
+    let response_id = acc.response_id().map(ToOwned::to_owned);
     Ok((response_id, acc.into_stream_response()))
 }
 
@@ -634,7 +635,6 @@ fn parse_usage(u: &Value) -> TokenUsage {
     let cached = u["input_tokens_details"]["cached_tokens"]
         .as_u64()
         .unwrap_or(0) as u32;
-
     let cache_write = u["input_tokens_details"]["cache_write_tokens"]
         .as_u64()
         .unwrap_or(0) as u32;
@@ -856,17 +856,17 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
     }
 
     #[test]
-    fn parse_sse_reasoning_text_delta() {
+    fn parse_sse_opaque_reasoning_text_delta_is_not_displayed() {
         smol::block_on(async {
             let sse = "\
 event: response.output_item.added\n\
 data: {\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[],\"content\":[],\"encrypted_content\":\"\",\"status\":\"in_progress\"}}\n\
 \n\
 event: response.reasoning_text.delta\n\
-data: {\"delta\":\"Let me think\"}\n\
+data: {\"delta\":\"opaque reasoning\"}\n\
 \n\
-event: response.reasoning_text.delta\n\
-data: {\"delta\":\" about this\"}\n\
+event: response.output_item.done\n\
+data: {\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[],\"content\":[],\"encrypted_content\":\"encrypted\",\"status\":\"completed\"}}\n\
 \n\
 event: response.output_item.added\n\
 data: {\"output_index\":1,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"in_progress\",\"content\":[],\"role\":\"assistant\"}}\n\
@@ -887,7 +887,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
 
             assert_eq!(resp.message.content.len(), 2);
             assert!(
-                matches!(&resp.message.content[0], ContentBlock::Thinking { thinking, .. } if thinking == "Let me think about this")
+                matches!(&resp.message.content[0], ContentBlock::RedactedThinking { data } if data.contains("encrypted"))
             );
             assert!(
                 matches!(&resp.message.content[1], ContentBlock::Text { text } if text == "Hello world")
@@ -900,7 +900,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
                     _ => None,
                 })
                 .collect();
-            assert_eq!(thinking_deltas, vec!["Let me think", " about this"]);
+            assert!(thinking_deltas.is_empty());
 
             let text_deltas: Vec<_> = events
                 .iter()
@@ -946,7 +946,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
     }
 
     #[test]
-    fn parse_sse_reasoning_only_no_text() {
+    fn parse_sse_opaque_reasoning_only_is_not_persisted_as_thinking() {
         smol::block_on(async {
             let sse = "\
 event: response.reasoning_text.delta\n\
@@ -959,10 +959,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
             let (resp, _) = run_sse(sse).await;
             let (_, resp) = resp.unwrap();
 
-            assert_eq!(resp.message.content.len(), 1);
-            assert!(
-                matches!(&resp.message.content[0], ContentBlock::Thinking { thinking, .. } if thinking == "Thinking only")
-            );
+            assert!(resp.message.content.is_empty());
             assert_eq!(resp.usage.output, 5);
         })
     }
@@ -1232,9 +1229,19 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     }
 
     #[test]
-    fn build_body_requests_encrypted_reasoning() {
+    fn build_body_includes_continuity_and_cache_keys() {
         let model = crate::model::Model::from_spec("openai/gpt-5.6").unwrap();
-        let body = build_body(&model, &[], "system", &json!([]), None, None);
+        let body = build_body(
+            &model,
+            &[],
+            "system",
+            &json!([]),
+            Some("resp_1"),
+            Some("session_1"),
+        );
+        assert_eq!(body["previous_response_id"], "resp_1");
+        assert_eq!(body["prompt_cache_key"], "session_1");
+        assert_eq!(body["reasoning"], json!({"summary":"auto"}));
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
     }
 
@@ -1276,7 +1283,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     #[test]
     fn parse_sse_preserves_reasoning_and_tool_order() {
         smol::block_on(async {
-            let sse = "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"one\",\"summary\":[]}}\n\nevent: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"one\\\"}\"}}\n\nevent: response.output_item.done\ndata: {\"output_index\":2,\"item\":{\"id\":\"rs_2\",\"type\":\"reasoning\",\"encrypted_content\":\"two\",\"summary\":[]}}\n\nevent: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n";
+            let sse = "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"one\",\"summary\":[]}}\n\nevent: response.output_item.done\ndata: {\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"one\\\"}\"}}\n\nevent: response.output_item.done\ndata: {\"output_index\":2,\"item\":{\"id\":\"rs_2\",\"type\":\"reasoning\",\"encrypted_content\":\"two\",\"summary\":[]}}\n\n";
             let (resp, _) = run_sse(sse).await;
             let (_, resp) = resp.unwrap();
             assert!(
@@ -1302,6 +1309,16 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
     }
 
     #[test]
+    fn parse_sse_captures_response_id() {
+        smol::block_on(async {
+            let sse = "event: response.created\ndata: {\"response\":{\"id\":\"resp_1\"}}\n\nevent: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n";
+            let (result, _) = run_sse(sse).await;
+            let (response_id, _) = result.unwrap();
+            assert_eq!(response_id.as_deref(), Some("resp_1"));
+        })
+    }
+
+    #[test]
     fn parse_sse_no_reasoning_tokens_in_usage() {
         smol::block_on(async {
             let sse = "\
@@ -1322,108 +1339,19 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
     }
 
     #[test]
-    fn parse_usage_with_cache_write_tokens() {
-        let usage = json!({
+    fn parse_usage_accounts_for_cache_writes() {
+        let usage = parse_usage(&json!({
             "input_tokens": 150,
             "output_tokens": 20,
             "input_tokens_details": {
                 "cached_tokens": 40,
                 "cache_write_tokens": 50
             }
-        });
-        let parsed = parse_usage(&usage);
-        assert_eq!(parsed.input, 60);
-        assert_eq!(parsed.output, 20);
-        assert_eq!(parsed.cache_read, 40);
-        assert_eq!(parsed.cache_creation, 50);
-    }
+        }));
 
-    #[test]
-    fn parse_usage_without_cache_write_tokens() {
-        let usage = json!({
-            "input_tokens": 100,
-            "output_tokens": 10,
-            "input_tokens_details": {
-                "cached_tokens": 30
-            }
-        });
-        let parsed = parse_usage(&usage);
-        assert_eq!(parsed.input, 70);
-        assert_eq!(parsed.output, 10);
-        assert_eq!(parsed.cache_read, 30);
-        assert_eq!(parsed.cache_creation, 0);
-    }
-
-    #[test]
-    fn response_accumulator_captures_response_id() {
-        smol::block_on(async {
-            let sse = "\
-event: response.created\ndata: {\"response\":{\"id\":\"resp_123\"}}\n\
-|\n\
-event: response.completed\n\
-data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\
-|\n";
-            let (resp, _) = run_sse(sse).await;
-            let (response_id, _) = resp.unwrap();
-            assert_eq!(response_id, Some("resp_123".to_string()));
-        })
-    }
-
-    #[test]
-    fn build_body_with_previous_response_id() {
-        let messages = vec![Message::user("test".to_string())];
-        let tools = json!([]);
-
-        let body = build_body(
-            &crate::model::Model {
-                id: "gpt-5.6-codex".to_string(),
-                provider: crate::provider::ProviderKind::OpenAi,
-                dynamic_slug: None,
-                tier: crate::model::ModelTier::Strong,
-                family: crate::model::ModelFamily::Gpt,
-                supports_tool_examples_override: None,
-                supports_thinking_override: None,
-                supports_vision_override: None,
-                pricing: Default::default(),
-                max_output_tokens: None,
-                context_window: 272_000,
-            },
-            &messages,
-            "system",
-            &tools,
-            Some("prev_resp"),
-            Some("cache_key"),
-        );
-        assert_eq!(body["previous_response_id"], "prev_resp");
-        assert_eq!(body["prompt_cache_key"], "cache_key");
-    }
-
-    #[test]
-    fn build_body_without_previous_response_id() {
-        let messages = vec![Message::user("test".to_string())];
-        let tools = json!([]);
-
-        let body = build_body(
-            &crate::model::Model {
-                id: "gpt-5.6-codex".to_string(),
-                provider: crate::provider::ProviderKind::OpenAi,
-                dynamic_slug: None,
-                tier: crate::model::ModelTier::Strong,
-                family: crate::model::ModelFamily::Gpt,
-                supports_tool_examples_override: None,
-                supports_thinking_override: None,
-                supports_vision_override: None,
-                pricing: Default::default(),
-                max_output_tokens: None,
-                context_window: 272_000,
-            },
-            &messages,
-            "system",
-            &tools,
-            None,
-            None,
-        );
-        assert!(body.get("previous_response_id").is_none());
-        assert!(body.get("prompt_cache_key").is_none());
+        assert_eq!(usage.input, 60);
+        assert_eq!(usage.output, 20);
+        assert_eq!(usage.cache_read, 40);
+        assert_eq!(usage.cache_creation, 50);
     }
 }

@@ -112,6 +112,12 @@ pub struct SessionMeta {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TranscriptEntry<M> {
+    Message(M),
+    Compaction { entries: Vec<TranscriptEntry<M>> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session<M, U, T> {
     pub version: u32,
     pub id: N00nId,
@@ -119,6 +125,8 @@ pub struct Session<M, U, T> {
     pub cwd: String,
     pub model: String,
     pub messages: Vec<M>,
+    #[serde(default)]
+    pub transcript: Vec<TranscriptEntry<M>>,
     pub token_usage: U,
     #[serde(default = "HashMap::new")]
     pub tool_outputs: HashMap<String, T>,
@@ -371,6 +379,8 @@ enum LogRecord<M, U, T> {
         title: String,
         token_usage: U,
         updated_at: u64,
+        #[serde(default)]
+        transcript: Vec<TranscriptEntry<M>>,
         #[serde(flatten)]
         meta: SessionMeta,
     },
@@ -398,7 +408,7 @@ fn sub_msg_snapshot<M>(map: &HashMap<String, Vec<M>>) -> HashMap<String, usize> 
 impl SessionLog {
     pub fn create<M, U, T>(dir: &Path, session: &Session<M, U, T>) -> Result<Self, SessionError>
     where
-        M: Serialize,
+        M: Serialize + Clone,
         U: Serialize,
         T: Serialize,
     {
@@ -412,7 +422,7 @@ impl SessionLog {
         session_id: N00nId,
     ) -> Result<(Session<M, U, T>, Self), SessionError>
     where
-        M: Serialize + DeserializeOwned,
+        M: Serialize + DeserializeOwned + Clone + Default,
         U: Serialize + DeserializeOwned + Default,
         T: Serialize + DeserializeOwned,
     {
@@ -442,7 +452,7 @@ impl SessionLog {
 
     pub fn append<M, U, T>(&mut self, session: &Session<M, U, T>) -> Result<(), SessionError>
     where
-        M: Serialize,
+        M: Serialize + Clone,
         U: Serialize,
         T: Serialize,
     {
@@ -540,7 +550,7 @@ impl SessionLog {
         session: &Session<M, U, T>,
     ) -> Result<(), SessionError>
     where
-        M: Serialize,
+        M: Serialize + Clone,
         U: Serialize,
         T: Serialize,
     {
@@ -561,7 +571,7 @@ impl SessionLog {
 
     fn cursor_from<M, U, T>(dir: &Path, session: &Session<M, U, T>, file: File) -> Self
     where
-        M: Serialize,
+        M: Serialize + Clone,
         U: Serialize,
         T: Serialize,
     {
@@ -604,17 +614,18 @@ impl SessionLog {
 
 fn meta_record_bytes<M, U, T>(session: &Session<M, U, T>) -> Result<Vec<u8>, SessionError>
 where
-    M: Serialize,
+    M: Serialize + Clone,
     U: Serialize,
     T: Serialize,
 {
     let mut buf = Vec::new();
     append_record(
         &mut buf,
-        &LogRecord::<&M, &U, &T>::Meta {
+        &LogRecord::<M, &U, &T>::Meta {
             title: session.title.clone(),
             token_usage: &session.token_usage,
             updated_at: session.updated_at,
+            transcript: session.transcript.clone(),
             meta: session.meta.clone(),
         },
     )?;
@@ -623,7 +634,7 @@ where
 
 fn write_session_file<M, U, T>(dir: &Path, session: &Session<M, U, T>) -> Result<File, SessionError>
 where
-    M: Serialize,
+    M: Serialize + Clone,
     U: Serialize,
     T: Serialize,
 {
@@ -646,7 +657,7 @@ fn write_full_session<M, U, T, W: Write>(
     session: &Session<M, U, T>,
 ) -> Result<(), SessionError>
 where
-    M: Serialize,
+    M: Serialize + Clone,
     U: Serialize,
     T: Serialize,
 {
@@ -691,7 +702,7 @@ where
 
 fn full_session_bytes<M, U, T>(session: &Session<M, U, T>) -> Result<Vec<u8>, SessionError>
 where
-    M: Serialize,
+    M: Serialize + Clone,
     U: Serialize,
     T: Serialize,
 {
@@ -720,7 +731,7 @@ enum RawTag {
 
 fn parse_records<M, U, T>(data: &[u8], path: &Path) -> Result<Session<M, U, T>, SessionError>
 where
-    M: DeserializeOwned,
+    M: DeserializeOwned + Default,
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
@@ -737,6 +748,7 @@ where
     let mut title = DEFAULT_TITLE.to_string();
     let mut token_usage = U::default();
     let mut updated_at = 0u64;
+    let mut transcript = Vec::new();
     let mut meta = SessionMeta::default();
     let mut got_header = false;
 
@@ -803,11 +815,13 @@ where
                 title: m_title,
                 token_usage: m_usage,
                 updated_at: m_updated,
+                transcript: m_transcript,
                 meta: m_meta,
             } => {
                 title = m_title;
                 token_usage = m_usage;
                 updated_at = m_updated;
+                transcript = m_transcript;
                 meta = m_meta;
             }
         }
@@ -822,6 +836,7 @@ where
         cwd,
         model,
         messages,
+        transcript,
         token_usage,
         tool_outputs,
         subagent_messages,
@@ -1108,7 +1123,7 @@ fn locate_session_file(dir: &Path, id: N00nId) -> Option<PathBuf> {
 
 fn load_session_at<M, U, T>(path: &Path) -> Result<Session<M, U, T>, SessionError>
 where
-    M: DeserializeOwned,
+    M: DeserializeOwned + Default + Clone,
     U: DeserializeOwned + Default,
     T: DeserializeOwned,
 {
@@ -1119,7 +1134,7 @@ where
 
 impl<M, U, T> Session<M, U, T>
 where
-    M: Serialize + DeserializeOwned + TitleSource,
+    M: Serialize + DeserializeOwned + TitleSource + Clone + Default,
     U: Serialize + DeserializeOwned + Default,
     T: Serialize + DeserializeOwned,
 {
@@ -1132,6 +1147,7 @@ where
             cwd: cwd.into(),
             model: model.into(),
             messages: Vec::new(),
+            transcript: Vec::new(),
             token_usage: U::default(),
             tool_outputs: HashMap::new(),
             subagent_messages: HashMap::new(),

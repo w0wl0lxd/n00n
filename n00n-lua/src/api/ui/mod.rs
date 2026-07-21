@@ -279,6 +279,30 @@ async fn open_editor(
     Ok(reply_rx.recv_async().await.unwrap_or(-1))
 }
 
+/// Opens n00n's native model discovery picker and waits for a selection.
+/// Returns nil when the picker is cancelled or the UI is unavailable.
+///
+/// @param current string? Model spec to preselect. Omit for no preselection.
+/// @return (string?) Selected model spec, or nil when cancelled.
+/// @example
+/// local model = n00n.ui.pick_model(current_model)
+/// if model then current_model = model end
+#[lua_fn]
+async fn pick_model(
+    _lua: Lua,
+    #[ctx] tx: flume::Sender<UiAction>,
+    current: Option<String>,
+) -> LuaResult<Option<String>> {
+    let (reply_tx, reply_rx) = flume::bounded(1);
+    if tx
+        .try_send(UiAction::PickModel { current, reply_tx })
+        .is_err()
+    {
+        return Ok(None);
+    }
+    Ok(reply_rx.recv_async().await.ok().flatten())
+}
+
 /// Opens a floating or split window that displays the contents of {buf}.
 /// Returns a Win handle you can use to receive events, update layout,
 /// and close the window when you are done.
@@ -321,6 +345,11 @@ fn open_win(
     opts: Table,
 ) -> LuaResult<WinHandle> {
     let buf_handle = buf.borrow::<buf::BufHandle>()?;
+    if let Some(handle) = _lua.app_data_ref::<crate::runtime::TaskHandle>() {
+        crate::runtime::lock_cell(&handle)
+            .bufs
+            .detach_handlers(&buf_handle.buf);
+    }
     let title: String = opts.get("title").unwrap_or_default();
     let cursor_line: bool = opts.get("cursor_line").unwrap_or(false);
     let footer = parse_footer(&opts)?;
@@ -422,7 +451,7 @@ lua_table! {
     extend "n00n.ui" => pub(crate) fn add_ui_fns(), DOCS [
         buf, theme_color, highlight, markdown, humantime, terminal_size,
         display_width, truncate_text,
-        manual flash, manual open_editor, manual open_win, manual set_status_hint,
+        manual flash, manual open_editor, manual pick_model, manual open_win, manual set_status_hint,
     ]
 }
 
@@ -437,6 +466,7 @@ pub(crate) fn create_ui_table(
     if let Some(tx) = ui_action_tx {
         flash__register(&t, lua, tx.clone())?;
         open_editor__register(&t, lua, tx.clone())?;
+        pick_model__register(&t, lua, tx.clone())?;
         open_win__register(&t, lua, tx)?;
     }
 

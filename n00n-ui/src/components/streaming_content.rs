@@ -146,7 +146,14 @@ impl PlainState {
 
     fn current_text_span(&mut self) -> &mut Span<'static> {
         self.ensure_current();
-        self.snapshot.last_mut().unwrap().spans.last_mut().unwrap()
+        let line_index = self.snapshot.len() - 1;
+        if self.snapshot[line_index].spans.is_empty() {
+            self.snapshot[line_index]
+                .spans
+                .push(Span::styled(String::new(), self.text_style));
+        }
+        let span_index = self.snapshot[line_index].spans.len() - 1;
+        &mut self.snapshot[line_index].spans[span_index]
     }
 
     fn finalize_current(&mut self) {
@@ -578,6 +585,21 @@ mod tests {
             has_complete_content,
             "complete cell content should be rendered"
         );
+    }
+
+    #[test]
+    fn plain_state_accepts_text_after_empty_snapshot() {
+        let style = Style::default();
+        let mut state = PlainState::new("", style, style);
+        state.update(&typewriter_for_text(""));
+        state.update(&typewriter_for_text("hello"));
+
+        let rendered: String = state.snapshot[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(rendered, "hello");
     }
 
     #[test]

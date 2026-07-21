@@ -10,19 +10,29 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use n00n_agent::{AgentInput, ExtractedCommand, ImageSource, InterruptSource};
+use n00n_agent::{AgentInput, ExtractedCommand, ImageSource, InterruptPoint, InterruptSource};
 
 use crate::components::input::Submission;
 use crate::components::queue_panel::QueueEntry;
 use crate::theme;
 
 const COMPACT_LABEL: &str = "/compact";
+const STEERING_PREFIX: &str = "↪ ";
+const IMMEDIATE_PREFIX: &str = "↯ ";
 
 type Items = Arc<Mutex<VecDeque<QueueItem>>>;
 
+#[derive(Clone)]
 pub(crate) struct QueuedMessage {
     pub(crate) text: String,
     pub(crate) images: Vec<ImageSource>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Delivery {
+    TurnEnd,
+    Steering,
+    Immediate,
 }
 
 impl From<Submission> for QueuedMessage {
@@ -45,6 +55,7 @@ pub(crate) enum QueueItem {
         /// `false` when the user typed while the agent was busy: the UI waits
         /// for `QueueItemConsumed` before drawing.
         displayed: bool,
+        delivery: Delivery,
     },
     Compact {
         run_id: u64,
@@ -60,8 +71,12 @@ impl QueueItem {
 
     fn as_queue_entry(&self) -> QueueEntry<'static> {
         match self {
-            Self::Message { text, .. } => QueueEntry {
-                text: Cow::Owned(text.clone()),
+            Self::Message { text, delivery, .. } => QueueEntry {
+                text: Cow::Owned(match delivery {
+                    Delivery::TurnEnd => text.clone(),
+                    Delivery::Steering => format!("{STEERING_PREFIX}{text}"),
+                    Delivery::Immediate => format!("{IMMEDIATE_PREFIX}{text}"),
+                }),
                 color: theme::current().foreground,
             },
             Self::Compact { .. } => QueueEntry {
@@ -125,18 +140,47 @@ impl QueueSender {
         let _ = self.notify_tx.try_send(());
     }
 
-    pub(crate) fn remove(&self, index: usize) -> Option<QueueItem> {
-        let mut items = lock(&self.items);
-        (index < items.len()).then(|| items.remove(index)).flatten()
+    fn panel_index(items: &VecDeque<QueueItem>, index: usize) -> Option<usize> {
+        items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.visible_in_panel())
+            .nth(index)
+            .map(|(item_index, _)| item_index)
     }
 
-    pub(crate) fn len(&self) -> usize {
-        lock(&self.items).len()
+    pub(crate) fn remove_panel(&self, index: usize) -> Option<QueueItem> {
+        let mut items = lock(&self.items);
+        let item_index = Self::panel_index(&items, index)?;
+        items.remove(item_index)
+    }
+
+    pub(crate) fn insert_panel(&self, index: usize, entry: QueueItem) {
+        let mut items = lock(&self.items);
+        let item_index = Self::panel_index(&items, index).unwrap_or(items.len());
+        items.insert(item_index, entry);
+    }
+
+    pub(crate) fn promote_latest_steering(&self) -> bool {
+        let mut items = lock(&self.items);
+        let Some(QueueItem::Message { delivery, .. }) = items.iter_mut().rev().find(|item| {
+            matches!(
+                item,
+                QueueItem::Message {
+                    delivery: Delivery::Steering,
+                    ..
+                }
+            )
+        }) else {
+            return false;
+        };
+        *delivery = Delivery::Immediate;
+        true
     }
 
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.len() == 0
+        lock(&self.items).is_empty()
     }
 
     pub(crate) fn clear(&self) {
@@ -172,7 +216,17 @@ impl QueueSender {
 
 impl QueueReceiver {
     pub(crate) fn pop(&self) -> Option<QueueItem> {
-        lock(&self.items).pop_front()
+        let mut items = lock(&self.items);
+        let index = items.iter().position(|item| {
+            matches!(
+                item,
+                QueueItem::Message {
+                    delivery: Delivery::TurnEnd,
+                    ..
+                } | QueueItem::Compact { .. }
+            )
+        })?;
+        items.remove(index)
     }
 
     pub(crate) async fn recv_notify(&self) -> Result<(), flume::RecvError> {
@@ -181,8 +235,17 @@ impl QueueReceiver {
 }
 
 impl InterruptSource for QueueReceiver {
-    fn poll(&self) -> Option<ExtractedCommand> {
-        self.pop().map(QueueItem::into_extracted_command)
+    fn poll(&self, point: InterruptPoint) -> Option<ExtractedCommand> {
+        let mut items = lock(&self.items);
+        let index = items.iter().position(|item| match item {
+            QueueItem::Message { delivery, .. } => match delivery {
+                Delivery::TurnEnd => false,
+                Delivery::Steering => point == InterruptPoint::ToolComplete,
+                Delivery::Immediate => true,
+            },
+            QueueItem::Compact { .. } => point == InterruptPoint::Safe,
+        })?;
+        items.remove(index).map(QueueItem::into_extracted_command)
     }
 }
 
@@ -207,6 +270,7 @@ mod tests {
             },
             run_id: 0,
             displayed,
+            delivery: Delivery::TurnEnd,
         }
     }
 
@@ -219,5 +283,57 @@ mod tests {
         let expected = usize::from(visible);
         assert_eq!(tx.panel_len(), expected);
         assert_eq!(tx.panel_entries().len(), expected);
+    }
+    #[test]
+    fn poll_respects_delivery_points_and_fifo_within_ready_messages() {
+        let (tx, rx) = queue();
+        let queued = |text: &str, delivery| QueueItem::Message {
+            text: text.into(),
+            image_count: 0,
+            input: AgentInput {
+                message: text.into(),
+                mode: Default::default(),
+                images: Vec::new(),
+                preamble: Vec::new(),
+                thinking: Default::default(),
+                fast: false,
+                workflow: false,
+                prompt: None,
+            },
+            run_id: 0,
+            displayed: false,
+            delivery,
+        };
+        tx.push(queued("normal", Delivery::TurnEnd));
+        tx.push(queued("steer one", Delivery::Steering));
+        tx.push(queued("steer two", Delivery::Steering));
+
+        let ExtractedCommand::Interrupt(first, _) = rx.poll(InterruptPoint::ToolComplete).unwrap()
+        else {
+            panic!("expected steering interrupt");
+        };
+        let ExtractedCommand::Interrupt(second, _) = rx.poll(InterruptPoint::ToolComplete).unwrap()
+        else {
+            panic!("expected steering interrupt");
+        };
+        assert!(rx.poll(InterruptPoint::Safe).is_none());
+        let QueueItem::Message { input: normal, .. } = rx.pop().unwrap() else {
+            panic!("expected normal queue item");
+        };
+        assert_eq!(
+            (first.message, second.message, normal.message),
+            ("steer one".into(), "steer two".into(), "normal".into())
+        );
+    }
+
+    #[test]
+    fn promoted_steering_is_available_at_safe_point() {
+        let (tx, rx) = queue();
+        tx.push(msg(false));
+        if let Some(QueueItem::Message { delivery, .. }) = lock(&tx.items).back_mut() {
+            *delivery = Delivery::Steering;
+        }
+        assert!(tx.promote_latest_steering());
+        assert!(rx.poll(InterruptPoint::Safe).is_some());
     }
 }

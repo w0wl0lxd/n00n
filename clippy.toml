@@ -1,4 +1,29 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-dbg-in-tests = true
+
+cognitive-complexity-threshold = 15
+too-many-lines-threshold = 100
+too-many-arguments-threshold = 8
+type-complexity-threshold = 300
+max-fn-params-bools = 3
+max-struct-bools = 5
+literal-representation-threshold = 10000
+single-char-binding-names-threshold = 4
+
 disallowed-methods = [
+  { path = "std::option::Option::unwrap_unchecked", reason = "use typed error propagation instead" },
+  { path = "std::result::Result::unwrap_unchecked", reason = "use typed error propagation instead" },
+  { path = "std::option::Option::unwrap_or", reason = "use typed errors or named observable fallback" },
+  { path = "std::option::Option::unwrap_or_default", reason = "do not hide missing data with defaults" },
+  { path = "std::result::Result::unwrap_or", reason = "propagate or explicitly log/reject errors" },
+  { path = "std::result::Result::unwrap_or_default", reason = "do not hide errors with defaults" },
+  { path = "std::str::from_utf8_unchecked", reason = "use from_utf8 with proper error handling" },
+  { path = "std::string::String::from_utf8_unchecked", reason = "use from_utf8 with proper error handling" },
+  { path = "std::time::Instant::duration_since", reason = "use saturating_duration_since to handle clock anomalies" },
+  { path = "std::vec::Vec::swap_remove", reason = "use swap_remove with bounds checking or get_mut" },
   { path = "uuid::Uuid::new_v4", reason = "use n00n_storage::id::N00nId::generate (base58-encoded UUIDv7)", allow-invalid = true },
   { path = "uuid::Uuid::new_v7", reason = "use n00n_storage::id::N00nId::generate (base58-encoded UUIDv7)", allow-invalid = true },
   { path = "uuid::Uuid::now_v7", reason = "use n00n_storage::id::N00nId::generate (base58-encoded UUIDv7)", allow-invalid = true },

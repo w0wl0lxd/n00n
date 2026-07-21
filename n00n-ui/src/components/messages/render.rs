@@ -5,11 +5,11 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Wrap};
 use ratatui_image::sliced::{SignedPosition, SlicedImage, SlicedProtocol};
 
+use super::COPY_LABEL_WIDTH;
 use super::segment::Surface;
 use crate::theme;
 
 const COPY_LABEL: &str = "[copy]";
-const COPY_LABEL_WIDTH: u16 = 6;
 
 pub(super) struct RenderCursor {
     skip: u16,
@@ -93,7 +93,14 @@ impl RenderCursor {
             self.skip = 0;
         }
         frame.render_widget(p, seg_area);
-        if surface == Surface::Assistant && segment_skip == 0 && visible_h > 0 {
+        if surface == Surface::Assistant
+            && segment_skip == 0
+            && visible_h > 0
+            && seg_area.width >= COPY_LABEL_WIDTH
+            && lines
+                .first()
+                .is_none_or(|line| line.width() <= usize::from(seg_area.width - COPY_LABEL_WIDTH))
+        {
             let copy_width = COPY_LABEL_WIDTH.min(seg_area.width);
             let copy_area = Rect::new(
                 seg_area.right().saturating_sub(copy_width),

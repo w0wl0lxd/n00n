@@ -78,5 +78,7 @@ if [ "$conflict" -eq 1 ]; then fail=1; fi
 if [ "$fail" -ne 0 ]; then
   echo "" >&2
   echo "pre-commit checks failed; commit blocked." >&2
-  exit 1
+  exit "$fail"
 fi
+
+exit 0

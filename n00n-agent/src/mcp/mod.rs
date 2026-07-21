@@ -711,6 +711,7 @@ fn spawn_persist_enabled(path: PathBuf, name: String, enabled: bool) {
 }
 
 #[cfg(unix)]
+#[allow(unsafe_code)]
 pub fn kill_process_groups(pids: &[u32]) {
     for &pid in pids {
         unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
