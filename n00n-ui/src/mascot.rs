@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use image::{DynamicImage, Rgba, RgbaImage};
@@ -72,6 +74,18 @@ const BANGS: [(f64, f64, f64, f64); 5] = [
 ];
 const SIDE_HAIR: [(f64, f64, f64, f64); 2] = [(23.0, 31.0, 5.0, 15.5), (57.0, 31.0, 5.0, 15.5)];
 
+static PICKER: OnceLock<Option<Arc<Picker>>> = OnceLock::new();
+
+fn detect_picker() -> Option<Arc<Picker>> {
+    if !std::io::stdout().is_terminal() {
+        return None;
+    }
+    Picker::from_query_stdio()
+        .ok()
+        .filter(|p| !matches!(p.protocol_type(), ProtocolType::Halfblocks))
+        .map(Arc::new)
+}
+
 pub struct Mascot {
     enabled: bool,
     mouse_col: Option<u16>,
@@ -89,8 +103,7 @@ pub struct Mascot {
     blink_start: Option<Instant>,
     breathe_phase: f32,
     last_tick: Instant,
-    picker: Option<Picker>,
-    picker_initialized: bool,
+    picker: Option<Arc<Picker>>,
     base_image: Option<RgbaImage>,
     last_area: Option<Rect>,
     last_font_size: Option<(u16, u16)>,
@@ -191,8 +204,7 @@ impl Mascot {
             blink_start: None,
             breathe_phase: 0.0,
             last_tick: now,
-            picker: None,
-            picker_initialized: false,
+            picker: PICKER.get_or_init(detect_picker).clone(),
             base_image: None,
             last_area: None,
             last_font_size: None,
@@ -292,13 +304,6 @@ impl Mascot {
 
         let inv = 1.0 / scale;
         let current_breathe_down = self.breathe_phase.sin() > BREATHE_THRESHOLD;
-
-        if !self.picker_initialized {
-            self.picker = Picker::from_query_stdio()
-                .ok()
-                .filter(|p| !matches!(p.protocol_type(), ProtocolType::Halfblocks));
-            self.picker_initialized = true;
-        }
 
         if self.picker.is_none() {
             self.render_braille(area, buf, &palette, off_x, off_y, inv);
