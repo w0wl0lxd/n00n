@@ -57,9 +57,8 @@ fn rounded_cell_dimension(size: u16, cells: u16) -> Option<u16> {
     let cells = u32::from(cells);
     // Round to the nearest pixel dimension.
     let dim = (size * 2 / cells).div_ceil(2);
-    let dim = match u16::try_from(dim) {
-        Ok(v) => v,
-        Err(_) => return None,
+    let Ok(dim) = u16::try_from(dim) else {
+        return None;
     };
     (dim > 0).then_some(dim)
 }
