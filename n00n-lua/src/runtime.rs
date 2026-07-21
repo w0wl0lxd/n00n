@@ -314,7 +314,9 @@ struct WarmTool {
 }
 
 pub(crate) fn lock_cell(handle: &TaskHandle) -> std::sync::MutexGuard<'_, TaskCell> {
-    handle.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    handle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The buf whose click handler owns this task's clicks: the explicit root

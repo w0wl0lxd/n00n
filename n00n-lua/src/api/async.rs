@@ -35,7 +35,8 @@ async fn acquire(lua: Lua, this: mlua::UserDataRef<LuaSemaphore>) -> LuaResult<L
     let sem = Arc::clone(&this.sem);
     drop(this);
     let cancel = lua
-        .app_data_ref::<TaskHandle>().map_or_else(CancelToken::none, |h| lock_cell(&h).cancel.clone());
+        .app_data_ref::<TaskHandle>()
+        .map_or_else(CancelToken::none, |h| lock_cell(&h).cancel.clone());
     let guard = cancel
         .race(sem.acquire_arc())
         .await

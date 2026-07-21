@@ -65,8 +65,9 @@ pub(crate) fn lua_to_json(lua: &Lua, val: &Value) -> LuaResult<JsonValue> {
     Ok(match val {
         Value::Boolean(b) => JsonValue::Bool(*b),
         Value::Integer(n) => JsonValue::Number((*n).into()),
-        Value::Number(n) => serde_json::Number::from_f64(*n)
-            .map_or(JsonValue::Null, JsonValue::Number),
+        Value::Number(n) => {
+            serde_json::Number::from_f64(*n).map_or(JsonValue::Null, JsonValue::Number)
+        }
         Value::String(s) => JsonValue::String(s.to_str()?.to_owned()),
         Value::Table(tbl) => {
             let len = tbl.raw_len();
