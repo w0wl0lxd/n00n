@@ -24,6 +24,8 @@ use crate::{
 use n00n_config::ToolOutputLines;
 use n00n_storage::id::SessionRef;
 
+use crate::tokenize::{count_json, count_tokens};
+
 const MAX_REAUTH_ATTEMPTS: u32 = 2;
 const NUDGE_PROMPT: &str = "You just executed tool calls but returned an empty response. Please process the tool results above and continue with the task.";
 const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
@@ -200,7 +202,8 @@ impl<'h> Agent<'h> {
         self.rollback_len = self.history.len();
         let msg = Message::user_with_images(input.message.clone(), input.images);
         self.history.push(msg);
-        self.context_size = estimate_message_tokens(self.history.as_slice());
+        self.context_size =
+            estimate_message_tokens(self.history.as_slice()) + estimate_tool_tokens(&self.tools);
         self.mode = input.mode;
         self.workflow = input.workflow;
         self.opts = RequestOptions {
@@ -478,7 +481,8 @@ impl<'h> Agent<'h> {
         self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history
             .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
-        self.context_size = estimate_message_tokens(self.history.as_slice());
+        self.context_size =
+            estimate_message_tokens(self.history.as_slice()) + estimate_tool_tokens(&self.tools);
         Ok(())
     }
 
@@ -515,29 +519,41 @@ impl<'h> Agent<'h> {
     }
 }
 
-const CHARS_PER_TOKEN: usize = 4;
+#[must_use]
+#[allow(clippy::manual_unwrap_or)]
+fn u32_from_usize(value: usize) -> u32 {
+    match u32::try_from(value) {
+        Ok(n) => n,
+        Err(_) => u32::MAX,
+    }
+}
 
 #[must_use]
 pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
     if messages.is_empty() {
         return 0;
     }
-    let total_bytes: usize = messages
+    let total: usize = messages
         .iter()
         .flat_map(|m| &m.content)
         .map(|b| match b {
-            ContentBlock::Text { text } => text.len(),
+            ContentBlock::Text { text } => count_tokens(text),
             ContentBlock::Thinking {
                 thinking,
                 signature,
-            } => thinking.len() + signature.as_ref().map_or(0, String::len),
-            ContentBlock::RedactedThinking { data } => data.len(),
-            ContentBlock::ToolResult { content, .. } => content.len(),
-            ContentBlock::ToolUse { input, .. } => input.to_string().len(),
-            ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN,
+            } => count_tokens(thinking) + signature.as_ref().map_or(0, |s| count_tokens(s)),
+            ContentBlock::RedactedThinking { data } => count_tokens(data),
+            ContentBlock::ToolResult { content, .. } => count_tokens(content),
+            ContentBlock::ToolUse { input, .. } => count_json(input),
+            ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
         })
         .sum();
-    u32::try_from(total_bytes.max(CHARS_PER_TOKEN) / CHARS_PER_TOKEN).unwrap_or_else(|_| u32::MAX)
+    u32_from_usize(total)
+}
+
+#[must_use]
+pub fn estimate_tool_tokens(tools: &Value) -> u32 {
+    u32_from_usize(count_json(tools))
 }
 
 #[cfg(test)]
