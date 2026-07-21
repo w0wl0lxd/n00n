@@ -72,7 +72,7 @@ Run `n00n acp` or configure your ACP supporting editor to use n00n, e.g. in [Zed
 
 ```json
 "agent_servers": {
-  "N00n": {
+  "n00n": {
     "default_config_options": {
       "model": "deepseek/deepseek-v4-flash"
     },
