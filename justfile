@@ -42,5 +42,11 @@ machete:
 almas-demo *ARGS:
     ./scripts/almas_demo.sh {{ARGS}}
 
+setup-git-hooks:
+    git config core.hooksPath .githooks
+
+secrets:
+    gitleaks detect --source . --redact --no-banner --config .gitleaks.toml
+
 # Full CI check
-ci: fmt-check lint pylint test gen-docs-check machete
+ci: fmt-check lint pylint test gen-docs-check machete secrets

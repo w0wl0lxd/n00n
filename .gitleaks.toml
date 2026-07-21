@@ -1,0 +1,19 @@
+title = "n00n gitleaks configuration"
+
+# Use the built-in gitleaks ruleset as a base, then layer repo-specific
+# allowlists on top.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known false positives that are not real secrets"
+paths = [
+  # Removed subproject; its history contains version-date strings that look
+  # like API keys but are not credentials.
+  '''maki-agent/''',
+]
+regexes = [
+  # Feature/version date identifiers, e.g. "oauth-2025-04-20" or
+  # "interleaved-thinking-2025-05-14". Not credentials.
+  '''(oauth|interleaved-thinking)-\d{4}-\d{2}-\d{2}''',
+]

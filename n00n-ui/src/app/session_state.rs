@@ -93,11 +93,15 @@ impl SessionState {
     pub fn sync_session(
         &mut self,
         shared_history: &Option<Arc<ArcSwap<Vec<Message>>>>,
+        shared_transcript: &Option<n00n_agent::SharedTranscript>,
         shared_tool_outputs: &Option<Arc<Mutex<HashMap<String, ToolOutput>>>>,
         permissions: &Arc<PermissionManager>,
     ) {
         if let Some(history) = shared_history {
             self.session.messages = Vec::clone(&history.load());
+        }
+        if let Some(transcript) = shared_transcript {
+            self.session.transcript = Vec::clone(&transcript.load());
         }
         if let Some(outputs) = shared_tool_outputs {
             self.session.tool_outputs = outputs.lock().unwrap_or_else(|e| e.into_inner()).clone();

@@ -1,0 +1,31 @@
+name: Zizmor
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/**"
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/**"
+  schedule:
+    - cron: "23 6 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  zizmor:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@v1
+        with:
+          comment: true
