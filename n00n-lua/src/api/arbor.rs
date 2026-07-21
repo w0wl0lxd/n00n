@@ -5,6 +5,15 @@ fn map_err(e: ArborError) -> mlua::Error {
     mlua::Error::external(format!("{e:#}"))
 }
 
+fn value_or_err<T: serde::Serialize>(
+    lua: &Lua,
+    result: Result<T, ArborError>,
+) -> LuaResult<mlua::Value> {
+    let val = result.map_err(map_err)?;
+    let json = serde_json::to_value(&val).map_err(|e| mlua::Error::external(format!("{e:#}")))?;
+    lua.to_value(&json)
+}
+
 pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
     let t = lua.create_table()?;
 
@@ -21,34 +30,31 @@ pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
     t.set("avaiable", avaiable)?;
 
     let callers = lua.create_function(|lua, (symbol, project): (String, String)| {
-        let results = Client::callers(&symbol, std::path::Path::new(&project)).map_err(map_err)?;
-        let val =
-            serde_json::to_value(&results).map_err(|e| mlua::Error::external(format!("{e:#}")))?;
-        lua.to_value(&val)
+        value_or_err(
+            lua,
+            Client::callers(&symbol, std::path::Path::new(&project)),
+        )
     })?;
     t.set("callers", callers)?;
 
     let callees = lua.create_function(|lua, (symbol, project): (String, String)| {
-        let results = Client::callees(&symbol, std::path::Path::new(&project)).map_err(map_err)?;
-        let val =
-            serde_json::to_value(&results).map_err(|e| mlua::Error::external(format!("{e:#}")))?;
-        lua.to_value(&val)
+        value_or_err(
+            lua,
+            Client::callees(&symbol, std::path::Path::new(&project)),
+        )
     })?;
     t.set("callees", callees)?;
 
     let map_fn = lua.create_function(|lua, (project, token_budget): (String, Option<u64>)| {
-        let results = Client::map(std::path::Path::new(&project), token_budget).map_err(map_err)?;
-        let val =
-            serde_json::to_value(&results).map_err(|e| mlua::Error::external(format!("{e:#}")))?;
-        lua.to_value(&val)
+        value_or_err(
+            lua,
+            Client::map(std::path::Path::new(&project), token_budget),
+        )
     })?;
     t.set("map", map_fn)?;
 
     let diff = lua.create_function(|lua, project: String| {
-        let results = Client::diff(std::path::Path::new(&project)).map_err(map_err)?;
-        let val =
-            serde_json::to_value(&results).map_err(|e| mlua::Error::external(format!("{e:#}")))?;
-        lua.to_value(&val)
+        value_or_err(lua, Client::diff(std::path::Path::new(&project)))
     })?;
     t.set("diff", diff)?;
 
@@ -74,7 +80,7 @@ pub(crate) fn create_arbor_table(lua: &Lua) -> LuaResult<Table> {
 pub(crate) const DOCS: crate::docs::ModuleDoc = crate::docs::ModuleDoc {
     name: "n00n.arbor",
     kind: crate::docs::DocKind::Table,
-    desc: "Graph-based code analysis via Arbor CLI. Wraps `arbor callers`, `arbor callees`, `arbor map`, `arbor diff`, `arbor query`, and `arbor status`. Each method shells out to the `arbor` binary (from Anandb71/arbor, `cargo install arbor-graph-cli`) and parses its JSON output into Lua tables.",
+    desc: "Graph-based code analysis via Arbor CLI. Wraps `arbor callers`, `arbor callees`, `arbor map`, `arbor diff`, `arbor query`, and `arbor status`. Each method shells out to the `arbor` binary (Anandb71/arbor, `cargo install arbor-graph-cli`) and parses its JSON output into Lua tables.",
     fns: &[
         crate::docs::FnDoc {
             name: "check_binary",
@@ -146,7 +152,7 @@ pub(crate) const DOCS: crate::docs::ModuleDoc = crate::docs::ModuleDoc {
                     desc: "Optional token budget (default 1024).",
                 },
             ],
-            returns: "(table) Array of map entries with `path`, `rank`, `symbols` fields.",
+            returns: "(table) Array of map entries with `file`, `symbols` (each with `name`, `kind`, `line`, `centrality`, `callers`).",
             example: "",
         },
         crate::docs::FnDoc {
@@ -158,7 +164,7 @@ pub(crate) const DOCS: crate::docs::ModuleDoc = crate::docs::ModuleDoc {
                 ty: "string",
                 desc: "Path to the project root.",
             }],
-            returns: "(table) Array of impacted symbols with `name`, `path`, `distance`, `kind` fields.",
+            returns: "(table) Impact object with `direct_callers`, `indirect_callers`, `blast_radius_nodes`, `api_entrypoints_affected`, `files_likely_require_updates`.",
             example: "",
         },
         crate::docs::FnDoc {

@@ -1,5 +1,14 @@
 local n00n_arbor = n00n.arbor
 
+local function format_list(items)
+  local lines = {}
+  for _, item in ipairs(items) do
+    local loc = item.line and (":" .. item.line) or ""
+    table.insert(lines, "  " .. item.name .. " (" .. item.kind .. ") " .. item.path .. loc)
+  end
+  return table.concat(lines, "\n")
+end
+
 local function dispatch(input, ctx)
   local command = input.command
   local project = input.project or "."
@@ -9,32 +18,41 @@ local function dispatch(input, ctx)
     if not symbol then
       return { llm_output = "error: symbol required for " .. command, is_error = true }
     end
+    local results
     if command == "callers" then
-      return { llm_output = n00n_arbor.callers(symbol, project) }
+      results = n00n_arbor.callers(symbol, project)
     else
-      return { llm_output = n00n_arbor.callees(symbol, project) }
+      results = n00n_arbor.callees(symbol, project)
     end
+    if #results == 0 then
+      return { llm_output = "No " .. command .. " found for symbol '" .. symbol .. "'" }
+    end
+    return { llm_output = command .. " of " .. symbol .. "\n" .. format_list(results) }
   end
 
   if command == "map" then
-    local results = n00n_arbor.map(project, input.token_budget)
+    local entries = n00n_arbor.map(project, input.token_budget)
     local lines = {}
-    for _, entry in ipairs(results) do
-      local rank = entry.rank and (" [" .. string.format("%.2f", entry.rank) .. "]") or ""
-      table.insert(lines, entry.path .. rank)
+    for _, entry in ipairs(entries) do
+      table.insert(lines, entry.file)
       for _, sym in ipairs(entry.symbols) do
-        table.insert(lines, "  " .. sym)
+        local rank = sym.centrality and ("[" .. string.format("%.2f", sym.centrality) .. "]") or ""
+        table.insert(lines, "  " .. rank .. sym.name)
       end
     end
     return { llm_output = table.concat(lines, "\n") }
   end
 
   if command == "diff" then
-    local results = n00n_arbor.diff(project)
-    local lines = {}
-    for _, item in ipairs(results) do
-      table.insert(lines, item.name .. " (" .. item.path .. ") distance=" .. item.distance)
-    end
+    local impact = n00n_arbor.diff(project)
+    local lines = {
+      "Blast Radius Impact",
+      "  Direct callers: " .. impact.direct_callers,
+      "  Indirect callers: " .. impact.indirect_callers,
+      "  Blast radius nodes: " .. impact.blast_radius_nodes,
+      "  API entrypoints affected: " .. impact.api_entrypoints_affected,
+      "  Files likely requiring updates: " .. impact.files_likely_require_updates,
+    }
     return { llm_output = table.concat(lines, "\n") }
   end
 
@@ -59,12 +77,12 @@ n00n.api.register_tool({
 Graph-based code analysis using Arbor.
 
 Commands:
-- callers <symbol>: Who calls this function/class?
+- callers <symbol>: Who calls this function/class? Returns name, kind, file, and line.
 - callees <symbol>: What does this function/class call?
-- map: Ranked project skeleton with symbols (supports token_budget)
-- diff: Blast radius of unpushed git changes
-- query <text>: Free-text search of the code graph
-- status: Index status
+- map: Ranked project skeleton with entry points, centrality scores, and symbol coverage.
+- diff: Blast radius of unpushed git changes — shows direct/indirect callers, entry points affected.
+- query <text>: Free-text search of the code graph.
+- status: Index status (node count, edge count, file count).
 
 Use this to understand call relationships, find affected code, and get a
 structured overview of a codebase. Complements codegraph — Arbor shows the
