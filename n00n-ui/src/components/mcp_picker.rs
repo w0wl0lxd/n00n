@@ -148,7 +148,7 @@ impl Overlay for McpPicker {
     }
 
     fn close(&mut self) {
-        self.picker.close()
+        self.picker.close();
     }
 }
 

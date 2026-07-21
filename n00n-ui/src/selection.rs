@@ -135,7 +135,7 @@ pub struct Selection {
 
 fn screen_to_doc(screen_row: u16, area: Rect, scroll_offset: u32) -> u32 {
     let clamped = screen_row.clamp(area.y, area.y + area.height.saturating_sub(1));
-    scroll_offset + (clamped - area.y) as u32
+    scroll_offset + u32::from(clamped - area.y)
 }
 
 fn clamp_col(col: u16, area: Rect, zone: SelectionZone) -> u16 {
@@ -193,7 +193,7 @@ impl Selection {
         }
 
         let view_top = scroll_offset;
-        let view_bottom = scroll_offset + self.area.height as u32;
+        let view_bottom = scroll_offset + u32::from(self.area.height);
 
         if end.row < view_top || start.row >= view_bottom {
             return None;
@@ -373,7 +373,7 @@ fn compute_wrap_types(line: &Line<'_>, width: u16) -> Vec<bool> {
 
     while i < chars.len() {
         let ch = chars[i];
-        let cw = ch.width().unwrap_or(0);
+        let cw = ch.width().unwrap_or_else(|| 0);
 
         if ch == ' ' || ch == '\t' {
             last_breakable = Some(i);
@@ -444,10 +444,10 @@ impl ScreenSelection {
             return false;
         }
         range_covers(
-            DocPos::new(self.start_row as u32, self.start_col),
-            DocPos::new(self.end_row as u32, self.end_col),
-            area.y as u32,
-            area.bottom().saturating_sub(1) as u32,
+            DocPos::new(u32::from(self.start_row), self.start_col),
+            DocPos::new(u32::from(self.end_row), self.end_col),
+            u32::from(area.y),
+            u32::from(area.bottom().saturating_sub(1)),
             area.x,
             area.x + area.width.saturating_sub(1),
         )

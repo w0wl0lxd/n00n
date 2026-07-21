@@ -99,7 +99,9 @@ impl StorageWriter {
 }
 
 fn lock(pending: &Pending) -> std::sync::MutexGuard<'_, HashMap<N00nId, Box<AppSession>>> {
-    pending.lock().unwrap_or_else(|e| e.into_inner())
+    pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn writer_gone() -> SessionError {

@@ -75,12 +75,15 @@ pub struct ColorTransition {
 }
 
 impl ColorTransition {
+    #[must_use]
     pub fn new(color: Color) -> Self {
         let rgb = extract_rgb(color, (100, 140, 255));
         Self {
             from: rgb,
             to: rgb,
-            start: Instant::now() - std::time::Duration::from_secs_f32(COLOR_TRANSITION_SECS),
+            start: Instant::now()
+                .checked_sub(std::time::Duration::from_secs_f32(COLOR_TRANSITION_SECS))
+                .unwrap(),
         }
     }
 
@@ -95,10 +98,12 @@ impl ColorTransition {
         self.start = now;
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         Instant::now().duration_since(self.start).as_secs_f32() < COLOR_TRANSITION_SECS
     }
 
+    #[must_use]
     pub fn resolve(&self) -> Color {
         let (r, g, b) = self.resolve_rgb(Instant::now());
         Color::Rgb(r, g, b)
@@ -129,6 +134,7 @@ impl Default for Splash {
 }
 
 impl Splash {
+    #[must_use]
     pub fn new(animate: bool) -> Self {
         let mut rng = [0u8; 8];
         getrandom::fill(&mut rng).ok();
@@ -178,13 +184,13 @@ impl Splash {
         let top_y = area.y + area.height.saturating_sub(block_height) / if compact { 1 } else { 2 };
         let tag_y = top_y + 1;
         let help_y = top_y + if compact { 2 } else { 3 };
-        let tip_y = top_y + if compact { 3 } else { 5 };
+        let hint_y = top_y + if compact { 3 } else { 5 };
         let version_y = if compact { top_y } else { area.y };
 
         self.render_logo(area, buf, t, fade, top_y, accent);
         render_centered_faded(area, buf, fade, 0.75, tag_y, TAGLINE);
         self.render_help(area, buf, fade, help_y, accent);
-        self.render_tip(area, buf, fade, tip_y, accent);
+        self.render_tip(area, buf, fade, hint_y, accent);
         render_version(area, buf, fade, version_y, new_version);
     }
 
@@ -255,7 +261,7 @@ impl Splash {
             .iter()
             .rev()
             .position(|&v| v <= vignette_inv)
-            .unwrap_or(0);
+            .unwrap_or_else(|| 0);
         if col_start >= col_end {
             return;
         }
@@ -284,7 +290,7 @@ impl Splash {
                     .iter()
                     .rev()
                     .position(|&v| v <= max_vx)
-                    .unwrap_or(0);
+                    .unwrap_or_else(|| 0);
 
             let out = &mut vals[rc_start - col_start..rc_end - col_start];
             let vx_slice = &vx[rc_start..rc_end];
@@ -392,7 +398,7 @@ impl Splash {
         let theme = theme::current();
         let bg = theme.background;
         let tip_rgb = extract_rgb(
-            theme.todo_in_progress.fg.unwrap_or(Color::Yellow),
+            theme.todo_in_progress.fg.unwrap_or_else(|| Color::Yellow),
             (249, 226, 175),
         );
         let ac = extract_rgb(accent, (100, 140, 255));

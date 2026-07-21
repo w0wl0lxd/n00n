@@ -174,7 +174,7 @@ fn build_lines(ctx: &UsageModalContext, theme: &crate::theme::Theme) -> Vec<Line
         .iter()
         .map(|(id, _)| id.chars().count())
         .max()
-        .unwrap_or(0)
+        .unwrap_or_else(|| 0)
         .max(MODEL_COL_MIN);
 
     lines.push(Line::default());
@@ -284,7 +284,7 @@ impl crate::components::Overlay for UsageModal {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 
@@ -316,7 +316,7 @@ fn quota_lines(state: &UsageFetchState, theme: &crate::theme::Theme) -> Vec<Line
                 .iter()
                 .map(|l| l.label.chars().count())
                 .max()
-                .unwrap_or(0);
+                .unwrap_or_else(|| 0);
             for limit in &usage.limits {
                 let mut spans = vec![
                     Span::styled(format!("{PREFIX}{:<label_w$}", limit.label), fg),

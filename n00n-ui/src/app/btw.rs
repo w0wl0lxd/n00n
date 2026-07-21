@@ -35,8 +35,7 @@ impl App {
         let mut messages = self
             .shared_history
             .as_ref()
-            .map(|h| Vec::clone(&h.load()))
-            .unwrap_or_default();
+            .map_or_else(Default::default, |h| Vec::clone(&h.load()));
         let system = self
             .btw_system
             .as_ref()
@@ -95,7 +94,7 @@ async fn run_btw(
         }
     };
 
-    let (result, _) = future::zip(stream_fut, forward_fut).await;
+    let (result, ()) = future::zip(stream_fut, forward_fut).await;
 
     match result {
         Ok(_) => {

@@ -31,11 +31,15 @@ impl MessageQueue {
 
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.shared.as_ref().is_none_or(|s| s.is_empty())
+        self.shared
+            .as_ref()
+            .is_none_or(super::super::agent::shared_queue::QueueSender::is_empty)
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.shared.as_ref().map_or(0, |s| s.panel_len())
+        self.shared
+            .as_ref()
+            .map_or(0, super::super::agent::shared_queue::QueueSender::panel_len)
     }
 
     pub(crate) fn remove(&mut self, index: usize) {
@@ -137,11 +141,17 @@ impl MessageQueue {
     }
 
     pub(crate) fn panel_entries(&self) -> Vec<QueueEntry<'static>> {
-        self.shared.as_ref().map_or(vec![], |s| s.panel_entries())
+        self.shared.as_ref().map_or(
+            vec![],
+            super::super::agent::shared_queue::QueueSender::panel_entries,
+        )
     }
 
     pub(crate) fn text_messages(&self) -> Vec<String> {
-        self.shared.as_ref().map_or(vec![], |s| s.text_messages())
+        self.shared.as_ref().map_or(
+            vec![],
+            super::super::agent::shared_queue::QueueSender::text_messages,
+        )
     }
 
     fn clamp_focus(&mut self) {

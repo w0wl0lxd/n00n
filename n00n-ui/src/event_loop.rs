@@ -278,7 +278,11 @@ fn merge_batch(
     if batch.models.is_empty() {
         return;
     }
-    let mut merged = available.load().as_deref().cloned().unwrap_or_default();
+    let mut merged = available
+        .load()
+        .as_deref()
+        .cloned()
+        .unwrap_or_else(Default::default);
     for spec in &batch.models {
         if !merged.contains(spec) {
             merged.push(spec.clone());
@@ -334,7 +338,8 @@ fn restore_session(app: &mut App, handles: &AgentHandles) {
     *handles
         .tool_outputs
         .lock()
-        .unwrap_or_else(|e| e.into_inner()) = app.state.session.tool_outputs.clone();
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        app.state.session.tool_outputs.clone();
     app.restore_display();
     for w in app.state.warnings.drain(..) {
         app.status_bar.flash(w);
@@ -730,7 +735,7 @@ impl<'t> EventLoop<'t> {
             SessionRequest::List => {
                 let storage = self.ctx.storage.clone();
                 smol::unblock(move || {
-                    let cwd = std::env::current_dir().unwrap_or_default();
+                    let cwd = std::env::current_dir().unwrap_or_else(|_| Default::default());
                     let reply = AppSession::list(&cwd.to_string_lossy(), &storage)
                         .map_err(|e| e.to_string())
                         .and_then(|list| serde_json::to_value(list).map_err(|e| e.to_string()));
@@ -1104,7 +1109,7 @@ impl<'t> EventLoop<'t> {
                     .handles
                     .tool_outputs
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = loaded.tool_outputs;
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = loaded.tool_outputs;
             }
             Action::ChangeModel(spec) => self.change_model(spec),
             Action::RefreshProvider { slug } => self.refresh_provider(slug),
@@ -1273,7 +1278,7 @@ impl<'t> EventLoop<'t> {
         match Arc::try_unwrap(self.ctx.storage_writer) {
             Ok(writer) => writer.shutdown(AGENT_SHUTDOWN_TIMEOUT),
             Err(_) => {
-                warn!("storage writer has outstanding references, skipping graceful shutdown")
+                warn!("storage writer has outstanding references, skipping graceful shutdown");
             }
         }
         ShutdownReport {

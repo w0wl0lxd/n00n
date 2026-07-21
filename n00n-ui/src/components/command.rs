@@ -199,7 +199,7 @@ impl CommandPalette {
         let nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| {}), None, 1);
         let injector = nucleo.injector();
 
-        for cmd in BUILTIN_COMMANDS.iter() {
+        for cmd in BUILTIN_COMMANDS {
             let item = CommandItem {
                 name: cmd.name.to_string(),
                 max_args: cmd.max_args,
@@ -313,7 +313,7 @@ impl CommandPalette {
         };
 
         let parts: Vec<&str> = stripped.split_whitespace().collect();
-        let cmd_word = parts.first().copied().unwrap_or(stripped);
+        let cmd_word = parts.first().copied().unwrap_or_else(|| stripped);
         let trailing_space = stripped.ends_with(char::is_whitespace);
 
         self.current_arg_count = if trailing_space {
@@ -437,8 +437,7 @@ impl CommandPalette {
         let args = input
             .strip_prefix('/')
             .and_then(|s| s.split_once(char::is_whitespace))
-            .map(|(_, a)| a.trim())
-            .unwrap_or("");
+            .map_or_else(|| "", |(_, a)| a.trim());
         Some(ParsedCommand {
             name,
             args: args.to_string(),
@@ -476,12 +475,12 @@ impl CommandPalette {
             .iter()
             .map(|item| self.item_name(item).len())
             .max()
-            .unwrap_or(0);
+            .unwrap_or_else(|| 0);
         let max_desc = filtered
             .iter()
             .map(|item| self.item_description(item).len())
             .max()
-            .unwrap_or(0);
+            .unwrap_or_else(|| 0);
         const PAD: usize = 1;
         let popup_width = (PAD + max_name + GAP + max_desc + PAD) as u16;
 
@@ -539,7 +538,7 @@ impl CommandPalette {
 
         let t = theme::current();
         let highlight = base
-            .fg(t.accent.fg.unwrap_or_default())
+            .fg(t.accent.fg.unwrap_or_else(Default::default))
             .add_modifier(Modifier::BOLD);
 
         let mut spans = Vec::new();
@@ -547,14 +546,14 @@ impl CommandPalette {
         let mut run = String::new();
 
         for (i, ch) in text.chars().enumerate() {
-            let is_match = indices.binary_search(&(i as u32)).is_ok();
-            if is_match != in_match && !run.is_empty() {
+            let matched = indices.binary_search(&(i as u32)).is_ok();
+            if matched != in_match && !run.is_empty() {
                 spans.push(Span::styled(
                     mem::take(&mut run),
                     if in_match { highlight } else { base },
                 ));
             }
-            in_match = is_match;
+            in_match = matched;
             run.push(ch);
         }
 
@@ -874,13 +873,13 @@ mod tests {
     #[test_case("/tsk", "/tasks" ; "tasks_fuzzy")]
     fn nucleo_highlights_matching_indices(input: &str, expected_cmd: &str) {
         let p = synced(input);
-        assert!(p.is_active(), "Input '{}' should activate palette", input);
+        assert!(p.is_active(), "Input '{input}' should activate palette");
         // Find the expected match
         let matched = p
             .filtered
             .iter()
             .find(|m| p.item_name(m) == expected_cmd)
-            .unwrap_or_else(|| panic!("Should find {} for input {}", expected_cmd, input));
+            .unwrap_or_else(|| panic!("Should find {expected_cmd} for input {input}"));
         // Should have some highlight indices
         assert!(
             !matched.indices.is_empty(),

@@ -48,8 +48,7 @@ impl RenderWorker {
         let (job_tx, job_rx) = flume::unbounded();
         let (result_tx, result_rx) = flume::unbounded();
         let max_threads = thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(FALLBACK_MAX_THREADS);
+            .map_or_else(|_| FALLBACK_MAX_THREADS, std::num::NonZero::get);
 
         Self {
             job_tx,

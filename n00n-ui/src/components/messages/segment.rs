@@ -79,9 +79,9 @@ pub(super) struct Segment {
     pub tool_id: Option<String>,
     pub identity: Option<SegmentIdentity>,
     /// Backlink to `self.messages`, set only by `with_lines`. A click on a
-    /// collapsed thinking indicator has no tool_id to route by, so this is
+    /// collapsed thinking indicator has no `tool_id` to route by, so this is
     /// how the click finds its message. It looks unused; delete it and the
-    /// show_thinking toggle breaks.
+    /// `show_thinking` toggle breaks.
     pub msg_index: Option<usize>,
     pub truncation: SectionFlags,
     cached_height: Cell<Option<CachedHeight>>,
@@ -163,7 +163,7 @@ impl Segment {
                 }
             }
             Err(err) => {
-                let search_text = format!("[image: {}]", err);
+                let search_text = format!("[image: {err}]");
                 let lines = vec![Line::from(vec![Span::styled(
                     search_text.clone(),
                     theme::current().error,
@@ -468,14 +468,17 @@ impl SegmentCache {
     }
 
     pub fn total_height(&self, width: u16) -> u32 {
-        self.segments.iter().map(|s| s.height(width) as u32).sum()
+        self.segments
+            .iter()
+            .map(|s| u32::from(s.height(width)))
+            .sum()
     }
 
     pub fn segment_at_row(&self, doc_row: u32, width: u16) -> Option<(usize, &Segment, u32)> {
         let mut cumulative: u32 = 0;
         for (i, seg) in self.segments.iter().enumerate() {
             let seg_start = cumulative;
-            cumulative += seg.height(width) as u32;
+            cumulative += u32::from(seg.height(width));
             if doc_row < cumulative {
                 return Some((i, seg, seg_start));
             }

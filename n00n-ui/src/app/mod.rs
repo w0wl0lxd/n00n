@@ -333,7 +333,7 @@ impl App {
     ) {
         self.model_picker_reply = Some(reply);
         self.model_picker
-            .open(current.as_deref().unwrap_or_default());
+            .open(current.as_deref().unwrap_or_else(Default::default));
     }
 
     pub(crate) fn flash(&mut self, msg: String) {
@@ -366,7 +366,7 @@ impl App {
         if !self
             .selection_state
             .as_ref()
-            .is_some_and(|s| s.is_pending_copy())
+            .is_some_and(super::selection::SelectionState::is_pending_copy)
         {
             self.selection_state = None;
         }
@@ -513,7 +513,7 @@ impl App {
                 let usage = if i == 0 {
                     Some("main session".to_owned())
                 } else {
-                    let model = c.model_id.as_deref().unwrap_or("model pending");
+                    let model = c.model_id.as_deref().unwrap_or_else(|| "model pending");
                     let tokens = c.token_usage.total_input() + c.token_usage.output;
                     Some(if tokens > 0 {
                         format!("{model} · {tokens} tokens")
@@ -728,7 +728,7 @@ impl App {
                     vec![]
                 }
                 PickerAction::Close => {
-                    self.active_chat = self.task_picker_original.take().unwrap_or(0);
+                    self.active_chat = self.task_picker_original.take().unwrap_or_else(|| 0);
                     vec![]
                 }
             });
@@ -900,12 +900,11 @@ impl App {
             if key::POP_QUEUE.matches(key) {
                 self.queue.remove(0);
             } else if key::OPEN_EDITOR.matches(key) {
-                return match self.state.plan.path() {
-                    Some(p) => vec![Action::OpenEditor(p.to_path_buf())],
-                    None => {
-                        self.flash(FLASH_NO_PLAN.into());
-                        vec![]
-                    }
+                return if let Some(p) = self.state.plan.path() {
+                    vec![Action::OpenEditor(p.to_path_buf())]
+                } else {
+                    self.flash(FLASH_NO_PLAN.into());
+                    vec![]
                 };
             } else if key::SEARCH.matches(key) {
                 let top = self.chats[self.active_chat].scroll_top();
@@ -1589,7 +1588,7 @@ impl App {
         }
 
         let prompt_ref = n00n_agent::McpPromptRef {
-            qualified_name: prompt.qualified_name.clone(),
+            qualified_name: prompt.qualified_name,
             arguments,
         };
         let display_text = if args.trim().is_empty() {
@@ -1651,11 +1650,11 @@ impl App {
 
     fn cmd_cd(&mut self, args: &str) -> Vec<Action> {
         let path = if args.is_empty() {
-            n00n_storage::paths::home().unwrap_or_default()
+            n00n_storage::paths::home().unwrap_or_else(Default::default)
         } else {
             match args.strip_prefix('~') {
                 Some(rest) => {
-                    let home = n00n_storage::paths::home().unwrap_or_default();
+                    let home = n00n_storage::paths::home().unwrap_or_else(Default::default);
                     if rest.is_empty() {
                         home
                     } else {
@@ -1671,7 +1670,7 @@ impl App {
                     self.state.session.cwd = canonical.to_string_lossy().into_owned();
                 }
                 self.status_bar.refresh_cwd();
-                self.flash(format!("cd {}", path.display()))
+                self.flash(format!("cd {}", path.display()));
             }
             Err(e) => self.flash(format!("cd: {e}")),
         }
@@ -1714,6 +1713,7 @@ impl App {
         ]
     }
 
+    #[must_use]
     pub fn any_overlay_open(&self) -> bool {
         self.overlays().iter().any(|o| o.is_open())
     }
@@ -1724,6 +1724,7 @@ impl App {
         self.permission_prompt.is_open() || self.pending_input != PendingInput::None
     }
 
+    #[must_use]
     pub fn has_modal_overlay(&self) -> bool {
         self.overlays().iter().any(|o| o.is_open() && o.is_modal())
     }
@@ -1732,6 +1733,7 @@ impl App {
         self.overlays_mut().iter_mut().for_each(|o| o.close());
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         !self.image_paste_rx.is_empty()
             || self.btw_modal.is_animating()
@@ -1740,9 +1742,9 @@ impl App {
             || self
                 .selection_state
                 .as_ref()
-                .is_some_and(|s| s.is_edge_scrolling())
+                .is_some_and(super::selection::SelectionState::is_edge_scrolling)
             || self.restoring.load(Ordering::Relaxed)
-            || self.chats.iter().any(|c| c.is_animating())
+            || self.chats.iter().any(super::chat::Chat::is_animating)
     }
 
     fn finish_subagents(&mut self, role: DisplayRole, text: &str) {
@@ -1806,13 +1808,14 @@ impl App {
                 self.plan_form.hide();
                 vec![]
             }
-            PlanFormAction::OpenEditor => match self.state.plan.path() {
-                Some(p) => vec![Action::OpenEditor(p.to_path_buf())],
-                None => {
+            PlanFormAction::OpenEditor => {
+                if let Some(p) = self.state.plan.path() {
+                    vec![Action::OpenEditor(p.to_path_buf())]
+                } else {
                     self.flash(FLASH_NO_PLAN.into());
                     vec![]
                 }
-            },
+            }
             PlanFormAction::Implement => self.implement_plan(false),
             PlanFormAction::ClearAndImplement => self.implement_plan(true),
         }
@@ -1823,7 +1826,7 @@ impl App {
         self.plan_form.reset();
         let plan_snapshot = match std::mem::take(&mut self.state.plan) {
             PlanState::Ready(p) => Some((
-                std::fs::read_to_string(&p).unwrap_or_default(),
+                std::fs::read_to_string(&p).unwrap_or_else(|_| Default::default()),
                 p.display().to_string(),
             )),
             _ => None,
@@ -1847,7 +1850,7 @@ impl App {
                 .push(DisplayMessage::plan(content, path_str));
             text
         } else {
-            format!("{}.", IMPLEMENT_MSG_PREFIX)
+            format!("{IMPLEMENT_MSG_PREFIX}.")
         };
         self.run_id += 1;
         let msg = QueuedMessage {

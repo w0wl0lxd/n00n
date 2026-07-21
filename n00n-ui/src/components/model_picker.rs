@@ -155,14 +155,14 @@ impl ModelPicker {
                 entries.push(e);
             }
         }
-        let full: Vec<ModelEntry> = specs
-            .map(|s| s.iter().filter_map(|s| parse_model_entry(s)).collect())
-            .unwrap_or_default();
+        let full: Vec<ModelEntry> = specs.map_or_else(Default::default, |s| {
+            s.iter().filter_map(|s| parse_model_entry(s)).collect()
+        });
         entries.extend(full);
         let idx = entries
             .iter()
             .position(|e| e.spec == self.current_spec)
-            .unwrap_or(0);
+            .unwrap_or_else(|| 0);
         (entries, idx)
     }
 
@@ -217,7 +217,7 @@ impl Overlay for ModelPicker {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 

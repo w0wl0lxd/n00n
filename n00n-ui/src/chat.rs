@@ -59,6 +59,7 @@ pub struct Chat {
 }
 
 impl Chat {
+    #[must_use]
     pub fn new(name: String, ui_config: UiConfig, picker: Arc<Picker>) -> Self {
         Self {
             name,
@@ -103,7 +104,7 @@ impl Chat {
             AgentEvent::ToolPending { id, name } => self.messages_panel.tool_pending(id, &name),
             AgentEvent::ToolStart(e) => self.messages_panel.tool_start(*e),
             AgentEvent::ToolOutput { id, content } => {
-                self.messages_panel.tool_output(&id, &content)
+                self.messages_panel.tool_output(&id, &content);
             }
             AgentEvent::ToolDone(e) => {
                 let plan_write = plan_path.filter(|pp| e.wrote_to(pp));
@@ -111,7 +112,7 @@ impl Chat {
                 self.messages_panel.tool_done(*e);
                 if let Some(pp) = plan_write {
                     let content = if is_full_write {
-                        std::fs::read_to_string(pp).unwrap_or_default()
+                        std::fs::read_to_string(pp).unwrap_or_else(|_| Default::default())
                     } else {
                         String::new()
                     };
@@ -210,10 +211,12 @@ impl Chat {
         self.messages_panel.scroll(delta);
     }
 
+    #[must_use]
     pub fn half_page(&self) -> i32 {
         self.messages_panel.half_page()
     }
 
+    #[must_use]
     pub fn auto_scroll(&self) -> bool {
         self.messages_panel.auto_scroll()
     }
@@ -230,6 +233,7 @@ impl Chat {
         self.messages_panel.jump_to_bottom();
     }
 
+    #[must_use]
     pub fn jump_to_bottom_popup(&self) -> Option<Rect> {
         self.messages_panel.jump_to_bottom_popup()
     }
@@ -250,10 +254,12 @@ impl Chat {
         self.messages_panel.set_accent(color);
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         self.messages_panel.is_animating()
     }
 
+    #[must_use]
     pub fn is_working(&self) -> bool {
         self.messages_panel.is_working()
     }
@@ -263,14 +269,17 @@ impl Chat {
             .view(frame, area, has_selection, is_working);
     }
 
+    #[must_use]
     pub fn scroll_top(&self) -> u16 {
         self.messages_panel.scroll_top()
     }
 
+    #[must_use]
     pub fn total_lines(&self) -> u16 {
         self.messages_panel.total_lines()
     }
 
+    #[must_use]
     pub fn scroll_info(&self, viewport_height: u16) -> Option<ScrollInfo> {
         self.messages_panel.scroll_info(viewport_height)
     }
@@ -279,22 +288,27 @@ impl Chat {
         self.messages_panel.set_scroll_top(y);
     }
 
+    #[must_use]
     pub fn segment_heights(&self) -> Vec<u16> {
         self.messages_panel.segment_heights()
     }
 
+    #[must_use]
     pub fn segment_search_texts(&self) -> Vec<&str> {
         self.messages_panel.segment_search_texts()
     }
 
+    #[must_use]
     pub fn extract_selection_text(&self, sel: &Selection, msg_area: Rect) -> String {
         self.messages_panel.extract_selection_text(sel, msg_area)
     }
 
+    #[must_use]
     pub fn copy_at(&self, row: u16, col: u16, area: Rect) -> Option<(String, &'static str)> {
         self.messages_panel.copy_at(row, col, area)
     }
 
+    #[must_use]
     pub fn tool_id_at(&self, row: u16, area: Rect) -> Option<&str> {
         self.messages_panel.tool_id_at(row, area)
     }
@@ -358,10 +372,12 @@ impl Chat {
             .push(DisplayMessage::new(role, text.into()));
     }
 
+    #[must_use]
     pub fn is_finished(&self) -> bool {
         self.finished
     }
 
+    #[must_use]
     pub fn is_failed(&self) -> bool {
         self.failed
     }
@@ -430,36 +446,43 @@ impl Chat {
     }
 
     #[cfg(test)]
+    #[must_use]
     pub fn message_count(&self) -> usize {
         self.messages_panel.message_count()
     }
 
     #[cfg(test)]
+    #[must_use]
     pub fn in_progress_count(&self) -> usize {
         self.messages_panel.in_progress_count()
     }
 
     #[cfg(test)]
+    #[must_use]
     pub fn last_message_text(&self) -> &str {
         self.messages_panel.last_message_text()
     }
 
     #[cfg(test)]
+    #[must_use]
     pub fn last_message_is_plan(&self) -> bool {
         self.messages_panel.last_message_is_plan()
     }
 
     #[cfg(test)]
+    #[must_use]
     pub fn last_message_role(&self) -> Option<&DisplayRole> {
         self.messages_panel.last_message_role()
     }
 
     #[cfg(test)]
+    #[must_use]
     pub fn streaming_text_is_empty(&self) -> bool {
         self.messages_panel.streaming_text_is_empty()
     }
 
     #[cfg(test)]
+    #[must_use]
     pub fn streaming_thinking_is_empty(&self) -> bool {
         self.messages_panel.streaming_thinking_is_empty()
     }
@@ -487,7 +510,9 @@ pub fn history_to_display(
                         }
                     })
                     .collect();
-                let text = msg.user_text().map_or_else(String::new, |t| t.to_owned());
+                let text = msg
+                    .user_text()
+                    .map_or_else(String::new, std::borrow::ToOwned::to_owned);
                 if !text.is_empty() || !images.is_empty() {
                     display.push(DisplayMessage::with_images(DisplayRole::User, text, images));
                 }
@@ -517,17 +542,17 @@ pub fn history_to_display(
                             let tool_call: Option<Box<dyn ToolInvocation>> =
                                 reg.get(name).and_then(|entry| entry.try_parse(input));
                             let summary = reg.resolve_header(name, input);
-                            let (status, result_text) = results
-                                .get(id.as_str())
-                                .map(|(err, text)| {
+                            let (status, result_text) = results.get(id.as_str()).map_or_else(
+                                || (ToolStatus::Success, None),
+                                |(err, text)| {
                                     let s = if *err {
                                         ToolStatus::Error
                                     } else {
                                         ToolStatus::Success
                                     };
                                     (s, Some(&**text))
-                                })
-                                .unwrap_or((ToolStatus::Success, None));
+                                },
+                            );
                             let stored = tool_outputs.get(id.as_str());
                             let (text, truncated_lines, tool_output, mut annotation) =
                                 build_loaded_tool(
@@ -537,15 +562,16 @@ pub fn history_to_display(
                                     result_text,
                                     tool_output_lines,
                                 );
-                            if let Some(ta) =
-                                tool_call.as_deref().and_then(|tc| tc.start_annotation())
+                            if let Some(ta) = tool_call
+                                .as_deref()
+                                .and_then(n00n_agent::tools::ToolInvocation::start_annotation)
                             {
                                 append_annotation(&mut annotation, &ta);
                             }
                             let output = stored
-                                .map(|o| o.as_text())
+                                .map(n00n_agent::ToolOutput::as_text)
                                 .or_else(|| result_text.map(str::to_owned))
-                                .unwrap_or_default();
+                                .unwrap_or_else(Default::default);
                             let state = stored.and_then(|o| o.state().cloned());
                             // Structured outputs (e.g. Diff) render natively
                             // in Rust with full fidelity; a Lua restore
@@ -637,29 +663,26 @@ fn build_loaded_tool(
     result_text: Option<&str>,
     tool_output_lines: &ToolOutputLines,
 ) -> (String, usize, Option<Arc<ToolOutput>>, Option<String>) {
-    match reconstructed {
-        Some(output) => {
-            let annotation = output.annotation();
-            (summary.to_owned(), 0, Some(Arc::new(output)), annotation)
-        }
-        None => {
-            let result = result_text.unwrap_or("");
-            let annotation = if !result.is_empty() {
-                ToolOutput::Plain(result.into()).annotation()
-            } else {
-                None
-            };
-            if result.is_empty() {
-                (summary.to_owned(), 0, None, annotation)
-            } else {
-                let tr = truncate_output(result, tool_output_lines.get(tool));
-                (
-                    format!("{}\n{}", summary, tr.kept),
-                    tr.skipped,
-                    None,
-                    annotation,
-                )
-            }
+    if let Some(output) = reconstructed {
+        let annotation = output.annotation();
+        (summary.to_owned(), 0, Some(Arc::new(output)), annotation)
+    } else {
+        let result = result_text.unwrap_or_else(|| "");
+        let annotation = if result.is_empty() {
+            None
+        } else {
+            ToolOutput::Plain(result.into()).annotation()
+        };
+        if result.is_empty() {
+            (summary.to_owned(), 0, None, annotation)
+        } else {
+            let tr = truncate_output(result, tool_output_lines.get(tool));
+            (
+                format!("{}\n{}", summary, tr.kept),
+                tr.skipped,
+                None,
+                annotation,
+            )
         }
     }
 }

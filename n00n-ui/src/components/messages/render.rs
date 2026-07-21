@@ -53,7 +53,7 @@ impl RenderCursor {
             .saturating_sub(segment_skip)
             .min(self.bottom.saturating_sub(self.y));
         let seg_area = Rect::new(self.viewport.x, self.y, self.viewport.width, visible_h);
-        let mut base = style.unwrap_or_default();
+        let mut base = style.unwrap_or_else(Default::default);
         if highlight {
             base = base.add_modifier(Modifier::REVERSED);
         }

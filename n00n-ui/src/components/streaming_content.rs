@@ -319,8 +319,8 @@ impl StreamingContent {
     pub fn height(&mut self, width: u16) -> u16 {
         self.render_lines(width);
         match self.mode {
-            RenderMode::Plain => self.plain.rendered_height.map(|(_, h)| h).unwrap_or(0),
-            RenderMode::Markdown => self.cache.rendered_height.map(|(_, h)| h).unwrap_or(0),
+            RenderMode::Plain => self.plain.rendered_height.map_or_else(|| 0, |(_, h)| h),
+            RenderMode::Markdown => self.cache.rendered_height.map_or_else(|| 0, |(_, h)| h),
         }
     }
 
