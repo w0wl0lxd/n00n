@@ -60,16 +60,14 @@ fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Mode
         .then(|| map.spec_for_tier(ctx.model.provider, effective))
         .flatten()
         .or_else(|| map.spec_for_tier_any(effective))
-        .and_then(|s| Model::from_spec(&s).ok())
-        .map(Ok)
-        .unwrap_or_else(|| {
+        .and_then(|s| Model::from_spec(&s).ok()).map_or_else(|| {
             Model::from_tier_dynamic(
                 ctx.model.provider,
                 effective,
                 ctx.model.dynamic_slug.as_deref(),
             )
             .map_err(|e| e.to_string())
-        })
+        }, Ok)
 }
 
 fn model_to_lua_table(lua: &Lua, model: &Model) -> LuaResult<Table> {
@@ -123,8 +121,8 @@ macro_rules! try_pair {
 /// if err then error(err) end
 /// print(model.spec, model.tier)
 #[lua_fn]
-async fn resolve_model(
-    lua: Lua,
+fn resolve_model(
+    lua: &Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
     opts: Option<Table>,
 ) -> LuaResult<Pair<Table>> {
@@ -140,7 +138,7 @@ async fn resolve_model(
         Some(ref spec) => try_pair!(Model::from_spec(spec)),
         None => try_pair!(resolve_model_from_ctx(agent, tier_str.as_deref())),
     };
-    Ok((Some(model_to_lua_table(&lua, &model)?), None))
+    Ok((Some(model_to_lua_table(lua, &model)?), None))
 }
 
 /// Estimate the dollar cost of a completion from its model spec and token
@@ -246,7 +244,7 @@ async fn system_prompt(
 /// if err then error(err) end
 /// print(#defs .. " tools available")
 #[lua_fn]
-async fn tools(lua: Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pair<LuaValue>> {
+fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pair<LuaValue>> {
     let agent = try_pair!(dispatch_ctx(&ctx, "tools"));
     let audience_str: String = opts.get("audience")?;
     let audience = try_pair!(
@@ -293,7 +291,7 @@ async fn tools(lua: Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResu
         mcp.extend_tools(&mut defs);
     }
 
-    Ok((Some(json_to_lua(&lua, &defs)?), None))
+    Ok((Some(json_to_lua(lua, &defs)?), None))
 }
 
 /// Run a tool by name and wait for the result. This is how you call built-in
@@ -641,8 +639,8 @@ struct LiveCallbacks<'a> {
 impl LiveCallbacks<'_> {
     async fn deliver(&self, ev: ToolLive) {
         let res = match ev {
-            ToolLive::Buf(buf) => call_opt(&self.on_buf, BufHandle::foreign(buf)).await,
-            ToolLive::Annotation(ann) => call_opt(&self.on_ann, ann).await,
+            ToolLive::Buf(buf) => call_opt(self.on_buf.as_ref(), BufHandle::foreign(buf)).await,
+            ToolLive::Annotation(ann) => call_opt(self.on_ann.as_ref(), ann).await,
         };
         if let Some(Err(e)) = res {
             tracing::warn!(tool = self.tool, error = %e, "call_tool callback failed");
@@ -650,7 +648,7 @@ impl LiveCallbacks<'_> {
     }
 }
 
-async fn call_opt(f: &Option<Function>, arg: impl IntoLuaMulti) -> Option<LuaResult<()>> {
+async fn call_opt(f: Option<&Function>, arg: impl IntoLuaMulti) -> Option<LuaResult<()>> {
     match f {
         Some(f) => Some(f.call_async::<()>(arg).await),
         None => None,
@@ -730,14 +728,14 @@ impl Progress {
     }
 
     fn set_current(&self, tool: &str) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.current = Some(tool.to_owned());
         drop(state);
         self.notify();
     }
 
     fn add_recent(&self, tool: &str) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.current = None;
         state.completed_count += 1;
         if state.recent.len() >= PROGRESS_MAX_RECENT {
@@ -749,7 +747,7 @@ impl Progress {
     }
 
     fn set_done(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.done = true;
         state.current = None;
         drop(state);
@@ -814,14 +812,13 @@ struct LuaSession {
 
 impl Drop for LuaSession {
     fn drop(&mut self) {
-        match self.inner.try_lock() {
-            Some(mut s) => s.close(),
+        if let Some(mut s) = self.inner.try_lock() {
+            s.close();
+        } else {
             // Prompt still in flight: close asynchronously so history
             // and cancel entry are never silently leaked.
-            None => {
-                let inner = Arc::clone(&self.inner);
-                smol::spawn(async move { inner.lock().await.close() }).detach();
-            }
+            let inner = Arc::clone(&self.inner);
+            smol::spawn(async move { inner.lock().await.close() }).detach();
         }
     }
 }
@@ -937,7 +934,7 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
     )));
     let _ = select(notify, timeout).await;
 
-    let state = progress.state.lock().unwrap_or_else(|e| e.into_inner());
+    let state = progress.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let elapsed = progress.start.elapsed().as_millis() as u64;
     let tbl = lua.create_table()?;
     tbl.set("elapsed_ms", elapsed)?;

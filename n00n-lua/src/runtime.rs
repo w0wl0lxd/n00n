@@ -58,7 +58,7 @@ const WATCHDOG_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const OPT_LEVEL_JIT: u8 = 2;
 const OPT_LEVEL_DEBUGGABLE: u8 = 1;
 const DEBUG_INFO_FULL: u8 = 2;
-const ASYNC_RUN_MIN_DEADLINE: Duration = Duration::from_secs(60);
+const ASYNC_RUN_MIN_DEADLINE: Duration = Duration::from_mins(1);
 /// Async tasks spawned during restore may spawn further tasks; cap the rounds.
 const RESTORE_SPAWN_ROUNDS: usize = 8;
 /// Keeps a buggy plugin's restore task from freezing the lua loop.
@@ -69,7 +69,7 @@ const RESTORE_ASYNC_DEADLINE: Duration = Duration::from_secs(10);
 /// Generous on purpose: legit restores of heavy items take double-digit
 /// seconds on a loaded debug build, and a wrongly killed restore loses the
 /// tool's rendered output.
-const RESTORE_ITEM_TIMEOUT: Duration = Duration::from_secs(60);
+const RESTORE_ITEM_TIMEOUT: Duration = Duration::from_mins(1);
 const TURN_END_EVENT: &str = "TurnEnd";
 /// Without a cap, a runaway plugin OOM-kills the whole process.
 /// With one, it hits a catchable Lua error instead.
@@ -309,7 +309,7 @@ struct WarmTool {
 }
 
 pub(crate) fn lock_cell(handle: &TaskHandle) -> std::sync::MutexGuard<'_, TaskCell> {
-    handle.lock().unwrap_or_else(|e| e.into_inner())
+    handle.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The buf whose click handler owns this task's clicks: the explicit root
@@ -596,7 +596,7 @@ pub(crate) fn enqueue_async_task(lua: &Lua, work_fn: RegistryKey) -> Result<(), 
             return Ok(());
         }
         task.owner = cell.bufs_claim.upgrade();
-        task.parent = parent.clone();
+        task.parent.clone_from(&parent);
     }
 
     let queue = lua
@@ -1181,7 +1181,7 @@ impl LuaRuntime {
     fn drain_pending(&self) -> Vec<PendingTool> {
         self.pending
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain(..)
             .collect()
     }
@@ -1528,9 +1528,8 @@ impl LuaRuntime {
                 return None;
             }
         };
-        let table = match result {
-            LuaValue::Table(t) => t,
-            _ => return None,
+        let LuaValue::Table(table) = result else {
+            return None;
         };
         let scopes_table: mlua::Table = table.get("scopes").ok()?;
         let mut scopes = Vec::new();

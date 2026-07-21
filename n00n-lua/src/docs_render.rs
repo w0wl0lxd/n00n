@@ -3,6 +3,7 @@
 //! repo. `n00n-docgen` calls [`site_page`] for the website; the plugin
 //! `require()` sandbox serves [`virtual_module`] to the skill plugin.
 
+use std::fmt::Write;
 use std::sync::LazyLock;
 
 use mlua::{Lua, Table};
@@ -190,9 +191,9 @@ fn reference_index(reference: &str) -> String {
     for (i, line) in lines.iter().enumerate() {
         if let Some(sig) = line.strip_prefix("### ") {
             let summary = index_summary(&lines[i + 1..]);
-            out.push_str(&format!("- L{} {sig}{summary}\n", i + 1));
+            let _ = write!(out, "- L{} {sig}{summary}\n", i + 1);
         } else if let Some(module) = line.strip_prefix("## ") {
-            out.push_str(&format!("\n## {module} - L{}\n", i + 1));
+            let _ = write!(out, "\n## {module} - L{}\n", i + 1);
         }
     }
     out
@@ -294,9 +295,9 @@ fn helpers_section() -> String {
         } else {
             skeleton(src)
         };
-        out.push_str(&format!(
+        let _ = write!(out, 
             "### `require(\"{name}\")`\n\n```lua\n{body}```\n\n"
-        ));
+        );
     }
     out
 }
@@ -367,15 +368,12 @@ fn format_returns(returns: &str, classes: &ClassLinks) -> String {
 
 fn field_item(text: &str) -> Option<String> {
     let rest = text.strip_prefix("- ").unwrap_or(text);
-    let (name, rest) = match rest.strip_prefix('`') {
-        Some(r) => r.split_once('`')?,
-        None => {
-            let end = rest.find(|c: char| !c.is_ascii_alphanumeric() && c != '_')?;
-            if end == 0 {
-                return None;
-            }
-            rest.split_at(end)
+    let (name, rest) = if let Some(r) = rest.strip_prefix('`') { r.split_once('`')? } else {
+        let end = rest.find(|c: char| !c.is_ascii_alphanumeric() && c != '_')?;
+        if end == 0 {
+            return None;
         }
+        rest.split_at(end)
     };
     let (ty, desc) = rest
         .strip_prefix(' ')?
@@ -413,12 +411,12 @@ fn push_fields_block(out: &mut String, block: &str) {
             if levels.last() != Some(&indent) {
                 levels.push(indent);
             }
-            out.push_str(&format!("{}- {item}\n", "  ".repeat(levels.len())));
+            let _ = write!(out, "{}- {item}\n", "  ".repeat(levels.len()));
         } else if levels.last().is_some_and(|&i| indent > i) {
-            out.push_str(&format!("{}{text}\n", "  ".repeat(levels.len() + 1)));
+            let _ = write!(out, "{}{text}\n", "  ".repeat(levels.len() + 1));
         } else {
             levels.clear();
-            out.push_str(&format!("\n  {text}\n\n"));
+            let _ = write!(out, "\n  {text}\n\n");
         }
     }
 }
@@ -430,13 +428,13 @@ fn push_fn(out: &mut String, module: &ModuleDoc, f: &FnDoc, classes: &ClassLinks
     };
     let sig = format!("{owner}{sep}{}({})", f.name, f.args);
     if compact {
-        out.push_str(&format!("### `{sig}`\n\n"));
+        let _ = write!(out, "### `{sig}`\n\n");
     } else {
         let title = format!("{owner}{sep}{}()", f.name);
         let id = slug(&title);
-        out.push_str(&format!(
+        let _ = write!(out, 
             "### `{title}` {{#{id}}}\n\n```lua\n{sig}\n```\n\n"
-        ));
+        );
     }
     if !f.desc.is_empty() {
         out.push_str(f.desc);
@@ -446,23 +444,23 @@ fn push_fn(out: &mut String, module: &ModuleDoc, f: &FnDoc, classes: &ClassLinks
         out.push_str("**Parameters:**\n\n");
         for p in f.params {
             let (first, rest) = p.desc.split_once('\n').unwrap_or((p.desc, ""));
-            out.push_str(&format!(
+            let _ = write!(out, 
                 "- `{}` ({}) {first}\n",
                 p.name,
                 link_ty(p.ty, classes)
-            ));
+            );
             push_fields_block(out, rest);
         }
         out.push('\n');
     }
     if !f.returns.is_empty() {
-        out.push_str(&format!(
+        let _ = write!(out, 
             "**Returns:** {}\n\n",
             format_returns(f.returns, classes)
-        ));
+        );
     }
     if !f.example.is_empty() {
-        out.push_str(&format!("**Example:**\n\n```lua\n{}\n```\n\n", f.example));
+        let _ = write!(out, "**Example:**\n\n```lua\n{}\n```\n\n", f.example);
     }
 }
 
@@ -490,15 +488,15 @@ fn render(compact: bool) -> String {
                 .map(|m| first_sentence(m.desc))
                 .find(|d| !d.is_empty())
                 .unwrap_or_default();
-            out.push_str(&format!("| [`{name}`](#{}) | {desc} |\n", slug(name)));
+            let _ = write!(out, "| [`{name}`](#{}) | {desc} |\n", slug(name));
         }
     }
 
     for (name, modules) in merged {
         if compact {
-            out.push_str(&format!("\n## {name}\n\n"));
+            let _ = write!(out, "\n## {name}\n\n");
         } else {
-            out.push_str(&format!("\n## {name} {{#{}}}\n\n", slug(name)));
+            let _ = write!(out, "\n## {name} {{#{}}}\n\n", slug(name));
         }
         for module in &modules {
             if !module.desc.is_empty() {
