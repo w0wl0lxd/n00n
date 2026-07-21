@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use n00n_config::{
     DefaultEffect, Effect, FILE_WRITE_TOOLS, PermissionRule, PermissionTarget, PermissionsConfig,
@@ -64,9 +64,9 @@ impl std::fmt::Display for PermissionError {
             PERMISSION_DENIED_PREFIX, self.tool, self.scope
         )?;
         if let Some(g) = &self.guidance {
-            write!(f, " User guidance: {}", g)
+            write!(f, " User guidance: {g}")
         } else {
-            write!(f, " {}", DEFAULT_DENY_GUIDANCE)
+            write!(f, " {DEFAULT_DENY_GUIDANCE}")
         }
     }
 }
@@ -102,6 +102,7 @@ pub enum PermissionAnswer {
 }
 
 impl PermissionAnswer {
+    #[must_use]
     pub fn is_allow(&self) -> bool {
         matches!(
             self,
@@ -109,6 +110,7 @@ impl PermissionAnswer {
         )
     }
 
+    #[must_use]
     pub fn encode(&self) -> String {
         match self {
             Self::AllowOnce => "allow".to_string(),
@@ -122,6 +124,7 @@ impl PermissionAnswer {
         }
     }
 
+    #[must_use]
     pub fn decode(s: &str) -> Option<Self> {
         match s {
             "allow" => Some(Self::AllowOnce),
@@ -132,7 +135,7 @@ impl PermissionAnswer {
             "deny_always_local" => Some(Self::DenyAlwaysLocal),
             "deny_always_global" => Some(Self::DenyAlwaysGlobal),
             _ if s.starts_with("deny:") => {
-                let guidance = s.strip_prefix("deny:").unwrap();
+                let guidance = s.strip_prefix("deny:").map_or_else(|| "", |v| v);
                 if guidance.is_empty() {
                     Some(Self::Deny)
                 } else {
@@ -143,6 +146,7 @@ impl PermissionAnswer {
         }
     }
 
+    #[must_use]
     pub fn guidance(&self) -> Option<&str> {
         match self {
             Self::DenyWithGuidance(g) => Some(g),
@@ -203,6 +207,8 @@ impl PermissionManager {
     /// Fresh manager for a new session runtime: shares config and builtin
     /// rules plus the current yolo state, but owns empty session rules so
     /// restoring one session never clobbers another's grants.
+    #[must_use]
+    #[allow(clippy::return_self_not_must_use)]
     pub fn fork(&self) -> Self {
         Self {
             session_rules: Mutex::new(Vec::new()),
@@ -306,17 +312,16 @@ impl PermissionManager {
             .copied()
             .or_else(|| {
                 // McpTool falls back to McpServer-level default (Arc clone, ~2ns)
-                let server = match tool {
-                    ToolKey::McpTool { server, .. } => server,
-                    _ => return None,
+                let ToolKey::McpTool { server, .. } = tool else {
+                    return None;
                 };
                 self.tool_defaults
                     .get(&ToolKey::McpServer {
-                        server: server.clone(),
+                        server: Arc::clone(server),
                     })
                     .copied()
             })
-            .unwrap_or(self.default);
+            .unwrap_or_else(|| self.default);
         match eff {
             DefaultEffect::Deny => {
                 info!(tool = %tool, "denied by default");
@@ -325,7 +330,10 @@ impl PermissionManager {
             DefaultEffect::Allow => PermissionCheck::Allowed,
             DefaultEffect::Prompt => PermissionCheck::NeedsPrompt {
                 tool: tool.clone(),
-                scopes: pending.into_iter().map(|s| s.to_string()).collect(),
+                scopes: pending
+                    .into_iter()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
                 force_prompt,
             },
         }
@@ -438,6 +446,11 @@ impl PermissionManager {
         }
     }
 
+    /// Enforces permission rules for a tool invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PermissionError` if the tool is not allowed.
     #[allow(clippy::too_many_arguments)]
     pub async fn enforce(
         &self,
@@ -449,7 +462,11 @@ impl PermissionManager {
         cancel: &crate::CancelToken,
         plan_path: Option<&Path>,
     ) -> Result<(), PermissionError> {
-        let scope_refs: Vec<&str> = scopes.scopes.iter().map(|s| s.as_str()).collect();
+        let scope_refs: Vec<&str> = scopes
+            .scopes
+            .iter()
+            .map(std::string::String::as_str)
+            .collect();
         let tool_string = tool.to_string();
         let scope_display = || scopes.scopes.join("; ");
         let deny = |guidance: Option<String>| match guidance {
@@ -474,7 +491,7 @@ impl PermissionManager {
         };
 
         let guard = rx.lock().await;
-        let refs: Vec<&str> = ps.iter().map(|s| s.as_str()).collect();
+        let refs: Vec<&str> = ps.iter().map(std::string::String::as_str).collect();
         let (t2, s2) = match self.check_inner(&pt, &refs, force_prompt, plan_path) {
             PermissionCheck::Allowed => return Ok(()),
             PermissionCheck::Denied => return Err(deny(None)),
@@ -514,8 +531,10 @@ fn matches_rule(rule_key: &ToolKey, actual: &ToolKey) -> bool {
     match (rule_key, actual) {
         (ToolKey::Wildcard, _) => true,
         (ToolKey::Native(a), ToolKey::Native(b)) => a == b,
-        (ToolKey::McpServer { server: rs }, ToolKey::McpServer { server: as_ }) => rs == as_,
-        (ToolKey::McpServer { server: rs }, ToolKey::McpTool { server: as_, .. }) => rs == as_,
+        (
+            ToolKey::McpServer { server: rs },
+            ToolKey::McpServer { server: as_ } | ToolKey::McpTool { server: as_, .. },
+        ) => rs == as_,
         (
             ToolKey::McpTool {
                 server: rs,
@@ -545,6 +564,7 @@ fn rule_matches_scope(rule: &PermissionRule, scope: &str) -> bool {
 /// For the `/**` path pattern, `Path::starts_with` is used to compare
 /// components rather than characters, which handles both `/` and `\`
 /// transparently on all platforms.
+#[must_use]
 pub fn scope_matches(pattern: &str, value: &str) -> bool {
     if pattern == "*" || pattern == "**" {
         return true;
@@ -574,6 +594,7 @@ pub fn scope_matches(pattern: &str, value: &str) -> bool {
 /// Use this for display, logging, and scope matching.
 ///
 /// For symlink-aware security checks, use [`physical_boundary_check`].
+#[must_use]
 pub fn normalize_scope_path(path: &str) -> String {
     let resolved = crate::tools::resolve_path(path).unwrap_or_else(|_| path.to_string());
     n00n_storage::paths::normalize_path(Path::new(&resolved))
@@ -591,6 +612,7 @@ pub fn normalize_scope_path(path: &str) -> String {
 ///
 /// Returns `true` only when the resolved filesystem location of `child`
 /// is under `parent`. Returns `None` if the parent itself cannot be resolved.
+#[must_use]
 pub fn physical_boundary_check(parent: &Path, child: &Path) -> Option<bool> {
     let parent_canon = n00n_storage::paths::incremental_canonicalize(parent)?;
     let child_canon =
@@ -599,10 +621,14 @@ pub fn physical_boundary_check(parent: &Path, child: &Path) -> Option<bool> {
 }
 
 fn generalize_bash_segment(segment: &str) -> String {
-    let first_token = segment.split_whitespace().next().unwrap_or(segment);
+    let first_token = segment
+        .split_whitespace()
+        .next()
+        .map_or_else(|| segment, |v| v);
     format!("{first_token} *")
 }
 
+#[must_use]
 pub fn generalized_scopes(tool: &ToolKey, scopes: &[String]) -> Vec<String> {
     let mut seen = HashSet::new();
     scopes
@@ -680,14 +706,14 @@ mod tests {
         scope_matches(pattern, value)
     }
 
-    #[test_case(vec!["cd /tmp", "cargo test"], vec!["cd *", "cargo *"], true ; "all_allowed")]
-    #[test_case(vec!["cd /tmp", "cargo test"], vec!["cargo *"], false ; "missing_rule")]
-    fn compound_check(scopes: Vec<&str>, rules: Vec<&str>, expect_allowed: bool) {
+    #[test_case(&["cd /tmp", "cargo test"], &["cd *", "cargo *"], true ; "all_allowed")]
+    #[test_case(&["cd /tmp", "cargo test"], &["cargo *"], false ; "missing_rule")]
+    fn compound_check(scopes: &[&str], rules: &[&str], expect_allowed: bool) {
         let mgr = PermissionManager::new(
-            make_config(rules.into_iter().map(allow_rule).collect()),
+            make_config(rules.iter().copied().map(allow_rule).collect()),
             PathBuf::from("/tmp"),
         );
-        let check = mgr.check_multi(&ToolKey::native("bash"), &scopes, false, None);
+        let check = mgr.check_multi(&ToolKey::native("bash"), scopes, false, None);
         assert_eq!(matches!(check, PermissionCheck::Allowed), expect_allowed);
     }
 
@@ -1189,6 +1215,7 @@ mod tests {
 
     #[test_case(PermissionAnswer::AllowOnce ; "allow_once")]
     #[test_case(PermissionAnswer::Deny ; "deny_once")]
+    #[allow(clippy::needless_pass_by_value)]
     fn once_decisions_add_no_session_rules(answer: PermissionAnswer) {
         let mgr = default_mgr();
         mgr.apply_decision(&ToolKey::native("bash"), &["cargo test".into()], &answer);

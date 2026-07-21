@@ -19,6 +19,11 @@ pub struct CallbackServer {
 }
 
 impl CallbackServer {
+    /// Bind a local callback server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no local port can be bound.
     pub async fn bind() -> Result<Self, String> {
         let listener = match TcpListener::bind(("127.0.0.1", PREFERRED_PORT)).await {
             Ok(l) => l,
@@ -30,10 +35,16 @@ impl CallbackServer {
         Ok(Self { port, listener })
     }
 
+    #[must_use]
     pub fn redirect_uri(&self) -> String {
         format!("http://127.0.0.1:{}{CALLBACK_PATH}", self.port)
     }
 
+    /// Wait for an OAuth callback on the bound server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection or request parsing fails.
     pub async fn wait_for_callback(self, expected_state: &str) -> Result<CallbackResult, String> {
         loop {
             let (mut stream, _) = self
@@ -59,7 +70,7 @@ impl CallbackServer {
             let request = String::from_utf8_lossy(&buf);
 
             let path = match request.lines().next() {
-                Some(line) => line.split_whitespace().nth(1).unwrap_or(""),
+                Some(line) => line.split_whitespace().nth(1).map_or_else(|| "", |v| v),
                 None => continue,
             };
 
@@ -68,15 +79,14 @@ impl CallbackServer {
                 continue;
             }
 
-            let query = path.split('?').nth(1).unwrap_or("");
+            let query = path.split('?').nth(1).map_or_else(|| "", |v| v);
             let params = parse_query(query);
 
             if let Some(error) = params.iter().find(|(k, _)| k == "error") {
                 let desc = params
                     .iter()
                     .find(|(k, _)| k == "error_description")
-                    .map(|(_, v)| v.as_str())
-                    .unwrap_or(&error.1);
+                    .map_or_else(|| error.1.as_str(), |(_, v)| v.as_str());
                 let _ = respond(&mut stream, 400, ERROR_HTML).await;
                 return Err(format!("OAuth error: {desc}"));
             }
@@ -124,8 +134,8 @@ fn url_decode(s: &str) -> String {
         match b {
             b'+' => bytes.push(b' '),
             b'%' => {
-                let h = iter.next().unwrap_or(b'0');
-                let l = iter.next().unwrap_or(b'0');
+                let h = iter.next().unwrap_or_else(|| b'0');
+                let l = iter.next().unwrap_or_else(|| b'0');
                 bytes.push((hex_val(h) << 4) | hex_val(l));
             }
             _ => bytes.push(b),

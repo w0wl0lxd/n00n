@@ -51,6 +51,11 @@ struct Negotiated {
 }
 
 impl HttpTransport {
+    /// Create a new HTTP transport for an MCP server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP client cannot be built.
     pub fn new(
         name: &str,
         url: &str,
@@ -204,7 +209,7 @@ impl HttpTransport {
             });
         }
 
-        Ok(resp.result.unwrap_or(Value::Null))
+        Ok(resp.result.unwrap_or_else(|| Value::Null))
     }
 
     /// Single-flight token refresh after a 401. Holds a lock while refreshing
@@ -215,7 +220,7 @@ impl HttpTransport {
         let _guard = self.refresh_lock.lock().await;
 
         let current = self.auth.load();
-        let current_str = current.as_ref().as_ref().map(|s| s.as_ref());
+        let current_str = current.as_ref().as_ref().map(std::convert::AsRef::as_ref);
 
         if current_str != used {
             return current.as_ref().clone();
@@ -224,7 +229,8 @@ impl HttpTransport {
         match oauth::silent_refresh(storage, &self.name, &self.url).await {
             Ok(Some(data)) => {
                 let header: Arc<str> = Arc::from(format!("Bearer {}", data.tokens?.access));
-                self.auth.store(Arc::new(Some(header.clone())));
+                self.auth
+                    .store(Arc::new(Some(std::sync::Arc::<str>::clone(&header))));
 
                 info!(server = %self.name, "MCP OAuth token refreshed after 401");
 
@@ -282,8 +288,7 @@ impl McpTransport for HttpTransport {
                         headers
                             .get("www-authenticate")
                             .and_then(|v| v.to_str().ok())
-                            .unwrap_or(&body_str)
-                            .to_string()
+                            .map_or_else(|| body_str.clone(), std::string::ToString::to_string)
                     } else {
                         body_str
                     };
@@ -316,7 +321,7 @@ impl McpTransport for HttpTransport {
                     self.negotiated.store(Arc::new(negotiated));
                 }
 
-                info!(server = %self.server(), method, status = %status, refreshed, duration_ms = start.elapsed().as_millis() as u64, "MCP HTTP request");
+                info!(server = %self.server(), method, status = %status, refreshed, duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX), "MCP HTTP request");
 
                 return result;
             }
@@ -353,7 +358,7 @@ impl McpTransport for HttpTransport {
         })
     }
 
-    fn shutdown<'a>(&'a self) -> BoxFuture<'a, ()> {
+    fn shutdown(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             let negotiated = self.negotiated.load();
             if negotiated.session_id.is_none() {
@@ -413,7 +418,7 @@ fn parse_sse_events(body: &str) -> Vec<Value> {
         }
 
         if let Some(rest) = line.strip_prefix("data:") {
-            let data = rest.strip_prefix(' ').unwrap_or(rest);
+            let data = rest.strip_prefix(' ').map_or_else(|| rest, |v| v);
             data_lines.push(data);
         }
     }
@@ -480,7 +485,11 @@ mod tests {
                     continue;
                 }
 
-                let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let path = line
+                    .split_whitespace()
+                    .nth(1)
+                    .map_or_else(|| "/", |v| v)
+                    .to_string();
                 let mut auth = None;
                 let mut protocol = None;
                 let mut content_length = 0usize;
@@ -498,7 +507,7 @@ mod tests {
                         let start = header.len() - v.len();
                         auth = Some(header[start..].trim().to_string());
                     } else if let Some(v) = lower.strip_prefix("content-length:") {
-                        content_length = v.trim().parse().unwrap_or(0);
+                        content_length = v.trim().parse().unwrap_or_else(|_| 0);
                     } else if let Some(v) = lower.strip_prefix("mcp-protocol-version:") {
                         protocol = Some(v.trim().to_string());
                     }
@@ -542,10 +551,10 @@ mod tests {
 
     fn transport_with(
         url: &str,
-        headers: HashMap<String, String>,
+        headers: &HashMap<String, String>,
         storage: Option<StateDir>,
     ) -> HttpTransport {
-        HttpTransport::new("srv", url, &headers, Duration::from_secs(5), storage).unwrap()
+        HttpTransport::new("srv", url, headers, Duration::from_secs(5), storage).unwrap()
     }
 
     fn oauth_routes(base: &str, req: &Req) -> Option<(u16, String)> {
@@ -597,7 +606,8 @@ mod tests {
     #[test_case(NOTIFICATION,                                       true,  None                      ; "sse_notification_only_rejected")]
     #[test_case(&rpc_ok(3),                                         false, None                      ; "json_wrong_id_rejected")]
     fn response_id_matching(body: &str, is_sse: bool, expected: Option<Value>) {
-        let transport = transport_with("http://127.0.0.1:1/mcp", HashMap::new(), None);
+        let headers = HashMap::new();
+        let transport = transport_with("http://127.0.0.1:1/mcp", &headers, None);
         let result = transport.parse_rpc_response(body, is_sse, REQUEST_ID);
         match expected {
             Some(value) => assert_eq!(result.unwrap(), value),
@@ -610,7 +620,8 @@ mod tests {
 
     #[test]
     fn null_id_error_event_maps_to_rpc_error() {
-        let transport = transport_with("http://127.0.0.1:1/mcp", HashMap::new(), None);
+        let headers = HashMap::new();
+        let transport = transport_with("http://127.0.0.1:1/mcp", &headers, None);
         let err = transport
             .parse_rpc_response(NULL_ID_ERROR_EVENT, true, REQUEST_ID)
             .unwrap_err();
@@ -620,7 +631,7 @@ mod tests {
     #[test]
     fn build_request_applies_all_headers() {
         let headers = HashMap::from([("x-custom".to_string(), "yes".to_string())]);
-        let transport = transport_with("http://127.0.0.1:1/mcp", headers, None);
+        let transport = transport_with("http://127.0.0.1:1/mcp", &headers, None);
         let negotiated = Negotiated {
             session_id: Some("sid".to_string()),
             protocol_version: Some(NEGOTIATED_VERSION.to_string()),
@@ -652,7 +663,8 @@ mod tests {
             }
         });
 
-        let transport = transport_with(&format!("{base}/mcp"), HashMap::new(), None);
+        let headers = HashMap::new();
+        let transport = transport_with(&format!("{base}/mcp"), &headers, None);
         smol::block_on(transport.send_request("initialize", None)).unwrap();
 
         let result = smol::block_on(transport.send_request("tools/list", None)).unwrap();
@@ -680,7 +692,8 @@ mod tests {
         let url = format!("{base}/mcp");
         save_mcp_auth(&storage, "srv", &stored_auth(&url, "old-token", "r1")).unwrap();
 
-        let transport = transport_with(&url, HashMap::new(), Some(storage.clone()));
+        let headers = HashMap::new();
+        let transport = transport_with(&url, &headers, Some(storage.clone()));
         let result = smol::block_on(transport.send_request("tools/list", None)).unwrap();
         assert_eq!(result, json!({"ok": true}));
 
@@ -701,7 +714,8 @@ mod tests {
             }
         });
 
-        let transport = transport_with(&format!("{base}/mcp"), HashMap::new(), None);
+        let headers = HashMap::new();
+        let transport = transport_with(&format!("{base}/mcp"), &headers, None);
         let err = smol::block_on(transport.send_request("tools/list", None)).unwrap_err();
         assert!(matches!(err, McpError::HttpError { status: 401, .. }));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -720,7 +734,7 @@ mod tests {
         });
 
         let headers = HashMap::from([("Authorization".to_string(), OLD_BEARER.to_string())]);
-        let transport = transport_with(&format!("{base}/mcp"), headers, None);
+        let transport = transport_with(&format!("{base}/mcp"), &headers, None);
         let result = smol::block_on(transport.send_request("tools/list", None)).unwrap();
         assert_eq!(result, json!({"ok": true}));
     }
@@ -742,7 +756,8 @@ mod tests {
         let url = format!("{base}/mcp");
         save_mcp_auth(&storage, "srv", &stored_auth(&url, "old-token", "r1")).unwrap();
 
-        let transport = transport_with(&url, HashMap::new(), Some(storage));
+        let headers = HashMap::new();
+        let transport = transport_with(&url, &headers, Some(storage));
         let result = smol::block_on(transport.send_request("tools/list", None)).unwrap();
         assert_eq!(result, json!({"ok": true}));
     }

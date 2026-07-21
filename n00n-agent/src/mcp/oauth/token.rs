@@ -6,6 +6,11 @@ use n00n_storage::auth::{OAuthTokens, now_millis};
 
 use super::OAuthError;
 
+/// Exchange an authorization code for access/refresh tokens.
+///
+/// # Errors
+///
+/// Returns an error if the token request fails or the response is invalid.
 #[allow(clippy::too_many_arguments)]
 pub async fn exchange_code(
     client: &HttpClient,
@@ -31,6 +36,11 @@ pub async fn exchange_code(
     token_request(client, token_endpoint, &params).await
 }
 
+/// Refresh OAuth tokens using a refresh token.
+///
+/// # Errors
+///
+/// Returns an error if the refresh request fails or the response is invalid.
 pub async fn refresh_token(
     client: &HttpClient,
     token_endpoint: &str,
@@ -107,8 +117,11 @@ fn parse_token_response(body: &str) -> Result<OAuthTokens, OAuthError> {
         .as_str()
         .ok_or_else(|| OAuthError::InvalidResponse("missing access_token".into()))?
         .to_string();
-    let refresh = resp["refresh_token"].as_str().unwrap_or("").to_string();
-    let expires_in = resp["expires_in"].as_u64().unwrap_or(3600);
+    let refresh = resp["refresh_token"]
+        .as_str()
+        .map_or_else(|| "", |v| v)
+        .to_string();
+    let expires_in = resp["expires_in"].as_u64().unwrap_or_else(|| 3600);
     let expires = now_millis() + expires_in * 1000;
 
     Ok(OAuthTokens {

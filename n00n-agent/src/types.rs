@@ -57,14 +57,16 @@ impl GrepMatchGroup {
         }
     }
 
+    #[must_use]
     pub fn match_count(&self) -> usize {
         self.lines.iter().filter(|l| l.is_match).count()
     }
 }
 
 impl GrepFileEntry {
+    #[must_use]
     pub fn match_count(&self) -> usize {
-        self.groups.iter().map(|g| g.match_count()).sum()
+        self.groups.iter().map(GrepMatchGroup::match_count).sum()
     }
 }
 
@@ -86,6 +88,7 @@ pub enum TodoStatus {
 }
 
 impl TodoStatus {
+    #[must_use]
     pub fn marker(self) -> &'static str {
         match self {
             Self::Completed => "[✓]",
@@ -236,7 +239,7 @@ pub enum ToolOutput {
     },
     Image {
         source: n00n_providers::ImageSource,
-        /// Caption for the tool_result block, e.g. "[image: slack.jpeg 222KB]";
+        /// Caption for the `tool_result` block, e.g. "[image: slack.jpeg 222KB]";
         /// the pixels ride separately as a `ContentBlock::Image`.
         text: String,
     },
@@ -252,6 +255,7 @@ impl ToolOutput {
     /// Short header suffix summarizing the output, e.g. `12 lines`.
     /// The UI uses it on tool completion, and `n00n.agent.call_tool` falls
     /// back to it when the tool's reply has no annotation of its own.
+    #[must_use]
     pub fn annotation(&self) -> Option<String> {
         match self {
             Self::ReadCode {
@@ -266,7 +270,7 @@ impl ToolOutput {
             }
             Self::WriteCode { byte_count, .. } => Some(format!("{byte_count} bytes")),
             Self::GrepResult { entries } => {
-                let matches: usize = entries.iter().map(|e| e.match_count()).sum();
+                let matches: usize = entries.iter().map(GrepFileEntry::match_count).sum();
                 let files = entries.len();
                 let f = if files == 1 { "file" } else { "files" };
                 Some(format!("{matches} matches in {files} {f}"))
@@ -282,8 +286,7 @@ impl ToolOutput {
             Self::Image { text, .. } => Some(
                 text.strip_prefix("[image: ")
                     .and_then(|t| t.strip_suffix(']'))
-                    .unwrap_or(text)
-                    .to_string(),
+                    .map_or_else(|| text.clone(), std::string::ToString::to_string),
             ),
             _ => None,
         }
@@ -291,6 +294,7 @@ impl ToolOutput {
 
     /// Only here for old persisted sessions that still have `WriteCode`/`Diff` variants.
     /// New code should use `ToolDoneEvent::written_path` instead.
+    #[must_use]
     pub fn written_path(&self) -> Option<&str> {
         match self {
             Self::WriteCode { path, .. } | Self::Diff { path, .. } => Some(path),
@@ -298,6 +302,7 @@ impl ToolOutput {
         }
     }
 
+    #[must_use]
     pub fn instructions(&self) -> Option<&[InstructionBlock]> {
         match self {
             Self::Plain(t) | Self::Markdown(t) | Self::ReadDir(t) => t.instructions.as_deref(),
@@ -309,13 +314,15 @@ impl ToolOutput {
     pub fn owned_instructions(&self) -> Option<Vec<InstructionBlock>> {
         self.instructions()
             .filter(|b| !b.is_empty())
-            .map(|b| b.to_vec())
+            .map(<[InstructionBlock]>::to_vec)
     }
 
+    #[must_use]
     pub fn is_markdown(&self) -> bool {
         matches!(self, Self::Markdown(_))
     }
 
+    #[must_use]
     pub fn state(&self) -> Option<&serde_json::Value> {
         match self {
             Self::Plain(t) | Self::Markdown(t) | Self::ReadDir(t) => t.state.as_ref(),
@@ -323,6 +330,7 @@ impl ToolOutput {
         }
     }
 
+    #[must_use]
     pub fn structured_display_text(&self) -> Option<String> {
         match self {
             Self::Diff { .. }
@@ -335,6 +343,7 @@ impl ToolOutput {
         }
     }
 
+    #[must_use]
     pub fn is_empty_result(&self) -> bool {
         match self {
             Self::GrepResult { entries } => entries.is_empty(),
@@ -343,6 +352,7 @@ impl ToolOutput {
         }
     }
 
+    #[must_use]
     pub fn as_text(&self) -> String {
         match self {
             Self::Diff { summary, .. } => summary.clone(),
@@ -365,6 +375,7 @@ impl ToolOutput {
         }
     }
 
+    #[must_use]
     pub fn as_display_text(&self) -> String {
         match self {
             Self::Plain(t) | Self::Markdown(t) | Self::ReadDir(t) => t.text.clone(),
@@ -382,12 +393,14 @@ impl ToolOutput {
                     .join("\n");
                 let remaining = lines_remaining_after(*total_lines, *start_line, lines.len());
                 if remaining > 0 {
-                    out.push_str(&format!(
+                    use std::fmt::Write;
+                    let _ = write!(
+                        out,
                         "\n\n...\n\nTruncated lines: {}-{}. Use offset={} to read further.",
                         start_line + lines.len(),
                         total_lines,
                         start_line + lines.len(),
-                    ));
+                    );
                 }
                 out
             }
@@ -486,6 +499,7 @@ impl ToolDoneEvent {
         }
     }
 
+    #[must_use]
     pub fn written_path(&self) -> Option<&str> {
         if self.is_error {
             return None;
@@ -495,12 +509,14 @@ impl ToolDoneEvent {
             .or_else(|| self.output.written_path())
     }
 
+    #[must_use]
     pub fn wrote_to(&self, plan_path: &Path) -> bool {
         self.written_path()
             .is_some_and(|wp| Path::new(wp) == plan_path)
     }
 }
 
+#[must_use]
 pub fn tool_results(results: Vec<ToolDoneEvent>) -> Message {
     let mut content = Vec::with_capacity(results.len());
     let mut images = Vec::new();
@@ -624,6 +640,7 @@ pub struct SharedBuf {
 }
 
 impl SharedBuf {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             committed: Mutex::new(Arc::new(Vec::new())),
@@ -635,15 +652,24 @@ impl SharedBuf {
     }
 
     pub fn set_click(&self, f: Arc<dyn Any + Send + Sync>) {
-        *self.click.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+        *self
+            .click
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(f);
     }
 
     pub fn click(&self) -> Option<Arc<dyn Any + Send + Sync>> {
-        self.click.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.click
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub fn clear_click(&self) {
-        *self.click.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .click
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Fires synchronously after every `append`/`set_lines`, on the
@@ -651,13 +677,19 @@ impl SharedBuf {
     /// notifications are silently dropped. One slot only: a second call
     /// replaces the previous watcher.
     pub fn set_on_change(&self, f: impl Fn() + Send + Sync + 'static) {
-        *self.on_change.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
+        *self
+            .on_change
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(f));
     }
 
     /// A watcher keeps everything it captured alive for as long as it is
     /// installed, so owners must clear it once the watching task retires.
     pub fn clear_on_change(&self) {
-        *self.on_change.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .on_change
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     fn notify_change(&self) {
@@ -667,7 +699,7 @@ impl SharedBuf {
         let cb = self
             .on_change
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         if let Some(cb) = cb {
             cb();
@@ -676,7 +708,10 @@ impl SharedBuf {
     }
 
     pub fn append(&self, line: SnapshotLine) {
-        let mut guard = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .committed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Arc::make_mut(&mut guard).push(line);
         drop(guard);
         self.dirty.store(true, Ordering::Release);
@@ -684,7 +719,10 @@ impl SharedBuf {
     }
 
     pub fn set_lines(&self, lines: Vec<SnapshotLine>) {
-        let mut guard = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .committed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = Arc::new(lines);
         drop(guard);
         self.dirty.store(true, Ordering::Release);
@@ -694,7 +732,7 @@ impl SharedBuf {
     pub fn len(&self) -> usize {
         self.committed
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
     }
 
@@ -703,7 +741,10 @@ impl SharedBuf {
     }
 
     pub fn read(&self) -> Arc<Vec<SnapshotLine>> {
-        let guard = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self
+            .committed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Arc::clone(&guard)
     }
 
@@ -711,13 +752,19 @@ impl SharedBuf {
         if !self.dirty.swap(false, Ordering::AcqRel) {
             return None;
         }
-        let guard = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self
+            .committed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Some(Arc::clone(&guard))
     }
 
     pub fn take(&self) -> BufferSnapshot {
         self.dirty.store(false, Ordering::Release);
-        let guard = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self
+            .committed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         BufferSnapshot::from_arc(Arc::clone(&guard))
     }
 }
@@ -746,23 +793,26 @@ pub struct BufferSnapshot {
 }
 
 impl BufferSnapshot {
+    #[must_use]
     pub fn from_arc(lines: Arc<Vec<SnapshotLine>>) -> Self {
         Self { lines }
     }
 
+    #[must_use]
     pub fn plain_text(text: String) -> Self {
         Self::from_arc(Arc::new(vec![SnapshotLine::plain(text)]))
     }
 
+    #[must_use]
     pub fn first_line_text(&self) -> String {
-        self.lines
-            .first()
-            .map(|l| l.spans.iter().map(|s| s.text.as_str()).collect())
-            .unwrap_or_default()
+        self.lines.first().map_or_else(String::new, |l| {
+            l.spans.iter().map(|s| s.text.as_str()).collect()
+        })
     }
 
     /// Search matches against this, so it must mirror exactly what the UI
     /// renders.
+    #[must_use]
     pub fn text(&self) -> String {
         let mut out = String::new();
         for (i, line) in self.lines.iter().enumerate() {
@@ -783,6 +833,7 @@ pub struct SnapshotLine {
 }
 
 impl SnapshotLine {
+    #[must_use]
     pub fn plain(text: String) -> Self {
         Self {
             spans: vec![SnapshotSpan {
@@ -808,6 +859,7 @@ pub enum SpanStyle {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct InlineStyle {
     pub fg: Option<(u8, u8, u8)>,
     pub bg: Option<(u8, u8, u8)>,
@@ -850,10 +902,16 @@ pub struct EventSender {
 }
 
 impl EventSender {
+    #[must_use]
     pub fn new(tx: Sender<Envelope>, run_id: u64) -> Self {
         Self { tx, run_id }
     }
 
+    /// Sends an agent event.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AgentError` if the channel is full or closed.
     pub fn send(&self, event: impl Into<AgentEvent>) -> Result<(), AgentError> {
         self.tx
             .try_send(Envelope {
@@ -864,6 +922,11 @@ impl EventSender {
             .map_err(|_| AgentError::Channel)
     }
 
+    /// Sends an envelope directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AgentError` if the channel is full or closed.
     pub fn send_envelope(&self, envelope: Envelope) -> Result<(), AgentError> {
         self.tx.try_send(envelope).map_err(|_| AgentError::Channel)
     }
@@ -876,10 +939,12 @@ impl EventSender {
         });
     }
 
+    #[must_use]
     pub fn run_id(&self) -> u64 {
         self.run_id
     }
 
+    #[must_use]
     pub fn raw_tx(&self) -> &Sender<Envelope> {
         &self.tx
     }
@@ -899,15 +964,16 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case(ToolOutput::Plain("ok".into()),                      Some("1 lines")     ; "plain_short_annotates")]
-    #[test_case(ToolOutput::Plain((0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n").into()), Some("20 lines") ; "plain_long_annotates")]
-    #[test_case(ToolOutput::Plain(String::new().into()),             None                ; "plain_empty_no_annotation")]
-    #[test_case(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec!["x".into(); 5], total_lines: 5, instructions: None }, Some("5 lines") ; "read_code_full_file")]
-    #[test_case(ToolOutput::ReadCode { path: "a.rs".into(), start_line: 10, lines: vec!["x".into(); 5], total_lines: 100, instructions: None }, Some("5 of 100 lines") ; "read_code_partial")]
-    #[test_case(ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
-    #[test_case(ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, Some("1 matches in 1 file") ; "grep_file_count")]
-    #[test_case(ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: "ok".into() }, None ; "diff_no_annotation")]
-    fn annotation_cases(output: ToolOutput, expected: Option<&str>) {
+    #[test_case(&ToolOutput::Plain("ok".into()),                      Some("1 lines")     ; "plain_short_annotates")]
+    #[test_case(&ToolOutput::Plain((0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n").into()), Some("20 lines") ; "plain_long_annotates")]
+    #[test_case(&ToolOutput::Plain(String::new().into()),             None                ; "plain_empty_no_annotation")]
+    #[test_case(&ToolOutput::ReadCode { path: "a.rs".into(), start_line: 1, lines: vec!["x".into(); 5], total_lines: 5, instructions: None }, Some("5 lines") ; "read_code_full_file")]
+    #[test_case(&ToolOutput::ReadCode { path: "a.rs".into(), start_line: 10, lines: vec!["x".into(); 5], total_lines: 100, instructions: None }, Some("5 of 100 lines") ; "read_code_partial")]
+    #[test_case(&ToolOutput::WriteCode { path: "a.rs".into(), byte_count: 99, lines: vec![] }, Some("99 bytes") ; "write_code_bytes")]
+    #[test_case(&ToolOutput::GrepResult { entries: vec![GrepFileEntry { path: "a.rs".into(), groups: vec![GrepMatchGroup::single(1, "hit")] }] }, Some("1 matches in 1 file") ; "grep_file_count")]
+    #[test_case(&ToolOutput::Diff { path: "a.rs".into(), before: String::new(), after: String::new(), summary: "ok".into() }, None ; "diff_no_annotation")]
+    #[allow(clippy::needless_pass_by_value)]
+    fn annotation_cases(output: &ToolOutput, expected: Option<&str>) {
         assert_eq!(output.annotation().as_deref(), expected);
     }
 
@@ -1027,10 +1093,11 @@ mod tests {
         assert!(text.contains("20: fn bar()"), "second group: {text}");
     }
 
-    #[test_case(ToolOutput::WriteCode { path: "src/lib.rs".into(), byte_count: 10, lines: vec![] }, Some("src/lib.rs") ; "write_code")]
-    #[test_case(ToolOutput::Diff { path: "src/lib.rs".into(), before: String::new(), after: String::new(), summary: String::new() }, Some("src/lib.rs") ; "diff")]
-    #[test_case(ToolOutput::Plain("ok".into()), None ; "non_write_variant")]
-    fn output_written_path(output: ToolOutput, expected: Option<&str>) {
+    #[test_case(&ToolOutput::WriteCode { path: "src/lib.rs".into(), byte_count: 10, lines: vec![] }, Some("src/lib.rs") ; "write_code")]
+    #[test_case(&ToolOutput::Diff { path: "src/lib.rs".into(), before: String::new(), after: String::new(), summary: String::new() }, Some("src/lib.rs") ; "diff")]
+    #[test_case(&ToolOutput::Plain("ok".into()), None ; "non_write_variant")]
+    #[allow(clippy::needless_pass_by_value)]
+    fn output_written_path(output: &ToolOutput, expected: Option<&str>) {
         assert_eq!(output.written_path(), expected);
     }
 
@@ -1313,6 +1380,15 @@ mod tests {
         const OMIT_MSG: &str = "theme_gen: None must not appear in serialized JSON";
         const COMPAT_MSG: &str = "missing theme_gen must deserialize as None (backwards compat)";
 
+        #[derive(Deserialize)]
+        #[allow(clippy::items_after_statements)]
+        struct ToolSnapshotFields {
+            #[allow(dead_code)]
+            id: String,
+            #[serde(default)]
+            theme_gen: Option<u64>,
+        }
+
         let event = AgentEvent::ToolSnapshot {
             id: "t1".into(),
             snapshot: BufferSnapshot {
@@ -1323,13 +1399,6 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(!json.contains("theme_gen"), "{OMIT_MSG}");
 
-        #[derive(Deserialize)]
-        struct ToolSnapshotFields {
-            #[allow(dead_code)]
-            id: String,
-            #[serde(default)]
-            theme_gen: Option<u64>,
-        }
         let json_without = r#"{"id":"t1"}"#;
         let parsed: ToolSnapshotFields = serde_json::from_str(json_without).unwrap();
         assert_eq!(parsed.theme_gen, None, "{COMPAT_MSG}");

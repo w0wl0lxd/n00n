@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -28,12 +29,17 @@ const LOCAL_INSTRUCTION_FILE: &str = "AGENTS.local.md";
 pub struct LoadedInstructions(Arc<Mutex<HashSet<PathBuf>>>);
 
 impl LoadedInstructions {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn contains_or_insert(&self, path: PathBuf) -> bool {
-        let mut set = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut set = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         !set.insert(path)
     }
 }
@@ -44,6 +50,7 @@ pub struct Instructions {
     pub loaded: LoadedInstructions,
 }
 
+#[must_use]
 pub fn is_instruction_file(name: &str) -> bool {
     name == LOCAL_INSTRUCTION_FILE
         || INSTRUCTION_FILES
@@ -51,6 +58,7 @@ pub fn is_instruction_file(name: &str) -> bool {
             .any(|f| *f == name || Path::new(f).file_name().is_some_and(|n| n == name))
 }
 
+#[must_use]
 pub fn build_system_prompt(
     vars: &Vars,
     mode: &AgentMode,
@@ -117,6 +125,7 @@ fn collect_instruction_files(
     out
 }
 
+#[must_use]
 pub fn load_instruction_text(cwd: &str) -> String {
     load_instruction_text_with_home(
         cwd,
@@ -135,11 +144,12 @@ pub(crate) fn load_instruction_text_with_home(
 
     let mut text = String::new();
     for (label, content) in files {
-        text.push_str(&format!("\n\n{label}:\n{content}"));
+        let _ = write!(text, "\n\n{label}:\n{content}");
     }
     text
 }
 
+#[must_use]
 pub fn load_instructions(cwd: &str) -> Instructions {
     load_instructions_with_home(
         cwd,
@@ -157,12 +167,13 @@ pub(crate) fn load_instructions_with_home(
     let files = collect_instruction_files(cwd, home, xdg_config, &instr.loaded);
 
     for (label, content) in files {
-        instr.text.push_str(&format!("\n\n{label}:\n{content}"));
+        let _ = write!(instr.text, "\n\n{label}:\n{content}");
     }
 
     instr
 }
 
+#[must_use]
 pub fn find_subdirectory_instructions(
     dir: &Path,
     cwd: &Path,
@@ -379,7 +390,7 @@ mod tests {
 
         let canonical = agents_path.canonicalize().unwrap();
         let loaded = LoadedInstructions::new();
-        loaded.contains_or_insert(canonical);
+        let _ = loaded.contains_or_insert(canonical);
         let pre_loaded = find_subdirectory_instructions(&sub, dir.path(), &loaded);
         assert!(pre_loaded.is_empty(), "should skip already-loaded files");
 
