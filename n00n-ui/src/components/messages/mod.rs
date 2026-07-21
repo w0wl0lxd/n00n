@@ -1639,6 +1639,7 @@ impl MessagesPanel {
                 compaction,
                 msg_index,
                 &self.expanded_compactions,
+                &self.tool_output_lines,
             )];
         }
         if let DisplayRole::Tool(t) = &msg.role {
@@ -1786,6 +1787,7 @@ impl MessagesPanel {
                     compaction,
                     i,
                     &self.expanded_compactions,
+                    &self.tool_output_lines,
                 ));
             } else if let DisplayRole::Tool(t) = &msg.role {
                 let exp = self.expanded_tools.get(&t.id).copied().unwrap_or_default();
@@ -1920,10 +1922,18 @@ fn build_compaction_segment(
     compaction: &CompactionDisplay,
     msg_index: usize,
     expanded: &HashSet<String>,
+    tool_output_lines: &ToolOutputLines,
 ) -> Segment {
     let mut lines = Vec::new();
     let mut actions = Vec::new();
-    append_compaction_lines(compaction, expanded, 0, &mut lines, &mut actions);
+    append_compaction_lines(
+        compaction,
+        expanded,
+        tool_output_lines,
+        0,
+        &mut lines,
+        &mut actions,
+    );
     let search_text = format!(
         "compaction> depth {} {} messages {}",
         compaction.depth,
@@ -1943,6 +1953,7 @@ fn compaction_summary_text(compaction: &CompactionDisplay) -> &str {
 fn append_compaction_lines(
     compaction: &CompactionDisplay,
     expanded: &HashSet<String>,
+    tool_output_lines: &ToolOutputLines,
     indent: usize,
     lines: &mut Vec<Line<'static>>,
     actions: &mut Vec<(usize, String)>,
@@ -1978,15 +1989,23 @@ fn append_compaction_lines(
     }
     for entry in &compaction.entries {
         if let Some(DisplayMetadata::Compaction(child)) = &entry.metadata {
-            append_compaction_lines(child, expanded, indent + 2, lines, actions);
+            append_compaction_lines(
+                child,
+                expanded,
+                tool_output_lines,
+                indent + 2,
+                lines,
+                actions,
+            );
         } else {
-            append_compaction_entry(entry, indent + 2, lines);
+            append_compaction_entry(entry, tool_output_lines, indent + 2, lines);
         }
     }
 }
 
 fn append_compaction_entry(
     message: &DisplayMessage,
+    tool_output_lines: &ToolOutputLines,
     indent: usize,
     lines: &mut Vec<Line<'static>>,
 ) {
@@ -2005,17 +2024,19 @@ fn append_compaction_entry(
             ]));
         }
     }
-    if let Some(output) = message
-        .tool_output
-        .as_deref()
-        .map(ToolOutput::as_display_text)
-        .filter(|output| !output.is_empty() && !message.text.contains(output))
-    {
-        for line in output.lines() {
-            lines.push(Line::from(vec![
-                Span::raw(" ".repeat(indent + label.len() + 2)),
-                Span::raw(line.to_owned()),
-            ]));
+    if let Some(output) = message.tool_output.as_deref() {
+        let output = output.as_display_text();
+        let truncated = truncate_output(
+            &output,
+            tool_output_lines.get(message.role.tool_name().unwrap_or("")),
+        );
+        if !truncated.kept.is_empty() && !message.text.contains(truncated.kept.as_ref()) {
+            for line in truncated.kept.lines() {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(indent + label.len() + 2)),
+                    Span::raw(line.to_owned()),
+                ]));
+            }
         }
     }
     if !message.images.is_empty() {
