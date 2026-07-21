@@ -540,9 +540,10 @@ mod tests {
             {
                 break;
             }
-            if std::time::Instant::now() > deadline {
-                panic!("should receive exit event for completed job");
-            }
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "should receive exit event for completed job"
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
     }

@@ -113,8 +113,8 @@ impl BtwModal {
 
         let theme = theme::current();
         let border_chrome: u16 = 2;
-        let padded_width = (area.width as u32 * WIDTH_PERCENT as u32 / 100)
-            .saturating_sub((border_chrome + H_PAD * 2) as u32) as u16;
+        let padded_width = (u32::from(area.width) * u32::from(WIDTH_PERCENT) / 100)
+            .saturating_sub(u32::from(border_chrome + H_PAD * 2)) as u16;
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
@@ -168,7 +168,7 @@ impl Overlay for BtwModal {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 

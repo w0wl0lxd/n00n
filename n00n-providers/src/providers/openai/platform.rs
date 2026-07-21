@@ -532,22 +532,21 @@ impl OpenAi {
             }) {
                 *connection = None;
             }
-            match connection.take() {
-                Some(connection) => connection,
-                None => {
-                    let socket = super::websocket::ResponsesWebSocket::connect(
-                        auth,
-                        self.websocket_connect_timeout,
-                    )
-                    .await
-                    .map_err(|error| {
-                        super::websocket::WebSocketAttemptError::transport(error, false, false)
-                    })?;
-                    ScopedResponsesWebSocket {
-                        socket,
-                        credential_hash: credential_hash.to_owned(),
-                        auth_generation,
-                    }
+            if let Some(connection) = connection.take() {
+                connection
+            } else {
+                let socket = super::websocket::ResponsesWebSocket::connect(
+                    auth,
+                    self.websocket_connect_timeout,
+                )
+                .await
+                .map_err(|error| {
+                    super::websocket::WebSocketAttemptError::transport(error, false, false)
+                })?;
+                ScopedResponsesWebSocket {
+                    socket,
+                    credential_hash: credential_hash.to_owned(),
+                    auth_generation,
                 }
             }
         };

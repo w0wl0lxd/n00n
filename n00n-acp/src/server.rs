@@ -311,7 +311,7 @@ fn handle_notification(srv: &Server, method: &str) {
             }
         }
     } else {
-        debug!(method, "unknown notification")
+        debug!(method, "unknown notification");
     }
 }
 

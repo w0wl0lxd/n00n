@@ -427,7 +427,10 @@ mod tests {
     fn sections_partition_registered_tools() {
         let (registry, _) = load_registry_with_builtins();
         let snapshot = registry.iter();
-        let registered: HashSet<&str> = snapshot.iter().map(|e| e.name()).collect();
+        let registered: HashSet<&str> = snapshot
+            .iter()
+            .map(n00n_agent::tools::RegisteredTool::name)
+            .collect();
 
         let mut sectioned: HashSet<&str> = HashSet::new();
         for (_, names) in SECTIONS {

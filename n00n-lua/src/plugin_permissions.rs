@@ -47,16 +47,19 @@ pub struct PluginPermissions {
 }
 
 impl PluginPermissions {
+    #[must_use]
     pub fn trusted() -> Self {
         Self { allowed: [true; 5] }
     }
 
+    #[must_use]
     pub fn denied() -> Self {
         Self {
             allowed: [false; 5],
         }
     }
 
+    #[must_use]
     pub fn is_allowed(&self, perm: Permission) -> bool {
         self.allowed[perm as usize]
     }
@@ -164,11 +167,11 @@ mod tests {
     #[test]
     fn from_manifest_partial() {
         let val: toml::Value = toml::from_str(
-            r#"
+            r"
             [permissions]
             fs_read = false
             net = false
-            "#,
+            ",
         )
         .unwrap();
         let p = PluginPermissions::from_manifest(&val);

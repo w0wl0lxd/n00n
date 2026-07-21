@@ -103,19 +103,20 @@ impl App {
         match self.state.mode {
             Mode::Build => self.enter_plan(),
             Mode::Plan => self.state.mode = Mode::Build,
-        };
+        }
         vec![]
     }
 
     pub(super) fn agent_mode(&self) -> AgentMode {
         match self.state.mode {
-            Mode::Plan => match self.state.plan.path() {
-                Some(p) => AgentMode::Plan(p.to_path_buf()),
-                None => {
+            Mode::Plan => {
+                if let Some(p) = self.state.plan.path() {
+                    AgentMode::Plan(p.to_path_buf())
+                } else {
                     debug_assert!(false, "Plan mode without path - invariant violated");
                     AgentMode::Build
                 }
-            },
+            }
             Mode::Build => AgentMode::Build,
         }
     }

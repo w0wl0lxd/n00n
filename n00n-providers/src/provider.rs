@@ -50,6 +50,7 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    #[must_use]
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::Anthropic => "Anthropic",
@@ -68,6 +69,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn api_key_env(self) -> &'static str {
         match self {
             Self::Anthropic => "ANTHROPIC_API_KEY",
@@ -86,6 +88,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn base_url(self) -> &'static str {
         match self {
             Self::Anthropic => "https://api.anthropic.com/v1/messages",
@@ -106,6 +109,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn supports_thinking(self) -> bool {
         matches!(
             self,
@@ -122,6 +126,7 @@ impl ProviderKind {
         )
     }
 
+    #[must_use]
     pub const fn features(self) -> Option<&'static str> {
         match self {
             Self::Anthropic => {
@@ -150,6 +155,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn family(self) -> ModelFamily {
         match self {
             Self::Anthropic => ModelFamily::Claude,
@@ -168,6 +174,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn accepts_arbitrary_models(self) -> bool {
         matches!(
             self,
@@ -183,10 +190,11 @@ impl ProviderKind {
     }
 
     /// `None` when we honestly don't know the output window: llama.cpp
-    /// serves whatever model the user loaded, and TensorX rejects explicit
-    /// max_tokens (see tensorx.rs). Unknown means "don't limit", never
+    /// serves whatever model the user loaded, and `TensorX` rejects explicit
+    /// `max_tokens` (see tensorx.rs). Unknown means "don't limit", never
     /// "assume small"; a `0` sentinel here once silently capped llama.cpp
     /// thinking budgets at the floor.
+    #[must_use]
     pub const fn fallback_max_output(self) -> Option<u32> {
         match self {
             Self::Anthropic => Some(128_000),
@@ -205,6 +213,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn fallback_context_window(self) -> u32 {
         match self {
             Self::Anthropic => 200_000,
@@ -247,6 +256,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub fn is_available(self) -> bool {
         self.create(Timeouts::default()).is_ok()
     }
@@ -379,6 +389,7 @@ pub struct ModelBatch {
 
 /// Offline version of model discovery: returns specs from static tables
 /// and configured dynamic providers. See [`fetch_all_models`] for live lookups.
+#[must_use]
 pub fn available_model_specs() -> Vec<String> {
     let mut specs: Vec<String> = ProviderKind::iter()
         .filter(|kind| should_discover(*kind) && kind.is_available())

@@ -14,7 +14,7 @@ const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 const BATCH_SRC: &str = include_str!("../../plugins/batch/init.lua");
 
-/// Only the real ToolView emits this when collapsed.
+/// Only the real `ToolView` emits this when collapsed.
 const EXPAND_HINT: &str = "click to expand";
 /// Fixed cap so truncation tests don't depend on the product default.
 const VIEW_CAP: usize = 3;

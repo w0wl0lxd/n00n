@@ -169,6 +169,7 @@ impl PluginHost {
         Ok(Self { inner: Some(lua) })
     }
 
+    #[must_use]
     pub fn disabled() -> Self {
         Self { inner: None }
     }
@@ -443,6 +444,7 @@ impl PluginHost {
         )
     }
 
+    #[must_use]
     pub fn event_handle(&self) -> Option<EventHandle> {
         self.inner.as_ref().map(|t| EventHandle {
             tx: t.tx.clone(),
@@ -468,6 +470,7 @@ impl PluginHost {
             .map_or_else(HintReader::empty, |t| t.hint_reader.clone())
     }
 
+    #[must_use]
     pub fn ui_action_rx(&self) -> Option<flume::Receiver<UiAction>> {
         self.inner.as_ref().map(|t| t.ui_action_rx.clone())
     }
@@ -489,6 +492,7 @@ impl EventHandle {
     }
 
     #[doc(hidden)]
+    #[must_use]
     pub fn disconnected_for_test() -> Self {
         Self::from_tx(flume::unbounded().0)
     }
@@ -512,6 +516,7 @@ impl EventHandle {
         });
     }
 
+    #[must_use]
     pub fn collect_prompt_slots(&self) -> ResolvedSlots {
         let (tx, rx) = flume::bounded(1);
         let _ = self.tx.send(Request::CollectPromptSlots { reply: tx });
@@ -587,6 +592,7 @@ impl EventHandle {
         });
     }
 
+    #[must_use]
     pub fn run_keybind_callback(&self, id: u64) -> bool {
         self.prio_tx
             .try_send(Request::RunKeybindCallback { id })

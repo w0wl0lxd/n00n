@@ -1494,7 +1494,7 @@ mod tests {
             tx,
             permission_state: PermissionState::Ready(None),
             mutable_path_field: None,
-            timeout: Some(Duration::from_secs(60)),
+            timeout: Some(Duration::from_mins(1)),
             start_annotation: None,
             has_start_fn: false,
         }
@@ -1547,7 +1547,7 @@ mod tests {
             has_header_fn: false,
             permission_scope_kind,
             mutable_path_field: None,
-            timeout: Some(Duration::from_secs(60)),
+            timeout: Some(Duration::from_mins(1)),
             start_annotation: None,
             has_start_fn: false,
             examples: None,

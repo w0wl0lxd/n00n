@@ -382,7 +382,7 @@ mod tests {
 
     fn populated_ctx() -> ToolContext {
         let mut ctx = stub_ctx_with(&AgentMode::Build, None, Some(TOOL_USE_ID));
-        ctx.deadline = Deadline::after(Duration::from_secs(60));
+        ctx.deadline = Deadline::after(Duration::from_mins(1));
         ctx.tool_output_lines = ToolOutputLines {
             bash: 999,
             ..ToolOutputLines::default()

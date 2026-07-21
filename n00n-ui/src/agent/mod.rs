@@ -91,8 +91,7 @@ impl AgentHandles {
     pub(crate) fn mcp_reader(&self) -> McpSnapshotReader {
         self.mcp_handle
             .as_ref()
-            .map(McpHandle::reader)
-            .unwrap_or_else(McpSnapshotReader::empty)
+            .map_or_else(McpSnapshotReader::empty, McpHandle::reader)
     }
 
     pub(crate) fn apply_to_app(&self, app: &mut App) {
@@ -285,7 +284,7 @@ mod tests {
 
     use super::*;
 
-    const LONG_TIMEOUT: Duration = Duration::from_secs(60);
+    const LONG_TIMEOUT: Duration = Duration::from_mins(1);
     const SHORT_TIMEOUT: Duration = Duration::from_millis(50);
 
     #[test]

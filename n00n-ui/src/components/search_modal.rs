@@ -281,7 +281,7 @@ impl Overlay for SearchModal {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 
