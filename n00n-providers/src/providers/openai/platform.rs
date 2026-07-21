@@ -294,6 +294,12 @@ impl OpenAi {
             record_in_state(state, response_id, tools_hash, messages);
         }
     }
+
+    fn clear_response_chain(&self, session_id: Option<&SessionRef>) {
+        if let Some(session_id) = session_id {
+            self.session_state.lock().unwrap().remove(session_id);
+        }
+    }
 }
 
 impl Provider for OpenAi {
@@ -324,6 +330,35 @@ impl Provider for OpenAi {
                     tools,
                     opts,
                     previous_response_id.as_deref(),
+                    prompt_cache_key.as_deref(),
+                );
+                let result = self
+                    .with_oauth_retry(|| async {
+                        let auth = self.codex_auth()?;
+                        let (response_id, response) = super::websocket::stream_message(
+                            &body,
+                            event_tx,
+                            &auth,
+                            stream_timeout,
+                        )
+                        .await?;
+                        self.record_response(session_id, response_id, &tools_hash, messages);
+                        Ok(response)
+                    })
+                    .await;
+                if previous_response_id.is_none() || !is_missing_previous_response(&result) {
+                    return result;
+                }
+
+                warn!("OpenAI Responses chain was not found; retrying with full history");
+                self.clear_response_chain(session_id);
+                let body = super::websocket::build_request_body(
+                    model,
+                    messages,
+                    system,
+                    tools,
+                    opts,
+                    None,
                     prompt_cache_key.as_deref(),
                 );
                 return self
@@ -409,6 +444,10 @@ impl Provider for OpenAi {
             model.context_window = model.context_window.min(context_window);
         }
     }
+}
+
+fn is_missing_previous_response<T>(result: &Result<T, AgentError>) -> bool {
+    matches!(result, Err(AgentError::Api { status: 400, message }) if message.to_lowercase().contains("previous response") && message.to_lowercase().contains("not found"))
 }
 
 #[cfg(test)]
