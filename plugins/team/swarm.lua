@@ -107,7 +107,7 @@ local function run_agent(ctx, agent, event, opts)
   agent.workload = agent.workload + 1
   local prompt = event.task
   if opts.relay_k and opts.relay_k > 0 then
-    local block = retrieve.retrieve(ctx, event.task, agent.slot, opts.relay_k)
+    local block = retrieve.retrieve(ctx, event.task, agent.slot, opts.relay_k, opts.use_summary)
     if block and #block > 0 then
       prompt = prompt .. "\n\nRelevant context:\n" .. block
     end
