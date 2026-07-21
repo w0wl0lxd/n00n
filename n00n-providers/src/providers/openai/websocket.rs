@@ -74,7 +74,7 @@ impl WebSocketAttemptError {
     }
 
     pub(crate) fn into_agent_error(self) -> AgentError {
-        if self.request_sent() && self.transport_failure {
+        if self.request_sent() && (self.transport_failure || self.error.is_retryable()) {
             AgentError::RequestSent {
                 message: self.error.to_string(),
                 metadata: Some(self.delivery),
@@ -852,6 +852,29 @@ mod tests {
         assert!(delivery.response_id.is_none());
     }
 
+    #[test]
+    fn retryable_response_error_after_send_is_not_replayed() {
+        let error = WebSocketAttemptError::response(
+            AgentError::Api {
+                status: 500,
+                message: "provider failed after accepting the create".into(),
+            },
+            false,
+            RequestDeliveryMetadata::new(RequestDeliveryPhase::SentAwaitingAcceptance),
+        )
+        .into_agent_error();
+
+        assert!(matches!(
+            error,
+            AgentError::RequestSent {
+                metadata: Some(RequestDeliveryMetadata {
+                    phase: RequestDeliveryPhase::SentAwaitingAcceptance,
+                    ..
+                }),
+                ..
+            }
+        ));
+    }
     #[test]
     #[allow(clippy::large_futures)]
     fn fake_transport_close_after_send_is_not_synthetic_422() {
