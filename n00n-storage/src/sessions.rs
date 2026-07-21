@@ -134,7 +134,12 @@ pub struct OpenAiResponseChainLock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TranscriptEntry<M> {
     Message(M),
-    Compaction { entries: Vec<TranscriptEntry<M>> },
+    GeneratedMessage(M),
+    Compaction {
+        entries: Vec<TranscriptEntry<M>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generated_summary: Option<M>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -425,13 +430,35 @@ pub struct SessionLog {
     session_id: N00nId,
     dir: PathBuf,
     file: File,
-    saved_msg_count: usize,
+    saved_messages: MessageCursor,
     saved_tool_ids: HashSet<String>,
     saved_sub_msg_counts: HashMap<String, usize>,
     /// Serialized trailing meta record; lets `append` persist meta-only
     /// changes (title, draft, `updated_at`) instead of dropping them.
     saved_meta: Vec<u8>,
     saved_title: String,
+}
+
+struct MessageCursor {
+    identities: Vec<Vec<u8>>,
+}
+
+impl MessageCursor {
+    fn capture<M: Serialize>(messages: &[M]) -> Result<Self, SessionError> {
+        let identities = messages
+            .iter()
+            .map(|message| serde_json::to_vec(message).map_err(StorageError::from))
+            .collect::<Result<_, _>>()?;
+        Ok(Self { identities })
+    }
+
+    fn len(&self) -> usize {
+        self.identities.len()
+    }
+
+    fn is_prefix_of(&self, current: &Self) -> bool {
+        current.identities.starts_with(&self.identities)
+    }
 }
 
 fn sub_msg_snapshot<M>(map: &HashMap<String, Vec<M>>) -> HashMap<String, usize> {
@@ -449,7 +476,7 @@ impl SessionLog {
     {
         let file = write_session_file(dir, session)?;
         update_cwd_index(dir, &session.cwd, session.id)?;
-        Ok(Self::cursor_from(dir, session, file))
+        Self::cursor_from(dir, session, file)
     }
 
     /// # Errors
@@ -480,7 +507,7 @@ impl SessionLog {
             .append(true)
             .open(&path)
             .map_err(StorageError::from)?;
-        let log = Self::cursor_from(dir, &session, file);
+        let log = Self::cursor_from(dir, &session, file)?;
         Ok((session, log))
     }
 
@@ -505,20 +532,24 @@ impl SessionLog {
             return self.compact(&dir, session);
         }
 
+        let current_messages = MessageCursor::capture(&session.messages)?;
+        if !self.saved_messages.is_prefix_of(&current_messages) {
+            let dir = self.dir.clone();
+            return self.compact(&dir, session);
+        }
+
         if self.cursor_ahead(session) {
             return Err(SessionError::CursorAhead {
-                saved: self.saved_msg_count,
+                saved: self.saved_messages.len(),
                 actual: session.messages.len(),
             });
         }
 
         let mut buf = Vec::new();
-        let mut new_msg_count = self.saved_msg_count;
         let mut new_tool_ids = Vec::new();
 
-        for msg in &session.messages[self.saved_msg_count..] {
+        for msg in &session.messages[self.saved_messages.len()..] {
             append_record(&mut buf, &LogRecord::<&M, &U, &T>::Msg { d: msg })?;
-            new_msg_count += 1;
         }
 
         for (id, output) in &session.tool_outputs {
@@ -574,7 +605,7 @@ impl SessionLog {
             return Err(e.into());
         }
 
-        self.saved_msg_count = new_msg_count;
+        self.saved_messages = current_messages;
         self.saved_tool_ids.extend(new_tool_ids);
         for (sub_id, count) in new_sub_counts {
             self.saved_sub_msg_counts.insert(sub_id, count);
@@ -609,28 +640,31 @@ impl SessionLog {
             .append(true)
             .open(&path)
             .map_err(StorageError::from)?;
-        *self = Self::cursor_from(dir, session, file);
+        *self = Self::cursor_from(dir, session, file)?;
 
         Ok(())
     }
 
-    fn cursor_from<M, U, T>(dir: &Path, session: &Session<M, U, T>, file: File) -> Self
+    fn cursor_from<M, U, T>(
+        dir: &Path,
+        session: &Session<M, U, T>,
+        file: File,
+    ) -> Result<Self, SessionError>
     where
         M: Serialize + Clone,
         U: Serialize,
         T: Serialize,
     {
-        Self {
+        Ok(Self {
             session_id: session.id,
             dir: dir.to_path_buf(),
             file,
-            saved_msg_count: session.messages.len(),
+            saved_messages: MessageCursor::capture(&session.messages)?,
             saved_tool_ids: session.tool_outputs.keys().cloned().collect(),
             saved_sub_msg_counts: sub_msg_snapshot(&session.subagent_messages),
-            #[allow(clippy::disallowed_methods)]
-            saved_meta: meta_record_bytes(session).unwrap_or_default(),
+            saved_meta: meta_record_bytes(session)?,
             saved_title: session.title.clone(),
-        }
+        })
     }
 
     fn require_same_id<M, U, T>(&self, session: &Session<M, U, T>) -> Result<(), SessionError> {
@@ -644,7 +678,7 @@ impl SessionLog {
     }
 
     fn cursor_ahead<M, U, T>(&self, session: &Session<M, U, T>) -> bool {
-        self.saved_msg_count > session.messages.len()
+        self.saved_messages.len() > session.messages.len()
             || self
                 .saved_tool_ids
                 .iter()
@@ -1532,7 +1566,10 @@ mod tests {
         delete_openai_response_chain, load_openai_response_chain_at, lock_openai_response_chain,
         openai_response_chain_path, save_openai_response_chain,
     };
-    use super::{SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource};
+    use super::{
+        SCAN_CACHE_FILE, Session, SessionError, SessionLog, StorageError, TitleSource,
+        TranscriptEntry,
+    };
     use crate::StateDir;
     use crate::id::N00nId;
     use serde_json::Value;
@@ -1628,6 +1665,14 @@ mod tests {
         let mut session: TestSession =
             Session::new("anthropic/claude-sonnet-4", "/home/test/project");
         session.messages.push(user_message("hello"));
+        session.transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(user_message("before compaction"))],
+                generated_summary: Some(assistant_message("generated summary")),
+            },
+            TranscriptEntry::GeneratedMessage(user_message("summary prompt")),
+            TranscriptEntry::GeneratedMessage(assistant_message("generated summary")),
+        ];
         session.subagent_messages.insert(
             "tool-1".into(),
             vec![user_message("sub-prompt"), assistant_message("sub-reply")],
@@ -1641,6 +1686,33 @@ mod tests {
         assert_eq!(loaded.messages.len(), 1);
         assert_eq!(loaded.version, SESSION_VERSION);
         assert_eq!(loaded.subagent_messages["tool-1"].len(), 2);
+        assert!(matches!(
+            loaded.transcript.as_slice(),
+            [
+                TranscriptEntry::Compaction {
+                    generated_summary: Some(summary),
+                    ..
+                },
+                TranscriptEntry::GeneratedMessage(_),
+                TranscriptEntry::GeneratedMessage(_),
+            ] if summary == &assistant_message("generated summary")
+        ));
+    }
+
+    #[test]
+    fn legacy_compaction_without_summary_metadata_deserializes() {
+        let entry: TranscriptEntry<Value> = serde_json::from_value(serde_json::json!({
+            "Compaction": { "entries": [] }
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            entry,
+            TranscriptEntry::Compaction {
+                generated_summary: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1711,6 +1783,78 @@ mod tests {
         assert!(loaded.tool_outputs.contains_key("tool-1"));
         assert_eq!(loaded.subagent_messages["sub-1"].len(), 2);
         assert_eq!(loaded.subagent_messages["sub-2"].len(), 1);
+    }
+
+    #[test]
+    fn append_rewrites_equal_length_replacement() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages = vec![user_message("old prompt"), assistant_message("old reply")];
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        session.messages = vec![user_message("new prompt"), assistant_message("new reply")];
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages, session.messages);
+    }
+
+    #[test]
+    fn append_rewrites_longer_replacement() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages = vec![user_message("old prompt"), assistant_message("old reply")];
+        let mut log = SessionLog::create(dir, &session).unwrap();
+
+        session.messages = vec![
+            user_message("replacement prompt"),
+            assistant_message("replacement reply"),
+            user_message("new tail"),
+        ];
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages, session.messages);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_only_messages_keep_append_fast_path() {
+        use std::os::unix::fs::MetadataExt;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages.push(user_message("first"));
+        let mut log = SessionLog::create(dir, &session).unwrap();
+        let path = jsonl_path(dir, session.id);
+        let inode = fs::metadata(&path).unwrap().ino();
+
+        session.messages.push(assistant_message("reply"));
+        log.append(&session).unwrap();
+
+        assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages, session.messages);
+    }
+
+    #[test]
+    fn reopened_log_rewrites_mutated_saved_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("m", "/project");
+        session.messages.push(user_message("old"));
+        let log = SessionLog::create(dir, &session).unwrap();
+        drop(log);
+
+        let (_loaded, mut log) = SessionLog::open::<Value, Value, Value>(dir, session.id).unwrap();
+        session.messages = vec![user_message("replacement"), assistant_message("new tail")];
+        log.append(&session).unwrap();
+
+        let loaded = TestSession::load_from(session.id, dir).unwrap();
+        assert_eq!(loaded.messages, session.messages);
     }
 
     #[test]

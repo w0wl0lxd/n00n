@@ -1,10 +1,12 @@
 //! Rebuilds display messages from stored sessions. Tool outputs get syntax
 //! highlighted, missing outputs fall back to plain text from `ToolResult`.
 
+#[cfg(test)]
+use crate::components::DisplayMetadata;
 use crate::components::messages::{MessagesPanel, PromptProgress};
 use crate::components::scrollbar::ScrollInfo;
 use crate::components::tool_display::append_annotation;
-use crate::components::{DisplayMessage, DisplayRole, ToolRole, ToolStatus};
+use crate::components::{CompactionDisplay, DisplayMessage, DisplayRole, ToolRole, ToolStatus};
 use crate::markdown::truncate_output;
 use std::collections::HashMap;
 use std::path::Path;
@@ -17,6 +19,7 @@ use n00n_agent::{
 };
 use n00n_config::{ToolKey, ToolOutputLines, UiConfig};
 use n00n_providers::{ContentBlock, Message, Role, TokenUsage};
+use n00n_storage::sessions::TranscriptEntry;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -119,7 +122,17 @@ impl Chat {
                         .push(DisplayMessage::plan(content, pp.display().to_string()));
                 }
             }
-            AgentEvent::TurnComplete(_) => {}
+            AgentEvent::TurnComplete(event) => {
+                if matches!(event.message.role, Role::Assistant)
+                    && let Some(summary) =
+                        event.message.content.iter().find_map(|block| match block {
+                            ContentBlock::Text { text } if !text.is_empty() => Some(text.clone()),
+                            _ => None,
+                        })
+                {
+                    self.messages_panel.set_pending_compaction_summary(summary);
+                }
+            }
             AgentEvent::ToolResultsSubmitted { .. } => {
                 if let Some(usage) = self.pending_turn_usage.take() {
                     self.messages_panel.set_turn_usage_on_last_tool(usage);
@@ -127,13 +140,13 @@ impl Chat {
             }
             AgentEvent::AutoCompacting => {
                 self.messages_panel.flush();
-                self.messages_panel.push(DisplayMessage::new(
-                    DisplayRole::Assistant,
-                    "Auto-compacting conversation...".into(),
-                ));
+                self.messages_panel
+                    .push(DisplayMessage::compaction_pending());
             }
             AgentEvent::CompactionDone => {
-                self.messages_panel.flush();
+                if !self.messages_panel.complete_pending_compaction() {
+                    self.messages_panel.flush();
+                }
             }
             AgentEvent::QueueItemConsumed {
                 text,
@@ -463,6 +476,129 @@ impl Chat {
     pub fn streaming_thinking_is_empty(&self) -> bool {
         self.messages_panel.streaming_thinking_is_empty()
     }
+
+    #[cfg(test)]
+    pub fn compaction_card_count(&self) -> usize {
+        self.messages_panel
+            .messages
+            .iter()
+            .filter(|message| {
+                matches!(
+                    message.metadata.as_ref(),
+                    Some(DisplayMetadata::Compaction(_))
+                )
+            })
+            .count()
+    }
+
+    #[cfg(test)]
+    pub fn has_pending_compaction(&self) -> bool {
+        self.messages_panel.messages.iter().any(|message| {
+            matches!(
+                message.metadata.as_ref(),
+                Some(DisplayMetadata::CompactionPending)
+            )
+        })
+    }
+
+    #[cfg(test)]
+    pub fn last_compaction_summary(&self) -> Option<&str> {
+        self.messages_panel
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| match message.metadata.as_ref() {
+                Some(DisplayMetadata::Compaction(compaction)) => compaction.summary.as_deref(),
+                Some(DisplayMetadata::CompactionPending) | None => None,
+            })
+    }
+}
+
+pub fn transcript_to_display(
+    entries: &[TranscriptEntry<Message>],
+    tool_outputs: &HashMap<String, ToolOutput>,
+    tool_output_lines: &ToolOutputLines,
+) -> (Vec<DisplayMessage>, Vec<n00n_lua::RestoreItem>) {
+    transcript_to_display_at(entries, tool_outputs, tool_output_lines, 1, "compaction")
+}
+
+fn transcript_to_display_at(
+    entries: &[TranscriptEntry<Message>],
+    tool_outputs: &HashMap<String, ToolOutput>,
+    tool_output_lines: &ToolOutputLines,
+    depth: usize,
+    parent_id: &str,
+) -> (Vec<DisplayMessage>, Vec<n00n_lua::RestoreItem>) {
+    let mut display = Vec::new();
+    let mut restore_items = Vec::new();
+    let mut index = 0;
+    let mut compaction_index = 0;
+    while index < entries.len() {
+        match &entries[index] {
+            TranscriptEntry::Message(_) => {
+                let run_start = index;
+                while matches!(entries.get(index), Some(TranscriptEntry::Message(_))) {
+                    index += 1;
+                }
+                let messages: Vec<_> = entries[run_start..index]
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        TranscriptEntry::Message(message) => Some(message.clone()),
+                        TranscriptEntry::GeneratedMessage(_)
+                        | TranscriptEntry::Compaction { .. } => None,
+                    })
+                    .collect();
+                let (mut run_display, mut run_items) =
+                    history_to_display(&messages, tool_outputs, tool_output_lines);
+                display.append(&mut run_display);
+                restore_items.append(&mut run_items);
+            }
+            TranscriptEntry::GeneratedMessage(_) => {
+                index += 1;
+            }
+            TranscriptEntry::Compaction {
+                entries: children,
+                generated_summary,
+            } => {
+                let id = if parent_id == "compaction" {
+                    format!("{parent_id}:{compaction_index}")
+                } else {
+                    format!("{parent_id}.{compaction_index}")
+                };
+                let (child_display, _) = transcript_to_display_at(
+                    children,
+                    tool_outputs,
+                    tool_output_lines,
+                    depth + 1,
+                    &id,
+                );
+                let summary = generated_summary
+                    .as_ref()
+                    .and_then(Message::first_text_content)
+                    .map(str::to_owned);
+                display.push(DisplayMessage::compaction(CompactionDisplay {
+                    id,
+                    depth,
+                    message_count: transcript_message_count(children),
+                    summary,
+                    entries: child_display,
+                }));
+                compaction_index += 1;
+                index += 1;
+            }
+        }
+    }
+    (display, restore_items)
+}
+
+fn transcript_message_count(entries: &[TranscriptEntry<Message>]) -> usize {
+    entries
+        .iter()
+        .map(|entry| match entry {
+            TranscriptEntry::Message(_) | TranscriptEntry::GeneratedMessage(_) => 1,
+            TranscriptEntry::Compaction { entries, .. } => transcript_message_count(entries),
+        })
+        .sum()
 }
 
 pub fn history_to_display(
@@ -573,6 +709,7 @@ pub fn history_to_display(
                                     name: static_name.into(),
                                 })),
                                 text,
+                                metadata: None,
                                 images: Vec::new(),
                                 tool_input: None,
                                 tool_raw_input: Some(Arc::new(input.clone())),
@@ -822,6 +959,143 @@ mod tests {
                 .0
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn recursive_transcript_becomes_two_level_compaction_cards() {
+        let transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![
+                    TranscriptEntry::Compaction {
+                        entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
+                        generated_summary: Some(Message {
+                            role: Role::Assistant,
+                            content: vec![ContentBlock::Text {
+                                text: "first summary".into(),
+                            }],
+                            ..Default::default()
+                        }),
+                    },
+                    TranscriptEntry::GeneratedMessage(Message::user(
+                        "What did we do so far?".into(),
+                    )),
+                    TranscriptEntry::GeneratedMessage(Message {
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::Text {
+                            text: "first summary".into(),
+                        }],
+                        ..Default::default()
+                    }),
+                ],
+                generated_summary: Some(Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "second summary".into(),
+                    }],
+                    ..Default::default()
+                }),
+            },
+            TranscriptEntry::GeneratedMessage(Message::user("What did we do so far?".into())),
+            TranscriptEntry::GeneratedMessage(Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "second summary".into(),
+                }],
+                ..Default::default()
+            }),
+        ];
+
+        let (display, _) =
+            transcript_to_display(&transcript, &empty_outputs(), &ToolOutputLines::default());
+        assert_eq!(
+            display.len(),
+            1,
+            "compaction preamble must stay inside its card"
+        );
+        let Some(DisplayMetadata::Compaction(outer)) = display[0].metadata.as_ref() else {
+            panic!("first display message should be a compaction card");
+        };
+        assert_eq!(outer.entries.len(), 1);
+        let Some(DisplayMetadata::Compaction(inner)) = outer.entries[0].metadata.as_ref() else {
+            panic!("outer card should contain the nested compaction card");
+        };
+
+        assert_eq!((outer.depth, outer.message_count), (1, 3));
+        assert_eq!(outer.summary.as_deref(), Some("second summary"));
+        assert_eq!((inner.depth, inner.message_count), (2, 1));
+        assert_eq!(inner.summary.as_deref(), Some("first summary"));
+    }
+
+    #[test]
+    fn legacy_compaction_keeps_following_user_assistant_pair_visible() {
+        let transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
+                generated_summary: None,
+            },
+            TranscriptEntry::Message(Message::user("legitimate follow-up".into())),
+            TranscriptEntry::Message(Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "legitimate answer".into(),
+                }],
+                ..Default::default()
+            }),
+        ];
+
+        let (display, _) =
+            transcript_to_display(&transcript, &empty_outputs(), &ToolOutputLines::default());
+
+        assert_eq!(display.len(), 3);
+        assert!(matches!(display[1].role, DisplayRole::User));
+        assert_eq!(display[1].text, "legitimate follow-up");
+        assert!(matches!(display[2].role, DisplayRole::Assistant));
+        assert_eq!(display[2].text, "legitimate answer");
+    }
+
+    #[test]
+    fn summary_metadata_does_not_hide_following_ordinary_pair() {
+        let transcript = vec![
+            TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
+                generated_summary: Some(Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "card summary".into(),
+                    }],
+                    ..Default::default()
+                }),
+            },
+            TranscriptEntry::Message(Message::user("ordinary follow-up".into())),
+            TranscriptEntry::Message(Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "ordinary answer".into(),
+                }],
+                ..Default::default()
+            }),
+        ];
+
+        let (display, _) =
+            transcript_to_display(&transcript, &empty_outputs(), &ToolOutputLines::default());
+
+        assert_eq!(display.len(), 3);
+        assert_eq!(display[1].text, "ordinary follow-up");
+        assert_eq!(display[2].text, "ordinary answer");
+    }
+
+    #[test]
+    fn standalone_user_text_equal_to_compaction_prompt_remains_visible() {
+        let transcript = vec![TranscriptEntry::Message(Message::user(
+            "What did we do so far?".into(),
+        ))];
+
+        let (display, _) =
+            transcript_to_display(&transcript, &empty_outputs(), &ToolOutputLines::default());
+
+        assert_eq!(display.len(), 1);
+        assert!(matches!(display[0].role, DisplayRole::User));
+        assert_eq!(display[0].text, "What did we do so far?");
     }
 
     fn tool_use_pair(
@@ -1169,7 +1443,7 @@ mod tests {
     }
 
     #[test]
-    fn compaction_done_flushes_streaming_buffers() {
+    fn compaction_done_absorbs_streaming_summary_into_card() {
         let mut chat = Chat::new("Main".into(), UiConfig::default(), test_picker());
 
         chat.handle_event(AgentEvent::AutoCompacting, None);
@@ -1193,11 +1467,12 @@ mod tests {
         chat.handle_event(AgentEvent::CompactionDone, None);
         assert!(chat.streaming_text_is_empty());
         assert!(chat.streaming_thinking_is_empty());
-        assert_eq!(chat.message_count(), 3);
+        assert_eq!(chat.message_count(), 1);
+        assert_eq!(chat.last_compaction_summary(), Some("summary"));
 
         chat.handle_event(AgentEvent::TextDelta { text: "new".into() }, None);
         chat.flush();
-        assert_eq!(chat.message_count(), 4);
+        assert_eq!(chat.message_count(), 2);
         assert_eq!(chat.last_message_text(), "new");
     }
 }
