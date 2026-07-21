@@ -256,7 +256,9 @@ impl KeyPool {
         if !self.rotate() {
             return false;
         }
-        *auth.lock().unwrap() = build(self.current());
+        *auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = build(self.current());
         true
     }
 
@@ -268,7 +270,9 @@ impl KeyPool {
         if !self.rotate() {
             return false;
         }
-        auth.lock().unwrap().headers = build(self.current());
+        auth.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .headers = build(self.current());
         true
     }
 
@@ -329,13 +333,13 @@ mod tests {
     fn next_sse_line_expired_deadline_returns_timeout() {
         smol::block_on(async {
             let mut lines = NeverReader.lines();
-            let mut past = Instant::now() - Duration::from_secs(1);
-            let stream_timeout = Duration::from_secs(300);
+            let mut past = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+            let stream_timeout = Duration::from_mins(5);
             let err = next_sse_line(&mut lines, &mut past, stream_timeout)
                 .await
                 .unwrap_err();
             assert!(matches!(err, AgentError::Timeout { .. }));
-        })
+        });
     }
 
     #[test]

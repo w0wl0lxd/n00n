@@ -133,10 +133,19 @@ impl Copilot {
 
     async fn auth(&self) -> Result<CopilotAuth, AgentError> {
         if let Some(auth) = &self.resolved_auth {
-            return copilot_auth_from_resolved(&auth.lock().unwrap());
+            return copilot_auth_from_resolved(
+                &auth
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
         }
 
-        if let Some(auth) = self.auth.lock().unwrap().clone() {
+        if let Some(auth) = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
             return Ok(auth);
         }
 
@@ -148,17 +157,29 @@ impl Copilot {
             token: creds.api_key,
             endpoint,
         };
-        *self.auth.lock().unwrap() = Some(auth.clone());
+        *self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(auth.clone());
         Ok(auth)
     }
 
     async fn model_endpoint(&self, model_id: &str) -> Result<Endpoint, AgentError> {
-        if let Some(model) = self.models.lock().unwrap().get(model_id).cloned() {
+        if let Some(model) = self
+            .models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(model_id)
+            .cloned()
+        {
             return Ok(model.endpoint());
         }
 
         let models = self.fetch_models().await?;
-        let mut guard = self.models.lock().unwrap();
+        let mut guard = self
+            .models
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.clear();
         guard.extend(models.into_iter().map(|model| (model.id.clone(), model)));
         Ok(guard
@@ -585,7 +606,10 @@ impl Provider for Copilot {
                 .iter()
                 .map(|model| crate::model::ModelInfo::id_only(model.id.clone()))
                 .collect::<Vec<_>>();
-            let mut guard = self.models.lock().unwrap();
+            let mut guard = self
+                .models
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.clear();
             guard.extend(models.into_iter().map(|model| (model.id.clone(), model)));
             Ok(infos)
@@ -594,8 +618,14 @@ impl Provider for Copilot {
 
     fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async {
-            *self.auth.lock().unwrap() = None;
-            self.models.lock().unwrap().clear();
+            *self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            self.models
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
             Ok(())
         })
     }

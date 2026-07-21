@@ -186,7 +186,10 @@ impl OpenAi {
     }
 
     fn current_auth(&self) -> ResolvedAuth {
-        self.auth.lock().unwrap().clone()
+        self.auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn is_oauth(&self) -> bool {
@@ -218,7 +221,10 @@ impl OpenAi {
             }
         })
         .await?;
-        *self.auth.lock().unwrap() = resolved;
+        *self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = resolved;
         debug!("refreshed OpenAI OAuth token");
         Ok(())
     }
@@ -259,7 +265,10 @@ impl OpenAi {
         tools_hash: &str,
         messages: &'a [Message],
     ) -> (Option<String>, &'a [Message]) {
-        let mut state = self.session_state.lock().unwrap();
+        let mut state = self
+            .session_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Opportunistically evict stale sessions
         let now = Instant::now();
@@ -282,7 +291,10 @@ impl OpenAi {
         messages: &[Message],
     ) {
         if let Some(sid) = session_id {
-            let mut state = self.session_state.lock().unwrap();
+            let mut state = self
+                .session_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session_state = state.entry(sid.clone()).or_default();
             session_state.last_used = Instant::now();
             record_in_state(session_state, response_id, tools_hash, messages);
@@ -421,7 +433,10 @@ impl Provider for OpenAi {
                 return Ok(());
             };
             let resolved = smol::unblock(move || auth::resolve(&storage)).await?;
-            *self.auth.lock().unwrap() = resolved;
+            *self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = resolved;
             debug!("reloaded OpenAI auth from storage");
             Ok(())
         })

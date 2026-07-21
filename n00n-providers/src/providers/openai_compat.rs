@@ -131,7 +131,10 @@ impl OpenAiCompatProvider {
 
         let key = value_hash(tools);
         {
-            let guard = self.cached_tools.lock().unwrap();
+            let guard = self
+                .cached_tools
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some((cached_key, cached_tools)) = guard.as_ref()
                 && *cached_key == key
             {
@@ -140,7 +143,10 @@ impl OpenAiCompatProvider {
         }
 
         let converted = convert_tools(tools);
-        *self.cached_tools.lock().unwrap() = Some((key, converted.clone()));
+        *self
+            .cached_tools
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, converted.clone()));
         converted
     }
 
@@ -767,7 +773,7 @@ mod tests {
     use super::*;
     use futures_lite::io::Cursor;
 
-    const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
+    const TEST_STREAM_TIMEOUT: Duration = Duration::from_mins(5);
 
     #[test]
     fn parse_sse_text_and_usage() {
@@ -802,7 +808,7 @@ data: [DONE]\n";
                 }
             }
             assert_eq!(deltas, vec!["Hello", " world"]);
-        })
+        });
     }
 
     #[test]
@@ -824,7 +830,7 @@ data: [DONE]\n";
             assert_eq!(resp.usage.output, 10);
             assert_eq!(resp.usage.cache_read, 30);
             assert_eq!(resp.usage.cache_creation, 20);
-        })
+        });
     }
 
     #[test]
@@ -865,7 +871,7 @@ data: [DONE]\n";
             }
             assert_eq!(thinking, vec!["Let me think", "..."]);
             assert_eq!(text_deltas, vec!["Hello"]);
-        })
+        });
     }
 
     #[test]
@@ -975,7 +981,7 @@ data: [DONE]\n";
                 starts,
                 vec![("c1".into(), "bash".into()), ("c2".into(), "read".into()),]
             );
-        })
+        });
     }
 
     #[test]
@@ -996,7 +1002,7 @@ data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\
                 }
                 other => panic!("expected Api error, got: {other:?}"),
             }
-        })
+        });
     }
 
     #[test]
@@ -1018,7 +1024,7 @@ data: [DONE]\n";
             assert_eq!(tools.len(), 1);
             assert!(!tools[0].0.is_empty(), "id must be non-empty for Bedrock");
             assert!(!tools[0].1.is_empty(), "name must be non-empty for Bedrock");
-        })
+        });
     }
 
     #[test]
@@ -1042,7 +1048,7 @@ data: [DONE]\n";
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].1, "bash");
             assert_eq!(*tools[0].2, Value::Object(Default::default()));
-        })
+        });
     }
 
     #[test]
@@ -1148,7 +1154,7 @@ data: [DONE]\n";
             assert!(resp.message.content.is_empty());
             assert_eq!(resp.usage, TokenUsage::default());
             assert_eq!(resp.stop_reason, None);
-        })
+        });
     }
 
     #[test]
@@ -1190,7 +1196,7 @@ data: [DONE]\n";
 
             assert_eq!(text_deltas, vec!["Hello"]);
             assert_eq!(thinking_deltas, vec!["Let me think", "..."]);
-        })
+        });
     }
 
     #[test]

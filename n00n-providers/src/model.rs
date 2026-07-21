@@ -258,7 +258,9 @@ impl Model {
                 anthropic::shared::long_context_window(model_id).unwrap_or(e.context_window),
             )
         } else {
-            let guard = crate::model_registry::model_registry().read().unwrap();
+            let guard = crate::model_registry::model_registry()
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let discovered = guard.discovered(provider, model_id);
             (
                 provider.family(),
@@ -292,7 +294,9 @@ impl Model {
     pub fn supports_thinking(&self) -> bool {
         self.supports_thinking_override
             .or_else(|| {
-                let guard = crate::model_registry::model_registry().read().unwrap();
+                let guard = crate::model_registry::model_registry()
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 guard
                     .discovered(self.provider, &self.id)
                     .and_then(|d| d.supports_thinking)
@@ -304,7 +308,9 @@ impl Model {
     pub fn supports_vision(&self) -> bool {
         self.supports_vision_override
             .or_else(|| {
-                let guard = crate::model_registry::model_registry().read().unwrap();
+                let guard = crate::model_registry::model_registry()
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 guard
                     .discovered(self.provider, &self.id)
                     .and_then(|d| d.supports_vision)

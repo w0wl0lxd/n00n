@@ -173,7 +173,10 @@ impl Google {
     }
 
     fn build_request(&self, method: &str, url: &str) -> isahc::http::request::Builder {
-        let auth = self.auth.lock().unwrap();
+        let auth = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         auth.configure_request(
             Request::builder()
                 .method(method)
@@ -183,7 +186,10 @@ impl Google {
     }
 
     fn api_key(&self) -> String {
-        let auth = self.auth.lock().unwrap();
+        let auth = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         auth.headers
             .iter()
             .find(|(k, _)| k == "x-goog-api-key")
@@ -193,7 +199,10 @@ impl Google {
 
     fn stream_url(&self, model_id: &str) -> String {
         let base = {
-            let auth = self.auth.lock().unwrap();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             auth.base_url.as_deref().unwrap_or(BASE_URL).to_string()
         };
         let encoded = super::urlenc(model_id);
@@ -202,7 +211,10 @@ impl Google {
 
     fn models_url(&self) -> String {
         let base = {
-            let auth = self.auth.lock().unwrap();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             auth.base_url.as_deref().unwrap_or(BASE_URL).to_string()
         };
         let key = self.api_key();
@@ -211,7 +223,10 @@ impl Google {
 
     fn cached_contents_url(&self) -> String {
         let base = {
-            let auth = self.auth.lock().unwrap();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             auth.base_url.as_deref().unwrap_or(BASE_URL).to_string()
         };
         let key = self.api_key();
@@ -260,7 +275,10 @@ impl Google {
 
     async fn delete_cached_content(&self, name: &str) -> Result<(), AgentError> {
         let base = {
-            let auth = self.auth.lock().unwrap();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             auth.base_url.as_deref().unwrap_or(BASE_URL).to_string()
         };
         let key = self.api_key();
@@ -363,7 +381,10 @@ impl Provider for Google {
             }
 
             let (cached_content_name, old_name_to_delete) = {
-                let mut cache_state = self.cache_state.lock().unwrap();
+                let mut cache_state = self
+                    .cache_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(state) = cache_state.get(sid) {
                     if state.is_valid(current_tools_hash, current_message_count) {
                         (Some(state.name.clone()), None)
@@ -389,7 +410,10 @@ impl Provider for Google {
                     .await
                 {
                     Ok(name) => {
-                        let mut cache_state = self.cache_state.lock().unwrap();
+                        let mut cache_state = self
+                            .cache_state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         cache_state.insert(
                             sid.clone(),
                             CachedContentState::new(
@@ -481,7 +505,11 @@ impl Provider for Google {
     fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async {
             let pool = KeyPool::resolve("google", ENV_VAR)?;
-            *self.auth.lock().unwrap() = resolve_auth_from_key(pool.current());
+            *self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                resolve_auth_from_key(pool.current());
             Ok(())
         })
     }
@@ -819,7 +847,7 @@ mod tests {
         super::super::Timeouts {
             connect: Duration::from_secs(5),
             low_speed: Duration::from_secs(30),
-            stream: Duration::from_secs(300),
+            stream: Duration::from_mins(5),
         }
     }
 
@@ -992,7 +1020,7 @@ mod tests {
         let result = convert_messages(&messages);
         assert_eq!(result.len(), 2);
         assert!(result[0]["parts"][0].get("functionResponse").is_some());
-        assert!(result[0]["parts"].as_array().unwrap().len() == 1);
+        assert_eq!(result[0]["parts"].as_array().unwrap().len(), 1);
         assert_eq!(result[1]["role"], "user");
         assert_eq!(result[1]["parts"][0]["inlineData"]["mimeType"], "image/png");
     }
