@@ -427,9 +427,12 @@ impl ResponseAccumulator {
 
             "response.in_progress" => {
                 if let Some(pp) = data.get("prompt_progress") {
-                    let processed = pp["processed"].as_u64().unwrap_or(0) as u32;
-                    let total = pp["total"].as_u64().unwrap_or(0) as u32;
-                    let cache = pp["cache"].as_u64().unwrap_or(0) as u32;
+                    #[allow(clippy::cast_possible_truncation)]
+                    let processed = pp["processed"].as_u64().map_or(0, |v| v as u32);
+                    #[allow(clippy::cast_possible_truncation)]
+                    let total = pp["total"].as_u64().map_or(0, |v| v as u32);
+                    #[allow(clippy::cast_possible_truncation)]
+                    let cache = pp["cache"].as_u64().map_or(0, |v| v as u32);
                     self.emitted_event = true;
                     event_tx
                         .send_async(ProviderEvent::PromptProgress {

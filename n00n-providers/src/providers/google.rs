@@ -26,7 +26,7 @@ const ENV_VAR: &str = "GEMINI_API_KEY";
 const FLASH_MAX_THINKING: u32 = 24_576;
 const PRO_MAX_THINKING: u32 = 32_768;
 const CACHE_PREFIX_LEN: usize = 3;
-const CACHE_TTL: Duration = Duration::from_secs(300);
+const CACHE_TTL: Duration = Duration::from_mins(5);
 
 /// The generic per-model max, capped by Google's documented `thinkingBudget`
 /// hard limits per family.
@@ -1207,7 +1207,11 @@ mod tests {
     fn cached_content_state_invalid_after_ttl() {
         let now = Instant::now();
         let mut state = CachedContentState::new("cache1".to_string(), 123, 5);
-        state.created_at = now - CACHE_TTL - Duration::from_secs(1);
+        state.created_at = now
+            .checked_sub(CACHE_TTL)
+            .unwrap()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap();
         assert!(!state.is_valid(123, 5, now));
     }
 
