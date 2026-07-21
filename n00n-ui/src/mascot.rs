@@ -83,7 +83,12 @@ fn detect_picker() -> Option<Arc<Picker>> {
     }
     Picker::from_query_stdio()
         .ok()
-        .filter(|p| !matches!(p.protocol_type(), ProtocolType::Halfblocks))
+        .map(|mut p| {
+            // Kitty/Sixel are stateful and stack/flicker when the image changes every
+            // frame (gaze/blink/breathe). Halfblocks is immediate and safe for animation.
+            p.set_protocol_type(ProtocolType::Halfblocks);
+            p
+        })
         .map(Arc::new)
 }
 
