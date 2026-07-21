@@ -373,38 +373,30 @@ pub(crate) fn render_instructions(
     highlight: bool,
 ) -> bool {
     let dim = theme::current().tool_dim;
-    let mut used = 0;
-    let mut truncated = false;
     let multi = blocks.len() > 1;
+    let mut rendered = Vec::new();
 
-    for (i, block) in blocks.iter().enumerate() {
-        if used >= max_lines {
-            truncated = true;
-            break;
-        }
-
+    for block in blocks {
         if multi {
-            lines.push(Line::from(Span::styled(block.path.clone(), dim)));
-            used += 1;
-            if i > 0 && used >= max_lines {
-                truncated = true;
-                break;
-            }
+            rendered.push(Line::from(Span::styled(block.path.clone(), dim)));
         }
-
         if block.content.is_empty() {
             continue;
         }
 
         let code_lines: Vec<String> = block.content.lines().map(String::from).collect();
-        let total = code_lines.len();
-        let remaining = max_lines.saturating_sub(used);
         let hl = highlight.then(|| n00n_highlight::Highlighter::for_path(&block.path));
-        let (rendered, was_truncated) = render_code(hl, 1, &code_lines, total, remaining);
-        used += rendered.len();
-        truncated |= was_truncated;
-        lines.extend(rendered);
+        let (mut block_lines, _) = render_code(hl, 1, &code_lines, code_lines.len(), usize::MAX);
+        rendered.append(&mut block_lines);
     }
+
+    let hidden = rendered.len().saturating_sub(max_lines);
+    let truncated = should_truncate(hidden);
+    if truncated {
+        rendered.truncate(max_lines);
+        rendered.push(truncation_line(hidden));
+    }
+    lines.extend(rendered);
     truncated
 }
 
@@ -447,9 +439,16 @@ impl RenderLimits {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TruncationAction {
+    pub line: usize,
+    pub section: SectionFlags,
+}
+
 pub struct ToolContent {
     pub lines: Vec<Line<'static>>,
     pub truncation: SectionFlags,
+    pub truncation_actions: Vec<TruncationAction>,
 }
 
 pub fn render_tool_content(
@@ -460,6 +459,7 @@ pub fn render_tool_content(
 ) -> ToolContent {
     let mut lines = Vec::new();
     let mut truncation = SectionFlags::default();
+    let mut truncation_actions = Vec::new();
     if let Some((language, code)) = input.map(|i| match i {
         ToolInput::Script { language, code } | ToolInput::Code { language, code } => {
             (language, code)
@@ -474,6 +474,15 @@ pub fn render_tool_content(
         let hl = highlight.then(|| n00n_highlight::Highlighter::for_token(language));
         let (code_result, trunc) = render_code(hl, 1, &code_lines, total, limits.script);
         truncation.script = trunc;
+        if trunc {
+            truncation_actions.push(TruncationAction {
+                line: lines.len() + code_result.len().saturating_sub(1),
+                section: SectionFlags {
+                    script: true,
+                    output: false,
+                },
+            });
+        }
         lines.extend(code_result);
     }
     let (output_lines, output_trunc) = match output {
@@ -530,8 +539,21 @@ pub fn render_tool_content(
     if !lines.is_empty() && !output_lines.is_empty() {
         lines.push(Line::default());
     }
+    if output_trunc {
+        truncation_actions.push(TruncationAction {
+            line: lines.len() + output_lines.len().saturating_sub(1),
+            section: SectionFlags {
+                script: false,
+                output: true,
+            },
+        });
+    }
     lines.extend(output_lines);
-    ToolContent { lines, truncation }
+    ToolContent {
+        lines,
+        truncation,
+        truncation_actions,
+    }
 }
 
 fn merge_syntax_with_diff(

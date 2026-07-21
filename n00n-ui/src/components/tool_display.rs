@@ -5,7 +5,7 @@ use super::code_view;
 use crate::animation::{spinner_frame, spinner_str};
 use crate::theme;
 use code_view::RenderLimits;
-use code_view::SectionFlags;
+use code_view::{SectionFlags, TruncationAction};
 use n00n_config::ToolOutputLines;
 
 use std::borrow::Cow;
@@ -112,6 +112,7 @@ pub struct ToolLines {
     pub snapshot_base: Option<usize>,
     pub content_indent: &'static str,
     pub truncation: SectionFlags,
+    pub truncation_actions: Vec<TruncationAction>,
 }
 
 pub struct HighlightRequest {
@@ -321,6 +322,7 @@ struct ToolLineBuilder {
     content_range: (usize, usize),
     width: u16,
     truncation: SectionFlags,
+    truncation_actions: Vec<TruncationAction>,
     limits: RenderLimits,
     markdown: bool,
 }
@@ -336,6 +338,7 @@ impl ToolLineBuilder {
             content_range: (0, 0),
             width,
             truncation: SectionFlags::default(),
+            truncation_actions: Vec::new(),
             limits,
             markdown: false,
         }
@@ -417,6 +420,11 @@ impl ToolLineBuilder {
         self.truncation.script |= content.truncation.script;
         self.truncation.output |= content.truncation.output;
         let start = self.lines.len();
+        self.truncation_actions
+            .extend(content.truncation_actions.into_iter().map(|mut action| {
+                action.line += start;
+                action
+            }));
         for mut line in content.lines {
             line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
             self.lines.push(line);
@@ -477,6 +485,13 @@ impl ToolLineBuilder {
     fn push_truncation_count(&mut self, skipped: usize) {
         if should_truncate(skipped) {
             self.truncation.output = true;
+            self.truncation_actions.push(TruncationAction {
+                line: self.lines.len(),
+                section: SectionFlags {
+                    script: false,
+                    output: true,
+                },
+            });
             let text = truncation_notice(skipped);
             let mut line = Line::from(Span::styled(text, theme::current().tool_dim));
             line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
@@ -520,6 +535,7 @@ impl ToolLineBuilder {
             snapshot_base: self.snapshot_base,
             content_indent,
             truncation: self.truncation,
+            truncation_actions: self.truncation_actions,
         }
     }
 }
@@ -724,6 +740,15 @@ pub fn build_instructions_lines(
     let has_truncation =
         code_view::render_instructions(blocks, &mut b.lines, b.limits.output, false);
     b.truncation.output |= has_truncation;
+    if has_truncation {
+        b.truncation_actions.push(TruncationAction {
+            line: b.lines.len().saturating_sub(1),
+            section: SectionFlags {
+                script: false,
+                output: true,
+            },
+        });
+    }
     for line in &mut b.lines[start..] {
         line.spans.insert(0, Span::raw(TOOL_BODY_INDENT));
     }
@@ -803,6 +828,7 @@ mod tests {
                 name: BASH_TOOL_NAME.into(),
             })),
             text: text.into(),
+            metadata: None,
             images: Vec::new(),
             tool_input: input.map(Arc::new),
             tool_raw_input: None,
@@ -942,6 +968,7 @@ mod tests {
                 name: TASK_TOOL_NAME.into(),
             })),
             text: "Find auth".into(),
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -1038,6 +1065,7 @@ mod tests {
                 name: "index".into(),
             })),
             text: format!("src/lib.rs\n{body}"),
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -1079,6 +1107,7 @@ mod tests {
                 name: "index".into(),
             })),
             text: "src/lib.rs\nplain fallback".into(),
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -1372,6 +1401,7 @@ mod tests {
                 name: BASH_TOOL_NAME.into(),
             })),
             text,
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -1468,6 +1498,7 @@ mod tests {
                 name: READ_TOOL_NAME.into(),
             })),
             text: "read /src/main.rs".into(),
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -1501,6 +1532,35 @@ mod tests {
         assert_eq!(tl.truncation.any(), expect_truncation);
         let text = lines_text(&tl);
         assert_eq!(text.contains("inst 29"), expect_all_visible);
+    }
+
+    #[test]
+    fn exact_boundary_instruction_action_targets_notice_row() {
+        let blocks = vec![
+            InstructionBlock {
+                path: "first.md".into(),
+                content: (0..14)
+                    .map(|index| format!("first {index}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            },
+            InstructionBlock {
+                path: "second.md".into(),
+                content: "second 0\nsecond 1".into(),
+            },
+        ];
+
+        let tl = build_instructions_lines(&blocks, 80, false);
+
+        assert_eq!(tl.truncation_actions.len(), 1);
+        let action_line = tl.truncation_actions[0].line;
+        assert!(
+            tl.lines[action_line]
+                .spans
+                .iter()
+                .any(|span| span.content.contains(crate::markdown::TRUNCATION_PREFIX)),
+            "instruction action must be attached to its notice row"
+        );
     }
 
     #[test]
@@ -1585,6 +1645,7 @@ mod tests {
                 name: "index".into(),
             })),
             text: "src/lib.rs\nbody_text_here".into(),
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,
@@ -1625,6 +1686,7 @@ mod tests {
                 name: "index".into(),
             })),
             text: "header\nbody_fallback".into(),
+            metadata: None,
             images: Vec::new(),
             tool_input: None,
             tool_raw_input: None,

@@ -1,9 +1,9 @@
-use crate::markdown::TRUNCATION_PREFIX;
 use crate::render_worker::RenderWorker;
 use crate::terminal_image::TerminalImage;
 use crate::theme;
 
 use super::super::code_view::SectionFlags;
+use super::super::code_view::TruncationAction;
 use super::super::tool_display::{HighlightRequest, ToolLines};
 use n00n_agent::{ImageMediaType, ImageSource};
 use ratatui::text::{Line, Span};
@@ -17,6 +17,17 @@ const INST_SUFFIX: &str = "__inst";
 pub(super) enum SegmentIdentity {
     Tool(String),
     Instructions(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum MessageAction {
+    ToggleCompaction(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PositionedMessageAction {
+    line: usize,
+    action: MessageAction,
 }
 
 fn media_type_label(media_type: ImageMediaType) -> &'static str {
@@ -90,6 +101,8 @@ pub(super) struct Segment {
     highlight_key: HighlightKey,
     pub spinner_lines: Vec<(usize, usize)>,
     snapshot_base: Option<usize>,
+    truncation_actions: Vec<TruncationAction>,
+    message_actions: Vec<PositionedMessageAction>,
     pub content_indent: &'static str,
     surface: Surface,
     image: Option<TerminalImage>,
@@ -100,6 +113,28 @@ impl Segment {
         Self {
             identity: Some(SegmentIdentity::Tool(tool_id.clone())),
             tool_id: Some(tool_id),
+            surface: Surface::Tool,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_compaction(
+        lines: Vec<Line<'static>>,
+        search_text: String,
+        msg_index: usize,
+        actions: Vec<(usize, String)>,
+    ) -> Self {
+        Self {
+            lines,
+            search_text,
+            msg_index: Some(msg_index),
+            message_actions: actions
+                .into_iter()
+                .map(|(line, id)| PositionedMessageAction {
+                    line,
+                    action: MessageAction::ToggleCompaction(id),
+                })
+                .collect(),
             surface: Surface::Tool,
             ..Self::default()
         }
@@ -281,20 +316,29 @@ impl Segment {
         }
     }
 
-    pub fn is_snapshot_line(&self, source_line: usize) -> bool {
-        self.snapshot_base.is_some_and(|base| source_line >= base)
+    pub fn truncation_action(&self, source_line: usize) -> Option<SectionFlags> {
+        self.truncation_actions
+            .iter()
+            .find(|action| action.line == source_line)
+            .map(|action| action.section)
     }
 
-    pub fn is_truncation_line(&self, source_line: usize) -> bool {
-        let Some(line) = self.lines.get(source_line) else {
-            return false;
-        };
-        let text: String = line
-            .spans
+    pub fn message_action(&self, source_line: usize) -> Option<&MessageAction> {
+        self.message_actions
             .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        text.contains(TRUNCATION_PREFIX) && text.contains('›')
+            .find(|action| action.line == source_line)
+            .map(|action| &action.action)
+    }
+
+    #[cfg(test)]
+    pub fn compaction_action_row(&self, id: &str, width: u16) -> Option<u16> {
+        (0..self.height(width)).find(|&row| {
+            self.source_line_at(row, width)
+                .and_then(|line| self.message_action(line))
+                .is_some_and(
+                    |action| matches!(action, MessageAction::ToggleCompaction(action_id) if action_id == id),
+                )
+        })
     }
 
     fn invalidate_height(&self) {
@@ -337,6 +381,7 @@ impl Segment {
         self.snapshot_base = tl.snapshot_base;
         self.content_indent = tl.content_indent;
         self.truncation = tl.truncation;
+        self.truncation_actions = tl.truncation_actions;
         self.set_lines(tl.lines);
     }
 
@@ -357,6 +402,7 @@ impl Segment {
             self.spinner_lines = tl.spinner_lines;
             self.snapshot_base = tl.snapshot_base;
             self.content_indent = tl.content_indent;
+            self.truncation_actions = tl.truncation_actions;
         } else {
             self.apply_highlight(tl, worker);
         }
@@ -403,6 +449,12 @@ impl Segment {
         }
         if let Some(base) = &mut self.snapshot_base {
             shift(base);
+        }
+        for action in &mut self.truncation_actions {
+            shift(&mut action.line);
+        }
+        for action in &mut self.message_actions {
+            shift(&mut action.line);
         }
     }
 }

@@ -30,7 +30,7 @@ use n00n_providers::{Message, Model};
 use n00n_storage::StateDir;
 use n00n_storage::StorageError;
 use n00n_storage::id::{N00nId, N00nIdParseError, SessionRef};
-use n00n_storage::sessions::{SessionError, normalize_title};
+use n00n_storage::sessions::{SessionError, TranscriptEntry, normalize_title};
 use serde_json::json;
 use tracing::warn;
 
@@ -161,6 +161,7 @@ impl SpawnCtx {
         let handles = AgentHandles::spawn(
             &self.model_slot,
             session.messages.clone(),
+            session.transcript.clone(),
             self.config.clone(),
             self.ui_config.tool_output_lines,
             &permissions,
@@ -1036,12 +1037,18 @@ impl<'t> EventLoop<'t> {
         }
     }
 
-    fn respawn_agent(&mut self, idx: usize, history: Vec<Message>) {
+    fn respawn_agent(
+        &mut self,
+        idx: usize,
+        history: Vec<Message>,
+        transcript: Vec<TranscriptEntry<Message>>,
+    ) {
         let rt = &mut self.sessions[idx];
         let lua_handle = rt.app.lua_event_handle.clone();
         let permissions = Arc::clone(&rt.app.permissions);
         rt.handles.respawn(
             history,
+            transcript,
             &self.ctx.model_slot,
             self.ctx.config.clone(),
             self.ctx.ui_config.tool_output_lines,
@@ -1095,7 +1102,7 @@ impl<'t> EventLoop<'t> {
                     .try_send(AgentCommand::CancelSubagent { tool_use_id });
             }
             Action::NewSession => {
-                self.respawn_agent(idx, Vec::new());
+                self.respawn_agent(idx, Vec::new(), Vec::new());
             }
             Action::LoadSession(loaded) => {
                 let loaded = *loaded;
@@ -1109,7 +1116,7 @@ impl<'t> EventLoop<'t> {
                         provider: Arc::from(new_provider),
                     }));
                 }
-                self.respawn_agent(idx, loaded.messages);
+                self.respawn_agent(idx, loaded.messages, loaded.transcript);
                 *self.sessions[idx]
                     .handles
                     .tool_outputs

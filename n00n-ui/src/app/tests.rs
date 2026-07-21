@@ -15,7 +15,7 @@ use n00n_agent::{
 use n00n_config::{PermissionsConfig, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader};
 use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
-use n00n_storage::sessions::{StoredMode, StoredThinking};
+use n00n_storage::sessions::{StoredMode, StoredThinking, TranscriptEntry};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use ratatui_image::picker::Picker;
 use std::env;
@@ -597,6 +597,71 @@ fn load_session_clears_plan() {
 }
 
 #[test]
+fn picker_load_carries_recursive_transcript_through_recompact_and_save() {
+    let (_tmp, dir, writer, mut app) = tempdir_app();
+    let summary = Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::Text {
+            text: "first summary".into(),
+        }],
+        ..Default::default()
+    };
+    app.state.session.messages = vec![Message::user("summary prompt".into()), summary.clone()];
+    app.state.session.transcript = vec![
+        TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
+                generated_summary: None,
+            }],
+            generated_summary: Some(summary.clone()),
+        },
+        TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
+        TranscriptEntry::GeneratedMessage(summary),
+    ];
+    app.state.session.save(&app.storage).unwrap();
+    let id = app.state.session.id;
+
+    let actions = app.load_session(id);
+    let Action::LoadSession(loaded) = actions.into_iter().next().expect("load action") else {
+        panic!("expected loaded session action");
+    };
+    assert!(matches!(
+        loaded.transcript.as_slice(),
+        [TranscriptEntry::Compaction { entries, .. }, ..]
+            if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }])
+    ));
+
+    let message_mirror = Arc::new(ArcSwap::from_pointee(loaded.messages.clone()));
+    let transcript_mirror = Arc::new(ArcSwap::from_pointee(loaded.transcript.clone()));
+    let mut history =
+        n00n_agent::agent::History::restored_with_transcript(loaded.messages, loaded.transcript)
+            .with_mirror(Arc::clone(&message_mirror))
+            .with_transcript_mirror(Arc::clone(&transcript_mirror));
+    history.push(Message::user("continued".into()));
+    history.compact_boundary(
+        Message::user("summary prompt".into()),
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "second summary".into(),
+            }],
+            ..Default::default()
+        },
+    );
+    app.shared_history = Some(message_mirror);
+    app.shared_transcript = Some(transcript_mirror);
+    app.save_session();
+    drain_writer(app, writer);
+
+    let saved = AppSession::load(id, &dir).unwrap();
+    assert!(matches!(
+        saved.transcript.as_slice(),
+        [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_)]
+            if matches!(entries.as_slice(), [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_)] if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }]))
+    ));
+}
+
+#[test]
 fn tab_in_palette_completes_command() {
     let mut app = test_app();
     type_slash(&mut app);
@@ -717,6 +782,87 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
     assert_eq!(app.chats[1].token_usage.input, 200);
     assert_eq!(app.chats[0].context_size, main_usage.context_tokens());
     assert_eq!(app.chats[1].context_size, sub_usage.context_tokens());
+}
+
+#[test]
+fn live_compaction_notice_becomes_typed_card() {
+    let mut app = test_app();
+    app.status = Status::Streaming;
+    app.run_id = 1;
+    app.shared_transcript = Some(Arc::new(ArcSwap::from_pointee(vec![
+        TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
+            generated_summary: None,
+        },
+    ])));
+
+    app.update(agent_msg(AgentEvent::AutoCompacting));
+    assert!(app.main_chat().has_pending_compaction());
+
+    app.update(agent_msg(AgentEvent::CompactionDone));
+    assert!(!app.main_chat().has_pending_compaction());
+    assert_eq!(app.main_chat().compaction_card_count(), 1);
+}
+
+#[test]
+fn subagent_compaction_completion_uses_live_summary_without_touching_main_transcript() {
+    let mut app = app_with_subagent();
+    let main_transcript = Arc::new(ArcSwap::from_pointee(vec![TranscriptEntry::Message(
+        Message::user("main conversation".into()),
+    )]));
+    app.shared_transcript = Some(Arc::clone(&main_transcript));
+
+    app.update(subagent_msg(
+        AgentEvent::AutoCompacting,
+        "task1",
+        Some("research"),
+    ));
+    assert!(app.chats[1].has_pending_compaction());
+    app.update(subagent_msg(
+        AgentEvent::TextDelta {
+            text: "subagent summary".into(),
+        },
+        "task1",
+        Some("research"),
+    ));
+    app.update(subagent_msg(
+        AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "subagent summary".into(),
+                }],
+                ..Default::default()
+            },
+            usage: TokenUsage::default(),
+            model: "test".into(),
+            context_size: None,
+        })),
+        "task1",
+        Some("research"),
+    ));
+    app.update(subagent_msg(
+        AgentEvent::CompactionDone,
+        "task1",
+        Some("research"),
+    ));
+
+    assert!(!app.chats[1].has_pending_compaction());
+    assert_eq!(app.chats[1].compaction_card_count(), 1);
+    assert_eq!(
+        app.chats[1].message_count(),
+        2,
+        "the streamed summary must not remain beside its compaction card"
+    );
+    assert_eq!(
+        app.chats[1].last_compaction_summary(),
+        Some("subagent summary")
+    );
+    assert_eq!(app.main_chat().compaction_card_count(), 0);
+    assert!(matches!(
+        main_transcript.load().as_slice(),
+        [TranscriptEntry::Message(message)] if message.user_text() == Some("main conversation")
+    ));
 }
 
 #[test]
@@ -2103,6 +2249,71 @@ fn rewind_to_middle_truncates_and_populates_input() {
     };
     assert_eq!(loaded.messages.len(), 2);
     assert!(loaded.tool_outputs.contains_key("tool-1"));
+}
+
+#[test]
+fn rewind_truncates_active_tail_inside_recursive_transcript() {
+    let mut app = test_app();
+    let assistant = |text: &str| Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::Text { text: text.into() }],
+        ..Default::default()
+    };
+    let summary = assistant("summary");
+    let kept_reply = assistant("kept reply");
+    let removed_reply = assistant("removed reply");
+    app.state.session.messages = vec![
+        Message::user("summary prompt".into()),
+        summary.clone(),
+        Message::user("keep".into()),
+        kept_reply.clone(),
+        Message::user("remove".into()),
+        removed_reply.clone(),
+    ];
+    app.state.session.transcript = vec![
+        TranscriptEntry::Compaction {
+            entries: vec![TranscriptEntry::Compaction {
+                entries: vec![TranscriptEntry::Message(Message::user("oldest".into()))],
+                generated_summary: None,
+            }],
+            generated_summary: Some(summary.clone()),
+        },
+        TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
+        TranscriptEntry::GeneratedMessage(summary),
+        TranscriptEntry::Message(Message::user("keep".into())),
+        TranscriptEntry::Message(kept_reply),
+        TranscriptEntry::Message(Message::user("remove".into())),
+        TranscriptEntry::Message(removed_reply),
+    ];
+
+    let actions = app.rewind_to(crate::components::rewind_picker::RewindEntry {
+        turn_index: 4,
+        prompt_preview: "remove".into(),
+        prompt_text: "remove".into(),
+    });
+
+    assert!(matches!(
+        app.state.session.transcript.as_slice(),
+        [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_), TranscriptEntry::Message(_)]
+            if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }])
+    ));
+    let Action::LoadSession(loaded) = &actions[0] else {
+        panic!("expected loaded session action");
+    };
+    let mut restored = n00n_agent::agent::History::restored_with_transcript(
+        loaded.messages.clone(),
+        loaded.transcript.clone(),
+    );
+    restored.compact_boundary(
+        Message::user("summary prompt".into()),
+        assistant("new summary"),
+    );
+    let TranscriptEntry::Compaction { entries, .. } = &restored.transcript()[0] else {
+        panic!("expected recursive compaction");
+    };
+    assert!(!entries.iter().any(|entry| {
+        matches!(entry, TranscriptEntry::Message(message) if message.user_text().is_some_and(|text| text.contains("remove")))
+    }));
 }
 
 #[test]

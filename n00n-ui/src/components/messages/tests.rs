@@ -7,6 +7,7 @@ use n00n_agent::{
     GrepFileEntry, GrepMatchGroup, SnapshotLine, SnapshotSpan, SpanStyle, ToolInput, ToolOutput,
 };
 use ratatui::backend::TestBackend;
+use ratatui::text::Line;
 use ratatui_image::picker::Picker;
 use std::sync::Arc;
 use test_case::test_case;
@@ -429,6 +430,14 @@ fn scrollbar_visibility(line_count: usize, expected: bool) {
     assert_eq!(has_scrollbar_thumb(&terminal), expected);
 }
 
+fn first_segment_text(panel: &MessagesPanel) -> String {
+    panel.cache.segments()[0]
+        .lines()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+        .collect()
+}
+
 fn seg_text(panel: &MessagesPanel, tool_id: &str) -> String {
     panel
         .cache
@@ -440,6 +449,34 @@ fn seg_text(panel: &MessagesPanel, tool_id: &str) -> String {
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
         .collect()
+}
+
+fn truncation_source_line(panel: &MessagesPanel, tool_id: &str) -> usize {
+    let segment = panel
+        .cache
+        .segments()
+        .iter()
+        .find(|segment| segment.tool_id.as_deref() == Some(tool_id))
+        .unwrap();
+    (0..segment.lines().len())
+        .find(|&line| segment.truncation_action(line).is_some())
+        .unwrap()
+}
+
+fn section_truncation_source_line(
+    panel: &MessagesPanel,
+    tool_id: &str,
+    section: SectionFlags,
+) -> usize {
+    let segment = panel
+        .cache
+        .segments()
+        .iter()
+        .find(|segment| segment.tool_id.as_deref() == Some(tool_id))
+        .unwrap();
+    (0..segment.lines().len())
+        .find(|&line| segment.truncation_action(line) == Some(section))
+        .unwrap()
 }
 
 fn msg_status(panel: &MessagesPanel, tool_id: &str) -> ToolStatus {
@@ -657,6 +694,152 @@ fn search_text_bash_with_code_input() {
     rebuild(&mut panel);
     let text = seg_search(&panel, "t1");
     assert!(text.contains("echo hello") && text.contains("hello"));
+}
+
+#[test]
+fn expanded_compaction_card_renders_stored_tool_output_once() {
+    let mut tool = DisplayMessage::new(
+        DisplayRole::Tool(Box::new(ToolRole {
+            id: "tool-1".into(),
+            status: ToolStatus::Success,
+            name: Arc::from("bash"),
+        })),
+        "Run command".into(),
+    );
+    tool.tool_output = Some(Arc::new(ToolOutput::Plain("reviewer output body".into())));
+    let compaction_id = "compaction:0";
+    let mut panel = test_panel();
+    panel.push(DisplayMessage::compaction(CompactionDisplay {
+        id: compaction_id.into(),
+        depth: 1,
+        message_count: 1,
+        summary: Some("summary".into()),
+        entries: vec![tool],
+    }));
+    panel.expanded_compactions.insert(compaction_id.into());
+    rebuild(&mut panel);
+
+    let card = first_segment_text(&panel);
+    assert!(card.contains("reviewer output body"), "card: {card}");
+    assert_eq!(card.matches("reviewer output body").count(), 1);
+}
+
+#[test]
+fn expanded_compaction_card_caps_stored_tool_output() {
+    let mut tool = DisplayMessage::new(
+        DisplayRole::Tool(Box::new(ToolRole {
+            id: "tool-1".into(),
+            status: ToolStatus::Success,
+            name: Arc::from("bash"),
+        })),
+        "Run command".into(),
+    );
+    tool.tool_output = Some(Arc::new(ToolOutput::Plain(
+        "line 0\nline 1\nline 2\nline 3\nline 4\nline 5".into(),
+    )));
+    let compaction_id = "compaction:0";
+    let mut ui_config = UiConfig::default();
+    ui_config.tool_output_lines.bash = 2;
+    let mut panel = test_panel_with_config(ui_config);
+    panel.push(DisplayMessage::compaction(CompactionDisplay {
+        id: compaction_id.into(),
+        depth: 1,
+        message_count: 1,
+        summary: Some("summary".into()),
+        entries: vec![tool],
+    }));
+    panel.expanded_compactions.insert(compaction_id.into());
+    rebuild(&mut panel);
+
+    let card = first_segment_text(&panel);
+    assert!(card.contains("line 0"), "card: {card}");
+    assert!(card.contains("line 1"), "card: {card}");
+    assert!(!card.contains("line 2"), "card: {card}");
+    assert!(!card.contains("line 5"), "card: {card}");
+}
+
+#[test]
+fn nested_compaction_cards_expand_collapse_at_narrow_width() {
+    let inner = DisplayMessage::compaction(CompactionDisplay {
+        id: "compaction:0.0".into(),
+        depth: 2,
+        message_count: 1,
+        summary: Some("inner summary".into()),
+        entries: vec![DisplayMessage::new(
+            DisplayRole::User,
+            "original request".into(),
+        )],
+    });
+    let outer = DisplayMessage::compaction(CompactionDisplay {
+        id: "compaction:0".into(),
+        depth: 1,
+        message_count: 2,
+        summary: Some("outer summary with narrow wrapping".into()),
+        entries: vec![
+            inner,
+            DisplayMessage::new(DisplayRole::Assistant, "inner summary".into()),
+        ],
+    });
+    let mut panel = test_panel();
+    panel.push(outer);
+    let area = Rect::new(0, 0, 24, 20);
+
+    let collapsed = buffer_text(&render(&mut panel, area.width, area.height));
+    let collapsed_card = first_segment_text(&panel);
+    assert!(collapsed_card.contains("depth 1"), "card: {collapsed_card}");
+    assert!(
+        collapsed_card.contains("2 messages"),
+        "card: {collapsed_card}"
+    );
+    assert!(
+        collapsed_card.contains("outer summary"),
+        "card: {collapsed_card}"
+    );
+    assert!(
+        !collapsed_card.contains("depth 2"),
+        "card: {collapsed_card}"
+    );
+    assert!(
+        collapsed.contains("wrapping"),
+        "rendered buffer: {collapsed}"
+    );
+
+    let outer_row = panel.cache.segments()[0]
+        .compaction_action_row("compaction:0", panel.viewport_width)
+        .unwrap();
+    assert!(panel.toggle_expansion_at(outer_row, area));
+    let expanded = buffer_text(&render(&mut panel, area.width, area.height));
+    let expanded_card = first_segment_text(&panel);
+    assert!(expanded_card.contains("depth 2"), "card: {expanded_card}");
+    assert!(
+        !expanded_card.contains("original request"),
+        "card: {expanded_card}"
+    );
+    assert!(expanded.contains("inner"), "rendered buffer: {expanded}");
+
+    let inner_row = panel.cache.segments()[0]
+        .compaction_action_row("compaction:0.0", panel.viewport_width)
+        .unwrap();
+    assert!(
+        panel.toggle_expansion_at(inner_row, area),
+        "inner_row={inner_row} scroll_top={} width={}",
+        panel.scroll_top,
+        panel.viewport_width
+    );
+    render(&mut panel, area.width, area.height);
+    let nested_card = first_segment_text(&panel);
+    assert!(
+        nested_card.contains("original request"),
+        "card: {nested_card}"
+    );
+
+    assert!(panel.toggle_expansion_at(outer_row, area));
+    render(&mut panel, area.width, area.height);
+    let recollapsed_card = first_segment_text(&panel);
+    assert!(
+        !recollapsed_card.contains("depth 2"),
+        "card: {recollapsed_card}"
+    );
 }
 
 #[test]
@@ -1409,14 +1592,72 @@ fn task_tool_id_at_only_routes_header() {
 
     assert_eq!(panel.tool_id_at(0, area), Some("task1"));
     assert_eq!(panel.tool_id_at(1, area), None);
-    let truncation_row = panel.cache.segments()[0]
-        .lines()
-        .iter()
-        .position(|line| line.spans.iter().any(|span| span.content.contains("›")))
-        .unwrap() as u16;
+    let truncation_row = truncation_source_line(&panel, "task1") as u16;
     assert_eq!(panel.tool_id_at(truncation_row, area), None);
     assert!(panel.handle_click(truncation_row, area));
     assert!(!seg_text(&panel, "task1").contains("›"));
+}
+
+#[test]
+fn row_truncation_actions_expand_only_their_section_in_mixed_states() {
+    const SCRIPT: SectionFlags = SectionFlags {
+        script: true,
+        output: false,
+    };
+    const OUTPUT: SectionFlags = SectionFlags {
+        script: false,
+        output: true,
+    };
+
+    fn panel_with_truncated_script_and_output() -> MessagesPanel {
+        let mut panel = test_panel();
+        bash_code_start(&mut panel, "t1", &"script line\n".repeat(200));
+        panel.tool_done(ToolDoneEvent {
+            id: "t1".into(),
+            tool: BASH_TOOL_NAME.into(),
+            output: ToolOutput::ReadCode {
+                path: "output.rs".into(),
+                start_line: 1,
+                lines: vec!["output line".into(); 200],
+                total_lines: 200,
+                instructions: None,
+            },
+            is_error: false,
+            annotation: None,
+            written_path: None,
+        });
+        render(&mut panel, 120, 240);
+        panel
+    }
+
+    let area = Rect::new(0, 0, 120, 240);
+    let mut output_first = panel_with_truncated_script_and_output();
+    let output_row = section_truncation_source_line(&output_first, "t1", OUTPUT) as u16;
+    assert!(output_first.handle_click(output_row, area));
+    assert_eq!(output_first.expanded_tools.get("t1"), Some(&OUTPUT));
+    let script_row = section_truncation_source_line(&output_first, "t1", SCRIPT) as u16;
+    assert!(output_first.handle_click(script_row, area));
+    assert_eq!(
+        output_first.expanded_tools.get("t1"),
+        Some(&SectionFlags {
+            script: true,
+            output: true,
+        })
+    );
+
+    let mut script_first = panel_with_truncated_script_and_output();
+    let script_row = section_truncation_source_line(&script_first, "t1", SCRIPT) as u16;
+    assert!(script_first.handle_click(script_row, area));
+    assert_eq!(script_first.expanded_tools.get("t1"), Some(&SCRIPT));
+    let output_row = section_truncation_source_line(&script_first, "t1", OUTPUT) as u16;
+    assert!(script_first.handle_click(output_row, area));
+    assert_eq!(
+        script_first.expanded_tools.get("t1"),
+        Some(&SectionFlags {
+            script: true,
+            output: true,
+        })
+    );
 }
 
 #[test]
@@ -1439,14 +1680,19 @@ fn snapshot_tool_native_truncation_expands_but_snapshot_row_routes_lua() {
     panel.tool_done(done("t1"));
     render(&mut panel, 80, 80);
     let area = Rect::new(0, 0, 80, 80);
-    let segment = &panel.cache.segments()[0];
-    let truncation_row = segment
-        .lines()
-        .iter()
-        .position(|line| line.spans.iter().any(|span| span.content.contains("›")))
-        .unwrap() as u16;
+    let truncation_line = truncation_source_line(&panel, "t1");
+    assert!(
+        panel.cache.segments()[0].lines()[truncation_line]
+            .spans
+            .iter()
+            .any(|span| span.content.contains('›'))
+    );
 
-    assert!(panel.handle_click(truncation_row, area));
+    let mut renamed_lines = panel.cache.segments()[0].lines().to_vec();
+    renamed_lines[truncation_line] = Line::from("  wording changed");
+    panel.cache.segments_mut()[0].set_lines(renamed_lines);
+
+    assert!(panel.handle_click(truncation_line as u16, area));
     assert!(panel.lua_clicks.is_empty());
     assert!(!seg_text(&panel, "t1").contains("›"));
 
@@ -1485,6 +1731,37 @@ fn handle_click_on_done_tool_records_click_row() {
     let area = Rect::new(0, 0, 80, 24);
     assert!(panel.handle_click(area.y, area));
     assert_eq!(panel.lua_clicks.get("t1").map(Vec::len), Some(1));
+}
+
+#[test]
+fn running_live_tool_native_truncation_expands_but_header_routes_lua() {
+    const SCRIPT: SectionFlags = SectionFlags {
+        script: true,
+        output: false,
+    };
+
+    let mut panel = test_panel();
+    bash_code_start(&mut panel, "t1", &"echo line\n".repeat(200));
+    let live = Arc::new(n00n_agent::SharedBuf::new());
+    live.set_lines(vec![snap_line("streaming")]);
+    panel.register_live_buf("t1".into(), live);
+    panel.tool_snapshot(
+        "t1",
+        BufferSnapshot::from_arc(Arc::new(vec![snap_line("streaming")])),
+        None,
+    );
+    let (handle, probe) = n00n_lua::test_support::probed_event_handle();
+    panel.lua_event_handle = Some(handle);
+    render(&mut panel, 80, 240);
+    let area = Rect::new(0, 0, 80, 240);
+    let truncation_row = section_truncation_source_line(&panel, "t1", SCRIPT) as u16;
+
+    assert!(panel.handle_click(truncation_row, area));
+    assert_eq!(panel.expanded_tools.get("t1"), Some(&SCRIPT));
+    assert_eq!(probe.try_recv(), None);
+
+    assert!(panel.handle_click(area.y, area));
+    assert_eq!(probe.try_recv(), Some(("click", vec![])));
 }
 
 #[test]
