@@ -15,6 +15,7 @@ With Nix: `nix run github:w0wl0lxd/n00n`
 Or grab a binary from [releases](https://github.com/w0wl0lxd/n00n/releases/latest).
 
 Type a prompt and press **Enter** — the agent reads, edits, searches, and runs code. n00n also has inline images! (for supported terminals)
+<img width="937" height="987" alt="image" src="https://github.com/user-attachments/assets/5c33e266-ebee-44a4-8a89-5ffd25a3b7ab" />
 
 ## Why n00n
 
