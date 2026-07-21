@@ -57,6 +57,7 @@ pub const DEFAULT_BUILTINS: &[&str] = &[
     "bash",
     "batch",
     "code_execution",
+    "codegraph",
     "edit",
     "glob",
     "grep",
@@ -346,6 +347,7 @@ pub struct ToolOutputLinesFile {
     pub workflow: Option<usize>,
     pub index: Option<usize>,
     pub grep: Option<usize>,
+    pub explore: Option<usize>,
     pub read: Option<usize>,
     pub write: Option<usize>,
     pub web: Option<usize>,
@@ -363,6 +365,7 @@ impl ToolOutputLinesFile {
             workflow,
             index,
             grep,
+            explore,
             read,
             write,
             web,
@@ -872,6 +875,7 @@ pub struct ToolOutputLines {
     pub workflow: usize,
     pub index: usize,
     pub grep: usize,
+    pub explore: usize,
     pub read: usize,
     pub write: usize,
     pub web: usize,
@@ -886,6 +890,7 @@ impl ToolOutputLines {
         workflow: 8,
         index: 3,
         grep: 3,
+        explore: 3,
         read: 3,
         write: 7,
         web: 3,
@@ -899,6 +904,7 @@ impl ToolOutputLines {
         ("workflow", Self::DEFAULT.workflow),
         ("index", Self::DEFAULT.index),
         ("grep", Self::DEFAULT.grep),
+        ("explore", Self::DEFAULT.explore),
         ("read", Self::DEFAULT.read),
         ("write", Self::DEFAULT.write),
         ("web", Self::DEFAULT.web),
@@ -915,6 +921,7 @@ impl ToolOutputLines {
             workflow: f.workflow.unwrap_or(d.workflow),
             index: f.index.unwrap_or(d.index),
             grep: f.grep.unwrap_or(d.grep),
+            explore: f.explore.unwrap_or(d.explore),
             read: f.read.unwrap_or(d.read),
             write: f.write.unwrap_or(d.write),
             web: f.web.unwrap_or(d.web),
@@ -922,7 +929,7 @@ impl ToolOutputLines {
         }
     }
 
-    fn fields(&self) -> [(&'static str, usize); 10] {
+    fn fields(&self) -> [(&'static str, usize); 11] {
         [
             ("bash", self.bash),
             ("code_execution", self.code_execution),
@@ -930,6 +937,7 @@ impl ToolOutputLines {
             ("workflow", self.workflow),
             ("index", self.index),
             ("grep", self.grep),
+            ("explore", self.explore),
             ("read", self.read),
             ("write", self.write),
             ("web", self.web),
@@ -958,6 +966,7 @@ impl ToolOutputLines {
             "workflow" => self.workflow,
             "index" => self.index,
             "grep" | "glob" => self.grep,
+            "codegraph" | "explore" => self.explore,
             "read" => self.read,
             "memory" => self.write,
             name if FILE_WRITE_TOOLS.contains(&name) => self.write,
