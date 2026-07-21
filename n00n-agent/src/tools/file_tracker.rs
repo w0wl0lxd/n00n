@@ -25,30 +25,42 @@ impl Default for FileReadTracker {
 }
 
 impl FileReadTracker {
+    #[must_use]
     pub fn new() -> Self {
         Self(Mutex::new(HashMap::new()))
     }
 
+    #[must_use]
     pub fn fresh() -> Arc<Self> {
         Arc::new(Self::new())
     }
 
+    /// Records that a file was read for change detection.
     pub fn record_read(&self, path: &Path) {
         let normalized = normalize_path(path);
-        match get_mtime(&normalized) {
-            Some(mtime) => {
-                self.0.lock().unwrap().insert(normalized, mtime);
-            }
-            None => warn!(
+        if let Some(mtime) = get_mtime(&normalized) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(normalized, mtime);
+        } else {
+            warn!(
                 path = %path.display(),
                 "record_read: could not get mtime, file will not be tracked"
-            ),
+            );
         }
     }
 
+    /// Checks if a file has been modified since it was last read.
+    ///
+    /// # Errors
+    /// Returns an error if the file has been modified externally.
     pub fn check_before_edit(&self, path: &Path) -> Result<(), String> {
         let normalized = normalize_path(path);
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(&recorded) = guard.get(&normalized) else {
             return Ok(());
         };

@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_lines)]
+
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -31,6 +33,7 @@ pub struct GrepParams {
 }
 
 impl GrepParams {
+    #[must_use]
     pub fn new(pattern: String) -> Self {
         Self {
             pattern,
@@ -46,7 +49,11 @@ impl GrepParams {
 
 /// Core grep logic. Blocking — caller must run on a thread pool.
 /// Returns `(base_path, entries)` where entries have paths relative to base.
-pub fn grep_search(params: GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>), String> {
+///
+/// # Errors
+///
+/// Returns an error if the search path or grep execution fails.
+pub fn grep_search(params: &GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>), String> {
     let search_path = resolve_search_path(params.path.as_deref())?;
     let is_multiline = needs_multiline(&params.pattern);
     debug!(
@@ -84,7 +91,7 @@ pub fn grep_search(params: GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>), 
 
     let search = Path::new(&search_path);
     let base = if search.is_file() {
-        search.parent().unwrap_or(search)
+        search.parent().map_or_else(|| search, |v| v)
     } else {
         search
     };
@@ -103,9 +110,8 @@ pub fn grep_search(params: GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>), 
             let results = Arc::clone(&results);
             let base = Arc::clone(&base);
             Box::new(move |entry| {
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => return WalkState::Continue,
+                let Ok(entry) = entry else {
+                    return WalkState::Continue;
                 };
                 if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                     return WalkState::Continue;
@@ -123,10 +129,12 @@ pub fn grep_search(params: GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>), 
                 if !groups.is_empty() {
                     let rel = path
                         .strip_prefix(&*base)
-                        .unwrap_or(&path)
+                        .unwrap_or_else(|_| &path)
                         .to_string_lossy()
                         .into_owned();
-                    let mut guard = results.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut guard = results
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     guard.push(GrepFileEntry { path: rel, groups });
                 }
                 WalkState::Continue
@@ -134,7 +142,11 @@ pub fn grep_search(params: GrepParams) -> Result<(PathBuf, Vec<GrepFileEntry>), 
         }
     });
 
-    let mut entries = std::mem::take(&mut *results.lock().unwrap_or_else(|e| e.into_inner()));
+    let mut entries = std::mem::take(
+        &mut *results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
 
     if entries.is_empty() {
         return Ok((base.to_path_buf(), entries));
@@ -176,10 +188,11 @@ impl GrepSink<'_> {
 
     fn push_line(&mut self, bytes: &[u8], line_nr: u64, is_match: bool) {
         let text = String::from_utf8_lossy(bytes);
-        let text = text.strip_suffix('\n').unwrap_or(&text);
-        let text = text.strip_suffix('\r').unwrap_or(text);
+        let text = text.strip_suffix('\n').unwrap_or_else(|| &*text);
+        let text = text.strip_suffix('\r').unwrap_or_else(|| text);
+        #[allow(clippy::expect_used)]
         self.current_group.push(GrepLine {
-            line_nr: line_nr as usize,
+            line_nr: usize::try_from(line_nr).expect("line number exceeds usize"),
             text: truncate_bytes(text, self.max_line_bytes),
             is_match,
         });
@@ -193,7 +206,7 @@ impl Sink for GrepSink<'_> {
         if !self.has_context {
             self.flush();
         }
-        let start_line = mat.line_number().unwrap_or(1);
+        let start_line = mat.line_number().unwrap_or_else(|| 1);
         for (i, line) in mat.lines().enumerate() {
             self.push_line(line, start_line + i as u64, true);
         }
@@ -205,7 +218,7 @@ impl Sink for GrepSink<'_> {
         _searcher: &Searcher,
         context: &SinkContext<'_>,
     ) -> Result<bool, io::Error> {
-        let line_nr = context.line_number().unwrap_or(1);
+        let line_nr = context.line_number().unwrap_or_else(|| 1);
         self.push_line(context.bytes(), line_nr, false);
         Ok(true)
     }

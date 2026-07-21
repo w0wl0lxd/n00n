@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::needless_pass_by_value
+)]
+
 //! Exercises real plugins (bash, grep, batch) through `request_restore`.
 //! A broken restore silently falls back to raw LLM output, so we assert
 //! things only the real views produce (gutters, command headers, truncation).
@@ -14,7 +21,7 @@ const BASH_SRC: &str = include_str!("../../plugins/bash/init.lua");
 const GREP_SRC: &str = include_str!("../../plugins/grep/init.lua");
 const BATCH_SRC: &str = include_str!("../../plugins/batch/init.lua");
 
-/// Only the real ToolView emits this when collapsed.
+/// Only the real `ToolView` emits this when collapsed.
 const EXPAND_HINT: &str = "click to expand";
 /// Fixed cap so truncation tests don't depend on the product default.
 const VIEW_CAP: usize = 3;

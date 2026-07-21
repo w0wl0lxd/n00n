@@ -173,6 +173,7 @@ pub(crate) fn virtual_module(lua: &Lua, modname: &str) -> Option<mlua::Result<Ta
 
 /// The body of the website's "Lua API" page: full render with anchors and
 /// an overview table, plus the shared helper modules.
+#[must_use]
 pub fn site_page() -> String {
     format!("{}\n{}", render(false), helpers_section())
 }
@@ -191,7 +192,7 @@ fn reference_index(reference: &str) -> String {
     for (i, line) in lines.iter().enumerate() {
         if let Some(sig) = line.strip_prefix("### ") {
             let summary = index_summary(&lines[i + 1..]);
-            let _ = write!(out, "- L{} {sig}{summary}\n", i + 1);
+            let _ = writeln!(out, "- L{} {sig}{summary}", i + 1);
         } else if let Some(module) = line.strip_prefix("## ") {
             let _ = write!(out, "\n## {module} - L{}\n", i + 1);
         }
@@ -273,14 +274,19 @@ fn skeleton(src: &str) -> String {
 fn helpers() -> Vec<(String, &'static str)> {
     let n00n = lib_dir()
         .get_dir("n00n")
-        .expect("plugins/lib/n00n embedded");
+        .unwrap_or_else(|| unreachable!("plugins/lib/n00n embedded"));
     let mut helpers: Vec<(String, &'static str)> = n00n
         .files()
         .filter_map(|file| {
             let path = file.path();
             let stem = path.file_stem()?.to_str()?;
-            (path.extension()? == "lua")
-                .then(|| (format!("n00n.{stem}"), file.contents_utf8().unwrap()))
+            (path.extension()? == "lua").then(|| {
+                (
+                    format!("n00n.{stem}"),
+                    file.contents_utf8()
+                        .unwrap_or_else(|| unreachable!("Lua source is UTF-8")),
+                )
+            })
         })
         .collect();
     helpers.sort();
@@ -313,11 +319,17 @@ fn slug(text: &str) -> String {
 }
 
 fn instance_name(module: &ModuleDoc) -> &'static str {
-    module.name.rsplit('.').next().unwrap_or(module.name)
+    const DEFAULT_INSTANCE: &str = "";
+    module
+        .name
+        .rsplit('.')
+        .next()
+        .unwrap_or_else(|| DEFAULT_INSTANCE)
 }
 
 fn first_sentence(desc: &str) -> &str {
-    let first_line = desc.lines().next().unwrap_or_default();
+    const DEFAULT_DESC: &str = "";
+    let first_line = desc.lines().next().unwrap_or_else(|| DEFAULT_DESC);
     match first_line.find(". ") {
         Some(i) => &first_line[..=i],
         None => first_line,
@@ -365,7 +377,8 @@ fn format_returns(returns: &str, classes: &ClassLinks) -> String {
 }
 
 fn field_item(text: &str) -> Option<String> {
-    let rest = text.strip_prefix("- ").unwrap_or(text);
+    const NO_PREFIX: &str = "";
+    let rest = text.strip_prefix("- ").unwrap_or_else(|| text);
     let (name, rest) = if let Some(r) = rest.strip_prefix('`') {
         r.split_once('`')?
     } else {
@@ -384,10 +397,10 @@ fn field_item(text: &str) -> Option<String> {
         return None;
     }
     let desc = match desc.chars().next() {
-        None => "",
+        None => NO_PREFIX,
         Some(' ') => {
             let d = desc.trim_start();
-            d.strip_prefix("- ").map_or(d, str::trim_start)
+            d.strip_prefix("- ").unwrap_or_else(|| d)
         }
         Some(':') => desc[1..].trim_start(),
         _ => return None,
@@ -398,7 +411,7 @@ fn field_item(text: &str) -> Option<String> {
 fn push_fields_block(out: &mut String, block: &str) {
     let mut levels: Vec<usize> = Vec::new();
     for raw in block.lines() {
-        let line = raw.strip_prefix("  ").unwrap_or(raw);
+        let line = raw.strip_prefix("  ").unwrap_or_else(|| raw);
         let text = line.trim_start();
         if text.is_empty() {
             continue;
@@ -411,9 +424,9 @@ fn push_fields_block(out: &mut String, block: &str) {
             if levels.last() != Some(&indent) {
                 levels.push(indent);
             }
-            let _ = write!(out, "{}- {item}\n", "  ".repeat(levels.len()));
+            let _ = writeln!(out, "{}- {item}", "  ".repeat(levels.len()));
         } else if levels.last().is_some_and(|&i| indent > i) {
-            let _ = write!(out, "{}{text}\n", "  ".repeat(levels.len() + 1));
+            let _ = writeln!(out, "{}{text}", "  ".repeat(levels.len() + 1));
         } else {
             levels.clear();
             let _ = write!(out, "\n  {text}\n\n");
@@ -441,8 +454,8 @@ fn push_fn(out: &mut String, module: &ModuleDoc, f: &FnDoc, classes: &ClassLinks
     if !f.params.is_empty() {
         out.push_str("**Parameters:**\n\n");
         for p in f.params {
-            let (first, rest) = p.desc.split_once('\n').unwrap_or((p.desc, ""));
-            let _ = write!(out, "- `{}` ({}) {first}\n", p.name, link_ty(p.ty, classes));
+            let (first, rest) = p.desc.split_once('\n').unwrap_or_else(|| (p.desc, ""));
+            let _ = writeln!(out, "- `{}` ({}) {first}", p.name, link_ty(p.ty, classes));
             push_fields_block(out, rest);
         }
         out.push('\n');
@@ -482,8 +495,8 @@ fn render(compact: bool) -> String {
                 .iter()
                 .map(|m| first_sentence(m.desc))
                 .find(|d| !d.is_empty())
-                .unwrap_or_default();
-            let _ = write!(out, "| [`{name}`](#{}) | {desc} |\n", slug(name));
+                .unwrap_or_else(|| "");
+            let _ = writeln!(out, "| [`{name}`](#{}) | {desc} |", slug(name));
         }
     }
 

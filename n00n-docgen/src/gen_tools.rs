@@ -26,6 +26,8 @@ const SECTIONS: &[(&str, &[&str])] = &[
             "grep",
             "index",
             "view_image",
+            "codegraph",
+            "arbor",
         ],
     ),
     (
@@ -310,7 +312,7 @@ pub fn generate() -> String {
 
     let snapshot = registry.iter();
     let mut tools: HashMap<&str, ToolInfo> = HashMap::new();
-    for entry in snapshot.iter() {
+    for entry in &snapshot {
         if let Some(info) = collect_tool_info(&def_map, entry) {
             tools.insert(entry.name(), info);
         }
@@ -427,7 +429,10 @@ mod tests {
     fn sections_partition_registered_tools() {
         let (registry, _) = load_registry_with_builtins();
         let snapshot = registry.iter();
-        let registered: HashSet<&str> = snapshot.iter().map(|e| e.name()).collect();
+        let registered: HashSet<&str> = snapshot
+            .iter()
+            .map(n00n_agent::tools::RegisteredTool::name)
+            .collect();
 
         let mut sectioned: HashSet<&str> = HashSet::new();
         for (_, names) in SECTIONS {

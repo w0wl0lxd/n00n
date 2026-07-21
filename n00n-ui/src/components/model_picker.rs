@@ -217,7 +217,7 @@ impl Overlay for ModelPicker {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 

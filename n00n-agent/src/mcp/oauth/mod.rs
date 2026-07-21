@@ -20,7 +20,7 @@ use self::callback::{CallbackResult, CallbackServer};
 use self::discovery::parse_www_authenticate;
 use super::error::McpError;
 
-const AUTH_TIMEOUT: Duration = Duration::from_secs(600);
+const AUTH_TIMEOUT: Duration = Duration::from_mins(10);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// In-band refresh blocks requests waiting on the transport's auth lock, so it
 /// gets a much tighter budget than the interactive flow.
@@ -44,6 +44,12 @@ pub enum Interaction {
     Background,
 }
 
+/// Authenticate with an MCP server using OAuth.
+///
+/// # Errors
+///
+/// Returns an error if discovery, registration, code exchange, or token refresh fails.
+#[allow(clippy::too_many_lines)]
 pub async fn authenticate(
     server_name: &str,
     server_url: &str,
@@ -217,6 +223,9 @@ pub async fn authenticate(
 
 /// Refresh stored tokens without any user interaction. `Ok(None)` means an
 /// interactive flow is required (no stored auth or no refresh token).
+///
+/// # Errors
+/// Returns `OAuthError` if token refresh fails or discovery fails.
 pub async fn silent_refresh(
     storage: &StateDir,
     server_name: &str,

@@ -265,15 +265,14 @@ fn diff_change_spans(
         prefix,
         base.patch(theme::current().code_block),
     )];
-    match syntax {
-        Some(syn) => spans.extend(merge_syntax_with_diff(&syn, ds, base, emph)),
-        None => {
-            let full: String = ds.iter().map(|s| s.text.as_str()).collect();
-            spans.push(Span::styled(
-                n00n_highlight::normalize_text(&full),
-                base.patch(theme::current().code_block),
-            ));
-        }
+    if let Some(syn) = syntax {
+        spans.extend(merge_syntax_with_diff(&syn, ds, base, emph))
+    } else {
+        let full: String = ds.iter().map(|s| s.text.as_str()).collect();
+        spans.push(Span::styled(
+            n00n_highlight::normalize_text(&full),
+            base.patch(theme::current().code_block),
+        ));
     }
     spans
 }
@@ -285,7 +284,10 @@ fn render_grep_results(
 ) -> (Vec<Line<'static>>, bool) {
     let mut out = Vec::new();
     let mut budget = max_lines;
-    let total_matches: usize = entries.iter().map(|e| e.match_count()).sum();
+    let total_matches: usize = entries
+        .iter()
+        .map(n00n_agent::GrepFileEntry::match_count)
+        .sum();
     let mut rendered_matches: usize = 0;
 
     let global_max_nr = entries

@@ -50,6 +50,7 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    #[must_use]
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::Anthropic => "Anthropic",
@@ -68,6 +69,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn api_key_env(self) -> &'static str {
         match self {
             Self::Anthropic => "ANTHROPIC_API_KEY",
@@ -86,6 +88,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn base_url(self) -> &'static str {
         match self {
             Self::Anthropic => "https://api.anthropic.com/v1/messages",
@@ -106,6 +109,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn supports_thinking(self) -> bool {
         matches!(
             self,
@@ -122,6 +126,7 @@ impl ProviderKind {
         )
     }
 
+    #[must_use]
     pub const fn features(self) -> Option<&'static str> {
         match self {
             Self::Anthropic => {
@@ -150,24 +155,26 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub const fn family(self) -> ModelFamily {
         match self {
             Self::Anthropic => ModelFamily::Claude,
             Self::OpenAi => ModelFamily::Gpt,
             Self::Google => ModelFamily::Gemini,
-            Self::Copilot => ModelFamily::Generic,
-            Self::Ollama => ModelFamily::Generic,
-            Self::LlamaCpp => ModelFamily::Generic,
-            Self::Mistral => ModelFamily::Generic,
+            Self::Copilot
+            | Self::Ollama
+            | Self::LlamaCpp
+            | Self::Mistral
+            | Self::DeepSeek
+            | Self::OpenRouter
+            | Self::TensorX
+            | Self::Opencode => ModelFamily::Generic,
             Self::Zai => ModelFamily::Glm,
-            Self::DeepSeek => ModelFamily::Generic,
-            Self::OpenRouter => ModelFamily::Generic,
             Self::Synthetic => ModelFamily::Synthetic,
-            Self::TensorX => ModelFamily::Generic,
-            Self::Opencode => ModelFamily::Generic,
         }
     }
 
+    #[must_use]
     pub const fn accepts_arbitrary_models(self) -> bool {
         matches!(
             self,
@@ -183,46 +190,41 @@ impl ProviderKind {
     }
 
     /// `None` when we honestly don't know the output window: llama.cpp
-    /// serves whatever model the user loaded, and TensorX rejects explicit
-    /// max_tokens (see tensorx.rs). Unknown means "don't limit", never
+    /// serves whatever model the user loaded, and `TensorX` rejects explicit
+    /// `max_tokens` (see tensorx.rs). Unknown means "don't limit", never
     /// "assume small"; a `0` sentinel here once silently capped llama.cpp
     /// thinking budgets at the floor.
+    #[must_use]
     pub const fn fallback_max_output(self) -> Option<u32> {
         match self {
-            Self::Anthropic => Some(128_000),
-            Self::OpenAi => Some(100_000),
+            Self::OpenAi | Self::Copilot => Some(100_000),
             Self::Google => Some(65_536),
-            Self::Copilot => Some(100_000),
+            Self::Anthropic | Self::OpenRouter | Self::Opencode => Some(128_000),
             Self::Ollama => Some(16_384),
-            Self::LlamaCpp => None,
-            Self::Mistral => Some(32_000),
+            Self::LlamaCpp | Self::TensorX => None,
+            Self::Mistral | Self::Synthetic => Some(32_000),
             Self::Zai => Some(16_000),
             Self::DeepSeek => Some(384_000),
-            Self::OpenRouter => Some(128_000),
-            Self::Synthetic => Some(32_000),
-            Self::TensorX => None,
-            Self::Opencode => Some(128_000),
         }
     }
 
+    #[must_use]
     pub const fn fallback_context_window(self) -> u32 {
         match self {
-            Self::Anthropic => 200_000,
-            Self::OpenAi => 200_000,
-            Self::Google => 1_000_000,
-            Self::Copilot => 200_000,
-            Self::Ollama => 128_000,
-            Self::LlamaCpp => 128_000,
-            Self::Mistral => 128_000,
-            Self::Zai => 128_000,
-            Self::DeepSeek => 1_000_000,
-            Self::OpenRouter => 200_000,
-            Self::Synthetic => 128_000,
-            Self::TensorX => 200_000,
+            Self::Anthropic | Self::OpenAi | Self::Copilot | Self::OpenRouter | Self::TensorX => {
+                200_000
+            }
+            Self::Google | Self::DeepSeek => 1_000_000,
+            Self::Ollama | Self::LlamaCpp | Self::Mistral | Self::Zai | Self::Synthetic => 128_000,
             Self::Opencode => 256_000,
         }
     }
 
+    /// Creates a new provider instance for this kind.
+    ///
+    /// # Errors
+    /// Returns an error if the provider's configuration is missing or invalid
+    /// (e.g., missing API key, invalid base URL, or provider-specific setup failure).
     pub fn create(self, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
         match self {
             Self::Anthropic => {
@@ -247,6 +249,7 @@ impl ProviderKind {
         }
     }
 
+    #[must_use]
     pub fn is_available(self) -> bool {
         self.create(Timeouts::default()).is_ok()
     }
@@ -298,6 +301,11 @@ fn provider_for_slug(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>
     }
 }
 
+/// Creates a provider instance from a model configuration.
+///
+/// # Errors
+/// Returns an error if the provider cannot be created (e.g., missing API key,
+/// invalid configuration, or provider-specific setup failure).
 pub fn from_model(model: &mut Model, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
     if let Some(slug) = &model.dynamic_slug {
         debug!(slug, model = %model.id, "slug provider created");
@@ -350,6 +358,11 @@ impl Provider for UnconfiguredProvider {
     }
 }
 
+/// Creates a provider instance from a model configuration asynchronously.
+///
+/// # Errors
+/// Returns an error if the provider cannot be created (e.g., missing API key,
+/// invalid configuration, or provider-specific setup failure).
 pub async fn from_model_async(
     model: &mut Model,
     timeouts: Timeouts,
@@ -379,6 +392,7 @@ pub struct ModelBatch {
 
 /// Offline version of model discovery: returns specs from static tables
 /// and configured dynamic providers. See [`fetch_all_models`] for live lookups.
+#[must_use]
 pub fn available_model_specs() -> Vec<String> {
     let mut specs: Vec<String> = ProviderKind::iter()
         .filter(|kind| should_discover(*kind) && kind.is_available())
@@ -417,6 +431,11 @@ fn llama_cpp_is_configured(has_host: bool, has_api_key: bool, has_provider_confi
     has_host || has_api_key || has_provider_config
 }
 
+/// Fetches all available models from all providers asynchronously.
+///
+/// # Panics
+/// Panics if the model registry mutex is poisoned.
+#[allow(clippy::too_many_lines)]
 pub async fn fetch_all_models(
     mut on_ready: impl FnMut(ModelBatch),
     on_done: Option<Box<dyn FnOnce() + Send>>,
@@ -436,7 +455,7 @@ pub async fn fetch_all_models(
                     if kind.accepts_arbitrary_models() {
                         crate::model_registry::model_registry()
                             .write()
-                            .unwrap()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .set_known_models(kind, models.clone());
                     }
                     let mut specs: Vec<String> =

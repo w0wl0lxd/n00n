@@ -2925,6 +2925,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "n00n-arbor"
+version = "0.4.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "n00n-config"
 version = "0.4.2"
 dependencies = [
@@ -3009,6 +3018,7 @@ dependencies = [
  "jsonschema",
  "mlua",
  "n00n-agent",
+ "n00n-arbor",
  "n00n-config",
  "n00n-highlight",
  "n00n-interpreter",

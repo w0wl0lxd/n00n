@@ -199,7 +199,7 @@ impl CommandPalette {
         let nucleo = Nucleo::new(Config::DEFAULT, Arc::new(|| {}), None, 1);
         let injector = nucleo.injector();
 
-        for cmd in BUILTIN_COMMANDS.iter() {
+        for cmd in BUILTIN_COMMANDS {
             let item = CommandItem {
                 name: cmd.name.to_string(),
                 max_args: cmd.max_args,
@@ -437,8 +437,7 @@ impl CommandPalette {
         let args = input
             .strip_prefix('/')
             .and_then(|s| s.split_once(char::is_whitespace))
-            .map(|(_, a)| a.trim())
-            .unwrap_or("");
+            .map_or("", |(_, a)| a.trim());
         Some(ParsedCommand {
             name,
             args: args.to_string(),
@@ -874,13 +873,13 @@ mod tests {
     #[test_case("/tsk", "/tasks" ; "tasks_fuzzy")]
     fn nucleo_highlights_matching_indices(input: &str, expected_cmd: &str) {
         let p = synced(input);
-        assert!(p.is_active(), "Input '{}' should activate palette", input);
+        assert!(p.is_active(), "Input '{input}' should activate palette");
         // Find the expected match
         let matched = p
             .filtered
             .iter()
             .find(|m| p.item_name(m) == expected_cmd)
-            .unwrap_or_else(|| panic!("Should find {} for input {}", expected_cmd, input));
+            .unwrap_or_else(|| panic!("Should find {expected_cmd} for input {input}"));
         // Should have some highlight indices
         assert!(
             !matched.indices.is_empty(),

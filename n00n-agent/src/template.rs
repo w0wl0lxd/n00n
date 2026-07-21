@@ -4,10 +4,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use jiff::Timestamp;
 
+#[must_use]
 pub fn env_vars() -> Vars {
-    let cwd = env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| ".".into());
+    let cwd = env::current_dir().map_or_else(|_| ".".into(), |p| p.to_string_lossy().into_owned());
     let date = Timestamp::now().strftime("%Y-%m-%d").to_string();
     Vars::new()
         .set("{cwd}", cwd)
@@ -19,15 +18,18 @@ pub fn env_vars() -> Vars {
 pub struct Vars(Vec<(&'static str, String)>);
 
 impl Vars {
+    #[must_use]
     pub fn new() -> Self {
         Self(Vec::new())
     }
 
+    #[must_use]
     pub fn set(mut self, key: &'static str, val: impl Into<String>) -> Self {
         self.0.push((key, val.into()));
         self
     }
 
+    #[must_use]
     pub fn apply<'a>(&self, s: &'a str) -> Cow<'a, str> {
         if self.0.is_empty() || !s.contains('{') {
             return Cow::Borrowed(s);
@@ -41,6 +43,7 @@ impl Vars {
 
     /// Cheap, order-sensitive digest of every (key, value) pair. Used as a
     /// cache key so cached templated output is invalidated when any var changes.
+    #[must_use]
     pub fn content_hash(&self) -> u64 {
         let mut h = DefaultHasher::new();
         self.0.hash(&mut h);

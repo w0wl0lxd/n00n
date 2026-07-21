@@ -13,6 +13,7 @@ pub struct JsonRpcRequest<'a> {
 }
 
 impl<'a> JsonRpcRequest<'a> {
+    #[must_use]
     pub fn new(id: u64, method: &'a str, params: Option<Value>) -> Self {
         Self {
             jsonrpc: "2.0",
@@ -32,6 +33,7 @@ pub struct JsonRpcNotification<'a> {
 }
 
 impl<'a> JsonRpcNotification<'a> {
+    #[must_use]
     pub fn new(method: &'a str, params: Option<Value>) -> Self {
         Self {
             jsonrpc: "2.0",
@@ -54,6 +56,7 @@ pub struct JsonRpcError {
     pub message: String,
 }
 
+#[must_use]
 pub fn initialize_params() -> Value {
     serde_json::json!({
         "protocolVersion": LATEST_PROTOCOL_VERSION,
@@ -93,6 +96,7 @@ pub struct CallToolResult {
 }
 
 impl CallToolResult {
+    #[must_use]
     pub fn joined_text(&self) -> String {
         self.content
             .iter()

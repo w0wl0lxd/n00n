@@ -21,7 +21,7 @@ pub(super) fn extract_selection_text(
 
     for (i, &h) in heights.iter().enumerate() {
         let seg_start = doc_row;
-        let seg_end = doc_row + h as u32;
+        let seg_end = doc_row + u32::from(h);
         doc_row = seg_end;
 
         if seg_end <= doc_start.row || seg_start > doc_end.row {

@@ -297,7 +297,7 @@ impl LoginPicker {
                                 if providers::builtin_provider(&slug).is_some() || def.is_some() {
                                     providers::resolve_display_name(&slug, def)
                                 } else {
-                                    item.display_name.clone()
+                                    item.display_name
                                 };
                             let needs_url =
                                 providers::builtin_provider(&slug).is_some_and(|b| b.needs_url);
@@ -326,7 +326,7 @@ impl LoginPicker {
                     let config = providers::ProvidersConfig::load();
                     StepAction::GoEnterKey {
                         slug: slug.clone(),
-                        plan: Some(item.key.clone()),
+                        plan: Some(item.key),
                         display_name: providers::resolve_display_name(slug, config.get(slug)),
                         custom: None,
                         builtin_url: None,
@@ -376,7 +376,7 @@ impl LoginPicker {
                     StepAction::GoEnterKey {
                         slug: slug.clone(),
                         plan: None,
-                        display_name: format!("Custom ({})", slug),
+                        display_name: format!("Custom ({slug})"),
                         custom: Some(CustomInfo {
                             base_url,
                             protocol: protocol.clone(),
@@ -453,7 +453,7 @@ impl LoginPicker {
                             return self.transition(StepAction::GoDone {
                                 message: format!("Error saving config: {e}"),
                                 model_spec: None,
-                                slug: slug_c.clone(),
+                                slug: slug_c,
                             });
                         }
                     } else {
@@ -470,7 +470,7 @@ impl LoginPicker {
                                 return self.transition(StepAction::GoDone {
                                     message: format!("Error saving config: {e}"),
                                     model_spec: None,
-                                    slug: slug_c.clone(),
+                                    slug: slug_c,
                                 });
                             }
                         }
@@ -504,7 +504,7 @@ impl LoginPicker {
                     StepAction::GoDone {
                         message: msg,
                         model_spec: default_model,
-                        slug: slug_c.clone(),
+                        slug: slug_c,
                     }
                 }
                 KeyCode::Esc => StepAction::Back,

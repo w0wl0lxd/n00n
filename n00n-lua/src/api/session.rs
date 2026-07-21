@@ -12,6 +12,7 @@ const NO_UI_ERR: &str = "no interactive UI attached";
 
 type Pair = (Value, Option<String>);
 
+#[allow(clippy::needless_pass_by_value)]
 fn err_pair(err: impl ToString) -> Pair {
     (Value::Nil, Some(err.to_string()))
 }
@@ -125,7 +126,10 @@ async fn new(
     opts: Option<Table>,
 ) -> LuaResult<Pair> {
     let (prompt, focus) = match opts {
-        Some(opts) => (opts.get("prompt")?, opts.get("focus").unwrap_or(false)),
+        Some(opts) => (
+            opts.get("prompt")?,
+            opts.get("focus").unwrap_or_else(|_| false),
+        ),
         None => (None, false),
     };
     roundtrip(lua, tx, SessionRequest::New { prompt, focus }).await

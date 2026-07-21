@@ -1,3 +1,5 @@
+#![allow(clippy::implicit_hasher, clippy::cast_possible_truncation)]
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -27,7 +29,7 @@ pub trait McpTransport: Send + Sync {
         method: &'a str,
         params: Option<Value>,
     ) -> BoxFuture<'a, Result<(), McpError>>;
-    fn shutdown<'a>(&'a self) -> BoxFuture<'a, ()>;
+    fn shutdown(&self) -> BoxFuture<'_, ()>;
     fn server_name(&self) -> &Arc<str>;
     fn transport_kind(&self) -> &'static str;
     fn child_pids(&self) -> Vec<u32> {
@@ -42,6 +44,11 @@ fn invalid_response(name: &Arc<str>, e: impl std::fmt::Display) -> McpError {
     }
 }
 
+/// Initialize the MCP transport session.
+///
+/// # Errors
+///
+/// Returns an error if the initialize handshake fails.
 pub async fn initialize(transport: &dyn McpTransport) -> Result<(), McpError> {
     let params = initialize_params();
     transport.send_request("initialize", Some(params)).await?;
@@ -50,6 +57,11 @@ pub async fn initialize(transport: &dyn McpTransport) -> Result<(), McpError> {
         .await
 }
 
+/// List tools available on the MCP server.
+///
+/// # Errors
+///
+/// Returns an error if the request fails or the response cannot be parsed.
 pub async fn list_tools(transport: &dyn McpTransport) -> Result<Vec<ToolInfo>, McpError> {
     let result = transport.send_request("tools/list", None).await?;
     let list: ToolsListResult =
@@ -59,6 +71,11 @@ pub async fn list_tools(transport: &dyn McpTransport) -> Result<Vec<ToolInfo>, M
 
 const METHOD_NOT_FOUND: i64 = -32601;
 
+/// List prompts available on the MCP server.
+///
+/// # Errors
+///
+/// Returns an error if the request fails or the response cannot be parsed.
 pub async fn list_prompts(transport: &dyn McpTransport) -> Result<Vec<PromptInfo>, McpError> {
     let result = transport.send_request("prompts/list", None).await;
     match result {
@@ -72,10 +89,15 @@ pub async fn list_prompts(transport: &dyn McpTransport) -> Result<Vec<PromptInfo
     }
 }
 
-pub async fn get_prompt(
+/// Get a prompt from the MCP server.
+///
+/// # Errors
+///
+/// Returns an error if the prompt is unknown or the response cannot be parsed.
+pub async fn get_prompt<S: std::hash::BuildHasher>(
     transport: &dyn McpTransport,
     name: &str,
-    arguments: &HashMap<String, String>,
+    arguments: &HashMap<String, String, S>,
 ) -> Result<Vec<super::protocol::PromptMessage>, McpError> {
     let params = serde_json::json!({ "name": name, "arguments": arguments });
     let result = transport.send_request("prompts/get", Some(params)).await?;
@@ -84,6 +106,11 @@ pub async fn get_prompt(
     Ok(parsed.messages)
 }
 
+/// Call a tool on the MCP server.
+///
+/// # Errors
+///
+/// Returns an error if the tool call fails or the response cannot be parsed.
 pub async fn call_tool(
     transport: &dyn McpTransport,
     tool_name: &str,
@@ -109,10 +136,11 @@ pub async fn call_tool(
         });
     }
 
+    let duration_ms = start.elapsed().as_millis();
     info!(
         server,
         tool = tool_name,
-        duration_ms = start.elapsed().as_millis() as u64,
+        duration_ms = duration_ms as u64,
         "MCP tools/call response"
     );
     Ok(text)

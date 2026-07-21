@@ -1103,7 +1103,7 @@ fn extract_skips_out_of_range_segments() {
     let total: u16 = heights.iter().sum();
     let mid = total / 2;
     let area = Rect::new(0, 0, 80, 24);
-    let sel = make_sel(area, (mid as u32, 0), (mid as u32, 79));
+    let sel = make_sel(area, (u32::from(mid), 0), (u32::from(mid), 79));
     let text = panel.extract_selection_text(&sel, area);
     assert!(text.contains("seg1"));
     assert!(!text.contains("seg0"));
@@ -1123,7 +1123,7 @@ fn extract_off_screen_rows_via_temp_buffer() {
     let total: u16 = panel.segment_heights().iter().sum();
     assert!(total > 5, "content must exceed viewport");
     let sel_area = Rect::new(0, 0, 80, total);
-    let sel = make_sel(sel_area, (1, 0), ((total - 1) as u32, 79));
+    let sel = make_sel(sel_area, (1, 0), (u32::from(total - 1), 79));
 
     let extracted = panel.extract_selection_text(&sel, sel_area);
     assert!(!extracted.contains("line 0"), "first line excluded");
@@ -1133,10 +1133,10 @@ fn extract_off_screen_rows_via_temp_buffer() {
 #[test]
 fn extract_mixed_fully_enclosed_and_partial() {
     let panel = panel_with_msgs(&["full segment", "partial here"], 80, 24);
-    let heights = panel.segment_heights().to_vec();
+    let heights = panel.segment_heights().clone();
     let area = Rect::new(0, 0, 80, 24);
     let seg1_start = heights[0] + heights[1];
-    let sel = make_sel(area, (0, 0), (seg1_start as u32, N00N_PREFIX_LEN + 6));
+    let sel = make_sel(area, (0, 0), (u32::from(seg1_start), N00N_PREFIX_LEN + 6));
     let text = panel.extract_selection_text(&sel, area);
     assert!(text.contains("full segment"));
     assert!(text.contains("partial"));
@@ -1152,8 +1152,8 @@ fn extract_partial_col_symmetric(msgs: &[&str], expect_start: &str, expect_end: 
     render(&mut panel, 80, 24);
     let total: u16 = panel.segment_heights().iter().sum();
     let area = Rect::new(0, 0, 80, 24);
-    let down = make_sel(area, (0, N00N_PREFIX_LEN), ((total - 1) as u32, 79));
-    let up = make_sel(area, ((total - 1) as u32, 79), (0, N00N_PREFIX_LEN));
+    let down = make_sel(area, (0, N00N_PREFIX_LEN), (u32::from(total - 1), 79));
+    let up = make_sel(area, (u32::from(total - 1), 79), (0, N00N_PREFIX_LEN));
     let text_down = panel.extract_selection_text(&down, area);
     let text_up = panel.extract_selection_text(&up, area);
     assert!(text_down.contains(expect_start));
@@ -1171,7 +1171,7 @@ fn extract_wrapped_no_soft_breaks(template: &str, anchor: (u32, u16)) {
     render(&mut panel, 40, 30);
     let total: u16 = panel.segment_heights().iter().sum();
     let area = Rect::new(0, 0, 40, 30);
-    let sel = make_sel(area, anchor, ((total - 1) as u32, 39));
+    let sel = make_sel(area, anchor, (u32::from(total - 1), 39));
     let text = panel.extract_selection_text(&sel, area);
     assert!(
         text.contains(&long),
@@ -1190,7 +1190,7 @@ fn extract_fully_selected_message_copies_raw_text() {
 
     let total: u16 = panel.segment_heights().iter().sum();
     let area = Rect::new(0, 0, 80, 24);
-    let sel = make_sel(area, (0, 0), ((total - 1) as u32, 79));
+    let sel = make_sel(area, (0, 0), (u32::from(total - 1), 79));
     let text = panel.extract_selection_text(&sel, area);
 
     assert_eq!(text, "some **markdown** text");
@@ -1213,7 +1213,7 @@ fn extract_fully_selected_tool_copies_raw_output() {
 
     let total: u16 = panel.segment_heights().iter().sum();
     let area = Rect::new(0, 0, 80, 24);
-    let sel = make_sel(area, (0, 0), ((total - 1) as u32, 79));
+    let sel = make_sel(area, (0, 0), (u32::from(total - 1), 79));
     let text = panel.extract_selection_text(&sel, area);
 
     assert!(
@@ -1236,7 +1236,7 @@ fn extract_partial_last_line_truncated() {
     render(&mut panel, 80, 24);
     let total: u16 = panel.segment_heights().iter().sum();
     let area = Rect::new(0, 0, 80, 24);
-    let last_row = (total - 1) as u32;
+    let last_row = u32::from(total - 1);
     let sel = make_sel(area, (0, 0), (last_row, 3));
     let text = panel.extract_selection_text(&sel, area);
     assert_eq!(text.lines().last().unwrap(), "ABCD");
@@ -1319,7 +1319,7 @@ fn extract_selection_copies_visible_content_only() {
     let panel = panel_with_long_tool(200);
     let area = Rect::new(0, 0, 80, 24);
     let total: u16 = panel.segment_heights().iter().sum();
-    let sel = make_sel(area, (0, 0), ((total - 1) as u32, 79));
+    let sel = make_sel(area, (0, 0), (u32::from(total - 1), 79));
     let text = panel.extract_selection_text(&sel, area);
     assert!(
         !text.contains("line 50"),
@@ -1547,7 +1547,7 @@ fn toggle_instruction_segment_expands_and_collapses() {
     let collapsed = seg_line_count(&panel, inst_id);
 
     panel.toggle_expansion(inst_id);
-    assert!(seg_line_count(&panel, &inst_id) > collapsed);
+    assert!(seg_line_count(&panel, inst_id) > collapsed);
 
     panel.toggle_expansion(inst_id);
     assert_eq!(seg_line_count(&panel, inst_id), collapsed);
@@ -1880,7 +1880,7 @@ fn tool_done_removes_live_buf_and_snapshots_dirty() {
 }
 
 /// The handler's buf must supersede the `start` preview: the UI keeps only
-/// the last registered buf per tool_use_id.
+/// the last registered buf per `tool_use_id`.
 #[test]
 fn second_register_live_buf_replaces_first() {
     let preview = Arc::new(n00n_agent::SharedBuf::new());
@@ -2010,7 +2010,7 @@ fn tool_done_without_live_buf_is_not_watched_and_click_restores() {
     assert_eq!(probe.try_recv(), None);
 }
 
-/// The stale-run_id filter drops ToolDone events after a cancel, so the
+/// The stale-run_id filter drops `ToolDone` events after a cancel, so the
 /// cancel path itself must retire live bufs: no `is_animating` pin, and
 /// the tool stays clickable through the warm path.
 #[test]

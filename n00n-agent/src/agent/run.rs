@@ -29,15 +29,17 @@ const NUDGE_PROMPT: &str = "You just executed tool calls but returned an empty r
 const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
 const IMAGE_TOKEN_ESTIMATE: usize = 2_048;
 
+/// Resolves the model to use for compaction.
+///
+/// # Panics
+/// Panics if the model registry lock is poisoned.
 pub fn resolve_compaction_model(
     provider: &Arc<dyn Provider>,
     model: &Model,
     timeouts: n00n_providers::Timeouts,
 ) -> (Arc<dyn Provider>, Model) {
-    if let Some(spec) = n00n_providers::model_registry::model_registry()
-        .read()
-        .unwrap()
-        .spec_for_tier_any(n00n_providers::ModelTier::Compaction)
+    if let Ok(registry) = n00n_providers::model_registry::model_registry().read()
+        && let Some(spec) = registry.spec_for_tier_any(n00n_providers::ModelTier::Compaction)
         && let Ok(mut m) = Model::from_spec(&spec)
         && let Ok(p) = n00n_providers::provider::from_model(&mut m, timeouts)
     {
@@ -111,6 +113,7 @@ pub struct Agent<'h> {
 }
 
 impl<'h> Agent<'h> {
+    #[must_use]
     pub fn new(params: AgentParams, run: AgentRunParams<'h>) -> Self {
         Self {
             provider: params.provider,
@@ -149,11 +152,13 @@ impl<'h> Agent<'h> {
         }
     }
 
+    #[must_use]
     pub fn with_mcp(mut self, mcp: Option<McpHandle>) -> Self {
         self.mcp = mcp;
         self
     }
 
+    #[must_use]
     pub fn with_user_response_rx(
         mut self,
         rx: Arc<async_lock::Mutex<flume::Receiver<String>>>,
@@ -162,26 +167,35 @@ impl<'h> Agent<'h> {
         self
     }
 
+    #[must_use]
     pub fn with_interrupt_source(mut self, source: Arc<dyn InterruptSource>) -> Self {
         self.interrupt_source = Some(source);
         self
     }
 
+    #[must_use]
     pub fn with_cancel(mut self, cancel: CancelToken) -> Self {
         self.cancel = cancel;
         self
     }
 
+    #[must_use]
     pub fn with_local_tools(mut self, local_tools: LocalTools) -> Self {
         self.local_tools = local_tools;
         self
     }
 
+    #[must_use]
     pub fn with_loaded_instructions(mut self, loaded: LoadedInstructions) -> Self {
         self.loaded_instructions = loaded;
         self
     }
 
+    /// Runs the agent loop with the given input.
+    ///
+    /// # Errors
+    /// Returns an error if the agent loop fails due to provider errors,
+    /// tool execution failures, or cancellation.
     pub async fn run(&mut self, input: AgentInput) -> Result<(), AgentError> {
         self.rollback_len = self.history.len();
         let msg = Message::user_with_images(input.message.clone(), input.images);
@@ -503,6 +517,7 @@ impl<'h> Agent<'h> {
 
 const CHARS_PER_TOKEN: usize = 4;
 
+#[must_use]
 pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
     if messages.is_empty() {
         return 0;
@@ -510,19 +525,19 @@ pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
     let total_bytes: usize = messages
         .iter()
         .flat_map(|m| &m.content)
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.len()),
+        .map(|b| match b {
+            ContentBlock::Text { text } => text.len(),
             ContentBlock::Thinking {
                 thinking,
                 signature,
-            } => Some(thinking.len() + signature.as_ref().map_or(0, String::len)),
-            ContentBlock::RedactedThinking { data } => Some(data.len()),
-            ContentBlock::ToolResult { content, .. } => Some(content.len()),
-            ContentBlock::ToolUse { input, .. } => Some(input.to_string().len()),
-            ContentBlock::Image { .. } => Some(IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN),
+            } => thinking.len() + signature.as_ref().map_or(0, String::len),
+            ContentBlock::RedactedThinking { data } => data.len(),
+            ContentBlock::ToolResult { content, .. } => content.len(),
+            ContentBlock::ToolUse { input, .. } => input.to_string().len(),
+            ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN,
         })
         .sum();
-    (total_bytes.max(CHARS_PER_TOKEN) / CHARS_PER_TOKEN) as u32
+    u32::try_from(total_bytes.max(CHARS_PER_TOKEN) / CHARS_PER_TOKEN).unwrap_or_else(|_| u32::MAX)
 }
 
 #[cfg(test)]
@@ -605,7 +620,7 @@ mod tests {
         }
 
         fn list_models(&self) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>> {
-            Box::pin(async { unimplemented!() })
+            Box::pin(async { Ok(vec![]) })
         }
     }
 
@@ -697,7 +712,7 @@ mod tests {
             mode: AgentMode::Build,
             images: Vec::new(),
             preamble: Vec::new(),
-            thinking: Default::default(),
+            thinking: n00n_providers::ThinkingConfig::default(),
             fast: false,
             workflow: false,
             prompt: None,
@@ -841,7 +856,7 @@ mod tests {
                 None
             };
 
-            let tool_use = queued.unwrap_or(true);
+            let tool_use = queued.unwrap_or_else(|| true);
             let responses = if tool_use {
                 vec![
                     tool_call_response("glob", "t1"),
@@ -976,7 +991,7 @@ mod tests {
                     &self,
                 ) -> BoxFuture<'_, Result<Vec<n00n_providers::ModelInfo>, AgentError>>
                 {
-                    Box::pin(async { unimplemented!() })
+                    Box::pin(async { Ok(vec![]) })
                 }
             }
 

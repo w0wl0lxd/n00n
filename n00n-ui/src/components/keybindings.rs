@@ -108,11 +108,13 @@ pub struct Bind {
 }
 
 impl Bind {
+    #[must_use]
     pub fn matches(&self, key: KeyEvent) -> bool {
         key.code == self.code && key.modifiers == self.modifiers
     }
 
     #[cfg(test)]
+    #[must_use]
     pub const fn to_key_event(self) -> KeyEvent {
         KeyEvent {
             code: self.code,
@@ -180,6 +182,7 @@ pub enum KeybindContext {
 }
 
 impl KeybindContext {
+    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::General => "General",
@@ -198,6 +201,7 @@ impl KeybindContext {
         }
     }
 
+    #[must_use]
     pub const fn parent(self) -> Option<KeybindContext> {
         match self {
             Self::TaskPicker
@@ -221,6 +225,7 @@ pub enum Platform {
 }
 
 impl Platform {
+    #[must_use]
     pub const fn is_visible(self) -> bool {
         match self {
             Self::All => true,
@@ -250,6 +255,7 @@ pub enum ResolvedLabel {
 }
 
 impl ResolvedLabel {
+    #[must_use]
     pub fn display_width(self) -> usize {
         match self {
             Self::Single(s) => UnicodeWidthStr::width(s),
@@ -269,6 +275,7 @@ impl ResolvedLabel {
 }
 
 impl KeyLabel {
+    #[must_use]
     pub fn resolve(self) -> ResolvedLabel {
         match self {
             Self::Single(s) => ResolvedLabel::Single(s),
@@ -650,8 +657,7 @@ mod tests {
                 .is_some_and(|p| KEYBINDS.iter().any(|kb| kb.context == p));
             assert!(
                 has_own || has_parent,
-                "context {:?} has no keybinds and no parent with keybinds",
-                ctx,
+                "context {ctx:?} has no keybinds and no parent with keybinds",
             );
         }
     }

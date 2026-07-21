@@ -21,7 +21,11 @@ fn format_name(format: ImageFormat) -> &'static str {
     match format {
         // Only jpeg deviates from its primary extension ("jpg").
         ImageFormat::Jpeg => "jpeg",
-        other => other.extensions_str().first().copied().unwrap_or("unknown"),
+        other => other
+            .extensions_str()
+            .first()
+            .copied()
+            .unwrap_or_else(|| "unknown"),
     }
 }
 

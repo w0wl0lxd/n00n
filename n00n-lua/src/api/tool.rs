@@ -1,3 +1,5 @@
+#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::path::Path;
@@ -79,7 +81,7 @@ fn local_tool_handles(tool: &str) -> Option<ToolHandles> {
 
 fn dctx_json(ctx: &DescriptionContext) -> Value {
     let mut obj = json!({
-        "audience": ctx.audience.name().unwrap_or("main"),
+        "audience": ctx.audience.name().unwrap_or_else(|| "main"),
         "workflow": ctx.workflow,
     });
     match ctx.filter {
@@ -372,6 +374,7 @@ impl ToolInvocation for LuaToolInvocation {
         Some(Path::new(val))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute(self: Box<Self>, ctx: &ToolContext) -> ExecFuture<'_> {
         let deadline = ctx.deadline;
         let plugin = self.plugin;
@@ -438,7 +441,7 @@ impl ToolInvocation for LuaToolInvocation {
                     "plugin {} tool {} exceeded timeout ({}s)",
                     plugin,
                     tool,
-                    effective_secs.unwrap_or(0)
+                    effective_secs.unwrap_or_else(|| 0)
                 ))
                 .into(),
                 Some(Err(_)) => Err("lua thread disconnected".to_string()).into(),
@@ -777,7 +780,7 @@ fn get_tools(lua: &Lua, opts: Option<Table>) -> LuaResult<Table> {
     {
         disabled = config
             .get::<Option<Vec<String>>>("disabled_tools")?
-            .unwrap_or_default();
+            .unwrap_or_else(Vec::new);
     }
 
     let out = lua.create_table()?;
@@ -956,7 +959,7 @@ fn normalize_restore_ctx(lua: &Lua, v: Option<&LuaValue>) -> LuaResult<LuaValue>
             t.get::<LuaValue>("tool_output_lines")
                 .ok()
                 .and_then(|v| lua.from_value::<ToolOutputLines>(v).ok())
-                .unwrap_or_default(),
+                .unwrap_or_else(ToolOutputLines::default),
             t.get::<LuaValue>("state")
                 .ok()
                 .and_then(|v| lua_to_json(lua, &v).ok())
@@ -973,7 +976,9 @@ fn is_valid_tool_name(name: &str) -> bool {
         return false;
     }
     let mut chars = name.chars();
-    let first = chars.next().unwrap();
+    let first = chars
+        .next()
+        .unwrap_or_else(|| unreachable!("name is not empty"));
     if !first.is_ascii_alphabetic() && first != '_' {
         return false;
     }
@@ -1004,10 +1009,17 @@ fn parse_audience(audiences: Option<mlua::Table>) -> LuaResult<ToolAudience> {
 }
 
 fn parse_timeout(spec: &Table) -> LuaResult<Option<Duration>> {
-    let value: LuaValue = spec.get("timeout").unwrap_or(LuaValue::Nil);
+    let value: LuaValue = spec.get("timeout").unwrap_or_else(|_| LuaValue::Nil);
     match value {
-        LuaValue::Integer(n) if n > 0 => Ok(Some(Duration::from_secs(n as u64))),
-        LuaValue::Number(n) if n > 0.0 && n.is_finite() => Ok(Some(Duration::from_secs(n as u64))),
+        LuaValue::Integer(n) if n > 0 => {
+            let secs = u64::try_from(n).map_err(|_| mlua::Error::runtime(TIMEOUT_PARSE_ERR))?;
+            Ok(Some(Duration::from_secs(secs)))
+        }
+        LuaValue::Number(n) if n > 0.0 && n.is_finite() => {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let secs = n as u64;
+            Ok(Some(Duration::from_secs(secs)))
+        }
         LuaValue::Nil | LuaValue::Boolean(false) | LuaValue::Integer(0) | LuaValue::Number(0.0) => {
             Ok(None)
         }
@@ -1079,7 +1091,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
             "register_tool: invalid name '{name}'"
         )));
     }
-    let description: String = spec.get("description").unwrap_or_default();
+    let description: String = spec.get("description").unwrap_or_else(|_| String::new());
     if description.trim().is_empty() {
         return Err(mlua::Error::runtime(
             "register_tool: description must be non-empty",
@@ -1183,7 +1195,7 @@ fn register_command_from_lua(lua: &Lua, spec: &Table, plugin: Arc<str>) -> LuaRe
             "register_command: name must be non-empty",
         ));
     }
-    let description: String = spec.get("description").unwrap_or_default();
+    let description: String = spec.get("description").unwrap_or_else(|_| String::new());
     let handler: Function = spec
         .get("handler")
         .map_err(|_| mlua::Error::runtime("register_command: missing 'handler'"))?;
@@ -1267,8 +1279,14 @@ impl ToolCallReply {
         let written_path = t.get::<String>("written_path").ok();
         let diff = t.get::<String>("diff_path").ok().map(|path| DiffPayload {
             path,
-            before: t.get::<String>("diff_before").ok().unwrap_or_default(),
-            after: t.get::<String>("diff_after").ok().unwrap_or_default(),
+            before: t
+                .get::<String>("diff_before")
+                .ok()
+                .unwrap_or_else(String::new),
+            after: t
+                .get::<String>("diff_after")
+                .ok()
+                .unwrap_or_else(String::new),
         });
         // A malformed image fails the call; dropping it silently would leave
         // a caption claiming pixels the model never receives.
@@ -1308,7 +1326,7 @@ impl ToolCallReply {
                 let h = ud.borrow::<BufHandle>().ok()?;
                 Some((Some(h.buf.take()), Some(Arc::clone(&h.buf))))
             })
-            .unwrap_or((None, None))
+            .unwrap_or_else(|| (None, None))
     }
 
     fn extract_snapshot(val: &LuaValue) -> Option<BufferSnapshot> {
@@ -1494,7 +1512,7 @@ mod tests {
             tx,
             permission_state: PermissionState::Ready(None),
             mutable_path_field: None,
-            timeout: Some(Duration::from_secs(60)),
+            timeout: Some(Duration::from_mins(1)),
             start_annotation: None,
             has_start_fn: false,
         }
@@ -1547,7 +1565,7 @@ mod tests {
             has_header_fn: false,
             permission_scope_kind,
             mutable_path_field: None,
-            timeout: Some(Duration::from_secs(60)),
+            timeout: Some(Duration::from_mins(1)),
             start_annotation: None,
             has_start_fn: false,
             examples: None,

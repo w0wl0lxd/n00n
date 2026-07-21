@@ -379,7 +379,7 @@ impl AgentLoop {
 
 fn spawn_oauth_for_needs_auth(handle: &McpHandle) {
     let snapshot = handle.reader().load().clone();
-    for info in snapshot.infos.iter() {
+    for info in &snapshot.infos {
         let McpServerStatus::NeedsAuth { ref url } = info.status else {
             continue;
         };

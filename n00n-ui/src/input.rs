@@ -57,12 +57,11 @@ impl InputReader {
         self.ctl_tx
             .send(Ctl::Pause(ack_tx))
             .map_err(|_| "input reader is unavailable".to_string())?;
-        match ack_rx.recv_timeout(PAUSE_ACK_TIMEOUT) {
-            Ok(()) => Ok(PauseGuard(self)),
-            Err(_) => {
-                let _ = self.ctl_tx.send(Ctl::Resume);
-                Err("input reader did not acknowledge pause".to_string())
-            }
+        if let Ok(()) = ack_rx.recv_timeout(PAUSE_ACK_TIMEOUT) {
+            Ok(PauseGuard(self))
+        } else {
+            let _ = self.ctl_tx.send(Ctl::Resume);
+            Err("input reader did not acknowledge pause".to_string())
         }
     }
 }

@@ -134,7 +134,7 @@ impl FilePickerModal {
                             if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                                 name.push(std::path::MAIN_SEPARATOR);
                             }
-                            injector.push((), |_, cols| {
+                            injector.push((), |(), cols| {
                                 cols[0] = Utf32String::from(name.as_str());
                             });
                             ignore::WalkState::Continue
@@ -245,10 +245,10 @@ impl FilePickerModal {
                 reparse_pattern(s);
             }
             _ if key::SCROLL_HALF_UP.matches(key) => {
-                move_selection(s, -((s.viewport_height / 2).max(1) as isize))
+                move_selection(s, -((s.viewport_height / 2).max(1) as isize));
             }
             _ if key::SCROLL_HALF_DOWN.matches(key) => {
-                move_selection(s, (s.viewport_height / 2).max(1) as isize)
+                move_selection(s, (s.viewport_height / 2).max(1) as isize);
             }
             _ if key::SCROLL_LINE_UP.matches(key) => move_selection(s, -1),
             _ if key::SCROLL_LINE_DOWN.matches(key) => move_selection(s, 1),
@@ -574,7 +574,7 @@ mod tests {
 
     fn inject_file(picker: &FilePickerModal, path: &str) {
         let s = picker.session.as_ref().unwrap();
-        s.nucleo.injector().push((), |_, cols| {
+        s.nucleo.injector().push((), |(), cols| {
             cols[0] = Utf32String::from(path);
         });
     }
@@ -605,8 +605,9 @@ mod tests {
             "should stay hidden before debounce"
         );
 
-        picker.session.as_mut().unwrap().started_at =
-            Instant::now() - std::time::Duration::from_millis(200);
+        picker.session.as_mut().unwrap().started_at = Instant::now()
+            .checked_sub(std::time::Duration::from_millis(200))
+            .unwrap();
         picker.tick();
         assert!(
             picker.session.as_ref().unwrap().visible,
