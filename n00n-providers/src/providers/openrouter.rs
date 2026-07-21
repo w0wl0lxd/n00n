@@ -178,7 +178,11 @@ impl Provider for OpenRouter {
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let mut buf = String::new();
             let system = super::with_prefix(&self.system_prefix, system, &mut buf);
             let mut body = self.compat.build_body_with_session(
@@ -192,7 +196,9 @@ impl Provider for OpenRouter {
             body["cache_control"] = json!({"type": "ephemeral"});
 
             let reasoning_info: Option<Arc<OpenRouterModelInfo>> = {
-                let guard = crate::model_registry::model_registry().read().unwrap();
+                let guard = crate::model_registry::model_registry()
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 guard
                     .discovered(model.provider, &model.id)
                     .and_then(|d| d.provider_info.clone())
@@ -221,7 +227,11 @@ impl Provider for OpenRouter {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             self.compat.fetch_and_parse_models(&auth, parse_model).await
         })
     }

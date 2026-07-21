@@ -121,7 +121,11 @@ impl Provider for DeepSeek {
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let mut buf = String::new();
             let system = super::with_prefix(&self.system_prefix, system, &mut buf);
             let mut body = self.compat.build_body_with_session(
@@ -152,7 +156,11 @@ impl Provider for DeepSeek {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             self.compat.do_list_models(&auth).await
         })
     }

@@ -198,7 +198,11 @@ impl ProviderData {
         if self.slug == "opencode"
             && let Some(auth) = override_auth
         {
-            return Some(auth.lock().unwrap().clone());
+            return Some(
+                auth.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+            );
         }
         self.resolve_auth(state_dir)
     }
@@ -468,7 +472,13 @@ impl Opencode {
 
     async fn do_list_models(&self) -> Result<Vec<ModelInfo>, AgentError> {
         // Delegate to a background thread
-        Ok(smol::unblock(|| init_catalog_if_needed().lock().unwrap().all_models()).await)
+        Ok(smol::unblock(|| {
+            init_catalog_if_needed()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .all_models()
+        })
+        .await)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -559,7 +569,7 @@ impl Opencode {
         let actual_id = actual_id.to_string();
         let auth_override = self.auth.clone();
         smol::unblock(move || {
-            let guard = init_catalog_if_needed().lock().unwrap();
+            let guard = init_catalog_if_needed().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let (meta, provider_data) = guard.lookup(&sub_provider, &actual_id)?;
             let state_dir = &guard.state_dir;
             // Dynamic provider auth (e.g. from Lua) overrides the opencode route
@@ -639,7 +649,9 @@ fn config_error(message: String) -> AgentError {
 /// Returns the list of all providers in alphabetical order.
 #[must_use]
 pub fn catalog_providers() -> Vec<ProviderData> {
-    let guard = init_catalog_if_needed().lock().unwrap();
+    let guard = init_catalog_if_needed()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     guard.all_providers()
 }
@@ -938,7 +950,7 @@ mod tests {
             name: "Test".into(),
             env: vec!["N00N_TEST_UNUSED_VAR_1"]
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
             npm: "@ai-sdk/openai".into(),
             api: None,
@@ -961,7 +973,7 @@ mod tests {
             name: "Anthropic".into(),
             env: vec!["ANTHROPIC_SECRET_KEY"]
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
             npm: "@ai-sdk/anthropic".into(),
             api: None,
@@ -1007,7 +1019,7 @@ mod tests {
             name: "Test".into(),
             env: vec!["OPENCODE_API_KEY"]
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
             npm: "@ai-sdk/openai-compatible".into(),
             api: None,
@@ -1037,7 +1049,7 @@ mod tests {
             name: "Test".into(),
             env: vec!["N00N_TEST_AUTH_KEY"]
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
             npm: "@ai-sdk/openai-compatible".into(),
             api: None,
@@ -1068,7 +1080,7 @@ mod tests {
             name: "Anthropic".into(),
             env: vec!["N00N_TEST_ANTHROPIC_KEY"]
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
             npm: "@ai-sdk/anthropic".into(),
             api: None,
@@ -1136,7 +1148,7 @@ mod tests {
 
         let result = CatalogData::from_index(providers, true, &state_dir);
         // No key filter — all models pass regardless of key status
-        let vendor = result.providers.get("some-vendor").unwrap();
+        let vendor = &result.providers["some-vendor"];
         assert_eq!(vendor.models.len(), 2, "all models included");
     }
 
@@ -1185,7 +1197,7 @@ mod tests {
 
         let result = CatalogData::from_index(providers, true, &state_dir);
         // No key filter — all models pass regardless of key status
-        let opencode = result.providers.get("opencode").unwrap();
+        let opencode = &result.providers["opencode"];
         assert_eq!(opencode.models.len(), 2, "all models included");
         // Public fallback auth registered
         assert!(matches!(
@@ -1241,7 +1253,7 @@ mod tests {
         let result = CatalogData::from_index(providers, true, &state_dir);
 
         // With key set, has_api_key is true, so all models pass
-        let opencode = result.providers.get("opencode").unwrap();
+        let opencode = &result.providers["opencode"];
         assert!(opencode.models.contains_key("free-model"));
         assert!(opencode.models.contains_key("paid-model"));
         assert!(matches!(
@@ -1300,7 +1312,7 @@ mod tests {
         let result = CatalogData::from_index(index, false, &state_dir);
 
         // All models are in entries (filtering happens in all_models)
-        let opencode = result.providers.get("opencode").unwrap();
+        let opencode = &result.providers["opencode"];
         assert!(opencode.models.contains_key("free-model"));
         assert!(opencode.models.contains_key("paid-model"));
         // Provider ID is "opencode" so slug becomes "opencode" -> OpenCodeFreeKey fallback
@@ -1319,7 +1331,7 @@ mod tests {
         let result = CatalogData::from_index(index, false, &state_dir);
 
         // All models are in entries (filtering happens in all_models)
-        let opencode = result.providers.get("opencode").unwrap();
+        let opencode = &result.providers["opencode"];
         assert!(opencode.models.contains_key("free-model"));
         assert!(opencode.models.contains_key("paid-model"));
         // Provider ID is "opencode" so slug becomes "opencode" -> OpenCodeFreeKey fallback
@@ -1378,19 +1390,9 @@ mod tests {
         let result = CatalogData::from_index(providers, true, &state_dir);
         remove_env("N00N_TEST_VENDOR_KEY_81274");
 
+        assert!(result.providers["some-vendor"].models.contains_key("cheap"));
         assert!(
-            result
-                .providers
-                .get("some-vendor")
-                .unwrap()
-                .models
-                .contains_key("cheap")
-        );
-        assert!(
-            result
-                .providers
-                .get("some-vendor")
-                .unwrap()
+            result.providers["some-vendor"]
                 .models
                 .contains_key("freebie")
         );
@@ -1469,18 +1471,12 @@ mod tests {
 
         // Both providers' entries are preserved
         assert!(
-            result
-                .providers
-                .get("opencode")
-                .unwrap()
+            result.providers["opencode"]
                 .models
                 .contains_key("shared-model")
         );
         assert!(
-            result
-                .providers
-                .get("other-vendor")
-                .unwrap()
+            result.providers["other-vendor"]
                 .models
                 .contains_key("shared-model")
         );
@@ -1760,7 +1756,7 @@ mod tests {
         let data = CatalogData::from_index(providers, true, &state_dir);
 
         // Both models are in providers
-        let opencode = data.providers.get("opencode").unwrap();
+        let opencode = &data.providers["opencode"];
         assert_eq!(opencode.models.len(), 2);
         // But all_models only returns the free one
         let result = data.all_models();

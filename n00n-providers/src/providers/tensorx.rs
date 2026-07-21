@@ -88,7 +88,11 @@ impl Provider for TensorX {
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let mut buf = String::new();
             let system = super::with_prefix(&self.system_prefix, system, &mut buf);
             let mut body = self.compat.build_body_with_session(
@@ -100,7 +104,9 @@ impl Provider for TensorX {
             );
 
             let (has_thinking, has_reasoning_effort) = {
-                let guard = crate::model_registry::model_registry().read().unwrap();
+                let guard = crate::model_registry::model_registry()
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let info = guard
                     .discovered(model.provider, &model.id)
                     .and_then(|d| d.provider_info.clone())
@@ -137,7 +143,11 @@ impl Provider for TensorX {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<ModelInfo>, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let url = format!("{}/model/info", CONFIG.base_url);
             let text = self.compat.get_text(&auth, &url).await?;
             let body: Value = serde_json::from_str(&text)?;

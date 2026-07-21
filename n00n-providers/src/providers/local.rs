@@ -134,7 +134,11 @@ impl Provider for LocalEndpoint {
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
 
             if matches!(self.protocol, Some(Protocol::OpenaiResponses)) {
                 let mut buf = String::new();
@@ -176,7 +180,11 @@ impl Provider for LocalEndpoint {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             match self.discovery_mode {
                 DiscoveryMode::None => self.compat.do_list_models(&auth).await,
                 DiscoveryMode::LlamaCpp => self.discover_llamacpp_models(&auth).await,
@@ -294,9 +302,9 @@ impl LocalEndpoint {
             .filter_map(|m| {
                 let arch = m.architecture.as_ref();
                 let has_text_input =
-                    arch.map_or(true, |a| a.input_modalities.iter().any(|m| m == "text"));
+                    arch.is_none_or(|a| a.input_modalities.iter().any(|m| m == "text"));
                 let has_text_output =
-                    arch.map_or(true, |a| a.output_modalities.iter().any(|m| m == "text"));
+                    arch.is_none_or(|a| a.output_modalities.iter().any(|m| m == "text"));
                 if !has_text_input || !has_text_output {
                     return None;
                 }
@@ -543,14 +551,18 @@ mod tests {
     const TEST_TIMEOUTS: super::super::Timeouts = super::super::Timeouts {
         connect: std::time::Duration::from_secs(10),
         low_speed: std::time::Duration::from_secs(30),
-        stream: std::time::Duration::from_secs(300),
+        stream: std::time::Duration::from_mins(5),
     };
 
     #[test]
     fn from_env_without_host_or_api_key_uses_default_host() {
         let ep = LocalEndpoint::build(&OLLAMA, TEST_TIMEOUTS, None, None, None).unwrap();
         assert_eq!(
-            ep.auth.lock().unwrap().base_url.as_deref(),
+            ep.auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .base_url
+                .as_deref(),
             Some("http://localhost:11434/v1")
         );
     }
@@ -565,7 +577,10 @@ mod tests {
             None,
         )
         .unwrap();
-        let auth = ep.auth.lock().unwrap();
+        let auth = ep
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://x:1234/v1"));
         assert!(auth.headers.is_empty());
     }
@@ -574,7 +589,10 @@ mod tests {
     fn from_env_with_api_key_uses_cloud_for_ollama() {
         let pool = KeyPool::from_keys(vec!["test-key".into()]);
         let ep = LocalEndpoint::build(&OLLAMA, TEST_TIMEOUTS, Some(pool), None, None).unwrap();
-        let auth = ep.auth.lock().unwrap();
+        let auth = ep
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("https://ollama.com/v1"));
         assert_eq!(auth.headers.len(), 1);
         assert_eq!(auth.headers[0].1, "Bearer test-key");
@@ -591,7 +609,10 @@ mod tests {
             None,
         )
         .unwrap();
-        let auth = ep.auth.lock().unwrap();
+        let auth = ep
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://local:1234/v1"));
         assert_eq!(auth.headers.len(), 1);
         assert_eq!(auth.headers[0].1, "Bearer test-key");
@@ -601,7 +622,11 @@ mod tests {
     fn llamacpp_without_host_uses_default_host() {
         let ep = LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, None, None, None).unwrap();
         assert_eq!(
-            ep.auth.lock().unwrap().base_url.as_deref(),
+            ep.auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .base_url
+                .as_deref(),
             Some("http://localhost:8080/v1")
         );
     }
@@ -616,7 +641,10 @@ mod tests {
             None,
         )
         .unwrap();
-        let auth = ep.auth.lock().unwrap();
+        let auth = ep
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://x:1234/v1"));
         assert!(auth.headers.is_empty());
     }
@@ -625,7 +653,10 @@ mod tests {
     fn llamacpp_with_key_uses_default_host_without_cloud_fallback() {
         let pool = KeyPool::from_keys(vec!["key".into()]);
         let ep = LocalEndpoint::build(&LLAMACPP, TEST_TIMEOUTS, Some(pool), None, None).unwrap();
-        let auth = ep.auth.lock().unwrap();
+        let auth = ep
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(auth.base_url.as_deref(), Some("http://localhost:8080/v1"));
         assert_eq!(
             auth.headers,
@@ -776,10 +807,10 @@ mod tests {
 
         #[test]
         fn single_mode_uses_meta_n_ctx() {
-            let model = model_with_meta(131072);
+            let model = model_with_meta(131_072);
             assert_eq!(
                 llamacpp_extract_ctx_from_model(&model, &ServerMode::Single, 0),
-                131072
+                131_072
             );
         }
 
@@ -907,8 +938,8 @@ mod tests {
 
         #[test]
         fn extracts_gemma_context_length() {
-            let info = make_model_info(&[("gemma3.context_length", 131072)]);
-            assert_eq!(ollama_extract_context_length(&info), Some(131072));
+            let info = make_model_info(&[("gemma3.context_length", 131_072)]);
+            assert_eq!(ollama_extract_context_length(&info), Some(131_072));
         }
 
         #[test]
@@ -993,7 +1024,7 @@ mod tests {
                 num_ctx 131072
                 seed 1234
                 ";
-            assert_eq!(ollama_extract_num_ctx(params), Some(131072));
+            assert_eq!(ollama_extract_num_ctx(params), Some(131_072));
         }
     }
 }

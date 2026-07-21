@@ -266,7 +266,10 @@ impl Anthropic {
     }
 
     fn build_request(&self, method: &str, url: Option<&str>) -> isahc::http::request::Builder {
-        let auth = self.auth.lock().unwrap();
+        let auth = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let url = url.unwrap_or_else(|| auth.base_url.as_deref().unwrap_or(MESSAGES_URL));
         auth.configure_request(
             Request::builder()
@@ -407,7 +410,11 @@ impl Provider for Anthropic {
     fn reload_auth(&self) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async {
             let pool = KeyPool::resolve("anthropic", ENV_VAR)?;
-            *self.auth.lock().unwrap() = resolve_auth_from_key(pool.current());
+            *self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                resolve_auth_from_key(pool.current());
             debug!("reloaded Anthropic auth from env");
             Ok(())
         })
@@ -424,7 +431,12 @@ impl Provider for Anthropic {
 
     fn fetch_usage(&self) -> BoxFuture<'_, Result<Option<ProviderUsage>, AgentError>> {
         Box::pin(async move {
-            if !usage_eligible(&self.auth.lock().unwrap()) {
+            if !usage_eligible(
+                &self
+                    .auth
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ) {
                 return Ok(None);
             }
             let request = self
@@ -498,7 +510,7 @@ mod tests {
     use std::time::Duration;
     use test_case::test_case;
 
-    const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
+    const TEST_STREAM_TIMEOUT: Duration = Duration::from_mins(5);
 
     const USAGE_BODY: &str = r#"{
         "five_hour": {"utilization": 14.0, "resets_at": "2026-02-06T22:00:00+00:00"},
@@ -530,7 +542,7 @@ mod tests {
         assert_eq!(usage.limits.len(), 4);
         assert_eq!(usage.limits[0].label, "Current session");
         assert_eq!(usage.limits[0].percentage, 14);
-        assert_eq!(usage.limits[0].reset_at, Some(1770415200000));
+        assert_eq!(usage.limits[0].reset_at, Some(1_770_415_200_000));
         assert_eq!(usage.limits[1].label, "Current week (all models)");
         assert_eq!(usage.limits[1].percentage, 2);
         assert_eq!(usage.limits[2].label, "Current week (Fable)");
@@ -555,7 +567,7 @@ mod tests {
         assert_eq!(usage.limits.len(), 5);
         assert_eq!(usage.limits[0].label, "Current session");
         assert_eq!(usage.limits[0].percentage, 35);
-        assert_eq!(usage.limits[0].reset_at, Some(1770415200000));
+        assert_eq!(usage.limits[0].reset_at, Some(1_770_415_200_000));
         assert_eq!(usage.limits[1].label, "Current week (all models)");
         assert_eq!(usage.limits[2].label, "Current week (Sonnet)");
         assert_eq!(usage.limits[3].label, "Current week (Opus)");
@@ -647,7 +659,7 @@ data: {\"type\":\"message_stop\"}\n";
                 }
             }
             assert_eq!(deltas, vec!["Hello", " world"]);
-        })
+        });
     }
 
     #[test]
@@ -680,7 +692,7 @@ data:{\"type\":\"message_stop\"}\n";
             assert_eq!(resp.stop_reason, Some(StopReason::EndTurn));
             assert_eq!(resp.usage.input, 7);
             assert_eq!(resp.usage.output, 1);
-        })
+        });
     }
 
     #[test]
@@ -723,7 +735,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
                 })
                 .collect();
             assert_eq!(starts, vec![("tu_1".to_string(), "bash".to_string())]);
-        })
+        });
     }
 
     #[test]
@@ -914,7 +926,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
                 }
                 other => panic!("expected Api error, got: {other:?}"),
             }
-        })
+        });
     }
 
     #[test]
@@ -932,7 +944,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n";
                 }
                 other => panic!("expected Api error, got: {other:?}"),
             }
-        })
+        });
     }
 
     #[test]
@@ -963,7 +975,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":1}}\n";
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].1, "read");
             assert_eq!(*tools[0].2, Value::Object(Default::default()));
-        })
+        });
     }
 
     #[test]
@@ -1021,7 +1033,7 @@ data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usa
                 })
                 .collect();
             assert_eq!(thinking_deltas, vec!["Let me", " think"]);
-        })
+        });
     }
 
     #[test]
@@ -1060,6 +1072,6 @@ data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usa
             assert!(
                 matches!(&resp.message.content[1], ContentBlock::Text { text } if text == "Hi")
             );
-        })
+        });
     }
 }

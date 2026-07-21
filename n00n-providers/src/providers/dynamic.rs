@@ -505,7 +505,9 @@ impl DynamicProvider {
                             script_path.display()
                         ),
                     })?;
-                *auth.lock().unwrap() = parsed.into();
+                *auth
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = parsed.into();
                 Ok(())
             })
             .await

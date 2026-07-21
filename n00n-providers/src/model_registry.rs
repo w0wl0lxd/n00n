@@ -380,8 +380,8 @@ mod tests {
         write_overrides(&path, &m);
 
         let loaded = read_overrides(&path);
-        assert_eq!(loaded.get(&ModelTier::Strong).unwrap(), "ollama/qwen3");
-        assert_eq!(loaded.get(&ModelTier::Medium).unwrap(), "ollama/qwen3:8b");
+        assert_eq!(&loaded[&ModelTier::Strong], "ollama/qwen3");
+        assert_eq!(&loaded[&ModelTier::Medium], "ollama/qwen3:8b");
     }
 
     #[test]
@@ -436,8 +436,8 @@ mod tests {
         std::fs::write(&path, legacy).unwrap();
 
         let loaded = read_overrides(&path);
-        assert_eq!(loaded.get(&ModelTier::Strong).unwrap(), "ollama/b");
-        assert_eq!(loaded.get(&ModelTier::Weak).unwrap(), "ollama/c");
+        assert_eq!(&loaded[&ModelTier::Strong], "ollama/b");
+        assert_eq!(&loaded[&ModelTier::Weak], "ollama/c");
     }
 
     #[test]
@@ -452,8 +452,8 @@ mod tests {
         write_overrides(&path, &m);
 
         let loaded = read_overrides(&path);
-        assert_eq!(loaded.get(&ModelTier::Strong).unwrap(), "ollama/qwen3");
-        assert_eq!(loaded.get(&ModelTier::Medium).unwrap(), "ollama/qwen3");
-        assert_eq!(loaded.get(&ModelTier::Weak).unwrap(), "ollama/qwen3:8b");
+        assert_eq!(&loaded[&ModelTier::Strong], "ollama/qwen3");
+        assert_eq!(&loaded[&ModelTier::Medium], "ollama/qwen3");
+        assert_eq!(&loaded[&ModelTier::Weak], "ollama/qwen3:8b");
     }
 }

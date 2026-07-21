@@ -196,7 +196,11 @@ impl Provider for Mistral {
         session_id: Option<&'a SessionRef>,
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             let mut buf = String::new();
             let system = super::with_prefix(&self.system_prefix, system, &mut buf);
             let mut body = self.compat.build_body_with_session(
@@ -223,7 +227,11 @@ impl Provider for Mistral {
 
     fn list_models(&self) -> BoxFuture<'_, Result<Vec<crate::model::ModelInfo>, AgentError>> {
         Box::pin(async move {
-            let auth = self.auth.lock().unwrap().clone();
+            let auth = self
+                .auth
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             self.compat
                 .fetch_and_parse_models(&auth, |m| {
                     // Filter: only completion_chat capable models
@@ -350,7 +358,7 @@ mod tests {
         ; "assistant_text_only_no_thinking"
     )]
     fn convert_assistant_messages_in_place_test(input: Value, expected: Value) {
-        let mut input_clone = input.clone();
+        let mut input_clone = input;
         convert_assistant_messages_in_place(&mut input_clone);
         assert_eq!(input_clone, expected);
     }
