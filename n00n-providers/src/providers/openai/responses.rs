@@ -309,7 +309,9 @@ pub(crate) fn is_semantic_progress_event(event_type: &str, data: &Value) -> bool
             data.get("response").is_some_and(Value::is_object)
                 || data.get("prompt_progress").is_some_and(Value::is_object)
         }
-        "response.output_text.delta" | "response.reasoning_summary_text.delta" => data
+        "response.output_text.delta"
+        | "response.reasoning_summary_text.delta"
+        | "response.reasoning_text.delta" => data
             .get("delta")
             .and_then(Value::as_str)
             .is_some_and(|delta| !delta.is_empty()),
@@ -892,6 +894,18 @@ mod tests {
         let (tx, rx) = flume::unbounded();
         let result = parse_sse(Cursor::new(sse.as_bytes()), &tx, TEST_STREAM_TIMEOUT).await;
         (result, rx.drain().collect())
+    }
+
+    #[test]
+    fn opaque_reasoning_delta_counts_as_semantic_progress() {
+        assert!(is_semantic_progress_event(
+            "response.reasoning_text.delta",
+            &json!({"delta": "active reasoning"}),
+        ));
+        assert!(!is_semantic_progress_event(
+            "response.reasoning_text.delta",
+            &json!({"delta": ""}),
+        ));
     }
 
     #[test]
