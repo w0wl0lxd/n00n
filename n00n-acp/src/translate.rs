@@ -17,15 +17,14 @@ fn fenced(text: &str) -> String {
         .split(|c: char| c != '`')
         .map(str::len)
         .max()
-        .unwrap_or(0);
+        .map_or(0, std::convert::identity);
     let fence = "`".repeat(MIN_FENCE_LEN.max(longest_backtick_run + 1));
     format!("{fence}\n{text}\n{fence}")
 }
 
 pub fn tool_kind(name: &str) -> ToolKind {
-    let entry = match ToolRegistry::global().get(name) {
-        Some(e) => e,
-        None => return ToolKind::Other,
+    let Some(entry) = ToolRegistry::global().get(name) else {
+        return ToolKind::Other;
     };
     entry
         .tool
@@ -165,13 +164,10 @@ pub fn map_stop_reason(
     sr: Option<n00n_providers::StopReason>,
 ) -> agent_client_protocol_schema::StopReason {
     match sr {
-        Some(n00n_providers::StopReason::EndTurn) | None => {
-            agent_client_protocol_schema::StopReason::EndTurn
-        }
         Some(n00n_providers::StopReason::MaxTokens) => {
             agent_client_protocol_schema::StopReason::MaxTokens
         }
-        Some(n00n_providers::StopReason::ToolUse) => {
+        Some(n00n_providers::StopReason::EndTurn | n00n_providers::StopReason::ToolUse) | None => {
             agent_client_protocol_schema::StopReason::EndTurn
         }
     }
@@ -206,7 +202,7 @@ fn replay_user(msg: &Message, updates: &mut Vec<SessionUpdate>) {
                 updates.push(SessionUpdate::UserMessageChunk(ContentChunk::new(
                     ContentBlock::Image(ImageContent::new(
                         source.data.to_string(),
-                        mime_type(&source.media_type),
+                        mime_type(source.media_type),
                     )),
                 )));
             }
@@ -255,7 +251,7 @@ fn replay_tool_result(id: &str, content: &str, is_error: bool) -> SessionUpdate 
     ))
 }
 
-fn mime_type(media: &ImageMediaType) -> &'static str {
+fn mime_type(media: ImageMediaType) -> &'static str {
     match media {
         ImageMediaType::Png => "image/png",
         ImageMediaType::Jpeg => "image/jpeg",
