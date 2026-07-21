@@ -259,7 +259,7 @@ impl Segment {
     }
 
     pub fn content_inset(&self) -> u16 {
-        0
+        if self.surface.is_framed() { 2 } else { 0 }
     }
 
     fn content_width(&self, width: u16) -> u16 {
@@ -293,7 +293,6 @@ impl Segment {
         if self.image.is_some() {
             return None;
         }
-        let rel_row = rel_row.saturating_sub(self.content_inset() / 2);
         let width = self.content_width(width);
         let mut acc = 0u16;
         for (i, line) in self.lines.iter().enumerate() {

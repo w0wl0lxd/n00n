@@ -70,16 +70,16 @@ pub(super) fn extract_selection_text(
         }
 
         let content_width = width.saturating_sub(inset.saturating_mul(2)).max(1);
-        let tmp_area = Rect::new(0, 0, content_width, h.saturating_sub(inset));
+        let tmp_area = Rect::new(0, 0, content_width, h);
         let mut tmp = Buffer::empty(tmp_area);
         Paragraph::new(seg.lines().to_vec())
             .wrap(Wrap { trim: false })
             .render(tmp_area, &mut tmp);
 
         let ss = ScreenSelection {
-            start_row: (rel_start as u16).saturating_sub(inset / 2),
+            start_row: rel_start as u16,
             start_col,
-            end_row: (rel_end.saturating_sub(1) as u16).saturating_sub(inset / 2),
+            end_row: rel_end.saturating_sub(1) as u16,
             end_col,
         };
 
@@ -88,8 +88,8 @@ pub(super) fn extract_selection_text(
             &tmp,
             tmp_area,
             &ss,
-            (rel_start as u16).saturating_sub(inset / 2),
-            (rel_end as u16).saturating_sub(inset / 2),
+            rel_start as u16,
+            rel_end as u16,
             &mut out,
             &breaks,
         );
