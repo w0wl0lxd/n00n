@@ -71,7 +71,7 @@ fn hash_messages(messages: &[Message]) -> u64 {
     let mut hasher = DefaultHasher::new();
     hasher.write(
         serde_json::to_string(messages)
-            .unwrap_or_default()
+            .unwrap_or_else(|_| String::new())
             .as_bytes(),
     );
     hasher.finish()
@@ -157,7 +157,7 @@ impl OpenAi {
     pub fn new(timeouts: crate::providers::Timeouts) -> Result<Self, AgentError> {
         let storage = StateDir::resolve()?;
         let resolved = auth::resolve(&storage)?;
-        let compat = OpenAiCompatProvider::new(&CONFIG, timeouts);
+        let compat = OpenAiCompatProvider::new(&CONFIG, timeouts)?;
         Ok(Self {
             compat,
             auth: Arc::new(Mutex::new(resolved)),
@@ -170,14 +170,14 @@ impl OpenAi {
     pub(crate) fn with_auth(
         auth: Arc<Mutex<ResolvedAuth>>,
         timeouts: crate::providers::Timeouts,
-    ) -> Self {
-        Self {
-            compat: OpenAiCompatProvider::new(&CONFIG, timeouts),
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            compat: OpenAiCompatProvider::new(&CONFIG, timeouts)?,
             auth,
             storage: None,
             system_prefix: None,
             session_state: Arc::new(Mutex::new(HashMap::new())),
-        }
+        })
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -244,19 +244,19 @@ impl OpenAi {
         result
     }
 
-    fn codex_auth(&self) -> Result<ResolvedAuth, AgentError> {
+    fn codex_auth(&self) -> ResolvedAuth {
         // Prefer OAuth tokens for the ChatGPT Coding Plan backend.
         if let Some(storage) = self.storage.as_ref()
             && let Some(tokens) = n00n_storage::auth::load_tokens(storage, auth::PROVIDER)
         {
-            return Ok(auth::build_coding_plan_resolved(&tokens));
+            return auth::build_coding_plan_resolved(&tokens);
         }
         // Fall back to standard API key via the Responses API.
         let mut auth = self.current_auth();
         if auth.base_url.is_none() {
             auth.base_url = Some(CONFIG.base_url.into());
         }
-        Ok(auth)
+        auth
     }
 
     fn prepare_request<'a>(
@@ -272,7 +272,7 @@ impl OpenAi {
 
         // Opportunistically evict stale sessions
         let now = Instant::now();
-        state.retain(|_, s| now.duration_since(s.last_used) < SESSION_STATE_TTL);
+        state.retain(|_, s| now.saturating_duration_since(s.last_used) < SESSION_STATE_TTL);
 
         if let Some(sid) = session_id {
             let session_state = state.entry(sid.clone()).or_default();
@@ -315,9 +315,9 @@ impl Provider for OpenAi {
     ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
         Box::pin(async move {
             let mut buf = String::new();
-            let system = super::super::with_prefix(&self.system_prefix, system, &mut buf);
+            let system = super::super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
 
-            let tools_hash = serde_json::to_string(tools).unwrap_or_default();
+            let tools_hash = serde_json::to_string(tools)?;
             let (previous_response_id, incremental_messages) =
                 self.prepare_request(session_id, &tools_hash, messages);
             let prompt_cache_key = session_id.map(std::string::ToString::to_string);
@@ -327,7 +327,7 @@ impl Provider for OpenAi {
                 return self
                     .with_oauth_retry(|| async {
                         let auth = if is_codex_model(&model.id) {
-                            self.codex_auth()?
+                            self.codex_auth()
                         } else {
                             self.current_auth()
                         };
@@ -352,7 +352,7 @@ impl Provider for OpenAi {
                 let stream_timeout = self.compat.stream_timeout();
                 return self
                     .with_oauth_retry(|| async {
-                        let codex_auth = self.codex_auth()?;
+                        let codex_auth = self.codex_auth();
 
                         let body = super::responses::build_body(
                             model,

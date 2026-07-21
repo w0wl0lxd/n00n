@@ -43,7 +43,7 @@ pub(crate) fn build_request_body(
 }
 
 fn build_create_event(body: &Value) -> Value {
-    let mut event = body.as_object().cloned().unwrap_or_default();
+    let mut event = body.as_object().cloned().unwrap_or_else(Default::default);
     event.remove("stream");
     event.insert("type".into(), json!("response.create"));
     Value::Object(event)
@@ -152,7 +152,7 @@ where
     S: futures_lite::AsyncRead + futures_lite::AsyncWrite + Unpin + Send,
 {
     let text = value.to_string();
-    debug!(event = %value["type"].as_str().unwrap_or("unknown"), bytes = text.len(), "sending websocket event");
+    debug!(event = %value["type"].as_str().unwrap_or_else(|| "unknown"), bytes = text.len(), "sending websocket event");
     ws.send(WsMessage::Text(text.into())).await.map_err(ws_err)
 }
 
@@ -195,16 +195,19 @@ fn error_from_event(event: &Value) -> AgentError {
         .get("error")
         .and_then(Value::as_object)
         .cloned()
-        .unwrap_or_default();
-    let error_type = err.get("type").and_then(Value::as_str).unwrap_or("");
+        .unwrap_or_else(Default::default);
+    let error_type = err
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| "");
     let message = err
         .get("message")
         .and_then(Value::as_str)
-        .unwrap_or("websocket error")
+        .unwrap_or_else(|| "websocket error")
         .to_string();
 
     let status = if let Some(s) = event.get("status").and_then(Value::as_u64) {
-        s as u16
+        u16::try_from(s).unwrap_or_else(|_| 500)
     } else {
         match error_type {
             "overloaded_error" => 529,

@@ -248,14 +248,15 @@ impl Model {
         };
         let tier = crate::model_registry::model_registry()
             .read()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .tier_for(&spec, provider, static_entry.map(|e| e.tier));
         let (family, pricing, max_output_tokens, context_window) = if let Some(e) = static_entry {
             (
                 e.family,
                 e.pricing.clone(),
                 Some(e.max_output_tokens),
-                anthropic::shared::long_context_window(model_id).unwrap_or(e.context_window),
+                anthropic::shared::long_context_window(model_id)
+                    .unwrap_or_else(|| e.context_window),
             )
         } else {
             let guard = crate::model_registry::model_registry()
@@ -266,7 +267,7 @@ impl Model {
                 provider.family(),
                 discovered
                     .and_then(|d| d.pricing.clone())
-                    .unwrap_or_default(),
+                    .unwrap_or_else(Default::default),
                 discovered
                     .and_then(|d| d.max_output_tokens)
                     .or_else(|| provider.fallback_max_output()),
@@ -357,10 +358,15 @@ impl Model {
         }
     }
 
+    /// Create a model for a provider and tier.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ModelError` if no default or override exists for the provider/tier.
     pub fn from_tier(provider: ProviderKind, tier: ModelTier) -> Result<Self, ModelError> {
         if let Some(spec) = crate::model_registry::model_registry()
             .read()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .spec_for_tier(provider, tier)
         {
             return Self::from_spec(&spec);
@@ -374,6 +380,11 @@ impl Model {
         Self::from_spec(&format!("{provider}/{model_id}"))
     }
 
+    /// Create a model for a dynamic provider, tier, and optional slug.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ModelError` when the tier cannot be resolved.
     pub fn from_tier_dynamic(
         provider: ProviderKind,
         tier: ModelTier,
@@ -393,6 +404,11 @@ impl Model {
         Self::from_tier(provider, tier)
     }
 
+    /// Parse a model from a `provider/model_id` spec string.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ModelError` if the spec is malformed or the provider is unsupported.
     pub fn from_spec(spec: &str) -> Result<Self, ModelError> {
         let (provider_str, model_id) = spec.split_once('/').ok_or(ModelError::InvalidFormat)?;
 
@@ -507,6 +523,7 @@ mod tests {
         ModelTier::Compaction,
     ];
 
+    #[allow(clippy::needless_pass_by_value)]
     #[test_case("no-slash-here", ModelError::InvalidFormat ; "invalid_format")]
     #[test_case("foobar/gpt-4", ModelError::UnsupportedProvider("foobar".into()) ; "unsupported_provider")]
     fn from_spec_errors(spec: &str, expected: ModelError) {
@@ -573,6 +590,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn fast_flag_ignored_without_fast_tier() {
         let pricing = ModelPricing {
             input: 3.00,

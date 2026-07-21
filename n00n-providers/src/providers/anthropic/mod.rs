@@ -5,6 +5,7 @@
 pub(crate) mod bedrock;
 pub(crate) mod shared;
 
+use std::fmt::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -123,8 +124,11 @@ fn parse_reset(rfc3339: &str) -> Option<u64> {
     u64::try_from(ts.as_millisecond()).ok()
 }
 
+#[allow(clippy::cast_possible_wrap)]
 fn spent(minor_units: f64, exponent: Option<u32>, currency: Option<&str>) -> String {
-    let amount = minor_units / 10f64.powi(exponent.unwrap_or(MONEY_EXPONENT) as i32);
+    let exp = i32::try_from(exponent.unwrap_or_else(|| MONEY_EXPONENT))
+        .unwrap_or_else(|_| MONEY_EXPONENT as i32);
+    let amount = minor_units / 10f64.powi(exp);
     match currency {
         None | Some("USD") => format!("${amount:.2} spent"),
         Some(c) => format!("{amount:.2} {c} spent"),
@@ -147,10 +151,16 @@ fn limit_label(l: &ApiLimit) -> String {
     }
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn percentage(value: f64) -> u32 {
+    value.clamp(0.0, 100.0).round() as u32
+}
+
+#[allow(clippy::cast_precision_loss)]
 fn credits_limit(u: &OauthUsage) -> Option<UsageLimit> {
     let (percent, detail) = match (&u.spend, &u.extra_usage) {
         (Some(s), _) if s.enabled => (
-            s.percent.unwrap_or_default(),
+            s.percent.unwrap_or_else(Default::default),
             s.used
                 .as_ref()
                 .map(|m| spent(m.amount_minor as f64, m.exponent, m.currency.as_deref())),
@@ -164,7 +174,7 @@ fn credits_limit(u: &OauthUsage) -> Option<UsageLimit> {
     };
     Some(UsageLimit {
         label: "Usage credits".into(),
-        percentage: percent.round() as u32,
+        percentage: percentage(percent),
         reset_at: None,
         detail,
     })
@@ -178,7 +188,7 @@ impl From<OauthUsage> for ProviderUsage {
             .filter_map(|l| {
                 Some(UsageLimit {
                     label: limit_label(l),
-                    percentage: l.percent?.round() as u32,
+                    percentage: l.percent.map(percentage)?,
                     reset_at: l.resets_at.as_deref().and_then(parse_reset),
                     detail: None,
                 })
@@ -195,7 +205,7 @@ impl From<OauthUsage> for ProviderUsage {
                 let w = w.as_ref()?;
                 Some(UsageLimit {
                     label: label.into(),
-                    percentage: w.utilization?.round() as u32,
+                    percentage: w.utilization.map(percentage)?,
                     reset_at: w.resets_at.as_deref().and_then(parse_reset),
                     detail: None,
                 })
@@ -239,7 +249,7 @@ impl Anthropic {
         let resolved = resolve_auth_from_key(pool.current());
         debug!(keys = pool.len(), "using API key authentication");
         Ok(Self {
-            client: super::http_client(timeouts),
+            client: super::http_client(timeouts)?,
             auth: Arc::new(Mutex::new(resolved)),
             key_pool: Some(pool),
             system_prefix: None,
@@ -250,14 +260,14 @@ impl Anthropic {
     pub(crate) fn with_auth(
         auth: Arc<Mutex<super::ResolvedAuth>>,
         timeouts: super::Timeouts,
-    ) -> Self {
-        Self {
-            client: super::http_client(timeouts),
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            client: super::http_client(timeouts)?,
             auth,
             key_pool: None,
             system_prefix: None,
             stream_timeout: timeouts.stream,
-        }
+        })
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -270,7 +280,7 @@ impl Anthropic {
             .auth
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let url = url.unwrap_or_else(|| auth.base_url.as_deref().unwrap_or(MESSAGES_URL));
+        let url = url.unwrap_or_else(|| auth.base_url.as_deref().unwrap_or_else(|| MESSAGES_URL));
         auth.configure_request(
             Request::builder()
                 .method(method)
@@ -319,7 +329,7 @@ impl Anthropic {
         loop {
             let mut url = MODELS_URL.to_string();
             if let Some(cursor) = &after_id {
-                url.push_str(&format!("&after_id={cursor}"));
+                let _ = write!(url, "&after_id={cursor}");
             }
 
             let request = self.build_request("GET", Some(&url)).body(())?;
@@ -480,12 +490,12 @@ pub(crate) async fn parse_sse(
 
     while let Some(line) = super::next_sse_line(&mut lines, &mut deadline, stream_timeout).await? {
         if let Some(rest) = line.strip_prefix("event:") {
-            current_event = rest.strip_prefix(' ').unwrap_or(rest).to_string();
+            current_event = rest.strip_prefix(' ').unwrap_or_else(|| rest).to_string();
             continue;
         }
 
         let data = match line.strip_prefix("data:") {
-            Some(d) => d.strip_prefix(' ').unwrap_or(d),
+            Some(d) => d.strip_prefix(' ').unwrap_or_else(|| d),
             None => continue,
         };
 

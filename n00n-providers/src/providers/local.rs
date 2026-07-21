@@ -70,16 +70,16 @@ impl LocalEndpoint {
         cfg: &'static LocalEndpointConfig,
         auth: Arc<Mutex<ResolvedAuth>>,
         timeouts: super::Timeouts,
-    ) -> Self {
-        Self {
-            compat: OpenAiCompatProvider::new(&cfg.compat, timeouts),
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            compat: OpenAiCompatProvider::new(&cfg.compat, timeouts)?,
             auth,
             key_pool: None,
             system_prefix: None,
             thinking_budget_field: cfg.thinking_budget_field,
             discovery_mode: cfg.discovery_mode,
             protocol: resolve_protocol_for_local(cfg.slug),
-        }
+        })
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -97,9 +97,13 @@ impl LocalEndpoint {
         let api_key = key_pool.as_ref().map(|p| p.current().to_string());
         let base_url = match host {
             Some(h) => format!("{h}/v1"),
-            None if api_key.is_some() && cfg.cloud_fallback_url.is_some() => {
-                cfg.cloud_fallback_url.unwrap().to_string()
-            }
+            None if api_key.is_some() && cfg.cloud_fallback_url.is_some() => cfg
+                .cloud_fallback_url
+                .as_ref()
+                .ok_or_else(|| AgentError::Config {
+                    message: "missing cloud fallback url".into(),
+                })?
+                .to_string(),
             None => format!("{}/v1", cfg.default_host.trim_end_matches('/')),
         };
         let headers = match api_key {
@@ -108,7 +112,7 @@ impl LocalEndpoint {
         };
         let compat_config = &cfg.compat;
         Ok(Self {
-            compat: OpenAiCompatProvider::new(compat_config, timeouts),
+            compat: OpenAiCompatProvider::new(compat_config, timeouts)?,
             auth: Arc::new(Mutex::new(ResolvedAuth {
                 base_url: Some(base_url),
                 headers,
@@ -142,7 +146,7 @@ impl Provider for LocalEndpoint {
 
             if matches!(self.protocol, Some(Protocol::OpenaiResponses)) {
                 let mut buf = String::new();
-                let system = super::with_prefix(&self.system_prefix, system, &mut buf);
+                let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
                 let mut body = responses::build_body(model, messages, system, tools, None, None);
                 body["return_progress"] = serde_json::Value::Bool(true);
                 // TODO: wire thinking budget into responses API when llama.cpp supports it
@@ -159,7 +163,7 @@ impl Provider for LocalEndpoint {
             }
 
             let mut buf = String::new();
-            let system = super::with_prefix(&self.system_prefix, system, &mut buf);
+            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,
@@ -267,8 +271,8 @@ impl LocalEndpoint {
         let base = auth
             .base_url
             .as_deref()
-            .unwrap_or(self.compat.config().base_url);
-        let root = base.strip_suffix("/v1").unwrap_or(base);
+            .unwrap_or_else(|| self.compat.config().base_url);
+        let root = base.strip_suffix("/v1").unwrap_or_else(|| base);
 
         let props: serde_json::Value = serde_json::from_str(
             &self
@@ -294,7 +298,7 @@ impl LocalEndpoint {
         let props_n_ctx = props["n_ctx"]
             .as_u64()
             .and_then(|v| u32::try_from(v).ok())
-            .unwrap_or(0);
+            .unwrap_or_else(|| 0);
 
         let mut models: Vec<crate::model::ModelInfo> = body
             .data
@@ -354,12 +358,12 @@ fn llamacpp_extract_ctx_from_model(
             .meta
             .as_ref()
             .and_then(|m| (m.n_ctx > 0).then_some(m.n_ctx))
-            .unwrap_or(LLAMACPP_DEFAULT_CTX),
+            .unwrap_or_else(|| LLAMACPP_DEFAULT_CTX),
         ServerMode::Legacy => model
             .max_model_len
             .filter(|&v| v > 0)
             .or_else(|| (props_n_ctx > 0).then_some(props_n_ctx))
-            .unwrap_or(LLAMACPP_DEFAULT_CTX),
+            .unwrap_or_else(|| LLAMACPP_DEFAULT_CTX),
     }
 }
 
@@ -397,8 +401,8 @@ impl LocalEndpoint {
         let base = auth
             .base_url
             .as_deref()
-            .unwrap_or(self.compat.config().base_url);
-        let root = base.strip_suffix("/v1").unwrap_or(base);
+            .unwrap_or_else(|| self.compat.config().base_url);
+        let root = base.strip_suffix("/v1").unwrap_or_else(|| base);
 
         let models_text = self
             .compat

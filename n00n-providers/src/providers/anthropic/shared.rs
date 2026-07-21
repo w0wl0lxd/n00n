@@ -28,7 +28,7 @@ pub(crate) const LONG_CONTEXT_WINDOW: u32 = 1_000_000;
 pub(crate) fn strip_long_context(model_id: &str) -> &str {
     model_id
         .strip_suffix(LONG_CONTEXT_SUFFIX)
-        .unwrap_or(model_id)
+        .unwrap_or_else(|| model_id)
 }
 
 /// A `-1m` model is just its base entry with a wider window.
@@ -48,6 +48,7 @@ pub(crate) const EPHEMERAL: CacheControl = CacheControl {
 };
 
 #[derive(Deserialize)]
+#[allow(clippy::struct_field_names)]
 struct Usage {
     #[serde(default)]
     input_tokens: u32,
@@ -239,7 +240,7 @@ pub(crate) fn build_request_body_with_system(
     let wire_tools = build_wire_tools(tools);
 
     let mut body = json!({
-        "max_tokens": model.max_output_tokens.unwrap_or(FALLBACK_MAX_TOKENS),
+        "max_tokens": model.max_output_tokens.unwrap_or_else(|| FALLBACK_MAX_TOKENS),
         "system": system_blocks,
         "messages": wire_messages,
         "tools": wire_tools,
@@ -268,6 +269,7 @@ impl EventParser {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn process(
         &mut self,
         event_type: &str,
@@ -367,7 +369,7 @@ impl EventParser {
                         }
                         Err(e) => {
                             warn!(error = %e, json = %self.current_tool_json, "malformed tool JSON, falling back to {{}}");
-                            Value::Object(Default::default())
+                            Value::Object(serde_json::Map::default())
                         }
                     };
                     self.current_tool_json.clear();
@@ -417,6 +419,7 @@ impl EventParser {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn models() -> &'static [ModelEntry] {
     const MODELS: &[ModelEntry] = &[
         ModelEntry {

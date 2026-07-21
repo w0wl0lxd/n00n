@@ -111,6 +111,7 @@ inventory::submit!(BuiltInProvider {
     needs_url: false,
 });
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn models() -> &'static [ModelEntry] {
     &[
         ModelEntry {
@@ -262,20 +263,23 @@ impl Zai {
             auth.base_url = Some(url);
         }
         Ok(Self {
-            compat: OpenAiCompatProvider::new(&CONFIG_STANDARD, timeouts),
+            compat: OpenAiCompatProvider::new(&CONFIG_STANDARD, timeouts)?,
             auth: Arc::new(Mutex::new(auth)),
             key_pool: Some(pool),
             system_prefix: None,
         })
     }
 
-    pub(crate) fn with_auth(auth: Arc<Mutex<ResolvedAuth>>, timeouts: super::Timeouts) -> Self {
-        Self {
-            compat: OpenAiCompatProvider::new(&CONFIG_STANDARD, timeouts),
+    pub(crate) fn with_auth(
+        auth: Arc<Mutex<ResolvedAuth>>,
+        timeouts: super::Timeouts,
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            compat: OpenAiCompatProvider::new(&CONFIG_STANDARD, timeouts)?,
             auth,
             key_pool: None,
             system_prefix: None,
-        }
+        })
     }
 
     pub(crate) fn with_system_prefix(mut self, prefix: Option<String>) -> Self {
@@ -302,7 +306,7 @@ impl Provider for Zai {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             let mut buf = String::new();
-            let system = super::with_prefix(&self.system_prefix, system, &mut buf);
+            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
             let mut body = self.compat.build_body_with_session(
                 model,
                 messages,

@@ -83,7 +83,7 @@ impl ScriptModel {
             supports_tool_examples_override: self.supports_tool_examples,
             supports_thinking_override: self.supports_thinking,
             supports_vision_override: self.supports_vision,
-            pricing: self.pricing.clone().unwrap_or_default(),
+            pricing: self.pricing.clone().unwrap_or_else(Default::default),
             max_output_tokens: Some(self.max_output_tokens),
             context_window: self.context_window,
         }
@@ -219,9 +219,8 @@ fn resolve_auth(meta: &DynamicProviderMeta) -> Result<ResolvedAuth, AgentError> 
 }
 
 fn discover_in(dir: &Path) -> Vec<DynamicProviderMeta> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
     };
 
     let builtins = builtin_slugs();
@@ -294,9 +293,7 @@ fn discover_in(dir: &Path) -> Vec<DynamicProviderMeta> {
             }
         };
 
-        let base = if let Ok(k) = ProviderKind::from_str(&info.base) {
-            k
-        } else {
+        let Ok(base) = ProviderKind::from_str(&info.base) else {
             warn!(slug, base = info.base, "unknown base provider, skipping");
             continue;
         };
@@ -326,13 +323,18 @@ fn discover_in(dir: &Path) -> Vec<DynamicProviderMeta> {
 static DISCOVERED: OnceLock<Vec<DynamicProviderMeta>> = OnceLock::new();
 
 fn discover() -> &'static [DynamicProviderMeta] {
-    DISCOVERED.get_or_init(|| providers_dir().map(|d| discover_in(&d)).unwrap_or_default())
+    DISCOVERED.get_or_init(|| providers_dir().map_or_else(Default::default, |d| discover_in(&d)))
 }
 
 fn find_meta(slug: &str) -> Option<&'static DynamicProviderMeta> {
     discover().iter().find(|m| m.slug == slug)
 }
 
+/// Log in to a dynamic script-based provider.
+///
+/// # Errors
+///
+/// Returns an `AgentError` if the provider is unknown, does not support login, or the script fails.
 pub fn login(slug: &str) -> Result<(), AgentError> {
     let meta = find_meta(slug).ok_or_else(|| AgentError::Config {
         message: format!("unknown provider '{slug}'"),
@@ -345,6 +347,11 @@ pub fn login(slug: &str) -> Result<(), AgentError> {
     run_script_interactive(&meta.script_path, "login")
 }
 
+/// Log out of a dynamic script-based provider.
+///
+/// # Errors
+///
+/// Returns an `AgentError` if the provider is unknown, does not support logout, or the script fails.
 pub fn logout(slug: &str) -> Result<(), AgentError> {
     let meta = find_meta(slug).ok_or_else(|| AgentError::Config {
         message: format!("unknown provider '{slug}'"),
@@ -366,6 +373,11 @@ pub fn auth_providers() -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
+/// Create a dynamic provider instance by slug.
+///
+/// # Errors
+///
+/// Returns an `AgentError` if the provider is unknown, auth resolution fails, or the base provider cannot be created.
 pub fn create(slug: &str, timeouts: super::Timeouts) -> Result<Box<dyn Provider>, AgentError> {
     let meta = find_meta(slug).ok_or_else(|| AgentError::Config {
         message: format!("unknown dynamic provider '{slug}'"),
@@ -375,51 +387,52 @@ pub fn create(slug: &str, timeouts: super::Timeouts) -> Result<Box<dyn Provider>
 
     let inner: Box<dyn Provider> = match meta.base {
         ProviderKind::Anthropic => Box::new(
-            Anthropic::with_auth(auth.clone(), timeouts)
+            Anthropic::with_auth(Arc::clone(&auth), timeouts)?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::OpenAi => Box::new(
-            OpenAi::with_auth(auth.clone(), timeouts)
+            OpenAi::with_auth(Arc::clone(&auth), timeouts)?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
-        ProviderKind::Google => Box::new(Google::with_auth(auth.clone(), timeouts)),
+        ProviderKind::Google => Box::new(Google::with_auth(Arc::clone(&auth), timeouts)?),
         ProviderKind::Copilot => Box::new(
-            Copilot::with_auth(auth.clone(), timeouts)
+            Copilot::with_auth(Arc::clone(&auth), timeouts)?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::Ollama => Box::new(
-            LocalEndpoint::with_auth(&OLLAMA, auth.clone(), timeouts)
+            LocalEndpoint::with_auth(&OLLAMA, Arc::clone(&auth), timeouts)?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::LlamaCpp => Box::new(
-            LocalEndpoint::with_auth(&LLAMACPP, auth.clone(), timeouts)
+            LocalEndpoint::with_auth(&LLAMACPP, Arc::clone(&auth), timeouts)?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::Mistral => Box::new(
-            Mistral::with_auth(auth.clone(), timeouts)
+            Mistral::with_auth(Arc::clone(&auth), timeouts)?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::Zai => Box::new(
-            Zai::with_auth(auth.clone(), timeouts).with_system_prefix(meta.system_prefix.clone()),
+            Zai::with_auth(Arc::clone(&auth), timeouts)?
+                .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::Synthetic => Box::new(
-            Synthetic::with_auth(auth.clone(), timeouts)
+            Synthetic::with_auth(Arc::clone(&auth), timeouts)?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::DeepSeek => Box::new(
-            DeepSeek::with_auth(auth.clone(), timeouts)
+            DeepSeek::with_auth(Arc::clone(&auth), timeouts)?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::OpenRouter => Box::new(
-            OpenRouter::with_auth(auth.clone(), timeouts)
+            OpenRouter::with_auth(Arc::clone(&auth), timeouts)?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::TensorX => Box::new(
-            TensorX::with_auth(auth.clone(), timeouts)
+            TensorX::with_auth(Arc::clone(&auth), timeouts)?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
         ProviderKind::Opencode => Box::new(
-            Opencode::with_auth(auth.clone(), timeouts)
+            Opencode::with_auth(Arc::clone(&auth), timeouts)?
                 .with_system_prefix(meta.system_prefix.clone()),
         ),
     };
@@ -495,7 +508,7 @@ impl DynamicProvider {
     fn run_auth_script(&self, subcommand: &'static str) -> BoxFuture<'_, Result<(), AgentError>> {
         Box::pin(async move {
             let script_path = self.script_path;
-            let auth = self.auth.clone();
+            let auth = Arc::clone(&self.auth);
             smol::unblock(move || {
                 let stdout = run_script(script_path, subcommand, SCRIPT_TIMEOUT)?;
                 let parsed: ScriptResolvedAuth =

@@ -161,16 +161,16 @@ impl ProviderKind {
             Self::Anthropic => ModelFamily::Claude,
             Self::OpenAi => ModelFamily::Gpt,
             Self::Google => ModelFamily::Gemini,
-            Self::Copilot => ModelFamily::Generic,
-            Self::Ollama => ModelFamily::Generic,
-            Self::LlamaCpp => ModelFamily::Generic,
-            Self::Mistral => ModelFamily::Generic,
             Self::Zai => ModelFamily::Glm,
-            Self::DeepSeek => ModelFamily::Generic,
-            Self::OpenRouter => ModelFamily::Generic,
             Self::Synthetic => ModelFamily::Synthetic,
-            Self::TensorX => ModelFamily::Generic,
-            Self::Opencode => ModelFamily::Generic,
+            Self::Copilot
+            | Self::Ollama
+            | Self::LlamaCpp
+            | Self::Mistral
+            | Self::DeepSeek
+            | Self::OpenRouter
+            | Self::TensorX
+            | Self::Opencode => ModelFamily::Generic,
         }
     }
 
@@ -197,41 +197,34 @@ impl ProviderKind {
     #[must_use]
     pub const fn fallback_max_output(self) -> Option<u32> {
         match self {
-            Self::Anthropic => Some(128_000),
-            Self::OpenAi => Some(100_000),
+            Self::Anthropic | Self::OpenRouter | Self::Opencode => Some(128_000),
+            Self::OpenAi | Self::Copilot => Some(100_000),
             Self::Google => Some(65_536),
-            Self::Copilot => Some(100_000),
             Self::Ollama => Some(16_384),
-            Self::LlamaCpp => None,
-            Self::Mistral => Some(32_000),
             Self::Zai => Some(16_000),
             Self::DeepSeek => Some(384_000),
-            Self::OpenRouter => Some(128_000),
-            Self::Synthetic => Some(32_000),
-            Self::TensorX => None,
-            Self::Opencode => Some(128_000),
+            Self::Mistral | Self::Synthetic => Some(32_000),
+            Self::LlamaCpp | Self::TensorX => None,
         }
     }
 
     #[must_use]
     pub const fn fallback_context_window(self) -> u32 {
         match self {
-            Self::Anthropic => 200_000,
-            Self::OpenAi => 200_000,
-            Self::Google => 1_000_000,
-            Self::Copilot => 200_000,
-            Self::Ollama => 128_000,
-            Self::LlamaCpp => 128_000,
-            Self::Mistral => 128_000,
-            Self::Zai => 128_000,
-            Self::DeepSeek => 1_000_000,
-            Self::OpenRouter => 200_000,
-            Self::Synthetic => 128_000,
-            Self::TensorX => 200_000,
+            Self::Anthropic | Self::OpenAi | Self::Copilot | Self::OpenRouter | Self::TensorX => {
+                200_000
+            }
+            Self::Google | Self::DeepSeek => 1_000_000,
+            Self::Ollama | Self::LlamaCpp | Self::Mistral | Self::Zai | Self::Synthetic => 128_000,
             Self::Opencode => 256_000,
         }
     }
 
+    /// Instantiate a provider for this kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `AgentError` if the provider cannot be created or authenticated.
     pub fn create(self, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
         match self {
             Self::Anthropic => {
@@ -308,6 +301,11 @@ fn provider_for_slug(slug: &str, timeouts: Timeouts) -> Result<Box<dyn Provider>
     }
 }
 
+/// Create a provider from a resolved model.
+///
+/// # Errors
+///
+/// Returns an `AgentError` if the provider cannot be created.
 pub fn from_model(model: &mut Model, timeouts: Timeouts) -> Result<Box<dyn Provider>, AgentError> {
     if let Some(slug) = &model.dynamic_slug {
         debug!(slug, model = %model.id, "slug provider created");
@@ -360,6 +358,11 @@ impl Provider for UnconfiguredProvider {
     }
 }
 
+/// Create a provider from a resolved model asynchronously.
+///
+/// # Errors
+///
+/// Returns an `AgentError` if the provider cannot be created.
 pub async fn from_model_async(
     model: &mut Model,
     timeouts: Timeouts,
@@ -411,6 +414,7 @@ pub fn available_model_specs() -> Vec<String> {
     specs
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn fetch_all_models(
     mut on_ready: impl FnMut(ModelBatch),
     on_done: Option<Box<dyn FnOnce() + Send>>,
@@ -430,7 +434,7 @@ pub async fn fetch_all_models(
                     if kind.accepts_arbitrary_models() {
                         crate::model_registry::model_registry()
                             .write()
-                            .unwrap()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .set_known_models(kind, models.clone());
                     }
                     let mut specs: Vec<String> =

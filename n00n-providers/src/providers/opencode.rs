@@ -283,7 +283,7 @@ fn enable_free_models_config() -> bool {
     n00n_config::providers::ProvidersConfig::load()
         .get("opencode")
         .and_then(|d| d.enable_free_models)
-        .unwrap_or(false)
+        .unwrap_or_else(|| false)
 }
 
 impl CatalogData {
@@ -324,34 +324,34 @@ impl CatalogData {
                     .cost
                     .as_ref()
                     .and_then(|c| c.input)
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| 0.0);
                 let output_price = model_data
                     .cost
                     .as_ref()
                     .and_then(|c| c.output)
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| 0.0);
 
                 let context = model_data
                     .limit
                     .as_ref()
                     .and_then(|l| l.context)
-                    .unwrap_or(128_000);
+                    .unwrap_or_else(|| 128_000);
                 let output = model_data
                     .limit
                     .as_ref()
                     .and_then(|l| l.output)
-                    .unwrap_or(64_000);
+                    .unwrap_or_else(|| 64_000);
 
                 let cache_read = model_data
                     .cost
                     .as_ref()
                     .and_then(|c| c.cache_read)
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| 0.0);
                 let cache_write = model_data
                     .cost
                     .as_ref()
                     .and_then(|c| c.cache_write)
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| 0.0);
 
                 models.insert(
                     model_id.clone(),
@@ -447,21 +447,27 @@ fn init_catalog_if_needed() -> &'static Mutex<CatalogData> {
 }
 
 impl Opencode {
-    fn new_impl(timeouts: super::Timeouts, auth: Option<Arc<Mutex<ResolvedAuth>>>) -> Self {
-        Self {
-            client: http_client(timeouts),
-            chat_compat: OpenAiCompatProvider::new(&CATALOG_CHAT_CONFIG, timeouts),
+    fn new_impl(
+        timeouts: super::Timeouts,
+        auth: Option<Arc<Mutex<ResolvedAuth>>>,
+    ) -> Result<Self, AgentError> {
+        Ok(Self {
+            client: http_client(timeouts)?,
+            chat_compat: OpenAiCompatProvider::new(&CATALOG_CHAT_CONFIG, timeouts)?,
             auth,
             system_prefix: None,
             stream_timeout: timeouts.stream,
-        }
+        })
     }
 
     pub fn new(timeouts: super::Timeouts) -> Result<Self, AgentError> {
-        Ok(Self::new_impl(timeouts, None))
+        Self::new_impl(timeouts, None)
     }
 
-    pub(crate) fn with_auth(auth: Arc<Mutex<ResolvedAuth>>, timeouts: super::Timeouts) -> Self {
+    pub(crate) fn with_auth(
+        auth: Arc<Mutex<ResolvedAuth>>,
+        timeouts: super::Timeouts,
+    ) -> Result<Self, AgentError> {
         Self::new_impl(timeouts, Some(auth))
     }
 
@@ -539,7 +545,7 @@ impl Opencode {
                     .method("POST")
                     .uri(format!(
                         "{}{}",
-                        auth.base_url.as_deref().unwrap_or(""),
+                        auth.base_url.as_deref().unwrap_or_else(|| ""),
                         MESSAGES_PATH
                     ))
                     .header("user-agent", super::user_agent())
@@ -601,13 +607,14 @@ impl Provider for Opencode {
             let model_for_stream = model.clone();
 
             let model_id = &model_for_stream.id;
-            let (sub_provider, actual_id) =
-                model_id.split_once('/').unwrap_or(("opencode", model_id));
+            let (sub_provider, actual_id) = model_id
+                .split_once('/')
+                .unwrap_or_else(|| ("opencode", model_id));
 
             let (meta, api_format, auth) = self.lookup(sub_provider, actual_id).await?;
 
             let mut buf = String::new();
-            let system = super::with_prefix(&self.system_prefix, system, &mut buf);
+            let system = super::with_prefix(self.system_prefix.as_deref(), system, &mut buf);
 
             let model = Model {
                 id: actual_id.to_string(),
@@ -703,9 +710,8 @@ async fn load_cached_catalog_async() -> Option<CatalogIndex> {
 }
 
 async fn save_cached_catalog_async(index: &CatalogIndex) {
-    let path = match catalog_cache_path() {
-        Some(p) => p,
-        None => return,
+    let Some(path) = catalog_cache_path() else {
+        return;
     };
     if let Some(dir) = path.parent() {
         let dir = dir.to_path_buf();
@@ -786,11 +792,21 @@ fn init_catalog_blocking() -> CatalogData {
         return CatalogData::from_index(index, enable_free_models, &state_dir);
     }
 
-    let client = isahc::HttpClient::builder()
+    let client = match isahc::HttpClient::builder()
         .connect_timeout(Duration::from_secs(10))
         .low_speed_timeout(1, Duration::from_secs(30))
         .build()
-        .expect("failed to build catalog HTTP client");
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "failed to build catalog HTTP client");
+            return CatalogData {
+                providers: HashMap::new(),
+                enable_free_models,
+                state_dir,
+            };
+        }
+    };
 
     match smol::block_on(fetch_remote_catalog_async(&client)) {
         Ok(index) => {
@@ -1708,6 +1724,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn catalog_all_models_public_fallback_shows_only_free() {
         let (_tmp, state_dir) = temp_state_dir();
         // Provider with OPENCODE_API_KEY in env but no key set gets "public" fallback.

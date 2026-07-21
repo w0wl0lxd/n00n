@@ -31,12 +31,17 @@ pub fn model_registry() -> &'static RwLock<ModelRegistry> {
 
 pub fn load_from_storage(dir: &StateDir) {
     let overrides = read_overrides(dir.path().join(TIERS_FILE).as_path());
-    model_registry().write().unwrap().set_overrides(overrides);
+    model_registry()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .set_overrides(overrides);
 }
 
 pub fn set_and_persist(spec: String, tier: ModelTier, dir: &StateDir) {
     let snapshot = {
-        let mut reg = model_registry().write().unwrap();
+        let mut reg = model_registry()
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reg.set(spec, tier);
         reg.overrides.clone()
     };
@@ -45,7 +50,9 @@ pub fn set_and_persist(spec: String, tier: ModelTier, dir: &StateDir) {
 
 pub fn unset_and_persist(spec: &str, tier: ModelTier, dir: &StateDir) {
     let snapshot = {
-        let mut reg = model_registry().write().unwrap();
+        let mut reg = model_registry()
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reg.unset(spec, tier);
         reg.overrides.clone()
     };
@@ -112,7 +119,7 @@ impl ModelRegistry {
             .map(|(&t, _)| t);
         if let Some(first) = tiers.next() {
             return match first {
-                ModelTier::Compaction => tiers.next().unwrap_or(first),
+                ModelTier::Compaction => tiers.next().unwrap_or_else(|| first),
                 t => t,
             };
         }
@@ -137,14 +144,13 @@ impl ModelRegistry {
             return Some(spec.clone());
         }
 
-        let candidate = self
-            .static_candidate(provider, tier)
+        let candidate = Self::static_candidate(provider, tier)
             .or_else(|| self.positional_candidate(provider, tier))?;
 
         (!self.claimed_elsewhere(&candidate, tier)).then_some(candidate)
     }
 
-    fn static_candidate(&self, provider: ProviderKind, tier: ModelTier) -> Option<String> {
+    fn static_candidate(provider: ProviderKind, tier: ModelTier) -> Option<String> {
         models_for_provider(provider)
             .iter()
             .find(|e| e.default && e.tier == tier)

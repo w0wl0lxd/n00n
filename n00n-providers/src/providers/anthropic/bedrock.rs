@@ -1,4 +1,5 @@
 use std::env;
+use std::fmt::Write;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -92,9 +93,10 @@ fn resolve_bedrock_auth() -> Result<BedrockAuth, AgentError> {
         }
     } else {
         let profile = env::var("AWS_PROFILE").unwrap_or_else(|_| "default".into());
-        let creds_path = env::var("HOME")
-            .map(|h| PathBuf::from(h).join(".aws").join("credentials"))
-            .unwrap_or_default();
+        let creds_path = env::var("HOME").map_or_else(
+            |_| PathBuf::new(),
+            |h| PathBuf::from(h).join(".aws").join("credentials"),
+        );
         if let Ok(content) = std::fs::read_to_string(&creds_path)
             && let Ok((access_key, secret_key, session_token)) =
                 parse_aws_credentials_file(&content, &profile)
@@ -243,6 +245,7 @@ fn parse_iso8601_to_epoch(s: &str) -> Option<u64> {
 }
 
 // Inverse of days_to_ymd. Howard Hinnant's algorithm; valid for any civil date.
+#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 fn ymdhms_to_epoch(year: u64, month: u64, day: u64, hour: u64, minute: u64, second: u64) -> u64 {
     let y = if month <= 2 { year - 1 } else { year };
     let era = y / 400;
@@ -266,7 +269,7 @@ fn sign_request_sigv4(
     region: &str,
     service: &str,
     timestamp: &str,
-) -> Vec<(String, String)> {
+) -> Result<Vec<(String, String)>, AgentError> {
     let date = &timestamp[..8];
 
     let (_, path, query) = parse_url(url);
@@ -282,10 +285,13 @@ fn sign_request_sigv4(
     }
     canonical_headers.sort_by(|a, b| a.0.cmp(b.0));
 
-    let canonical_headers_str: String = canonical_headers
-        .iter()
-        .map(|(k, v)| format!("{k}:{v}\n"))
-        .collect();
+    let canonical_headers_str: String =
+        canonical_headers
+            .iter()
+            .fold(String::new(), |mut acc, (k, v)| {
+                let _ = writeln!(acc, "{k}:{v}");
+                acc
+            });
 
     let signed_headers: String = canonical_headers
         .iter()
@@ -307,8 +313,8 @@ fn sign_request_sigv4(
         hex_sha256(canonical_request.as_bytes())
     );
 
-    let signing_key = derive_signing_key(secret_key, date, region, service);
-    let signature = hex_encode(&hmac_sha256(&signing_key, string_to_sign.as_bytes()));
+    let signing_key = derive_signing_key(secret_key, date, region, service)?;
+    let signature = hex_encode(&hmac_sha256(&signing_key, string_to_sign.as_bytes())?);
 
     let authorization = format!(
         "AWS4-HMAC-SHA256 Credential={access_key}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}"
@@ -321,7 +327,7 @@ fn sign_request_sigv4(
     if let Some(tok) = session_token {
         result.push(("x-amz-security-token".into(), tok.into()));
     }
-    result
+    Ok(result)
 }
 
 fn encode_path(path: &str) -> String {
@@ -346,8 +352,10 @@ fn parse_url(url: &str) -> (&str, &str, &str) {
     let after_scheme = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
-    let (host, path_and_query) = after_scheme.split_once('/').unwrap_or((after_scheme, ""));
+        .unwrap_or_else(|| url);
+    let (host, path_and_query) = after_scheme
+        .split_once('/')
+        .unwrap_or_else(|| (after_scheme, ""));
     let full_path = if path_and_query.is_empty() {
         "/"
     } else {
@@ -355,7 +363,7 @@ fn parse_url(url: &str) -> (&str, &str, &str) {
         let path_start = url.len() - path_and_query.len() - 1;
         &url[path_start..]
     };
-    let (path, query) = full_path.split_once('?').unwrap_or((full_path, ""));
+    let (path, query) = full_path.split_once('?').unwrap_or_else(|| (full_path, ""));
     (host, path, query)
 }
 
@@ -365,16 +373,23 @@ fn hex_sha256(data: &[u8]) -> String {
     hex_encode(&hasher.finalize())
 }
 
-fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>, AgentError> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).map_err(|_| AgentError::Config {
+        message: "invalid HMAC key length".into(),
+    })?;
     mac.update(data);
-    mac.finalize().into_bytes().to_vec()
+    Ok(mac.finalize().into_bytes().to_vec())
 }
 
-fn derive_signing_key(secret_key: &str, date: &str, region: &str, service: &str) -> Vec<u8> {
-    let k_date = hmac_sha256(format!("AWS4{secret_key}").as_bytes(), date.as_bytes());
-    let k_region = hmac_sha256(&k_date, region.as_bytes());
-    let k_service = hmac_sha256(&k_region, service.as_bytes());
+fn derive_signing_key(
+    secret_key: &str,
+    date: &str,
+    region: &str,
+    service: &str,
+) -> Result<Vec<u8>, AgentError> {
+    let k_date = hmac_sha256(format!("AWS4{secret_key}").as_bytes(), date.as_bytes())?;
+    let k_region = hmac_sha256(&k_date, region.as_bytes())?;
+    let k_service = hmac_sha256(&k_region, service.as_bytes())?;
     hmac_sha256(&k_service, b"aws4_request")
 }
 
@@ -423,7 +438,7 @@ fn decode_eventstream_frame(buf: &[u8]) -> Result<(usize, Option<Vec<u8>>), Agen
         if pos + name_len > headers_bytes.len() {
             break;
         }
-        let name = std::str::from_utf8(&headers_bytes[pos..pos + name_len]).unwrap_or("");
+        let name = std::str::from_utf8(&headers_bytes[pos..pos + name_len]).unwrap_or_else(|_| "");
         pos += name_len;
 
         if pos >= headers_bytes.len() {
@@ -442,7 +457,8 @@ fn decode_eventstream_frame(buf: &[u8]) -> Result<(usize, Option<Vec<u8>>), Agen
             if pos + value_len > headers_bytes.len() {
                 break;
             }
-            let value = std::str::from_utf8(&headers_bytes[pos..pos + value_len]).unwrap_or("");
+            let value =
+                std::str::from_utf8(&headers_bytes[pos..pos + value_len]).unwrap_or_else(|_| "");
             pos += value_len;
 
             match name {
@@ -457,7 +473,7 @@ fn decode_eventstream_frame(buf: &[u8]) -> Result<(usize, Option<Vec<u8>>), Agen
 
     if let Some(exc) = exception_type {
         let message = std::str::from_utf8(payload_bytes)
-            .unwrap_or("unknown error")
+            .unwrap_or_else(|_| "unknown error")
             .to_string();
         let status = match exc.as_str() {
             "ThrottlingException" => 429,
@@ -492,7 +508,7 @@ impl Bedrock {
         })?;
         let base_url = env::var("ANTHROPIC_BEDROCK_BASE_URL").ok();
         Ok(Self {
-            client: super::super::http_client(timeouts),
+            client: super::super::http_client(timeouts)?,
             auth: Arc::new(Mutex::new(auth)),
             base_url,
         })
@@ -519,6 +535,7 @@ impl Bedrock {
 }
 
 impl Provider for Bedrock {
+    #[allow(clippy::too_many_lines)]
     fn stream_message<'a>(
         &'a self,
         model: &'a Model,
@@ -604,7 +621,7 @@ impl Provider for Bedrock {
                     &auth.region,
                     "bedrock",
                     &timestamp,
-                )),
+                )?),
                 AuthKind::Bearer { token } => {
                     Some(vec![("Authorization".into(), format!("Bearer {token}"))])
                 }
@@ -723,7 +740,7 @@ fn decode_event_payload(payload: &[u8]) -> Result<(String, String), AgentError> 
     let event_type = parsed
         .get("type")
         .and_then(|t| t.as_str())
-        .unwrap_or("")
+        .unwrap_or_else(|| "")
         .to_string();
     Ok((event_type, json))
 }
@@ -732,7 +749,7 @@ fn now_timestamp() -> String {
     use std::time::SystemTime;
     let dur = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap();
+        .unwrap_or_else(|_| Duration::ZERO);
     let secs = dur.as_secs();
     let days = secs / 86400;
     let day_secs = secs % 86400;
@@ -785,7 +802,8 @@ mod tests {
             "us-east-1",
             "bedrock",
             "20240101T000000Z",
-        );
+        )
+        .unwrap();
         let auth = headers
             .iter()
             .find(|(k, _)| k == "Authorization")
@@ -816,7 +834,8 @@ mod tests {
             "us-east-1",
             "bedrock",
             "20240101T000000Z",
-        );
+        )
+        .unwrap();
         let auth = headers.iter().find(|(k, _)| k == "Authorization").unwrap();
         assert!(auth.1.starts_with(
             "AWS4-HMAC-SHA256 Credential=AKID/20240101/us-east-1/bedrock/aws4_request"
@@ -838,6 +857,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn build_eventstream_frame(header_name: &str, header_value: &str, payload: &[u8]) -> Vec<u8> {
         let mut header_buf = Vec::new();
         header_buf.push(header_name.len() as u8);
