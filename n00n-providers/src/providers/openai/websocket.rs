@@ -10,40 +10,38 @@ use serde_json::{Value, json};
 use smol::Timer;
 use tracing::debug;
 
-use super::responses::ResponseAccumulator;
-use crate::providers::ResolvedAuth;
-use crate::{AgentError, ProviderEvent, StreamResponse};
-
-#[cfg(test)]
-use super::responses::build_body;
-#[cfg(test)]
+use super::responses::{ResponseAccumulator, build_body};
 use crate::model::Model;
-#[cfg(test)]
-use crate::{Message, RequestOptions, dialect};
+use crate::providers::ResolvedAuth;
+use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, dialect};
 
 const DEFAULT_RESPONSES_WS_URL: &str = "wss://api.openai.com/v1/responses";
 
-pub(crate) fn is_websocket_model(model_id: &str) -> bool {
-    model_id.starts_with("gpt-5.6") && !model_id.contains("-codex")
-}
-
-#[cfg(test)]
 pub(crate) fn build_request_body(
     model: &Model,
     messages: &[Message],
     system: &str,
     tools: &Value,
     opts: RequestOptions,
+    previous_response_id: Option<&str>,
+    prompt_cache_key: Option<&str>,
 ) -> Value {
-    let mut body = build_body(model, messages, system, tools, None, None);
+    let mut body = build_body(
+        model,
+        messages,
+        system,
+        tools,
+        previous_response_id,
+        prompt_cache_key,
+    );
     if let Some(effort) = opts.thinking.effort_str(&dialect::STANDARD, model) {
-        body["reasoning"] = json!({"effort": effort});
+        body["reasoning"]["effort"] = json!(effort);
     }
     body
 }
 
 fn build_create_event(body: &Value) -> Value {
-    let mut event = body.as_object().cloned().unwrap_or_else(Default::default);
+    let mut event = body.as_object().cloned().unwrap_or_default();
     event.remove("stream");
     event.insert("type".into(), json!("response.create"));
     Value::Object(event)
@@ -73,7 +71,7 @@ fn responses_websocket_url(base_url: Option<&str>) -> String {
 }
 
 pub(crate) async fn stream_message(
-    body: Value,
+    body: &Value,
     event_tx: &Sender<ProviderEvent>,
     auth: &ResolvedAuth,
     stream_timeout: Duration,
@@ -96,7 +94,7 @@ pub(crate) async fn stream_message(
         .await
         .map_err(ws_err)?;
 
-    let create_event = build_create_event(&body);
+    let create_event = build_create_event(body);
     send_json(&mut ws, &create_event).await?;
 
     let mut acc = ResponseAccumulator::new();
@@ -125,7 +123,7 @@ pub(crate) async fn stream_message(
     }
 
     let _ = ws.close(None).await;
-    let response_id = acc.response_id().map(std::string::ToString::to_string);
+    let response_id = acc.response_id().map(ToOwned::to_owned);
     Ok((response_id, acc.into_stream_response()))
 }
 
@@ -134,10 +132,11 @@ fn ws_err(e: WsError) -> AgentError {
         WsError::Io(io) => AgentError::Io(io),
         WsError::Http(resp) => {
             let status = resp.status().as_u16();
-            let message = resp.body().as_ref().map_or_else(
-                || "websocket handshake failed".into(),
-                |b| String::from_utf8_lossy(b).into_owned(),
-            );
+            let message = resp
+                .body()
+                .as_ref()
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_else(|| "websocket handshake failed".into());
             AgentError::Api { status, message }
         }
         other => AgentError::Api {
@@ -152,7 +151,7 @@ where
     S: futures_lite::AsyncRead + futures_lite::AsyncWrite + Unpin + Send,
 {
     let text = value.to_string();
-    debug!(event = %value["type"].as_str().unwrap_or_else(|| "unknown"), bytes = text.len(), "sending websocket event");
+    debug!(event = %value["type"].as_str().unwrap_or("unknown"), bytes = text.len(), "sending websocket event");
     ws.send(WsMessage::Text(text.into())).await.map_err(ws_err)
 }
 
@@ -195,19 +194,16 @@ fn error_from_event(event: &Value) -> AgentError {
         .get("error")
         .and_then(Value::as_object)
         .cloned()
-        .unwrap_or_else(Default::default);
-    let error_type = err
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| "");
+        .unwrap_or_default();
+    let error_type = err.get("type").and_then(Value::as_str).unwrap_or("");
     let message = err
         .get("message")
         .and_then(Value::as_str)
-        .unwrap_or_else(|| "websocket error")
+        .unwrap_or("websocket error")
         .to_string();
 
     let status = if let Some(s) = event.get("status").and_then(Value::as_u64) {
-        u16::try_from(s).unwrap_or_else(|_| 500)
+        s as u16
     } else {
         match error_type {
             "overloaded_error" => 529,
@@ -231,16 +227,6 @@ mod tests {
     use serde_json::json;
     use test_case::test_case;
 
-    #[test_case("gpt-5.6", true)]
-    #[test_case("gpt-5.6-luna", true)]
-    #[test_case("gpt-5.6-terra-preview", true)]
-    #[test_case("gpt-5.6-codex", false ; "codex_models_use_http")]
-    #[test_case("gpt-5.5", false)]
-    #[test_case("gpt-5.3-codex", false)]
-    fn is_websocket_model_recognizes_gpt_5_6(model_id: &str, expected: bool) {
-        assert_eq!(is_websocket_model(model_id), expected);
-    }
-
     #[test_case(None, "wss://api.openai.com/v1/responses")]
     #[test_case(Some("https://api.openai.com/v1"), "wss://api.openai.com/v1/responses")]
     #[test_case(
@@ -263,14 +249,35 @@ mod tests {
             thinking: crate::ThinkingConfig::Effort(crate::Effort::High),
             ..Default::default()
         };
-        let body = build_request_body(&model, &[], "system", &json!([]), opts);
+        let body = build_request_body(&model, &[], "system", &json!([]), opts, None, None);
         let event = build_create_event(&body);
-        assert_eq!(event["reasoning"], json!({"effort":"high"}));
+        assert_eq!(
+            event["reasoning"],
+            json!({"effort":"high","summary":"auto"})
+        );
         assert!(event.get("reasoning_effort").is_none());
         assert_eq!(event["type"], "response.create");
         assert!(event.get("stream").is_none());
     }
 
+    #[test]
+    fn accumulator_captures_response_id_from_websocket_event() {
+        smol::block_on(async {
+            let (event_tx, _) = flume::unbounded();
+            let mut accumulator = ResponseAccumulator::new();
+            let completed = accumulator
+                .handle_event(
+                    "response.created",
+                    &json!({"response": {"id": "resp_1"}}),
+                    &event_tx,
+                )
+                .await
+                .unwrap();
+
+            assert!(!completed);
+            assert_eq!(accumulator.response_id(), Some("resp_1"));
+        });
+    }
     #[test]
     fn websocket_request_includes_handshake_headers() {
         let request =
@@ -286,6 +293,11 @@ mod tests {
         ] {
             assert!(request.headers().contains_key(header), "missing {header}");
         }
+    }
+
+    #[test]
+    fn rustls_ring_provider_is_available() {
+        let _ = rustls::ClientConfig::builder();
     }
 
     #[test]

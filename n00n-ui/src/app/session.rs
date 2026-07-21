@@ -21,6 +21,8 @@ use crate::agent::QueuedMessage;
 /// first (`save_session` does).
 pub(crate) fn session_has_content(session: &AppSession) -> bool {
     !session.messages.is_empty()
+        || !session.subagent_messages.is_empty()
+        || !session.meta.subagents.is_empty()
         || session.meta.input_draft.is_some()
         || !session.meta.queued_messages.is_empty()
         || session.meta.mode != Some(n00n_storage::sessions::StoredMode::Build)
@@ -34,6 +36,7 @@ impl App {
     pub(crate) fn save_session(&mut self) {
         self.state.sync_session(
             &self.shared_history,
+            &self.shared_transcript,
             &self.shared_tool_outputs,
             &self.permissions,
         );
@@ -54,12 +57,13 @@ impl App {
             .chats
             .iter()
             .skip(1)
-            .zip(self.chat_index.iter())
-            .map(|(chat, (tool_id, _))| StoredSubagent {
-                tool_use_id: tool_id.clone(),
-                name: chat.name.clone(),
-                prompt: None,
-                model: chat.model_id.clone(),
+            .filter_map(|chat| {
+                chat.tool_use_id.as_ref().map(|tool_use_id| StoredSubagent {
+                    tool_use_id: tool_use_id.clone(),
+                    name: chat.name.clone(),
+                    prompt: None,
+                    model: chat.model_id.clone(),
+                })
             })
             .collect();
     }

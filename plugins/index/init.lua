@@ -145,11 +145,6 @@ n00n.api.register_prompt_hint({
   content = "- Use the **index** tool first on individual files to get their skeleton, then use the **read** tool with offset/limit for the specific section you need.",
 })
 
-n00n.api.register_prompt_hint({
-  slot = "efficient_tools",
-  content = "index",
-})
-
 n00n.api.register_tool({
   name = "index",
   kind = "read",

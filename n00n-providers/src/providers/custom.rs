@@ -230,7 +230,7 @@ impl Provider for CustomOpenAiProvider {
             if self.protocol == Protocol::OpenaiResponses {
                 let body = responses::build_body(model, messages, system, tools, None, None);
                 // TODO: wire thinking budget into responses API when llama.cpp supports it
-                let (_, resp) = responses::do_stream(
+                return responses::do_stream(
                     self.compat.client(),
                     model,
                     &body,
@@ -238,8 +238,8 @@ impl Provider for CustomOpenAiProvider {
                     &auth,
                     self.compat.stream_timeout(),
                 )
-                .await?;
-                return Ok(resp);
+                .await
+                .map(|(_, response)| response);
             }
 
             let mut body = self.compat.build_body_with_session(

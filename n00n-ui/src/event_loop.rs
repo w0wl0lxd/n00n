@@ -230,6 +230,36 @@ enum Wake {
     Warn(String),
 }
 
+struct DrainScheduler {
+    prefer_input: bool,
+}
+
+impl Default for DrainScheduler {
+    fn default() -> Self {
+        Self { prefer_input: true }
+    }
+}
+
+impl DrainScheduler {
+    fn next<T>(
+        &mut self,
+        mut input: impl FnMut() -> Option<T>,
+        mut other: impl FnMut() -> Option<T>,
+    ) -> Option<T> {
+        let (is_input, item) = if self.prefer_input {
+            input()
+                .map(|item| (true, item))
+                .or_else(|| other().map(|item| (false, item)))
+        } else {
+            other()
+                .map(|item| (false, item))
+                .or_else(|| input().map(|item| (true, item)))
+        }?;
+        self.prefer_input = !is_input;
+        Some(item)
+    }
+}
+
 struct BackgroundModels {
     available: Arc<ArcSwapOption<Vec<String>>>,
     warn_rx: flume::Receiver<String>,
@@ -480,9 +510,17 @@ impl<'t> EventLoop<'t> {
     }
 
     /// Wait for the next event from any source, or time out so animations
-    /// and periodic polls keep running. `Duration::ZERO` drains whatever is
-    /// already pending.
+    /// and periodic polls keep running. Already-pending input wins before
+    /// joining the fair selector.
     fn next_wake(&self, timeout: Duration) -> Option<Wake> {
+        self.try_input_wake().or_else(|| self.select_wake(timeout))
+    }
+
+    fn try_input_wake(&self) -> Option<Wake> {
+        self.input.receiver().try_recv().ok().map(Wake::Input)
+    }
+
+    fn select_wake(&self, timeout: Duration) -> Option<Wake> {
         let mut sel = flume::Selector::new().recv(self.input.receiver(), |res| match res {
             Ok(ev) => Some(Wake::Input(ev)),
             Err(_) => Some(Wake::InputGone),
@@ -506,6 +544,29 @@ impl<'t> EventLoop<'t> {
             });
         }
         sel.wait_timeout(timeout).ok().flatten()
+    }
+
+    fn next_non_input_wake(&self) -> Option<Wake> {
+        let mut sel = flume::Selector::new();
+        if let Some(rx) = self
+            .ui_action_rx
+            .as_ref()
+            .filter(|rx| !rx.is_disconnected())
+        {
+            sel = sel.recv(rx, |res| res.ok().map(Wake::Ui));
+        }
+        sel = sel.recv(&self.warn_rx, |res| res.ok().map(Wake::Warn));
+        for (i, rt) in self.sessions.iter().enumerate() {
+            if !rt.handles.agent_rx.is_disconnected() {
+                sel = sel.recv(&rt.handles.agent_rx, move |res| {
+                    res.ok().map(|env| Wake::Agent(i, Box::new(env)))
+                });
+            }
+            sel = sel.recv(&rt.shell_rx, move |res| {
+                res.ok().map(|ev| Wake::Shell(i, ev))
+            });
+        }
+        sel.wait_timeout(Duration::ZERO).ok().flatten()
     }
 
     fn handle_wake(&mut self, wake: Wake) -> Result<()> {
@@ -556,11 +617,14 @@ impl<'t> EventLoop<'t> {
 
     fn drain_channels(&mut self) -> Result<()> {
         // Leftovers beyond the budget are picked up right after the next draw.
+        let mut scheduler = DrainScheduler::default();
         for _ in 0..DRAIN_BUDGET {
-            match self.next_wake(Duration::ZERO) {
-                Some(wake) => self.handle_wake(wake)?,
-                None => break,
-            }
+            let Some(wake) =
+                scheduler.next(|| self.try_input_wake(), || self.next_non_input_wake())
+            else {
+                break;
+            };
+            self.handle_wake(wake)?;
         }
 
         for rt in &mut self.sessions {
@@ -605,6 +669,10 @@ impl<'t> EventLoop<'t> {
                 if focus {
                     app.transition_plan(crate::app::mode::PlanTrigger::InteractivePrompt);
                 }
+            }
+            UiAction::PickModel { current, reply_tx } => {
+                self.focused_app().pick_model_for_lua(current, reply_tx);
+                self.handle_action(self.focused, Action::RefreshModels);
             }
             UiAction::Session { req, reply_tx } => {
                 self.handle_session_request(req, reply_tx);
@@ -1001,6 +1069,7 @@ impl<'t> EventLoop<'t> {
                     input,
                     run_id,
                     displayed: true,
+                    delivery: crate::agent::shared_queue::Delivery::TurnEnd,
                 });
             }
             Action::CancelAgent { run_id } => {
@@ -1220,5 +1289,53 @@ fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
         lines as i32
     } else {
         -(lines as i32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DRAIN_BUDGET, DrainScheduler};
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Source {
+        Input(usize),
+        Agent(usize),
+    }
+
+    #[test]
+    fn drain_prioritizes_input_and_preserves_fair_bounded_progress() {
+        let (input_tx, input_rx) = flume::unbounded();
+        let (agent_tx, agent_rx) = flume::unbounded();
+        for i in 0..DRAIN_BUDGET {
+            input_tx.send(i).expect("input receiver remains connected");
+            agent_tx.send(i).expect("agent receiver remains connected");
+        }
+
+        let mut scheduler = DrainScheduler::default();
+        let drained: Vec<_> = (0..DRAIN_BUDGET)
+            .filter_map(|_| {
+                scheduler.next(
+                    || input_rx.try_recv().ok().map(Source::Input),
+                    || agent_rx.try_recv().ok().map(Source::Agent),
+                )
+            })
+            .collect();
+
+        assert_eq!(drained.first(), Some(&Source::Input(0)));
+        assert_eq!(
+            drained
+                .iter()
+                .filter(|source| matches!(source, Source::Input(_)))
+                .count(),
+            DRAIN_BUDGET / 2
+        );
+        assert_eq!(
+            drained
+                .iter()
+                .filter(|source| matches!(source, Source::Agent(_)))
+                .count(),
+            DRAIN_BUDGET / 2
+        );
+        assert_eq!(input_rx.len() + agent_rx.len(), DRAIN_BUDGET);
     }
 }

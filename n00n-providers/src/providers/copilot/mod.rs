@@ -282,7 +282,7 @@ impl Copilot {
             base_url: Some(auth.endpoint.clone()),
             headers: copilot_headers(&auth, Some("conversation-agent")),
         };
-        let (_, resp) = responses::do_stream(
+        responses::do_stream(
             &self.client,
             model,
             &body,
@@ -290,8 +290,8 @@ impl Copilot {
             &resolved,
             self.stream_timeout,
         )
-        .await?;
-        Ok(resp)
+        .await
+        .map(|(_, response)| response)
     }
 
     async fn stream_messages(

@@ -10,6 +10,7 @@ pub mod model;
 pub mod paths;
 pub mod plans;
 pub mod sessions;
+pub use sessions::TranscriptEntry;
 pub mod theme;
 pub mod toon;
 pub mod version;

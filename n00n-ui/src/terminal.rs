@@ -56,10 +56,11 @@ impl TerminalMux {
 impl TerminalGuard {
     pub(crate) fn init() -> Result<(Self, ratatui::DefaultTerminal)> {
         let terminal = ratatui::init();
+        let guard = Self;
         stdout().execute(EnableBracketedPaste)?;
         stdout().execute(EnableMouseCapture)?;
         push_keyboard_enhancement();
-        Ok((Self, terminal))
+        Ok((guard, terminal))
     }
 }
 
@@ -96,9 +97,9 @@ fn pop_terminal_modes() {
 
 fn resume(terminal: &mut ratatui::DefaultTerminal) {
     stdout().execute(EnterAlternateScreen).ok();
+    terminal::enable_raw_mode().ok();
     stdout().execute(EnableBracketedPaste).ok();
     stdout().execute(EnableMouseCapture).ok();
-    terminal::enable_raw_mode().ok();
     push_keyboard_enhancement();
     let _ = terminal.clear();
 }

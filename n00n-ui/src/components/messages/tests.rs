@@ -197,6 +197,51 @@ fn thinking_delta_separate_from_text() {
 }
 
 #[test]
+fn tool_boundaries_preserve_independently_expandable_thinking_rows() {
+    let mut panel = test_panel();
+    panel.thinking_delta("A");
+    panel.tool_pending("tool1".into(), "bash");
+    panel.thinking_delta("B");
+    panel.tool_pending("tool2".into(), "bash");
+    rebuild(&mut panel);
+
+    let thinking: Vec<_> = panel
+        .messages
+        .iter()
+        .enumerate()
+        .filter(|(_, msg)| matches!(msg.role, DisplayRole::Thinking))
+        .collect();
+    assert_eq!(thinking.len(), 2);
+    assert_eq!(thinking[0].1.text, "A");
+    assert_eq!(thinking[1].1.text, "B");
+    assert!(thinking.iter().all(|(_, msg)| msg.thinking_collapsed));
+
+    let first_idx = thinking[0].0;
+    let second_idx = thinking[1].0;
+    assert!(panel.try_toggle_cached_thinking(Some(first_idx), 80));
+    assert!(!panel.messages[first_idx].thinking_collapsed);
+    assert!(panel.messages[second_idx].thinking_collapsed);
+    assert!(panel.try_toggle_cached_thinking(Some(second_idx), 80));
+    assert!(!panel.messages[first_idx].thinking_collapsed);
+    assert!(!panel.messages[second_idx].thinking_collapsed);
+}
+
+#[test]
+fn transcript_details_toggle_only_changes_persisted_thinking() {
+    let mut panel = test_panel();
+    panel.thinking_delta("persisted");
+    panel.flush();
+    panel.thinking_delta("live");
+
+    assert!(panel.toggle_transcript_details());
+    assert!(!panel.messages[0].thinking_collapsed);
+    assert_eq!(panel.streaming_thinking, "live");
+    assert!(!panel.toggle_transcript_details());
+    assert!(panel.messages[0].thinking_collapsed);
+    assert_eq!(panel.streaming_thinking, "live");
+}
+
+#[test]
 fn scroll_up_pins_viewport_during_streaming() {
     let mut panel = test_panel();
     panel.streaming_text.set_buffer(&"a\n".repeat(30));
@@ -672,17 +717,30 @@ fn copy_hit_target_requires_exact_visible_label() {
 }
 
 #[test]
-fn copy_action_stays_within_narrow_offset_area() {
+fn copy_label_does_not_replace_narrow_assistant_text() {
     let mut panel = test_panel();
     panel.push(DisplayMessage::new(DisplayRole::Assistant, "answer".into()));
-    let area = Rect::new(10, 0, 5, 8);
-    render(&mut panel, 5, 8);
+    let area = Rect::new(0, 0, 5, 8);
+    let text = buffer_text(&render(&mut panel, area.width, area.height));
 
-    assert_eq!(panel.copy_at(0, 9, area), None);
-    assert_eq!(
-        panel.copy_at(0, 10, area),
-        Some(("answer".into(), "markdown"))
-    );
+    assert!(text.contains("ans"), "rendered buffer: {text}");
+    assert!(text.contains("wer"), "rendered buffer: {text}");
+    assert!(!text.contains("[copy]"), "rendered buffer: {text}");
+    assert_eq!(panel.copy_at(0, 0, area), None);
+}
+
+#[test]
+fn copy_label_does_not_replace_full_width_assistant_text() {
+    let mut panel = test_panel();
+    panel.push(DisplayMessage::new(
+        DisplayRole::Assistant,
+        "abcdefghijkl".into(),
+    ));
+    let text = buffer_text(&render(&mut panel, 12, 8));
+
+    assert!(text.contains("abcdefghijk"), "rendered buffer: {text}");
+    assert!(text.contains("l "), "rendered buffer: {text}");
+    assert!(!text.contains("[copy]"), "rendered buffer: {text}");
 }
 
 #[test]
@@ -1033,15 +1091,28 @@ fn panel_with_long_tool(line_count: usize) -> MessagesPanel {
 fn toggle_expand_collapse_truncated_tool() {
     let mut panel = panel_with_long_tool(200);
     let area = Rect::new(0, 0, 80, 24);
-    assert!(seg_text(&panel, "t1").contains("click to expand"));
+    assert!(seg_text(&panel, "t1").contains("›"));
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
-    assert!(!seg_text(&panel, "t1").contains("click to expand"));
+    assert!(!seg_text(&panel, "t1").contains("›"));
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
-    assert!(seg_text(&panel, "t1").contains("click to expand"));
+    assert!(seg_text(&panel, "t1").contains("›"));
+}
+
+#[test]
+fn narrow_truncated_tool_keeps_chevron_click_target() {
+    let mut panel = panel_with_long_tool(200);
+    let area = Rect::new(0, 0, 24, 12);
+    render(&mut panel, area.width, area.height);
+
+    assert!(seg_text(&panel, "t1").contains('›'));
+    assert!(panel.handle_click(area.y, area));
+
+    render(&mut panel, area.width, area.height);
+    assert!(!seg_text(&panel, "t1").contains('›'));
 }
 
 #[test]
@@ -1114,15 +1185,15 @@ fn panel_with_grep_tool(match_count: usize) -> MessagesPanel {
 fn toggle_expand_collapse_grep_tool() {
     let mut panel = panel_with_grep_tool(8);
     let area = Rect::new(0, 0, 80, 24);
-    assert!(seg_text(&panel, "t1").contains("click to expand"));
+    assert!(seg_text(&panel, "t1").contains("›"));
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
-    assert!(!seg_text(&panel, "t1").contains("click to expand"));
+    assert!(!seg_text(&panel, "t1").contains("›"));
 
     assert!(panel.toggle_expansion_at(area.y, area));
     render(&mut panel, 80, 24);
-    assert!(seg_text(&panel, "t1").contains("click to expand"));
+    assert!(seg_text(&panel, "t1").contains("›"));
 }
 
 fn buffer_text(terminal: &ratatui::Terminal<TestBackend>) -> String {
@@ -1244,8 +1315,8 @@ fn read_code_with_instructions(blocks: Vec<InstructionBlock>) -> ToolOutput {
     }
 }
 
-fn prev_segment_is_spacer(panel: &MessagesPanel, tool_id: &str) -> bool {
-    let idx = panel.cache.find_by_tool_id(tool_id).unwrap();
+fn prev_segment_is_spacer(panel: &MessagesPanel, _tool_id: &str) -> bool {
+    let idx = panel.cache.find_instructions("t1").unwrap();
     panel.cache.get(idx - 1).unwrap().tool_id.is_none()
 }
 
@@ -1263,19 +1334,12 @@ fn instruction_segment_has_spacer_before_it() {
     });
     rebuild(&mut panel);
 
-    let inst_id = super::segment::instruction_id("t1");
-    assert!(prev_segment_is_spacer(&panel, &inst_id));
+    assert!(prev_segment_is_spacer(&panel, "t1__inst"));
 }
 
-fn seg_line_count(panel: &MessagesPanel, tool_id: &str) -> usize {
-    panel
-        .cache
-        .segments()
-        .iter()
-        .find(|s| s.tool_id.as_deref() == Some(tool_id))
-        .unwrap()
-        .lines()
-        .len()
+fn seg_line_count(panel: &MessagesPanel, _tool_id: &str) -> usize {
+    let idx = panel.cache.find_instructions("t1").unwrap();
+    panel.cache.get(idx).unwrap().lines().len()
 }
 
 #[test]
@@ -1296,14 +1360,14 @@ fn toggle_instruction_segment_expands_and_collapses() {
     });
     rebuild(&mut panel);
 
-    let inst_id = super::segment::instruction_id("t1");
-    let collapsed = seg_line_count(&panel, &inst_id);
+    let inst_id = "t1__inst";
+    let collapsed = seg_line_count(&panel, inst_id);
 
-    panel.toggle_expansion(&inst_id);
+    panel.toggle_expansion(inst_id);
     assert!(seg_line_count(&panel, &inst_id) > collapsed);
 
-    panel.toggle_expansion(&inst_id);
-    assert_eq!(seg_line_count(&panel, &inst_id), collapsed);
+    panel.toggle_expansion(inst_id);
+    assert_eq!(seg_line_count(&panel, inst_id), collapsed);
 }
 
 #[test]
@@ -1321,6 +1385,83 @@ fn tool_id_at_returns_clicked_tool() {
     render(&mut panel, 80, 24);
     let area = Rect::new(0, 0, 80, 24);
     assert_eq!(panel.tool_id_at(area.y, area), Some("task1"));
+}
+
+#[test]
+fn task_tool_id_at_only_routes_header() {
+    let mut panel = test_panel();
+    panel.tool_start(start("task1", "task"));
+    panel.tool_done(ToolDoneEvent {
+        id: "task1".into(),
+        tool: "task".into(),
+        output: ToolOutput::Markdown(
+            "body line
+"
+            .repeat(100)
+            .into(),
+        ),
+        is_error: false,
+        annotation: None,
+        written_path: None,
+    });
+    render(&mut panel, 80, 80);
+    let area = Rect::new(0, 0, 80, 80);
+
+    assert_eq!(panel.tool_id_at(0, area), Some("task1"));
+    assert_eq!(panel.tool_id_at(1, area), None);
+    let truncation_row = panel.cache.segments()[0]
+        .lines()
+        .iter()
+        .position(|line| line.spans.iter().any(|span| span.content.contains("›")))
+        .unwrap() as u16;
+    assert_eq!(panel.tool_id_at(truncation_row, area), None);
+    assert!(panel.handle_click(truncation_row, area));
+    assert!(!seg_text(&panel, "task1").contains("›"));
+}
+
+#[test]
+fn snapshot_tool_native_truncation_expands_but_snapshot_row_routes_lua() {
+    let mut panel = test_panel();
+    panel.tool_start(ToolStartEvent {
+        input: Some(ToolInput::Code {
+            language: "bash".into(),
+            code: "echo line
+"
+            .repeat(200),
+        }),
+        ..start("t1", BASH_TOOL_NAME)
+    });
+    panel.tool_snapshot(
+        "t1",
+        BufferSnapshot::from_arc(Arc::new(vec![snap_line("lua snapshot row")])),
+        None,
+    );
+    panel.tool_done(done("t1"));
+    render(&mut panel, 80, 80);
+    let area = Rect::new(0, 0, 80, 80);
+    let segment = &panel.cache.segments()[0];
+    let truncation_row = segment
+        .lines()
+        .iter()
+        .position(|line| line.spans.iter().any(|span| span.content.contains("›")))
+        .unwrap() as u16;
+
+    assert!(panel.handle_click(truncation_row, area));
+    assert!(panel.lua_clicks.is_empty());
+    assert!(!seg_text(&panel, "t1").contains("›"));
+
+    render(&mut panel, 80, 240);
+    let snapshot_row = panel.cache.segments()[0]
+        .lines()
+        .iter()
+        .position(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.contains("lua snapshot row"))
+        })
+        .unwrap() as u16;
+    assert!(panel.handle_click(snapshot_row, Rect::new(0, 0, 80, 240)));
+    assert_eq!(panel.lua_clicks.get("t1"), Some(&vec![1]));
 }
 
 #[test]
@@ -1909,7 +2050,7 @@ fn hidden_config_still_streams_thinking_live() {
     let text = buffer_text(&terminal);
     assert!(text.contains("line one"), "live reasoning: {text}");
     assert!(text.contains("line three"), "live reasoning: {text}");
-    assert!(!text.contains("click to expand"), "live reasoning: {text}");
+    assert!(!text.contains("›"), "live reasoning: {text}");
 }
 
 #[test]
@@ -1928,7 +2069,7 @@ fn live_streaming_thinking_does_not_toggle_on_click() {
         text.contains("secret reasoning"),
         "expanded view should show reasoning; got: {text}"
     );
-    assert!(!text.contains("click to expand"), "live reasoning: {text}");
+    assert!(!text.contains("›"), "live reasoning: {text}");
 }
 
 #[test]
@@ -1954,7 +2095,7 @@ fn hide_keeps_cached_thinking_as_indicator() {
         "footer always shows the line count; got: {text}"
     );
     assert!(
-        text.contains("click to expand"),
+        text.contains("›"),
         "footer should hint click-to-expand; got: {text}"
     );
     assert!(
@@ -2006,7 +2147,7 @@ fn hide_cached_thinking_persists_as_indicator() {
     );
     assert!(text.contains("7 lines"), "footer line count; got: {text}");
     assert!(
-        text.contains("click to expand"),
+        text.contains("›"),
         "footer should hint click-to-expand; got: {text}"
     );
     assert!(
@@ -2040,7 +2181,7 @@ fn hide_cached_thinking_click_expands() {
         "expanded view shows full reasoning; got: {text}"
     );
     assert!(
-        !text.contains("click to expand"),
+        !text.contains("›"),
         "footer should disappear when expanded; got: {text}"
     );
 }
