@@ -225,6 +225,17 @@ pub(crate) fn convert_tools(anthropic_tools: &Value) -> Value {
     )
 }
 
+fn suppress_retry_after_response(error: AgentError) -> AgentError {
+    match error {
+        error @ (AgentError::Io(_) | AgentError::Http(_) | AgentError::Timeout { .. }) => {
+            AgentError::RequestSent {
+                message: error.to_string(),
+            }
+        }
+        error => error,
+    }
+}
+
 pub(crate) async fn do_stream(
     client: &HttpClient,
     model: &crate::model::Model,
@@ -264,6 +275,7 @@ pub(crate) async fn do_stream(
             stream_timeout,
         )
         .await
+        .map_err(suppress_retry_after_response)
     } else {
         Err(AgentError::from_response(response).await)
     }
@@ -1408,6 +1420,33 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
                 matches!(&resp.message.content[2], ContentBlock::RedactedThinking { data } if data.contains("two"))
             );
         });
+    }
+
+    #[test]
+    fn post_response_api_error_remains_retryable() {
+        let error = AgentError::Api {
+            status: 500,
+            message: "provider rejected request".into(),
+        };
+
+        assert!(matches!(
+            suppress_retry_after_response(error),
+            AgentError::Api { status: 500, .. }
+        ));
+    }
+
+    #[test]
+    fn post_response_eof_is_non_retryable() {
+        let error = IoError::new(
+            ErrorKind::UnexpectedEof,
+            "Responses API stream ended without a terminal event",
+        )
+        .into();
+
+        assert!(matches!(
+            suppress_retry_after_response(error),
+            AgentError::RequestSent { .. }
+        ));
     }
 
     #[test]
