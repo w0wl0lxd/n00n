@@ -1,0 +1,19 @@
+[files]
+extend-exclude = ["site/_build/**", "Cargo.lock", "*.svg", "*.png", "*.ico", "flake.lock"]
+
+[default.extend-words]
+n00n = "n00n"
+w0wl0lxd = "w0wl0lxd"
+luau = "luau"
+ratatui = "ratatui"
+mlua = "mlua"
+asciinema = "asciinema"
+zola = "zola"
+ndjson = "ndjson"
+subagent = "subagent"
+subagents = "subagents"
+unmaintained = "unmaintained"
+tree-sitter = "tree-sitter"
+treesitter = "treesitter"
+worktree = "worktree"
+worktrees = "worktrees"

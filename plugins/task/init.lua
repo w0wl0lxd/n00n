@@ -13,7 +13,6 @@ local STRUCTURED_OUTPUT_DESCRIPTION = "Report your final result. Call it exactly
 local STRUCTURED_OUTPUT_ACK = "Output recorded."
 local STRUCTURED_OUTPUT_PROMPT_SUFFIX = "\n\nWhen finished, call the structured_output tool with your final result."
 local MAX_SCHEMA_ERRORS = 3
-local TASK_TIMEOUT_SECS = 3600
 local MAX_STRUCTURED_RETRIES = 2
 local SCHEMA_ROOT_ERROR = "output_schema must have type object"
 local SCHEMA_COMPILE_ERROR = "invalid output_schema"
@@ -28,7 +27,7 @@ local MIN_MD_WIDTH = 20
 local DEFAULT_OUTPUT_LINES = 5
 local DEFAULT_MAX_LINE_BYTES = 500
 
-local description = [[Launch an autonomous subagent to perform tasks independently. Best combined with batch.
+local description = [[Launch a single agent to perform tasks independently. Best combined with batch.
 
 Subagent types (set via `subagent_type`):
 - `research` (default): Read-only tools. For codebase exploration or gathering context.
@@ -154,13 +153,21 @@ local function handler(input, ctx)
       forwarded[key] = value
     end
     forwarded.background = false
+    local forwarded_json, encode_err = n00n.json.encode(forwarded)
+    if encode_err then
+      return { llm_output = "failed to encode task input: " .. tostring(encode_err), is_error = true }
+    end
     local prompt = "Use the task tool now with background=false. Do not only describe this request.\n\n"
-      .. n00n.json.encode(forwarded)
+      .. forwarded_json
     local id, err = n00n.session.new({ prompt = prompt, focus = false })
     if not id then
       return { llm_output = err, is_error = true }
     end
-    return n00n.json.encode({ agent_id = id, status = "started" })
+    local output, output_err = n00n.json.encode({ agent_id = id, status = "started" })
+    if output_err then
+      return { llm_output = "failed to encode task status: " .. tostring(output_err), is_error = true }
+    end
+    return output
   end
 
   local subagent_type = input.subagent_type or "research"
@@ -235,8 +242,9 @@ local function handler(input, ctx)
 
   local preview = make_preview(ctx, input.description or "task")
 
-  local permit = semaphore:acquire()
+  local permit
   local ok, out = pcall(function()
+    permit = semaphore:acquire()
     local sess, sess_err = n00n.agent.session(ctx, {
       model_spec = model.spec,
       system = system,
@@ -271,7 +279,15 @@ local function handler(input, ctx)
       if not captured and (not result or not result.text or result.text == "") then
         return { llm_output = "sub-agent returned no output", is_error = true }
       end
-      return { llm_output = captured and n00n.json.encode(captured) or result.text, format = "markdown" }
+      local output = result.text
+      if captured then
+        local encoded, encode_err = n00n.json.encode(captured)
+        if encode_err then
+          return { llm_output = "failed to encode structured output: " .. tostring(encode_err), is_error = true }
+        end
+        output = encoded
+      end
+      return { llm_output = output, format = "markdown" }
     end
 
     local function do_poll()
@@ -295,7 +311,9 @@ local function handler(input, ctx)
     end
     return prompt_res.value
   end)
-  permit:release()
+  if permit then
+    permit:release()
+  end
   if not ok then
     return { llm_output = "task failed: " .. tostring(out), is_error = true, body = preview.buf }
   end
@@ -337,7 +355,6 @@ n00n.api.register_tool({
   audiences = { "main", "workflow" },
   examples = examples,
   schema = schema,
-  timeout = TASK_TIMEOUT_SECS,
   handler = handler,
   header = header,
   restore = restore,

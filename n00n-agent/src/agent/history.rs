@@ -2,31 +2,47 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use n00n_providers::{ContentBlock, Message, Role};
+use n00n_storage::sessions::TranscriptEntry;
 use tracing::warn;
 
 const CANCEL_MARKER: &str = "[Cancelled by user]";
 const UNAVAILABLE_RESULT: &str = "[Tool result not available]";
 
 pub type SharedMessages = Arc<ArcSwap<Vec<Message>>>;
+pub type SharedTranscript = Arc<ArcSwap<Vec<TranscriptEntry<Message>>>>;
 
 pub struct History {
     messages: Vec<Message>,
+    transcript: Vec<TranscriptEntry<Message>>,
     mirror: Option<SharedMessages>,
+    transcript_mirror: Option<SharedTranscript>,
 }
 
 impl History {
     pub fn new(messages: Vec<Message>) -> Self {
         Self {
+            transcript: messages
+                .iter()
+                .cloned()
+                .map(TranscriptEntry::Message)
+                .collect(),
             messages,
             mirror: None,
+            transcript_mirror: None,
         }
     }
 
     pub fn restored(mut messages: Vec<Message>) -> Self {
         sanitize_restored(&mut messages);
         Self {
+            transcript: messages
+                .iter()
+                .cloned()
+                .map(TranscriptEntry::Message)
+                .collect(),
             messages,
             mirror: None,
+            transcript_mirror: None,
         }
     }
 
@@ -34,6 +50,25 @@ impl History {
         self.mirror = Some(mirror);
         self.publish();
         self
+    }
+
+    pub fn with_transcript_mirror(mut self, mirror: SharedTranscript) -> Self {
+        self.transcript_mirror = Some(mirror);
+        self.publish();
+        self
+    }
+
+    pub fn transcript(&self) -> &[TranscriptEntry<Message>] {
+        &self.transcript
+    }
+
+    pub fn compact_boundary(&mut self, summary: Vec<Message>) {
+        let previous = std::mem::take(&mut self.transcript);
+        self.transcript = vec![TranscriptEntry::Compaction { entries: previous }];
+        self.messages = summary.clone();
+        self.transcript
+            .extend(summary.into_iter().map(TranscriptEntry::Message));
+        self.publish();
     }
 
     pub fn as_slice(&self) -> &[Message] {
@@ -74,7 +109,12 @@ impl History {
     }
 
     fn edit(&mut self, f: impl FnOnce(&mut Vec<Message>)) {
+        let before = self.messages.len();
         f(&mut self.messages);
+        for message in self.messages.iter().skip(before) {
+            self.transcript
+                .push(TranscriptEntry::Message(message.clone()));
+        }
         self.publish();
     }
 
@@ -83,6 +123,9 @@ impl History {
         let mut snapshot = self.messages.clone();
         close_dangling_tool_calls(&mut snapshot, UNAVAILABLE_RESULT);
         mirror.store(Arc::new(snapshot));
+        if let Some(transcript) = &self.transcript_mirror {
+            transcript.store(Arc::new(self.transcript.clone()));
+        }
     }
 }
 
@@ -176,6 +219,7 @@ pub(crate) fn sanitize_cancelled_history(history: &mut History, rollback_len: us
 #[cfg(test)]
 mod tests {
     use n00n_providers::{ContentBlock, Message, Role};
+    use n00n_storage::sessions::TranscriptEntry;
     use test_case::test_case;
 
     use super::*;
@@ -185,6 +229,34 @@ mod tests {
         let last = history.as_slice().last().unwrap();
         assert!(matches!(last.role, Role::User));
         assert!(matches!(&last.content[0], ContentBlock::Text { text } if text == CANCEL_MARKER));
+    }
+
+    #[test]
+    fn compaction_boundary_preserves_prior_transcript_and_summary() {
+        let mut history = History::new(vec![Message::user("old".into())]);
+        history.push(Message::synthetic("reply".into()));
+        history.compact_boundary(vec![Message::user("summary".into())]);
+
+        assert_eq!(history.as_slice().len(), 1);
+        assert!(matches!(
+            history.transcript(),
+            [TranscriptEntry::Compaction { entries }, TranscriptEntry::Message(_)]
+                if entries.len() == 2
+        ));
+    }
+
+    #[test]
+    fn later_compactions_nest_independently() {
+        let mut history = History::new(vec![Message::user("one".into())]);
+        history.compact_boundary(vec![Message::user("summary one".into())]);
+        history.push(Message::user("two".into()));
+        history.compact_boundary(vec![Message::user("summary two".into())]);
+
+        assert!(matches!(
+            history.transcript(),
+            [TranscriptEntry::Compaction { entries }, TranscriptEntry::Message(_)]
+                if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }, TranscriptEntry::Message(_), TranscriptEntry::Message(_)])
+        ));
     }
 
     fn make_tool_use_msg(ids: &[&str]) -> Message {

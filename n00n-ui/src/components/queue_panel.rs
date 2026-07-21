@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 const ELLIPSIS: &str = "...";
 const QUEUE_LABEL: &str = " Queue ";
-const FOCUSED_HINT: &str = " - Enter to delete";
+const FOCUSED_HINT: &str = "  ↵ edit · del";
 
 pub struct QueueEntry<'a> {
     pub text: Cow<'a, str>,
@@ -41,7 +41,7 @@ pub fn view(frame: &mut Frame, area: Rect, entries: &[QueueEntry], focus: Option
             } else if i == 0 {
                 (
                     Style::new().fg(entry.color),
-                    (" - ", key::POP_QUEUE.label, " to delete"),
+                    ("  · ", key::POP_QUEUE.label, " pop"),
                 )
             } else {
                 (Style::new().fg(entry.color), ("", "", ""))

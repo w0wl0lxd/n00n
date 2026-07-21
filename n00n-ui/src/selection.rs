@@ -82,34 +82,19 @@ pub struct SelectableZone {
     pub scroll_info: Option<ScrollInfo>,
 }
 
-const ZONE_CAP: usize = 12;
-
-const EMPTY_ZONE: SelectableZone = SelectableZone {
-    area: Rect::new(0, 0, 0, 0),
-    zone: SelectionZone::Messages,
-    scroll_info: None,
-};
-
 pub struct ZoneRegistry {
-    entries: [SelectableZone; ZONE_CAP],
-    len: u8,
+    entries: Vec<SelectableZone>,
 }
 
 impl ZoneRegistry {
     pub fn new() -> Self {
         Self {
-            entries: [EMPTY_ZONE; ZONE_CAP],
-            len: 0,
+            entries: Vec::new(),
         }
     }
 
     pub fn push(&mut self, zone: SelectableZone) {
-        let i = self.len as usize;
-        if i >= ZONE_CAP {
-            return;
-        }
-        self.entries[i] = zone;
-        self.len += 1;
+        self.entries.push(zone);
     }
 
     pub fn push_overlay(&mut self, area: Rect) {
@@ -122,7 +107,7 @@ impl ZoneRegistry {
 
     pub fn zone_at(&self, row: u16, col: u16) -> Option<SelectableZone> {
         let pos = ratatui::layout::Position::new(col, row);
-        self.entries[..self.len as usize]
+        self.entries
             .iter()
             .rev()
             .find(|z| z.area.contains(pos))
@@ -130,15 +115,11 @@ impl ZoneRegistry {
     }
 
     pub fn find(&self, zone: SelectionZone) -> Option<&SelectableZone> {
-        self.entries[..self.len as usize]
-            .iter()
-            .find(|z| z.zone == zone)
+        self.entries.iter().find(|z| z.zone == zone)
     }
 
     pub fn find_area(&self, area: Rect) -> Option<&SelectableZone> {
-        self.entries[..self.len as usize]
-            .iter()
-            .find(|z| z.area == area)
+        self.entries.iter().find(|z| z.area == area)
     }
 }
 
@@ -954,6 +935,28 @@ mod tests {
         assert!(lb.is_line_start(0));
         assert!(!lb.is_line_start(64));
         assert!(lb.is_line_start(65));
+    }
+
+    #[test]
+    fn zone_at_keeps_late_high_z_zone_beyond_twelve_entries() {
+        let mut zones = ZoneRegistry::new();
+        for x in 0..12 {
+            zones.push(SelectableZone {
+                area: Rect::new(x, 0, 1, 1),
+                zone: SelectionZone::Messages,
+                scroll_info: None,
+            });
+        }
+        zones.push(SelectableZone {
+            area: Rect::new(0, 0, 1, 1),
+            zone: SelectionZone::Overlay,
+            scroll_info: None,
+        });
+
+        assert_eq!(
+            zones.zone_at(0, 0).map(|zone| zone.zone),
+            Some(SelectionZone::Overlay)
+        );
     }
 
     #[test]

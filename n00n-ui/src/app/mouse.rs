@@ -28,6 +28,13 @@ impl App {
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let pos = Position::new(event.column, event.row);
+                if self
+                    .float_mgr
+                    .handle_click(pos, self.lua_event_handle.as_ref())
+                {
+                    self.selection_state = None;
+                    return;
+                }
                 let render_chat = self.resolve_render_chat();
                 if !self.has_modal_overlay()
                     && self.chats[render_chat]
@@ -38,7 +45,10 @@ impl App {
                     return;
                 }
                 if let Some(zone) = self.zone_at(event.row, event.column) {
-                    if self.has_modal_overlay() && zone.zone != SelectionZone::Overlay {
+                    if self.has_modal_overlay()
+                        && !self.task_picker.is_open()
+                        && zone.zone != SelectionZone::Overlay
+                    {
                         return;
                     }
                     let scroll = self.scroll_offset(zone.zone);
@@ -70,12 +80,13 @@ impl App {
                         self.selection_state = None;
                         if zone == SelectionZone::Messages {
                             let area = self.msg_area();
+                            let render_chat = self.resolve_render_chat();
                             if let Some((text, label)) =
-                                self.chats[self.active_chat].copy_at(event.row, event.column, area)
+                                self.chats[render_chat].copy_at(event.row, event.column, area)
                             {
                                 self.copy_text(&text, format!("Copied {label}"));
                             } else {
-                                let session = self.chats[self.active_chat]
+                                let session = self.chats[render_chat]
                                     .tool_id_at(event.row, area)
                                     .and_then(|id| {
                                         self.chats.iter().position(|chat| {
@@ -86,7 +97,7 @@ impl App {
                                     self.active_chat = idx;
                                     return;
                                 }
-                                self.chats[self.active_chat].handle_click(event.row, area);
+                                self.chats[render_chat].handle_click(event.row, area);
                             }
                         }
                     }
@@ -100,7 +111,7 @@ impl App {
         if !scrollbar::is_enabled() {
             return false;
         }
-        if self.has_modal_overlay() {
+        if self.has_modal_overlay() && !self.task_picker.is_open() {
             self.scrollbar_drag = None;
             return false;
         }
@@ -181,7 +192,10 @@ impl App {
 
     fn set_scroll_zone(&mut self, zone: SelectionZone, position: u16) {
         match zone {
-            SelectionZone::Messages => self.chats[self.active_chat].set_scroll_top(position),
+            SelectionZone::Messages => {
+                let render_chat = self.resolve_render_chat();
+                self.chats[render_chat].set_scroll_top(position);
+            }
             SelectionZone::Input => self.input_box.set_scroll_y(position),
             SelectionZone::Overlay => {}
         }
@@ -342,7 +356,7 @@ impl App {
 
     pub(super) fn scroll_offset(&self, zone: SelectionZone) -> u32 {
         match zone {
-            SelectionZone::Messages => self.chats[self.active_chat].scroll_top() as u32,
+            SelectionZone::Messages => self.chats[self.resolve_render_chat()].scroll_top() as u32,
             SelectionZone::Input => self.input_box.scroll_y() as u32,
             SelectionZone::Overlay => 0,
         }
@@ -350,7 +364,10 @@ impl App {
 
     pub(super) fn scroll_zone(&mut self, zone: SelectionZone, delta: i32) {
         match zone {
-            SelectionZone::Messages => self.chats[self.active_chat].scroll(delta),
+            SelectionZone::Messages => {
+                let render_chat = self.resolve_render_chat();
+                self.chats[render_chat].scroll(delta);
+            }
             SelectionZone::Input => self.input_box.scroll(delta),
             SelectionZone::Overlay => {}
         }
