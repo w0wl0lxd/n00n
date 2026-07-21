@@ -3346,7 +3346,7 @@ fn interpreter_bridge_flattens_image_with_visibility_note() {
 }
 
 #[test]
-fn bundled_todo_panel_tracks_running_activity_in_hint() {
+fn bundled_todo_panel_keeps_current_todo_stable_in_hint() {
     let (reg, host) = builtins_host();
     let ui_rx = host.ui_action_rx().unwrap();
     exec_tool(
@@ -3390,27 +3390,97 @@ fn bundled_todo_panel_tracks_running_activity_in_hint() {
         }),
     );
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        let hints = host.hint_reader().load();
-        let text = hints
-            .entries
-            .iter()
-            .flat_map(|(_, spans)| spans.iter().map(|(text, _)| text.as_str()))
-            .collect::<String>();
-        if text.contains("cargo test --workspace") {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "todo hint did not expose running activity: {text}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let hints = host.hint_reader().load();
+    let text = hints
+        .entries
+        .iter()
+        .flat_map(|(_, spans)| spans.iter().map(|(text, _)| text.as_str()))
+        .collect::<String>();
+    assert!(
+        text.contains("Run tests"),
+        "current todo disappeared: {text}"
+    );
+    assert!(
+        !text.contains("cargo test --workspace"),
+        "transient tool activity replaced the current todo: {text}"
+    );
 
     handle.fire_autocmd(
         "ToolDone",
         serde_json::json!({ "id": "cmd-1", "tool": "bash", "is_error": false }),
+    );
+}
+
+#[test]
+fn bundled_todo_running_click_toggles_and_final_done_resets_collapsed() {
+    let (reg, host) = builtins_host();
+    let ui_rx = host.ui_action_rx().unwrap();
+    let handle = host.event_handle().unwrap();
+    handle.fire_autocmd(
+        "ToolStart",
+        serde_json::json!({ "id": "cmd-1", "tool": "bash", "summary": "cargo test" }),
+    );
+    barrier(&host);
+    exec_tool(
+        &reg,
+        "todo_write",
+        serde_json::json!({
+            "todos": [
+                { "content": "Run tests", "status": "in_progress", "priority": "high" }
+            ]
+        }),
+    )
+    .unwrap();
+    let n00n_lua::UiAction::OpenWin { buf, cmd_rx, .. } =
+        ui_rx.recv_timeout(Duration::from_secs(2)).unwrap()
+    else {
+        panic!("todo tool did not open its panel");
+    };
+    let text = || {
+        buf.read()
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+            .collect::<String>()
+    };
+    let wait_for = |needle: &str| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let got = text();
+            if got.contains(needle) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "missing {needle:?}: {got}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+
+    wait_for("Running ▸");
+    assert!(
+        buf.click().is_some(),
+        "panel click handler must remain registered"
+    );
+    handle.request_buf_click(Arc::clone(&buf), 1);
+    assert!(
+        cmd_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+        "click handler did not reconfigure panel"
+    );
+    wait_for("Running ▾");
+    handle.fire_autocmd(
+        "ToolDone",
+        serde_json::json!({ "id": "cmd-1", "tool": "bash", "is_error": false }),
+    );
+    handle.fire_autocmd(
+        "ToolStart",
+        serde_json::json!({ "id": "cmd-2", "tool": "bash", "summary": "cargo clippy" }),
+    );
+    barrier(&host);
+    wait_for("Running ▸");
+    assert!(
+        !text().contains("Running ▾"),
+        "new activity must start collapsed"
     );
 }
 
@@ -3429,6 +3499,94 @@ fn bundled_todo_ctrl_t_keybind_dispatches() {
         host.event_handle().unwrap().run_keybind_callback(entry.id),
         "live plugin host must accept the Ctrl+T callback"
     );
+}
+
+#[test]
+fn team_launcher_uses_native_model_picker_and_amp_labels() {
+    let (_reg, host) = builtins_host();
+    let rx = host.ui_action_rx().unwrap();
+    let handle = host.event_handle().unwrap();
+    handle.run_command(
+        Arc::from("team"),
+        Arc::from("/team"),
+        "fix the parser".into(),
+    );
+
+    let action = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("Team launcher did not open");
+    let n00n_lua::UiAction::OpenWin { buf, event_tx, .. } = action else {
+        panic!("expected Team launcher window");
+    };
+    let rendered = || {
+        buf.read()
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+            .collect::<String>()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let initial = loop {
+        let text = rendered();
+        if text.contains("Model: Default (tier routing)") {
+            break text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "team launcher did not render: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(initial.contains("Start team"), "{initial}");
+    assert!(!initial.contains("Exact model"), "{initial}");
+
+    for key in ["down", "down", "enter"] {
+        event_tx
+            .send(n00n_lua::WinEvent::Key { key: key.into() })
+            .unwrap();
+    }
+    let action = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("Model picker did not open");
+    let n00n_lua::UiAction::PickModel { current, reply_tx } = action else {
+        panic!("expected native model picker request");
+    };
+    assert_eq!(current, None);
+    reply_tx
+        .send(Some("anthropic/claude-sonnet-4-6".into()))
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !rendered().contains("anthropic/claude-sonnet-4-6") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "selected model was not rendered: {}",
+            rendered()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    event_tx
+        .send(n00n_lua::WinEvent::Key {
+            key: "ctrl+enter".into(),
+        })
+        .unwrap();
+    let action = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("Team launcher did not submit a session prompt");
+    let n00n_lua::UiAction::Session { req, reply_tx } = action else {
+        panic!("expected Team session prompt");
+    };
+    let n00n_lua::SessionRequest::Prompt { text, .. } = req else {
+        panic!("expected a prompt request");
+    };
+    assert!(
+        text.contains("model: anthropic/claude-sonnet-4-6"),
+        "submitted prompt: {text}"
+    );
+    assert!(
+        text.contains("model_tier: strong"),
+        "tier routing default was not retained: {text}"
+    );
+    reply_tx.send(Ok(serde_json::json!("started"))).unwrap();
 }
 
 #[test]

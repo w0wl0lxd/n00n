@@ -51,6 +51,7 @@ impl Emphasis {
         underline: true,
     };
 
+    #[must_use]
     pub fn merge(self, other: Self) -> Self {
         Self {
             bold: self.bold || other.bold,
@@ -60,6 +61,7 @@ impl Emphasis {
         }
     }
 
+    #[must_use]
     pub fn is_empty(self) -> bool {
         !self.bold && !self.italic && !self.strike && !self.underline
     }
@@ -126,6 +128,7 @@ pub enum Block {
     },
 }
 
+#[must_use]
 pub fn single_code_block(text: &str) -> Option<&str> {
     let fence = find_code_fence(text)?;
     if !text[..fence.before_end].trim().is_empty() || !text[fence.block_end..].trim().is_empty() {
@@ -134,6 +137,7 @@ pub fn single_code_block(text: &str) -> Option<&str> {
     Some(fence.code)
 }
 
+#[must_use]
 pub fn parse(text: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut rest = text;
@@ -284,6 +288,7 @@ fn classify_line(line: &str) -> LineBlock {
     }
 }
 
+#[must_use]
 pub fn block_prefix(kind: &BlockKind) -> Option<String> {
     match kind {
         BlockKind::UnorderedListItem { depth } => {
@@ -478,6 +483,7 @@ fn find_code_fence(text: &str) -> Option<CodeFence<'_>> {
 
 /// Emphasis composes additively. Code spans are atomic and carry the
 /// surrounding emphasis as a separate modifier.
+#[must_use]
 pub fn parse_inline(text: &str) -> Vec<InlineSpan> {
     parse_inline_impl(text, Emphasis::default(), ParseMode::WithCode)
 }
@@ -503,7 +509,7 @@ fn parse_inline_impl(text: &str, base: Emphasis, mode: ParseMode) -> Vec<InlineS
             }
             match mode {
                 ParseMode::WithCode => {
-                    spans.extend(parse_inline_impl(plain, base, ParseMode::EmphasisOnly))
+                    spans.extend(parse_inline_impl(plain, base, ParseMode::EmphasisOnly));
                 }
                 ParseMode::EmphasisOnly => spans.push(InlineSpan::text(plain.to_owned(), base)),
             }

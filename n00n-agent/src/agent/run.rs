@@ -19,7 +19,7 @@ use crate::permissions::PermissionManager;
 use crate::tools::{Deadline, FileReadTracker, LocalTools, ToolAudience, ToolContext};
 use crate::{
     AgentConfig, AgentError, AgentEvent, AgentInput, AgentMode, EventSender, ExtractedCommand,
-    InterruptSource, TurnCompleteEvent,
+    InterruptPoint, InterruptSource, TurnCompleteEvent,
 };
 use n00n_config::ToolOutputLines;
 use n00n_storage::id::SessionRef;
@@ -366,7 +366,15 @@ impl<'h> Agent<'h> {
             }
         }
 
-        if self.try_auto_compact().await? || self.handle_queued_command().await? {
+        if self.try_auto_compact().await?
+            || self
+                .handle_queued_commands(if has_tools {
+                    InterruptPoint::ToolComplete
+                } else {
+                    InterruptPoint::Safe
+                })
+                .await?
+        {
             return Ok(TurnOutcome::Continue);
         }
 
@@ -508,35 +516,36 @@ impl<'h> Agent<'h> {
         Ok(())
     }
 
-    async fn handle_queued_command(&mut self) -> Result<bool, AgentError> {
-        let Some(ref source) = self.interrupt_source else {
+    async fn handle_queued_commands(&mut self, point: InterruptPoint) -> Result<bool, AgentError> {
+        let Some(source) = self.interrupt_source.clone() else {
             return Ok(false);
         };
-        let Some(cmd) = source.poll() else {
-            return Ok(false);
-        };
-        match cmd {
-            ExtractedCommand::Interrupt(mut input, _) => {
-                self.event_tx.send(AgentEvent::QueueItemConsumed {
-                    text: input.message.clone(),
-                    image_count: input.images.len(),
-                    images: input.images.clone(),
-                })?;
-                for msg in std::mem::take(&mut input.preamble) {
-                    self.history.push(msg);
+        let mut handled = false;
+        while let Some(cmd) = source.poll(point) {
+            handled = true;
+            match cmd {
+                ExtractedCommand::Interrupt(mut input, _) => {
+                    self.event_tx.send(AgentEvent::QueueItemConsumed {
+                        text: input.message.clone(),
+                        image_count: input.images.len(),
+                        images: input.images.clone(),
+                    })?;
+                    for msg in std::mem::take(&mut input.preamble) {
+                        self.history.push(msg);
+                    }
+                    self.mode = input.mode.clone();
+                    let display = input.message.clone();
+                    let wrapped = format!(
+                        "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{display}\n</user-interrupt>"
+                    );
+                    self.history.push(Message::user_display(wrapped, display));
                 }
-                self.mode = input.mode.clone();
-                let display = input.message.clone();
-                let wrapped = format!(
-                    "<user-interrupt>\nThe user sent a new message while you were working. Address it and continue.\n\n{display}\n</user-interrupt>"
-                );
-                self.history.push(Message::user_display(wrapped, display));
-            }
-            ExtractedCommand::Compact(_) => {
-                self.do_compact().await?;
+                ExtractedCommand::Compact(_) => {
+                    self.do_compact().await?;
+                }
             }
         }
-        Ok(true)
+        Ok(handled)
     }
 }
 
@@ -589,7 +598,7 @@ mod tests {
     }
 
     impl InterruptSource for MockInterruptSource {
-        fn poll(&self) -> Option<ExtractedCommand> {
+        fn poll(&self, _: InterruptPoint) -> Option<ExtractedCommand> {
             self.commands.lock().unwrap().pop_front()
         }
     }

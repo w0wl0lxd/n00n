@@ -1,6 +1,7 @@
 local ToolView = require("n00n.tool_view")
 
 local DEFAULT_PREVIEW_LINES = 5
+local MAX_PANEL_HEIGHT = 12
 
 local items = {}
 local buf = nil
@@ -8,6 +9,8 @@ local win = nil
 local seen_first = false
 local running = {}
 local running_order = {}
+local activity_expanded = false
+local render_panel
 
 local STATUS_MARKERS = {
   completed = { "[✓]", "todo_completed" },
@@ -36,6 +39,15 @@ end
 
 local function compact_text(value)
   return (value or ""):gsub("%s+", " "):match("^%s*(.-)%s*$")
+end
+
+local function current_todo()
+  for _, item in ipairs(items) do
+    if item.status == "in_progress" then
+      return compact_text(item.content)
+    end
+  end
+  return nil
 end
 
 local function running_count()
@@ -79,13 +91,12 @@ local function update_hint()
   local spans = {
     { string.format(" %d/%d ", count_done(), #items), "foreground" },
   }
-  local activity = current_activity()
-  if activity then
+  local active_todo = current_todo()
+  if active_todo then
     local max_width = math.max(n00n.ui.terminal_size().cols - 24, 8)
-    local truncated = n00n.ui.truncate_text(activity, max_width)
-    local suffix = running_count() > 1 and string.format(" +%d", running_count() - 1) or ""
+    local truncated = n00n.ui.truncate_text(active_todo, max_width)
     spans[#spans + 1] = {
-      " • " .. truncated.head .. (truncated.tail ~= "" and "…" or "") .. suffix .. " ",
+      " • " .. truncated.head .. (truncated.tail ~= "" and "…" or "") .. " ",
       "todo_in_progress",
     }
   end
@@ -99,6 +110,12 @@ local function ensure_win(visible)
     return
   end
   buf = n00n.ui.buf()
+  buf:on("click", function(ev)
+    if current_activity() and ev and ev.row == 1 then
+      activity_expanded = not activity_expanded
+      render_panel(true)
+    end
+  end)
   win = n00n.ui.open_win(buf, {
     split = "panel",
     height = 4,
@@ -108,7 +125,8 @@ local function ensure_win(visible)
     focus = false,
     visible = visible,
     footer = {
-      { "Ctrl+T", "to hide" },
+      { "click Running", "details" },
+      { "Ctrl+T", "hide" },
     },
   })
 end
@@ -119,11 +137,26 @@ local function build_lines()
   if activity then
     local width = (win and win.width or n00n.ui.terminal_size().cols) - 16
     local truncated = n00n.ui.truncate_text(activity, math.max(width, 8))
-    local suffix = running_count() > 1 and string.format("  +%d more", running_count() - 1) or ""
+    local count = running_count()
+    local suffix = count > 1 and string.format("  +%d more", count - 1) or ""
     lines[#lines + 1] = {
-      { "[•] Running  ", "todo_in_progress" },
+      { activity_expanded and "[•] Running ▾  " or "[•] Running ▸  ", "todo_in_progress" },
       { truncated.head .. (truncated.tail ~= "" and "…" or "") .. suffix, "bold" },
     }
+    if activity_expanded then
+      for _, id in ipairs(running_order) do
+        local detail = running[id]
+        if detail and detail.tool ~= "todo_write" then
+          local summary = compact_text(detail.summary ~= "" and detail.summary or detail.tool)
+          local owner = detail.subagent and detail.subagent ~= "" and (detail.subagent .. " · ") or ""
+          lines[#lines + 1] = {
+            { "    " .. owner, "dim" },
+            { detail.tool, "tool" },
+            { "  " .. summary, "foreground" },
+          }
+        end
+      end
+    end
   end
   for _, item in ipairs(items) do
     local marker = STATUS_MARKERS[item.status] or STATUS_MARKERS.pending
@@ -134,10 +167,11 @@ local function build_lines()
   return lines
 end
 
-local function render_panel(visible)
+render_panel = function(visible)
   ensure_win(visible)
-  buf:set_lines(build_lines())
-  win:set_config({ height = #items + (current_activity() and 3 or 2) })
+  local lines = build_lines()
+  buf:set_lines(lines)
+  win:set_config({ height = math.min(#lines + 2, MAX_PANEL_HEIGHT) })
   if win:is_visible() then
     n00n.ui.set_status_hint(nil)
   else
@@ -271,6 +305,9 @@ n00n.api.create_autocmd("ToolDone", {
     if data.id then
       running[data.id] = nil
       prune_running_order()
+      if running_count() == 0 then
+        activity_expanded = false
+      end
       refresh_activity()
     end
   end,
@@ -281,6 +318,7 @@ local function clear_todos()
   seen_first = false
   running = {}
   running_order = {}
+  activity_expanded = false
   if win and win:is_open() then
     win:hide()
   end

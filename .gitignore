@@ -6,4 +6,17 @@ runs.csv
 /site/.bin/
 /.antigravitycli/
 /.maki/
+/.cargo_home/
+/.cargo_target/
+/.kilo/
 /result
+
+# Secrets / credentials (keep .envrc tracked for direnv)
+.env
+.env.*
+!.envrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore

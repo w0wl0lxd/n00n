@@ -541,6 +541,11 @@ impl EventHandle {
         });
     }
 
+    /// Dispatches a click to a standalone UI buffer's registered handler.
+    pub fn request_buf_click(&self, buf: Arc<n00n_agent::SharedBuf>, row: usize) {
+        let _ = self.tx.send(Request::ClickBuf { buf, row });
+    }
+
     /// Like [`Self::request_click`], but when the runtime no longer holds
     /// a live or warm handle for the tool it restores from `item` (whose
     /// `clicks` must already include `row`) and emits fresh snapshots on

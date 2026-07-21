@@ -1,3 +1,4 @@
+use crate::markdown::TRUNCATION_PREFIX;
 use crate::render_worker::RenderWorker;
 use crate::terminal_image::TerminalImage;
 use crate::theme;
@@ -11,6 +12,12 @@ use ratatui_image::picker::Picker;
 use std::cell::Cell;
 
 const INST_SUFFIX: &str = "__inst";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SegmentIdentity {
+    Tool(String),
+    Instructions(String),
+}
 
 fn media_type_label(media_type: ImageMediaType) -> &'static str {
     match media_type {
@@ -70,6 +77,7 @@ pub(super) struct Segment {
     /// Used when copying a selection back to the original source text.
     pub prefix_width: u16,
     pub tool_id: Option<String>,
+    pub identity: Option<SegmentIdentity>,
     /// Backlink to `self.messages`, set only by `with_lines`. A click on a
     /// collapsed thinking indicator has no tool_id to route by, so this is
     /// how the click finds its message. It looks unused; delete it and the
@@ -90,6 +98,17 @@ pub(super) struct Segment {
 impl Segment {
     pub fn with_tool(tool_id: String) -> Self {
         Self {
+            identity: Some(SegmentIdentity::Tool(tool_id.clone())),
+            tool_id: Some(tool_id),
+            surface: Surface::Tool,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_instructions(parent_id: String) -> Self {
+        let tool_id = format!("{parent_id}{INST_SUFFIX}");
+        Self {
+            identity: Some(SegmentIdentity::Instructions(parent_id)),
             tool_id: Some(tool_id),
             surface: Surface::Tool,
             ..Self::default()
@@ -172,6 +191,14 @@ impl Segment {
     pub fn surface(&self) -> Surface {
         self.surface
     }
+
+    pub fn has_copy_label_room(&self, width: u16, label_width: u16) -> bool {
+        width >= label_width
+            && self
+                .lines
+                .first()
+                .is_none_or(|line| line.width() <= usize::from(width - label_width))
+    }
 }
 
 impl Surface {
@@ -252,6 +279,22 @@ impl Segment {
             Some(base) if source_line >= base => source_line - base + 1,
             _ => 0,
         }
+    }
+
+    pub fn is_snapshot_line(&self, source_line: usize) -> bool {
+        self.snapshot_base.is_some_and(|base| source_line >= base)
+    }
+
+    pub fn is_truncation_line(&self, source_line: usize) -> bool {
+        let Some(line) = self.lines.get(source_line) else {
+            return false;
+        };
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        text.contains(TRUNCATION_PREFIX) && text.contains('›')
     }
 
     fn invalidate_height(&self) {
@@ -457,9 +500,15 @@ impl SegmentCache {
     }
 
     pub fn find_by_tool_id(&self, id: &str) -> Option<usize> {
-        self.segments
-            .iter()
-            .rposition(|s| s.tool_id.as_deref() == Some(id))
+        self.segments.iter().rposition(
+            |s| matches!(&s.identity, Some(SegmentIdentity::Tool(tool_id)) if tool_id == id),
+        )
+    }
+
+    pub fn find_instructions(&self, parent_id: &str) -> Option<usize> {
+        self.segments.iter().rposition(
+            |s| matches!(&s.identity, Some(SegmentIdentity::Instructions(id)) if id == parent_id),
+        )
     }
 
     pub fn len(&self) -> usize {
