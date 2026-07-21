@@ -35,7 +35,7 @@ if [ ${#rs_files[@]} -gt 0 ]; then
     tmp="$(mktemp)"
     for f in "${rs_files[@]}"; do
       git show ":$f" > "$tmp"
-      if ! rustfmt --edition 2024 --check "$tmp" >/dev/null 2>&1; then
+      if ! rustfmt --edition 2024 --config skip_children=true --check "$tmp" >/dev/null 2>&1; then
         echo "rustfmt: $f is not formatted. Run 'cargo fmt' and stage again." >&2
         fail=1
       fi
@@ -53,7 +53,7 @@ if [ ${#lua_files[@]} -gt 0 ]; then
     tmp="$(mktemp)"
     for f in "${lua_files[@]}"; do
       git show ":$f" > "$tmp"
-      if ! stylua --check "$tmp" >/dev/null 2>&1; then
+      if ! stylua --config-path "$ROOT/.stylua.toml" --check "$tmp" >/dev/null 2>&1; then
         echo "stylua: $f is not formatted. Run 'stylua plugins/' and stage again." >&2
         fail=1
       fi

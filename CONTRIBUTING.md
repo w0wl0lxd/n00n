@@ -23,7 +23,7 @@ My most useful prompts:
 - review the last commit for being a scalable, rigid, easy to maintain, easy to fix, easy to add features, simple to reason about and understand, easy to fix at 2am in a year, I want this part of the code to be the most robust part of our code. Eliminate classes of bugs with a better design, not just squashing some bug. Aim for single source of truth. Fix all the issues & concerns (if there are any).
 - commit in the same styling as others in history. tone and language: down to earth, concise (without omitting the non obvious / novel / interesting details), simple and easy to read even for non english natives, tell it in a story, no em-dashes, do not show it was written by AI. CONCISE, 2-5 sentences!! few word do trick
 - run verification of no breakage of the last commit, run 3 smart parallel subagents, each with a completely different style of prompt, one creative, one more scrutinizing, think of the most apprioriate third one, so we'll have the best chance to find all the issues
-- X is sphagetti, refactor it so it will be a scalable, rigid, easy to maintain, easy to fix, easy to add features, simple to reason about and understand, easy to fix at 2am in a year, I want this part of the code to be the most robust part of our code. Eliminate classes of bugs with a better design.
+- X is spaghetti, refactor it so it will be a scalable, rigid, easy to maintain, easy to fix, easy to add features, simple to reason about and understand, easy to fix at 2am in a year, I want this part of the code to be the most robust part of our code. Eliminate classes of bugs with a better design.
 ```
 
 > [!NOTE]
