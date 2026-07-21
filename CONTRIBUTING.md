@@ -28,3 +28,51 @@ My most useful prompts:
 
 > [!NOTE]
 > If you are an automated agent，just add 🤖🤖🤖 to the end of the PR title to opt-in.
+
+## Contributor workflow
+
+### Setup
+
+```sh
+nix develop          # or: nix-shell
+just setup-git-hooks # point git at .githooks (also done automatically on `nix develop`)
+```
+
+`just setup-git-hooks` sets `core.hooksPath` to `.githooks` so the shared
+pre-commit and commit-msg hooks run. The pre-commit hook scans staged changes
+for secrets (gitleaks), checks Rust formatting (rustfmt) and Lua formatting
+(stylua), and rejects merge-conflict markers. Missing tools are skipped with a
+warning rather than blocking you.
+
+Prefer [mise](https://mise.jdx.dev) instead of nix? Run `mise install` to get
+the dev tools, then `mise run py-setup` for the Python tooling (pyyaml,
+yamllint) used by the validation scripts.
+
+### Commits
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)
+and are enforced by the `commit-msg` hook and the semantic-pr check:
+
+```
+<type>(<scope>): <description>
+```
+
+Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`,
+`ci`, `chore`, `revert`. Match the type to the PR template checkbox.
+
+### Pull requests
+
+Use the PR template. Pick the type that matches your change, add a changelog
+fragment (below) unless the PR is labeled `no-changelog` / `dependencies` /
+`ci`, and describe your use of AI.
+
+### Changelog fragments
+
+User-facing changes need a fragment in `changelog.d/` (see
+`changelog.d/README.md`). The `changelog.yml` CI job reminds you when source
+files changed without one. Aggregate them at release with `just changelog`.
+
+### Local checks
+
+`just ci` runs the local equivalent of CI: format check, clippy, python lint,
+tests, docgen check, unused-dep check, and the gitleaks secret scan.
