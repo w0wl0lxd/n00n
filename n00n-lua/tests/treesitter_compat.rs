@@ -14,7 +14,7 @@ fn run_lua(host: &PluginHost, name: &str, src: &str) {
         .unwrap_or_else(|e| panic!("lua error in {name}: {e}"));
 }
 
-const RUST_SOURCE: &str = r#"
+const RUST_SOURCE: &str = r"
 use std::sync::Arc;
 
 const MAX_SIZE: usize = 1024;
@@ -33,7 +33,7 @@ impl Config {
 fn helper(x: &str) -> bool {
     x.len() > MAX_SIZE
 }
-"#;
+";
 
 #[test]
 fn parse_and_walk_nodes() {

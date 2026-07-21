@@ -75,12 +75,15 @@ pub struct ColorTransition {
 }
 
 impl ColorTransition {
+    #[must_use]
     pub fn new(color: Color) -> Self {
         let rgb = extract_rgb(color, (100, 140, 255));
         Self {
             from: rgb,
             to: rgb,
-            start: Instant::now() - std::time::Duration::from_secs_f32(COLOR_TRANSITION_SECS),
+            start: Instant::now()
+                .checked_sub(std::time::Duration::from_secs_f32(COLOR_TRANSITION_SECS))
+                .unwrap(),
         }
     }
 
@@ -95,10 +98,12 @@ impl ColorTransition {
         self.start = now;
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         Instant::now().duration_since(self.start).as_secs_f32() < COLOR_TRANSITION_SECS
     }
 
+    #[must_use]
     pub fn resolve(&self) -> Color {
         let (r, g, b) = self.resolve_rgb(Instant::now());
         Color::Rgb(r, g, b)
@@ -129,6 +134,7 @@ impl Default for Splash {
 }
 
 impl Splash {
+    #[must_use]
     pub fn new(animate: bool) -> Self {
         let mut rng = [0u8; 8];
         getrandom::fill(&mut rng).ok();

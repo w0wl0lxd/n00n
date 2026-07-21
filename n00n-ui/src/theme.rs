@@ -271,11 +271,10 @@ pub fn generation() -> u64 {
 }
 
 pub fn load_by_name(name: &str) -> Result<Theme, String> {
-    BUNDLED_THEMES
-        .iter()
-        .find(|e| e.name == name)
-        .map(|e| Theme::from_toml(e.toml))
-        .unwrap_or_else(|| Err(format!("unknown theme: {name}")))
+    BUNDLED_THEMES.iter().find(|e| e.name == name).map_or_else(
+        || Err(format!("unknown theme: {name}")),
+        |e| Theme::from_toml(e.toml),
+    )
 }
 
 pub fn persist_theme(name: &str) {
@@ -691,14 +690,14 @@ impl Theme {
             error: style("error"),
             status_dim: style("status_dim"),
             bold: bold_style,
-            italic: ui
-                .get("italic")
-                .map(|d| resolve_style(d, &palette))
-                .unwrap_or_else(|| Style::default().add_modifier(Modifier::ITALIC)),
-            bold_italic: ui
-                .get("bold_italic")
-                .map(|d| resolve_style(d, &palette))
-                .unwrap_or_else(|| bold_style.add_modifier(Modifier::ITALIC)),
+            italic: ui.get("italic").map_or_else(
+                || Style::default().add_modifier(Modifier::ITALIC),
+                |d| resolve_style(d, &palette),
+            ),
+            bold_italic: ui.get("bold_italic").map_or_else(
+                || bold_style.add_modifier(Modifier::ITALIC),
+                |d| resolve_style(d, &palette),
+            ),
             inline_code: derived_style(
                 "inline_code",
                 &["function.call", "function"],
@@ -815,7 +814,7 @@ impl Theme {
 }
 
 pub(crate) fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t.clamp(0.0, 1.0)) as u8
+    (f32::from(a) + (f32::from(b) - f32::from(a)) * t.clamp(0.0, 1.0)) as u8
 }
 
 pub(crate) fn dim_style(style: Style, factor: f32) -> Style {
@@ -968,10 +967,10 @@ mod tests {
 
     #[test]
     fn missing_ui_key_defaults_to_empty_style() {
-        let toml = r#"
+        let toml = r"
 [palette]
 [ui]
-"#;
+";
         let theme = Theme::from_toml(toml).unwrap();
         assert_eq!(theme.user, Style::default());
     }
@@ -1080,7 +1079,9 @@ mode_build = "#112233"
 
     #[test]
     fn style_by_name_resolves() {
-        let _guard = THEME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         set(dracula());
         let t = current();
         assert_eq!(style_by_name("dim"), t.tool_dim);
@@ -1132,7 +1133,9 @@ mode_build = "#112233"
 
     #[test]
     fn set_advances_generation() {
-        let _guard = THEME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let before = generation();
         set(dracula());
         assert!(generation() > before);
@@ -1140,7 +1143,9 @@ mode_build = "#112233"
 
     #[test]
     fn set_installs_theme_before_generation_observed() {
-        let _guard = THEME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let theme = tokyonight();
         let expected_syntax_bg = theme.syntax.settings.background;
         let before = generation();
@@ -1159,7 +1164,9 @@ mode_build = "#112233"
 
     #[test]
     fn set_generation_is_monotonic_across_switches() {
-        let _guard = THEME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let g0 = generation();
         set(dracula());
         let g1 = generation();

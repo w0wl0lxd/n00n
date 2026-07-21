@@ -15,14 +15,15 @@ use crate::theme::Theme;
 
 static MASCOT_IMAGE: OnceLock<DynamicImage> = OnceLock::new();
 
-fn mascot_image() -> DynamicImage {
+fn mascot_image() -> &'static DynamicImage {
     const MASCOT_PNG: &[u8] = include_bytes!("../assets/mascot.png");
-    MASCOT_IMAGE
-        .get_or_init(|| match image::load_from_memory(MASCOT_PNG) {
-            Ok(img) => img,
-            Err(_) => DynamicImage::new_rgba8(1, 1),
-        })
-        .clone()
+    MASCOT_IMAGE.get_or_init(|| match image::load_from_memory(MASCOT_PNG) {
+        Ok(img) => img,
+        Err(error) => {
+            tracing::error!(%error, "failed to load mascot.png");
+            DynamicImage::new_rgba8(1, 1)
+        }
+    })
 }
 
 pub struct Mascot {
@@ -34,6 +35,7 @@ pub struct Mascot {
 }
 
 impl Mascot {
+    #[must_use]
     pub fn new(enabled: bool) -> Self {
         Self {
             enabled,
@@ -44,6 +46,7 @@ impl Mascot {
         }
     }
 
+    #[must_use]
     pub fn enabled(&self) -> bool {
         self.enabled
     }
@@ -57,6 +60,7 @@ impl Mascot {
 
     pub fn tick(&mut self, _area: Rect) {}
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         false
     }

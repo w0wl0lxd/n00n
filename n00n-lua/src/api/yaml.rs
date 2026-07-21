@@ -67,7 +67,7 @@ mod tests {
     fn decode_string() {
         let lua = lua_with_yaml();
         let result: i64 = lua
-            .load(r#"local t, err = yaml.decode('x: 42'); return t.x"#)
+            .load(r"local t, err = yaml.decode('x: 42'); return t.x")
             .eval()
             .unwrap();
         assert_eq!(result, 42);
@@ -106,12 +106,12 @@ mod tests {
         let lua = lua_with_yaml();
         let (is_nil, has_err): (bool, bool) = lua
             .load(
-                r#"
+                r"
                 local bad = {}
                 bad.self_ref = bad
                 local s, err = yaml.encode(bad)
                 return s == nil, err ~= nil
-                "#,
+                ",
             )
             .eval()
             .unwrap();

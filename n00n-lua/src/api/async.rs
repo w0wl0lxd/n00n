@@ -393,10 +393,10 @@ mod tests {
         (lua, tbl)
     }
 
-    #[test_case(r#"return async_tbl.await(1)"#, ERR_TOO_FEW_ARGS ; "too_few_args")]
-    #[test_case(r#"return async_tbl.await(0, function() end)"#, ERR_ARGC_GE_1 ; "argc_below_one")]
-    #[test_case(r#"return async_tbl.await(nil, function() end)"#, ERR_ARGC_INTEGER ; "argc_non_integer")]
-    #[test_case(r#"return async_tbl.await(1, 42)"#, ERR_SECOND_ARG_FN ; "second_arg_not_fn")]
+    #[test_case(r"return async_tbl.await(1)", ERR_TOO_FEW_ARGS ; "too_few_args")]
+    #[test_case(r"return async_tbl.await(0, function() end)", ERR_ARGC_GE_1 ; "argc_below_one")]
+    #[test_case(r"return async_tbl.await(nil, function() end)", ERR_ARGC_INTEGER ; "argc_non_integer")]
+    #[test_case(r"return async_tbl.await(1, 42)", ERR_SECOND_ARG_FN ; "second_arg_not_fn")]
     fn await_validation(code: &str, expected_err: &str) {
         smol::block_on(async {
             let (lua, _tbl) = setup();
@@ -472,13 +472,13 @@ mod tests {
     fn wrap_creates_callable_wrapper() {
         smol::block_on(async {
             let (lua, _tbl) = setup();
-            let code = r#"
+            let code = r"
                 local function async_add(a, b, cb)
                     cb(a + b)
                 end
                 local wrapped = async_tbl.wrap(3, async_add)
                 return wrapped(10, 32)
-            "#;
+            ";
             let result = lua.load(code).eval_async::<i64>().await.unwrap();
             assert_eq!(result, 42);
         });
@@ -522,7 +522,7 @@ mod tests {
         smol::block_on(async {
             let (lua, _tbl) = setup();
             let msg = lua
-                .load(r#"return async_tbl.gather({ function() end, 42 })"#)
+                .load(r"return async_tbl.gather({ function() end, 42 })")
                 .eval_async::<Value>()
                 .await
                 .unwrap_err()
@@ -575,10 +575,10 @@ mod tests {
                 .await
                 .unwrap();
             lua.set_app_data::<TaskHandle>(cancelled_task_handle());
-            let code = r#"
+            let code = r"
                 local r = async_tbl.gather({ function() return sem:acquire() end })
                 return r[1].ok, tostring(r[1].err)
-            "#;
+            ";
             let vals: Vec<Value> = lua
                 .load(code)
                 .eval_async::<MultiValue>()

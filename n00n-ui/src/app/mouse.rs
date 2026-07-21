@@ -73,9 +73,7 @@ impl App {
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 if let Some(SelectionState::Dragging { sel, .. }) = self.selection_state {
-                    if !sel.is_empty() {
-                        self.selection_state = Some(SelectionState::PendingCopy { sel });
-                    } else {
+                    if sel.is_empty() {
                         let zone = sel.zone;
                         self.selection_state = None;
                         if zone == SelectionZone::Messages {
@@ -100,6 +98,8 @@ impl App {
                                 self.chats[render_chat].handle_click(event.row, area);
                             }
                         }
+                    } else {
+                        self.selection_state = Some(SelectionState::PendingCopy { sel });
                     }
                 }
             }
@@ -145,11 +145,11 @@ impl App {
                         content_len: info.content_len,
                         viewport_height: zone.area.height,
                         thumb_len,
-                        grab_offset: row_rel as i32 - thumb_start as i32,
+                        grab_offset: i32::from(row_rel) - i32::from(thumb_start),
                         track_y_start: zone.area.y,
                     });
                 } else {
-                    let page = zone.area.height as i32;
+                    let page = i32::from(zone.area.height);
                     let delta = if row_rel < thumb_start { page } else { -page };
                     self.scroll_zone(zone.zone, delta);
                 }
@@ -169,8 +169,8 @@ impl App {
                         drag.track_y_start,
                     )
                 };
-                let row_rel = event.row.saturating_sub(track_y_start) as i32;
-                let max_thumb_start = (viewport_height as i32 - thumb_len as i32).max(0);
+                let row_rel = i32::from(event.row.saturating_sub(track_y_start));
+                let max_thumb_start = (i32::from(viewport_height) - i32::from(thumb_len)).max(0);
                 let new_thumb_start = (row_rel - grab_offset).clamp(0, max_thumb_start) as u16;
                 let position = scrollbar::position_for_thumb_row(
                     content_len,
@@ -356,8 +356,10 @@ impl App {
 
     pub(super) fn scroll_offset(&self, zone: SelectionZone) -> u32 {
         match zone {
-            SelectionZone::Messages => self.chats[self.resolve_render_chat()].scroll_top() as u32,
-            SelectionZone::Input => self.input_box.scroll_y() as u32,
+            SelectionZone::Messages => {
+                u32::from(self.chats[self.resolve_render_chat()].scroll_top())
+            }
+            SelectionZone::Input => u32::from(self.input_box.scroll_y()),
             SelectionZone::Overlay => 0,
         }
     }

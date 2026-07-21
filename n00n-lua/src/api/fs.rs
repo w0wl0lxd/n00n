@@ -1128,7 +1128,7 @@ mod tests {
         std::fs::write(&old_path, "").unwrap();
         std::fs::write(&new_path, "").unwrap();
 
-        let old_time = SystemTime::now() - Duration::from_secs(60);
+        let old_time = SystemTime::now() - Duration::from_mins(1);
         let new_time = SystemTime::now();
         OpenOptions::new()
             .write(true)

@@ -1,4 +1,4 @@
-//! Tests the code_execution plugin's interpreter visibility: one predicate
+//! Tests the `code_execution` plugin's interpreter visibility: one predicate
 //! gates both `describe` text and the handler's fn-map, so what the model
 //! sees is exactly what the interpreter can call.
 
@@ -185,7 +185,7 @@ fn workflow_tool_not_callable_when_workflow_false() {
     assert!(err.contains("wf_task"), "got: {err}");
 }
 
-/// Regression guard: the old `ctx:agent_context()` take() used to reset
+/// Regression guard: the old `ctx:agent_context()` `take()` used to reset
 /// audience/workflow reads. That accessor is gone now, this makes sure
 /// workflow tools stay callable when `ctx.workflow = true`.
 #[test]
@@ -365,7 +365,7 @@ fn restore_lines_with(code: &str, output: &str, is_error: bool, clicks: Vec<usiz
     );
     let snapshot = loop {
         let env = rx
-            .recv_timeout(std::time::Duration::from_secs(60))
+            .recv_timeout(std::time::Duration::from_mins(1))
             .expect("restore must emit a snapshot");
         if let n00n_agent::AgentEvent::ToolSnapshot { id, snapshot, .. } = env.event
             && id == SCRIPT_TOOL_ID

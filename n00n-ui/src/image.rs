@@ -18,6 +18,7 @@ const IMAGE_EXTENSIONS: &[(&str, ImageMediaType)] = &[
     ("webp", ImageMediaType::Webp),
 ];
 
+#[must_use]
 pub fn media_type_for(path: &Path) -> Option<ImageMediaType> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     IMAGE_EXTENSIONS

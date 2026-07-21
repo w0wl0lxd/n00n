@@ -71,7 +71,7 @@ mod tests {
         let compile: Function = t.get("compile").unwrap();
         let env = lua.create_table().unwrap();
         let (func, err): (Option<Function>, Option<String>) = compile
-            .call((r#"return n00n, os, io, require, print"#, env))
+            .call((r"return n00n, os, io, require, print", env))
             .unwrap();
         assert!(err.is_none(), "compile failed: {err:?}");
         let (n, o, i, r, p): (Value, Value, Value, Value, Value) = func.unwrap().call(()).unwrap();

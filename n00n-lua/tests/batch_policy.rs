@@ -250,7 +250,7 @@ fn nested_batch_rejected_without_dispatch() {
 #[test]
 fn overflow_entries_discarded_with_section() {
     let (reg, _host) = load_batch_host();
-    let entries: Vec<Value> = (0..MAX_BATCH_SIZE + 1)
+    let entries: Vec<Value> = (0..=MAX_BATCH_SIZE)
         .map(|i| json!({ "tool": "ok", "parameters": { "tag": i.to_string() } }))
         .collect();
     let out = run_batch(&reg, json!(entries)).expect("batch failed");
@@ -384,7 +384,7 @@ fn lines_text(lines: &[Vec<(String, SpanStyle)>]) -> String {
 
 /// Pins the child header contract: indicator span, `{tool}> ` prefix in
 /// `tool_prefix` style, the child's own header spans, then the persisted
-/// annotation like standalone (`push_header` in tool_display.rs).
+/// annotation like standalone (`push_header` in `tool_display.rs`).
 #[test]
 fn restore_with_state_renders_child_header_contract() {
     let (_reg, host) = load_batch_host();
@@ -456,7 +456,7 @@ fn restore_error_child_renders_error_style() {
 }
 
 /// A batch child's body is the child tool's own restore view, including
-/// its ToolView truncation notice.
+/// its `ToolView` truncation notice.
 #[test]
 fn restore_child_body_equals_child_restore_view() {
     let (_reg, host) = load_batch_host();
@@ -699,7 +699,7 @@ fn header_click_toggles_all_children() {
 /// in `diff_old`, new lines in `diff_new`), not the llm summary. Runs the
 /// real edit and batch plugins. The extensionless path outside any real
 /// filesystem pins the plain diff render: no async highlight rewrite (which
-/// replaces these spans; covered at text level in real_plugins_restore.rs)
+/// replaces these spans; covered at text level in `real_plugins_restore.rs`)
 /// and no line numbers read back from disk.
 #[test]
 fn edit_child_body_renders_diff_not_summary() {

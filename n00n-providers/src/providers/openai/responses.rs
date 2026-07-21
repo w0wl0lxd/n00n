@@ -776,7 +776,7 @@ mod tests {
     use futures_lite::io::Cursor;
     use serde_json::json;
 
-    const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
+    const TEST_STREAM_TIMEOUT: Duration = Duration::from_mins(5);
 
     async fn run_sse(
         sse: &str,
@@ -822,7 +822,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
                 })
                 .collect();
             assert_eq!(deltas, vec!["Hello", " world"]);
-        })
+        });
     }
 
     #[test]
@@ -864,7 +864,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
                 })
                 .collect();
             assert_eq!(starts, vec![("c1", "bash"), ("c2", "read")]);
-        })
+        });
     }
 
     #[test]
@@ -883,7 +883,7 @@ data: {\"error\":{\"message\":\"Server overloaded\",\"type\":\"overloaded_error\
                 }
                 other => panic!("expected Api error, got: {other:?}"),
             }
-        })
+        });
     }
 
     #[test]
@@ -902,7 +902,7 @@ data: {\"response\":{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"R
                 }
                 other => panic!("expected Api error, got: {other:?}"),
             }
-        })
+        });
     }
 
     #[test]
@@ -922,7 +922,7 @@ data: {\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":10,\"
             assert!(
                 matches!(&resp.message.content[0], ContentBlock::Text { text } if text == "partial")
             );
-        })
+        });
     }
 
     #[test]
@@ -1031,7 +1031,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
                 })
                 .collect();
             assert_eq!(text_deltas, vec!["Hello world"]);
-        })
+        });
     }
 
     #[test]
@@ -1063,7 +1063,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
                 })
                 .collect();
             assert_eq!(thinking_deltas, vec!["Summary part"]);
-        })
+        });
     }
 
     #[test]
@@ -1082,7 +1082,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
 
             assert!(resp.message.content.is_empty());
             assert_eq!(resp.usage.output, 5);
-        })
+        });
     }
 
     #[test]
@@ -1105,7 +1105,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"ou
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].1, "bash");
             assert_eq!(*tools[0].2, Value::Object(Default::default()));
-        })
+        });
     }
 
     // llama.cpp's /v1/responses endpoint omits output_index in SSE events
@@ -1134,7 +1134,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].1, "bash");
             assert_eq!(tools[0].2["command"], "ls");
             assert_eq!(resp.stop_reason, Some(StopReason::ToolUse));
-        })
+        });
     }
 
     #[test]
@@ -1173,7 +1173,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].2["command"], "ls");
             assert_eq!((tools[1].0, tools[1].1), ("c2", "read"));
             assert_eq!(tools[1].2["path"], "/tmp");
-        })
+        });
     }
 
     #[test]
@@ -1202,7 +1202,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].1, "glob");
             assert_eq!(tools[0].2["pattern"], "*.rs");
             assert_eq!(tools[0].2["path"], "src");
-        })
+        });
     }
 
     #[test]
@@ -1236,7 +1236,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
                 })
                 .collect();
             assert_eq!(progress, vec![(100, 1000, 50), (500, 1000, 50)]);
-        })
+        });
     }
 
     #[test]
@@ -1261,7 +1261,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].1, "read");
             assert_eq!(tools[0].2["path"], "/tmp/file.txt");
-        })
+        });
     }
 
     #[test]
@@ -1293,7 +1293,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"o
             assert!(
                 matches!(&resp.message.content[0], ContentBlock::Thinking { thinking, .. } if thinking == "First part\n\nSecond part")
             );
-        })
+        });
     }
 
     #[test]
@@ -1319,7 +1319,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].1, "grep");
             assert_eq!(tools[0].2["pattern"], "TODO");
             assert_eq!(tools[0].2["path"], "src");
-        })
+        });
     }
 
     #[test]
@@ -1346,7 +1346,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             assert_eq!(tools[0].2["path"], "foo.rs");
             assert_eq!(tools[0].2["old_string"], "a");
             assert_eq!(tools[0].2["new_string"], "b");
-        })
+        });
     }
 
     #[test]
@@ -1468,7 +1468,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"ou
             let (result, _) = run_sse(sse).await;
             let (response_id, _) = result.unwrap();
             assert_eq!(response_id.as_deref(), Some("resp_1"));
-        })
+        });
     }
 
     #[test]
@@ -1488,7 +1488,7 @@ data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"
             assert_eq!(resp.usage.input, 60);
             assert_eq!(resp.usage.output, 10);
             assert_eq!(resp.usage.cache_read, 40);
-        })
+        });
     }
 
     #[test]

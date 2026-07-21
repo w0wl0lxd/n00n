@@ -49,11 +49,11 @@ impl App {
             self.image_paste_rx.swap_remove(i);
             match result {
                 Ok(source) => {
-                    if !self.state.model.supports_vision() {
-                        self.status_bar.flash(IMAGE_NOT_SUPPORTED_MSG.into());
-                    } else {
+                    if self.state.model.supports_vision() {
                         self.input_box.attach_image(source);
                         self.status_bar.flash("Image attached".into());
+                    } else {
+                        self.status_bar.flash(IMAGE_NOT_SUPPORTED_MSG.into());
                     }
                 }
                 Err(e) => self.status_bar.flash(format!("Image paste failed: {e}")),

@@ -116,7 +116,7 @@ impl Overlay for ThemePicker {
     }
 
     fn close(&mut self) {
-        self.close()
+        self.close();
     }
 }
 

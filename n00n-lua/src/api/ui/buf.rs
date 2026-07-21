@@ -919,7 +919,7 @@ mod tests {
         set_buf_global(&lua);
 
         smol::block_on(async {
-            lua.load(r#"buf:click({ row = 3 })"#)
+            lua.load(r"buf:click({ row = 3 })")
                 .exec_async()
                 .await
                 .expect("click without handler is a no-op");
@@ -965,7 +965,7 @@ mod tests {
             .unwrap();
 
         smol::block_on(async {
-            lua.load(r#"foreign:click({ row = 7 })"#)
+            lua.load(r"foreign:click({ row = 7 })")
                 .exec_async()
                 .await
                 .unwrap();
@@ -993,10 +993,7 @@ mod tests {
             .await
             .expect("handler mutating its own buf must not fail borrow");
         });
-        let text: String = lua
-            .load(r#"return buf:get_lines()[1][1][1]"#)
-            .eval()
-            .unwrap();
+        let text: String = lua.load(r"return buf:get_lines()[1][1][1]").eval().unwrap();
         assert_eq!(text, "toggled");
     }
 
@@ -1028,7 +1025,7 @@ mod tests {
 
     #[test_case(r#"buf:blit(buffer.create(3), 1, 1, { fromat = "bgra" })"#, "unknown opts key" ; "opts_key_typo")]
     #[test_case(r#"buf:blit(buffer.create(3), 1, 1, { format = "argb" })"#, "unknown format" ; "unknown_format")]
-    #[test_case(r#"buf:blit(buffer.create(5), 1, 1)"#, "needs exactly 3" ; "wrong_size")]
+    #[test_case(r"buf:blit(buffer.create(5), 1, 1)", "needs exactly 3" ; "wrong_size")]
     fn blit_throws(code: &str, expected: &str) {
         let lua = test_lua();
         set_buf_global(&lua);

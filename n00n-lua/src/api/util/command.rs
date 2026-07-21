@@ -24,12 +24,14 @@ pub struct LuaCommandSnapshot {
 pub struct LuaCommandReader(Arc<ArcSwap<LuaCommandSnapshot>>);
 
 impl LuaCommandReader {
+    #[must_use]
     pub fn empty() -> Self {
         Self(Arc::new(ArcSwap::from_pointee(
             LuaCommandSnapshot::default(),
         )))
     }
 
+    #[must_use]
     pub fn from_commands(commands: Vec<LuaCommandInfo>) -> Self {
         Self(Arc::new(ArcSwap::from_pointee(LuaCommandSnapshot {
             commands,
@@ -37,6 +39,7 @@ impl LuaCommandReader {
         })))
     }
 
+    #[must_use]
     pub fn load(&self) -> arc_swap::Guard<Arc<LuaCommandSnapshot>> {
         self.0.load()
     }
@@ -80,10 +83,12 @@ pub struct HintSnapshot {
 pub struct HintReader(Arc<ArcSwap<HintSnapshot>>);
 
 impl HintReader {
+    #[must_use]
     pub fn empty() -> Self {
         Self(Arc::new(ArcSwap::from_pointee(HintSnapshot::default())))
     }
 
+    #[must_use]
     pub fn load(&self) -> arc_swap::Guard<Arc<HintSnapshot>> {
         self.0.load()
     }
@@ -143,6 +148,7 @@ pub enum Dimension {
 }
 
 impl Dimension {
+    #[must_use]
     pub fn resolve(self, total: u16) -> u16 {
         match self {
             Self::Abs(n) => n,
@@ -161,6 +167,7 @@ pub enum Anchor {
 }
 
 impl Anchor {
+    #[must_use]
     pub fn parse(s: &str) -> Self {
         match s {
             "NE" => Self::NE,
@@ -181,6 +188,7 @@ pub enum Border {
 }
 
 impl Border {
+    #[must_use]
     pub fn parse(s: &str) -> Self {
         match s {
             "none" => Self::None,
@@ -220,6 +228,7 @@ pub struct Edge {
 }
 
 impl Split {
+    #[must_use]
     pub fn parse(s: &str) -> Self {
         match s {
             "above" => Self::Above,
@@ -233,6 +242,7 @@ impl Split {
 
     /// The one place a direction turns into geometry, so the mapping lives in a
     /// single spot. `None` means the split is off.
+    #[must_use]
     pub fn edge(self) -> Option<Edge> {
         Some(match self {
             Self::None | Self::Panel => return None,
@@ -270,6 +280,7 @@ pub enum TitlePos {
 }
 
 impl TitlePos {
+    #[must_use]
     pub fn parse(s: &str) -> Self {
         match s {
             "center" => Self::Center,

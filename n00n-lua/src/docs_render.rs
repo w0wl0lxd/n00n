@@ -173,6 +173,7 @@ pub(crate) fn virtual_module(lua: &Lua, modname: &str) -> Option<mlua::Result<Ta
 
 /// The body of the website's "Lua API" page: full render with anchors and
 /// an overview table, plus the shared helper modules.
+#[must_use]
 pub fn site_page() -> String {
     format!("{}\n{}", render(false), helpers_section())
 }
@@ -191,7 +192,7 @@ fn reference_index(reference: &str) -> String {
     for (i, line) in lines.iter().enumerate() {
         if let Some(sig) = line.strip_prefix("### ") {
             let summary = index_summary(&lines[i + 1..]);
-            let _ = write!(out, "- L{} {sig}{summary}\n", i + 1);
+            let _ = writeln!(out, "- L{} {sig}{summary}", i + 1);
         } else if let Some(module) = line.strip_prefix("## ") {
             let _ = write!(out, "\n## {module} - L{}\n", i + 1);
         }
@@ -411,9 +412,9 @@ fn push_fields_block(out: &mut String, block: &str) {
             if levels.last() != Some(&indent) {
                 levels.push(indent);
             }
-            let _ = write!(out, "{}- {item}\n", "  ".repeat(levels.len()));
+            let _ = writeln!(out, "{}- {item}", "  ".repeat(levels.len()));
         } else if levels.last().is_some_and(|&i| indent > i) {
-            let _ = write!(out, "{}{text}\n", "  ".repeat(levels.len() + 1));
+            let _ = writeln!(out, "{}{text}", "  ".repeat(levels.len() + 1));
         } else {
             levels.clear();
             let _ = write!(out, "\n  {text}\n\n");
@@ -442,7 +443,7 @@ fn push_fn(out: &mut String, module: &ModuleDoc, f: &FnDoc, classes: &ClassLinks
         out.push_str("**Parameters:**\n\n");
         for p in f.params {
             let (first, rest) = p.desc.split_once('\n').unwrap_or((p.desc, ""));
-            let _ = write!(out, "- `{}` ({}) {first}\n", p.name, link_ty(p.ty, classes));
+            let _ = writeln!(out, "- `{}` ({}) {first}", p.name, link_ty(p.ty, classes));
             push_fields_block(out, rest);
         }
         out.push('\n');
@@ -483,7 +484,7 @@ fn render(compact: bool) -> String {
                 .map(|m| first_sentence(m.desc))
                 .find(|d| !d.is_empty())
                 .unwrap_or_default();
-            let _ = write!(out, "| [`{name}`](#{}) | {desc} |\n", slug(name));
+            let _ = writeln!(out, "| [`{name}`](#{}) | {desc} |", slug(name));
         }
     }
 
