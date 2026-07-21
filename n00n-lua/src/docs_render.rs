@@ -295,9 +295,7 @@ fn helpers_section() -> String {
         } else {
             skeleton(src)
         };
-        let _ = write!(out, 
-            "### `require(\"{name}\")`\n\n```lua\n{body}```\n\n"
-        );
+        let _ = write!(out, "### `require(\"{name}\")`\n\n```lua\n{body}```\n\n");
     }
     out
 }
@@ -368,7 +366,9 @@ fn format_returns(returns: &str, classes: &ClassLinks) -> String {
 
 fn field_item(text: &str) -> Option<String> {
     let rest = text.strip_prefix("- ").unwrap_or(text);
-    let (name, rest) = if let Some(r) = rest.strip_prefix('`') { r.split_once('`')? } else {
+    let (name, rest) = if let Some(r) = rest.strip_prefix('`') {
+        r.split_once('`')?
+    } else {
         let end = rest.find(|c: char| !c.is_ascii_alphanumeric() && c != '_')?;
         if end == 0 {
             return None;
@@ -432,9 +432,7 @@ fn push_fn(out: &mut String, module: &ModuleDoc, f: &FnDoc, classes: &ClassLinks
     } else {
         let title = format!("{owner}{sep}{}()", f.name);
         let id = slug(&title);
-        let _ = write!(out, 
-            "### `{title}` {{#{id}}}\n\n```lua\n{sig}\n```\n\n"
-        );
+        let _ = write!(out, "### `{title}` {{#{id}}}\n\n```lua\n{sig}\n```\n\n");
     }
     if !f.desc.is_empty() {
         out.push_str(f.desc);
@@ -444,17 +442,14 @@ fn push_fn(out: &mut String, module: &ModuleDoc, f: &FnDoc, classes: &ClassLinks
         out.push_str("**Parameters:**\n\n");
         for p in f.params {
             let (first, rest) = p.desc.split_once('\n').unwrap_or((p.desc, ""));
-            let _ = write!(out, 
-                "- `{}` ({}) {first}\n",
-                p.name,
-                link_ty(p.ty, classes)
-            );
+            let _ = write!(out, "- `{}` ({}) {first}\n", p.name, link_ty(p.ty, classes));
             push_fields_block(out, rest);
         }
         out.push('\n');
     }
     if !f.returns.is_empty() {
-        let _ = write!(out, 
+        let _ = write!(
+            out,
             "**Returns:** {}\n\n",
             format_returns(f.returns, classes)
         );

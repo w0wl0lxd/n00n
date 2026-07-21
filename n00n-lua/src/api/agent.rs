@@ -61,14 +61,18 @@ fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Mode
         .then(|| map.spec_for_tier(ctx.model.provider, effective))
         .flatten()
         .or_else(|| map.spec_for_tier_any(effective))
-        .and_then(|s| Model::from_spec(&s).ok()).map_or_else(|| {
-            Model::from_tier_dynamic(
-                ctx.model.provider,
-                effective,
-                ctx.model.dynamic_slug.as_deref(),
-            )
-            .map_err(|e| e.to_string())
-        }, Ok)
+        .and_then(|s| Model::from_spec(&s).ok())
+        .map_or_else(
+            || {
+                Model::from_tier_dynamic(
+                    ctx.model.provider,
+                    effective,
+                    ctx.model.dynamic_slug.as_deref(),
+                )
+                .map_err(|e| e.to_string())
+            },
+            Ok,
+        )
 }
 
 fn model_to_lua_table(lua: &Lua, model: &Model) -> LuaResult<Table> {
@@ -733,14 +737,20 @@ impl Progress {
     }
 
     fn set_current(&self, tool: &str) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.current = Some(tool.to_owned());
         drop(state);
         self.notify();
     }
 
     fn add_recent(&self, tool: &str) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.current = None;
         state.completed_count += 1;
         if state.recent.len() >= PROGRESS_MAX_RECENT {
@@ -752,7 +762,10 @@ impl Progress {
     }
 
     fn set_done(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.done = true;
         state.current = None;
         drop(state);
@@ -975,7 +988,10 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
     )));
     let _ = select(notify, timeout).await;
 
-    let state = progress.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let state = progress
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let elapsed = progress.start.elapsed().as_millis() as u64;
     let tbl = lua.create_table()?;
     tbl.set("elapsed_ms", elapsed)?;

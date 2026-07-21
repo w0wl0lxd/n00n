@@ -452,17 +452,20 @@ impl PluginHost {
 
     pub fn command_reader(&self) -> LuaCommandReader {
         self.inner
-            .as_ref().map_or_else(LuaCommandReader::empty, |t| t.command_reader.clone())
+            .as_ref()
+            .map_or_else(LuaCommandReader::empty, |t| t.command_reader.clone())
     }
 
     pub fn keymap_reader(&self) -> KeymapReader {
         self.inner
-            .as_ref().map_or_else(KeymapReader::empty, |t| t.keymap_reader.clone())
+            .as_ref()
+            .map_or_else(KeymapReader::empty, |t| t.keymap_reader.clone())
     }
 
     pub fn hint_reader(&self) -> HintReader {
         self.inner
-            .as_ref().map_or_else(HintReader::empty, |t| t.hint_reader.clone())
+            .as_ref()
+            .map_or_else(HintReader::empty, |t| t.hint_reader.clone())
     }
 
     pub fn ui_action_rx(&self) -> Option<flume::Receiver<UiAction>> {
