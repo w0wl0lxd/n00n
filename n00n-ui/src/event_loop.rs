@@ -19,9 +19,7 @@ use crossterm::event::{
 };
 use n00n_agent::command::CustomCommand;
 use n00n_agent::permissions::PermissionManager;
-use n00n_agent::{
-    AgentConfig, AgentInput, CancelToken, McpCommand, McpConfigErrors, McpHandle, mcp,
-};
+use n00n_agent::{AgentConfig, CancelToken, McpCommand, McpConfigErrors, McpHandle, mcp};
 use n00n_config::UiConfig;
 use n00n_lua::{
     EventHandle, HintReader, KeymapReader, LuaCommandReader, SessionReply, SessionRequest, UiAction,
@@ -45,7 +43,9 @@ use crate::app::shell::{ShellEvent, spawn_shell};
 use crate::app::{App, Msg, QueuedMessage, SubmitOutcome};
 use crate::components::input::Submission;
 use crate::components::usage_modal::UsageFetchState;
-use crate::components::{Action, DisplayMessage, DisplayRole, ExitRequest, Status};
+use crate::components::{
+    Action, DisplayMessage, DisplayRole, ExitRequest, Status, SubmissionDispatch,
+};
 use crate::input::InputReader;
 
 use crate::storage_writer::StorageWriter;
@@ -163,7 +163,7 @@ struct SpawnCtx {
 
 impl SpawnCtx {
     fn spawn_runtime(&self, session: AppSession) -> SessionRuntime {
-        let resumed = !session.messages.is_empty();
+        let resumed = crate::app::session_has_content(&session);
         let permissions = Arc::new(self.permissions.fork());
         let handles = AgentHandles::spawn(
             &self.model_slot,
@@ -196,7 +196,7 @@ impl SpawnCtx {
             Arc::clone(&self.custom_commands),
             Arc::clone(&self.picker),
         );
-        app.lua_event_handle.clone_from(&self.lua_event_handle);
+        app.lua_event_handle = self.lua_event_handle.clone();
         handles.apply_to_app(&mut app);
         if resumed {
             restore_session(&mut app, &handles);
@@ -221,6 +221,9 @@ pub(crate) struct EventLoop<'t> {
     warn_rx: flume::Receiver<String>,
     warn_tx: flume::Sender<String>,
     ui_action_rx: Option<flume::Receiver<UiAction>>,
+    submission_persist_tx: flume::Sender<SubmissionPersistence>,
+    submission_persist_rx: flume::Receiver<SubmissionPersistence>,
+    post_draw_submissions: Vec<(N00nId, SubmissionDispatch)>,
     last_save: Instant,
     _model_fetch_task: smol::Task<()>,
     /// Set when UI state changed and a fresh frame must be painted. Draws are
@@ -231,12 +234,19 @@ pub(crate) struct EventLoop<'t> {
 
 /// One item from any of the event loop's sources; `None` from `next_wake`
 /// means the wait timed out (animation/idle tick).
+struct SubmissionPersistence {
+    session_id: N00nId,
+    dispatch: SubmissionDispatch,
+    result: Result<(), SessionError>,
+}
+
 enum Wake {
     Input(Event),
     InputGone,
     Ui(UiAction),
     Agent(usize, Box<n00n_agent::Envelope>),
     Shell(usize, ShellEvent),
+    SubmissionPersisted(SubmissionPersistence),
     Warn(String),
 }
 
@@ -288,11 +298,7 @@ fn merge_batch(
     if batch.models.is_empty() {
         return;
     }
-    let mut merged = available
-        .load()
-        .as_deref()
-        .cloned()
-        .unwrap_or_else(Default::default);
+    let mut merged = available.load().as_deref().cloned().unwrap_or_default();
     for spec in &batch.models {
         if !merged.contains(spec) {
             merged.push(spec.clone());
@@ -353,11 +359,11 @@ fn restore_session(app: &mut App, handles: &AgentHandles) {
         .load_session_rules(crate::app::session_state::stored_to_rules(
             &app.state.session.meta.session_rules,
         ));
-    (*handles
+    *handles
         .tool_outputs
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner))
-    .clone_from(&app.state.session.tool_outputs);
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        app.state.session.tool_outputs.clone();
     app.restore_display();
     for w in app.state.warnings.drain(..) {
         app.status_bar.flash(w);
@@ -369,8 +375,6 @@ impl<'t> EventLoop<'t> {
         terminal: &'t mut ratatui::DefaultTerminal,
         params: EventLoopParams,
     ) -> Result<Self> {
-        static PROCESS_WARMUP: std::sync::Once = std::sync::Once::new();
-
         let EventLoopParams {
             mut model,
             needs_login,
@@ -392,6 +396,8 @@ impl<'t> EventLoop<'t> {
             ui_action_rx,
             lua_event_handle,
         } = params;
+
+        static PROCESS_WARMUP: std::sync::Once = std::sync::Once::new();
         PROCESS_WARMUP.call_once(|| {
             std::thread::spawn(crate::highlight::warmup);
             crate::update::spawn_check();
@@ -463,6 +469,7 @@ impl<'t> EventLoop<'t> {
             app.flash(w);
         }
 
+        let (submission_persist_tx, submission_persist_rx) = flume::unbounded();
         Ok(Self {
             terminal,
             sessions: runtimes,
@@ -472,6 +479,9 @@ impl<'t> EventLoop<'t> {
             warn_rx: bg.warn_rx,
             warn_tx: bg.warn_tx,
             ui_action_rx,
+            submission_persist_tx,
+            submission_persist_rx,
+            post_draw_submissions: Vec::new(),
             last_save: Instant::now(),
             _model_fetch_task: bg.task,
             dirty: true,
@@ -496,13 +506,16 @@ impl<'t> EventLoop<'t> {
             if let Err(e) = self.drain_channels() {
                 break Err(e);
             }
-            let should_draw = self.dirty || self.sessions[self.focused].app.is_animating();
+            let should_draw = self.dirty
+                || self.sessions[self.focused].app.is_animating()
+                || !self.post_draw_submissions.is_empty();
             let app = &mut self.sessions[self.focused].app;
             if should_draw {
-                if let Err(e) = self.terminal.draw(|f| app.view(f)) {
+                if let Err(e) = draw_then_post_terminal(self.terminal, |f| app.view(f), || {}) {
                     break Err(e.into());
                 }
                 self.dirty = false;
+                self.after_terminal_draw();
             }
 
             if let Some(i) = self
@@ -557,6 +570,9 @@ impl<'t> EventLoop<'t> {
             sel = sel.recv(rx, |res| res.ok().map(Wake::Ui));
         }
         sel = sel.recv(&self.warn_rx, |res| res.ok().map(Wake::Warn));
+        sel = sel.recv(&self.submission_persist_rx, |res| {
+            res.ok().map(Wake::SubmissionPersisted)
+        });
         for (i, rt) in self.sessions.iter().enumerate() {
             if !rt.handles.agent_rx.is_disconnected() {
                 sel = sel.recv(&rt.handles.agent_rx, move |res| {
@@ -580,6 +596,9 @@ impl<'t> EventLoop<'t> {
             sel = sel.recv(rx, |res| res.ok().map(Wake::Ui));
         }
         sel = sel.recv(&self.warn_rx, |res| res.ok().map(Wake::Warn));
+        sel = sel.recv(&self.submission_persist_rx, |res| {
+            res.ok().map(Wake::SubmissionPersisted)
+        });
         for (i, rt) in self.sessions.iter().enumerate() {
             if !rt.handles.agent_rx.is_disconnected() {
                 sel = sel.recv(&rt.handles.agent_rx, move |res| {
@@ -601,6 +620,7 @@ impl<'t> EventLoop<'t> {
             Wake::Ui(action) => self.handle_ui_action(action),
             Wake::Agent(i, envelope) => self.handle_agent(i, envelope),
             Wake::Shell(i, event) => self.sessions[i].app.handle_shell_event(event),
+            Wake::SubmissionPersisted(completion) => self.handle_submission_persisted(completion),
             Wake::Warn(warning) => self.focused_app().flash(warning),
         }
         Ok(())
@@ -752,198 +772,155 @@ impl<'t> EventLoop<'t> {
         reply_tx: flume::Sender<SessionReply>,
     ) {
         match req {
-            SessionRequest::List => self.handle_list_sessions(reply_tx),
-            SessionRequest::Delete { id } => self.handle_delete_session(id, reply_tx),
-            SessionRequest::Live => self.handle_live_sessions(reply_tx),
-            SessionRequest::Status { id } => self.handle_session_status(id, reply_tx),
-            SessionRequest::Current => self.handle_current_session(reply_tx),
-            SessionRequest::New { prompt, focus } => {
-                self.handle_new_session(prompt, focus, reply_tx);
-            }
-            SessionRequest::Prompt { id, text } => self.handle_session_prompt(id, text, reply_tx),
-            SessionRequest::Cancel { id } => self.handle_cancel_session(id, reply_tx),
-            SessionRequest::Focus { id } => self.handle_focus_session(id, reply_tx),
-            SessionRequest::SetTitle { id, title } => {
-                self.handle_set_session_title(id, title, reply_tx);
-            }
-        }
-    }
-
-    fn handle_list_sessions(&self, reply_tx: flume::Sender<SessionReply>) {
-        let storage = self.ctx.storage.clone();
-        smol::unblock(move || {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::default());
-            let reply = AppSession::list(&cwd.to_string_lossy(), &storage)
-                .map_err(|e| e.to_string())
-                .and_then(|list| serde_json::to_value(list).map_err(|e| e.to_string()));
-            let _ = reply_tx.send(reply);
-        })
-        .detach();
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    fn handle_delete_session(&mut self, id: String, reply_tx: flume::Sender<SessionReply>) {
-        let id = match parse_session_id(&id) {
-            Ok(id) => id,
-            Err(e) => {
-                let _ = reply_tx.send(Err(e));
-                return;
-            }
-        };
-        if let Some(i) = self.position(id) {
-            if i == self.focused {
-                let _ = reply_tx.send(Err(DELETE_FOCUSED_ERR.into()));
-                return;
-            }
-            let rt = self.remove_runtime(i);
-            rt.handles.cancel();
-        }
-        self.ctx.storage_writer.delete(id, move |res| {
-            let reply = match res {
-                Ok(()) | Err(SessionError::Storage(StorageError::NotFound(_))) => Ok(json!(true)),
-                Err(e) => Err(e.to_string()),
-            };
-            let _ = reply_tx.send(reply);
-        });
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    fn handle_live_sessions(&self, reply_tx: flume::Sender<SessionReply>) {
-        let list: Vec<_> = self
-            .sessions
-            .iter()
-            .enumerate()
-            .map(|(i, rt)| {
-                json!({
-                    "id": rt.id(),
-                    "title": rt.app.state.session.title,
-                    "status": SessionStatus::of(&rt.app).as_str(),
-                    "updated_at": rt.app.state.session.updated_at,
-                    "focused": i == self.focused,
+            SessionRequest::List => {
+                let storage = self.ctx.storage.clone();
+                smol::unblock(move || {
+                    let cwd = std::env::current_dir().unwrap_or_default();
+                    let reply = AppSession::list(&cwd.to_string_lossy(), &storage)
+                        .map_err(|e| e.to_string())
+                        .and_then(|list| serde_json::to_value(list).map_err(|e| e.to_string()));
+                    let _ = reply_tx.send(reply);
                 })
-            })
-            .collect();
-        let _ = reply_tx.send(Ok(json!(list)));
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    fn handle_session_status(&self, id: String, reply_tx: flume::Sender<SessionReply>) {
-        let reply = parse_session_id(&id).and_then(|id| {
-            let idx = self
-                .position(id)
-                .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
-            let rt = &self.sessions[idx];
-            let history = rt.handles.history.load();
-            let output = history.iter().rev().find_map(|message| {
-                matches!(message.role, n00n_providers::Role::Assistant)
-                    .then(|| message.first_text_content())
-                    .flatten()
-            });
-            Ok(json!({
-                "id": rt.id(),
-                "title": rt.app.state.session.title,
-                "status": SessionStatus::of(&rt.app).as_str(),
-                "updated_at": rt.app.state.session.updated_at,
-                "focused": idx == self.focused,
-                "output": output,
-            }))
-        });
-        let _ = reply_tx.send(reply);
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    fn handle_current_session(&self, reply_tx: flume::Sender<SessionReply>) {
-        let _ = reply_tx.send(Ok(json!(self.sessions[self.focused].id())));
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    fn handle_new_session(
-        &mut self,
-        prompt: Option<String>,
-        focus: bool,
-        reply_tx: flume::Sender<SessionReply>,
-    ) {
-        let session = {
-            let slot = self.ctx.model_slot.load();
-            let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-            AppSession::new(&slot.model.spec(), &cwd.to_string_lossy())
-        };
-        let idx = self.push_runtime(self.ctx.spawn_runtime(session));
-        let id = self.sessions[idx].id();
-        if let Some(prompt) = prompt {
-            let _ = self.submit_text(idx, prompt);
-        }
-        if focus {
-            self.set_focus(idx);
-        }
-        let _ = reply_tx.send(Ok(json!(id)));
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    fn handle_session_prompt(
-        &mut self,
-        id: Option<String>,
-        text: String,
-        reply_tx: flume::Sender<SessionReply>,
-    ) {
-        let idx = match id {
-            None => Ok(self.focused),
-            Some(id) => parse_session_id(&id).and_then(|id| {
-                self.position(id)
-                    .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))
-            }),
-        };
-        let _ = reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text)));
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    fn handle_cancel_session(&mut self, id: String, reply_tx: flume::Sender<SessionReply>) {
-        let reply = parse_session_id(&id).and_then(|id| {
-            let idx = self
-                .position(id)
-                .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
-            if SessionStatus::of(&self.sessions[idx].app) == SessionStatus::Idle {
-                return Err(format!("session is idle: {id}"));
+                .detach();
             }
-            let actions = self.sessions[idx].app.cancel_current_run();
-            self.dispatch(idx, actions);
-            Ok(json!(true))
-        });
-        let _ = reply_tx.send(reply);
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    fn handle_focus_session(&mut self, id: String, reply_tx: flume::Sender<SessionReply>) {
-        let reply = parse_session_id(&id)
-            .and_then(|id| self.focus_session(id))
-            .map(|()| json!(true));
-        let _ = reply_tx.send(reply);
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    fn handle_set_session_title(
-        &mut self,
-        id: String,
-        title: String,
-        reply_tx: flume::Sender<SessionReply>,
-    ) {
-        let title = normalize_title(&title);
-        let reply = (|| {
-            let id = parse_session_id(&id)?;
-            if let Some(i) = self.position(id) {
-                let app = &mut self.sessions[i].app;
-                app.state.session.title = title;
-                app.save_session();
-            } else {
-                let mut session =
-                    AppSession::load(id, &self.ctx.storage).map_err(|e| e.to_string())?;
-                session.title = title;
-                session.updated_at = n00n_storage::now_epoch();
-                self.ctx.storage_writer.send(Box::new(session));
+            // Deletes run on the storage writer thread after any queued
+            // flushes, so the loop never blocks on disk and a queued save
+            // cannot resurrect the files.
+            SessionRequest::Delete { id } => {
+                let id = match parse_session_id(&id) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        let _ = reply_tx.send(Err(e));
+                        return;
+                    }
+                };
+                if let Some(i) = self.position(id) {
+                    if i == self.focused {
+                        let _ = reply_tx.send(Err(DELETE_FOCUSED_ERR.into()));
+                        return;
+                    }
+                    let rt = self.remove_runtime(i);
+                    rt.handles.cancel();
+                }
+                self.ctx.storage_writer.delete(id, move |res| {
+                    let reply = match res {
+                        Ok(()) | Err(SessionError::Storage(StorageError::NotFound(_))) => {
+                            Ok(json!(true))
+                        }
+                        Err(e) => Err(e.to_string()),
+                    };
+                    let _ = reply_tx.send(reply);
+                });
             }
-            Ok(json!(true))
-        })();
-        let _ = reply_tx.send(reply);
+            SessionRequest::Live => {
+                let list: Vec<_> = self
+                    .sessions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, rt)| {
+                        json!({
+                            "id": rt.id(),
+                            "title": rt.app.state.session.title,
+                            "status": SessionStatus::of(&rt.app).as_str(),
+                            "updated_at": rt.app.state.session.updated_at,
+                            "focused": i == self.focused,
+                        })
+                    })
+                    .collect();
+                let _ = reply_tx.send(Ok(json!(list)));
+            }
+            SessionRequest::Status { id } => {
+                let reply = parse_session_id(&id).and_then(|id| {
+                    let idx = self
+                        .position(id)
+                        .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
+                    let rt = &self.sessions[idx];
+                    let history = rt.handles.history.load();
+                    let output = history.iter().rev().find_map(|message| {
+                        matches!(message.role, n00n_providers::Role::Assistant)
+                            .then(|| message.first_text_content())
+                            .flatten()
+                    });
+                    Ok(json!({
+                        "id": rt.id(),
+                        "title": rt.app.state.session.title,
+                        "status": SessionStatus::of(&rt.app).as_str(),
+                        "updated_at": rt.app.state.session.updated_at,
+                        "focused": idx == self.focused,
+                        "output": output,
+                    }))
+                });
+                let _ = reply_tx.send(reply);
+            }
+            SessionRequest::Current => {
+                let _ = reply_tx.send(Ok(json!(self.sessions[self.focused].id())));
+            }
+            SessionRequest::New { prompt, focus } => {
+                let session = {
+                    let slot = self.ctx.model_slot.load();
+                    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+                    AppSession::new(&slot.model.spec(), &cwd.to_string_lossy())
+                };
+                let idx = self.push_runtime(self.ctx.spawn_runtime(session));
+                let id = self.sessions[idx].id();
+                if let Some(prompt) = prompt {
+                    let _ = self.submit_text(idx, prompt);
+                }
+                if focus {
+                    self.set_focus(idx);
+                }
+                let _ = reply_tx.send(Ok(json!(id)));
+            }
+            SessionRequest::Prompt { id, text } => {
+                let idx = match id {
+                    None => Ok(self.focused),
+                    Some(id) => parse_session_id(&id).and_then(|id| {
+                        self.position(id)
+                            .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))
+                    }),
+                };
+                let _ = reply_tx.send(idx.and_then(|idx| self.submit_text(idx, text)));
+            }
+            SessionRequest::Cancel { id } => {
+                let reply = parse_session_id(&id).and_then(|id| {
+                    let idx = self
+                        .position(id)
+                        .ok_or_else(|| format!("{NOT_LIVE_ERR}: {id}"))?;
+                    if SessionStatus::of(&self.sessions[idx].app) == SessionStatus::Idle {
+                        return Err(format!("session is idle: {id}"));
+                    }
+                    let actions = self.sessions[idx].app.cancel_current_run();
+                    self.dispatch(idx, actions);
+                    Ok(json!(true))
+                });
+                let _ = reply_tx.send(reply);
+            }
+            SessionRequest::Focus { id } => {
+                let reply = parse_session_id(&id)
+                    .and_then(|id| self.focus_session(id))
+                    .map(|()| json!(true));
+                let _ = reply_tx.send(reply);
+            }
+            SessionRequest::SetTitle { id, title } => {
+                let title = normalize_title(&title);
+                let reply = (|| {
+                    let id = parse_session_id(&id)?;
+                    if let Some(i) = self.position(id) {
+                        let app = &mut self.sessions[i].app;
+                        app.state.session.title = title;
+                        app.save_session();
+                    } else {
+                        let mut session =
+                            AppSession::load(id, &self.ctx.storage).map_err(|e| e.to_string())?;
+                        session.title = title;
+                        session.updated_at = n00n_storage::now_epoch();
+                        self.ctx.storage_writer.send(Box::new(session));
+                    }
+                    Ok(json!(true))
+                })();
+                let _ = reply_tx.send(reply);
+            }
+        }
     }
 
     fn submit_text(&mut self, idx: usize, text: String) -> SessionReply {
@@ -951,7 +928,7 @@ impl<'t> EventLoop<'t> {
             text,
             images: Vec::new(),
         };
-        match self.sessions[idx].app.submit_prompt(msg) {
+        match self.sessions[idx].app.submit_background_prompt(msg) {
             SubmitOutcome::Started(actions) => {
                 self.dispatch(idx, actions);
                 Ok(json!("started"))
@@ -1032,6 +1009,7 @@ impl<'t> EventLoop<'t> {
                 (None, None)
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => (Some(Msg::Key(key)), None),
+            Event::Key(_) => (None, None),
             Event::Paste(text) => (Some(Msg::Paste(text)), None),
             Event::Mouse(mouse) => self.translate_mouse(mouse),
             _ => (None, None),
@@ -1104,7 +1082,27 @@ impl<'t> EventLoop<'t> {
 
     fn dispatch(&mut self, idx: usize, actions: Vec<Action>) {
         for action in actions {
-            self.handle_action(idx, action);
+            match action {
+                Action::SendMessage(dispatch) if dispatch.paint_required => {
+                    self.post_draw_submissions
+                        .push((self.sessions[idx].id(), *dispatch));
+                }
+                Action::SendMessage(dispatch) => {
+                    self.handle_action(idx, Action::SendMessage(dispatch));
+                }
+                action => self.handle_action(idx, action),
+            }
+        }
+    }
+
+    /// The optimistic user bubble must have completed a terminal draw before
+    /// persistence or provider dispatch can begin.
+    fn after_terminal_draw(&mut self) {
+        let painted_session = self.sessions[self.focused].id();
+        for (_, dispatch) in
+            take_painted_submissions(&mut self.post_draw_submissions, painted_session)
+        {
+            self.handle_action(self.focused, Action::SendMessage(Box::new(dispatch)));
         }
     }
 
@@ -1129,22 +1127,104 @@ impl<'t> EventLoop<'t> {
         );
     }
 
+    fn handle_submission_persisted(&mut self, completion: SubmissionPersistence) {
+        let Some(idx) = self.position(completion.session_id) else {
+            return;
+        };
+        let rt = &mut self.sessions[idx];
+        if completion.result.is_err() {
+            rt.app
+                .handle_submission_persistence_failure(&completion.dispatch);
+            return;
+        }
+        if !rt.app.accepts_submission_persistence(&completion.dispatch) {
+            rt.app
+                .queue
+                .remove_submission(completion.dispatch.submission_id);
+            return;
+        }
+        let submission_id = completion.dispatch.submission_id;
+        if !rt
+            .app
+            .queue
+            .mark_submission_ready(submission_id, completion.dispatch.input)
+        {
+            rt.app.queue.remove_submission(submission_id);
+        }
+    }
+
     fn handle_action(&mut self, idx: usize, action: Action) {
         match action {
-            Action::SendMessage(input) => self.handle_send_message(idx, input),
-            Action::CancelAgent { run_id } => self.handle_cancel_agent(idx, run_id),
-            Action::CancelSubagent { tool_use_id } => self.handle_cancel_subagent(idx, tool_use_id),
-            Action::NewSession => self.respawn_agent(idx, Vec::new(), Vec::new()),
-            Action::LoadSession(loaded) => self.handle_load_session(idx, loaded),
-            Action::ChangeModel(spec) => self.change_model(&spec),
-            Action::RefreshProvider { slug } => self.refresh_provider(&slug),
+            Action::SendMessage(mut dispatch) => {
+                let rt = &mut self.sessions[idx];
+                if !rt.app.stage_submission_preamble(&mut dispatch) {
+                    rt.app.queue.remove_submission(dispatch.submission_id);
+                    return;
+                }
+                let session_id = rt.app.state.session.id;
+                let snapshot = rt.app.session_snapshot();
+                let completion_tx = self.submission_persist_tx.clone();
+                self.ctx
+                    .storage_writer
+                    .persist(Box::new(snapshot), move |result| {
+                        let _ = completion_tx.send(SubmissionPersistence {
+                            session_id,
+                            dispatch: *dispatch,
+                            result,
+                        });
+                    });
+            }
+            Action::CancelAgent { run_id } => {
+                let _ = self.sessions[idx]
+                    .handles
+                    .cmd_tx
+                    .try_send(AgentCommand::Cancel { run_id });
+            }
+            Action::CancelSubagent { tool_use_id } => {
+                let _ = self.sessions[idx]
+                    .handles
+                    .cmd_tx
+                    .try_send(AgentCommand::CancelSubagent { tool_use_id });
+            }
+            Action::NewSession => {
+                self.respawn_agent(idx, Vec::new(), Vec::new());
+            }
+            Action::LoadSession(loaded) => {
+                let loaded = *loaded;
+                if loaded.model_spec != self.ctx.model_slot.load().model.spec()
+                    && let Ok(mut new_model) = Model::from_spec(&loaded.model_spec)
+                    && let Ok(new_provider) = from_model_with_openai_options(
+                        &mut new_model,
+                        self.ctx.timeouts,
+                        self.ctx.openai_options,
+                    )
+                {
+                    self.sessions[idx].app.usage_slot.store(None);
+                    self.ctx.model_slot.store(Arc::new(ModelSlot {
+                        model: new_model,
+                        provider: Arc::from(new_provider),
+                    }));
+                }
+                self.respawn_agent(idx, loaded.messages, loaded.transcript);
+                *self.sessions[idx]
+                    .handles
+                    .tool_outputs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = loaded.tool_outputs;
+            }
+            Action::ChangeModel(spec) => self.change_model(spec),
+            Action::RefreshProvider { slug } => self.refresh_provider(slug),
             Action::AssignTier(spec, tier) => {
                 n00n_providers::model_registry::set_and_persist(spec, tier, &self.ctx.storage);
             }
             Action::UnassignTier(spec, tier) => {
                 n00n_providers::model_registry::unset_and_persist(&spec, tier, &self.ctx.storage);
             }
-            Action::Compact => self.handle_compact(idx),
+            Action::Compact => {
+                let rt = &mut self.sessions[idx];
+                let run_id = rt.app.run_id;
+                rt.handles.queue.push(QueueItem::Compact { run_id });
+            }
             Action::ToggleMcp(server_name, enabled) => {
                 self.sessions[idx].handles.send_mcp(McpCommand::Toggle {
                     server: server_name,
@@ -1155,139 +1235,52 @@ impl<'t> EventLoop<'t> {
                 id,
                 command,
                 visible,
-            } => self.handle_shell_command(idx, id, command, visible),
-            Action::OpenEditor(path) => {
-                let _ = self.open_editor(idx, &path);
+            } => {
+                let rt = &mut self.sessions[idx];
+                let (trigger, cancel) = CancelToken::new();
+                rt.app.shell.add_trigger(trigger);
+                spawn_shell(
+                    command,
+                    id,
+                    visible,
+                    rt.shell_tx.clone(),
+                    cancel,
+                    &self.ctx.config,
+                );
             }
-            Action::EditInputInEditor => self.handle_edit_input_in_editor(idx),
-            Action::Btw(question) => self.handle_btw(idx, question),
-            Action::Suspend => self.handle_suspend(idx),
+            Action::OpenEditor(path) => {
+                self.open_editor(idx, &path);
+            }
+            Action::EditInputInEditor => {
+                let current_text = self.sessions[idx].app.input_box.buffer.value();
+                let result = match self.input.pause() {
+                    Ok(_pause) => terminal::edit_temp_content(&current_text, self.terminal),
+                    Err(e) => Err(e),
+                };
+                match result {
+                    Ok(edited) => self.sessions[idx].app.input_box.set_input(edited),
+                    Err(e) => self.sessions[idx].app.flash(e),
+                }
+            }
+            Action::Btw(question) => {
+                let slot = self.ctx.model_slot.load();
+                self.sessions[idx].app.start_btw(
+                    &question,
+                    Arc::clone(&slot.provider),
+                    slot.model.clone(),
+                );
+            }
+            Action::Suspend => match self.input.pause() {
+                Ok(_pause) => terminal::suspend(self.terminal),
+                Err(e) => self.sessions[idx].app.flash(e),
+            },
             Action::RefreshModels => self.refresh_models(),
             Action::RefreshUsage => self.refresh_usage(),
         }
     }
 
-    #[allow(clippy::boxed_local)]
-    fn handle_send_message(&mut self, idx: usize, input: Box<AgentInput>) {
-        let rt = &mut self.sessions[idx];
-        match n00n_storage::sessions::openai_response_chain_parent_exists(
-            &rt.app.storage,
-            rt.app.state.session.id,
-        ) {
-            Ok(false) => {
-                let mut initial_session = rt.app.state.session.clone();
-                if let Err(error) = initial_session.save(&rt.app.storage) {
-                    warn!(%error, "failed to persist session before provider request");
-                }
-            }
-            Err(error) => {
-                warn!(%error, "failed to check session persistence before provider request");
-            }
-            Ok(true) => {}
-        }
-        let mut input = *input;
-        input.preamble = rt.app.shell.drain_results();
-        let run_id = rt.app.run_id;
-        rt.handles.queue.push(QueueItem::Message {
-            text: input.message.clone(),
-            image_count: input.images.len(),
-            input,
-            run_id,
-            displayed: true,
-            delivery: crate::agent::shared_queue::Delivery::TurnEnd,
-        });
-    }
-
-    #[allow(clippy::boxed_local)]
-    fn handle_load_session(&mut self, idx: usize, loaded: Box<crate::components::LoadedSession>) {
-        let loaded = *loaded;
-        if loaded.model_spec != self.ctx.model_slot.load().model.spec()
-            && let Ok(mut new_model) = Model::from_spec(&loaded.model_spec)
-            && let Ok(new_provider) = from_model_with_openai_options(
-                &mut new_model,
-                self.ctx.timeouts,
-                self.ctx.openai_options,
-            )
-        {
-            self.sessions[idx].app.usage_slot.store(None);
-            self.ctx.model_slot.store(Arc::new(ModelSlot {
-                model: new_model,
-                provider: Arc::from(new_provider),
-            }));
-        }
-        self.respawn_agent(idx, loaded.messages, loaded.transcript);
-        (*self.sessions[idx]
-            .handles
-            .tool_outputs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner))
-        .clone_from(&loaded.tool_outputs);
-    }
-
-    fn handle_cancel_agent(&mut self, idx: usize, run_id: u64) {
-        let _ = self.sessions[idx]
-            .handles
-            .cmd_tx
-            .try_send(AgentCommand::Cancel { run_id });
-    }
-
-    fn handle_cancel_subagent(&mut self, idx: usize, tool_use_id: String) {
-        let _ = self.sessions[idx]
-            .handles
-            .cmd_tx
-            .try_send(AgentCommand::CancelSubagent { tool_use_id });
-    }
-
-    fn handle_compact(&mut self, idx: usize) {
-        let rt = &mut self.sessions[idx];
-        let run_id = rt.app.run_id;
-        rt.handles.queue.push(QueueItem::Compact { run_id });
-    }
-
-    fn handle_shell_command(&mut self, idx: usize, id: String, command: String, visible: bool) {
-        let rt = &mut self.sessions[idx];
-        let (trigger, cancel) = CancelToken::new();
-        rt.app.shell.add_trigger(trigger);
-        spawn_shell(
-            command,
-            id,
-            visible,
-            rt.shell_tx.clone(),
-            cancel,
-            &self.ctx.config,
-        );
-    }
-
-    fn handle_edit_input_in_editor(&mut self, idx: usize) {
-        let current_text = self.sessions[idx].app.input_box.buffer.value();
-        let result = match self.input.pause() {
-            Ok(_pause) => terminal::edit_temp_content(&current_text, self.terminal),
-            Err(e) => Err(e),
-        };
-        match result {
-            Ok(edited) => self.sessions[idx].app.input_box.set_input(edited),
-            Err(e) => self.sessions[idx].app.flash(e),
-        }
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    fn handle_btw(&mut self, idx: usize, question: String) {
-        let slot = self.ctx.model_slot.load();
-        self.sessions[idx]
-            .app
-            .start_btw(&question, Arc::clone(&slot.provider), slot.model.clone());
-    }
-
-    fn handle_suspend(&mut self, idx: usize) {
-        match self.input.pause() {
-            Ok(_pause) => terminal::suspend(self.terminal),
-            Err(e) => self.sessions[idx].app.flash(e),
-        }
-    }
-
-    #[allow(clippy::needless_borrow)]
-    fn change_model(&mut self, spec: &str) {
-        match Model::from_spec(spec) {
+    fn change_model(&mut self, spec: String) {
+        match Model::from_spec(&spec) {
             Ok(mut new_model) => match from_model_with_openai_options(
                 &mut new_model,
                 self.ctx.timeouts,
@@ -1296,7 +1289,7 @@ impl<'t> EventLoop<'t> {
                 Ok(new_provider) => {
                     let app = self.focused_app();
                     app.update_model(&new_model);
-                    app.record_recent_model(spec);
+                    app.record_recent_model(&spec);
                     app.usage_slot.store(None);
                     self.ctx.model_slot.store(Arc::new(ModelSlot {
                         model: new_model,
@@ -1346,27 +1339,40 @@ impl<'t> EventLoop<'t> {
         .detach();
     }
 
-    #[allow(clippy::needless_borrow)]
-    fn refresh_provider(&mut self, slug: &str) {
+    fn refresh_provider(&mut self, slug: String) {
         let mut model = self.ctx.model_slot.load().model.clone();
         if model.provider.to_string() == slug {
-            if let Ok(provider) = n00n_providers::provider::from_model_with_openai_options(
-                &mut model,
-                self.ctx.timeouts,
-                self.ctx.openai_options,
-            ) {
+            if let Ok(provider) =
+                n00n_providers::provider::from_model(&mut model, self.ctx.timeouts)
+            {
                 self.focused_app().usage_slot.store(None);
                 self.ctx.model_slot.store(Arc::new(ModelSlot {
                     model,
                     provider: Arc::from(provider),
                 }));
             }
-        } else if let Some(builtin) = n00n_config::providers::builtin_provider(slug) {
-            self.change_model(&builtin.default_model);
+        } else if let Some(builtin) = n00n_config::providers::builtin_provider(&slug) {
+            self.change_model(builtin.default_model.to_string());
+        }
+    }
+
+    fn preserve_post_draw_submissions(&mut self) {
+        for (session_id, dispatch) in std::mem::take(&mut self.post_draw_submissions)
+            .into_iter()
+            .rev()
+        {
+            let Some(idx) = self.position(session_id) else {
+                warn!(%session_id, "paint-gated submission lost its session before shutdown");
+                continue;
+            };
+            self.sessions[idx]
+                .app
+                .preserve_submission_for_shutdown(dispatch);
         }
     }
 
     fn shutdown(mut self) -> ShutdownReport {
+        self.preserve_post_draw_submissions();
         let exit = self.sessions[self.focused].app.exit_request;
         if let Some(ref h) = self.ctx.mcp_handle {
             mcp::kill_process_groups(&h.reader().load().pids);
@@ -1404,22 +1410,173 @@ impl<'t> EventLoop<'t> {
     }
 }
 
+fn draw_then_post_terminal<B>(
+    terminal: &mut ratatui::Terminal<B>,
+    draw: impl FnOnce(&mut ratatui::Frame<'_>),
+    after_draw: impl FnOnce(),
+) -> Result<(), B::Error>
+where
+    B: ratatui::backend::Backend,
+{
+    terminal.draw(draw)?;
+    after_draw();
+    Ok(())
+}
+
+fn take_painted_submissions<T>(
+    pending: &mut Vec<(N00nId, T)>,
+    painted_session: N00nId,
+) -> Vec<(N00nId, T)> {
+    let submissions = std::mem::take(pending);
+    let mut ready = Vec::new();
+    for (session_id, submission) in submissions {
+        if session_id == painted_session {
+            ready.push((session_id, submission));
+        } else {
+            pending.push((session_id, submission));
+        }
+    }
+    ready
+}
+
 fn scroll_delta(kind: MouseEventKind, lines: u32) -> i32 {
     if kind == MouseEventKind::ScrollUp {
-        crate::cast::cast_signed(lines)
+        lines as i32
     } else {
-        -crate::cast::cast_signed(lines)
+        -(lines as i32)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DRAIN_BUDGET, DrainScheduler};
+    use super::{DRAIN_BUDGET, DrainScheduler, draw_then_post_terminal, take_painted_submissions};
+    use n00n_storage::id::N00nId;
+    use ratatui::{
+        Terminal,
+        backend::{Backend, ClearType, TestBackend, WindowSize},
+        buffer::Cell,
+        layout::{Position, Size},
+        widgets::Paragraph,
+    };
+    use std::io;
+
+    struct FailingBackend(TestBackend);
+
+    fn infallible<T>(result: Result<T, std::convert::Infallible>) -> io::Result<T> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => match error {},
+        }
+    }
+
+    impl Backend for FailingBackend {
+        type Error = io::Error;
+        fn draw<'a, I>(&mut self, _content: I) -> io::Result<()>
+        where
+            I: Iterator<Item = (u16, u16, &'a Cell)>,
+        {
+            Err(io::Error::other("deterministic draw failure"))
+        }
+
+        fn hide_cursor(&mut self) -> io::Result<()> {
+            infallible(self.0.hide_cursor())
+        }
+
+        fn show_cursor(&mut self) -> io::Result<()> {
+            infallible(self.0.show_cursor())
+        }
+
+        fn get_cursor_position(&mut self) -> io::Result<Position> {
+            infallible(self.0.get_cursor_position())
+        }
+
+        fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+            infallible(self.0.set_cursor_position(position))
+        }
+
+        fn clear(&mut self) -> io::Result<()> {
+            infallible(self.0.clear())
+        }
+
+        fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+            infallible(self.0.clear_region(clear_type))
+        }
+
+        fn size(&self) -> io::Result<Size> {
+            infallible(self.0.size())
+        }
+
+        fn window_size(&mut self) -> io::Result<WindowSize> {
+            infallible(self.0.window_size())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            infallible(self.0.flush())
+        }
+    }
 
     #[derive(Debug, PartialEq, Eq)]
     enum Source {
         Input(usize),
         Agent(usize),
+    }
+
+    #[test]
+    fn painted_submission_waits_for_its_session_after_focus_switch() {
+        let first = N00nId::generate();
+        let second = N00nId::generate();
+        let mut pending = vec![(first, "first"), (second, "second")];
+
+        let released = take_painted_submissions(&mut pending, second);
+
+        assert_eq!(released, vec![(second, "second")]);
+        assert_eq!(pending, vec![(first, "first")]);
+        assert_eq!(
+            take_painted_submissions(&mut pending, first),
+            vec![(first, "first")]
+        );
+    }
+
+    #[test]
+    fn post_draw_hook_runs_after_terminal_buffer_is_painted() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 1)).expect("test terminal");
+        let painted = std::cell::Cell::new(false);
+        let persistence_started = std::cell::Cell::new(false);
+
+        draw_then_post_terminal(
+            &mut terminal,
+            |frame| {
+                frame.render_widget(Paragraph::new("bubble"), frame.area());
+                painted.set(true);
+            },
+            || {
+                persistence_started.set(true);
+                assert!(painted.get());
+            },
+        )
+        .expect("draw succeeds");
+
+        assert!(persistence_started.get());
+        assert_eq!(
+            terminal.backend().buffer().cell((0, 0)).unwrap().symbol(),
+            "b"
+        );
+    }
+
+    #[test]
+    fn terminal_draw_failure_does_not_release_post_draw_work() {
+        let mut terminal =
+            Terminal::new(FailingBackend(TestBackend::new(20, 1))).expect("test terminal");
+        let post_draw_ran = std::cell::Cell::new(false);
+
+        let result = draw_then_post_terminal(
+            &mut terminal,
+            |frame| frame.render_widget(Paragraph::new("bubble"), frame.area()),
+            || post_draw_ran.set(true),
+        );
+
+        assert!(result.is_err());
+        assert!(!post_draw_ran.get());
     }
 
     #[test]

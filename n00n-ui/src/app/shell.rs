@@ -97,6 +97,13 @@ impl ShellState {
     pub fn drain_results(&mut self) -> Vec<Message> {
         std::mem::take(&mut self.pending_results)
     }
+
+    pub fn restore_results(&mut self, results: Vec<Message>) {
+        if results.is_empty() {
+            return;
+        }
+        self.pending_results.splice(0..0, results);
+    }
 }
 
 impl App {

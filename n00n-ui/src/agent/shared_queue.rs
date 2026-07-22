@@ -8,9 +8,14 @@
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{
+    Arc, Mutex, MutexGuard, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 
-use n00n_agent::{AgentInput, ExtractedCommand, ImageSource, InterruptPoint, InterruptSource};
+use n00n_agent::{
+    AgentInput, ExtractedCommand, ImageSource, InterruptPoint, InterruptSource, PreDispatchGate,
+};
 
 use crate::components::input::Submission;
 use crate::components::queue_panel::QueueEntry;
@@ -50,6 +55,11 @@ pub(crate) enum QueueItem {
         image_count: usize,
         input: AgentInput,
         run_id: u64,
+        submission_id: u64,
+        pre_dispatch_gate: Arc<PreDispatchGate>,
+        /// The UI releases this after persistence succeeds. A blocked item
+        /// keeps later submissions from reaching the provider first.
+        ready: Arc<AtomicBool>,
         /// `true` when the UI already drew the bubble (immediate dispatch).
         /// The agent then skips `QueueItemConsumed` so we don't draw it twice.
         /// `false` when the user typed while the agent was busy: the UI waits
@@ -105,6 +115,17 @@ impl QueueItem {
             Self::Compact { .. } => true,
         }
     }
+
+    fn is_ready(&self) -> bool {
+        match self {
+            Self::Message { ready, .. } => ready.load(Ordering::Acquire),
+            Self::Compact { .. } => true,
+        }
+    }
+
+    fn blocks_dispatch(&self) -> bool {
+        matches!(self, Self::Message { ready, .. } if !ready.load(Ordering::Acquire))
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -137,6 +158,11 @@ pub(crate) fn queue() -> (QueueSender, QueueReceiver) {
 impl QueueSender {
     pub(crate) fn push(&self, entry: QueueItem) {
         lock(&self.items).push_back(entry);
+        let _ = self.notify_tx.try_send(());
+    }
+
+    pub(crate) fn push_front(&self, entry: QueueItem) {
+        lock(&self.items).push_front(entry);
         let _ = self.notify_tx.try_send(());
     }
 
@@ -187,12 +213,65 @@ impl QueueSender {
         lock(&self.items).clear();
     }
 
+    pub(crate) fn remove_submission(&self, submission_id: u64) {
+        let mut items = lock(&self.items);
+        let before = items.len();
+        items.retain(|item| {
+            !matches!(
+                item,
+                QueueItem::Message {
+                    submission_id: id,
+                    ..
+                } if *id == submission_id
+            )
+        });
+        let removed = items.len() != before;
+        drop(items);
+        if removed {
+            let _ = self.notify_tx.try_send(());
+        }
+    }
+
+    pub(crate) fn contains_submission(&self, submission_id: u64) -> bool {
+        lock(&self.items).iter().any(|item| {
+            matches!(item, QueueItem::Message { submission_id: id, .. } if *id == submission_id)
+        })
+    }
+
+    pub(crate) fn mark_submission_ready(&self, submission_id: u64, input: AgentInput) -> bool {
+        let mut items = lock(&self.items);
+        let Some(QueueItem::Message {
+            input: queued_input,
+            ready,
+            ..
+        }) = items.iter_mut().find(|item| {
+            matches!(item, QueueItem::Message { submission_id: id, .. } if *id == submission_id)
+        }) else {
+            return false;
+        };
+        *queued_input = input;
+        ready.store(true, Ordering::Release);
+        drop(items);
+        let _ = self.notify_tx.try_send(());
+        true
+    }
+
     pub(crate) fn text_messages(&self) -> Vec<String> {
         lock(&self.items)
             .iter()
             .filter(|item| item.visible_in_panel())
             .filter_map(|item| match item {
                 QueueItem::Message { text, .. } => Some(text.clone()),
+                QueueItem::Compact { .. } => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn queued_inputs(&self) -> Vec<AgentInput> {
+        lock(&self.items)
+            .iter()
+            .filter_map(|item| match item {
+                QueueItem::Message { input, .. } => Some(input.clone()),
                 QueueItem::Compact { .. } => None,
             })
             .collect()
@@ -217,14 +296,21 @@ impl QueueSender {
 impl QueueReceiver {
     pub(crate) fn pop(&self) -> Option<QueueItem> {
         let mut items = lock(&self.items);
-        let index = items.iter().position(|item| {
-            matches!(
-                item,
-                QueueItem::Message {
-                    delivery: Delivery::TurnEnd,
-                    ..
-                } | QueueItem::Compact { .. }
-            )
+        let index = items.iter().enumerate().find_map(|(index, item)| {
+            if !item.is_ready()
+                || items.iter().take(index).any(QueueItem::blocks_dispatch)
+                || !matches!(
+                    item,
+                    QueueItem::Message {
+                        delivery: Delivery::TurnEnd,
+                        ..
+                    } | QueueItem::Compact { .. }
+                )
+            {
+                None
+            } else {
+                Some(index)
+            }
         })?;
         items.remove(index)
     }
@@ -237,13 +323,18 @@ impl QueueReceiver {
 impl InterruptSource for QueueReceiver {
     fn poll(&self, point: InterruptPoint) -> Option<ExtractedCommand> {
         let mut items = lock(&self.items);
-        let index = items.iter().position(|item| match item {
-            QueueItem::Message { delivery, .. } => match delivery {
-                Delivery::TurnEnd => false,
-                Delivery::Steering => point == InterruptPoint::ToolComplete,
-                Delivery::Immediate => true,
-            },
-            QueueItem::Compact { .. } => point == InterruptPoint::Safe,
+        let index = items.iter().enumerate().find_map(|(index, item)| {
+            if !item.is_ready() || items.iter().take(index).any(QueueItem::blocks_dispatch) {
+                return None;
+            }
+            match item {
+                QueueItem::Message { delivery, .. } => match delivery {
+                    Delivery::TurnEnd => None,
+                    Delivery::Steering => (point == InterruptPoint::ToolComplete).then_some(index),
+                    Delivery::Immediate => Some(index),
+                },
+                QueueItem::Compact { .. } => (point == InterruptPoint::Safe).then_some(index),
+            }
         })?;
         items.remove(index).map(QueueItem::into_extracted_command)
     }
@@ -270,6 +361,9 @@ mod tests {
                 prompt: None,
             },
             run_id: 0,
+            submission_id: 0,
+            pre_dispatch_gate: Arc::new(PreDispatchGate::new()),
+            ready: Arc::new(AtomicBool::new(true)),
             displayed,
             delivery: Delivery::TurnEnd,
         }
@@ -302,6 +396,9 @@ mod tests {
                 prompt: None,
             },
             run_id: 0,
+            submission_id: 0,
+            pre_dispatch_gate: Arc::new(PreDispatchGate::new()),
+            ready: Arc::new(AtomicBool::new(true)),
             displayed: false,
             delivery,
         };
