@@ -15,6 +15,7 @@ rust-version = "1.97"
 [[bin]]
 name = "n00n"
 path = "src/main.rs"
+bench = false
 
 [dependencies]
 n00n-ui = { workspace = true }
