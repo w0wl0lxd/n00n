@@ -27,6 +27,221 @@ local function mock_buf()
   return b
 end
 
+local function line_text(line)
+  if type(line) == "string" then
+    return line
+  end
+  local out = {}
+  for _, span in ipairs(line or {}) do
+    out[#out + 1] = type(span) == "string" and span or (span[1] or "")
+  end
+  return table.concat(out)
+end
+
+local function buf_text(buf)
+  local out = {}
+  for _, line in ipairs(buf:get_lines()) do
+    out[#out + 1] = line_text(line)
+  end
+  return table.concat(out, "\n")
+end
+
+local function occurrences(text, needle)
+  local count, from = 0, 1
+  while true do
+    local at = text:find(needle, from, true)
+    if not at then
+      return count
+    end
+    count = count + 1
+    from = at + #needle
+  end
+end
+
+local function action(session_id, tool_call_id, sequence, tool, status, extra)
+  local out = {
+    session_id = session_id,
+    tool_call_id = tool_call_id,
+    sequence = sequence,
+    tool = tool,
+    status = status,
+    message = status,
+  }
+  for key, value in pairs(extra or {}) do
+    out[key] = value
+  end
+  return out
+end
+
+local function new_activity()
+  local SessionActivity = require("n00n.session_activity")
+  local live
+  local ctx = {
+    live_buf = function(_, buf)
+      live = buf
+    end,
+  }
+  local activity = SessionActivity.new(ctx, { max_lines = 5 })
+  assert(activity.buf == live, "activity buffer must be published with ctx:live_buf immediately")
+  activity:set_header({ "Activity" })
+  return activity, live
+end
+
+case("session_activity_header_and_body_clicks_toggle", function()
+  local activity, buf = new_activity()
+  local actions = {}
+  for i = 1, 6 do
+    actions[i] = action("session-a", "call-" .. i, i, "tool" .. i, "running")
+  end
+  activity:ingest({ session_id = "session-a", actions = actions })
+
+  assert(not buf_text(buf):find("tool1 %- running"), "collapsed card must hide the oldest action")
+  buf:click({ row = 0 })
+  assert(buf_text(buf):find("tool1 %- running"), "header row 0 must expand the card")
+  buf:click({ row = 2 })
+  assert(not buf_text(buf):find("tool1 %- running"), "body rows must collapse the same card")
+end)
+
+case("session_activity_latest_five_preserve_first_seen_order", function()
+  local activity, buf = new_activity()
+  local actions = {}
+  for i = 1, 7 do
+    actions[i] = action("session-a", "call-" .. i, i, "tool" .. i, "running")
+  end
+  activity:ingest({ session_id = "session-a", actions = actions })
+
+  local text = buf_text(buf)
+  assert(
+    not text:find("tool1 %- running") and not text:find("tool2 %- running"),
+    "only the latest five belong in the collapsed tail"
+  )
+  local previous = 0
+  for i = 3, 7 do
+    local at = assert(text:find("tool" .. i .. " %- running"), "missing tool" .. i)
+    assert(at > previous, "latest five must render oldest-to-newest")
+    previous = at
+  end
+end)
+
+case("session_activity_done_updates_in_place_without_reordering", function()
+  local activity, buf = new_activity()
+  activity:ingest({
+    session_id = "session-a",
+    actions = {
+      action("session-a", "same", 1, "read", "running"),
+      action("session-a", "later", 2, "write", "running"),
+    },
+  })
+  activity:ingest({
+    session_id = "session-a",
+    actions = {
+      action("session-a", "same", 1, "read", "done"),
+      action("session-a", "later", 2, "write", "running"),
+    },
+  })
+
+  local text = buf_text(buf)
+  eq(occurrences(text, "read - "), 1, "ToolStart/ToolDone must share one row")
+  assert(text:find("read %- done") < text:find("write %- running"), "completion must not reorder first-seen actions")
+  assert(not text:find("read %- running"), "running status must transition in place")
+end)
+
+case("session_activity_expansion_survives_status_updates", function()
+  local activity, buf = new_activity()
+  local actions = {}
+  for i = 1, 6 do
+    actions[i] = action("session-a", "call-" .. i, i, "tool" .. i, "running")
+  end
+  activity:ingest({ session_id = "session-a", actions = actions })
+  buf:click({ row = 0 })
+  assert(buf_text(buf):find("tool1 %- running"), "precondition: card expanded")
+
+  actions[6] = action("session-a", "call-6", 6, "tool6", "done")
+  activity:ingest({ session_id = "session-a", actions = actions })
+  local text = buf_text(buf)
+  assert(text:find("tool1 %- running"), "progress updates must not collapse an expanded card")
+  assert(text:find("tool6 %- done"), "status update must remain visible in the same expanded buffer")
+end)
+
+case("session_activity_structural_session_and_call_identity_do_not_collide", function()
+  local activity, buf = new_activity()
+  activity:ingest({
+    session_id = "session-a",
+    actions = { action("session-a", "provider-id", 1, "read", "running") },
+  })
+  activity:ingest({
+    session_id = "session-b",
+    actions = { action("session-b", "provider-id", 1, "write", "running") },
+  })
+
+  local text = buf_text(buf)
+  eq(occurrences(text, "read - running"), 1)
+  eq(occurrences(text, "write - running"), 1)
+end)
+
+case("session_activity_uses_only_safe_fixed_status_messages", function()
+  local activity, buf = new_activity()
+  activity:ingest({
+    session_id = "session-a",
+    actions = {
+      action("session-a", "call-1", 1, "bash", "failed", {
+        message = "header SECRET_MESSAGE",
+        summary = "summary SECRET_SUMMARY",
+        annotation = "annotation SECRET_ANNOTATION",
+        header = "header SECRET_HEADER",
+      }),
+    },
+  })
+
+  local text = buf_text(buf)
+  assert(text:find("bash %- failed"), "status selects the fixed failed message")
+  assert(not text:find("SECRET_", 1, true), "summary, annotation, header, and arbitrary message must be ignored")
+end)
+
+case("session_activity_sanitizes_and_caps_tool_labels", function()
+  local activity, buf = new_activity()
+  local malicious = "bash\n\27[31m" .. string.rep("x", 200) .. " SECRET_TOOL"
+  activity:ingest({
+    session_id = "session-a",
+    actions = { action("session-a", "call-1", 1, malicious, "running") },
+  })
+
+  local rendered = buf_text(buf)
+  assert(not rendered:find("\n\27", 1, true), "control characters must not survive")
+  assert(not rendered:find("SECRET_TOOL", 1, true), "over-cap suffix must not survive")
+  local label = assert(rendered:match("Activity\n([^\n]+) %- running"), "expected one rendered action")
+  assert(#label < #malicious, "sanitized tool label must be length-capped")
+  assert(label:match("^[%w_.:/-]+$"), "tool label contains unsupported characters: " .. label)
+end)
+
+case("session_activity_state_excludes_raw_io_prompts_logs_and_secrets", function()
+  local activity = new_activity()
+  activity:ingest({
+    session_id = "session-a",
+    prompt = "SECRET_PROMPT",
+    logs = { "SECRET_LOG" },
+    actions = {
+      action("session-a", "call-1", 1, "read", "done", {
+        raw_input = "SECRET_RAW_INPUT",
+        input = "SECRET_INPUT",
+        output = "SECRET_OUTPUT",
+        environment = "SECRET_ENV",
+      }),
+    },
+  })
+
+  local state = activity:state()
+  local encoded = assert(n00n.json.encode(state))
+  assert(not encoded:find("SECRET_", 1, true), "serialized activity state crossed the privacy boundary: " .. encoded)
+  local allowed =
+    { session_id = true, tool_call_id = true, sequence = true, tool = true, status = true, message = true }
+  for _, item in ipairs(state.actions or {}) do
+    for key in pairs(item) do
+      assert(allowed[key], "unsafe activity state key: " .. tostring(key))
+    end
+  end
+end)
+
 case("truncate_within_limits_unchanged", function()
   eq(truncate("hello", 100, 1000), "hello")
   eq(truncate("a\nb\nc", 3, 1000), "a\nb\nc")

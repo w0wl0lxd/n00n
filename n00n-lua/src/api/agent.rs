@@ -1,7 +1,7 @@
 //! `n00n.agent` exposes subagent primitives to Lua plugins. Policy (retries,
 //! validation, concurrency) lives in the task plugin, not here.
 
-use std::collections::{HashMap, VecDeque, hash_map::Entry};
+use std::collections::{HashMap, VecDeque};
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -22,7 +22,7 @@ use n00n_agent::tools::{
 };
 use n00n_agent::{
     Agent, AgentEvent, AgentInput, AgentMode, AgentParams, AgentRunParams, Envelope, EventSender,
-    History, SubagentInfo, ToolDoneEvent, ToolStartEvent,
+    History, SubagentInfo, ToolDoneEvent,
 };
 use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use n00n_providers::model::ModelTier;
@@ -40,24 +40,8 @@ use crate::api::util::ctx::{AgentContext, LuaCtx};
 const SESSION_CLOSED_ERR: &str = "session closed";
 const DEFAULT_SESSION_AUDIENCE: ToolAudience = ToolAudience::GENERAL_SUB;
 const PROGRESS_MAX_RECENT: usize = 5;
-const ACTIVITY_MESSAGE_MAX_CHARS: usize = 80;
-const REDACTED: &str = "[REDACTED]";
-const SAFE_ACTIVITY_DESCRIPTION_TOOLS: &[&str] = &[
-    "batch",
-    "code_execution",
-    "edit",
-    "glob",
-    "grep",
-    "index",
-    "memory",
-    "multiedit",
-    "question",
-    "read",
-    "skill",
-    "todo_write",
-    "view_image",
-    "write",
-];
+const ACTIVITY_TOOL_MAX_BYTES: usize = 64;
+const ACTIVITY_ID_MAX_BYTES: usize = 128;
 const PROGRESS_TIMEOUT_MS: u64 = 500;
 const STEERING_QUEUE_CAPACITY: usize = 32;
 
@@ -72,7 +56,7 @@ fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Mode
     }
     let map = n00n_providers::model_registry::model_registry()
         .read()
-        .map_err(|e| format!("model registry lock poisoned: {e}"))?;
+        .unwrap();
     ctx.model
         .dynamic_slug
         .is_none()
@@ -80,17 +64,15 @@ fn resolve_model_from_ctx(ctx: &AgentContext, tier: Option<&str>) -> Result<Mode
         .flatten()
         .or_else(|| map.spec_for_tier_any(effective))
         .and_then(|s| Model::from_spec(&s).ok())
-        .map_or_else(
-            || {
-                Model::from_tier_dynamic(
-                    ctx.model.provider,
-                    effective,
-                    ctx.model.dynamic_slug.as_deref(),
-                )
-                .map_err(|e| e.to_string())
-            },
-            Ok,
-        )
+        .map(Ok)
+        .unwrap_or_else(|| {
+            Model::from_tier_dynamic(
+                ctx.model.provider,
+                effective,
+                ctx.model.dynamic_slug.as_deref(),
+            )
+            .map_err(|e| e.to_string())
+        })
 }
 
 fn model_to_lua_table(lua: &Lua, model: &Model) -> LuaResult<Table> {
@@ -109,7 +91,6 @@ fn dispatch_ctx<'a>(ctx: &'a LuaCtx, method: &str) -> Result<&'a AgentContext, S
 
 type Pair<T> = (Option<T>, Option<String>);
 
-#[allow(clippy::needless_pass_by_value)]
 fn err_pair<T>(err: impl ToString) -> Pair<T> {
     (None, Some(err.to_string()))
 }
@@ -145,9 +126,8 @@ macro_rules! try_pair {
 /// if err then error(err) end
 /// print(model.spec, model.tier)
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
-fn resolve_model(
-    lua: &Lua,
+async fn resolve_model(
+    lua: Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
     opts: Option<Table>,
 ) -> LuaResult<Pair<Table>> {
@@ -163,7 +143,7 @@ fn resolve_model(
         Some(ref spec) => try_pair!(Model::from_spec(spec)),
         None => try_pair!(resolve_model_from_ctx(agent, tier_str.as_deref())),
     };
-    Ok((Some(model_to_lua_table(lua, &model)?), None))
+    Ok((Some(model_to_lua_table(&lua, &model)?), None))
 }
 
 /// Estimate the dollar cost of a completion from its model spec and token
@@ -180,7 +160,6 @@ fn resolve_model(
 /// if err then error(err) end
 /// print(string.format("$%.4f", cost))
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn usage_cost(
     _lua: &Lua,
     spec: String,
@@ -217,7 +196,6 @@ fn usage_cost(
 /// })
 /// if err then error(err) end
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 async fn system_prompt(
     _lua: Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
@@ -271,8 +249,7 @@ async fn system_prompt(
 /// if err then error(err) end
 /// print(#defs .. " tools available")
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
-fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pair<LuaValue>> {
+async fn tools(lua: Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pair<LuaValue>> {
     let agent = try_pair!(dispatch_ctx(&ctx, "tools"));
     let audience_str: String = opts.get("audience")?;
     let audience = try_pair!(
@@ -282,18 +259,14 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
 
     let only: Option<Vec<String>> = opts.get("only")?;
     let except: Option<Vec<String>> = opts.get("except")?;
-    let include_mcp: bool = opts.get::<Option<bool>>("include_mcp")?.map_or(true, |v| v);
-    let workflow: bool = opts.get::<Option<bool>>("workflow")?.map_or(false, |v| v);
+    let include_mcp: bool = opts.get::<Option<bool>>("include_mcp")?.unwrap_or(true);
+    let workflow: bool = opts.get::<Option<bool>>("workflow")?.unwrap_or(false);
     let spec_str: Option<String> = opts.get("spec")?;
 
     let parsed = spec_str
         .as_deref()
         .and_then(|spec| Model::from_spec(spec).ok());
-    let model = if let Some(ref m) = parsed {
-        m
-    } else {
-        &agent.model
-    };
+    let model = parsed.as_ref().unwrap_or(&agent.model);
 
     let base = match (only, except) {
         (Some(o), _) => ToolFilter::Only(o),
@@ -323,7 +296,7 @@ fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pa
         mcp.extend_tools(&mut defs);
     }
 
-    Ok((Some(json_to_lua(lua, &defs)?), None))
+    Ok((Some(json_to_lua(&lua, &defs)?), None))
 }
 
 /// Run a tool by name and wait for the result. This is how you call built-in
@@ -433,8 +406,6 @@ async fn call_tool(
 /// local result = sess:prompt("Summarize this file.")
 /// sess:close()
 #[lua_fn]
-#[allow(clippy::too_many_lines)]
-#[allow(clippy::cast_possible_truncation)]
 async fn session(
     lua: Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
@@ -456,7 +427,7 @@ async fn session(
     };
     let fast: bool = opts
         .get::<Option<bool>>("fast")?
-        .map_or(agent_ctx.opts.fast, |v| v);
+        .unwrap_or(agent_ctx.opts.fast);
 
     let (model, provider): (Model, Arc<dyn provider::Provider>) = if let Some(ref spec) = model_spec
     {
@@ -488,9 +459,7 @@ async fn session(
 
     let mut local_map: HashMap<String, LocalToolFn> = HashMap::new();
     if let Some(tbl) = local_tools_tbl {
-        let defs = tools_json
-            .as_array_mut()
-            .unwrap_or_else(|| unreachable!("tools_json is always an array here"));
+        let defs = tools_json.as_array_mut().expect("checked above");
         for pair in tbl.pairs::<String, Table>() {
             let (name, spec) = pair?;
             let description = try_pair!(
@@ -526,9 +495,7 @@ async fn session(
             _ => return Ok(err_pair(format!("invalid thinking budget: {n}"))),
         },
         Some(LuaValue::Number(n)) if n >= 1.0 && n <= f64::from(u32::MAX) => {
-            let tokens = u32::try_from(n as i64)
-                .map_err(|_| mlua::Error::runtime(format!("invalid thinking budget: {n}")))?;
-            ThinkingConfig::Budget(tokens)
+            ThinkingConfig::Budget(n as u32)
         }
         Some(LuaValue::Number(n)) => {
             return Ok(err_pair(format!("invalid thinking budget: {n}")));
@@ -539,17 +506,14 @@ async fn session(
 
     let session_id = N00nId::generate();
     let child_id = session_id.to_string();
-    let parent_tool_use_id = agent_ctx
-        .tool_use_id
-        .clone()
-        .unwrap_or_else(|| format!("session-{child_id}"));
+    let parent_tool_use_id = child_id.clone();
     let start = Instant::now();
     let (sub_tx, sub_rx) = flume::unbounded::<Envelope>();
     let sub_event_tx = EventSender::new(sub_tx, agent_ctx.event_tx.run_id());
     let parent_tx = agent_ctx.event_tx.clone();
     let (answer_tx, answer_rx) = flume::unbounded::<String>();
     let (prompt_tx, prompt_rx) = flume::bounded::<String>(STEERING_QUEUE_CAPACITY);
-    let progress = Arc::new(Progress::new(start));
+    let progress = Arc::new(Progress::new(start, child_id.clone()));
 
     let subagent_info: Arc<OnceLock<SubagentInfo>> = Arc::new(OnceLock::new());
     let total_input = Arc::new(AtomicU32::new(0));
@@ -567,14 +531,13 @@ async fn session(
                     AgentEvent::Done { usage, .. } => {
                         ti.fetch_add(usage.total_input(), Ordering::Relaxed);
                         to.fetch_add(usage.output, Ordering::Relaxed);
-                        progress.record_forwarder_barrier();
                         continue;
                     }
                     AgentEvent::ToolStart(e) => {
-                        progress.record_start(e);
+                        progress.start_action(&e.id, &e.tool);
                     }
                     AgentEvent::ToolDone(e) => {
-                        progress.record_done(e);
+                        progress.finish_action(&e.id, &e.tool, e.is_error);
                     }
                     AgentEvent::Error { .. }
                     | AgentEvent::ToolOutput { .. }
@@ -594,7 +557,7 @@ async fn session(
         .subagent_cancels
         .insert(child_id.clone(), child_trigger);
 
-    let name = name.unwrap_or_else(|| format!("session-{child_id}"));
+    let name = name.unwrap_or_default();
     info!(name = %name, model = %model.id, "subagent session opened");
 
     let state = SessionState {
@@ -612,7 +575,7 @@ async fn session(
             registry: Arc::clone(n00n_agent::tools::ToolRegistry::global_arc()),
             audience,
         },
-        system: system.unwrap_or_else(String::new),
+        system: system.unwrap_or_default(),
         tools: tools_json,
         thinking,
         fast,
@@ -682,8 +645,8 @@ struct LiveCallbacks<'a> {
 impl LiveCallbacks<'_> {
     async fn deliver(&self, ev: ToolLive) {
         let res = match ev {
-            ToolLive::Buf(buf) => call_opt(self.on_buf.as_ref(), BufHandle::foreign(buf)).await,
-            ToolLive::Annotation(ann) => call_opt(self.on_ann.as_ref(), ann).await,
+            ToolLive::Buf(buf) => call_opt(&self.on_buf, BufHandle::foreign(buf)).await,
+            ToolLive::Annotation(ann) => call_opt(&self.on_ann, ann).await,
         };
         if let Some(Err(e)) = res {
             tracing::warn!(tool = self.tool, error = %e, "call_tool callback failed");
@@ -691,7 +654,7 @@ impl LiveCallbacks<'_> {
     }
 }
 
-async fn call_opt(f: Option<&Function>, arg: impl IntoLuaMulti) -> Option<LuaResult<()>> {
+async fn call_opt(f: &Option<Function>, arg: impl IntoLuaMulti) -> Option<LuaResult<()>> {
     match f {
         Some(f) => Some(f.call_async::<()>(arg).await),
         None => None,
@@ -736,324 +699,161 @@ async fn dispatch_racing_live(
     }
 }
 
-fn activity_message(event: &ToolStartEvent) -> Option<String> {
-    if !SAFE_ACTIVITY_DESCRIPTION_TOOLS.contains(&event.tool.as_ref()) {
-        return None;
-    }
-    let rendered_header = event
-        .render_header
-        .as_ref()
-        .map(n00n_agent::BufferSnapshot::first_line_text);
-    rendered_header
-        .as_deref()
-        .filter(|text| !text.trim().is_empty())
-        .or_else(|| (!event.summary.trim().is_empty()).then_some(event.summary.as_str()))
-        .or_else(|| {
-            event
-                .annotation
-                .as_deref()
-                .filter(|text| !text.trim().is_empty())
-        })
-        .map(sanitize_activity_message)
-}
-
-fn sanitize_activity_message(raw: &str) -> String {
-    let words = raw.split_whitespace().collect::<Vec<_>>();
-    let mut sanitized = Vec::with_capacity(words.len());
-    let mut index = 0;
-    while index < words.len() {
-        let word = words[index];
-        if word.eq_ignore_ascii_case("bearer") {
-            sanitized.push(format!("Bearer {REDACTED}"));
-            index = index.saturating_add(2);
-            continue;
-        }
-
-        let separator = word.find(['=', ':']);
-        let key = separator.map_or(word, |position| &word[..position]);
-        if is_sensitive_key(key) || is_sensitive_key(word) {
-            let separator_char =
-                separator.map_or('=', |position| word.as_bytes()[position] as char);
-            sanitized.push(format!("{key}{separator_char}{REDACTED}"));
-            let inline_value = separator.and_then(|position| word.get(position + 1..));
-            index += 1;
-            if inline_value.is_some_and(|value| value.eq_ignore_ascii_case("bearer")) {
-                index = index.saturating_add(1).min(words.len());
-            } else if inline_value.is_none_or(str::is_empty) {
-                if words
-                    .get(index)
-                    .is_some_and(|next| *next == "=" || *next == ":")
-                {
-                    index += 1;
-                }
-                if words
-                    .get(index)
-                    .is_some_and(|next| next.eq_ignore_ascii_case("bearer"))
-                {
-                    index += 1;
-                }
-                if index < words.len() {
-                    index += 1;
-                }
-            }
-            continue;
-        }
-
-        let secret_value = separator.map_or(word, |position| &word[position + 1..]);
-        if is_secret_token(secret_value) {
-            let prefix = separator.map_or("", |position| &word[..=position]);
-            sanitized.push(format!("{prefix}{REDACTED}"));
-        } else {
-            sanitized.push(word.to_owned());
-        }
-        index += 1;
-    }
-    truncate_activity_message(&sanitized.join(" "))
-}
-
-fn is_sensitive_key(value: &str) -> bool {
-    let normalized: String = value
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .flat_map(char::to_lowercase)
-        .collect();
-    [
-        "apikey",
-        "accesstoken",
-        "authtoken",
-        "authorization",
-        "password",
-        "passwd",
-        "secret",
-        "privatekey",
-        "clientsecret",
-    ]
-    .iter()
-    .any(|key| normalized.contains(key))
-}
-
-fn is_secret_token(value: &str) -> bool {
-    let lower = value
-        .trim_matches(|character: char| !character.is_ascii_alphanumeric())
-        .to_ascii_lowercase();
-    ["sk-", "ghp_", "github_pat_", "glpat-", "xoxb-", "xoxp-"]
-        .iter()
-        .any(|prefix| lower.contains(prefix))
-        || lower.starts_with("akia")
-        || lower.starts_with("aiza")
-}
-
-fn truncate_activity_message(message: &str) -> String {
-    if message.chars().count() <= ACTIVITY_MESSAGE_MAX_CHARS {
-        return message.to_owned();
-    }
-    let mut truncated: String = message
-        .chars()
-        .take(ACTIVITY_MESSAGE_MAX_CHARS.saturating_sub(1))
-        .collect();
-    truncated.push('…');
-    truncated
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ActivityStatus {
     Running,
-    Success,
-    Error,
+    Done,
+    Failed,
 }
 
 impl ActivityStatus {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
-            Self::Success => "success",
-            Self::Error => "error",
+            Self::Done => "done",
+            Self::Failed => "failed",
         }
     }
 }
 
-#[derive(Debug, Clone)]
-struct Activity {
-    id: String,
+struct ActivityAction {
+    tool_call_id: String,
+    sequence: u64,
     tool: String,
-    message: Option<String>,
     status: ActivityStatus,
 }
 
 struct ProgressState {
     current: Option<String>,
     recent: VecDeque<String>,
-    activities: VecDeque<Activity>,
+    actions: VecDeque<ActivityAction>,
+    next_sequence: u64,
     done: bool,
     completed_count: u64,
-    active_activity_counts: HashMap<String, usize>,
-    turn_id: u64,
-    forwarded_barriers: u64,
 }
 
 struct Progress {
+    session_id: String,
     start: Instant,
     state: Mutex<ProgressState>,
     tx: flume::Sender<()>,
     rx: flume::Receiver<()>,
-    barrier_tx: flume::Sender<()>,
-    barrier_rx: flume::Receiver<()>,
+}
+
+fn sanitize_activity_value(value: &str, max_bytes: usize, fallback: &str) -> String {
+    let mut out = String::with_capacity(value.len().min(max_bytes));
+    for byte in value.bytes() {
+        if out.len() >= max_bytes {
+            break;
+        }
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'/' | b'-') {
+            out.push(char::from(byte));
+        }
+    }
+    if out.is_empty() {
+        fallback.to_owned()
+    } else {
+        out
+    }
 }
 
 impl Progress {
-    fn new(start: Instant) -> Self {
-        let (tx, rx) = flume::bounded(1);
-        let (barrier_tx, barrier_rx) = flume::bounded(1);
+    fn new(start: Instant, session_id: String) -> Self {
+        let (tx, rx) = flume::unbounded();
         Self {
+            session_id,
             start,
             state: Mutex::new(ProgressState {
                 current: None,
                 recent: VecDeque::new(),
-                activities: VecDeque::new(),
+                actions: VecDeque::new(),
+                next_sequence: 1,
                 done: false,
                 completed_count: 0,
-                active_activity_counts: HashMap::new(),
-                turn_id: 0,
-                forwarded_barriers: 0,
             }),
             tx,
             rx,
-            barrier_tx,
-            barrier_rx,
         }
     }
 
     fn notify(&self) {
-        let _ = self.tx.try_send(());
+        let _ = self.tx.send(());
     }
 
-    fn begin_turn(&self) -> u64 {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.turn_id = state.turn_id.saturating_add(1);
-        state.done = false;
-        state.current = None;
-        let turn_id = state.turn_id;
-        drop(state);
-        self.notify();
-        turn_id
-    }
-
-    fn next_forwarder_barrier(&self) -> u64 {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .forwarded_barriers
-            .saturating_add(1)
-    }
-
-    fn record_forwarder_barrier(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.forwarded_barriers = state.forwarded_barriers.saturating_add(1);
-        drop(state);
-        let _ = self.barrier_tx.try_send(());
-    }
-
-    async fn wait_for_forwarder_barrier(&self, target: u64) {
-        loop {
-            let reached = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .forwarded_barriers
-                >= target;
-            if reached || self.barrier_rx.recv_async().await.is_err() {
-                return;
-            }
-        }
-    }
-
-    fn record_start(&self, event: &ToolStartEvent) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let active_count = state
-            .active_activity_counts
-            .entry(event.id.clone())
-            .or_insert(0);
-        *active_count = active_count.saturating_add(1);
-        if state.activities.len() >= PROGRESS_MAX_RECENT {
-            state.activities.pop_front();
-        }
-        state.activities.push_back(Activity {
-            id: event.id.clone(),
-            tool: event.tool.to_string(),
-            message: activity_message(event),
-            status: ActivityStatus::Running,
-        });
-        state.current = Some(event.tool.to_string());
-        drop(state);
-        self.notify();
-    }
-
-    fn record_done(&self, event: &ToolDoneEvent) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match state.active_activity_counts.entry(event.id.clone()) {
-            Entry::Occupied(mut entry) if *entry.get() > 1 => {
-                *entry.get_mut() = entry.get().saturating_sub(1);
-            }
-            Entry::Occupied(entry) => {
-                entry.remove();
-            }
-            Entry::Vacant(_) => return,
-        }
-        if let Some(activity) = state
-            .activities
+    fn start_action(&self, tool_call_id: &str, tool: &str) {
+        let id = sanitize_activity_value(tool_call_id, ACTIVITY_ID_MAX_BYTES, "call");
+        let tool = sanitize_activity_value(tool, ACTIVITY_TOOL_MAX_BYTES, "tool");
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.current = Some(tool.clone());
+        if let Some(action) = state
+            .actions
             .iter_mut()
-            .find(|activity| activity.id == event.id && activity.status == ActivityStatus::Running)
+            .find(|action| action.tool_call_id == id)
         {
-            activity.status = if event.is_error {
-                ActivityStatus::Error
-            } else {
-                ActivityStatus::Success
-            };
+            action.status = ActivityStatus::Running;
+            action.tool = tool;
+        } else {
+            if state.actions.len() >= PROGRESS_MAX_RECENT {
+                state.actions.pop_front();
+            }
+            let sequence = state.next_sequence;
+            state.next_sequence = state.next_sequence.saturating_add(1);
+            state.actions.push_back(ActivityAction {
+                tool_call_id: id,
+                sequence,
+                tool,
+                status: ActivityStatus::Running,
+            });
         }
+        drop(state);
+        self.notify();
+    }
+
+    fn finish_action(&self, tool_call_id: &str, tool: &str, is_error: bool) {
+        let id = sanitize_activity_value(tool_call_id, ACTIVITY_ID_MAX_BYTES, "call");
+        let tool = sanitize_activity_value(tool, ACTIVITY_TOOL_MAX_BYTES, "tool");
+        let status = if is_error {
+            ActivityStatus::Failed
+        } else {
+            ActivityStatus::Done
+        };
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(action) = state
+            .actions
+            .iter_mut()
+            .find(|action| action.tool_call_id == id)
+        {
+            action.status = status;
+        } else {
+            if state.actions.len() >= PROGRESS_MAX_RECENT {
+                state.actions.pop_front();
+            }
+            let sequence = state.next_sequence;
+            state.next_sequence = state.next_sequence.saturating_add(1);
+            state.actions.push_back(ActivityAction {
+                tool_call_id: id,
+                sequence,
+                tool: tool.clone(),
+                status,
+            });
+        }
+        state.current = state
+            .actions
+            .iter()
+            .rev()
+            .find(|action| action.status == ActivityStatus::Running)
+            .map(|action| action.tool.clone());
         state.completed_count = state.completed_count.saturating_add(1);
         if state.recent.len() >= PROGRESS_MAX_RECENT {
             state.recent.pop_front();
         }
-        state.recent.push_back(event.tool.to_string());
-        state.current = state
-            .activities
-            .iter()
-            .rev()
-            .find(|activity| activity.status == ActivityStatus::Running)
-            .map(|activity| activity.tool.clone());
+        state.recent.push_back(tool);
         drop(state);
         self.notify();
     }
 
-    fn set_current_done(&self) {
-        let turn_id = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .turn_id;
-        self.set_done(turn_id);
-    }
-
-    fn set_done(&self, turn_id: u64) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.turn_id != turn_id {
-            return;
-        }
+    fn set_done(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.done = true;
         state.current = None;
         drop(state);
@@ -1091,13 +891,12 @@ struct SessionState {
 }
 
 impl SessionState {
-    #[allow(clippy::cast_possible_truncation)]
     fn close(&mut self) {
         if self.closed {
             return;
         }
         self.closed = true;
-        self.progress.set_current_done();
+        self.progress.set_done();
         self.parent_cancels.remove(&self.child_id);
         let messages = std::mem::replace(&mut self.history, History::new(Vec::new())).into_vec();
         let _ = self.parent_event_tx.send(AgentEvent::SubagentHistory {
@@ -1105,10 +904,9 @@ impl SessionState {
             messages,
             is_error: self.failed,
         });
-        let duration_ms = self.start.elapsed().as_millis() as u64;
         info!(
             name = %self.name,
-            duration_ms,
+            duration_ms = self.start.elapsed().as_millis() as u64,
             input_tokens = self.total_input.load(Ordering::Relaxed),
             output_tokens = self.total_output.load(Ordering::Relaxed),
             "subagent session closed",
@@ -1147,13 +945,14 @@ struct LuaSession {
 
 impl Drop for LuaSession {
     fn drop(&mut self) {
-        if let Some(mut s) = self.inner.try_lock() {
-            s.close();
-        } else {
+        match self.inner.try_lock() {
+            Some(mut s) => s.close(),
             // Prompt still in flight: close asynchronously so history
             // and cancel entry are never silently leaked.
-            let inner = Arc::clone(&self.inner);
-            smol::spawn(async move { inner.lock().await.close() }).detach();
+            None => {
+                let inner = Arc::clone(&self.inner);
+                smol::spawn(async move { inner.lock().await.close() }).detach();
+            }
         }
     }
 }
@@ -1173,7 +972,6 @@ impl Drop for LuaSession {
 /// print(r.text)
 /// print(r.input_tokens .. " input, " .. r.output_tokens .. " output tokens")
 #[lua_fn]
-#[allow(clippy::cast_possible_truncation)]
 async fn prompt(
     lua: Lua,
     this: mlua::UserDataRef<LuaSession>,
@@ -1186,7 +984,6 @@ async fn prompt(
     if s.closed {
         return Ok((None, Some(SESSION_CLOSED_ERR.to_owned())));
     }
-    let progress_turn = s.progress.begin_turn();
     if s.subagent_info.get().is_none() {
         let _ = s.subagent_info.set(SubagentInfo {
             parent_tool_use_id: s.parent_tool_use_id.clone(),
@@ -1227,34 +1024,16 @@ async fn prompt(
             workflow: false,
             prompt: None,
         };
-        let barrier_target = s.progress.next_forwarder_barrier();
         let result = agent.run(input).await;
         drop(agent);
-        if result.is_err()
-            && let Err(barrier_error) = s.sub_event_tx.send(AgentEvent::Done {
-                usage: TokenUsage::default(),
-                num_turns: 0,
-                stop_reason: None,
-            })
-        {
-            s.failed = true;
-            s.progress.set_done(progress_turn);
-            return Ok((
-                None,
-                Some(format!(
-                    "subagent event forwarder barrier failed: {barrier_error}"
-                )),
-            ));
-        }
-        s.progress.wait_for_forwarder_barrier(barrier_target).await;
         if let Err(e) = result {
             s.failed = true;
-            s.progress.set_done(progress_turn);
+            s.progress.set_done();
             return Ok((None, Some(e.to_string())));
         }
         next_message = s.prompt_rx.try_recv().ok();
     }
-    s.progress.set_done(progress_turn);
+    s.progress.set_done();
 
     let text = s
         .history
@@ -1267,15 +1046,12 @@ async fn prompt(
             ContentBlock::Text { text } => Some(text.as_str()),
             _ => None,
         })
-        .map_or_else(
-            || "(no response)".to_owned(),
-            std::borrow::ToOwned::to_owned,
-        );
+        .unwrap_or("(no response)")
+        .to_owned();
 
-    let duration_ms = s.start.elapsed().as_millis() as u64;
     let tbl = lua.create_table()?;
     tbl.set("text", text)?;
-    tbl.set("duration_ms", duration_ms)?;
+    tbl.set("duration_ms", s.start.elapsed().as_millis() as u64)?;
     tbl.set("input_tokens", s.total_input.load(Ordering::Relaxed))?;
     tbl.set("output_tokens", s.total_output.load(Ordering::Relaxed))?;
     Ok((Some(tbl), None))
@@ -1287,16 +1063,12 @@ async fn prompt(
 ///   `elapsed_ms` (integer): time since the session was created.
 ///   `current_tool` (string?): name of the tool currently running, if any.
 ///   `recent_tools` (table): names of the last few finished tools, oldest first.
-///   `activities` (table): up to five safe rendered tool summaries, oldest first.
 ///   `completed_count` (integer): total number of finished tools so far.
-///   `turn_id` (integer): increases before each `prompt` call.
-///   `done` (bool): true once the current prompt call has completed.
+///   `done` (bool): true once the prompt has completed.
 ///
 /// The call returns at most every `PROGRESS_TIMEOUT_MS` milliseconds, or
 /// immediately when a tool starts or finishes.
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
-#[allow(clippy::cast_possible_truncation)]
 async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResult<Pair<Table>> {
     let progress = Arc::clone(&this.progress);
     let notify = pin!(progress.rx.recv_async());
@@ -1305,17 +1077,14 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
     )));
     let _ = select(notify, timeout).await;
 
-    let state = progress
-        .state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let state = progress.state.lock().unwrap_or_else(|e| e.into_inner());
     let elapsed = progress.start.elapsed().as_millis() as u64;
     let tbl = lua.create_table()?;
+    tbl.set("session_id", progress.session_id.as_str())?;
     tbl.set("elapsed_ms", elapsed)?;
     tbl.set("current_tool", state.current.as_deref())?;
     tbl.set("done", state.done)?;
     tbl.set("completed_count", state.completed_count)?;
-    tbl.set("turn_id", state.turn_id)?;
 
     let recent = lua.create_table()?;
     for (i, tool) in state.recent.iter().enumerate() {
@@ -1323,16 +1092,18 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
     }
     tbl.set("recent_tools", recent)?;
 
-    let activities = lua.create_table()?;
-    for (i, activity) in state.activities.iter().enumerate() {
+    let actions = lua.create_table()?;
+    for (i, action) in state.actions.iter().enumerate() {
         let item = lua.create_table()?;
-        item.set("id", activity.id.as_str())?;
-        item.set("tool", activity.tool.as_str())?;
-        item.set("message", activity.message.as_deref())?;
-        item.set("status", activity.status.as_str())?;
-        activities.set(i + 1, item)?;
+        item.set("session_id", progress.session_id.as_str())?;
+        item.set("tool_call_id", action.tool_call_id.as_str())?;
+        item.set("sequence", action.sequence)?;
+        item.set("tool", action.tool.as_str())?;
+        item.set("status", action.status.as_str())?;
+        item.set("message", action.status.as_str())?;
+        actions.set(i + 1, item)?;
     }
-    tbl.set("activities", activities)?;
+    tbl.set("actions", actions)?;
     Ok((Some(tbl), None))
 }
 
@@ -1387,224 +1158,14 @@ fn call_local_tool(
 
 #[cfg(test)]
 mod tests {
-    use n00n_agent::ToolOutput;
     use serde_json::json;
 
     use super::*;
 
-    fn call(src: &str, input: &JsonValue) -> Result<String, String> {
+    fn call(src: &str, input: JsonValue) -> Result<String, String> {
         let lua = Lua::new();
         let f: Function = lua.load(src).eval().unwrap();
-        call_local_tool(&lua.weak(), &f, input)
-    }
-
-    fn progress_start(id: &str, summary: &str) -> ToolStartEvent {
-        ToolStartEvent {
-            id: id.into(),
-            tool: Arc::from("read"),
-            summary: summary.into(),
-            render_header: None,
-            annotation: None,
-            input: None,
-            raw_input: Some(json!({"secret": "must not be read"})),
-            output: Some(ToolOutput::Plain("must not be read".into())),
-        }
-    }
-
-    fn progress_done(id: &str, is_error: bool) -> ToolDoneEvent {
-        ToolDoneEvent {
-            id: id.into(),
-            tool: Arc::from("read"),
-            output: ToolOutput::Plain("must not be read".into()),
-            is_error,
-            annotation: Some("must not be read".into()),
-            written_path: None,
-        }
-    }
-
-    #[test]
-    fn progress_updates_start_in_place_and_retains_status() {
-        let progress = Progress::new(Instant::now());
-        progress.record_start(&progress_start("one", "cargo test"));
-        progress.record_done(&progress_done("one", true));
-        progress.record_done(&progress_done("one", true));
-
-        let state = progress
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(state.completed_count, 1);
-        assert_eq!(state.activities.len(), 1);
-        assert_eq!(state.activities[0].message.as_deref(), Some("cargo test"));
-        assert_eq!(state.activities[0].status, ActivityStatus::Error);
-        assert!(state.active_activity_counts.is_empty());
-    }
-
-    #[test]
-    fn progress_tracks_reused_activity_ids_in_order() {
-        let progress = Progress::new(Instant::now());
-        progress.record_start(&progress_start("call_read", "first"));
-        progress.record_start(&progress_start("call_read", "second"));
-        progress.record_done(&progress_done("call_read", false));
-        progress.record_done(&progress_done("call_read", true));
-
-        let state = progress
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(state.completed_count, 2);
-        assert_eq!(state.activities.len(), 2);
-        assert_eq!(state.activities[0].message.as_deref(), Some("first"));
-        assert_eq!(state.activities[0].status, ActivityStatus::Success);
-        assert_eq!(state.activities[1].message.as_deref(), Some("second"));
-        assert_eq!(state.activities[1].status, ActivityStatus::Error);
-        assert!(state.active_activity_counts.is_empty());
-    }
-
-    #[test]
-    fn progress_keeps_latest_five_activity_rows() {
-        let progress = Progress::new(Instant::now());
-        for i in 0..7 {
-            let id = i.to_string();
-            progress.record_start(&progress_start(&id, &format!("message {i}")));
-            progress.record_done(&progress_done(&id, false));
-        }
-
-        let state = progress
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(state.activities.len(), PROGRESS_MAX_RECENT);
-        assert_eq!(state.activities[0].message.as_deref(), Some("message 2"));
-        assert_eq!(state.activities[4].message.as_deref(), Some("message 6"));
-        assert!(
-            state
-                .activities
-                .iter()
-                .all(|activity| activity.status == ActivityStatus::Success)
-        );
-    }
-
-    #[test]
-    fn progress_activity_message_is_sanitized_and_truncated() {
-        let progress = Progress::new(Instant::now());
-        let long_secret = format!("API_KEY=super-secret\n{}", "é".repeat(100));
-        progress.record_start(&progress_start("secret", &long_secret));
-
-        let state = progress
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let message = state.activities[0].message.as_deref().unwrap();
-        assert!(!message.contains("super-secret"));
-        assert!(!message.contains('\n'));
-        assert!(message.ends_with('…'));
-        assert!(message.chars().count() <= ACTIVITY_MESSAGE_MAX_CHARS);
-    }
-
-    #[test]
-    fn progress_counts_done_events_for_evicted_activity_rows() {
-        let progress = Progress::new(Instant::now());
-        for i in 0..7 {
-            progress.record_start(&progress_start(&i.to_string(), "running"));
-        }
-        for i in 0..7 {
-            progress.record_done(&progress_done(&i.to_string(), false));
-        }
-
-        let state = progress
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(state.completed_count, 7);
-        assert_eq!(state.recent.len(), PROGRESS_MAX_RECENT);
-        assert!(
-            state
-                .activities
-                .iter()
-                .all(|activity| activity.status == ActivityStatus::Success)
-        );
-    }
-
-    #[test]
-    fn forwarder_barrier_observes_prior_tool_done() {
-        smol::block_on(async {
-            let progress = Arc::new(Progress::new(Instant::now()));
-            progress.record_start(&progress_start("one", "reading"));
-            let target = progress.next_forwarder_barrier();
-            let forwarded = Arc::clone(&progress);
-            let worker = smol::spawn(async move {
-                forwarded.record_done(&progress_done("one", false));
-                forwarded.record_forwarder_barrier();
-            });
-
-            progress.wait_for_forwarder_barrier(target).await;
-            worker.await;
-            let state = progress
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert_eq!(state.activities[0].status, ActivityStatus::Success);
-        });
-    }
-
-    #[test]
-    fn progress_redacts_separated_credentials() {
-        let sanitized = sanitize_activity_message(
-            "API_KEY = first Authorization: Bearer second --password third foo=sk-secret",
-        );
-        assert_eq!(
-            sanitized,
-            "API_KEY=[REDACTED] Authorization:[REDACTED] --password=[REDACTED] foo=[REDACTED]"
-        );
-    }
-
-    #[test]
-    fn progress_redacts_adjacent_bearer_scheme_and_token() {
-        let sanitized = sanitize_activity_message("Authorization:Bearer visible-token trailing");
-        assert_eq!(sanitized, "Authorization:[REDACTED] trailing");
-    }
-
-    #[test]
-    fn progress_redacts_credentials_embedded_in_urls_and_tokens() {
-        let sanitized = sanitize_activity_message(
-            "https://host.test/path?api_key=visible glpat-visible prefix-ghp_visible",
-        );
-        assert_eq!(sanitized, "https:[REDACTED] [REDACTED] [REDACTED]");
-    }
-
-    #[test]
-    fn progress_notifications_are_coalesced() {
-        let progress = Progress::new(Instant::now());
-        for _ in 0..100 {
-            progress.notify();
-            progress.record_forwarder_barrier();
-        }
-        assert_eq!(progress.rx.len(), 1);
-        assert_eq!(progress.barrier_rx.len(), 1);
-    }
-
-    #[test]
-    fn progress_hides_bash_and_unknown_tool_headers() {
-        for tool in ["bash", "custom_plugin"] {
-            let mut event = progress_start(tool, "API_KEY=visible");
-            event.tool = Arc::from(tool);
-            event.render_header = Some(n00n_agent::BufferSnapshot::plain_text(
-                "Authorization: Bearer rendered-secret".into(),
-            ));
-            assert_eq!(activity_message(&event), None);
-        }
-    }
-
-    #[test]
-    fn progress_done_is_turn_safe() {
-        let progress = Progress::new(Instant::now());
-        let first = progress.begin_turn();
-        let second = progress.begin_turn();
-        progress.set_done(first);
-        assert!(!progress.state.lock().unwrap().done);
-        progress.set_done(second);
-        assert!(progress.state.lock().unwrap().done);
+        call_local_tool(&lua.weak(), &f, &input)
     }
 
     #[test]
@@ -1622,20 +1183,20 @@ mod tests {
     fn local_tool_handler_result_conventions() {
         let input = json!({"x": "1"});
         assert_eq!(
-            call("function(v) return 'ok:' .. v.x end", &input),
+            call("function(v) return 'ok:' .. v.x end", input.clone()),
             Ok("ok:1".into())
         );
         assert_eq!(
-            call("function() return nil, 'bad' end", &input),
+            call("function() return nil, 'bad' end", input.clone()),
             Err("bad".into())
         );
         assert_eq!(
-            call("function() end", &input),
+            call("function() end", input.clone()),
             Err(crate::api::util::convert::NIL_TOOL_RESULT_ERR.into())
         );
-        let raised = call("function() error('boom') end", &input).unwrap_err();
+        let raised = call("function() error('boom') end", input.clone()).unwrap_err();
         assert!(raised.contains("boom"), "got: {raised}");
-        let wrong = call("function() return 42 end", &input).unwrap_err();
+        let wrong = call("function() return 42 end", input).unwrap_err();
         assert!(wrong.contains("expected string"), "got: {wrong}");
     }
 }

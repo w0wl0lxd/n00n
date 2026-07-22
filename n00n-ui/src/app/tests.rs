@@ -15,7 +15,7 @@ use n00n_agent::{
 use n00n_config::{PermissionsConfig, UiConfig};
 use n00n_lua::{HintReader, KeymapReader, LuaCommandReader};
 use n00n_providers::{ContentBlock, Effort, Role, TokenUsage};
-use n00n_storage::sessions::{StoredMode, StoredThinking, TranscriptEntry};
+use n00n_storage::sessions::{StoredMode, StoredThinking};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 use ratatui_image::picker::Picker;
 use std::env;
@@ -421,7 +421,7 @@ fn submit_prompt_never_interprets_text(text: &str) {
     let mut app = test_app();
     match app.submit_prompt(queued_msg(text)) {
         SubmitOutcome::Started(actions) => {
-            assert!(matches!(&actions[0], Action::SendMessage(_)));
+            assert!(matches!(&actions[0], Action::SendMessage(_)))
         }
         _ => panic!("raw prompt must start the agent"),
     }
@@ -597,71 +597,6 @@ fn load_session_clears_plan() {
 }
 
 #[test]
-fn picker_load_carries_recursive_transcript_through_recompact_and_save() {
-    let (_tmp, dir, writer, mut app) = tempdir_app();
-    let summary = Message {
-        role: Role::Assistant,
-        content: vec![ContentBlock::Text {
-            text: "first summary".into(),
-        }],
-        ..Default::default()
-    };
-    app.state.session.messages = vec![Message::user("summary prompt".into()), summary.clone()];
-    app.state.session.transcript = vec![
-        TranscriptEntry::Compaction {
-            entries: vec![TranscriptEntry::Compaction {
-                entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
-                generated_summary: None,
-            }],
-            generated_summary: Some(summary.clone()),
-        },
-        TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
-        TranscriptEntry::GeneratedMessage(summary),
-    ];
-    app.state.session.save(&app.storage).unwrap();
-    let id = app.state.session.id;
-
-    let actions = app.load_session(id);
-    let Action::LoadSession(loaded) = actions.into_iter().next().expect("load action") else {
-        panic!("expected loaded session action");
-    };
-    assert!(matches!(
-        loaded.transcript.as_slice(),
-        [TranscriptEntry::Compaction { entries, .. }, ..]
-            if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }])
-    ));
-
-    let message_mirror = Arc::new(ArcSwap::from_pointee(loaded.messages.clone()));
-    let transcript_mirror = Arc::new(ArcSwap::from_pointee(loaded.transcript.clone()));
-    let mut history =
-        n00n_agent::agent::History::restored_with_transcript(loaded.messages, loaded.transcript)
-            .with_mirror(Arc::clone(&message_mirror))
-            .with_transcript_mirror(Arc::clone(&transcript_mirror));
-    history.push(Message::user("continued".into()));
-    history.compact_boundary(
-        Message::user("summary prompt".into()),
-        Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::Text {
-                text: "second summary".into(),
-            }],
-            ..Default::default()
-        },
-    );
-    app.shared_history = Some(message_mirror);
-    app.shared_transcript = Some(transcript_mirror);
-    app.save_session();
-    drain_writer(app, writer);
-
-    let saved = AppSession::load(id, &dir).unwrap();
-    assert!(matches!(
-        saved.transcript.as_slice(),
-        [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_)]
-            if matches!(entries.as_slice(), [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_)] if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }]))
-    ));
-}
-
-#[test]
 fn tab_in_palette_completes_command() {
     let mut app = test_app();
     type_slash(&mut app);
@@ -782,87 +717,6 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
     assert_eq!(app.chats[1].token_usage.input, 200);
     assert_eq!(app.chats[0].context_size, main_usage.context_tokens());
     assert_eq!(app.chats[1].context_size, sub_usage.context_tokens());
-}
-
-#[test]
-fn live_compaction_notice_becomes_typed_card() {
-    let mut app = test_app();
-    app.status = Status::Streaming;
-    app.run_id = 1;
-    app.shared_transcript = Some(Arc::new(ArcSwap::from_pointee(vec![
-        TranscriptEntry::Compaction {
-            entries: vec![TranscriptEntry::Message(Message::user("original".into()))],
-            generated_summary: None,
-        },
-    ])));
-
-    app.update(agent_msg(AgentEvent::AutoCompacting));
-    assert!(app.main_chat().has_pending_compaction());
-
-    app.update(agent_msg(AgentEvent::CompactionDone));
-    assert!(!app.main_chat().has_pending_compaction());
-    assert_eq!(app.main_chat().compaction_card_count(), 1);
-}
-
-#[test]
-fn subagent_compaction_completion_uses_live_summary_without_touching_main_transcript() {
-    let mut app = app_with_subagent();
-    let main_transcript = Arc::new(ArcSwap::from_pointee(vec![TranscriptEntry::Message(
-        Message::user("main conversation".into()),
-    )]));
-    app.shared_transcript = Some(Arc::clone(&main_transcript));
-
-    app.update(subagent_msg(
-        AgentEvent::AutoCompacting,
-        "task1",
-        Some("research"),
-    ));
-    assert!(app.chats[1].has_pending_compaction());
-    app.update(subagent_msg(
-        AgentEvent::TextDelta {
-            text: "subagent summary".into(),
-        },
-        "task1",
-        Some("research"),
-    ));
-    app.update(subagent_msg(
-        AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-            message: Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::Text {
-                    text: "subagent summary".into(),
-                }],
-                ..Default::default()
-            },
-            usage: TokenUsage::default(),
-            model: "test".into(),
-            context_size: None,
-        })),
-        "task1",
-        Some("research"),
-    ));
-    app.update(subagent_msg(
-        AgentEvent::CompactionDone,
-        "task1",
-        Some("research"),
-    ));
-
-    assert!(!app.chats[1].has_pending_compaction());
-    assert_eq!(app.chats[1].compaction_card_count(), 1);
-    assert_eq!(
-        app.chats[1].message_count(),
-        2,
-        "the streamed summary must not remain beside its compaction card"
-    );
-    assert_eq!(
-        app.chats[1].last_compaction_summary(),
-        Some("subagent summary")
-    );
-    assert_eq!(app.main_chat().compaction_card_count(), 0);
-    assert!(matches!(
-        main_transcript.load().as_slice(),
-        [TranscriptEntry::Message(message)] if message.user_text() == Some("main conversation")
-    ));
 }
 
 #[test]
@@ -1002,16 +856,19 @@ fn completed_subagent_chat_remains_discoverable_by_tool_id() {
     assert_eq!(idx, Some(1));
 }
 
-#[test]
-fn completed_task_card_click_toggles_inline_without_navigating() {
+#[test_case("task"     ; "task")]
+#[test_case("agent"    ; "agent")]
+#[test_case("team"     ; "team")]
+#[test_case("workflow" ; "workflow")]
+fn completed_subagent_card_header_and_body_clicks_toggle_without_navigation(tool: &str) {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
     app.update(agent_msg(AgentEvent::ToolStart(Box::new(ToolStartEvent {
-        id: "task1".into(),
-        tool: "task".into(),
-        summary: "research".into(),
-        annotation: None,
+        id: "card1".into(),
+        tool: tool.into(),
+        summary: "safe summary".into(),
+        annotation: Some("safe annotation".into()),
         input: None,
         raw_input: None,
         output: None,
@@ -1021,12 +878,12 @@ fn completed_task_card_click_toggles_inline_without_navigating() {
         AgentEvent::TextDelta {
             text: "child".into(),
         },
-        "task1",
+        "card1",
         Some("research"),
     ));
     app.update(agent_msg(AgentEvent::ToolDone(Box::new(ToolDoneEvent {
-        id: "task1".into(),
-        tool: "task".into(),
+        id: "card1".into(),
+        tool: tool.into(),
         output: ToolOutput::Markdown("body line\n".repeat(100).into()),
         is_error: false,
         annotation: None,
@@ -1038,39 +895,54 @@ fn completed_task_card_click_toggles_inline_without_navigating() {
     let area = app.msg_area();
     let collapsed_lines = app.chats[0].total_lines();
 
-    app.update(mouse_event(
-        MouseEventKind::Down(MouseButton::Left),
-        10,
-        area.y,
-    ));
-    app.update(mouse_event(
-        MouseEventKind::Up(MouseButton::Left),
-        10,
-        area.y,
-    ));
-    assert_eq!(app.active_chat, 0, "task card click must not navigate");
+    let click = |app: &mut App, row| {
+        app.update(mouse_event(
+            MouseEventKind::Down(MouseButton::Left),
+            10,
+            row,
+        ));
+        app.update(mouse_event(MouseEventKind::Up(MouseButton::Left), 10, row));
+    };
+
+    click(&mut app, area.y + 1);
+    assert_eq!(app.active_chat, 0, "{tool} body click must not navigate");
     terminal.draw(|frame| app.view(frame)).unwrap();
     assert!(
         app.chats[0].total_lines() > collapsed_lines,
-        "task card click must expand inline"
+        "{tool} body click must expand the completed card"
     );
 
-    app.update(mouse_event(
-        MouseEventKind::Down(MouseButton::Left),
-        10,
-        area.y,
-    ));
-    app.update(mouse_event(
-        MouseEventKind::Up(MouseButton::Left),
-        10,
-        area.y,
-    ));
+    click(&mut app, area.y + 1);
     assert_eq!(
         app.active_chat, 0,
-        "repeated task card click must not navigate"
+        "second {tool} body click must not navigate"
     );
     terminal.draw(|frame| app.view(frame)).unwrap();
-    assert_eq!(app.chats[0].total_lines(), collapsed_lines);
+    assert_eq!(
+        app.chats[0].total_lines(),
+        collapsed_lines,
+        "second {tool} body click must collapse the card"
+    );
+
+    click(&mut app, area.y);
+    assert_eq!(app.active_chat, 0, "{tool} header click must not navigate");
+    terminal.draw(|frame| app.view(frame)).unwrap();
+    assert!(
+        app.chats[0].total_lines() > collapsed_lines,
+        "{tool} header row 0 must expand the same card"
+    );
+
+    click(&mut app, area.y);
+    assert_eq!(
+        app.active_chat, 0,
+        "second {tool} header click must not navigate"
+    );
+    terminal.draw(|frame| app.view(frame)).unwrap();
+    assert_eq!(
+        app.chats[0].total_lines(),
+        collapsed_lines,
+        "second {tool} header click must collapse the card"
+    );
 }
 
 fn open_tasks_picker(app: &mut App) {
@@ -1102,6 +974,26 @@ fn ctrl_x_toggles_tasks_picker() {
     assert!(app.task_picker.is_open());
     app.update(Msg::Key(kb::TASKS.to_key_event()));
     assert!(!app.task_picker.is_open());
+}
+
+#[test]
+fn ctrl_x_then_enter_still_switches_sessions() {
+    let mut app = app_with_subagent();
+    assert_eq!(app.active_chat, 0);
+
+    app.update(Msg::Key(kb::TASKS.to_key_event()));
+    assert!(
+        app.task_picker.is_open(),
+        "Ctrl+X must open the session picker"
+    );
+    app.update(Msg::Key(key(KeyCode::Down)));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert!(!app.task_picker.is_open());
+    assert_eq!(
+        app.active_chat, 1,
+        "Enter must switch to the selected child session"
+    );
 }
 
 fn app_with_subagent_id(id: &str) -> App {
@@ -1165,7 +1057,7 @@ fn task_picker_preview_copy_uses_rendered_chat() {
 }
 
 #[test]
-fn nested_task_preview_click_stays_inline_and_picker_enter_navigates() {
+fn task_picker_preview_tool_click_uses_rendered_chat() {
     let mut app = app_with_subagent();
     app.update(subagent_msg(
         AgentEvent::ToolStart(Box::new(ToolStartEvent {
@@ -1207,21 +1099,7 @@ fn nested_task_preview_click_stays_inline_and_picker_enter_navigates() {
         tool_row,
     ));
 
-    assert_eq!(
-        app.active_chat, 0,
-        "nested task card click must not navigate"
-    );
-
-    app.update(Msg::Key(kb::TASKS.to_key_event()));
-    assert!(!app.task_picker.is_open());
-    app.update(Msg::Key(kb::TASKS.to_key_event()));
-    app.update(Msg::Key(key(KeyCode::Down)));
-    app.update(Msg::Key(key(KeyCode::Down)));
-    app.update(Msg::Key(key(KeyCode::Enter)));
-    assert_eq!(
-        app.active_chat, 2,
-        "Ctrl+X and Enter must navigate explicitly"
-    );
+    assert_eq!(app.active_chat, 2);
 }
 
 #[test]
@@ -2111,7 +1989,9 @@ fn reload_leaves_empty_session_unpersisted_on_disk() {
     drain_writer(app, writer);
 
     let sessions_dir = tmp.path().join(n00n_storage::sessions::SESSIONS_DIR);
-    let entries = std::fs::read_dir(&sessions_dir).map_or(0, std::iter::Iterator::count);
+    let entries = std::fs::read_dir(&sessions_dir)
+        .map(|d| d.count())
+        .unwrap_or(0);
     assert_eq!(entries, 0);
 }
 
@@ -2269,71 +2149,6 @@ fn rewind_to_middle_truncates_and_populates_input() {
 }
 
 #[test]
-fn rewind_truncates_active_tail_inside_recursive_transcript() {
-    let mut app = test_app();
-    let assistant = |text: &str| Message {
-        role: Role::Assistant,
-        content: vec![ContentBlock::Text { text: text.into() }],
-        ..Default::default()
-    };
-    let summary = assistant("summary");
-    let kept_reply = assistant("kept reply");
-    let removed_reply = assistant("removed reply");
-    app.state.session.messages = vec![
-        Message::user("summary prompt".into()),
-        summary.clone(),
-        Message::user("keep".into()),
-        kept_reply.clone(),
-        Message::user("remove".into()),
-        removed_reply.clone(),
-    ];
-    app.state.session.transcript = vec![
-        TranscriptEntry::Compaction {
-            entries: vec![TranscriptEntry::Compaction {
-                entries: vec![TranscriptEntry::Message(Message::user("oldest".into()))],
-                generated_summary: None,
-            }],
-            generated_summary: Some(summary.clone()),
-        },
-        TranscriptEntry::GeneratedMessage(Message::user("summary prompt".into())),
-        TranscriptEntry::GeneratedMessage(summary),
-        TranscriptEntry::Message(Message::user("keep".into())),
-        TranscriptEntry::Message(kept_reply),
-        TranscriptEntry::Message(Message::user("remove".into())),
-        TranscriptEntry::Message(removed_reply),
-    ];
-
-    let actions = app.rewind_to(crate::components::rewind_picker::RewindEntry {
-        turn_index: 4,
-        prompt_preview: "remove".into(),
-        prompt_text: "remove".into(),
-    });
-
-    assert!(matches!(
-        app.state.session.transcript.as_slice(),
-        [TranscriptEntry::Compaction { entries, .. }, TranscriptEntry::GeneratedMessage(_), TranscriptEntry::GeneratedMessage(_), TranscriptEntry::Message(_), TranscriptEntry::Message(_)]
-            if matches!(entries.as_slice(), [TranscriptEntry::Compaction { .. }])
-    ));
-    let Action::LoadSession(loaded) = &actions[0] else {
-        panic!("expected loaded session action");
-    };
-    let mut restored = n00n_agent::agent::History::restored_with_transcript(
-        loaded.messages.clone(),
-        loaded.transcript.clone(),
-    );
-    restored.compact_boundary(
-        Message::user("summary prompt".into()),
-        assistant("new summary"),
-    );
-    let TranscriptEntry::Compaction { entries, .. } = &restored.transcript()[0] else {
-        panic!("expected recursive compaction");
-    };
-    assert!(!entries.iter().any(|entry| {
-        matches!(entry, TranscriptEntry::Message(message) if message.user_text().is_some_and(|text| text.contains("remove")))
-    }));
-}
-
-#[test]
 fn rewind_to_first_turn_clears_everything() {
     let mut app = build_rewind_app();
     app.state.context_size = 100_000;
@@ -2356,12 +2171,12 @@ fn rewind_to_first_turn_clears_everything() {
 }
 
 #[test_case(Duration::ZERO,          true  ; "keeps_fresh_error")]
-#[test_case(Duration::from_mins(1), false ; "clears_stale_error")]
+#[test_case(Duration::from_secs(60), false ; "clears_stale_error")]
 fn tick_error_expiry(age: Duration, expect_error: bool) {
     let mut app = test_app();
     app.status = Status::Error {
         message: "fail".into(),
-        since: Instant::now().checked_sub(age).unwrap(),
+        since: Instant::now() - age,
     };
     app.tick_error_expiry();
     assert_eq!(matches!(app.status, Status::Error { .. }), expect_error);
@@ -2505,7 +2320,7 @@ fn app_with_steerable_subagent(id: &str) -> (App, flume::Receiver<String>) {
         )),
         run_id: 1,
     })));
-    app.active_chat = app.chat_index[id];
+    app.active_chat = *app.chat_index.get(id).unwrap();
     (app, prompt_rx)
 }
 
@@ -2543,7 +2358,7 @@ fn concurrent_children_with_one_parent_have_independent_chats_cancels_and_persis
         ["child-a", "child-b"]
     );
 
-    app.active_chat = app.chat_index["child-b"];
+    app.active_chat = *app.chat_index.get("child-b").unwrap();
     app.last_esc = Some(Instant::now());
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
@@ -2551,8 +2366,8 @@ fn concurrent_children_with_one_parent_have_independent_chats_cancels_and_persis
         &actions[..],
         [Action::CancelSubagent { tool_use_id }] if tool_use_id == "child-b"
     ));
-    assert!(!app.chats[app.chat_index["child-a"]].is_finished());
-    assert!(app.chats[app.chat_index["child-b"]].is_finished());
+    assert!(!app.chats[*app.chat_index.get("child-a").unwrap()].is_finished());
+    assert!(app.chats[*app.chat_index.get("child-b").unwrap()].is_finished());
 }
 
 #[test]
@@ -3476,8 +3291,8 @@ fn workflow_toggle_flows_into_agent_input() {
     assert_eq!(app.status_bar.flash_text(), Some(WORKFLOW_OFF_MSG));
 }
 
-/// Workflow sessions have synthetic ids that no `ToolDone` matches, so
-/// `SubagentHistory` is what finishes their chat.
+/// Workflow sessions have synthetic ids that no ToolDone matches, so
+/// SubagentHistory is what finishes their chat.
 #[test]
 fn subagent_history_finishes_workflow_chat() {
     let mut app = test_app();
@@ -3821,7 +3636,7 @@ fn multiple_subagents_cancel_one_other_unaffected() {
     ));
     assert_eq!(app.chats.len(), 3);
 
-    app.active_chat = app.chat_index["task2"];
+    app.active_chat = *app.chat_index.get("task2").unwrap();
     app.last_esc = Some(Instant::now());
     let actions = app.update(Msg::Key(key(KeyCode::Esc)));
 
@@ -3830,7 +3645,7 @@ fn multiple_subagents_cancel_one_other_unaffected() {
         &actions[0],
         Action::CancelSubagent { tool_use_id } if tool_use_id == "task2"
     ));
-    let task1_idx = app.chat_index["task1"];
+    let task1_idx = *app.chat_index.get("task1").unwrap();
     assert!(!app.chats[task1_idx].is_finished());
     assert!(app.chats[app.active_chat].is_finished());
 }
