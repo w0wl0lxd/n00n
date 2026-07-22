@@ -205,9 +205,9 @@ local function run_supervisor(ctx, goal, opts)
     return nil, sess_err
   end
 
-  local res, rerr = opts._preview:prompt(sess, plan_prompt(goal), "supervisor")
+  local _, rerr = opts._preview:prompt(sess, plan_prompt(goal), "supervisor")
   if not rerr and not captured then
-    res, rerr = opts._preview:prompt(sess, NUDGE, "supervisor")
+    _, rerr = opts._preview:prompt(sess, NUDGE, "supervisor")
   end
   sess:close()
   if rerr then
@@ -418,7 +418,10 @@ local function handler(input, ctx)
     return { llm_output = "failed to publish team preview: " .. tostring(preview_err), is_error = true }
   end
   input._preview = preview
-  local result = run_team(input, ctx)
+  local ok, result = pcall(run_team, input, ctx)
+  if not ok then
+    return { llm_output = "team failed: " .. tostring(result), is_error = true, body = preview.view.buf }
+  end
   result.body = preview.view.buf
   return result
 end

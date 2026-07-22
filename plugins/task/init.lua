@@ -221,8 +221,8 @@ local function handler(input, ctx)
     }
   end
 
-  local description = input.description or "task"
-  local preview, preview_err = ActivityPreview.new(ctx, description)
+  local task_description = input.description or "task"
+  local preview, preview_err = ActivityPreview.new(ctx, task_description)
   if not preview then
     return { llm_output = "failed to publish task preview: " .. tostring(preview_err), is_error = true }
   end
@@ -248,11 +248,11 @@ local function handler(input, ctx)
       if validator then
         message = message .. STRUCTURED_OUTPUT_PROMPT_SUFFIX
       end
-      local result, err = preview:prompt(sess, message, description)
+      local result, err = preview:prompt(sess, message, task_description)
       local retries = 0
       while not err and validator and not captured and retries < MAX_STRUCTURED_RETRIES do
         retries = retries + 1
-        result, err = preview:prompt(sess, NUDGE_MISSING, description)
+        result, err = preview:prompt(sess, NUDGE_MISSING, task_description)
       end
       if err then
         return { llm_output = "sub-agent error: " .. err, is_error = true }
