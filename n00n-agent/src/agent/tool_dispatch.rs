@@ -436,10 +436,10 @@ pub(super) async fn process_tool_calls(
     let filtered_results: Vec<ToolDoneEvent> = all_results
         .into_iter()
         .map(|mut result| {
-            if let ToolOutput::Plain(text) = &result.output {
+            if let ToolOutput::Plain(text) = &mut result.output {
                 let filtered = super::run::filter_tool_result(&text.text);
                 if filtered != text.text {
-                    result.output = ToolOutput::Plain(filtered.into());
+                    text.text = filtered;
                 }
             }
             result
