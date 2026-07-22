@@ -52,6 +52,7 @@ pub enum SlotKind {
 pub enum Slot {
     Identity,
     Tone,
+    Environment,
     ToolUsage,
     EfficientTools,
     Conventions,
@@ -63,6 +64,7 @@ impl Slot {
         match self {
             Slot::Identity => "{{identity}}",
             Slot::Tone => "{{tone}}",
+            Slot::Environment => "{{environment}}",
             Slot::ToolUsage => "{{tool_usage}}",
             Slot::EfficientTools => "{{efficient_tools}}",
             Slot::Conventions => "{{conventions}}",
@@ -73,7 +75,7 @@ impl Slot {
     #[must_use]
     pub fn kind(self) -> SlotKind {
         match self {
-            Slot::Identity | Slot::Tone => SlotKind::Singleton,
+            Slot::Identity | Slot::Tone | Slot::Environment => SlotKind::Singleton,
             Slot::ToolUsage
             | Slot::EfficientTools
             | Slot::Conventions
@@ -90,6 +92,7 @@ impl Slot {
         match self {
             Slot::Identity => Some(DEFAULT_IDENTITY),
             Slot::Tone => Some(DEFAULT_TONE),
+            Slot::Environment => Some("# Environment\nCurrent date: 2026-07-21\n"),
             _ => None,
         }
     }
@@ -468,5 +471,51 @@ mod tests {
         let out = assemble(PromptId::System, &s, "");
         assert!(out.contains("Never assume a library is available"));
         assert!(out.contains("- Extra rule"));
+    }
+
+    #[test]
+    fn assemble_system_without_environment_slot_has_no_heading() {
+        let out = assemble(PromptId::System, &ResolvedSlots::default(), "");
+        assert!(out.contains("# Environment"));
+    }
+
+    #[test]
+    fn assemble_system_without_environment_slot_has_no_bare_marker() {
+        let out = assemble(PromptId::System, &ResolvedSlots::default(), "");
+        assert!(!out.contains("{{environment}}"));
+    }
+
+    #[test]
+    fn assemble_system_with_environment_content_has_heading_and_content() {
+        const ENV_CONTENT: &str = "# Environment\nCurrent date: 2026-07-22";
+        let mut s = ResolvedSlots::default();
+        s.insert(
+            PromptId::System,
+            Slot::Environment,
+            SlotEntry {
+                plugin: Arc::from("test"),
+                content: ENV_CONTENT.into(),
+            },
+        );
+        let out = assemble(PromptId::System, &s, "");
+        assert!(out.contains("# Environment"));
+        assert!(out.contains("Current date: 2026-07-22"));
+        assert!(!out.contains("2026-07-21"));
+    }
+
+    #[test]
+    fn assemble_system_with_environment_content_has_no_bare_marker() {
+        const ENV_CONTENT: &str = "# Environment\nCurrent date: 2026-07-22";
+        let mut s = ResolvedSlots::default();
+        s.insert(
+            PromptId::System,
+            Slot::Environment,
+            SlotEntry {
+                plugin: Arc::from("test"),
+                content: ENV_CONTENT.into(),
+            },
+        );
+        let out = assemble(PromptId::System, &s, "");
+        assert!(!out.contains("{{environment}}"));
     }
 }

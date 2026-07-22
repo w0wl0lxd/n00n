@@ -23,7 +23,7 @@ pub mod prompt;
 pub mod template;
 pub mod tools;
 pub use tools::ToolFilter;
-pub mod tokenize;
+pub(crate) mod tokenize;
 pub mod types;
 
 use std::collections::HashMap;
