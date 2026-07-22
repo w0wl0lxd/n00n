@@ -546,14 +546,14 @@ impl CommandPalette {
         let mut run = String::new();
 
         for (i, ch) in text.chars().enumerate() {
-            let is_match = indices.binary_search(&(i as u32)).is_ok();
-            if is_match != in_match && !run.is_empty() {
+            let matched = indices.binary_search(&(i as u32)).is_ok();
+            if matched != in_match && !run.is_empty() {
                 spans.push(Span::styled(
                     mem::take(&mut run),
                     if in_match { highlight } else { base },
                 ));
             }
-            in_match = is_match;
+            in_match = matched;
             run.push(ch);
         }
 

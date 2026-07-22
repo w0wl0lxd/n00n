@@ -1658,12 +1658,15 @@ impl MessagesPanel {
             )];
         }
         if let DisplayRole::Tool(t) = &msg.role {
-            let exp = self.expanded_tools.get(&t.id).copied().unwrap_or_default();
+            let exp = match self.expanded_tools.get(&t.id).copied() {
+                Some(expanded) => expanded,
+                None => SectionFlags::default(),
+            };
             let status = t.status;
             let tl = Self::build_tool_segment_lines(msg, status, &self.rctx(), exp);
             let id = t.id.clone();
             let mut seg = Segment::with_tool(id.clone());
-            seg.search_text = tl.search_text.clone();
+            seg.search_text.clone_from(&tl.search_text);
             seg.apply_highlight(tl, &self.hl_worker);
             let mut out = vec![seg];
             let blocks = msg

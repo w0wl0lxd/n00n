@@ -15,7 +15,7 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use tracing::warn;
+use tracing::{error, warn};
 use unicode_width::UnicodeWidthChar;
 
 use crate::animation::spinner_frame;
@@ -103,11 +103,18 @@ impl FilePickerModal {
         if let Err(e) = thread::Builder::new()
             .name("file-walker".into())
             .spawn(move || {
-                let overrides = OverrideBuilder::new(&root)
-                    .add("!.git")
-                    .unwrap()
-                    .build()
-                    .unwrap();
+                let mut builder = OverrideBuilder::new(&root);
+                if let Err(e) = builder.add("!.git") {
+                    error!(error = %e, "failed to add git override");
+                    return;
+                }
+                let overrides = match builder.build() {
+                    Ok(overrides) => overrides,
+                    Err(e) => {
+                        error!(error = %e, "failed to build file overrides");
+                        return;
+                    }
+                };
                 WalkBuilder::new(&root)
                     .hidden(false)
                     .overrides(overrides)
@@ -129,7 +136,10 @@ impl FilePickerModal {
                             {
                                 return ignore::WalkState::Continue;
                             }
-                            let path = entry.path().strip_prefix(&root).unwrap_or(entry.path());
+                            let path = entry
+                                .path()
+                                .strip_prefix(&root)
+                                .unwrap_or_else(|_| entry.path());
                             let mut name = path.to_string_lossy().into_owned();
                             if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                                 name.push(std::path::MAIN_SEPARATOR);
@@ -514,14 +524,14 @@ fn build_highlighted_line<'a>(
         }
         width += cw;
 
-        let is_match = indices.binary_search(&(i as u32)).is_ok();
-        if is_match != in_match && !run.is_empty() {
+        let matched = indices.binary_search(&(i as u32)).is_ok();
+        if matched != in_match && !run.is_empty() {
             spans.push(Span::styled(
                 mem::take(&mut run),
                 if in_match { highlight } else { base },
             ));
         }
-        in_match = is_match;
+        in_match = matched;
         run.push(ch);
     }
 
