@@ -81,7 +81,7 @@ fn login_provider(slug: &str, storage: &StateDir) -> Result<()> {
         api_key_optional,
     )?;
 
-    let mut provider_def = def.unwrap_or_default();
+    let mut provider_def = def.unwrap_or_else(Default::default);
     if let Some(plan_name) = &plan {
         provider_def.plan = Some(plan_name.clone());
     }
@@ -114,21 +114,18 @@ fn login_provider(slug: &str, storage: &StateDir) -> Result<()> {
 
     println!();
     let display = resolve_display_name(slug, config.get(slug));
-    println!("  \x1b[32m✓\x1b[0m Configured: {}", display);
+    println!("  \x1b[32m✓\x1b[0m Configured: {display}");
     if let Some(url) = resolve_base_url(slug, config.get(slug)) {
-        println!("  Endpoint: {}", url);
+        println!("  Endpoint: {url}");
     }
     if let Some(model) = &default_model {
-        println!("  Default model: {}", model);
+        println!("  Default model: {model}");
     }
     if has_key {
-        println!("  Credentials: ~/.local/state/n00n/auth/{}.json", slug);
+        println!("  Credentials: ~/.local/state/n00n/auth/{slug}.json");
     } else {
         let env_var = resolve_api_key_env(slug, config.get(slug));
-        println!(
-            "  Set API key via: {} or run: n00n auth login {}",
-            env_var, slug
-        );
+        println!("  Set API key via: {env_var} or run: n00n auth login {slug}",);
     }
 
     Ok(())
@@ -167,8 +164,8 @@ fn login_interactive(storage: &StateDir) -> Result<()> {
         let display = config
             .get(slug)
             .and_then(|d| d.display_name.as_deref())
-            .unwrap_or(slug);
-        println!("  {} {}. {:<14} {}", status, idx, slug, display);
+            .unwrap_or_else(|| slug);
+        println!("  {status} {idx}. {slug:<14} {display}");
     }
 
     let catalog_entries = catalog_providers();
@@ -186,10 +183,10 @@ fn login_interactive(storage: &StateDir) -> Result<()> {
     }
     idx += 1;
     let custom_idx = idx;
-    println!("    {}. Custom provider...", custom_idx);
+    println!("    {custom_idx}. Custom provider...");
     println!();
 
-    print!("  Select [1-{}]: ", custom_idx);
+    print!("  Select [1-{custom_idx}]: ");
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
@@ -217,7 +214,7 @@ fn login_interactive(storage: &StateDir) -> Result<()> {
 
 fn login_catalog_provider(provider: &ProviderData, storage: &StateDir) -> Result<()> {
     println!();
-    if let Some(ref var) = provider.env_keys.first() {
+    if let Some(var) = provider.env_keys.first() {
         println!("  Provider: {} (env: {var})", provider.slug);
     } else {
         println!("  Provider: {}", provider.slug);
@@ -324,17 +321,14 @@ fn login_custom(storage: &StateDir) -> Result<()> {
     config.save().context("save providers.toml")?;
 
     println!();
-    println!("  \x1b[32m✓\x1b[0m Configured: {}", slug);
-    println!("  Endpoint: {}", base_url);
+    println!("  \x1b[32m✓\x1b[0m Configured: {slug}");
+    println!("  Endpoint: {base_url}");
     if has_key {
-        println!("  Credentials: ~/.local/state/n00n/auth/{}.json", slug);
+        println!("  Credentials: ~/.local/state/n00n/auth/{slug}.json");
     } else {
-        println!(
-            "  Set API key via: {} or run: n00n auth login {}",
-            api_key_env, slug
-        );
+        println!("  Set API key via: {api_key_env} or run: n00n auth login {slug}",);
     }
-    println!("  Use with: n00n -m {}/<model>", slug);
+    println!("  Use with: n00n -m {slug}/<model>");
 
     Ok(())
 }
@@ -351,7 +345,7 @@ fn select_plan(
         }
         return Ok(None);
     }
-    let plans = plans.unwrap();
+    let Some(plans) = plans else { return Ok(None) };
 
     if let Some(d) = def
         && d.plan.is_some()
@@ -377,8 +371,8 @@ fn select_plan(
 }
 
 fn prompt_host_url(slug: &str, display_name: &str, def: Option<&ProviderDef>) -> Result<String> {
-    let default = resolve_base_url(slug, def).unwrap_or_default();
-    print!("  {} host URL [{}]: ", display_name, default);
+    let default = resolve_base_url(slug, def).unwrap_or_else(String::new);
+    print!("  {display_name} host URL [{default}]: ");
     io::stdout().flush()?;
 
     let mut url = String::new();
@@ -393,12 +387,12 @@ fn prompt_api_key(url: Option<&str>, display_name: &str, optional: bool) -> Resu
         if let Err(e) = open::that(url) {
             tracing::warn!(error = %e, "failed to open browser");
         }
-        println!("  Opened {} in your browser.", url);
+        println!("  Opened {url} in your browser.");
     }
     if optional {
-        print!("  {} API key (or Enter to skip): ", display_name);
+        print!("  {display_name} API key (or Enter to skip): ");
     } else {
-        print!("  {} API key: ", display_name);
+        print!("  {display_name} API key: ");
     }
     io::stdout().flush()?;
 
@@ -419,7 +413,7 @@ pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
             let deleted =
                 delete_provider_credentials(storage, &slug).context("delete credentials")?;
             if deleted {
-                println!("Removed credentials for '{}'.", slug);
+                println!("Removed credentials for '{slug}'.");
             }
             if config.remove(&slug) {
                 config.save().context("save providers.toml")?;
@@ -432,7 +426,7 @@ pub fn auth_logout(provider: &str, storage: &StateDir) -> Result<()> {
     Ok(())
 }
 
-pub fn auth_status(storage: &StateDir) -> Result<()> {
+pub fn auth_status(storage: &StateDir) {
     let config = ProvidersConfig::load();
     let builtins = all_builtins();
 
@@ -444,8 +438,7 @@ pub fn auth_status(storage: &StateDir) -> Result<()> {
         if let Some(creds) = load_provider_credentials(storage, b.slug) {
             let plan_info = def
                 .and_then(|d| d.plan.as_deref())
-                .map(|p| format!(" ({})", p))
-                .unwrap_or_default();
+                .map_or_else(String::new, |p| format!(" ({p})"));
             let masked = if creds.api_key.len() > 8 {
                 format!(
                     "{}...{}",
@@ -481,7 +474,7 @@ pub fn auth_status(storage: &StateDir) -> Result<()> {
         {
             continue;
         }
-        let display = def.display_name.as_deref().unwrap_or(slug);
+        let display = def.display_name.as_deref().unwrap_or_else(|| slug);
         if let Some(creds) = load_provider_credentials(storage, slug) {
             println!(
                 "  \x1b[32m✓\x1b[0m {:<14} {} (key: {})",
@@ -491,17 +484,11 @@ pub fn auth_status(storage: &StateDir) -> Result<()> {
             );
         } else {
             let default_env = format!("{}_API_KEY", slug.to_uppercase().replace('-', "_"));
-            let env_var = def.api_key_env.as_deref().unwrap_or(&default_env);
+            let env_var = def.api_key_env.as_deref().unwrap_or_else(|| &default_env);
             if env::var(env_var).is_ok() {
-                println!(
-                    "  \x1b[33m~\x1b[0m {:<14} {} (via {})",
-                    slug, display, env_var
-                );
+                println!("  \x1b[33m~\x1b[0m {slug:<14} {display} (via {env_var})");
             } else {
-                println!(
-                    "  \x1b[31m✗\x1b[0m {:<14} {} (run: n00n auth login {})",
-                    slug, display, slug
-                );
+                println!("  \x1b[31m✗\x1b[0m {slug:<14} {display} (run: n00n auth login {slug})");
             }
         }
     }
@@ -531,8 +518,6 @@ pub fn auth_status(storage: &StateDir) -> Result<()> {
         }
         println!();
     }
-
-    Ok(())
 }
 
 pub fn models() {
@@ -563,7 +548,7 @@ pub fn index(path: &str, no_plugins: bool, no_jit: bool) -> Result<()> {
     let raw_config = host.load_init_files(&cwd).context("load init.lua files")?;
 
     let mut config = raw_config
-        .unwrap_or_default()
+        .unwrap_or_else(Default::default)
         .into_config(false)
         .context("invalid config")?;
     config.permissions = load_permissions(&cwd);
@@ -574,7 +559,7 @@ pub fn index(path: &str, no_plugins: bool, no_jit: bool) -> Result<()> {
     let abs_path = Path::new(path)
         .canonicalize()
         .unwrap_or_else(|_| Path::new(path).to_path_buf());
-    let input = serde_json::json!({"path": abs_path.to_str().unwrap_or(path)});
+    let input = serde_json::json!({"path": abs_path.to_str().unwrap_or_else(|| path)});
     let reg = ToolRegistry::global_arc();
     let entry = reg
         .get("index")
@@ -602,11 +587,10 @@ pub fn mcp_auth(server: &str, storage: &StateDir) -> Result<()> {
             .mcp
             .get(server)
             .ok_or_else(|| color_eyre::eyre::eyre!("unknown MCP server: {server}"))?;
-        let url = match mcp_config::parse_server(server.to_owned(), raw.clone())?.transport {
-            mcp_config::Transport::Http { url, .. } => url,
-            _ => {
-                color_eyre::eyre::bail!("server '{server}' is not an HTTP transport");
-            }
+        let mcp_config::Transport::Http { url, .. } =
+            mcp_config::parse_server(server.to_owned(), raw.clone())?.transport
+        else {
+            color_eyre::eyre::bail!("server '{server}' is not an HTTP transport");
         };
         mcp_oauth::authenticate(server, &url, None, storage, mcp_oauth::Interaction::Cli).await?;
         eprintln!("Successfully authenticated with MCP server '{server}'");
@@ -624,6 +608,7 @@ pub fn mcp_logout(server: &str, storage: &StateDir) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::fn_params_excessive_bools)]
 pub fn prompt(
     variant: &crate::cli::PromptVariant,
     plan: bool,
@@ -651,7 +636,7 @@ pub fn prompt(
         PluginHost::with_jit(Arc::clone(reg), !no_jit).context("initialize lua plugin host")?;
     let raw_config = host.load_init_files(&cwd).context("load init.lua files")?;
     let config = raw_config
-        .unwrap_or_default()
+        .unwrap_or_else(Default::default)
         .into_config(false)
         .context("invalid config")?;
 
@@ -684,8 +669,7 @@ pub fn prompt(
     let instructions = load_instruction_text(&cwd_str);
     let slots = host
         .event_handle()
-        .map(|h| h.collect_prompt_slots())
-        .unwrap_or_default();
+        .map_or_else(Default::default, |h| h.collect_prompt_slots());
 
     let output = match variant {
         PromptVariant::System => {
@@ -698,7 +682,7 @@ pub fn prompt(
                 .provider
                 .default_model
                 .as_deref()
-                .unwrap_or("anthropic/claude-sonnet-4-20250514");
+                .unwrap_or_else(|| "anthropic/claude-sonnet-4-20250514");
             let model = Model::from_spec(model_spec).context("invalid default model")?;
             build_system_prompt(&vars, &mode, &instructions, &slots, &model)
         }

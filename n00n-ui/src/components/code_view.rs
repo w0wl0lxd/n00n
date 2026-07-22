@@ -156,7 +156,7 @@ fn render_diff(
     syntax: Option<&'static SyntaxReference>,
     before: &str,
     after: &str,
-    theme: Arc<Theme>,
+    theme: &Arc<Theme>,
 ) -> Vec<Line<'static>> {
     let hunks = compute_hunks(before, after);
     let Some(last) = hunks.last() else {
@@ -171,8 +171,8 @@ fn render_diff(
 
     let mut walkers = syntax.map(|s| {
         (
-            FileWalker::new(before, s, Arc::clone(&theme)),
-            FileWalker::new(after, s, Arc::clone(&theme)),
+            FileWalker::new(before, s, Arc::clone(theme)),
+            FileWalker::new(after, s, Arc::clone(theme)),
         )
     });
 
@@ -512,7 +512,7 @@ pub fn render_tool_content(
                 highlight.then(|| n00n_highlight::syntax_for_path(path)),
                 before,
                 after,
-                n00n_highlight::theme(),
+                &n00n_highlight::theme(),
             ),
             false,
         ),
@@ -525,7 +525,6 @@ pub fn render_tool_content(
                 render_instructions(blocks, &mut instruction_lines, limits.output, highlight);
             (instruction_lines, trunc)
         }
-        Some(ToolOutput::ReadDir(_)) => (Vec::new(), false),
         _ => (Vec::new(), false),
     };
     truncation.output = output_trunc;
@@ -669,7 +668,7 @@ mod tests {
             Some(n00n_highlight::syntax_for_path("test.rs")),
             before,
             after,
-            Arc::clone(&theme),
+            &theme,
         );
 
         let expected = fg_in_context(
@@ -694,7 +693,7 @@ mod tests {
             Some(n00n_highlight::syntax_for_path("test.rs")),
             before,
             after,
-            Arc::clone(&theme),
+            &theme,
         );
 
         let expected = fg_in_context("test.rs", "/*\ndoc\n", "fn x() {}", "fn", theme);

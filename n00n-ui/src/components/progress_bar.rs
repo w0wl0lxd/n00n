@@ -25,8 +25,9 @@ pub fn render(frame: &mut Frame, area: Rect, config: &ProgressBarConfig<'_>) {
     let ratio = config.ratio.clamp(0.0, 1.0);
     let cache_ratio = config.cache_ratio.clamp(0.0, 1.0);
     let width = config.bar_width as usize;
-    let filled = (ratio * width as f64).round() as usize;
-    let cache_filled = (cache_ratio * width as f64).round() as usize;
+    let filled = crate::cast::f64_to_usize((ratio * crate::cast::usize_to_f64(width)).round());
+    let cache_filled =
+        crate::cast::f64_to_usize((cache_ratio * crate::cast::usize_to_f64(width)).round());
     let cache_filled = cache_filled.min(filled);
 
     let mut spans = Vec::with_capacity(width);

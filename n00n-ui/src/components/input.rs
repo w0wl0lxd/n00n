@@ -185,7 +185,8 @@ impl InputBox {
     }
 
     pub fn set_max_input_lines(&mut self, max: u32) {
-        self.max_input_lines = max.clamp(1, u32::from(u16::MAX) - 2) as u16;
+        self.max_input_lines =
+            u16::try_from(max.clamp(1, u32::from(u16::MAX) - 2)).unwrap_or_else(|_| u16::MAX);
     }
 
     pub fn copy_text(&self) -> String {
@@ -203,12 +204,9 @@ impl InputBox {
 
     pub fn line_breaks(&self, content_width: u16) -> LineBreaks {
         let ew = effective_width(content_width.saturating_sub(2) as usize);
-        LineBreaks::from_heights(
-            self.buffer
-                .lines()
-                .iter()
-                .map(|line| visual_line_count(line.width(), ew) as u16),
-        )
+        LineBreaks::from_heights(self.buffer.lines().iter().map(|line| {
+            u16::try_from(visual_line_count(line.width(), ew)).unwrap_or_else(|_| u16::MAX)
+        }))
     }
 
     pub fn height(&self, width: u16) -> u16 {
@@ -218,7 +216,7 @@ impl InputBox {
             visual_lines += 1;
         }
         let capped = visual_lines.min(self.max_input_lines as usize);
-        (capped + 2) as u16
+        u16::try_from(capped + 2).unwrap_or_else(|_| u16::MAX)
     }
 
     pub fn is_at_first_line(&self) -> bool {
@@ -336,7 +334,9 @@ impl InputBox {
             .lines()
             .iter()
             .take(self.buffer.y())
-            .map(|line| visual_line_count(line.width(), ew) as u16)
+            .map(|line| {
+                u16::try_from(visual_line_count(line.width(), ew)).unwrap_or_else(|_| u16::MAX)
+            })
             .sum();
 
         let wrap_row = {
@@ -346,7 +346,8 @@ impl InputBox {
                 .take(self.buffer.x())
                 .map(|c| c.width().unwrap_or_else(|| 1))
                 .sum();
-            cursor_col.checked_div(ew).unwrap_or_else(|| 0) as u16
+            u16::try_from(cursor_col.checked_div(ew).unwrap_or_else(|| 0))
+                .unwrap_or_else(|_| u16::MAX)
         };
 
         lines_above + wrap_row
@@ -373,7 +374,8 @@ impl InputBox {
             }
         }
 
-        let mut total_vl = total_visual_lines(&self.buffer, ew, focused) as u16;
+        let mut total_vl = u16::try_from(total_visual_lines(&self.buffer, ew, focused))
+            .unwrap_or_else(|_| u16::MAX);
         if !self.pending_images.is_empty() {
             total_vl += 1;
         }

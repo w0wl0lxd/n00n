@@ -4,7 +4,7 @@
 //! orchestrators work without adaptation.
 //!
 //! Per-message wire ids (`uuid`, assistant `message.id`) use `uuid::Uuid::now_v7()` to emit the
-//! hyphenated-hex UUIDv7 shape that Claude Code SDK consumers expect, rather than n00n's base58
+//! hyphenated-hex `UUIDv7` shape that Claude Code SDK consumers expect, rather than n00n's base58
 //! `N00nId` canonical form.
 
 use std::collections::{HashMap, HashSet};
@@ -55,7 +55,7 @@ const TOOL_NAME_MAP: &[(&str, &str)] = &[
     ("skill", "Skill"),
 ];
 
-/// Emits a hyphenated-hex UUIDv7 string for Claude Code SDK wire ids
+/// Emits a hyphenated-hex `UUIDv7` string for Claude Code SDK wire ids
 /// (message.id, assistant message.id).
 #[allow(clippy::disallowed_methods)]
 fn wire_uuid() -> String {
@@ -395,8 +395,7 @@ fn n00n_to_claude_tool_name(name: &str) -> &str {
     TOOL_NAME_MAP
         .iter()
         .find(|(m, _)| *m == name)
-        .map(|(_, c)| *c)
-        .unwrap_or(name)
+        .map_or(name, |(_, c)| *c)
 }
 
 #[derive(Clone)]
@@ -456,6 +455,7 @@ struct Shared {
     pending: HashSet<String>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn run(params: SdkParams) -> Result<()> {
     let SdkParams {
         cli,
@@ -590,7 +590,7 @@ pub fn run(params: SdkParams) -> Result<()> {
                     mode: mode.agent_mode(&cwd),
                     images,
                     preamble: Vec::new(),
-                    thinking: Default::default(),
+                    thinking: n00n_providers::ThinkingConfig::default(),
                     fast,
                     workflow,
                     prompt: None,
@@ -614,14 +614,13 @@ pub fn run(params: SdkParams) -> Result<()> {
                     continue;
                 };
                 let data = cr.response;
-                if let Some(req_id) = data.get("request_id").and_then(Value::as_str) {
-                    if let Ok(mut shared) = shared.lock() {
-                        if shared.pending.remove(req_id) {
-                            let _ = handle
-                                .answer_tx
-                                .send(decode_permission_response(&data).encode());
-                        }
-                    }
+                if let Some(req_id) = data.get("request_id").and_then(Value::as_str)
+                    && let Ok(mut shared) = shared.lock()
+                    && shared.pending.remove(req_id)
+                {
+                    let _ = handle
+                        .answer_tx
+                        .send(decode_permission_response(&data).encode());
                 }
             }
             "control_cancel_request" => {
@@ -631,10 +630,10 @@ pub fn run(params: SdkParams) -> Result<()> {
                 ) else {
                     continue;
                 };
-                if let Ok(mut shared) = shared.lock() {
-                    if shared.pending.remove(&ccr.request_id) {
-                        let _ = handle.answer_tx.send(PermissionAnswer::Deny.encode());
-                    }
+                if let Ok(mut shared) = shared.lock()
+                    && shared.pending.remove(&ccr.request_id)
+                {
+                    let _ = handle.answer_tx.send(PermissionAnswer::Deny.encode());
                 }
             }
             other => warn!("unknown inbound message type: {other}"),
@@ -735,7 +734,7 @@ fn handle_control_request(
     shared: &Mutex<Shared>,
     startup_model: &Model,
 ) -> Result<()> {
-    let ok = Some(Value::Object(Default::default()));
+    let ok = Some(Value::Object(serde_json::Map::default()));
     match cr.request.subtype.as_str() {
         "initialize" => {
             if let Some(extra) = cr.request.extra.as_object()
@@ -767,7 +766,7 @@ fn handle_control_request(
                     None,
                     Some(format!(
                         "invalid permission mode: {}",
-                        mode_str.unwrap_or("<missing>")
+                        mode_str.unwrap_or_else(|| "<missing>")
                     )),
                 ),
             }
@@ -843,7 +842,7 @@ impl EventPump {
     fn spawn(mut self, event_rx: Receiver<Envelope>) -> smol::Task<()> {
         smol::spawn(async move {
             while let Ok(envelope) = event_rx.recv_async().await {
-                if let Err(e) = self.handle(envelope) {
+                if let Err(e) = self.handle(&envelope) {
                     warn!(error = %e, "sdk event pump stopped");
                     break;
                 }
@@ -854,8 +853,7 @@ impl EventPump {
     fn model_id(&self) -> String {
         self.shared
             .lock()
-            .map(|shared| shared.model.id.clone())
-            .unwrap_or_else(|_| "unknown".to_string())
+            .map_or_else(|_| "unknown".to_string(), |shared| shared.model.id.clone())
     }
 
     fn emit_stream(&self, events: Vec<Value>) -> Result<()> {
@@ -910,7 +908,8 @@ impl EventPump {
         Ok(())
     }
 
-    fn handle(&mut self, envelope: Envelope) -> Result<()> {
+    #[allow(clippy::too_many_lines)]
+    fn handle(&mut self, envelope: &Envelope) -> Result<()> {
         let parent_tool_use_id = envelope
             .subagent
             .as_ref()
@@ -933,7 +932,7 @@ impl EventPump {
             }
             AgentEvent::ToolStart(ts) => {
                 let name = ts.tool.to_string();
-                let input = ts.raw_input.clone().unwrap_or(Value::Null);
+                let input = ts.raw_input.clone().unwrap_or_else(|| Value::Null);
 
                 if self.include_partial_messages {
                     let model = self.model_id();
@@ -983,7 +982,7 @@ impl EventPump {
 
                 let content_value = serde_json::to_value(&tc.message.content)?;
                 if parent_tool_use_id.is_none() {
-                    self.result_text = content_text(&content_value).unwrap_or_default();
+                    self.result_text = content_text(&content_value).unwrap_or_else(String::new);
                 }
                 self.writer.emit(WireInner::Assistant(AssistantPayload {
                     message: AssistantMessage {
@@ -1007,11 +1006,9 @@ impl EventPump {
                 }))?;
             }
             AgentEvent::PermissionRequest { id, tool, .. } => {
-                let bypass = self
-                    .shared
-                    .lock()
-                    .map(|shared| shared.permission_mode == PermissionMode::BypassPermissions)
-                    .unwrap_or(false);
+                let bypass = self.shared.lock().is_ok_and(|shared| {
+                    shared.permission_mode == PermissionMode::BypassPermissions
+                });
                 if bypass {
                     let _ = self.answer_tx.send(PermissionAnswer::AllowSession.encode());
                     return Ok(());
@@ -1087,8 +1084,7 @@ mod tests {
         TOOL_NAME_MAP
             .iter()
             .find(|(_, c)| *c == name)
-            .map(|(m, _)| *m)
-            .unwrap_or(name)
+            .map_or(name, |(m, _)| *m)
     }
 
     #[test_case("bash", "Bash")]

@@ -254,7 +254,7 @@ impl LoginPicker {
             section: None,
         });
 
-        self.provider_items = items.clone();
+        self.provider_items.clone_from(&items);
         let mut picker = ListPicker::new();
         picker.open(items, TITLE);
         self.storage = Some(storage);
@@ -273,7 +273,7 @@ impl LoginPicker {
             _ => false,
         }
     }
-
+    #[allow(clippy::too_many_lines)]
     pub fn handle_key(&mut self, key: KeyEvent) -> LoginPickerAction {
         let action = match &mut self.step {
             Step::Closed => return LoginPickerAction::Consumed,
@@ -464,7 +464,7 @@ impl LoginPicker {
                                 .get(&slug_c)
                                 .cloned()
                                 .unwrap_or_else(Default::default);
-                            def.plan = plan_c.clone();
+                            def.plan.clone_from(&plan_c);
                             if let Some(url) = builtin_url_c {
                                 def.base_url = Some(url);
                             }
@@ -552,7 +552,7 @@ impl LoginPicker {
 
         self.transition(action)
     }
-
+    #[allow(clippy::too_many_lines)]
     fn transition(&mut self, action: StepAction) -> LoginPickerAction {
         match action {
             StepAction::None => LoginPickerAction::Consumed,
@@ -660,7 +660,7 @@ impl LoginPicker {
             }
         }
     }
-
+    #[allow(clippy::too_many_lines)]
     pub fn view(&mut self, frame: &mut Frame, area: Rect) -> Rect {
         match &mut self.step {
             Step::Closed => Rect::default(),

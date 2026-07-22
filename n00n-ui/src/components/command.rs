@@ -301,9 +301,9 @@ impl CommandPalette {
         if mcp_snap.generation != self.mcp_generation || lua_snap.generation != self.lua_generation
         {
             self.mcp_generation = mcp_snap.generation;
-            self.mcp_prompts = mcp_snap.prompts.clone();
+            self.mcp_prompts.clone_from(&mcp_snap.prompts);
             self.lua_generation = lua_snap.generation;
-            self.lua_commands = lua_snap.commands.clone();
+            self.lua_commands.clone_from(&lua_snap.commands);
             self.nucleo = Self::build_nucleo(&self.custom, &self.mcp_prompts, &self.lua_commands);
         }
         let Some(stripped) = input.strip_prefix('/') else {
@@ -460,17 +460,19 @@ impl CommandPalette {
     }
 
     pub fn view(&self, frame: &mut Frame, input_area: Rect) -> Option<Rect> {
+        const GAP: usize = 2;
+        const PAD: usize = 1;
         let filtered = &self.filtered;
         if filtered.is_empty() {
             return None;
         }
 
-        let popup_height = (filtered.len() as u16).min(input_area.y);
+        let popup_height = u16::try_from(filtered.len())
+            .unwrap_or_else(|_| u16::MAX)
+            .min(input_area.y);
         if popup_height == 0 {
             return None;
         }
-
-        const GAP: usize = 2;
         let max_name = filtered
             .iter()
             .map(|item| self.item_name(item).len())
@@ -481,8 +483,8 @@ impl CommandPalette {
             .map(|item| self.item_description(item).len())
             .max()
             .unwrap_or_else(|| 0);
-        const PAD: usize = 1;
-        let popup_width = (PAD + max_name + GAP + max_desc + PAD) as u16;
+        let popup_width =
+            u16::try_from(PAD + max_name + GAP + max_desc + PAD).unwrap_or_else(|_| u16::MAX);
 
         let popup = Rect {
             x: input_area.x,
@@ -503,7 +505,7 @@ impl CommandPalette {
 
                 if selected {
                     let s = t.item_selected;
-                    let highlighted_name = self.build_highlighted_spans(&name, &m.indices, s);
+                    let highlighted_name = Self::build_highlighted_spans(&name, &m.indices, s);
                     let mut spans = vec![Span::styled(" ".repeat(PAD), s)];
                     spans.extend(highlighted_name);
                     spans.push(Span::styled(" ".repeat(name_pad), s));
@@ -511,7 +513,7 @@ impl CommandPalette {
                     spans.push(Span::styled(" ".repeat(PAD), s));
                     Line::from(spans)
                 } else {
-                    let highlighted_name = self.build_highlighted_spans(&name, &m.indices, t.item);
+                    let highlighted_name = Self::build_highlighted_spans(&name, &m.indices, t.item);
                     let mut spans = vec![Span::raw(" ".repeat(PAD))];
                     spans.extend(highlighted_name);
                     spans.push(Span::raw(" ".repeat(name_pad)));
@@ -531,7 +533,7 @@ impl CommandPalette {
         Some(popup)
     }
 
-    fn build_highlighted_spans(&self, text: &str, indices: &[u32], base: Style) -> Vec<Span<'_>> {
+    fn build_highlighted_spans(text: &str, indices: &[u32], base: Style) -> Vec<Span<'static>> {
         if indices.is_empty() {
             return vec![Span::styled(text.to_string(), base)];
         }
@@ -546,7 +548,9 @@ impl CommandPalette {
         let mut run = String::new();
 
         for (i, ch) in text.chars().enumerate() {
-            let matched = indices.binary_search(&(i as u32)).is_ok();
+            let matched = indices
+                .binary_search(&u32::try_from(i).unwrap_or_else(|_| u32::MAX))
+                .is_ok();
             if matched != in_match && !run.is_empty() {
                 spans.push(Span::styled(
                     mem::take(&mut run),

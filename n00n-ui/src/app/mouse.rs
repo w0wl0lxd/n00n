@@ -22,7 +22,7 @@ pub(crate) struct ScrollbarDrag {
 
 impl App {
     pub(super) fn handle_mouse(&mut self, event: MouseEvent) {
-        if self.handle_scrollbar_mouse(&event) {
+        if self.handle_scrollbar_mouse(event) {
             return;
         }
         match event.kind {
@@ -107,7 +107,7 @@ impl App {
         }
     }
 
-    fn handle_scrollbar_mouse(&mut self, event: &MouseEvent) -> bool {
+    fn handle_scrollbar_mouse(&mut self, event: MouseEvent) -> bool {
         if !scrollbar::is_enabled() {
             return false;
         }
@@ -171,7 +171,9 @@ impl App {
                 };
                 let row_rel = i32::from(event.row.saturating_sub(track_y_start));
                 let max_thumb_start = (i32::from(viewport_height) - i32::from(thumb_len)).max(0);
-                let new_thumb_start = (row_rel - grab_offset).clamp(0, max_thumb_start) as u16;
+                let new_thumb_start =
+                    u16::try_from((row_rel - grab_offset).clamp(0, max_thumb_start))
+                        .unwrap_or_else(|_| u16::MAX);
                 let position = scrollbar::position_for_thumb_row(
                     content_len,
                     viewport_height,
@@ -185,7 +187,6 @@ impl App {
                 self.scrollbar_drag = None;
                 true
             }
-            MouseEventKind::Up(MouseButton::Left) => false,
             _ => false,
         }
     }
@@ -322,7 +323,7 @@ impl App {
                     raw_text: &copy_text,
                     line_breaks,
                 }];
-                selection::extract_selected_text(buf, &screen_sel, &regions)
+                selection::extract_selected_text(buf, screen_sel, &regions)
             }
             SelectionZone::Overlay => {
                 let scroll = self.scroll_offset(sel.zone);
@@ -334,7 +335,7 @@ impl App {
                     area: sel.area,
                     ..Default::default()
                 }];
-                selection::extract_selected_text(buf, &screen_sel, &regions)
+                selection::extract_selected_text(buf, screen_sel, &regions)
             }
         };
 

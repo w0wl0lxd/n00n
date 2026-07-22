@@ -214,7 +214,9 @@ impl Mascot {
 
         if let Some(start) = self.gaze_start {
             let elapsed = now.saturating_duration_since(start).as_millis();
-            let t = (elapsed as f64 / GAZE_TRANSITION_MS as f64).clamp(0.0, 1.0);
+            let t = (crate::cast::u128_to_f64(elapsed)
+                / crate::cast::u128_to_f64(GAZE_TRANSITION_MS))
+            .clamp(0.0, 1.0);
             self.gaze_x = self.gaze_from_x + (self.target_gaze_x - self.gaze_from_x) * t;
             self.gaze_y = self.gaze_from_y + (self.target_gaze_y - self.gaze_from_y) * t;
             if t >= 1.0 {
@@ -383,6 +385,7 @@ impl Layer {
 }
 
 impl Palette {
+    #[allow(clippy::too_many_lines)]
     fn new(theme: &Theme) -> Self {
         let (bg_r, bg_g, bg_b) = extract_rgb(theme.background, (20, 20, 28));
         let luma = 0.299 * f32::from(bg_r) + 0.587 * f32::from(bg_g) + 0.114 * f32::from(bg_b);
@@ -520,9 +523,9 @@ impl Palette {
         let (r, g, b) = extract_rgb(color, (0, 0, 0));
         let f = 1.0 - shadow_factor(role);
         Color::Rgb(
-            (f32::from(r) * f) as u8,
-            (f32::from(g) * f) as u8,
-            (f32::from(b) * f) as u8,
+            crate::cast::f32_to_u8(f32::from(r) * f),
+            crate::cast::f32_to_u8(f32::from(g) * f),
+            crate::cast::f32_to_u8(f32::from(b) * f),
         )
     }
 }
@@ -879,7 +882,8 @@ fn aa(d: f64, edge: f64) -> f64 {
 fn random_blink_interval() -> u64 {
     let mut rng = [0u8; 4];
     getrandom::fill(&mut rng).ok();
-    let range = (BLINK_INTERVAL_MAX_MS - BLINK_INTERVAL_MIN_MS) as u32;
+    let range =
+        u32::try_from(BLINK_INTERVAL_MAX_MS - BLINK_INTERVAL_MIN_MS).unwrap_or_else(|_| u32::MAX);
     BLINK_INTERVAL_MIN_MS + u64::from(u32::from_le_bytes(rng) % range)
 }
 

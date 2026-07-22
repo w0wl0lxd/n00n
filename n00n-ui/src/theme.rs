@@ -595,6 +595,7 @@ fn build_syntax_theme(
 }
 
 impl Theme {
+    #[allow(clippy::too_many_lines)]
     fn from_toml(toml_str: &str) -> Result<Self, String> {
         let full_table: toml::Table = toml::from_str(toml_str).map_err(|e| e.to_string())?;
 
@@ -813,7 +814,7 @@ impl Theme {
 }
 
 pub(crate) fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (f32::from(a) + (f32::from(b) - f32::from(a)) * t.clamp(0.0, 1.0)) as u8
+    crate::cast::f32_to_u8(f32::from(a) + (f32::from(b) - f32::from(a)) * t.clamp(0.0, 1.0))
 }
 
 pub(crate) fn dim_style(style: Style, factor: f32) -> Style {

@@ -688,7 +688,7 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
     };
     app.update(agent_msg(AgentEvent::TurnComplete(Box::new(
         TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: main_usage,
             model: "test".into(),
             context_size: None,
@@ -702,7 +702,7 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
     };
     app.update(subagent_msg(
         AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: sub_usage,
             model: "test".into(),
             context_size: None,
@@ -725,7 +725,7 @@ fn turn_complete_accumulates_usage_by_model() {
 
     app.update(agent_msg(AgentEvent::TurnComplete(Box::new(
         TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: TokenUsage {
                 input: 100,
                 output: 50,
@@ -738,7 +738,7 @@ fn turn_complete_accumulates_usage_by_model() {
     ))));
     app.update(subagent_msg(
         AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: TokenUsage {
                 input: 200,
                 output: 75,
@@ -1319,7 +1319,7 @@ fn edge_scroll_direction(zone: Rect, down: (u16, u16), drag: (u16, u16), expecte
     let state = app.selection_state.as_ref().unwrap();
     let edge_dir = match state {
         SelectionState::Dragging { edge_scroll, .. } => edge_scroll.as_ref().map(|es| es.dir),
-        _ => None,
+        SelectionState::PendingCopy { .. } => None,
     };
     assert_eq!(edge_dir, expected);
 }

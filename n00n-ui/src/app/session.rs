@@ -35,9 +35,9 @@ impl App {
 
     pub(crate) fn save_session(&mut self) {
         self.state.sync_session(
-            &self.shared_history,
-            &self.shared_transcript,
-            &self.shared_tool_outputs,
+            self.shared_history.as_ref(),
+            self.shared_transcript.as_ref(),
+            self.shared_tool_outputs.as_ref(),
             &self.permissions,
         );
         self.sync_ephemeral_state();

@@ -87,7 +87,9 @@ impl FloatWindow {
     fn scroll_by(&mut self, delta: i32) {
         let max_offset = self.layout().max_offset(self.viewport_h);
         if delta >= 0 {
-            self.scroll_offset = self.scroll_offset.saturating_sub(delta as usize);
+            self.scroll_offset = self
+                .scroll_offset
+                .saturating_sub(delta.unsigned_abs() as usize);
         } else {
             self.scroll_offset =
                 (self.scroll_offset + delta.unsigned_abs() as usize).min(max_offset);
@@ -374,7 +376,7 @@ impl FloatManager {
         }
         self.render_window(frame, idx, rect);
     }
-
+    #[allow(clippy::too_many_lines)]
     fn render_window(&mut self, frame: &mut Frame, idx: usize, popup: Rect) {
         let t = theme::current();
         let win = &mut self.windows[idx];
@@ -429,8 +431,8 @@ impl FloatManager {
         }
 
         let layout = win.layout();
-        let reserved_top_h = layout.reserved_top as u16;
-        let reserved_bot_h = layout.reserved_bot as u16;
+        let reserved_top_h = u16::try_from(layout.reserved_top).unwrap_or_else(|_| u16::MAX);
+        let reserved_bot_h = u16::try_from(layout.reserved_bot).unwrap_or_else(|_| u16::MAX);
         let chrome_h = reserved_top_h + reserved_bot_h;
 
         let (pinned_top_area, scroll_area, pinned_bot_area) =
@@ -496,12 +498,12 @@ impl FloatManager {
             frame.render_widget(Paragraph::new(pinned), pa);
         }
 
-        if scrollable as u16 > win.viewport_h {
+        if u16::try_from(scrollable).unwrap_or_else(|_| u16::MAX) > win.viewport_h {
             render_vertical_scrollbar(
                 frame,
                 scroll_area,
-                scrollable as u16,
-                win.scroll_offset as u16,
+                u16::try_from(scrollable).unwrap_or_else(|_| u16::MAX),
+                u16::try_from(win.scroll_offset).unwrap_or_else(|_| u16::MAX),
                 None,
             );
         }
@@ -591,21 +593,23 @@ fn resolve_rect(config: &FloatConfig, area: Rect) -> Rect {
             let row_off = row.unwrap_or_else(|| 0);
 
             let left = match config.anchor {
-                Anchor::NW | Anchor::SW => (area.x as i16 + col_off)
-                    .clamp(area.x as i16, (area.x + area.width) as i16)
-                    as u16,
-                Anchor::NE | Anchor::SE => ((area.x + area.width) as i16 - width as i16 + col_off)
-                    .clamp(area.x as i16, (area.x + area.width) as i16)
-                    as u16,
+                Anchor::NW | Anchor::SW => (area.x.cast_signed() + col_off)
+                    .clamp(area.x.cast_signed(), (area.x + area.width).cast_signed())
+                    .cast_unsigned(),
+                Anchor::NE | Anchor::SE => {
+                    ((area.x + area.width).cast_signed() - width.cast_signed() + col_off)
+                        .clamp(area.x.cast_signed(), (area.x + area.width).cast_signed())
+                        .cast_unsigned()
+                }
             };
             let top = match config.anchor {
-                Anchor::NW | Anchor::NE => (area.y as i16 + row_off)
-                    .clamp(area.y as i16, (area.y + area.height) as i16)
-                    as u16,
+                Anchor::NW | Anchor::NE => (area.y.cast_signed() + row_off)
+                    .clamp(area.y.cast_signed(), (area.y + area.height).cast_signed())
+                    .cast_unsigned(),
                 Anchor::SW | Anchor::SE => {
-                    ((area.y + area.height) as i16 - height as i16 + row_off)
-                        .clamp(area.y as i16, (area.y + area.height) as i16)
-                        as u16
+                    ((area.y + area.height).cast_signed() - height.cast_signed() + row_off)
+                        .clamp(area.y.cast_signed(), (area.y + area.height).cast_signed())
+                        .cast_unsigned()
                 }
             };
             (left, top)

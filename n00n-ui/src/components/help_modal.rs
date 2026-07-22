@@ -200,7 +200,7 @@ impl HelpModal {
             }
         }
 
-        let total = lines.len() as u16;
+        let total = u16::try_from(lines.len()).unwrap_or_else(|_| u16::MAX);
         let modal = Modal {
             title: TITLE,
             width_percent: 50,
