@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784710982851,
+  "lastUpdate": 1784711495338,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -431,6 +431,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 101144,
             "range": "± 11474",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "08c2021000c386a5b7b495d35661ec0021d83f20",
+          "message": "Merge pull request #61 from w0wl0lxd/fix/openai-session-continuity\n\nfix(providers): harden OpenAI session continuity",
+          "timestamp": "2026-07-22T04:59:09-04:00",
+          "tree_id": "93534fd77cb6fbeade1d583c75505882f9ac6c8c",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/08c2021000c386a5b7b495d35661ec0021d83f20"
+        },
+        "date": 1784711494479,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7789222,
+            "range": "± 214309",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 1613232,
+            "range": "± 50447",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 1621014,
+            "range": "± 144280",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9009115,
+            "range": "± 224256",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3020098,
+            "range": "± 67371",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3007091,
+            "range": "± 132525",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 793149,
+            "range": "± 19946",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 93078,
+            "range": "± 4323",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 92879,
+            "range": "± 5953",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1159111,
+            "range": "± 44977",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 478765,
+            "range": "± 14760",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 477350,
+            "range": "± 16573",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 53100,
+            "range": "± 6013",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 135374,
+            "range": "± 11332",
             "unit": "ns/iter"
           }
         ]
