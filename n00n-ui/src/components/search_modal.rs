@@ -51,7 +51,7 @@ pub struct SearchModal {
 impl SearchModal {
     pub fn new() -> Self {
         Self {
-            search: TextBuffer::new(String::new()),
+            search: TextBuffer::new(""),
             matches: Vec::new(),
             selected: 0,
             scroll_offset: 0,
@@ -375,7 +375,7 @@ mod tests {
     fn modal_with_query(query: &str, texts: &[&str]) -> SearchModal {
         let mut modal = SearchModal::new();
         modal.open(0, true);
-        modal.search = TextBuffer::new(query.into());
+        modal.search = TextBuffer::new(query);
         modal.update_matches(texts);
         modal
     }

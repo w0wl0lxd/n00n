@@ -94,8 +94,6 @@ pub(crate) enum PromptState {
 pub enum PermissionPrompt {
     Closed,
     Open {
-        #[allow(dead_code)]
-        id: String,
         tool: ToolKey,
         scopes: Vec<String>,
         subagent_id: Option<String>,
@@ -124,13 +122,7 @@ impl PermissionPrompt {
         Self::Closed
     }
 
-    pub fn open(
-        &mut self,
-        id: String,
-        tool: ToolKey,
-        scopes: Vec<String>,
-        subagent_id: Option<String>,
-    ) {
+    pub fn open(&mut self, tool: ToolKey, scopes: Vec<String>, subagent_id: Option<String>) {
         let allow_scopes = generalized_scopes(&tool, &scopes);
         let allow_scopes = if allow_scopes == scopes {
             vec![]
@@ -138,13 +130,12 @@ impl PermissionPrompt {
             allow_scopes
         };
         *self = Self::Open {
-            id,
             tool,
             scopes,
             subagent_id,
             allow_scopes,
             state: PromptState::Normal,
-            buffer: TextBuffer::new(String::new()),
+            buffer: TextBuffer::new(""),
         };
     }
 
@@ -173,7 +164,7 @@ impl PermissionPrompt {
                     }
                 }
                 KeyCode::Esc => {
-                    *buffer = TextBuffer::new(String::new());
+                    *buffer = TextBuffer::new("");
                     *state = PromptState::Normal;
                     None
                 }
@@ -372,12 +363,7 @@ mod tests {
 
     fn open_prompt() -> PermissionPrompt {
         let mut prompt = PermissionPrompt::new();
-        prompt.open(
-            "id".into(),
-            ToolKey::native("bash"),
-            vec!["execute".into()],
-            None,
-        );
+        prompt.open(ToolKey::native("bash"), vec!["execute".into()], None);
         prompt
     }
 
@@ -462,7 +448,7 @@ mod tests {
     #[test]
     fn wildcard_tool_key_opens() {
         let mut prompt = PermissionPrompt::new();
-        prompt.open("id".into(), ToolKey::Wildcard, vec![], None);
+        prompt.open(ToolKey::Wildcard, vec![], None);
         assert!(matches!(prompt, PermissionPrompt::Open { .. }));
     }
 }

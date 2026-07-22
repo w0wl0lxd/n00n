@@ -501,8 +501,15 @@ fn walk(schema: &ParamSchema, value: Value, path: &mut JsonPath) -> Result<Value
                     Err(_) => {}
                 }
             }
-            #[allow(clippy::expect_used)]
-            Err(first_error.expect("union variants are checked as non-empty while parsing"))
+            match first_error {
+                Some(error) => Err(error),
+                None => Err(ToolInputError::at(
+                    path,
+                    ToolInputErrorKind::InternalBug {
+                        detail: "union validation failed with no error details".to_string(),
+                    },
+                )),
+            }
         }
     }
 }

@@ -152,7 +152,6 @@ fn finish_compact(
         Message::user("What did we do so far?".into()),
         response.message,
     );
-    #[allow(clippy::unnecessary_lazy_evaluations)]
     let duration_ms =
         u64::try_from(compact_start.elapsed().as_millis()).unwrap_or_else(|_| u64::MAX);
     info!(

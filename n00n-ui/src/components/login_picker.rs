@@ -571,7 +571,7 @@ impl LoginPicker {
                     tracing::warn!(error = %e, url, "failed to open browser");
                 }
                 self.step = Step::EnterKey {
-                    input: TextBuffer::new(String::new()),
+                    input: TextBuffer::new(""),
                     slug,
                     plan,
                     display_name,
@@ -586,7 +586,7 @@ impl LoginPicker {
                 let default = providers::resolve_base_url(&slug, config.get(&slug))
                     .unwrap_or_else(Default::default);
                 self.step = Step::BuiltinUrl {
-                    input: TextBuffer::new(default),
+                    input: TextBuffer::new(&default),
                     slug,
                     display_name,
                 };
@@ -614,7 +614,7 @@ impl LoginPicker {
             }
             StepAction::GoCustomName => {
                 self.step = Step::CustomName {
-                    input: TextBuffer::new(String::new()),
+                    input: TextBuffer::new(""),
                 };
                 LoginPickerAction::Consumed
             }
@@ -630,7 +630,7 @@ impl LoginPicker {
             }
             StepAction::GoCustomUrl { slug, protocol } => {
                 self.step = Step::CustomUrl {
-                    input: TextBuffer::new(String::new()),
+                    input: TextBuffer::new(""),
                     slug,
                     protocol,
                 };
