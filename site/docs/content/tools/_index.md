@@ -116,11 +116,17 @@ Return a compact overview of a source file: imports, type definitions, function 
 
 ### `view_image` *(lua plugin)*
 
-View an image file (png, jpeg, gif, webp) so you can actually see it; it is returned as vision input alongside the tool result. Use instead of `read` for images.
+View an image without losing quality. Large images are split into tiles instead of being resized, so you see the real pixels. Animated GIFs need `allow_gif_animation=true` if the provider can play them, or `static_image=true` to show just the first frame (this also applies to animated WebP).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Path to the image file |
+| `crop` | array | no | Region to crop, as [x, y, width, height]. Each edge is at most 8000 pixels, and the area is at most 4 megapixels |
+| `allow_gif_animation` | boolean | no | Allow showing the raw animated GIF |
+| `static_image` | boolean | no | Show only the first frame, as a PNG |
+| `tile_index` | integer | no | Which tile to return, starting at 1 |
+| `tile_width` | integer | no | Tile width in pixels. Defaults to 2000, up to 4 megapixels |
+| `tile_height` | integer | no | Tile height in pixels. Defaults to 2000, up to 4 megapixels |
 
 ### `codegraph` *(lua plugin)*
 
