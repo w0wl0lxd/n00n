@@ -5,7 +5,8 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, Message, Model, RequestOptions, StopReason, StreamResponse, TokenUsage,
+    ContentBlock, Message, Model, OpenAiOptions, RequestOptions, StopReason, StreamResponse,
+    TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -37,11 +38,16 @@ pub fn resolve_compaction_model(
     provider: &Arc<dyn Provider>,
     model: &Model,
     timeouts: n00n_providers::Timeouts,
+    openai_options: OpenAiOptions,
 ) -> (Arc<dyn Provider>, Model) {
     if let Ok(registry) = n00n_providers::model_registry::model_registry().read()
         && let Some(spec) = registry.spec_for_tier_any(n00n_providers::ModelTier::Compaction)
         && let Ok(mut m) = Model::from_spec(&spec)
-        && let Ok(p) = n00n_providers::provider::from_model(&mut m, timeouts)
+        && let Ok(p) = n00n_providers::provider::from_model_with_openai_options(
+            &mut m,
+            timeouts,
+            openai_options,
+        )
     {
         return (Arc::from(p), m);
     }
@@ -62,6 +68,7 @@ pub struct AgentParams {
     pub permissions: Arc<PermissionManager>,
     pub session_id: Option<SessionRef>,
     pub timeouts: n00n_providers::Timeouts,
+    pub openai_options: OpenAiOptions,
     pub file_tracker: Arc<FileReadTracker>,
     pub prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     pub subagent_cancels: Arc<CancelMap<String>>,
@@ -104,6 +111,7 @@ pub struct Agent<'h> {
     opts: RequestOptions,
     session_id: Option<SessionRef>,
     timeouts: n00n_providers::Timeouts,
+    openai_options: OpenAiOptions,
     file_tracker: Arc<FileReadTracker>,
     prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     subagent_cancels: Arc<crate::cancel::CancelMap<String>>,
@@ -123,6 +131,7 @@ impl<'h> Agent<'h> {
             tool_output_lines: params.tool_output_lines,
             permissions: params.permissions,
             timeouts: params.timeouts,
+            openai_options: params.openai_options,
             history: run.history,
             system: run.system,
             event_tx: run.event_tx,
@@ -450,6 +459,7 @@ impl<'h> Agent<'h> {
             tool_output_lines: self.tool_output_lines,
             permissions: Arc::clone(&self.permissions),
             timeouts: self.timeouts,
+            openai_options: self.openai_options,
             file_tracker: Arc::clone(&self.file_tracker),
             prompt_slots: Arc::clone(&self.prompt_slots),
             opts: self.opts,
@@ -482,8 +492,12 @@ impl<'h> Agent<'h> {
     }
 
     async fn do_compact(&mut self) -> Result<(), AgentError> {
-        let (compact_provider, compact_model) =
-            resolve_compaction_model(&self.provider, &self.model, self.timeouts);
+        let (compact_provider, compact_model) = resolve_compaction_model(
+            &self.provider,
+            &self.model,
+            self.timeouts,
+            self.openai_options,
+        );
         let usage = compaction::compact_history(
             &*compact_provider,
             &compact_model,
@@ -712,6 +726,7 @@ mod tests {
                 )),
                 session_id: None,
                 timeouts: n00n_providers::Timeouts::default(),
+                openai_options: OpenAiOptions::default(),
                 file_tracker: FileReadTracker::fresh(),
                 prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
                 subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),
@@ -1093,6 +1108,7 @@ mod tests {
                     )),
                     session_id: None,
                     timeouts: n00n_providers::Timeouts::default(),
+                    openai_options: OpenAiOptions::default(),
                     file_tracker: FileReadTracker::fresh(),
                     prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
                     subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),

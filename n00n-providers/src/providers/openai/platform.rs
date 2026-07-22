@@ -93,6 +93,12 @@ impl Default for OpenAiOptions {
     }
 }
 
+impl From<&n00n_config::ProviderConfig> for OpenAiOptions {
+    fn from(config: &n00n_config::ProviderConfig) -> Self {
+        Self::with_coding_plan_slots(config.openai_coding_plan_slots)
+    }
+}
+
 struct ScopedResponsesWebSocket {
     socket: super::websocket::ResponsesWebSocket,
     credential_hash: String,
@@ -1949,6 +1955,24 @@ mod tests {
     const LEGACY_SESSION_ID: &str = "01965087-4c71-7f00-8000-000000000000";
     const TEST_CREDENTIAL_HASH: &str = "test-credential";
     const TEST_STREAM_TIMEOUT: Duration = Duration::from_secs(30);
+
+    #[test_case(1)]
+    #[test_case(8)]
+    fn provider_config_slots_reach_openai_provider(slots: u64) {
+        let config = n00n_config::ProviderConfig {
+            openai_coding_plan_slots: slots,
+            ..Default::default()
+        };
+        let auth = Arc::new(Mutex::new(ResolvedAuth::bearer("test-key")));
+        let provider = OpenAi::with_auth_options(
+            auth,
+            crate::providers::Timeouts::default(),
+            OpenAiOptions::from(&config),
+        )
+        .unwrap();
+
+        assert_eq!(provider.coding_plan_slots, u8::try_from(slots).unwrap());
+    }
 
     fn provider_with_response_storage(path: &Path) -> OpenAi {
         let auth = Arc::new(Mutex::new(ResolvedAuth::bearer("test-key")));

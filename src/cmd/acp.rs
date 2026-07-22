@@ -62,6 +62,7 @@ pub fn run(model_arg: Option<&str>, yolo: bool, no_jit: bool) -> Result<()> {
         config: config.agent,
         permissions_config: config.permissions,
         timeouts,
+        openai_options: n00n_providers::OpenAiOptions::from(&config.provider),
         initial_wd: cwd,
         mcp_handle,
         prompt_slots: Arc::new(prompt_slots),

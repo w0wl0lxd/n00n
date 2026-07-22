@@ -1,5 +1,5 @@
 use std::io::{Error as IoError, ErrorKind};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use async_tungstenite::WebSocketStream;
 use async_tungstenite::tungstenite::client::IntoClientRequest;
@@ -11,7 +11,7 @@ use futures::SinkExt;
 use futures_lite::StreamExt;
 use serde_json::{Value, json};
 use smol::Timer;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::responses::{
     ResponseAccumulator, build_body, is_semantic_progress_event, response_in_flight_timeout,
@@ -31,6 +31,7 @@ const MAX_POOL_IDLE: Duration = Duration::from_secs(30);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 const PREFLIGHT_PING_PAYLOAD: &[u8] = b"n00n-preflight";
 const MAX_SAFE_CLOSE_REASON_CHARS: usize = 120;
+const MALFORMED_RETRY_AFTER_DELAY: Duration = Duration::from_mins(1);
 
 type ResponsesSocket = WebSocketStream<async_tungstenite::smol::ConnectStream>;
 
@@ -525,16 +526,40 @@ fn ws_connect_err(auth: &ResolvedAuth, error: WsError) -> AgentError {
                 response
                     .headers()
                     .get("retry-after")
-                    .and_then(|value| value.to_str().ok()),
+                    .map(HeaderValue::as_bytes),
             ),
         };
     }
     ws_err(WsError::Http(response))
 }
 
-pub(crate) fn retry_after(value: Option<&str>) -> Option<Duration> {
-    let seconds = value.and_then(|value| value.trim().parse::<u64>().ok())?;
-    Some(Duration::from_secs(seconds))
+pub(crate) fn retry_after(value: Option<&[u8]>) -> Option<Duration> {
+    retry_after_at(value, SystemTime::now())
+}
+
+fn retry_after_at(value: Option<&[u8]>, now: SystemTime) -> Option<Duration> {
+    let value = value?;
+    if let Ok(delay) = parse_retry_after(value, now) {
+        Some(delay)
+    } else {
+        warn!(
+            fallback_seconds = MALFORMED_RETRY_AFTER_DELAY.as_secs(),
+            "provider returned malformed Retry-After; using conservative delay"
+        );
+        Some(MALFORMED_RETRY_AFTER_DELAY)
+    }
+}
+
+fn parse_retry_after(value: &[u8], now: SystemTime) -> Result<Duration, ()> {
+    let value = std::str::from_utf8(value).map_err(|_| ())?.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Ok(Duration::from_secs(seconds));
+    }
+    let deadline = httpdate::parse_http_date(value).map_err(|_| ())?;
+    match deadline.duration_since(now) {
+        Ok(delay) => Ok(delay),
+        Err(_) => Ok(Duration::ZERO),
+    }
 }
 
 fn ws_err(e: WsError) -> AgentError {
@@ -1336,6 +1361,26 @@ mod tests {
             }
             other => panic!("expected CodingPlanAdmission, got {other:?}"),
         }
+    }
+
+    #[test_case(b"invalid"; "nonnumeric")]
+    #[test_case(b"\xff"; "non_utf8")]
+    fn malformed_retry_after_uses_conservative_delay(value: &[u8]) {
+        assert_eq!(
+            super::retry_after(Some(value)),
+            Some(MALFORMED_RETRY_AFTER_DELAY)
+        );
+    }
+
+    #[test]
+    fn http_date_retry_after_uses_remaining_delay() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let value = httpdate::fmt_http_date(now + Duration::from_secs(7));
+
+        assert_eq!(
+            super::retry_after_at(Some(value.as_bytes()), now),
+            Some(Duration::from_secs(7))
+        );
     }
 
     #[test]

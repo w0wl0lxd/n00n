@@ -290,7 +290,7 @@ pub(crate) async fn do_stream(
             response
                 .headers()
                 .get("retry-after")
-                .and_then(|value| value.to_str().ok()),
+                .map(isahc::http::HeaderValue::as_bytes),
         );
         let error = AgentError::from_response(response).await;
         if auth.base_url.as_deref() == Some(super::auth::CODING_PLAN_BASE_URL)
