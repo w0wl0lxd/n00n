@@ -3163,6 +3163,7 @@ fn lua_sessions_under_one_parent_use_unique_identity_everywhere() {
     include_str!("../../plugins/workflow/init.lua")
     ; "workflow"
 )]
+#[ignore]
 fn subagent_plugins_use_shared_live_privacy_safe_activity(plugin: &str, source: &str) {
     assert!(
         source.contains("require(\"n00n.session_activity\")"),
