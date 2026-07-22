@@ -46,5 +46,4 @@ jobs:
           comment-on-alert: true
           alert-threshold: "200%"
           comment-always: ${{ github.event_name == 'pull_request' }}
-          skip-fetch-gh-pages: true
           gh-pages-branch: benchmark-data
