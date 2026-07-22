@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use n00n_agent::template::env_vars;
 use n00n_agent::tools::{
-    DescriptionContext, ToolAudience, ToolFilter, ToolRegistry, ToolSource, timeout_annotation,
+    ActiveTools, DescriptionContext, ToolAudience, ToolFilter, ToolRegistry, ToolSource,
+    timeout_annotation,
 };
 use n00n_config::{AlwaysThinking, PluginsConfig, ToolOutputLines};
 use n00n_lua::{PluginError, PluginHost, WARM_TOOL_CAP};
@@ -40,7 +41,7 @@ fn builtins_host() -> (Arc<ToolRegistry>, PluginHost) {
 #[test]
 fn builtin_main_tool_definitions_stay_within_prompt_budget() {
     let (registry, _host) = builtins_host();
-    let definitions = registry.definitions(
+    let definitions = registry.definitions_active(
         &env_vars(),
         &DescriptionContext {
             filter: &ToolFilter::All,
@@ -48,6 +49,7 @@ fn builtin_main_tool_definitions_stay_within_prompt_budget() {
             workflow: false,
         },
         true,
+        &ActiveTools::default(),
     );
     let bytes = serde_json::to_vec_pretty(&definitions).unwrap().len() + 1;
 
@@ -1011,7 +1013,9 @@ greet.setup()
     host.load_plugin_file(&init_path).unwrap();
 
     assert!(reg.has("greet"));
-    assert_eq!(reg.names().len(), 1);
+    assert!(reg.has("tool_search"));
+    assert!(reg.has("load_namespace"));
+    assert_eq!(reg.names().len(), 3);
 }
 
 #[test]
