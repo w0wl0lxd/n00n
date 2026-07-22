@@ -33,6 +33,7 @@ event-listener = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
 futures-lite = { workspace = true }
+libc = { workspace = true }
 pin-project-lite = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-astro-next = { workspace = true }
