@@ -124,19 +124,37 @@ fn parse_reset(rfc3339: &str) -> Option<u64> {
     u64::try_from(ts.as_millisecond()).ok()
 }
 
-fn spent(minor_units: f64, exponent: Option<u32>, currency: Option<&str>) -> String {
-    let exp = match exponent {
-        Some(e) => match i32::try_from(e) {
-            Ok(v) => v,
-            Err(_) => MONEY_EXPONENT,
-        },
-        None => MONEY_EXPONENT,
+fn spent(minor_units: i64, exponent: Option<u32>, currency: Option<&str>) -> String {
+    const DEFAULT_EXPONENT: u32 = MONEY_EXPONENT as u32;
+    let exp: u32 = match exponent {
+        Some(e) => e,
+        None => DEFAULT_EXPONENT,
     };
-    let amount = minor_units / 10f64.powi(exp);
+    let exp = exp.min(38); // prevent 10_i128 overflow
+
+    let sign = if minor_units < 0 { "-" } else { "" };
+    let abs = i128::from(minor_units.unsigned_abs());
+    let scaled_hundredths = if exp >= 2 {
+        let divisor = 10_i128.pow(exp - 2);
+        (abs + divisor / 2) / divisor
+    } else {
+        abs * i128::from(10_i64.pow(2 - exp))
+    };
+    let whole = scaled_hundredths / 100;
+    let frac = scaled_hundredths % 100;
+    let amount = format!("{sign}{whole}.{frac:02}");
     match currency {
-        None | Some("USD") => format!("${amount:.2} spent"),
-        Some(c) => format!("{amount:.2} {c} spent"),
+        None | Some("USD") => format!("${amount} spent"),
+        Some(c) => format!("{amount} {c} spent"),
     }
+}
+
+fn f64_minor_units_to_i64(value: f64) -> Option<i64> {
+    if !value.is_finite() {
+        return None;
+    }
+    let rounded = value.round();
+    format!("{rounded:.0}").parse::<i64>().ok()
 }
 
 fn limit_label(l: &ApiLimit) -> String {
@@ -168,14 +186,14 @@ fn credits_limit(u: &OauthUsage) -> Option<UsageLimit> {
     let (percent, detail) = match (&u.spend, &u.extra_usage) {
         (Some(s), _) if s.enabled => (
             s.percent.unwrap_or_else(Default::default),
-            s.used.as_ref().map(|m| {
-                #[allow(clippy::cast_precision_loss)]
-                spent(m.amount_minor as f64, m.exponent, m.currency.as_deref())
-            }),
+            s.used
+                .as_ref()
+                .map(|m| spent(m.amount_minor, m.exponent, m.currency.as_deref())),
         ),
         (None, Some(e)) if e.is_enabled => (
             e.utilization?,
             e.used_credits
+                .and_then(f64_minor_units_to_i64)
                 .map(|c| spent(c, e.decimal_places, e.currency.as_deref())),
         ),
         _ => return None,
