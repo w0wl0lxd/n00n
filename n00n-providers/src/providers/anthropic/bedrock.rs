@@ -17,7 +17,7 @@ use tracing::{debug, warn};
 
 use crate::model::Model;
 use crate::provider::{BoxFuture, Provider};
-use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse};
+use crate::{AgentError, Message, ProviderEvent, RequestOptions, StreamResponse, ThinkingConfig};
 
 use super::shared;
 
@@ -550,8 +550,122 @@ impl Bedrock {
     }
 }
 
+impl Bedrock {
+    fn build_body(
+        model: &Model,
+        messages: &[Message],
+        system: &str,
+        tools: &Value,
+        thinking: ThinkingConfig,
+    ) -> (Value, String) {
+        let requested_id = env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| model.id.clone());
+        let long_context = requested_id.ends_with(shared::LONG_CONTEXT_SUFFIX);
+        let model_id = shared::strip_long_context(&requested_id).to_string();
+
+        let mut body = shared::build_request_body_with_system(
+            model,
+            messages,
+            &[shared::SystemBlock {
+                r#type: "text",
+                text: system,
+                cache_control: Some(shared::EPHEMERAL),
+            }],
+            tools,
+            thinking,
+        );
+        // Fast mode lives only on the direct API, so Bedrock skips `opts.fast`
+        // and never sends the `speed` param.
+        body["anthropic_version"] = json!(BEDROCK_API_VERSION);
+        let has_examples = tools
+            .as_array()
+            .is_some_and(|arr| arr.iter().any(|t| t.get("input_examples").is_some()));
+        let mut betas = Vec::new();
+        if has_examples {
+            betas.push(shared::BETA_TOOL_EXAMPLES_BEDROCK);
+        }
+        if long_context {
+            betas.push(shared::LONG_CONTEXT_BETA);
+        }
+        if !betas.is_empty() {
+            body["anthropic_beta"] = json!(betas);
+        }
+
+        (body, model_id)
+    }
+
+    fn build_request(
+        &self,
+        model: &Model,
+        messages: &[Message],
+        system: &str,
+        tools: &Value,
+        opts: RequestOptions,
+    ) -> Result<(Request<Vec<u8>>, String), AgentError> {
+        let (body, model_id) = Bedrock::build_body(model, messages, system, tools, opts.thinking);
+        let json_body = serde_json::to_vec(&body)?;
+
+        let auth = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let encoded_model = super::super::urlenc(&model_id);
+        let url = match &self.base_url {
+            Some(base) => format!("{base}/model/{encoded_model}/invoke-with-response-stream"),
+            None => format!(
+                "https://bedrock-runtime.{}.amazonaws.com/model/{encoded_model}/invoke-with-response-stream",
+                auth.region
+            ),
+        };
+
+        let (host, _, _) = parse_url(&url);
+        let host = host.to_string();
+        let extra_headers = vec![("content-type", "application/json"), ("host", &host)];
+
+        let timestamp = now_timestamp();
+        let signing_headers = match &auth.kind {
+            AuthKind::SigV4 {
+                access_key,
+                secret_key,
+                session_token,
+                expires_at: _,
+            } => Some(sign_request_sigv4(&SigV4Request {
+                method: "POST",
+                url: &url,
+                headers: &extra_headers,
+                body: &json_body,
+                access_key,
+                secret_key,
+                session_token: session_token.as_deref(),
+                region: &auth.region,
+                service: "bedrock",
+                timestamp: &timestamp,
+            })?),
+            AuthKind::Bearer { token } => {
+                Some(vec![("Authorization".into(), format!("Bearer {token}"))])
+            }
+            AuthKind::None => None,
+        };
+
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(&url)
+            .header("user-agent", super::super::user_agent());
+        for (k, v) in &extra_headers {
+            builder = builder.header(*k, *v);
+        }
+        if let Some(ref sign_hdrs) = signing_headers {
+            for (k, v) in sign_hdrs {
+                builder = builder.header(k.as_str(), v.as_str());
+            }
+        }
+        let request = builder.body(json_body)?;
+
+        Ok((request, model_id))
+    }
+}
+
 impl Provider for Bedrock {
-    #[allow(clippy::too_many_lines)]
     fn stream_message<'a>(
         &'a self,
         model: &'a Model,
@@ -567,98 +681,9 @@ impl Provider for Bedrock {
                 debug!("Bedrock creds near expiry, refreshing before request");
                 self.reload_auth().await?;
             }
-            let auth = self
-                .auth
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
-            let requested_id = env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| model.id.clone());
-            let long_context = requested_id.ends_with(shared::LONG_CONTEXT_SUFFIX);
-            let model_id = shared::strip_long_context(&requested_id).to_string();
 
-            let mut body = shared::build_request_body_with_system(
-                model,
-                messages,
-                &[shared::SystemBlock {
-                    r#type: "text",
-                    text: system,
-                    cache_control: Some(shared::EPHEMERAL),
-                }],
-                tools,
-                opts.thinking,
-            );
-            // Fast mode lives only on the direct API, so Bedrock skips `opts.fast`
-            // and never sends the `speed` param.
-            body["anthropic_version"] = json!(BEDROCK_API_VERSION);
-            let has_examples = tools
-                .as_array()
-                .is_some_and(|arr| arr.iter().any(|t| t.get("input_examples").is_some()));
-            let mut betas = Vec::new();
-            if has_examples {
-                betas.push(shared::BETA_TOOL_EXAMPLES_BEDROCK);
-            }
-            if long_context {
-                betas.push(shared::LONG_CONTEXT_BETA);
-            }
-            if !betas.is_empty() {
-                body["anthropic_beta"] = json!(betas);
-            }
-
-            let encoded_model = super::super::urlenc(&model_id);
-            let url = match &self.base_url {
-                Some(base) => format!("{base}/model/{encoded_model}/invoke-with-response-stream"),
-                None => format!(
-                    "https://bedrock-runtime.{}.amazonaws.com/model/{encoded_model}/invoke-with-response-stream",
-                    auth.region
-                ),
-            };
-
-            let json_body = serde_json::to_vec(&body)?;
-
-            let (host, _, _) = parse_url(&url);
-            let host = host.to_string();
-            let extra_headers = vec![("content-type", "application/json"), ("host", &host)];
-
-            let timestamp = now_timestamp();
-            let signing_headers = match &auth.kind {
-                AuthKind::SigV4 {
-                    access_key,
-                    secret_key,
-                    session_token,
-                    expires_at: _,
-                } => Some(sign_request_sigv4(&SigV4Request {
-                    method: "POST",
-                    url: &url,
-                    headers: &extra_headers,
-                    body: &json_body,
-                    access_key,
-                    secret_key,
-                    session_token: session_token.as_deref(),
-                    region: &auth.region,
-                    service: "bedrock",
-                    timestamp: &timestamp,
-                })?),
-                AuthKind::Bearer { token } => {
-                    Some(vec![("Authorization".into(), format!("Bearer {token}"))])
-                }
-                AuthKind::None => None,
-            };
-
-            let mut builder = Request::builder()
-                .method("POST")
-                .uri(&url)
-                .header("user-agent", super::super::user_agent());
-            for (k, v) in &extra_headers {
-                builder = builder.header(*k, *v);
-            }
-            if let Some(ref sign_hdrs) = signing_headers {
-                for (k, v) in sign_hdrs {
-                    builder = builder.header(k.as_str(), v.as_str());
-                }
-            }
-            let request = builder.body(json_body)?;
-
-            debug!(model = %model_id, region = %auth.region, "sending Bedrock request");
+            let (request, model_id) = self.build_request(model, messages, system, tools, opts)?;
+            debug!(model = %model_id, region = %self.auth.lock().unwrap_or_else(std::sync::PoisonError::into_inner).region, "sending Bedrock request");
 
             let mut response = self.client.send_async(request).await?;
             let status = response.status().as_u16();
