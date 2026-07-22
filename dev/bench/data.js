@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784706733482,
+  "lastUpdate": 1784709193215,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -215,6 +215,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 191244,
             "range": "± 1633",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "387f766d1e9f8fdefb1a3e502ce42b695f6b981b",
+          "message": "Merge pull request #50 from w0wl0lxd/feat/stable-inline-images\n\nfix(ui): broaden terminal image protocol detection without stdin probe",
+          "timestamp": "2026-07-22T04:27:34-04:00",
+          "tree_id": "cb5263c00bb643b98d99432937dc01786bb03b2d",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/387f766d1e9f8fdefb1a3e502ce42b695f6b981b"
+        },
+        "date": 1784709192902,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6689609,
+            "range": "± 147972",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2365397,
+            "range": "± 6968",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2558040,
+            "range": "± 3480",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 9414265,
+            "range": "± 31739",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4325768,
+            "range": "± 29828",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4281163,
+            "range": "± 16656",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 584426,
+            "range": "± 3843",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191380,
+            "range": "± 1393",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191209,
+            "range": "± 276",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1022618,
+            "range": "± 5901",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 561327,
+            "range": "± 1285",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 562191,
+            "range": "± 3963",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 63063,
+            "range": "± 7854",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 134355,
+            "range": "± 27065",
             "unit": "ns/iter"
           }
         ]
