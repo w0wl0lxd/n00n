@@ -175,7 +175,7 @@ impl Splash {
             ease_out_cubic(t / FADE_DURATION)
         };
         if self.animate {
-            Self::render_field(area, buf, t + self.field_offset, fade, accent);
+            self.render_field(area, buf, t + self.field_offset, fade, accent);
         }
     }
 

@@ -123,7 +123,7 @@ fn subagent_info_with_channels(
     _parent_id: &str,
     name: &str,
     answer_tx: Option<flume::Sender<String>>,
-    prompt_tx: Option<flume::Sender<String>>,
+    prompt_tx: Option<flume::Sender<SubagentPrompt>>,
 ) -> SubagentInfo {
     SubagentInfo {
         parent_tool_use_id: session_id.into(),
@@ -2474,7 +2474,7 @@ fn draw_failure_pending_submission_restores_fifo_and_images_after_restart() {
         .expect("test owns the storage writer")
         .shutdown(WRITER_DRAIN_TIMEOUT);
 
-    let writer = Arc::new(StorageWriter::new(dir.clone()));
+    let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let mut restarted = build_app(dir.clone(), Arc::clone(&writer));
     let (shared, receiver) = shared_queue::queue();
     restarted.queue.set_shared(shared);
@@ -2562,7 +2562,7 @@ fn mcp_prompt_draw_failure_survives_restart_without_text_fallback() {
         .expect("test owns the storage writer")
         .shutdown(WRITER_DRAIN_TIMEOUT);
 
-    let writer = Arc::new(StorageWriter::new(dir.clone()));
+    let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let mut restarted = build_app_with_mcp(dir.clone(), Arc::clone(&writer), mcp_reader);
     let (shared, receiver) = shared_queue::queue();
     restarted.queue.set_shared(shared);
@@ -2950,7 +2950,8 @@ fn typing_in_running_subagent_routes_prompt_to_that_agent() {
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
     assert!(actions.is_empty());
-    assert_eq!(prompt_rx.try_recv().unwrap(), "hi");
+    let prompt = prompt_rx.try_recv().unwrap();
+    assert_eq!(prompt.text, "hi");
     assert_eq!(app.chats[1].last_message_text(), "hi");
     assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
 }
@@ -2982,7 +2983,7 @@ fn app_with_subagent_tx(id: &str) -> (App, flume::Receiver<String>, flume::Recei
     (app, sub_rx, main_rx)
 }
 
-fn app_with_steerable_subagent(id: &str) -> (App, flume::Receiver<String>) {
+fn app_with_steerable_subagent(id: &str) -> (App, flume::Receiver<SubagentPrompt>) {
     let (prompt_tx, prompt_rx) = flume::bounded(2);
     let mut app = test_app();
     app.status = Status::Streaming;
@@ -3058,7 +3059,8 @@ fn expanded_subagent_chat_sends_typed_steering() {
     let actions = app.update(Msg::Key(key(KeyCode::Enter)));
 
     assert!(actions.is_empty());
-    assert_eq!(prompt_rx.try_recv().unwrap(), "expand");
+    let prompt = prompt_rx.try_recv().unwrap();
+    assert_eq!(prompt.text, "expand");
     assert_eq!(app.chats[1].last_message_role(), Some(&DisplayRole::User));
     assert_eq!(app.chats[1].last_message_text(), "expand");
 }
@@ -3083,7 +3085,8 @@ fn expanded_subagent_chat_sends_pasted_steering() {
 
     app.update(Msg::Key(key(KeyCode::Enter)));
 
-    assert_eq!(prompt_rx.try_recv().unwrap(), "pasted steering");
+    let prompt = prompt_rx.try_recv().unwrap();
+    assert_eq!(prompt.text, "pasted steering");
     assert_eq!(app.chats[1].last_message_text(), "pasted steering");
 }
 

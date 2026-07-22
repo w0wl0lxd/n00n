@@ -509,7 +509,7 @@ impl App {
         };
         match tx.try_send(prompt) {
             Ok(()) => {
-                self.chats[idx].show_user_message_with_images(sub.text.clone(), sub.images.clone());
+                self.chats[idx].show_user_message_with_images(sub.text.clone(), sub.images);
                 Ok(())
             }
             Err(flume::TrySendError::Full(_)) => Err(SubagentPromptError::Full(sub)),
@@ -520,14 +520,14 @@ impl App {
         }
     }
 
-    fn handle_subagent_prompt_result(&mut self, subagent_id: String, sub: Submission) {
-        match self.send_subagent_prompt(&subagent_id, sub) {
+    fn handle_subagent_prompt_result(&mut self, subagent_id: &str, sub: Submission) {
+        match self.send_subagent_prompt(subagent_id, sub) {
             Ok(()) => {}
             Err(SubagentPromptError::Full(sub)) => {
                 self.flash(STEERING_BUSY_MSG.into());
                 self.input_box.set_submission(sub);
             }
-            Err(SubagentPromptError::Finished) | Err(SubagentPromptError::Disconnected) => {
+            Err(SubagentPromptError::Finished | SubagentPromptError::Disconnected) => {
                 self.flash(STEERING_UNAVAILABLE_MSG.into());
             }
         }
@@ -1097,7 +1097,7 @@ impl App {
                 return vec![];
             }
             PendingInput::SubagentFollowUp { subagent_id } => {
-                self.handle_subagent_prompt_result(subagent_id, sub);
+                self.handle_subagent_prompt_result(&subagent_id, sub);
                 return vec![];
             }
             PendingInput::None => {}
@@ -1109,7 +1109,7 @@ impl App {
             let Some(tool_use_id) = self.chats[self.active_chat].tool_use_id.clone() else {
                 return vec![];
             };
-            self.handle_subagent_prompt_result(tool_use_id, sub);
+            self.handle_subagent_prompt_result(&tool_use_id, sub);
             return vec![];
         }
         if sub.is_empty() {
@@ -1125,7 +1125,7 @@ impl App {
                 .find(|&(_, &idx)| idx == self.active_chat)
                 .map(|(id, _)| id.clone());
             if let Some(subagent_id) = subagent_id
-                && !self.send_subagent_prompt(&subagent_id, sub.text)
+                && self.send_subagent_prompt(&subagent_id, sub).is_err()
             {
                 self.flash(STEERING_UNAVAILABLE_MSG.into());
             }

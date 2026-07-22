@@ -191,6 +191,7 @@ impl AgentLoop {
         agent::compact(&*provider, &model, &mut self.history, event_tx).await
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn do_agent_run(
         &mut self,
         mut input: AgentInput,
@@ -249,7 +250,9 @@ impl AgentLoop {
             self.history.push(msg);
         }
         for pm in prompt_messages {
-            let text = pm.content.text.unwrap_or_default();
+            let Some(text) = pm.content.text else {
+                continue;
+            };
             let msg = match pm.role {
                 PromptRole::Assistant => Message {
                     role: n00n_providers::Role::Assistant,
