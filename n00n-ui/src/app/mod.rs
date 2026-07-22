@@ -812,7 +812,7 @@ impl App {
         if self.rewind_picker.is_open() {
             return Some(match self.rewind_picker.handle_key(key) {
                 RewindPickerAction::Consumed | RewindPickerAction::Close => vec![],
-                RewindPickerAction::Select(entry) => self.rewind_to(entry),
+                RewindPickerAction::Select(entry) => self.rewind_to(&entry),
             });
         }
 
@@ -1002,7 +1002,7 @@ impl App {
             CommandAction::Execute(cmd) => return self.execute_command(cmd),
             CommandAction::Complete(text) => {
                 self.command_palette.sync(&text);
-                self.input_box.set_input(text);
+                self.input_box.set_input(&text);
                 self.input_box.buffer.move_to_end();
                 return vec![];
             }
@@ -1563,9 +1563,14 @@ impl App {
             return vec![];
         }
 
-        if let ChatEventResult::PermissionRequest { id, tool, scopes } = result {
+        if let ChatEventResult::PermissionRequest {
+            id: _,
+            tool,
+            scopes,
+        } = result
+        {
             self.permission_prompt
-                .open(id, tool, scopes, subagent_id.clone());
+                .open(tool, scopes, subagent_id.clone());
             return vec![];
         }
 

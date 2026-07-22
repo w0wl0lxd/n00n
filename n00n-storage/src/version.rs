@@ -57,8 +57,7 @@ fn parse_tag(bytes: &[u8]) -> Result<String, VersionError> {
         .get("tag_name")
         .and_then(|t| t.as_str())
         .ok_or(VersionError::InvalidResponse("missing tag_name"))?;
-    #[allow(clippy::disallowed_methods)]
-    Ok(tag.strip_prefix('v').unwrap_or(tag).to_owned())
+    Ok(tag.strip_prefix('v').unwrap_or_else(|| tag).to_owned())
 }
 
 /// # Errors
