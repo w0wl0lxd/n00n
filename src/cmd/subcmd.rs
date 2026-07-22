@@ -125,7 +125,7 @@ fn login_provider(slug: &str, storage: &StateDir) -> Result<()> {
         println!("  Credentials: ~/.local/state/n00n/auth/{slug}.json");
     } else {
         let env_var = resolve_api_key_env(slug, config.get(slug));
-        println!("  Set API key via: {env_var} or run: n00n auth login {slug}",);
+        println!("  Set API key via: {env_var} or run: n00n auth login {slug}");
     }
 
     Ok(())
@@ -326,7 +326,7 @@ fn login_custom(storage: &StateDir) -> Result<()> {
     if has_key {
         println!("  Credentials: ~/.local/state/n00n/auth/{slug}.json");
     } else {
-        println!("  Set API key via: {api_key_env} or run: n00n auth login {slug}",);
+        println!("  Set API key via: {api_key_env} or run: n00n auth login {slug}");
     }
     println!("  Use with: n00n -m {slug}/<model>");
 
