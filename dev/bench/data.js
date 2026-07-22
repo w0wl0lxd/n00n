@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784737836088,
+  "lastUpdate": 1784747278010,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -1403,6 +1403,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 106641,
             "range": "± 6673",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ea6071d5bc4b0d18c29fb1bb0a8fb66ed0667c5f",
+          "message": "fix: remaining review issues from activity-preview-finish followup\n\n- n00n-providers/openai: use the event's output_index when a\n  function_call output_item.done has to create a new ToolAccumulator,\n  ensuring out-of-order SSE events sort correctly. Add regression test.\n- n00n-ui: route MouseEventKind::Moved through resolve_render_chat() so\n  mouse hover/tracking targets the task-picker previewed subagent chat.\n- n00n-lua/tests: remove ignored test referencing the non-existent\n  n00n.session_activity module.\n- n00n-lua: add unit tests covering Progress current/recent tool tracking,\n  completed_count, status transitions, and notification behavior.",
+          "timestamp": "2026-07-22T15:02:07-04:00",
+          "tree_id": "7f2258067f4ef1279ea927099ec709a1253f493c",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/ea6071d5bc4b0d18c29fb1bb0a8fb66ed0667c5f"
+        },
+        "date": 1784747277655,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 6443174,
+            "range": "± 259503",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2379747,
+            "range": "± 4664",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2389010,
+            "range": "± 6810",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 7456134,
+            "range": "± 198951",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 3621906,
+            "range": "± 17815",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 3621268,
+            "range": "± 11056",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 554012,
+            "range": "± 12664",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 167991,
+            "range": "± 245",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 167824,
+            "range": "± 278",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1066441,
+            "range": "± 9560",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 607966,
+            "range": "± 6921",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 608225,
+            "range": "± 5137",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 65260,
+            "range": "± 8300",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 145906,
+            "range": "± 23198",
             "unit": "ns/iter"
           }
         ]
