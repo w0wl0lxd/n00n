@@ -1141,13 +1141,7 @@ impl App {
     }
 
     fn handle_subagent_cancel(&mut self) -> Vec<Action> {
-        let tool_use_id = self
-            .chat_index
-            .iter()
-            .find(|&(_, &idx)| idx == self.active_chat)
-            .map(|(id, _)| id.clone());
-
-        let Some(tool_use_id) = tool_use_id else {
+        let Some(tool_use_id) = self.chats[self.active_chat].tool_use_id.clone() else {
             return vec![];
         };
 
