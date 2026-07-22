@@ -2919,6 +2919,7 @@ dependencies = [
  "tempfile",
  "test-case",
  "thiserror 2.0.19",
+ "tiktoken-rs",
  "toml",
  "toml_edit",
  "tracing",
