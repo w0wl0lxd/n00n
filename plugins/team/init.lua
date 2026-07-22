@@ -10,6 +10,7 @@ local roles = require("roles")
 local ibn = require("ibn")
 local quorum = require("quorum")
 local swarm = require("swarm")
+local telemetry = require("n00n.telemetry")
 
 local MAX_PLAN_STEPS = 8
 local DEFAULT_PLAN_STEPS = 6
@@ -47,10 +48,12 @@ local PLANNER_OUTPUT = {
         properties = {
           role = {
             type = "string",
-            enum = { "product_manager", "planner", "developer", "tester", "reviewer" },
+            enum = { "product_manager", "sprint", "planner", "developer", "tester", "reviewer" },
           },
           prompt = { type = "string" },
           tier = { type = "string", enum = { "weak", "medium", "strong" } },
+          acceptance_criteria = { type = "string" },
+          effort = { type = "string" },
         },
       },
     },
@@ -58,8 +61,7 @@ local PLANNER_OUTPUT = {
 }
 
 local description =
-  [[Run a bounded ALMAS team for an SDLC goal. Roles cover scope, planning, implementation, testing, and review on cost-aware tiers.
-supervised returns a plan; autonomous executes it with optional validator quorum; swarm runs bounded explorer/worker/validator rounds with an information-bottleneck fan-out gate. model overrides tiers; auto_tier routes by task. use_retrieval grounds work, compact TOON-encodes that context, and background returns an agent_id for agent_control. Default/hard budgets are 16/24 agents and 4 concurrent.]]
+  [[Run an ALMAS team for an SDLC goal. supervised returns a plan; autonomous executes it; swarm runs decentralized rounds. background returns an agent_id for agent_control.]]
 
 local schema = {
   type = "object",
@@ -140,6 +142,24 @@ local schema = {
       default = false,
       description = "Encode retrieved context as TOON (token-saving, opt-in).",
     },
+    use_summary = {
+      type = "boolean",
+      default = false,
+      description = "Use the Summary Agent index for retrieval.",
+    },
+    human_escalation = {
+      type = "boolean",
+      default = false,
+      description = "Pause on step failure and return a resumable run_id.",
+    },
+    resume = {
+      type = "string",
+      description = "Paused run_id to resume.",
+    },
+    continue = {
+      type = "string",
+      description = "Human guidance appended when resuming.",
+    },
   },
 }
 
@@ -162,7 +182,9 @@ end
 
 local function plan_prompt(goal)
   return "Decompose this goal into ordered SDLC steps. Assign each step exactly one role "
-    .. "from: product_manager, planner, developer, tester, reviewer. "
+    .. "from: product_manager, sprint, planner, developer, tester, reviewer. "
+    .. "Use the 'sprint' role to refine the goal into acceptance criteria and an effort estimate. "
+    .. "For any step, you may include optional 'acceptance_criteria' and 'effort' fields. "
     .. "Output the plan via the structured_output tool.\n\nGoal:\n"
     .. goal
 end
@@ -251,12 +273,15 @@ end
 
 local function run_step(ctx, step, goal, input, relay_k, prior_results)
   local step_prompt = step.prompt
+  if step.acceptance_criteria and #step.acceptance_criteria > 0 then
+    step_prompt = step_prompt .. "\n\nAcceptance criteria:\n" .. step.acceptance_criteria
+  end
   if prior_results and #prior_results > 0 then
     local prior = table.concat(prior_results, "\n\n"):sub(-MAX_RELAY_BYTES)
     step_prompt = step_prompt .. "\n\nResults from earlier plan steps:\n" .. prior
   end
   if input.use_retrieval ~= false then
-    local block = retrieve.retrieve(ctx, goal .. " " .. step.prompt, step.role, relay_k)
+    local block = retrieve.retrieve(ctx, goal .. " " .. step.prompt, step.role, relay_k, input.use_summary)
     if block and #block > 0 then
       if input.compact then
         local encoded, fmt = n00n.json.tooned({ context = block })
@@ -282,22 +307,64 @@ local function run_step(ctx, step, goal, input, relay_k, prior_results)
   return roles.run(ctx, step.role, step_prompt, role_opts)
 end
 
-local function run_autonomous(ctx, goal, input, steps, relay_k)
+local function run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_state)
   local results = {}
   local total_cost = 0.0
   local total_usage = roles.usage()
+  local start_index = 1
+  if resume_state then
+    results = resume_state.results or results
+    total_cost = resume_state.total_cost or total_cost
+    total_usage = resume_state.total_usage or total_usage
+    start_index = resume_state.start_index or start_index
+  end
   local failures = 0
-  for i, step in ipairs(steps) do
+  for i = start_index, #steps do
+    local step = steps[i]
+    if i == start_index and input.continue and #input.continue > 0 then
+      step.prompt = step.prompt .. "\n\nHuman guidance:\n" .. input.continue
+    end
+    if logger then
+      logger.log("step_started", { index = i, role = step.role, tier = step.tier })
+    end
     local r = run_step(ctx, step, goal, input, relay_k, results)
     total_cost = add_cost(total_cost, r.cost)
     total_usage = roles.add_usage(total_usage, r.usage)
     if not r.ok then
       failures = failures + 1
       results[#results + 1] = string.format("[%d] %s: ERROR %s", i, step.role, r.error)
+      if logger then
+        logger.log("step_error", { index = i, role = step.role, error = r.error })
+      end
+      if input.human_escalation then
+        memory.save_state(ctx, input.resume or memory.slug(goal), {
+          goal = goal,
+          steps = steps,
+          results = results,
+          total_cost = total_cost,
+          total_usage = total_usage,
+          failed_index = i,
+          start_index = i,
+        })
+        return results,
+          total_cost,
+          failures,
+          total_usage,
+          {
+            paused = true,
+            run_id = input.resume or memory.slug(goal),
+            failed_step = i,
+            failed_role = step.role,
+            error = r.error,
+          }
+      end
       break
     else
       local cost_line = cost_label(r.cost, r.model)
       results[#results + 1] = string.format("[%d] %s%s:\n%s", i, step.role, cost_line, r.text or "")
+      if logger then
+        logger.log("step_done", { index = i, role = step.role, cost = r.cost or 0, model = r.model })
+      end
 
       if input.quorum ~= false and (step.role == "tester" or step.role == "reviewer") then
         local verdict = quorum.validate(ctx, table.concat(results, "\n\n"), {
@@ -320,18 +387,32 @@ local function run_autonomous(ctx, goal, input, steps, relay_k)
       end
     end
   end
-  return results, total_cost, failures, total_usage
+  return results, total_cost, failures, total_usage, nil
 end
 
 -- Information-bottleneck fallback: a single strong-agent pass when fanning out
 -- would not help (strong model + single-step goal). Runs the plan in sequence,
 -- honoring each step's tier, rather than paying coordination cost.
-local function run_single_pass(ctx, goal, input, steps, relay_k)
+local function run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_state)
   local results = {}
   local total_cost = 0.0
   local total_usage = roles.usage()
+  local start_index = 1
+  if resume_state then
+    results = resume_state.results or results
+    total_cost = resume_state.total_cost or total_cost
+    total_usage = resume_state.total_usage or total_usage
+    start_index = resume_state.start_index or start_index
+  end
   local failures = 0
-  for i, step in ipairs(steps) do
+  for i = start_index, #steps do
+    local step = steps[i]
+    if i == start_index and input.continue and #input.continue > 0 then
+      step.prompt = step.prompt .. "\n\nHuman guidance:\n" .. input.continue
+    end
+    if logger then
+      logger.log("step_started", { index = i, role = step.role, tier = step.tier })
+    end
     local r = run_step(ctx, step, goal, input, relay_k, results)
     r.model = r.model or "strong"
     total_cost = add_cost(total_cost, r.cost)
@@ -339,13 +420,41 @@ local function run_single_pass(ctx, goal, input, steps, relay_k)
     if not r.ok then
       failures = failures + 1
       results[#results + 1] = string.format("[%d] %s: ERROR %s", i, step.role, r.error)
+      if logger then
+        logger.log("step_error", { index = i, role = step.role, error = r.error })
+      end
+      if input.human_escalation then
+        memory.save_state(ctx, input.resume or memory.slug(goal), {
+          goal = goal,
+          steps = steps,
+          results = results,
+          total_cost = total_cost,
+          total_usage = total_usage,
+          failed_index = i,
+          start_index = i,
+        })
+        return results,
+          total_cost,
+          failures,
+          total_usage,
+          {
+            paused = true,
+            run_id = input.resume or memory.slug(goal),
+            failed_step = i,
+            failed_role = step.role,
+            error = r.error,
+          }
+      end
       break
     else
       local cost_line = cost_label(r.cost, r.model)
       results[#results + 1] = string.format("[%d] %s%s:\n%s", i, step.role, cost_line, r.text or "")
+      if logger then
+        logger.log("step_done", { index = i, role = step.role, cost = r.cost or 0, model = r.model })
+      end
     end
   end
-  return results, total_cost, failures, total_usage
+  return results, total_cost, failures, total_usage, nil
 end
 
 local finish_run
@@ -362,7 +471,11 @@ local function run_team(input, ctx)
     if not id then
       return { llm_output = err, is_error = true }
     end
-    return n00n.json.encode({ agent_id = id, status = "started" })
+    local title = "team: " .. (input.goal or ""):sub(1, 60)
+    pcall(function()
+      n00n.session.set_title({ id = id, title = title })
+    end)
+    return n00n.json.encode({ agent_id = id, status = "started", title = title })
   end
 
   input.mode = input.mode or "supervised"
@@ -382,16 +495,55 @@ local function run_team(input, ctx)
     goal = goal .. "\n\nPrior learnings for this goal:\n" .. prior
   end
 
-  local steps, perr, supervisor_cost, supervisor_usage = run_supervisor(ctx, goal, input)
-  supervisor_usage = roles.usage(supervisor_usage)
+  local run_id = n00n.workflow.hash(input.goal .. "\0" .. tostring(os.time()))
+  local team_dir = memory.base_dir()
+  local logger
+  if team_dir then
+    logger = telemetry.open(n00n.fs.joinpath(team_dir, "events"), run_id)
+  end
+
+  local steps, perr, supervisor_cost, supervisor_usage
+  local resume_state
+  if input.resume and #input.resume > 0 then
+    resume_state = memory.load_state(ctx, input.resume)
+    if resume_state then
+      steps = resume_state.steps
+      goal = resume_state.goal
+      input.mode = input.mode or "autonomous"
+    else
+      return { llm_output = "resume run_id not found: " .. input.resume, is_error = true }
+    end
+  end
+
+  if not steps then
+    steps, perr, supervisor_cost, supervisor_usage = run_supervisor(ctx, goal, input)
+    supervisor_usage = roles.usage(supervisor_usage)
+  end
   if perr then
+    if logger then
+      logger.log("run_error", { error = perr })
+    end
     return { llm_output = perr, is_error = true, cost = supervisor_cost, usage = supervisor_usage }
   end
 
   if input.mode == "supervised" then
+    if logger then
+      logger.log("run_started", { mode = "supervised", goal = input.goal })
+    end
     local plan = {}
     for i, step in ipairs(steps) do
-      plan[#plan + 1] = string.format("%d. **%s** (%s): %s", i, step.role, step.tier or "default tier", step.prompt)
+      local extra = ""
+      if step.effort then
+        extra = extra .. " — effort: " .. step.effort
+      end
+      plan[#plan + 1] =
+        string.format("%d. **%s** (%s): %s%s", i, step.role, step.tier or "default tier", step.prompt, extra)
+      if step.acceptance_criteria and #step.acceptance_criteria > 0 then
+        plan[#plan + 1] = "   - *Acceptance*: " .. step.acceptance_criteria
+      end
+    end
+    if logger then
+      logger.log("run_done", { mode = "supervised", steps = #steps, goal = input.goal })
     end
     return {
       llm_output = table.concat(plan, "\n")
@@ -400,6 +552,10 @@ local function run_team(input, ctx)
       cost = supervisor_cost,
       usage = supervisor_usage,
     }
+  end
+
+  if logger then
+    logger.log("run_started", { mode = input.mode, goal = input.goal })
   end
 
   -- Information-bottleneck β gate: decide fan-out + relay budget (offline).
@@ -421,6 +577,7 @@ local function run_team(input, ctx)
         budget = input._agent_budget,
         thinking = input.thinking,
         quorum = input.quorum,
+        use_summary = input.use_summary,
         preview = input._preview,
       })
       local total_cost = add_cost(supervisor_cost, out.cost)
@@ -434,21 +591,49 @@ local function run_team(input, ctx)
         }
       end
       local results = { string.format("[swarm] β gate: %s\n\n%s", gate.reason, out.text or "") }
-      return finish_run(ctx, input, results, total_cost, out.rounds or 0, "rounds", slug, nil, total_usage)
+      return finish_run(ctx, input, results, total_cost, out.rounds or 0, "rounds", slug, nil, total_usage, logger)
     end
 
     -- β gate says don't fan out: single strong-agent pass, log the reason.
-    local results, total_cost, failures, total_usage = run_single_pass(ctx, goal, input, steps, relay_k)
-    total_cost = add_cost(supervisor_cost, total_cost)
-    total_usage = roles.add_usage(supervisor_usage, total_usage)
+    local results, sp_cost, sp_failures, sp_usage, pause =
+      run_single_pass(ctx, goal, input, steps, relay_k, logger, resume_state)
+    if pause then
+      if logger then
+        logger.log(
+          "human_escalation",
+          { run_id = pause.run_id, failed_step = pause.failed_step, failed_role = pause.failed_role }
+        )
+      end
+      return {
+        llm_output = n00n.json.encode(pause),
+        format = "json",
+        is_error = true,
+      }
+    end
+    total_cost = add_cost(supervisor_cost, sp_cost)
+    total_usage = roles.add_usage(supervisor_usage, sp_usage)
     results[1] = "[swarm] β gate: " .. gate.reason .. "\n" .. (results[1] or "")
-    return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures, total_usage)
+    return finish_run(ctx, input, results, total_cost, #results, "steps", slug, sp_failures, total_usage, logger)
   end
 
-  local results, total_cost, failures, total_usage = run_autonomous(ctx, goal, input, steps, relay_k)
-  total_cost = add_cost(supervisor_cost, total_cost)
-  total_usage = roles.add_usage(supervisor_usage, total_usage)
-  return finish_run(ctx, input, results, total_cost, #results, "steps", slug, failures, total_usage)
+  local results, auto_cost, auto_failures, auto_usage, pause =
+    run_autonomous(ctx, goal, input, steps, relay_k, logger, resume_state)
+  if pause then
+    if logger then
+      logger.log(
+        "human_escalation",
+        { run_id = pause.run_id, failed_step = pause.failed_step, failed_role = pause.failed_role }
+      )
+    end
+    return {
+      llm_output = n00n.json.encode(pause),
+      format = "json",
+      is_error = true,
+    }
+  end
+  total_cost = add_cost(supervisor_cost, auto_cost)
+  total_usage = roles.add_usage(supervisor_usage, auto_usage)
+  return finish_run(ctx, input, results, total_cost, #results, "steps", slug, auto_failures, total_usage, logger)
 end
 
 local function handler(input, ctx)
@@ -468,7 +653,7 @@ local function handler(input, ctx)
   return result
 end
 
-finish_run = function(ctx, input, results, total_cost, completed, unit, slug, failures, usage)
+finish_run = function(ctx, input, results, total_cost, completed, unit, slug, failures, usage, logger)
   local report = table.concat(results, "\n\n")
   local failed = failures or 0
   local successful = math.max(completed - failed, 0)
@@ -483,6 +668,14 @@ finish_run = function(ctx, input, results, total_cost, completed, unit, slug, fa
   end
 
   memory.save(ctx, slug, report .. summary)
+
+  if logger then
+    if failed > 0 then
+      logger.log("run_error", { completed = completed, failed = failed, total_cost = total_cost, unit = unit })
+    else
+      logger.log("run_done", { completed = completed, total_cost = total_cost, unit = unit })
+    end
+  end
 
   return {
     llm_output = report .. summary,
