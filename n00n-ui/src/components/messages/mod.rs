@@ -674,18 +674,22 @@ impl MessagesPanel {
         )
     }
 
+    fn shift_scroll_for_height_change(&mut self, old_height: u16, new_height: u16) {
+        let delta = i32::from(new_height) - i32::from(old_height);
+        self.scroll_top = if delta >= 0 {
+            self.scroll_top.saturating_add(delta as u16)
+        } else {
+            self.scroll_top.saturating_sub(delta.unsigned_abs() as u16)
+        };
+    }
+
     fn preserve_anchor(&mut self, old_start: Option<u32>, old_height: u16, tool_id: &str) {
         let Some(old_start) = old_start else {
             return;
         };
         let (_, new_height) = self.segment_position(tool_id);
         if old_start < u32::from(self.scroll_top) {
-            let delta = i32::from(new_height) - i32::from(old_height);
-            self.scroll_top = if delta >= 0 {
-                self.scroll_top.saturating_add(delta as u16)
-            } else {
-                self.scroll_top.saturating_sub(delta.unsigned_abs() as u16)
-            };
+            self.shift_scroll_for_height_change(old_height, new_height);
         }
     }
 
@@ -1415,6 +1419,8 @@ impl MessagesPanel {
         is_header: bool,
         theme_gen: Option<u64>,
     ) {
+        let (old_start, old_height) = self.segment_position(tool_id);
+        let anchor_auto_scroll = self.auto_scroll && self.last_total_lines > self.viewport_height;
         if theme_gen.is_some() {
             // A generation only comes with restore replies. The restore
             // superseded the old live view (and evicted the runtime's
@@ -1433,6 +1439,12 @@ impl MessagesPanel {
             }
             msg.snapshot_theme_gen = applied_gen;
             self.rebuild_tool_segment(tool_id);
+            let (_, new_height) = self.segment_position(tool_id);
+            if anchor_auto_scroll {
+                self.shift_scroll_for_height_change(old_height, new_height);
+            } else {
+                self.preserve_anchor(old_start, old_height, tool_id);
+            }
         }
     }
 

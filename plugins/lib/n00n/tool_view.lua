@@ -134,7 +134,7 @@ function ToolView:set_header(lines)
   self:flush()
 end
 
-function ToolView:clear()
+local function reset_content(self)
   self.ring = {}
   self.ring_start = 1
   self.ring_count = 0
@@ -142,10 +142,14 @@ function ToolView:clear()
   self.all_lines = {}
   self.all_skipped = 0
   self.ring_map = {}
+end
+
+function ToolView:clear()
+  reset_content(self)
   self:flush()
 end
 
-function ToolView:append(line)
+local function append_line(self, line, publish)
   line = truncate_line(line, self.max_line_bytes, self.max_width)
   local all_idx
   if #self.all_lines < self.max_expand_lines then
@@ -162,7 +166,9 @@ function ToolView:append(line)
       if all_idx then
         self.ring_map[self.ring_count] = all_idx
       end
-      self:flush()
+      if publish then
+        self:flush()
+      end
     else
       self.skipped = self.skipped + 1
     end
@@ -181,13 +187,37 @@ function ToolView:append(line)
       self.ring_start = (self.ring_start % self.max) + 1
       self.skipped = self.skipped + 1
     end
-    self:flush()
+    if publish then
+      self:flush()
+    end
   end
+end
+
+function ToolView:append(line)
+  append_line(self, line, true)
 end
 
 function ToolView:append_text(text)
   for _, line in ipairs(n00n.split(text, "\n")) do
-    self:append(line)
+    append_line(self, line, true)
+  end
+end
+
+-- Replace the logical result in one publication. Expansion is view state,
+-- so it survives live-result updates while readers never observe a partial card.
+function ToolView:replace_lines(lines)
+  reset_content(self)
+  for _, line in ipairs(lines) do
+    append_line(self, line, false)
+  end
+  self:flush()
+end
+
+function ToolView:replace_text(text)
+  if text == "" then
+    self:replace_lines({})
+  else
+    self:replace_lines(n00n.split(text, "\n"))
   end
 end
 
