@@ -180,6 +180,7 @@ fn spawn_session(
         config: params.config.clone(),
         permissions_config: params.permissions_config.clone(),
         timeouts: params.timeouts,
+        openai_options: params.openai_options,
         prompt_slots: Arc::clone(&params.prompt_slots),
         excluded_tools: Vec::new(),
         mcp_handle: params.mcp_handle.clone(),

@@ -5,7 +5,8 @@ use tracing::{error, info, warn};
 
 use n00n_providers::provider::Provider;
 use n00n_providers::{
-    ContentBlock, Message, Model, RequestOptions, StopReason, StreamResponse, TokenUsage,
+    ContentBlock, Message, Model, OpenAiOptions, RequestOptions, StopReason, StreamResponse,
+    TokenUsage,
 };
 
 use super::compaction::{self, CONTINUE_AFTER_COMPACT};
@@ -24,6 +25,8 @@ use crate::{
 use n00n_config::ToolOutputLines;
 use n00n_storage::id::SessionRef;
 
+use crate::tokenize::{count_json, count_tokens};
+
 const MAX_REAUTH_ATTEMPTS: u32 = 2;
 const NUDGE_PROMPT: &str = "You just executed tool calls but returned an empty response. Please process the tool results above and continue with the task.";
 const MAX_TOKENS_CONTINUE_PROMPT: &str = "Continue exactly where you stopped.";
@@ -37,11 +40,16 @@ pub fn resolve_compaction_model(
     provider: &Arc<dyn Provider>,
     model: &Model,
     timeouts: n00n_providers::Timeouts,
+    openai_options: OpenAiOptions,
 ) -> (Arc<dyn Provider>, Model) {
     if let Ok(registry) = n00n_providers::model_registry::model_registry().read()
         && let Some(spec) = registry.spec_for_tier_any(n00n_providers::ModelTier::Compaction)
         && let Ok(mut m) = Model::from_spec(&spec)
-        && let Ok(p) = n00n_providers::provider::from_model(&mut m, timeouts)
+        && let Ok(p) = n00n_providers::provider::from_model_with_openai_options(
+            &mut m,
+            timeouts,
+            openai_options,
+        )
     {
         return (Arc::from(p), m);
     }
@@ -62,6 +70,7 @@ pub struct AgentParams {
     pub permissions: Arc<PermissionManager>,
     pub session_id: Option<SessionRef>,
     pub timeouts: n00n_providers::Timeouts,
+    pub openai_options: OpenAiOptions,
     pub file_tracker: Arc<FileReadTracker>,
     pub prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     pub subagent_cancels: Arc<CancelMap<String>>,
@@ -106,6 +115,7 @@ pub struct Agent<'h> {
     opts: RequestOptions,
     session_id: Option<SessionRef>,
     timeouts: n00n_providers::Timeouts,
+    openai_options: OpenAiOptions,
     file_tracker: Arc<FileReadTracker>,
     prompt_slots: Arc<crate::prompt::ResolvedSlots>,
     subagent_cancels: Arc<crate::cancel::CancelMap<String>>,
@@ -125,6 +135,7 @@ impl<'h> Agent<'h> {
             tool_output_lines: params.tool_output_lines,
             permissions: params.permissions,
             timeouts: params.timeouts,
+            openai_options: params.openai_options,
             history: run.history,
             system: run.system,
             event_tx: run.event_tx,
@@ -232,7 +243,8 @@ impl<'h> Agent<'h> {
             .unwrap_or_else(|| rollback_len);
         let msg = Message::user_with_images(input.message.clone(), input.images);
         self.history.push(msg);
-        self.context_size = estimate_message_tokens(self.history.as_slice());
+        self.context_size =
+            estimate_message_tokens(self.history.as_slice()) + estimate_tool_tokens(&self.tools);
         self.mode = input.mode;
         self.workflow = input.workflow;
         self.opts = RequestOptions {
@@ -485,6 +497,7 @@ impl<'h> Agent<'h> {
             tool_output_lines: self.tool_output_lines,
             permissions: Arc::clone(&self.permissions),
             timeouts: self.timeouts,
+            openai_options: self.openai_options,
             file_tracker: Arc::clone(&self.file_tracker),
             prompt_slots: Arc::clone(&self.prompt_slots),
             opts: self.opts,
@@ -520,8 +533,12 @@ impl<'h> Agent<'h> {
         if !self.commit_pre_dispatch() {
             return Err(AgentError::Cancelled);
         }
-        let (compact_provider, compact_model) =
-            resolve_compaction_model(&self.provider, &self.model, self.timeouts);
+        let (compact_provider, compact_model) = resolve_compaction_model(
+            &self.provider,
+            &self.model,
+            self.timeouts,
+            self.openai_options,
+        );
         let usage = compaction::compact_history(
             &*compact_provider,
             &compact_model,
@@ -536,7 +553,8 @@ impl<'h> Agent<'h> {
         self.event_tx.send(AgentEvent::CompactionDone)?;
         self.history
             .push(Message::synthetic(CONTINUE_AFTER_COMPACT.into()));
-        self.context_size = estimate_message_tokens(self.history.as_slice());
+        self.context_size =
+            estimate_message_tokens(self.history.as_slice()) + estimate_tool_tokens(&self.tools);
         Ok(())
     }
 
@@ -573,29 +591,41 @@ impl<'h> Agent<'h> {
     }
 }
 
-const CHARS_PER_TOKEN: usize = 4;
+#[must_use]
+#[allow(clippy::manual_unwrap_or)]
+fn u32_from_usize(value: usize) -> u32 {
+    match u32::try_from(value) {
+        Ok(n) => n,
+        Err(_) => u32::MAX,
+    }
+}
 
 #[must_use]
 pub fn estimate_message_tokens(messages: &[Message]) -> u32 {
     if messages.is_empty() {
         return 0;
     }
-    let total_bytes: usize = messages
+    let total: usize = messages
         .iter()
         .flat_map(|m| &m.content)
         .map(|b| match b {
-            ContentBlock::Text { text } => text.len(),
+            ContentBlock::Text { text } => count_tokens(text),
             ContentBlock::Thinking {
                 thinking,
                 signature,
-            } => thinking.len() + signature.as_ref().map_or(0, String::len),
-            ContentBlock::RedactedThinking { data } => data.len(),
-            ContentBlock::ToolResult { content, .. } => content.len(),
-            ContentBlock::ToolUse { input, .. } => input.to_string().len(),
-            ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN,
+            } => count_tokens(thinking) + signature.as_ref().map_or(0, |s| count_tokens(s)),
+            ContentBlock::RedactedThinking { data } => count_tokens(data),
+            ContentBlock::ToolResult { content, .. } => count_tokens(content),
+            ContentBlock::ToolUse { input, .. } => count_json(input),
+            ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
         })
         .sum();
-    u32::try_from(total_bytes.max(CHARS_PER_TOKEN) / CHARS_PER_TOKEN).unwrap_or_else(|_| u32::MAX)
+    u32_from_usize(total)
+}
+
+#[must_use]
+pub fn estimate_tool_tokens(tools: &Value) -> u32 {
+    u32_from_usize(count_json(tools))
 }
 
 #[cfg(test)]
@@ -608,8 +638,8 @@ mod tests {
 
     use n00n_providers::provider::{BoxFuture, Provider};
     use n00n_providers::{
-        ContentBlock, Message, Model, ProviderEvent, RequestOptions, Role, StopReason,
-        StreamResponse, TokenUsage,
+        ContentBlock, ImageMediaType, ImageSource, Message, Model, ProviderEvent, RequestOptions,
+        Role, StopReason, StreamResponse, TokenUsage,
     };
     use n00n_storage::sessions::TranscriptEntry;
     use serde_json::Value;
@@ -620,6 +650,74 @@ mod tests {
     use crate::permissions::PermissionManager;
 
     const COST_EPSILON: f64 = 1e-12;
+
+    #[test]
+    fn estimate_message_tokens_counts_content_blocks() {
+        let messages = vec![Message::user("hello world".into())];
+        let tokens = estimate_message_tokens(&messages);
+        assert!(tokens > 0, "expected positive token count for messages");
+    }
+
+    #[test]
+    fn estimate_tool_tokens_counts_json() {
+        let tools = serde_json::json!([{"name": "skill", "description": "A tool"}]);
+        let tokens = estimate_tool_tokens(&tools);
+        assert!(tokens > 0, "expected positive token count for tools");
+    }
+
+    #[test]
+    fn estimate_message_tokens_empty_is_zero() {
+        assert_eq!(estimate_message_tokens(&[]), 0);
+    }
+
+    #[test]
+    fn estimate_message_tokens_counts_each_content_block() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text { text: "hi".into() },
+                ContentBlock::Image {
+                    source: ImageSource {
+                        media_type: ImageMediaType::Png,
+                        data: Arc::from("data"),
+                    },
+                },
+            ],
+            ..Default::default()
+        }];
+        let tokens = estimate_message_tokens(&messages);
+        assert!(
+            tokens >= u32_from_usize(IMAGE_TOKEN_ESTIMATE),
+            "image blocks should add {IMAGE_TOKEN_ESTIMATE} tokens"
+        );
+    }
+
+    #[test]
+    fn estimate_message_tokens_counts_thinking_and_signature() {
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "thinking text".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::RedactedThinking {
+                    data: "redacted".into(),
+                },
+            ],
+            ..Default::default()
+        }];
+        let tokens = estimate_message_tokens(&messages);
+        assert!(
+            tokens > 0,
+            "thinking and redacted blocks should contribute tokens"
+        );
+    }
+
+    #[test]
+    fn estimate_tool_tokens_empty_array_costs_one() {
+        assert_eq!(estimate_tool_tokens(&serde_json::json!([])), 1);
+    }
 
     struct MockInterruptSource {
         commands: Mutex<VecDeque<ExtractedCommand>>,
@@ -773,6 +871,7 @@ mod tests {
                 )),
                 session_id: None,
                 timeouts: n00n_providers::Timeouts::default(),
+                openai_options: OpenAiOptions::default(),
                 file_tracker: FileReadTracker::fresh(),
                 prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
                 subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),
@@ -1154,6 +1253,7 @@ mod tests {
                     )),
                     session_id: None,
                     timeouts: n00n_providers::Timeouts::default(),
+                    openai_options: OpenAiOptions::default(),
                     file_tracker: FileReadTracker::fresh(),
                     prompt_slots: Arc::new(crate::prompt::ResolvedSlots::default()),
                     subagent_cancels: Arc::new(crate::cancel::CancelMap::new()),

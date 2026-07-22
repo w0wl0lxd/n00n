@@ -1,6 +1,7 @@
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::shell::parse_shell_prefix;
+use crate::cast;
 use crate::highlight;
 use crate::text_buffer::{EditResult, TextBuffer, is_newline_key};
 use crate::theme;
@@ -185,7 +186,7 @@ impl InputBox {
     }
 
     pub fn set_max_input_lines(&mut self, max: u32) {
-        self.max_input_lines = max.clamp(1, u32::from(u16::MAX) - 2) as u16;
+        self.max_input_lines = cast::u32_to_u16(max.clamp(1, u32::from(u16::MAX) - 2));
     }
 
     pub fn copy_text(&self) -> String {
@@ -207,7 +208,7 @@ impl InputBox {
             self.buffer
                 .lines()
                 .iter()
-                .map(|line| visual_line_count(line.width(), ew) as u16),
+                .map(|line| cast::usize_to_u16(visual_line_count(line.width(), ew))),
         )
     }
 
@@ -218,7 +219,7 @@ impl InputBox {
             visual_lines += 1;
         }
         let capped = visual_lines.min(self.max_input_lines as usize);
-        (capped + 2) as u16
+        cast::usize_to_u16(capped + 2)
     }
 
     pub fn is_at_first_line(&self) -> bool {
@@ -306,8 +307,9 @@ impl InputBox {
             Some(i) => i - 1,
         };
         self.history_index = Some(new_index);
-        let entry = self.history.get(new_index).unwrap().to_string();
-        self.set_input(entry);
+        if let Some(entry) = self.history.get(new_index) {
+            self.set_input(entry.to_string());
+        }
         self.buffer.move_to_end();
     }
 
@@ -317,8 +319,9 @@ impl InputBox {
         };
         if i + 1 < self.history.len() {
             self.history_index = Some(i + 1);
-            let entry = self.history.get(i + 1).unwrap().to_string();
-            self.set_input(entry);
+            if let Some(entry) = self.history.get(i + 1) {
+                self.set_input(entry.to_string());
+            }
         } else {
             self.history_index = None;
             let draft = mem::take(&mut self.draft);
@@ -332,7 +335,7 @@ impl InputBox {
             .lines()
             .iter()
             .take(self.buffer.y())
-            .map(|line| visual_line_count(line.width(), ew) as u16)
+            .map(|line| cast::usize_to_u16(visual_line_count(line.width(), ew)))
             .sum();
 
         let wrap_row = {
@@ -340,14 +343,15 @@ impl InputBox {
             let cursor_col: usize = line
                 .chars()
                 .take(self.buffer.x())
-                .map(|c| c.width().unwrap_or(1))
+                .map(|c| c.width().map_or(1, |w| w))
                 .sum();
-            cursor_col.checked_div(ew).unwrap_or(0) as u16
+            cast::usize_to_u16(cursor_col.checked_div(ew).map_or(0, |v| v))
         };
 
         lines_above + wrap_row
     }
 
+    #[allow(clippy::too_many_lines)] // terminal rendering layout; extraction would fragment coordinates
     pub fn view(
         &mut self,
         frame: &mut Frame,
@@ -369,6 +373,7 @@ impl InputBox {
             }
         }
 
+        #[allow(clippy::cast_possible_truncation)]
         let mut total_vl = total_visual_lines(&self.buffer, ew, focused) as u16;
         if !self.pending_images.is_empty() {
             total_vl += 1;
@@ -512,7 +517,10 @@ fn wrap_line(
     shell_spans: Option<&[Span<'static>]>,
 ) -> Vec<Line<'static>> {
     let chars: Vec<char> = line.chars().collect();
-    let widths: Vec<usize> = chars.iter().map(|c| c.width().unwrap_or(1)).collect();
+    let widths: Vec<usize> = chars
+        .iter()
+        .map(|c| c.width().unwrap_or_else(|| 1))
+        .collect();
     let row_width = ew.max(1);
 
     let mut row_ranges: Vec<(usize, usize)> = Vec::new();

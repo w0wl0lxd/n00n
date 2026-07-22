@@ -2,6 +2,8 @@ use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::fs::FileType;
 use std::io::ErrorKind;
+
+use futures_lite::io::AsyncReadExt;
 use std::path::{Component, Path, PathBuf};
 
 use mlua::{IntoLua, Lua, Result as LuaResult, Table, Value};
@@ -102,6 +104,85 @@ fn result_pair<T: mlua::IntoLua, E: std::fmt::Display>(
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+enum ReadBytesLimitedError {
+    #[error("cannot open file: {0}")]
+    Open(#[source] std::io::Error),
+    #[error("cannot inspect file: {0}")]
+    Metadata(#[source] std::io::Error),
+    #[error("file is not a regular file")]
+    NotRegularFile,
+    #[error("cannot read file: {0}")]
+    Read(#[source] std::io::Error),
+    #[error("file exceeds maximum size of {max_bytes} bytes")]
+    TooLarge { max_bytes: usize },
+    #[error("maximum file size is too large")]
+    LimitTooLarge,
+    #[error("file cannot be buffered within the configured limit")]
+    Allocation,
+}
+
+#[cfg(unix)]
+async fn open_for_limited_read(path: &Path) -> std::io::Result<smol::fs::File> {
+    use smol::fs::unix::OpenOptionsExt as _;
+
+    smol::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .await
+}
+
+#[cfg(not(unix))]
+async fn open_for_limited_read(path: &Path) -> std::io::Result<smol::fs::File> {
+    smol::fs::File::open(path).await
+}
+
+async fn read_regular_file_limited(
+    path: &Path,
+    max_bytes: usize,
+) -> Result<Vec<u8>, ReadBytesLimitedError> {
+    const READ_CHUNK_BYTES: usize = 64 * 1024;
+
+    let max_read_bytes = max_bytes
+        .checked_add(1)
+        .ok_or(ReadBytesLimitedError::LimitTooLarge)?;
+    let mut file = open_for_limited_read(path)
+        .await
+        .map_err(ReadBytesLimitedError::Open)?;
+    if !file
+        .metadata()
+        .await
+        .map_err(ReadBytesLimitedError::Metadata)?
+        .is_file()
+    {
+        return Err(ReadBytesLimitedError::NotRegularFile);
+    }
+
+    let mut bytes = Vec::new();
+    let mut chunk = vec![0_u8; READ_CHUNK_BYTES];
+    while bytes.len() < max_read_bytes {
+        let remaining = max_read_bytes - bytes.len();
+        let read_len = remaining.min(READ_CHUNK_BYTES);
+        let read = file
+            .read(&mut chunk[..read_len])
+            .await
+            .map_err(ReadBytesLimitedError::Read)?;
+        if read == 0 {
+            break;
+        }
+        bytes
+            .try_reserve(read)
+            .map_err(|_| ReadBytesLimitedError::Allocation)?;
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+
+    if bytes.len() > max_bytes {
+        return Err(ReadBytesLimitedError::TooLarge { max_bytes });
+    }
+    Ok(bytes)
+}
+
 /// Read the entire file at {path} as a UTF-8 string.
 /// If the file contains bytes that are not valid UTF-8, this function throws.
 /// Use `read_bytes` for binary files.
@@ -141,6 +222,29 @@ async fn read_bytes(lua: Lua, path: String) -> LuaResult<(Value, Value)> {
     match smol::fs::read(&abs).await {
         Ok(bytes) => Ok((lua.create_buffer(bytes)?.into_lua(&lua)?, Value::Nil)),
         Err(e) => Ok((Value::Nil, Value::String(lua.create_string(e.to_string())?))),
+    }
+}
+
+/// Read at most {max_bytes} raw bytes from a regular file at {path}.
+/// The opened handle is checked before reading, so devices, FIFOs, and directories
+/// are rejected. Reads one byte beyond the limit to report oversized files without
+/// allocating their full contents.
+///
+/// @param path string Absolute or relative file path. `~/` is expanded to the home directory.
+/// @param max_bytes integer Maximum file size in bytes.
+/// @return (buffer?, string?) File bytes, or nil plus a sanitized error message.
+/// @example
+/// local bytes, err = n00n.fs.read_bytes_limited("image.png", 50 * 1024 * 1024)
+/// if err then return end
+#[lua_fn(guard = FsRead)]
+async fn read_bytes_limited(lua: Lua, path: String, max_bytes: usize) -> LuaResult<(Value, Value)> {
+    let abs = make_absolute(&path)?;
+    match read_regular_file_limited(&abs, max_bytes).await {
+        Ok(bytes) => Ok((lua.create_buffer(bytes)?.into_lua(&lua)?, Value::Nil)),
+        Err(error) => Ok((
+            Value::Nil,
+            Value::String(lua.create_string(error.to_string())?),
+        )),
     }
 }
 
@@ -645,7 +749,7 @@ lua_table! {
     /// if err then return end
     /// ```
     "n00n.fs" => pub(crate) fn create_fs_table(perms: &PluginPermissions), DOCS [
-        read(perms), read_bytes(perms), metadata(perms), dirname, basename,
+        read(perms), read_bytes(perms), read_bytes_limited(perms), metadata(perms), dirname, basename,
         joinpath, normalize, abspath, parents, root(perms), relpath, ext,
         dir(perms), write(perms), rm(perms), mkdir(perms), glob(perms), grep(perms),
     ]
@@ -672,6 +776,45 @@ mod tests {
         let read: mlua::Function = tbl.get("read").unwrap();
         let result: String = smol::block_on(read.call_async(file.to_str().unwrap())).unwrap();
         assert_eq!(result, "world");
+    }
+
+    #[test]
+    fn read_bytes_limited_rejects_oversized_regular_file() {
+        const LIMIT: usize = 4096;
+        const EXPECTED_ERROR: &str = "file exceeds maximum size of 4096 bytes";
+
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("oversized.bin");
+        std::fs::write(&file, vec![0_u8; LIMIT + 1]).unwrap();
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let read: mlua::Function = tbl.get("read_bytes_limited").unwrap();
+        let (value, error): (Value, Value) =
+            smol::block_on(read.call_async((file.to_str().unwrap(), LIMIT))).unwrap();
+
+        assert!(matches!(value, Value::Nil));
+        let Value::String(error) = error else {
+            panic!("expected size error");
+        };
+        assert_eq!(error.to_str().unwrap(), EXPECTED_ERROR);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_bytes_limited_rejects_device() {
+        const EXPECTED_ERROR: &str = "file is not a regular file";
+
+        let lua = Lua::new();
+        let tbl = create_fs_table(&lua, &PluginPermissions::trusted()).unwrap();
+        let read: mlua::Function = tbl.get("read_bytes_limited").unwrap();
+        let (value, error): (Value, Value) =
+            smol::block_on(read.call_async(("/dev/zero", 1_usize))).unwrap();
+
+        assert!(matches!(value, Value::Nil));
+        let Value::String(error) = error else {
+            panic!("expected regular-file error");
+        };
+        assert_eq!(error.to_str().unwrap(), EXPECTED_ERROR);
     }
 
     #[test]

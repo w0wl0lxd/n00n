@@ -50,7 +50,7 @@ pub struct StorageWriter {
 }
 
 impl StorageWriter {
-    pub fn new(dir: StateDir) -> Self {
+    pub fn new(dir: StateDir) -> std::io::Result<Self> {
         let pending: Pending = Arc::default();
         let writer_pending = Arc::clone(&pending);
         let (ops, ops_rx) = flume::unbounded::<Op>();
@@ -98,14 +98,13 @@ impl StorageWriter {
                 }
                 flush(&writer_pending, &mut logs, &mut durable_revisions, &dir);
                 let _ = done_tx.send(());
-            })
-            .expect("failed to spawn storage writer thread");
+            })?;
 
-        Self {
+        Ok(Self {
             pending,
             ops,
             done_rx,
-        }
+        })
     }
 
     pub fn send(&self, session: Box<AppSession>) {
@@ -327,7 +326,7 @@ mod tests {
     #[test]
     fn shutdown_drains_newest_snapshot_of_every_session() {
         let (_tmp, dir) = state_dir();
-        let writer = StorageWriter::new(dir.clone());
+        let writer = StorageWriter::new(dir.clone()).unwrap();
         let a = AppSession::new("test-model", "/tmp/a");
         let mut b = AppSession::new("test-model", "/tmp/b");
         let (a_id, b_id) = (a.id, b.id);
@@ -406,7 +405,7 @@ mod tests {
     #[test]
     fn delete_discards_pending_snapshot() {
         let (_tmp, dir) = state_dir();
-        let writer = StorageWriter::new(dir.clone());
+        let writer = StorageWriter::new(dir.clone()).unwrap();
         let session = AppSession::new("test-model", "/tmp/c");
         let id = session.id;
         writer.send(Box::new(session));

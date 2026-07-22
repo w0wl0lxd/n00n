@@ -598,38 +598,15 @@ impl Theme {
     fn from_toml(toml_str: &str) -> Result<Self, String> {
         let full_table: toml::Table = toml::from_str(toml_str).map_err(|e| e.to_string())?;
 
-        let raw_palette: HashMap<String, String> = full_table
-            .get("palette")
-            .and_then(|v| v.as_table())
-            .map(|t| {
-                t.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let palette: HashMap<String, Color> = raw_palette
-            .iter()
-            .filter_map(|(k, v)| parse_hex(v).map(|c| (k.clone(), c)))
-            .collect();
-
-        let ui: HashMap<String, StyleDef> = full_table
-            .get("ui")
-            .and_then(|v| v.as_table())
-            .map(|t| {
-                t.iter()
-                    .filter_map(|(k, v)| {
-                        let def: StyleDef = v.clone().try_into().ok()?;
-                        Some((k.clone(), def))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let raw_palette = Self::parse_raw_palette(&full_table);
+        let palette = Self::parse_palette(&raw_palette);
+        let ui = Self::parse_ui(&full_table);
+        let syntax = build_syntax_theme(&full_table, &raw_palette);
 
         let style = |key: &str| -> Style {
             ui.get(key)
                 .map(|d| resolve_style(d, &palette))
-                .unwrap_or_default()
+                .map_or(Style::default(), |s| s)
         };
 
         let derived_color = |ui_key: &str, scopes: &[&str]| -> Color {
@@ -656,9 +633,8 @@ impl Theme {
             Style::default()
         };
 
-        let syntax = build_syntax_theme(&full_table, &raw_palette);
-
-        let color = |key: &str| -> Color { palette.get(key).copied().unwrap_or(Color::Reset) };
+        let color =
+            |key: &str| -> Color { palette.get(key).copied().unwrap_or_else(|| Color::Reset) };
 
         let bold_style = derived_style(
             "bold",
@@ -666,7 +642,72 @@ impl Theme {
             Modifier::BOLD,
         );
 
-        Ok(Self {
+        Ok(Self::build_theme(
+            &style,
+            &derived_color,
+            &derived_style,
+            &color,
+            bold_style,
+            &ui,
+            &palette,
+            syntax,
+        ))
+    }
+
+    fn parse_raw_palette(full_table: &toml::Table) -> HashMap<String, String> {
+        full_table
+            .get("palette")
+            .and_then(|v| v.as_table())
+            .map_or_else(HashMap::default, |t| {
+                t.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                    .collect()
+            })
+    }
+
+    fn parse_palette(raw_palette: &HashMap<String, String>) -> HashMap<String, Color> {
+        raw_palette
+            .iter()
+            .filter_map(|(k, v)| parse_hex(v).map(|c| (k.clone(), c)))
+            .collect()
+    }
+
+    fn parse_ui(full_table: &toml::Table) -> HashMap<String, StyleDef> {
+        full_table
+            .get("ui")
+            .and_then(|v| v.as_table())
+            .map_or_else(HashMap::default, |t| {
+                t.iter()
+                    .filter_map(|(k, v)| {
+                        let def: StyleDef = v.clone().try_into().ok()?;
+                        Some((k.clone(), def))
+                    })
+                    .collect()
+            })
+    }
+
+    #[allow(clippy::expect_used)]
+    fn load_or_bundled() -> Self {
+        if let Some(name) = read_theme_name()
+            && let Ok(theme) = load_by_name(&name)
+        {
+            return theme;
+        }
+        Self::from_toml(BUNDLED_THEMES[0].toml).expect("bundled theme must parse")
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn build_theme(
+        style: &impl Fn(&str) -> Style,
+        derived_color: &impl Fn(&str, &[&str]) -> Color,
+        derived_style: &impl Fn(&str, &[&str], Modifier) -> Style,
+        color: &impl Fn(&str) -> Color,
+        bold_style: Style,
+        ui: &HashMap<String, StyleDef>,
+        palette: &HashMap<String, Color>,
+        syntax: syntect::highlighting::Theme,
+    ) -> Self {
+        Self {
             background: color("background"),
             foreground: color("foreground"),
 
@@ -692,11 +733,11 @@ impl Theme {
             bold: bold_style,
             italic: ui.get("italic").map_or_else(
                 || Style::default().add_modifier(Modifier::ITALIC),
-                |d| resolve_style(d, &palette),
+                |d| resolve_style(d, palette),
             ),
             bold_italic: ui.get("bold_italic").map_or_else(
                 || bold_style.add_modifier(Modifier::ITALIC),
-                |d| resolve_style(d, &palette),
+                |d| resolve_style(d, palette),
             ),
             inline_code: derived_style(
                 "inline_code",
@@ -739,7 +780,7 @@ impl Theme {
                 let s = style("item_match");
                 if s == Style::default() {
                     style("item")
-                        .fg(style("accent").fg.unwrap_or_default())
+                        .fg(style("accent").fg.map_or(Color::default(), |c| c))
                         .add_modifier(Modifier::BOLD)
                 } else {
                     s
@@ -749,7 +790,7 @@ impl Theme {
                 let s = style("item_match_selected");
                 if s == Style::default() {
                     style("item_selected")
-                        .fg(style("accent").fg.unwrap_or_default())
+                        .fg(style("accent").fg.map_or(Color::default(), |c| c))
                         .add_modifier(Modifier::BOLD)
                 } else {
                     s
@@ -800,21 +841,12 @@ impl Theme {
                 }
             },
             syntax,
-        })
-    }
-
-    fn load_or_bundled() -> Self {
-        if let Some(name) = read_theme_name()
-            && let Ok(theme) = load_by_name(&name)
-        {
-            return theme;
         }
-        Self::from_toml(BUNDLED_THEMES[0].toml).expect("bundled theme must parse")
     }
 }
 
 pub(crate) fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (f32::from(a) + (f32::from(b) - f32::from(a)) * t.clamp(0.0, 1.0)) as u8
+    crate::cast::f32_to_u8(f32::from(a) + (f32::from(b) - f32::from(a)) * t.clamp(0.0, 1.0))
 }
 
 pub(crate) fn dim_style(style: Style, factor: f32) -> Style {
