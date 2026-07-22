@@ -44,29 +44,29 @@ fn build_app_with_mcp(
     mcp_reader: McpSnapshotReader,
 ) -> App {
     let model = test_model();
-    App::new(
-        &model,
-        AppSession::new("test-model", "/tmp/test"),
-        dir,
-        Arc::new(ArcSwapOption::empty()),
+    App::new(AppInit {
+        model,
+        session: AppSession::new("test-model", "/tmp/test"),
+        storage: dir,
+        available_models: Arc::new(ArcSwapOption::empty()),
         mcp_reader,
-        McpConfigErrors::new(PathBuf::new()),
-        LuaCommandReader::empty(),
-        KeymapReader::empty(),
-        HintReader::empty(),
-        writer,
-        UiConfig::default(),
-        100,
-        Arc::new(PermissionManager::new(
+        mcp_config_errors: McpConfigErrors::new(PathBuf::new()),
+        lua_command_reader: LuaCommandReader::empty(),
+        keymap_reader: KeymapReader::empty(),
+        hint_reader: HintReader::empty(),
+        storage_writer: writer,
+        ui_config: UiConfig::default(),
+        input_history_size: 100,
+        permissions: Arc::new(PermissionManager::new(
             PermissionsConfig {
                 rules: vec![],
                 ..Default::default()
             },
             PathBuf::from("/tmp"),
         )),
-        Arc::from([]),
-        Arc::new(Picker::halfblocks()),
-    )
+        custom_commands: Arc::from([]),
+        picker: Arc::new(Picker::halfblocks()),
+    })
 }
 
 fn test_app() -> App {

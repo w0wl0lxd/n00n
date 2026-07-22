@@ -249,27 +249,46 @@ pub struct App {
     subagent_prompts: HashMap<String, flume::Sender<SubagentPrompt>>,
 }
 
+pub struct AppInit {
+    pub model: Model,
+    pub session: AppSession,
+    pub storage: StateDir,
+    pub available_models: Arc<ArcSwapOption<Vec<String>>>,
+    pub mcp_reader: McpSnapshotReader,
+    pub mcp_config_errors: McpConfigErrors,
+    pub lua_command_reader: LuaCommandReader,
+    pub keymap_reader: KeymapReader,
+    pub hint_reader: HintReader,
+    pub storage_writer: Arc<StorageWriter>,
+    pub ui_config: UiConfig,
+    pub input_history_size: usize,
+    pub permissions: Arc<PermissionManager>,
+    pub custom_commands: Arc<[n00n_agent::command::CustomCommand]>,
+    pub picker: Arc<Picker>,
+}
+
 impl App {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        model: &Model,
-        session: AppSession,
-        storage: StateDir,
-        available_models: Arc<ArcSwapOption<Vec<String>>>,
-        mcp_reader: McpSnapshotReader,
-        mcp_config_errors: McpConfigErrors,
-        lua_command_reader: LuaCommandReader,
-        keymap_reader: KeymapReader,
-        hint_reader: HintReader,
-        storage_writer: Arc<StorageWriter>,
-        ui_config: UiConfig,
-        input_history_size: usize,
-        permissions: Arc<PermissionManager>,
-        custom_commands: Arc<[n00n_agent::command::CustomCommand]>,
-        picker: Arc<Picker>,
-    ) -> Self {
+    #[must_use]
+    pub fn new(init: AppInit) -> Self {
+        let AppInit {
+            model,
+            session,
+            storage,
+            available_models,
+            mcp_reader,
+            mcp_config_errors,
+            lua_command_reader,
+            keymap_reader,
+            hint_reader,
+            storage_writer,
+            ui_config,
+            input_history_size,
+            permissions,
+            custom_commands,
+            picker,
+        } = init;
         scrollbar::set_enabled(ui_config.scrollbar);
-        let state = SessionState::from_session(session, model, &storage);
+        let state = SessionState::from_session(session, &model, &storage);
         let mut input_box = InputBox::new(InputHistory::load(&storage, input_history_size));
         input_box.set_max_input_lines(ui_config.max_input_lines);
         let mut app = Self {
@@ -672,7 +691,6 @@ impl App {
         None
     }
 
-    #[allow(clippy::too_many_lines)]
     fn dispatch_overlay(&mut self, key: KeyEvent) -> Option<Vec<Action>> {
         if self.permission_prompt.is_open() {
             if let Some(answer) = self.permission_prompt.handle_key(key) {
@@ -953,7 +971,6 @@ impl App {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn handle_main_chat_key(&mut self, key: KeyEvent) -> Vec<Action> {
         if key::TRANSCRIPT_DETAILS.matches(key) {
             let visible = self.active_chat().toggle_transcript_details();
@@ -1356,7 +1373,6 @@ impl App {
         vec![Action::CancelSubagent { tool_use_id }]
     }
 
-    #[allow(clippy::too_many_lines)]
     fn handle_agent_event(&mut self, envelope: Envelope) -> Vec<Action> {
         if envelope.run_id == RESTORE_RUN_ID {
             let (id, snapshot, theme_gen, is_header) = match envelope.event {
@@ -1677,7 +1693,6 @@ impl App {
         idx
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute_command(&mut self, cmd: ParsedCommand) -> Vec<Action> {
         self.input_box.discard();
         match cmd.name.as_str() {
