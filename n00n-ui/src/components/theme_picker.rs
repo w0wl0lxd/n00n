@@ -46,7 +46,7 @@ impl ThemePicker {
         let current_idx = entries
             .iter()
             .position(|e| e.name == current_name)
-            .unwrap_or(0);
+            .unwrap_or_else(|| 0);
         self.original_theme_name = Some(current_name);
         self.picker.open(entries, TITLE);
         self.picker.select(current_idx);

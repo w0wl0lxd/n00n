@@ -18,14 +18,14 @@ const STREAMING_MAX_LINE_BYTES: usize = 5_000;
 /// alongside the hash because hashing alone could in principle collide;
 /// requiring both makes accidental reuse on different buffers
 /// astronomically unlikely.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct StreamingCache {
     key: Option<CacheKey>,
     lines: Vec<Line<'static>>,
     rendered_height: Option<(u16, u16)>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CacheKey {
     generation: u64,
     visible_len: usize,
@@ -80,7 +80,7 @@ impl StreamingCache {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RenderMode {
     Plain,
     Markdown,
@@ -92,6 +92,7 @@ enum RenderMode {
 /// text, avoiding a full resplit/rescopy of the visible buffer on every
 /// 16ms tick. Completed lines are left untouched; only the last partial
 /// line is mutated in place.
+#[derive(Debug)]
 struct PlainState {
     completed_count: usize,
     rendered_byte_offset: usize,
@@ -343,7 +344,13 @@ impl std::fmt::Debug for StreamingContent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamingContent")
             .field("typewriter", &self.typewriter)
+            .field("cache", &self.cache)
+            .field("plain", &self.plain)
+            .field("renderer", &self.renderer)
             .field("prefix", &self.prefix)
+            .field("text_style", &self.text_style)
+            .field("prefix_style", &self.prefix_style)
+            .field("mode", &self.mode)
             .finish()
     }
 }
