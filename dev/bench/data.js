@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784711495338,
+  "lastUpdate": 1784711628905,
   "repoUrl": "https://github.com/w0wl0lxd/n00n",
   "entries": {
     "Criterion": [
@@ -539,6 +539,114 @@ window.BENCHMARK_DATA = {
             "name": "splash_render_200x60",
             "value": 135374,
             "range": "± 11332",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "w0wl0lxd@tuta.com",
+            "name": "w0wl0lxd",
+            "username": "w0wl0lxd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "224daf9b12246080bacaff48b145c4c8174fb1af",
+          "message": "Merge pull request #55 from w0wl0lxd/feat/index-astro-languages\n\nfeat(index): support Astro and additional formats",
+          "timestamp": "2026-07-22T04:59:54-04:00",
+          "tree_id": "6511d4446a552cb4fb2ffc261c1528cf00273e65",
+          "url": "https://github.com/w0wl0lxd/n00n/commit/224daf9b12246080bacaff48b145c4c8174fb1af"
+        },
+        "date": 1784711627714,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "fib/jit_mlua_hook",
+            "value": 7180956,
+            "range": "± 153997",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_watchdog",
+            "value": 2226763,
+            "range": "± 5276",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/jit_none",
+            "value": 2221563,
+            "range": "± 34169",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_mlua_hook",
+            "value": 8733882,
+            "range": "± 50264",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_watchdog",
+            "value": 4298014,
+            "range": "± 59712",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fib/interp_none",
+            "value": 4305571,
+            "range": "± 70068",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_mlua_hook",
+            "value": 583300,
+            "range": "± 2404",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_watchdog",
+            "value": 191892,
+            "range": "± 1877",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/jit_none",
+            "value": 191973,
+            "range": "± 490",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_mlua_hook",
+            "value": 1028224,
+            "range": "± 11472",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_watchdog",
+            "value": 557818,
+            "range": "± 1162",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "buffer_rw/interp_none",
+            "value": 557709,
+            "range": "± 9397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_120x40",
+            "value": 67264,
+            "range": "± 7054",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "splash_render_200x60",
+            "value": 186267,
+            "range": "± 9124",
             "unit": "ns/iter"
           }
         ]
