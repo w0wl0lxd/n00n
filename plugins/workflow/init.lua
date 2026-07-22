@@ -78,11 +78,7 @@ local DEFAULT_TIMEOUT_SECS = 600
 
 local description = [[Run a bounded, sandboxed Lua workflow for multi-stage agent orchestration.
 
-Start with meta({ name = ..., description = ..., phases = {...} }). Available globals only:
-- agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns one isolated agent result. research is read-only; general is the default. Tiers are weak/medium/strong and capped at the current model. output_schema returns validated JSON.
-- parallel(fns, { concurrency? }) runs zero-argument branches in order; any failure fails the call.
-- pipeline(items, stages, { concurrency? }) runs each item through all stages.
-- phase(name, fn), log(...), and inputs.
+Start with meta({ name = ..., description = ..., phases = {...} }). Globals: agent({ prompt, subagent_type?, model_tier?, label?, output_schema? }) returns isolated agent result (research=read-only, general=default; tiers weak/medium/strong; output_schema returns validated JSON). parallel(fns, { concurrency? }) runs branches in order; any failure fails the call. pipeline(items, stages, { concurrency? }) runs each item through all stages. phase(name, fn), log(...), and inputs.
 
 No n00n, os, io, require, print, or load. Scripts must be deterministic for resume replay, must return the final string, and are limited to 24 agent calls by default (32 hard maximum). Use task for one agent.]]
 
@@ -93,14 +89,14 @@ local schema = {
   properties = {
     script = {
       type = "string",
-      description = "Lua workflow script. First statement: meta({...}). Then orchestrate with agent/parallel/pipeline/phase/log. Must return the final answer as a string.",
+      description = "Lua workflow script. First statement: meta({...}). Orchestrate with agent/parallel/pipeline/phase/log. Must return final answer as string.",
     },
     inputs = {
-      description = "Free-form object exposed to the script as the global `inputs`.",
+      description = "Free-form object exposed to script as global `inputs`.",
     },
     resume = {
       type = "string",
-      description = "Prior run_id. Replays journaled agent() results and only spends tokens on new calls.",
+      description = "Prior run_id. Replays journaled agent() results; only spends tokens on new calls.",
     },
   },
 }

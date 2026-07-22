@@ -128,8 +128,7 @@ local function discover_skills()
 end
 
 local boot_skills = discover_skills()
-local description = "Load a skill that provides instructions and workflows for specific tasks."
-  .. build_skill_list(boot_skills)
+local description = "Load a skill for specific tasks." .. build_skill_list(boot_skills)
 
 n00n.api.register_tool({
   name = "skill",

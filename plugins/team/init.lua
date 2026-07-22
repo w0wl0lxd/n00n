@@ -58,8 +58,7 @@ local PLANNER_OUTPUT = {
 }
 
 local description =
-  [[Run a bounded ALMAS team for an SDLC goal. Roles cover scope, planning, implementation, testing, and review on cost-aware tiers.
-supervised returns a plan; autonomous executes it with optional validator quorum; swarm runs bounded explorer/worker/validator rounds with an information-bottleneck fan-out gate. model overrides tiers; auto_tier routes by task. use_retrieval grounds work, compact TOON-encodes that context, and background returns an agent_id for agent_control. Default/hard budgets are 16/24 agents and 4 concurrent.]]
+  [[Run a bounded ALMAS team for an SDLC goal. Roles: product_manager, planner, developer, tester, reviewer. Modes: supervised (return plan), autonomous (execute plan), swarm (decentralized rounds with IBN gate). model overrides tiers; auto_tier routes by task. use_retrieval grounds work; compact TOON-encodes context; background returns agent_id. Default/hard budgets: 16/24 agents, 4 concurrent.]]
 
 local schema = {
   type = "object",
@@ -68,53 +67,53 @@ local schema = {
   properties = {
     goal = {
       type = "string",
-      description = "High-level SDLC goal, e.g. 'Add a retry helper and cover it with tests.'",
+      description = "High-level SDLC goal.",
     },
     mode = {
       type = "string",
       enum = { "supervised", "autonomous", "swarm" },
       default = "supervised",
-      description = '"supervised" (default, return the plan for review), "autonomous" (run the plan), or "swarm" (decentralized SwarmSys rounds).',
+      description = '"supervised" (return plan), "autonomous" (run plan), "swarm" (decentralized rounds).',
     },
     max_rounds = {
       type = "integer",
       minimum = 1,
       maximum = MAX_SWARM_ROUNDS,
-      description = "Swarm mode only: max coordination rounds (default 2, maximum 4).",
+      description = "Swarm max rounds (default 2, max 4).",
     },
     max_concurrent = {
       type = "integer",
       minimum = 1,
       maximum = MAX_TEAM_CONCURRENT,
-      description = "Swarm concurrency (default 4). Maximum 4.",
+      description = "Swarm concurrency (default 4, max 4).",
     },
     max_agents = {
       type = "integer",
       minimum = 1,
       maximum = MAX_TEAM_AGENTS,
-      description = "Total team agent-call budget (default 16, hard maximum 24).",
+      description = "Team agent budget (default 16, max 24).",
     },
     max_steps = {
       type = "integer",
       minimum = 1,
       maximum = MAX_PLAN_STEPS,
-      description = "Maximum supervisor plan steps to execute (default 6, maximum 8).",
+      description = "Max plan steps (default 6, max 8).",
     },
     model = {
       type = "string",
-      description = "Exact model spec for every team agent. Overrides model_tier and role tiers.",
+      description = "Exact model for all agents. Overrides model_tier.",
     },
     model_tier = {
       type = "string",
-      description = "Supervisor/model tier (weak/medium/strong). Defaults to strong when model is omitted.",
+      description = "Supervisor tier (weak/medium/strong). Default: strong.",
     },
     thinking = {
       type = { "string", "integer" },
-      description = 'Thinking mode for team agents: "off", "adaptive", an effort level through "max", or a token budget. Defaults to "adaptive".',
+      description = 'Thinking mode: "off", "adaptive", effort level, or token budget. Default: "adaptive".',
     },
     auto_tier = {
       type = "boolean",
-      description = "Route each subagent tier from its step prompt. Defaults to true unless an exact model is set.",
+      description = "Route subagent tier from step prompt. Default: true unless model set.",
     },
     use_retrieval = {
       type = "boolean",
@@ -124,21 +123,21 @@ local schema = {
     ibn_gate = {
       type = "boolean",
       default = true,
-      description = "Use the information-bottleneck fan-out gate in swarm mode.",
+      description = "Use information-bottleneck fan-out gate in swarm.",
     },
     quorum = {
       type = "boolean",
       default = true,
-      description = "Require validator quorum for autonomous validation and swarm acceptance.",
+      description = "Require validator quorum for autonomous/swarm.",
     },
     background = {
       type = "boolean",
-      description = "Start the team in a separate background session and return its agent_id immediately.",
+      description = "Start in background session; return agent_id.",
     },
     compact = {
       type = "boolean",
       default = false,
-      description = "Encode retrieved context as TOON (token-saving, opt-in).",
+      description = "TOON-encode retrieved context (token-saving).",
     },
   },
 }
