@@ -266,7 +266,7 @@ fn diff_change_spans(
         base.patch(theme::current().code_block),
     )];
     if let Some(syn) = syntax {
-        spans.extend(merge_syntax_with_diff(&syn, ds, base, emph))
+        spans.extend(merge_syntax_with_diff(&syn, ds, base, emph));
     } else {
         let full: String = ds.iter().map(|s| s.text.as_str()).collect();
         spans.push(Span::styled(

@@ -1364,7 +1364,7 @@ fn toggle_instruction_segment_expands_and_collapses() {
     let collapsed = seg_line_count(&panel, inst_id);
 
     panel.toggle_expansion(inst_id);
-    assert!(seg_line_count(&panel, &inst_id) > collapsed);
+    assert!(seg_line_count(&panel, inst_id) > collapsed);
 
     panel.toggle_expansion(inst_id);
     assert_eq!(seg_line_count(&panel, inst_id), collapsed);

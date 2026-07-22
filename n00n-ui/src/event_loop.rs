@@ -1179,12 +1179,12 @@ impl<'t> EventLoop<'t> {
     }
 
     fn change_model(&mut self, spec: &str) {
-        match Model::from_spec(&spec) {
+        match Model::from_spec(spec) {
             Ok(mut new_model) => match from_model(&mut new_model, self.ctx.timeouts) {
                 Ok(new_provider) => {
                     let app = self.focused_app();
                     app.update_model(&new_model);
-                    app.record_recent_model(&spec);
+                    app.record_recent_model(spec);
                     app.usage_slot.store(None);
                     self.ctx.model_slot.store(Arc::new(ModelSlot {
                         model: new_model,
@@ -1246,8 +1246,8 @@ impl<'t> EventLoop<'t> {
                     provider: Arc::from(provider),
                 }));
             }
-        } else if let Some(builtin) = n00n_config::providers::builtin_provider(&slug) {
-            self.change_model(&builtin.default_model);
+        } else if let Some(builtin) = n00n_config::providers::builtin_provider(slug) {
+            self.change_model(builtin.default_model);
         }
     }
 
