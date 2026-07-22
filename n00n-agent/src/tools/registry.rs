@@ -83,6 +83,7 @@ pub struct ToolExecResult {
     pub output: Result<ToolOutput, String>,
     pub annotation: Option<String>,
     pub written_path: Option<String>,
+    pub telemetry: Option<crate::ToolTelemetry>,
 }
 
 impl From<Result<ToolOutput, String>> for ToolExecResult {
@@ -91,6 +92,7 @@ impl From<Result<ToolOutput, String>> for ToolExecResult {
             output,
             annotation: None,
             written_path: None,
+            telemetry: None,
         }
     }
 }

@@ -63,7 +63,7 @@ fn build_app(dir: StateDir, writer: Arc<StorageWriter>) -> App {
 
 fn test_app() -> App {
     let dir = StateDir::from_path(env::temp_dir());
-    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir)));
+    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir).unwrap()));
     let (shared_queue, _rx) = shared_queue::queue();
     app.queue.set_shared(shared_queue);
     app
@@ -72,7 +72,7 @@ fn test_app() -> App {
 fn tempdir_app() -> (TempDir, StateDir, Arc<StorageWriter>, App) {
     let tmp = TempDir::new().unwrap();
     let dir = StateDir::from_path(tmp.path().to_path_buf());
-    let writer = Arc::new(StorageWriter::new(dir.clone()));
+    let writer = Arc::new(StorageWriter::new(dir.clone()).unwrap());
     let app = build_app(dir.clone(), Arc::clone(&writer));
     (tmp, dir, writer, app)
 }
@@ -139,7 +139,7 @@ fn subagent_msg_with_run_id(
 ) -> Msg {
     Msg::Agent(Box::new(Envelope {
         event,
-        subagent: Some(subagent_info(parent_id, name.unwrap_or("Agent"))),
+        subagent: Some(subagent_info(parent_id, name.unwrap_or_else(|| "Agent"))),
         run_id,
     }))
 }
@@ -150,7 +150,7 @@ fn subagent_msg_with_prompt(
     name: Option<&str>,
     prompt: Option<&str>,
 ) -> Msg {
-    let mut info = subagent_info(parent_id, name.unwrap_or("Agent"));
+    let mut info = subagent_info(parent_id, name.unwrap_or_else(|| "Agent"));
     info.prompt = prompt.map(String::from);
     Msg::Agent(Box::new(Envelope {
         event,
@@ -263,7 +263,7 @@ fn toggle_mode_state_machine() {
 }
 
 #[test_case(ToolOutput::Plain("wrote 100 bytes to /tmp/plans/test.md".into()), Some("/tmp/plans/test.md".into()), true  ; "write_matching")]
-#[test_case(ToolOutput::Diff { path: "/tmp/plans/test.md".into(), before: String::new(), after: String::new(), summary: String::new() }, None, true  ; "edit_matching")]
+#[test_case(ToolOutput::Diff { path: "/tmp/plans/test.md".into(), before: String::new(), after: String::new(), summary: String::new(), telemetry: None }, None, true  ; "edit_matching")]
 #[test_case(ToolOutput::Plain("wrote 100 bytes to /tmp/other.rs".into()), Some("/tmp/other.rs".into()), false ; "write_non_matching")]
 fn tool_done_transitions_plan_to_ready(
     output: ToolOutput,
@@ -450,7 +450,7 @@ fn submit_prompt_rejects(mk: fn() -> App, text: &str, expected: &str) {
 
 fn streaming_app_without_queue() -> App {
     let dir = StateDir::from_path(env::temp_dir());
-    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir)));
+    let mut app = build_app(dir.clone(), Arc::new(StorageWriter::new(dir).unwrap()));
     app.status = Status::Streaming;
     app
 }
@@ -753,7 +753,7 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
     };
     app.update(agent_msg(AgentEvent::TurnComplete(Box::new(
         TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: main_usage,
             model: "test".into(),
             context_size: None,
@@ -767,7 +767,7 @@ fn turn_complete_tracks_usage_and_context_per_chat() {
     };
     app.update(subagent_msg(
         AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: sub_usage,
             model: "test".into(),
             context_size: None,
@@ -871,7 +871,7 @@ fn turn_complete_accumulates_usage_by_model() {
 
     app.update(agent_msg(AgentEvent::TurnComplete(Box::new(
         TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: TokenUsage {
                 input: 100,
                 output: 50,
@@ -884,7 +884,7 @@ fn turn_complete_accumulates_usage_by_model() {
     ))));
     app.update(subagent_msg(
         AgentEvent::TurnComplete(Box::new(TurnCompleteEvent {
-            message: Default::default(),
+            message: Message::default(),
             usage: TokenUsage {
                 input: 200,
                 output: 75,
@@ -1003,7 +1003,7 @@ fn completed_subagent_chat_remains_discoverable_by_tool_id() {
 }
 
 #[test]
-fn completed_task_body_click_expands_while_header_navigates() {
+fn completed_task_card_click_toggles_inline_without_navigating() {
     let mut app = test_app();
     app.status = Status::Streaming;
     app.run_id = 1;
@@ -1041,18 +1041,18 @@ fn completed_task_body_click_expands_while_header_navigates() {
     app.update(mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         10,
-        area.y + 1,
+        area.y,
     ));
     app.update(mouse_event(
         MouseEventKind::Up(MouseButton::Left),
         10,
-        area.y + 1,
+        area.y,
     ));
-    assert_eq!(app.active_chat, 0, "task body must not navigate");
+    assert_eq!(app.active_chat, 0, "task card click must not navigate");
     terminal.draw(|frame| app.view(frame)).unwrap();
     assert!(
         app.chats[0].total_lines() > collapsed_lines,
-        "task body click must expand the completed task"
+        "task card click must expand inline"
     );
 
     app.update(mouse_event(
@@ -1065,7 +1065,12 @@ fn completed_task_body_click_expands_while_header_navigates() {
         10,
         area.y,
     ));
-    assert_eq!(app.active_chat, 1, "task header navigates to child chat");
+    assert_eq!(
+        app.active_chat, 0,
+        "repeated task card click must not navigate"
+    );
+    terminal.draw(|frame| app.view(frame)).unwrap();
+    assert_eq!(app.chats[0].total_lines(), collapsed_lines);
 }
 
 fn open_tasks_picker(app: &mut App) {
@@ -1160,7 +1165,7 @@ fn task_picker_preview_copy_uses_rendered_chat() {
 }
 
 #[test]
-fn task_picker_preview_tool_click_uses_rendered_chat() {
+fn nested_task_preview_click_stays_inline_and_picker_enter_navigates() {
     let mut app = app_with_subagent();
     app.update(subagent_msg(
         AgentEvent::ToolStart(Box::new(ToolStartEvent {
@@ -1202,7 +1207,21 @@ fn task_picker_preview_tool_click_uses_rendered_chat() {
         tool_row,
     ));
 
-    assert_eq!(app.active_chat, 2);
+    assert_eq!(
+        app.active_chat, 0,
+        "nested task card click must not navigate"
+    );
+
+    app.update(Msg::Key(kb::TASKS.to_key_event()));
+    assert!(!app.task_picker.is_open());
+    app.update(Msg::Key(kb::TASKS.to_key_event()));
+    app.update(Msg::Key(key(KeyCode::Down)));
+    app.update(Msg::Key(key(KeyCode::Down)));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(
+        app.active_chat, 2,
+        "Ctrl+X and Enter must navigate explicitly"
+    );
 }
 
 #[test]
@@ -1465,7 +1484,7 @@ fn edge_scroll_direction(zone: Rect, down: (u16, u16), drag: (u16, u16), expecte
     let state = app.selection_state.as_ref().unwrap();
     let edge_dir = match state {
         SelectionState::Dragging { edge_scroll, .. } => edge_scroll.as_ref().map(|es| es.dir),
-        _ => None,
+        SelectionState::PendingCopy { .. } => None,
     };
     assert_eq!(edge_dir, expected);
 }

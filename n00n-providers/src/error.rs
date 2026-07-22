@@ -4,6 +4,32 @@
 
 use isahc::AsyncReadResponseExt;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestDeliveryPhase {
+    NotSent,
+    SentAwaitingAcceptance,
+    Accepted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestDeliveryMetadata {
+    pub phase: RequestDeliveryPhase,
+    pub response_id: Option<String>,
+    pub close_code: Option<u16>,
+    pub close_reason: Option<String>,
+}
+
+impl RequestDeliveryMetadata {
+    pub(crate) fn new(phase: RequestDeliveryPhase) -> Self {
+        Self {
+            phase,
+            response_id: None,
+            close_code: None,
+            close_reason: None,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error("API error ({status}): {message}")]
@@ -27,7 +53,10 @@ pub enum AgentError {
     #[error("stream timed out after {secs}s of inactivity")]
     Timeout { secs: u64 },
     #[error("request may have been accepted before the connection failed: {message}")]
-    RequestSent { message: String },
+    RequestSent {
+        message: String,
+        metadata: Option<RequestDeliveryMetadata>,
+    },
 }
 
 impl AgentError {
