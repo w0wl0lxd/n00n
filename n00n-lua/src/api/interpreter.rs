@@ -134,7 +134,6 @@ async fn call_lua_tool(lua: Lua, f: Option<Function>, pc: &PendingCall) -> Resul
 /// if err then error(err) end
 /// if result.stdout then print(result.stdout) end
 #[lua_fn(guard = Run, name = "run")]
-#[allow(clippy::too_many_lines)]
 async fn interpreter_run(
     lua: Lua,
     code: String,

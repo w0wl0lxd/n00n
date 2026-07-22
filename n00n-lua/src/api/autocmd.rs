@@ -114,7 +114,7 @@ fn make_ev_table(
     Ok(ev)
 }
 
-fn parse_string_or_seq(value: Value, what: &str) -> LuaResult<Vec<String>> {
+fn parse_string_or_seq(value: &Value, what: &str) -> LuaResult<Vec<String>> {
     match value {
         Value::String(s) => Ok(vec![s.to_str()?.to_owned()]),
         Value::Table(t) => t.sequence_values::<String>().collect(),
@@ -145,14 +145,13 @@ fn parse_string_or_seq(value: Value, what: &str) -> LuaResult<Vec<String>> {
 ///   end,
 /// })
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn create_autocmd(lua: &Lua, #[ctx] plugin: Arc<str>, event: Value, opts: Table) -> LuaResult<u64> {
-    let events = parse_string_or_seq(event, "event")?;
+    let events = parse_string_or_seq(&event, "event")?;
     let callback: Function = opts.get("callback")?;
     let once: bool = opts.get("once").map_or(false, |v| v);
     let patterns = match opts.get::<Value>("pattern")? {
         Value::Nil => None,
-        v => Some(parse_string_or_seq(v, "pattern")?),
+        ref v => Some(parse_string_or_seq(v, "pattern")?),
     };
     let id = NEXT_AUTOCMD_ID.fetch_add(1, Ordering::Relaxed);
     let mut store = lua
@@ -181,7 +180,6 @@ fn create_autocmd(lua: &Lua, #[ctx] plugin: Arc<str>, event: Value, opts: Table)
 /// @example
 /// n00n.api.del_autocmd(id)
 #[lua_fn]
-#[allow(clippy::unnecessary_wraps)]
 fn del_autocmd(lua: &Lua, id: u64) -> LuaResult<()> {
     if let Some(mut store) = lua.app_data_mut::<AutocmdStore>() {
         store.remove(id);
@@ -204,7 +202,7 @@ fn del_autocmd(lua: &Lua, id: u64) -> LuaResult<()> {
 /// })
 #[lua_fn]
 fn exec_autocmds(lua: &Lua, event: Value, opts: Option<Table>) -> LuaResult<()> {
-    let events = parse_string_or_seq(event, "event")?;
+    let events = parse_string_or_seq(&event, "event")?;
     let (pattern, data) = match opts {
         Some(opts) => {
             let pattern = match opts.get::<Value>("pattern")? {

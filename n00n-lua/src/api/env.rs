@@ -16,7 +16,6 @@ fn utf8(p: PathBuf) -> Option<String> {
 /// @example
 /// local dir = n00n.env.state_dir()
 #[lua_fn(guard = Env)]
-#[allow(clippy::unnecessary_wraps)]
 fn state_dir(_lua: &Lua) -> mlua::Result<Option<String>> {
     Ok(n00n_storage::paths::state_dir().ok().and_then(utf8))
 }
@@ -28,7 +27,6 @@ fn state_dir(_lua: &Lua) -> mlua::Result<Option<String>> {
 /// @example
 /// local dir = n00n.env.config_dir()
 #[lua_fn(guard = Env)]
-#[allow(clippy::unnecessary_wraps)]
 fn config_dir(_lua: &Lua) -> mlua::Result<Option<String>> {
     Ok(n00n_storage::paths::config_dir().ok().and_then(utf8))
 }
@@ -40,7 +38,6 @@ fn config_dir(_lua: &Lua) -> mlua::Result<Option<String>> {
 /// @example
 /// local dir = n00n.env.logs_dir()
 #[lua_fn(guard = Env)]
-#[allow(clippy::unnecessary_wraps)]
 fn logs_dir(_lua: &Lua) -> mlua::Result<Option<String>> {
     Ok(n00n_storage::paths::logs_dir().ok().and_then(utf8))
 }

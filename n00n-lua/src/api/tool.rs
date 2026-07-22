@@ -1,10 +1,10 @@
-#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use num_traits::ToPrimitive;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -61,9 +61,8 @@ pub(crate) fn set_local_describe(f: impl Fn(&str, &str, &Value) -> Option<String
     LOCAL_DESCRIBE.with(|c| *c.borrow_mut() = Some(Box::new(f)));
 }
 
-#[allow(clippy::option_option)]
-fn local_describe(plugin: &str, tool: &str, dctx: &Value) -> Option<Option<String>> {
-    LOCAL_DESCRIBE.with(|c| c.borrow().as_ref().map(|f| f(plugin, tool, dctx)))
+fn local_describe(plugin: &str, tool: &str, dctx: &Value) -> Option<String> {
+    LOCAL_DESCRIBE.with(|c| c.borrow().as_ref().and_then(|f| f(plugin, tool, dctx)))
 }
 
 type ToolHandles = (Option<Function>, Option<Function>);
@@ -172,11 +171,8 @@ impl Tool for LuaTool {
             return Cow::Borrowed(&self.description);
         }
         let dctx = dctx_json(ctx);
-        if let Some(result) = local_describe(&self.plugin, &self.name, &dctx) {
-            return match result {
-                Some(s) => Cow::Owned(s),
-                None => Cow::Borrowed(&self.description),
-            };
+        if let Some(s) = local_describe(&self.plugin, &self.name, &dctx) {
+            return Cow::Owned(s);
         }
         let (reply_tx, reply_rx) = flume::bounded(1);
         let sent = self
@@ -388,7 +384,6 @@ impl ToolInvocation for LuaToolInvocation {
         Some(Path::new(val))
     }
 
-    #[allow(clippy::too_many_lines)]
     fn execute(self: Box<Self>, ctx: &ToolContext) -> ExecFuture<'_> {
         let deadline = ctx.deadline;
         let plugin = self.plugin;
@@ -1048,8 +1043,11 @@ fn parse_timeout(spec: &Table) -> LuaResult<Option<Duration>> {
             Ok(Some(Duration::from_secs(secs)))
         }
         LuaValue::Number(n) if n > 0.0 && n.is_finite() => {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let secs = n as u64;
+            let secs = u64::try_from(
+                n.to_i64()
+                    .ok_or_else(|| mlua::Error::runtime(TIMEOUT_PARSE_ERR))?,
+            )
+            .map_err(|_| mlua::Error::runtime(TIMEOUT_PARSE_ERR))?;
             Ok(Some(Duration::from_secs(secs)))
         }
         LuaValue::Nil | LuaValue::Boolean(false) | LuaValue::Integer(0) | LuaValue::Number(0.0) => {
@@ -1114,22 +1112,54 @@ fn parse_start_annotation(spec: &Table, schema: &Value) -> LuaResult<Option<Star
     }
 }
 
-#[allow(clippy::too_many_lines)]
-fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> LuaResult<()> {
-    let name: String = spec
-        .get("name")
-        .map_err(|_| mlua::Error::runtime("register_tool: missing 'name'"))?;
-    if !is_valid_tool_name(&name) {
+fn validate_tool_name(name: &str) -> LuaResult<()> {
+    if !is_valid_tool_name(name) {
         return Err(mlua::Error::runtime(format!(
             "register_tool: invalid name '{name}'"
         )));
     }
-    let description: String = spec.get("description").unwrap_or_else(|_| String::new());
+    Ok(())
+}
+
+fn validate_tool_description(description: &str) -> LuaResult<()> {
     if description.trim().is_empty() {
         return Err(mlua::Error::runtime(
             "register_tool: description must be non-empty",
         ));
     }
+    Ok(())
+}
+
+fn parse_permission_scopes(
+    lua: &Lua,
+    spec: &Table,
+    schema_val: &Value,
+) -> LuaResult<Option<PermissionScopeSpec>> {
+    match spec.get::<LuaValue>("permission_scopes")? {
+        LuaValue::Nil => Ok(None),
+        LuaValue::String(s) => {
+            let field = s.to_str()?.to_owned();
+            check_schema_field(schema_val, "permission_scopes", &field, "string")?;
+            Ok(Some(PermissionScopeSpec::Field(Arc::from(field.as_str()))))
+        }
+        LuaValue::Function(f) => Ok(Some(PermissionScopeSpec::Callback(
+            lua.create_registry_value(f)?,
+        ))),
+        _ => Err(mlua::Error::runtime(
+            "register_tool: 'permission_scopes' must be a string field name or a function",
+        )),
+    }
+}
+
+fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> LuaResult<()> {
+    let name: String = spec
+        .get("name")
+        .map_err(|_| mlua::Error::runtime("register_tool: missing 'name'"))?;
+    validate_tool_name(&name)?;
+
+    let description: String = spec.get("description").unwrap_or_else(|_| String::new());
+    validate_tool_description(&description)?;
+
     let handler: Function = spec
         .get("handler")
         .map_err(|_| mlua::Error::runtime("register_tool: missing 'handler'"))?;
@@ -1147,21 +1177,7 @@ fn register_tool_from_lua(lua: &Lua, spec: &Table, pending: PendingTools) -> Lua
         ));
     }
     let mutable_path_field = require_schema_field(spec, "mutable_path", &schema_val)?;
-
-    let permission_scopes = match spec.get::<LuaValue>("permission_scopes")? {
-        LuaValue::Nil => None,
-        LuaValue::String(s) => {
-            let field = s.to_str()?.to_owned();
-            check_schema_field(&schema_val, "permission_scopes", &field, "string")?;
-            Some(PermissionScopeSpec::Field(Arc::from(field.as_str())))
-        }
-        LuaValue::Function(f) => Some(PermissionScopeSpec::Callback(lua.create_registry_value(f)?)),
-        _ => {
-            return Err(mlua::Error::runtime(
-                "register_tool: 'permission_scopes' must be a string field name or a function",
-            ));
-        }
-    };
+    let permission_scopes = parse_permission_scopes(lua, spec, &schema_val)?;
 
     let header_fn: Option<Function> = spec.get("header").ok();
     let restore_fn: Option<Function> = spec.get("restore").ok();
@@ -1423,16 +1439,21 @@ fn optional_nonnegative_integer(table: &mlua::Table, field: &str) -> Result<Opti
         .map_err(|error| format!("invalid tool usage field '{field}': {error}"))?;
     match value {
         LuaValue::Nil => Ok(None),
-        LuaValue::Integer(value) if (0..=MAX_SAFE_INTEGER_I64).contains(&value) => {
-            Ok(Some(value as u64))
-        }
+        LuaValue::Integer(value) if (0..=MAX_SAFE_INTEGER_I64).contains(&value) => Ok(Some(
+            u64::try_from(value).map_err(|_| "invalid integer value".to_string())?,
+        )),
         LuaValue::Number(value)
             if value.is_finite()
                 && value >= 0.0
                 && value.fract() == 0.0
                 && value <= MAX_SAFE_INTEGER_F64 =>
         {
-            Ok(Some(value as u64))
+            let int_value = value
+                .to_i64()
+                .ok_or_else(|| "invalid number value".to_string())?;
+            Ok(Some(
+                u64::try_from(int_value).map_err(|_| "invalid integer value".to_string())?,
+            ))
         }
         _ => Err(format!(
             "tool usage field '{field}' must be a finite nonnegative integer"
@@ -1913,7 +1934,9 @@ mod tests {
         let big: f64 = 1e10;
         assert_eq!(
             timeout_ok(&lua, LuaValue::Number(big)),
-            Some(Duration::from_secs(big as u64))
+            Some(Duration::from_secs(
+                u64::try_from(big.to_i64().unwrap()).unwrap()
+            ))
         );
         assert_eq!(
             timeout_ok(&lua, LuaValue::Number(0.5)),

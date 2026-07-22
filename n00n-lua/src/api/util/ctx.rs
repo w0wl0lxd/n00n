@@ -216,7 +216,6 @@ impl LuaCtx {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 impl UserData for LuaCtx {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("cancelled", |_, this, ()| Ok(this.cancel.is_cancelled()));

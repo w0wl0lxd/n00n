@@ -178,7 +178,6 @@ async fn gather(lua: Lua, fns: Table) -> LuaResult<Table> {
 /// do_work()
 /// permit:release()
 #[lua_fn]
-#[allow(clippy::unnecessary_wraps)]
 fn semaphore(_lua: &Lua, n: usize) -> LuaResult<LuaSemaphore> {
     Ok(LuaSemaphore {
         sem: Arc::new(Semaphore::new(n.max(1))),

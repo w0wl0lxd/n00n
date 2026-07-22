@@ -71,7 +71,6 @@ fn get_string_parser(
 /// local text = n00n.treesitter.get_node_text(node, source)
 /// print(text)
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn get_node_text(_lua: &Lua, node: AnyUserData, source: String) -> LuaResult<String> {
     let lua_node = node.borrow::<LuaNode>()?;
     let ts = lua_node.ts_node()?;
@@ -90,17 +89,16 @@ fn get_node_text(_lua: &Lua, node: AnyUserData, source: String) -> LuaResult<Str
 /// @example
 /// local sr, sc, er, ec = n00n.treesitter.get_node_range(node)
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value, clippy::cast_possible_wrap)]
 fn get_node_range(_lua: &Lua, node: AnyUserData) -> LuaResult<(i64, i64, i64, i64)> {
     let n = node.borrow::<LuaNode>()?;
     let ts = n.ts_node()?;
     let sp = ts.start_position();
     let ep = ts.end_position();
     Ok((
-        sp.row as i64,
-        sp.column as i64,
-        ep.row as i64,
-        ep.column as i64,
+        i64::try_from(sp.row).map_err(|_| mlua::Error::runtime("row value too large"))?,
+        i64::try_from(sp.column).map_err(|_| mlua::Error::runtime("column value too large"))?,
+        i64::try_from(ep.row).map_err(|_| mlua::Error::runtime("row value too large"))?,
+        i64::try_from(ep.column).map_err(|_| mlua::Error::runtime("column value too large"))?,
     ))
 }
 
@@ -113,19 +111,36 @@ fn get_node_range(_lua: &Lua, node: AnyUserData) -> LuaResult<(i64, i64, i64, i6
 /// local r = n00n.treesitter.get_range(node)
 /// print("bytes: " .. r[3] .. "-" .. r[6])
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value, clippy::cast_possible_wrap)]
 fn get_range(lua: &Lua, node: AnyUserData) -> LuaResult<Table> {
     let n = node.borrow::<LuaNode>()?;
     let ts = n.ts_node()?;
     let sp = ts.start_position();
     let ep = ts.end_position();
     let tbl = lua.create_table()?;
-    tbl.set(1, sp.row as i64)?;
-    tbl.set(2, sp.column as i64)?;
-    tbl.set(3, ts.start_byte() as i64)?;
-    tbl.set(4, ep.row as i64)?;
-    tbl.set(5, ep.column as i64)?;
-    tbl.set(6, ts.end_byte() as i64)?;
+    tbl.set(
+        1,
+        i64::try_from(sp.row).map_err(|_| mlua::Error::runtime("row value too large"))?,
+    )?;
+    tbl.set(
+        2,
+        i64::try_from(sp.column).map_err(|_| mlua::Error::runtime("column value too large"))?,
+    )?;
+    tbl.set(
+        3,
+        i64::try_from(ts.start_byte()).map_err(|_| mlua::Error::runtime("byte value too large"))?,
+    )?;
+    tbl.set(
+        4,
+        i64::try_from(ep.row).map_err(|_| mlua::Error::runtime("row value too large"))?,
+    )?;
+    tbl.set(
+        5,
+        i64::try_from(ep.column).map_err(|_| mlua::Error::runtime("column value too large"))?,
+    )?;
+    tbl.set(
+        6,
+        i64::try_from(ts.end_byte()).map_err(|_| mlua::Error::runtime("byte value too large"))?,
+    )?;
     Ok(tbl)
 }
 
@@ -136,7 +151,6 @@ fn get_range(lua: &Lua, node: AnyUserData) -> LuaResult<Table> {
 /// @param source Node Node to check ancestry for.
 /// @return (boolean)
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn is_ancestor(_lua: &Lua, dest: AnyUserData, source: AnyUserData) -> LuaResult<bool> {
     let dest = dest.borrow::<LuaNode>()?;
     let source = source.borrow::<LuaNode>()?;
@@ -159,7 +173,6 @@ fn is_ancestor(_lua: &Lua, dest: AnyUserData, source: AnyUserData) -> LuaResult<
 /// @param col integer 0-based column number.
 /// @return (boolean)
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn is_in_node_range(_lua: &Lua, node: AnyUserData, line: usize, col: usize) -> LuaResult<bool> {
     let n = node.borrow::<LuaNode>()?;
     let ts = n.ts_node()?;
@@ -175,7 +188,6 @@ fn is_in_node_range(_lua: &Lua, node: AnyUserData, line: usize, col: usize) -> L
 /// @param range table Four-element array `{start_row, start_col, end_row, end_col}`.
 /// @return (boolean)
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn node_contains(_lua: &Lua, node: AnyUserData, range: Table) -> LuaResult<bool> {
     let n = node.borrow::<LuaNode>()?;
     let ts = n.ts_node()?;
@@ -194,7 +206,6 @@ fn node_contains(_lua: &Lua, node: AnyUserData, range: Table) -> LuaResult<bool>
 /// @param opts table? Options (currently unused).
 /// @return (Node|nil) Always nil.
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 fn get_node(_lua: &Lua, opts: Option<Table>) -> LuaResult<Option<LuaNode>> {
     let _ = opts;
     Ok(None)

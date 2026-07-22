@@ -3034,6 +3034,7 @@ dependencies = [
  "n00n-markdown",
  "n00n-providers",
  "n00n-storage",
+ "num-traits",
  "pin-project-lite",
  "regex",
  "rustix 0.38.44",

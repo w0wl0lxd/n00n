@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use num_traits::ToPrimitive;
+
 use mlua::{Lua, MultiValue, Value as LuaValue};
 use n00n_lua_macro::{lua_class, lua_fn, lua_table};
 use regex::Regex;
@@ -559,17 +561,11 @@ fn eval_set(args: &[QueryPredicateArg], metadata: &mut HashMap<String, String>) 
     metadata.insert(key.to_string(), value.to_string());
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn lua_to_usize(v: LuaValue) -> Option<usize> {
     match v {
         LuaValue::Integer(n) => usize::try_from(n).ok(),
-        LuaValue::Number(n) => {
-            let n_i64 = n as i64;
-            if n_i64 >= 0 {
-                usize::try_from(n_i64).ok()
-            } else {
-                None
-            }
+        LuaValue::Number(n) if n >= 0.0 && n.fract() == 0.0 && n <= 9_007_199_254_740_991.0 => {
+            n.to_i64().and_then(|v| usize::try_from(v).ok())
         }
         _ => None,
     }

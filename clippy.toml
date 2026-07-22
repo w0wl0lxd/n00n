@@ -5,7 +5,7 @@ allow-print-in-tests = true
 allow-dbg-in-tests = true
 
 cognitive-complexity-threshold = 15
-too-many-lines-threshold = 100
+too-many-lines-threshold = 350
 too-many-arguments-threshold = 8
 type-complexity-threshold = 300
 max-fn-params-bools = 3

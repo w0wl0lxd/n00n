@@ -967,19 +967,31 @@ struct LuaRuntime {
     ui_action_tx: Option<flume::Sender<UiAction>>,
 }
 
+struct LuaRuntimeConfig {
+    registry: Arc<ToolRegistry>,
+    tx: flume::Sender<Request>,
+    shutdown: Arc<AtomicBool>,
+    bundled_dirs: &'static [&'static Dir<'static>],
+    ui_action_tx: Option<flume::Sender<UiAction>>,
+    command_writer: LuaCommandWriter,
+    keymap_writer: KeymapWriter,
+    hint_writer: HintWriter,
+    jit: bool,
+}
+
 impl LuaRuntime {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        registry: Arc<ToolRegistry>,
-        tx: flume::Sender<Request>,
-        shutdown: Arc<AtomicBool>,
-        bundled_dirs: &'static [&'static Dir<'static>],
-        ui_action_tx: Option<flume::Sender<UiAction>>,
-        command_writer: LuaCommandWriter,
-        keymap_writer: KeymapWriter,
-        hint_writer: HintWriter,
-        jit: bool,
-    ) -> Result<Self, PluginError> {
+    fn new(config: LuaRuntimeConfig) -> Result<Self, PluginError> {
+        let LuaRuntimeConfig {
+            registry,
+            tx,
+            shutdown,
+            bundled_dirs,
+            ui_action_tx,
+            command_writer,
+            keymap_writer,
+            hint_writer,
+            jit,
+        } = config;
         let lua = Lua::new();
         apply_jit(&lua, jit);
         lua.set_memory_limit(LUA_MEMORY_LIMIT)
@@ -1398,7 +1410,6 @@ impl LuaRuntime {
         )))
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn load_source(
         &mut self,
         name: Arc<str>,
@@ -2006,24 +2017,39 @@ async fn run_tool_start(
     }
 }
 
-/// Two layers of deadline enforcement: the watchdog interrupt catches
-/// tight CPU loops, the dispatch loop catches I/O waits.
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_lines)]
-async fn run_tool_call(
+struct RunToolCallConfig {
     lua: Lua,
     plugin: Arc<str>,
     tool: Arc<str>,
     input: Value,
-    mut ctx: Box<LuaCtx>,
-    deadline: Option<Instant>,
+    ctx: Box<LuaCtx>,
     live: Option<LiveCtx>,
     live_tasks: LiveTasks,
     warm_tools: WarmTools,
     plugins: PluginMap,
     shutdown: Arc<AtomicBool>,
     gate: Rc<InflightGate>,
-) -> ToolCallReply {
+    scope: TaskScope,
+}
+
+/// Two layers of deadline enforcement: the watchdog interrupt catches
+/// tight CPU loops, the dispatch loop catches I/O waits.
+async fn run_tool_call(config: RunToolCallConfig) -> ToolCallReply {
+    let RunToolCallConfig {
+        lua,
+        plugin,
+        tool,
+        input,
+        mut ctx,
+        live,
+        live_tasks,
+        warm_tools,
+        plugins,
+        shutdown,
+        gate,
+        scope,
+        ..
+    } = config;
     let handler: Function = {
         let plugins_ref = plugins.borrow();
         let Some(keys) = plugins_ref.get(&*plugin) else {
@@ -2043,13 +2069,11 @@ async fn run_tool_call(
 
     let (finish_tx, finish_rx) = flume::bounded::<ToolCallReply>(1);
     ctx.finish_tx = Some(finish_tx);
-    let cancel = ctx.cancel.clone();
 
     let input_lua = match json_to_lua(&lua, &input) {
         Ok(v) => v,
         Err(e) => return ToolCallReply::err(strip_traceback(&e)),
     };
-    let live_sink = ctx.agent().and_then(|a| a.live_sink.clone());
     let ctx_ud = match lua.create_userdata(*ctx) {
         Ok(u) => u,
         Err(e) => return ToolCallReply::err(strip_traceback(&e)),
@@ -2060,9 +2084,6 @@ async fn run_tool_call(
         Err(e) => return ToolCallReply::err(strip_traceback(&e)),
     };
     let live_id = live.as_ref().map(|l| l.tool_use_id.clone());
-    let mut cell = TaskCell::new(cancel, deadline, live);
-    cell.live_sink = live_sink;
-    let scope = TaskScope::new(&lua, cell);
     let handle = Arc::clone(scope.handle());
 
     let async_thread = match thread.into_async::<LuaValue>((input_lua, ctx_ud)) {
@@ -2162,7 +2183,545 @@ pub(crate) struct LuaThread {
 
 /// Lua lives on its own OS thread (no Send needed). `smol::block_on`
 /// drives async, load/clear requests wait for in-flight tools.
-#[allow(clippy::too_many_lines)]
+fn handle_click_tool(
+    rt: &LuaRuntime,
+    ex: &Rc<smol::LocalExecutor<'_>>,
+    gate: &Rc<InflightGate>,
+    restores: &Rc<RestoreTracker>,
+    tool_use_id: String,
+    row: usize,
+    fallback: Option<Box<ClickFallback>>,
+) {
+    let handle = rt
+        .live_tasks
+        .borrow()
+        .get(&tool_use_id)
+        .map(Arc::clone)
+        .or_else(|| {
+            rt.warm_tools
+                .borrow()
+                .iter()
+                .find(|w| w.id == tool_use_id)
+                .map(|w| Arc::clone(&w.handle))
+        });
+    let func = handle
+        .as_ref()
+        .and_then(resolve_root_buf)
+        .and_then(|root| crate::api::ui::buf::click_fn(&root));
+    let (Some(handle), Some(func)) = (handle, func) else {
+        if let Some(fb) = fallback {
+            spawn_restore(ex, gate, restores, rt, fb.item, fb.event_tx);
+        } else {
+            tracing::debug!(tool_use_id, "unhandled click ignored");
+        }
+        return;
+    };
+    let lua = rt.lua.clone();
+    let g = Rc::clone(gate);
+    let arg = match rt.lua.create_table() {
+        Ok(t) => {
+            let _ = t.set("row", row);
+            LuaValue::Table(t)
+        }
+        Err(_) => LuaValue::Nil,
+    };
+    ex.spawn(async move {
+        let _gate_guard = g.acquire().await;
+        let call = ScopedFuture {
+            lua: lua.clone(),
+            handle,
+            inner: func.call_async::<()>(arg),
+        };
+        if let Err(e) = call.await {
+            tracing::warn!(tool_use_id, error = %e, "live click failed");
+        }
+    })
+    .detach();
+}
+
+async fn handle_click_buf(lua: &Lua, buf: Arc<SharedBuf>, row: usize) {
+    let Some(func) = crate::api::ui::buf::click_fn(&buf) else {
+        return;
+    };
+    let arg = match lua.create_table() {
+        Ok(t) => {
+            let _ = t.set("row", row);
+            LuaValue::Table(t)
+        }
+        Err(_) => LuaValue::Nil,
+    };
+    let scope = TaskScope::detached(lua);
+    if let Err(e) = scope.scope_future(func.call_async::<()>(arg)).await {
+        tracing::warn!(error = %e, "window buffer click failed");
+    }
+}
+
+struct StartToolRequest {
+    plugin: Arc<str>,
+    tool: Arc<str>,
+    input: Value,
+    live: LiveCtx,
+    ctx: Box<LuaCtx>,
+    reply: flume::Sender<()>,
+}
+
+fn handle_start_tool(
+    rt: &LuaRuntime,
+    ex: &Rc<smol::LocalExecutor<'_>>,
+    gate: &Rc<InflightGate>,
+    req: StartToolRequest,
+) {
+    let func = {
+        let plugins = rt.plugins.borrow();
+        plugins
+            .get(&*req.plugin)
+            .and_then(|p| p.get(&*req.tool))
+            .and_then(|tk| tk.start.as_ref())
+            .and_then(|key| rt.lua.registry_value::<Function>(key).ok())
+    };
+    let Some(func) = func else {
+        let _ = req.reply.send(());
+        return;
+    };
+    let lua = rt.lua.clone();
+    let g = Rc::clone(gate);
+    let tool = Arc::clone(&req.tool);
+    ex.spawn(async move {
+        let _gate_guard = g.acquire().await;
+        run_tool_start(&lua, func, &tool, req.input, req.live, req.ctx).await;
+        let _ = req.reply.send(());
+    })
+    .detach();
+}
+
+fn handle_keybind_callback(rt: &LuaRuntime, ex: &Rc<smol::LocalExecutor<'_>>, id: u64) {
+    let func = rt.lua.app_data_ref::<KeymapStore>().and_then(|store| {
+        let key = store.callback_for_id(id)?;
+        rt.lua.registry_value::<Function>(key).ok()
+    });
+    if let Some(func) = func {
+        let lua = rt.lua.clone();
+        ex.spawn(async move {
+            if let Err(e) = run_detached(&lua, func.call_async::<()>(())).await {
+                tracing::warn!(keybind_id = id, error = %e, "keybind callback failed");
+            }
+        })
+        .detach();
+    }
+}
+
+struct LoadSourceRequest {
+    name: Arc<str>,
+    source: String,
+    plugin_dir: Option<PathBuf>,
+    permissions: PluginPermissions,
+    opts: PluginOpts,
+    reply: flume::Sender<LoadResult>,
+}
+
+async fn handle_load_source(
+    rt: &mut LuaRuntime,
+    ex: &Rc<smol::LocalExecutor<'_>>,
+    gate: &Rc<InflightGate>,
+    spawn_rx: &flume::Receiver<PendingAsyncTask>,
+    req: LoadSourceRequest,
+) {
+    drain_barrier(&rt.lua, ex, gate, spawn_rx).await;
+    let res = rt
+        .load_source(
+            Arc::clone(&req.name),
+            &req.source,
+            req.plugin_dir,
+            &req.permissions,
+            req.opts,
+            None,
+        )
+        .await;
+    let _ = req.reply.send(res);
+}
+
+struct CallToolRequest {
+    plugin: Arc<str>,
+    tool: Arc<str>,
+    input: Value,
+    ctx: Box<LuaCtx>,
+    deadline: Option<Instant>,
+    reply: flume::Sender<ToolCallReply>,
+    live: Option<LiveCtx>,
+}
+
+fn handle_call_tool(
+    rt: &LuaRuntime,
+    ex: &Rc<smol::LocalExecutor<'_>>,
+    gate: &Rc<InflightGate>,
+    req: CallToolRequest,
+) {
+    let lua = rt.lua.clone();
+    let plugins = Rc::clone(&rt.plugins);
+    let live_tasks = Rc::clone(&rt.live_tasks);
+    let warm_tools = Rc::clone(&rt.warm_tools);
+    let shutdown_ref = Arc::clone(&rt.shutdown);
+    let g = Rc::clone(gate);
+    let scope = TaskScope::new(
+        &lua,
+        TaskCell::new(req.ctx.cancel.clone(), req.deadline, req.live.clone()),
+    );
+    ex.spawn(async move {
+        let config = RunToolCallConfig {
+            lua: lua.clone(),
+            plugin: req.plugin,
+            tool: req.tool,
+            input: req.input,
+            ctx: req.ctx,
+            live: req.live,
+            live_tasks,
+            warm_tools,
+            plugins,
+            shutdown: shutdown_ref,
+            gate: g,
+            scope,
+        };
+        let res = run_tool_call(config).await;
+        let _ = req.reply.send(res);
+    })
+    .detach();
+}
+
+async fn handle_clear_plugin(
+    rt: &mut LuaRuntime,
+    ex: &Rc<smol::LocalExecutor<'_>>,
+    gate: &Rc<InflightGate>,
+    spawn_rx: &flume::Receiver<PendingAsyncTask>,
+    plugin: Arc<str>,
+    reply: flume::Sender<()>,
+) {
+    drain_barrier(&rt.lua, ex, gate, spawn_rx).await;
+    rt.clear_plugin(&plugin);
+    let _ = reply.send(());
+}
+
+async fn handle_compute_header(
+    rt: &LuaRuntime,
+    plugin: Arc<str>,
+    tool: Arc<str>,
+    input: Value,
+    reply: flume::Sender<HeaderResult>,
+) {
+    let res = compute_header(&rt.lua, &rt.plugins, &plugin, &tool, input).await;
+    let _ = reply.send(res);
+}
+
+async fn handle_compute_permission_scopes(
+    rt: &LuaRuntime,
+    plugin: Arc<str>,
+    tool: Arc<str>,
+    input: Value,
+    reply: flume::Sender<Option<PermissionScopes>>,
+) {
+    let res = rt.compute_permission_scopes(&plugin, &tool, input).await;
+    let _ = reply.send(res);
+}
+
+async fn handle_run_init_lua(
+    rt: &mut LuaRuntime,
+    ex: &Rc<smol::LocalExecutor<'_>>,
+    gate: &Rc<InflightGate>,
+    spawn_rx: &flume::Receiver<PendingAsyncTask>,
+    source: String,
+    source_name: String,
+    plugin_dir: Option<PathBuf>,
+    reply: flume::Sender<Result<Option<RawConfig>, PluginError>>,
+) {
+    drain_barrier(&rt.lua, ex, gate, spawn_rx).await;
+    let res = rt.run_init_lua(&source, &source_name, plugin_dir).await;
+    let _ = reply.send(res);
+}
+
+async fn handle_collect_prompt_slots(rt: &LuaRuntime, reply: flume::Sender<ResolvedSlots>) {
+    let slots = rt.collect_prompt_slots().await;
+    let _ = reply.send(slots);
+}
+
+fn handle_run_command(
+    rt: &LuaRuntime,
+    ex: &Rc<smol::LocalExecutor<'_>>,
+    plugin: Arc<str>,
+    command: Arc<str>,
+    args: String,
+) {
+    let handler_fn = rt.lua.app_data_ref::<CommandHandlerMap>().and_then(|m| {
+        let entry = m.get(&plugin)?.get(&command)?;
+        rt.lua.registry_value::<Function>(&entry.handler).ok()
+    });
+    if let Some(func) = handler_fn {
+        let lua = rt.lua.clone();
+        ex.spawn(async move {
+            let run = async {
+                let thread = lua.create_thread(func)?;
+                thread.into_async::<()>(args)?.await
+            };
+            if let Err(e) = run_detached(&lua, run).await {
+                tracing::warn!(plugin = %plugin, command = %command, error = %e, "command handler failed");
+            }
+        })
+        .detach();
+    }
+}
+
+fn handle_fire_autocmd(rt: &LuaRuntime, event: &str, data: &Value) {
+    let data = json_to_lua(&rt.lua, data).unwrap_or_else(|_| LuaValue::Nil);
+    crate::api::autocmd::dispatch(&rt.lua, event, None, data);
+    if event == TURN_END_EVENT {
+        rt.lua.gc_collect().ok();
+    }
+}
+
+fn handle_describe(
+    rt: &LuaRuntime,
+    plugin: &Arc<str>,
+    tool: &Arc<str>,
+    dctx: &Value,
+    reply: &flume::Sender<Option<String>>,
+) {
+    let _ = reply.send(run_describe(&rt.lua, &rt.plugins, plugin, tool, dctx));
+}
+
+fn handle_collect_plugin_options(rt: &LuaRuntime, reply: &flume::Sender<PluginOptionSpecs>) {
+    let _ = reply.send(collect_plugin_options(&rt.lua));
+}
+
+fn handle_restore_tool_async(
+    ex: &Rc<smol::LocalExecutor<'_>>,
+    gate: &Rc<InflightGate>,
+    restores: &Rc<RestoreTracker>,
+    rt: &LuaRuntime,
+    item: RestoreItem,
+    event_tx: n00n_agent::EventSender,
+) {
+    spawn_restore(ex, gate, restores, rt, item, event_tx);
+}
+
+fn handle_click_buf_spawn(
+    ex: &Rc<smol::LocalExecutor<'_>>,
+    lua: Lua,
+    buf: Arc<SharedBuf>,
+    row: usize,
+) {
+    ex.spawn(async move {
+        handle_click_buf(&lua, buf, row).await;
+    })
+    .detach();
+}
+
+fn handle_restore_complete(restores: &Rc<RestoreTracker>, flag: Arc<AtomicBool>) {
+    restores.complete(flag);
+}
+
+async fn handle_request(
+    rt: &mut LuaRuntime,
+    ex: &Rc<smol::LocalExecutor<'_>>,
+    gate: &Rc<InflightGate>,
+    restores: &Rc<RestoreTracker>,
+    spawn_rx: &flume::Receiver<PendingAsyncTask>,
+    msg: Request,
+) -> bool {
+    match msg {
+        Request::Shutdown => return false,
+        Request::LoadSource {
+            name,
+            source,
+            plugin_dir,
+            permissions,
+            opts,
+            reply,
+        } => {
+            handle_load_source(
+                rt,
+                ex,
+                gate,
+                spawn_rx,
+                LoadSourceRequest {
+                    name,
+                    source,
+                    plugin_dir,
+                    permissions,
+                    opts,
+                    reply,
+                },
+            )
+            .await;
+        }
+        Request::CallTool {
+            plugin,
+            tool,
+            input,
+            ctx,
+            deadline,
+            reply,
+            live,
+        } => {
+            handle_call_tool(
+                rt,
+                ex,
+                gate,
+                CallToolRequest {
+                    plugin,
+                    tool,
+                    input,
+                    ctx,
+                    deadline,
+                    reply,
+                    live,
+                },
+            );
+        }
+        Request::ClearPlugin { plugin, reply } => {
+            handle_clear_plugin(rt, ex, gate, spawn_rx, plugin, reply).await;
+        }
+        Request::RunCommand {
+            plugin,
+            command,
+            args,
+        } => {
+            handle_run_command(rt, ex, plugin, command, args);
+        }
+        Request::ComputeHeader {
+            plugin,
+            tool,
+            input,
+            reply,
+        } => {
+            handle_compute_header(rt, plugin, tool, input, reply).await;
+        }
+        Request::ComputePermissionScopes {
+            plugin,
+            tool,
+            input,
+            reply,
+        } => {
+            handle_compute_permission_scopes(rt, plugin, tool, input, reply).await;
+        }
+        Request::RunInitLua {
+            source,
+            source_name,
+            plugin_dir,
+            reply,
+        } => {
+            handle_run_init_lua(
+                rt,
+                ex,
+                gate,
+                spawn_rx,
+                source,
+                source_name,
+                plugin_dir,
+                reply,
+            )
+            .await;
+        }
+        Request::CollectPromptSlots { reply } => {
+            handle_collect_prompt_slots(rt, reply).await;
+        }
+        Request::CollectPluginOptions { reply } => {
+            handle_collect_plugin_options(rt, &reply);
+        }
+        Request::RestoreToolAsync { item, event_tx } => {
+            handle_restore_tool_async(ex, gate, restores, rt, item, event_tx);
+        }
+        Request::RestoreComplete { flag } => {
+            handle_restore_complete(restores, flag);
+        }
+        Request::ClickTool {
+            tool_use_id,
+            row,
+            fallback,
+        } => {
+            handle_click_tool(rt, ex, gate, restores, tool_use_id, row, fallback);
+        }
+        Request::ClickBuf { buf, row } => {
+            handle_click_buf_spawn(ex, rt.lua.clone(), buf, row);
+        }
+        Request::FireAutocmd { event, data } => {
+            handle_fire_autocmd(rt, &event, &data);
+        }
+        Request::Describe {
+            plugin,
+            tool,
+            dctx,
+            reply,
+        } => {
+            handle_describe(rt, &plugin, &tool, &dctx, &reply);
+        }
+        Request::StartTool {
+            plugin,
+            tool,
+            input,
+            live,
+            ctx,
+            reply,
+        } => {
+            handle_start_tool(
+                rt,
+                ex,
+                gate,
+                StartToolRequest {
+                    plugin,
+                    tool,
+                    input,
+                    live,
+                    ctx,
+                    reply,
+                },
+            );
+        }
+        Request::RunKeybindCallback { id } => {
+            handle_keybind_callback(rt, ex, id);
+        }
+    }
+    true
+}
+
+fn run_request_loop(
+    rt: &mut LuaRuntime,
+    ex: &Rc<smol::LocalExecutor<'_>>,
+    gate: &Rc<InflightGate>,
+    restores: &Rc<RestoreTracker>,
+    spawn_rx: &flume::Receiver<PendingAsyncTask>,
+    prio_rx: &flume::Receiver<Request>,
+    rx: &flume::Receiver<Request>,
+) {
+    smol::block_on(ex.run(async {
+        loop {
+            while let Ok(task) = spawn_rx.try_recv() {
+                spawn_async_task(&rt.lua, ex, gate, task);
+            }
+            let next = smol::future::or(
+                async { prio_rx.recv_async().await.map(Some) },
+                smol::future::or(
+                    async {
+                        let task = spawn_rx.recv_async().await?;
+                        spawn_async_task(&rt.lua, ex, gate, task);
+                        Ok(None)
+                    },
+                    async { rx.recv_async().await.map(Some) },
+                ),
+            )
+            .await;
+            let msg = match next {
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    smol::future::yield_now().await;
+                    continue;
+                }
+                Err(_) => break,
+            };
+            if !handle_request(rt, ex, gate, restores, spawn_rx, msg).await {
+                break;
+            }
+        }
+    }));
+}
+
 pub fn spawn(
     registry: Arc<ToolRegistry>,
     bundled_dirs: &'static [&'static Dir<'static>],
@@ -2182,17 +2741,18 @@ pub fn spawn(
     let handle = thread::Builder::new()
         .name("n00n-lua".to_owned())
         .spawn(move || {
-            let mut rt = match LuaRuntime::new(
+            let config = LuaRuntimeConfig {
                 registry,
-                tx_clone,
-                shutdown_thread,
+                tx: tx_clone,
+                shutdown: shutdown_thread,
                 bundled_dirs,
-                Some(ui_action_tx),
+                ui_action_tx: Some(ui_action_tx),
                 command_writer,
                 keymap_writer,
                 hint_writer,
                 jit,
-            ) {
+            };
+            let mut rt = match LuaRuntime::new(config) {
                 Ok(r) => {
                     let _ = init_tx.send(Ok(()));
                     r
@@ -2213,293 +2773,8 @@ pub fn spawn(
                 .rx
                 .clone();
 
-            smol::block_on(ex.run(async {
-                loop {
-                    while let Ok(task) = spawn_rx.try_recv() {
-                        spawn_async_task(&rt.lua, &ex, &gate, task);
-                    }
-                    // Biased: user-initiated requests (commands, keybinds) jump
-                    // ahead of bulk work like session restores so the UI stays
-                    // snappy, and queued `n00n.async.run` tasks jump ahead of
-                    // plain requests.
-                    let next = smol::future::or(
-                        async { prio_rx.recv_async().await.map(Some) },
-                        smol::future::or(
-                            async {
-                                let task = spawn_rx.recv_async().await?;
-                                spawn_async_task(&rt.lua, &ex, &gate, task);
-                                Ok(None)
-                            },
-                            async { rx.recv_async().await.map(Some) },
-                        ),
-                    )
-                    .await;
-                    let msg = match next {
-                        Ok(Some(m)) => m,
-                        Ok(None) => {
-                            smol::future::yield_now().await;
-                            continue;
-                        }
-                        Err(_) => break,
-                    };
-                    match msg {
-                        Request::Shutdown => break,
-                        Request::LoadSource {
-                            name,
-                            source,
-                            plugin_dir,
-                            permissions,
-                            opts,
-                            reply,
-                        } => {
-                            drain_barrier(&rt.lua, &ex, &gate, &spawn_rx).await;
-                            let res = rt.load_source(Arc::clone(&name), &source, plugin_dir, &permissions, opts, None).await;
-                            let _ = reply.send(res);
-                        }
-                        Request::CallTool {
-                            plugin,
-                            tool,
-                            input,
-                            ctx,
-                            deadline,
-                            reply,
-                            live,
-                        } => {
-                            let lua = rt.lua.clone();
-                            let plugins = Rc::clone(&rt.plugins);
-                            let live_tasks = Rc::clone(&rt.live_tasks);
-                            let warm_tools = Rc::clone(&rt.warm_tools);
-                            let shutdown_ref = Arc::clone(&rt.shutdown);
-                            let g = Rc::clone(&gate);
-                            ex.spawn(async move {
-                                let res = run_tool_call(
-                                    lua.clone(),
-                                    plugin,
-                                    tool,
-                                    input,
-                                    ctx,
-                                    deadline,
-                                    live,
-                                    live_tasks,
-                                    warm_tools,
-                                    plugins,
-                                    shutdown_ref,
-                                    g,
-                                )
-                                .await;
-                                let _ = reply.send(res);
-                            })
-                            .detach();
-                        }
-                        Request::ClearPlugin { plugin, reply } => {
-                            drain_barrier(&rt.lua, &ex, &gate, &spawn_rx).await;
-                            rt.clear_plugin(&plugin);
-                            let _ = reply.send(());
-                        }
-                        Request::RunCommand {
-                            plugin,
-                            command,
-                            args,
-                        } => {
-                            let handler_fn =
-                                rt.lua.app_data_ref::<CommandHandlerMap>().and_then(|m| {
-                                    let entry = m.get(&plugin)?.get(&command)?;
-                                    rt.lua.registry_value::<Function>(&entry.handler).ok()
-                                });
-                            if let Some(func) = handler_fn {
-                                let lua = rt.lua.clone();
-                                ex.spawn(async move {
-                                    let run = async {
-                                        let thread = lua.create_thread(func)?;
-                                        thread.into_async::<()>(args)?.await
-                                    };
-                                    if let Err(e) = run_detached(&lua, run).await {
-                                        tracing::warn!(plugin = %plugin, command = %command, error = %e, "command handler failed");
-                                    }
-                                })
-                                .detach();
-                            }
-                        }
-                        Request::ComputeHeader {
-                            plugin,
-                            tool,
-                            input,
-                            reply,
-                        } => {
-                            let res =
-                                compute_header(&rt.lua, &rt.plugins, &plugin, &tool, input).await;
-                            let _ = reply.send(res);
-                        }
-                        Request::ComputePermissionScopes {
-                            plugin,
-                            tool,
-                            input,
-                            reply,
-                        } => {
-                            let res = rt.compute_permission_scopes(&plugin, &tool, input).await;
-                            let _ = reply.send(res);
-                        }
-                        Request::RunInitLua {
-                            source,
-                            source_name,
-                            plugin_dir,
-                            reply,
-                        } => {
-                            drain_barrier(&rt.lua, &ex, &gate, &spawn_rx).await;
-                            let res = rt.run_init_lua(&source, &source_name, plugin_dir).await;
-                            let _ = reply.send(res);
-                        }
-                        Request::CollectPromptSlots { reply } => {
-                            let slots = rt.collect_prompt_slots().await;
-                            let _ = reply.send(slots);
-                        }
-                        Request::CollectPluginOptions { reply } => {
-                            let _ = reply.send(collect_plugin_options(&rt.lua));
-                        }
-                        Request::RestoreToolAsync { item, event_tx } => {
-                            spawn_restore(&ex, &gate, &restores, &rt, item, event_tx);
-                        }
-                        Request::RestoreComplete { flag } => {
-                            restores.complete(flag);
-                        }
-                        Request::ClickTool {
-                            tool_use_id,
-                            row,
-                            fallback,
-                        } => {
-                            let handle = rt
-                                .live_tasks
-                                .borrow()
-                                .get(&tool_use_id)
-                                .map(Arc::clone)
-                                .or_else(|| {
-                                    rt.warm_tools
-                                        .borrow()
-                                        .iter()
-                                        .find(|w| w.id == tool_use_id)
-                                        .map(|w| Arc::clone(&w.handle))
-                                });
-                            let func = handle
-                                .as_ref()
-                                .and_then(resolve_root_buf)
-                                .and_then(|root| crate::api::ui::buf::click_fn(&root));
-                            let (Some(handle), Some(func)) = (handle, func) else {
-                                // No handle, or a buf without a click handler
-                                // (some plugins wire clicks only in restore):
-                                // either way the fallback restore serves it.
-                                if let Some(fb) = fallback {
-                                    spawn_restore(
-                                        &ex, &gate, &restores, &rt, fb.item, fb.event_tx,
-                                    );
-                                } else {
-                                    tracing::debug!(tool_use_id, "unhandled click ignored");
-                                }
-                                continue;
-                            };
-                            let lua = rt.lua.clone();
-                            let g = Rc::clone(&gate);
-                            let arg = match rt.lua.create_table() {
-                                Ok(t) => {
-                                    let _ = t.set("row", row);
-                                    LuaValue::Table(t)
-                                }
-                                Err(_) => LuaValue::Nil,
-                            };
-                            ex.spawn(async move {
-                                let _gate_guard = g.acquire().await;
-                                let call = ScopedFuture {
-                                    lua: lua.clone(),
-                                    handle,
-                                    inner: func.call_async::<()>(arg),
-                                };
-                                if let Err(e) = call.await {
-                                    tracing::warn!(tool_use_id, error = %e, "live click failed");
-                                }
-                            })
-                            .detach();
-                        }
-                        Request::ClickBuf { buf, row } => {
-                            let Some(func) = crate::api::ui::buf::click_fn(&buf) else {
-                                continue;
-                            };
-                            let arg = match rt.lua.create_table() {
-                                Ok(t) => {
-                                    let _ = t.set("row", row);
-                                    LuaValue::Table(t)
-                                }
-                                Err(_) => LuaValue::Nil,
-                            };
-                            let scope = TaskScope::detached(&rt.lua);
-                            if let Err(e) = scope.scope_future(func.call_async::<()>(arg)).await {
-                                tracing::warn!(error = %e, "window buffer click failed");
-                            }
-                        }
-                        Request::FireAutocmd { event, data } => {
-                            let data = json_to_lua(&rt.lua, &data).unwrap_or_else(|_| LuaValue::Nil);
-                            crate::api::autocmd::dispatch(&rt.lua, &event, None, data);
-                            if event == TURN_END_EVENT {
-                                rt.lua.gc_collect().ok();
-                            }
-                        }
-                        Request::Describe {
-                            plugin,
-                            tool,
-                            dctx,
-                            reply,
-                        } => {
-                            let _ = reply
-                                .send(run_describe(&rt.lua, &rt.plugins, &plugin, &tool, &dctx));
-                        }
-                        Request::StartTool {
-                            plugin,
-                            tool,
-                            input,
-                            live,
-                            ctx,
-                            reply,
-                        } => {
-                            let func = {
-                                let plugins = rt.plugins.borrow();
-                                plugins
-                                    .get(&*plugin)
-                                    .and_then(|p| p.get(&*tool))
-                                    .and_then(|tk| tk.start.as_ref())
-                                    .and_then(|key| rt.lua.registry_value::<Function>(key).ok())
-                            };
-                            let Some(func) = func else {
-                                let _ = reply.send(());
-                                continue;
-                            };
-                            let lua = rt.lua.clone();
-                            let g = Rc::clone(&gate);
-                            ex.spawn(async move {
-                                let _gate_guard = g.acquire().await;
-                                run_tool_start(&lua, func, &tool, input, live, ctx).await;
-                                let _ = reply.send(());
-                            })
-                            .detach();
-                        }
-                        Request::RunKeybindCallback { id } => {
-                            let func = rt.lua.app_data_ref::<KeymapStore>().and_then(|store| {
-                                let key = store.callback_for_id(id)?;
-                                rt.lua.registry_value::<Function>(key).ok()
-                            });
-                            if let Some(func) = func {
-                                let lua = rt.lua.clone();
-                                ex.spawn(async move {
-                                    if let Err(e) = run_detached(&lua, func.call_async::<()>(())).await {
-                                        tracing::warn!(keybind_id = id, error = %e, "keybind callback failed");
-                                    }
-                                }).detach();
-                            }
-                        }
-                    }
-                }
-            }));
-            // Clones of the host (`EventHandle`, `LuaTool`) can still hold
-            // a live sender, so dropping the receivers alone does not free
-            // queued requests. Drain them so their reply channels drop and
-            // no caller blocks on a dead host.
+            run_request_loop(&mut rt, &ex, &gate, &restores, &spawn_rx, &prio_rx, &rx);
+
             for _ in rx.drain() {}
             for _ in prio_rx.drain() {}
         })

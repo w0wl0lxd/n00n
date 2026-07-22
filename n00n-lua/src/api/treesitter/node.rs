@@ -88,25 +88,50 @@ fn id(_lua: &Lua, this: &LuaNode) -> LuaResult<String> {
 /// local sr, sc, er, ec = node:range()
 /// local sr, sc, sb, er, ec, eb = node:range(true)
 #[lua_fn]
-#[allow(clippy::cast_possible_wrap)]
 fn range(_lua: &Lua, this: &LuaNode, include_bytes: Option<bool>) -> LuaResult<MultiValue> {
     let sp = this.ts_node()?.start_position();
     let ep = this.ts_node()?.end_position();
     if include_bytes.unwrap_or_else(|| false) {
         Ok(MultiValue::from_iter([
-            Value::Integer(sp.row as i64),
-            Value::Integer(sp.column as i64),
-            Value::Integer(this.ts_node()?.start_byte() as i64),
-            Value::Integer(ep.row as i64),
-            Value::Integer(ep.column as i64),
-            Value::Integer(this.ts_node()?.end_byte() as i64),
+            Value::Integer(
+                i64::try_from(sp.row).map_err(|_| mlua::Error::runtime("row value too large"))?,
+            ),
+            Value::Integer(
+                i64::try_from(sp.column)
+                    .map_err(|_| mlua::Error::runtime("column value too large"))?,
+            ),
+            Value::Integer(
+                i64::try_from(this.ts_node()?.start_byte())
+                    .map_err(|_| mlua::Error::runtime("byte value too large"))?,
+            ),
+            Value::Integer(
+                i64::try_from(ep.row).map_err(|_| mlua::Error::runtime("row value too large"))?,
+            ),
+            Value::Integer(
+                i64::try_from(ep.column)
+                    .map_err(|_| mlua::Error::runtime("column value too large"))?,
+            ),
+            Value::Integer(
+                i64::try_from(this.ts_node()?.end_byte())
+                    .map_err(|_| mlua::Error::runtime("byte value too large"))?,
+            ),
         ]))
     } else {
         Ok(MultiValue::from_iter([
-            Value::Integer(sp.row as i64),
-            Value::Integer(sp.column as i64),
-            Value::Integer(ep.row as i64),
-            Value::Integer(ep.column as i64),
+            Value::Integer(
+                i64::try_from(sp.row).map_err(|_| mlua::Error::runtime("row value too large"))?,
+            ),
+            Value::Integer(
+                i64::try_from(sp.column)
+                    .map_err(|_| mlua::Error::runtime("column value too large"))?,
+            ),
+            Value::Integer(
+                i64::try_from(ep.row).map_err(|_| mlua::Error::runtime("row value too large"))?,
+            ),
+            Value::Integer(
+                i64::try_from(ep.column)
+                    .map_err(|_| mlua::Error::runtime("column value too large"))?,
+            ),
         ]))
     }
 }
@@ -115,13 +140,13 @@ fn range(_lua: &Lua, this: &LuaNode, include_bytes: Option<bool>) -> LuaResult<M
 ///
 /// @return (integer, integer, integer) start_row, start_col, start_byte.
 #[lua_fn]
-#[allow(clippy::cast_possible_wrap)]
 fn start(_lua: &Lua, this: &LuaNode) -> LuaResult<(i64, i64, i64)> {
     let sp = this.ts_node()?.start_position();
     Ok((
-        sp.row as i64,
-        sp.column as i64,
-        this.ts_node()?.start_byte() as i64,
+        i64::try_from(sp.row).map_err(|_| mlua::Error::runtime("row value too large"))?,
+        i64::try_from(sp.column).map_err(|_| mlua::Error::runtime("column value too large"))?,
+        i64::try_from(this.ts_node()?.start_byte())
+            .map_err(|_| mlua::Error::runtime("byte value too large"))?,
     ))
 }
 
@@ -129,13 +154,13 @@ fn start(_lua: &Lua, this: &LuaNode) -> LuaResult<(i64, i64, i64)> {
 ///
 /// @return (integer, integer, integer) end_row, end_col, end_byte.
 #[lua_fn]
-#[allow(clippy::cast_possible_wrap)]
 fn end_(_lua: &Lua, this: &LuaNode) -> LuaResult<(i64, i64, i64)> {
     let ep = this.ts_node()?.end_position();
     Ok((
-        ep.row as i64,
-        ep.column as i64,
-        this.ts_node()?.end_byte() as i64,
+        i64::try_from(ep.row).map_err(|_| mlua::Error::runtime("row value too large"))?,
+        i64::try_from(ep.column).map_err(|_| mlua::Error::runtime("column value too large"))?,
+        i64::try_from(this.ts_node()?.end_byte())
+            .map_err(|_| mlua::Error::runtime("byte value too large"))?,
     ))
 }
 
@@ -143,9 +168,9 @@ fn end_(_lua: &Lua, this: &LuaNode) -> LuaResult<(i64, i64, i64)> {
 ///
 /// @return (integer) Byte length.
 #[lua_fn]
-#[allow(clippy::cast_possible_wrap)]
 fn byte_length(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
-    Ok((this.ts_node()?.end_byte() - this.ts_node()?.start_byte()) as i64)
+    i64::try_from(this.ts_node()?.end_byte() - this.ts_node()?.start_byte())
+        .map_err(|_| mlua::Error::runtime("byte length too large"))
 }
 
 /// Returns the child at position {index} (0-based), including anonymous nodes like punctuation.
@@ -172,18 +197,18 @@ fn named_child(_lua: &Lua, this: &LuaNode, index: u32) -> LuaResult<Option<LuaNo
 ///
 /// @return (integer) Child count.
 #[lua_fn]
-#[allow(clippy::cast_possible_wrap)]
 fn child_count(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
-    Ok(this.ts_node()?.child_count() as i64)
+    i64::try_from(this.ts_node()?.child_count())
+        .map_err(|_| mlua::Error::runtime("child count too large"))
 }
 
 /// Returns the number of named children (skipping anonymous punctuation nodes).
 ///
 /// @return (integer) Named child count.
 #[lua_fn]
-#[allow(clippy::cast_possible_wrap)]
 fn named_child_count(_lua: &Lua, this: &LuaNode) -> LuaResult<i64> {
-    Ok(this.ts_node()?.named_child_count() as i64)
+    i64::try_from(this.ts_node()?.named_child_count())
+        .map_err(|_| mlua::Error::runtime("named child count too large"))
 }
 
 /// Returns all children (named and anonymous) as a Lua table.
@@ -227,10 +252,10 @@ fn named_children(lua: &Lua, this: &LuaNode) -> LuaResult<mlua::Table> {
 ///   if field then print(field .. ": " .. child:type()) end
 /// end
 #[lua_fn]
-#[allow(clippy::cast_possible_truncation)]
 fn iter_children(lua: &Lua, this: &LuaNode) -> LuaResult<Function> {
     let node = this.ts_node()?;
-    let count = node.child_count() as u32;
+    let count = u32::try_from(node.child_count())
+        .map_err(|_| mlua::Error::runtime("child count too large"))?;
     let mut entries: Vec<(LuaNode, Option<String>)> = Vec::with_capacity(count as usize);
     for i in 0..count {
         if let Some(child) = node.child(i) {

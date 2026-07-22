@@ -168,6 +168,8 @@ pub fn lua_fn(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     let mut func = parse_macro_input!(item as ItemFn);
+    func.attrs
+        .push(syn::parse_quote!(#[allow(clippy::unnecessary_wraps)]));
     match expand_lua_fn(args, &mut func) {
         Ok(ts) => ts.into(),
         Err(e) => {

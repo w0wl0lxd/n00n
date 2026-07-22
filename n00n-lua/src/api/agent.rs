@@ -8,6 +8,8 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use num_traits::ToPrimitive;
+
 use async_lock::Mutex as AsyncMutex;
 use futures::future::{Either, select};
 use mlua::{Function, IntoLuaMulti, Lua, Result as LuaResult, Table, Value as LuaValue};
@@ -108,8 +110,7 @@ fn dispatch_ctx<'a>(ctx: &'a LuaCtx, method: &str) -> Result<&'a AgentContext, S
 
 type Pair<T> = (Option<T>, Option<String>);
 
-#[allow(clippy::needless_pass_by_value)]
-fn err_pair<T>(err: impl ToString) -> Pair<T> {
+fn err_pair<T>(err: &impl ToString) -> Pair<T> {
     (None, Some(err.to_string()))
 }
 
@@ -120,7 +121,7 @@ macro_rules! try_pair {
     ($e:expr) => {
         match $e {
             Ok(v) => v,
-            Err(e) => return Ok(err_pair(e)),
+            Err(e) => return Ok(err_pair(&e)),
         }
     };
 }
@@ -144,7 +145,6 @@ macro_rules! try_pair {
 /// if err then error(err) end
 /// print(model.spec, model.tier)
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn resolve_model(
     lua: &Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
@@ -218,7 +218,6 @@ fn fresh_input_from_legacy_total(
 /// if err then error(err) end
 /// print(string.format("$%.4f", cost))
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn usage_cost(
     _lua: &Lua,
     spec: String,
@@ -288,7 +287,6 @@ fn usage_cost(
 /// })
 /// if err then error(err) end
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 async fn system_prompt(
     _lua: Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
@@ -300,7 +298,10 @@ async fn system_prompt(
         "research" => n00n_agent::prompt::PromptId::Research,
         "general" => n00n_agent::prompt::PromptId::General,
         "system" => n00n_agent::prompt::PromptId::System,
-        other => return Ok(err_pair(format!("unknown prompt_id: {other}"))),
+        other => {
+            let err = format!("unknown prompt_id: {other}");
+            return Ok(err_pair(&err));
+        }
     };
 
     let vars = n00n_agent::template::env_vars();
@@ -342,7 +343,6 @@ async fn system_prompt(
 /// if err then error(err) end
 /// print(#defs .. " tools available")
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn tools(lua: &Lua, ctx: mlua::UserDataRef<LuaCtx>, opts: Table) -> LuaResult<Pair<LuaValue>> {
     let agent = try_pair!(dispatch_ctx(&ctx, "tools"));
     let audience_str: String = opts.get("audience")?;
@@ -445,7 +445,7 @@ async fn call_tool(
         }
     }
     drop(ctx);
-    if let Err(e) = tctx.deadline.check() {
+    if let Err(ref e) = tctx.deadline.check() {
         return Ok(err_pair(e));
     }
     let cbs = LiveCallbacks {
@@ -504,8 +504,6 @@ async fn call_tool(
 /// local result = sess:prompt("Summarize this file.")
 /// sess:close()
 #[lua_fn]
-#[allow(clippy::too_many_lines)]
-#[allow(clippy::cast_possible_truncation)]
 async fn session(
     lua: Lua,
     ctx: mlua::UserDataRef<LuaCtx>,
@@ -548,8 +546,6 @@ async fn session(
         )
     };
     let fast = requested_fast && model.supports_fast();
-    // A standalone task shows its model via SubagentInfo on the header;
-    // a dispatching caller (batch) gets the same thing as a live annotation.
     if let Some(sink) = &agent_ctx.live_sink {
         let _ = sink.send(ToolLive::Annotation(model.spec()));
     }
@@ -610,19 +606,29 @@ async fn session(
     let thinking = match thinking_val {
         Some(LuaValue::String(s)) => match StoredThinking::parse_setting(&s.to_str()?) {
             Ok(stored) => ThinkingConfig::from(stored),
-            Err(e) => return Ok(err_pair(format!("invalid thinking: {e}"))),
+            Err(e) => {
+                let err = format!("invalid thinking: {e}");
+                return Ok(err_pair(&err));
+            }
         },
         Some(LuaValue::Integer(n)) => match u32::try_from(n) {
             Ok(tokens) if tokens > 0 => ThinkingConfig::Budget(tokens),
-            _ => return Ok(err_pair(format!("invalid thinking budget: {n}"))),
+            _ => {
+                let err = format!("invalid thinking budget: {n}");
+                return Ok(err_pair(&err));
+            }
         },
-        Some(LuaValue::Number(n)) if n >= 1.0 && n <= f64::from(u32::MAX) => {
-            let tokens = u32::try_from(n as i64)
+        Some(LuaValue::Number(n)) if n >= 1.0 && n <= f64::from(u32::MAX) && n.fract() == 0.0 => {
+            let int_n = n
+                .to_i64()
+                .ok_or_else(|| mlua::Error::runtime(format!("invalid thinking budget: {n}")))?;
+            let tokens = u32::try_from(int_n)
                 .map_err(|_| mlua::Error::runtime(format!("invalid thinking budget: {n}")))?;
             ThinkingConfig::Budget(tokens)
         }
         Some(LuaValue::Number(n)) => {
-            return Ok(err_pair(format!("invalid thinking budget: {n}")));
+            let err = format!("invalid thinking budget: {n}");
+            return Ok(err_pair(&err));
         }
         Some(_) => return Err(mlua::Error::runtime("thinking must be string or number")),
         None => agent_ctx.opts.thinking,
@@ -1225,7 +1231,6 @@ struct SessionState {
 }
 
 impl SessionState {
-    #[allow(clippy::cast_possible_truncation)]
     fn close(&mut self) {
         if self.closed {
             return;
@@ -1239,7 +1244,7 @@ impl SessionState {
             messages,
             is_error: self.failed,
         });
-        let duration_ms = self.start.elapsed().as_millis() as u64;
+        let duration_ms = duration_ms_u64(self.start.elapsed());
         info!(
             name = %self.name,
             duration_ms,
@@ -1320,9 +1325,7 @@ impl Drop for LuaSession {
 /// if err then error(err) end
 /// print(r.text)
 /// print(r.input_tokens .. " input, " .. r.output_tokens .. " output tokens")
-#[allow(clippy::too_many_lines)]
 #[lua_fn]
-#[allow(clippy::cast_possible_truncation)]
 async fn prompt(
     lua: Lua,
     this: mlua::UserDataRef<LuaSession>,
@@ -1405,17 +1408,7 @@ async fn prompt(
         }
         s.progress.wait_for_forwarder_barrier(barrier_target).await;
         if let Err(e) = result {
-            s.failed = true;
-            s.progress.set_done(progress_turn);
-            let table = prompt_result_table(
-                &lua,
-                s.start.elapsed().as_millis() as u64,
-                s.usage,
-                s.cost,
-                s.fast,
-                None,
-            )?;
-            return Ok((Some(table), Some(e.to_string())));
+            return handle_prompt_error(&lua, s, progress_turn, e);
         }
         next_message = s.prompt_rx.try_recv().ok();
     }
@@ -1425,7 +1418,7 @@ async fn prompt(
 
     let table = prompt_result_table(
         &lua,
-        s.start.elapsed().as_millis() as u64,
+        duration_ms_u64(s.start.elapsed()),
         s.usage,
         s.cost,
         s.fast,
@@ -1434,7 +1427,29 @@ async fn prompt(
     Ok((Some(table), None))
 }
 
-/// Poll the session for a progress snapshot while a prompt is running.
+fn duration_ms_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or_else(|_| u64::MAX)
+}
+
+fn handle_prompt_error<E: std::fmt::Display>(
+    lua: &Lua,
+    s: &mut SessionState,
+    progress_turn: u64,
+    error: E,
+) -> LuaResult<Pair<Table>> {
+    s.failed = true;
+    s.progress.set_done(progress_turn);
+    let table = prompt_result_table(
+        lua,
+        duration_ms_u64(s.start.elapsed()),
+        s.usage,
+        s.cost,
+        s.fast,
+        None,
+    )?;
+    Ok((Some(table), Some(error.to_string())))
+}
+
 ///
 /// Returns a table with:
 ///   `elapsed_ms` (integer): time since the session was created.
@@ -1448,8 +1463,6 @@ async fn prompt(
 /// The call returns at most every `PROGRESS_TIMEOUT_MS` milliseconds, or
 /// immediately when a tool starts or finishes.
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
-#[allow(clippy::cast_possible_truncation)]
 async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResult<Pair<Table>> {
     let progress = Arc::clone(&this.progress);
     let notify = pin!(progress.rx.recv_async());
@@ -1462,7 +1475,7 @@ async fn get_progress(lua: Lua, this: mlua::UserDataRef<LuaSession>) -> LuaResul
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let elapsed = progress.start.elapsed().as_millis() as u64;
+    let elapsed = duration_ms_u64(progress.start.elapsed());
     let tbl = lua.create_table()?;
     tbl.set("session_id", progress.session_id.as_str())?;
     tbl.set("elapsed_ms", elapsed)?;

@@ -168,7 +168,6 @@ pub(crate) fn buf_from_reply(val: &LuaValue) -> Option<Arc<SharedBuf>> {
 /// buf:line("plain text")
 /// buf:line({ { "ERROR", { fg = "#ff0000", bold = true } }, { " something broke" } })
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn line(_lua: &Lua, this: &BufHandle, line: LuaValue) -> LuaResult<()> {
     let l = parse_line(&line)?;
     this.buf.append(l);
@@ -187,7 +186,6 @@ fn line(_lua: &Lua, this: &BufHandle, line: LuaValue) -> LuaResult<()> {
 ///   "third line",
 /// })
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn lines(_lua: &Lua, this: &BufHandle, lines: Table) -> LuaResult<()> {
     let mut parsed = Vec::with_capacity(lines.raw_len());
     for i in 1..=lines.raw_len() {
@@ -209,7 +207,6 @@ fn lines(_lua: &Lua, this: &BufHandle, lines: Table) -> LuaResult<()> {
 /// @example
 /// buf:set_lines({ "new content", "replaces everything" })
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn set_lines(_lua: &Lua, this: &BufHandle, lines: Table) -> LuaResult<()> {
     let mut parsed = Vec::with_capacity(lines.raw_len());
     for i in 1..=lines.raw_len() {
@@ -228,7 +225,6 @@ fn set_lines(_lua: &Lua, this: &BufHandle, lines: Table) -> LuaResult<()> {
 ///   buf:line("(empty)")
 /// end
 #[lua_fn]
-#[allow(clippy::unnecessary_wraps)]
 fn len(_lua: &Lua, this: &BufHandle) -> LuaResult<usize> {
     Ok(this.buf.len())
 }
@@ -270,7 +266,6 @@ fn get_lines(lua: &Lua, this: &BufHandle) -> LuaResult<Table> {
 ///   n00n.ui.flash("Clicked row " .. ev.row)
 /// end)
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn on(lua: &Lua, this: &BufHandle, event: String, callback: Function) -> LuaResult<()> {
     match event.as_str() {
         "click" => {
@@ -347,7 +342,6 @@ async fn click(_lua: Lua, this: mlua::UserDataRef<BufHandle>, ev: LuaValue) -> L
 /// buf:blit(fb, 160, 100)
 /// buf:blit(fb32, 160, 100, { format = "bgra", char = "█" })
 #[lua_fn]
-#[allow(clippy::needless_pass_by_value)]
 fn blit(
     _lua: &Lua,
     this: &BufHandle,

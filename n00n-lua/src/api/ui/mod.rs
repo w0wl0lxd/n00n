@@ -1260,28 +1260,21 @@ mod tests {
         );
     }
 
-    #[test_case(false, false, false, false, "" ; "default_emphasis_is_empty")]
-    #[test_case(true, false, false, false, "bold" ; "bold_only")]
-    #[test_case(false, true, false, false, "italic" ; "italic_only")]
-    #[test_case(true, true, false, false, "bold_italic" ; "bold_and_italic")]
-    #[test_case(false, false, true, false, "strikethrough" ; "strike_only")]
-    #[test_case(true, false, true, false, "strikethrough" ; "strike_wins_over_bold")]
-    #[test_case(false, true, true, false, "strikethrough" ; "strike_wins_over_italic")]
-    #[test_case(false, false, false, true, "" ; "underline_alone_not_surfaced")]
-    #[test_case(true, false, false, true, "bold" ; "underline_ignored_with_bold")]
-    #[allow(clippy::fn_params_excessive_bools)]
-    fn emphasis_style_name_combos(
-        bold: bool,
-        italic: bool,
-        strike: bool,
-        underline: bool,
-        expected: &str,
-    ) {
+    #[test_case((false, false, false, false), "" ; "default_emphasis_is_empty")]
+    #[test_case((true, false, false, false), "bold" ; "bold_only")]
+    #[test_case((false, true, false, false), "italic" ; "italic_only")]
+    #[test_case((true, true, false, false), "bold_italic" ; "bold_and_italic")]
+    #[test_case((false, false, true, false), "strikethrough" ; "strike_only")]
+    #[test_case((true, false, true, false), "strikethrough" ; "strike_wins_over_bold")]
+    #[test_case((false, true, true, false), "strikethrough" ; "strike_wins_over_italic")]
+    #[test_case((false, false, false, true), "" ; "underline_alone_not_surfaced")]
+    #[test_case((true, false, false, true), "bold" ; "underline_ignored_with_bold")]
+    fn emphasis_style_name_combos(flags: (bool, bool, bool, bool), expected: &str) {
         let emphasis = n00n_markdown::Emphasis {
-            bold,
-            italic,
-            strike,
-            underline,
+            bold: flags.0,
+            italic: flags.1,
+            strike: flags.2,
+            underline: flags.3,
         };
         assert_eq!(emphasis_style_name(emphasis), expected);
     }
