@@ -205,8 +205,8 @@ mod tests {
     fn from_source_decodes_png_and_fits_width() {
         let img = ImageBuffer::from_fn(TEST_IMAGE_SIZE, TEST_IMAGE_SIZE, |x, y| {
             image::Rgb([
-                u8::try_from(x * 32).unwrap(),
-                u8::try_from(y * 32).unwrap(),
+                u8::try_from(x).unwrap_or_else(|_| u8::MAX) * 32,
+                u8::try_from(y).unwrap_or_else(|_| u8::MAX) * 32,
                 128,
             ])
         });

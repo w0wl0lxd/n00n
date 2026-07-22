@@ -77,9 +77,9 @@ pub(super) fn extract_selection_text(
             .render(tmp_area, &mut tmp);
 
         let ss = ScreenSelection {
-            start_row: rel_start as u16,
+            start_row: u16::try_from(rel_start).unwrap_or_else(|_| u16::MAX),
             start_col,
-            end_row: rel_end.saturating_sub(1) as u16,
+            end_row: u16::try_from(rel_end.saturating_sub(1)).unwrap_or_else(|_| u16::MAX),
             end_col,
         };
 
@@ -87,9 +87,9 @@ pub(super) fn extract_selection_text(
         selection::append_rows(
             &tmp,
             tmp_area,
-            &ss,
-            rel_start as u16,
-            rel_end as u16,
+            ss,
+            u16::try_from(rel_start).unwrap_or_else(|_| u16::MAX),
+            u16::try_from(rel_end).unwrap_or_else(|_| u16::MAX),
             &mut out,
             &breaks,
         );
