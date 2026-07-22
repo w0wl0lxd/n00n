@@ -838,8 +838,14 @@ fn spawn_persist_enabled(path: PathBuf, name: String, enabled: bool) {
 #[allow(unsafe_code)]
 pub fn kill_process_groups(pids: &[u32]) {
     for &pid in pids {
-        let pid_i32 = i32::try_from(pid).unwrap_or_else(|_| i32::MAX);
-        unsafe { libc::killpg(pid_i32, libc::SIGKILL) };
+        if let Ok(pid_i32) = i32::try_from(pid) {
+            // SAFETY: pid_i32 is a valid pid_t value, and killpg only
+            // signals the process group; callers already hold the PID
+            // list from a child they own.
+            unsafe { libc::killpg(pid_i32, libc::SIGKILL) };
+        } else {
+            warn!(pid = %pid, "process ID out of i32 range; skipping killpg");
+        }
     }
 }
 
