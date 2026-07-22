@@ -25,27 +25,21 @@ pub(crate) fn btw_question(question: &str) -> Message {
 }
 
 impl App {
-    pub(crate) fn start_btw(
-        &mut self,
-        question: String,
-        provider: Arc<dyn Provider>,
-        model: Model,
-    ) {
+    pub(crate) fn start_btw(&mut self, question: &str, provider: Arc<dyn Provider>, model: Model) {
         let mut messages = self
             .shared_history
             .as_ref()
-            .map(|h| Vec::clone(&h.load()))
-            .unwrap_or_default();
+            .map_or_else(Default::default, |h| Vec::clone(&h.load()));
         let system = self
             .btw_system
             .as_ref()
             .map(|s| String::clone(&s.load()))
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| BTW_FALLBACK_SYSTEM.to_string());
-        messages.push(btw_question(&question));
+        messages.push(btw_question(question));
 
         let (tx, rx) = flume::bounded(64);
-        self.btw_modal.open(&question, rx);
+        self.btw_modal.open(question, rx);
 
         smol::spawn(run_btw(provider, model, system, messages, tx)).detach();
     }
@@ -74,9 +68,10 @@ async fn run_btw(
 
     let forward_fut = async {
         while let Ok(event) = event_rx.recv_async().await {
-            let delta = match event {
-                ProviderEvent::TextDelta { text } | ProviderEvent::ThinkingDelta { text } => text,
-                _ => continue,
+            let (ProviderEvent::TextDelta { text: delta }
+            | ProviderEvent::ThinkingDelta { text: delta }) = event
+            else {
+                continue;
             };
             if btw_tx.send(BtwEvent::TextDelta(delta)).is_err() {
                 return;
