@@ -37,14 +37,14 @@ jobs:
           components: rustfmt
 
       - name: Run benchmarks
-        run: cargo bench
+        run: cargo bench -- --output-format bencher | tee criterion-output.txt
 
       - name: Store / report results
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: Criterion
-          tool: criterion
-          output-file-path: dev/benchmark-data.json
+          tool: cargo
+          output-file-path: criterion-output.txt
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: ${{ github.event_name != 'pull_request' }}
           save-data-file: ${{ github.event_name != 'pull_request' }}
