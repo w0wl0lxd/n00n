@@ -94,7 +94,6 @@ impl Chat {
             .set_restore_channel(event_handle, event_tx);
     }
 
-    #[allow(clippy::too_many_lines)]
     pub fn handle_event(&mut self, event: AgentEvent, plan_path: Option<&Path>) -> ChatEventResult {
         match event {
             AgentEvent::ThinkingDelta { text } => {
@@ -632,7 +631,6 @@ fn transcript_message_count(entries: &[TranscriptEntry<Message>]) -> usize {
         .sum()
 }
 
-#[allow(clippy::too_many_lines)] // message-role dispatch; extraction would fragment rendering
 pub fn history_to_display<S: std::hash::BuildHasher>(
     messages: &[Message],
     tool_outputs: &HashMap<String, ToolOutput, S>,

@@ -288,7 +288,6 @@ impl TextBuffer {
         self.lines[self.cursor_y].drain(..byte_x);
         self.raw_x = 0;
     }
-    #[allow(clippy::too_many_lines)]
     pub fn handle_key(&mut self, key: KeyEvent) -> EditResult {
         let m = key.modifiers;
         let ctrl = m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT);
