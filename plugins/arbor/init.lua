@@ -1,3 +1,4 @@
+local ExploreResult = require("n00n.explore_result")
 local n00n_arbor = n00n.arbor
 
 local function format_list(items)
@@ -102,7 +103,17 @@ two symbols.]],
       token_budget = { type = "integer", default = 1024 },
     },
   },
-  handler = function(input, _ctx)
+  header = function(input)
+    local label = input.command or ""
+    if input.symbol then
+      label = label .. " " .. input.symbol
+    end
+    return ExploreResult.header(label, input.project)
+  end,
+  restore = function(_input, output, _is_error, ctx)
+    return ExploreResult.restore(output, ctx)
+  end,
+  handler = function(input, ctx)
     local ok, err = pcall(n00n_arbor.check_binary)
     if not ok then
       return {
@@ -110,6 +121,13 @@ two symbols.]],
         is_error = true,
       }
     end
-    return dispatch(input)
+    local card, live_err = ExploreResult.live(ctx)
+    if not card then
+      return { llm_output = "error: failed to publish Arbor results: " .. tostring(live_err), is_error = true }
+    end
+    local result = dispatch(input)
+    card:update(result.llm_output)
+    result.body = card.buf
+    return result
   end,
 })

@@ -321,10 +321,9 @@ impl<T: PickerItem> ListPicker<T> {
 
     #[allow(clippy::expect_used)]
     fn handle_ready_key(&mut self, key: KeyEvent) -> PickerAction<T> {
-        let s = self
-            .state
-            .as_mut()
-            .expect("handle_ready_key called without state");
+        let Some(s) = self.state.as_mut() else {
+            return PickerAction::Consumed;
+        };
 
         if key::QUIT.matches(key) {
             self.state = None;

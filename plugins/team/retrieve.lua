@@ -118,8 +118,16 @@ end
 -- @param goal string Goal (or step) text used to source context.
 -- @param role string Role requesting context (for future weighting).
 -- @param k integer? Max snippets.
+-- @param use_summary boolean? Try summary index first when true.
 -- @return string? Context block, or nil if nothing useful was found.
-function M.retrieve(ctx, goal, role, k)
+function M.retrieve(ctx, goal, role, k, use_summary)
+  if use_summary then
+    local summary = require("summary")
+    local block, _ = summary.retrieve(ctx, goal, k)
+    if block and #block > 0 then
+      return block
+    end
+  end
   local hits = retrieve_lexical(ctx, goal, k)
   if hits and #hits > 0 then
     return hits
