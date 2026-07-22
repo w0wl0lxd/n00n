@@ -24,6 +24,7 @@ fn write_header(out: &mut String) {
     let _ = writeln!(out, "weight = 5");
     let _ = writeln!(out, "[extra]");
     let _ = writeln!(out, "group = \"Reference\"");
+    let _ = writeln!(out, "+++");
     let _ = writeln!(out);
     let _ = writeln!(out, "# Commands");
     let _ = writeln!(out);
